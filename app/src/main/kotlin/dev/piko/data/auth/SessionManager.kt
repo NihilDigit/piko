@@ -35,6 +35,7 @@ class SessionManager(private val context: Context) {
         val USERNAME = stringPreferencesKey("username")
         val AVATAR_URL = stringPreferencesKey("avatar_url")
         val CONCURRENT_CONNECTIONS = intPreferencesKey("concurrent_connections")
+        val CONCURRENT_ACCELERATION = booleanPreferencesKey("concurrent_acceleration")
         val DOWNLOAD_DIR_PATH = stringPreferencesKey("download_dir_path")
         val SPOILER_BLUR_ENABLED = booleanPreferencesKey("spoiler_blur_enabled")
         val HEURISTIC_FILTER_ENABLED = booleanPreferencesKey("heuristic_filter_enabled")
@@ -118,8 +119,12 @@ class SessionManager(private val context: Context) {
         }
     }
 
-    val concurrentConnectionsFlow: Flow<Int> = context.dataStore.data.map { preferences ->
-        preferences[PreferencesKeys.CONCURRENT_CONNECTIONS] ?: 8
+    val concurrentAccelerationFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[PreferencesKeys.CONCURRENT_ACCELERATION] ?: true
+    }
+
+    val concurrentConnectionsFlow: Flow<Int> = concurrentAccelerationFlow.map { enabled ->
+        if (enabled) 8 else 1
     }
 
     val downloadDirPathFlow: Flow<String> = context.dataStore.data.map { preferences ->
@@ -137,9 +142,9 @@ class SessionManager(private val context: Context) {
         return prefs[PreferencesKeys.DOWNLOAD_DIR_PATH] ?: ""
     }
 
-    suspend fun updateConcurrentConnections(connections: Int) {
+    suspend fun setConcurrentAccelerationEnabled(enabled: Boolean) {
         context.dataStore.edit { preferences ->
-            preferences[PreferencesKeys.CONCURRENT_CONNECTIONS] = connections.coerceIn(1, 8)
+            preferences[PreferencesKeys.CONCURRENT_ACCELERATION] = enabled
         }
     }
 

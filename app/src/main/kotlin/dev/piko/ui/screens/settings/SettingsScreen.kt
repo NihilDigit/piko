@@ -91,15 +91,13 @@ fun SettingsScreen(
     val session by sessionManager.sessionFlow.collectAsState(initial = null)
     val isSpoilerBlurEnabled by sessionManager.spoilerBlurFlow.collectAsState(initial = true)
     val isHeuristicFilterEnabled by sessionManager.heuristicFilterFlow.collectAsState(initial = true)
-    val concurrentConnections by sessionManager.concurrentConnectionsFlow.collectAsState(initial = 8)
+    val isConcurrentAccelerationEnabled by sessionManager.concurrentAccelerationFlow.collectAsState(initial = true)
     val downloadDirPath by sessionManager.downloadDirPathFlow.collectAsState(initial = "")
     val scope = rememberCoroutineScope()
 
     val quota by driveRepo.quotaFlow.collectAsState()
     var showLogoutDialog by remember { mutableStateOf(false) }
-    var showConcurrencyDialog by remember { mutableStateOf(false) }
     var showDownloadDirDialog by remember { mutableStateOf(false) }
-    var tempConnections by remember(concurrentConnections) { mutableStateOf(concurrentConnections) }
     var customPathInput by remember(downloadManager.downloadDir.absolutePath) {
         mutableStateOf(downloadManager.downloadDir.absolutePath)
     }
@@ -456,10 +454,6 @@ fun SettingsScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable {
-                                tempConnections = concurrentConnections
-                                showConcurrencyDialog = true
-                            }
                             .padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -472,29 +466,29 @@ fun SettingsScreen(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "并发传输引擎",
+                                text = "8 连接并发加速",
                                 style = MaterialTheme.typography.bodyLarge,
                                 fontWeight = FontWeight.Medium,
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = "$concurrentConnections 连接分块并发下载，点击即可自定义线程数",
+                                text = if (isConcurrentAccelerationEnabled) {
+                                    "已开启 8 连接并发分块加速，充分利用网络吞吐量"
+                                } else {
+                                    "已关闭并发加速，当前使用单连接标准下载"
+                                },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = MaterialTheme.colorScheme.tertiaryContainer,
-                        ) {
-                            Text(
-                                text = "$concurrentConnections 线程",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onTertiaryContainer,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            )
-                        }
+                        Switch(
+                            checked = isConcurrentAccelerationEnabled,
+                            onCheckedChange = { checked ->
+                                scope.launch {
+                                    sessionManager.setConcurrentAccelerationEnabled(checked)
+                                }
+                            },
+                        )
                     }
 
                     HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
@@ -708,79 +702,6 @@ fun SettingsScreen(
         )
     }
 
-    if (showConcurrencyDialog) {
-        AlertDialog(
-            onDismissRequest = { showConcurrencyDialog = false },
-            title = { Text("并发传输连接数") },
-            text = {
-                Column {
-                    Text(
-                        text = "调整并发分块下载的最大连接数 (1 ~ 8 线程)。\n连接数越多吞吐量越大，官方推荐 8 线程以兼顾速度与稳定性。",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        text = "当前设定：$tempConnections 线程",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Slider(
-                        value = tempConnections.toFloat(),
-                        onValueChange = { tempConnections = it.toInt().coerceIn(1, 8) },
-                        valueRange = 1f..8f,
-                        steps = 6,
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text("快速预设：", style = MaterialTheme.typography.labelMedium)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        listOf(2, 4, 6, 8).forEach { count ->
-                            val isSelected = tempConnections == count
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHigh,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clickable { tempConnections = count },
-                            ) {
-                                Text(
-                                    text = "$count 线程",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
-                                    modifier = Modifier.padding(vertical = 8.dp),
-                                    textAlign = TextAlign.Center,
-                                )
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showConcurrencyDialog = false
-                        scope.launch {
-                            sessionManager.updateConcurrentConnections(tempConnections.coerceIn(1, 8))
-                        }
-                    }
-                ) {
-                    Text("保存")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showConcurrencyDialog = false }) {
-                    Text("取消")
-                }
-            }
-        )
-    }
 
     if (showDownloadDirDialog) {
         val publicDownloadsPath = remember {
