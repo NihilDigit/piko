@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Piko 品牌 Logo (汲取 PikPak 灵感并全新演绎的胖嘟嘟箱子机器人)。
+  保留标志性开箱仓盖与治愈微笑的神韵，拥有圆润饱满的 Material 3 Squircle 脸庞与灵动双眼。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+
+    <!-- 品牌蓝圆角背景 (rx=12) -->
+    <path
+        android:fillColor="#306EFF"
+        android:pathData="M12,0 H36 A12,12 0 0 1 48,12 V36 A12,12 0 0 1 36,48 H12 A12,12 0 0 1 0,36 V12 A12,12 0 0 1 12,0 Z" />
+
+    <!-- 左开箱仓盖 / 翘翘耳 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M22.5,15.8 L11.8,9.2 C9.8,8.0 7.2,9.5 7.5,12.0 L8.4,17.2 Z" />
+
+    <!-- 右开箱仓盖 / 翘翘耳 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M25.5,15.8 L36.2,9.2 C38.2,8.0 40.8,9.5 40.5,12.0 L39.6,17.2 Z" />
+
+    <!-- 圆润饱满的 Squircle 机器人面庞 (rx=7.5) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M15,15 H33 A7.5,7.5 0 0 1 40.5,22.5 V32.5 A7.5,7.5 0 0 1 33,40 H15 A7.5,7.5 0 0 1 7.5,32.5 V22.5 A7.5,7.5 0 0 1 15,15 Z" />
+
+    <!-- 左胶囊眼 -->
+    <path
+        android:fillColor="#306EFF"
+        android:pathData="M17.5,22.5 H17.5 A1.7,1.7 0 0 1 19.2,24.2 V27.0 A1.7,1.7 0 0 1 17.5,28.7 H17.5 A1.7,1.7 0 0 1 15.8,27.0 V24.2 A1.7,1.7 0 0 1 17.5,22.5 Z" />
+
+    <!-- 右胶囊眼 -->
+    <path
+        android:fillColor="#306EFF"
+        android:pathData="M30.5,22.5 H30.5 A1.7,1.7 0 0 1 32.2,24.2 V27.0 A1.7,1.7 0 0 1 30.5,28.7 H30.5 A1.7,1.7 0 0 1 28.8,27.0 V24.2 A1.7,1.7 0 0 1 30.5,22.5 Z" />
+
+    <!-- 治愈微笑 -->
+    <path
+        android:strokeColor="#306EFF"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:pathData="M20.8,31.8 Q24,35.5 27.2,31.8" />
+
+</vector>

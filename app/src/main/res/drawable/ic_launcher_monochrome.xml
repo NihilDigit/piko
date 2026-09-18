@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Piko Material You 主题图标层 (单色模式)。
+  系统按用户壁纸动态着色，采用 Material You 标准的轮廓与实体细节结构。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <group
+        android:pivotX="24"
+        android:pivotY="24"
+        android:scaleX="1.4"
+        android:scaleY="1.4"
+        android:translateX="30"
+        android:translateY="30">
+
+        <!-- 左开箱仓盖 (实体) -->
+        <path
+            android:fillColor="#000000"
+            android:pathData="M22.5,15.8 L11.8,9.2 C9.8,8.0 7.2,9.5 7.5,12.0 L8.4,17.2 Z" />
+
+        <!-- 右开箱仓盖 (实体) -->
+        <path
+            android:fillColor="#000000"
+            android:pathData="M25.5,15.8 L36.2,9.2 C38.2,8.0 40.8,9.5 40.5,12.0 L39.6,17.2 Z" />
+
+        <!-- 脸庞轮廓 (描边) -->
+        <path
+            android:strokeColor="#000000"
+            android:strokeWidth="2.5"
+            android:strokeLineJoin="round"
+            android:pathData="M15,15 H33 A7.5,7.5 0 0 1 40.5,22.5 V32.5 A7.5,7.5 0 0 1 33,40 H15 A7.5,7.5 0 0 1 7.5,32.5 V22.5 A7.5,7.5 0 0 1 15,15 Z" />
+
+        <!-- 左胶囊眼 (实体) -->
+        <path
+            android:fillColor="#000000"
+            android:pathData="M17.5,22.5 H17.5 A1.7,1.7 0 0 1 19.2,24.2 V27.0 A1.7,1.7 0 0 1 17.5,28.7 H17.5 A1.7,1.7 0 0 1 15.8,27.0 V24.2 A1.7,1.7 0 0 1 17.5,22.5 Z" />
+
+        <!-- 右胶囊眼 (实体) -->
+        <path
+            android:fillColor="#000000"
+            android:pathData="M30.5,22.5 H30.5 A1.7,1.7 0 0 1 32.2,24.2 V27.0 A1.7,1.7 0 0 1 30.5,28.7 H30.5 A1.7,1.7 0 0 1 28.8,27.0 V24.2 A1.7,1.7 0 0 1 30.5,22.5 Z" />
+
+        <!-- 治愈微笑 (描边) -->
+        <path
+            android:strokeColor="#000000"
+            android:strokeWidth="2.2"
+            android:strokeLineCap="round"
+            android:pathData="M20.8,31.8 Q24,35.5 27.2,31.8" />
+    </group>
+
+</vector>

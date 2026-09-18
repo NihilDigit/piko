@@ -1,0 +1,262 @@
+package dev.piko.ui.screens.auth
+
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.CloudQueue
+import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SecondaryTabRow
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.unit.dp
+import dev.piko.PikoApplication
+import dev.piko.R
+import dev.piko.ui.components.PikoLoadingIndicator
+import kotlinx.coroutines.launch
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+fun LoginScreen(
+    onLoginSuccess: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val clientManager = PikoApplication.instance.clientManager
+    val scope = rememberCoroutineScope()
+
+    var loginMode by remember { mutableIntStateOf(0) } // 0: 账号密码, 1: Token/Cookie快捷登录
+    var account by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
+
+    var token by remember { mutableStateOf("") }
+
+    var isLoading by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    Surface(
+        modifier = modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .imePadding()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp, vertical = 40.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            // Piko 品牌 Logo
+            Icon(
+                painter = painterResource(R.drawable.ic_piko_logo),
+                contentDescription = "Piko Logo",
+                tint = Color.Unspecified,
+                modifier = Modifier
+                    .size(72.dp)
+                    .clip(MaterialTheme.shapes.extraLarge),
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(
+                text = "Piko",
+                style = MaterialTheme.typography.headlineLarge,
+                color = MaterialTheme.colorScheme.onBackground,
+            )
+            Text(
+                text = "符合 M3E 规范的高性能 PikPak 客户端",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            Spacer(modifier = Modifier.height(32.dp))
+
+            // 登录方式切换
+            SecondaryTabRow(
+                selectedTabIndex = loginMode,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Tab(
+                    selected = loginMode == 0,
+                    onClick = { loginMode = 0 },
+                    text = { Text("账号密码") },
+                )
+                Tab(
+                    selected = loginMode == 1,
+                    onClick = { loginMode = 1 },
+                    text = { Text("Token 快速登录") },
+                )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            if (loginMode == 0) {
+                OutlinedTextField(
+                    value = account,
+                    onValueChange = { account = it },
+                    label = { Text("邮箱或用户名") },
+                    leadingIcon = { Icon(Icons.Outlined.Person, contentDescription = null) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.largeIncreased,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next),
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text("密码") },
+                    leadingIcon = { Icon(Icons.Outlined.Lock, contentDescription = null) },
+                    trailingIcon = {
+                        IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                            Icon(
+                                imageVector = if (passwordVisible) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
+                                contentDescription = null,
+                            )
+                        }
+                    },
+                    visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.largeIncreased,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = {
+                        if (account.isNotBlank() && password.isNotBlank() && !isLoading) {
+                            isLoading = true
+                            errorMessage = null
+                            scope.launch {
+                                val result = clientManager.login(account.trim()) { password }
+                                isLoading = false
+                                result.onSuccess { onLoginSuccess() }
+                                    .onFailure { errorMessage = it.localizedMessage ?: "登录失败，请检查账号密码" }
+                            }
+                        }
+                    }),
+                )
+            } else {
+                OutlinedTextField(
+                    value = account,
+                    onValueChange = { account = it },
+                    label = { Text("账号名称 (如邮箱或自定义标识)") },
+                    leadingIcon = { Icon(Icons.Outlined.Person, contentDescription = null) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.largeIncreased,
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                OutlinedTextField(
+                    value = token,
+                    onValueChange = { token = it },
+                    label = { Text("PikPak Access Token") },
+                    leadingIcon = { Icon(Icons.Outlined.Key, contentDescription = null) },
+                    maxLines = 3,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.largeIncreased,
+                )
+            }
+
+            AnimatedVisibility(
+                visible = errorMessage != null,
+                enter = fadeIn(),
+                exit = fadeOut(),
+            ) {
+                errorMessage?.let { msg ->
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = msg,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(28.dp))
+
+            Button(
+                onClick = {
+                    if (isLoading) return@Button
+                    isLoading = true
+                    errorMessage = null
+                    scope.launch {
+                        val result = if (loginMode == 0) {
+                            clientManager.login(account.trim()) { password }
+                        } else {
+                            clientManager.loginWithToken(account.trim(), token.trim())
+                        }
+                        isLoading = false
+                        result.onSuccess {
+                            onLoginSuccess()
+                        }.onFailure {
+                            errorMessage = it.localizedMessage ?: "登录出现异常，请稍后重试"
+                        }
+                    }
+                },
+                enabled = !isLoading && (if (loginMode == 0) account.isNotBlank() && password.isNotBlank() else account.isNotBlank() && token.isNotBlank()),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp),
+                shape = MaterialTheme.shapes.large,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                ),
+            ) {
+                if (isLoading) {
+                    PikoLoadingIndicator(size = 24.dp)
+                } else {
+                    Text(
+                        text = "立即登录",
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                }
+            }
+        }
+    }
+}
