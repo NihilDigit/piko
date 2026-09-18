@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   Piko 自适应启动器图标前景层。
-  画布 108x108，中心 (54,54)，主体尺寸约 45.5dp，占 66dp 安全可视区约 70%（参照 Bilby 呼吸感标准，留出舒适留白）。
+  画布 108x108，中心 (54,54)，主体尺寸按 90% 缩放（scale=1.24），留出更为宽松自然的呼吸感留白。
+  猫耳高度调矮，呈现娇憨可爱的小猫耳比例。
   底色层为 PikPak 标志性品牌蓝 (#306EFF)。
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
@@ -12,21 +13,21 @@
 
     <group
         android:pivotX="24"
-        android:pivotY="23.4"
-        android:scaleX="1.38"
-        android:scaleY="1.38"
+        android:pivotY="24.5"
+        android:scaleX="1.24"
+        android:scaleY="1.24"
         android:translateX="30"
-        android:translateY="30.6">
+        android:translateY="29.5">
 
-        <!-- 左挺立萌猫耳 (优化圆润三角猫耳) -->
+        <!-- 左挺立萌小猫耳 (适度矮化，比例更娇憨可爱) -->
         <path
             android:fillColor="#FFFFFF"
-            android:pathData="M10.2,16.5 C10.2,13.0 12.0,8.8 13.5,7.2 C14.2,6.4 15.4,6.8 16.0,8.0 L20.8,15.2 Z" />
+            android:pathData="M10.5,16.8 C10.5,14.0 12.2,11.0 13.5,9.8 C14.2,9.0 15.5,9.2 16.0,10.2 L20.8,15.2 Z" />
 
-        <!-- 右挺立萌猫耳 (优化圆润三角猫耳) -->
+        <!-- 右挺立萌小猫耳 (适度矮化，比例更娇憨可爱) -->
         <path
             android:fillColor="#FFFFFF"
-            android:pathData="M37.8,16.5 C37.8,13.0 36.0,8.8 34.5,7.2 C33.8,6.4 32.6,6.8 32.0,8.0 L27.2,15.2 Z" />
+            android:pathData="M37.5,16.8 C37.5,14.0 35.8,11.0 34.5,9.8 C33.8,9.0 32.5,9.2 32.0,10.2 L27.2,15.2 Z" />
 
         <!-- 圆润饱满的 Squircle 机器人面庞 (rx=7.5) -->
         <path
