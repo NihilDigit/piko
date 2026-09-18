@@ -35,6 +35,7 @@ class SessionManager(private val context: Context) {
         val USERNAME = stringPreferencesKey("username")
         val AVATAR_URL = stringPreferencesKey("avatar_url")
         val CONCURRENT_CONNECTIONS = intPreferencesKey("concurrent_connections")
+        val DOWNLOAD_DIR_PATH = stringPreferencesKey("download_dir_path")
         val SPOILER_BLUR_ENABLED = booleanPreferencesKey("spoiler_blur_enabled")
         val HEURISTIC_FILTER_ENABLED = booleanPreferencesKey("heuristic_filter_enabled")
         val LAST_FOLDER_ID = stringPreferencesKey("last_folder_id")
@@ -117,9 +118,28 @@ class SessionManager(private val context: Context) {
         }
     }
 
+    val concurrentConnectionsFlow: Flow<Int> = context.dataStore.data.map { preferences ->
+        preferences[PreferencesKeys.CONCURRENT_CONNECTIONS] ?: 8
+    }
+
+    val downloadDirPathFlow: Flow<String> = context.dataStore.data.map { preferences ->
+        preferences[PreferencesKeys.DOWNLOAD_DIR_PATH] ?: ""
+    }
+
+    suspend fun setDownloadDirPath(path: String) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.DOWNLOAD_DIR_PATH] = path
+        }
+    }
+
+    suspend fun getDownloadDirPath(): String {
+        val prefs = context.dataStore.data.first()
+        return prefs[PreferencesKeys.DOWNLOAD_DIR_PATH] ?: ""
+    }
+
     suspend fun updateConcurrentConnections(connections: Int) {
         context.dataStore.edit { preferences ->
-            preferences[PreferencesKeys.CONCURRENT_CONNECTIONS] = connections.coerceIn(1, 16)
+            preferences[PreferencesKeys.CONCURRENT_CONNECTIONS] = connections.coerceIn(1, 8)
         }
     }
 

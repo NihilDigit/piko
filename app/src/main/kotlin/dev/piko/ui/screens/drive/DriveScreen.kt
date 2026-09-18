@@ -216,6 +216,7 @@ fun DriveScreen(
         }
     }
 
+    var highlightedFileIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     BackHandler(enabled = folderStack.size > 1) {
         driveRepo.popFolder()
     }
@@ -255,7 +256,6 @@ fun DriveScreen(
         }
     }
 
-    var highlightedFileIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var folderMeaninglessMap by remember {
         mutableStateOf(driveRepo.getAllCachedFolderMeaningless())
     }
@@ -431,7 +431,9 @@ fun DriveScreen(
                     }
                 } else if (folderStack.size > 1) {
                     {
-                        IconButton(onClick = { driveRepo.popFolder() }) {
+                        IconButton(onClick = {
+                            driveRepo.popFolder()
+                        }) {
                             Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回上一级")
                         }
                     }
@@ -1023,6 +1025,7 @@ fun ShadowFileCard(
     file: FileStat,
     isSpoilerBlurred: Boolean = false,
     isHighlighted: Boolean = false,
+    highlightBadgeText: String = "刚秒传",
     onToggleSpoiler: () -> Unit = {},
     onClick: () -> Unit,
     onDownload: () -> Unit = {},
@@ -1120,7 +1123,7 @@ fun ShadowFileCard(
                                 color = MaterialTheme.colorScheme.primary,
                             ) {
                                 Text(
-                                    text = "刚秒传",
+                                    text = highlightBadgeText,
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onPrimary,

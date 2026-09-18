@@ -37,7 +37,7 @@ class PikoStreamDataSource(
         opened = true
 
         val totalSize = reader.size
-        if (dataSpec.position in 1..<totalSize) {
+        if (dataSpec.position in 0..<totalSize) {
             runBlockingInterruptible {
                 reader.seekTo(dataSpec.position)
             }

@@ -19,15 +19,20 @@ object FileNameSanitizer {
 
     /**
      * 清洗文件名
-     * @param rawName 待清洗名称（如 torrent 外层名称）
-     * @param fallbackExtension 视频应具备的文件后缀（如 "mp4" 或 "mkv"），若 rawName 未包含合法视频后缀则自动追加
+     * @param rawName 待清洗名称（如 torrent 外层名称或云端文件名）
+     * @param fallbackExtension 缺失后缀时的替补后缀（如 "mp4"），若 rawName 未包含合法后缀则自动追加
+     * @param forceExtension 强制使用的后缀（如流抽取 MP4 切片强制使用 "mp4"）
      */
-    fun sanitize(rawName: String, fallbackExtension: String = ""): String {
-        // 1. 分离可能的合法扩展名
+    fun sanitize(
+        rawName: String,
+        fallbackExtension: String = "",
+        forceExtension: String? = null,
+    ): String {
+        // 1. 分离可能的合法扩展名 (常规扩展名 1-10 字符)
         val (rawBase, rawExt) = if (rawName.contains('.')) {
             val idx = rawName.lastIndexOf('.')
             val ext = rawName.substring(idx + 1).lowercase()
-            if (ext in VIDEO_EXTENSIONS) {
+            if (ext.isNotBlank() && ext.length in 1..10 && !ILLEGAL_CHARS.containsMatchIn(ext)) {
                 Pair(rawName.substring(0, idx), ".$ext")
             } else {
                 Pair(rawName, "")
@@ -41,12 +46,16 @@ object FileNameSanitizer {
         }
 
         val finalExt = when {
+            !forceExtension.isNullOrBlank() -> {
+                val fe = forceExtension.trim().lowercase()
+                if (fe.startsWith(".")) fe else ".$fe"
+            }
             rawExt.isNotEmpty() -> rawExt
             cleanFallbackExt.isNotEmpty() -> cleanFallbackExt
             else -> ""
         }
 
-        // 2. 替换非法或容易引发 400 错误的字符
+        // 2. 替换非法或容易引发文件系统及网络传输异常的字符
         var cleanBase = rawBase
             .replace(':', ' ')
             .replace('/', '-')
@@ -66,7 +75,7 @@ object FileNameSanitizer {
             .trimStart('.', ' ')
 
         if (cleanBase.isBlank()) {
-            cleanBase = "unnamed_video"
+            cleanBase = if (isVideoFileName("file$finalExt")) "unnamed_video" else "unnamed_file"
         }
 
         // 3. 控制文件名长度（PikPak 接口限制 255 字节，保守限制 200 字符，保留后缀）

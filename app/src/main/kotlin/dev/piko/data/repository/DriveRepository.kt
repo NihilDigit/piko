@@ -76,18 +76,22 @@ class DriveRepository(
         _folderStackFlow.value = _folderStackFlow.value + PathBreadcrumb(id, name)
     }
 
-    fun popFolder(): Boolean {
+    fun popFolder(): PathBreadcrumb? {
         if (_folderStackFlow.value.size > 1) {
+            val popped = _folderStackFlow.value.last()
             _folderStackFlow.value = _folderStackFlow.value.dropLast(1)
-            return true
+            return popped
         }
-        return false
+        return null
     }
 
-    fun popToBreadcrumb(index: Int) {
-        if (index >= 0 && index < _folderStackFlow.value.size) {
+    fun popToBreadcrumb(index: Int): PathBreadcrumb? {
+        if (index >= 0 && index < _folderStackFlow.value.size - 1) {
+            val targetChild = _folderStackFlow.value.getOrNull(index + 1)
             _folderStackFlow.value = _folderStackFlow.value.take(index + 1)
+            return targetChild
         }
+        return null
     }
 
     fun navigateToFolder(breadcrumb: PathBreadcrumb) {

@@ -2,6 +2,9 @@ package dev.piko.ui.screens.settings
 
 import android.content.Intent
 import android.net.Uri
+import android.os.Environment
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -40,11 +43,16 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import java.io.File
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -83,10 +91,38 @@ fun SettingsScreen(
     val session by sessionManager.sessionFlow.collectAsState(initial = null)
     val isSpoilerBlurEnabled by sessionManager.spoilerBlurFlow.collectAsState(initial = true)
     val isHeuristicFilterEnabled by sessionManager.heuristicFilterFlow.collectAsState(initial = true)
+    val concurrentConnections by sessionManager.concurrentConnectionsFlow.collectAsState(initial = 8)
+    val downloadDirPath by sessionManager.downloadDirPathFlow.collectAsState(initial = "")
     val scope = rememberCoroutineScope()
 
     val quota by driveRepo.quotaFlow.collectAsState()
     var showLogoutDialog by remember { mutableStateOf(false) }
+    var showConcurrencyDialog by remember { mutableStateOf(false) }
+    var showDownloadDirDialog by remember { mutableStateOf(false) }
+    var tempConnections by remember(concurrentConnections) { mutableStateOf(concurrentConnections) }
+    var customPathInput by remember(downloadManager.downloadDir.absolutePath) {
+        mutableStateOf(downloadManager.downloadDir.absolutePath)
+    }
+
+    val dirPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            val path = uri.path ?: ""
+            val resolved = if (path.contains("primary:")) {
+                val sub = path.substringAfter("primary:").trimStart('/')
+                File(Environment.getExternalStorageDirectory(), sub).absolutePath
+            } else {
+                uri.path ?: ""
+            }
+            if (resolved.isNotBlank()) {
+                customPathInput = resolved
+                scope.launch {
+                    sessionManager.setDownloadDirPath(resolved)
+                }
+            }
+        }
+    }
 
     LaunchedEffect(Unit) {
         driveRepo.getQuota()
@@ -418,7 +454,13 @@ fun SettingsScreen(
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                tempConnections = concurrentConnections
+                                showConcurrencyDialog = true
+                            }
+                            .padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Icon(
@@ -436,7 +478,7 @@ fun SettingsScreen(
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = "8 连接并发分块滑动窗口写入，自适应断点续传",
+                                text = "$concurrentConnections 连接分块并发下载，点击即可自定义线程数",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -446,11 +488,11 @@ fun SettingsScreen(
                             color = MaterialTheme.colorScheme.tertiaryContainer,
                         ) {
                             Text(
-                                text = "8 线程",
+                                text = "$concurrentConnections 线程",
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.onTertiaryContainer,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                             )
                         }
                     }
@@ -458,7 +500,13 @@ fun SettingsScreen(
                     HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
 
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                customPathInput = downloadManager.downloadDir.absolutePath
+                                showDownloadDirDialog = true
+                            }
+                            .padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Icon(
@@ -479,6 +527,20 @@ fun SettingsScreen(
                                 text = downloadManager.downloadDir.absolutePath,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                        ) {
+                            Text(
+                                text = "更改",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                             )
                         }
                     }
@@ -643,6 +705,177 @@ fun SettingsScreen(
                     Text("取消")
                 }
             },
+        )
+    }
+
+    if (showConcurrencyDialog) {
+        AlertDialog(
+            onDismissRequest = { showConcurrencyDialog = false },
+            title = { Text("并发传输连接数") },
+            text = {
+                Column {
+                    Text(
+                        text = "调整并发分块下载的最大连接数 (1 ~ 8 线程)。\n连接数越多吞吐量越大，官方推荐 8 线程以兼顾速度与稳定性。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "当前设定：$tempConnections 线程",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Slider(
+                        value = tempConnections.toFloat(),
+                        onValueChange = { tempConnections = it.toInt().coerceIn(1, 8) },
+                        valueRange = 1f..8f,
+                        steps = 6,
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text("快速预设：", style = MaterialTheme.typography.labelMedium)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        listOf(2, 4, 6, 8).forEach { count ->
+                            val isSelected = tempConnections == count
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHigh,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable { tempConnections = count },
+                            ) {
+                                Text(
+                                    text = "$count 线程",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.padding(vertical = 8.dp),
+                                    textAlign = TextAlign.Center,
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showConcurrencyDialog = false
+                        scope.launch {
+                            sessionManager.updateConcurrentConnections(tempConnections.coerceIn(1, 8))
+                        }
+                    }
+                ) {
+                    Text("保存")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showConcurrencyDialog = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
+    if (showDownloadDirDialog) {
+        val publicDownloadsPath = remember {
+            val pub = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            File(pub, "Piko").absolutePath
+        }
+        val appPrivatePath = remember {
+            (context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir).absolutePath
+        }
+
+        AlertDialog(
+            onDismissRequest = { showDownloadDirDialog = false },
+            title = { Text("设置下载存储路径") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "选择或自定义文件保存的存储路径：",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+
+                    // 预设 1: 系统公共 Download/Piko
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (customPathInput == publicDownloadsPath) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { customPathInput = publicDownloadsPath },
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text("系统公共下载目录 (推荐)", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(publicDownloadsPath, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+
+                    // 预设 2: 应用沙盒专属目录
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (customPathInput == appPrivatePath) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { customPathInput = appPrivatePath },
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text("应用专属沙盒目录", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(appPrivatePath, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+
+                    // 选项 3: 调用系统文件夹选择器
+                    OutlinedButton(
+                        onClick = {
+                            dirPickerLauncher.launch(null)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                    ) {
+                        Icon(Icons.Outlined.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("系统文件选择器浏览...")
+                    }
+
+                    // 手动输入路径
+                    OutlinedTextField(
+                        value = customPathInput,
+                        onValueChange = { customPathInput = it },
+                        label = { Text("自定义目标绝对路径") },
+                        maxLines = 2,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val trimmed = customPathInput.trim()
+                        if (trimmed.isNotBlank()) {
+                            showDownloadDirDialog = false
+                            scope.launch {
+                                sessionManager.setDownloadDirPath(trimmed)
+                            }
+                        }
+                    }
+                ) {
+                    Text("应用路径")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDownloadDirDialog = false }) {
+                    Text("取消")
+                }
+            }
         )
     }
 }

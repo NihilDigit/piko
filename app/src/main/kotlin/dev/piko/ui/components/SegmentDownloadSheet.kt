@@ -326,6 +326,13 @@ fun SegmentDownloadSheet(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "💡 原画质无损抽取（MP4 容器）：免重新编解码。为防止首帧花屏，实际起点自动对齐至前序同步关键帧（可能提前数秒）。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
 

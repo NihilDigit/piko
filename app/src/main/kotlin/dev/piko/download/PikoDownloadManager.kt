@@ -2,7 +2,9 @@ package dev.piko.download
 
 import android.content.Context
 import android.os.Environment
+import dev.piko.data.auth.SessionManager
 import dev.piko.data.client.PikPakClientManager
+import dev.piko.data.repository.FileNameSanitizer
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.PikPakFileHandle
 import io.github.nihildigit.pikpak.RangeSource
@@ -18,9 +20,14 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.io.files.Path
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import java.io.File
 
+@Serializable
 enum class DownloadStatus {
     PENDING,
     DOWNLOADING,
@@ -29,6 +36,7 @@ enum class DownloadStatus {
     FAILED,
 }
 
+@Serializable
 data class DownloadTask(
     val taskId: String,
     val fileId: String,
@@ -56,32 +64,134 @@ data class DownloadTask(
 class PikoDownloadManager(
     private val context: Context,
     private val clientManager: PikPakClientManager,
+    private val sessionManager: SessionManager,
     private val scope: CoroutineScope,
 ) {
-    private val _tasks = MutableStateFlow<Map<String, DownloadTask>>(emptyMap())
+    private val tasksFile: File get() = File(context.filesDir, "piko_download_tasks.json")
+
+    private val json = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+        prettyPrint = false
+    }
+
+    private val _tasks = MutableStateFlow<Map<String, DownloadTask>>(loadPersistedTasks())
     val tasks: StateFlow<Map<String, DownloadTask>> = _tasks.asStateFlow()
 
     private val runningJobs = mutableMapOf<String, Job>()
+    private var currentConcurrentConnections = 8
+    private var currentDownloadDir: File = resolveDownloadDir("")
+    val downloadDir: File get() = currentDownloadDir
 
-    val downloadDir: File by lazy {
-        val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir
+    init {
+        scope.launch {
+            sessionManager.downloadDirPathFlow.collect { path ->
+                currentDownloadDir = resolveDownloadDir(path)
+            }
+        }
+        scope.launch {
+            sessionManager.concurrentConnectionsFlow.collect { connections ->
+                currentConcurrentConnections = connections
+            }
+        }
+        // 自动持久化任务列表至磁盘，解决进程被杀任务丢失问题
+        scope.launch {
+            var lastSerialized = ""
+            _tasks.collect { tasksMap ->
+                try {
+                    val serialized = json.encodeToString(tasksMap)
+                    if (serialized != lastSerialized) {
+                        lastSerialized = serialized
+                        withContext(Dispatchers.IO) {
+                            tasksFile.writeText(serialized)
+                        }
+                    }
+                } catch (e: Exception) {
+                    // ignore write failure
+                }
+            }
+        }
+    }
+
+    private fun loadPersistedTasks(): Map<String, DownloadTask> {
+        if (!tasksFile.exists()) return emptyMap()
+        return try {
+            val content = tasksFile.readText()
+            if (content.isBlank()) return emptyMap()
+            val decoded = json.decodeFromString<Map<String, DownloadTask>>(content)
+            decoded.mapValues { (_, task) ->
+                val destFile = File(task.destinationPath)
+                when {
+                    task.isSegment -> {
+                        val isComplete = VideoSegmentExtractor.isCompleteMediaFile(destFile)
+                        if (isComplete) {
+                            task.copy(
+                                status = DownloadStatus.COMPLETED,
+                                downloadedBytes = destFile.length(),
+                                totalBytes = destFile.length(),
+                                speedBytesPerSec = 0L,
+                            )
+                        } else {
+                            task.copy(
+                                status = DownloadStatus.PAUSED,
+                                downloadedBytes = if (destFile.exists()) destFile.length() else 0L,
+                                speedBytesPerSec = 0L,
+                            )
+                        }
+                    }
+                    task.status == DownloadStatus.DOWNLOADING -> {
+                        task.copy(
+                            status = DownloadStatus.PAUSED,
+                            downloadedBytes = if (destFile.exists()) destFile.length() else 0L,
+                            speedBytesPerSec = 0L,
+                        )
+                    }
+                    task.status == DownloadStatus.COMPLETED -> {
+                        if (destFile.exists()) {
+                            task.copy(downloadedBytes = destFile.length(), speedBytesPerSec = 0L)
+                        } else {
+                            task.copy(status = DownloadStatus.PAUSED, downloadedBytes = 0L, speedBytesPerSec = 0L)
+                        }
+                    }
+                    else -> task.copy(speedBytesPerSec = 0L)
+                }
+            }
+        } catch (e: Throwable) {
+            emptyMap()
+        }
+    }
+
+    fun resolveDownloadDir(customPath: String): File {
+        val dir = if (customPath.isNotBlank()) {
+            val f = File(customPath)
+            if (!f.exists()) f.mkdirs()
+            if (f.canWrite()) f else (context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir)
+        } else {
+            val publicDownloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            val pikoFolder = if (publicDownloads != null && publicDownloads.exists() && publicDownloads.canWrite()) {
+                File(publicDownloads, "Piko").also { if (!it.exists()) it.mkdirs() }
+            } else null
+            pikoFolder ?: (context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir)
+        }
         if (!dir.exists()) dir.mkdirs()
-        dir
+        return dir
     }
 
     fun enqueue(file: FileStat) {
-        val destFile = File(downloadDir, file.name)
+        val cleanName = FileNameSanitizer.sanitize(file.name)
+        val destFile = File(downloadDir, cleanName)
         val initialDownloaded = if (destFile.exists()) destFile.length() else 0L
+        val isCompleted = destFile.exists() && destFile.length() >= file.sizeBytes && file.sizeBytes > 0
 
         val task = DownloadTask(
             taskId = file.id,
             fileId = file.id,
-            fileName = file.name,
+            fileName = cleanName,
             gcid = file.hash,
             totalBytes = file.sizeBytes,
             downloadedBytes = initialDownloaded,
             destinationPath = destFile.absolutePath,
-            status = if (initialDownloaded >= file.sizeBytes && file.sizeBytes > 0) DownloadStatus.COMPLETED else DownloadStatus.PENDING,
+            status = if (isCompleted) DownloadStatus.COMPLETED else DownloadStatus.PENDING,
             fullFileSize = file.sizeBytes,
             thumbnailLink = file.thumbnailLink,
         )
@@ -104,23 +214,28 @@ class PikoDownloadManager(
         startByte: Long = 0L,
         lengthBytes: Long = 0L,
     ) {
-        val ext = file.name.substringAfterLast(".", "")
-        val baseName = file.name.substringBeforeLast(".")
+        val baseName = if (file.name.contains('.')) file.name.substringBeforeLast('.') else file.name
         val safeLabel = timeRangeLabel.replace(":", "-").replace(" ", "")
-        val segmentFileName = if (ext.isNotEmpty()) "${baseName}_[$safeLabel].$ext" else "${baseName}_[$safeLabel]"
-        val destFile = File(downloadDir, segmentFileName)
+        val rawSegmentName = "${baseName}_[$safeLabel].mp4"
+        val cleanSegmentName = FileNameSanitizer.sanitize(
+            rawSegmentName,
+            fallbackExtension = "mp4",
+            forceExtension = "mp4",
+        )
+        val destFile = File(downloadDir, cleanSegmentName)
+        val isCompleted = VideoSegmentExtractor.isCompleteMediaFile(destFile)
         val initialDownloaded = if (destFile.exists()) destFile.length() else 0L
         val taskId = "${file.id}_seg_${startMs}_$endMs"
 
         val task = DownloadTask(
             taskId = taskId,
             fileId = file.id,
-            fileName = segmentFileName,
+            fileName = cleanSegmentName,
             gcid = file.hash,
             totalBytes = if (lengthBytes > 0) lengthBytes else (destFile.length().coerceAtLeast(1024L)),
             downloadedBytes = initialDownloaded,
             destinationPath = destFile.absolutePath,
-            status = if (initialDownloaded > 1024L) DownloadStatus.COMPLETED else DownloadStatus.PENDING,
+            status = if (isCompleted) DownloadStatus.COMPLETED else DownloadStatus.PENDING,
             isSegment = true,
             startByte = startByte,
             fullFileSize = file.sizeBytes,
@@ -140,6 +255,9 @@ class PikoDownloadManager(
     fun startDownload(taskId: String) {
         val task = _tasks.value[taskId] ?: return
         if (task.status == DownloadStatus.DOWNLOADING) return
+
+        // 启动 Android 前台下载服务保障后台存活并展示常驻通知
+        PikoDownloadService.start(context)
 
         val destFile = File(task.destinationPath)
 
@@ -215,7 +333,7 @@ class PikoDownloadManager(
                 size = if (task.isSegment) task.fullFileSize else task.totalBytes,
                 name = task.fileName,
                 initialFileId = task.fileId,
-                connectionBudget = 8,
+                connectionBudget = currentConcurrentConnections,
             )
 
             // 如果是段落下载，偏移 RangeSource 的访问基址
@@ -256,11 +374,11 @@ class PikoDownloadManager(
 
             val destPath = Path(destFile.absolutePath)
             try {
-                // 利用 SDK 的 8 连接并发分块滑动窗口下载，支持断点续传
+                // 利用 SDK 的并发分块滑动窗口下载，支持断点续传与动态连接并发度
                 rangeSource.downloadTo(
                     dest = destPath,
                     totalSize = task.totalBytes,
-                    concurrency = 8,
+                    concurrency = currentConcurrentConnections,
                     priority = 1,
                     progress = progressFlow,
                 )
@@ -307,7 +425,10 @@ class PikoDownloadManager(
         pauseDownload(taskId)
         val task = _tasks.value[taskId]
         if (task != null) {
-            File(task.destinationPath).delete()
+            val file = File(task.destinationPath)
+            if (file.exists()) file.delete()
+            val partFile = File(file.parentFile ?: downloadDir, "${file.name}.part")
+            if (partFile.exists()) partFile.delete()
         }
         _tasks.update { it - taskId }
     }

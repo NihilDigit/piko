@@ -73,6 +73,7 @@ fun FileItemRow(
     isSelectionMode: Boolean,
     isSelected: Boolean,
     isHighlighted: Boolean = false,
+    highlightBadgeText: String = "刚秒传",
     isSpoilerBlurred: Boolean = false,
     onToggleSpoiler: () -> Unit = {},
     onClick: () -> Unit,
@@ -218,7 +219,7 @@ fun FileItemRow(
                             color = MaterialTheme.colorScheme.primary,
                         ) {
                             Text(
-                                text = "刚秒传",
+                                text = highlightBadgeText,
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onPrimary,

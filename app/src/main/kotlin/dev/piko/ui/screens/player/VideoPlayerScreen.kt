@@ -237,15 +237,23 @@ fun VideoPlayerScreen(
         }
         exoPlayer.addListener(listener)
 
+        var lastSavedTimeMs = System.currentTimeMillis()
+        var lastSavedPositionMs = 0L
+
         while (isActive) {
             currentPosition = exoPlayer.currentPosition.coerceAtLeast(0L)
             bufferedPosition = exoPlayer.bufferedPosition.coerceAtLeast(0L)
-            // 周期性持久化播放进度
-            if (isPlaying && currentPosition > 2000L) {
-                if (totalDuration > 0 && currentPosition >= totalDuration - 10000L) {
-                    mediaRepo.savePlaybackPosition(playbackKey, 0L)
-                } else {
-                    mediaRepo.savePlaybackPosition(playbackKey, currentPosition)
+            val now = System.currentTimeMillis()
+            // 周期性持久化播放进度：降低频率至 8 秒并按位置变动节流，避免高频 DataStore 写盘
+            if (isPlaying && currentPosition > 2000L && now - lastSavedTimeMs >= 8000L) {
+                if (kotlin.math.abs(currentPosition - lastSavedPositionMs) >= 3000L) {
+                    lastSavedTimeMs = now
+                    lastSavedPositionMs = currentPosition
+                    if (totalDuration > 0 && currentPosition >= totalDuration - 10000L) {
+                        mediaRepo.savePlaybackPosition(playbackKey, 0L)
+                    } else {
+                        mediaRepo.savePlaybackPosition(playbackKey, currentPosition)
+                    }
                 }
             }
             delay(400)

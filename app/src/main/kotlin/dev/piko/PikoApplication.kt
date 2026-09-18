@@ -53,7 +53,7 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
         instantMagnetRepository = InstantMagnetRepository(clientManager)
         taskRepository = TaskRepository(clientManager)
         mediaRepository = MediaRepository(clientManager, sessionManager)
-        downloadManager = PikoDownloadManager(this, clientManager, appScope)
+        downloadManager = PikoDownloadManager(this, clientManager, sessionManager, appScope)
     }
 
     override fun newImageLoader(context: PlatformContext): ImageLoader {

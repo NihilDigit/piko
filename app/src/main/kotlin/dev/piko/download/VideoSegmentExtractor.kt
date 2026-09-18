@@ -37,12 +37,13 @@ object VideoSegmentExtractor {
                     extractor.setDataSource(sourceUrlOrPath)
                 }
 
-                if (destinationFile.exists()) {
-                    destinationFile.delete()
+                val tempFile = File(destinationFile.parentFile ?: context.cacheDir, "${destinationFile.name}.part")
+                if (tempFile.exists()) {
+                    tempFile.delete()
                 }
-                destinationFile.parentFile?.mkdirs()
+                tempFile.parentFile?.mkdirs()
 
-                val muxer = MediaMuxer(destinationFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+                val muxer = MediaMuxer(tempFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
                 val trackCount = extractor.trackCount
                 val trackIndexMap = mutableMapOf<Int, Int>()
 
@@ -81,7 +82,7 @@ object VideoSegmentExtractor {
                 val endUs = (endMs * 1000L).coerceAtLeast(startUs + 1000L)
                 val durationUs = (endUs - startUs).coerceAtLeast(1L)
 
-                // 定位至最近的前序同步关键帧 (I 帧)，保障视频播放起始画面干净
+                // 无损流抽取限制：必须从前序同步关键帧 (I 帧) 开始提取，确保视频首帧画面干净且音画同步
                 extractor.seekTo(startUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
                 val basePts = extractor.sampleTime.coerceAtLeast(0L)
 
@@ -131,9 +132,44 @@ object VideoSegmentExtractor {
                     runCatching { muxer.stop() }
                     muxer.release()
                 }
+
+                // 写入完整后再原子替换至最终目标文件
+                if (tempFile.exists() && tempFile.length() > 1024L) {
+                    if (destinationFile.exists()) {
+                        destinationFile.delete()
+                    }
+                    if (!tempFile.renameTo(destinationFile)) {
+                        tempFile.copyTo(destinationFile, overwrite = true)
+                        tempFile.delete()
+                    }
+                } else {
+                    tempFile.delete()
+                    error("视频片段提取未生成有效数据")
+                }
+            } catch (e: Throwable) {
+                val tempFile = File(destinationFile.parentFile ?: context.cacheDir, "${destinationFile.name}.part")
+                runCatching { tempFile.delete() }
+                throw e
             } finally {
                 extractor.release()
             }
+        }
+    }
+
+    /**
+     * 校验媒体切片文件是否已完整写入并具备合法的容器及解码时长信息
+     */
+    fun isCompleteMediaFile(file: File): Boolean {
+        if (!file.exists() || file.length() < 1024L) return false
+        val retriever = android.media.MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(file.absolutePath)
+            val duration = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
+            duration != null && (duration.toLongOrNull() ?: 0L) > 0L
+        } catch (e: Exception) {
+            false
+        } finally {
+            runCatching { retriever.release() }
         }
     }
 }
