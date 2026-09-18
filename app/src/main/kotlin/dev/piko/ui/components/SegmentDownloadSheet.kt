@@ -211,22 +211,16 @@ fun SegmentDownloadSheet(
                                 }
                             },
                         )
-                        Spacer(modifier = Modifier.height(6.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            StepChip(label = "-10s") {
-                                startPosMs = (startPosMs - 10000L).coerceAtLeast(0L)
-                            }
-                            StepChip(label = "-1s") {
+                            StepChip(label = "-1s", modifier = Modifier.weight(1f)) {
                                 startPosMs = (startPosMs - 1000L).coerceAtLeast(0L)
                             }
-                            StepChip(label = "+1s") {
+                            StepChip(label = "+1s", modifier = Modifier.weight(1f)) {
                                 startPosMs = (startPosMs + 1000L).coerceAtMost(endPosMs - 500L)
-                            }
-                            StepChip(label = "+10s") {
-                                startPosMs = (startPosMs + 10000L).coerceAtMost(endPosMs - 500L)
                             }
                         }
                     }
@@ -244,22 +238,16 @@ fun SegmentDownloadSheet(
                                 }
                             },
                         )
-                        Spacer(modifier = Modifier.height(6.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            StepChip(label = "-10s") {
-                                endPosMs = (endPosMs - 10000L).coerceAtLeast(startPosMs + 500L)
-                            }
-                            StepChip(label = "-1s") {
+                            StepChip(label = "-1s", modifier = Modifier.weight(1f)) {
                                 endPosMs = (endPosMs - 1000L).coerceAtLeast(startPosMs + 500L)
                             }
-                            StepChip(label = "+1s") {
+                            StepChip(label = "+1s", modifier = Modifier.weight(1f)) {
                                 endPosMs = (endPosMs + 1000L).coerceAtMost(totalDurationMs)
-                            }
-                            StepChip(label = "+10s") {
-                                endPosMs = (endPosMs + 10000L).coerceAtMost(totalDurationMs)
                             }
                         }
                     }
@@ -471,19 +459,27 @@ private fun PreviewCard(
 @Composable
 private fun StepChip(
     label: String,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(8.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHighest,
-        modifier = Modifier.padding(horizontal = 2.dp),
+        modifier = modifier,
     ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
-        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 6.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
