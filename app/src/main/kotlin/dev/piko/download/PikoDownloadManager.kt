@@ -44,6 +44,7 @@ data class DownloadTask(
     val startByte: Long = 0L,
     val fullFileSize: Long = 0L,
     val timeRangeLabel: String? = null,
+    val thumbnailLink: String = "",
 ) {
     val progress: Float
         get() = if (totalBytes > 0) (downloadedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f) else 0f
@@ -79,6 +80,7 @@ class PikoDownloadManager(
             destinationPath = destFile.absolutePath,
             status = if (initialDownloaded >= file.sizeBytes && file.sizeBytes > 0) DownloadStatus.COMPLETED else DownloadStatus.PENDING,
             fullFileSize = file.sizeBytes,
+            thumbnailLink = file.thumbnailLink,
         )
 
         _tasks.update { it + (file.id to task) }
@@ -117,6 +119,7 @@ class PikoDownloadManager(
             startByte = startByte,
             fullFileSize = file.sizeBytes,
             timeRangeLabel = timeRangeLabel,
+            thumbnailLink = file.thumbnailLink,
         )
 
         _tasks.update { it + (taskId to task) }

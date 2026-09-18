@@ -6,8 +6,14 @@ import dev.piko.ui.screens.download.DownloadsScreen
 
 @Composable
 fun TransfersScreen(
+    onNavigateToVideoPlayer: (fileId: String, fileName: String, localPath: String?) -> Unit,
     onNavigateToInstant: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    DownloadsScreen(modifier = modifier)
+    DownloadsScreen(
+        onPlayVideo = { task ->
+            onNavigateToVideoPlayer(task.fileId, task.fileName, task.destinationPath)
+        },
+        modifier = modifier,
+    )
 }

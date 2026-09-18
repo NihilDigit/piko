@@ -116,7 +116,12 @@ fun PikoMainScaffold(
                     MainTab.FILES -> {
                         FilesScreen(
                             onNavigateToVideoPlayer = { id, name ->
-                                backStack.add(Screen.VideoPlayer(id, name))
+                                val downloadManager = dev.piko.PikoApplication.instance.downloadManager
+                                val localTask = downloadManager.tasks.value.values.find {
+                                    it.fileId == id && it.status == dev.piko.download.DownloadStatus.COMPLETED && !it.isSegment
+                                }
+                                val localPath = localTask?.destinationPath?.takeIf { java.io.File(it).exists() }
+                                backStack.add(Screen.VideoPlayer(id, name, localPath))
                             },
                         )
                     }
@@ -124,6 +129,9 @@ fun PikoMainScaffold(
                         TransfersScreen(
                             onNavigateToInstant = {
                                 currentTab = MainTab.FILES
+                            },
+                            onNavigateToVideoPlayer = { fileId, fileName, localPath ->
+                                backStack.add(Screen.VideoPlayer(fileId, fileName, localPath))
                             },
                         )
                     }
@@ -162,7 +170,12 @@ fun PikoMainScaffold(
                                 backStack.add(Screen.SubDrive(id, name))
                             },
                             onNavigateToVideoPlayer = { id, name ->
-                                backStack.add(Screen.VideoPlayer(id, name))
+                                val downloadManager = dev.piko.PikoApplication.instance.downloadManager
+                                val localTask = downloadManager.tasks.value.values.find {
+                                    it.fileId == id && it.status == dev.piko.download.DownloadStatus.COMPLETED && !it.isSegment
+                                }
+                                val localPath = localTask?.destinationPath?.takeIf { java.io.File(it).exists() }
+                                backStack.add(Screen.VideoPlayer(id, name, localPath))
                             },
                         )
                     }
@@ -170,6 +183,7 @@ fun PikoMainScaffold(
                         VideoPlayerScreen(
                             fileId = screen.fileId,
                             fileName = screen.fileName,
+                            localPath = screen.localPath,
                             onBackClick = {
                                 backStack.removeLastOrNull()
                             },

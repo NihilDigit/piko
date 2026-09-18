@@ -114,6 +114,7 @@ import kotlin.math.abs
 fun VideoPlayerScreen(
     fileId: String,
     fileName: String,
+    localPath: String? = null,
     onBackClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -126,6 +127,7 @@ fun VideoPlayerScreen(
     val mediaVolume = rememberMediaVolume(context)
     val mediaRepo = PikoApplication.instance.mediaRepository
     val scope = rememberCoroutineScope()
+    val playbackKey = localPath ?: fileId
 
     var mediaInfo by remember { mutableStateOf<PlayableMediaInfo?>(null) }
     var isLoading by remember { mutableStateOf(true) }
@@ -170,34 +172,45 @@ fun VideoPlayerScreen(
     val prepareVideo = { resolution: String? ->
         isLoading = true
         scope.launch {
-            currentStreamSession?.close()
-            currentStreamSession = null
-
-            val result = mediaRepo.createStreamSession(fileId, resolution, concurrency = 8)
-            isLoading = false
-            result.onSuccess { (info, session) ->
-                mediaInfo = info
-                currentStreamSession = session
-                val mediaSource = DefaultMediaSourceFactory(session.dataSourceFactory)
-                    .createMediaSource(MediaItem.fromUri(info.currentUrl))
-                exoPlayer.setMediaSource(mediaSource)
+            if (localPath != null && java.io.File(localPath).exists()) {
+                currentStreamSession?.close()
+                currentStreamSession = null
+                val localFile = java.io.File(localPath)
+                val uri = android.net.Uri.fromFile(localFile)
+                val mediaItem = MediaItem.fromUri(uri)
+                exoPlayer.setMediaItem(mediaItem)
                 exoPlayer.prepare()
-            }.onFailure {
-                // 回退到单连接默认取流保障播放
-                val fallback = mediaRepo.prepareMedia(fileId, resolution)
-                fallback.onSuccess { info ->
+                isLoading = false
+            } else {
+                currentStreamSession?.close()
+                currentStreamSession = null
+
+                val result = mediaRepo.createStreamSession(fileId, resolution, concurrency = 8)
+                isLoading = false
+                result.onSuccess { (info, session) ->
                     mediaInfo = info
-                    val mediaItem = MediaItem.fromUri(info.currentUrl)
-                    exoPlayer.setMediaItem(mediaItem)
+                    currentStreamSession = session
+                    val mediaSource = DefaultMediaSourceFactory(session.dataSourceFactory)
+                        .createMediaSource(MediaItem.fromUri(info.currentUrl))
+                    exoPlayer.setMediaSource(mediaSource)
                     exoPlayer.prepare()
+                }.onFailure {
+                    // 回退到单连接默认取流保障播放
+                    val fallback = mediaRepo.prepareMedia(fileId, resolution)
+                    fallback.onSuccess { info ->
+                        mediaInfo = info
+                        val mediaItem = MediaItem.fromUri(info.currentUrl)
+                        exoPlayer.setMediaItem(mediaItem)
+                        exoPlayer.prepare()
+                    }
                 }
             }
         }
     }
 
     // 初始化载入并恢复上次播放进度
-    LaunchedEffect(fileId) {
-        val saved = mediaRepo.getPlaybackPosition(fileId)
+    LaunchedEffect(playbackKey) {
+        val saved = mediaRepo.getPlaybackPosition(playbackKey)
         if (saved > 3000L) {
             resumedPosition = saved
             pendingSeekPosition = saved
@@ -230,9 +243,9 @@ fun VideoPlayerScreen(
             // 周期性持久化播放进度
             if (isPlaying && currentPosition > 2000L) {
                 if (totalDuration > 0 && currentPosition >= totalDuration - 10000L) {
-                    mediaRepo.savePlaybackPosition(fileId, 0L)
+                    mediaRepo.savePlaybackPosition(playbackKey, 0L)
                 } else {
-                    mediaRepo.savePlaybackPosition(fileId, currentPosition)
+                    mediaRepo.savePlaybackPosition(playbackKey, currentPosition)
                 }
             }
             delay(400)
@@ -256,17 +269,17 @@ fun VideoPlayerScreen(
     }
 
     // 退出时保存最终进度并释放播放器
-    DisposableEffect(fileId) {
+    DisposableEffect(playbackKey) {
         onDispose {
             val pos = exoPlayer.currentPosition
             val dur = exoPlayer.duration
             if (dur > 0 && pos >= dur - 10000L) {
                 PikoApplication.instance.appScope.launch {
-                    mediaRepo.savePlaybackPosition(fileId, 0L)
+                    mediaRepo.savePlaybackPosition(playbackKey, 0L)
                 }
             } else if (pos > 1500L) {
                 PikoApplication.instance.appScope.launch {
-                    mediaRepo.savePlaybackPosition(fileId, pos)
+                    mediaRepo.savePlaybackPosition(playbackKey, pos)
                 }
             }
             exoPlayer.release()
@@ -698,8 +711,23 @@ fun VideoPlayerScreen(
                             color = Color.White,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier.weight(1f, fill = false),
                         )
+                        if (localPath != null) {
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.85f),
+                                modifier = Modifier.padding(start = 8.dp),
+                            ) {
+                                Text(
+                                    text = "本地播放",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.weight(1f))
 
                         // 画面比例选择
                         Box {

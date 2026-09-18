@@ -19,7 +19,11 @@ sealed interface Screen {
     data object Settings : Screen
 
     @Serializable
-    data class VideoPlayer(val fileId: String, val fileName: String) : Screen
+    data class VideoPlayer(
+        val fileId: String,
+        val fileName: String,
+        val localPath: String? = null,
+    ) : Screen
 }
 
 enum class MainTab(val title: String) {
