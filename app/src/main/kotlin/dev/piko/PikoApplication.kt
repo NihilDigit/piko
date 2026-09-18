@@ -49,7 +49,7 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
 
         sessionManager = SessionManager(this)
         clientManager = PikPakClientManager(this, sessionManager, appScope)
-        driveRepository = DriveRepository(clientManager)
+        driveRepository = DriveRepository(this, clientManager)
         instantMagnetRepository = InstantMagnetRepository(clientManager)
         taskRepository = TaskRepository(clientManager)
         mediaRepository = MediaRepository(clientManager, sessionManager)

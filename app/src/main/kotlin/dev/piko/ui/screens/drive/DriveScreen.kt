@@ -256,7 +256,9 @@ fun DriveScreen(
     }
 
     var highlightedFileIds by remember { mutableStateOf<Set<String>>(emptySet()) }
-    var folderMeaninglessMap by remember(activeFolderId) { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
+    var folderMeaninglessMap by remember {
+        mutableStateOf(driveRepo.getAllCachedFolderMeaningless())
+    }
 
     // 启发式量级筛选：当主体大文件与次要小文件差 10 倍以上时，默认折叠低量级小文件与无意义文件夹
     val nonFolderFiles = remember(files) { files.filter { !it.isFolder } }
@@ -275,18 +277,32 @@ fun DriveScreen(
         return false
     }
 
-    LaunchedEffect(files, threshold, isHeuristicFilterEnabled) {
+    LaunchedEffect(files, threshold, isHeuristicFilterEnabled, isRefreshing) {
         if (threshold > 0L && isHeuristicFilterEnabled) {
             val folders = files.filter { it.isFolder }
             folders.forEach { folder ->
-                if (!folderMeaninglessMap.containsKey(folder.id)) {
+                val cached = driveRepo.getFolderMeaningless(folder.id)
+                if (cached != null && !isRefreshing) {
+                    if (folderMeaninglessMap[folder.id] != cached) {
+                        folderMeaninglessMap = folderMeaninglessMap + (folder.id to cached)
+                    }
+                } else {
+                    // 尚未缓存或处于下拉刷新：快速语义命名判断先行，避免未缓存时的视觉闪烁
                     val fastNoise = isLikelyNoiseFolderName(folder.name)
-                    if (fastNoise) {
+                    if (fastNoise && cached == null) {
+                        driveRepo.cacheFolderMeaningless(folder.id, true)
                         folderMeaninglessMap = folderMeaninglessMap + (folder.id to true)
                     }
                     launch(Dispatchers.IO) {
-                        val isMeaningless = driveRepo.isFolderMeaningless(folder.id, threshold)
-                        folderMeaninglessMap = folderMeaninglessMap + (folder.id to isMeaningless)
+                        val isMeaningless = driveRepo.isFolderMeaningless(
+                            folderId = folder.id,
+                            thresholdBytes = threshold,
+                            forceRefresh = isRefreshing,
+                        )
+                        // 若网络探查结果确实发生变化，才触发 Compose 状态更新
+                        if (folderMeaninglessMap[folder.id] != isMeaningless) {
+                            folderMeaninglessMap = folderMeaninglessMap + (folder.id to isMeaningless)
+                        }
                     }
                 }
             }
@@ -304,7 +320,9 @@ fun DriveScreen(
         } else {
             val filtered = files.filter { file ->
                 if (file.isFolder) {
-                    val isMeaningless = folderMeaninglessMap[file.id] ?: isLikelyNoiseFolderName(file.name)
+                    val isMeaningless = folderMeaninglessMap[file.id]
+                        ?: driveRepo.getFolderMeaningless(file.id)
+                        ?: isLikelyNoiseFolderName(file.name)
                     !isMeaningless
                 } else {
                     file.sizeBytes >= threshold
@@ -326,7 +344,9 @@ fun DriveScreen(
         } else {
             files.filter { file ->
                 if (file.isFolder) {
-                    val isMeaningless = folderMeaninglessMap[file.id] ?: isLikelyNoiseFolderName(file.name)
+                    val isMeaningless = folderMeaninglessMap[file.id]
+                        ?: driveRepo.getFolderMeaningless(file.id)
+                        ?: isLikelyNoiseFolderName(file.name)
                     !isMeaningless
                 } else {
                     file.sizeBytes >= threshold

@@ -1,5 +1,6 @@
 package dev.piko.data.repository
 
+import android.content.Context
 import dev.piko.data.client.PikPakClientManager
 import io.github.nihildigit.pikpak.FileDetail
 import io.github.nihildigit.pikpak.FileStat
@@ -20,6 +21,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 
 enum class FileSortOrder {
     NAME_ASC, NAME_DESC,
@@ -33,9 +35,30 @@ data class PathBreadcrumb(
 )
 
 class DriveRepository(
+    private val context: Context,
     private val clientManager: PikPakClientManager,
 ) {
     private val client get() = clientManager.currentClient.value ?: error("Not logged in")
+
+    private val heuristicPrefs = context.getSharedPreferences("piko_folder_heuristic_cache", Context.MODE_PRIVATE)
+    private val folderMeaninglessCache = ConcurrentHashMap<String, Boolean>()
+
+    init {
+        heuristicPrefs.all.forEach { (key, value) ->
+            if (value is Boolean) {
+                folderMeaninglessCache[key] = value
+            }
+        }
+    }
+
+    fun getFolderMeaningless(folderId: String): Boolean? = folderMeaninglessCache[folderId]
+
+    fun getAllCachedFolderMeaningless(): Map<String, Boolean> = folderMeaninglessCache.toMap()
+
+    fun cacheFolderMeaningless(folderId: String, isMeaningless: Boolean) {
+        folderMeaninglessCache[folderId] = isMeaningless
+        heuristicPrefs.edit().putBoolean(folderId, isMeaningless).apply()
+    }
 
     private val _quotaFlow = MutableStateFlow<QuotaResponse?>(null)
     val quotaFlow: StateFlow<QuotaResponse?> = _quotaFlow.asStateFlow()
@@ -147,21 +170,29 @@ class DriveRepository(
         runCatching { client.listTrash() }
     }
 
-    suspend fun isFolderMeaningless(folderId: String, thresholdBytes: Long): Boolean = withContext(Dispatchers.IO) {
+    suspend fun isFolderMeaningless(
+        folderId: String,
+        thresholdBytes: Long,
+        forceRefresh: Boolean = false,
+    ): Boolean = withContext(Dispatchers.IO) {
+        if (!forceRefresh) {
+            val cached = folderMeaninglessCache[folderId]
+            if (cached != null) return@withContext cached
+        }
         runCatching {
             val response = client.listFilesPaged(parentId = folderId, pageSize = 50)
             val subFiles = response.files
-            if (subFiles.isEmpty()) return@runCatching true
-
-            val maxInnerSize = subFiles.maxOfOrNull { it.sizeBytes } ?: 0L
-            if (maxInnerSize >= thresholdBytes) return@runCatching false
-
-            val hasSubfolder = subFiles.any { it.isFolder }
-            if (hasSubfolder) return@runCatching false
-
-            val totalInnerSize = subFiles.sumOf { it.sizeBytes }
-            totalInnerSize < thresholdBytes
-        }.getOrDefault(false)
+            val isMeaningless = if (subFiles.isEmpty()) {
+                true
+            } else {
+                val maxInnerSize = subFiles.maxOfOrNull { it.sizeBytes } ?: 0L
+                val hasSubfolder = subFiles.any { it.isFolder }
+                val totalInnerSize = subFiles.sumOf { it.sizeBytes }
+                maxInnerSize < thresholdBytes && !hasSubfolder && totalInnerSize < thresholdBytes
+            }
+            cacheFolderMeaningless(folderId, isMeaningless)
+            isMeaningless
+        }.getOrDefault(folderMeaninglessCache[folderId] ?: false)
     }
 
     private fun sortFiles(files: List<FileStat>, order: FileSortOrder): List<FileStat> {
