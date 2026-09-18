@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Piko 品牌图标 - 萌猫云朵 (Piko Cat) 自适应前景层。
-  画布 108x108，中心 (54,54)，严密适配 Android 66dp 安全圆与各类遮罩裁剪。
+  Piko 自适应启动器图标前景层。
+  画布 108x108，中心 (54,54)，整体视觉占安全可视区约 70%。
+  底色层为 PikPak 标志性品牌蓝 (#306EFF)。
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -9,88 +10,45 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- 1. 左猫耳 (白色基底) -->
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M27.5,45 L34.2,27 C34.8,25.4 37.0,25.4 37.6,27 L44.8,40.5 Z" />
+    <group
+        android:pivotX="24"
+        android:pivotY="23"
+        android:scaleX="1.6"
+        android:scaleY="1.6"
+        android:translateX="30"
+        android:translateY="31">
 
-    <!-- 2. 右猫耳 (白色基底) -->
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M63.2,40.5 L70.4,27 C71.0,25.4 73.2,25.4 73.8,27 L80.5,45 Z" />
+        <!-- 左挺立萌猫耳 -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M9.5,17.5 C9.5,13.5 11.8,7.8 13.2,6.5 C14.2,5.5 15.6,6.0 16.3,7.5 L21.5,15.5 Z" />
 
-    <!-- 3. 左内耳 (PikPak 品牌蓝) -->
-    <path
-        android:fillColor="#306EFF"
-        android:pathData="M31.0,42.5 L35.5,29.5 L40.5,39.0 Z" />
+        <!-- 右挺立萌猫耳 -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M38.5,17.5 C38.5,13.5 36.2,7.8 34.8,6.5 C33.8,5.5 32.4,6.0 31.7,7.5 L26.5,15.5 Z" />
 
-    <!-- 4. 右内耳 (PikPak 品牌蓝) -->
-    <path
-        android:fillColor="#306EFF"
-        android:pathData="M67.5,39.0 L72.5,29.5 L77.0,42.5 Z" />
+        <!-- 圆润饱满的 Squircle 猫咪面庞 (rx=7.5) -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M15,15 H33 A7.5,7.5 0 0 1 40.5,22.5 V32.5 A7.5,7.5 0 0 1 33,40 H15 A7.5,7.5 0 0 1 7.5,32.5 V22.5 A7.5,7.5 0 0 1 15,15 Z" />
 
-    <!-- 5. 饱满圆润的猫咪包子脸庞 (白色) -->
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M38,38 H70 C79,38 84.5,47 84.5,57 C84.5,69.5 73.5,76 54,76 C34.5,76 23.5,69.5 23.5,57 C23.5,47 29,38 38,38 Z" />
+        <!-- 左胶囊眼 -->
+        <path
+            android:fillColor="#306EFF"
+            android:pathData="M17.5,22.5 H17.5 A1.7,1.7 0 0 1 19.2,24.2 V27.0 A1.7,1.7 0 0 1 17.5,28.7 H17.5 A1.7,1.7 0 0 1 15.8,27.0 V24.2 A1.7,1.7 0 0 1 17.5,22.5 Z" />
 
-    <!-- 6. 灵动大猫眼 (左眼 + 高光) -->
-    <path
-        android:fillColor="#306EFF"
-        android:pathData="M38,54 A4.5,4.5 0 1,1 47,54 A4.5,4.5 0 1,1 38,54 Z" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M42.5,52 A1.5,1.5 0 1,1 45.5,52 A1.5,1.5 0 1,1 42.5,52 Z" />
+        <!-- 右胶囊眼 -->
+        <path
+            android:fillColor="#306EFF"
+            android:pathData="M30.5,22.5 H30.5 A1.7,1.7 0 0 1 32.2,24.2 V27.0 A1.7,1.7 0 0 1 30.5,28.7 H30.5 A1.7,1.7 0 0 1 28.8,27.0 V24.2 A1.7,1.7 0 0 1 30.5,22.5 Z" />
 
-    <!-- 7. 灵动大猫眼 (右眼 + 高光) -->
-    <path
-        android:fillColor="#306EFF"
-        android:pathData="M61,54 A4.5,4.5 0 1,1 70,54 A4.5,4.5 0 1,1 61,54 Z" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M65.5,52 A1.5,1.5 0 1,1 68.5,52 A1.5,1.5 0 1,1 65.5,52 Z" />
-
-    <!-- 8. 可爱小猫鼻 -->
-    <path
-        android:fillColor="#306EFF"
-        android:pathData="M51.8,60 C52.2,59.5 55.8,59.5 56.2,60 C56.6,60.8 54.8,62.8 54,62.8 C53.2,62.8 51.4,60.8 51.8,60 Z" />
-
-    <!-- 9. 经典 ω 形猫咪三瓣嘴 -->
-    <path
-        android:strokeColor="#306EFF"
-        android:strokeWidth="2.2"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round"
-        android:pathData="M54,62.8 C54,65 52,67.2 49,67.2 C46.2,67.2 44.5,65.2 44.5,63.8" />
-    <path
-        android:strokeColor="#306EFF"
-        android:strokeWidth="2.2"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round"
-        android:pathData="M54,62.8 C54,65 56,67.2 59,67.2 C61.8,67.2 63.5,65.2 63.5,63.8" />
-
-    <!-- 10. 左侧猫胡须 (2根) -->
-    <path
-        android:strokeColor="#306EFF"
-        android:strokeWidth="2.0"
-        android:strokeLineCap="round"
-        android:pathData="M33,57 L21,55.5" />
-    <path
-        android:strokeColor="#306EFF"
-        android:strokeWidth="2.0"
-        android:strokeLineCap="round"
-        android:pathData="M33,62 L21,63.5" />
-
-    <!-- 11. 右侧猫胡须 (2根) -->
-    <path
-        android:strokeColor="#306EFF"
-        android:strokeWidth="2.0"
-        android:strokeLineCap="round"
-        android:pathData="M75,57 L87,55.5" />
-    <path
-        android:strokeColor="#306EFF"
-        android:strokeWidth="2.0"
-        android:strokeLineCap="round"
-        android:pathData="M75,62 L87,63.5" />
+        <!-- 治愈微笑 -->
+        <path
+            android:strokeColor="#306EFF"
+            android:strokeWidth="2.2"
+            android:strokeLineCap="round"
+            android:pathData="M20.8,31.8 Q24,35.5 27.2,31.8" />
+    </group>
 
 </vector>
