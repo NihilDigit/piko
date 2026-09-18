@@ -896,8 +896,16 @@ fun DriveScreen(
         SegmentDownloadSheet(
             file = target,
             onDismiss = { segmentTargetFile = null },
-            onConfirmDownload = { startByte: Long, lengthBytes: Long, timeLabel: String ->
-                downloadManager.enqueueSegment(target, startByte, lengthBytes, timeLabel)
+            onConfirmDownload = { startByte, lengthBytes, timeLabel, startMs, endMs, streamUrl ->
+                downloadManager.enqueueSegment(
+                    file = target,
+                    startMs = startMs,
+                    endMs = endMs,
+                    timeRangeLabel = timeLabel,
+                    streamUrl = streamUrl,
+                    startByte = startByte,
+                    lengthBytes = lengthBytes,
+                )
                 segmentTargetFile = null
                 scope.launch {
                     snackbarHostState.showSnackbar("已加入段落下载: ${target.name} [$timeLabel]")

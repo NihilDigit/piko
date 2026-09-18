@@ -45,6 +45,9 @@ data class DownloadTask(
     val fullFileSize: Long = 0L,
     val timeRangeLabel: String? = null,
     val thumbnailLink: String = "",
+    val startMs: Long = 0L,
+    val endMs: Long = 0L,
+    val streamUrl: String? = null,
 ) {
     val progress: Float
         get() = if (totalBytes > 0) (downloadedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f) else 0f
@@ -90,13 +93,16 @@ class PikoDownloadManager(
     }
 
     /**
-     * 走 SDK 的段落下载：基于指定起止字节偏移行驶 8 连接并发分块下载
+     * 段落下载：基于原生 MediaExtractor + MediaMuxer 无损流抽取，生成带标准 ftyp/moov 容器头的合规 MP4
      */
     fun enqueueSegment(
         file: FileStat,
-        startByte: Long,
-        lengthBytes: Long,
+        startMs: Long,
+        endMs: Long,
         timeRangeLabel: String,
+        streamUrl: String? = null,
+        startByte: Long = 0L,
+        lengthBytes: Long = 0L,
     ) {
         val ext = file.name.substringAfterLast(".", "")
         val baseName = file.name.substringBeforeLast(".")
@@ -104,22 +110,25 @@ class PikoDownloadManager(
         val segmentFileName = if (ext.isNotEmpty()) "${baseName}_[$safeLabel].$ext" else "${baseName}_[$safeLabel]"
         val destFile = File(downloadDir, segmentFileName)
         val initialDownloaded = if (destFile.exists()) destFile.length() else 0L
-        val taskId = "${file.id}_seg_${startByte}_$lengthBytes"
+        val taskId = "${file.id}_seg_${startMs}_$endMs"
 
         val task = DownloadTask(
             taskId = taskId,
             fileId = file.id,
             fileName = segmentFileName,
             gcid = file.hash,
-            totalBytes = lengthBytes,
+            totalBytes = if (lengthBytes > 0) lengthBytes else (destFile.length().coerceAtLeast(1024L)),
             downloadedBytes = initialDownloaded,
             destinationPath = destFile.absolutePath,
-            status = if (initialDownloaded >= lengthBytes && lengthBytes > 0) DownloadStatus.COMPLETED else DownloadStatus.PENDING,
+            status = if (initialDownloaded > 1024L) DownloadStatus.COMPLETED else DownloadStatus.PENDING,
             isSegment = true,
             startByte = startByte,
             fullFileSize = file.sizeBytes,
             timeRangeLabel = timeRangeLabel,
             thumbnailLink = file.thumbnailLink,
+            startMs = startMs,
+            endMs = endMs,
+            streamUrl = streamUrl,
         )
 
         _tasks.update { it + (taskId to task) }
@@ -132,8 +141,70 @@ class PikoDownloadManager(
         val task = _tasks.value[taskId] ?: return
         if (task.status == DownloadStatus.DOWNLOADING) return
 
-        val client = clientManager.currentClient.value ?: return
         val destFile = File(task.destinationPath)
+
+        // 若为段落下载，执行原生无损流抽取打包
+        if (task.isSegment && task.endMs > task.startMs) {
+            val job = scope.launch(Dispatchers.IO) {
+                _tasks.update { it + (taskId to task.copy(status = DownloadStatus.DOWNLOADING, errorMessage = null)) }
+
+                var url = task.streamUrl
+                if (url.isNullOrBlank()) {
+                    val mediaRepo = dev.piko.PikoApplication.instance.mediaRepository
+                    val prep = mediaRepo.prepareMedia(task.fileId)
+                    url = prep.getOrNull()?.currentUrl
+                }
+
+                if (url.isNullOrBlank()) {
+                    _tasks.update { it + (taskId to task.copy(status = DownloadStatus.FAILED, errorMessage = "无法解析媒体直链")) }
+                    return@launch
+                }
+
+                val result = VideoSegmentExtractor.extractSegment(
+                    context = context,
+                    sourceUrlOrPath = url,
+                    destinationFile = destFile,
+                    startMs = task.startMs,
+                    endMs = task.endMs,
+                    onProgress = { p ->
+                        val bytes = (task.totalBytes * p).toLong()
+                        _tasks.update { current ->
+                            val c = current[taskId] ?: return@update current
+                            current + (taskId to c.copy(
+                                downloadedBytes = if (destFile.exists()) destFile.length() else bytes,
+                            ))
+                        }
+                    }
+                )
+
+                if (result.isSuccess) {
+                    val finalSize = destFile.length()
+                    _tasks.update { current ->
+                        val c = current[taskId] ?: return@update current
+                        current + (taskId to c.copy(
+                            status = DownloadStatus.COMPLETED,
+                            downloadedBytes = finalSize,
+                            totalBytes = finalSize,
+                            speedBytesPerSec = 0L,
+                        ))
+                    }
+                } else {
+                    _tasks.update { current ->
+                        val c = current[taskId] ?: return@update current
+                        current + (taskId to c.copy(
+                            status = DownloadStatus.FAILED,
+                            errorMessage = result.exceptionOrNull()?.localizedMessage ?: "提取切片失败",
+                            speedBytesPerSec = 0L,
+                        ))
+                    }
+                }
+                runningJobs.remove(taskId)
+            }
+            runningJobs[taskId] = job
+            return
+        }
+
+        val client = clientManager.currentClient.value ?: return
 
         val job = scope.launch(Dispatchers.IO) {
             _tasks.update { it + (taskId to task.copy(status = DownloadStatus.DOWNLOADING, errorMessage = null)) }

@@ -93,7 +93,7 @@ fun formatTimeMs(ms: Long): String {
 fun SegmentDownloadSheet(
     file: FileStat,
     onDismiss: () -> Unit,
-    onConfirmDownload: (startByte: Long, lengthBytes: Long, timeLabel: String) -> Unit,
+    onConfirmDownload: (startByte: Long, lengthBytes: Long, timeLabel: String, startMs: Long, endMs: Long, streamUrl: String?) -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val mediaRepo = PikoApplication.instance.mediaRepository
@@ -364,7 +364,7 @@ fun SegmentDownloadSheet(
                             val lengthBytes = (endByte - startByte).coerceAtLeast(1024L)
                             val label = "${formatTimeMs(startPosMs)}_${formatTimeMs(endPosMs)}"
 
-                            onConfirmDownload(startByte, lengthBytes, label)
+                            onConfirmDownload(startByte, lengthBytes, label, startPosMs, endPosMs, mediaInfo?.currentUrl)
                         },
                         modifier = Modifier.weight(2f),
                     ) {
