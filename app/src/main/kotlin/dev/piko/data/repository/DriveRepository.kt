@@ -147,6 +147,23 @@ class DriveRepository(
         runCatching { client.listTrash() }
     }
 
+    suspend fun isFolderMeaningless(folderId: String, thresholdBytes: Long): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            val response = client.listFilesPaged(parentId = folderId, pageSize = 50)
+            val subFiles = response.files
+            if (subFiles.isEmpty()) return@runCatching true
+
+            val maxInnerSize = subFiles.maxOfOrNull { it.sizeBytes } ?: 0L
+            if (maxInnerSize >= thresholdBytes) return@runCatching false
+
+            val hasSubfolder = subFiles.any { it.isFolder }
+            if (hasSubfolder) return@runCatching false
+
+            val totalInnerSize = subFiles.sumOf { it.sizeBytes }
+            totalInnerSize < thresholdBytes
+        }.getOrDefault(false)
+    }
+
     private fun sortFiles(files: List<FileStat>, order: FileSortOrder): List<FileStat> {
         val (folders, nonFolders) = files.partition { it.isFolder }
         val sortComparator: Comparator<FileStat> = when (order) {

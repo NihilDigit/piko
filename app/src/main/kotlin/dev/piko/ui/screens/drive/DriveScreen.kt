@@ -57,6 +57,11 @@ import dev.piko.data.repository.MagnetResolutionResult
 import androidx.compose.material.icons.outlined.HourglassEmpty
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.ui.text.font.FontWeight
+import kotlinx.coroutines.Dispatchers
 import androidx.compose.material.icons.outlined.ContentCut
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.SelectAll
@@ -250,29 +255,83 @@ fun DriveScreen(
         }
     }
 
-    // 启发式量级筛选：当主体大文件与次要小文件差 10 倍以上时，默认折叠低量级小文件
+    var highlightedFileIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var folderMeaninglessMap by remember(activeFolderId) { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
+
+    // 启发式量级筛选：当主体大文件与次要小文件差 10 倍以上时，默认折叠低量级小文件与无意义文件夹
     val nonFolderFiles = remember(files) { files.filter { !it.isFolder } }
     val maxFileSize = remember(nonFolderFiles) { nonFolderFiles.maxOfOrNull { it.sizeBytes } ?: 0L }
-    val smallFilesCount = remember(nonFolderFiles, maxFileSize) {
-        if (maxFileSize >= 5 * 1024 * 1024L) {
-            val threshold = maxFileSize / 10L
-            nonFolderFiles.count { it.sizeBytes < threshold }
-        } else 0
+    val threshold = remember(maxFileSize) { if (maxFileSize >= 5 * 1024 * 1024L) maxFileSize / 10L else 0L }
+
+    fun isLikelyNoiseFolderName(name: String): Boolean {
+        val clean = name.trim().lowercase()
+        val noiseNames = setOf(
+            "sample", "samples", "proof", "proofs", "screens", "screen", "screenshot", "screenshots",
+            "subs", "sub", "subtitle", "subtitles", "extra", "extras", "nfo", "trailer", "trailers",
+            "bonus", "featurette", "featurettes", "cover", "covers", "metadata"
+        )
+        if (clean in noiseNames) return true
+        if (clean.startsWith("sample") || clean.startsWith("screen") || clean.startsWith("proof") || clean.startsWith("sub")) return true
+        return false
     }
 
-    val (heuristicFilteredFiles, hiddenSmallFilesCount) = remember(
+    LaunchedEffect(files, threshold, isHeuristicFilterEnabled) {
+        if (threshold > 0L && isHeuristicFilterEnabled) {
+            val folders = files.filter { it.isFolder }
+            folders.forEach { folder ->
+                if (!folderMeaninglessMap.containsKey(folder.id)) {
+                    val fastNoise = isLikelyNoiseFolderName(folder.name)
+                    if (fastNoise) {
+                        folderMeaninglessMap = folderMeaninglessMap + (folder.id to true)
+                    }
+                    launch(Dispatchers.IO) {
+                        val isMeaningless = driveRepo.isFolderMeaningless(folder.id, threshold)
+                        folderMeaninglessMap = folderMeaninglessMap + (folder.id to isMeaningless)
+                    }
+                }
+            }
+        }
+    }
+
+    val potentialHiddenCount = remember(
+        files,
+        isHeuristicFilterEnabled,
+        threshold,
+        folderMeaninglessMap,
+    ) {
+        if (!isHeuristicFilterEnabled || threshold <= 0L) {
+            0
+        } else {
+            val filtered = files.filter { file ->
+                if (file.isFolder) {
+                    val isMeaningless = folderMeaninglessMap[file.id] ?: isLikelyNoiseFolderName(file.name)
+                    !isMeaningless
+                } else {
+                    file.sizeBytes >= threshold
+                }
+            }
+            (files.size - filtered.size).coerceAtLeast(0)
+        }
+    }
+
+    val heuristicFilteredFiles = remember(
         files,
         isHeuristicFilterEnabled,
         showAllFilesTemporarily,
-        maxFileSize,
-        smallFilesCount,
+        threshold,
+        folderMeaninglessMap,
     ) {
-        if (!isHeuristicFilterEnabled || showAllFilesTemporarily || smallFilesCount == 0 || smallFilesCount == nonFolderFiles.size) {
-            Pair(files, 0)
+        if (!isHeuristicFilterEnabled || showAllFilesTemporarily || threshold <= 0L) {
+            files
         } else {
-            val threshold = maxFileSize / 10L
-            val filtered = files.filter { it.isFolder || it.sizeBytes >= threshold }
-            Pair(filtered, smallFilesCount)
+            files.filter { file ->
+                if (file.isFolder) {
+                    val isMeaningless = folderMeaninglessMap[file.id] ?: isLikelyNoiseFolderName(file.name)
+                    !isMeaningless
+                } else {
+                    file.sizeBytes >= threshold
+                }
+            }
         }
     }
 
@@ -283,6 +342,22 @@ fun DriveScreen(
             heuristicFilteredFiles
         } else {
             files.filter { it.name.contains(searchQuery.trim(), ignoreCase = true) }
+        }
+    }
+
+    // 刚秒传成功时，自动平滑滚动定位至新添加的项目并在 8 秒后渐隐
+    LaunchedEffect(displayedFiles, highlightedFileIds) {
+        if (highlightedFileIds.isNotEmpty()) {
+            val idx = displayedFiles.indexOfFirst { it.id in highlightedFileIds }
+            if (idx >= 0) {
+                if (isGridShadowMode) {
+                    gridState.animateScrollToItem(idx)
+                } else {
+                    listState.animateScrollToItem(idx)
+                }
+            }
+            delay(8000)
+            highlightedFileIds = emptySet()
         }
     }
 
@@ -549,7 +624,7 @@ fun DriveScreen(
                         Column(modifier = Modifier.fillMaxSize()) {
                             // 启发式量级折叠提示胶囊/横幅
                             if (isHeuristicFilterEnabled && searchQuery.isBlank() && globalSearchResults == null) {
-                                if (hiddenSmallFilesCount > 0) {
+                                if (!showAllFilesTemporarily && potentialHiddenCount > 0) {
                                     Surface(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -574,7 +649,7 @@ fun DriveScreen(
                                                 )
                                                 Spacer(modifier = Modifier.width(6.dp))
                                                 Text(
-                                                    text = "已智能折叠 $hiddenSmallFilesCount 个次要小文件",
+                                                    text = "已智能折叠 $potentialHiddenCount 个次要文件及文件夹",
                                                     style = MaterialTheme.typography.bodySmall,
                                                     color = MaterialTheme.colorScheme.onSecondaryContainer,
                                                 )
@@ -587,7 +662,7 @@ fun DriveScreen(
                                             }
                                         }
                                     }
-                                } else if (showAllFilesTemporarily && smallFilesCount > 0) {
+                                } else if (showAllFilesTemporarily && potentialHiddenCount > 0) {
                                     Surface(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -612,7 +687,7 @@ fun DriveScreen(
                                                 )
                                                 Spacer(modifier = Modifier.width(6.dp))
                                                 Text(
-                                                    text = "正在显示全部文件 (含 $smallFilesCount 个次要小文件)",
+                                                    text = "正在显示全部文件 (含 $potentialHiddenCount 个次要文件及文件夹)",
                                                     style = MaterialTheme.typography.bodySmall,
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                                 )
@@ -656,6 +731,7 @@ fun DriveScreen(
                                     ShadowFileCard(
                                         file = file,
                                         isSpoilerBlurred = isBlurred,
+                                        isHighlighted = highlightedFileIds.contains(file.id),
                                         onToggleSpoiler = {
                                             if (revealedFileIds.contains(file.id)) {
                                                 revealedFileIds.remove(file.id)
@@ -700,6 +776,7 @@ fun DriveScreen(
                                             isSelectionMode = isSelectionMode,
                                             isSelected = isSelected,
                                             isSpoilerBlurred = isBlurred,
+                                            isHighlighted = highlightedFileIds.contains(file.id),
                                             onToggleSpoiler = {
                                                 if (revealedFileIds.contains(file.id)) {
                                                     revealedFileIds.remove(file.id)
@@ -779,11 +856,14 @@ fun DriveScreen(
                     showInstantSheet = false
                     instantRepo.clearPendingMagnet()
                 },
-                onSuccess = { count, folderName ->
+                onSuccess = { createdIds, targetBread ->
                     showInstantSheet = false
                     instantRepo.clearPendingMagnet()
+                    highlightedFileIds = createdIds.toSet()
+                    driveRepo.navigateToFolder(targetBread)
+                    loadFiles()
                     scope.launch {
-                        snackbarHostState.showSnackbar("成功秒传 $count 个文件并进入 $folderName！")
+                        snackbarHostState.showSnackbar("成功秒传 ${createdIds.size} 项并进入 ${targetBread.name}！")
                     }
                 },
                 onOfflineTaskCreated = { folderName ->
@@ -922,6 +1002,7 @@ fun DriveScreen(
 fun ShadowFileCard(
     file: FileStat,
     isSpoilerBlurred: Boolean = false,
+    isHighlighted: Boolean = false,
     onToggleSpoiler: () -> Unit = {},
     onClick: () -> Unit,
     onDownload: () -> Unit = {},
@@ -940,7 +1021,7 @@ fun ShadowFileCard(
             .clickable { onClick() },
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer,
+            containerColor = if (isHighlighted) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f) else MaterialTheme.colorScheme.surfaceContainer,
         ),
     ) {
         Column {
@@ -961,28 +1042,27 @@ fun ShadowFileCard(
                         contentScale = ContentScale.Crop,
                     )
                     if (isSpoilerBlurred) {
-                        Box(
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.scrim.copy(alpha = 0.5f),
                             modifier = Modifier
-                                .fillMaxSize()
-                                .background(MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.7f))
-                                .clickable { onToggleSpoiler() },
-                            contentAlignment = Alignment.Center,
+                                .clickable { onToggleSpoiler() }
+                                .padding(8.dp),
                         ) {
                             Column(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center,
                             ) {
                                 Icon(
-                                    imageVector = Icons.Outlined.VisibilityOff,
-                                    contentDescription = "点击查看",
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(26.dp),
+                                    imageVector = Icons.Outlined.Visibility,
+                                    contentDescription = "查看预览",
+                                    tint = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.size(18.dp),
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
                                     text = "已遮蔽",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
                         }
@@ -1005,12 +1085,30 @@ fun ShadowFileCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = file.name,
-                        style = MaterialTheme.typography.bodyMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = file.name,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        if (isHighlighted) {
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = MaterialTheme.colorScheme.primary,
+                            ) {
+                                Text(
+                                    text = "刚秒传",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                                )
+                            }
+                        }
+                    }
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
                         text = if (file.isFolder) "文件夹" else file.sizeBytes.toReadableSize(),
@@ -1109,7 +1207,7 @@ fun ShadowFileCard(
 fun InstantSheetContent(
     initialMagnet: String = "",
     onDismiss: () -> Unit,
-    onSuccess: (count: Int, folderName: String) -> Unit,
+    onSuccess: (createdIds: List<String>, targetBread: PathBreadcrumb) -> Unit,
     onOfflineTaskCreated: (folderName: String) -> Unit,
 ) {
     val driveRepo = PikoApplication.instance.driveRepository
@@ -1435,9 +1533,9 @@ fun InstantSheetContent(
                                 val targetBread = targetBreadcrumb ?: driveRepo.getOrCreateMyPacksFolder().getOrDefault(PathBreadcrumb("", "My Packs"))
                                 val saveRes = instantRepo.instantSave(readySelectedItems, targetBread.id)
                                 isSaving = false
-                                saveRes.onSuccess {
+                                saveRes.onSuccess { createdIds ->
                                     driveRepo.navigateToFolder(targetBread)
-                                    onSuccess(it.size, targetBread.name)
+                                    onSuccess(createdIds, targetBread)
                                 }.onFailure {
                                     errorMsg = "秒传保存失败: ${it.localizedMessage}"
                                 }

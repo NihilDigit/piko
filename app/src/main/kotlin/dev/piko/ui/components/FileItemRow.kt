@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AudioFile
 import androidx.compose.material.icons.outlined.ContentCut
@@ -70,6 +72,7 @@ fun FileItemRow(
     file: FileStat,
     isSelectionMode: Boolean,
     isSelected: Boolean,
+    isHighlighted: Boolean = false,
     isSpoilerBlurred: Boolean = false,
     onToggleSpoiler: () -> Unit = {},
     onClick: () -> Unit,
@@ -100,7 +103,11 @@ fun FileItemRow(
                     onLongClick()
                 },
             ),
-        color = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f) else MaterialTheme.colorScheme.surface,
+        color = when {
+            isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+            isHighlighted -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+            else -> MaterialTheme.colorScheme.surface
+        },
     ) {
         Row(
             modifier = Modifier
@@ -192,13 +199,34 @@ fun FileItemRow(
 
             // 文件名称与元信息
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = file.name,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        text = file.name,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (isHighlighted) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = MaterialTheme.colorScheme.primary,
+                        ) {
+                            Text(
+                                text = "刚秒传",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimary,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                            )
+                        }
+                    }
+                }
                 val subtitle = buildString {
                     if (!file.isFolder) {
                         append(file.sizeBytes.toReadableSize())
