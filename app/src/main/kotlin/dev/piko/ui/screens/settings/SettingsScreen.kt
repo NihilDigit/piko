@@ -284,7 +284,7 @@ fun SettingsScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = "Piko 是一款遵循 Material 3 Expressive 设计系统打造的第三方高性能 PikPak 客户端。\n\n" +
-                            "核心基于 Kotlin Multiplatform 的 pikpak-kotlin SDK，提供毫秒级磁力秒传、LRU 预读流媒体播放与多连接分块下载。",
+                            "核心基于 Kotlin Multiplatform 的 pikpak-kotlin SDK，提供毫秒级磁力秒传、流畅流媒体播放与极速下载。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

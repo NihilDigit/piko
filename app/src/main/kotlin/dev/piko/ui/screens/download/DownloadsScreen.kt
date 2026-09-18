@@ -89,7 +89,7 @@ fun DownloadsScreen(
         if (tasks.isEmpty()) {
             PikoEmptyState(
                 title = "暂无下载任务",
-                description = "在云盘中点击文件操作菜单，选择“下载到本地”开启 8 线程并发高速下载",
+                description = "在云盘中点击文件操作菜单，选择“下载到本地”将文件保存至本地",
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding),
