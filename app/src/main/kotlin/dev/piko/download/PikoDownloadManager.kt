@@ -63,7 +63,7 @@ class PikoDownloadManager(
 
     private val runningJobs = mutableMapOf<String, Job>()
 
-    private val downloadDir: File by lazy {
+    val downloadDir: File by lazy {
         val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir
         if (!dir.exists()) dir.mkdirs()
         dir
