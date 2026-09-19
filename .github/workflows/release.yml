@@ -66,10 +66,14 @@ jobs:
 
       - name: Verify signed release APK
         run: |
-          apk="app/build/outputs/apk/release/app-release.apk"
-          test -s "$apk"
+          shopt -s nullglob
+          apks=(app/build/outputs/apk/release/*.apk)
+          test "${#apks[@]}" -gt 0
           build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
-          "$build_tools/apksigner" verify --verbose "$apk"
+          for apk in "${apks[@]}"; do
+            test -s "$apk"
+            "$build_tools/apksigner" verify --verbose "$apk"
+          done
 
       - name: Verify release AAB
         run: test -s app/build/outputs/bundle/release/app-release.aab
@@ -79,7 +83,7 @@ jobs:
         with:
           name: piko-${{ github.ref_name }}
           path: |
-            app/build/outputs/apk/release/app-release.apk
+            app/build/outputs/apk/release/*.apk
             app/build/outputs/bundle/release/app-release.aab
           if-no-files-found: error
           retention-days: 90
@@ -91,5 +95,5 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
-            app/build/outputs/apk/release/app-release.apk \
+            app/build/outputs/apk/release/*.apk \
             app/build/outputs/bundle/release/app-release.aab
