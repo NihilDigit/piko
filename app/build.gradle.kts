@@ -25,13 +25,17 @@ val appVersionCode = providers.environmentVariable("PIKO_VERSION_CODE")
     .orElse(2000)
 require(appVersionCode.get() > 0) { "PIKO_VERSION_CODE must be greater than zero." }
 
+val enableAbiSplits = providers.gradleProperty("piko.enableAbiSplits")
+    .map { it.toBoolean() }
+    .orElse(true)
+
 android {
     namespace = "dev.piko"
     compileSdk = 37
 
     splits {
         abi {
-            isEnable = true
+            isEnable = enableAbiSplits.get()
             reset()
             include("arm64-v8a", "armeabi-v7a", "x86_64")
             isUniversalApk = true

@@ -16,7 +16,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     env:
-      ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/piko-release.jks
+      ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/piko-release.jks
       ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
       ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
@@ -26,7 +26,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '21'
           distribution: 'temurin'
@@ -61,16 +61,27 @@ jobs:
           echo "PIKO_VERSION_NAME=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
           echo "PIKO_VERSION_CODE=$((major * 1000000 + minor * 1000 + patch))" >> "$GITHUB_ENV"
 
-      - name: Build signed split release APKs
-        run: ./gradlew assembleRelease -Ppiko.enableAbiSplits=true --no-daemon --stacktrace --warning-mode=all
+      - name: Build signed release APKs
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
 
-      - name: Build signed release AAB
-        run: ./gradlew bundleRelease -Ppiko.enableAbiSplits=false --no-daemon --stacktrace --warning-mode=all
+      - name: Collect artifacts
+        run: |
+          mkdir -p dist
+          version="${PIKO_VERSION_NAME}"
+          for apk in app/build/outputs/apk/release/*.apk; do
+            variant=$(basename "$apk" | sed -E 's/^app-(.*)-release\.apk$/\1/')
+            cp "$apk" "dist/piko-$version-$variant.apk"
+          done
+          if [ -f app/build/outputs/mapping/release/mapping.txt ]; then
+            cp app/build/outputs/mapping/release/mapping.txt "dist/piko-$version-mapping.txt"
+          fi
+          (cd dist && sha256sum * > SHA256SUMS.txt)
+          ls -lh dist
 
-      - name: Verify signed release APK
+      - name: Verify signed release APKs
         run: |
           shopt -s nullglob
-          apks=(app/build/outputs/apk/release/*.apk)
+          apks=(dist/*.apk)
           test "${#apks[@]}" -gt 0
           build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
           for apk in "${apks[@]}"; do
@@ -78,16 +89,11 @@ jobs:
             "$build_tools/apksigner" verify --verbose "$apk"
           done
 
-      - name: Verify release AAB
-        run: test -s app/build/outputs/bundle/release/app-release.aab
-
       - name: Upload signed release artifacts
         uses: actions/upload-artifact@v4
         with:
           name: piko-${{ github.ref_name }}
-          path: |
-            app/build/outputs/apk/release/*.apk
-            app/build/outputs/bundle/release/app-release.aab
+          path: dist/*
           if-no-files-found: error
           retention-days: 90
 
@@ -98,5 +104,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
-            app/build/outputs/apk/release/*.apk \
-            app/build/outputs/bundle/release/app-release.aab
+            dist/*
