@@ -5,6 +5,26 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+// Release signing is injected by CI or a local release shell. Keeping the
+// values outside the project lets unsigned CI builds stay useful without
+// putting a keystore or passwords in source control.
+val releaseSigningValues = listOf(
+    providers.environmentVariable("ANDROID_KEYSTORE_PATH"),
+    providers.environmentVariable("ANDROID_KEYSTORE_PASSWORD"),
+    providers.environmentVariable("ANDROID_KEY_ALIAS"),
+    providers.environmentVariable("ANDROID_KEY_PASSWORD"),
+)
+val releaseSigningConfigured = releaseSigningValues.any { it.isPresent }
+require(!releaseSigningConfigured || releaseSigningValues.all { it.isPresent }) {
+    "Release signing requires ANDROID_KEYSTORE_PATH, ANDROID_KEYSTORE_PASSWORD, " +
+        "ANDROID_KEY_ALIAS, and ANDROID_KEY_PASSWORD together."
+}
+val appVersionName = providers.environmentVariable("PIKO_VERSION_NAME").orElse("0.1.0")
+val appVersionCode = providers.environmentVariable("PIKO_VERSION_CODE")
+    .map { it.toInt() }
+    .orElse(1)
+require(appVersionCode.get() > 0) { "PIKO_VERSION_CODE must be greater than zero." }
+
 android {
     namespace = "dev.piko"
     compileSdk = 37
@@ -13,10 +33,21 @@ android {
         applicationId = "dev.piko"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = appVersionCode.get()
+        versionName = appVersionName.get()
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        if (releaseSigningConfigured) {
+            create("release") {
+                storeFile = file(releaseSigningValues[0].get())
+                storePassword = releaseSigningValues[1].get()
+                keyAlias = releaseSigningValues[2].get()
+                keyPassword = releaseSigningValues[3].get()
+            }
+        }
     }
 
     buildTypes {
@@ -25,7 +56,11 @@ android {
             versionNameSuffix = "-debug"
         }
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            if (releaseSigningConfigured) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -62,6 +97,7 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.androidx.compose.foundation)
+    implementation(libs.androidx.compose.material3.adaptive.navigation.suite)
     debugImplementation(libs.androidx.compose.ui.tooling)
 
     // Navigation 3
@@ -69,12 +105,9 @@ dependencies {
     implementation(libs.androidx.navigation3.ui)
     implementation(libs.androidx.lifecycle.viewmodel.navigation3)
 
-    // Media3 (ExoPlayer, PlayerView & Compose UI)
+    // Media3 (ExoPlayer and PlayerView)
     implementation(libs.androidx.media3.exoplayer)
     implementation(libs.androidx.media3.ui)
-    implementation(libs.androidx.media3.ui.compose)
-    implementation(libs.androidx.media3.session)
-    implementation(libs.androidx.media3.extractor)
 
     // DataStore
     implementation(libs.androidx.datastore.preferences)

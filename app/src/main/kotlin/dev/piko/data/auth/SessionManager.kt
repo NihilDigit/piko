@@ -112,7 +112,11 @@ class SessionManager(private val context: Context) {
     ) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.TOKEN] = token
-            if (refreshToken.isNotEmpty()) preferences[PreferencesKeys.REFRESH_TOKEN] = refreshToken
+            if (refreshToken.isNotEmpty()) {
+                preferences[PreferencesKeys.REFRESH_TOKEN] = refreshToken
+            } else {
+                preferences.remove(PreferencesKeys.REFRESH_TOKEN)
+            }
             if (userId.isNotEmpty()) preferences[PreferencesKeys.USER_ID] = userId
             if (username.isNotEmpty()) preferences[PreferencesKeys.USERNAME] = username
             if (avatarUrl.isNotEmpty()) preferences[PreferencesKeys.AVATAR_URL] = avatarUrl

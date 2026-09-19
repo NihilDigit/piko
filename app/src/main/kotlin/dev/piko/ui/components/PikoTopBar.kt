@@ -37,7 +37,7 @@ fun PikoTopBar(
                 text = title,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.titleLarge,
+                style = MaterialTheme.typography.titleLargeEmphasized,
             )
         },
         modifier = modifier,
@@ -48,7 +48,7 @@ fun PikoTopBar(
                 IconButton(onClick = onBackClick) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Back",
+                        contentDescription = "返回",
                     )
                 }
             }

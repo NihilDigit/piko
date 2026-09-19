@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -56,6 +57,8 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
+import dev.piko.data.repository.isPlayableVideo
+import dev.piko.data.repository.isPreviewableImage
 import io.github.nihildigit.pikpak.FileStat
 
 fun Long.toReadableSize(): String {
@@ -91,7 +94,9 @@ fun FileItemRow(
     Surface(
         modifier = modifier
             .fillMaxWidth()
+            .heightIn(min = 72.dp)
             .combinedClickable(
+                onClickLabel = if (file.isFolder) "打开文件夹" else "打开文件",
                 onClick = {
                     if (isSelectionMode) {
                         onSelectToggle(!isSelected)
@@ -132,7 +137,7 @@ fun FileItemRow(
             // 图标或缩略图
             Box(
                 modifier = Modifier
-                    .size(44.dp)
+                    .size(48.dp)
                     .clip(MaterialTheme.shapes.small),
                 contentAlignment = Alignment.Center,
             ) {
@@ -141,7 +146,7 @@ fun FileItemRow(
                         model = file.thumbnailLink,
                         contentDescription = null,
                         modifier = Modifier
-                            .size(44.dp)
+                            .fillMaxSize()
                             .then(if (isSpoilerBlurred) Modifier.blur(16.dp) else Modifier),
                         contentScale = ContentScale.Crop,
                     )
@@ -150,7 +155,10 @@ fun FileItemRow(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .background(MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.65f))
-                                .clickable { onToggleSpoiler() },
+                                .clickable(
+                                    onClickLabel = "显示预览",
+                                    onClick = onToggleSpoiler,
+                                ),
                             contentAlignment = Alignment.Center,
                         ) {
                             Icon(
@@ -163,23 +171,18 @@ fun FileItemRow(
                     }
                 } else {
                     Surface(
-                        modifier = Modifier.size(44.dp),
+                        modifier = Modifier.size(48.dp),
                         shape = MaterialTheme.shapes.small,
                         color = if (file.isFolder) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             val icon = when {
                                 file.isFolder -> Icons.Outlined.Folder
-                                file.name.endsWith(".mp4", ignoreCase = true) ||
-                                    file.name.endsWith(".mkv", ignoreCase = true) ||
-                                    file.name.endsWith(".avi", ignoreCase = true) ||
-                                    file.name.endsWith(".mov", ignoreCase = true) -> Icons.Outlined.Movie
+                                file.name.isPlayableVideo() -> Icons.Outlined.Movie
                                 file.name.endsWith(".mp3", ignoreCase = true) ||
                                     file.name.endsWith(".flac", ignoreCase = true) ||
                                     file.name.endsWith(".wav", ignoreCase = true) -> Icons.Outlined.AudioFile
-                                file.name.endsWith(".jpg", ignoreCase = true) ||
-                                    file.name.endsWith(".png", ignoreCase = true) ||
-                                    file.name.endsWith(".webp", ignoreCase = true) -> Icons.Outlined.Image
+                                file.name.isPreviewableImage() -> Icons.Outlined.Image
                                 file.name.endsWith(".zip", ignoreCase = true) ||
                                     file.name.endsWith(".rar", ignoreCase = true) ||
                                     file.name.endsWith(".7z", ignoreCase = true) -> Icons.Outlined.FolderZip
@@ -253,7 +256,7 @@ fun FileItemRow(
                     IconButton(onClick = { showMenu = true }) {
                         Icon(
                             imageVector = Icons.Outlined.MoreVert,
-                            contentDescription = "Options",
+                            contentDescription = "更多操作",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
@@ -273,13 +276,7 @@ fun FileItemRow(
                                     onDownload()
                                 },
                             )
-                            val isVideo = file.name.endsWith(".mp4", ignoreCase = true) ||
-                                file.name.endsWith(".mkv", ignoreCase = true) ||
-                                file.name.endsWith(".mov", ignoreCase = true) ||
-                                file.name.endsWith(".avi", ignoreCase = true) ||
-                                file.name.endsWith(".webm", ignoreCase = true) ||
-                                file.name.endsWith(".ts", ignoreCase = true)
-                            if (isVideo) {
+                            if (file.name.isPlayableVideo()) {
                                 DropdownMenuItem(
                                     text = { Text("下载指定段落") },
                                     leadingIcon = {

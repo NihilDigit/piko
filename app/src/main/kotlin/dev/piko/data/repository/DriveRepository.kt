@@ -186,14 +186,9 @@ class DriveRepository(
         runCatching {
             val response = client.listFilesPaged(parentId = folderId, pageSize = 50)
             val subFiles = response.files
-            val isMeaningless = if (subFiles.isEmpty()) {
-                true
-            } else {
-                val maxInnerSize = subFiles.maxOfOrNull { it.sizeBytes } ?: 0L
-                val hasSubfolder = subFiles.any { it.isFolder }
-                val totalInnerSize = subFiles.sumOf { it.sizeBytes }
-                maxInnerSize < thresholdBytes && !hasSubfolder && totalInnerSize < thresholdBytes
-            }
+            // Do not classify a folder by a shallow sample. Its parent view cannot
+            // know whether a small child is meaningful; the leaf view can.
+            val isMeaningless = subFiles.isEmpty()
             cacheFolderMeaningless(folderId, isMeaningless)
             isMeaningless
         }.getOrDefault(folderMeaninglessCache[folderId] ?: false)

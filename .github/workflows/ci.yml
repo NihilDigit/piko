@@ -10,6 +10,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -23,13 +26,18 @@ jobs:
         with:
           java-version: '21'
           distribution: 'temurin'
-          cache: 'gradle'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build Debug APK
-        run: ./gradlew assembleDebug --stacktrace
+      - name: Verify Gradle wrapper
+        run: ./gradlew --version
+
+      - name: Build debug APK and optimized release artifacts
+        run: ./gradlew assembleDebug assembleRelease bundleRelease --no-daemon --stacktrace --warning-mode=all
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
@@ -37,3 +45,16 @@ jobs:
         with:
           name: app-debug
           path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload unsigned release artifacts
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: app-release-unsigned
+          path: |
+            app/build/outputs/apk/release/*.apk
+            app/build/outputs/bundle/release/*.aab
+          if-no-files-found: error
+          retention-days: 14

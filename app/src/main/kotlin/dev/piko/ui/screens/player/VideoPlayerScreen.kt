@@ -28,7 +28,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeGesturesPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -92,21 +94,31 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import dev.piko.PikoApplication
 import dev.piko.data.repository.PlayableMediaInfo
+import dev.piko.data.repository.PlayableMediaKind
+import dev.piko.data.repository.mediaKindOf
 import dev.piko.media.PikoStreamSession
 import dev.piko.ui.components.FullScreenLoading
 import dev.piko.ui.theme.FixedColors
 import dev.piko.ui.theme.LocalFixedColors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
 @OptIn(UnstableApi::class)
@@ -131,9 +143,12 @@ fun VideoPlayerScreen(
 
     var mediaInfo by remember { mutableStateOf<PlayableMediaInfo?>(null) }
     var isLoading by remember { mutableStateOf(true) }
+    var playbackError by remember { mutableStateOf<String?>(null) }
+    var retryAttempt by remember { mutableStateOf(0) }
+    var isWideVideo by remember { mutableStateOf(false) }
     var isLocked by remember { mutableStateOf(false) }
 
-    val exoPlayer = remember {
+    val exoPlayer = remember(context, playbackKey) {
         ExoPlayer.Builder(context).build().apply {
             playWhenReady = true
         }
@@ -168,54 +183,105 @@ fun VideoPlayerScreen(
     var doubleTapFeedback by remember { mutableStateOf<Pair<Boolean, String>?>(null) } // isRight to label
 
     var currentStreamSession by remember { mutableStateOf<PikoStreamSession?>(null) }
+    var prepareJob by remember { mutableStateOf<Job?>(null) }
+    var recoveryJob by remember { mutableStateOf<Job?>(null) }
 
-    val prepareVideo = { resolution: String? ->
+    fun closeCurrentSession() {
+        currentStreamSession?.close()
+        currentStreamSession = null
+    }
+
+    suspend fun prepareVideo(resolution: String?) {
         isLoading = true
-        scope.launch {
+        playbackError = null
+        isWideVideo = false
+        totalDuration = 0L
+        recoveryJob?.cancel()
+        recoveryJob = null
+        exoPlayer.stop()
+        closeCurrentSession()
+
+        try {
             if (localPath != null && java.io.File(localPath).exists()) {
-                currentStreamSession?.close()
-                currentStreamSession = null
                 val localFile = java.io.File(localPath)
-                val uri = android.net.Uri.fromFile(localFile)
-                val mediaItem = MediaItem.fromUri(uri)
+                val mediaItem = mediaItemFor(
+                    uri = android.net.Uri.fromFile(localFile),
+                    name = localFile.name,
+                    kind = mediaKindOf(localFile.name),
+                )
+                if (mediaItem == null) {
+                    throw UnsupportedOperationException("GIF 图片暂不支持预览")
+                }
                 exoPlayer.setMediaItem(mediaItem)
                 exoPlayer.prepare()
-                isLoading = false
-            } else {
-                currentStreamSession?.close()
-                currentStreamSession = null
-
-                val result = mediaRepo.createStreamSession(fileId, resolution, concurrency = 8)
-                isLoading = false
-                result.onSuccess { (info, session) ->
-                    mediaInfo = info
-                    currentStreamSession = session
-                    val mediaSource = DefaultMediaSourceFactory(session.dataSourceFactory)
-                        .createMediaSource(MediaItem.fromUri(info.currentUrl))
-                    exoPlayer.setMediaSource(mediaSource)
-                    exoPlayer.prepare()
-                }.onFailure {
-                    // 回退到单连接默认取流保障播放
-                    val fallback = mediaRepo.prepareMedia(fileId, resolution)
-                    fallback.onSuccess { info ->
-                        mediaInfo = info
-                        val mediaItem = MediaItem.fromUri(info.currentUrl)
-                        exoPlayer.setMediaItem(mediaItem)
-                        exoPlayer.prepare()
-                    }
-                }
+                return
             }
+
+            val result = mediaRepo.createStreamSession(fileId, resolution, concurrency = 8)
+            if (result.isSuccess) {
+                val (info, session) = result.getOrThrow()
+                val mediaItem = mediaItemFor(
+                    uri = android.net.Uri.parse(info.currentUrl),
+                    name = info.name,
+                    kind = info.kind,
+                )
+                if (mediaItem == null) {
+                    session.close()
+                    throw UnsupportedOperationException("GIF 图片暂不支持预览")
+                }
+                mediaInfo = info
+                currentStreamSession = session
+                val mediaSource = mediaSourceFor(session.dataSourceFactory, mediaItem)
+                exoPlayer.setMediaSource(mediaSource)
+                exoPlayer.prepare()
+            } else {
+                val info = mediaRepo.prepareMedia(fileId, resolution).getOrThrow()
+                val mediaItem = mediaItemFor(
+                    uri = android.net.Uri.parse(info.currentUrl),
+                    name = info.name,
+                    kind = info.kind,
+                )
+                if (mediaItem == null) {
+                    throw UnsupportedOperationException("GIF 图片暂不支持预览")
+                }
+                mediaInfo = info
+                val fallbackFactory = DefaultHttpDataSource.Factory()
+                exoPlayer.setMediaSource(mediaSourceFor(fallbackFactory, mediaItem))
+                exoPlayer.prepare()
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            closeCurrentSession()
+            isLoading = false
+            playbackError = e.localizedMessage ?: "无法打开媒体"
+        }
+    }
+
+    fun launchPrepare(resolution: String?, resetRecovery: Boolean = true) {
+        if (resetRecovery) retryAttempt = 0
+        prepareJob?.cancel()
+        prepareJob = scope.launch {
+            prepareVideo(resolution)
         }
     }
 
     // 初始化载入并恢复上次播放进度
     LaunchedEffect(playbackKey) {
-        val saved = mediaRepo.getPlaybackPosition(playbackKey)
+        resumedPosition = 0L
+        pendingSeekPosition = 0L
+        val saved = try {
+            mediaRepo.getPlaybackPosition(playbackKey)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            0L
+        }
         if (saved > 3000L) {
             resumedPosition = saved
             pendingSeekPosition = saved
         }
-        prepareVideo(null)
+        launchPrepare(null)
     }
 
     LaunchedEffect(exoPlayer) {
@@ -226,6 +292,11 @@ fun VideoPlayerScreen(
 
             override fun onPlaybackStateChanged(state: Int) {
                 if (state == Player.STATE_READY) {
+                    isLoading = false
+                    playbackError = null
+                    recoveryJob?.cancel()
+                    recoveryJob = null
+                    retryAttempt = 0
                     totalDuration = exoPlayer.duration.coerceAtLeast(0L)
                     if (pendingSeekPosition > 0L && totalDuration > pendingSeekPosition) {
                         exoPlayer.seekTo(pendingSeekPosition)
@@ -234,29 +305,79 @@ fun VideoPlayerScreen(
                     }
                 }
             }
+
+            override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+                isWideVideo = videoSize.width > videoSize.height && videoSize.height > 0
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                if ((localPath != null && java.io.File(localPath).exists()) ||
+                    retryAttempt >= MAX_RECOVERY_ATTEMPTS
+                ) {
+                    isLoading = false
+                    playbackError = error.localizedMessage ?: "播放中断"
+                    return
+                }
+
+                val resumePosition = exoPlayer.currentPosition.coerceAtLeast(0L)
+                retryAttempt += 1
+                pendingSeekPosition = resumePosition
+                isLoading = true
+                recoveryJob?.cancel()
+                recoveryJob = scope.launch {
+                    delay(RECOVERY_DELAYS_MS[retryAttempt - 1])
+                    launchPrepare(null, resetRecovery = false)
+                }
+            }
         }
         exoPlayer.addListener(listener)
 
         var lastSavedTimeMs = System.currentTimeMillis()
         var lastSavedPositionMs = 0L
 
-        while (isActive) {
-            currentPosition = exoPlayer.currentPosition.coerceAtLeast(0L)
-            bufferedPosition = exoPlayer.bufferedPosition.coerceAtLeast(0L)
-            val now = System.currentTimeMillis()
-            // 周期性持久化播放进度：降低频率至 8 秒并按位置变动节流，避免高频 DataStore 写盘
-            if (isPlaying && currentPosition > 2000L && now - lastSavedTimeMs >= 8000L) {
-                if (kotlin.math.abs(currentPosition - lastSavedPositionMs) >= 3000L) {
-                    lastSavedTimeMs = now
-                    lastSavedPositionMs = currentPosition
-                    if (totalDuration > 0 && currentPosition >= totalDuration - 10000L) {
-                        mediaRepo.savePlaybackPosition(playbackKey, 0L)
-                    } else {
-                        mediaRepo.savePlaybackPosition(playbackKey, currentPosition)
+        try {
+            while (isActive) {
+                currentPosition = exoPlayer.currentPosition.coerceAtLeast(0L)
+                bufferedPosition = exoPlayer.bufferedPosition.coerceAtLeast(0L)
+                val now = System.currentTimeMillis()
+                // 周期性持久化播放进度：降低频率至 8 秒并按位置变动节流，避免高频 DataStore 写盘
+                if (isPlaying && currentPosition > 2000L && now - lastSavedTimeMs >= 8000L) {
+                    if (kotlin.math.abs(currentPosition - lastSavedPositionMs) >= 3000L) {
+                        lastSavedTimeMs = now
+                        lastSavedPositionMs = currentPosition
+                        try {
+                            if (totalDuration > 0 && currentPosition >= totalDuration - 10000L) {
+                                mediaRepo.savePlaybackPosition(playbackKey, 0L)
+                            } else {
+                                mediaRepo.savePlaybackPosition(playbackKey, currentPosition)
+                            }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            // A progress write must not cancel the player state collector.
+                        }
                     }
                 }
+                delay(400)
             }
-            delay(400)
+        } finally {
+            exoPlayer.removeListener(listener)
+            val finalPosition = exoPlayer.currentPosition.coerceAtLeast(0L)
+            val finalDuration = exoPlayer.duration
+            withContext(NonCancellable) {
+                try {
+                    val savedPosition = if (finalDuration > 0L && finalPosition >= finalDuration - 10_000L) {
+                        0L
+                    } else {
+                        finalPosition
+                    }
+                    if (savedPosition > 1_500L || savedPosition == 0L) {
+                        mediaRepo.savePlaybackPosition(playbackKey, savedPosition)
+                    }
+                } catch (_: Exception) {
+                    // Playback teardown must not fail because persistence is unavailable.
+                }
+            }
         }
     }
 
@@ -277,22 +398,17 @@ fun VideoPlayerScreen(
     }
 
     // 退出时保存最终进度并释放播放器
-    DisposableEffect(playbackKey) {
+    DisposableEffect(exoPlayer) {
         onDispose {
-            val pos = exoPlayer.currentPosition
-            val dur = exoPlayer.duration
-            if (dur > 0 && pos >= dur - 10000L) {
-                PikoApplication.instance.appScope.launch {
-                    mediaRepo.savePlaybackPosition(playbackKey, 0L)
-                }
-            } else if (pos > 1500L) {
-                PikoApplication.instance.appScope.launch {
-                    mediaRepo.savePlaybackPosition(playbackKey, pos)
-                }
-            }
+            prepareJob?.cancel()
+            recoveryJob?.cancel()
             exoPlayer.release()
-            currentStreamSession?.close()
         }
+    }
+
+    DisposableEffect(currentStreamSession) {
+        val session = currentStreamSession
+        onDispose { session?.close() }
     }
 
     // 屏幕常亮与旋转沉浸式系统栏监听
@@ -640,6 +756,54 @@ fun VideoPlayerScreen(
             FullScreenLoading()
         }
 
+        playbackError?.let { message ->
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(24.dp),
+                shape = MaterialTheme.shapes.large,
+                color = Color.Black.copy(alpha = 0.82f),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text("播放暂时中断", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(message, color = Color.White.copy(alpha = 0.72f), style = MaterialTheme.typography.bodySmall)
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Button(onClick = { launchPrepare(null) }) {
+                        Text("重试")
+                    }
+                }
+            }
+        }
+
+        if (isWideVideo && !isLandscape) {
+            Surface(
+                onClick = { orientationController.toggleOrientation(isLandscape) },
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                shadowElevation = 8.dp,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 132.dp)
+                    .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                    .safeGesturesPadding(),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Filled.Fullscreen, contentDescription = null, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("横屏播放", style = MaterialTheme.typography.labelLarge)
+                }
+            }
+        }
+
         // 屏幕锁手势控制（浮动于左边缘）
         AnimatedVisibility(
             visible = controlsVisible || isLocked,
@@ -658,7 +822,7 @@ fun VideoPlayerScreen(
                 shape = CircleShape,
                 color = Color.Black.copy(alpha = 0.6f),
                 border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
-                modifier = Modifier.size(46.dp),
+                modifier = Modifier.size(48.dp),
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
@@ -792,7 +956,7 @@ fun VideoPlayerScreen(
                                         text = { Text("原画 (Original)") },
                                         onClick = {
                                             showQualityMenu = false
-                                            prepareVideo("Original")
+                                            launchPrepare("Original")
                                         },
                                     )
                                     info.availableVariants.forEach { variant ->
@@ -800,7 +964,7 @@ fun VideoPlayerScreen(
                                             text = { Text(variant.mediaName) },
                                             onClick = {
                                                 showQualityMenu = false
-                                                prepareVideo(variant.mediaName)
+                                                launchPrepare(variant.mediaName)
                                             },
                                         )
                                     }
@@ -836,7 +1000,8 @@ fun VideoPlayerScreen(
                         .padding(
                             horizontal = if (isLandscape) 36.dp else 20.dp,
                             vertical = if (isLandscape) 14.dp else 20.dp,
-                        ),
+                        )
+                        .safeGesturesPadding(),
                 ) {
                     Column(modifier = Modifier.fillMaxWidth()) {
                         // 进度条上方工具项：播放/暂停、快进快退、时间、全屏切换
@@ -850,7 +1015,7 @@ fun VideoPlayerScreen(
                                     onClick = {
                                         if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
                                     },
-                                    modifier = Modifier.size(40.dp),
+                                    modifier = Modifier.size(48.dp),
                                 ) {
                                     Icon(
                                         imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
@@ -864,7 +1029,7 @@ fun VideoPlayerScreen(
                                     onClick = {
                                         exoPlayer.seekTo((exoPlayer.currentPosition - 10000).coerceAtLeast(0L))
                                     },
-                                    modifier = Modifier.size(36.dp),
+                                    modifier = Modifier.size(48.dp),
                                 ) {
                                     Icon(
                                         imageVector = Icons.Filled.Replay10,
@@ -878,7 +1043,7 @@ fun VideoPlayerScreen(
                                     onClick = {
                                         exoPlayer.seekTo((exoPlayer.currentPosition + 10000).coerceAtMost(totalDuration))
                                     },
-                                    modifier = Modifier.size(36.dp),
+                                    modifier = Modifier.size(48.dp),
                                 ) {
                                     Icon(
                                         imageVector = Icons.Filled.Forward10,
@@ -924,7 +1089,7 @@ fun VideoPlayerScreen(
                                     onClick = {
                                         orientationController.toggleOrientation(isLandscape)
                                     },
-                                    modifier = Modifier.size(40.dp),
+                                    modifier = Modifier.size(48.dp),
                                 ) {
                                     Icon(
                                         imageVector = if (isLandscape) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
@@ -1089,6 +1254,51 @@ fun VideoPlayerScreen(
             }
         }
     }
+}
+
+private const val MAX_LOAD_RETRIES = 5
+private const val MAX_RECOVERY_ATTEMPTS = 3
+private const val IMAGE_DURATION_MS = 5_000L
+private val RECOVERY_DELAYS_MS = longArrayOf(500L, 1_500L, 4_000L)
+
+@OptIn(UnstableApi::class)
+private fun mediaSourceFor(
+    dataSourceFactory: androidx.media3.datasource.DataSource.Factory,
+    mediaItem: MediaItem,
+) = DefaultMediaSourceFactory(dataSourceFactory)
+    .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(MAX_LOAD_RETRIES))
+    .createMediaSource(mediaItem)
+
+@OptIn(UnstableApi::class)
+private fun mediaItemFor(
+    uri: android.net.Uri,
+    name: String,
+    kind: PlayableMediaKind,
+): MediaItem? {
+    if (kind == PlayableMediaKind.UnsupportedImage) return null
+    if (kind == PlayableMediaKind.Video) {
+        val builder = MediaItem.Builder().setUri(uri)
+        if (name.substringAfterLast('.', "").equals("avi", ignoreCase = true)) {
+            builder.setMimeType(MimeTypes.VIDEO_AVI)
+        }
+        return builder.build()
+    }
+
+    val mimeType = when (name.substringAfterLast('.', "").lowercase()) {
+        "avif" -> MimeTypes.IMAGE_AVIF
+        "bmp" -> MimeTypes.IMAGE_BMP
+        "heic" -> MimeTypes.IMAGE_HEIC
+        "heif" -> MimeTypes.IMAGE_HEIF
+        "jpeg", "jpg" -> MimeTypes.IMAGE_JPEG
+        "png" -> MimeTypes.IMAGE_PNG
+        "webp" -> MimeTypes.IMAGE_WEBP
+        else -> return null
+    }
+    return MediaItem.Builder()
+        .setUri(uri)
+        .setMimeType(mimeType)
+        .setImageDurationMs(IMAGE_DURATION_MS)
+        .build()
 }
 
 /**

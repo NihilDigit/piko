@@ -1,0 +1,95 @@
+name: Android Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/piko-release.jks
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Decode release keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$ANDROID_KEYSTORE_BASE64"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE_PATH"
+          chmod 600 "$ANDROID_KEYSTORE_PATH"
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Derive Android version from tag
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "Release tags must use vMAJOR.MINOR.PATCH format."
+            exit 1
+          fi
+          major=$((10#${BASH_REMATCH[1]}))
+          minor=$((10#${BASH_REMATCH[2]}))
+          patch=$((10#${BASH_REMATCH[3]}))
+          if (( major > 2000 || minor > 999 || patch > 999 )); then
+            echo "Release tag components exceed the supported Android versionCode range."
+            exit 1
+          fi
+          echo "PIKO_VERSION_NAME=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          echo "PIKO_VERSION_CODE=$((major * 1000000 + minor * 1000 + patch))" >> "$GITHUB_ENV"
+
+      - name: Build signed release APK and AAB
+        run: ./gradlew assembleRelease bundleRelease --no-daemon --stacktrace --warning-mode=all
+
+      - name: Verify signed release APK
+        run: |
+          apk="app/build/outputs/apk/release/app-release.apk"
+          test -s "$apk"
+          build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          "$build_tools/apksigner" verify --verbose "$apk"
+
+      - name: Verify release AAB
+        run: test -s app/build/outputs/bundle/release/app-release.aab
+
+      - name: Upload signed release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: piko-${{ github.ref_name }}
+          path: |
+            app/build/outputs/apk/release/app-release.apk
+            app/build/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            app/build/outputs/apk/release/app-release.apk \
+            app/build/outputs/bundle/release/app-release.aab

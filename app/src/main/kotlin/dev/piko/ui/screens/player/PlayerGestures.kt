@@ -101,6 +101,8 @@ internal fun rememberMediaVolume(context: Context): MediaVolume =
  * 控制屏幕沉浸式全屏与横竖屏旋转
  */
 internal class ScreenOrientationController(private val activity: Activity?) {
+    private val initialRequestedOrientation =
+        activity?.requestedOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
 
     fun setLandscape() {
         activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
@@ -113,7 +115,7 @@ internal class ScreenOrientationController(private val activity: Activity?) {
     }
 
     fun resetOrientation() {
-        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        activity?.requestedOrientation = initialRequestedOrientation
         showSystemBars()
     }
 

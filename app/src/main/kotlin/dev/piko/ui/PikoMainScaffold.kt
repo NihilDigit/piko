@@ -17,10 +17,8 @@ import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.SyncAlt
 import androidx.compose.material3.Icon
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -64,53 +62,11 @@ fun PikoMainScaffold(
     }
 
     Box(modifier = modifier.fillMaxSize()) {
-        Scaffold(
-            modifier = Modifier.fillMaxSize(),
-            contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
-            bottomBar = {
-                if (activeOverlayScreen == null) {
-                    NavigationBar {
-                        NavigationBarItem(
-                            selected = currentTab == MainTab.FILES,
-                            onClick = { currentTab = MainTab.FILES },
-                            icon = {
-                                Icon(
-                                    imageVector = if (currentTab == MainTab.FILES) Icons.Filled.Folder else Icons.Outlined.Folder,
-                                    contentDescription = "文件",
-                                )
-                            },
-                            label = { Text("文件") },
-                        )
-                        NavigationBarItem(
-                            selected = currentTab == MainTab.TRANSFERS,
-                            onClick = { currentTab = MainTab.TRANSFERS },
-                            icon = {
-                                Icon(
-                                    imageVector = if (currentTab == MainTab.TRANSFERS) Icons.Filled.SyncAlt else Icons.Outlined.SyncAlt,
-                                    contentDescription = "传输",
-                                )
-                            },
-                            label = { Text("传输") },
-                        )
-                        NavigationBarItem(
-                            selected = currentTab == MainTab.SETTINGS,
-                            onClick = { currentTab = MainTab.SETTINGS },
-                            icon = {
-                                Icon(
-                                    imageVector = if (currentTab == MainTab.SETTINGS) Icons.Filled.Person else Icons.Outlined.Person,
-                                    contentDescription = "我的",
-                                )
-                            },
-                            label = { Text("我的") },
-                        )
-                    }
-                }
-            },
-        ) { innerPadding ->
+        val mainContent: @Composable () -> Unit = {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(bottom = innerPadding.calculateBottomPadding()),
+                    .padding(),
             ) {
                 when (currentTab) {
                     MainTab.FILES -> {
@@ -142,6 +98,49 @@ fun PikoMainScaffold(
                     }
                 }
             }
+        }
+
+        if (activeOverlayScreen == null) {
+            NavigationSuiteScaffold(
+                navigationSuiteItems = {
+                    item(
+                        selected = currentTab == MainTab.FILES,
+                        onClick = { currentTab = MainTab.FILES },
+                        icon = {
+                            Icon(
+                                imageVector = if (currentTab == MainTab.FILES) Icons.Filled.Folder else Icons.Outlined.Folder,
+                                contentDescription = "文件",
+                            )
+                        },
+                        label = { Text("文件") },
+                    )
+                    item(
+                        selected = currentTab == MainTab.TRANSFERS,
+                        onClick = { currentTab = MainTab.TRANSFERS },
+                        icon = {
+                            Icon(
+                                imageVector = if (currentTab == MainTab.TRANSFERS) Icons.Filled.SyncAlt else Icons.Outlined.SyncAlt,
+                                contentDescription = "传输",
+                            )
+                        },
+                        label = { Text("传输") },
+                    )
+                    item(
+                        selected = currentTab == MainTab.SETTINGS,
+                        onClick = { currentTab = MainTab.SETTINGS },
+                        icon = {
+                            Icon(
+                                imageVector = if (currentTab == MainTab.SETTINGS) Icons.Filled.Person else Icons.Outlined.Person,
+                                contentDescription = "我的",
+                            )
+                        },
+                        label = { Text("我的") },
+                    )
+                },
+                content = mainContent,
+            )
+        } else {
+            mainContent()
         }
 
         // 压栈页面 (子目录或全屏播放器)

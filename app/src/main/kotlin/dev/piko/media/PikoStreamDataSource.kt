@@ -10,6 +10,7 @@ import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.TransferListener
 import io.github.nihildigit.pikpak.PikPakFileHandle
 import io.github.nihildigit.pikpak.PikPakStreamReader
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import java.io.IOException
 import java.io.InterruptedIOException
@@ -30,46 +31,75 @@ class PikoStreamDataSource(
 
     private var uri: Uri? = null
     private var opened = false
+    private var transferHasStarted = false
+    private var bytesRemaining = 0L
 
     override fun open(dataSpec: DataSpec): Long {
-        this.uri = dataSpec.uri
+        close()
         transferInitializing(dataSpec)
-        opened = true
+        return try {
+            val totalSize = reader.size
+            if (dataSpec.position < 0L || dataSpec.position > totalSize) {
+                throw IOException("Invalid stream position: ${dataSpec.position}")
+            }
+            if (dataSpec.length < 0L && dataSpec.length != C.LENGTH_UNSET.toLong()) {
+                throw IOException("Invalid stream length: ${dataSpec.length}")
+            }
 
-        val totalSize = reader.size
-        if (dataSpec.position in 0..<totalSize) {
             runBlockingInterruptible {
                 reader.seekTo(dataSpec.position)
             }
-        }
 
-        val bytesRemaining = if (dataSpec.length != C.LENGTH_UNSET.toLong()) {
-            dataSpec.length
-        } else {
-            (totalSize - dataSpec.position).coerceAtLeast(0L)
+            uri = dataSpec.uri
+            bytesRemaining = if (dataSpec.length == C.LENGTH_UNSET.toLong()) {
+                totalSize - dataSpec.position
+            } else {
+                minOf(dataSpec.length, totalSize - dataSpec.position)
+            }
+            opened = true
+            transferHasStarted = true
+            transferStarted(dataSpec)
+            bytesRemaining
+        } catch (e: CancellationException) {
+            close()
+            throw InterruptedIOException("Piko stream open was cancelled").apply { initCause(e) }
+        } catch (e: IOException) {
+            close()
+            throw e
+        } catch (e: Exception) {
+            close()
+            throw IOException("Unable to open Piko stream", e)
         }
-
-        transferStarted(dataSpec)
-        return bytesRemaining
     }
 
     override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
-        if (length == 0) return 0
+        if (!opened) throw IOException("DataSource not open")
+        if (length == 0 || bytesRemaining == 0L) {
+            return if (length == 0) 0 else C.RESULT_END_OF_INPUT
+        }
+        val requestedLength = minOf(length.toLong(), bytesRemaining).toInt()
         val bytesRead = try {
             runBlockingInterruptible {
-                reader.read(buffer, offset, length)
+                reader.read(buffer, offset, requestedLength)
             }
         } catch (e: InterruptedIOException) {
             throw e
         } catch (e: IOException) {
             throw e
-        } catch (e: Throwable) {
+        } catch (e: CancellationException) {
+            throw InterruptedIOException("Piko stream read was cancelled").apply { initCause(e) }
+        } catch (e: Exception) {
             throw IOException(e)
         }
 
         if (bytesRead == -1) {
+            bytesRemaining = 0L
             return C.RESULT_END_OF_INPUT
         }
+        if (bytesRead == 0) {
+            throw IOException("Piko stream returned no data")
+        }
+        bytesRemaining = (bytesRemaining - bytesRead).coerceAtLeast(0L)
         bytesTransferred(bytesRead)
         return bytesRead
     }
@@ -77,11 +107,15 @@ class PikoStreamDataSource(
     override fun getUri(): Uri? = uri
 
     override fun close() {
-        uri = null
         if (opened) {
             opened = false
-            transferEnded()
+            if (transferHasStarted) {
+                transferEnded()
+            }
         }
+        transferHasStarted = false
+        bytesRemaining = 0L
+        uri = null
     }
 }
 
@@ -114,6 +148,7 @@ private class PikoRoutingDataSource(
     }
 
     override fun open(dataSpec: DataSpec): Long {
+        close()
         val uriStr = dataSpec.uri.toString()
         val dataSource = if (uriStr == mediaUri || uriStr.startsWith("piko://")) {
             pikoDataSourceFactory.createDataSource()
@@ -122,11 +157,17 @@ private class PikoRoutingDataSource(
         }
         transferListeners.forEach(dataSource::addTransferListener)
         activeDataSource = dataSource
-        return dataSource.open(dataSpec)
+        return try {
+            dataSource.open(dataSpec)
+        } catch (e: Exception) {
+            dataSource.close()
+            activeDataSource = null
+            throw e
+        }
     }
 
     override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
-        checkNotNull(activeDataSource) { "DataSource not open" }.read(buffer, offset, length)
+        (activeDataSource ?: throw IOException("DataSource not open")).read(buffer, offset, length)
 
     override fun getUri(): Uri? = activeDataSource?.uri
 
@@ -146,9 +187,20 @@ class PikoStreamSession(
     val reader: PikPakStreamReader,
     val dataSourceFactory: DataSource.Factory,
 ) : AutoCloseable {
+    @Volatile
+    private var closed = false
+
     override fun close() {
-        reader.close()
-        handle.close()
+        if (closed) return
+        synchronized(this) {
+            if (closed) return
+            closed = true
+        }
+        try {
+            reader.close()
+        } finally {
+            handle.close()
+        }
     }
 }
 

@@ -4,6 +4,7 @@ import android.content.Context
 import dev.piko.data.auth.DataStoreSessionStore
 import dev.piko.data.auth.SessionManager
 import io.github.nihildigit.pikpak.PikPakClient
+import io.github.nihildigit.pikpak.PikPakException
 import io.github.nihildigit.pikpak.Session
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -37,12 +38,22 @@ class PikPakClientManager(
                     accountConnectionBudget = 16,
                 )
                 try {
-                    // 冷启动关键：从 sessionStore 恢复并激活内存中的 session
-                    client.login()
+                    // SDK handles the refresh-token flow. Persist the returned
+                    // session because a successful refresh rotates its tokens.
+                    val restoredSession = client.login()
+                    persistSession(session.username, restoredSession)
                     _currentClient.value = client
+                } catch (e: PikPakException) {
+                    if (e.isRefreshTokenInvalid) {
+                        sessionStore.clear(session.username)
+                        sessionManager.clearSession()
+                    }
+                    client.close()
+                    _currentClient.value = null
                 } catch (e: Exception) {
-                    // 凭据彻底失效时清空登录态回到登录页
-                    sessionManager.clearSession()
+                    // Network and server failures must not destroy a valid
+                    // refresh token; the next process start can retry silently.
+                    client.close()
                     _currentClient.value = null
                 }
             }
@@ -61,14 +72,7 @@ class PikPakClientManager(
             )
             // 调用 login/prewarm 登录并建立凭据
             client.login()
-            val accessToken = client.currentSession?.accessToken ?: "authenticated"
-            val refreshToken = client.currentSession?.refreshToken.orEmpty()
-            sessionManager.saveSession(
-                token = accessToken,
-                refreshToken = refreshToken,
-                username = account,
-                userId = account,
-            )
+            persistSession(account, client.currentSession ?: error("Login returned no session"))
             _currentClient.value = client
             client
         }
@@ -82,7 +86,7 @@ class PikPakClientManager(
                 account,
                 Session(
                     accessToken = token,
-                    refreshToken = refreshToken.ifEmpty { token },
+                    refreshToken = refreshToken,
                     sub = account,
                     expiresAt = expiresAt,
                 ),
@@ -99,12 +103,7 @@ class PikPakClientManager(
             // 从 sessionStore 激活会话
             client.login()
 
-            sessionManager.saveSession(
-                token = token,
-                refreshToken = refreshToken,
-                username = account,
-                userId = account,
-            )
+            persistSession(account, client.currentSession ?: error("Token login returned no session"))
             _currentClient.value = client
             client
         }
@@ -117,5 +116,14 @@ class PikPakClientManager(
             _currentClient.value = null
         }
         sessionManager.clearSession()
+    }
+
+    private suspend fun persistSession(account: String, session: Session) {
+        sessionManager.saveSession(
+            token = session.accessToken,
+            refreshToken = session.refreshToken,
+            userId = session.sub,
+            username = account,
+        )
     }
 }

@@ -3,6 +3,7 @@ package dev.piko.ui.components
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -29,7 +30,7 @@ fun BreadcrumbBar(
 ) {
     val scrollState = rememberScrollState()
 
-    LaunchedEffect(breadcrumbs.size) {
+    LaunchedEffect(breadcrumbs) {
         scrollState.animateScrollTo(scrollState.maxValue)
     }
 
@@ -46,6 +47,7 @@ fun BreadcrumbBar(
             TextButton(
                 onClick = { onBreadcrumbClick(0) },
                 shape = MaterialTheme.shapes.small,
+                modifier = Modifier.heightIn(min = 48.dp),
             ) {
                 Icon(
                     imageVector = Icons.Outlined.Home,
@@ -70,6 +72,7 @@ fun BreadcrumbBar(
                     onClick = { onBreadcrumbClick(index + 1) },
                     enabled = !isLast,
                     shape = MaterialTheme.shapes.small,
+                    modifier = Modifier.heightIn(min = 48.dp),
                 ) {
                     Text(
                         text = crumb.name,

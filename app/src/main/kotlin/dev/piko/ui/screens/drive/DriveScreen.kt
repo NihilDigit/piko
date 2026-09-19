@@ -9,6 +9,8 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,6 +18,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -116,9 +119,15 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.foundation.layout.safeDrawingPadding
 import coil3.compose.AsyncImage
 import dev.piko.PikoApplication
 import dev.piko.data.repository.FileSortOrder
+import dev.piko.data.repository.HeuristicFileFilter
+import dev.piko.data.repository.isPlayableVideo
+import dev.piko.data.repository.isPreviewableImage
 import dev.piko.data.repository.PathBreadcrumb
 import dev.piko.ui.components.BreadcrumbBar
 import dev.piko.ui.components.FileItemRow
@@ -138,6 +147,54 @@ import io.github.nihildigit.pikpak.TaskPhase
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+
+private val SECONDARY_FOLDER_NAMES = setOf(
+    "sample", "samples", "proof", "proofs", "screens", "screen", "screenshot", "screenshots",
+    "subs", "sub", "subtitle", "subtitles", "extra", "extras", "nfo", "trailer", "trailers",
+    "bonus", "featurette", "featurettes", "cover", "covers", "metadata",
+)
+private val SECONDARY_FOLDER_PREFIXES = listOf("sample", "screen", "proof", "sub")
+
+private fun isLikelyNoiseFolderName(name: String): Boolean {
+    val clean = name.trim().lowercase()
+    return clean in SECONDARY_FOLDER_NAMES ||
+        SECONDARY_FOLDER_PREFIXES.any { prefix ->
+            clean.startsWith("$prefix-") ||
+                clean.startsWith("${prefix}_") ||
+                clean.startsWith("$prefix ") ||
+                clean.removePrefix(prefix).toIntOrNull() != null
+        }
+}
+
+/**
+ * The heuristic is only allowed at the leaf or the penultimate level. At the
+ * penultimate level, secondary child folders are noise candidates; ordinary
+ * child folders keep the parent directory untouched.
+ */
+private fun filterDriveFiles(
+    files: List<FileStat>,
+    enabled: Boolean,
+    revealAll: Boolean,
+): List<FileStat> {
+    if (!enabled || revealAll) return files
+
+    val childFolders = files.filter(FileStat::isFolder)
+    if (childFolders.isEmpty()) {
+        return HeuristicFileFilter.filter(files, enabled = true, revealAll = false)
+    }
+    if (!childFolders.all { isLikelyNoiseFolderName(it.name) }) return files
+
+    val leafFiles = files.filterNot(FileStat::isFolder)
+    val visibleLeafFiles = HeuristicFileFilter.filter(
+        leafFiles,
+        enabled = true,
+        revealAll = false,
+    )
+    val visibleFileIds = visibleLeafFiles.mapTo(hashSetOf()) { it.id }
+    return files.filter { file ->
+        if (file.isFolder) !isLikelyNoiseFolderName(file.name) else file.id in visibleFileIds
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -172,9 +229,6 @@ fun DriveScreen(
     val isHeuristicFilterEnabled by sessionManager.heuristicFilterFlow.collectAsState(initial = true)
     val revealedFileIds = remember { mutableStateListOf<String>() }
 
-    // 启发式过滤单文件夹临时展开状态 (切文件夹时自动重置)
-    var showAllFilesTemporarily by remember(currentFolderId) { mutableStateOf(false) }
-
     // 多选模式
     var isSelectionMode by remember { mutableStateOf(false) }
     val selectedFileIds = remember { mutableStateListOf<String>() }
@@ -184,9 +238,14 @@ fun DriveScreen(
     val activeFolder = folderStack.lastOrNull() ?: PathBreadcrumb(currentFolderId, currentFolderName)
     val activeFolderId = activeFolder.id
     val activeFolderName = activeFolder.name
+    // 启发式过滤单文件夹临时展开状态 (切文件夹时自动重置)
+    var showAllFilesTemporarily by rememberSaveable(activeFolderId) { mutableStateOf(false) }
 
     LaunchedEffect(activeFolderId) {
         showAllFilesTemporarily = false
+        isSelectionMode = false
+        selectedFileIds.clear()
+        revealedFileIds.clear()
     }
 
     LaunchedEffect(Unit) {
@@ -227,6 +286,7 @@ fun DriveScreen(
     var renameTargetFile by remember { mutableStateOf<FileStat?>(null) }
     var renameNewName by remember { mutableStateOf("") }
     var segmentTargetFile by remember { mutableStateOf<FileStat?>(null) }
+    var previewImage by remember { mutableStateOf<FileStat?>(null) }
 
     // 秒传与离线任务 BottomSheet
     var showInstantSheet by remember { mutableStateOf(false) }
@@ -256,104 +316,25 @@ fun DriveScreen(
         }
     }
 
-    var folderMeaninglessMap by remember {
-        mutableStateOf(driveRepo.getAllCachedFolderMeaningless())
+    // 仅叶目录，或子目录全部属于次要目录时启用启发式。
+    val heuristicScope = remember(files) {
+        val childFolders = files.filter(FileStat::isFolder)
+        childFolders.isEmpty() || childFolders.all { isLikelyNoiseFolderName(it.name) }
     }
 
-    // 启发式量级筛选：当主体大文件与次要小文件差 10 倍以上时，默认折叠低量级小文件与无意义文件夹
-    val nonFolderFiles = remember(files) { files.filter { !it.isFolder } }
-    val maxFileSize = remember(nonFolderFiles) { nonFolderFiles.maxOfOrNull { it.sizeBytes } ?: 0L }
-    val threshold = remember(maxFileSize) { if (maxFileSize >= 5 * 1024 * 1024L) maxFileSize / 10L else 0L }
-
-    fun isLikelyNoiseFolderName(name: String): Boolean {
-        val clean = name.trim().lowercase()
-        val noiseNames = setOf(
-            "sample", "samples", "proof", "proofs", "screens", "screen", "screenshot", "screenshots",
-            "subs", "sub", "subtitle", "subtitles", "extra", "extras", "nfo", "trailer", "trailers",
-            "bonus", "featurette", "featurettes", "cover", "covers", "metadata"
+    val heuristicVisibleFiles = remember(
+        files,
+        isHeuristicFilterEnabled,
+        heuristicScope,
+    ) {
+        filterDriveFiles(
+            files,
+            enabled = isHeuristicFilterEnabled && heuristicScope,
+            revealAll = false,
         )
-        if (clean in noiseNames) return true
-        if (clean.startsWith("sample") || clean.startsWith("screen") || clean.startsWith("proof") || clean.startsWith("sub")) return true
-        return false
     }
-
-    LaunchedEffect(files, threshold, isHeuristicFilterEnabled, isRefreshing) {
-        if (threshold > 0L && isHeuristicFilterEnabled) {
-            val folders = files.filter { it.isFolder }
-            folders.forEach { folder ->
-                val cached = driveRepo.getFolderMeaningless(folder.id)
-                if (cached != null && !isRefreshing) {
-                    if (folderMeaninglessMap[folder.id] != cached) {
-                        folderMeaninglessMap = folderMeaninglessMap + (folder.id to cached)
-                    }
-                } else {
-                    // 尚未缓存或处于下拉刷新：快速语义命名判断先行，避免未缓存时的视觉闪烁
-                    val fastNoise = isLikelyNoiseFolderName(folder.name)
-                    if (fastNoise && cached == null) {
-                        driveRepo.cacheFolderMeaningless(folder.id, true)
-                        folderMeaninglessMap = folderMeaninglessMap + (folder.id to true)
-                    }
-                    launch(Dispatchers.IO) {
-                        val isMeaningless = driveRepo.isFolderMeaningless(
-                            folderId = folder.id,
-                            thresholdBytes = threshold,
-                            forceRefresh = isRefreshing,
-                        )
-                        // 若网络探查结果确实发生变化，才触发 Compose 状态更新
-                        if (folderMeaninglessMap[folder.id] != isMeaningless) {
-                            folderMeaninglessMap = folderMeaninglessMap + (folder.id to isMeaningless)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    val potentialHiddenCount = remember(
-        files,
-        isHeuristicFilterEnabled,
-        threshold,
-        folderMeaninglessMap,
-    ) {
-        if (!isHeuristicFilterEnabled || threshold <= 0L) {
-            0
-        } else {
-            val filtered = files.filter { file ->
-                if (file.isFolder) {
-                    val isMeaningless = folderMeaninglessMap[file.id]
-                        ?: driveRepo.getFolderMeaningless(file.id)
-                        ?: isLikelyNoiseFolderName(file.name)
-                    !isMeaningless
-                } else {
-                    file.sizeBytes >= threshold
-                }
-            }
-            (files.size - filtered.size).coerceAtLeast(0)
-        }
-    }
-
-    val heuristicFilteredFiles = remember(
-        files,
-        isHeuristicFilterEnabled,
-        showAllFilesTemporarily,
-        threshold,
-        folderMeaninglessMap,
-    ) {
-        if (!isHeuristicFilterEnabled || showAllFilesTemporarily || threshold <= 0L) {
-            files
-        } else {
-            files.filter { file ->
-                if (file.isFolder) {
-                    val isMeaningless = folderMeaninglessMap[file.id]
-                        ?: driveRepo.getFolderMeaningless(file.id)
-                        ?: isLikelyNoiseFolderName(file.name)
-                    !isMeaningless
-                } else {
-                    file.sizeBytes >= threshold
-                }
-            }
-        }
-    }
+    val potentialHiddenCount = (files.size - heuristicVisibleFiles.size).coerceAtLeast(0)
+    val heuristicFilteredFiles = if (showAllFilesTemporarily) files else heuristicVisibleFiles
 
     val displayedFiles = remember(files, heuristicFilteredFiles, searchQuery, globalSearchResults) {
         if (globalSearchResults != null) {
@@ -441,11 +422,11 @@ fun DriveScreen(
                 actions = {
                     if (isSelectionMode) {
                         IconButton(onClick = {
-                            if (selectedFileIds.size == files.size) {
+                            if (selectedFileIds.size == displayedFiles.size) {
                                 selectedFileIds.clear()
                             } else {
                                 selectedFileIds.clear()
-                                selectedFileIds.addAll(files.map { it.id })
+                                selectedFileIds.addAll(displayedFiles.map { it.id })
                             }
                         }) {
                             Icon(Icons.Outlined.SelectAll, contentDescription = "Select all")
@@ -549,7 +530,8 @@ fun DriveScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding),
+                .padding(top = innerPadding.calculateTopPadding())
+                .consumeWindowInsets(innerPadding),
         ) {
             if (folderStack.size > 1) {
                 BreadcrumbBar(
@@ -744,14 +726,25 @@ fun DriveScreen(
                                 state = gridState,
                                 columns = GridCells.Adaptive(minSize = 130.dp),
                                 modifier = Modifier.fillMaxSize(),
-                                contentPadding = PaddingValues(16.dp),
+                                contentPadding = PaddingValues(
+                                    start = 16.dp,
+                                    top = 16.dp,
+                                    end = 16.dp,
+                                    bottom = innerPadding.calculateBottomPadding() + 96.dp,
+                                ),
                                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                                 verticalArrangement = Arrangement.spacedBy(12.dp),
                             ) {
-                                items(displayedFiles, key = { it.id }) { file ->
+                                items(
+                                    items = displayedFiles,
+                                    key = { it.id },
+                                    contentType = { if (it.isFolder) "folder" else "file" },
+                                ) { file ->
                                     val isBlurred = isSpoilerBlurEnabled && !revealedFileIds.contains(file.id)
                                     ShadowFileCard(
                                         file = file,
+                                        isSelectionMode = isSelectionMode,
+                                        isSelected = selectedFileIds.contains(file.id),
                                         isSpoilerBlurred = isBlurred,
                                         isHighlighted = highlightedFileIds.contains(file.id),
                                         onToggleSpoiler = {
@@ -762,12 +755,15 @@ fun DriveScreen(
                                             }
                                         },
                                         onClick = {
-                                            if (file.isFolder) {
+                                            if (isSelectionMode) {
+                                                val selected = file.id in selectedFileIds
+                                                if (selected) selectedFileIds.remove(file.id) else selectedFileIds.add(file.id)
+                                            } else if (file.isFolder) {
                                                 driveRepo.pushFolder(file.id, file.name)
-                                            } else if (file.name.endsWith(".mp4", ignoreCase = true) ||
-                                                file.name.endsWith(".mkv", ignoreCase = true)
-                                            ) {
+                                            } else if (file.name.isPlayableVideo()) {
                                                 onNavigateToVideoPlayer(file.id, file.name)
+                                            } else if (file.name.isPreviewableImage() && file.thumbnailLink.isNotBlank()) {
+                                                previewImage = file
                                             }
                                         },
                                         onDownload = {
@@ -779,6 +775,24 @@ fun DriveScreen(
                                         onDownloadSegment = {
                                             segmentTargetFile = file
                                         },
+                                        onRename = {
+                                            renameTargetFile = file
+                                            renameNewName = file.name
+                                        },
+                                        onDelete = {
+                                            scope.launch {
+                                                driveRepo.moveToTrash(listOf(file.id))
+                                                snackbarHostState.showSnackbar("已移入回收站: ${file.name}")
+                                                loadFiles()
+                                            }
+                                        },
+                                        onLongClick = {
+                                            isSelectionMode = true
+                                            if (file.id !in selectedFileIds) selectedFileIds.add(file.id)
+                                        },
+                                        onSelectToggle = { selected ->
+                                            if (selected) selectedFileIds.add(file.id) else selectedFileIds.remove(file.id)
+                                        },
                                     )
                                 }
                             }
@@ -787,9 +801,15 @@ fun DriveScreen(
                             LazyColumn(
                                 state = listState,
                                 modifier = Modifier.fillMaxSize(),
-                                contentPadding = PaddingValues(bottom = 90.dp),
+                                contentPadding = PaddingValues(
+                                    bottom = innerPadding.calculateBottomPadding() + 96.dp,
+                                ),
                             ) {
-                                items(displayedFiles, key = { it.id }) { file ->
+                                items(
+                                    items = displayedFiles,
+                                    key = { it.id },
+                                    contentType = { if (it.isFolder) "folder" else "file" },
+                                ) { file ->
                                     val isSelected = selectedFileIds.contains(file.id)
                                     val isBlurred = isSpoilerBlurEnabled && !revealedFileIds.contains(file.id)
                                     Box(modifier = Modifier.animateItem()) {
@@ -809,12 +829,10 @@ fun DriveScreen(
                                             onClick = {
                                                 if (file.isFolder) {
                                                     driveRepo.pushFolder(file.id, file.name)
-                                                } else if (file.name.endsWith(".mp4", ignoreCase = true) ||
-                                                    file.name.endsWith(".mkv", ignoreCase = true) ||
-                                                    file.name.endsWith(".mov", ignoreCase = true) ||
-                                                    file.name.endsWith(".avi", ignoreCase = true)
-                                                ) {
+                                                } else if (file.name.isPlayableVideo()) {
                                                     onNavigateToVideoPlayer(file.id, file.name)
+                                                } else if (file.name.isPreviewableImage() && file.thumbnailLink.isNotBlank()) {
+                                                    previewImage = file
                                                 } else {
                                                     downloadManager.enqueue(file)
                                                     scope.launch {
@@ -1015,14 +1033,71 @@ fun DriveScreen(
             },
         )
     }
+
+    previewImage?.let { image ->
+        Dialog(
+            onDismissRequest = { previewImage = null },
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false,
+            ),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .safeDrawingPadding(),
+                contentAlignment = Alignment.Center,
+            ) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    shape = MaterialTheme.shapes.large,
+                    color = MaterialTheme.colorScheme.surfaceContainer,
+                ) {
+                    Column {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 16.dp, end = 4.dp, top = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = image.name,
+                                style = MaterialTheme.typography.titleMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            IconButton(onClick = { previewImage = null }) {
+                                Icon(Icons.Outlined.Close, contentDescription = "关闭预览")
+                            }
+                        }
+                        AsyncImage(
+                            model = image.thumbnailLink,
+                            contentDescription = image.name,
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 560.dp)
+                                .padding(12.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 /**
  * 带 Spoiler 防窥模糊与卡片投影的大图卡片视图，利用 Coil 3 加载缩略图
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ShadowFileCard(
     file: FileStat,
+    isSelectionMode: Boolean = false,
+    isSelected: Boolean = false,
     isSpoilerBlurred: Boolean = false,
     isHighlighted: Boolean = false,
     highlightBadgeText: String = "刚秒传",
@@ -1032,19 +1107,31 @@ fun ShadowFileCard(
     onDownloadSegment: () -> Unit = {},
     onRename: () -> Unit = {},
     onDelete: () -> Unit = {},
+    onLongClick: () -> Unit = {},
+    onSelectToggle: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    val primaryActionModifier = Modifier.combinedClickable(
+        onClick = {
+            if (isSelectionMode) onSelectToggle(!isSelected) else onClick()
+        },
+        onLongClick = onLongClick,
+    )
+
     Card(
         modifier = modifier
             .fillMaxWidth()
             .shadow(
                 elevation = if (file.thumbnailLink.isNotEmpty()) 4.dp else 1.dp,
                 shape = MaterialTheme.shapes.medium,
-            )
-            .clickable { onClick() },
+            ),
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(
-            containerColor = if (isHighlighted) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f) else MaterialTheme.colorScheme.surfaceContainer,
+            containerColor = when {
+                isSelected -> MaterialTheme.colorScheme.secondaryContainer
+                isHighlighted -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+                else -> MaterialTheme.colorScheme.surfaceContainer
+            },
         ),
     ) {
         Column {
@@ -1052,6 +1139,7 @@ fun ShadowFileCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(16f / 10f)
+                    .then(primaryActionModifier)
                     .background(MaterialTheme.colorScheme.surfaceContainerHighest),
                 contentAlignment = Alignment.Center,
             ) {
@@ -1069,25 +1157,18 @@ fun ShadowFileCard(
                             shape = CircleShape,
                             color = MaterialTheme.colorScheme.scrim.copy(alpha = 0.5f),
                             modifier = Modifier
-                                .clickable { onToggleSpoiler() }
-                                .padding(8.dp),
+                                .size(48.dp)
+                                .clickable(
+                                    onClickLabel = "显示预览",
+                                    onClick = onToggleSpoiler,
+                                ),
                         ) {
-                            Column(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.Visibility,
-                                    contentDescription = "查看预览",
-                                    tint = MaterialTheme.colorScheme.onSurface,
-                                    modifier = Modifier.size(18.dp),
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = "已遮蔽",
-                                    style = MaterialTheme.typography.labelSmall,
-                                )
-                            }
+                            Icon(
+                                imageVector = Icons.Outlined.Visibility,
+                                contentDescription = "显示预览",
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(18.dp),
+                            )
                         }
                     }
                 } else {
@@ -1107,7 +1188,11 @@ fun ShadowFileCard(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Column(modifier = Modifier.weight(1f)) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .then(primaryActionModifier),
+                ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             text = file.name,
@@ -1140,19 +1225,22 @@ fun ShadowFileCard(
                     )
                 }
 
-                var showCardMenu by remember { mutableStateOf(false) }
-                Box {
-                    IconButton(
-                        onClick = { showCardMenu = true },
-                        modifier = Modifier.size(32.dp),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.MoreVert,
-                            contentDescription = "更多",
-                            modifier = Modifier.size(18.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                if (isSelectionMode) {
+                    Checkbox(
+                        checked = isSelected,
+                        onCheckedChange = onSelectToggle,
+                    )
+                } else {
+                    var showCardMenu by remember { mutableStateOf(false) }
+                    Box {
+                        IconButton(onClick = { showCardMenu = true }) {
+                            Icon(
+                                imageVector = Icons.Outlined.MoreVert,
+                                contentDescription = "更多操作",
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     DropdownMenu(
                         expanded = showCardMenu,
                         onDismissRequest = { showCardMenu = false },
@@ -1168,13 +1256,7 @@ fun ShadowFileCard(
                                     onDownload()
                                 },
                             )
-                            val isVideo = file.name.endsWith(".mp4", ignoreCase = true) ||
-                                file.name.endsWith(".mkv", ignoreCase = true) ||
-                                file.name.endsWith(".mov", ignoreCase = true) ||
-                                file.name.endsWith(".avi", ignoreCase = true) ||
-                                file.name.endsWith(".webm", ignoreCase = true) ||
-                                file.name.endsWith(".ts", ignoreCase = true)
-                            if (isVideo) {
+                            if (file.name.isPlayableVideo()) {
                                 DropdownMenuItem(
                                     text = { Text("下载指定段落") },
                                     leadingIcon = {
@@ -1216,6 +1298,7 @@ fun ShadowFileCard(
                             },
                         )
                     }
+                }
                 }
             }
         }

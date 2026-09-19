@@ -12,4 +12,7 @@ captures/
 *.hprof
 *.apk
 *.aab
+*.jks
+*.keystore
+release-secrets.*
 !gradle/wrapper/gradle-wrapper.jar
