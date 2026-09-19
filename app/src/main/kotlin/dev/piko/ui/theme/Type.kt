@@ -29,6 +29,10 @@ private fun cjkStyle(
 /**
  * Piko 排版规范：15 档基线 + 15 档 Emphasized 变体。
  * 针对中文字形特性：字距归零、小字号行高增加 2sp，杜绝正文拥挤。
+ *
+ * Documentation references:
+ * - Material 3 Typography Scale: `m3-material-mirror/pages/styles/typography.md`
+ * - Android Material 3 Typography: `android-docs-mirror/pages/develop/ui/compose/designsystems/material3.md`
  */
 val PikoTypography = Typography(
     displayLarge = cjkStyle(57, 64, FontWeight.Normal, -0.25),

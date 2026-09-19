@@ -55,7 +55,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import java.io.File
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -70,6 +69,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import dev.piko.PikoApplication
 import dev.piko.R
@@ -78,6 +78,14 @@ import dev.piko.ui.components.toReadableSize
 import kotlinx.coroutines.launch
 import java.util.Locale
 
+/**
+ * Settings screen for account, visual preferences, and storage directories.
+ *
+ * Documentation references:
+ * - Lifecycle-aware flow collection: `android-docs-mirror/pages/develop/ui/compose/state.md`
+ * - Material 3 switches and cards: `m3-material-mirror/pages/components/switch.md`
+ * - Structured coroutine cancellation: `kotlin-docs-mirror/pages/docs/coroutines-cancellation.md`
+ */
 @Composable
 fun SettingsScreen(
     onLogout: () -> Unit,
@@ -88,14 +96,14 @@ fun SettingsScreen(
     val clientManager = PikoApplication.instance.clientManager
     val driveRepo = PikoApplication.instance.driveRepository
     val downloadManager = PikoApplication.instance.downloadManager
-    val session by sessionManager.sessionFlow.collectAsState(initial = null)
-    val isSpoilerBlurEnabled by sessionManager.spoilerBlurFlow.collectAsState(initial = true)
-    val isHeuristicFilterEnabled by sessionManager.heuristicFilterFlow.collectAsState(initial = true)
-    val isConcurrentAccelerationEnabled by sessionManager.concurrentAccelerationFlow.collectAsState(initial = true)
-    val downloadDirPath by sessionManager.downloadDirPathFlow.collectAsState(initial = "")
+    val session by sessionManager.sessionFlow.collectAsStateWithLifecycle(initialValue = null)
+    val isSpoilerBlurEnabled by sessionManager.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = true)
+    val isHeuristicFilterEnabled by sessionManager.heuristicFilterFlow.collectAsStateWithLifecycle(initialValue = true)
+    val isConcurrentAccelerationEnabled by sessionManager.concurrentAccelerationFlow.collectAsStateWithLifecycle(initialValue = true)
+    val downloadDirPath by sessionManager.downloadDirPathFlow.collectAsStateWithLifecycle(initialValue = "")
     val scope = rememberCoroutineScope()
 
-    val quota by driveRepo.quotaFlow.collectAsState()
+    val quota by driveRepo.quotaFlow.collectAsStateWithLifecycle()
     var showLogoutDialog by remember { mutableStateOf(false) }
     var showDownloadDirDialog by remember { mutableStateOf(false) }
     var customPathInput by remember(downloadManager.downloadDir.absolutePath) {

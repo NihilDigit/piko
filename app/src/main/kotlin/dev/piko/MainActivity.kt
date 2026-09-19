@@ -7,15 +7,24 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.ui.PikoMainScaffold
 import dev.piko.ui.components.FullScreenLoading
 import dev.piko.ui.screens.auth.LoginScreen
 import dev.piko.ui.theme.PikoMotion
 import dev.piko.ui.theme.PikoTheme
 
+/**
+ * Main application entry activity using Single Activity architecture.
+ *
+ * Documentation References:
+ * - Android Compose State: android-docs-mirror/pages/develop/ui/compose/state.md
+ *   "Consuming flows safely in Jetpack Compose with collectAsStateWithLifecycle"
+ * - Android Lifecycle: android-docs-mirror/pages/develop/ui/compose/lifecycle.md
+ * - Material 3 Motion: m3-material-mirror/pages/styles/motion.md
+ */
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -26,8 +35,8 @@ class MainActivity : ComponentActivity() {
         setContent {
             PikoTheme {
                 val clientManager = PikoApplication.instance.clientManager
-                val currentClient by clientManager.currentClient.collectAsState()
-                val isInitializing by clientManager.isInitializing.collectAsState()
+                val currentClient by clientManager.currentClient.collectAsStateWithLifecycle()
+                val isInitializing by clientManager.isInitializing.collectAsStateWithLifecycle()
 
                 Crossfade(
                     targetState = when {

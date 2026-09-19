@@ -23,6 +23,11 @@ import java.io.InterruptedIOException
  * 2. 精确处理 ExoPlayer Loader 的线程中断：捕获 InterruptedException 并重新置位线程中断标志，
  *    包装为 InterruptedIOException，避免媒体解析线程因非检查异常闪退；
  * 3. 跨 seek 生命周期保持 underlying reader 存活，防止拖动时反复重构连接池与丢弃缓存。
+ *
+ * Documentation References:
+ * - Media3 DataSource Customization: android-docs-mirror/pages/media/media3/exoplayer/customization.md
+ * - Media3 BaseDataSource Reference: android-docs-mirror/pages/reference/androidx/media3/datasource/BaseDataSource.md
+ * - Kotlin Interruption & Cancellation: kotlin-docs-mirror/pages/docs/coroutines-cancellation.md
  */
 @OptIn(UnstableApi::class)
 class PikoStreamDataSource(

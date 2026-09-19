@@ -26,7 +26,16 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import kotlinx.coroutines.CancellationException
 
+/**
+ * High-performance download manager supporting concurrent chunked transfer and task persistence.
+ *
+ * Documentation References:
+ * - Kotlin Coroutines & Cancellation: kotlin-docs-mirror/pages/docs/coroutines-cancellation.md
+ *   "Never swallow CancellationException to ensure coroutine jobs cancel promptly."
+ * - Android Storage: android-docs-mirror/pages/develop/background-work/
+ */
 @Serializable
 enum class DownloadStatus {
     PENDING,
@@ -106,6 +115,8 @@ class PikoDownloadManager(
                             tasksFile.writeText(serialized)
                         }
                     }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     // ignore write failure
                 }

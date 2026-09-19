@@ -61,8 +61,11 @@ jobs:
           echo "PIKO_VERSION_NAME=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
           echo "PIKO_VERSION_CODE=$((major * 1000000 + minor * 1000 + patch))" >> "$GITHUB_ENV"
 
-      - name: Build signed release APK and AAB
-        run: ./gradlew assembleRelease bundleRelease --no-daemon --stacktrace --warning-mode=all
+      - name: Build signed split release APKs
+        run: ./gradlew assembleRelease -Ppiko.enableAbiSplits=true --no-daemon --stacktrace --warning-mode=all
+
+      - name: Build signed release AAB
+        run: ./gradlew bundleRelease -Ppiko.enableAbiSplits=false --no-daemon --stacktrace --warning-mode=all
 
       - name: Verify signed release APK
         run: |

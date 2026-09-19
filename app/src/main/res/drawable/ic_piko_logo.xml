@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Piko 品牌 Logo (Piko 萌猫云盘)。
-  圆润饱满的 Squircle 萌猫脸庞、小猫耳、胶囊眼与治愈微笑。
+  Piko 品牌 Logo。
+  圆角品牌蓝背景，内部完全采用单色图标相同的萌猫轮廓与五官。
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="48dp"
@@ -24,24 +24,26 @@
         android:fillColor="#FFFFFF"
         android:pathData="M37.5,16.8 C37.5,14.0 35.8,11.0 34.5,9.8 C33.8,9.0 32.5,9.2 32.0,10.2 L27.2,15.2 Z" />
 
-    <!-- 圆润饱满的 Squircle 猫咪面庞 (rx=7.5) -->
+    <!-- 脸庞轮廓 (描边) -->
     <path
-        android:fillColor="#FFFFFF"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2.5"
+        android:strokeLineJoin="round"
         android:pathData="M15,15 H33 A7.5,7.5 0 0 1 40.5,22.5 V32.5 A7.5,7.5 0 0 1 33,40 H15 A7.5,7.5 0 0 1 7.5,32.5 V22.5 A7.5,7.5 0 0 1 15,15 Z" />
 
     <!-- 左胶囊眼 -->
     <path
-        android:fillColor="#306EFF"
+        android:fillColor="#FFFFFF"
         android:pathData="M17.5,22.5 H17.5 A1.7,1.7 0 0 1 19.2,24.2 V27.0 A1.7,1.7 0 0 1 17.5,28.7 H17.5 A1.7,1.7 0 0 1 15.8,27.0 V24.2 A1.7,1.7 0 0 1 17.5,22.5 Z" />
 
     <!-- 右胶囊眼 -->
     <path
-        android:fillColor="#306EFF"
+        android:fillColor="#FFFFFF"
         android:pathData="M30.5,22.5 H30.5 A1.7,1.7 0 0 1 32.2,24.2 V27.0 A1.7,1.7 0 0 1 30.5,28.7 H30.5 A1.7,1.7 0 0 1 28.8,27.0 V24.2 A1.7,1.7 0 0 1 30.5,22.5 Z" />
 
     <!-- 治愈微笑 -->
     <path
-        android:strokeColor="#306EFF"
+        android:strokeColor="#FFFFFF"
         android:strokeWidth="2.2"
         android:strokeLineCap="round"
         android:pathData="M20.8,31.8 Q24,35.5 27.2,31.8" />

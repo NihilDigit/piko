@@ -1,6 +1,7 @@
 package dev.piko.data.repository
 
 import dev.piko.data.client.PikPakClientManager
+import dev.piko.util.runSuspendCatching
 import io.github.nihildigit.pikpak.CreateUrlResult
 import io.github.nihildigit.pikpak.MagnetResource
 import io.github.nihildigit.pikpak.ResolvedFile
@@ -26,6 +27,13 @@ data class MagnetResolutionResult(
     val totalCount: Int,
 )
 
+/**
+ * Repository for resolving magnet URIs, triggering instant cloud saves, and creating offline download tasks.
+ *
+ * Documentation References:
+ * - Kotlin Structured Concurrency & Cancellation: kotlin-docs-mirror/pages/docs/coroutines-cancellation.md
+ * - Kotlin Coroutines & Channels: kotlin-docs-mirror/pages/docs/flow.md
+ */
 class InstantMagnetRepository(
     private val clientManager: PikPakClientManager,
 ) {
@@ -46,8 +54,8 @@ class InstantMagnetRepository(
     }
 
     suspend fun resolve(magnet: String): Result<MagnetResolutionResult?> = withContext(Dispatchers.IO) {
-        runCatching {
-            val resource = client.resolveMagnet(magnet) ?: return@runCatching null
+        runSuspendCatching {
+            val resource = client.resolveMagnet(magnet) ?: return@runSuspendCatching null
 
             // 建任务时保留全部真实文件与原始命名，启发式筛选移至展示层
             val items = resource.files.map { file ->
@@ -72,7 +80,7 @@ class InstantMagnetRepository(
         items: List<InstantFileItem>,
         targetParentId: String = "",
     ): Result<List<String>> = withContext(Dispatchers.IO) {
-        runCatching {
+        runSuspendCatching {
             val createdIds = mutableListOf<String>()
             for (item in items) {
                 if (item.file.gcid != null) {
@@ -90,7 +98,7 @@ class InstantMagnetRepository(
 
     suspend fun enqueueOfflineTask(magnet: String, targetParentId: String = ""): Result<CreateUrlResult> =
         withContext(Dispatchers.IO) {
-            runCatching {
+            runSuspendCatching {
                 client.createUrlFile(parentId = targetParentId, url = magnet)
             }
         }

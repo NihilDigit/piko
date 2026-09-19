@@ -7,6 +7,10 @@ import androidx.compose.ui.graphics.Color
 /**
  * Piko 基线色板，基于 M3E 规范，种子色选择深邃青蓝 #0077B6。
  * 色彩层级通过 surfaceContainer 家族精准表达层级深度。
+ *
+ * Documentation references:
+ * - Material 3 Color Roles & System: `m3-material-mirror/pages/styles/color.md`
+ * - Android Material 3 Color Schemes: `android-docs-mirror/pages/develop/ui/compose/designsystems/material3.md`
  */
 val PikoLightColors = lightColorScheme(
     primary = Color(0xFF006590),

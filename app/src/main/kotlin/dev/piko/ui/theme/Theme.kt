@@ -19,6 +19,11 @@ val LocalFixedColors = staticCompositionLocalOf { FixedColors }
 /**
  * Piko 全局主题，使用 [MaterialExpressiveTheme] 作为统一入口。
  * 遵循 Material 3 Expressive 规范，激活组件物理弹性响应，配置 10 档形状与 30 档排版。
+ *
+ * Documentation references:
+ * - Material 3 Expressive Theming: `m3-material-mirror/pages/styles/`
+ * - Material 3 Dynamic Color: `m3-material-mirror/pages/styles/color.md`
+ * - Compose Theming in Android: `android-docs-mirror/pages/develop/ui/compose/designsystems/material3.md`
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable

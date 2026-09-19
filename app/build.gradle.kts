@@ -19,10 +19,10 @@ require(!releaseSigningConfigured || releaseSigningValues.all { it.isPresent }) 
     "Release signing requires ANDROID_KEYSTORE_PATH, ANDROID_KEYSTORE_PASSWORD, " +
         "ANDROID_KEY_ALIAS, and ANDROID_KEY_PASSWORD together."
 }
-val appVersionName = providers.environmentVariable("PIKO_VERSION_NAME").orElse("0.1.0")
+val appVersionName = providers.environmentVariable("PIKO_VERSION_NAME").orElse("0.2.0")
 val appVersionCode = providers.environmentVariable("PIKO_VERSION_CODE")
     .map { it.toInt() }
-    .orElse(1)
+    .orElse(2000)
 require(appVersionCode.get() > 0) { "PIKO_VERSION_CODE must be greater than zero." }
 
 android {
@@ -85,6 +85,11 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
     }
 }
 

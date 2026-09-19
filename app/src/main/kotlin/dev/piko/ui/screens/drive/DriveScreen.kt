@@ -100,8 +100,8 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -196,6 +196,20 @@ private fun filterDriveFiles(
     }
 }
 
+/**
+ * Main cloud drive file manager screen.
+ *
+ * Provides breadcrumb folder navigation, list/grid dual view layouts,
+ * heuristic spoiler blur, instant magnet creation, and batch file actions.
+ *
+ * Documentation References:
+ * - Android Compose State: android-docs-mirror/pages/develop/ui/compose/state.md
+ *   "Consuming flows safely in Jetpack Compose with collectAsStateWithLifecycle"
+ * - Android Compose Lists: android-docs-mirror/pages/develop/ui/compose/lists.md
+ *   "Control item position and layout stability with keys and item animations"
+ * - Material 3 Components: m3-material-mirror/pages/components.md
+ *   (Scaffold, PullToRefreshBox, ExtendedFloatingActionButton, ModalBottomSheet, AlertDialog)
+ */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun DriveScreen(
@@ -225,8 +239,8 @@ fun DriveScreen(
 
     // 防窥/Spoiler 模糊遮蔽与启发式筛选 (可在设置中切换)
     val sessionManager = PikoApplication.instance.sessionManager
-    val isSpoilerBlurEnabled by sessionManager.spoilerBlurFlow.collectAsState(initial = true)
-    val isHeuristicFilterEnabled by sessionManager.heuristicFilterFlow.collectAsState(initial = true)
+    val isSpoilerBlurEnabled by sessionManager.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = true)
+    val isHeuristicFilterEnabled by sessionManager.heuristicFilterFlow.collectAsStateWithLifecycle(initialValue = true)
     val revealedFileIds = remember { mutableStateListOf<String>() }
 
     // 多选模式
@@ -234,7 +248,7 @@ fun DriveScreen(
     val selectedFileIds = remember { mutableStateListOf<String>() }
 
     // 目录导航栈：持久化与全局单例共享，记住当前打开的位置，切 Tab / 重启不丢失
-    val folderStack by driveRepo.folderStackFlow.collectAsState()
+    val folderStack by driveRepo.folderStackFlow.collectAsStateWithLifecycle()
     val activeFolder = folderStack.lastOrNull() ?: PathBreadcrumb(currentFolderId, currentFolderName)
     val activeFolderId = activeFolder.id
     val activeFolderName = activeFolder.name
@@ -292,7 +306,7 @@ fun DriveScreen(
     var showInstantSheet by remember { mutableStateOf(false) }
     var showCloudTasksSheet by remember { mutableStateOf(false) }
 
-    val pendingMagnet by instantRepo.pendingMagnetFlow.collectAsState()
+    val pendingMagnet by instantRepo.pendingMagnetFlow.collectAsStateWithLifecycle()
     LaunchedEffect(pendingMagnet) {
         if (!pendingMagnet.isNullOrBlank()) {
             showInstantSheet = true
@@ -337,8 +351,9 @@ fun DriveScreen(
     val heuristicFilteredFiles = if (showAllFilesTemporarily) files else heuristicVisibleFiles
 
     val displayedFiles = remember(files, heuristicFilteredFiles, searchQuery, globalSearchResults) {
-        if (globalSearchResults != null) {
-            globalSearchResults!!
+        val results = globalSearchResults
+        if (results != null) {
+            results
         } else if (searchQuery.isBlank()) {
             heuristicFilteredFiles
         } else {

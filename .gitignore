@@ -16,3 +16,5 @@ captures/
 *.keystore
 release-secrets.*
 !gradle/wrapper/gradle-wrapper.jar
+*.bak
+*-mirror/

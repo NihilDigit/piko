@@ -47,7 +47,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -61,6 +60,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import dev.piko.PikoApplication
 import dev.piko.download.DownloadStatus
@@ -71,13 +71,21 @@ import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.theme.LocalFixedColors
 import java.io.File
 
+/**
+ * Downloads screen showing active and completed downloads.
+ *
+ * Documentation references:
+ * - Lifecycle-aware flow collection: `android-docs-mirror/pages/develop/ui/compose/state.md`
+ * - Lazy lists and key stability: `android-docs-mirror/pages/develop/ui/compose/lists.md`
+ * - Material 3 cards and expressive lists: `m3-material-mirror/pages/components/card.md`
+ */
 @Composable
 fun DownloadsScreen(
     onPlayVideo: (DownloadTask) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val downloadManager = PikoApplication.instance.downloadManager
-    val tasksMap by downloadManager.tasks.collectAsState()
+    val tasksMap by downloadManager.tasks.collectAsStateWithLifecycle()
     val tasks = tasksMap.values.toList()
 
     Scaffold(

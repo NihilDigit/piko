@@ -3,9 +3,11 @@ package dev.piko.data.client
 import android.content.Context
 import dev.piko.data.auth.DataStoreSessionStore
 import dev.piko.data.auth.SessionManager
+import dev.piko.util.runSuspendCatching
 import io.github.nihildigit.pikpak.PikPakClient
 import io.github.nihildigit.pikpak.PikPakException
 import io.github.nihildigit.pikpak.Session
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -14,6 +16,14 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
+/**
+ * Manager class orchestrating PikPak client instances and session lifecycle.
+ *
+ * Documentation References:
+ * - Kotlin Structured Concurrency & Cancellation: kotlin-docs-mirror/pages/docs/coroutines-cancellation.md
+ *   "Ensure CancellationException is rethrown to allow proper coroutine teardown."
+ * - Android DataStore Session Persistence: android-docs-mirror/pages/develop/ui/compose/state.md
+ */
 class PikPakClientManager(
     private val context: Context,
     private val sessionManager: SessionManager,
@@ -50,6 +60,9 @@ class PikPakClientManager(
                     }
                     client.close()
                     _currentClient.value = null
+                } catch (e: CancellationException) {
+                    client.close()
+                    throw e
                 } catch (e: Exception) {
                     // Network and server failures must not destroy a valid
                     // refresh token; the next process start can retry silently.
@@ -62,7 +75,7 @@ class PikPakClientManager(
     }
 
     suspend fun login(account: String, passwordSupplier: suspend () -> String): Result<PikPakClient> {
-        return runCatching {
+        return runSuspendCatching {
             val client = PikPakClient(
                 account = account,
                 passwordSupplier = passwordSupplier,
@@ -79,7 +92,7 @@ class PikPakClientManager(
     }
 
     suspend fun loginWithToken(account: String, token: String, refreshToken: String = ""): Result<PikPakClient> {
-        return runCatching {
+        return runSuspendCatching {
             val currentTimeSeconds = System.currentTimeMillis() / 1000
             val expiresAt = currentTimeSeconds + 3600 * 24 * 30 // 30天
             sessionStore.save(

@@ -11,6 +11,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import dev.piko.MainActivity
 import dev.piko.PikoApplication
@@ -24,14 +25,21 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 /**
- * 负责 Android 前台下载生命周期的系统 Service。
- * 在任务处于 DOWNLOADING 状态时常驻前台，显示通知栏实时并发速率与进度；
- * 所有下载暂停或完成后优雅退出前台，防止系统低内存杀后台。
+ * Foreground Service managing background downloading and lossless video segment extraction.
+ *
+ * Maintains a foreground service with continuous notification while tasks are DOWNLOADING,
+ * displaying real-time aggregated throughput and progress. Gracefully steps down when idle.
+ *
+ * Documentation References:
+ * - Android Foreground Services: android-docs-mirror/pages/develop/background-work/services/foreground-services.md
+ * - Android Notifications: android-docs-mirror/pages/develop/ui/views/notifications/build-notification.md
+ * - Kotlin Flow Collection: kotlin-docs-mirror/pages/docs/flow.md
  */
 class PikoDownloadService : Service() {
 
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
     private lateinit var notificationManager: NotificationManager
+    private var observeJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -51,12 +59,14 @@ class PikoDownloadService : Service() {
             startForeground(NOTIFICATION_ID, initialNotification)
         }
 
-        observeDownloads()
+        startObservingDownloadsIfNeeded()
         return START_NOT_STICKY
     }
 
-    private fun observeDownloads() {
-        serviceScope.launch {
+    private fun startObservingDownloadsIfNeeded() {
+        if (observeJob?.isActive == true) return
+
+        observeJob = serviceScope.launch {
             val downloadManager = PikoApplication.instance.downloadManager
             downloadManager.tasks.collectLatest { tasksMap ->
                 val activeTasks = tasksMap.values.filter { it.status == DownloadStatus.DOWNLOADING }
@@ -65,12 +75,7 @@ class PikoDownloadService : Service() {
                     delay(2000)
                     val stillActive = downloadManager.tasks.value.values.any { it.status == DownloadStatus.DOWNLOADING }
                     if (!stillActive) {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                            stopForeground(STOP_FOREGROUND_REMOVE)
-                        } else {
-                            @Suppress("DEPRECATION")
-                            stopForeground(true)
-                        }
+                        ServiceCompat.stopForeground(this@PikoDownloadService, ServiceCompat.STOP_FOREGROUND_REMOVE)
                         stopSelf()
                     }
                 } else {
@@ -154,6 +159,7 @@ class PikoDownloadService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        observeJob?.cancel()
         serviceScope.cancel()
     }
 

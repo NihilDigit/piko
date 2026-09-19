@@ -20,14 +20,16 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation3.runtime.rememberNavBackStack
+import dev.piko.PikoApplication
+import dev.piko.download.DownloadStatus
 import dev.piko.ui.navigation.MainTab
 import dev.piko.ui.navigation.Screen
 import dev.piko.ui.screens.drive.DriveScreen
@@ -36,20 +38,32 @@ import dev.piko.ui.screens.player.VideoPlayerScreen
 import dev.piko.ui.screens.settings.SettingsScreen
 import dev.piko.ui.screens.transfers.TransfersScreen
 import dev.piko.ui.theme.PikoMotion
+import java.io.File
 
+/**
+ * Main application scaffold managing Adaptive Navigation and persistent overlay destinations.
+ *
+ * Documentation References:
+ * - Android Navigation 3: android-docs-mirror/pages/guide/navigation/navigation-3/save-state.md
+ *   "Use rememberNavBackStack to ensure back stack persists across configuration changes and process death."
+ * - Android Compose State: android-docs-mirror/pages/develop/ui/compose/state.md
+ *   "Consuming flows safely in Jetpack Compose with collectAsStateWithLifecycle."
+ * - Material 3 Adaptive Navigation Suite: m3-material-mirror/pages/components/navigation-bar.md
+ *   and m3-material-mirror/pages/components/navigation-rail.md
+ */
 @Composable
 fun PikoMainScaffold(
     onLogout: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var currentTab by rememberSaveable { mutableStateOf(MainTab.FILES) }
-    val backStack = remember { mutableStateListOf<Screen>() }
+    val backStack = rememberNavBackStack()
 
-    val activeOverlayScreen = backStack.lastOrNull()
+    val activeOverlayScreen = backStack.lastOrNull() as? Screen
 
     // 监听外部传入的磁力链接，自动切到文件页并关闭覆盖层
-    val pendingMagnet by dev.piko.PikoApplication.instance.instantMagnetRepository.pendingMagnetFlow.collectAsState()
-    androidx.compose.runtime.LaunchedEffect(pendingMagnet) {
+    val pendingMagnet by PikoApplication.instance.instantMagnetRepository.pendingMagnetFlow.collectAsStateWithLifecycle()
+    LaunchedEffect(pendingMagnet) {
         if (pendingMagnet != null) {
             currentTab = MainTab.FILES
             backStack.clear()
@@ -72,11 +86,11 @@ fun PikoMainScaffold(
                     MainTab.FILES -> {
                         FilesScreen(
                             onNavigateToVideoPlayer = { id, name ->
-                                val downloadManager = dev.piko.PikoApplication.instance.downloadManager
+                                val downloadManager = PikoApplication.instance.downloadManager
                                 val localTask = downloadManager.tasks.value.values.find {
-                                    it.fileId == id && it.status == dev.piko.download.DownloadStatus.COMPLETED && !it.isSegment
+                                    it.fileId == id && it.status == DownloadStatus.COMPLETED && !it.isSegment
                                 }
-                                val localPath = localTask?.destinationPath?.takeIf { java.io.File(it).exists() }
+                                val localPath = localTask?.destinationPath?.takeIf { File(it).exists() }
                                 backStack.add(Screen.VideoPlayer(id, name, localPath))
                             },
                         )
@@ -169,11 +183,11 @@ fun PikoMainScaffold(
                                 backStack.add(Screen.SubDrive(id, name))
                             },
                             onNavigateToVideoPlayer = { id, name ->
-                                val downloadManager = dev.piko.PikoApplication.instance.downloadManager
+                                val downloadManager = PikoApplication.instance.downloadManager
                                 val localTask = downloadManager.tasks.value.values.find {
-                                    it.fileId == id && it.status == dev.piko.download.DownloadStatus.COMPLETED && !it.isSegment
+                                    it.fileId == id && it.status == DownloadStatus.COMPLETED && !it.isSegment
                                 }
-                                val localPath = localTask?.destinationPath?.takeIf { java.io.File(it).exists() }
+                                val localPath = localTask?.destinationPath?.takeIf { File(it).exists() }
                                 backStack.add(Screen.VideoPlayer(id, name, localPath))
                             },
                         )

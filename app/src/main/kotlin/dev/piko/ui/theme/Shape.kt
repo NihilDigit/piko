@@ -8,6 +8,10 @@ import androidx.compose.ui.unit.dp
 /**
  * Piko 形状系统，基于 Material 3 Expressive 10 档规范。
  * 由信息密度驱动组件形状的选择。
+ *
+ * Documentation references:
+ * - Material 3 Shape Scale: `m3-material-mirror/pages/styles/shape.md`
+ * - Android Material 3 Shapes: `android-docs-mirror/pages/develop/ui/compose/designsystems/material3.md`
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 val PikoShapes = Shapes(

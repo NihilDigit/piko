@@ -377,6 +377,14 @@ fun SegmentDownloadSheet(
  * 带有实时帧定位与加载态的预览卡片
  */
 @OptIn(UnstableApi::class)
+/**
+ * PreviewCard renders a lightweight video frame preview using Media3 ExoPlayer.
+ *
+ * Documentation references:
+ * - Media3 ExoPlayer setup & lifecycle: `android-docs-mirror/pages/media/media3/exoplayer/hello-world.md`
+ * - Listening to player events: `android-docs-mirror/pages/media/media3/exoplayer/events.md`
+ * - Material 3 Surface containers: `m3-material-mirror/pages/styles/color.md`
+ */
 @Composable
 private fun PreviewCard(
     label: String,
@@ -392,18 +400,21 @@ private fun PreviewCard(
         }
     }
 
-    LaunchedEffect(url) {
-        if (url.isNotBlank()) {
-            val listener = object : Player.Listener {
-                override fun onPlaybackStateChanged(state: Int) {
-                    if (state == Player.STATE_READY) {
-                        onDurationKnown(previewPlayer.duration.coerceAtLeast(0L))
-                    }
+    DisposableEffect(previewPlayer, url) {
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(state: Int) {
+                if (state == Player.STATE_READY) {
+                    onDurationKnown(previewPlayer.duration.coerceAtLeast(0L))
                 }
             }
+        }
+        if (url.isNotBlank()) {
             previewPlayer.addListener(listener)
             previewPlayer.setMediaItem(MediaItem.fromUri(url))
             previewPlayer.prepare()
+        }
+        onDispose {
+            previewPlayer.removeListener(listener)
         }
     }
 

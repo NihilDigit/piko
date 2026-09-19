@@ -17,6 +17,14 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import kotlin.math.roundToInt
 
+/**
+ * Gestures and system level controls for media playback: brightness, volume, and orientation.
+ *
+ * Documentation References:
+ * - Android Audio Focus & Stream: android-docs-mirror/pages/media/optimize/audio-focus.md
+ * - Android Immersive System Bars: android-docs-mirror/pages/develop/ui/views/layout/edge-to-edge.md
+ * - Material 3 Interaction & Haptics: m3-material-mirror/pages/foundations.md
+ */
 internal enum class VerticalAdjust {
     Brightness,
     Volume,

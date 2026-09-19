@@ -1,8 +1,20 @@
 package dev.piko.ui.navigation
 
+import androidx.navigation3.runtime.NavKey
 import kotlinx.serialization.Serializable
 
-sealed interface Screen {
+/**
+ * Navigation destinations modeling application screens.
+ *
+ * Implements [NavKey] to support Navigation 3 back stack persistence
+ * across configuration changes and process death.
+ *
+ * Documentation References:
+ * - Android Navigation 3: android-docs-mirror/pages/guide/navigation/navigation-3/basics.md
+ * - Android Navigation 3 State: android-docs-mirror/pages/guide/navigation/navigation-3/save-state.md
+ *   "Every key in the back stack must implement the NavKey interface and be marked @Serializable."
+ */
+sealed interface Screen : NavKey {
     @Serializable
     data object Login : Screen
 

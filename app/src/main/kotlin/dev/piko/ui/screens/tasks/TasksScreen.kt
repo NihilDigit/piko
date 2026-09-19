@@ -28,6 +28,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -52,6 +54,15 @@ import io.github.nihildigit.pikpak.OfflineTask
 import io.github.nihildigit.pikpak.TaskPhase
 import kotlinx.coroutines.launch
 
+/**
+ * TasksScreen displays cloud offline download tasks with real-time status and pull-to-refresh.
+ *
+ * Documentation references:
+ * - Lazy lists with keys: `android-docs-mirror/pages/develop/ui/compose/lists.md`
+ * - Snackbars and user feedback: `m3-material-mirror/pages/components/snackbar.md`
+ * - Material 3 cards & pull-to-refresh: `m3-material-mirror/pages/components/card.md`
+ * - Coroutine error handling: `kotlin-docs-mirror/pages/docs/exception-handling.md`
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TasksScreen(
@@ -60,6 +71,7 @@ fun TasksScreen(
 ) {
     val taskRepo = PikoApplication.instance.taskRepository
     val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
 
     var tasks by remember { mutableStateOf<List<OfflineTask>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
@@ -72,6 +84,8 @@ fun TasksScreen(
             isRefreshing = false
             result.onSuccess { response ->
                 tasks = response.tasks
+            }.onFailure { err ->
+                snackbarHostState.showSnackbar("加载离线任务失败: ${err.message ?: "网络错误"}")
             }
         }
     }
@@ -83,6 +97,7 @@ fun TasksScreen(
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             PikoTopBar(
                 title = "云端离线任务",

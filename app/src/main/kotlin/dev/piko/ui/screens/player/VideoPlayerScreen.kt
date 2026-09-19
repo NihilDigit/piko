@@ -93,6 +93,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
@@ -121,6 +126,20 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
+/**
+ * Fullscreen immersive gesture-driven media player.
+ *
+ * Configured with AndroidX Media3 ExoPlayer, audio focus handling,
+ * audio-becoming-noisy listener, and Activity lifecycle awareness.
+ *
+ * Documentation References:
+ * - Media3 Architecture: android-docs-mirror/pages/media/implement/playback-app.md
+ *   "Builder includes setAudioAttributes to configure audio focus handling,
+ *    and setHandleAudioBecomingNoisy to configure playback behavior."
+ * - Media3 ExoPlayer: android-docs-mirror/pages/media/media3/exoplayer/hello-world.md
+ * - Compose Lifecycle: android-docs-mirror/pages/develop/ui/compose/lifecycle.md
+ * - Material 3 Surfaces & Controls: m3-material-mirror/pages/components.md
+ */
 @OptIn(UnstableApi::class)
 @Composable
 fun VideoPlayerScreen(
@@ -149,9 +168,19 @@ fun VideoPlayerScreen(
     var isLocked by remember { mutableStateOf(false) }
 
     val exoPlayer = remember(context, playbackKey) {
-        ExoPlayer.Builder(context).build().apply {
-            playWhenReady = true
-        }
+        ExoPlayer.Builder(context)
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                    .setUsage(C.USAGE_MEDIA)
+                    .build(),
+                /* handleAudioFocus = */ true,
+            )
+            .setHandleAudioBecomingNoisy(true)
+            .build()
+            .apply {
+                playWhenReady = true
+            }
     }
 
     var isPlaying by remember { mutableStateOf(true) }
@@ -403,6 +432,20 @@ fun VideoPlayerScreen(
             prepareJob?.cancel()
             recoveryJob?.cancel()
             exoPlayer.release()
+        }
+    }
+
+    // 生命周期联动：应用退入后台时暂停播放，遵循 Android Media3 规范
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, exoPlayer) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_PAUSE) {
+                exoPlayer.pause()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }
 
@@ -998,8 +1041,8 @@ fun VideoPlayerScreen(
                             ),
                         )
                         .padding(
-                            horizontal = if (isLandscape) 36.dp else 20.dp,
-                            vertical = if (isLandscape) 14.dp else 20.dp,
+                            horizontal = if (isLandscape) 36.dp else 12.dp,
+                            vertical = if (isLandscape) 14.dp else 16.dp,
                         )
                         .safeGesturesPadding(),
                 ) {
@@ -1010,18 +1053,21 @@ fun VideoPlayerScreen(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.weight(1f, fill = false),
+                            ) {
                                 IconButton(
                                     onClick = {
                                         if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
                                     },
-                                    modifier = Modifier.size(48.dp),
+                                    modifier = Modifier.size(if (isLandscape) 48.dp else 42.dp),
                                 ) {
                                     Icon(
                                         imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                                         contentDescription = if (isPlaying) "Pause" else "Play",
                                         tint = Color.White,
-                                        modifier = Modifier.size(30.dp),
+                                        modifier = Modifier.size(if (isLandscape) 30.dp else 28.dp),
                                     )
                                 }
 
@@ -1029,13 +1075,13 @@ fun VideoPlayerScreen(
                                     onClick = {
                                         exoPlayer.seekTo((exoPlayer.currentPosition - 10000).coerceAtLeast(0L))
                                     },
-                                    modifier = Modifier.size(48.dp),
+                                    modifier = Modifier.size(if (isLandscape) 48.dp else 36.dp),
                                 ) {
                                     Icon(
                                         imageVector = Icons.Filled.Replay10,
                                         contentDescription = "Rewind 10s",
                                         tint = Color.White,
-                                        modifier = Modifier.size(24.dp),
+                                        modifier = Modifier.size(if (isLandscape) 24.dp else 20.dp),
                                     )
                                 }
 
@@ -1043,45 +1089,49 @@ fun VideoPlayerScreen(
                                     onClick = {
                                         exoPlayer.seekTo((exoPlayer.currentPosition + 10000).coerceAtMost(totalDuration))
                                     },
-                                    modifier = Modifier.size(48.dp),
+                                    modifier = Modifier.size(if (isLandscape) 48.dp else 36.dp),
                                 ) {
                                     Icon(
                                         imageVector = Icons.Filled.Forward10,
                                         contentDescription = "Forward 10s",
                                         tint = Color.White,
-                                        modifier = Modifier.size(24.dp),
+                                        modifier = Modifier.size(if (isLandscape) 24.dp else 20.dp),
                                     )
                                 }
 
-                                Spacer(modifier = Modifier.width(10.dp))
+                                Spacer(modifier = Modifier.width(if (isLandscape) 10.dp else 6.dp))
 
                                 Text(
                                     text = formatTime(currentPosition),
-                                    style = MaterialTheme.typography.labelLarge,
+                                    style = if (isLandscape) MaterialTheme.typography.labelLarge else MaterialTheme.typography.labelMedium,
                                     color = Color.White,
                                     fontWeight = FontWeight.Medium,
+                                    maxLines = 1,
                                 )
                                 Text(
                                     text = " / ${formatTime(totalDuration)}",
-                                    style = MaterialTheme.typography.labelLarge,
+                                    style = if (isLandscape) MaterialTheme.typography.labelLarge else MaterialTheme.typography.labelMedium,
                                     color = Color.White.copy(alpha = 0.6f),
+                                    maxLines = 1,
                                 )
                             }
 
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
                                 // 倍速调节入口胶囊 (带 .01 实时回显，点击呼出 0.5~3.5 无步进调节器)
                                 Surface(
                                     onClick = { showSpeedDialog = true },
                                     shape = CircleShape,
                                     color = Color.White.copy(alpha = 0.18f),
-                                    modifier = Modifier.padding(end = 8.dp),
+                                    modifier = Modifier.padding(end = 4.dp),
                                 ) {
                                     Text(
                                         text = String.format(Locale.US, "%.2fx", playbackSpeed),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = Color.White,
                                         fontWeight = FontWeight.Medium,
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                                     )
                                 }
 

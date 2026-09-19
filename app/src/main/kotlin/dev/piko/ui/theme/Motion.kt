@@ -9,6 +9,10 @@ import androidx.compose.ui.unit.IntOffset
  * Piko 动效系统规范。
  * - 页面转场（滑动 1/5 屏 + 淡入淡出）使用缓动 + 时长系统。
  * - 组件内物理形变使用 MaterialExpressiveTheme 注入的 MotionScheme.expressive()。
+ *
+ * Documentation references:
+ * - Material 3 Motion System & Easing: `m3-material-mirror/pages/styles/motion.md`
+ * - Android Compose Animation: `android-docs-mirror/pages/develop/ui/compose/animation.md`
  */
 object PikoMotion {
     object Easing {

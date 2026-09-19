@@ -2,6 +2,7 @@ package dev.piko.data.repository
 
 import android.content.Context
 import dev.piko.data.client.PikPakClientManager
+import dev.piko.util.runSuspendCatching
 import io.github.nihildigit.pikpak.FileDetail
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.QuotaResponse
@@ -34,6 +35,14 @@ data class PathBreadcrumb(
     val name: String,
 )
 
+/**
+ * Cloud drive file management repository.
+ *
+ * Documentation References:
+ * - Kotlin Structured Concurrency & Cancellation: kotlin-docs-mirror/pages/docs/coroutines-cancellation.md
+ *   "Never swallow CancellationException; rethrow it to allow proper cancellation propagation."
+ * - Kotlin Coding Conventions: kotlin-docs-mirror/pages/docs/coding-conventions.md
+ */
 class DriveRepository(
     private val context: Context,
     private val clientManager: PikPakClientManager,
@@ -99,7 +108,7 @@ class DriveRepository(
     }
 
     suspend fun getOrCreateMyPacksFolder(): Result<PathBreadcrumb> = withContext(Dispatchers.IO) {
-        runCatching {
+        runSuspendCatching {
             val rootPage = client.listFilesPaged(parentId = "", pageSize = 100)
             val existing = rootPage.files.firstOrNull { file ->
                 file.kind == "drive#folder" && (
@@ -119,7 +128,7 @@ class DriveRepository(
     }
 
     suspend fun getQuota(): Result<QuotaResponse> = withContext(Dispatchers.IO) {
-        runCatching {
+        runSuspendCatching {
             val res = client.getQuota()
             _quotaFlow.value = res
             res
@@ -131,7 +140,7 @@ class DriveRepository(
         pageToken: String = "",
         sortOrder: FileSortOrder = FileSortOrder.TIME_DESC,
     ): Result<Pair<List<FileStat>, String>> = withContext(Dispatchers.IO) {
-        runCatching {
+        runSuspendCatching {
             val response = client.listFilesPaged(parentId = parentId, pageToken = pageToken, pageSize = 100)
             val sortedFiles = sortFiles(response.files, sortOrder)
             Pair(sortedFiles, response.nextPageToken)
@@ -139,39 +148,39 @@ class DriveRepository(
     }
 
     suspend fun getFileDetail(fileId: String): Result<FileDetail> = withContext(Dispatchers.IO) {
-        runCatching { client.getFile(fileId) }
+        runSuspendCatching { client.getFile(fileId) }
     }
 
     suspend fun createNewFolder(parentId: String, name: String): Result<String> = withContext(Dispatchers.IO) {
-        runCatching { client.createFolder(parentId, name) }
+        runSuspendCatching { client.createFolder(parentId, name) }
     }
 
     suspend fun renameItem(fileId: String, newName: String): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching { client.rename(fileId, newName) }
+        runSuspendCatching { client.rename(fileId, newName) }
     }
 
     suspend fun moveToTrash(ids: List<String>): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching { client.batchTrash(ids) }
+        runSuspendCatching { client.batchTrash(ids) }
     }
 
     suspend fun restoreFromTrash(ids: List<String>): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching { client.batchUntrash(ids) }
+        runSuspendCatching { client.batchUntrash(ids) }
     }
 
     suspend fun deletePermanently(ids: List<String>): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching { client.batchDelete(ids) }
+        runSuspendCatching { client.batchDelete(ids) }
     }
 
     suspend fun moveItems(ids: List<String>, toParentId: String): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching { client.batchMove(ids, toParentId) }
+        runSuspendCatching { client.batchMove(ids, toParentId) }
     }
 
     suspend fun search(query: String): Result<List<FileStat>> = withContext(Dispatchers.IO) {
-        runCatching { client.searchFiles(query) }
+        runSuspendCatching { client.searchFiles(query) }
     }
 
     suspend fun getTrashFiles(): Result<List<FileStat>> = withContext(Dispatchers.IO) {
-        runCatching { client.listTrash() }
+        runSuspendCatching { client.listTrash() }
     }
 
     suspend fun isFolderMeaningless(
@@ -183,7 +192,7 @@ class DriveRepository(
             val cached = folderMeaninglessCache[folderId]
             if (cached != null) return@withContext cached
         }
-        runCatching {
+        runSuspendCatching {
             val response = client.listFilesPaged(parentId = folderId, pageSize = 50)
             val subFiles = response.files
             // Do not classify a folder by a shallow sample. Its parent view cannot
