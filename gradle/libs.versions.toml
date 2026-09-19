@@ -21,6 +21,8 @@ pikpakSdk = "0.6.6"
 composeMultiplatform = "1.12.0"
 mediamp = "0.4.0"
 fluentUi = "v0.1.0"
+winrt = "0.1.0-SNAPSHOT"
+winrtSdkProjection = "10.0.26100.0-kotlin-winrt-0.1.0-SNAPSHOT"
 
 junit = "4.13.2"
 
@@ -29,6 +31,9 @@ pikpak-kotlin = { module = "io.github.nihildigit:pikpak-kotlin", version.ref = "
 mediamp-all = { module = "org.openani.mediamp:mediamp-all", version.ref = "mediamp" }
 mediamp-source-ktxio = { module = "org.openani.mediamp:mediamp-source-ktxio", version.ref = "mediamp" }
 fluent-ui = { module = "io.github.compose-fluent:fluent", version.ref = "fluentUi" }
+fluent-icons-extended = { module = "io.github.compose-fluent:fluent-icons-extended", version.ref = "fluentUi" }
+winrt-runtime = { module = "io.github.compose-fluent:winrt-runtime", version.ref = "winrt" }
+winrt-projections-windows-sdk = { module = "io.github.compose-fluent:winrt-projections-windows-sdk", version.ref = "winrtSdkProjection" }
 
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
 androidx-documentfile = { module = "androidx.documentfile:documentfile", version.ref = "documentFile" }

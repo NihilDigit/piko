@@ -10,6 +10,11 @@ class DesktopSettingsStore(
         if (file.isFile) file.inputStream().use(values::load)
     }
 
+    private fun save() {
+        file.parentFile?.mkdirs()
+        file.outputStream().use { properties.store(it, "Piko desktop settings") }
+    }
+
     var downloadDirectory: File
         get() = File(
             properties.getProperty("downloadDirectory")
@@ -17,7 +22,13 @@ class DesktopSettingsStore(
         )
         set(value) {
             properties.setProperty("downloadDirectory", value.absolutePath)
-            file.parentFile?.mkdirs()
-            file.outputStream().use { properties.store(it, "Piko desktop settings") }
+            save()
+        }
+
+    var themeMode: String
+        get() = properties.getProperty("themeMode") ?: "system"
+        set(value) {
+            properties.setProperty("themeMode", value)
+            save()
         }
 }

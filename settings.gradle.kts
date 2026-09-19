@@ -10,7 +10,17 @@ pluginManagement {
         mavenCentral()
         gradlePluginPortal()
         maven("https://maven.pkg.jetbrains.space/public/p/compose/dev")
+        maven {
+            url = uri("https://central.sonatype.com/repository/maven-snapshots/")
+            mavenContent {
+                snapshotsOnly()
+            }
+        }
     }
+}
+
+plugins {
+    id("org.gradle.toolchains.foojay-resolver-convention") version "0.9.0"
 }
 
 dependencyResolutionManagement {
@@ -19,6 +29,12 @@ dependencyResolutionManagement {
         google()
         mavenCentral()
         maven("https://maven.pkg.jetbrains.space/public/p/compose/dev")
+        maven {
+            url = uri("https://central.sonatype.com/repository/maven-snapshots/")
+            mavenContent {
+                snapshotsOnly()
+            }
+        }
     }
 }
 
