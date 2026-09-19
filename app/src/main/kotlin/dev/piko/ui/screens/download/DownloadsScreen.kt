@@ -1,6 +1,8 @@
 package dev.piko.ui.screens.download
 
 import android.content.Intent
+import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -60,6 +62,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
+import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import dev.piko.PikoApplication
@@ -150,13 +153,7 @@ fun DownloadTaskCard(
         task.fileName.endsWith(".aac", ignoreCase = true)
 
     val openExternalFile = {
-        val file = File(task.destinationPath)
-        if (file.exists()) {
-            val uri = FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.fileprovider",
-                file,
-            )
+        downloadUri(context, task.destinationPath)?.let { uri ->
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(uri, if (isMedia) "video/*" else "*/*")
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -166,29 +163,11 @@ fun DownloadTaskCard(
     }
 
     val openFolderOrFile = {
-        val file = File(task.destinationPath)
-        if (file.exists()) {
-            val uri = FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.fileprovider",
-                file,
-            )
-            val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "*/*")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            runCatching { context.startActivity(intent) }
-        }
+        openContainingFolder(context, task.destinationPath)
     }
 
     val shareFile = {
-        val file = File(task.destinationPath)
-        if (file.exists()) {
-            val uri = FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.fileprovider",
-                file,
-            )
+        downloadUri(context, task.destinationPath)?.let { uri ->
             val intent = Intent(Intent.ACTION_SEND).apply {
                 type = if (isMedia) "video/*" else "*/*"
                 putExtra(Intent.EXTRA_STREAM, uri)
@@ -230,6 +209,7 @@ fun DownloadTaskCard(
                     Box(contentAlignment = Alignment.Center) {
                         val imageModel = when {
                             task.thumbnailLink.isNotEmpty() -> task.thumbnailLink
+                            task.destinationPath.startsWith("content:") -> task.destinationPath
                             File(task.destinationPath).exists() -> File(task.destinationPath)
                             else -> null
                         }
@@ -492,3 +472,29 @@ fun DownloadTaskCard(
 }
 
 private fun Float.formatTwoDecimals(): String = String.format("%.2f", this)
+
+private fun downloadUri(context: android.content.Context, path: String): Uri? {
+    if (path.startsWith("content:")) return Uri.parse(path)
+    val file = File(path)
+    if (!file.exists()) return null
+    return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+}
+
+private fun openContainingFolder(context: android.content.Context, path: String) {
+    val uri = if (path.startsWith("content:")) {
+        val fileUri = Uri.parse(path)
+        val authority = fileUri.authority ?: return
+        val documentId = runCatching { DocumentsContract.getDocumentId(fileUri) }.getOrNull() ?: return
+        val parentId = documentId.substringBeforeLast('/', documentId)
+        DocumentsContract.buildTreeDocumentUri(authority, parentId)
+    } else {
+        val file = File(path)
+        if (!file.exists()) return
+        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file.parentFile ?: file)
+    }
+    val intent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(uri, "vnd.android.document/directory")
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+    }
+    runCatching { context.startActivity(intent) }
+}

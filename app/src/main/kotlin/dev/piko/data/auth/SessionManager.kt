@@ -15,18 +15,7 @@ import kotlinx.coroutines.flow.map
 
 val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "piko_preferences")
 
-data class UserSession(
-    val token: String = "",
-    val refreshToken: String = "",
-    val userId: String = "",
-    val username: String = "",
-    val avatarUrl: String = "",
-    val concurrentConnections: Int = 8,
-) {
-    val isLoggedIn: Boolean get() = token.isNotEmpty()
-}
-
-class SessionManager(private val context: Context) {
+class SessionManager(private val context: Context) : PikoUserPreferences {
 
     private object PreferencesKeys {
         val TOKEN = stringPreferencesKey("auth_token")
@@ -44,18 +33,18 @@ class SessionManager(private val context: Context) {
         val LAST_FOLDER_STACK_SERIALIZED = stringPreferencesKey("last_folder_stack")
     }
 
-    suspend fun savePlaybackPosition(fileId: String, positionMs: Long) {
+    override suspend fun savePlaybackPosition(fileId: String, positionMs: Long) {
         context.dataStore.edit { preferences ->
             preferences[longPreferencesKey("playback_pos_$fileId")] = positionMs
         }
     }
 
-    suspend fun getPlaybackPosition(fileId: String): Long {
+    override suspend fun getPlaybackPosition(fileId: String): Long {
         val prefs = context.dataStore.data.first()
         return prefs[longPreferencesKey("playback_pos_$fileId")] ?: 0L
     }
 
-    suspend fun saveLastFolder(folderId: String, folderName: String, stackSerialized: String) {
+    override suspend fun saveLastFolder(folderId: String, folderName: String, stackSerialized: String) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.LAST_FOLDER_ID] = folderId
             preferences[PreferencesKeys.LAST_FOLDER_NAME] = folderName
@@ -63,7 +52,7 @@ class SessionManager(private val context: Context) {
         }
     }
 
-    suspend fun getLastFolder(): Triple<String, String, String> {
+    override suspend fun getLastFolder(): Triple<String, String, String> {
         val prefs = context.dataStore.data.first()
         return Triple(
             prefs[PreferencesKeys.LAST_FOLDER_ID] ?: "",
@@ -72,27 +61,27 @@ class SessionManager(private val context: Context) {
         )
     }
 
-    val spoilerBlurFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
+    override val spoilerBlurFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
         preferences[PreferencesKeys.SPOILER_BLUR_ENABLED] ?: true // 默认开启 Spoiler 遮蔽
     }
 
-    suspend fun setSpoilerBlurEnabled(enabled: Boolean) {
+    override suspend fun setSpoilerBlurEnabled(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.SPOILER_BLUR_ENABLED] = enabled
         }
     }
 
-    val heuristicFilterFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
+    override val heuristicFilterFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
         preferences[PreferencesKeys.HEURISTIC_FILTER_ENABLED] ?: true // 默认开启启发式单视频内容筛选
     }
 
-    suspend fun setHeuristicFilterEnabled(enabled: Boolean) {
+    override suspend fun setHeuristicFilterEnabled(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.HEURISTIC_FILTER_ENABLED] = enabled
         }
     }
 
-    val sessionFlow: Flow<UserSession> = context.dataStore.data.map { preferences ->
+    override val sessionFlow: Flow<UserSession> = context.dataStore.data.map { preferences ->
         UserSession(
             token = preferences[PreferencesKeys.TOKEN].orEmpty(),
             refreshToken = preferences[PreferencesKeys.REFRESH_TOKEN].orEmpty(),
@@ -103,12 +92,12 @@ class SessionManager(private val context: Context) {
         )
     }
 
-    suspend fun saveSession(
+    override suspend fun saveSession(
         token: String,
-        refreshToken: String = "",
-        userId: String = "",
-        username: String = "",
-        avatarUrl: String = "",
+        refreshToken: String,
+        userId: String,
+        username: String,
+        avatarUrl: String,
     ) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.TOKEN] = token
@@ -123,36 +112,36 @@ class SessionManager(private val context: Context) {
         }
     }
 
-    val concurrentAccelerationFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
+    override val concurrentAccelerationFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
         preferences[PreferencesKeys.CONCURRENT_ACCELERATION] ?: true
     }
 
-    val concurrentConnectionsFlow: Flow<Int> = concurrentAccelerationFlow.map { enabled ->
+    override val concurrentConnectionsFlow: Flow<Int> = concurrentAccelerationFlow.map { enabled ->
         if (enabled) 8 else 1
     }
 
-    val downloadDirPathFlow: Flow<String> = context.dataStore.data.map { preferences ->
+    override val downloadDirPathFlow: Flow<String> = context.dataStore.data.map { preferences ->
         preferences[PreferencesKeys.DOWNLOAD_DIR_PATH] ?: ""
     }
 
-    suspend fun setDownloadDirPath(path: String) {
+    override suspend fun setDownloadDirPath(path: String) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.DOWNLOAD_DIR_PATH] = path
         }
     }
 
-    suspend fun getDownloadDirPath(): String {
+    override suspend fun getDownloadDirPath(): String {
         val prefs = context.dataStore.data.first()
         return prefs[PreferencesKeys.DOWNLOAD_DIR_PATH] ?: ""
     }
 
-    suspend fun setConcurrentAccelerationEnabled(enabled: Boolean) {
+    override suspend fun setConcurrentAccelerationEnabled(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.CONCURRENT_ACCELERATION] = enabled
         }
     }
 
-    suspend fun clearSession() {
+    override suspend fun clearSession() {
         context.dataStore.edit { preferences ->
             preferences.remove(PreferencesKeys.TOKEN)
             preferences.remove(PreferencesKeys.REFRESH_TOKEN)

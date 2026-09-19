@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import io.github.nihildigit.pikpak.Session
 import io.github.nihildigit.pikpak.SessionStore
 import kotlinx.coroutines.flow.first
+import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.serialization.json.Json
 
 /**
@@ -37,5 +38,27 @@ class DataStoreSessionStore(private val context: Context) : SessionStore {
         context.dataStore.edit { prefs ->
             prefs.remove(sessionKey(account))
         }
+    }
+
+    suspend fun loadLastAccount(): String? =
+        context.dataStore.data.first()[stringPreferencesKey("piko_last_account")]
+
+    suspend fun saveLastAccount(account: String) {
+        context.dataStore.edit { it[stringPreferencesKey("piko_last_account")] = account }
+    }
+
+    suspend fun clearLastAccount() {
+        context.dataStore.edit { it.remove(stringPreferencesKey("piko_last_account")) }
+    }
+
+    suspend fun loadCredentials(account: String): String? =
+        context.dataStore.data.first()[stringPreferencesKey("pikpak_password_$account")]
+
+    suspend fun saveCredentials(account: String, password: String) {
+        context.dataStore.edit { it[stringPreferencesKey("pikpak_password_$account")] = password }
+    }
+
+    suspend fun clearCredentials(account: String) {
+        context.dataStore.edit { it.remove(stringPreferencesKey("pikpak_password_$account")) }
     }
 }

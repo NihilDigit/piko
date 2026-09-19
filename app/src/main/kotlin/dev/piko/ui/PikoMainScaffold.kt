@@ -34,7 +34,7 @@ import dev.piko.ui.navigation.MainTab
 import dev.piko.ui.navigation.Screen
 import dev.piko.ui.screens.drive.DriveScreen
 import dev.piko.ui.screens.files.FilesScreen
-import dev.piko.ui.screens.player.VideoPlayerScreen
+import dev.piko.ui.screens.player.MediampVideoPlayerScreen
 import dev.piko.ui.screens.settings.SettingsScreen
 import dev.piko.ui.screens.transfers.TransfersScreen
 import dev.piko.ui.theme.PikoMotion
@@ -193,7 +193,7 @@ fun PikoMainScaffold(
                         )
                     }
                     is Screen.VideoPlayer -> {
-                        VideoPlayerScreen(
+                        MediampVideoPlayerScreen(
                             fileId = screen.fileId,
                             fileName = screen.fileName,
                             localPath = screen.localPath,

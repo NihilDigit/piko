@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Environment
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.documentfile.provider.DocumentFile
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -106,27 +107,19 @@ fun SettingsScreen(
     val quota by driveRepo.quotaFlow.collectAsStateWithLifecycle()
     var showLogoutDialog by remember { mutableStateOf(false) }
     var showDownloadDirDialog by remember { mutableStateOf(false) }
-    var customPathInput by remember(downloadManager.downloadDir.absolutePath) {
-        mutableStateOf(downloadManager.downloadDir.absolutePath)
+    val resolvedDownloadPath = remember(downloadDirPath) {
+        displayDownloadPath(context, downloadDirPath)
     }
-
     val dirPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree()
+        contract = ActivityResultContracts.StartActivityForResult()
     ) { uri ->
-        if (uri != null) {
-            val path = uri.path ?: ""
-            val resolved = if (path.contains("primary:")) {
-                val sub = path.substringAfter("primary:").trimStart('/')
-                File(Environment.getExternalStorageDirectory(), sub).absolutePath
-            } else {
-                uri.path ?: ""
-            }
-            if (resolved.isNotBlank()) {
-                customPathInput = resolved
-                scope.launch {
-                    sessionManager.setDownloadDirPath(resolved)
-                }
-            }
+        val selected = uri.data?.data
+        if (selected != null) {
+            val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            runCatching { context.contentResolver.takePersistableUriPermission(selected, flags) }
+            val persistedTreeUri = selected.toString()
+            scope.launch { sessionManager.setDownloadDirPath(persistedTreeUri) }
+            showDownloadDirDialog = false
         }
     }
 
@@ -505,7 +498,6 @@ fun SettingsScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable {
-                                customPathInput = downloadManager.downloadDir.absolutePath
                                 showDownloadDirDialog = true
                             }
                             .padding(vertical = 4.dp),
@@ -526,7 +518,7 @@ fun SettingsScreen(
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = downloadManager.downloadDir.absolutePath,
+                                text = resolvedDownloadPath,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 2,
@@ -712,99 +704,55 @@ fun SettingsScreen(
 
 
     if (showDownloadDirDialog) {
-        val publicDownloadsPath = remember {
-            val pub = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            File(pub, "Piko").absolutePath
-        }
-        val appPrivatePath = remember {
-            (context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir).absolutePath
-        }
-
         AlertDialog(
             onDismissRequest = { showDownloadDirDialog = false },
-            title = { Text("设置下载存储路径") },
+            title = { Text("下载存储位置") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        text = "选择或自定义文件保存的存储路径：",
-                        style = MaterialTheme.typography.bodySmall,
+                        text = "默认使用应用私有目录。选择公共目录后，文件将保存到你授权的文件夹。",
+                        style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-
-                    // 预设 1: 系统公共 Download/Piko
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (customPathInput == publicDownloadsPath) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { customPathInput = publicDownloadsPath },
-                    ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
-                            Text("系统公共下载目录 (推荐)", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(publicDownloadsPath, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-
-                    // 预设 2: 应用沙盒专属目录
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (customPathInput == appPrivatePath) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { customPathInput = appPrivatePath },
-                    ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
-                            Text("应用专属沙盒目录", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(appPrivatePath, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-
-                    // 选项 3: 调用系统文件夹选择器
                     OutlinedButton(
                         onClick = {
-                            dirPickerLauncher.launch(null)
+                            val initialUri = android.provider.DocumentsContract.buildTreeDocumentUri(
+                                "com.android.externalstorage.documents",
+                                "primary:Download/Piko",
+                            )
+                            dirPickerLauncher.launch(
+                                Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                                    putExtra("android.provider.extra.INITIAL_URI", initialUri)
+                                    addFlags(
+                                        Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                            Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                                            Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION,
+                                    )
+                                },
+                            )
                         },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(10.dp),
                     ) {
                         Icon(Icons.Outlined.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("系统文件选择器浏览...")
+                        Text("选择文件夹")
                     }
-
-                    // 手动输入路径
-                    OutlinedTextField(
-                        value = customPathInput,
-                        onValueChange = { customPathInput = it },
-                        label = { Text("自定义目标绝对路径") },
-                        maxLines = 2,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(10.dp),
-                    )
                 }
             },
             confirmButton = {
-                Button(
-                    onClick = {
-                        val trimmed = customPathInput.trim()
-                        if (trimmed.isNotBlank()) {
-                            showDownloadDirDialog = false
-                            scope.launch {
-                                sessionManager.setDownloadDirPath(trimmed)
-                            }
-                        }
-                    }
-                ) {
-                    Text("应用路径")
-                }
+                TextButton(onClick = { showDownloadDirDialog = false }) { Text("完成") }
             },
-            dismissButton = {
-                TextButton(onClick = { showDownloadDirDialog = false }) {
-                    Text("取消")
-                }
-            }
         )
+    }
+}
+
+private fun displayDownloadPath(context: android.content.Context, storedPath: String): String {
+    if (storedPath.startsWith("content:")) {
+        return DocumentFile.fromTreeUri(context, Uri.parse(storedPath))?.name ?: "已选择的文件夹"
+    }
+    return storedPath.ifBlank {
+        context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.absolutePath
+            ?: context.filesDir.resolve("Piko").absolutePath
     }
 }

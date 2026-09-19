@@ -1,6 +1,5 @@
 @file:OptIn(
     androidx.compose.material3.ExperimentalMaterial3Api::class,
-    androidx.media3.common.util.UnstableApi::class,
 )
 
 package dev.piko.ui.components
@@ -47,6 +46,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -55,21 +55,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.media3.common.MediaItem
-import androidx.media3.common.Player
-import androidx.media3.common.util.UnstableApi
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.ui.AspectRatioFrameLayout
-import androidx.media3.ui.PlayerView
 import dev.piko.PikoApplication
-import dev.piko.data.repository.PlayableMediaInfo
+import dev.piko.shared.media.PlayableMediaInfo
 import io.github.nihildigit.pikpak.FileStat
 import java.util.Locale
+import org.openani.mediamp.ExperimentalMediampApi
+import org.openani.mediamp.compose.MediampPlayerSurface
+import org.openani.mediamp.compose.rememberMediampPlayer
+import org.openani.mediamp.isLoadingOrBuffering
+import org.openani.mediamp.playUri
 
 fun formatTimeMs(ms: Long): String {
     val totalSec = (ms / 1000L).coerceAtLeast(0L)
@@ -88,7 +85,7 @@ fun formatTimeMs(ms: Long): String {
  * 提供起点与终点两处画面的实时帧预览，微调步进控制与时长/文件体积估算，
  * 确认后交由 SDK 的 8 连接并发分块滑动窗口机制进行段落流式写入。
  */
-@OptIn(ExperimentalMaterial3Api::class, UnstableApi::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMediampApi::class)
 @Composable
 fun SegmentDownloadSheet(
     file: FileStat,
@@ -96,7 +93,7 @@ fun SegmentDownloadSheet(
     onConfirmDownload: (startByte: Long, lengthBytes: Long, timeLabel: String, startMs: Long, endMs: Long, streamUrl: String?) -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val mediaRepo = PikoApplication.instance.mediaRepository
+    val mediaRepo = PikoApplication.instance.mediampMediaRepository
 
     var mediaInfo by remember { mutableStateOf<PlayableMediaInfo?>(null) }
     var isLoading by remember { mutableStateOf(true) }
@@ -376,15 +373,7 @@ fun SegmentDownloadSheet(
 /**
  * 带有实时帧定位与加载态的预览卡片
  */
-@OptIn(UnstableApi::class)
-/**
- * PreviewCard renders a lightweight video frame preview using Media3 ExoPlayer.
- *
- * Documentation references:
- * - Media3 ExoPlayer setup & lifecycle: `android-docs-mirror/pages/media/media3/exoplayer/hello-world.md`
- * - Listening to player events: `android-docs-mirror/pages/media/media3/exoplayer/events.md`
- * - Material 3 Surface containers: `m3-material-mirror/pages/styles/color.md`
- */
+@OptIn(ExperimentalMediampApi::class)
 @Composable
 private fun PreviewCard(
     label: String,
@@ -393,29 +382,11 @@ private fun PreviewCard(
     onDurationKnown: (Long) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val context = LocalContext.current
-    val previewPlayer = remember {
-        ExoPlayer.Builder(context).build().apply {
-            playWhenReady = false
-        }
-    }
+    val previewPlayer = rememberMediampPlayer()
+    val playerState by previewPlayer.state.collectAsState()
 
-    DisposableEffect(previewPlayer, url) {
-        val listener = object : Player.Listener {
-            override fun onPlaybackStateChanged(state: Int) {
-                if (state == Player.STATE_READY) {
-                    onDurationKnown(previewPlayer.duration.coerceAtLeast(0L))
-                }
-            }
-        }
-        if (url.isNotBlank()) {
-            previewPlayer.addListener(listener)
-            previewPlayer.setMediaItem(MediaItem.fromUri(url))
-            previewPlayer.prepare()
-        }
-        onDispose {
-            previewPlayer.removeListener(listener)
-        }
+    LaunchedEffect(url) {
+        if (url.isNotBlank()) previewPlayer.playUri(url, playWhenReady = false)
     }
 
     LaunchedEffect(positionMs) {
@@ -423,8 +394,13 @@ private fun PreviewCard(
     }
 
     DisposableEffect(previewPlayer) {
-        onDispose {
-            previewPlayer.release()
+        onDispose { previewPlayer.close() }
+    }
+
+    LaunchedEffect(previewPlayer) {
+        while (true) {
+            previewPlayer.mediaProperties.value?.durationMillis?.let(onDurationKnown)
+            kotlinx.coroutines.delay(250)
         }
     }
 
@@ -442,16 +418,8 @@ private fun PreviewCard(
                 contentAlignment = Alignment.Center,
             ) {
                 if (url.isNotBlank()) {
-                    AndroidView(
-                        factory = { ctx ->
-                            PlayerView(ctx).apply {
-                                player = previewPlayer
-                                useController = false
-                                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                            }
-                        },
-                        modifier = Modifier.fillMaxSize(),
-                    )
+                    MediampPlayerSurface(previewPlayer, Modifier.fillMaxSize())
+                    if (playerState.isLoadingOrBuffering) CircularProgressIndicator(modifier = Modifier.size(24.dp))
                 } else {
                     CircularProgressIndicator(modifier = Modifier.size(24.dp))
                 }

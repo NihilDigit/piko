@@ -53,7 +53,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.PikoApplication
-import dev.piko.data.repository.MagnetResolutionResult
+import dev.piko.shared.data.MagnetResolutionResult
 import dev.piko.ui.components.PikoLoadingIndicator
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.toReadableSize

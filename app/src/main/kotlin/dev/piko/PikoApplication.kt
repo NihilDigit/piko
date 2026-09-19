@@ -5,13 +5,17 @@ import coil3.ImageLoader
 import coil3.PlatformContext
 import coil3.SingletonImageLoader
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
+import dev.piko.data.auth.AndroidPikoSessionStore
 import dev.piko.data.auth.SessionManager
-import dev.piko.data.client.PikPakClientManager
 import dev.piko.data.repository.DriveRepository
-import dev.piko.data.repository.InstantMagnetRepository
-import dev.piko.data.repository.MediaRepository
-import dev.piko.data.repository.TaskRepository
-import dev.piko.download.PikoDownloadManager
+import dev.piko.download.AndroidPikoDownloadStorage
+import dev.piko.download.AndroidPikoSegmentDownloader
+import dev.piko.download.PikoDownloadService
+import dev.piko.shared.data.PikoClientManager
+import dev.piko.shared.data.InstantMagnetRepository
+import dev.piko.shared.data.TaskRepository
+import dev.piko.shared.download.PikoDownloadCoordinator
+import dev.piko.shared.media.PikoMediaRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -25,7 +29,7 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
     lateinit var sessionManager: SessionManager
         private set
 
-    lateinit var clientManager: PikPakClientManager
+    lateinit var clientManager: PikoClientManager
         private set
 
     lateinit var driveRepository: DriveRepository
@@ -37,10 +41,10 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
     lateinit var taskRepository: TaskRepository
         private set
 
-    lateinit var mediaRepository: MediaRepository
+    lateinit var mediampMediaRepository: PikoMediaRepository
         private set
 
-    lateinit var downloadManager: PikoDownloadManager
+    lateinit var downloadManager: PikoDownloadCoordinator
         private set
 
     override fun onCreate() {
@@ -48,12 +52,19 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
         instance = this
 
         sessionManager = SessionManager(this)
-        clientManager = PikPakClientManager(this, sessionManager, appScope)
-        driveRepository = DriveRepository(this, clientManager)
+        clientManager = PikoClientManager(AndroidPikoSessionStore(this, sessionManager), appScope)
+        driveRepository = DriveRepository(clientManager)
         instantMagnetRepository = InstantMagnetRepository(clientManager)
         taskRepository = TaskRepository(clientManager)
-        mediaRepository = MediaRepository(clientManager, sessionManager)
-        downloadManager = PikoDownloadManager(this, clientManager, sessionManager, appScope)
+        mediampMediaRepository = PikoMediaRepository(clientManager, sessionManager)
+        downloadManager = PikoDownloadCoordinator(
+            clientProvider = clientManager,
+            preferences = sessionManager,
+            storage = AndroidPikoDownloadStorage(this, sessionManager, appScope),
+            scope = appScope,
+            segmentDownloader = AndroidPikoSegmentDownloader(this),
+            onDownloadStarted = { PikoDownloadService.start(this) },
+        )
     }
 
     override fun newImageLoader(context: PlatformContext): ImageLoader {

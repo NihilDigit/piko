@@ -11,6 +11,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -55,8 +57,8 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Folder
 import dev.piko.data.repository.FileNameSanitizer
-import dev.piko.data.repository.InstantFileItem
-import dev.piko.data.repository.MagnetResolutionResult
+import dev.piko.shared.data.InstantFileItem
+import dev.piko.shared.data.MagnetResolutionResult
 import androidx.compose.material.icons.outlined.HourglassEmpty
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Search
@@ -114,6 +116,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -1088,10 +1092,9 @@ fun DriveScreen(
                                 Icon(Icons.Outlined.Close, contentDescription = "关闭预览")
                             }
                         }
-                        AsyncImage(
+                        ZoomableImage(
                             model = image.thumbnailLink,
                             contentDescription = image.name,
-                            contentScale = ContentScale.Fit,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .heightIn(max = 560.dp)
@@ -1102,6 +1105,53 @@ fun DriveScreen(
             }
         }
     }
+}
+
+/**
+ * Full-size image viewer. The old preview only rendered a scaled thumbnail,
+ * which made high-resolution posters impossible to inspect. Keep the image in
+ * the same dialog, but let touch and pointer gestures control a bounded canvas.
+ */
+@Composable
+private fun ZoomableImage(
+    model: String,
+    contentDescription: String,
+    modifier: Modifier = Modifier,
+) {
+    var scale by remember { mutableStateOf(1f) }
+    var offsetX by remember { mutableStateOf(0f) }
+    var offsetY by remember { mutableStateOf(0f) }
+    val transformState = androidx.compose.foundation.gestures.rememberTransformableState { zoom, pan, _ ->
+        scale = (scale * zoom).coerceIn(1f, 6f)
+        offsetX += pan.x
+        offsetY += pan.y
+    }
+
+    AsyncImage(
+        model = model,
+        contentDescription = contentDescription,
+        contentScale = ContentScale.Fit,
+        modifier = modifier
+            .heightIn(min = 240.dp)
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onDoubleTap = {
+                        scale = if (scale > 1f) 1f else 2f
+                        if (scale == 1f) {
+                            offsetX = 0f
+                            offsetY = 0f
+                        }
+                    },
+                )
+            }
+            .transformable(transformState)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+                translationX = offsetX
+                translationY = offsetY
+            },
+    )
 }
 
 /**

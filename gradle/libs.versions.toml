@@ -4,26 +4,34 @@ kotlin = "2.4.10"
 ksp = "2.3.11"
 
 coreKtx = "1.19.0"
+documentFile = "1.1.0"
 activityCompose = "1.13.0"
 lifecycle = "2.11.0"
 composeBom = "2026.07.01"
 material3AdaptiveSuite = "1.5.0-alpha17"
 navigation3 = "1.1.5"
 
-media3 = "1.11.1"
 datastore = "1.2.1"
 ktor = "3.5.2"
 serialization = "1.11.0"
-coil = "3.5.0"
+coil = "3.6.3"
 kotlinxCoroutines = "1.11.0"
+kotlinxDatetime = "0.7.1"
 pikpakSdk = "0.6.6"
+composeMultiplatform = "1.12.0"
+mediamp = "0.4.0"
+fluentUi = "v0.1.0"
 
 junit = "4.13.2"
 
 [libraries]
 pikpak-kotlin = { module = "io.github.nihildigit:pikpak-kotlin", version.ref = "pikpakSdk" }
+mediamp-all = { module = "org.openani.mediamp:mediamp-all", version.ref = "mediamp" }
+mediamp-source-ktxio = { module = "org.openani.mediamp:mediamp-source-ktxio", version.ref = "mediamp" }
+fluent-ui = { module = "io.github.compose-fluent:fluent", version.ref = "fluentUi" }
 
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
+androidx-documentfile = { module = "androidx.documentfile:documentfile", version.ref = "documentFile" }
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
 androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "lifecycle" }
 androidx-lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }
@@ -44,10 +52,6 @@ androidx-navigation3-runtime = { module = "androidx.navigation3:navigation3-runt
 androidx-navigation3-ui = { module = "androidx.navigation3:navigation3-ui", version.ref = "navigation3" }
 androidx-lifecycle-viewmodel-navigation3 = { module = "androidx.lifecycle:lifecycle-viewmodel-navigation3", version.ref = "lifecycle" }
 
-# Media3
-androidx-media3-exoplayer = { module = "androidx.media3:media3-exoplayer", version.ref = "media3" }
-androidx-media3-ui = { module = "androidx.media3:media3-ui", version.ref = "media3" }
-
 # DataStore
 androidx-datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastore" }
 
@@ -61,6 +65,7 @@ ktor-client-logging = { module = "io.ktor:ktor-client-logging", version.ref = "k
 # KotlinX
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
+kotlinx-datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.ref = "kotlinxDatetime" }
 kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "kotlinxCoroutines" }
 
 # Coil 3
@@ -71,6 +76,9 @@ junit = { module = "junit:junit", version.ref = "junit" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
+android-kotlin-multiplatform-library = { id = "com.android.kotlin.multiplatform.library", version.ref = "agp" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
+compose = { id = "org.jetbrains.compose", version.ref = "composeMultiplatform" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }

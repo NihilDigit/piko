@@ -98,11 +98,16 @@ android {
 }
 
 dependencies {
+    // Shared KMP domain and media primitives. Android-specific UI and services
+    // remain in this application module while migration proceeds incrementally.
+    implementation(project(":shared"))
+
     // PikPak SDK (KMP)
     implementation(libs.pikpak.kotlin)
 
     // AndroidX & Lifecycle
     implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.documentfile)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
@@ -122,10 +127,6 @@ dependencies {
     implementation(libs.androidx.navigation3.runtime)
     implementation(libs.androidx.navigation3.ui)
     implementation(libs.androidx.lifecycle.viewmodel.navigation3)
-
-    // Media3 (ExoPlayer and PlayerView)
-    implementation(libs.androidx.media3.exoplayer)
-    implementation(libs.androidx.media3.ui)
 
     // DataStore
     implementation(libs.androidx.datastore.preferences)
