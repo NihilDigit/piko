@@ -120,7 +120,7 @@ private fun MainAppContent(
     val downloadCoordinator = remember(manager, preferences, storage) {
         PikoDownloadCoordinator(manager, preferences, storage, scope)
     }
-    val driveRepo = remember(manager) { PikoDriveRepository(manager) }
+    val driveRepo = remember(manager, preferences) { PikoDriveRepository(manager, preferences) }
     val mediaRepo = remember(manager) { PikoMediaRepository(manager) }
 
     var currentSection by remember { mutableStateOf(NavSection.DRIVE) }
@@ -240,6 +240,7 @@ private fun MainAppContent(
                         repository = driveRepo,
                         mediaRepository = mediaRepo,
                         downloadCoordinator = downloadCoordinator,
+                        preferences = preferences,
                         themeColors = themeColors,
                     )
                 }

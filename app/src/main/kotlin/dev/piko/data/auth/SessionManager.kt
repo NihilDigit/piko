@@ -28,6 +28,10 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val DOWNLOAD_DIR_PATH = stringPreferencesKey("download_dir_path")
         val SPOILER_BLUR_ENABLED = booleanPreferencesKey("spoiler_blur_enabled")
         val HEURISTIC_FILTER_ENABLED = booleanPreferencesKey("heuristic_filter_enabled")
+        val INSTANT_TARGET_ID = stringPreferencesKey("instant_target_id")
+        val INSTANT_TARGET_NAME = stringPreferencesKey("instant_target_name")
+        val QUOTA_USAGE_BYTES = longPreferencesKey("quota_usage_bytes")
+        val QUOTA_LIMIT_BYTES = longPreferencesKey("quota_limit_bytes")
         val LAST_FOLDER_ID = stringPreferencesKey("last_folder_id")
         val LAST_FOLDER_NAME = stringPreferencesKey("last_folder_name")
         val LAST_FOLDER_STACK_SERIALIZED = stringPreferencesKey("last_folder_stack")
@@ -107,6 +111,44 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
                 preferences.remove(PreferencesKeys.REFRESH_TOKEN)
             }
             if (userId.isNotEmpty()) preferences[PreferencesKeys.USER_ID] = userId
+            if (username.isNotEmpty()) preferences[PreferencesKeys.USERNAME] = username
+            if (avatarUrl.isNotEmpty()) preferences[PreferencesKeys.AVATAR_URL] = avatarUrl
+        }
+    }
+
+    override val quotaSnapshotFlow: Flow<QuotaSnapshot?> = context.dataStore.data.map { preferences ->
+        val limit = preferences[PreferencesKeys.QUOTA_LIMIT_BYTES]
+        val usage = preferences[PreferencesKeys.QUOTA_USAGE_BYTES]
+        // 只有上限有值才算拿到过配额：零上限会让占比计算除零
+        if (limit != null && usage != null && limit > 0) QuotaSnapshot(usage, limit) else null
+    }
+
+    override suspend fun saveQuotaSnapshot(usageBytes: Long, limitBytes: Long) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.QUOTA_USAGE_BYTES] = usageBytes
+            preferences[PreferencesKeys.QUOTA_LIMIT_BYTES] = limitBytes
+        }
+    }
+
+    override val instantTargetFlow: Flow<InstantTarget?> = context.dataStore.data.map { preferences ->
+        val name = preferences[PreferencesKeys.INSTANT_TARGET_NAME]
+        // id 为根目录时是空串，所以用名字判断有没有配置过
+        if (name.isNullOrEmpty()) {
+            null
+        } else {
+            InstantTarget(preferences[PreferencesKeys.INSTANT_TARGET_ID].orEmpty(), name)
+        }
+    }
+
+    override suspend fun saveInstantTarget(folderId: String, folderName: String) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.INSTANT_TARGET_ID] = folderId
+            preferences[PreferencesKeys.INSTANT_TARGET_NAME] = folderName
+        }
+    }
+
+    override suspend fun saveProfile(username: String, avatarUrl: String) {
+        context.dataStore.edit { preferences ->
             if (username.isNotEmpty()) preferences[PreferencesKeys.USERNAME] = username
             if (avatarUrl.isNotEmpty()) preferences[PreferencesKeys.AVATAR_URL] = avatarUrl
         }

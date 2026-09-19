@@ -25,6 +25,7 @@ import androidx.compose.material.icons.outlined.ContentCut
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Image
@@ -33,8 +34,7 @@ import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material.icons.outlined.QuestionMark
 import androidx.compose.material.icons.outlined.VideoFile
 import androidx.compose.material.icons.outlined.FolderZip
-import androidx.compose.material.icons.outlined.VisibilityOff
-import androidx.compose.ui.draw.blur
+import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -78,6 +78,8 @@ fun FileItemRow(
     isHighlighted: Boolean = false,
     highlightBadgeText: String = "刚秒传",
     isSpoilerBlurred: Boolean = false,
+    /** 全盘搜索结果所在的目录路径。仅搜索结果需要，平时为 null。 */
+    locationLabel: String? = null,
     onToggleSpoiler: () -> Unit = {},
     onClick: () -> Unit,
     onLongClick: () -> Unit,
@@ -86,6 +88,7 @@ fun FileItemRow(
     onDelete: () -> Unit,
     onDownload: () -> Unit,
     onDownloadSegment: () -> Unit = {},
+    onMove: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val haptic = LocalHapticFeedback.current
@@ -145,16 +148,16 @@ fun FileItemRow(
                     AsyncImage(
                         model = file.thumbnailLink,
                         contentDescription = null,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .then(if (isSpoilerBlurred) Modifier.blur(16.dp) else Modifier),
+                        modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop,
                     )
                     if (isSpoilerBlurred) {
+                        // 48dp 缩略图上的高斯模糊只是一团色块，遮蔽效果还不如不透明遮罩，
+                        // 代价却要每帧重绘。模糊留给网格视图的大图，列表只用眼睛图标。
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .background(MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.65f))
+                                .background(MaterialTheme.colorScheme.surfaceContainerHighest)
                                 .clickable(
                                     onClickLabel = "显示预览",
                                     onClick = onToggleSpoiler,
@@ -162,8 +165,8 @@ fun FileItemRow(
                             contentAlignment = Alignment.Center,
                         ) {
                             Icon(
-                                imageVector = Icons.Outlined.VisibilityOff,
-                                contentDescription = "点击查看",
+                                imageVector = Icons.Outlined.Visibility,
+                                contentDescription = "显示预览",
                                 tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(18.dp),
                             )
@@ -248,6 +251,15 @@ fun FileItemRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                 )
+                if (!locationLabel.isNullOrEmpty()) {
+                    Text(
+                        text = locationLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
 
             // 更多操作按钮
@@ -301,6 +313,16 @@ fun FileItemRow(
                             onClick = {
                                 showMenu = false
                                 onRename()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("移动到") },
+                            leadingIcon = {
+                                Icon(Icons.Outlined.DriveFileMove, contentDescription = null)
+                            },
+                            onClick = {
+                                showMenu = false
+                                onMove()
                             },
                         )
                         DropdownMenuItem(

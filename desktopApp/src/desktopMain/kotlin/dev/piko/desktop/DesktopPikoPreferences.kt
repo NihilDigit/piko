@@ -1,6 +1,8 @@
 package dev.piko.desktop
 
+import dev.piko.data.auth.InstantTarget
 import dev.piko.data.auth.PikoUserPreferences
+import dev.piko.data.auth.QuotaSnapshot
 import dev.piko.data.auth.UserSession
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -12,6 +14,8 @@ class DesktopPikoPreferences(settings: DesktopSettingsStore) : PikoUserPreferenc
     private val heuristic = MutableStateFlow(true)
     private val acceleration = MutableStateFlow(true)
     private val session = MutableStateFlow(UserSession())
+    private val quota = MutableStateFlow<QuotaSnapshot?>(null)
+    private val instantTarget = MutableStateFlow<InstantTarget?>(null)
     private val downloadPath = MutableStateFlow(settings.downloadDirectory.absolutePath)
 
     override suspend fun savePlaybackPosition(fileId: String, positionMs: Long) { playback[fileId] = positionMs }
@@ -25,6 +29,20 @@ class DesktopPikoPreferences(settings: DesktopSettingsStore) : PikoUserPreferenc
     override val sessionFlow: Flow<UserSession> = session.asStateFlow()
     override suspend fun saveSession(token: String, refreshToken: String, userId: String, username: String, avatarUrl: String) {
         session.value = UserSession(token, refreshToken, userId, username, avatarUrl)
+    }
+    override val instantTargetFlow: Flow<InstantTarget?> = instantTarget.asStateFlow()
+    override suspend fun saveInstantTarget(folderId: String, folderName: String) {
+        instantTarget.value = InstantTarget(folderId, folderName)
+    }
+    override val quotaSnapshotFlow: Flow<QuotaSnapshot?> = quota.asStateFlow()
+    override suspend fun saveQuotaSnapshot(usageBytes: Long, limitBytes: Long) {
+        quota.value = QuotaSnapshot(usageBytes, limitBytes)
+    }
+    override suspend fun saveProfile(username: String, avatarUrl: String) {
+        session.value = session.value.copy(
+            username = username.ifEmpty { session.value.username },
+            avatarUrl = avatarUrl.ifEmpty { session.value.avatarUrl },
+        )
     }
     override suspend fun clearSession() { session.value = UserSession() }
     override val concurrentAccelerationFlow: Flow<Boolean> = acceleration.asStateFlow()

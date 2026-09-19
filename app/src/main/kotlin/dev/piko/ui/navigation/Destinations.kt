@@ -31,6 +31,9 @@ sealed interface Screen : NavKey {
     data object Settings : Screen
 
     @Serializable
+    data object Trash : Screen
+
+    @Serializable
     data class VideoPlayer(
         val fileId: String,
         val fileName: String,

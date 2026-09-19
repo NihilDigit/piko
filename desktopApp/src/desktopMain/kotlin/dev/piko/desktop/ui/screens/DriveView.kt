@@ -51,12 +51,13 @@ import dev.piko.desktop.ui.components.isImageFile
 import dev.piko.desktop.ui.components.isVideoFile
 import dev.piko.desktop.ui.player.VideoPlayerWindow
 import dev.piko.desktop.winrt.WinRTSupport
+import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.data.PikoClientManager
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoFileSortOrder
-import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.media.PikoMediaRepository
+import dev.piko.shared.state.DriveScreenState
 import io.github.composefluent.Colors
 import io.github.composefluent.FluentTheme
 import io.github.composefluent.component.AccentButton
@@ -94,19 +95,26 @@ fun DriveView(
     repository: PikoDriveRepository,
     mediaRepository: PikoMediaRepository,
     downloadCoordinator: PikoDownloadCoordinator,
+    preferences: PikoUserPreferences,
     themeColors: Colors,
 ) {
     val scope = rememberCoroutineScope()
 
-    // Folder Stack & Path
-    val folderStack by repository.folderStackFlow.collectAsState()
-    val currentCrumb = folderStack.lastOrNull() ?: PikoPathBreadcrumb("", "网盘")
-    val parentId = currentCrumb.id
+    // 浏览、搜索、增删改的状态都在共享状态类里，Desktop 这边只剩 Fluent 的布局与外观。
+    // Desktop 目前不提供排序入口，固定按名称升序。
+    val state = remember(repository, preferences) {
+        DriveScreenState(repository, preferences, scope, PikoFileSortOrder.NAME_ASC)
+    }
 
-    var files by remember { mutableStateOf<List<FileStat>>(emptyList()) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var successMsg by remember { mutableStateOf<String?>(null) }
-    var isLoading by remember { mutableStateOf(true) }
+    val folderStack by state.folderStack.collectAsState()
+
+    // 回收站不在共享状态类的覆盖范围内，单独持有自己的列表与加载态。
+    var trashFiles by remember { mutableStateOf<List<FileStat>>(emptyList()) }
+    var isTrashLoading by remember { mutableStateOf(false) }
+
+    // 共享状态类的提示成功失败走同一条流，这里按文案里的「失败」分流到 InfoBar 的
+    // 两种 severity。分成两个变量的话，一次操作的成功与失败提示会同时挂在界面上。
+    var notice by remember { mutableStateOf<String?>(null) }
 
     // 视图模式：列表模式 (false) vs 网格模式 (true)
     var isGridView by remember { mutableStateOf(false) }
@@ -133,29 +141,30 @@ fun DriveView(
     var deleteTargetFile by remember { mutableStateOf<FileStat?>(null) }
     var permanentDeleteTargetFile by remember { mutableStateOf<FileStat?>(null) }
 
-    var query by remember { mutableStateOf("") }
     var showTrash by remember { mutableStateOf(false) }
 
-    suspend fun reload() {
-        isLoading = true
-        val result: Result<List<FileStat>> = when {
-            showTrash -> repository.trashFiles().onSuccess { files = it; error = null }
-            query.isNotBlank() -> repository.search(query.trim()).onSuccess { files = it; error = null }
-            else -> repository.listFiles(parentId = parentId, sortOrder = PikoFileSortOrder.NAME_ASC)
-                .map { it.first }
-        }
-        result.onSuccess { files = it; error = null }
-            .onFailure { error = it.message ?: "读取网盘失败" }
-        isLoading = false
+    suspend fun reloadTrash() {
+        isTrashLoading = true
+        repository.trashFiles()
+            .onSuccess { trashFiles = it }
+            .onFailure { notice = "读取回收站失败: ${it.message}" }
+        isTrashLoading = false
     }
 
-    LaunchedEffect(repository, parentId, showTrash) {
-        reload()
+    LaunchedEffect(state, showTrash) {
+        if (showTrash) reloadTrash() else state.load()
     }
+
+    LaunchedEffect(state) {
+        state.messages.collect { notice = it }
+    }
+
+    val files = if (showTrash) trashFiles else state.displayedFiles
+    val isLoading = if (showTrash) isTrashLoading else state.isLoading
 
     fun handleFileClick(file: FileStat) {
         if (file.isFolder) {
-            repository.pushFolder(file.id, file.name)
+            state.openFolder(file.id, file.name)
         } else if (isVideoFile(file.name)) {
             activePlayingFile = file
         } else if (isImageFile(file.name) && file.thumbnailLink.isNotBlank()) {
@@ -165,7 +174,7 @@ fun DriveView(
             imageOffsetY = 0f
         } else {
             downloadCoordinator.enqueue(file)
-            successMsg = "已加入下载任务：${file.name}"
+            notice = "已加入下载任务：${file.name}"
             WinRTSupport.showNotification("已添加下载任务", file.name)
         }
     }
@@ -183,9 +192,7 @@ fun DriveView(
             ) {
                 if (folderStack.size > 1 && !showTrash) {
                     SubtleButton(
-                        onClick = {
-                            repository.popFolder()
-                        },
+                        onClick = { state.navigateUp() },
                     ) {
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -234,7 +241,9 @@ fun DriveView(
                     }
                 }
                 Button(
-                    onClick = { scope.launch { reload() } },
+                    onClick = {
+                        if (showTrash) scope.launch { reloadTrash() } else state.load(refresh = true)
+                    },
                 ) {
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -246,7 +255,7 @@ fun DriveView(
                 }
                 Button(
                     onClick = {
-                        query = ""
+                        state.updateSearchQuery("")
                         showTrash = !showTrash
                     },
                 ) {
@@ -287,9 +296,7 @@ fun DriveView(
                         )
                     } else {
                         SubtleButton(
-                            onClick = {
-                                repository.popToBreadcrumb(index)
-                            },
+                            onClick = { state.navigateToBreadcrumb(index) },
                         ) {
                             Text(crumb.name)
                         }
@@ -299,44 +306,64 @@ fun DriveView(
         }
 
         // Search Bar
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TextField(
-                value = query,
-                onValueChange = { query = it },
-                placeholder = { Text("搜索当前网盘文件…") },
-                leadingIcon = { Icon(Icons.Regular.Search, contentDescription = "搜索", modifier = Modifier.size(16.dp)) },
-                singleLine = true,
-                modifier = Modifier.weight(1f),
-            )
-            Button(onClick = { scope.launch { reload() } }) {
-                Text("搜索")
+        // 回收站列表是它自己那份，过滤与全盘搜索都作用不到，搜索框在回收站模式下不出现。
+        if (!showTrash) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextField(
+                    value = state.searchQuery,
+                    onValueChange = { state.updateSearchQuery(it) },
+                    placeholder = { Text("在当前文件夹内过滤…") },
+                    leadingIcon = { Icon(Icons.Regular.Search, contentDescription = "搜索", modifier = Modifier.size(16.dp)) },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                )
+                if (state.isGlobalSearching) {
+                    ProgressRing(size = ProgressRingSize.Small)
+                    Button(onClick = { state.cancelGlobalSearch() }) {
+                        Text("停止")
+                    }
+                } else {
+                    Button(
+                        onClick = { state.startGlobalSearch() },
+                        disabled = state.searchQuery.isBlank(),
+                    ) {
+                        Text("全盘搜索")
+                    }
+                }
             }
         }
 
         // Notifications
-        error?.let {
-            InfoBar(
-                title = { Text("提示") },
-                message = { Text(it) },
-                severity = InfoBarSeverity.Critical,
-                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                closeAction = {
-                    InfoBarDefaults.CloseActionButton(onClick = { error = null })
-                },
-            )
+        // loadError 与 notice 分开：前者说明列表里现在这份数据是旧的，要一直挂着直到加载
+        // 成功；后者是一次性的操作结果。并成一条的话，下一次操作的提示会把陈旧提示冲掉。
+        if (!showTrash) {
+            state.loadError?.let {
+                InfoBar(
+                    title = { Text("内容可能不是最新的") },
+                    message = { Text(it) },
+                    severity = InfoBarSeverity.Warning,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                    action = {
+                        Button(onClick = { state.load(refresh = true) }) {
+                            Text("重试")
+                        }
+                    },
+                )
+            }
         }
-        successMsg?.let {
+        notice?.let {
+            val failed = it.contains("失败")
             InfoBar(
-                title = { Text("操作成功") },
+                title = { Text(if (failed) "提示" else "操作成功") },
                 message = { Text(it) },
-                severity = InfoBarSeverity.Success,
+                severity = if (failed) InfoBarSeverity.Critical else InfoBarSeverity.Success,
                 modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
                 closeAction = {
-                    InfoBarDefaults.CloseActionButton(onClick = { successMsg = null })
+                    InfoBarDefaults.CloseActionButton(onClick = { notice = null })
                 },
             )
         }
@@ -349,7 +376,12 @@ fun DriveView(
         } else if (files.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
-                    text = if (showTrash) "回收站为空" else "当前文件夹为空",
+                    text = when {
+                        showTrash -> "回收站为空"
+                        state.isGlobalSearchActive -> if (state.isGlobalSearching) "正在全盘搜索…" else "全盘未找到匹配的文件"
+                        state.searchQuery.isNotBlank() -> "当前文件夹内没有匹配的文件"
+                        else -> "当前文件夹为空"
+                    },
                     style = FluentTheme.typography.bodyLarge,
                     color = FluentTheme.colors.text.text.secondary,
                 )
@@ -418,6 +450,18 @@ fun DriveView(
                                 color = FluentTheme.colors.text.text.secondary,
                             )
 
+                            // 全盘结果横跨多个目录，不显示所在位置的话同名文件分不清。
+                            state.hitLocations[file.id]?.let { location ->
+                                Text(
+                                    text = location,
+                                    style = FluentTheme.typography.caption,
+                                    color = FluentTheme.colors.text.text.tertiary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
+
                             Spacer(Modifier.height(6.dp))
 
                             // 快捷操作栏
@@ -438,7 +482,7 @@ fun DriveView(
                                     SubtleButton(
                                         onClick = {
                                             downloadCoordinator.enqueue(file)
-                                            successMsg = "已加入下载任务：${file.name}"
+                                            notice = "已加入下载任务：${file.name}"
                                             WinRTSupport.showNotification("已添加下载任务", file.name)
                                         },
                                     ) {
@@ -469,10 +513,10 @@ fun DriveView(
                                             scope.launch {
                                                 repository.restore(listOf(file.id))
                                                     .onSuccess {
-                                                        successMsg = "已恢复文件：${file.name}"
-                                                        reload()
+                                                        notice = "已恢复文件：${file.name}"
+                                                        reloadTrash()
                                                     }
-                                                    .onFailure { error = it.message ?: "恢复失败" }
+                                                    .onFailure { notice = "恢复失败: ${it.message}" }
                                             }
                                         },
                                     ) {
@@ -512,6 +556,15 @@ fun DriveView(
                                         text = formatBytes(file.sizeBytes),
                                         style = FluentTheme.typography.caption,
                                         color = FluentTheme.colors.text.text.secondary,
+                                    )
+                                }
+                                state.hitLocations[file.id]?.let { location ->
+                                    Text(
+                                        text = location,
+                                        style = FluentTheme.typography.caption,
+                                        color = FluentTheme.colors.text.text.tertiary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
                                     )
                                 }
                             }
@@ -569,7 +622,7 @@ fun DriveView(
                                     SubtleButton(
                                         onClick = {
                                             downloadCoordinator.enqueue(file)
-                                            successMsg = "已加入下载任务：${file.name}"
+                                            notice = "已加入下载任务：${file.name}"
                                             WinRTSupport.showNotification("已添加下载任务", file.name)
                                         },
                                     ) {
@@ -606,10 +659,10 @@ fun DriveView(
                                             scope.launch {
                                                 repository.restore(listOf(file.id))
                                                     .onSuccess {
-                                                        successMsg = "已恢复文件：${file.name}"
-                                                        reload()
+                                                        notice = "已恢复文件：${file.name}"
+                                                        reloadTrash()
                                                     }
-                                                    .onFailure { error = it.message ?: "恢复失败" }
+                                                    .onFailure { notice = "恢复失败: ${it.message}" }
                                             }
                                         },
                                     ) {
@@ -699,16 +752,9 @@ fun DriveView(
                     ContentDialogButton.Primary -> {
                         val name = newFolderName.trim()
                         if (name.isNotEmpty()) {
-                            scope.launch {
-                                repository.createFolder(parentId, name)
-                                    .onSuccess {
-                                        newFolderName = ""
-                                        showCreateFolder = false
-                                        successMsg = "文件夹创建成功"
-                                        reload()
-                                    }
-                                    .onFailure { error = it.message ?: "创建文件夹失败" }
-                            }
+                            state.createFolder(name)
+                            newFolderName = ""
+                            showCreateFolder = false
                         }
                     }
                     ContentDialogButton.Close -> {
@@ -744,15 +790,8 @@ fun DriveView(
                     ContentDialogButton.Primary -> {
                         val name = renameNewName.trim()
                         if (name.isNotEmpty()) {
-                            scope.launch {
-                                repository.rename(target.id, name)
-                                    .onSuccess {
-                                        renameTargetFile = null
-                                        successMsg = "已重命名为: $name"
-                                        reload()
-                                    }
-                                    .onFailure { error = it.message ?: "重命名失败" }
-                            }
+                            state.rename(target.id, name)
+                            renameTargetFile = null
                         }
                     }
                     ContentDialogButton.Close -> {
@@ -785,15 +824,8 @@ fun DriveView(
             onButtonClick = { button ->
                 when (button) {
                     ContentDialogButton.Primary -> {
-                        scope.launch {
-                            repository.trash(listOf(target.id))
-                                .onSuccess {
-                                    deleteTargetFile = null
-                                    successMsg = "已将 ${target.name} 移入回收站"
-                                    reload()
-                                }
-                                .onFailure { error = it.message ?: "操作失败" }
-                        }
+                        state.moveToTrash(listOf(target.id), target.name)
+                        deleteTargetFile = null
                     }
                     ContentDialogButton.Close -> {
                         deleteTargetFile = null
@@ -821,10 +853,10 @@ fun DriveView(
                             repository.delete(listOf(target.id))
                                 .onSuccess {
                                     permanentDeleteTargetFile = null
-                                    successMsg = "已彻底删除 ${target.name}"
-                                    reload()
+                                    notice = "已彻底删除 ${target.name}"
+                                    reloadTrash()
                                 }
-                                .onFailure { error = it.message ?: "删除失败" }
+                                .onFailure { notice = "彻底删除失败: ${it.message}" }
                         }
                     }
                     ContentDialogButton.Close -> {

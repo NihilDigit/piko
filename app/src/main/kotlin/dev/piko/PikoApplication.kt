@@ -11,6 +11,7 @@ import dev.piko.data.repository.DriveRepository
 import dev.piko.download.AndroidPikoDownloadStorage
 import dev.piko.download.AndroidPikoSegmentDownloader
 import dev.piko.download.PikoDownloadService
+import dev.piko.shared.data.PikoAccountRepository
 import dev.piko.shared.data.PikoClientManager
 import dev.piko.shared.data.InstantMagnetRepository
 import dev.piko.shared.data.TaskRepository
@@ -35,6 +36,9 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
     lateinit var driveRepository: DriveRepository
         private set
 
+    lateinit var accountRepository: PikoAccountRepository
+        private set
+
     lateinit var instantMagnetRepository: InstantMagnetRepository
         private set
 
@@ -53,7 +57,8 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
 
         sessionManager = SessionManager(this)
         clientManager = PikoClientManager(AndroidPikoSessionStore(this, sessionManager), appScope)
-        driveRepository = DriveRepository(clientManager)
+        driveRepository = DriveRepository(clientManager, sessionManager)
+        accountRepository = PikoAccountRepository(clientManager, sessionManager)
         instantMagnetRepository = InstantMagnetRepository(clientManager)
         taskRepository = TaskRepository(clientManager)
         mediampMediaRepository = PikoMediaRepository(clientManager, sessionManager)

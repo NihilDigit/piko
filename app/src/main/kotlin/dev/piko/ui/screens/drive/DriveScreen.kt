@@ -12,6 +12,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -44,7 +45,6 @@ import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Check
-import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CloudDone
 import androidx.compose.material.icons.outlined.CloudDownload
@@ -53,6 +53,7 @@ import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Folder
@@ -62,15 +63,12 @@ import dev.piko.shared.data.MagnetResolutionResult
 import androidx.compose.material.icons.outlined.HourglassEmpty
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Search
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.ui.text.font.FontWeight
 import kotlinx.coroutines.Dispatchers
 import androidx.compose.material.icons.outlined.ContentCut
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.SelectAll
-import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -88,7 +86,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
@@ -105,10 +102,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -116,6 +111,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
@@ -129,13 +125,14 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import coil3.compose.AsyncImage
 import dev.piko.PikoApplication
 import dev.piko.data.repository.FileSortOrder
-import dev.piko.data.repository.HeuristicFileFilter
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.data.repository.isPreviewableImage
 import dev.piko.data.repository.PathBreadcrumb
 import dev.piko.ui.components.BreadcrumbBar
 import dev.piko.ui.components.FileItemRow
+import dev.piko.ui.components.FolderPickerDialog
 import dev.piko.ui.components.FullScreenLoading
+import dev.piko.ui.components.MoveTargetDialog
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoLoadingIndicator
 import dev.piko.ui.components.SegmentDownloadSheet
@@ -143,62 +140,17 @@ import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.theme.FixedColors
 import dev.piko.ui.theme.LocalFixedColors
+import dev.piko.shared.state.DriveScreenState
+import dev.piko.shared.state.mainContentIndices
 import dev.piko.ui.theme.PikoMotion
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.OfflineTask
 import io.github.nihildigit.pikpak.ResolvedFile
 import io.github.nihildigit.pikpak.TaskPhase
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-
-private val SECONDARY_FOLDER_NAMES = setOf(
-    "sample", "samples", "proof", "proofs", "screens", "screen", "screenshot", "screenshots",
-    "subs", "sub", "subtitle", "subtitles", "extra", "extras", "nfo", "trailer", "trailers",
-    "bonus", "featurette", "featurettes", "cover", "covers", "metadata",
-)
-private val SECONDARY_FOLDER_PREFIXES = listOf("sample", "screen", "proof", "sub")
-
-private fun isLikelyNoiseFolderName(name: String): Boolean {
-    val clean = name.trim().lowercase()
-    return clean in SECONDARY_FOLDER_NAMES ||
-        SECONDARY_FOLDER_PREFIXES.any { prefix ->
-            clean.startsWith("$prefix-") ||
-                clean.startsWith("${prefix}_") ||
-                clean.startsWith("$prefix ") ||
-                clean.removePrefix(prefix).toIntOrNull() != null
-        }
-}
-
-/**
- * The heuristic is only allowed at the leaf or the penultimate level. At the
- * penultimate level, secondary child folders are noise candidates; ordinary
- * child folders keep the parent directory untouched.
- */
-private fun filterDriveFiles(
-    files: List<FileStat>,
-    enabled: Boolean,
-    revealAll: Boolean,
-): List<FileStat> {
-    if (!enabled || revealAll) return files
-
-    val childFolders = files.filter(FileStat::isFolder)
-    if (childFolders.isEmpty()) {
-        return HeuristicFileFilter.filter(files, enabled = true, revealAll = false)
-    }
-    if (!childFolders.all { isLikelyNoiseFolderName(it.name) }) return files
-
-    val leafFiles = files.filterNot(FileStat::isFolder)
-    val visibleLeafFiles = HeuristicFileFilter.filter(
-        leafFiles,
-        enabled = true,
-        revealAll = false,
-    )
-    val visibleFileIds = visibleLeafFiles.mapTo(hashSetOf()) { it.id }
-    return files.filter { file ->
-        if (file.isFolder) !isLikelyNoiseFolderName(file.name) else file.id in visibleFileIds
-    }
-}
 
 /**
  * Main cloud drive file manager screen.
@@ -231,58 +183,42 @@ fun DriveScreen(
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    var files by remember { mutableStateOf<List<FileStat>>(emptyList()) }
-    var runningTasks by remember { mutableStateOf<List<OfflineTask>>(emptyList()) }
-    var isLoading by remember { mutableStateOf(true) }
-    var isRefreshing by remember { mutableStateOf(false) }
-    var sortOrder by remember { mutableStateOf(FileSortOrder.TIME_DESC) }
+    // 防窥/Spoiler 模糊遮蔽 (可在设置中切换)。是渲染选择，不进共享状态。
+    val sessionManager = PikoApplication.instance.sessionManager
+    val isSpoilerBlurEnabled by sessionManager.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = true)
+
+    val state = remember { DriveScreenState(driveRepo, sessionManager, scope) }
+
+    LaunchedEffect(state) {
+        state.messages.collect { snackbarHostState.showSnackbar(it) }
+    }
+
     var showSortMenu by remember { mutableStateOf(false) }
 
     // 视图切换：列表模式 vs 网格模式
     var isGridShadowMode by remember { mutableStateOf(false) }
 
-    // 防窥/Spoiler 模糊遮蔽与启发式筛选 (可在设置中切换)
-    val sessionManager = PikoApplication.instance.sessionManager
-    val isSpoilerBlurEnabled by sessionManager.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = true)
-    val isHeuristicFilterEnabled by sessionManager.heuristicFilterFlow.collectAsStateWithLifecycle(initialValue = true)
-    val revealedFileIds = remember { mutableStateListOf<String>() }
-
-    // 多选模式
-    var isSelectionMode by remember { mutableStateOf(false) }
-    val selectedFileIds = remember { mutableStateListOf<String>() }
-
     // 目录导航栈：持久化与全局单例共享，记住当前打开的位置，切 Tab / 重启不丢失
-    val folderStack by driveRepo.folderStackFlow.collectAsStateWithLifecycle()
+    val folderStack by state.folderStack.collectAsStateWithLifecycle()
     val activeFolder = folderStack.lastOrNull() ?: PathBreadcrumb(currentFolderId, currentFolderName)
     val activeFolderId = activeFolder.id
     val activeFolderName = activeFolder.name
-    // 启发式过滤单文件夹临时展开状态 (切文件夹时自动重置)
-    var showAllFilesTemporarily by rememberSaveable(activeFolderId) { mutableStateOf(false) }
-
-    LaunchedEffect(activeFolderId) {
-        showAllFilesTemporarily = false
-        isSelectionMode = false
-        selectedFileIds.clear()
-        revealedFileIds.clear()
-    }
 
     LaunchedEffect(Unit) {
-        if (folderStack.size == 1 && folderStack[0].id.isEmpty() && currentFolderId.isEmpty()) {
+        val restoredStack = if (folderStack.size == 1 && folderStack[0].id.isEmpty() && currentFolderId.isEmpty()) {
             val (lastId, lastName, serialized) = sessionManager.getLastFolder()
-            if (lastId.isNotEmpty()) {
-                val restoredStack = if (serialized.isNotEmpty()) {
-                    serialized.split(";").mapNotNull { entry ->
-                        val parts = entry.split("::")
-                        if (parts.size == 2) PathBreadcrumb(parts[0], parts[1]) else null
-                    }
-                } else emptyList()
-                if (restoredStack.isNotEmpty()) {
-                    driveRepo.updateFolderStack(restoredStack)
-                } else {
-                    driveRepo.updateFolderStack(listOf(PathBreadcrumb(lastId, lastName)))
-                }
+            when {
+                lastId.isEmpty() -> emptyList()
+                serialized.isEmpty() -> listOf(PathBreadcrumb(lastId, lastName))
+                else -> serialized.split(";").mapNotNull { entry ->
+                    val parts = entry.split("::")
+                    if (parts.size == 2) PathBreadcrumb(parts[0], parts[1]) else null
+                }.ifEmpty { listOf(PathBreadcrumb(lastId, lastName)) }
             }
-        }
+        } else emptyList()
+
+        // restoreFolderStack 自带加载，两条路各触发一次，不能都调。
+        if (restoredStack.isNotEmpty()) state.restoreFolderStack(restoredStack) else state.load()
     }
 
     LaunchedEffect(folderStack) {
@@ -293,9 +229,8 @@ fun DriveScreen(
         }
     }
 
-    var highlightedFileIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     BackHandler(enabled = folderStack.size > 1) {
-        driveRepo.popFolder()
+        state.navigateUp()
     }
 
     // 对话框与 Sheet 状态
@@ -304,11 +239,13 @@ fun DriveScreen(
     var renameTargetFile by remember { mutableStateOf<FileStat?>(null) }
     var renameNewName by remember { mutableStateOf("") }
     var segmentTargetFile by remember { mutableStateOf<FileStat?>(null) }
+    // 待移动的条目。选择器只负责选目录，移动本身与刷新在这里做，
+    // 所以单项菜单和多选工具栏可以共用同一套状态。
+    var moveTargetIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var previewImage by remember { mutableStateOf<FileStat?>(null) }
 
     // 秒传与离线任务 BottomSheet
     var showInstantSheet by remember { mutableStateOf(false) }
-    var showCloudTasksSheet by remember { mutableStateOf(false) }
 
     val pendingMagnet by instantRepo.pendingMagnetFlow.collectAsStateWithLifecycle()
     LaunchedEffect(pendingMagnet) {
@@ -316,11 +253,6 @@ fun DriveScreen(
             showInstantSheet = true
         }
     }
-
-    // 搜索状态 (支持当前目录 0ms 即时过滤与全盘云端检索)
-    var searchQuery by rememberSaveable { mutableStateOf("") }
-    var isGlobalSearching by remember { mutableStateOf(false) }
-    var globalSearchResults by remember { mutableStateOf<List<FileStat>?>(null) }
 
     val listState = rememberLazyListState()
     val gridState = rememberLazyGridState()
@@ -334,36 +266,9 @@ fun DriveScreen(
         }
     }
 
-    // 仅叶目录，或子目录全部属于次要目录时启用启发式。
-    val heuristicScope = remember(files) {
-        val childFolders = files.filter(FileStat::isFolder)
-        childFolders.isEmpty() || childFolders.all { isLikelyNoiseFolderName(it.name) }
-    }
-
-    val heuristicVisibleFiles = remember(
-        files,
-        isHeuristicFilterEnabled,
-        heuristicScope,
-    ) {
-        filterDriveFiles(
-            files,
-            enabled = isHeuristicFilterEnabled && heuristicScope,
-            revealAll = false,
-        )
-    }
-    val potentialHiddenCount = (files.size - heuristicVisibleFiles.size).coerceAtLeast(0)
-    val heuristicFilteredFiles = if (showAllFilesTemporarily) files else heuristicVisibleFiles
-
-    val displayedFiles = remember(files, heuristicFilteredFiles, searchQuery, globalSearchResults) {
-        val results = globalSearchResults
-        if (results != null) {
-            results
-        } else if (searchQuery.isBlank()) {
-            heuristicFilteredFiles
-        } else {
-            files.filter { it.name.contains(searchQuery.trim(), ignoreCase = true) }
-        }
-    }
+    val displayedFiles = state.displayedFiles
+    val hitLocations = state.hitLocations
+    val highlightedFileIds = state.highlightedFileIds
 
     // 刚秒传成功时，自动平滑滚动定位至新添加的项目并在 8 秒后渐隐
     LaunchedEffect(displayedFiles, highlightedFileIds) {
@@ -377,41 +282,8 @@ fun DriveScreen(
                 }
             }
             delay(8000)
-            highlightedFileIds = emptySet()
+            state.clearHighlight()
         }
-    }
-
-    LaunchedEffect(activeFolderId) {
-        searchQuery = ""
-        globalSearchResults = null
-    }
-
-    val loadFiles = {
-        scope.launch {
-            val result = driveRepo.listFiles(parentId = activeFolderId, sortOrder = sortOrder)
-            isLoading = false
-            isRefreshing = false
-            result.onSuccess { (list, _) ->
-                files = list
-            }.onFailure { error ->
-                snackbarHostState.showSnackbar("加载失败: ${error.localizedMessage}")
-            }
-        }
-    }
-
-    // 监听云端离线任务并就地刷新
-    LaunchedEffect(Unit) {
-        while (isActive) {
-            taskRepo.getTasks().onSuccess { resp ->
-                runningTasks = resp.tasks.filter { it.phase == TaskPhase.RUNNING || it.phase == TaskPhase.PENDING }
-            }
-            delay(4000)
-        }
-    }
-
-    LaunchedEffect(activeFolderId, sortOrder) {
-        isLoading = true
-        loadFiles()
     }
 
     Scaffold(
@@ -419,48 +291,34 @@ fun DriveScreen(
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         topBar = {
             PikoTopBar(
-                title = if (isSelectionMode) "已选择 ${selectedFileIds.size} 项" else activeFolderName,
-                navigationIcon = if (isSelectionMode) {
+                title = if (state.isSelectionMode) "已选择 ${state.selectedFileIds.size} 项" else activeFolderName,
+                navigationIcon = if (state.isSelectionMode) {
                     {
-                        IconButton(onClick = {
-                            isSelectionMode = false
-                            selectedFileIds.clear()
-                        }) {
+                        IconButton(onClick = { state.exitSelection() }) {
                             Icon(Icons.Outlined.Close, contentDescription = "Exit selection")
                         }
                     }
                 } else if (folderStack.size > 1) {
                     {
-                        IconButton(onClick = {
-                            driveRepo.popFolder()
-                        }) {
+                        IconButton(onClick = { state.navigateUp() }) {
                             Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回上一级")
                         }
                     }
                 } else null,
                 actions = {
-                    if (isSelectionMode) {
-                        IconButton(onClick = {
-                            if (selectedFileIds.size == displayedFiles.size) {
-                                selectedFileIds.clear()
-                            } else {
-                                selectedFileIds.clear()
-                                selectedFileIds.addAll(displayedFiles.map { it.id })
-                            }
-                        }) {
+                    if (state.isSelectionMode) {
+                        IconButton(onClick = { state.toggleSelectAll() }) {
                             Icon(Icons.Outlined.SelectAll, contentDescription = "Select all")
                         }
                         IconButton(
-                            onClick = {
-                                scope.launch {
-                                    driveRepo.moveToTrash(selectedFileIds.toList())
-                                    snackbarHostState.showSnackbar("已移入回收站")
-                                    isSelectionMode = false
-                                    selectedFileIds.clear()
-                                    loadFiles()
-                                }
-                            },
-                            enabled = selectedFileIds.isNotEmpty(),
+                            onClick = { moveTargetIds = state.selectedFileIds.toSet() },
+                            enabled = state.selectedFileIds.isNotEmpty(),
+                        ) {
+                            Icon(Icons.Outlined.DriveFileMove, contentDescription = "移动所选")
+                        }
+                        IconButton(
+                            onClick = { state.moveToTrash(state.selectedFileIds.toList()) },
+                            enabled = state.selectedFileIds.isNotEmpty(),
                         ) {
                             Icon(Icons.Outlined.Delete, contentDescription = "Delete selected", tint = MaterialTheme.colorScheme.error)
                         }
@@ -471,25 +329,6 @@ fun DriveScreen(
                             showNewFolderDialog = true
                         }) {
                             Icon(Icons.Outlined.CreateNewFolder, contentDescription = "新建文件夹")
-                        }
-
-                        // 云端离线任务入口 (带任务角标)
-                        IconButton(onClick = { showCloudTasksSheet = true }) {
-                            BadgedBox(
-                                badge = {
-                                    if (runningTasks.isNotEmpty()) {
-                                        Badge {
-                                            Text("${runningTasks.size}")
-                                        }
-                                    }
-                                },
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.CloudSync,
-                                    contentDescription = "云端离线任务",
-                                    tint = if (runningTasks.isNotEmpty()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
                         }
 
                         // 切换网格视图 / 列表视图
@@ -509,29 +348,25 @@ fun DriveScreen(
                         ) {
                             DropdownMenuItem(
                                 text = { Text("按修改时间 (最新)") },
-                                onClick = { sortOrder = FileSortOrder.TIME_DESC; showSortMenu = false },
+                                onClick = { state.changeSortOrder(FileSortOrder.TIME_DESC); showSortMenu = false },
                             )
                             DropdownMenuItem(
                                 text = { Text("按文件名称 (A-Z)") },
-                                onClick = { sortOrder = FileSortOrder.NAME_ASC; showSortMenu = false },
+                                onClick = { state.changeSortOrder(FileSortOrder.NAME_ASC); showSortMenu = false },
                             )
                             DropdownMenuItem(
                                 text = { Text("按文件大小 (从大到小)") },
-                                onClick = { sortOrder = FileSortOrder.SIZE_DESC; showSortMenu = false },
+                                onClick = { state.changeSortOrder(FileSortOrder.SIZE_DESC); showSortMenu = false },
                             )
                         }
 
-                        IconButton(onClick = {
-                            isSelectionMode = true
-                        }) {
-                            Icon(Icons.Outlined.Check, contentDescription = "Enter selection")
-                        }
+                        // 多选统一由长按进入，顶栏不再单列入口
                     }
                 },
             )
         },
         floatingActionButton = {
-            if (!isSelectionMode) {
+            if (!state.isSelectionMode) {
                 // 规范的标准 M3 ExtendedFloatingActionButton，滚动时自适应收起/展开，添加下边距防误触
                 ExtendedFloatingActionButton(
                     onClick = { showInstantSheet = true },
@@ -556,22 +391,21 @@ fun DriveScreen(
                 BreadcrumbBar(
                     breadcrumbs = folderStack.drop(1),
                     onBreadcrumbClick = { index ->
-                        driveRepo.popToBreadcrumb(index + 1)
+                        // BreadcrumbBar 回调传的已经是完整路径栈的下标（首页按钮传 0），
+                        // 再加一是把目标算深了一级，点上级目录会停在它的子目录里。
+                        state.navigateToBreadcrumb(index)
                     },
                 )
             }
 
             // 搜索栏 (支持当前目录 0ms 即时过滤与全盘云端检索)
             OutlinedTextField(
-                value = searchQuery,
-                onValueChange = {
-                    searchQuery = it
-                    globalSearchResults = null
-                },
+                value = state.searchQuery,
+                onValueChange = { state.updateSearchQuery(it) },
                 placeholder = {
                     Text(
-                        if (globalSearchResults != null) "全盘搜索: $searchQuery"
-                        else "搜索当前目录 (${files.size} 项)..."
+                        if (state.isGlobalSearchActive) "全盘搜索: ${state.searchQuery}"
+                        else "搜索当前目录 (${state.files.size} 项)..."
                     )
                 },
                 leadingIcon = {
@@ -583,33 +417,26 @@ fun DriveScreen(
                 },
                 trailingIcon = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (isGlobalSearching) {
+                        if (state.isGlobalSearching) {
                             PikoLoadingIndicator(size = 18.dp)
                             Spacer(modifier = Modifier.width(8.dp))
-                        } else if (searchQuery.isNotBlank() && globalSearchResults == null) {
                             TextButton(
-                                onClick = {
-                                    isGlobalSearching = true
-                                    scope.launch {
-                                        val res = driveRepo.search(searchQuery.trim())
-                                        isGlobalSearching = false
-                                        res.onSuccess {
-                                            globalSearchResults = it
-                                        }.onFailure {
-                                            snackbarHostState.showSnackbar("全盘搜索失败: ${it.localizedMessage}")
-                                        }
-                                    }
-                                },
+                                // 只取消，已找到的结果留在列表里
+                                onClick = { state.cancelGlobalSearch() },
+                                contentPadding = PaddingValues(horizontal = 8.dp),
+                            ) {
+                                Text("停止", style = MaterialTheme.typography.labelMedium)
+                            }
+                        } else if (state.searchQuery.isNotBlank() && !state.isGlobalSearchActive) {
+                            TextButton(
+                                onClick = { state.startGlobalSearch() },
                                 contentPadding = PaddingValues(horizontal = 8.dp),
                             ) {
                                 Text("全盘搜", style = MaterialTheme.typography.labelMedium)
                             }
                         }
-                        if (searchQuery.isNotEmpty() || globalSearchResults != null) {
-                            IconButton(onClick = {
-                                searchQuery = ""
-                                globalSearchResults = null
-                            }) {
+                        if (state.searchQuery.isNotEmpty() || state.isGlobalSearchActive) {
+                            IconButton(onClick = { state.updateSearchQuery("") }) {
                                 Icon(Icons.Outlined.Close, contentDescription = "清除")
                             }
                         }
@@ -629,7 +456,7 @@ fun DriveScreen(
             )
 
             Crossfade(
-                targetState = isLoading,
+                targetState = state.isLoading,
                 animationSpec = PikoMotion.StateCrossfadeSpec,
                 label = "drive_loading",
             ) { loading ->
@@ -637,17 +464,59 @@ fun DriveScreen(
                     FullScreenLoading()
                 } else {
                     PullToRefreshBox(
-                        isRefreshing = isRefreshing,
-                        onRefresh = {
-                            isRefreshing = true
-                            loadFiles()
-                        },
+                        isRefreshing = state.isRefreshing,
+                        onRefresh = { state.load(refresh = true) },
                         modifier = Modifier.fillMaxSize(),
                     ) {
                         Column(modifier = Modifier.fillMaxSize()) {
+                            // 加载失败时列表留在上一次的内容上。Snackbar 弹完就没了，
+                            // 这条横幅常驻到重新加载成功，否则用户无从知道眼前是旧数据。
+                            state.loadError?.let { reason ->
+                                Surface(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                                    shape = MaterialTheme.shapes.small,
+                                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f),
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.weight(1f),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Outlined.ErrorOutline,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.error,
+                                                modifier = Modifier.size(16.dp),
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = "内容可能不是最新的：$reason",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        }
+                                        TextButton(
+                                            onClick = { state.load(refresh = true) },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                        ) {
+                                            Text("重试", style = MaterialTheme.typography.labelSmall)
+                                        }
+                                    }
+                                }
+                            }
+
                             // 启发式量级折叠提示胶囊/横幅
-                            if (isHeuristicFilterEnabled && searchQuery.isBlank() && globalSearchResults == null) {
-                                if (!showAllFilesTemporarily && potentialHiddenCount > 0) {
+                            val potentialHiddenCount = state.potentialHiddenCount
+                            if (state.isHeuristicFilterEnabled && state.searchQuery.isBlank() && !state.isGlobalSearchActive) {
+                                if (!state.showAllFilesTemporarily && potentialHiddenCount > 0) {
                                     Surface(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -678,14 +547,14 @@ fun DriveScreen(
                                                 )
                                             }
                                             TextButton(
-                                                onClick = { showAllFilesTemporarily = true },
+                                                onClick = { state.setShowAllFiles(true) },
                                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                                             ) {
                                                 Text("显示全部", style = MaterialTheme.typography.labelSmall)
                                             }
                                         }
                                     }
-                                } else if (showAllFilesTemporarily && potentialHiddenCount > 0) {
+                                } else if (state.showAllFilesTemporarily && potentialHiddenCount > 0) {
                                     Surface(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -716,7 +585,7 @@ fun DriveScreen(
                                                 )
                                             }
                                             TextButton(
-                                                onClick = { showAllFilesTemporarily = false },
+                                                onClick = { state.setShowAllFiles(false) },
                                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                                             ) {
                                                 Text("恢复折叠", style = MaterialTheme.typography.labelSmall)
@@ -727,11 +596,15 @@ fun DriveScreen(
                             }
 
                             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                                if (displayedFiles.isEmpty() && runningTasks.isEmpty()) {
-                                    if (searchQuery.isNotBlank()) {
+                                if (displayedFiles.isEmpty()) {
+                                    if (state.searchQuery.isNotBlank()) {
                                         PikoEmptyState(
-                                            title = "未找到相关文件",
-                                            description = if (globalSearchResults != null) "全盘未找到包含「$searchQuery」的文件" else "当前文件夹未找到「$searchQuery」，可点击搜索框右侧「全盘搜」进行全局查找",
+                                            title = if (state.isGlobalSearching) "正在遍历网盘" else "未找到相关文件",
+                                            description = when {
+                                                state.isGlobalSearching -> "全盘搜索需要逐层遍历目录，结果会边搜边出现"
+                                                state.isGlobalSearchActive -> "全盘未找到包含「${state.searchQuery}」的文件"
+                                                else -> "当前文件夹未找到「${state.searchQuery}」，可点击搜索框右侧「全盘搜」进行全局查找"
+                                            },
                                         )
                                     } else {
                                         PikoEmptyState(
@@ -759,26 +632,19 @@ fun DriveScreen(
                                     key = { it.id },
                                     contentType = { if (it.isFolder) "folder" else "file" },
                                 ) { file ->
-                                    val isBlurred = isSpoilerBlurEnabled && !revealedFileIds.contains(file.id)
+                                    val isBlurred = isSpoilerBlurEnabled && !state.revealedFileIds.contains(file.id)
                                     ShadowFileCard(
                                         file = file,
-                                        isSelectionMode = isSelectionMode,
-                                        isSelected = selectedFileIds.contains(file.id),
+                                        isSelectionMode = state.isSelectionMode,
+                                        isSelected = state.selectedFileIds.contains(file.id),
                                         isSpoilerBlurred = isBlurred,
                                         isHighlighted = highlightedFileIds.contains(file.id),
-                                        onToggleSpoiler = {
-                                            if (revealedFileIds.contains(file.id)) {
-                                                revealedFileIds.remove(file.id)
-                                            } else {
-                                                revealedFileIds.add(file.id)
-                                            }
-                                        },
+                                        onToggleSpoiler = { state.toggleSpoiler(file.id) },
                                         onClick = {
-                                            if (isSelectionMode) {
-                                                val selected = file.id in selectedFileIds
-                                                if (selected) selectedFileIds.remove(file.id) else selectedFileIds.add(file.id)
+                                            if (state.isSelectionMode) {
+                                                state.setSelected(file.id, file.id !in state.selectedFileIds)
                                             } else if (file.isFolder) {
-                                                driveRepo.pushFolder(file.id, file.name)
+                                                state.openFolder(file.id, file.name)
                                             } else if (file.name.isPlayableVideo()) {
                                                 onNavigateToVideoPlayer(file.id, file.name)
                                             } else if (file.name.isPreviewableImage() && file.thumbnailLink.isNotBlank()) {
@@ -798,20 +664,10 @@ fun DriveScreen(
                                             renameTargetFile = file
                                             renameNewName = file.name
                                         },
-                                        onDelete = {
-                                            scope.launch {
-                                                driveRepo.moveToTrash(listOf(file.id))
-                                                snackbarHostState.showSnackbar("已移入回收站: ${file.name}")
-                                                loadFiles()
-                                            }
-                                        },
-                                        onLongClick = {
-                                            isSelectionMode = true
-                                            if (file.id !in selectedFileIds) selectedFileIds.add(file.id)
-                                        },
-                                        onSelectToggle = { selected ->
-                                            if (selected) selectedFileIds.add(file.id) else selectedFileIds.remove(file.id)
-                                        },
+                                        onMove = { moveTargetIds = setOf(file.id) },
+                                        onDelete = { state.moveToTrash(listOf(file.id), file.name) },
+                                        onLongClick = { state.enterSelection(file.id) },
+                                        onSelectToggle = { selected -> state.setSelected(file.id, selected) },
                                     )
                                 }
                             }
@@ -829,25 +685,20 @@ fun DriveScreen(
                                     key = { it.id },
                                     contentType = { if (it.isFolder) "folder" else "file" },
                                 ) { file ->
-                                    val isSelected = selectedFileIds.contains(file.id)
-                                    val isBlurred = isSpoilerBlurEnabled && !revealedFileIds.contains(file.id)
+                                    val isSelected = state.selectedFileIds.contains(file.id)
+                                    val isBlurred = isSpoilerBlurEnabled && !state.revealedFileIds.contains(file.id)
                                     Box(modifier = Modifier.animateItem()) {
                                         FileItemRow(
                                             file = file,
-                                            isSelectionMode = isSelectionMode,
+                                            isSelectionMode = state.isSelectionMode,
                                             isSelected = isSelected,
                                             isSpoilerBlurred = isBlurred,
                                             isHighlighted = highlightedFileIds.contains(file.id),
-                                            onToggleSpoiler = {
-                                                if (revealedFileIds.contains(file.id)) {
-                                                    revealedFileIds.remove(file.id)
-                                                } else {
-                                                    revealedFileIds.add(file.id)
-                                                }
-                                            },
+                                            locationLabel = hitLocations[file.id],
+                                            onToggleSpoiler = { state.toggleSpoiler(file.id) },
                                             onClick = {
                                                 if (file.isFolder) {
-                                                    driveRepo.pushFolder(file.id, file.name)
+                                                    state.openFolder(file.id, file.name)
                                                 } else if (file.name.isPlayableVideo()) {
                                                     onNavigateToVideoPlayer(file.id, file.name)
                                                 } else if (file.name.isPreviewableImage() && file.thumbnailLink.isNotBlank()) {
@@ -859,24 +710,14 @@ fun DriveScreen(
                                                     }
                                                 }
                                             },
-                                            onLongClick = {
-                                                isSelectionMode = true
-                                                if (!isSelected) selectedFileIds.add(file.id)
-                                            },
-                                            onSelectToggle = { selected ->
-                                                if (selected) selectedFileIds.add(file.id) else selectedFileIds.remove(file.id)
-                                            },
+                                            onLongClick = { state.enterSelection(file.id) },
+                                            onSelectToggle = { selected -> state.setSelected(file.id, selected) },
                                             onRename = {
                                                 renameTargetFile = file
                                                 renameNewName = file.name
                                             },
-                                            onDelete = {
-                                                scope.launch {
-                                                    driveRepo.moveToTrash(listOf(file.id))
-                                                    snackbarHostState.showSnackbar("已移入回收站: ${file.name}")
-                                                    loadFiles()
-                                                }
-                                            },
+                                            onMove = { moveTargetIds = setOf(file.id) },
+                                            onDelete = { state.moveToTrash(listOf(file.id), file.name) },
                                             onDownload = {
                                                 downloadManager.enqueue(file)
                                                 scope.launch {
@@ -918,36 +759,19 @@ fun DriveScreen(
                 onSuccess = { createdIds, targetBread ->
                     showInstantSheet = false
                     instantRepo.clearPendingMagnet()
-                    highlightedFileIds = createdIds.toSet()
-                    driveRepo.navigateToFolder(targetBread)
-                    loadFiles()
+                    state.navigateToFolder(targetBread)
+                    state.highlight(createdIds.toSet())
                     scope.launch {
                         snackbarHostState.showSnackbar("成功秒传 ${createdIds.size} 项并进入 ${targetBread.name}！")
                     }
                 },
-                onOfflineTaskCreated = { folderName ->
+                onOfflineTaskCreated = { targetBread ->
                     showInstantSheet = false
                     instantRepo.clearPendingMagnet()
+                    state.navigateToFolder(targetBread)
                     scope.launch {
-                        snackbarHostState.showSnackbar("已加入云端离线任务并进入 $folderName！")
+                        snackbarHostState.showSnackbar("已加入云端离线任务并进入 ${targetBread.name}！")
                     }
-                },
-            )
-        }
-    }
-
-    // 云端离线任务 ModalBottomSheet（从顶栏 IconButton 唤起）
-    if (showCloudTasksSheet) {
-        ModalBottomSheet(
-            onDismissRequest = { showCloudTasksSheet = false },
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            shape = MaterialTheme.shapes.large,
-        ) {
-            CloudTasksSheetContent(
-                runningTasks = runningTasks,
-                onNewTask = {
-                    showCloudTasksSheet = false
-                    showInstantSheet = true
                 },
             )
         }
@@ -973,10 +797,7 @@ fun DriveScreen(
                     onClick = {
                         if (newFolderName.isNotBlank()) {
                             showNewFolderDialog = false
-                            scope.launch {
-                                driveRepo.createNewFolder(activeFolderId, newFolderName.trim())
-                                loadFiles()
-                            }
+                            state.createFolder(newFolderName)
                         }
                     },
                 ) {
@@ -1011,11 +832,9 @@ fun DriveScreen(
                     onClick = {
                         if (renameNewName.isNotBlank() && renameNewName != target.name) {
                             val id = target.id
+                            val newName = renameNewName
                             renameTargetFile = null
-                            scope.launch {
-                                driveRepo.renameItem(id, renameNewName.trim())
-                                loadFiles()
-                            }
+                            state.rename(id, newName)
                         }
                     },
                 ) {
@@ -1026,6 +845,21 @@ fun DriveScreen(
                 TextButton(onClick = { renameTargetFile = null }) {
                     Text("取消")
                 }
+            },
+        )
+    }
+
+    // 移动目标选择器
+    if (moveTargetIds.isNotEmpty()) {
+        val pendingIds = moveTargetIds
+        MoveTargetDialog(
+            itemCount = pendingIds.size,
+            movingIds = pendingIds,
+            sourceParentId = activeFolderId,
+            onDismiss = { moveTargetIds = emptySet() },
+            onConfirm = { targetId, targetName ->
+                moveTargetIds = emptySet()
+                state.move(pendingIds.toList(), targetId, targetName)
             },
         )
     }
@@ -1172,6 +1006,7 @@ fun ShadowFileCard(
     onDownloadSegment: () -> Unit = {},
     onRename: () -> Unit = {},
     onDelete: () -> Unit = {},
+    onMove: () -> Unit = {},
     onLongClick: () -> Unit = {},
     onSelectToggle: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
@@ -1179,6 +1014,21 @@ fun ShadowFileCard(
     val primaryActionModifier = Modifier.combinedClickable(
         onClick = {
             if (isSelectionMode) onSelectToggle(!isSelected) else onClick()
+        },
+        onLongClick = onLongClick,
+    )
+
+    // 网格视图不叠眼睛按钮：整块封面本身就是热区，模糊即提示。
+    // 首次点击揭示，再点才打开，避免误触把遮蔽形同虚设。
+    val coverIsSpoiler = isSpoilerBlurred && file.thumbnailLink.isNotEmpty()
+    val coverActionModifier = Modifier.combinedClickable(
+        onClickLabel = if (coverIsSpoiler) "显示预览" else null,
+        onClick = {
+            when {
+                isSelectionMode -> onSelectToggle(!isSelected)
+                coverIsSpoiler -> onToggleSpoiler()
+                else -> onClick()
+            }
         },
         onLongClick = onLongClick,
     )
@@ -1204,7 +1054,7 @@ fun ShadowFileCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(16f / 10f)
-                    .then(primaryActionModifier)
+                    .then(coverActionModifier)
                     .background(MaterialTheme.colorScheme.surfaceContainerHighest),
                 contentAlignment = Alignment.Center,
             ) {
@@ -1217,25 +1067,6 @@ fun ShadowFileCard(
                             .then(if (isSpoilerBlurred) Modifier.blur(24.dp) else Modifier),
                         contentScale = ContentScale.Crop,
                     )
-                    if (isSpoilerBlurred) {
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.scrim.copy(alpha = 0.5f),
-                            modifier = Modifier
-                                .size(48.dp)
-                                .clickable(
-                                    onClickLabel = "显示预览",
-                                    onClick = onToggleSpoiler,
-                                ),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Visibility,
-                                contentDescription = "显示预览",
-                                tint = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.size(18.dp),
-                            )
-                        }
-                    }
                 } else {
                     Icon(
                         imageVector = if (file.isFolder) Icons.Outlined.CreateNewFolder else Icons.Outlined.Image,
@@ -1349,6 +1180,16 @@ fun ShadowFileCard(
                             },
                         )
                         DropdownMenuItem(
+                            text = { Text("移动到") },
+                            leadingIcon = {
+                                Icon(Icons.Outlined.DriveFileMove, contentDescription = null)
+                            },
+                            onClick = {
+                                showCardMenu = false
+                                onMove()
+                            },
+                        )
+                        DropdownMenuItem(
                             text = { Text("移入回收站", color = MaterialTheme.colorScheme.error) },
                             leadingIcon = {
                                 Icon(
@@ -1370,23 +1211,90 @@ fun ShadowFileCard(
     }
 }
 
+private const val AUTO_RESOLVE_DEBOUNCE_MS = 350L
+
+/**
+ * 输入框里的内容归一化成可解析的磁力链，不像磁力链就返回 null，不解析也不报错。
+ *
+ * 只粘 infohash 的情况不少，所以补全一条磁力链；但限定 40 位十六进制，否则随手敲的
+ * 任意长串都会发一次请求。
+ */
+private fun normalizeMagnet(raw: String): String? {
+    val trimmed = raw.trim()
+    return when {
+        trimmed.startsWith("magnet:?xt=urn:btih:") -> trimmed
+        trimmed.length == 40 && trimmed.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' } ->
+            "magnet:?xt=urn:btih:$trimmed"
+        else -> null
+    }
+}
+
+/** 保存位置胶囊。目标还没取到时不可点，也不拿 My Packs 顶替，免得闪一个可能是错的名字。 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun InstantTargetChip(
+    target: PathBreadcrumb?,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        enabled = enabled && target != null,
+        shape = MaterialTheme.shapes.extraSmall,
+        color = MaterialTheme.colorScheme.primaryContainer,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Outlined.Folder,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = if (target == null) "正在确认保存位置" else "目标：${target.name}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+            )
+            if (target != null) {
+                Spacer(modifier = Modifier.width(2.dp))
+                Icon(
+                    Icons.Outlined.Edit,
+                    contentDescription = "更换保存位置",
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.size(12.dp),
+                )
+            }
+        }
+    }
+}
+
 /**
  * 嵌入在 BottomSheet 里的秒传与磁力确认工作台
- * 默认保存至 My Packs，提供全量文件勾选与秒传/离线操作
+ * 粘上磁力链自动解析，保存目标可点胶囊更换并被记住，未配置过时默认 My Packs
+ *
+ * 这里只保存、不导航：目标目录随回调交给调用方，由它经状态类切过去，顺带清掉
+ * 搜索与选中。自己调仓库切目录会绕过这一步。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun InstantSheetContent(
     initialMagnet: String = "",
     onDismiss: () -> Unit,
     onSuccess: (createdIds: List<String>, targetBread: PathBreadcrumb) -> Unit,
-    onOfflineTaskCreated: (folderName: String) -> Unit,
+    onOfflineTaskCreated: (targetBread: PathBreadcrumb) -> Unit,
 ) {
     val driveRepo = PikoApplication.instance.driveRepository
     val instantRepo = PikoApplication.instance.instantMagnetRepository
+    val sessionManager = PikoApplication.instance.sessionManager
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
     var magnetInput by remember { mutableStateOf(initialMagnet) }
+    var showTargetPicker by remember { mutableStateOf(false) }
     var isResolving by remember { mutableStateOf(false) }
     var isSaving by remember { mutableStateOf(false) }
     var resolutionResult by remember { mutableStateOf<MagnetResolutionResult?>(null) }
@@ -1394,44 +1302,109 @@ fun InstantSheetContent(
     var selectedIndices by remember { mutableStateOf<Set<Int>>(emptySet()) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
     var targetBreadcrumb by remember { mutableStateOf<PathBreadcrumb?>(null) }
+    var targetNotice by remember { mutableStateOf<String?>(null) }
 
-    fun doResolve(magnet: String) {
-        val trimmed = magnet.trim()
-        if (trimmed.startsWith("magnet:?xt=urn:btih:") || trimmed.length == 40 || trimmed.startsWith("magnet:")) {
-            isResolving = true
-            errorMsg = null
-            scope.launch {
-                val formattedMagnet = if (!trimmed.startsWith("magnet:")) "magnet:?xt=urn:btih:$trimmed" else trimmed
-                val result = instantRepo.resolve(formattedMagnet)
-                isResolving = false
-                result.onSuccess { data ->
-                    if (data == null) {
-                        errorMsg = "PikPak 索引暂未收录该资源，可直接提交云端离线任务"
-                    } else {
-                        resolutionResult = data
-                        items = data.items
-                        selectedIndices = data.items.mapIndexedNotNull { idx, item ->
-                            if (item.isSelected) idx else null
-                        }.toSet()
-                    }
-                }.onFailure { err ->
-                    errorMsg = "解析失败: ${err.localizedMessage}"
-                }
-            }
+    // 勾选项里只要有一项云端没收录，整单就走离线，不做「能秒传的先秒传、其余离线」。
+    // createUrlFile 只收整条磁力 URL，ResolvedFile 也不带文件索引，离线任务没法只取
+    // 选中的那几个；两者并用会把刚秒传的文件再下一遍，目录里留下重复项。取舍是用户
+    // 定的：宁可放弃那几项的秒传，也不要重复。
+    val selectedItems = selectedIndices.sorted().map { items[it] }
+    val canInstantSaveAll = selectedItems.isNotEmpty() && selectedItems.all { it.isInstantReady }
+
+    // 只在这次保存真的会建目录时才让人改名字。走离线那条路目录是 PikPak 自己建的，摆一个
+    // 可编辑的名字只会让人以为能生效。
+    val willCreateFolder = canInstantSaveAll && selectedItems.size > 1
+    var folderNameInput by remember { mutableStateOf("") }
+    val resourceName = resolutionResult?.resource?.name
+    // 换一条磁力链要重新预填，否则输入框里留着上一条资源的名字
+    LaunchedEffect(resourceName) {
+        folderNameInput = resourceName?.let { FileNameSanitizer.sanitize(it) }.orEmpty()
+    }
+
+    // 外部分享进来的磁力链已经在用户手上，输入框只是让他把同一件事再确认一遍，所以收起。
+    // 解析失败时再放出来：否则他既看不到那串链接，也没法改、没法重试。
+    var showMagnetEditor by remember { mutableStateOf(initialMagnet.isBlank()) }
+
+    // 归一化后的磁力链兼作解析的触发键：同一条链不会重复解析，改成别的链会取消上一次。
+    // 非磁力的输入（http 直链、ed2k）在这里是 null，自动解析不触发，由按钮手动提交。
+    val pendingMagnet = remember(magnetInput) { normalizeMagnet(magnetInput) }
+    var resolveTrigger by remember { mutableStateOf(0) }
+
+    // 记住过的目标优先；没配置过才退回 My Packs。只取一次而不是持续收集，
+    // 否则用户在本次会话里改完目标，写回 DataStore 的那次发射会再盖一遍。
+    suspend fun resolveTarget(): PathBreadcrumb {
+        val saved = sessionManager.instantTargetFlow.first()
+        if (saved != null) {
+            // 记下的目录可能已经被删或进了回收站。不验的话要等保存时才暴露，报的还是
+            // 一句原始 API 错误。根目录是空 id，没有对应的 FileDetail，不验。
+            val alive = saved.folderId.isEmpty() ||
+                driveRepo.getFileDetail(saved.folderId).map { !it.trashed }.getOrDefault(false)
+            if (alive) return PathBreadcrumb(saved.folderId, saved.folderName)
+            targetNotice = "原保存目标已不存在，已切换到 My Packs"
+        }
+        return driveRepo.getOrCreateMyPacksFolder().getOrDefault(PathBreadcrumb("", "My Packs"))
+    }
+
+    LaunchedEffect(Unit) {
+        targetBreadcrumb = resolveTarget()
+    }
+
+    // 把当前输入整条交给云端离线任务。磁力以外的链接只有这一条路：createUrlFile 收任意
+    // URL，但 resolveMagnet 只认磁力，所以这些输入不会有文件列表可勾。
+    fun submitOfflineTask() {
+        isSaving = true
+        scope.launch {
+            val targetBread = targetBreadcrumb ?: resolveTarget()
+            instantRepo.enqueueOfflineTask(magnetInput.trim(), targetBread.id)
+                .onSuccess { onOfflineTaskCreated(targetBread) }
+                .onFailure { errorMsg = "保存失败: ${it.localizedMessage}" }
+            isSaving = false
         }
     }
 
-    // 默认加载或获取 "My Packs" 目录
-    LaunchedEffect(Unit) {
-        val packs = driveRepo.getOrCreateMyPacksFolder().getOrNull()
-        targetBreadcrumb = packs ?: PathBreadcrumb("", "My Packs")
+    // 解析的唯一实现。外部唤起、手动粘贴、按钮重试都走这里：resolveTrigger 让按钮能对
+    // 同一条链再来一次，key 不变时不会重复解析。
+    LaunchedEffect(pendingMagnet, resolveTrigger) {
+        resolutionResult = null
+        items = emptyList()
+        selectedIndices = emptySet()
+        errorMsg = null
+        if (pendingMagnet == null) return@LaunchedEffect
+        // 防抖。粘贴一次就是一条完整的链，等待只为压掉手敲时中途的半条链接，所以取短值。
+        delay(AUTO_RESOLVE_DEBOUNCE_MS)
+        isResolving = true
+        try {
+            instantRepo.resolve(pendingMagnet)
+                .onSuccess { data ->
+                    if (data == null) {
+                        errorMsg = "PikPak 索引暂未收录该资源，可直接提交云端离线任务"
+                        showMagnetEditor = true
+                    } else {
+                        resolutionResult = data
+                        items = data.items
+                        // 与网盘列表的启发式折叠同一套判据：剔掉 sample/subs 这类次要目录里的
+                        // 文件，再按最大文件的十分之一卡一道门槛。用户仍可手改。
+                        selectedIndices = mainContentIndices(
+                            data.items.map { it.file.path },
+                            data.items.map { it.file.size },
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    errorMsg = "解析失败: ${err.localizedMessage}"
+                    showMagnetEditor = true
+                }
+        } finally {
+            // 取消也要走到这里，否则换链后指示器会一直转
+            isResolving = false
+        }
     }
 
-    // 若有初始外部传入磁链，自动触发解析
+    // 外部唤起的链不合法时自动解析不会发生，而输入框又是收起的，不兜住就是一个空 Sheet。
     LaunchedEffect(initialMagnet) {
-        if (initialMagnet.isNotBlank()) {
-            magnetInput = initialMagnet
-            doResolve(initialMagnet)
+        if (initialMagnet.isNotBlank() && normalizeMagnet(initialMagnet) == null) {
+            errorMsg = "这不是一条可解析的磁力链接，可直接提交云端离线任务"
+            showMagnetEditor = true
         }
     }
 
@@ -1453,7 +1426,7 @@ fun InstantSheetContent(
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
-                    text = "默认存至 My Packs，毫秒级探测云端秒传与离线下载",
+                    text = "毫秒级探测云端秒传与离线下载",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1465,46 +1438,83 @@ fun InstantSheetContent(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // 磁力输入框
-        OutlinedTextField(
-            value = magnetInput,
-            onValueChange = { magnetInput = it },
-            label = { Text("Magnet 磁力链接") },
-            placeholder = { Text("magnet:?xt=urn:btih:...") },
-            modifier = Modifier.fillMaxWidth(),
-            shape = MaterialTheme.shapes.largeIncreased,
-            maxLines = 2,
-            trailingIcon = {
-                IconButton(onClick = {
-                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    val clip = clipboard.primaryClip?.getItemAt(0)?.text?.toString()
-                    if (!clip.isNullOrBlank()) {
-                        magnetInput = clip.trim()
-                        doResolve(clip.trim())
+        if (showMagnetEditor) {
+            // 磁力输入框
+            OutlinedTextField(
+                value = magnetInput,
+                onValueChange = { magnetInput = it },
+                label = { Text("磁力链接或下载地址") },
+                placeholder = { Text("magnet:?xt=urn:btih:... 或 http://...") },
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.largeIncreased,
+                maxLines = 2,
+                trailingIcon = {
+                    IconButton(onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val clip = clipboard.primaryClip?.getItemAt(0)?.text?.toString()
+                        if (!clip.isNullOrBlank()) magnetInput = clip.trim()
+                    }) {
+                        Icon(Icons.Outlined.ContentPaste, contentDescription = "从剪贴板粘贴")
                     }
-                }) {
-                    Icon(Icons.Outlined.ContentPaste, contentDescription = "Paste")
+                },
+            )
+
+            // 已经出结果时按钮没有可触发的东西。解析中与解析失败都留着，否则没有重试手段。
+            if (resolutionResult == null) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Button(
+                    onClick = { if (pendingMagnet != null) resolveTrigger++ else submitOfflineTask() },
+                    enabled = !isResolving && !isSaving && magnetInput.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.medium,
+                ) {
+                    if (isResolving) {
+                        PikoLoadingIndicator(size = 20.dp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("正在毫秒级探测云端索引...")
+                    } else {
+                        Icon(
+                            imageVector = if (pendingMagnet != null) Icons.Outlined.Bolt else Icons.Outlined.CloudDownload,
+                            contentDescription = null,
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(if (pendingMagnet != null) "重新解析磁力资源" else "提交离线下载")
+                    }
                 }
-            },
-        )
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        Button(
-            onClick = { doResolve(magnetInput) },
-            enabled = !isResolving && magnetInput.isNotBlank(),
-            modifier = Modifier.fillMaxWidth(),
-            shape = MaterialTheme.shapes.medium,
-        ) {
-            if (isResolving) {
-                PikoLoadingIndicator(size = 20.dp)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("正在毫秒级探测云端索引...")
-            } else {
-                Icon(Icons.Outlined.Bolt, contentDescription = null)
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("解析磁力资源")
             }
+
+            Spacer(modifier = Modifier.height(10.dp))
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            InstantTargetChip(
+                target = targetBreadcrumb,
+                enabled = !isSaving,
+                onClick = { showTargetPicker = true },
+            )
+            // 外部那条路没有解析按钮，进度只能落在这里
+            if (isResolving && !showMagnetEditor) {
+                Spacer(modifier = Modifier.width(10.dp))
+                PikoLoadingIndicator(size = 16.dp)
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "正在探测云端索引...",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        targetNotice?.let { notice ->
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = notice,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
         }
 
         errorMsg?.let { err ->
@@ -1539,7 +1549,8 @@ fun InstantSheetContent(
         resolutionResult?.let { result ->
             Spacer(modifier = Modifier.height(14.dp))
 
-            // 资源标题卡片与目标目录提示
+            // 资源标题卡片。多文件秒传会以这个名字建一层目录，所以这一行本身就是那个
+            // 目录名，直接在原地改，不另起一个输入框。
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
@@ -1547,56 +1558,49 @@ fun InstantSheetContent(
                 ),
                 shape = MaterialTheme.shapes.medium,
             ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Text(
-                        text = result.resource.name,
-                        style = MaterialTheme.typography.titleMedium,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Surface(
-                            shape = MaterialTheme.shapes.extraSmall,
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Icon(
-                                    Icons.Outlined.Folder,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(14.dp),
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = "目标：${targetBreadcrumb?.name ?: "My Packs"}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                )
-                            }
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (willCreateFolder) {
+                        val isBlank = folderNameInput.isBlank()
+                        val nameColor = if (isBlank) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
                         }
-
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Outlined.CheckCircle,
-                                contentDescription = null,
-                                tint = LocalFixedColors.current.InstantMatchGreen,
-                                modifier = Modifier.size(14.dp),
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = "秒传 ${result.instantReadyCount} / ${result.totalCount} 项",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = LocalFixedColors.current.InstantMatchGreen,
-                            )
-                        }
+                        BasicTextField(
+                            value = folderNameInput,
+                            onValueChange = { folderNameInput = it },
+                            enabled = !isSaving,
+                            textStyle = MaterialTheme.typography.titleMedium.copy(color = nameColor),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            modifier = Modifier.weight(1f),
+                            decorationBox = { inner ->
+                                if (isBlank) {
+                                    Text(
+                                        text = "目录名不能为空",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = MaterialTheme.colorScheme.error,
+                                    )
+                                }
+                                inner()
+                            },
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Icon(
+                            imageVector = Icons.Outlined.Edit,
+                            contentDescription = "修改新建目录的名称",
+                            tint = nameColor,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    } else {
+                        Text(
+                            text = result.resource.name,
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                     }
                 }
             }
@@ -1670,17 +1674,16 @@ fun InstantSheetContent(
 
                             Spacer(modifier = Modifier.width(6.dp))
 
-                            Surface(
-                                shape = MaterialTheme.shapes.extraSmall,
-                                color = if (item.isInstantReady) LocalFixedColors.current.InstantMatchGreen.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant,
-                            ) {
-                                Text(
-                                    text = if (item.isInstantReady) "秒传" else "需离线",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = if (item.isInstantReady) LocalFixedColors.current.InstantMatchGreen else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                )
-                            }
+                            Icon(
+                                imageVector = if (item.isInstantReady) Icons.Outlined.Check else Icons.Outlined.ErrorOutline,
+                                contentDescription = if (item.isInstantReady) "云端已有，可秒传" else "云端没有，需下载",
+                                tint = if (item.isInstantReady) {
+                                    LocalFixedColors.current.InstantMatchGreen
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                                modifier = Modifier.size(18.dp),
+                            )
                         }
                     }
                 }
@@ -1688,33 +1691,70 @@ fun InstantSheetContent(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // 保存与离线按钮
-            val readySelectedItems = selectedIndices.map { items[it] }.filter { it.isInstantReady }
-            val hasSelected = selectedIndices.isNotEmpty()
+            suspend fun runInstantSave(target: PathBreadcrumb, toSave: List<InstantFileItem>) {
+                // 多个文件平铺进目标目录会把它和别的资源混在一起，先建一层再存。名字取自
+                // 输入框，仍要过一遍 sanitize：用户可能敲进 / : * 这类建不出来的字符。
+                val saveTarget = if (toSave.size > 1) {
+                    val folderName = FileNameSanitizer.sanitize(folderNameInput)
+                    val folderId = driveRepo.createNewFolder(target.id, folderName).getOrElse { err ->
+                        isSaving = false
+                        errorMsg = "新建文件夹失败: ${err.localizedMessage}"
+                        return
+                    }
+                    PathBreadcrumb(folderId, folderName)
+                } else {
+                    target
+                }
+                val saveRes = instantRepo.instantSave(toSave, saveTarget.id)
+                isSaving = false
+                saveRes
+                    .onSuccess { createdIds -> onSuccess(createdIds, saveTarget) }
+                    .onFailure { errorMsg = "保存失败: ${it.localizedMessage}" }
+            }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Button(
-                    onClick = {
-                        if (readySelectedItems.isNotEmpty()) {
-                            isSaving = true
-                            scope.launch {
-                                val targetBread = targetBreadcrumb ?: driveRepo.getOrCreateMyPacksFolder().getOrDefault(PathBreadcrumb("", "My Packs"))
-                                val saveRes = instantRepo.instantSave(readySelectedItems, targetBread.id)
-                                isSaving = false
-                                saveRes.onSuccess { createdIds ->
-                                    driveRepo.navigateToFolder(targetBread)
-                                    onSuccess(createdIds, targetBread)
-                                }.onFailure {
-                                    errorMsg = "秒传保存失败: ${it.localizedMessage}"
-                                }
-                            }
+            Button(
+                onClick = {
+                    isSaving = true
+                    scope.launch {
+                        val targetBread = targetBreadcrumb ?: resolveTarget()
+                        if (canInstantSaveAll) {
+                            runInstantSave(targetBread, selectedItems)
+                        } else {
+                            val taskRes = instantRepo.enqueueOfflineTask(magnetInput.trim(), targetBread.id)
+                            isSaving = false
+                            taskRes
+                                .onSuccess { onOfflineTaskCreated(targetBread) }
+                                .onFailure { errorMsg = "保存失败: ${it.localizedMessage}" }
                         }
-                    },
-                    enabled = !isSaving && readySelectedItems.isNotEmpty(),
-                    modifier = Modifier.weight(1f),
+                    }
+                },
+                enabled = !isSaving && selectedItems.isNotEmpty() && targetBreadcrumb != null &&
+                    !(willCreateFolder && folderNameInput.isBlank()),
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.medium,
+            ) {
+                if (isSaving) {
+                    PikoLoadingIndicator(size = 18.dp)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("保存中...")
+                } else {
+                    Icon(
+                        imageVector = if (canInstantSaveAll) Icons.Outlined.Bolt else Icons.Outlined.CloudDownload,
+                        contentDescription = null,
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("保存 ${selectedItems.size} 项到 ${targetBreadcrumb?.name.orEmpty()}")
+                }
+            }
+        } ?: run {
+            // 云端没有收录时，磁力本身仍然可以直接交给离线下载。非磁力的输入不在这里出口：
+            // 顶部那个按钮已经是它唯一的提交入口，两个一样的按钮只会让人犹豫点哪个。
+            if (pendingMagnet != null) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Button(
+                    onClick = { submitOfflineTask() },
+                    enabled = !isSaving && !isResolving && targetBreadcrumb != null,
+                    modifier = Modifier.fillMaxWidth(),
                     shape = MaterialTheme.shapes.medium,
                 ) {
                     if (isSaving) {
@@ -1722,64 +1762,27 @@ fun InstantSheetContent(
                         Spacer(modifier = Modifier.width(6.dp))
                         Text("保存中...")
                     } else {
-                        Icon(Icons.Outlined.Bolt, contentDescription = null)
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("秒传到 My Packs (${readySelectedItems.size})")
+                        Icon(Icons.Outlined.CloudDownload, contentDescription = null)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("保存到 ${targetBreadcrumb?.name.orEmpty()}")
                     }
-                }
-
-                OutlinedButton(
-                    onClick = {
-                        isSaving = true
-                        scope.launch {
-                            val targetBread = targetBreadcrumb ?: driveRepo.getOrCreateMyPacksFolder().getOrDefault(PathBreadcrumb("", "My Packs"))
-                            val taskRes = instantRepo.enqueueOfflineTask(magnetInput.trim(), targetBread.id)
-                            isSaving = false
-                            taskRes.onSuccess {
-                                driveRepo.navigateToFolder(targetBread)
-                                onOfflineTaskCreated(targetBread.name)
-                            }.onFailure {
-                                errorMsg = "离线任务提交失败: ${it.localizedMessage}"
-                            }
-                        }
-                    },
-                    enabled = !isSaving && (hasSelected || magnetInput.isNotBlank()),
-                    shape = MaterialTheme.shapes.medium,
-                ) {
-                    Icon(Icons.Outlined.CloudDownload, contentDescription = null)
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("离线下载")
-                }
-            }
-        } ?: run {
-            // 当未解析或未命中云端索引时，如果输入了磁力，也可以直接提交离线任务
-            if (magnetInput.isNotBlank()) {
-                Spacer(modifier = Modifier.height(12.dp))
-                OutlinedButton(
-                    onClick = {
-                        isSaving = true
-                        scope.launch {
-                            val targetBread = targetBreadcrumb ?: driveRepo.getOrCreateMyPacksFolder().getOrDefault(PathBreadcrumb("", "My Packs"))
-                            val taskRes = instantRepo.enqueueOfflineTask(magnetInput.trim(), targetBread.id)
-                            isSaving = false
-                            taskRes.onSuccess {
-                                driveRepo.navigateToFolder(targetBread)
-                                onOfflineTaskCreated(targetBread.name)
-                            }.onFailure {
-                                errorMsg = "离线任务提交失败: ${it.localizedMessage}"
-                            }
-                        }
-                    },
-                    enabled = !isSaving,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = MaterialTheme.shapes.medium,
-                ) {
-                    Icon(Icons.Outlined.CloudDownload, contentDescription = null)
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("直接提交云端离线到 My Packs")
                 }
             }
         }
+    }
+
+    if (showTargetPicker) {
+        FolderPickerDialog(
+            title = "选择保存位置",
+            confirmLabel = "存到这里",
+            onDismiss = { showTargetPicker = false },
+            onConfirm = { targetId, targetName ->
+                showTargetPicker = false
+                targetNotice = null
+                targetBreadcrumb = PathBreadcrumb(targetId, targetName)
+                scope.launch { sessionManager.saveInstantTarget(targetId, targetName) }
+            },
+        )
     }
 }
 

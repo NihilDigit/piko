@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -85,6 +86,7 @@ import java.io.File
 @Composable
 fun DownloadsScreen(
     onPlayVideo: (DownloadTask) -> Unit = {},
+    topBarActions: @Composable RowScope.() -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val downloadManager = PikoApplication.instance.downloadManager
@@ -94,7 +96,7 @@ fun DownloadsScreen(
     Scaffold(
         modifier = modifier.fillMaxSize(),
         topBar = {
-            PikoTopBar(title = "本地下载")
+            PikoTopBar(title = "本地下载", actions = topBarActions)
         },
     ) { innerPadding ->
         if (tasks.isEmpty()) {

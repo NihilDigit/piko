@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.AccountCircle
@@ -31,6 +32,7 @@ import androidx.compose.material.icons.outlined.AutoFixHigh
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Code
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.VisibilityOff
@@ -74,6 +76,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import dev.piko.PikoApplication
 import dev.piko.R
+import dev.piko.data.auth.QuotaSnapshot
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.toReadableSize
 import kotlinx.coroutines.launch
@@ -90,12 +93,14 @@ import java.util.Locale
 @Composable
 fun SettingsScreen(
     onLogout: () -> Unit,
+    onNavigateToTrash: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val sessionManager = PikoApplication.instance.sessionManager
     val clientManager = PikoApplication.instance.clientManager
     val driveRepo = PikoApplication.instance.driveRepository
+    val accountRepo = PikoApplication.instance.accountRepository
     val downloadManager = PikoApplication.instance.downloadManager
     val session by sessionManager.sessionFlow.collectAsStateWithLifecycle(initialValue = null)
     val isSpoilerBlurEnabled by sessionManager.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = true)
@@ -104,7 +109,10 @@ fun SettingsScreen(
     val downloadDirPath by sessionManager.downloadDirPathFlow.collectAsStateWithLifecycle(initialValue = "")
     val scope = rememberCoroutineScope()
 
-    val quota by driveRepo.quotaFlow.collectAsStateWithLifecycle()
+    // 网络回来之前先用上次存下的数字渲染，否则卡片整块缺席、刷新完再跳出来
+    val liveQuota by driveRepo.quotaFlow.collectAsStateWithLifecycle()
+    val cachedQuota by sessionManager.quotaSnapshotFlow.collectAsStateWithLifecycle(initialValue = null)
+    val quota = liveQuota?.let { QuotaSnapshot(it.quota.usageBytes, it.quota.limitBytes) } ?: cachedQuota
     var showLogoutDialog by remember { mutableStateOf(false) }
     var showDownloadDirDialog by remember { mutableStateOf(false) }
     val resolvedDownloadPath = remember(downloadDirPath) {
@@ -125,6 +133,9 @@ fun SettingsScreen(
 
     LaunchedEffect(Unit) {
         driveRepo.getQuota()
+        // 昵称与头像不随登录态返回，每次进入本页取一次。
+        // 失败不提示：头像本就有首字母兜底，为它弹一条错误反而扰人。
+        accountRepo.refreshProfile()
     }
 
     Scaffold(
@@ -232,8 +243,8 @@ fun SettingsScreen(
 
             // 2. 云盘容量配额卡片
             quota?.let { q ->
-                val usage = q.quota.usageBytes
-                val limit = q.quota.limitBytes
+                val usage = q.usageBytes
+                val limit = q.limitBytes
                 val fraction = if (limit > 0) (usage.toFloat() / limit.toFloat()).coerceIn(0f, 1f) else 0f
                 val remaining = (limit - usage).coerceAtLeast(0L)
                 val percentText = String.format(Locale.getDefault(), "%.1f%%", fraction * 100f)
@@ -340,7 +351,64 @@ fun SettingsScreen(
                 }
             }
 
-            // 3. 浏览与视觉分区
+            // 3. 文件管理分区
+            Text(
+                text = "文件管理",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(start = 4.dp, top = 4.dp),
+            )
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                ),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onNavigateToTrash)
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Delete,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "回收站",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                            )
+                            Text(
+                                text = "恢复误删的文件，或彻底清除以释放空间",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+            }
+
+            // 4. 浏览与视觉分区
             Text(
                 text = "浏览与呈现",
                 style = MaterialTheme.typography.titleSmall,
@@ -435,7 +503,7 @@ fun SettingsScreen(
                 }
             }
 
-            // 4. 传输与存储分区
+            // 5. 传输与存储分区
             Text(
                 text = "传输与加速",
                 style = MaterialTheme.typography.titleSmall,
@@ -541,7 +609,7 @@ fun SettingsScreen(
                 }
             }
 
-            // 5. 关于 Piko 分区
+            // 6. 关于 Piko 分区
             Text(
                 text = "关于应用",
                 style = MaterialTheme.typography.titleSmall,
@@ -647,7 +715,7 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(4.dp))
 
-            // 6. 退出登录按钮 (带二次确认对话框)
+            // 7. 退出登录按钮 (带二次确认对话框)
             OutlinedButton(
                 onClick = { showLogoutDialog = true },
                 modifier = Modifier.fillMaxWidth(),

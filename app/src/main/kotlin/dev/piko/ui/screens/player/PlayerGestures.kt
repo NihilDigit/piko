@@ -8,13 +8,28 @@ import android.media.AudioManager
 import android.provider.Settings
 import android.view.Window
 import android.view.WindowManager
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -149,6 +164,135 @@ internal class ScreenOrientationController(private val activity: Activity?) {
         insetsController.show(WindowInsetsCompat.Type.systemBars())
     }
 }
+
+/**
+ * 覆盖整个播放区域的手势层。
+ *
+ * 单击显隐控件，双击左右半屏快退/快进，长按加速，横滑 seek，左右半屏竖滑调亮度/音量。
+ * 锁定时只保留单击，其余手势一律不识别。
+ */
+@Composable
+internal fun PlayerGestureLayer(
+    isLocked: Boolean,
+    durationMillis: Long,
+    positionProvider: () -> Long,
+    brightness: WindowBrightness,
+    volume: MediaVolume,
+    onGestureChange: (PlayerGesture?) -> Unit,
+    onToggleControls: () -> Unit,
+    onSeekTo: (Long) -> Unit,
+    onDoubleTapSeek: (forward: Boolean) -> Unit,
+    onSpeedBoost: (active: Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val haptic = LocalHapticFeedback.current
+    // pointerInput 只以 isLocked 为 key，其余入参走 rememberUpdatedState，
+    // 否则播放位置每变一次都会重建手势检测协程，拖拽会被打断
+    val duration by rememberUpdatedState(durationMillis)
+    val readPosition by rememberUpdatedState(positionProvider)
+    val gestureChanged by rememberUpdatedState(onGestureChange)
+    val toggleControls by rememberUpdatedState(onToggleControls)
+    val seekTo by rememberUpdatedState(onSeekTo)
+    val doubleTapSeek by rememberUpdatedState(onDoubleTapSeek)
+    val speedBoost by rememberUpdatedState(onSpeedBoost)
+
+    var gesture by remember { mutableStateOf<PlayerGesture?>(null) }
+    var touchOrigin by remember { mutableStateOf(Offset.Zero) }
+    var adjustBaseValue by remember { mutableFloatStateOf(0f) }
+    var boosting by remember { mutableStateOf(false) }
+
+    fun publish(next: PlayerGesture?) {
+        gesture = next
+        gestureChanged(next)
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .pointerInput(isLocked) {
+                if (isLocked) {
+                    detectTapGestures(onTap = { toggleControls() })
+                    return@pointerInput
+                }
+                detectTapGestures(
+                    onTap = { toggleControls() },
+                    onDoubleTap = { offset ->
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        doubleTapSeek(offset.x > size.width / 2)
+                    },
+                    onLongPress = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        boosting = true
+                        speedBoost(true)
+                    },
+                    onPress = {
+                        tryAwaitRelease()
+                        if (boosting) {
+                            boosting = false
+                            speedBoost(false)
+                        }
+                    },
+                )
+            }
+            .pointerInput(isLocked) {
+                if (isLocked) return@pointerInput
+                detectDragGestures(
+                    onDragStart = { offset ->
+                        touchOrigin = offset
+                        publish(null)
+                    },
+                    onDragEnd = {
+                        (gesture as? PlayerGesture.Seek)?.let { seek ->
+                            val target = (seek.startPositionMillis + seek.deltaMillis)
+                                .coerceIn(0L, duration.coerceAtLeast(1L))
+                            seekTo(target)
+                        }
+                        publish(null)
+                    },
+                    onDragCancel = { publish(null) },
+                    onDrag = { change, _ ->
+                        change.consume()
+                        val dx = change.position.x - touchOrigin.x
+                        val dy = change.position.y - touchOrigin.y
+
+                        if (gesture == null) {
+                            if (abs(dx) > GESTURE_SLOP_PX && abs(dx) > abs(dy)) {
+                                publish(PlayerGesture.Seek(readPosition(), 0L))
+                            } else if (abs(dy) > GESTURE_SLOP_PX && abs(dy) > abs(dx)) {
+                                val leftSide = touchOrigin.x < size.width / 2
+                                val kind = if (leftSide) VerticalAdjust.Brightness else VerticalAdjust.Volume
+                                adjustBaseValue = if (leftSide) brightness.current() else volume.current()
+                                publish(PlayerGesture.Adjust(kind, adjustBaseValue))
+                            }
+                        }
+
+                        when (val active = gesture) {
+                            is PlayerGesture.Seek -> {
+                                publish(active.copy(deltaMillis = (dx * SEEK_MILLIS_PER_PX).toLong()))
+                            }
+
+                            is PlayerGesture.Adjust -> {
+                                val fraction = (adjustBaseValue - dy / (size.height * ADJUST_TRAVEL_RATIO))
+                                    .coerceIn(0f, 1f)
+                                if (active.kind == VerticalAdjust.Brightness) {
+                                    brightness.set(fraction)
+                                } else {
+                                    volume.set(fraction)
+                                }
+                                publish(active.copy(fraction = fraction))
+                            }
+
+                            null -> Unit
+                        }
+                    },
+                )
+            },
+    )
+}
+
+private const val GESTURE_SLOP_PX = 24f
+private const val SEEK_MILLIS_PER_PX = 120f
+private const val ADJUST_TRAVEL_RATIO = 0.75f
 
 @Composable
 internal fun rememberOrientationController(): ScreenOrientationController {

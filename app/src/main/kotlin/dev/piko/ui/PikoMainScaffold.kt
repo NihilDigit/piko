@@ -22,7 +22,10 @@ import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffo
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -36,6 +39,7 @@ import dev.piko.ui.screens.drive.DriveScreen
 import dev.piko.ui.screens.files.FilesScreen
 import dev.piko.ui.screens.player.MediampVideoPlayerScreen
 import dev.piko.ui.screens.settings.SettingsScreen
+import dev.piko.ui.screens.trash.TrashScreen
 import dev.piko.ui.screens.transfers.TransfersScreen
 import dev.piko.ui.theme.PikoMotion
 import java.io.File
@@ -75,8 +79,17 @@ fun PikoMainScaffold(
         currentTab = MainTab.FILES
     }
 
+    // 退出登录的回调每次重组都可能是新实例，movableContent 只捕获第一次的那个，
+    // 所以取最新值而不是直接捕获参数
+    val latestOnLogout by rememberUpdatedState(onLogout)
+
     Box(modifier = modifier.fillMaxSize()) {
-        val mainContent: @Composable () -> Unit = {
+        // 打开全屏播放器时主内容会从 NavigationSuiteScaffold 里挪到外面调用。
+        // 这是两个不同的组合位置，普通 lambda 会让整棵子树被销毁重建——列表滚动
+        // 位置、已加载的文件、展开状态全部丢失，表现就是看完视频返回时列表回到顶部。
+        // movableContentOf 让 Compose 搬运子树而不是重建，状态得以保留。
+        val mainContent = remember {
+            movableContentOf {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -107,10 +120,12 @@ fun PikoMainScaffold(
                     }
                     MainTab.SETTINGS -> {
                         SettingsScreen(
-                            onLogout = onLogout,
+                            onLogout = { latestOnLogout() },
+                            onNavigateToTrash = { backStack.add(Screen.Trash) },
                         )
                     }
                 }
+            }
             }
         }
 
@@ -190,6 +205,11 @@ fun PikoMainScaffold(
                                 val localPath = localTask?.destinationPath?.takeIf { File(it).exists() }
                                 backStack.add(Screen.VideoPlayer(id, name, localPath))
                             },
+                        )
+                    }
+                    is Screen.Trash -> {
+                        TrashScreen(
+                            onBackClick = { backStack.removeLastOrNull() },
                         )
                     }
                     is Screen.VideoPlayer -> {

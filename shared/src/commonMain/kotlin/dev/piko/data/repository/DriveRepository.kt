@@ -8,7 +8,10 @@ import dev.piko.shared.data.PikoPathBreadcrumb
 typealias FileSortOrder = PikoFileSortOrder
 typealias PathBreadcrumb = PikoPathBreadcrumb
 
-class DriveRepository(clientManager: PikoClientProvider) : PikoDriveRepository(clientManager) {
+class DriveRepository(
+    clientManager: PikoClientProvider,
+    preferences: dev.piko.data.auth.PikoUserPreferences? = null,
+) : PikoDriveRepository(clientManager, preferences) {
     fun getFolderMeaningless(folderId: String): Boolean? = folderMeaningless(folderId)
     fun getAllCachedFolderMeaningless(): Map<String, Boolean> = folderMeaninglessCache.toMap()
 
