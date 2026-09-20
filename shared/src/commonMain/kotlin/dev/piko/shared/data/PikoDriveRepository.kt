@@ -115,6 +115,15 @@ open class PikoDriveRepository(
         }
     }
 
+    /**
+     * 全屏查看图片用的原图直链。
+     *
+     * 列表里的 thumbnailLink 是压过的小图，放大到全屏就是一团马赛克；原图链接只有
+     * getFileDetail 才带。链接是签过名的，过期后 CDN 直接 403，所以不缓存，每次打开现取。
+     */
+    suspend fun originalImageUrl(fileId: String): String? =
+        getFileDetail(fileId).getOrNull()?.downloadUrl
+
     suspend fun createFolder(parentId: String, name: String): Result<String> = withContext(Dispatchers.Default) {
         runSuspendCatching { client.createFolder(parentId, name) }
     }

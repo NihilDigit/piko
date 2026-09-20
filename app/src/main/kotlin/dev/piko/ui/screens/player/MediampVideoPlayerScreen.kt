@@ -1,6 +1,7 @@
 package dev.piko.ui.screens.player
 
 import android.content.res.Configuration
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
@@ -9,6 +10,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
@@ -30,16 +32,24 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import dev.piko.PikoApplication
+import dev.piko.data.repository.isPlayableVideo
+import dev.piko.data.repository.needsTranscodedPlayback
+import dev.piko.download.DownloadStatus
 import dev.piko.shared.media.PlayableMediaInfo
 import dev.piko.shared.media.PlayableMediaKind
+import dev.piko.shared.media.bestTranscodeName
+import dev.piko.shared.media.originNeedsTranscode
 import dev.piko.ui.components.FullScreenLoading
+import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import org.openani.mediamp.ExperimentalMediampApi
+import org.openani.mediamp.PlaybackErrorCode
 import org.openani.mediamp.PlaybackEvent
 import org.openani.mediamp.errorOrNull
 import org.openani.mediamp.compose.MediampPlayerSurface
@@ -59,15 +69,21 @@ import java.io.File
 @OptIn(ExperimentalMediampApi::class)
 @Composable
 fun MediampVideoPlayerScreen(
-    fileId: String,
-    fileName: String,
-    localPath: String? = null,
+    initialFileId: String,
+    initialFileName: String,
+    initialLocalPath: String? = null,
     onBackClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // 播的是哪个文件由状态决定，入参只是初值：同目录的视频可以在播放器里直接切换，
+    // 不退回列表再进来一次
+    var fileId by remember(initialFileId) { mutableStateOf(initialFileId) }
+    var fileName by remember(initialFileId) { mutableStateOf(initialFileName) }
+    var localPath by remember(initialFileId) { mutableStateOf(initialLocalPath) }
     val app = PikoApplication.instance
     val context = LocalContext.current
     val repository = app.mediampMediaRepository
+    val driveRepo = app.driveRepository
     val player = rememberMediampPlayer()
     val playerState by player.state.collectAsStateWithLifecycle()
     val positionMillis by player.currentPositionMillis.collectAsStateWithLifecycle()
@@ -91,6 +107,9 @@ fun MediampVideoPlayerScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var isPreparing by remember { mutableStateOf(true) }
     var requestedQuality by remember(playbackKey) { mutableStateOf<String?>(null) }
+    // 实际在放的变体。与 requestedQuality 的区别是它包含自动选的转码流，
+    // 顶栏显示和「是否已经换过流」的判断都看这个
+    var activeQuality by remember(playbackKey) { mutableStateOf<String?>(null) }
     // 重试时清晰度不变，靠这个计数器把准备流程重新拉起来
     var retryToken by remember(playbackKey) { mutableIntStateOf(0) }
     // 切清晰度时从当前位置续上；为 null 才去读持久化的进度
@@ -102,6 +121,25 @@ fun MediampVideoPlayerScreen(
     var lastKnownPositionMillis by remember(playbackKey) { mutableLongStateOf(0L) }
     var resumedPositionMillis by remember { mutableLongStateOf(0L) }
     var showResumeTip by remember { mutableStateOf(false) }
+
+    // 本地播放没有服务端元数据，画面朝向只能自己读一次容器头
+    var localIsLandscapeVideo by remember(localPath) { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(localPath) {
+        val path = localPath ?: return@LaunchedEffect
+        localIsLandscapeVideo = withContext(Dispatchers.IO) { readVideoIsLandscape(path) }
+    }
+    val isLandscapeVideo = localIsLandscapeVideo ?: mediaInfo?.isLandscapeVideo
+
+    // 同目录的其他视频。取一次即可：播放期间目录内容变了也不该让播放列表在脚下重排
+    var siblingVideos by remember(initialFileId) { mutableStateOf<List<FileStat>>(emptyList()) }
+    var showPlaylist by remember { mutableStateOf(false) }
+    LaunchedEffect(initialFileId) {
+        val parentId = driveRepo.getFileDetail(initialFileId).getOrNull()?.parentId ?: return@LaunchedEffect
+        siblingVideos = driveRepo.listAllFiles(parentId)
+            .getOrNull()
+            .orEmpty()
+            .filter { it.isPlayableVideo() }
+    }
 
     var controlsVisible by remember { mutableStateOf(true) }
     var isLocked by remember { mutableStateOf(false) }
@@ -120,6 +158,13 @@ fun MediampVideoPlayerScreen(
     val displayedError = when {
         isRecovering -> null
         error != null -> error
+        // 容器不认又没有转码流可换时，报底层的 3001/3003 对用户没有意义。
+        // 盘里同一部片子有的有转码有的没有，所以这句要说清等的是什么
+        playerState.errorOrNull != null &&
+            (fileName.needsTranscodedPlayback() || mediaInfo?.originNeedsTranscode() == true) &&
+            mediaInfo?.bestTranscodeName() == null ->
+            "本机无法解码此格式，需等服务端转码完成"
+
         else -> playerState.errorOrNull?.let { it.message ?: "播放中断" }
     }
 
@@ -159,7 +204,24 @@ fun MediampVideoPlayerScreen(
                     }
 
                     PlayableMediaKind.Video -> {
-                        val dataResult = repository.createMediaData(fileId, requestedQuality)
+                        // wmv/rm 这类容器 ExoPlayer 根本没有 extractor，原文件拉下来只会
+                        // 报 3003 PARSING_CONTAINER_UNSUPPORTED，开播就直接要 PikPak 的
+                        // 转码流。用户仍可从清晰度菜单切回原画。
+                        val needsTranscode = fileName.needsTranscodedPlayback() || info.originNeedsTranscode()
+                        val autoQuality = if (requestedQuality == null && needsTranscode) {
+                            info.bestTranscodeName()
+                        } else {
+                            null
+                        }
+                        // 换了变体就要重取一次详情：失败回退用的直链必须与实际读的字节同源
+                        val playedInfo = if (autoQuality != null) {
+                            repository.prepareMedia(fileId, autoQuality).getOrThrow().also { mediaInfo = it }
+                        } else {
+                            info
+                        }
+                        val quality = requestedQuality ?: autoQuality
+                        activeQuality = quality
+                        val dataResult = repository.createMediaData(fileId, quality)
                         if (dataResult.isSuccess) {
                             player.setMediaData(
                                 dataResult.getOrThrow().second,
@@ -168,7 +230,7 @@ fun MediampVideoPlayerScreen(
                             )
                         } else {
                             // Direct URL remains a recovery path for files the range reader cannot open.
-                            player.playUri(info.currentUrl, startPositionMillis = startMillis)
+                            player.playUri(playedInfo.currentUrl, startPositionMillis = startMillis)
                         }
                         isPreparing = false
                     }
@@ -230,6 +292,26 @@ fun MediampVideoPlayerScreen(
             if (event !is PlaybackEvent.ErrorOccurred) return@collect
             // 本地文件重来一遍还是同一个解码错误，直接交给用户
             if (localPath != null) return@collect
+
+            // 原画解不开多半是容器不认（扩展名没拦住的那些），同一份字节重拉多少次
+            // 都是一样的结果，有转码流就换过去，没有才走退避重连
+            val transcode = mediaInfo?.bestTranscodeName()
+            if (activeQuality == null && transcode != null) {
+                pendingStartMillis = player.currentPositionMillis.value.takeIf { it > 0L }
+                    ?: lastKnownPositionMillis
+                retryAttempt = 0
+                isRecovering = true
+                requestedQuality = transcode
+                return@collect
+            }
+
+            // 容器/编码不被支持（media3 的 3001~3004、4005 都归到这里）重拉多少次
+            // 都是同一份解不开的字节，退避没有意义，直接把错误交给用户
+            if (event.error.code == PlaybackErrorCode.UNSUPPORTED_FORMAT) {
+                isRecovering = false
+                return@collect
+            }
+
             if (retryAttempt >= RECOVERY_DELAYS_MILLIS.size) {
                 isRecovering = false
                 return@collect
@@ -310,10 +392,15 @@ fun MediampVideoPlayerScreen(
                 onGestureChange = { activeGesture = it },
                 onToggleControls = { controlsVisible = !controlsVisible },
                 onSeekTo = ::seekTo,
-                onDoubleTapSeek = { forward ->
-                    val delta = if (forward) SEEK_STEP_MILLIS else -SEEK_STEP_MILLIS
-                    seekTo((player.currentPositionMillis.value + delta).coerceAtMost(durationMillis))
-                    doubleTapForward = forward
+                onDoubleTap = { zone ->
+                    if (zone == DoubleTapZone.PlayPause) {
+                        player.togglePlayWhenReady()
+                    } else {
+                        val forward = zone == DoubleTapZone.Forward
+                        val delta = if (forward) SEEK_STEP_MILLIS else -SEEK_STEP_MILLIS
+                        seekTo((player.currentPositionMillis.value + delta).coerceAtMost(durationMillis))
+                        doubleTapForward = forward
+                    }
                 },
                 onSpeedBoost = { active ->
                     isSpeedBoosting = active
@@ -334,6 +421,14 @@ fun MediampVideoPlayerScreen(
             visible = isSpeedBoosting,
             isLandscape = isLandscape,
             speed = BOOST_SPEED,
+        )
+
+        // 竖屏放横屏片子时画面只占中间一条，下面整片黑边闲着。全屏入口在顶栏
+        // 那排图标里太小也太远，这里给一个落在拇指位置的大目标。
+        FullscreenPromptButton(
+            visible = !isImage && !isLocked && !isLandscape && isLandscapeVideo == true,
+            controlsVisible = controlsVisible,
+            onClick = { orientationController.setLandscape() },
         )
 
         ResumeTipCapsule(
@@ -367,7 +462,8 @@ fun MediampVideoPlayerScreen(
                 exit = fadeOut(),
                 modifier = Modifier
                     .align(Alignment.CenterStart)
-                    .padding(start = if (isLandscape) 36.dp else 16.dp),
+                    .displayCutoutPadding()
+                    .padding(start = 16.dp),
             ) {
                 LockToggle(
                     isLocked = isLocked,
@@ -388,12 +484,13 @@ fun MediampVideoPlayerScreen(
             Box(Modifier.fillMaxSize()) {
                 PlayerTopBar(
                     title = fileName,
-                    isLandscape = isLandscape,
                     isLocalPlayback = localPath != null,
                     aspectRatioMode = if (isImage) null else aspectRatioMode,
                     qualityOptions = if (isImage) emptyList() else qualityOptionsOf(mediaInfo, localPath),
-                    currentQuality = requestedQuality ?: ORIGINAL_QUALITY,
+                    currentQuality = activeQuality ?: ORIGINAL_QUALITY,
                     showSpeedEntry = !isImage && speedFeature != null,
+                    showPlaylistEntry = !isImage && siblingVideos.size > 1,
+                    onPlaylistClick = { showPlaylist = true },
                     onBackClick = {
                         orientationController.resetOrientation()
                         onBackClick()
@@ -428,6 +525,24 @@ fun MediampVideoPlayerScreen(
             }
         }
 
+        if (showPlaylist) {
+            PlayerPlaylistSheet(
+                videos = siblingVideos,
+                currentFileId = fileId,
+                onSelect = { target ->
+                    showPlaylist = false
+                    if (target.id != fileId) {
+                        // 清晰度、重试计数、续播位置都以 playbackKey 为 remember 的键，
+                        // 换了文件这些状态自己会重置，这里只换标识
+                        fileId = target.id
+                        fileName = target.name
+                        localPath = completedDownloadPath(target.id)
+                    }
+                },
+                onDismiss = { showPlaylist = false },
+            )
+        }
+
         if (showSpeedDialog && speedFeature != null) {
             PlaybackSpeedDialog(
                 speed = playbackSpeed,
@@ -436,6 +551,44 @@ fun MediampVideoPlayerScreen(
                 onDismiss = { showSpeedDialog = false },
             )
         }
+    }
+}
+
+/**
+ * 这个文件已下载到本地的完整副本，没有则为 null。
+ *
+ * 与进播放器时那次查找同一套判据：分段下载的片段不算，路径对应的文件也要还在。
+ */
+private fun completedDownloadPath(fileId: String): String? =
+    PikoApplication.instance.downloadManager.tasks.value.values
+        .find { it.fileId == fileId && it.status == DownloadStatus.COMPLETED && !it.isSegment }
+        ?.destinationPath
+        ?.takeIf { File(it).exists() }
+
+/**
+ * 本地文件的画面朝向，读不出来返回 null。
+ *
+ * 竖着拍的片子容器里存的仍是横向分辨率，靠 rotation 摆正，所以 90/270 时宽高要对调，
+ * 否则竖屏视频也会被当成横屏去提示全屏。
+ */
+private fun readVideoIsLandscape(path: String): Boolean? {
+    val retriever = MediaMetadataRetriever()
+    return try {
+        retriever.setDataSource(path)
+        val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull()
+        val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull()
+        val rotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+        if (width == null || height == null || width <= 0 || height <= 0) {
+            null
+        } else if (rotation % 180 == 0) {
+            width > height
+        } else {
+            height > width
+        }
+    } catch (_: Exception) {
+        null
+    } finally {
+        runCatching { retriever.release() }
     }
 }
 

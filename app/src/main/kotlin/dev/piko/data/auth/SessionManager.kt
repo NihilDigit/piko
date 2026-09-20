@@ -28,6 +28,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val DOWNLOAD_DIR_PATH = stringPreferencesKey("download_dir_path")
         val SPOILER_BLUR_ENABLED = booleanPreferencesKey("spoiler_blur_enabled")
         val HEURISTIC_FILTER_ENABLED = booleanPreferencesKey("heuristic_filter_enabled")
+        val GRID_VIEW_ENABLED = booleanPreferencesKey("grid_view_enabled")
         val INSTANT_TARGET_ID = stringPreferencesKey("instant_target_id")
         val INSTANT_TARGET_NAME = stringPreferencesKey("instant_target_name")
         val QUOTA_USAGE_BYTES = longPreferencesKey("quota_usage_bytes")
@@ -82,6 +83,16 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun setHeuristicFilterEnabled(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.HEURISTIC_FILTER_ENABLED] = enabled
+        }
+    }
+
+    override val gridViewFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[PreferencesKeys.GRID_VIEW_ENABLED] ?: false // 默认列表视图
+    }
+
+    override suspend fun setGridViewEnabled(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.GRID_VIEW_ENABLED] = enabled
         }
     }
 

@@ -29,6 +29,10 @@ interface PikoUserPreferences {
     suspend fun setSpoilerBlurEnabled(enabled: Boolean)
     val heuristicFilterFlow: Flow<Boolean>
     suspend fun setHeuristicFilterEnabled(enabled: Boolean)
+
+    /** 网盘列表用网格还是列表。全局记住，不随进出目录或重启复位。 */
+    val gridViewFlow: Flow<Boolean>
+    suspend fun setGridViewEnabled(enabled: Boolean)
     val sessionFlow: Flow<UserSession>
     suspend fun saveSession(token: String, refreshToken: String = "", userId: String = "", username: String = "", avatarUrl: String = "")
 

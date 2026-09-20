@@ -45,6 +45,12 @@ internal enum class VerticalAdjust {
     Volume,
 }
 
+/**
+ * 双击落点分区。中间三成是播放/暂停，两侧各三成五是快退与快进——快进快退靠的是
+ * 手指落在哪半边，判据放宽到 35% 仍然分得清，而中间留出一块专门给播放控制。
+ */
+internal enum class DoubleTapZone { Rewind, PlayPause, Forward }
+
 internal sealed interface PlayerGesture {
     data class Seek(val startPositionMillis: Long, val deltaMillis: Long) : PlayerGesture
     data class Adjust(val kind: VerticalAdjust, val fraction: Float) : PlayerGesture
@@ -168,7 +174,7 @@ internal class ScreenOrientationController(private val activity: Activity?) {
 /**
  * 覆盖整个播放区域的手势层。
  *
- * 单击显隐控件，双击左右半屏快退/快进，长按加速，横滑 seek，左右半屏竖滑调亮度/音量。
+ * 单击显隐控件，双击两侧快退/快进、中间播放暂停，长按加速，横滑 seek，左右半屏竖滑调亮度/音量。
  * 锁定时只保留单击，其余手势一律不识别。
  */
 @Composable
@@ -181,7 +187,7 @@ internal fun PlayerGestureLayer(
     onGestureChange: (PlayerGesture?) -> Unit,
     onToggleControls: () -> Unit,
     onSeekTo: (Long) -> Unit,
-    onDoubleTapSeek: (forward: Boolean) -> Unit,
+    onDoubleTap: (zone: DoubleTapZone) -> Unit,
     onSpeedBoost: (active: Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -193,7 +199,7 @@ internal fun PlayerGestureLayer(
     val gestureChanged by rememberUpdatedState(onGestureChange)
     val toggleControls by rememberUpdatedState(onToggleControls)
     val seekTo by rememberUpdatedState(onSeekTo)
-    val doubleTapSeek by rememberUpdatedState(onDoubleTapSeek)
+    val doubleTap by rememberUpdatedState(onDoubleTap)
     val speedBoost by rememberUpdatedState(onSpeedBoost)
 
     var gesture by remember { mutableStateOf<PlayerGesture?>(null) }
@@ -218,7 +224,13 @@ internal fun PlayerGestureLayer(
                     onTap = { toggleControls() },
                     onDoubleTap = { offset ->
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        doubleTapSeek(offset.x > size.width / 2)
+                        doubleTap(
+                            when {
+                                offset.x < size.width * SIDE_ZONE_FRACTION -> DoubleTapZone.Rewind
+                                offset.x > size.width * (1f - SIDE_ZONE_FRACTION) -> DoubleTapZone.Forward
+                                else -> DoubleTapZone.PlayPause
+                            },
+                        )
                     },
                     onLongPress = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -290,6 +302,7 @@ internal fun PlayerGestureLayer(
     )
 }
 
+private const val SIDE_ZONE_FRACTION = 0.35f
 private const val GESTURE_SLOP_PX = 24f
 private const val SEEK_MILLIS_PER_PX = 120f
 private const val ADJUST_TRAVEL_RATIO = 0.75f

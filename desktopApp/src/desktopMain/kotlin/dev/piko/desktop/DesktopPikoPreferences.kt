@@ -12,6 +12,7 @@ class DesktopPikoPreferences(settings: DesktopSettingsStore) : PikoUserPreferenc
     private val playback = mutableMapOf<String, Long>()
     private val spoiler = MutableStateFlow(true)
     private val heuristic = MutableStateFlow(true)
+    private val gridView = MutableStateFlow(false)
     private val acceleration = MutableStateFlow(true)
     private val session = MutableStateFlow(UserSession())
     private val quota = MutableStateFlow<QuotaSnapshot?>(null)
@@ -26,6 +27,8 @@ class DesktopPikoPreferences(settings: DesktopSettingsStore) : PikoUserPreferenc
     override suspend fun setSpoilerBlurEnabled(enabled: Boolean) { spoiler.value = enabled }
     override val heuristicFilterFlow: Flow<Boolean> = heuristic.asStateFlow()
     override suspend fun setHeuristicFilterEnabled(enabled: Boolean) { heuristic.value = enabled }
+    override val gridViewFlow: Flow<Boolean> = gridView.asStateFlow()
+    override suspend fun setGridViewEnabled(enabled: Boolean) { gridView.value = enabled }
     override val sessionFlow: Flow<UserSession> = session.asStateFlow()
     override suspend fun saveSession(token: String, refreshToken: String, userId: String, username: String, avatarUrl: String) {
         session.value = UserSession(token, refreshToken, userId, username, avatarUrl)

@@ -144,7 +144,7 @@ fun FileItemRow(
                     .clip(MaterialTheme.shapes.small),
                 contentAlignment = Alignment.Center,
             ) {
-                if (file.thumbnailLink.isNotEmpty()) {
+                if (!file.isFolder && file.thumbnailLink.isNotEmpty()) {
                     AsyncImage(
                         model = file.thumbnailLink,
                         contentDescription = null,
@@ -176,16 +176,20 @@ fun FileItemRow(
                     Surface(
                         modifier = Modifier.size(48.dp),
                         shape = MaterialTheme.shapes.small,
-                        color = if (file.isFolder) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+                        color = if (file.isFolder) {
+                            MaterialTheme.colorScheme.secondaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainerHigh
+                        },
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             val icon = when {
                                 file.isFolder -> Icons.Outlined.Folder
-                                file.name.isPlayableVideo() -> Icons.Outlined.Movie
+                                file.isPlayableVideo() -> Icons.Outlined.Movie
                                 file.name.endsWith(".mp3", ignoreCase = true) ||
                                     file.name.endsWith(".flac", ignoreCase = true) ||
                                     file.name.endsWith(".wav", ignoreCase = true) -> Icons.Outlined.AudioFile
-                                file.name.isPreviewableImage() -> Icons.Outlined.Image
+                                file.isPreviewableImage() -> Icons.Outlined.Image
                                 file.name.endsWith(".zip", ignoreCase = true) ||
                                     file.name.endsWith(".rar", ignoreCase = true) ||
                                     file.name.endsWith(".7z", ignoreCase = true) -> Icons.Outlined.FolderZip
@@ -194,7 +198,11 @@ fun FileItemRow(
                             Icon(
                                 imageVector = icon,
                                 contentDescription = null,
-                                tint = if (file.isFolder) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                tint = if (file.isFolder) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
                                 modifier = Modifier.size(26.dp),
                             )
                         }
@@ -288,7 +296,7 @@ fun FileItemRow(
                                     onDownload()
                                 },
                             )
-                            if (file.name.isPlayableVideo()) {
+                            if (file.isPlayableVideo()) {
                                 DropdownMenuItem(
                                     text = { Text("下载指定段落") },
                                     leadingIcon = {

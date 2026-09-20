@@ -8,7 +8,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Person
@@ -22,13 +22,14 @@ import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffo
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntSize
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation3.runtime.rememberNavBackStack
 import dev.piko.PikoApplication
@@ -79,21 +80,27 @@ fun PikoMainScaffold(
         currentTab = MainTab.FILES
     }
 
-    // 退出登录的回调每次重组都可能是新实例，movableContent 只捕获第一次的那个，
-    // 所以取最新值而不是直接捕获参数
-    val latestOnLogout by rememberUpdatedState(onLogout)
+    // 覆盖层盖住主内容时，主内容这棵树仍留在组合里，也仍会被重新测量：播放器把
+    // Activity 转成横屏，底下的列表就按横屏尺寸重排，LazyList 的滚动锚点跟着挪，
+    // 退出播放器回来看到的已经不是刚才那一条。这里在覆盖层期间把尺寸钉在进去之前
+    // 那一次——反正此刻它一个像素也不显示。
+    var contentSize by remember { mutableStateOf(IntSize.Zero) }
+    val density = LocalDensity.current
+    val frozenSizeModifier = if (activeOverlayScreen != null && contentSize != IntSize.Zero) {
+        with(density) { Modifier.requiredSize(contentSize.width.toDp(), contentSize.height.toDp()) }
+    } else {
+        Modifier.onSizeChanged { contentSize = it }
+    }
 
     Box(modifier = modifier.fillMaxSize()) {
-        // 打开全屏播放器时主内容会从 NavigationSuiteScaffold 里挪到外面调用。
-        // 这是两个不同的组合位置，普通 lambda 会让整棵子树被销毁重建——列表滚动
-        // 位置、已加载的文件、展开状态全部丢失，表现就是看完视频返回时列表回到顶部。
-        // movableContentOf 让 Compose 搬运子树而不是重建，状态得以保留。
-        val mainContent = remember {
-            movableContentOf {
+        // 全屏覆盖层是这个 Box 的兄弟节点且画在后面，把导航栏一并盖住，所以主内容
+        // 始终留在 NavigationSuiteScaffold 里调用，不搬到外面去。搬动意味着换组合
+        // 位置，整棵子树会被销毁重建，列表滚动位置与已加载的文件全部丢失。
+        val mainContent: @Composable () -> Unit = {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(),
+                    .then(frozenSizeModifier),
             ) {
                 when (currentTab) {
                     MainTab.FILES -> {
@@ -120,57 +127,52 @@ fun PikoMainScaffold(
                     }
                     MainTab.SETTINGS -> {
                         SettingsScreen(
-                            onLogout = { latestOnLogout() },
+                            onLogout = onLogout,
                             onNavigateToTrash = { backStack.add(Screen.Trash) },
                         )
                     }
                 }
             }
-            }
         }
 
-        if (activeOverlayScreen == null) {
-            NavigationSuiteScaffold(
-                navigationSuiteItems = {
-                    item(
-                        selected = currentTab == MainTab.FILES,
-                        onClick = { currentTab = MainTab.FILES },
-                        icon = {
-                            Icon(
-                                imageVector = if (currentTab == MainTab.FILES) Icons.Filled.Folder else Icons.Outlined.Folder,
-                                contentDescription = "文件",
-                            )
-                        },
-                        label = { Text("文件") },
-                    )
-                    item(
-                        selected = currentTab == MainTab.TRANSFERS,
-                        onClick = { currentTab = MainTab.TRANSFERS },
-                        icon = {
-                            Icon(
-                                imageVector = if (currentTab == MainTab.TRANSFERS) Icons.Filled.SyncAlt else Icons.Outlined.SyncAlt,
-                                contentDescription = "传输",
-                            )
-                        },
-                        label = { Text("传输") },
-                    )
-                    item(
-                        selected = currentTab == MainTab.SETTINGS,
-                        onClick = { currentTab = MainTab.SETTINGS },
-                        icon = {
-                            Icon(
-                                imageVector = if (currentTab == MainTab.SETTINGS) Icons.Filled.Person else Icons.Outlined.Person,
-                                contentDescription = "我的",
-                            )
-                        },
-                        label = { Text("我的") },
-                    )
-                },
-                content = mainContent,
-            )
-        } else {
-            mainContent()
-        }
+        NavigationSuiteScaffold(
+            navigationSuiteItems = {
+                item(
+                    selected = currentTab == MainTab.FILES,
+                    onClick = { currentTab = MainTab.FILES },
+                    icon = {
+                        Icon(
+                            imageVector = if (currentTab == MainTab.FILES) Icons.Filled.Folder else Icons.Outlined.Folder,
+                            contentDescription = "文件",
+                        )
+                    },
+                    label = { Text("文件") },
+                )
+                item(
+                    selected = currentTab == MainTab.TRANSFERS,
+                    onClick = { currentTab = MainTab.TRANSFERS },
+                    icon = {
+                        Icon(
+                            imageVector = if (currentTab == MainTab.TRANSFERS) Icons.Filled.SyncAlt else Icons.Outlined.SyncAlt,
+                            contentDescription = "传输",
+                        )
+                    },
+                    label = { Text("传输") },
+                )
+                item(
+                    selected = currentTab == MainTab.SETTINGS,
+                    onClick = { currentTab = MainTab.SETTINGS },
+                    icon = {
+                        Icon(
+                            imageVector = if (currentTab == MainTab.SETTINGS) Icons.Filled.Person else Icons.Outlined.Person,
+                            contentDescription = "我的",
+                        )
+                    },
+                    label = { Text("我的") },
+                )
+            },
+            content = mainContent,
+        )
 
         // 压栈页面 (子目录或全屏播放器)
         activeOverlayScreen?.let { screen ->
@@ -214,9 +216,9 @@ fun PikoMainScaffold(
                     }
                     is Screen.VideoPlayer -> {
                         MediampVideoPlayerScreen(
-                            fileId = screen.fileId,
-                            fileName = screen.fileName,
-                            localPath = screen.localPath,
+                            initialFileId = screen.fileId,
+                            initialFileName = screen.fileName,
+                            initialLocalPath = screen.localPath,
                             onBackClick = {
                                 backStack.removeLastOrNull()
                             },

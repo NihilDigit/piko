@@ -481,11 +481,11 @@ private fun TrashItemRow(
                         Box(contentAlignment = Alignment.Center) {
                             val icon = when {
                                 file.isFolder -> Icons.Outlined.Folder
-                                file.name.isPlayableVideo() -> Icons.Outlined.Movie
+                                file.isPlayableVideo() -> Icons.Outlined.Movie
                                 file.name.endsWith(".mp3", ignoreCase = true) ||
                                     file.name.endsWith(".flac", ignoreCase = true) ||
                                     file.name.endsWith(".wav", ignoreCase = true) -> Icons.Outlined.AudioFile
-                                file.name.isPreviewableImage() -> Icons.Outlined.Image
+                                file.isPreviewableImage() -> Icons.Outlined.Image
                                 file.name.endsWith(".zip", ignoreCase = true) ||
                                     file.name.endsWith(".rar", ignoreCase = true) ||
                                     file.name.endsWith(".7z", ignoreCase = true) -> Icons.Outlined.FolderZip

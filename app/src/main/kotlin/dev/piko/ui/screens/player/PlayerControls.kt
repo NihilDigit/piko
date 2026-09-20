@@ -12,13 +12,19 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.safeGesturesPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Fullscreen
@@ -66,12 +72,13 @@ import kotlin.math.round
 @Composable
 internal fun PlayerTopBar(
     title: String,
-    isLandscape: Boolean,
     isLocalPlayback: Boolean,
     aspectRatioMode: AspectRatioMode?,
     qualityOptions: List<String>,
     currentQuality: String?,
     showSpeedEntry: Boolean,
+    showPlaylistEntry: Boolean,
+    onPlaylistClick: () -> Unit,
     onBackClick: () -> Unit,
     onAspectRatioChange: (AspectRatioMode) -> Unit,
     onQualityChange: (String) -> Unit,
@@ -93,10 +100,13 @@ internal fun PlayerTopBar(
                     ),
                 ),
             )
-            .padding(
-                horizontal = if (isLandscape) 36.dp else 16.dp,
-                vertical = if (isLandscape) 12.dp else 28.dp,
-            ),
+            // 横屏隐藏了系统栏，顶部内边距就只剩挖孔那一侧要让——固定 36dp 在没有挖孔的
+            // 机器上把整排图标推得离边太远，在挖孔一侧又让不够。竖屏同理，状态栏高度
+            // 各机不同，28dp 只是凑的。渐变背景在 padding 之前，仍然满幅。
+            .windowInsetsPadding(
+                WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top),
+            )
+            .padding(horizontal = 8.dp, vertical = 10.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -184,6 +194,16 @@ internal fun PlayerTopBar(
                     Icon(Icons.Outlined.Speed, contentDescription = "倍速", tint = Color.White)
                 }
             }
+
+            if (showPlaylistEntry) {
+                IconButton(onClick = onPlaylistClick) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.PlaylistPlay,
+                        contentDescription = "同目录视频",
+                        tint = Color.White,
+                    )
+                }
+            }
         }
     }
 }
@@ -218,11 +238,12 @@ internal fun PlayerBottomBar(
                     ),
                 ),
             )
-            .padding(
-                horizontal = if (isLandscape) 36.dp else 12.dp,
-                vertical = if (isLandscape) 14.dp else 16.dp,
+            .windowInsetsPadding(
+                WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom),
             )
-            .safeGesturesPadding(),
+            // 手势导航的返回热区在左右两条边上，进度条压上去会被系统先吃掉拖拽
+            .safeGesturesPadding()
+            .padding(horizontal = 8.dp, vertical = if (isLandscape) 8.dp else 12.dp),
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Row(
