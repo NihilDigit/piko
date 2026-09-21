@@ -61,7 +61,9 @@ jobs:
           fi
 
       - name: Build, test and stage portable package
-        run: .\gradlew.bat test :shared:compileKotlinDesktop :desktopApp:packageUberJarForCurrentOS :desktopApp:createDistributable -PpikoDesktopVersion="$env:PIKO_DESKTOP_VERSION" --no-daemon --stacktrace
+        # 注意：windows-11-arm 镜像没有 Android SDK，所以这里只跑 shared/desktop 的测试，
+        # 不用裸 test（会连带 :app:testDebugUnitTest，在 arm 上直接挂）。Android 单测归 Android 流水线。
+        run: .\gradlew.bat :shared:desktopTest :desktopApp:desktopTest :shared:compileKotlinDesktop :desktopApp:packageUberJarForCurrentOS :desktopApp:createDistributable -PpikoDesktopVersion="$env:PIKO_DESKTOP_VERSION" --no-daemon --stacktrace
 
       - name: Install WiX Toolset (MSI only)
         continue-on-error: true
