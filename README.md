@@ -66,7 +66,7 @@
 - **桌面界面**：[Compose Multiplatform](https://github.com/JetBrains/compose-multiplatform) + [compose-fluent](https://github.com/compose-fluent/compose-fluent-ui)（Microsoft Fluent 2 组件、图标与 Mica 背景）
 - **播放器**：双端统一 [mediamp](https://github.com/open-ani/mediamp)（OpenAni，桌面走 MPV runtime，x64/arm64 双架构）
 - **Windows 原生**：[kotlin-winrt](https://github.com/compose-fluent/kotlin-winrt)（WinRT 投影：Toast 通知、系统强调色/深浅色）+ JDK FFM 直调 Win32（防锁屏常醒、AUMID、文件关联）
-- **网盘协议**：[`pikpak-kotlin`](https://github.com/nihildigit/pikpak-kotlin) by [@nihildigit](https://github.com/nihildigit)（登录、文件、离线任务、回收站等全套 PikPak API）
+- **网盘协议**：[pikpak-kotlin](https://github.com/nihildigit/pikpak-kotlin)（登录、文件、离线任务、回收站等全套 PikPak API）
 - **网络与图片**：[Ktor Client](https://github.com/ktorio/ktor)（OkHttp 引擎）+ [Coil 3](https://github.com/coil-kt/coil)（跨平台图片加载）
 - **视频片段**：[mp4parser](https://github.com/sannies/mp4parser)（纯 JVM 无损流复制切片，无需捆绑 ffmpeg）
 
