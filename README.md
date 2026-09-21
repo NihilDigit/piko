@@ -59,16 +59,16 @@
 
 ## 🛠 技术栈
 
-- **Language**: Kotlin 2.4+ (Kotlin Multiplatform)
-- **UI Framework**:
-  - Android: Jetpack Compose (Material 3 Expressive)
-  - Desktop: Compose Multiplatform + `compose-fluent` (Microsoft Fluent 2)
-- **Native Windows API**: `kotlin-winrt` (Windows SDK 投影：Toast 通知、Mica、系统色彩、DisplayRequest 常亮)
-- **Architecture**: Kotlin Multiplatform (`shared` 纯业务逻辑层 + 双端原生风格表现层)
-- **Media Engine**: AndroidX Media3 (ExoPlayer) / MediaMP (MPV Windows)
-- **SDK**: [`pikpak-kotlin`](https://github.com/nihildigit/pikpak-kotlin) by [@nihildigit](https://github.com/nihildigit)
-- **Image Loading**: Coil 3 (Multiplatform)
-- **Network**: Ktor Client 3.x
+Piko 站在这些开源项目肩上（排名不分先后，括号里是它们在 Piko 里的职责）：
+
+- **语言与构建**：[Kotlin Multiplatform](https://github.com/JetBrains/kotlin)（`shared` 纯业务逻辑层 + 双端原生风格表现层）、[kotlinx.coroutines](https://github.com/Kotlin/kotlinx.coroutines) / [kotlinx.serialization](https://github.com/Kotlin/kotlinx.serialization) / [kotlinx-datetime](https://github.com/Kotlin/kotlinx-datetime)
+- **Android 界面**：[Jetpack Compose](https://developer.android.com/jetpack/compose)（Material 3 Expressive）+ [Navigation 3](https://developer.android.com/jetpack/compose/navigation) + Material 3 自适应套件、AndroidX（activity / lifecycle / DataStore / DocumentFile）
+- **桌面界面**：[Compose Multiplatform](https://github.com/JetBrains/compose-multiplatform) + [compose-fluent](https://github.com/compose-fluent/compose-fluent-ui)（Microsoft Fluent 2 组件、图标与 Mica 背景）
+- **播放器**：双端统一 [mediamp](https://github.com/open-ani/mediamp)（OpenAni，桌面走 MPV runtime，x64/arm64 双架构）
+- **Windows 原生**：[kotlin-winrt](https://github.com/compose-fluent/kotlin-winrt)（WinRT 投影：Toast 通知、系统强调色/深浅色）+ JDK FFM 直调 Win32（防锁屏常醒、AUMID、文件关联）
+- **网盘协议**：[`pikpak-kotlin`](https://github.com/nihildigit/pikpak-kotlin) by [@nihildigit](https://github.com/nihildigit)（登录、文件、离线任务、回收站等全套 PikPak API）
+- **网络与图片**：[Ktor Client](https://github.com/ktorio/ktor)（OkHttp 引擎）+ [Coil 3](https://github.com/coil-kt/coil)（跨平台图片加载）
+- **视频片段**：[mp4parser](https://github.com/sannies/mp4parser)（纯 JVM 无损流复制切片，无需捆绑 ffmpeg）
 
 ---
 
