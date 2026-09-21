@@ -25,11 +25,14 @@ jobs:
           # x64：windows-latest 常备 runner，兜底架构。
           - runner: windows-latest
             arch: x64
+            java-distribution: temurin
           # arm64：用户主力机就是 ARM64 Windows；mpv/skiko 都有 windows-arm64，
           # 构建机 arch 会自动选中对的 runtime（见 desktopApp/build.gradle.kts）。
+          # 注意 Temurin 不发 Windows-ARM64 的 25，只能用 Zulu。
           # 若仓库无权使用该 runner（一直排队），删掉这一段只留 x64。
           - runner: windows-11-arm
             arch: arm64
+            java-distribution: zulu
     runs-on: ${{ matrix.runner }}
     permissions:
       # tag 构建要往 Release 挂 zip 包。
@@ -39,10 +42,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 25
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '25'
-          distribution: temurin
+          distribution: ${{ matrix.java-distribution }}
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
