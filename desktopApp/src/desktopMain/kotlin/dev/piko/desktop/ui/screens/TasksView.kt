@@ -52,6 +52,7 @@ import kotlinx.coroutines.launch
 fun TasksView(
     manager: PikoClientManager,
     modifier: Modifier = Modifier,
+    initialMagnetUrl: String? = null,
 ) {
     val taskRepo = remember(manager) { TaskRepository(manager) }
     val instantRepo = remember(manager) { InstantMagnetRepository(manager) }
@@ -62,8 +63,8 @@ fun TasksView(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var successMessage by remember { mutableStateOf<String?>(null) }
 
-    var showNewTaskDialog by remember { mutableStateOf(false) }
-    var inputUrl by remember { mutableStateOf("") }
+    var showNewTaskDialog by remember(initialMagnetUrl) { mutableStateOf(initialMagnetUrl != null) }
+    var inputUrl by remember(initialMagnetUrl) { mutableStateOf(initialMagnetUrl ?: "") }
     var isSubmitting by remember { mutableStateOf(false) }
 
     val fetchTasks: () -> Unit = {

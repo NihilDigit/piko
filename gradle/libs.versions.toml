@@ -25,6 +25,7 @@ winrt = "0.1.0-SNAPSHOT"
 winrtSdkProjection = "10.0.26100.0-kotlin-winrt-0.1.0-SNAPSHOT"
 
 junit = "4.13.2"
+mp4parser = "1.1.22"
 
 [libraries]
 pikpak-kotlin = { module = "io.github.nihildigit:pikpak-kotlin", version.ref = "pikpakSdk" }
@@ -32,6 +33,7 @@ mediamp-all = { module = "org.openani.mediamp:mediamp-all", version.ref = "media
 mediamp-source-ktxio = { module = "org.openani.mediamp:mediamp-source-ktxio", version.ref = "mediamp" }
 fluent-ui = { module = "io.github.compose-fluent:fluent", version.ref = "fluentUi" }
 fluent-icons-extended = { module = "io.github.compose-fluent:fluent-icons-extended", version.ref = "fluentUi" }
+mp4parser-isobox = { module = "com.googlecode.mp4parser:isoparser", version.ref = "mp4parser" }
 winrt-runtime = { module = "io.github.compose-fluent:winrt-runtime", version.ref = "winrt" }
 winrt-projections-windows-sdk = { module = "io.github.compose-fluent:winrt-projections-windows-sdk", version.ref = "winrtSdkProjection" }
 

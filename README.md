@@ -75,8 +75,10 @@
 ## 🔨 本地构建
 
 ### 前置要求
-- JDK 17 或以上
+- JDK 17 或以上（Android / shared 模块）
+- JDK 25（desktopApp 模块：WinRT FFM 桥要求 JDK 22+，已钉死 toolchain 25，Gradle 自动供给）
 - Android SDK 34+
+- Windows 打包另需 WiX Toolset 3.x（CI 自带，`packageMsi` 用）
 
 ### 本地编译
 ```bash
@@ -89,6 +91,16 @@ cd piko
 
 # 安装到连接的 Android 设备
 adb install -r app/build/outputs/apk/debug/app-debug.apk
+
+# 跑桌面端（Windows，需 JDK 25，原生冒烟测试一并执行）
+./gradlew :desktopApp:run :desktopApp:desktopTest
+
+# 打 Windows 安装包（需 WiX 3.x）
+./gradlew :desktopApp:packageMsi
+
+# 打 Windows 绿色包（exe + 自带 JRE 25，解压即跑，CI 出 zip 用的就是它）
+./gradlew :desktopApp:createDistributable
+# 产物：desktopApp/build/compose/binaries/main/app/Piko/Piko.exe
 ```
 
 ---

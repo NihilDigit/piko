@@ -31,4 +31,21 @@ class DesktopSettingsStore(
             properties.setProperty("themeMode", value)
             save()
         }
+
+    /** 通用 KV：给 DesktopPikoPreferences 做写穿持久化。调用方约定 key 命名空间。 */
+    fun get(key: String, default: String = ""): String =
+        properties.getProperty(key) ?: default
+
+    fun set(key: String, value: String) {
+        properties.setProperty(key, value)
+        save()
+    }
+
+    fun keysWithPrefix(prefix: String): List<String> =
+        properties.stringPropertyNames().filter { it.startsWith(prefix) }.sorted()
+
+    fun remove(key: String) {
+        properties.remove(key)
+        save()
+    }
 }

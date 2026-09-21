@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class PikoDownloadCoordinator(
     private val clientProvider: PikoClientProvider,
@@ -29,6 +30,21 @@ class PikoDownloadCoordinator(
     private val _tasks = MutableStateFlow<Map<String, DownloadTask>>(emptyMap())
     val tasks: StateFlow<Map<String, DownloadTask>> = _tasks.asStateFlow()
     private val jobs = mutableMapOf<String, Job>()
+
+    /**
+     * 这个文件在下载目录里有没有完整副本。
+     *
+     * 只查内存任务表会在 App 重启后失忆（表是空的），明明下好的片子又去云端取流。
+     * 这里以磁盘为准：sanitize 后的文件名对上、长度落满才算数，暂停中的半截文件不算。
+     */
+    suspend fun findCompletedLocalPath(file: FileStat): String? = withContext(Dispatchers.IO) {
+        if (file.sizeBytes <= 0L) return@withContext null
+        val name = FileNameSanitizer.sanitize(file.name)
+        if (!storage.exists(name)) return@withContext null
+        if (storage.existingLength(name) < file.sizeBytes) return@withContext null
+        // SAF 目录返回的是 content: URI，播放器认不了，维持走云端（与之前行为一致）。
+        storage.pathFor(name).takeUnless { it.startsWith("content:") }
+    }
 
     fun enqueue(file: FileStat) {
         onDownloadStarted?.invoke()

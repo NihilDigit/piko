@@ -22,6 +22,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,6 +48,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.openani.mediamp.ExperimentalMediampApi
 import org.openani.mediamp.PlaybackErrorCode
@@ -82,6 +84,7 @@ fun MediampVideoPlayerScreen(
     var localPath by remember(initialFileId) { mutableStateOf(initialLocalPath) }
     val app = PikoApplication.instance
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val repository = app.mediampMediaRepository
     val driveRepo = app.driveRepository
     val player = rememberMediampPlayer()
@@ -139,6 +142,14 @@ fun MediampVideoPlayerScreen(
             .getOrNull()
             .orEmpty()
             .filter { it.isPlayableVideo() }
+    }
+
+    // 内存任务表 App 重启就空：同目录元数据到了之后，用磁盘再验一次，
+    // 下好的片子直接播本地，不用再去云端取流。命中后 playbackKey 翻转，主流程重跑一遍播本地。
+    LaunchedEffect(fileId, siblingVideos) {
+        if (localPath != null) return@LaunchedEffect
+        val stat = siblingVideos.find { it.id == fileId } ?: return@LaunchedEffect
+        app.downloadManager.findCompletedLocalPath(stat)?.let { localPath = it }
     }
 
     var controlsVisible by remember { mutableStateOf(true) }
@@ -534,9 +545,14 @@ fun MediampVideoPlayerScreen(
                     if (target.id != fileId) {
                         // 清晰度、重试计数、续播位置都以 playbackKey 为 remember 的键，
                         // 换了文件这些状态自己会重置，这里只换标识
-                        fileId = target.id
-                        fileName = target.name
-                        localPath = completedDownloadPath(target.id)
+                        scope.launch {
+                            // 先把本地验完再切，否则主流程会先跑一遍云端准备再翻回来。
+                            val path = completedDownloadPath(target.id)
+                                ?: app.downloadManager.findCompletedLocalPath(target)
+                            fileId = target.id
+                            fileName = target.name
+                            localPath = path
+                        }
                     }
                 },
                 onDismiss = { showPlaylist = false },

@@ -3,20 +3,55 @@ package dev.piko.desktop.winrt
 import androidx.compose.ui.graphics.Color
 import io.github.composefluent.winrt.runtime.RuntimeScope
 import windows.data.xml.dom.XmlDocument
-import windows.system.display.DisplayRequest
 import windows.ui.notifications.ToastNotification
 import windows.ui.notifications.ToastNotificationManager
 import windows.ui.viewmanagement.UIColorType
 import windows.ui.viewmanagement.UISettings
+import java.awt.Desktop
 import java.io.File
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
+/**
+ * Windows 原生能力集成（WinRT）。
+ *
+ * 设计约束（对照 docmirror4a/winrt-capability-map.md）：
+ * - 本应用是非打包（unpackaged）桌面应用：Toast 走 Windows.UI.Notifications，
+ *   不碰 AppNotifications / StartupTask 等打包独占 API。
+ * - kotlin-winrt 的 FFM 桥需要 JDK 22+（见 desktopApp jvmToolchain(25)）。
+ *   JDK 不对时所有调用抛异常，这里一律收敛为 null/false，UI 层负责降级显示。
+ * - COM apartment 亲和性：所有 WinRT 调用都串行跑在同一条专用线程上，
+ *   每次调用独立开关 RuntimeScope；DisplayRequest 这种跨调用 lease 在持有
+ *   期间不关闭 scope，release 之后才关。
+ */
 object WinRTSupport {
     val isWindows: Boolean = System.getProperty("os.name").contains("Windows", ignoreCase = true)
+
+    /**
+     * Toast 用的应用标识。经典桌面应用弹 Toast 要求该 AUMID 已在开始菜单
+     * 快捷方式上注册（MSI 安装器负责创建，见 compose nativeDistributions 配置）。
+     * 开发机直接跑 jar 时没有该快捷方式，Toast 会静默失败——此时 showNotification
+     * 返回 false，调用方应降级为应用内 InfoBar 提示。
+     */
+    const val APP_USER_MODEL_ID = "dev.piko.Piko"
+
+    private val comThread = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "Piko-WinRT-STA").also { it.isDaemon = true }
+    }
+
+    /** 在专用 COM 线程上执行一次 WinRT 调用，自带 scope 开关。 */
+    private fun <T> onComThread(action: (RuntimeScope) -> T): T =
+        comThread.submit(
+            Callable {
+                RuntimeScope.initializeSingleThreaded().use(action)
+            },
+        ).get(15, TimeUnit.SECONDS)
 
     fun getSystemAccentColor(): Color? {
         if (!isWindows) return null
         return runCatching {
-            RuntimeScope.initializeSingleThreaded().use {
+            onComThread { _ ->
                 val settings = UISettings()
                 val color = settings.getColorValue(UIColorType.Accent)
                 Color(
@@ -32,7 +67,7 @@ object WinRTSupport {
     fun isSystemInDarkMode(): Boolean {
         if (!isWindows) return false
         return runCatching {
-            RuntimeScope.initializeSingleThreaded().use {
+            onComThread { _ ->
                 val settings = UISettings()
                 val bg = settings.getColorValue(UIColorType.Background)
                 val r = bg.r.toInt() and 0xFF
@@ -44,29 +79,112 @@ object WinRTSupport {
         }.getOrDefault(false)
     }
 
-    fun showNotification(title: String, message: String) {
-        if (!isWindows) return
+    /**
+     * 设置进程级 AppUserModelID。经典桌面应用弹 Toast 的前提之一，
+     * 必须在建窗口/发 Toast 之前调（main() 入口同步调）。
+     * 另一半（开始菜单快捷方式带同名 AUMID）由 MSI 安装器提供。
+     */
+    fun ensureAppUserModelId(): Boolean {
+        if (!isWindows) return false
+        return Shell32AppId.set(APP_USER_MODEL_ID)
+    }
+
+    /**
+     * 注册 magnet: 协议到当前用户（HKCU，无需管理员权限）。
+     * 只有安装版（exe 启动）才注册；jar/gradle 直接跑的不碰注册表。
+     * 已注册且指向自己时直接返回 true。
+     */
+    fun ensureMagnetProtocolHandler(): Boolean {
+        if (!isWindows) return false
+        return runCatching {
+            val exe = ProcessHandle.current().info().command().orElse(null)
+                ?: return false
+            if (!exe.endsWith(".exe", ignoreCase = true)) return false
+            val expected = "\"$exe\" \"%1\""
+            if (currentMagnetCommand()?.equals(expected, ignoreCase = true) == true) return true
+            regAdd("HKCU\\Software\\Classes\\magnet", "/ve", "/t", "REG_SZ", "/d", "URL:Magnet Protocol", "/f") &&
+                regAdd("HKCU\\Software\\Classes\\magnet", "/v", "URL Protocol", "/t", "REG_SZ", "/d", "Piko", "/f") &&
+                regAdd("HKCU\\Software\\Classes\\magnet\\shell\\open\\command", "/ve", "/t", "REG_SZ", "/d", expected, "/f")
+        }.getOrDefault(false)
+    }
+
+    private fun regAdd(vararg args: String): Boolean =
         runCatching {
-            RuntimeScope.initializeSingleThreaded().use {
+            ProcessBuilder(listOf("reg", "add") + args)
+                .redirectErrorStream(true)
+                .start()
+                .waitFor(15, TimeUnit.SECONDS)
+        }.getOrDefault(false)
+
+    private fun currentMagnetCommand(): String? =
+        runCatching {
+            val process = ProcessBuilder(
+                "reg", "query",
+                "HKCU\\Software\\Classes\\magnet\\shell\\open\\command", "/ve",
+            ).start()
+            val output = process.inputStream.bufferedReader().readText()
+            process.waitFor(15, TimeUnit.SECONDS)
+            Regex("REG_SZ\\s+(.*)").find(output)?.groupValues?.get(1)?.trim()
+        }.getOrNull()
+
+    /** shell32.SetCurrentProcessExplicitAppUserModelID 的最小 FFM 绑定。 */
+    private object Shell32AppId {
+        private val setAppId: java.lang.invoke.MethodHandle by lazy {
+            val linker = java.lang.foreign.Linker.nativeLinker()
+            val shell32 = java.lang.foreign.SymbolLookup.libraryLookup(
+                "shell32",
+                java.lang.foreign.Arena.global(),
+            )
+            linker.downcallHandle(
+                shell32.find("SetCurrentProcessExplicitAppUserModelID").orElseThrow(),
+                java.lang.foreign.FunctionDescriptor.of(
+                    java.lang.foreign.ValueLayout.JAVA_INT, // HRESULT
+                    java.lang.foreign.ValueLayout.ADDRESS, // PCWSTR
+                ),
+            )
+        }
+
+        fun set(appId: String): Boolean =
+            runCatching {
+                java.lang.foreign.Arena.ofConfined().use { arena ->
+                    // NUL 结尾的 UTF-16LE（PCWSTR），手工编码以兼容各 JDK 的 FFM 形态。
+                    val utf16 = (appId + "\u0000").toByteArray(Charsets.UTF_16LE)
+                    val native = arena.allocate(utf16.size.toLong())
+                    native.copyFrom(java.lang.foreign.MemorySegment.ofArray(utf16))
+                    val hr = setAppId.invokeWithArguments(native) as Int
+                    hr >= 0 // SUCCEEDED(hr)
+                }
+            }.getOrDefault(false)
+    }
+
+    /**
+     * 发送系统 Toast。返回 true 表示已提交给系统（用户是否可见还取决于
+     * 系统通知设置），false 表示本次没发出去，调用方应做应用内降级提示。
+     */
+    fun showNotification(title: String, message: String): Boolean {
+        if (!isWindows) return false
+        return runCatching {
+            onComThread { _ ->
                 val xml = XmlDocument()
-                val escapedTitle = escapeXml(title)
-                val escapedMessage = escapeXml(message)
                 xml.loadXml(
                     """
                     <toast>
                         <visual>
                             <binding template="ToastGeneric">
-                                <text>$escapedTitle</text>
-                                <text>$escapedMessage</text>
+                                <text>${escapeXml(title)}</text>
+                                <text>${escapeXml(message)}</text>
                             </binding>
                         </visual>
                     </toast>
                     """.trimIndent(),
                 )
                 val toast = ToastNotification(xml)
-                ToastNotificationManager.Metadata.createToastNotifier("Piko").show(toast)
+                ToastNotificationManager.Metadata
+                    .createToastNotifier(APP_USER_MODEL_ID)
+                    .show(toast)
             }
-        }
+            true
+        }.getOrDefault(false)
     }
 
     private fun escapeXml(text: String): String =
@@ -76,52 +194,82 @@ object WinRTSupport {
             .replace("\"", "&quot;")
             .replace("'", "&apos;")
 
-    fun createDisplayRequest(): AutoCloseable? {
+    /**
+     * 持有"屏幕常亮"请求，直到返回的 AutoCloseable 被关闭。
+     *
+     * 刻意走 Win32 `SetThreadExecutionState` 而不是 WinRT `DisplayRequest`：
+     * 前者是非打包桌面应用保持唤醒的正统 API，无需 COM apartment；后者在这版
+     * 投影里有生成代码 bug（IDisplayRequest 的 ABI glue 类 <clinit> 传了空
+     * typeSignature，requestActive 直接 NPE），等上游 kotlin-winrt 修好再评估切回。
+     * FFM 在 JDK 22+ 已是稳定 API（要求 JDK 25，见 desktopApp jvmToolchain）。
+     */
+    fun acquireDisplayRequest(): AutoCloseable? {
         if (!isWindows) return null
         return runCatching {
-            RuntimeScope.initializeSingleThreaded().use {
-                val request = DisplayRequest()
-                request.requestActive()
-                AutoCloseable {
-                    runCatching {
-                        RuntimeScope.initializeSingleThreaded().use {
-                            request.requestRelease()
-                        }
-                    }
-                }
+            Win32ExecutionState.preventSleep()
+            AutoCloseable {
+                runCatching { Win32ExecutionState.allowSleep() }
             }
         }.getOrNull()
     }
 
+    /** Win32 电源状态：kernel32.SetThreadExecutionState 的最小 FFM 绑定。 */
+    private object Win32ExecutionState {
+        const val ES_CONTINUOUS = Int.MIN_VALUE // 0x80000000
+        const val ES_SYSTEM_REQUIRED = 0x00000001
+        const val ES_DISPLAY_REQUIRED = 0x00000002
+
+        private val setState: java.lang.invoke.MethodHandle by lazy {
+            val linker = java.lang.foreign.Linker.nativeLinker()
+            val kernel32 = java.lang.foreign.SymbolLookup.libraryLookup(
+                "kernel32",
+                java.lang.foreign.Arena.global(),
+            )
+            linker.downcallHandle(
+                kernel32.find("SetThreadExecutionState").orElseThrow(),
+                java.lang.foreign.FunctionDescriptor.of(
+                    java.lang.foreign.ValueLayout.JAVA_INT,
+                    java.lang.foreign.ValueLayout.JAVA_INT,
+                ),
+            )
+        }
+
+        fun preventSleep() {
+            setState.invokeWithArguments(ES_CONTINUOUS or ES_SYSTEM_REQUIRED or ES_DISPLAY_REQUIRED)
+        }
+
+        fun allowSleep() {
+            setState.invokeWithArguments(ES_CONTINUOUS)
+        }
+    }
+
     fun openFolder(folder: File) {
-        if (!folder.exists()) folder.mkdirs()
         runCatching {
+            if (!folder.exists()) folder.mkdirs()
+            if (openWithDesktop(folder)) return
             if (isWindows) {
-                RuntimeScope.initializeSingleThreaded().use {
-                    val uri = windows.foundation.Uri("file:///" + folder.absolutePath.replace('\\', '/'))
-                    windows.system.Launcher.Metadata.launchUriAsync(uri)
-                }
-            } else {
-                java.awt.Desktop.getDesktop().open(folder)
+                ProcessBuilder("explorer", folder.absolutePath).start()
             }
-        }.onFailure {
-            runCatching { java.awt.Desktop.getDesktop().open(folder) }
         }
     }
 
     fun openFile(file: File) {
         if (!file.exists()) return
         runCatching {
+            if (openWithDesktop(file)) return
             if (isWindows) {
-                RuntimeScope.initializeSingleThreaded().use {
-                    val uri = windows.foundation.Uri("file:///" + file.absolutePath.replace('\\', '/'))
-                    windows.system.Launcher.Metadata.launchUriAsync(uri)
-                }
-            } else {
-                java.awt.Desktop.getDesktop().open(file)
+                // start "" <path> 经 shell 走默认关联，比 explorer 更稳。
+                ProcessBuilder("cmd", "/c", "start", "", file.absolutePath).start()
             }
-        }.onFailure {
-            runCatching { java.awt.Desktop.getDesktop().open(file) }
         }
     }
+
+    private fun openWithDesktop(file: File): Boolean =
+        runCatching {
+            if (!Desktop.isDesktopSupported()) return false
+            val desktop = Desktop.getDesktop()
+            if (!desktop.isSupported(Desktop.Action.OPEN)) return false
+            desktop.open(file)
+            true
+        }.getOrDefault(false)
 }

@@ -46,9 +46,12 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil3.compose.AsyncImage
 import dev.piko.desktop.ui.components.formatBytes
+import dev.piko.desktop.ui.components.SegmentDialog
+import dev.piko.desktop.ui.components.formatSegmentTime
 import dev.piko.desktop.ui.components.getFileIcon
 import dev.piko.desktop.ui.components.isImageFile
 import dev.piko.desktop.ui.components.isVideoFile
+import dev.piko.desktop.ui.components.parseSegmentTime
 import dev.piko.desktop.ui.player.VideoPlayerWindow
 import dev.piko.desktop.winrt.WinRTSupport
 import dev.piko.data.auth.PikoUserPreferences
@@ -79,6 +82,7 @@ import io.github.composefluent.icons.regular.Add
 import io.github.composefluent.icons.regular.ArrowDownload
 import io.github.composefluent.icons.regular.ArrowLeft
 import io.github.composefluent.icons.regular.ArrowSync
+import io.github.composefluent.icons.regular.Cut
 import io.github.composefluent.icons.regular.Delete
 import io.github.composefluent.icons.regular.Edit
 import io.github.composefluent.icons.regular.Grid
@@ -97,6 +101,7 @@ fun DriveView(
     downloadCoordinator: PikoDownloadCoordinator,
     preferences: PikoUserPreferences,
     themeColors: Colors,
+    openTrashSignal: Int = 0,
 ) {
     val scope = rememberCoroutineScope()
 
@@ -138,10 +143,16 @@ fun DriveView(
     var newFolderName by remember { mutableStateOf("") }
     var renameTargetFile by remember { mutableStateOf<FileStat?>(null) }
     var renameNewName by remember { mutableStateOf("") }
+    var segmentTargetFile by remember { mutableStateOf<FileStat?>(null) }
     var deleteTargetFile by remember { mutableStateOf<FileStat?>(null) }
     var permanentDeleteTargetFile by remember { mutableStateOf<FileStat?>(null) }
 
     var showTrash by remember { mutableStateOf(false) }
+
+    // 「我的」页点回收站进来：信号每+1 翻一次回收站（值为 0 的初始态不触发）。
+    LaunchedEffect(openTrashSignal) {
+        if (openTrashSignal > 0) showTrash = true
+    }
 
     suspend fun reloadTrash() {
         isTrashLoading = true
@@ -476,6 +487,17 @@ fun DriveView(
                                     ) {
                                         Icon(Icons.Regular.Play, contentDescription = "播放", modifier = Modifier.size(14.dp))
                                     }
+                                    SubtleButton(
+                                        onClick = { segmentTargetFile = file },
+                                    ) {
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Icon(Icons.Regular.Cut, contentDescription = "片段", modifier = Modifier.size(14.dp))
+                                            Text("片段")
+                                        }
+                                    }
                                 }
 
                                 if (!file.isFolder && !showTrash) {
@@ -528,7 +550,7 @@ fun DriveView(
                                             permanentDeleteTargetFile = file
                                         },
                                     ) {
-                                        Text("删除")
+                                        Text("彻底删除")
                                     }
                                 }
                             }
@@ -618,6 +640,21 @@ fun DriveView(
                                     }
                                 }
 
+                                // 视频片段：起止时间切片，无损输出 MP4（与 Android 分段下载同语义）。
+                                if (isVideoFile(file.name)) {
+                                    SubtleButton(
+                                        onClick = { segmentTargetFile = file },
+                                    ) {
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Icon(Icons.Regular.Cut, contentDescription = "片段", modifier = Modifier.size(14.dp))
+                                            Text("片段")
+                                        }
+                                    }
+                                }
+
                                 if (!file.isFolder && !showTrash) {
                                     SubtleButton(
                                         onClick = {
@@ -693,6 +730,9 @@ fun DriveView(
             mediaRepository = mediaRepository,
             themeColors = themeColors,
             onClose = { activePlayingFile = null },
+            downloadCoordinator = downloadCoordinator,
+            // 同目录里的视频都进播放列表，换片不用退回网盘。
+            playlist = files.filter { isVideoFile(it.name) },
         )
     }
 
@@ -814,9 +854,40 @@ fun DriveView(
         )
     }
 
+    // 视频片段下载：起止时间切片，无损输出 MP4。选区间在对话框里做（带双路预览），
+    // 确认时重新拿播放链接（直链有时效），经 coordinator 走片段任务通道。
+    segmentTargetFile?.let { target ->
+        SegmentDialog(
+            file = target,
+            mediaRepository = mediaRepository,
+            onDismiss = { segmentTargetFile = null },
+            onConfirm = { startMs, endMs, label ->
+                segmentTargetFile = null
+                scope.launch {
+                    mediaRepository.prepareMedia(target.id)
+                        .onSuccess { info ->
+                            val totalMs = info.durationSeconds * 1000L
+                            if (totalMs > 0 && endMs > totalMs) {
+                                notice = "结束时间超出片长（全片约 ${formatSegmentTime(totalMs)}）"
+                            } else {
+                                downloadCoordinator.enqueueSegment(
+                                    target,
+                                    startMs,
+                                    endMs,
+                                    label,
+                                    info.currentUrl,
+                                )
+                                notice = "已加入片段任务：${target.name} [$label]"
+                            }
+                        }
+                        .onFailure { notice = it.message ?: "获取播放链接失败" }
+                }
+            },
+        )
+    }
+
     // Move to Trash Confirmation
-    deleteTargetFile?.let { target ->
-        ContentDialog(
+    deleteTargetFile?.let { target ->        ContentDialog(
             title = "移入回收站",
             visible = true,
             primaryButtonText = "确定移入",

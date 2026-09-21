@@ -126,7 +126,9 @@ internal fun PlayerTopBar(
                 color = Color.White,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false),
+                // 占满剩余宽度：fill=false 时短标题会在自己那半格里留空，
+                // 右侧按钮组就被 Spacer 顶不到最右边了。
+                modifier = Modifier.weight(1f),
             )
             if (isLocalPlayback) {
                 Surface(
@@ -142,7 +144,7 @@ internal fun PlayerTopBar(
                     )
                 }
             }
-            Spacer(Modifier.weight(1f))
+            // 标题已占满剩余宽度，按钮组自然贴右，不再需要 Spacer。
 
             // 后端不支持画面比例时整个入口隐藏，避免点了没反应
             if (aspectRatioMode != null) {

@@ -1,15 +1,15 @@
 package dev.piko.desktop
 
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -17,6 +17,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.painter.BitmapPainter
+import androidx.compose.ui.res.loadImageBitmap
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
@@ -34,33 +36,60 @@ import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.media.PikoMediaRepository
 import io.github.composefluent.FluentTheme
 import io.github.composefluent.background.Mica
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.layout.width
 import io.github.composefluent.component.Icon
+import io.github.composefluent.component.NavigationDisplayMode
+import io.github.composefluent.component.NavigationView
 import io.github.composefluent.component.ProgressRing
 import io.github.composefluent.component.ProgressRingSize
-import io.github.composefluent.component.SideNav
-import io.github.composefluent.component.SideNavItem
 import io.github.composefluent.component.Text
+import io.github.composefluent.component.menuItem
+import io.github.composefluent.component.rememberNavigationState
 import io.github.composefluent.darkColors
-import io.github.composefluent.icons.Icons
-import io.github.composefluent.icons.regular.ArrowDownload
-import io.github.composefluent.icons.regular.Cloud
-import io.github.composefluent.icons.regular.Folder
-import io.github.composefluent.icons.regular.Settings
 import io.github.composefluent.lightColors
 
-fun main() = application {
+fun main(args: Array<String>) {
+    // magnet: 链接经 MSI 注册的协议唤起时，URL 以启动参数进来。
+    val magnetArg = args.firstOrNull { it.startsWith("magnet:", ignoreCase = true) }
+    if (WinRTSupport.isWindows) {
+        // 进程级 AUMID 必须在建窗口/发 Toast 之前设置；协议注册放后台线程，不挡启动。
+        runCatching { WinRTSupport.ensureAppUserModelId() }
+        Thread(
+            { runCatching { WinRTSupport.ensureMagnetProtocolHandler() } },
+            "Piko-Win32-Setup",
+        ).apply { isDaemon = true; start() }
+    }
+    pikoApplication(magnetArg)
+}
+
+private fun pikoApplication(initialMagnetUrl: String?) = application {
+    // 任务栏/标题栏图标：desktopMain/resources/app-icon.png（docs/icon.svg 同源）。
+    // 用 classloader 直读，不走 compose resources codegen（桌面独占资源）。
+    val appIcon = remember {
+        object {}.javaClass.getResourceAsStream("/app-icon.png")
+            ?.use { BitmapPainter(loadImageBitmap(it)) }
+    }
     Window(
         onCloseRequest = ::exitApplication,
         title = "Piko",
+        icon = appIcon,
     ) {
         val settingsStore = remember { DesktopSettingsStore() }
         var themeVersion by remember { mutableStateOf(0) }
 
-        val systemAccent = remember { WinRTSupport.getSystemAccentColor() }
+        // Fluent 行为：窗口每次获焦重读系统强调色/深浅色，跟随系统设置变化。
+        // （UISettings.ColorValuesChanged 需要 STA 消息泵，JVM 上先用获焦刷新代替。）
+        DisposableEffect(Unit) {
+            val focusListener = object : java.awt.event.WindowFocusListener {
+                override fun windowGainedFocus(e: java.awt.event.WindowEvent) {
+                    themeVersion++
+                }
+                override fun windowLostFocus(e: java.awt.event.WindowEvent) = Unit
+            }
+            window.addWindowFocusListener(focusListener)
+            onDispose { window.removeWindowFocusListener(focusListener) }
+        }
+
+        val systemAccent = remember(themeVersion) { WinRTSupport.getSystemAccentColor() }
         val accent = systemAccent ?: Color(0xFF0078D4)
 
         val isDark = remember(themeVersion, settingsStore.themeMode) {
@@ -76,6 +105,8 @@ fun main() = application {
         }
 
         FluentTheme(colors = colors) {
+            // Mica 注：compose-fluent 单参 Mica() 目前只是纯色 mica.base 兜底，
+            // 真云母需要 DWM 窗口级集成（alterWindowBackground / backdrop），待上游支持后再接。
             Mica(Modifier.fillMaxSize()) {
                 val scope = rememberCoroutineScope()
                 val manager = remember { PikoClientManager(FilePikoSessionStore(), scope) }
@@ -97,6 +128,7 @@ fun main() = application {
                             settingsStore = settingsStore,
                             themeColors = colors,
                             onThemeChanged = { themeVersion++ },
+                            initialMagnetUrl = initialMagnetUrl,
                         )
                     }
                 }
@@ -111,6 +143,7 @@ private fun MainAppContent(
     settingsStore: DesktopSettingsStore,
     themeColors: io.github.composefluent.Colors,
     onThemeChanged: () -> Unit,
+    initialMagnetUrl: String? = null,
 ) {
     val scope = rememberCoroutineScope()
     val preferences = remember(settingsStore) { DesktopPikoPreferences(settingsStore) }
@@ -118,14 +151,23 @@ private fun MainAppContent(
         DesktopPikoDownloadStorage(settingsStore.downloadDirectory)
     }
     val downloadCoordinator = remember(manager, preferences, storage) {
-        PikoDownloadCoordinator(manager, preferences, storage, scope)
+        PikoDownloadCoordinator(
+            manager,
+            preferences,
+            storage,
+            scope,
+            segmentDownloader = DesktopPikoSegmentDownloader(),
+        )
     }
     val driveRepo = remember(manager, preferences) { PikoDriveRepository(manager, preferences) }
     val mediaRepo = remember(manager) { PikoMediaRepository(manager) }
 
-    var currentSection by remember { mutableStateOf(NavSection.DRIVE) }
-    var isSideNavExpanded by remember { mutableStateOf(true) }
-
+    // 协议唤起（magnet: 链接）直接落到离线任务页，输入框预填并弹出新建对话框。
+    var currentSection by remember {
+        mutableStateOf(if (initialMagnetUrl != null) NavSection.TASKS else NavSection.DRIVE)
+    }
+    // 「我的」里点回收站：先切到网盘页，再用这个信号让 DriveView 翻到回收站。
+    var trashSignal by remember { mutableIntStateOf(0) }
     // WinRT Toast notification integration for completed or failed downloads
     var previousStatuses by remember { mutableStateOf<Map<String, DownloadStatus>>(emptyMap()) }
     LaunchedEffect(downloadCoordinator) {
@@ -150,89 +192,50 @@ private fun MainAppContent(
         }
     }
 
-    val sideNavWidth by animateDpAsState(
-        targetValue = if (isSideNavExpanded) 200.dp else 48.dp,
-        animationSpec = tween(
-            durationMillis = 150,
-            easing = FastOutSlowInEasing,
-        ),
-    )
-
-    Row(Modifier.fillMaxSize()) {
-        SideNav(
-            expanded = isSideNavExpanded,
-            onExpandStateChange = { isSideNavExpanded = it },
-            modifier = Modifier.width(sideNavWidth),
-            title = {
-                Text(
-                    text = "Piko",
-                    style = FluentTheme.typography.subtitle,
-                    modifier = Modifier.padding(start = 4.dp),
+    // 画廊同款 NavigationView（Left）：选中指示器、展开/收起、Fluent 动效
+    // 全部由组件内部处理，不再手写 Row + SideNav + 宽度动画。
+    NavigationView(
+        menuItems = {
+            // NavSection 自带标题与图标（DRIVE/DOWNLOADS/TASKS），SETTINGS 走 footer。
+            NavSection.entries.filter { it != NavSection.SETTINGS }.forEach { section ->
+                menuItem(
+                    selected = currentSection == section,
+                    onClick = { currentSection = section },
+                    text = { Text(section.title) },
+                    icon = {
+                        Icon(
+                            imageVector = section.icon,
+                            contentDescription = section.title,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    },
                 )
-            },
-            content = {
-                SideNavItem(
-                    selected = currentSection == NavSection.DRIVE,
-                    onClick = { currentSection = NavSection.DRIVE },
-                    icon = {
-                        Icon(
-                            imageVector = Icons.Regular.Folder,
-                            contentDescription = "网盘",
-                            modifier = Modifier.size(18.dp),
-                        )
-                    },
-                ) {
-                    Text("网盘")
-                }
-                SideNavItem(
-                    selected = currentSection == NavSection.DOWNLOADS,
-                    onClick = { currentSection = NavSection.DOWNLOADS },
-                    icon = {
-                        Icon(
-                            imageVector = Icons.Regular.ArrowDownload,
-                            contentDescription = "下载",
-                            modifier = Modifier.size(18.dp),
-                        )
-                    },
-                ) {
-                    Text("下载")
-                }
-                SideNavItem(
-                    selected = currentSection == NavSection.TASKS,
-                    onClick = { currentSection = NavSection.TASKS },
-                    icon = {
-                        Icon(
-                            imageVector = Icons.Regular.Cloud,
-                            contentDescription = "云端离线",
-                            modifier = Modifier.size(18.dp),
-                        )
-                    },
-                ) {
-                    Text("云端离线")
-                }
-            },
-            footer = {
-                SideNavItem(
-                    selected = currentSection == NavSection.SETTINGS,
-                    onClick = { currentSection = NavSection.SETTINGS },
-                    icon = {
-                        Icon(
-                            imageVector = Icons.Regular.Settings,
-                            contentDescription = "设置",
-                            modifier = Modifier.size(18.dp),
-                        )
-                    },
-                ) {
-                    Text("设置")
-                }
-            },
-        )
-
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight(),
-        ) {
+            }
+        },
+        footerItems = {
+            menuItem(
+                selected = currentSection == NavSection.SETTINGS,
+                onClick = { currentSection = NavSection.SETTINGS },
+                text = { Text(NavSection.SETTINGS.title) },
+                icon = {
+                    Icon(
+                        imageVector = NavSection.SETTINGS.icon,
+                        contentDescription = NavSection.SETTINGS.title,
+                        modifier = Modifier.size(18.dp),
+                    )
+                },
+            )
+        },
+        title = {
+            Text(
+                text = "Piko",
+                style = FluentTheme.typography.subtitle,
+                modifier = Modifier.padding(start = 4.dp),
+            )
+        },
+        displayMode = NavigationDisplayMode.LeftCompact,
+        state = rememberNavigationState(),
+        pane = {
             when (currentSection) {
                 NavSection.DRIVE -> {
                     DriveView(
@@ -242,6 +245,7 @@ private fun MainAppContent(
                         downloadCoordinator = downloadCoordinator,
                         preferences = preferences,
                         themeColors = themeColors,
+                        openTrashSignal = trashSignal,
                     )
                 }
                 NavSection.DOWNLOADS -> {
@@ -253,16 +257,23 @@ private fun MainAppContent(
                 NavSection.TASKS -> {
                     TasksView(
                         manager = manager,
+                        initialMagnetUrl = initialMagnetUrl,
                     )
                 }
                 NavSection.SETTINGS -> {
                     SettingsView(
                         manager = manager,
                         settingsStore = settingsStore,
+                        preferences = preferences,
+                        driveRepository = driveRepo,
                         onThemeChanged = onThemeChanged,
+                        onNavigateToTrash = {
+                            currentSection = NavSection.DRIVE
+                            trashSignal += 1
+                        },
                     )
                 }
             }
-        }
-    }
+        },
+    )
 }
