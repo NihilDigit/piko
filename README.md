@@ -59,7 +59,7 @@
 
 ## 🛠 技术栈
 
-Piko 站在这些开源项目肩上（排名不分先后，括号里是它们在 Piko 里的职责）：
+核心依赖及在 Piko 中的用途：
 
 - **语言与构建**：[Kotlin Multiplatform](https://github.com/JetBrains/kotlin)（`shared` 纯业务逻辑层 + 双端原生风格表现层）、[kotlinx.coroutines](https://github.com/Kotlin/kotlinx.coroutines) / [kotlinx.serialization](https://github.com/Kotlin/kotlinx.serialization) / [kotlinx-datetime](https://github.com/Kotlin/kotlinx-datetime)
 - **Android 界面**：[Jetpack Compose](https://developer.android.com/jetpack/compose)（Material 3 Expressive）+ [Navigation 3](https://developer.android.com/jetpack/compose/navigation) + Material 3 自适应套件、AndroidX（activity / lifecycle / DataStore / DocumentFile）
