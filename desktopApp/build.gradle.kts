@@ -58,6 +58,19 @@ kotlin {
     }
 }
 
+// Compose 的 run 默认用 Gradle 自身所在的 JDK 启动，不看 jvmToolchain，Gradle 跑在 JDK 21 上时
+// 加载 25 编出的类即报 UnsupportedClassVersionError。不在 application 里写 javaHome：它是 String，
+// 赋值即在配置期解析工具链，而只装了 JDK 21 的 Android CI job 也会配置本工程，找不到 25 便失败。
+// run 由 Compose 在 afterEvaluate 中注册，其注册动作会覆盖先登记的 configureEach，故在其后追加；
+// 该动作只在 run 被实际请求时执行。也不能推迟到 doFirst：执行前 javaLauncher 已按旧的
+// executable 定值，届时再改会报两者不匹配。
+val desktopJavaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(25) }
+afterEvaluate {
+    tasks.named<JavaExec>("run") {
+        executable(desktopJavaLauncher.get().executablePath.asFile)
+    }
+}
+
 compose.desktop {
     application {
         mainClass = "dev.piko.desktop.MainKt"
