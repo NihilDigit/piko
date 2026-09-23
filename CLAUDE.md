@@ -117,6 +117,6 @@ piko 源码仍是 MIT，但发版时要附 GPLv3 与第三方声明，并指明�
 ## 冒烟测试
 
 `.github/workflows/smoke.yml` 在每次推送时运行：Linux 上的 `:shared:desktopTest`，以及 x86_64 模拟器
-（API 26 与 34）上的 `:app:connectedDebugAndroidTest`。这些是端到端行为冒烟，不是单元测试：走真实 libmpv、
+（API 34）上的 `:app:connectedDebugAndroidTest`。这些是端到端行为冒烟，不是单元测试：走真实 libmpv、
 真实代理，PikPak 服务端用 MockEngine 顶替，SDK 的请求、鉴权与解析仍走真实代码。本地不必跑，以 CI 结果为准。
 老格式样片在 `testdata/media/`，直接提交，生成方式见 `generate.sh`；没有 WMV3/VC-1 样片，因为 ffmpeg 没有它的编码器。

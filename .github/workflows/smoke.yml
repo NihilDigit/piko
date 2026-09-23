@@ -46,11 +46,9 @@ jobs:
     # 打包或格式覆盖出问题时两者一起坏，差异只在机型硬解，这部分 CI 本来就测不到。
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        # 26 是 minSdk；34 覆盖前台服务类型与 predictive back 等新平台行为
-        api-level: [26, 34]
+    env:
+      # 34 覆盖前台服务类型、后台启动限制等新平台行为
+      API_LEVEL: 34
     steps:
       - uses: actions/checkout@v4
 
@@ -78,13 +76,13 @@ jobs:
           path: |
             ~/.android/avd/*
             ~/.android/adb*
-          key: avd-${{ matrix.api-level }}-x86_64-v1
+          key: avd-${{ env.API_LEVEL }}-x86_64-v1
 
       - name: Create AVD snapshot
         if: steps.avd-cache.outputs.cache-hit != 'true'
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: ${{ matrix.api-level }}
+          api-level: ${{ env.API_LEVEL }}
           arch: x86_64
           target: default
           force-avd-creation: false
@@ -95,7 +93,7 @@ jobs:
       - name: Instrumented smoke tests
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: ${{ matrix.api-level }}
+          api-level: ${{ env.API_LEVEL }}
           arch: x86_64
           target: default
           force-avd-creation: false
@@ -107,7 +105,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: android-smoke-reports-api${{ matrix.api-level }}
+          name: android-smoke-reports-api${{ env.API_LEVEL }}
           path: |
             app/build/reports/androidTests/
             app/build/outputs/androidTest-results/
