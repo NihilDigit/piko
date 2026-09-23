@@ -91,6 +91,16 @@ android {
         buildConfig = true
     }
 
+    packaging {
+        jniLibs {
+            // libmpv 自带 x86 的 .so，而 splits 只发三种 ABI，不排除就会混进通用包
+            excludes += "lib/x86/**"
+            // APK 从 GitHub 直接分发，没有商店的传输压缩；libav* 约 20MB 一套，
+            // 压缩存放能让安装包小一半，代价是安装时解压一次
+            useLegacyPackaging = true
+        }
+    }
+
     lint {
         checkReleaseBuilds = false
         abortOnError = false
