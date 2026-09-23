@@ -22,15 +22,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.desktop.ui.components.getFileIcon
 import dev.piko.shared.data.InstantMagnetRepository
 import dev.piko.shared.data.PikoClientManager
+import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.TaskRepository
+import dev.piko.shared.state.InstantSaveOutcome
+import dev.piko.shared.state.OfflineTasksState
 import io.github.composefluent.FluentTheme
 import io.github.composefluent.component.AccentButton
 import io.github.composefluent.component.Button
-import io.github.composefluent.component.ContentDialog
-import io.github.composefluent.component.ContentDialogButton
 import io.github.composefluent.component.Icon
 import io.github.composefluent.component.InfoBar
 import io.github.composefluent.component.InfoBarDefaults
@@ -38,53 +41,60 @@ import io.github.composefluent.component.ProgressBar
 import io.github.composefluent.component.ProgressRing
 import io.github.composefluent.component.ProgressRingSize
 import io.github.composefluent.component.Text
-import io.github.composefluent.component.TextField
 import io.github.composefluent.icons.Icons
-import io.github.composefluent.icons.regular.Add
 import io.github.composefluent.icons.regular.ArrowSync
 import io.github.composefluent.icons.regular.Cloud
+import io.github.composefluent.icons.regular.Flash
 import io.github.composefluent.surface.Card
 import io.github.nihildigit.pikpak.OfflineTask
 import io.github.nihildigit.pikpak.TaskPhase
-import kotlinx.coroutines.launch
 
+/**
+ * 云端离线任务与秒传入口。
+ *
+ * 任务列表与轮询在 [OfflineTasksState]，秒传与磁力解析在 [InstantDialog] 背后的
+ * InstantSheetState，都与 Android 共用。这个视图只在选中「离线任务」一节时处于组合中，
+ * 轮询随之启停。
+ */
 @Composable
 fun TasksView(
     manager: PikoClientManager,
+    driveRepository: PikoDriveRepository,
+    preferences: PikoUserPreferences,
+    onOpenFolder: (PikoPathBreadcrumb) -> Unit,
     modifier: Modifier = Modifier,
-    initialMagnetUrl: String? = null,
+    pendingMagnet: String? = null,
+    onPendingMagnetConsumed: () -> Unit = {},
 ) {
     val taskRepo = remember(manager) { TaskRepository(manager) }
     val instantRepo = remember(manager) { InstantMagnetRepository(manager) }
     val scope = rememberCoroutineScope()
+    val tasksState = remember(taskRepo) { OfflineTasksState(taskRepo, scope) }
+    val tasks = tasksState.tasks
+    val isLoading = tasksState.isLoading
 
-    var tasks by remember { mutableStateOf<List<OfflineTask>>(emptyList()) }
-    var isLoading by remember { mutableStateOf(true) }
+    // 一次性提示：拉取失败或保存成功。loadError 另作长驻提示，两者分开，免得一次成功提示
+    // 把「列表不是最新的」冲掉
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var successMessage by remember { mutableStateOf<String?>(null) }
 
-    var showNewTaskDialog by remember(initialMagnetUrl) { mutableStateOf(initialMagnetUrl != null) }
-    var inputUrl by remember(initialMagnetUrl) { mutableStateOf(initialMagnetUrl ?: "") }
-    var isSubmitting by remember { mutableStateOf(false) }
+    // 秒传对话框的初始输入，null 表示对话框关闭
+    var instantInput by remember { mutableStateOf<String?>(null) }
 
-    val fetchTasks: () -> Unit = {
-        scope.launch {
-            isLoading = true
-            errorMessage = null
-            taskRepo.getTasks()
-                .onSuccess { response ->
-                    tasks = response.tasks
-                    isLoading = false
-                }
-                .onFailure { err ->
-                    errorMessage = "加载离线任务失败: ${err.message ?: "网络错误"}"
-                    isLoading = false
-                }
+    // 协议唤起带进来的磁力链只用一次。旧实现以它为 remember 的 key，每次切回这一页
+    // 视图重建，同一条链又弹一次对话框
+    LaunchedEffect(pendingMagnet) {
+        if (pendingMagnet != null) {
+            instantInput = pendingMagnet
+            onPendingMagnetConsumed()
         }
     }
 
-    LaunchedEffect(Unit) {
-        fetchTasks()
+    LaunchedEffect(tasksState) {
+        tasksState.pollWhileVisible()
+    }
+    LaunchedEffect(tasksState) {
+        tasksState.messages.collect { errorMessage = it }
     }
 
     Column(
@@ -112,19 +122,19 @@ fun TasksView(
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 AccentButton(
-                    onClick = { showNewTaskDialog = true },
+                    onClick = { instantInput = "" },
                 ) {
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Icon(Icons.Regular.Add, contentDescription = "新建任务", modifier = Modifier.size(16.dp))
-                        Text("新建任务")
+                        Icon(Icons.Regular.Flash, contentDescription = "秒传与离线", modifier = Modifier.size(16.dp))
+                        Text("秒传 / 新建任务")
                     }
                 }
 
                 Button(
-                    onClick = { fetchTasks() },
+                    onClick = tasksState::refresh,
                 ) {
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -139,7 +149,18 @@ fun TasksView(
 
         Spacer(Modifier.height(16.dp))
 
-        // Error or Success Bar
+        // 轮询失败时列表停在上一次的内容，要一直挂着说明，直到下一次拉取成功
+        if (errorMessage == null) {
+            tasksState.loadError?.let { reason ->
+                InfoBar(
+                    title = { Text("任务列表可能不是最新的") },
+                    message = { Text(reason) },
+                    severity = io.github.composefluent.component.InfoBarSeverity.Warning,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                )
+            }
+        }
+
         errorMessage?.let { msg ->
             InfoBar(
                 title = { Text("错误") },
@@ -198,8 +219,8 @@ fun TasksView(
                         style = FluentTheme.typography.bodyLarge,
                         color = FluentTheme.colors.text.text.secondary,
                     )
-                    AccentButton(onClick = { showNewTaskDialog = true }) {
-                        Text("新建离线任务")
+                    AccentButton(onClick = { instantInput = "" }) {
+                        Text("秒传或新建离线任务")
                     }
                 }
             }
@@ -215,56 +236,26 @@ fun TasksView(
         }
     }
 
-    // New Task ContentDialog
-    if (showNewTaskDialog) {
-        ContentDialog(
-            title = "新建离线下载任务",
-            visible = showNewTaskDialog,
-            primaryButtonText = if (isSubmitting) "添加中…" else "立即转存",
-            closeButtonText = "取消",
-            onButtonClick = { button ->
-                when (button) {
-                    ContentDialogButton.Primary -> {
-                        val url = inputUrl.trim()
-                        if (url.isNotBlank() && !isSubmitting) {
-                            isSubmitting = true
-                            scope.launch {
-                                instantRepo.enqueueOfflineTask(url)
-                                    .onSuccess {
-                                        successMessage = "离线任务已提交至云端"
-                                        inputUrl = ""
-                                        showNewTaskDialog = false
-                                        isSubmitting = false
-                                        fetchTasks()
-                                    }
-                                    .onFailure { err ->
-                                        errorMessage = "提交离线任务失败: ${err.message ?: "未知错误"}"
-                                        isSubmitting = false
-                                    }
-                            }
-                        }
+    instantInput?.let { initial ->
+        InstantDialog(
+            instantRepository = instantRepo,
+            driveRepository = driveRepository,
+            preferences = preferences,
+            initialMagnet = initial,
+            onDismiss = { instantInput = null },
+            onSaved = { outcome ->
+                instantInput = null
+                when (outcome) {
+                    is InstantSaveOutcome.InstantSaved -> {
+                        // 秒传是同步完成的，文件已在网盘里，直接带用户过去
+                        successMessage = "已秒传 ${outcome.createdIds.size} 项到 ${outcome.target.name}"
+                        onOpenFolder(outcome.target)
                     }
-                    ContentDialogButton.Close -> {
-                        if (!isSubmitting) {
-                            showNewTaskDialog = false
-                        }
+                    is InstantSaveOutcome.OfflineTaskCreated -> {
+                        // 离线任务要等云端下完，留在任务页看进度
+                        successMessage = "离线任务已提交，完成后保存到 ${outcome.target.name}"
+                        tasksState.refresh()
                     }
-                    else -> {}
-                }
-            },
-            content = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        text = "支持 magnet:?xt=urn:btih: 磁力链接或 http/https 直链",
-                        style = FluentTheme.typography.caption,
-                        color = FluentTheme.colors.text.text.secondary,
-                    )
-                    TextField(
-                        value = inputUrl,
-                        onValueChange = { inputUrl = it },
-                        placeholder = { Text("粘贴下载链接…") },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
                 }
             },
         )

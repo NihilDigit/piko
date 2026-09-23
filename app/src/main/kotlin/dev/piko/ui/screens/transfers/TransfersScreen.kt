@@ -16,15 +16,16 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import dev.piko.PikoApplication
+import dev.piko.shared.state.OfflineTasksState
 import dev.piko.ui.screens.download.DownloadsScreen
-import dev.piko.ui.screens.drive.CloudTasksSheetContent
-import io.github.nihildigit.pikpak.OfflineTask
-import io.github.nihildigit.pikpak.TaskPhase
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
+import dev.piko.ui.screens.tasks.CloudTasksSheetContent
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -33,17 +34,18 @@ fun TransfersScreen(
     onNavigateToInstant: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    val taskRepo = PikoApplication.instance.taskRepository
-    var runningTasks by remember { mutableStateOf<List<OfflineTask>>(emptyList()) }
+    val scope = rememberCoroutineScope()
+    val tasksState = remember { OfflineTasksState(PikoApplication.instance.taskRepository, scope) }
+    val runningTasks = tasksState.activeTasks
     var showCloudTasksSheet by remember { mutableStateOf(false) }
 
-    // 只在本页轮询。云端离线与本地下载同属「传输」，放在这里也免去了文件页常驻一个 4 秒轮询
-    LaunchedEffect(Unit) {
-        while (isActive) {
-            taskRepo.getTasks().onSuccess { resp ->
-                runningTasks = resp.tasks.filter { it.phase == TaskPhase.RUNNING || it.phase == TaskPhase.PENDING }
-            }
-            delay(4000)
+    // 只在本页可见期间轮询。云端离线与本地下载同属「传输」，放在这里也免去了文件页常驻
+    // 一个轮询。挂在 STARTED 上：应用退到后台时 LaunchedEffect 并不会取消，只靠它的话
+    // 后台每 4 秒照样发一次请求
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(tasksState, lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            tasksState.pollWhileVisible()
         }
     }
 

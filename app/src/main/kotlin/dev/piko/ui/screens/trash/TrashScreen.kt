@@ -57,7 +57,6 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -79,8 +78,8 @@ import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.theme.PikoMotion
+import dev.piko.shared.state.TrashScreenState
 import io.github.nihildigit.pikpak.FileStat
-import kotlinx.coroutines.launch
 
 /**
  * 彻底删除的待确认请求。清空回收站与逐项删除共用同一个 AlertDialog，
@@ -104,83 +103,27 @@ fun TrashScreen(
     onBackClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val driveRepo = PikoApplication.instance.driveRepository
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
 
-    var files by remember { mutableStateOf<List<FileStat>>(emptyList()) }
-    var isLoading by remember { mutableStateOf(true) }
-    var isRefreshing by remember { mutableStateOf(false) }
-    var isActionRunning by remember { mutableStateOf(false) }
-
-    var isSelectionMode by remember { mutableStateOf(false) }
-    val selectedFileIds = remember { mutableStateListOf<String>() }
+    // 列表、多选与恢复删除动作都在共享状态类里，这里只剩 Material 的布局与外观
+    val state = remember { TrashScreenState(PikoApplication.instance.driveRepository, scope) }
+    val files = state.files
+    val isActionRunning = state.isActionRunning
+    val isSelectionMode = state.isSelectionMode
+    val selectedFileIds = state.selectedFileIds
 
     var showOverflowMenu by remember { mutableStateOf(false) }
     var deleteRequest by remember { mutableStateOf<PermanentDeleteRequest?>(null) }
 
-    val loadFiles = {
-        scope.launch {
-            val result = driveRepo.getTrashFiles()
-            isLoading = false
-            isRefreshing = false
-            result.onSuccess { list ->
-                files = list
-                // 刷新后已被移除的条目不应继续留在选中集合里，否则批量操作会带上失效 id
-                selectedFileIds.retainAll(list.mapTo(hashSetOf()) { it.id })
-            }.onFailure { error ->
-                snackbarHostState.showSnackbar("加载失败: ${error.localizedMessage}")
-            }
-        }
-    }
+    val exitSelection = { state.exitSelection() }
+    val restoreFiles = { ids: List<String> -> state.restore(ids) }
+    val deleteFiles = { ids: List<String> -> state.deletePermanently(ids) }
 
-    val exitSelection = {
-        isSelectionMode = false
-        selectedFileIds.clear()
-    }
-
-    val restoreFiles = { ids: List<String> ->
-        if (ids.isNotEmpty() && !isActionRunning) {
-            isActionRunning = true
-            scope.launch {
-                val result = driveRepo.restoreFromTrash(ids)
-                isActionRunning = false
-                result.onSuccess {
-                    exitSelection()
-                    // 恢复出的文件回到原目录，网盘界面此刻仍在后台组合中，不会自己重新拉取
-                    driveRepo.requestRefresh()
-                    // showSnackbar 会挂起到提示消失，刷新必须排在它前面，否则列表要等几秒才更新
-                    loadFiles()
-                    snackbarHostState.showSnackbar("已恢复 ${ids.size} 项")
-                }.onFailure { error ->
-                    snackbarHostState.showSnackbar("恢复失败: ${error.localizedMessage}")
-                }
-            }
-        }
-        Unit
-    }
-
-    val deleteFiles = { ids: List<String> ->
-        if (ids.isNotEmpty() && !isActionRunning) {
-            isActionRunning = true
-            scope.launch {
-                val result = driveRepo.deletePermanently(ids)
-                isActionRunning = false
-                result.onSuccess {
-                    exitSelection()
-                    loadFiles()
-                    snackbarHostState.showSnackbar("已彻底删除 ${ids.size} 项")
-                }.onFailure { error ->
-                    snackbarHostState.showSnackbar("删除失败: ${error.localizedMessage}")
-                }
-            }
-        }
-        Unit
-    }
-
-    LaunchedEffect(Unit) {
-        loadFiles()
+    LaunchedEffect(state) {
+        state.load()
+        state.messages.collect { snackbarHostState.showSnackbar(it) }
     }
 
     BackHandler(enabled = isSelectionMode) {
@@ -206,14 +149,7 @@ fun TrashScreen(
                 },
                 actions = {
                     if (isSelectionMode) {
-                        IconButton(onClick = {
-                            if (selectedFileIds.size == files.size) {
-                                selectedFileIds.clear()
-                            } else {
-                                selectedFileIds.clear()
-                                selectedFileIds.addAll(files.map { it.id })
-                            }
-                        }) {
+                        IconButton(onClick = { state.toggleSelectAll() }) {
                             Icon(Icons.Outlined.SelectAll, contentDescription = "全选")
                         }
                         IconButton(
@@ -234,7 +170,7 @@ fun TrashScreen(
                         }
                     } else {
                         IconButton(
-                            onClick = { isSelectionMode = true },
+                            onClick = { state.enterSelection() },
                             enabled = files.isNotEmpty(),
                         ) {
                             Icon(Icons.Outlined.Check, contentDescription = "进入多选")
@@ -279,7 +215,7 @@ fun TrashScreen(
                 .consumeWindowInsets(innerPadding),
         ) {
             Crossfade(
-                targetState = isLoading,
+                targetState = state.isLoading,
                 animationSpec = PikoMotion.StateCrossfadeSpec,
                 label = "trash_loading",
             ) { loading ->
@@ -287,11 +223,8 @@ fun TrashScreen(
                     FullScreenLoading()
                 } else {
                     PullToRefreshBox(
-                        isRefreshing = isRefreshing,
-                        onRefresh = {
-                            isRefreshing = true
-                            loadFiles()
-                        },
+                        isRefreshing = state.isRefreshing,
+                        onRefresh = { state.load(refresh = true) },
                         modifier = Modifier.fillMaxSize(),
                     ) {
                         // 空态也放进 LazyColumn，否则没有可滚动的子项，下拉刷新在空回收站里无法触发
@@ -327,25 +260,10 @@ fun TrashScreen(
                                             isSelectionMode = isSelectionMode,
                                             isSelected = isSelected,
                                             onClick = {
-                                                if (isSelectionMode) {
-                                                    if (isSelected) {
-                                                        selectedFileIds.remove(file.id)
-                                                    } else {
-                                                        selectedFileIds.add(file.id)
-                                                    }
-                                                }
+                                                if (isSelectionMode) state.setSelected(file.id, !isSelected)
                                             },
-                                            onLongClick = {
-                                                isSelectionMode = true
-                                                if (!isSelected) selectedFileIds.add(file.id)
-                                            },
-                                            onSelectToggle = { selected ->
-                                                if (selected) {
-                                                    selectedFileIds.add(file.id)
-                                                } else {
-                                                    selectedFileIds.remove(file.id)
-                                                }
-                                            },
+                                            onLongClick = { state.enterSelection(file.id) },
+                                            onSelectToggle = { selected -> state.setSelected(file.id, selected) },
                                             onRestore = { restoreFiles(listOf(file.id)) },
                                             onDeleteForever = {
                                                 deleteRequest = PermanentDeleteRequest(listOf(file.id))

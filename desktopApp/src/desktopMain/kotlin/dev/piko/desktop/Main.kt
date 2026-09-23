@@ -162,10 +162,11 @@ private fun MainAppContent(
     val driveRepo = remember(manager, preferences) { PikoDriveRepository(manager, preferences) }
     val mediaRepo = remember(manager) { PikoMediaRepository(manager) }
 
-    // 协议唤起（magnet: 链接）直接落到离线任务页，输入框预填并弹出新建对话框。
+    // 协议唤起（magnet: 链接）直接落到离线任务页，带着这条链打开秒传对话框。
     var currentSection by remember {
         mutableStateOf(if (initialMagnetUrl != null) NavSection.TASKS else NavSection.DRIVE)
     }
+    var pendingMagnet by remember { mutableStateOf(initialMagnetUrl) }
     // 「我的」里点回收站：先切到网盘页，再用这个信号让 DriveView 翻到回收站。
     var trashSignal by remember { mutableIntStateOf(0) }
     // WinRT Toast notification integration for completed or failed downloads
@@ -257,7 +258,15 @@ private fun MainAppContent(
                 NavSection.TASKS -> {
                     TasksView(
                         manager = manager,
-                        initialMagnetUrl = initialMagnetUrl,
+                        driveRepository = driveRepo,
+                        preferences = preferences,
+                        onOpenFolder = { target ->
+                            // 经仓库层的全局目录栈切过去，DriveView 重建时从栈顶加载
+                            driveRepo.navigateToFolder(target)
+                            currentSection = NavSection.DRIVE
+                        },
+                        pendingMagnet = pendingMagnet,
+                        onPendingMagnetConsumed = { pendingMagnet = null },
                     )
                 }
                 NavSection.SETTINGS -> {

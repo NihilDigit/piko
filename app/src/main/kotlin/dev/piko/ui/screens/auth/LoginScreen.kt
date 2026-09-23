@@ -48,8 +48,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import dev.piko.PikoApplication
 import dev.piko.R
+import dev.piko.shared.state.LoginState
 import dev.piko.ui.components.PikoLoadingIndicator
-import kotlinx.coroutines.launch
 
 /**
  * Login screen supporting account (email/username) and password authentication.
@@ -63,31 +63,18 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun LoginScreen(
-    onLoginSuccess: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val clientManager = PikoApplication.instance.clientManager
     val scope = rememberCoroutineScope()
-
-    var account by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
+    val state = remember { LoginState(PikoApplication.instance.clientManager, scope) }
     var passwordVisible by remember { mutableStateOf(false) }
 
-    var isLoading by remember { mutableStateOf(false) }
-    var errorMessage by remember { mutableStateOf<String?>(null) }
+    val account = state.account
+    val password = state.password
+    val isLoading = state.isLoggingIn
+    val errorMessage = state.errorMessage
 
-    val performLogin = {
-        if (account.isNotBlank() && password.isNotBlank() && !isLoading) {
-            isLoading = true
-            errorMessage = null
-            scope.launch {
-                val result = clientManager.login(account.trim()) { password }
-                isLoading = false
-                result.onSuccess { onLoginSuccess() }
-                    .onFailure { errorMessage = it.localizedMessage ?: "登录失败，请检查账号密码" }
-            }
-        }
-    }
+    val performLogin = { state.login() }
 
     Surface(
         modifier = modifier.fillMaxSize(),
@@ -129,7 +116,7 @@ fun LoginScreen(
 
             OutlinedTextField(
                 value = account,
-                onValueChange = { account = it },
+                onValueChange = state::updateAccount,
                 label = { Text("邮箱或用户名") },
                 leadingIcon = { Icon(Icons.Outlined.Person, contentDescription = null) },
                 singleLine = true,
@@ -142,7 +129,7 @@ fun LoginScreen(
 
             OutlinedTextField(
                 value = password,
-                onValueChange = { password = it },
+                onValueChange = state::updatePassword,
                 label = { Text("密码") },
                 leadingIcon = { Icon(Icons.Outlined.Lock, contentDescription = null) },
                 trailingIcon = {
@@ -180,7 +167,7 @@ fun LoginScreen(
 
             Button(
                 onClick = { performLogin() },
-                enabled = !isLoading && account.isNotBlank() && password.isNotBlank(),
+                enabled = state.canSubmit,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(52.dp),

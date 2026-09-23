@@ -1,0 +1,97 @@
+package dev.piko.shared.state
+
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import dev.piko.shared.data.TaskRepository
+import io.github.nihildigit.pikpak.OfflineTask
+import io.github.nihildigit.pikpak.TaskPhase
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.launch
+
+/**
+ * 云端离线任务列表，两端共用。
+ *
+ * 轮询不在构造时启动，而是由视图在可见期间调用 [pollWhileVisible]：Android 挂在
+ * repeatOnLifecycle(STARTED) 里，切到后台即停；Desktop 挂在 LaunchedEffect 里，
+ * 离开这一页即停。状态类自己开一个常驻循环的话，谁也关不掉它。
+ */
+class OfflineTasksState(
+    private val taskRepo: TaskRepository,
+    private val scope: CoroutineScope,
+) {
+    var tasks by mutableStateOf<List<OfflineTask>>(emptyList())
+        private set
+
+    /** 首次加载。之后的刷新与轮询都不再切回整页加载态，列表保持可见。 */
+    var isLoading by mutableStateOf(true)
+        private set
+    var isRefreshing by mutableStateOf(false)
+        private set
+
+    /** 最近一次拉取失败的原因，成功后清空。此时列表仍是上一次的数据。 */
+    var loadError by mutableStateOf<String?>(null)
+        private set
+
+    private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    val messages: SharedFlow<String> = _messages.asSharedFlow()
+
+    /** 还在云端排队或下载中的任务，用于徽标与抽屉。 */
+    val activeTasks: List<OfflineTask> by derivedStateOf {
+        tasks.filter { it.phase == TaskPhase.RUNNING || it.phase == TaskPhase.PENDING }
+    }
+
+    private var refreshJob: Job? = null
+
+    /** 用户主动刷新。失败时弹一次提示；轮询失败只更新 [loadError]，不刷屏。 */
+    fun refresh() {
+        if (!isLoading) isRefreshing = true
+        launchFetch(notifyFailure = true)
+    }
+
+    /**
+     * 可见期间周期性拉取。挂起直到调用方的协程被取消。
+     *
+     * 每轮先拉取再等待，所以进入页面立刻有一次加载，不必另调 [refresh]。
+     */
+    suspend fun pollWhileVisible(intervalMs: Long = DEFAULT_POLL_INTERVAL_MS) {
+        while (true) {
+            fetch(notifyFailure = isLoading)
+            delay(intervalMs)
+        }
+    }
+
+    private fun launchFetch(notifyFailure: Boolean) {
+        // 连点刷新只保留最后一次，旧请求晚到的结果不能盖掉新的
+        refreshJob?.cancel()
+        refreshJob = scope.launch { fetch(notifyFailure) }
+    }
+
+    private suspend fun fetch(notifyFailure: Boolean) {
+        try {
+            taskRepo.getTasks()
+                .onSuccess { response ->
+                    tasks = response.tasks
+                    loadError = null
+                }
+                .onFailure { err ->
+                    val reason = err.message ?: "网络错误"
+                    loadError = reason
+                    if (notifyFailure) _messages.tryEmit("加载离线任务失败: $reason")
+                }
+        } finally {
+            isLoading = false
+            isRefreshing = false
+        }
+    }
+
+    companion object {
+        const val DEFAULT_POLL_INTERVAL_MS = 4_000L
+    }
+}

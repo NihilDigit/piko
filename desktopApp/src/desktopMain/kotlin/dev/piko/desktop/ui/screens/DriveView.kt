@@ -61,6 +61,7 @@ import dev.piko.shared.data.PikoFileSortOrder
 import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.state.DriveScreenState
+import dev.piko.shared.state.TrashScreenState
 import io.github.composefluent.Colors
 import io.github.composefluent.FluentTheme
 import io.github.composefluent.component.AccentButton
@@ -113,9 +114,8 @@ fun DriveView(
 
     val folderStack by state.folderStack.collectAsState()
 
-    // 回收站不在共享状态类的覆盖范围内，单独持有自己的列表与加载态。
-    var trashFiles by remember { mutableStateOf<List<FileStat>>(emptyList()) }
-    var isTrashLoading by remember { mutableStateOf(false) }
+    // 回收站的列表与恢复、彻底删除动作在另一个共享状态类里，与 Android 的回收站页同一份逻辑
+    val trashState = remember(repository) { TrashScreenState(repository, scope) }
 
     // 共享状态类的提示成功失败走同一条流，这里按文案里的「失败」分流到 InfoBar 的
     // 两种 severity。分成两个变量的话，一次操作的成功与失败提示会同时挂在界面上。
@@ -154,24 +154,21 @@ fun DriveView(
         if (openTrashSignal > 0) showTrash = true
     }
 
-    suspend fun reloadTrash() {
-        isTrashLoading = true
-        repository.trashFiles()
-            .onSuccess { trashFiles = it }
-            .onFailure { notice = "读取回收站失败: ${it.message}" }
-        isTrashLoading = false
-    }
-
     LaunchedEffect(state, showTrash) {
-        if (showTrash) reloadTrash() else state.load()
+        if (showTrash) trashState.load() else state.load()
     }
 
     LaunchedEffect(state) {
         state.messages.collect { notice = it }
     }
 
-    val files = if (showTrash) trashFiles else state.displayedFiles
-    val isLoading = if (showTrash) isTrashLoading else state.isLoading
+    LaunchedEffect(trashState) {
+        trashState.messages.collect { notice = it }
+    }
+
+    val files = if (showTrash) trashState.files else state.displayedFiles
+    // 回收站的刷新也用整页加载指示：它没有网盘列表那样的「内容可能不是最新的」提示条
+    val isLoading = if (showTrash) trashState.isLoading || trashState.isRefreshing else state.isLoading
 
     fun handleFileClick(file: FileStat) {
         if (file.isFolder) {
@@ -253,7 +250,7 @@ fun DriveView(
                 }
                 Button(
                     onClick = {
-                        if (showTrash) scope.launch { reloadTrash() } else state.load(refresh = true)
+                        if (showTrash) trashState.load(refresh = true) else state.load(refresh = true)
                     },
                 ) {
                     Row(
@@ -531,16 +528,8 @@ fun DriveView(
                                     }
                                 } else {
                                     SubtleButton(
-                                        onClick = {
-                                            scope.launch {
-                                                repository.restore(listOf(file.id))
-                                                    .onSuccess {
-                                                        notice = "已恢复文件：${file.name}"
-                                                        reloadTrash()
-                                                    }
-                                                    .onFailure { notice = "恢复失败: ${it.message}" }
-                                            }
-                                        },
+                                        onClick = { trashState.restore(listOf(file.id)) },
+                                        disabled = trashState.isActionRunning,
                                     ) {
                                         Text("恢复")
                                     }
@@ -692,16 +681,8 @@ fun DriveView(
                                     }
                                 } else {
                                     SubtleButton(
-                                        onClick = {
-                                            scope.launch {
-                                                repository.restore(listOf(file.id))
-                                                    .onSuccess {
-                                                        notice = "已恢复文件：${file.name}"
-                                                        reloadTrash()
-                                                    }
-                                                    .onFailure { notice = "恢复失败: ${it.message}" }
-                                            }
-                                        },
+                                        onClick = { trashState.restore(listOf(file.id)) },
+                                        disabled = trashState.isActionRunning,
                                     ) {
                                         Text("恢复")
                                     }
@@ -920,15 +901,8 @@ fun DriveView(
             onButtonClick = { button ->
                 when (button) {
                     ContentDialogButton.Primary -> {
-                        scope.launch {
-                            repository.delete(listOf(target.id))
-                                .onSuccess {
-                                    permanentDeleteTargetFile = null
-                                    notice = "已彻底删除 ${target.name}"
-                                    reloadTrash()
-                                }
-                                .onFailure { notice = "彻底删除失败: ${it.message}" }
-                        }
+                        permanentDeleteTargetFile = null
+                        trashState.deletePermanently(listOf(target.id))
                     }
                     ContentDialogButton.Close -> {
                         permanentDeleteTargetFile = null

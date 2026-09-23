@@ -8,11 +8,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -30,16 +27,13 @@ import io.github.composefluent.component.TextField
 import io.github.composefluent.icons.Icons
 import io.github.composefluent.icons.regular.Key
 import io.github.composefluent.icons.regular.Person
+import dev.piko.shared.state.LoginState
 import io.github.composefluent.surface.Card
-import kotlinx.coroutines.launch
 
 @Composable
 fun LoginView(manager: PikoClientManager) {
     val scope = rememberCoroutineScope()
-    var account by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
-    var error by remember { mutableStateOf<String?>(null) }
-    var isLoggingIn by remember { mutableStateOf(false) }
+    val state = remember(manager) { LoginState(manager, scope) }
 
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Card(
@@ -59,8 +53,8 @@ fun LoginView(manager: PikoClientManager) {
                 )
 
                 TextField(
-                    value = account,
-                    onValueChange = { account = it },
+                    value = state.account,
+                    onValueChange = state::updateAccount,
                     header = { Text("账号") },
                     placeholder = { Text("邮箱 / 用户名") },
                     leadingIcon = {
@@ -71,8 +65,8 @@ fun LoginView(manager: PikoClientManager) {
                 )
 
                 TextField(
-                    value = password,
-                    onValueChange = { password = it },
+                    value = state.password,
+                    onValueChange = state::updatePassword,
                     header = { Text("密码") },
                     placeholder = { Text("请输入密码") },
                     leadingIcon = {
@@ -83,33 +77,24 @@ fun LoginView(manager: PikoClientManager) {
                     singleLine = true,
                 )
 
-                error?.let { err ->
+                state.errorMessage?.let { err ->
                     InfoBar(
                         title = { Text("登录失败") },
                         message = { Text(err) },
                         severity = io.github.composefluent.component.InfoBarSeverity.Critical,
                         modifier = Modifier.fillMaxWidth(),
                         closeAction = {
-                            InfoBarDefaults.CloseActionButton(onClick = { error = null })
+                            InfoBarDefaults.CloseActionButton(onClick = state::dismissError)
                         },
                     )
                 }
 
                 AccentButton(
-                    disabled = account.isBlank() || password.isEmpty() || isLoggingIn,
-                    onClick = {
-                        isLoggingIn = true
-                        error = null
-                        scope.launch {
-                            manager.login(account.trim()) { password }.onFailure {
-                                error = it.message ?: "登录失败，请检查账号密码"
-                            }
-                            isLoggingIn = false
-                        }
-                    },
+                    disabled = !state.canSubmit,
+                    onClick = state::login,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    if (isLoggingIn) {
+                    if (state.isLoggingIn) {
                         ProgressRing(size = ProgressRingSize.Small)
                         Text("正在登录…", modifier = Modifier.padding(start = 8.dp))
                     } else {

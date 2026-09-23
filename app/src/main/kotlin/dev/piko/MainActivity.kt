@@ -54,13 +54,8 @@ class MainActivity : ComponentActivity() {
                         AppState.INITIALIZING -> {
                             FullScreenLoading()
                         }
-                        AppState.LOGIN -> {
-                            LoginScreen(
-                                onLoginSuccess = {
-                                    // 登录成功后 StateFlow 会自动更新至 AppState.MAIN
-                                },
-                            )
-                        }
+                        // 登录成功后 currentClient 变为非空，根状态随之切到 MAIN，不需要回调
+                        AppState.LOGIN -> LoginScreen()
                         AppState.MAIN -> {
                             PikoMainScaffold(
                                 onLogout = {
