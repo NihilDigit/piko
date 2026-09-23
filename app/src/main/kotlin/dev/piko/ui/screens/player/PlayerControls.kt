@@ -37,7 +37,6 @@ import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.ContainedLoadingIndicator
 import androidx.compose.material3.DropdownMenuGroup
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DropdownMenuPopup
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -49,8 +48,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuDefaults
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.PlainTooltip
+import androidx.compose.material3.SelectableDropdownMenuItem
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.SliderState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -417,13 +418,18 @@ internal fun PlayerSeekBar(
     )
     val bufferedColor = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = BUFFERED_ALPHA)
     val interactionSource = remember { MutableInteractionSource() }
+    // 按 value 传值并自定义 thumb 与 track 的重载在 1.5.0-alpha28 被隐藏，只能经 SliderState。
+    // 每次重组把外部进度写回，与被隐藏的重载内部做法相同。
+    val sliderState = remember { SliderState() }
+    sliderState.value = fraction
     val positionText = formatTime((fraction * durationMillis).toLong())
     val durationText = formatTime(durationMillis)
 
     BoxWithConstraints(modifier = modifier) {
         Slider(
-            value = fraction,
+            state = sliderState,
             onValueChange = {
+                sliderState.value = it
                 dragFraction = it
                 currentOnScrub((it * durationMillis).toLong())
             },
@@ -639,7 +645,7 @@ internal fun PlaybackSpeedSheet(
                             PresetSpeeds.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
                             else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
                         },
-                        colors = ToggleButtonDefaults.toggleButtonColors(),
+                        colors = ToggleButtonDefaults.colors(),
                         // 六个预设要在 360dp 宽的竖屏里排成一行，默认的 24dp 水平内边距放不下
                         contentPadding = PaddingValues(horizontal = 0.dp),
                         modifier = Modifier.weight(1f),
@@ -733,7 +739,7 @@ private fun <T> SelectionMenuButton(
         ) {
             DropdownMenuGroup(shapes = MenuDefaults.groupShape(0, 1)) {
                 options.forEachIndexed { index, option ->
-                    DropdownMenuItem(
+                    SelectableDropdownMenuItem(
                         selected = option == selected,
                         onClick = {
                             setExpanded(false)

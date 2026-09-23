@@ -31,7 +31,10 @@ val enableAbiSplits = providers.gradleProperty("piko.enableAbiSplits")
 
 android {
     namespace = "dev.piko"
-    compileSdk = 37
+    // Compose 1.13 的 alpha 要求 37.1
+    compileSdk {
+        version = release(37) { minorApiLevel = 1 }
+    }
 
     splits {
         abi {
@@ -130,7 +133,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
 
-    // Compose (Material 3 Expressive 1.5.0-alpha25 via BOM)
+    // Compose (Material 3 Expressive 1.5.0-alpha28 via BOM)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)

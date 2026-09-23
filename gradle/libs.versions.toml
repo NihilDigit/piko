@@ -7,8 +7,7 @@ coreKtx = "1.19.0"
 documentFile = "1.1.0"
 activityCompose = "1.13.0"
 lifecycle = "2.11.0"
-composeBom = "2026.07.01"
-material3AdaptiveSuite = "1.5.0-alpha17"
+composeBom = "2026.09.00"
 navigation3 = "1.1.5"
 
 datastore = "1.2.1"
@@ -17,11 +16,11 @@ serialization = "1.11.0"
 coil = "3.6.3"
 kotlinxCoroutines = "1.11.0"
 kotlinxDatetime = "0.7.1"
-# 与 pikpak-kotlin 0.6.7 所依赖的版本一致。SDK 的 downloadTo 以 kotlinx.io.files.Path 为参数，
+# 与 pikpak-kotlin 0.6.8 所依赖的版本一致。SDK 的 downloadTo 以 kotlinx.io.files.Path 为参数，
 # 却只把 kotlinx-io 声明为 runtime 依赖，调用方编译时要自己引入
 kotlinxIo = "0.9.0"
-pikpakSdk = "0.6.7"
-composeMultiplatform = "1.12.0"
+pikpakSdk = "0.6.8"
+composeMultiplatform = "1.13.0-alpha01"
 mediamp = "0.4.0"
 libmpv = "1.0.0"
 fluentUi = "v0.1.0"
@@ -55,7 +54,7 @@ androidx-activity-compose = { module = "androidx.activity:activity-compose", ver
 androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "lifecycle" }
 androidx-lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }
 
-# Compose BOM & Material 3 Expressive (1.5.0-alpha25)
+# Compose BOM & Material 3 Expressive (1.5.0-alpha28)
 androidx-compose-bom = { module = "androidx.compose:compose-bom-alpha", version.ref = "composeBom" }
 androidx-compose-ui = { module = "androidx.compose.ui:ui" }
 androidx-compose-ui-graphics = { module = "androidx.compose.ui:ui-graphics" }
@@ -64,7 +63,7 @@ androidx-compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling
 androidx-compose-material3 = { module = "androidx.compose.material3:material3" }
 androidx-compose-material-icons-extended = { module = "androidx.compose.material:material-icons-extended" }
 androidx-compose-foundation = { module = "androidx.compose.foundation:foundation" }
-androidx-compose-material3-adaptive-navigation-suite = { module = "androidx.compose.material3:material3-adaptive-navigation-suite", version.ref = "material3AdaptiveSuite" }
+androidx-compose-material3-adaptive-navigation-suite = { module = "androidx.compose.material3:material3-adaptive-navigation-suite" }
 
 # Navigation 3
 androidx-navigation3-runtime = { module = "androidx.navigation3:navigation3-runtime", version.ref = "navigation3" }
