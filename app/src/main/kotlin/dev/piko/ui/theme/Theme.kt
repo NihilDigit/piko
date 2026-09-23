@@ -1,18 +1,13 @@
 package dev.piko.ui.theme
 
-import android.os.Build
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.MaterialExpressiveTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
-import androidx.compose.ui.platform.LocalContext
 
 val LocalFixedColors = staticCompositionLocalOf { FixedColors }
 val LocalStatusColors = staticCompositionLocalOf { PikoLightStatusColors }
@@ -29,26 +24,21 @@ val LocalStatusColors = staticCompositionLocalOf { PikoLightStatusColors }
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun PikoTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = true,
+    appearance: Appearance = Appearance(),
     content: @Composable () -> Unit,
 ) {
-    val context = LocalContext.current
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-
-        darkTheme -> PikoDarkColors
-        else -> PikoLightColors
-    }
+    val darkTheme = appearance.isDark()
+    val motionScheme = MotionScheme.expressive()
+    val colorScheme = animateColorScheme(appearance.colorScheme(darkTheme), motionScheme)
 
     MaterialExpressiveTheme(
         colorScheme = colorScheme,
-        motionScheme = MotionScheme.expressive(),
+        motionScheme = motionScheme,
         typography = PikoTypography,
         shapes = PikoShapes,
     ) {
         CompositionLocalProvider(
+            LocalAppearance provides appearance,
             LocalFixedColors provides FixedColors,
             LocalStatusColors provides if (darkTheme) PikoDarkStatusColors else PikoLightStatusColors,
         ) {
