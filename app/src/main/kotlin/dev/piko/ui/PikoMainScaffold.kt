@@ -136,6 +136,7 @@ fun PikoMainScaffold(
         }
 
         NavigationSuiteScaffold(
+            // 图标不写 contentDescription：每项都有文字标签，图标再给一次会被读屏念两遍
             navigationSuiteItems = {
                 item(
                     selected = currentTab == MainTab.FILES,
@@ -143,7 +144,7 @@ fun PikoMainScaffold(
                     icon = {
                         Icon(
                             imageVector = if (currentTab == MainTab.FILES) Icons.Filled.Folder else Icons.Outlined.Folder,
-                            contentDescription = "文件",
+                            contentDescription = null,
                         )
                     },
                     label = { Text("文件") },
@@ -154,7 +155,7 @@ fun PikoMainScaffold(
                     icon = {
                         Icon(
                             imageVector = if (currentTab == MainTab.TRANSFERS) Icons.Filled.SyncAlt else Icons.Outlined.SyncAlt,
-                            contentDescription = "传输",
+                            contentDescription = null,
                         )
                     },
                     label = { Text("传输") },
@@ -165,7 +166,7 @@ fun PikoMainScaffold(
                     icon = {
                         Icon(
                             imageVector = if (currentTab == MainTab.SETTINGS) Icons.Filled.Person else Icons.Outlined.Person,
-                            contentDescription = "我的",
+                            contentDescription = null,
                         )
                     },
                     label = { Text("我的") },
