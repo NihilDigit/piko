@@ -1,5 +1,6 @@
 package dev.piko.ui.theme
 
+import androidx.compose.runtime.Immutable
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.ui.graphics.Color
@@ -75,6 +76,19 @@ val PikoDarkColors = darkColorScheme(
     surfaceContainerHigh = Color(0xFF272A2E),
     surfaceContainerHighest = Color(0xFF313539),
 )
+
+/**
+ * M3 色彩角色里没有「成功」，这里按深浅主题各给一档。
+ *
+ * 不能直接用 FixedColors.InstantMatchGreen：#10B981 在浅色 surface 上只有约 2.5:1，
+ * 做文字不到 4.5:1，做图标也不到 3:1。那一档是给压在深色媒体遮罩上的元素用的。
+ * 浅色档 #1B6C3C 在 surface 上约 6:1，深色档 #8AD6A0 在深色 surface 上约 10:1。
+ */
+@Immutable
+data class PikoStatusColors(val success: Color)
+
+val PikoLightStatusColors = PikoStatusColors(success = Color(0xFF1B6C3C))
+val PikoDarkStatusColors = PikoStatusColors(success = Color(0xFF8AD6A0))
 
 /**
  * 不受系统深浅主题影响的固定色彩。

@@ -15,6 +15,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.platform.LocalContext
 
 val LocalFixedColors = staticCompositionLocalOf { FixedColors }
+val LocalStatusColors = staticCompositionLocalOf { PikoLightStatusColors }
 
 /**
  * Piko 全局主题，使用 [MaterialExpressiveTheme] 作为统一入口。
@@ -49,6 +50,7 @@ fun PikoTheme(
     ) {
         CompositionLocalProvider(
             LocalFixedColors provides FixedColors,
+            LocalStatusColors provides if (darkTheme) PikoDarkStatusColors else PikoLightStatusColors,
         ) {
             Surface(
                 color = MaterialTheme.colorScheme.background,
