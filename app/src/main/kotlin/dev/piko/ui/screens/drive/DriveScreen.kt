@@ -373,7 +373,6 @@ fun DriveScreen(
                 instantRepo.clearPendingMagnet()
             },
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            shape = MaterialTheme.shapes.large,
         ) {
             InstantSheetContent(
                 initialMagnet = pendingMagnet.orEmpty(),
