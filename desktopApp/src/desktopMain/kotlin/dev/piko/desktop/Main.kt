@@ -160,7 +160,7 @@ private fun MainAppContent(
         )
     }
     val driveRepo = remember(manager, preferences) { PikoDriveRepository(manager, preferences) }
-    val mediaRepo = remember(manager) { PikoMediaRepository(manager) }
+    val mediaRepo = remember(manager, preferences) { PikoMediaRepository(manager, preferences) }
 
     // 协议唤起（magnet: 链接）直接落到离线任务页，带着这条链打开秒传对话框。
     var currentSection by remember {
