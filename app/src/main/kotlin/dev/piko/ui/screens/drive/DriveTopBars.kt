@@ -20,6 +20,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.TopAppBarScrollBehavior
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
@@ -36,6 +37,7 @@ import dev.piko.ui.components.PikoTopBar
 /** 多选态顶栏。三个动作都作用于整批选中项，没有可以下放到别处的。 */
 @Composable
 internal fun DriveSelectionTopBar(
+    scrollBehavior: TopAppBarScrollBehavior,
     selectedCount: Int,
     onExit: () -> Unit,
     onSelectAll: () -> Unit,
@@ -43,6 +45,7 @@ internal fun DriveSelectionTopBar(
     onTrash: () -> Unit,
 ) {
     PikoTopBar(
+        scrollBehavior = scrollBehavior,
         title = "已选择 $selectedCount 项",
         navigationIcon = {
             IconButton(onClick = onExit) {

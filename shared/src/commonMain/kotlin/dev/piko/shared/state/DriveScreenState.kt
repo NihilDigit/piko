@@ -69,7 +69,7 @@ class DriveScreenState(
 
     val revealedFileIds = mutableStateListOf<String>()
 
-    var highlightedFileIds by mutableStateOf<Set<String>>(emptySet())
+    var highlightedFileIds by mutableStateOf(driveRepo.takePendingHighlight())
         private set
 
     var showAllFilesTemporarily by mutableStateOf(false)
@@ -151,19 +151,46 @@ class DriveScreenState(
         onFolderChanged()
     }
 
+    /**
+     * [files] 当前是哪个目录的内容。视图据此恢复滚动位置：必须等列表真的换成目标目录的
+     * 内容再恢复，否则会把旧列表的位置记到新目录名下。
+     */
+    var loadedFolderId by mutableStateOf<String?>(null)
+        private set
+
+    private var loadJob: Job? = null
+
+    /**
+     * 路径栈上的目录有缓存时先显示缓存，不进加载态，再在后台刷新；返回上级与切回网盘页
+     * 因此是即时的。下拉刷新不用缓存。
+     *
+     * 新的加载取消旧的：进入 A 后未等返回就进了 B，A 晚到的结果不能盖掉 B。
+     */
     fun load(refresh: Boolean = false) {
-        if (refresh) isRefreshing = true else isLoading = true
-        scope.launch {
-            driveRepo.listAllFiles(parentId = activeFolder.id, sortOrder = sortOrder)
+        val folderId = activeFolder.id
+        val cached = if (refresh) null else driveRepo.cachedFiles(folderId, sortOrder)
+        when {
+            cached != null -> {
+                files = cached
+                loadedFolderId = folderId
+                isLoading = false
+            }
+            refresh -> isRefreshing = true
+            else -> isLoading = true
+        }
+        loadJob?.cancel()
+        loadJob = scope.launch {
+            driveRepo.listAllFiles(parentId = folderId, sortOrder = sortOrder)
                 .onSuccess {
                     files = it
+                    loadedFolderId = folderId
                     loadError = null
                 }
                 .onFailure {
                     // 消息是一次性的，弹完就没了；而列表此刻显示的是上一次的内容，
                     // 界面需要一个持续的标记才能说明「这是陈旧数据」
                     loadError = it.message ?: "读取网盘失败"
-                    _messages.tryEmit("加载失败: ${it.message}")
+                    _messages.tryEmit("加载失败")
                 }
             isLoading = false
             isRefreshing = false
@@ -228,7 +255,7 @@ class DriveScreenState(
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                _messages.tryEmit("全盘搜索失败: ${e.message}")
+                _messages.tryEmit("全盘搜索失败")
             } finally {
                 isGlobalSearching = false
             }
@@ -299,9 +326,9 @@ class DriveScreenState(
             driveRepo.createFolder(activeFolder.id, trimmed)
                 .onSuccess {
                     load()
-                    _messages.tryEmit("已创建文件夹: $trimmed")
+                    _messages.tryEmit("已新建文件夹")
                 }
-                .onFailure { _messages.tryEmit("新建文件夹失败: ${it.message}") }
+                .onFailure { _messages.tryEmit("新建文件夹失败") }
         }
     }
 
@@ -312,22 +339,22 @@ class DriveScreenState(
             driveRepo.rename(fileId, trimmed)
                 .onSuccess {
                     load()
-                    _messages.tryEmit("已重命名为: $trimmed")
+                    _messages.tryEmit("已重命名")
                 }
-                .onFailure { _messages.tryEmit("重命名失败: ${it.message}") }
+                .onFailure { _messages.tryEmit("重命名失败") }
         }
     }
 
-    fun moveToTrash(ids: List<String>, describe: String? = null) {
+    fun moveToTrash(ids: List<String>) {
         if (ids.isEmpty()) return
         scope.launch {
             driveRepo.trash(ids)
                 .onSuccess {
                     exitSelection()
                     load()
-                    _messages.tryEmit(describe?.let { "已移入回收站: $it" } ?: "已移入回收站 ${ids.size} 项")
+                    _messages.tryEmit(if (ids.size == 1) "已移入回收站" else "已将 ${ids.size} 项移入回收站")
                 }
-                .onFailure { _messages.tryEmit("移入回收站失败: ${it.message}") }
+                .onFailure { _messages.tryEmit("移入回收站失败") }
         }
     }
 
@@ -338,9 +365,9 @@ class DriveScreenState(
                 .onSuccess {
                     exitSelection()
                     load()
-                    _messages.tryEmit("已移动 ${ids.size} 项到 $targetName")
+                    _messages.tryEmit("已移至 $targetName")
                 }
-                .onFailure { _messages.tryEmit("移动失败: ${it.message}") }
+                .onFailure { _messages.tryEmit("移动失败") }
         }
     }
 }

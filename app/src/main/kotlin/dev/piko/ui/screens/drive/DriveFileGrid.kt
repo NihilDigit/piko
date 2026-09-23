@@ -2,6 +2,7 @@ package dev.piko.ui.screens.drive
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -11,25 +12,27 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.GridItemSpan
-import androidx.compose.foundation.lazy.grid.LazyGridState
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.staggeredgrid.LazyStaggeredGridState
+import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
+import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
+import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
+import androidx.compose.foundation.lazy.staggeredgrid.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.automirrored.outlined.Sort
-import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.Dashboard
+import androidx.compose.material.icons.outlined.ArrowDownward
+import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.AutoAwesome
-import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.ToggleButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -38,39 +41,45 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.piko.data.repository.FileSortOrder
-import dev.piko.ui.components.FileItemRow
+import dev.piko.ui.components.FileListItem
 import io.github.nihildigit.pikpak.FileStat
 
 /**
- * 列表视图也用 LazyVerticalGrid：单列宽度下限 360dp，手机上始终一列，横屏平板上
- * 自动排成两列以上。M3 列表规范要求宽窗口下控制行长或改为多栏，否则一行名字会被
- * 拉得很长。网格视图则按 128dp 自适应。两种视图共用同一个 LazyGridState。
+ * 两种视图都用 LazyVerticalStaggeredGrid，共用同一个状态。瀑布流视图不用
+ * 规整网格：规整网格同一行各项顶端对齐、不拉成等高，名字一行与两行的卡片并排时一边底下
+ * 空一行；瀑布流各列各自往下排，卡片多高都行，名字因此不必截断。代价是同一段里的左右
+ * 顺序随卡片高度略有交错，文件夹在前、文件在后的分段不受影响。
+ *
+ * 列表视图单列宽度下限 360dp，手机上始终一列，横屏平板上自动排成两列以上。M3 列表规范
+ * 要求宽窗口下控制行长或改为多栏，否则一行名字会被拉得很长。
+ *
+ * 瀑布流列宽下限 160dp，手机上两列。原先 128dp 在 432dp 宽的手机上排成三列，卡片扣掉
+ * 内边距与行尾更多按钮后，名字只剩约 68dp，一行四个汉字。
  */
 private val ListColumnMinWidth = 360.dp
-private val GridColumnMinWidth = 128.dp
+private val WaterfallColumnMinWidth = 160.dp
 
 private const val KEY_HEADER = "drive_header"
 private const val KEY_FOLD = "drive_fold"
-private const val KEY_FILES_START = "drive_files_start"
 
-/** 列表或网格里的每一项需要的回调，由 DriveScreen 按条目绑定。 */
+/** 列表或瀑布流里的每一项需要的回调，由 DriveScreen 按条目绑定。 */
 internal class DriveItemCallbacks(
     val onOpen: (FileStat) -> Unit,
     val onMore: (FileStat) -> Unit,
     val onLongPress: (FileStat) -> Unit,
     val onSelect: (FileStat, Boolean) -> Unit,
-    val onToggleSpoiler: (FileStat) -> Unit,
 )
 
 @Composable
 internal fun DriveFileGrid(
     files: List<FileStat>,
-    isGridMode: Boolean,
-    gridState: LazyGridState,
+    isWaterfallMode: Boolean,
+    gridState: LazyStaggeredGridState,
     isSelectionMode: Boolean,
     selectedIds: Set<String>,
     highlightedIds: Set<String>,
@@ -83,127 +92,64 @@ internal fun DriveFileGrid(
     modifier: Modifier = Modifier,
 ) {
     // 文件夹始终排在前面。目录列表在仓库层已经这样排好；全盘搜索的结果按到达顺序，
-    // 这里一并归拢，网格视图才能让文件夹图块与文件卡片各成一段。
+    // 这里一并归拢。两组之间不另起一行：最后一排文件夹留下的空位由文件接着填上。
     val (folders, regularFiles) = remember(files) { files.partition(FileStat::isFolder) }
     val leadingItemCount = 1 + (if (foldBanner != null) 1 else 0)
-    val splitSpacer = isGridMode && folders.isNotEmpty() && regularFiles.isNotEmpty()
 
     // 刚秒传成功时滚到新条目。视图模式是异步读出来的偏好，首帧拿到的还是默认值，
     // 所以它也要进 key，否则真值到达前的滚动会停在错误的位置。
-    LaunchedEffect(files, highlightedIds, isGridMode) {
-        if (highlightedIds.isEmpty()) return@LaunchedEffect
-        val folderIndex = folders.indexOfFirst { it.id in highlightedIds }
-        val index = if (folderIndex >= 0) {
-            leadingItemCount + folderIndex
-        } else {
-            val fileIndex = regularFiles.indexOfFirst { it.id in highlightedIds }
-            if (fileIndex < 0) return@LaunchedEffect
-            leadingItemCount + folders.size + (if (splitSpacer) 1 else 0) + fileIndex
-        }
-        gridState.animateScrollToItem(index)
-    }
+    val horizontalPadding = if (isWaterfallMode) 16.dp else 0.dp
+    val itemSpacing = if (isWaterfallMode) 8.dp else 0.dp
 
-    val horizontalPadding = if (isGridMode) 16.dp else 0.dp
-    val itemSpacing = if (isGridMode) 8.dp else 0.dp
+    Box(modifier = modifier.fillMaxSize()) {
+        val entries = remember(folders, regularFiles) { folders + regularFiles }
 
-    LazyVerticalGrid(
-        state = gridState,
-        columns = GridCells.Adaptive(if (isGridMode) GridColumnMinWidth else ListColumnMinWidth),
-        modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(
-            start = horizontalPadding,
-            end = horizontalPadding,
-            bottom = bottomPadding,
-        ),
-        horizontalArrangement = Arrangement.spacedBy(itemSpacing),
-        verticalArrangement = Arrangement.spacedBy(itemSpacing),
-    ) {
-        item(key = KEY_HEADER, span = { GridItemSpan(maxLineSpan) }, contentType = KEY_HEADER) {
-            // 网格模式的 16dp 页边距由 contentPadding 统一给出；列表模式没有，页眉自己补。
-            // 列表模式末端只补 4dp，让视图切换按钮的图标与行尾的更多按钮对齐。
-            Box(
-                modifier = if (isGridMode) Modifier else Modifier.padding(start = 16.dp, end = 4.dp),
-            ) {
-                header()
-            }
+        // 刚秒传成功时滚到新条目。视图模式是异步读出来的偏好，首帧拿到的还是默认值，
+        // 所以它也要进 key，否则真值到达前的滚动会停在错误的位置。
+        LaunchedEffect(entries, highlightedIds, isWaterfallMode) {
+            if (highlightedIds.isEmpty()) return@LaunchedEffect
+            val entryIndex = entries.indexOfFirst { it.id in highlightedIds }
+            if (entryIndex >= 0) gridState.animateScrollToItem(leadingItemCount + entryIndex)
         }
-        if (foldBanner != null) {
-            item(key = KEY_FOLD, span = { GridItemSpan(maxLineSpan) }, contentType = KEY_FOLD) {
-                Box(modifier = Modifier.padding(horizontal = if (isGridMode) 0.dp else 16.dp)) {
-                    foldBanner()
+
+        LazyVerticalStaggeredGrid(
+            state = gridState,
+            columns = StaggeredGridCells.Adaptive(if (isWaterfallMode) WaterfallColumnMinWidth else ListColumnMinWidth),
+            modifier = modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                start = horizontalPadding,
+                end = horizontalPadding,
+                bottom = bottomPadding,
+            ),
+            horizontalArrangement = Arrangement.spacedBy(itemSpacing),
+            verticalItemSpacing = itemSpacing,
+        ) {
+            item(key = KEY_HEADER, span = StaggeredGridItemSpan.FullLine, contentType = KEY_HEADER) {
+                // 页眉总是整行宽，内边距由它自己决定，两种视图下排布一致。瀑布流模式的
+                // contentPadding 会把它缩进 16dp，这里向两侧撑回去
+                Box(modifier = if (isWaterfallMode) Modifier.bleedHorizontal(horizontalPadding) else Modifier) {
+                    header()
                 }
             }
-        }
-
-        items(folders, key = { it.id }, contentType = { "folder" }) { file ->
-            val selected = file.id in selectedIds
-            val highlighted = file.id in highlightedIds
-            if (isGridMode) {
-                FolderGridTile(
-                    file = file,
-                    isSelectionMode = isSelectionMode,
-                    isSelected = selected,
-                    isHighlighted = highlighted,
-                    onClick = { callbacks.onOpen(file) },
-                    onLongClick = { callbacks.onLongPress(file) },
-                    onSelectToggle = { callbacks.onSelect(file, it) },
-                    onMoreClick = { callbacks.onMore(file) },
-                    modifier = Modifier.animateItem(),
-                )
-            } else {
-                FileItemRow(
-                    file = file,
-                    isSelectionMode = isSelectionMode,
-                    isSelected = selected,
-                    isHighlighted = highlighted,
-                    locationLabel = hitLocations[file.id],
-                    onClick = { callbacks.onOpen(file) },
-                    onLongClick = { callbacks.onLongPress(file) },
-                    onSelectToggle = { callbacks.onSelect(file, it) },
-                    onMoreClick = { callbacks.onMore(file) },
-                    modifier = Modifier.animateItem(),
-                )
+            if (foldBanner != null) {
+                item(key = KEY_FOLD, span = StaggeredGridItemSpan.FullLine, contentType = KEY_FOLD) {
+                    Box(modifier = Modifier.padding(horizontal = if (isWaterfallMode) 0.dp else 16.dp)) {
+                        foldBanner()
+                    }
+                }
             }
-        }
 
-        if (splitSpacer) {
-            // 让第一张文件卡片另起一行，不与最后一排文件夹图块挤在同一行
-            item(key = KEY_FILES_START, span = { GridItemSpan(maxLineSpan) }, contentType = KEY_FILES_START) {
-                Spacer(modifier = Modifier.fillMaxWidth())
-            }
-        }
-
-        items(regularFiles, key = { it.id }, contentType = { "file" }) { file ->
-            val selected = file.id in selectedIds
-            val highlighted = file.id in highlightedIds
-            val blurred = isBlurred(file)
-            if (isGridMode) {
-                FileGridCard(
+        itemsIndexed(entries, key = { _, file -> file.id }, contentType = { _, file -> if (file.isFolder) "folder" else "file" }) { index, file ->
+                DriveCell(
                     file = file,
+                    isWaterfallMode = isWaterfallMode,
+                    coverAspectRatio = coverAspectFor(index),
                     isSelectionMode = isSelectionMode,
-                    isSelected = selected,
-                    isSpoilerBlurred = blurred,
-                    isHighlighted = highlighted,
-                    onToggleSpoiler = { callbacks.onToggleSpoiler(file) },
-                    onClick = { callbacks.onOpen(file) },
-                    onLongClick = { callbacks.onLongPress(file) },
-                    onSelectToggle = { callbacks.onSelect(file, it) },
-                    onMoreClick = { callbacks.onMore(file) },
-                    modifier = Modifier.animateItem(),
-                )
-            } else {
-                FileItemRow(
-                    file = file,
-                    isSelectionMode = isSelectionMode,
-                    isSelected = selected,
-                    isHighlighted = highlighted,
-                    isSpoilerBlurred = blurred,
+                    isSelected = file.id in selectedIds,
+                    isHighlighted = file.id in highlightedIds,
+                    isBlurred = isBlurred(file),
                     locationLabel = hitLocations[file.id],
-                    onToggleSpoiler = { callbacks.onToggleSpoiler(file) },
-                    onClick = { callbacks.onOpen(file) },
-                    onLongClick = { callbacks.onLongPress(file) },
-                    onSelectToggle = { callbacks.onSelect(file, it) },
-                    onMoreClick = { callbacks.onMore(file) },
+                    callbacks = callbacks,
                     modifier = Modifier.animateItem(),
                 )
             }
@@ -211,85 +157,191 @@ internal fun DriveFileGrid(
     }
 }
 
-private fun FileSortOrder.shortLabel(): String = when (this) {
-    FileSortOrder.NAME_ASC, FileSortOrder.NAME_DESC -> "名称"
-    FileSortOrder.TIME_DESC, FileSortOrder.TIME_ASC -> "修改时间"
-    FileSortOrder.SIZE_DESC, FileSortOrder.SIZE_ASC -> "大小"
+@Composable
+private fun DriveCell(
+    file: FileStat,
+    isWaterfallMode: Boolean,
+    coverAspectRatio: Float,
+    isSelectionMode: Boolean,
+    isSelected: Boolean,
+    isHighlighted: Boolean,
+    isBlurred: Boolean,
+    locationLabel: String?,
+    callbacks: DriveItemCallbacks,
+    modifier: Modifier,
+) {
+    if (isWaterfallMode) {
+        WaterfallCard(
+            file = file,
+            isSelectionMode = isSelectionMode,
+            isSelected = isSelected,
+            isSpoilerBlurred = isBlurred,
+            isHighlighted = isHighlighted,
+            coverAspectRatio = coverAspectRatio,
+            onClick = { callbacks.onOpen(file) },
+            onLongClick = { callbacks.onLongPress(file) },
+            onSelectToggle = { callbacks.onSelect(file, it) },
+            onMoreClick = { callbacks.onMore(file) },
+            modifier = modifier,
+        )
+    } else {
+        FileListItem(
+            file = file,
+            isSelectionMode = isSelectionMode,
+            isSelected = isSelected,
+            isHighlighted = isHighlighted,
+            // 文件夹没有缩略图，不走防窥
+            isSpoilerBlurred = isBlurred && !file.isFolder,
+            locationLabel = locationLabel,
+            onClick = { callbacks.onOpen(file) },
+            onLongClick = { callbacks.onLongPress(file) },
+            onSelectToggle = { callbacks.onSelect(file, it) },
+            onMoreClick = { callbacks.onMore(file) },
+            modifier = modifier,
+        )
+    }
 }
 
-private val SortChoices = listOf(
-    FileSortOrder.TIME_DESC to "修改时间（新到旧）",
-    FileSortOrder.NAME_ASC to "名称（A 到 Z）",
-    FileSortOrder.SIZE_DESC to "大小（大到小）",
-)
+/**
+ * 封面高度按「矮、高、高、矮」轮换，矮为 16:10，高为 1:1。
+ *
+ * M3 卡片规范里的 staggered 与 mosaic 网格，各列都从顶端齐平开始，错落来自卡片本身的
+ * 高矮；先前在第二列顶上垫一块空白来制造错位，右上角空着一块，规范里没有这种排法。
+ * 这个节奏配合瀑布流「放进最矮的列」：第一排一矮一高，第二排各补一张与对面相反的，
+ * 两列交替错开。高卡不取图示那样的竖幅：视频缩略图多为横幅，裁成竖幅损失太多画面。
+ * 按位置而不是随机取，同一目录每次打开排法相同。
+ */
+private fun coverAspectFor(index: Int): Float =
+    if (index % 4 == 1 || index % 4 == 2) 1f else 16f / 10f
+
+/**
+ * 排序字段与方向。ascending 与 descending 分别是该字段两个方向的枚举值，
+ * defaultOrder 是切到这个字段时的起始方向：名称从 A 到 Z，时间与大小从新到旧、从大到小。
+ */
+private enum class SortField(
+    val label: String,
+    val ascending: FileSortOrder,
+    val descending: FileSortOrder,
+    val defaultOrder: FileSortOrder,
+) {
+    TIME("创建时间", FileSortOrder.TIME_ASC, FileSortOrder.TIME_DESC, FileSortOrder.TIME_DESC),
+    NAME("名称", FileSortOrder.NAME_ASC, FileSortOrder.NAME_DESC, FileSortOrder.NAME_ASC),
+    SIZE("大小", FileSortOrder.SIZE_ASC, FileSortOrder.SIZE_DESC, FileSortOrder.SIZE_DESC),
+    ;
+
+    fun owns(order: FileSortOrder) = order == ascending || order == descending
+}
+
+private val FileSortOrder.field: SortField get() = SortField.entries.first { it.owns(this) }
+private val FileSortOrder.isAscending: Boolean get() = this == field.ascending
+
+@Composable
+private fun SortDirectionIcon(order: FileSortOrder, modifier: Modifier = Modifier) {
+    Icon(
+        imageVector = if (order.isAscending) Icons.Outlined.ArrowUpward else Icons.Outlined.ArrowDownward,
+        contentDescription = if (order.isAscending) "升序" else "降序",
+        modifier = modifier,
+    )
+}
 
 /**
  * 列表页眉：搜索时的结果说明、排序、视图切换。
  *
  * 排序与视图切换原先挤在顶栏，与新建、搜索一起共四个图标。M3 顶栏规范建议只放一到
  * 两个动作；这两个是作用于列表本身的控件，放进随列表滚走的页眉，不再常驻占位。
- * 排序按钮直接写出当前排序方式，菜单里对当前项打勾，原先两处都看不出当前状态。
+ * 排序按钮写出当前字段与方向。菜单里再点当前字段即切换升降序，点其他字段则按该字段的
+ * 起始方向排，不必为六种组合各列一项。
  */
 @Composable
 internal fun DriveListHeader(
     summary: String?,
     sortOrder: FileSortOrder,
     onSortChange: (FileSortOrder) -> Unit,
-    isGridMode: Boolean,
-    onToggleGridMode: () -> Unit,
+    isWaterfallMode: Boolean,
+    onToggleWaterfallMode: () -> Unit,
 ) {
     var showSortMenu by remember { mutableStateOf(false) }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 48.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
+    Column(modifier = Modifier.fillMaxWidth()) {
         if (summary != null) {
+            // 与排序按钮的图标同落在 16dp 页边距上：外层只给了 4dp，这里补 TextButton 的 12dp
             Text(
                 text = summary,
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.padding(start = 12.dp, top = 8.dp),
             )
-        } else {
-            Spacer(modifier = Modifier.weight(1f))
         }
-        Box {
-            TextButton(onClick = { showSortMenu = true }) {
-                Icon(
-                    Icons.AutoMirrored.Outlined.Sort,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("按${sortOrder.shortLabel()}")
-            }
-            DropdownMenu(expanded = showSortMenu, onDismissRequest = { showSortMenu = false }) {
-                SortChoices.forEach { (order, label) ->
-                    DropdownMenuItem(
-                        text = { Text(label) },
-                        trailingIcon = {
-                            if (order == sortOrder) Icon(Icons.Outlined.Check, contentDescription = "当前排序")
-                        },
-                        onClick = {
-                            showSortMenu = false
-                            onSortChange(order)
-                        },
+        // 排序靠左、视图切换靠右，读作列表自身的控件；原先两者都靠右，像是顶栏放不下挤下来的第二排
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box {
+                TextButton(onClick = { showSortMenu = true }) {
+                    Icon(
+                        Icons.AutoMirrored.Outlined.Sort,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
                     )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("按${sortOrder.field.label}")
+                    Spacer(modifier = Modifier.width(2.dp))
+                    SortDirectionIcon(sortOrder, modifier = Modifier.size(16.dp))
+                }
+                DropdownMenu(expanded = showSortMenu, onDismissRequest = { showSortMenu = false }) {
+                    SortField.entries.forEach { field ->
+                        val isCurrent = field.owns(sortOrder)
+                        DropdownMenuItem(
+                            text = { Text(field.label) },
+                            trailingIcon = { if (isCurrent) SortDirectionIcon(sortOrder) },
+                            onClick = {
+                                showSortMenu = false
+                                onSortChange(
+                                    when {
+                                        !isCurrent -> field.defaultOrder
+                                        sortOrder.isAscending -> field.descending
+                                        else -> field.ascending
+                                    },
+                                )
+                            },
+                        )
+                    }
                 }
             }
-        }
-        IconButton(onClick = onToggleGridMode) {
-            Icon(
-                imageVector = if (isGridMode) Icons.AutoMirrored.Filled.ViewList else Icons.Filled.GridView,
-                contentDescription = if (isGridMode) "切换为列表视图" else "切换为网格视图",
-            )
+            Spacer(modifier = Modifier.weight(1f))
+            ViewModeToggle(isWaterfallMode = isWaterfallMode, onToggleWaterfallMode = onToggleWaterfallMode)
         }
     }
 }
+
+/** 列表与瀑布流二选一，M3 Expressive 连体按钮组，当前视图为选中态。 */
+@Composable
+private fun ViewModeToggle(isWaterfallMode: Boolean, onToggleWaterfallMode: () -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)) {
+        ToggleButton(
+            checked = !isWaterfallMode,
+            onCheckedChange = { if (isWaterfallMode) onToggleWaterfallMode() },
+            shapes = ButtonGroupDefaults.connectedLeadingButtonShapes(),
+            contentPadding = ViewToggleContentPadding,
+        ) {
+            Icon(Icons.AutoMirrored.Filled.ViewList, contentDescription = "列表视图", modifier = Modifier.size(20.dp))
+        }
+        ToggleButton(
+            checked = isWaterfallMode,
+            onCheckedChange = { if (!isWaterfallMode) onToggleWaterfallMode() },
+            shapes = ButtonGroupDefaults.connectedTrailingButtonShapes(),
+            contentPadding = ViewToggleContentPadding,
+        ) {
+            Icon(Icons.Filled.Dashboard, contentDescription = "瀑布流视图", modifier = Modifier.size(20.dp))
+        }
+    }
+}
+
+private val ViewToggleContentPadding = PaddingValues(horizontal = 12.dp)
 
 /** 启发式折叠提示。作为列表的一项随内容滚走，不再常驻在列表上方。 */
 @Composable
@@ -326,5 +378,19 @@ internal fun FoldBanner(
                 Text(if (isFolded) "显示全部" else "恢复折叠")
             }
         }
+    }
+}
+
+/** 在父级给的宽度两侧各多占 [bleed]，用来抵消容器的水平内边距。 */
+private fun Modifier.bleedHorizontal(bleed: Dp): Modifier = layout { measurable, constraints ->
+    val extra = (bleed * 2).roundToPx()
+    val placeable = measurable.measure(
+        constraints.copy(
+            minWidth = constraints.minWidth + extra,
+            maxWidth = constraints.maxWidth + extra,
+        ),
+    )
+    layout(constraints.maxWidth, placeable.height) {
+        placeable.place(-bleed.roundToPx(), 0)
     }
 }

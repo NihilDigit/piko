@@ -876,7 +876,7 @@ fun DriveView(
             onButtonClick = { button ->
                 when (button) {
                     ContentDialogButton.Primary -> {
-                        state.moveToTrash(listOf(target.id), target.name)
+                        state.moveToTrash(listOf(target.id))
                         deleteTargetFile = null
                     }
                     ContentDialogButton.Close -> {

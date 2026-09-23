@@ -3,6 +3,7 @@ package dev.piko.ui.screens.drive
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -11,14 +12,17 @@ import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.lazy.staggeredgrid.LazyStaggeredGridState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.ErrorOutline
@@ -28,7 +32,8 @@ import androidx.compose.material.icons.outlined.SearchOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FloatingActionButtonMenu
+import androidx.compose.material3.FloatingActionButtonMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -40,6 +45,9 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.ToggleFloatingActionButton
+import androidx.compose.material3.ToggleFloatingActionButtonDefaults.animateIcon
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -52,8 +60,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -61,6 +71,7 @@ import dev.piko.PikoApplication
 import dev.piko.data.repository.PathBreadcrumb
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.data.repository.isPreviewableImage
+import dev.piko.shared.data.ScrollAnchor
 import dev.piko.shared.state.DriveScreenState
 import dev.piko.ui.components.BreadcrumbBar
 import dev.piko.ui.components.FullScreenLoading
@@ -68,14 +79,20 @@ import dev.piko.ui.components.MoveTargetDialog
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.SegmentDownloadSheet
+import dev.piko.shared.state.InstantSaveOutcome
+import dev.piko.ui.components.FileNameField
+import dev.piko.ui.screens.instant.InstantSession
 import dev.piko.ui.screens.instant.InstantSheetContent
+import dev.piko.ui.screens.instant.InstantSheetHandle
 import dev.piko.ui.theme.PikoMotion
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 /**
- * 网盘主界面：目录导航、列表与网格两种视图、防窥遮蔽、秒传入口与批量操作。
+ * 网盘主界面：目录导航、列表与瀑布流两种视图、防窥遮蔽、秒传入口与批量操作。
  *
  * 布局上把常驻的界面元素压到最少：顶栏之下只有子目录里才出现的面包屑，
  * 排序、视图切换、折叠提示都作为列表的首几项随内容滚走，搜索框只在点开搜索后
@@ -110,11 +127,14 @@ fun DriveScreen(
     val state = remember { DriveScreenState(driveRepo, sessionManager, scope) }
 
     LaunchedEffect(state) {
-        state.messages.collect { snackbarHostState.showSnackbar(it) }
+        state.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
     }
 
     // 视图模式存进偏好，切 Tab 与重启后保持上次的选择
-    val isGridMode by sessionManager.gridViewFlow.collectAsStateWithLifecycle(initialValue = false)
+    // 初值同步读：异步给默认值的话，选了列表的用户每次进来都先闪一帧瀑布流。DataStore 在
+    // MainActivity 读外观时已载入，这里只是取内存里的值
+    val initialWaterfallMode = remember { runBlocking { sessionManager.gridViewFlow.first() } }
+    val isWaterfallMode by sessionManager.gridViewFlow.collectAsStateWithLifecycle(initialWaterfallMode)
 
     // 目录导航栈：持久化并与全局单例共享，切 Tab / 重启不丢失
     val folderStack by state.folderStack.collectAsStateWithLifecycle()
@@ -171,15 +191,48 @@ fun DriveScreen(
     // 所以单项操作和多选工具栏可以共用同一套状态。
     var moveTargetIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var previewImage by remember { mutableStateOf<FileStat?>(null) }
-    var showInstantSheet by remember { mutableStateOf(false) }
-
+    // 外部打开的磁力链是一次明确的新请求：开新会话并就地取走，面板收起后不再靠它续命
     val pendingMagnet by instantRepo.pendingMagnetFlow.collectAsStateWithLifecycle()
     LaunchedEffect(pendingMagnet) {
-        if (!pendingMagnet.isNullOrBlank()) showInstantSheet = true
+        val magnet = pendingMagnet
+        if (!magnet.isNullOrBlank()) {
+            InstantSession.start(magnet)
+            instantRepo.clearPendingMagnet()
+        }
     }
 
-    val gridState = rememberLazyGridState()
-    val isFabExpanded by remember { derivedStateOf { gridState.firstVisibleItemIndex == 0 } }
+    // 保存结果在这里收而不在面板里：面板可能正收起着
+    val instantState = InstantSession.state
+    LaunchedEffect(instantState) {
+        instantState?.outcomes?.collect { outcome ->
+            InstantSession.end()
+            state.navigateToFolder(outcome.target)
+            when (outcome) {
+                is InstantSaveOutcome.InstantSaved -> {
+                    state.highlight(outcome.createdIds.toSet())
+                    snackbarHostState.showSnackbar("已秒传 ${outcome.createdIds.size} 个文件", withDismissAction = true)
+                }
+                is InstantSaveOutcome.OfflineTaskCreated ->
+                    snackbarHostState.showSnackbar("已加入离线任务", withDismissAction = true)
+            }
+        }
+    }
+
+    // 每个目录一份列表状态，按「列表此刻显示的目录」重建，初值取仓库里记下的位置：
+    // 新目录的第一帧就落在该在的地方。共用一份再在加载后 scrollToItem 的话，第一帧会
+    // 先停在上一个目录的位置上，返回上级也会带回子目录的偏移。
+    val loadedFolderId = state.loadedFolderId
+    val gridState = remember(loadedFolderId) {
+        val anchor = loadedFolderId?.let(driveRepo::scrollAnchor)
+        LazyStaggeredGridState(anchor?.index ?: 0, anchor?.offset ?: 0)
+    }
+    LaunchedEffect(gridState) {
+        val folderId = loadedFolderId ?: return@LaunchedEffect
+        snapshotFlow { ScrollAnchor(gridState.firstVisibleItemIndex, gridState.firstVisibleItemScrollOffset) }
+            .collect { driveRepo.saveScrollAnchor(folderId, it) }
+    }
+    var isFabMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    BackHandler(enabled = isFabMenuExpanded) { isFabMenuExpanded = false }
 
     val displayedFiles = state.displayedFiles
     val highlightedFileIds = state.highlightedFileIds
@@ -195,7 +248,7 @@ fun DriveScreen(
 
     fun enqueueDownload(file: FileStat) {
         downloadManager.enqueue(file)
-        scope.launch { snackbarHostState.showSnackbar("已加入本地下载：${file.name}") }
+        scope.launch { snackbarHostState.showSnackbar("已加入下载", withDismissAction = true) }
     }
 
     // 回调对象只建一次，列表项拿到的引用不变；外部传入的导航回调经 rememberUpdatedState 取最新值
@@ -214,16 +267,43 @@ fun DriveScreen(
             onMore = { actionTargetFile = it },
             onLongPress = { state.enterSelection(it.id) },
             onSelect = { file, selected -> state.setSelected(file.id, selected) },
-            onToggleSpoiler = { state.toggleSpoiler(it.id) },
         )
     }
 
+    // 列表滚动后顶栏换上填充色与内容分开，M3 app bar 规范的滚动态
+    val topBarScrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
+
+    // 当前目录名已在顶栏标题上，面包屑只列上级。一级目录的唯一上级是根，返回键已足够
+    val ancestorCrumbs = folderStack.drop(1).dropLast(1)
+    val breadcrumbs: @Composable () -> Unit = {
+        if (ancestorCrumbs.isNotEmpty()) {
+            BreadcrumbBar(
+                breadcrumbs = ancestorCrumbs,
+                endsWithCurrent = false,
+                // 回调给的是完整路径栈的下标（首页按钮传 0），与 ancestorCrumbs 的偏移已在组件里处理
+                onBreadcrumbClick = { index -> state.navigateToBreadcrumb(index) },
+            )
+        }
+    }
+
     Scaffold(
-        modifier = modifier.fillMaxSize(),
+        modifier = modifier
+            .fillMaxSize()
+            .nestedScroll(topBarScrollBehavior.nestedScrollConnection),
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
+        bottomBar = {
+            if (instantState != null && !InstantSession.isSheetOpen) {
+                InstantSheetHandle(
+                    state = instantState,
+                    onExpand = InstantSession::reopen,
+                    onClose = InstantSession::end,
+                )
+            }
+        },
         topBar = {
             when {
                 state.isSelectionMode -> DriveSelectionTopBar(
+                    scrollBehavior = topBarScrollBehavior,
                     selectedCount = state.selectedFileIds.size,
                     onExit = { state.exitSelection() },
                     onSelectAll = { state.toggleSelectAll() },
@@ -242,6 +322,7 @@ fun DriveScreen(
                 )
 
                 else -> PikoTopBar(
+                    scrollBehavior = topBarScrollBehavior,
                     title = activeFolder.name,
                     navigationIcon = if (folderStack.size > 1) {
                         {
@@ -251,14 +332,10 @@ fun DriveScreen(
                         }
                     } else null,
                     actions = {
+                        // 顶栏只留搜索：M3 顶栏放一到两个动作，新建与秒传同属「往网盘里添东西」，
+                        // 一起收进 FAB 菜单；排序与视图切换作用于列表，放在列表页眉
                         IconButton(onClick = { isSearchOpen = true }) {
                             Icon(Icons.Outlined.Search, contentDescription = "搜索")
-                        }
-                        IconButton(onClick = {
-                            newFolderName = ""
-                            showNewFolderDialog = true
-                        }) {
-                            Icon(Icons.Outlined.CreateNewFolder, contentDescription = "新建文件夹")
                         }
                     },
                 )
@@ -266,15 +343,43 @@ fun DriveScreen(
         },
         floatingActionButton = {
             if (!state.isSelectionMode) {
-                ExtendedFloatingActionButton(
-                    onClick = { showInstantSheet = true },
-                    icon = { Icon(Icons.Outlined.Bolt, contentDescription = null) },
-                    text = { Text("秒传磁力") },
-                    expanded = isFabExpanded,
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                    shape = MaterialTheme.shapes.large,
-                )
+                // FAB 菜单自带 16dp 的右边距与下边距，Scaffold 的 FAB 槽位又留了 16dp，
+                // 不抵消的话按钮离屏幕角是 32dp。偏移而不是挪出槽位，系统栏避让仍由 Scaffold 处理
+                FloatingActionButtonMenu(
+                    expanded = isFabMenuExpanded,
+                    modifier = Modifier.offset(x = 16.dp, y = 16.dp),
+                    button = {
+                        ToggleFloatingActionButton(
+                            checked = isFabMenuExpanded,
+                            onCheckedChange = { isFabMenuExpanded = it },
+                        ) {
+                            val icon by remember { derivedStateOf { if (checkedProgress > 0.5f) Icons.Filled.Close else Icons.Filled.Add } }
+                            Icon(
+                                imageVector = icon,
+                                contentDescription = if (isFabMenuExpanded) "收起" else "添加",
+                                modifier = Modifier.animateIcon({ checkedProgress }),
+                            )
+                        }
+                    },
+                ) {
+                    FloatingActionButtonMenuItem(
+                        onClick = {
+                            isFabMenuExpanded = false
+                            InstantSession.start()
+                        },
+                        icon = { Icon(Icons.Outlined.Bolt, contentDescription = null) },
+                        text = { Text("添加链接") },
+                    )
+                    FloatingActionButtonMenuItem(
+                        onClick = {
+                            isFabMenuExpanded = false
+                            newFolderName = ""
+                            showNewFolderDialog = true
+                        },
+                        icon = { Icon(Icons.Outlined.CreateNewFolder, contentDescription = null) },
+                        text = { Text("新建文件夹") },
+                    )
+                }
             }
         },
     ) { innerPadding ->
@@ -284,15 +389,6 @@ fun DriveScreen(
                 .padding(top = innerPadding.calculateTopPadding())
                 .consumeWindowInsets(innerPadding),
         ) {
-            if (folderStack.size > 1) {
-                BreadcrumbBar(
-                    breadcrumbs = folderStack.drop(1),
-                    // BreadcrumbBar 回调传的已经是完整路径栈的下标（首页按钮传 0），
-                    // 再加一是把目标算深了一级，点上级目录会停在它的子目录里。
-                    onBreadcrumbClick = { index -> state.navigateToBreadcrumb(index) },
-                )
-            }
-
             Crossfade(
                 targetState = state.isLoading,
                 animationSpec = PikoMotion.StateCrossfadeSpec,
@@ -316,11 +412,13 @@ fun DriveScreen(
 
                         val bottomPadding = innerPadding.calculateBottomPadding() + FabClearance
                         if (displayedFiles.isEmpty()) {
+                            // 空目录没有列表页眉，面包屑单独放在空状态上方
+                            breadcrumbs()
                             DriveEmptyState(state = state, modifier = Modifier.weight(1f))
                         } else {
                             DriveFileGrid(
                                 files = displayedFiles,
-                                isGridMode = isGridMode,
+                                isWaterfallMode = isWaterfallMode,
                                 gridState = gridState,
                                 isSelectionMode = state.isSelectionMode,
                                 selectedIds = selectedIdSet,
@@ -330,15 +428,24 @@ fun DriveScreen(
                                 callbacks = callbacks,
                                 bottomPadding = bottomPadding,
                                 header = {
-                                    DriveListHeader(
-                                        summary = searchSummary(state, displayedFiles),
-                                        sortOrder = state.sortOrder,
-                                        onSortChange = { state.changeSortOrder(it) },
-                                        isGridMode = isGridMode,
-                                        onToggleGridMode = {
-                                            scope.launch { sessionManager.setGridViewEnabled(!isGridMode) }
-                                        },
-                                    )
+                                    // 面包屑随列表滚走，而不是钉在顶栏下方：顶栏滚动后换了填充色，
+                                    // 钉住的面包屑会在它下面留一条底色不同的带子
+                                    Column {
+                                        breadcrumbs()
+                                        // 起始只留 4dp：排序是 TextButton，自带 12dp 内边距，合起来图标落在 16dp
+                                        // 页边距上。末端的视图切换是 ToggleButton，没有内边距，要给足 16dp
+                                        Box(modifier = Modifier.padding(start = 4.dp, end = 16.dp)) {
+                                            DriveListHeader(
+                                                summary = searchSummary(state, displayedFiles),
+                                                sortOrder = state.sortOrder,
+                                                onSortChange = { state.changeSortOrder(it) },
+                                                isWaterfallMode = isWaterfallMode,
+                                                onToggleWaterfallMode = {
+                                                    scope.launch { sessionManager.setGridViewEnabled(!isWaterfallMode) }
+                                                },
+                                            )
+                                        }
+                                    }
                                 },
                                 foldBanner = foldBannerOrNull(state),
                                 modifier = Modifier.weight(1f),
@@ -354,6 +461,14 @@ fun DriveScreen(
         FileActionsSheet(
             file = target,
             locationLabel = state.hitLocations[target.id],
+            previewHidden = if (isSpoilerBlurEnabled && target.thumbnailLink.isNotEmpty()) {
+                target.id !in state.revealedFileIds
+            } else {
+                null
+            },
+            // remember 住同一个 flow：每次重组新建的话，produceState 会把统计从头再跑一遍
+            folderUsage = remember(target.id) { if (target.isFolder) driveRepo.folderUsage(target.id) else null },
+            onTogglePreview = { state.toggleSpoiler(target.id) },
             onDismiss = { actionTargetFile = null },
             onDownload = { enqueueDownload(target) },
             onDownloadSegment = { segmentTargetFile = target },
@@ -362,43 +477,17 @@ fun DriveScreen(
                 renameNewName = target.name
             },
             onMove = { moveTargetIds = setOf(target.id) },
-            onTrash = { state.moveToTrash(listOf(target.id), target.name) },
+            onTrash = { state.moveToTrash(listOf(target.id)) },
         )
     }
 
-    // 秒传面板（从 FAB 或外部磁力链唤起）
-    if (showInstantSheet) {
+    // 秒传面板。划走只是收起，会话还在，底部留把手，见 InstantSession
+    if (instantState != null && InstantSession.isSheetOpen) {
         ModalBottomSheet(
-            onDismissRequest = {
-                showInstantSheet = false
-                instantRepo.clearPendingMagnet()
-            },
+            onDismissRequest = InstantSession::collapse,
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         ) {
-            InstantSheetContent(
-                initialMagnet = pendingMagnet.orEmpty(),
-                onDismiss = {
-                    showInstantSheet = false
-                    instantRepo.clearPendingMagnet()
-                },
-                onSuccess = { createdIds, targetBread ->
-                    showInstantSheet = false
-                    instantRepo.clearPendingMagnet()
-                    state.navigateToFolder(targetBread)
-                    state.highlight(createdIds.toSet())
-                    scope.launch {
-                        snackbarHostState.showSnackbar("已秒传 ${createdIds.size} 项到 ${targetBread.name}")
-                    }
-                },
-                onOfflineTaskCreated = { targetBread ->
-                    showInstantSheet = false
-                    instantRepo.clearPendingMagnet()
-                    state.navigateToFolder(targetBread)
-                    scope.launch {
-                        snackbarHostState.showSnackbar("已加入云端离线任务，完成后存入 ${targetBread.name}")
-                    }
-                },
-            )
+            InstantSheetContent(state = instantState)
         }
     }
 
@@ -466,7 +555,7 @@ fun DriveScreen(
                 )
                 segmentTargetFile = null
                 scope.launch {
-                    snackbarHostState.showSnackbar("已加入段落下载：${target.name} [$timeLabel]")
+                    snackbarHostState.showSnackbar("已加入段落下载", withDismissAction = true)
                 }
             },
         )
@@ -588,7 +677,7 @@ private fun DriveEmptyState(state: DriveScreenState, modifier: Modifier = Modifi
                 } else {
                     PikoEmptyState(
                         title = "此文件夹为空",
-                        description = "可用右下角「秒传磁力」保存资源，或新建文件夹",
+                        description = "可用右下角「添加链接」保存资源，或新建文件夹",
                         icon = Icons.Outlined.FolderOpen,
                     )
                 }
@@ -612,13 +701,12 @@ private fun NameInputDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = {
-            OutlinedTextField(
+            FileNameField(
                 value = value,
                 onValueChange = onValueChange,
-                label = { Text(label) },
-                singleLine = true,
+                label = label,
                 modifier = Modifier.fillMaxWidth(),
-                shape = MaterialTheme.shapes.largeIncreased,
+                onDone = { if (confirmEnabled) onConfirm() },
             )
         },
         confirmButton = {

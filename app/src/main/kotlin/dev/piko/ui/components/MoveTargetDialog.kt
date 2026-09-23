@@ -222,11 +222,12 @@ private fun FolderPickerContent(
     }
 
     LaunchedEffect(loadError) {
-        val message = loadError ?: return@LaunchedEffect
+        if (loadError == null) return@LaunchedEffect
         loadError = null
         val result = snackbarHostState.showSnackbar(
-            message = "加载失败：$message",
+            message = "加载失败",
             actionLabel = "重试",
+            withDismissAction = true,
             duration = SnackbarDuration.Long,
         )
         if (result == SnackbarResult.ActionPerformed) {
@@ -383,9 +384,7 @@ private fun FolderPickerContent(
                                 .onFailure { error ->
                                     isCreatingFolder = false
                                     showNewFolderDialog = false
-                                    snackbarHostState.showSnackbar(
-                                        "新建文件夹失败：${error.localizedMessage ?: "未知错误"}",
-                                    )
+                                    snackbarHostState.showSnackbar("新建文件夹失败", withDismissAction = true)
                                 }
                         }
                     },

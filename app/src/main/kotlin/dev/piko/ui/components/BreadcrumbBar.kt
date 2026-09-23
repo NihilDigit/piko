@@ -34,12 +34,16 @@ private val CrumbPadding = PaddingValues(horizontal = 8.dp)
 /**
  * 路径面包屑。整行 48dp，正好是触控目标下限，不再额外加上下内边距和底色带：
  * 它与顶栏、列表同为 surface 底，层级靠位置而不是色块表达。
+ *
+ * [endsWithCurrent] 为 false 时 [breadcrumbs] 只含上级目录，每一级都可点。网盘页如此：
+ * 当前目录名已在顶栏标题上，面包屑再列一遍是重复。
  */
 @Composable
 fun BreadcrumbBar(
     breadcrumbs: List<PathBreadcrumb>,
     onBreadcrumbClick: (Int) -> Unit,
     modifier: Modifier = Modifier,
+    endsWithCurrent: Boolean = true,
 ) {
     val scrollState = rememberScrollState()
 
@@ -76,7 +80,7 @@ fun BreadcrumbBar(
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(16.dp),
             )
-            val isLast = index == breadcrumbs.lastIndex
+            val isLast = endsWithCurrent && index == breadcrumbs.lastIndex
             TextButton(
                 onClick = { onBreadcrumbClick(index + 1) },
                 enabled = !isLast,

@@ -16,6 +16,7 @@ import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.FolderZip
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Movie
+import androidx.compose.material.icons.outlined.Subtitles
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalTextStyle
@@ -41,13 +42,13 @@ import coil3.compose.AsyncImage
 import coil3.compose.LocalPlatformContext
 import coil3.request.ImageRequest
 import coil3.size.Precision
+import dev.piko.data.repository.FileCategory
+import dev.piko.data.repository.fileCategory
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.data.repository.isPreviewableImage
 import dev.piko.ui.theme.LocalFixedColors
 import io.github.nihildigit.pikpak.FileStat
 
-private val AUDIO_EXTENSIONS = setOf("mp3", "flac", "wav", "m4a", "aac", "ogg", "opus", "ape")
-private val ARCHIVE_EXTENSIONS = setOf("zip", "rar", "7z", "tar", "gz", "xz", "bz2")
 
 /**
  * 扩展名的展示形式（大写，不带点），拿不到可信扩展名时返回 null。
@@ -114,20 +115,63 @@ fun MetaRow(
     }
 }
 
-fun FileStat.typeIcon(): ImageVector {
-    val ext = name.substringAfterLast('.', "").lowercase()
+private enum class FileKind { FOLDER, VIDEO, AUDIO, IMAGE, ARCHIVE, SUBTITLE, DOCUMENT }
+
+/** 只看扩展名。磁力解析出的文件没有 mime 与元数据，只有名字。 */
+private fun fileNameKind(name: String): FileKind = name.fileCategory().toKind()
+
+private fun FileCategory.toKind(): FileKind = when (this) {
+    FileCategory.VIDEO -> FileKind.VIDEO
+    FileCategory.AUDIO -> FileKind.AUDIO
+    FileCategory.IMAGE -> FileKind.IMAGE
+    FileCategory.ARCHIVE -> FileKind.ARCHIVE
+    FileCategory.SUBTITLE -> FileKind.SUBTITLE
+    FileCategory.DOCUMENT -> FileKind.DOCUMENT
+}
+
+/** 文件大类的图标，秒传面板的按类勾选也用它。 */
+fun FileCategory.icon(): ImageVector = toKind().icon()
+
+/** 网盘条目另认服务端的 mime 与元数据，扩展名非标时也能归对类。 */
+private fun FileStat.kind(): FileKind {
+    val byName = fileNameKind(name)
     return when {
-        isFolder -> Icons.Filled.Folder
-        isPlayableVideo() -> Icons.Outlined.Movie
-        ext in AUDIO_EXTENSIONS -> Icons.Outlined.AudioFile
-        isPreviewableImage() -> Icons.Outlined.Image
-        ext in ARCHIVE_EXTENSIONS -> Icons.Outlined.FolderZip
-        else -> Icons.Outlined.Description
+        isFolder -> FileKind.FOLDER
+        isPlayableVideo() -> FileKind.VIDEO
+        byName == FileKind.AUDIO -> FileKind.AUDIO
+        isPreviewableImage() -> FileKind.IMAGE
+        else -> byName
     }
 }
 
+private fun FileKind.icon(): ImageVector = when (this) {
+    FileKind.FOLDER -> Icons.Filled.Folder
+    FileKind.VIDEO -> Icons.Outlined.Movie
+    FileKind.AUDIO -> Icons.Outlined.AudioFile
+    FileKind.IMAGE -> Icons.Outlined.Image
+    FileKind.ARCHIVE -> Icons.Outlined.FolderZip
+    FileKind.SUBTITLE -> Icons.Outlined.Subtitles
+    FileKind.DOCUMENT -> Icons.Outlined.Description
+}
+
+fun FileStat.typeIcon(): ImageVector = kind().icon()
+
+/** 只有文件名时的类型图标，如磁力解析结果。 */
+fun fileNameTypeIcon(name: String): ImageVector = fileNameKind(name).icon()
+
+/** 瀑布流图块的放大底纹，见 WatermarkIcons。 */
+fun FileStat.watermarkIcon(): ImageVector = when (kind()) {
+    FileKind.FOLDER -> WatermarkIcons.Folder
+    FileKind.VIDEO -> WatermarkIcons.Movie
+    FileKind.AUDIO -> WatermarkIcons.AudioFile
+    FileKind.IMAGE -> WatermarkIcons.Image
+    FileKind.ARCHIVE -> WatermarkIcons.FolderZip
+    FileKind.SUBTITLE -> WatermarkIcons.Subtitles
+    FileKind.DOCUMENT -> WatermarkIcons.Description
+}
+
 /**
- * 列表行与网格卡片共用的前导图形：文件夹、无缩略图的文件、有缩略图的文件三种外观。
+ * 网盘文件的前导图形：文件夹、无缩略图的文件、有缩略图的文件三种外观。
  *
  * 文件夹与文件的区分不只靠颜色：文件夹用实心图标压在 secondaryContainer 上，文件用
  * 描边图标压在 surfaceContainerHighest 上。动态取色下这两种容器色可能很接近，
@@ -137,31 +181,19 @@ fun FileStat.typeIcon(): ImageVector {
 fun FileLeadingVisual(
     file: FileStat,
     isSpoilerBlurred: Boolean,
-    onToggleSpoiler: () -> Unit,
     modifier: Modifier = Modifier,
-    size: Dp = 48.dp,
+    size: Dp = ListLeadingSize,
 ) {
-    Box(
-        modifier = modifier
-            .size(size)
-            .clip(MaterialTheme.shapes.small),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (!file.isFolder && file.thumbnailLink.isNotEmpty()) {
-            SpoilerThumbnail(
-                url = file.thumbnailLink,
-                isBlurred = isSpoilerBlurred,
-                onReveal = onToggleSpoiler,
-                blur = ListSpoilerBlur,
-                modifier = Modifier.fillMaxSize(),
-            )
-        } else {
-            FileTypeIcon(file = file, iconSize = size * 0.5f, modifier = Modifier.fillMaxSize())
-        }
-    }
+    ListLeadingMedia(
+        thumbnail = file.thumbnailLink.takeIf { !file.isFolder && it.isNotEmpty() },
+        fallback = { FileTypeIcon(file = file, iconSize = ListLeadingIconSize, modifier = Modifier.fillMaxSize()) },
+        isSpoilerBlurred = isSpoilerBlurred,
+        size = size,
+        modifier = modifier,
+    )
 }
 
-/** 无缩略图时的类型图标块，网格卡片的封面区也用它。 */
+/** 无缩略图时的类型图标块，瀑布流卡片的封面区也用它。 */
 @Composable
 fun FileTypeIcon(
     file: FileStat,
@@ -195,15 +227,15 @@ fun FileTypeIcon(
  * 防窥模糊的参数。decodePx 是 Coil 解码的目标边长，radius 是绘制时的高斯模糊半径。
  *
  * 半径按显示尺寸给，不按解码尺寸：RenderEffect 作用在已经放大到显示尺寸的图层上。
- * 两档都取显示宽度的约六分之一（列表 48dp 取 8dp，网格封面 130 到 200dp 取 24dp），
+ * 两档都取显示宽度的约六分之一（列表 56dp 取 9dp，瀑布流封面 130 到 200dp 取 24dp），
  * 这个比例下人脸与文字已不成形，只剩大块色调。解码尺寸取到 48 与 64px，
  * 比清晰图小一个数量级，高频细节在解码时就已丢掉，模糊只需要抹平放大后的块状边。
  */
 @Immutable
 class SpoilerBlur internal constructor(val decodePx: Int, val radius: Dp)
 
-val ListSpoilerBlur = SpoilerBlur(decodePx = 48, radius = 8.dp)
-val GridSpoilerBlur = SpoilerBlur(decodePx = 64, radius = 24.dp)
+val ListSpoilerBlur = SpoilerBlur(decodePx = 48, radius = 9.dp)
+val WaterfallSpoilerBlur = SpoilerBlur(decodePx = 64, radius = 24.dp)
 
 /**
  * 防窥缩略图。
@@ -216,19 +248,21 @@ val GridSpoilerBlur = SpoilerBlur(decodePx = 64, radius = 24.dp)
  *
  * 模糊的图层里只放图片。遮罩与图标是它的兄弟节点，按压、选中这些父级重绘不会让
  * 模糊图层失效。
+ *
+ * 本身不接收点击，单击归所在的行或卡片。原先点缩略图只揭示、点别处才打开，同一张
+ * 卡片上两块区域看不出分界，文件夹还要多点一次才能进入。逐项揭示改由操作菜单提供。
  */
 @Composable
 fun SpoilerThumbnail(
-    url: String,
+    /** Coil 能解析的任何来源：缩略图 URL、本地 File、SAF 的 content: URI。 */
+    model: Any,
     isBlurred: Boolean,
-    onReveal: () -> Unit,
     blur: SpoilerBlur,
     modifier: Modifier = Modifier,
-    revealOnClick: Boolean = true,
 ) {
     if (!isBlurred) {
         AsyncImage(
-            model = url,
+            model = model,
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = modifier,
@@ -241,18 +275,11 @@ fun SpoilerThumbnail(
     Box(
         modifier = modifier
             .clipToBounds()
-            .background(MaterialTheme.colorScheme.surfaceContainerHighest)
-            .then(
-                if (revealOnClick) {
-                    Modifier.clickable(onClickLabel = "显示预览", onClick = onReveal)
-                } else {
-                    Modifier
-                },
-            ),
+            .background(MaterialTheme.colorScheme.surfaceContainerHighest),
         contentAlignment = Alignment.Center,
     ) {
         if (supportsRenderEffect) {
-            BlurredThumbnail(url = url, blur = blur, modifier = Modifier.fillMaxSize())
+            BlurredThumbnail(model = model, blur = blur, modifier = Modifier.fillMaxSize())
             // 遮罩压低色块对比度，并给图标一个在任何底色上都成立的衬底
             Box(
                 modifier = Modifier
@@ -278,14 +305,14 @@ fun SpoilerThumbnail(
  */
 @RequiresApi(Build.VERSION_CODES.S)
 @Composable
-private fun BlurredThumbnail(url: String, blur: SpoilerBlur, modifier: Modifier) {
+private fun BlurredThumbnail(model: Any, blur: SpoilerBlur, modifier: Modifier) {
     val context = LocalPlatformContext.current
-    val request = remember(url, blur.decodePx) {
+    val request = remember(model, blur.decodePx) {
         ImageRequest.Builder(context)
-            .data(url)
+            .data(model)
             .size(blur.decodePx)
             .precision(Precision.EXACT)
-            .memoryCacheKey("spoiler:${blur.decodePx}:$url")
+            .memoryCacheKey("spoiler:${blur.decodePx}:$model")
             .build()
     }
     AsyncImage(

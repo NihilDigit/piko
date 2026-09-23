@@ -102,7 +102,7 @@ class FolderPickerState(
                         reload()
                     }
                 }
-                .onFailure { _messages.tryEmit("新建文件夹失败: ${it.message}") }
+                .onFailure { _messages.tryEmit("新建文件夹失败") }
             isCreatingFolder = false
         }
     }
