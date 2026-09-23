@@ -90,7 +90,9 @@ DataStore 开关加配额与资料卡片，真正共用的部分已经在仓库�
 - **离线任务只吃整条磁力 URL**，`createUrlFile` 没有按文件选择的参数，`ResolvedFile` 也不带
   文件索引。所以「秒传一部分、离线另一部分」必然产生重复文件。
 - **gcid 是内容哈希**，与文件名无关。已在网盘的文件其 gcid 就在 `FileStat.hash` 里。
-- **`getFileDetail` 对已移进回收站的条目仍返回成功**，判断目录是否可用要带 `!trashed`。
+- **回收站里的条目查详情会失败**：`getFileDetail` 返回 `error_code=9`、`file_in_recycle_bin`（2026-09-23 实测，
+  文件与文件夹相同）。9 也是验证码的错误码，SDK 按 `error` 名区分。判断目录是否可用时失败与 `trashed` 同样视为不可用。
+- **列回收站必须带 `parent_id=*`**，否则只返回从根目录删除的条目。SDK 0.6.8 起 `listTrash` 已带上。
 
 ## 播放器
 

@@ -25,7 +25,7 @@ class TasksAndTrashSmokeTest {
         server.addTask("排队中", TaskPhase.PENDING)
         server.addTask("下载中", TaskPhase.RUNNING)
         server.addTask("已完成", TaskPhase.COMPLETE)
-        val state = OfflineTasksState(TaskRepository(server.provider()), scope)
+        val state = OfflineTasksState(TaskRepository(server.provider(), PikoDriveRepository(server.provider())), scope)
 
         val polling = scope.launch { state.pollWhileVisible(intervalMs = 50) }
         awaitUntil("至少轮询三轮") { server.count("GET /drive/v1/tasks") >= 3 }
@@ -43,7 +43,7 @@ class TasksAndTrashSmokeTest {
     fun `a failed poll keeps the last list and marks it stale until the next success`() = smoke { scope ->
         val server = FakePikPakServer()
         server.addTask("下载中", TaskPhase.RUNNING)
-        val state = OfflineTasksState(TaskRepository(server.provider()), scope)
+        val state = OfflineTasksState(TaskRepository(server.provider(), PikoDriveRepository(server.provider())), scope)
         scope.launch { state.pollWhileVisible(intervalMs = 50) }
         awaitUntil("首次加载完成") { state.tasks.isNotEmpty() }
 

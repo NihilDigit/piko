@@ -7,41 +7,37 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.DeleteForever
 import androidx.compose.material.icons.outlined.DeleteSweep
-import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.RestoreFromTrash
 import androidx.compose.material.icons.outlined.SelectAll
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -50,22 +46,24 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.PikoApplication
+import dev.piko.shared.state.TrashScreenState
 import dev.piko.ui.components.FileLeadingVisual
+import dev.piko.ui.components.FileListItem
+import dev.piko.ui.components.FileTypeIcon
 import dev.piko.ui.components.FullScreenLoading
+import dev.piko.ui.components.ItemDetailsSheet
 import dev.piko.ui.components.MetaRow
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoTopBar
+import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.displayTitle
 import dev.piko.ui.components.metaParts
 import dev.piko.ui.theme.PikoMotion
-import dev.piko.shared.state.TrashScreenState
 import io.github.nihildigit.pikpak.FileStat
 
 /**
@@ -93,6 +91,7 @@ fun TrashScreen(
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
+    val isFabExpanded by remember { derivedStateOf { listState.firstVisibleItemIndex == 0 } }
 
     // 列表、多选与恢复删除动作都在共享状态类里，这里只剩 Material 的布局与外观
     val state = remember { TrashScreenState(PikoApplication.instance.driveRepository, scope) }
@@ -106,7 +105,6 @@ fun TrashScreen(
         .collectAsStateWithLifecycle(initialValue = true)
     val revealedIds = remember { mutableStateListOf<String>() }
 
-    var showOverflowMenu by remember { mutableStateOf(false) }
     var deleteRequest by remember { mutableStateOf<PermanentDeleteRequest?>(null) }
 
     val exitSelection = { state.exitSelection() }
@@ -115,18 +113,23 @@ fun TrashScreen(
 
     LaunchedEffect(state) {
         state.load()
-        state.messages.collect { snackbarHostState.showSnackbar(it) }
+        state.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
     }
 
     BackHandler(enabled = isSelectionMode) {
         exitSelection()
     }
 
+    val topBarScrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
+
     Scaffold(
-        modifier = modifier.fillMaxSize(),
+        modifier = modifier
+            .fillMaxSize()
+            .nestedScroll(topBarScrollBehavior.nestedScrollConnection),
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         topBar = {
             PikoTopBar(
+                scrollBehavior = topBarScrollBehavior,
                 title = if (isSelectionMode) "已选择 ${selectedFileIds.size} 项" else "回收站",
                 navigationIcon = {
                     if (isSelectionMode) {
@@ -160,44 +163,26 @@ fun TrashScreen(
                                 tint = MaterialTheme.colorScheme.error,
                             )
                         }
-                    } else {
-                        IconButton(
-                            onClick = { state.enterSelection() },
-                            enabled = files.isNotEmpty(),
-                        ) {
-                            Icon(Icons.Outlined.Check, contentDescription = "进入多选")
-                        }
-                        Box {
-                            IconButton(onClick = { showOverflowMenu = true }) {
-                                Icon(Icons.Outlined.MoreVert, contentDescription = "更多操作")
-                            }
-                            DropdownMenu(
-                                expanded = showOverflowMenu,
-                                onDismissRequest = { showOverflowMenu = false },
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text("清空回收站", color = MaterialTheme.colorScheme.error) },
-                                    leadingIcon = {
-                                        Icon(
-                                            Icons.Outlined.DeleteSweep,
-                                            contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.error,
-                                        )
-                                    },
-                                    enabled = files.isNotEmpty() && !isActionRunning,
-                                    onClick = {
-                                        showOverflowMenu = false
-                                        deleteRequest = PermanentDeleteRequest(
-                                            ids = files.map { it.id },
-                                            isEmptyingTrash = true,
-                                        )
-                                    },
-                                )
-                            }
-                        }
                     }
                 },
             )
+        },
+        // 清空是本页唯一的页面级动作，放在 FAB 而不是藏进溢出菜单。多选只经长按进入，与网盘页一致，
+        // 不再在顶栏另设入口
+        floatingActionButton = {
+            if (!isSelectionMode && files.isNotEmpty()) {
+                ExtendedFloatingActionButton(
+                    onClick = {
+                        deleteRequest = PermanentDeleteRequest(ids = files.map { it.id }, isEmptyingTrash = true)
+                    },
+                    icon = { Icon(Icons.Outlined.DeleteSweep, contentDescription = null) },
+                    text = { Text("清空回收站") },
+                    expanded = isFabExpanded,
+                    containerColor = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    shape = MaterialTheme.shapes.large,
+                )
+            }
         },
     ) { innerPadding ->
         Column(
@@ -224,7 +209,8 @@ fun TrashScreen(
                             state = listState,
                             modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(
-                                bottom = innerPadding.calculateBottomPadding() + 24.dp,
+                                // 末项上方留出 FAB 的高度，否则最后一行被它盖住
+                                bottom = innerPadding.calculateBottomPadding() + 88.dp,
                             ),
                         ) {
                             if (files.isEmpty()) {
@@ -250,8 +236,12 @@ fun TrashScreen(
                                         file = file,
                                         isSelectionMode = isSelectionMode,
                                         isSelected = isSelected,
-                                        isSpoilerBlurred = isSpoilerBlurEnabled && file.id !in revealedIds,
-                                        onToggleSpoiler = {
+                                        previewHidden = if (isSpoilerBlurEnabled && file.thumbnailLink.isNotEmpty()) {
+                                            file.id !in revealedIds
+                                        } else {
+                                            null
+                                        },
+                                        onTogglePreview = {
                                             if (!revealedIds.remove(file.id)) revealedIds.add(file.id)
                                         },
                                         onLongClick = { state.enterSelection(file.id) },
@@ -308,127 +298,67 @@ fun TrashScreen(
     }
 }
 
-// 与 FileItemRow 相同：64dp 行高（两行列表 72dp 降两档密度），外侧 4dp 让变圆的容器不贴边，
-// 内侧起始 12dp 使内容落在 16dp 页边距上，末端 0 让尾部图标按钮自带的内边距对齐页边距
-private val TrashRowMinHeight = 64.dp
-private val TrashRowContentPadding = PaddingValues(start = 12.dp, end = 0.dp, top = 8.dp, bottom = 8.dp)
-
 /**
- * 回收站列表项。外观规则与 FileItemRow 一致：交互式 ListItem、名字两行、扩展名在副文本行、
- * 多选时整行是复选项且复选框占更多按钮的位置。行尾操作换成恢复与彻底删除。
+ * 回收站列表项，外观与网盘列表同为 [FileListItem]。
  *
- * 回收站里的文件不能打开，平时单击整行等同于点更多按钮，弹出恢复与彻底删除；
- * 单击不直接执行其中任何一项，避免误触。
+ * 回收站里的文件不能打开，单击整行与点更多按钮一样，打开详情面板，恢复与彻底删除都在里面；
+ * 单击不直接执行其中任何一项，避免误触。面板顶部同时是长文件名唯一读得全的地方。
  */
 @Composable
 private fun TrashItemRow(
     file: FileStat,
     isSelectionMode: Boolean,
     isSelected: Boolean,
-    isSpoilerBlurred: Boolean,
-    onToggleSpoiler: () -> Unit,
+    previewHidden: Boolean?,
+    onTogglePreview: () -> Unit,
     onLongClick: () -> Unit,
     onSelectToggle: (Boolean) -> Unit,
     onRestore: () -> Unit,
     onDeleteForever: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val haptic = LocalHapticFeedback.current
-    var showMenu by remember { mutableStateOf(false) }
-    val itemModifier = modifier
-        .fillMaxWidth()
-        .padding(horizontal = 4.dp)
-        .heightIn(min = TrashRowMinHeight)
+    var showDetails by remember { mutableStateOf(false) }
+    val metaParts = trashMetaParts(file)
 
-    val leading: @Composable () -> Unit = {
-        FileLeadingVisual(
-            file = file,
-            isSpoilerBlurred = isSpoilerBlurred,
-            onToggleSpoiler = onToggleSpoiler,
-        )
-    }
-    // FileStat 没有独立的回收站时间字段，PikPak 在移入回收站时更新 modified_time，
-    // 故以它作为删除时间
-    val supporting: @Composable () -> Unit = {
-        val parts = file.metaParts(includeDate = false) +
-            listOfNotNull(file.modifiedTime.takeIf { it.isNotEmpty() }?.let { "删除于 ${it.take(10)}" })
-        MetaRow(parts = parts)
-    }
-    val headline: @Composable () -> Unit = {
-        Text(
-            text = file.displayTitle(),
-            fontWeight = if (file.isFolder) FontWeight.Medium else null,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
+    FileListItem(
+        headline = file.displayTitle(),
+        headlineFontWeight = if (file.isFolder) FontWeight.Medium else null,
+        leading = { FileLeadingVisual(file = file, isSpoilerBlurred = previewHidden == true) },
+        supporting = { MetaRow(parts = metaParts) },
+        onClick = { showDetails = true },
+        onMoreClick = { showDetails = true },
+        onLongClick = onLongClick,
+        isSelectionMode = isSelectionMode,
+        isSelected = isSelected,
+        onSelectToggle = onSelectToggle,
+        modifier = modifier,
+    )
 
-    if (isSelectionMode) {
-        ListItem(
-            checked = isSelected,
-            onCheckedChange = onSelectToggle,
-            modifier = itemModifier,
-            leadingContent = leading,
-            trailingContent = {
-                Checkbox(
-                    checked = isSelected,
-                    onCheckedChange = null,
-                    modifier = Modifier.minimumInteractiveComponentSize(),
-                )
-            },
-            supportingContent = supporting,
-            contentPadding = TrashRowContentPadding,
-            content = headline,
-        )
-    } else {
-        ListItem(
-            onClick = { showMenu = true },
-            modifier = itemModifier,
-            leadingContent = leading,
-            trailingContent = {
-                Box {
-                    IconButton(onClick = { showMenu = true }) {
-                        Icon(Icons.Outlined.MoreVert, contentDescription = "更多操作")
-                    }
-                    DropdownMenu(
-                        expanded = showMenu,
-                        onDismissRequest = { showMenu = false },
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("恢复") },
-                            leadingIcon = {
-                                Icon(Icons.Outlined.RestoreFromTrash, contentDescription = null)
-                            },
-                            onClick = {
-                                showMenu = false
-                                onRestore()
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("彻底删除", color = MaterialTheme.colorScheme.error) },
-                            leadingIcon = {
-                                Icon(
-                                    Icons.Outlined.DeleteForever,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.error,
-                                )
-                            },
-                            onClick = {
-                                showMenu = false
-                                onDeleteForever()
-                            },
-                        )
-                    }
+    if (showDetails) {
+        ItemDetailsSheet(
+            title = file.name,
+            headerIcon = { FileTypeIcon(file = file, iconSize = 24.dp, modifier = Modifier.fillMaxSize()) },
+            metaParts = metaParts,
+            onDismiss = { showDetails = false },
+            actions = buildList {
+                if (previewHidden != null) {
+                    add(
+                        SheetAction(
+                            icon = if (previewHidden) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
+                            label = if (previewHidden) "显示预览" else "隐藏预览",
+                            onClick = onTogglePreview,
+                        ),
+                    )
                 }
+                add(SheetAction(Icons.Outlined.RestoreFromTrash, "恢复", onRestore))
+                add(SheetAction(Icons.Outlined.DeleteForever, "彻底删除", onDeleteForever, destructive = true))
             },
-            supportingContent = supporting,
-            onLongClick = {
-                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                onLongClick()
-            },
-            onLongClickLabel = "多选",
-            contentPadding = TrashRowContentPadding,
-            content = headline,
         )
     }
 }
+
+// delete_time 是服务端排定的彻底清除时间。实测为移入回收站后 15 天，但期限由服务端决定，
+// 不在这里按固定天数推算
+private fun trashMetaParts(file: FileStat): List<String> =
+    file.metaParts(includeDate = false) +
+        listOfNotNull(file.deleteTime.takeIf { it.isNotEmpty() }?.let { "将于 ${it.take(10)} 删除" })

@@ -66,7 +66,7 @@ class TrashScreenState(
             }
             .onFailure {
                 loadError = it.message ?: "读取回收站失败"
-                _messages.tryEmit("加载失败: ${it.message}")
+                _messages.tryEmit("加载失败")
             }
         isLoading = false
         isRefreshing = false
@@ -105,7 +105,7 @@ class TrashScreenState(
                     _messages.tryEmit("已恢复 ${ids.size} 项")
                     fetch()
                 }
-                .onFailure { _messages.tryEmit("恢复失败: ${it.message}") }
+                .onFailure { _messages.tryEmit("恢复失败") }
         }
     }
 
@@ -117,7 +117,7 @@ class TrashScreenState(
                     _messages.tryEmit("已彻底删除 ${ids.size} 项")
                     fetch()
                 }
-                .onFailure { _messages.tryEmit("删除失败: ${it.message}") }
+                .onFailure { _messages.tryEmit("删除失败") }
         }
     }
 
