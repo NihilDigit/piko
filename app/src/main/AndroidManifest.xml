@@ -7,6 +7,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- 应用内更新：经 PackageInstaller 安装从 GitHub Releases 下载的新版本 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:name=".PikoApplication"
@@ -36,6 +38,17 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="magnet" />
             </intent-filter>
+            <!-- 官方「在 App 中打开」链接，Telegram 机器人存完文件后发的就是它。域名归官方 App
+                 验证所有，这里不设 autoVerify；要由 Piko 打开，需在系统设置的「默认打开」里添加 -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" />
+                <data android:host="toapp.mypikpak.com" />
+                <data android:host="toapp.mypikpak.net" />
+                <data android:path="/toapp" />
+            </intent-filter>
             <!-- 注册接收外部文本分享 (含有磁力链接的文本) -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
@@ -48,6 +61,10 @@
             android:name=".download.PikoDownloadService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <receiver
+            android:name=".update.UpdateInstallReceiver"
+            android:exported="false" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

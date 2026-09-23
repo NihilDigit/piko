@@ -1,12 +1,16 @@
 package dev.piko
 
 import android.content.Intent
+import android.graphics.Color
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -15,6 +19,12 @@ import dev.piko.ui.components.FullScreenLoading
 import dev.piko.ui.screens.auth.LoginScreen
 import dev.piko.ui.theme.PikoMotion
 import dev.piko.ui.theme.PikoTheme
+import dev.piko.ui.theme.appearanceFlow
+import dev.piko.ui.theme.isDark
+import dev.piko.ui.screens.instant.InstantSession
+import dev.piko.util.PikPakAppLink
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 
 /**
  * Main application entry activity using Single Activity architecture.
@@ -34,8 +44,23 @@ class MainActivity : ComponentActivity() {
         // 不判断的话同一条分享进来的磁力链会再弹一次秒传面板
         if (savedInstanceState == null) handleIntent(intent)
 
+        val appearanceFlow = PikoApplication.instance.sessionManager.appearanceFlow()
+        // 同步读一次再 setContent：异步给初值的话，首帧按系统取色画出来，随即跳成用户选的主题
+        val initialAppearance = runBlocking { appearanceFlow.first() }
+
         setContent {
-            PikoTheme {
+            val appearance by appearanceFlow.collectAsStateWithLifecycle(initialAppearance)
+            val darkTheme = appearance.isDark()
+            // 系统栏图标的深浅默认看系统的夜间模式。应用强制浅色而系统是深色时，状态栏会是
+            // 浅色图标压在浅色背景上，所以改为按应用实际的深浅判断。导航栏遮罩沿用库的默认值
+            DisposableEffect(darkTheme) {
+                enableEdgeToEdge(
+                    statusBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { darkTheme },
+                    navigationBarStyle = SystemBarStyle.auto(NavBarLightScrim, NavBarDarkScrim) { darkTheme },
+                )
+                onDispose {}
+            }
+            PikoTheme(appearance = appearance) {
                 val clientManager = PikoApplication.instance.clientManager
                 val currentClient by clientManager.currentClient.collectAsStateWithLifecycle()
                 val isInitializing by clientManager.isInitializing.collectAsStateWithLifecycle()
@@ -55,7 +80,11 @@ class MainActivity : ComponentActivity() {
                             FullScreenLoading()
                         }
                         // 登录成功后 currentClient 变为非空，根状态随之切到 MAIN，不需要回调
-                        AppState.LOGIN -> LoginScreen()
+                        AppState.LOGIN -> {
+                            // 未完成的添加链接属于上一个账号，保存目标也是那边的目录
+                            LaunchedEffect(Unit) { InstantSession.end() }
+                            LoginScreen()
+                        }
                         AppState.MAIN -> {
                             PikoMainScaffold(
                                 onLogout = {
@@ -77,6 +106,12 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIntent(intent: Intent?) {
         if (intent == null) return
+        intent.dataString?.let(PikPakAppLink::parse)?.let { target ->
+            when (target) {
+                PikPakAppLink.Target.Drive -> PikoApplication.instance.driveRepository.requestOpenDrive()
+            }
+            return
+        }
         val magnet = extractMagnet(intent)
         if (!magnet.isNullOrBlank()) {
             PikoApplication.instance.instantMagnetRepository.onIncomingMagnet(magnet)
@@ -122,3 +157,7 @@ class MainActivity : ComponentActivity() {
         MAIN,
     }
 }
+
+// 与 androidx.activity 的 DefaultLightScrim、DefaultDarkScrim 相同，那两个是 internal
+private val NavBarLightScrim = Color.argb(0xe6, 0xFF, 0xFF, 0xFF)
+private val NavBarDarkScrim = Color.argb(0x80, 0x1b, 0x1b, 0x1b)
