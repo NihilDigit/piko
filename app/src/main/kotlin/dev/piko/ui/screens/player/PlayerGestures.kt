@@ -32,27 +32,30 @@ import androidx.core.view.WindowInsetsControllerCompat
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-/**
- * Gestures and system level controls for media playback: brightness, volume, and orientation.
+/*
+ * 播放器的手势层与系统胶水：亮度、媒体音量、横竖屏与沉浸式系统栏。
  *
- * Documentation References:
- * - Android Audio Focus & Stream: android-docs-mirror/pages/media/optimize/audio-focus.md
- * - Android Immersive System Bars: android-docs-mirror/pages/develop/ui/views/layout/edge-to-edge.md
- * - Material 3 Interaction & Haptics: m3-material-mirror/pages/foundations.md
+ * 亮度与音量走窗口属性和 AudioManager，而不是播放器后端：ExoPlayer 与 libmpv
+ * 的音量都只是软件增益，系统音量键调的是另一路，两者叠加会出现「系统满格却很小声」。
  */
+
 internal enum class VerticalAdjust {
     Brightness,
     Volume,
 }
 
 /**
- * 双击落点分区。中间三成是播放/暂停，两侧各三成五是快退与快进——快进快退靠的是
+ * 双击落点分区。两侧各三成五是快退与快进，中间三成是播放/暂停：快进快退靠的是
  * 手指落在哪半边，判据放宽到 35% 仍然分得清，而中间留出一块专门给播放控制。
  */
 internal enum class DoubleTapZone { Rewind, PlayPause, Forward }
 
 internal sealed interface PlayerGesture {
-    data class Seek(val startPositionMillis: Long, val deltaMillis: Long) : PlayerGesture
+    data class Seek(val startPositionMillis: Long, val deltaMillis: Long) : PlayerGesture {
+        fun targetMillis(durationMillis: Long): Long =
+            (startPositionMillis + deltaMillis).coerceIn(0L, durationMillis.coerceAtLeast(0L))
+    }
+
     data class Adjust(val kind: VerticalAdjust, val fraction: Float) : PlayerGesture
 }
 
@@ -72,6 +75,7 @@ internal class WindowBrightness(private val window: Window?) {
     fun set(fraction: Float) {
         val w = window ?: return
         w.attributes = w.attributes.apply {
+            // 0 会让部分机型直接关背光，留一点下限
             screenBrightness = fraction.coerceIn(0.02f, 1f)
         }
     }
@@ -94,11 +98,13 @@ internal class MediaVolume(context: Context) {
     fun current(): Float =
         ((audioManager?.getStreamVolume(AudioManager.STREAM_MUSIC) ?: 0).toFloat() / max).coerceIn(0f, 1f)
 
-    fun set(fraction: Float) {
+    /** 设置音量，返回实际落到的档位比例。系统音量只有十几档，HUD 显示实际档位才不会与音量键对不上。 */
+    fun set(fraction: Float): Float {
         val index = (fraction.coerceIn(0f, 1f) * max).roundToInt().coerceIn(0, max)
         runCatching {
             audioManager?.setStreamVolume(AudioManager.STREAM_MUSIC, index, 0)
         }
+        return index.toFloat() / max
     }
 }
 
@@ -171,11 +177,29 @@ internal class ScreenOrientationController(private val activity: Activity?) {
     }
 }
 
+@Composable
+internal fun rememberOrientationController(): ScreenOrientationController {
+    val context = LocalContext.current
+    val activity = remember(context) { context.findActivity() }
+    val controller = remember(activity) { ScreenOrientationController(activity) }
+    DisposableEffect(controller) {
+        onDispose {
+            controller.resetOrientation()
+            controller.showSystemBars()
+        }
+    }
+    return controller
+}
+
 /**
  * 覆盖整个播放区域的手势层。
  *
- * 单击显隐控件，双击两侧快退/快进、中间播放暂停，长按加速，横滑 seek，左右半屏竖滑调亮度/音量。
- * 锁定时只保留单击，其余手势一律不识别。
+ * 单击显隐控件，双击两侧快退/快进、中间播放暂停，长按加速，横滑 seek，
+ * 左右半屏竖滑调亮度/音量。锁定时只保留单击，其余手势一律不识别。
+ *
+ * 方向判定只做一次：detectDragGestures 已经等过系统 touchSlop，越过 slop 的那一刻
+ * 按位移的主方向锁定，之后不再切换。旧实现在 slop 之后又叠了 24px 的固定阈值，
+ * 这个像素值随屏幕密度变化，高密度屏上手势起步明显发粘。
  */
 @Composable
 internal fun PlayerGestureLayer(
@@ -203,7 +227,8 @@ internal fun PlayerGestureLayer(
     val speedBoost by rememberUpdatedState(onSpeedBoost)
 
     var gesture by remember { mutableStateOf<PlayerGesture?>(null) }
-    var touchOrigin by remember { mutableStateOf(Offset.Zero) }
+    var dragTotal by remember { mutableStateOf(Offset.Zero) }
+    var dragOrigin by remember { mutableStateOf(Offset.Zero) }
     var adjustBaseValue by remember { mutableFloatStateOf(0f) }
     var boosting by remember { mutableStateOf(false) }
 
@@ -223,7 +248,7 @@ internal fun PlayerGestureLayer(
                 detectTapGestures(
                     onTap = { toggleControls() },
                     onDoubleTap = { offset ->
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        haptic.performHapticFeedback(HapticFeedbackType.ContextClick)
                         doubleTap(
                             when {
                                 offset.x < size.width * SIDE_ZONE_FRACTION -> DoubleTapZone.Rewind
@@ -250,28 +275,28 @@ internal fun PlayerGestureLayer(
                 if (isLocked) return@pointerInput
                 detectDragGestures(
                     onDragStart = { offset ->
-                        touchOrigin = offset
+                        dragOrigin = offset
+                        dragTotal = Offset.Zero
                         publish(null)
                     },
                     onDragEnd = {
-                        (gesture as? PlayerGesture.Seek)?.let { seek ->
-                            val target = (seek.startPositionMillis + seek.deltaMillis)
-                                .coerceIn(0L, duration.coerceAtLeast(1L))
-                            seekTo(target)
-                        }
+                        (gesture as? PlayerGesture.Seek)?.let { seek -> seekTo(seek.targetMillis(duration)) }
                         publish(null)
                     },
                     onDragCancel = { publish(null) },
-                    onDrag = { change, _ ->
+                    onDrag = { change, dragAmount ->
+                        // 长按加速时手指难免移动，这时的位移不算拖动手势
+                        if (boosting) return@detectDragGestures
                         change.consume()
-                        val dx = change.position.x - touchOrigin.x
-                        val dy = change.position.y - touchOrigin.y
+                        dragTotal += dragAmount
 
                         if (gesture == null) {
-                            if (abs(dx) > GESTURE_SLOP_PX && abs(dx) > abs(dy)) {
+                            val horizontal = abs(dragTotal.x) >= abs(dragTotal.y)
+                            haptic.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
+                            if (horizontal) {
                                 publish(PlayerGesture.Seek(readPosition(), 0L))
-                            } else if (abs(dy) > GESTURE_SLOP_PX && abs(dy) > abs(dx)) {
-                                val leftSide = touchOrigin.x < size.width / 2
+                            } else {
+                                val leftSide = dragOrigin.x < size.width / 2
                                 val kind = if (leftSide) VerticalAdjust.Brightness else VerticalAdjust.Volume
                                 adjustBaseValue = if (leftSide) brightness.current() else volume.current()
                                 publish(PlayerGesture.Adjust(kind, adjustBaseValue))
@@ -280,18 +305,23 @@ internal fun PlayerGestureLayer(
 
                         when (val active = gesture) {
                             is PlayerGesture.Seek -> {
-                                publish(active.copy(deltaMillis = (dx * SEEK_MILLIS_PER_PX).toLong()))
+                                val delta = dragTotal.x / size.width * SEEK_FULL_SWEEP_MILLIS
+                                publish(active.copy(deltaMillis = delta.toLong()))
                             }
 
                             is PlayerGesture.Adjust -> {
-                                val fraction = (adjustBaseValue - dy / (size.height * ADJUST_TRAVEL_RATIO))
+                                val requested = (adjustBaseValue - dragTotal.y / (size.height * ADJUST_TRAVEL_RATIO))
                                     .coerceIn(0f, 1f)
-                                if (active.kind == VerticalAdjust.Brightness) {
-                                    brightness.set(fraction)
+                                val applied = if (active.kind == VerticalAdjust.Brightness) {
+                                    brightness.set(requested)
+                                    requested
                                 } else {
-                                    volume.set(fraction)
+                                    volume.set(requested)
                                 }
-                                publish(active.copy(fraction = fraction))
+                                if (applied != active.fraction && (applied == 0f || applied == 1f)) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.SegmentTick)
+                                }
+                                publish(active.copy(fraction = applied))
                             }
 
                             null -> Unit
@@ -302,21 +332,11 @@ internal fun PlayerGestureLayer(
     )
 }
 
-private const val SIDE_ZONE_FRACTION = 0.35f
-private const val GESTURE_SLOP_PX = 24f
-private const val SEEK_MILLIS_PER_PX = 120f
-private const val ADJUST_TRAVEL_RATIO = 0.75f
+internal const val SIDE_ZONE_FRACTION = 0.35f
 
-@Composable
-internal fun rememberOrientationController(): ScreenOrientationController {
-    val context = LocalContext.current
-    val activity = remember(context) { context.findActivity() }
-    val controller = remember(activity) { ScreenOrientationController(activity) }
-    DisposableEffect(controller) {
-        onDispose {
-            controller.resetOrientation()
-            controller.showSystemBars()
-        }
-    }
-    return controller
-}
+// 横向划过整个手势层宽度对应的时长。按宽度比例而不是按像素换算，
+// 同一手势在不同密度、不同朝向下的幅度一致
+private const val SEEK_FULL_SWEEP_MILLIS = 180_000f
+
+// 竖向划过手势层高度的 75% 对应亮度或音量的全量程
+private const val ADJUST_TRAVEL_RATIO = 0.75f

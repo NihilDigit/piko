@@ -56,6 +56,7 @@ import org.openani.mediamp.PlaybackEvent
 import org.openani.mediamp.errorOrNull
 import org.openani.mediamp.compose.MediampPlayerSurface
 import org.openani.mediamp.compose.rememberMediampPlayer
+import org.openani.mediamp.features.AspectRatioMode
 import org.openani.mediamp.features.Buffering
 import org.openani.mediamp.features.PlaybackSpeed
 import org.openani.mediamp.features.VideoAspectRatio
@@ -384,7 +385,7 @@ fun MediampVideoPlayerScreen(
         if (isLandscape) orientationController.setPortrait() else onBackClick()
     }
 
-    Box(modifier.fillMaxSize().background(Color.Black)) {
+    PlayerTheme { Box(modifier.fillMaxSize().background(Color.Black)) {
         if (isImage) {
             AsyncImage(
                 model = mediaInfo?.currentUrl,
@@ -426,7 +427,7 @@ fun MediampVideoPlayerScreen(
 
         activeGesture?.let { PlayerGestureHud(it, durationMillis) }
 
-        doubleTapForward?.let { DoubleTapIndicator(it) }
+        doubleTapForward?.let { DoubleTapIndicator(it, seconds = (SEEK_STEP_MILLIS / 1000).toInt()) }
 
         SpeedBoostCapsule(
             visible = isSpeedBoosting,
@@ -496,38 +497,44 @@ fun MediampVideoPlayerScreen(
                 PlayerTopBar(
                     title = fileName,
                     isLocalPlayback = localPath != null,
-                    aspectRatioMode = if (isImage) null else aspectRatioMode,
+                    aspectRatio = if (isImage) null else aspectRatioMode?.toPlayerAspectRatio(),
                     qualityOptions = if (isImage) emptyList() else qualityOptionsOf(mediaInfo, localPath),
                     currentQuality = activeQuality ?: ORIGINAL_QUALITY,
-                    showSpeedEntry = !isImage && speedFeature != null,
                     showPlaylistEntry = !isImage && siblingVideos.size > 1,
                     onPlaylistClick = { showPlaylist = true },
                     onBackClick = {
                         orientationController.resetOrientation()
                         onBackClick()
                     },
-                    onAspectRatioChange = { aspectRatioFeature?.setMode(it) },
+                    onAspectRatioChange = { aspectRatioFeature?.setMode(it.toAspectRatioMode()) },
                     onQualityChange = { quality ->
                         pendingStartMillis = player.currentPositionMillis.value
                         // 切清晰度是用户动作，不是故障，退避次数给新流重新算
                         retryAttempt = 0
                         requestedQuality = quality
                     },
-                    onSpeedClick = { showSpeedDialog = true },
                     modifier = Modifier.align(Alignment.TopCenter),
                 )
 
                 if (!isImage) {
-                    PlayerBottomBar(
+                    PlayerCenterControls(
                         isPlaying = playerState.playWhenReady,
+                        isLoading = playerState.isLoadingOrBuffering,
+                        isLandscape = isLandscape,
+                        onPlayPause = { player.togglePlayWhenReady() },
+                        onSeekBackward = { seekTo(player.currentPositionMillis.value - SEEK_STEP_MILLIS) },
+                        onSeekForward = {
+                            seekTo((player.currentPositionMillis.value + SEEK_STEP_MILLIS).coerceAtMost(durationMillis))
+                        },
+                        modifier = Modifier.align(Alignment.Center),
+                    )
+                    PlayerBottomBar(
                         isLandscape = isLandscape,
                         positionMillis = positionMillis,
                         durationMillis = durationMillis,
-                        bufferedFraction = bufferedPercentage / 100f,
-                        playbackSpeed = playbackSpeed,
-                        speedSupported = speedFeature != null,
-                        onPlayPause = { player.togglePlayWhenReady() },
-                        onSeekTo = ::seekTo,
+                        bufferedPositionMillis = durationMillis * bufferedPercentage / 100,
+                        playbackSpeed = playbackSpeed.takeIf { speedFeature != null },
+                        onSeek = ::seekTo,
                         onSpeedClick = { showSpeedDialog = true },
                         onToggleFullscreen = { orientationController.toggleOrientation(isLandscape) },
                         modifier = Modifier.align(Alignment.BottomCenter),
@@ -560,14 +567,13 @@ fun MediampVideoPlayerScreen(
         }
 
         if (showSpeedDialog && speedFeature != null) {
-            PlaybackSpeedDialog(
+            PlaybackSpeedSheet(
                 speed = playbackSpeed,
-                isLandscape = isLandscape,
                 onSpeedChange = ::applySpeed,
                 onDismiss = { showSpeedDialog = false },
             )
         }
-    }
+    } }
 }
 
 /**
@@ -606,6 +612,18 @@ private fun readVideoIsLandscape(path: String): Boolean? {
     } finally {
         runCatching { retriever.release() }
     }
+}
+
+private fun AspectRatioMode.toPlayerAspectRatio(): PlayerAspectRatio = when (this) {
+    AspectRatioMode.FIT -> PlayerAspectRatio.Fit
+    AspectRatioMode.CROP -> PlayerAspectRatio.Crop
+    AspectRatioMode.STRETCH -> PlayerAspectRatio.Stretch
+}
+
+private fun PlayerAspectRatio.toAspectRatioMode(): AspectRatioMode = when (this) {
+    PlayerAspectRatio.Fit -> AspectRatioMode.FIT
+    PlayerAspectRatio.Crop -> AspectRatioMode.CROP
+    PlayerAspectRatio.Stretch -> AspectRatioMode.STRETCH
 }
 
 private const val ORIGINAL_QUALITY = "Original"
