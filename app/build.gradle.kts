@@ -105,6 +105,9 @@ dependencies {
     // PikPak SDK (KMP)
     implementation(libs.pikpak.kotlin)
 
+    // 播放后端：预编译的 libmpv 与 FFmpeg（含 arm64/armv7/x86_64）
+    implementation(libs.libmpv.android)
+
     // AndroidX & Lifecycle
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.documentfile)

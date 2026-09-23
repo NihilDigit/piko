@@ -46,7 +46,8 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -55,6 +56,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -62,11 +64,9 @@ import dev.piko.PikoApplication
 import dev.piko.shared.media.PlayableMediaInfo
 import io.github.nihildigit.pikpak.FileStat
 import java.util.Locale
-import org.openani.mediamp.ExperimentalMediampApi
-import org.openani.mediamp.compose.MediampPlayerSurface
-import org.openani.mediamp.compose.rememberMediampPlayer
-import org.openani.mediamp.isLoadingOrBuffering
-import org.openani.mediamp.playUri
+import dev.piko.shared.media.player.PlaybackTarget
+import dev.piko.ui.screens.player.MpvPlaybackBackend
+import dev.piko.ui.screens.player.MpvVideoSurface
 
 fun formatTimeMs(ms: Long): String {
     val totalSec = (ms / 1000L).coerceAtLeast(0L)
@@ -85,7 +85,7 @@ fun formatTimeMs(ms: Long): String {
  * 提供起点与终点两处画面的实时帧预览，微调步进控制与时长/文件体积估算，
  * 确认后交由 SDK 的 8 连接并发分块滑动窗口机制进行段落流式写入。
  */
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalMediampApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SegmentDownloadSheet(
     file: FileStat,
@@ -373,7 +373,6 @@ fun SegmentDownloadSheet(
 /**
  * 带有实时帧定位与加载态的预览卡片
  */
-@OptIn(ExperimentalMediampApi::class)
 @Composable
 private fun PreviewCard(
     label: String,
@@ -382,11 +381,14 @@ private fun PreviewCard(
     onDurationKnown: (Long) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val previewPlayer = rememberMediampPlayer()
-    val playerState by previewPlayer.state.collectAsState()
+    val context = LocalContext.current
+    val previewPlayer = remember { MpvPlaybackBackend(context.applicationContext, preview = true) }
+    val latestOnDurationKnown by rememberUpdatedState(onDurationKnown)
 
     LaunchedEffect(url) {
-        if (url.isNotBlank()) previewPlayer.playUri(url, playWhenReady = false)
+        if (url.isNotBlank()) {
+            previewPlayer.open(PlaybackTarget.Url(url), startMillis = positionMs, playWhenReady = false)
+        }
     }
 
     LaunchedEffect(positionMs) {
@@ -394,14 +396,11 @@ private fun PreviewCard(
     }
 
     DisposableEffect(previewPlayer) {
-        onDispose { previewPlayer.close() }
+        onDispose { previewPlayer.release() }
     }
 
     LaunchedEffect(previewPlayer) {
-        while (true) {
-            previewPlayer.mediaProperties.value?.durationMillis?.let(onDurationKnown)
-            kotlinx.coroutines.delay(250)
-        }
+        snapshotFlow { previewPlayer.durationMillis }.collect { if (it > 0L) latestOnDurationKnown(it) }
     }
 
     Surface(
@@ -418,8 +417,8 @@ private fun PreviewCard(
                 contentAlignment = Alignment.Center,
             ) {
                 if (url.isNotBlank()) {
-                    MediampPlayerSurface(previewPlayer, Modifier.fillMaxSize())
-                    if (playerState.isLoadingOrBuffering) CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                    MpvVideoSurface(previewPlayer, Modifier.fillMaxSize(), useTextureView = true)
+                    if (previewPlayer.isBuffering) CircularProgressIndicator(modifier = Modifier.size(24.dp))
                 } else {
                     CircularProgressIndicator(modifier = Modifier.size(24.dp))
                 }
