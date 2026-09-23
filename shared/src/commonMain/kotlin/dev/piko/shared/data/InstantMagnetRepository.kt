@@ -40,7 +40,7 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
 
     suspend fun resolve(magnet: String): Result<MagnetResolutionResult?> = withContext(Dispatchers.Default) {
         runSuspendCatching {
-            val resource = client.resolveMagnet(magnet) ?: return@runSuspendCatching null
+            val resource = client.resolveMagnet(magnet) ?: return@withContext Result.success(null)
             val items = resource.files.map { InstantFileItem(it, it.gcid != null) }
             MagnetResolutionResult(resource, items, items.count { it.isInstantReady }, items.size)
         }
@@ -57,12 +57,4 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
 
     suspend fun enqueueOfflineTask(magnet: String, targetParentId: String = ""): Result<CreateUrlResult> =
         withContext(Dispatchers.Default) { runSuspendCatching { client.createUrlFile(parentId = targetParentId, url = magnet) } }
-
-    private suspend fun <T> runSuspendCatching(block: suspend () -> T): Result<T> = try {
-        Result.success(block())
-    } catch (e: kotlinx.coroutines.CancellationException) {
-        throw e
-    } catch (e: Throwable) {
-        Result.failure(e)
-    }
 }

@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 
 enum class PikoFileSortOrder { NAME_ASC, NAME_DESC, TIME_DESC, TIME_ASC, SIZE_DESC, SIZE_ASC }
@@ -37,10 +38,14 @@ open class PikoDriveRepository(
     private val preferences: PikoUserPreferences? = null,
 ) {
     private val client get() = clientManager.currentClient.value ?: error("Not logged in")
-    protected val folderMeaninglessCache = mutableMapOf<String, Boolean>()
+
+    // 读写发生在 Dispatchers.Default 的多个线程上，普通 HashMap 并发写会丢项甚至破坏结构。
+    // commonMain 没有 ConcurrentHashMap，借 MutableStateFlow.update 的 CAS 做原子替换。
+    private val folderMeaninglessCacheFlow = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+    protected val folderMeaninglessCache: Map<String, Boolean> get() = folderMeaninglessCacheFlow.value
     private val _quotaFlow = MutableStateFlow<QuotaResponse?>(null)
     val quotaFlow: StateFlow<QuotaResponse?> = _quotaFlow.asStateFlow()
-    private val _folderStackFlow = MutableStateFlow(listOf(PikoPathBreadcrumb("", "网盘")))
+    private val _folderStackFlow = MutableStateFlow(listOf(ROOT_BREADCRUMB))
     val folderStackFlow: StateFlow<List<PikoPathBreadcrumb>> = _folderStackFlow.asStateFlow()
 
     // 回收站恢复这类改动发生在网盘界面之外，界面不会重建，也就不会重新拉取。
@@ -53,7 +58,7 @@ open class PikoDriveRepository(
     }
 
     fun pushFolder(id: String, name: String) {
-        _folderStackFlow.value += PikoPathBreadcrumb(id, name)
+        _folderStackFlow.update { it + PikoPathBreadcrumb(id, name) }
     }
 
     fun updateFolderStack(stack: List<PikoPathBreadcrumb>) {
@@ -61,21 +66,35 @@ open class PikoDriveRepository(
     }
 
     fun popToBreadcrumb(index: Int): PikoPathBreadcrumb? {
-        if (index !in 0 until _folderStackFlow.value.lastIndex) return null
-        val child = _folderStackFlow.value.getOrNull(index + 1)
-        _folderStackFlow.value = _folderStackFlow.value.take(index + 1)
+        var child: PikoPathBreadcrumb? = null
+        _folderStackFlow.update { stack ->
+            if (index !in 0 until stack.lastIndex) return null
+            child = stack[index + 1]
+            stack.take(index + 1)
+        }
         return child
     }
 
+    /**
+     * 直接跳到某个目录，中间层级不可知，栈只留根与目标两级。目标本身是根时只留根：
+     * 秒传的保存目标可以是根目录，拼成两级会出现两个「网盘」，返回一次还停在原地。
+     */
     fun navigateToFolder(breadcrumb: PikoPathBreadcrumb) {
-        _folderStackFlow.value = listOf(PikoPathBreadcrumb("", "网盘"), breadcrumb)
+        _folderStackFlow.value = if (breadcrumb.id.isEmpty()) {
+            listOf(ROOT_BREADCRUMB)
+        } else {
+            listOf(ROOT_BREADCRUMB, breadcrumb)
+        }
     }
 
     fun popFolder(): PikoPathBreadcrumb? {
-        if (_folderStackFlow.value.size <= 1) return null
-        val result = _folderStackFlow.value.last()
-        _folderStackFlow.value = _folderStackFlow.value.dropLast(1)
-        return result
+        var popped: PikoPathBreadcrumb? = null
+        _folderStackFlow.update { stack ->
+            if (stack.size <= 1) return null
+            popped = stack.last()
+            stack.dropLast(1)
+        }
+        return popped
     }
 
     suspend fun listFiles(
@@ -145,7 +164,9 @@ open class PikoDriveRepository(
     }
 
     suspend fun move(ids: List<String>, parentId: String): Result<Unit> = withContext(Dispatchers.Default) {
-        runSuspendCatching { client.batchMove(ids, parentId) }
+        // SDK 0.6.7 的 batchTrash、batchDelete、batchUntrash 都按上限分批，唯独 batchMove 没有；
+        // 一次移动整个目录的内容会超过服务端的 id 数上限（error_code 11）
+        runSuspendCatching { ids.chunked(BATCH_MOVE_LIMIT).forEach { client.batchMove(it, parentId) } }
     }
 
     suspend fun search(query: String): Result<List<FileStat>> = withContext(Dispatchers.Default) {
@@ -167,7 +188,23 @@ open class PikoDriveRepository(
     fun folderMeaningless(folderId: String): Boolean? = folderMeaninglessCache[folderId]
 
     fun cacheFolderMeaningless(folderId: String, value: Boolean) {
-        folderMeaninglessCache[folderId] = value
+        folderMeaninglessCacheFlow.update { it + (folderId to value) }
+    }
+
+    /**
+     * 秒传与离线任务的默认保存目录。根目录里已有同类目录就沿用，没有才新建。
+     *
+     * 要列全根目录再找：只看第一页的话，根目录条目一多，已有的那个目录落在后面几页，
+     * 每次都会再建一个同名目录。
+     */
+    suspend fun getOrCreateMyPacksFolder(): Result<PikoPathBreadcrumb> {
+        val rootFiles = listAllFiles().getOrElse { return Result.failure(it) }
+        val existing = rootFiles.firstOrNull { it.isFolder && it.name.lowercase() in MY_PACKS_FOLDER_NAMES }
+        return if (existing != null) {
+            Result.success(PikoPathBreadcrumb(existing.id, existing.name))
+        } else {
+            createFolder("", MY_PACKS_FOLDER_NAME).map { PikoPathBreadcrumb(it, MY_PACKS_FOLDER_NAME) }
+        }
     }
 
     suspend fun isFolderMeaningless(folderId: String, thresholdBytes: Long, forceRefresh: Boolean = false): Boolean =
@@ -183,21 +220,27 @@ open class PikoDriveRepository(
     private fun sortFiles(files: List<FileStat>, order: PikoFileSortOrder): List<FileStat> {
         val (folders, regularFiles) = files.partition { it.isFolder }
         val comparator = when (order) {
-            PikoFileSortOrder.NAME_ASC -> compareBy<FileStat> { it.name.lowercase() }
-            PikoFileSortOrder.NAME_DESC -> compareBy<FileStat> { it.name.lowercase() }.reversed()
-            PikoFileSortOrder.TIME_DESC -> compareBy<FileStat> { it.modifiedTime.toString() }.reversed()
-            PikoFileSortOrder.TIME_ASC -> compareBy<FileStat> { it.modifiedTime.toString() }
-            PikoFileSortOrder.SIZE_DESC -> compareBy<FileStat> { it.sizeBytes }.reversed()
-            PikoFileSortOrder.SIZE_ASC -> compareBy<FileStat> { it.sizeBytes }
+            // 比较器每次比较都会调用，lowercase() 会为每次比较新建两个字符串，
+            // 千项目录一次排序就是几万次分配
+            PikoFileSortOrder.NAME_ASC -> compareBy(String.CASE_INSENSITIVE_ORDER, FileStat::name)
+            PikoFileSortOrder.NAME_DESC -> compareBy(String.CASE_INSENSITIVE_ORDER, FileStat::name).reversed()
+            PikoFileSortOrder.TIME_DESC -> compareByDescending(FileStat::modifiedTime)
+            PikoFileSortOrder.TIME_ASC -> compareBy(FileStat::modifiedTime)
+            PikoFileSortOrder.SIZE_DESC -> compareByDescending(FileStat::sizeBytes)
+            PikoFileSortOrder.SIZE_ASC -> compareBy(FileStat::sizeBytes)
         }
         return folders.sortedWith(comparator) + regularFiles.sortedWith(comparator)
     }
 
-    private suspend fun <T> runSuspendCatching(block: suspend () -> T): Result<T> = try {
-        Result.success(block())
-    } catch (e: kotlinx.coroutines.CancellationException) {
-        throw e
-    } catch (e: Throwable) {
-        Result.failure(e)
+    companion object {
+        val ROOT_BREADCRUMB = PikoPathBreadcrumb("", "网盘")
+
+        private const val MY_PACKS_FOLDER_NAME = "My Packs"
+
+        // 与 SDK 其余批量接口的分批大小一致。实测 200 可以、1000 被拒
+        private const val BATCH_MOVE_LIMIT = 100
+
+        // PikPak 各端自动建的保存目录名不一，官方客户端建过的也算
+        private val MY_PACKS_FOLDER_NAMES = setOf("my pack", "my packs", "我的资源", "我的离线")
     }
 }

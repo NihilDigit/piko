@@ -7,6 +7,8 @@ import kotlinx.serialization.json.Json
 import dev.piko.shared.data.PikoSessionStore
 import dev.piko.shared.data.PikoCredentials
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 class FilePikoSessionStore(
     private val root: File = File(System.getProperty("user.home"), ".piko"),
@@ -25,7 +27,16 @@ class FilePikoSessionStore(
 
     override suspend fun save(account: String, session: Session) = withContext(Dispatchers.IO) {
         root.mkdirs()
-        sessionFile.writeText(json.encodeToString(Session.serializer(), session))
+        // 先写临时文件再原子替换：SDK 每次 refresh 都会调 save，直接覆盖写到一半进程退出，
+        // 留下半截 JSON，下次启动解析失败，只能用密码重新登录
+        val staging = File(root, "${sessionFile.name}.tmp")
+        staging.writeText(json.encodeToString(Session.serializer(), session))
+        Files.move(
+            staging.toPath(),
+            sessionFile.toPath(),
+            StandardCopyOption.REPLACE_EXISTING,
+            StandardCopyOption.ATOMIC_MOVE,
+        )
         accountFile.writeText(account)
     }
 

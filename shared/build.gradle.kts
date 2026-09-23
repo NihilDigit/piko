@@ -19,6 +19,9 @@ kotlin {
         commonMain.dependencies {
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.datetime)
+            implementation(libs.kotlinx.io.core)
+            // PikPakClient 的构造参数里有 HttpClient，SDK 却只把 Ktor 声明为 runtime 依赖
+            implementation(libs.ktor.client.core)
             // state holder 的公开 API 直接暴露 Compose 的 State，消费方要拿得到这些类型
             api(compose.runtime)
             api(libs.pikpak.kotlin)
@@ -26,6 +29,13 @@ kotlin {
         }
         commonTest.dependencies {
             implementation(kotlin("test"))
+        }
+        // 冒烟测试用 MockEngine 顶替 PikPak 服务端，SDK 的请求、鉴权与解析仍走真实代码
+        val desktopTest by getting {
+            dependencies {
+                implementation(libs.ktor.client.mock)
+                implementation(libs.kotlinx.serialization.json)
+            }
         }
     }
 }
