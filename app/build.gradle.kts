@@ -148,4 +148,10 @@ dependencies {
     implementation(libs.coil.network.okhttp)
 
     testImplementation(libs.junit)
+
+    // 冒烟测试：只验证必须在真实 Android 上才能观察的行为（前台服务、Intent 路由、Keystore、FileProvider）
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.ext.junit)
 }
