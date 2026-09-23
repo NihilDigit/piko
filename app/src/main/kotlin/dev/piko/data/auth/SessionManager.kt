@@ -1,19 +1,70 @@
 package dev.piko.data.auth
 
 import android.content.Context
+import androidx.datastore.core.DataMigration
 import androidx.datastore.core.DataStore
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
-val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "piko_preferences")
+// 文件损坏时整份重置而不是抛 CorruptionException：首读发生在 appScope 的恢复登录里，
+// 那里抛出的异常没有人接，结果是每次冷启动都崩，只能清数据
+val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
+    name = "piko_preferences",
+    corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+)
+
+/**
+ * 续播进度单独一个文件。Preferences DataStore 每次写入都整份重写文件，而进度是每个看过的
+ * 视频一个键、只增不减，混在主文件里会让每一次写偏好、每一次冷启动读偏好都越来越慢。
+ */
+private val Context.playbackDataStore: DataStore<Preferences> by preferencesDataStore(
+    name = "piko_playback",
+    corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+    produceMigrations = { context -> listOf(LegacyPlaybackPositionMigration(context.dataStore)) },
+)
+
+private const val PLAYBACK_KEY_PREFIX = "playback_pos_"
+
+private fun playbackKey(fileId: String) = longPreferencesKey("$PLAYBACK_KEY_PREFIX$fileId")
+
+/** 把旧版本写在主偏好文件里的续播进度搬过来，并从主文件里删掉。 */
+private class LegacyPlaybackPositionMigration(
+    private val legacy: DataStore<Preferences>,
+) : DataMigration<Preferences> {
+    private suspend fun legacyEntries(): Map<Preferences.Key<*>, Any> =
+        legacy.data.first().asMap().filterKeys { it.name.startsWith(PLAYBACK_KEY_PREFIX) }
+
+    override suspend fun shouldMigrate(currentData: Preferences): Boolean = legacyEntries().isNotEmpty()
+
+    override suspend fun migrate(currentData: Preferences): Preferences {
+        val migrated = currentData.toMutablePreferences()
+        legacyEntries().forEach { (key, value) ->
+            val playback = longPreferencesKey(key.name)
+            // 新文件里已有的进度更新，不拿旧值覆盖
+            if (value is Long && migrated[playback] == null) migrated[playback] = value
+        }
+        return migrated.toPreferences()
+    }
+
+    override suspend fun cleanUp() {
+        legacy.edit { preferences ->
+            preferences.asMap().keys
+                .filter { it.name.startsWith(PLAYBACK_KEY_PREFIX) }
+                .forEach { preferences.remove(it) }
+        }
+    }
+}
 
 class SessionManager(private val context: Context) : PikoUserPreferences {
 
@@ -38,15 +89,23 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val LAST_FOLDER_STACK_SERIALIZED = stringPreferencesKey("last_folder_stack")
     }
 
+    /**
+     * 每个 DataStore 值都从同一份 data 流映射出来，任何一个键的写入都会让所有映射重新发射。
+     * 不去重的话，播放器每 5 秒写一次进度，网盘列表、下载存储、设置页的收集者就跟着每 5 秒
+     * 醒一次。
+     */
+    private fun <T> preference(read: (Preferences) -> T): Flow<T> =
+        context.dataStore.data.map(read).distinctUntilChanged()
+
     override suspend fun savePlaybackPosition(fileId: String, positionMs: Long) {
-        context.dataStore.edit { preferences ->
-            preferences[longPreferencesKey("playback_pos_$fileId")] = positionMs
+        context.playbackDataStore.edit { preferences ->
+            preferences[playbackKey(fileId)] = positionMs
         }
     }
 
     override suspend fun getPlaybackPosition(fileId: String): Long {
-        val prefs = context.dataStore.data.first()
-        return prefs[longPreferencesKey("playback_pos_$fileId")] ?: 0L
+        val prefs = context.playbackDataStore.data.first()
+        return prefs[playbackKey(fileId)] ?: 0L
     }
 
     override suspend fun saveLastFolder(folderId: String, folderName: String, stackSerialized: String) {
@@ -66,7 +125,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         )
     }
 
-    override val spoilerBlurFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
+    override val spoilerBlurFlow: Flow<Boolean> = preference { preferences ->
         preferences[PreferencesKeys.SPOILER_BLUR_ENABLED] ?: true // 默认开启 Spoiler 遮蔽
     }
 
@@ -76,7 +135,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
-    override val heuristicFilterFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
+    override val heuristicFilterFlow: Flow<Boolean> = preference { preferences ->
         preferences[PreferencesKeys.HEURISTIC_FILTER_ENABLED] ?: true // 默认开启启发式单视频内容筛选
     }
 
@@ -86,7 +145,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
-    override val gridViewFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
+    override val gridViewFlow: Flow<Boolean> = preference { preferences ->
         preferences[PreferencesKeys.GRID_VIEW_ENABLED] ?: false // 默认列表视图
     }
 
@@ -96,7 +155,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
-    override val sessionFlow: Flow<UserSession> = context.dataStore.data.map { preferences ->
+    override val sessionFlow: Flow<UserSession> = preference { preferences ->
         UserSession(
             token = preferences[PreferencesKeys.TOKEN].orEmpty(),
             refreshToken = preferences[PreferencesKeys.REFRESH_TOKEN].orEmpty(),
@@ -127,7 +186,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
-    override val quotaSnapshotFlow: Flow<QuotaSnapshot?> = context.dataStore.data.map { preferences ->
+    override val quotaSnapshotFlow: Flow<QuotaSnapshot?> = preference { preferences ->
         val limit = preferences[PreferencesKeys.QUOTA_LIMIT_BYTES]
         val usage = preferences[PreferencesKeys.QUOTA_USAGE_BYTES]
         // 只有上限有值才算拿到过配额：零上限会让占比计算除零
@@ -141,7 +200,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
-    override val instantTargetFlow: Flow<InstantTarget?> = context.dataStore.data.map { preferences ->
+    override val instantTargetFlow: Flow<InstantTarget?> = preference { preferences ->
         val name = preferences[PreferencesKeys.INSTANT_TARGET_NAME]
         // id 为根目录时是空串，所以用名字判断有没有配置过
         if (name.isNullOrEmpty()) {
@@ -165,7 +224,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
-    override val concurrentAccelerationFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
+    override val concurrentAccelerationFlow: Flow<Boolean> = preference { preferences ->
         preferences[PreferencesKeys.CONCURRENT_ACCELERATION] ?: true
     }
 
@@ -173,7 +232,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         if (enabled) 8 else 1
     }
 
-    override val downloadDirPathFlow: Flow<String> = context.dataStore.data.map { preferences ->
+    override val downloadDirPathFlow: Flow<String> = preference { preferences ->
         preferences[PreferencesKeys.DOWNLOAD_DIR_PATH] ?: ""
     }
 
