@@ -91,6 +91,11 @@ android {
         buildConfig = true
     }
 
+    sourceSets {
+        // 播放冒烟的样片与 generate.sh 在仓库根目录，JVM 与 Android 两边的测试共用
+        getByName("androidTest").assets.srcDir(rootProject.file("testdata/media"))
+    }
+
     packaging {
         jniLibs {
             // libmpv 自带 x86 的 .so，而 splits 只发三种 ABI，不排除就会混进通用包
@@ -162,9 +167,15 @@ dependencies {
 
     testImplementation(libs.junit)
 
-    // 冒烟测试：只验证必须在真实 Android 上才能观察的行为（前台服务、Intent 路由、Keystore、FileProvider）
+    // 冒烟测试：只验证必须在真实 Android 上才能观察的行为（播放链路、前台服务、Intent 路由、
+    // Keystore、FileProvider、播放器手势）
+    androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.rules)
     androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+    // 冒烟里要一个真实 Activity 挂 SurfaceView；它把 ComponentActivity 声明进 debug 清单
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
 }

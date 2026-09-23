@@ -92,6 +92,8 @@ compose.desktop {
 // 不加现在只是 warning，未来 JDK 会直接拦截。exe 启动器的那份在上面的 application.jvmArgs。
 tasks.withType<Test> {
     jvmArgs("--enable-native-access=ALL-UNNAMED")
+    // 播放冒烟读仓库里的样片，路径由这里给出，不依赖测试进程的工作目录
+    systemProperty("piko.testdata", rootProject.file("testdata/media").absolutePath)
 }
 tasks.withType<JavaExec> {
     jvmArgs("--enable-native-access=ALL-UNNAMED")

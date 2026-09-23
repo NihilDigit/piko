@@ -31,7 +31,7 @@ kotlin {
         commonTest.dependencies {
             implementation(kotlin("test"))
         }
-        // 冒烟测试用 MockEngine 顶替 PikPak 服务端，SDK 的请求、鉴权与解析仍走真实代码
+        // 冒烟测试用 MockEngine 顶替 PikPak 的 API 与 CDN，SDK 的请求、鉴权与解析仍走真实代码
         val desktopTest by getting {
             dependencies {
                 implementation(libs.ktor.client.mock)
