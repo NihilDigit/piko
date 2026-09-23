@@ -24,7 +24,19 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Close
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.window.DialogWindowProvider
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -67,7 +79,7 @@ private const val VIEWER_DOUBLE_TAP_SCALE = 2.5f
  *
  * 做成 Dialog 而不是页面内的浮层：底部导航栏挂在 PikoMainScaffold 上，DriveScreen
  * 自己的 Box 盖不住它。decorFitsSystemWindows 关掉之后黑底一路铺到系统栏下面，
- * 只有顶部的文件名一行按 safeDrawing 内缩。
+ * 只有顶部的文件名一行按 safeDrawing 内缩。单击切换顶栏与系统栏的显隐。
  */
 @Composable
 internal fun ImageViewer(
@@ -85,6 +97,9 @@ internal fun ImageViewer(
         val pagerState = rememberPagerState(initialPage = initialIndex) { images.size }
         // 下滑关闭的进度，0 到 1。背景跟着变透明，让下面的列表透出来，表明这是退出而不是切图。
         var dismissProgress by remember { mutableFloatStateOf(0f) }
+        var isChromeVisible by remember { mutableStateOf(true) }
+
+        ImmersiveSystemBars(visible = isChromeVisible)
 
         Box(
             modifier = Modifier
@@ -98,38 +113,88 @@ internal fun ImageViewer(
                 val file = images[page]
                 ZoomableImagePage(
                     file = file,
+                    onTap = { isChromeVisible = !isChromeVisible },
                     onDismiss = onDismiss,
                     onDismissProgress = { dismissProgress = it },
                 )
             }
 
-            Row(
+            AnimatedVisibility(
+                visible = isChromeVisible,
+                enter = fadeIn(),
+                exit = fadeOut(),
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .fillMaxWidth()
-                    .windowInsetsPadding(WindowInsets.safeDrawing)
-                    .padding(start = 16.dp, end = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                    .graphicsLayer { alpha = 1f - dismissProgress },
             ) {
-                Text(
-                    text = images[pagerState.currentPage].name,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = Color.White,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
+                ViewerTopBar(
+                    title = images[pagerState.currentPage].name,
+                    position = if (images.size > 1) "${pagerState.currentPage + 1} / ${images.size}" else null,
+                    onClose = onDismiss,
                 )
-                if (images.size > 1) {
-                    Text(
-                        text = "${pagerState.currentPage + 1} / ${images.size}",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = Color.White.copy(alpha = 0.7f),
-                    )
-                }
-                IconButton(onClick = onDismiss) {
-                    Icon(Icons.Outlined.Close, contentDescription = "关闭", tint = Color.White)
-                }
             }
+        }
+    }
+}
+
+/**
+ * 顶栏压在一段由黑到透明的渐变上。原先文字直接叠在图上，浅色图片的顶部一片白，
+ * 文件名与关闭按钮都看不清。
+ */
+@Composable
+private fun ViewerTopBar(title: String, position: String?, onClose: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.6f), Color.Transparent))),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
+                .padding(start = 4.dp, end = 16.dp, top = 4.dp, bottom = 24.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onClose) {
+                Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "关闭", tint = Color.White)
+            }
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                color = Color.White,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            if (position != null) {
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(
+                    text = position,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = Color.White.copy(alpha = 0.8f),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 界面隐藏时一并收起系统栏，看图不被状态栏与导航条压住；从边缘滑动可临时唤出。
+ * Dialog 有自己的窗口，要从 DialogWindowProvider 取，改 Activity 的窗口不起作用。
+ * 状态栏图标固定为浅色：背景总是黑的，跟随应用浅色主题会是黑字压黑底。
+ */
+@Composable
+private fun ImmersiveSystemBars(visible: Boolean) {
+    val window = (LocalView.current.parent as? DialogWindowProvider)?.window ?: return
+    LaunchedEffect(window, visible) {
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        controller.isAppearanceLightStatusBars = false
+        controller.isAppearanceLightNavigationBars = false
+        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        if (visible) {
+            controller.show(WindowInsetsCompat.Type.systemBars())
+        } else {
+            controller.hide(WindowInsetsCompat.Type.systemBars())
         }
     }
 }
@@ -145,6 +210,7 @@ internal fun ImageViewer(
 @Composable
 private fun ZoomableImagePage(
     file: FileStat,
+    onTap: () -> Unit,
     onDismiss: () -> Unit,
     onDismissProgress: (Float) -> Unit,
 ) {
@@ -154,7 +220,7 @@ private fun ZoomableImagePage(
     var fullUrl by remember(file.id) { mutableStateOf<String?>(null) }
     var isFullReady by remember(file.id) { mutableStateOf(false) }
     // 全屏查看器里不再受防窥遮蔽拦一道：点进来本身就是「我要看这张」，
-    // 再要求点一次「显示图片」只是多一步。遮蔽仍然作用在列表和网格的缩略图上。
+    // 再要求点一次「显示图片」只是多一步。遮蔽仍然作用在列表和瀑布流的缩略图上。
     LaunchedEffect(file.id) {
         if (fullUrl == null) fullUrl = driveRepo.originalImageUrl(file.id)
     }
@@ -196,8 +262,9 @@ private fun ZoomableImagePage(
                 .fillMaxSize()
                 .pointerInput(file.id) {
                     detectTapGestures(
-                        // 放大状态下的单击是在看图，不该关掉窗口
-                        onTap = { if (scale == 1f) onDismiss() },
+                        // 单击切换界面显隐，不再关闭：放大后点一下想收起顶栏的操作太常见，
+                        // 原先 1 倍时单击即关，误触就得重新找回这张图。关闭走返回、顶栏按钮与下滑
+                        onTap = { onTap() },
                         onDoubleTap = { tap ->
                             scope.launch {
                                 if (scale > 1f) {
@@ -257,8 +324,10 @@ private fun ZoomableImagePage(
                     }
                 }
                 .graphicsLayer {
-                    scaleX = scale
-                    scaleY = scale
+                    // 下滑时图随之缩小，像是被收回列表里，与左右翻页的平移区分开
+                    val dragShrink = 1f - (abs(dragY) / (size.height * 0.4f)).coerceIn(0f, 1f) * 0.2f
+                    scaleX = scale * dragShrink
+                    scaleY = scale * dragShrink
                     translationX = offset.x
                     translationY = offset.y + dragY
                 },
