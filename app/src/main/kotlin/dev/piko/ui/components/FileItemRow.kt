@@ -1,64 +1,33 @@
 package dev.piko.ui.components
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.AudioFile
-import androidx.compose.material.icons.outlined.ContentCut
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.Description
-import androidx.compose.material.icons.outlined.Download
-import androidx.compose.material.icons.outlined.DriveFileMove
-import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.Folder
-import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.MoreVert
-import androidx.compose.material.icons.outlined.Movie
-import androidx.compose.material.icons.outlined.QuestionMark
-import androidx.compose.material.icons.outlined.VideoFile
-import androidx.compose.material.icons.outlined.FolderZip
-import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import coil3.compose.AsyncImage
-import dev.piko.data.repository.isPlayableVideo
-import dev.piko.data.repository.isPreviewableImage
 import io.github.nihildigit.pikpak.FileStat
 
 fun Long.toReadableSize(): String {
@@ -69,287 +38,157 @@ fun Long.toReadableSize(): String {
     return String.format("%.1f %s", this / Math.pow(1024.0, digitGroups.toDouble()), units[digitGroups])
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+// 行高按 M3 两行列表项 72dp 降两档密度（每档 4dp）取 64dp：文件列表以扫读为主，
+// 属于规范里建议提高密度的场景。前导 48dp 加上下各 8dp 正好是 64dp。
+private val RowMinHeight = 64.dp
+
+// 外侧留 4dp，让按压与选中时变圆的容器不贴屏幕边缘；内侧起始 12dp，
+// 两者相加使内容仍落在紧凑窗口 16dp 的页边距上。末端为 0，让尾部 48dp 图标按钮
+// 自带的 12dp 内边距把图标对齐到同一条页边距。
+private val RowOuterPadding = 4.dp
+private val RowContentPadding = PaddingValues(start = 12.dp, end = 0.dp, top = 8.dp, bottom = 8.dp)
+
+/**
+ * 网盘列表的一行。
+ *
+ * 基于 M3 Expressive 的交互式 ListItem：按压与选中的形状变化、点击与长按的语义都由
+ * 组件提供。多选时换用 checked 重载，整行即一个复选项，读屏会报告勾选状态；尾部的
+ * 复选框只作指示，不单独响应点击，符合「每项只保留一种选择交互」的规范。复选框与
+ * 更多按钮同宽，进出多选时内容不会横移。
+ *
+ * 名字最多两行。扩展名移到副标题单列，所以截断发生时丢掉的是名字中段而不是类型；
+ * 完整名字在操作面板顶部可见。
+ */
 @Composable
 fun FileItemRow(
     file: FileStat,
     isSelectionMode: Boolean,
     isSelected: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    onSelectToggle: (Boolean) -> Unit,
+    onMoreClick: () -> Unit,
+    modifier: Modifier = Modifier,
     isHighlighted: Boolean = false,
     highlightBadgeText: String = "刚秒传",
     isSpoilerBlurred: Boolean = false,
     /** 全盘搜索结果所在的目录路径。仅搜索结果需要，平时为 null。 */
     locationLabel: String? = null,
     onToggleSpoiler: () -> Unit = {},
-    onClick: () -> Unit,
-    onLongClick: () -> Unit,
-    onSelectToggle: (Boolean) -> Unit,
-    onRename: () -> Unit,
-    onDelete: () -> Unit,
-    onDownload: () -> Unit,
-    onDownloadSegment: () -> Unit = {},
-    onMove: () -> Unit = {},
-    modifier: Modifier = Modifier,
 ) {
     val haptic = LocalHapticFeedback.current
-    var showMenu by remember { mutableStateOf(false) }
+    val colors = if (isHighlighted) {
+        ListItemDefaults.colors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+        )
+    } else {
+        ListItemDefaults.colors()
+    }
+    val itemModifier = modifier
+        .fillMaxWidth()
+        .padding(horizontal = RowOuterPadding)
+        .heightIn(min = RowMinHeight)
 
-    Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .heightIn(min = 72.dp)
-            .combinedClickable(
-                onClickLabel = if (file.isFolder) "打开文件夹" else "打开文件",
-                onClick = {
-                    if (isSelectionMode) {
-                        onSelectToggle(!isSelected)
-                    } else {
-                        onClick()
-                    }
-                },
-                onLongClick = {
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onLongClick()
-                },
-            ),
-        color = when {
-            isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
-            isHighlighted -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
-            else -> MaterialTheme.colorScheme.surface
-        },
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            // 多选勾选框动画
-            AnimatedVisibility(
-                visible = isSelectionMode,
-                enter = fadeIn(),
-                exit = fadeOut(),
-            ) {
-                Checkbox(
-                    checked = isSelected,
-                    onCheckedChange = { onSelectToggle(it) },
-                    modifier = Modifier.padding(end = 8.dp),
-                )
-            }
-
-            // 图标或缩略图
-            Box(
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(MaterialTheme.shapes.small),
-                contentAlignment = Alignment.Center,
-            ) {
-                if (!file.isFolder && file.thumbnailLink.isNotEmpty()) {
-                    AsyncImage(
-                        model = file.thumbnailLink,
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop,
-                    )
-                    if (isSpoilerBlurred) {
-                        // 48dp 缩略图上的高斯模糊只是一团色块，遮蔽效果还不如不透明遮罩，
-                        // 代价却要每帧重绘。模糊留给网格视图的大图，列表只用眼睛图标。
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(MaterialTheme.colorScheme.surfaceContainerHighest)
-                                .clickable(
-                                    onClickLabel = "显示预览",
-                                    onClick = onToggleSpoiler,
-                                ),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Visibility,
-                                contentDescription = "显示预览",
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(18.dp),
-                            )
-                        }
-                    }
-                } else {
-                    Surface(
-                        modifier = Modifier.size(48.dp),
-                        shape = MaterialTheme.shapes.small,
-                        color = if (file.isFolder) {
-                            MaterialTheme.colorScheme.secondaryContainer
-                        } else {
-                            MaterialTheme.colorScheme.surfaceContainerHigh
-                        },
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            val icon = when {
-                                file.isFolder -> Icons.Outlined.Folder
-                                file.isPlayableVideo() -> Icons.Outlined.Movie
-                                file.name.endsWith(".mp3", ignoreCase = true) ||
-                                    file.name.endsWith(".flac", ignoreCase = true) ||
-                                    file.name.endsWith(".wav", ignoreCase = true) -> Icons.Outlined.AudioFile
-                                file.isPreviewableImage() -> Icons.Outlined.Image
-                                file.name.endsWith(".zip", ignoreCase = true) ||
-                                    file.name.endsWith(".rar", ignoreCase = true) ||
-                                    file.name.endsWith(".7z", ignoreCase = true) -> Icons.Outlined.FolderZip
-                                else -> Icons.Outlined.Description
-                            }
-                            Icon(
-                                imageVector = icon,
-                                contentDescription = null,
-                                tint = if (file.isFolder) {
-                                    MaterialTheme.colorScheme.primary
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                                modifier = Modifier.size(26.dp),
-                            )
-                        }
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.width(16.dp))
-
-            // 文件名称与元信息
-            Column(modifier = Modifier.weight(1f)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(
-                        text = file.name,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false),
-                    )
-                    if (isHighlighted) {
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Surface(
-                            shape = RoundedCornerShape(4.dp),
-                            color = MaterialTheme.colorScheme.primary,
-                        ) {
-                            Text(
-                                text = highlightBadgeText,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onPrimary,
-                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
-                            )
-                        }
-                    }
-                }
-                val subtitle = buildString {
-                    if (!file.isFolder) {
-                        append(file.sizeBytes.toReadableSize())
-                    } else {
-                        append("文件夹")
-                    }
-                    if (file.modifiedTime.isNotEmpty()) {
-                        append(" · ")
-                        append(file.modifiedTime.take(10))
-                    }
-                }
+    val leading: @Composable () -> Unit = {
+        FileLeadingVisual(
+            file = file,
+            isSpoilerBlurred = isSpoilerBlurred,
+            onToggleSpoiler = onToggleSpoiler,
+        )
+    }
+    val supporting: @Composable () -> Unit = {
+        Column {
+            Text(
+                text = file.metaLine(),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (!locationLabel.isNullOrEmpty()) {
+                // 路径从头截断：离命中项最近的几级目录最有辨识度
                 Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = locationLabel,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
                     maxLines = 1,
+                    overflow = TextOverflow.StartEllipsis,
                 )
-                if (!locationLabel.isNullOrEmpty()) {
-                    Text(
-                        text = locationLabel,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-
-            // 更多操作按钮
-            if (!isSelectionMode) {
-                Box {
-                    IconButton(onClick = { showMenu = true }) {
-                        Icon(
-                            imageVector = Icons.Outlined.MoreVert,
-                            contentDescription = "更多操作",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-
-                    DropdownMenu(
-                        expanded = showMenu,
-                        onDismissRequest = { showMenu = false },
-                    ) {
-                        if (!file.isFolder) {
-                            DropdownMenuItem(
-                                text = { Text("下载到本地") },
-                                leadingIcon = {
-                                    Icon(Icons.Outlined.Download, contentDescription = null)
-                                },
-                                onClick = {
-                                    showMenu = false
-                                    onDownload()
-                                },
-                            )
-                            if (file.isPlayableVideo()) {
-                                DropdownMenuItem(
-                                    text = { Text("下载指定段落") },
-                                    leadingIcon = {
-                                        Icon(
-                                            Icons.Outlined.ContentCut,
-                                            contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.primary,
-                                        )
-                                    },
-                                    onClick = {
-                                        showMenu = false
-                                        onDownloadSegment()
-                                    },
-                                )
-                            }
-                        }
-                        DropdownMenuItem(
-                            text = { Text("重命名") },
-                            leadingIcon = {
-                                Icon(Icons.Outlined.Edit, contentDescription = null)
-                            },
-                            onClick = {
-                                showMenu = false
-                                onRename()
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("移动到") },
-                            leadingIcon = {
-                                Icon(Icons.Outlined.DriveFileMove, contentDescription = null)
-                            },
-                            onClick = {
-                                showMenu = false
-                                onMove()
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("移入回收站", color = MaterialTheme.colorScheme.error) },
-                            leadingIcon = {
-                                Icon(
-                                    Icons.Outlined.Delete,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.error,
-                                )
-                            },
-                            onClick = {
-                                showMenu = false
-                                onDelete()
-                            },
-                        )
-                    }
-                }
             }
         }
+    }
+    val headline: @Composable () -> Unit = {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = file.displayTitle(),
+                fontWeight = if (file.isFolder) FontWeight.Medium else null,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            if (isHighlighted) {
+                Spacer(modifier = Modifier.width(6.dp))
+                HighlightBadge(text = highlightBadgeText)
+            }
+        }
+    }
+
+    if (isSelectionMode) {
+        ListItem(
+            checked = isSelected,
+            onCheckedChange = onSelectToggle,
+            modifier = itemModifier,
+            leadingContent = leading,
+            trailingContent = {
+                Checkbox(
+                    checked = isSelected,
+                    onCheckedChange = null,
+                    modifier = Modifier.minimumInteractiveComponentSize(),
+                )
+            },
+            supportingContent = supporting,
+            colors = colors,
+            contentPadding = RowContentPadding,
+            content = headline,
+        )
+    } else {
+        ListItem(
+            onClick = onClick,
+            modifier = itemModifier,
+            leadingContent = leading,
+            trailingContent = {
+                IconButton(onClick = onMoreClick) {
+                    Icon(
+                        imageVector = Icons.Outlined.MoreVert,
+                        contentDescription = "更多操作",
+                    )
+                }
+            },
+            supportingContent = supporting,
+            onLongClick = {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onLongClick()
+            },
+            onLongClickLabel = "多选",
+            colors = colors,
+            contentPadding = RowContentPadding,
+            content = headline,
+        )
+    }
+}
+
+/** 刚秒传进来的条目角标。 */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+fun HighlightBadge(text: String, modifier: Modifier = Modifier) {
+    Surface(
+        shape = MaterialTheme.shapes.extraSmall,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = modifier,
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmallEmphasized,
+            color = MaterialTheme.colorScheme.onPrimary,
+            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+        )
     }
 }
