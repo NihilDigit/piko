@@ -66,7 +66,7 @@ fun TasksView(
     pendingMagnet: String? = null,
     onPendingMagnetConsumed: () -> Unit = {},
 ) {
-    val taskRepo = remember(manager) { TaskRepository(manager) }
+    val taskRepo = remember(manager, driveRepository) { TaskRepository(manager, driveRepository) }
     val instantRepo = remember(manager) { InstantMagnetRepository(manager) }
     val scope = rememberCoroutineScope()
     val tasksState = remember(taskRepo) { OfflineTasksState(taskRepo, scope) }

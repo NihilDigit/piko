@@ -75,6 +75,15 @@ fun PikoMainScaffold(
         }
     }
 
+    val openDriveRequested by PikoApplication.instance.driveRepository.openDriveRequested.collectAsStateWithLifecycle()
+    LaunchedEffect(openDriveRequested) {
+        if (openDriveRequested) {
+            currentTab = MainTab.FILES
+            backStack.clear()
+            PikoApplication.instance.driveRepository.consumeOpenDriveRequest()
+        }
+    }
+
     // 若当前不在文件主页且未打开覆盖页面，按下返回键优先回到文件页
     BackHandler(enabled = currentTab != MainTab.FILES && activeOverlayScreen == null) {
         currentTab = MainTab.FILES
@@ -119,6 +128,17 @@ fun PikoMainScaffold(
                         TransfersScreen(
                             onNavigateToInstant = {
                                 currentTab = MainTab.FILES
+                            },
+                            onOpenCloudFile = { fileId, _ ->
+                                val driveRepo = PikoApplication.instance.driveRepository
+                                driveRepo.locateFolder(fileId)
+                                    .onSuccess { stack ->
+                                        // 先设好栈再切页：网盘页重新组合时直接加载栈顶目录
+                                        driveRepo.updateFolderStack(stack)
+                                        driveRepo.requestHighlight(setOf(fileId))
+                                        currentTab = MainTab.FILES
+                                    }
+                                    .isSuccess
                             },
                             onNavigateToVideoPlayer = { fileId, fileName, localPath ->
                                 backStack.add(Screen.VideoPlayer(fileId, fileName, localPath))

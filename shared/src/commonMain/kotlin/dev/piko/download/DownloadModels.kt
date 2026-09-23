@@ -32,6 +32,8 @@ data class DownloadTask(
      * 按字节算的进度会一直停在 0。
      */
     val progressFraction: Float? = null,
+    /** 加入队列的时刻，epoch 毫秒。与云端任务混排时按它排序。 */
+    val createdAtMs: Long = 0L,
 ) {
     val progress: Float
         get() = progressFraction?.coerceIn(0f, 1f)

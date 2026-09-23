@@ -5,6 +5,8 @@ import dev.piko.data.repository.FileNameSanitizer
 import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
 import dev.piko.shared.data.PikoClientProvider
+import dev.piko.shared.media.PikoMediaRepository
+import dev.piko.shared.data.runSuspendCatching
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.PikPakFileHandle
 import io.github.nihildigit.pikpak.downloadTo
@@ -20,11 +22,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.io.files.Path
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
+import kotlin.time.Clock
 import kotlin.time.TimeSource
 
 class PikoDownloadCoordinator(
@@ -33,6 +39,8 @@ class PikoDownloadCoordinator(
     private val storage: PikoDownloadStorage,
     private val scope: CoroutineScope,
     private val segmentDownloader: PikoSegmentDownloader? = null,
+    /** 片段抽取经它开本机代理会话读源文件。缺省时退回任务里存下的直链。 */
+    private val mediaRepository: PikoMediaRepository? = null,
     private val onDownloadStarted: (() -> Unit)? = null,
 ) {
     private val _tasks = MutableStateFlow<Map<String, DownloadTask>>(emptyMap())
@@ -41,6 +49,71 @@ class PikoDownloadCoordinator(
     // 视图在主线程启停任务，任务协程在 IO 线程上结束时自己摘除，两边会同时改这张表。
     // 用 StateFlow.update 的 CAS 代替普通 Map，commonMain 里没有 ConcurrentHashMap。
     private val jobs = MutableStateFlow<Map<String, Job>>(emptyMap())
+
+    init {
+        // 先恢复再开始写回：反过来的话，第一次写入的是构造时的空表，上次的记录就被抹掉了
+        scope.launch {
+            restore()
+            persistOnStructuralChange()
+        }
+    }
+
+    /**
+     * 读回上次保存的任务表。
+     *
+     * 上次进程结束时仍在下载或排队的任务，协程早已不在，一律转为暂停，由用户决定是否继续。
+     * 已完成的任务以磁盘为准核对，文件被删或长度不足的丢弃，免得列表里挂着打不开的条目。
+     */
+    private suspend fun restore() {
+        val saved = runSuspendCatching {
+            json.decodeFromString(taskListSerializer, preferences.loadDownloadTasks())
+        }.getOrDefault(emptyList())
+        if (saved.isEmpty()) return
+        val restored = withContext(Dispatchers.IO) { saved.mapNotNull { restoreTask(it) } }
+        // 恢复期间用户可能已经加了新任务，同一任务以内存里的为准
+        _tasks.update { current -> restored.associateBy { it.taskId } + current }
+    }
+
+    // 片段任务的 destinationPath 与按 fileName 在下载目录里解析出的是同一个文件，存储层
+    // 只提供按文件名查询，所以两类任务都按 fileName 核对
+    private suspend fun restoreTask(task: DownloadTask): DownloadTask? {
+        val stopped = task.copy(speedBytesPerSec = 0L)
+        if (task.status == DownloadStatus.COMPLETED) {
+            if (!storage.exists(task.fileName)) return null
+            val length = storage.existingLength(task.fileName)
+            // 片段的 totalBytes 在旧版本里一直是 0，「长度不小于 totalBytes」对空文件也成立，
+            // 抽取失败留下的 0 字节文件会被当成已完成恢复回来。片段改为要求非空，并补上大小
+            if (task.isSegment) {
+                return stopped.copy(totalBytes = length, downloadedBytes = length).takeIf { length > 0 }
+            }
+            return stopped.takeIf { length >= task.totalBytes }
+        }
+        val status = when (task.status) {
+            DownloadStatus.PENDING, DownloadStatus.DOWNLOADING -> DownloadStatus.PAUSED
+            else -> task.status
+        }
+        // 保存只在状态变化时发生，记下的字节数可能落后；整文件下载的续传点就是文件长度
+        val downloaded = if (task.isSegment) {
+            task.downloadedBytes
+        } else {
+            storage.existingLength(task.fileName).coerceAtMost(task.totalBytes)
+        }
+        return stopped.copy(status = status, downloadedBytes = downloaded)
+    }
+
+    /**
+     * 任务增删或状态变化时保存整张表。进度每 500 毫秒刷新一次，按它写盘的话，
+     * Android 的 DataStore 每次都要整份重写文件。
+     */
+    private suspend fun persistOnStructuralChange() {
+        _tasks
+            .distinctUntilChangedBy { tasks -> tasks.mapValues { it.value.status } }
+            .collect { tasks ->
+                val serialized = json.encodeToString(taskListSerializer, tasks.values.toList())
+                // 写盘失败只影响下次启动能否恢复，不能让收集协程带着异常退出
+                runSuspendCatching { preferences.saveDownloadTasks(serialized) }
+            }
+    }
 
     /**
      * 这个文件在下载目录里有没有完整副本。
@@ -77,6 +150,7 @@ class PikoDownloadCoordinator(
                 fullFileSize = file.sizeBytes,
                 thumbnailLink = file.thumbnailLink,
                 parentId = file.parentId,
+                createdAtMs = Clock.System.now().toEpochMilliseconds(),
             )
             _tasks.update { it + (task.taskId to task) }
             if (!complete) startDownload(task.taskId)
@@ -87,7 +161,8 @@ class PikoDownloadCoordinator(
     fun startDownload(taskId: String) {
         val task = _tasks.value[taskId] ?: return
         onDownloadStarted?.invoke()
-        launchTracked(taskId) { runDownload(task) }
+        // 片段任务要重新抽取，不能走整文件下载：它的 totalBytes 是 0，gcid 属于整个源文件
+        if (task.isSegment) startSegment(task) else launchTracked(taskId) { runDownload(task) }
     }
 
     /**
@@ -204,6 +279,7 @@ class PikoDownloadCoordinator(
             endMs = endMillis,
             streamUrl = sourceUrl,
             parentId = file.parentId,
+            createdAtMs = Clock.System.now().toEpochMilliseconds(),
         )
         _tasks.update { it + (taskId to task) }
         startSegment(task)
@@ -226,16 +302,45 @@ class PikoDownloadCoordinator(
         }
         launchTracked(task.taskId) {
             update(task.taskId) { it.copy(status = DownloadStatus.DOWNLOADING, progressFraction = 0f) }
-            extractor.extract(
-                PikoSegmentRequest(task.streamUrl ?: "", task.destinationPath, task.fileName, task.startMs, task.endMs),
-            ) { fraction ->
-                update(task.taskId) { it.copy(progressFraction = fraction) }
-            }.onSuccess { path ->
-                update(task.taskId) {
-                    it.copy(status = DownloadStatus.COMPLETED, destinationPath = path, progressFraction = 1f)
+            // 源地址在抽取开始时现取，经本机代理读，不用入队时存下的直链。直链绕过 SDK 的账号
+            // 连接预算，与代理、预览播放器抢连接，超出上限后 CDN 一律回 503（2026-09-23 实测），
+            // 抽取器只会不停重试；存下的直链还会过期，恢复出来的任务续做时必然失败。
+            val prepared = mediaRepository?.let { repo ->
+                repo.preparePlayback(task.fileId).getOrElse { error ->
+                    update(task.taskId) { it.copy(status = DownloadStatus.FAILED, errorMessage = error.message) }
+                    return@launchTracked
                 }
-            }.onFailure { error ->
-                update(task.taskId) { it.copy(status = DownloadStatus.FAILED, errorMessage = error.message) }
+            }
+            val sourceUrl = prepared?.let { it.proxyUrl ?: it.info.currentUrl } ?: task.streamUrl.orEmpty()
+            try {
+                extractor.extract(
+                    PikoSegmentRequest(
+                        sourceUrl = sourceUrl,
+                        destinationPath = task.destinationPath,
+                        fileName = task.fileName,
+                        startMillis = task.startMs,
+                        endMillis = task.endMs,
+                        openRandomAccess = mediaRepository?.let { repo -> { repo.openRandomAccess(task.fileId).getOrThrow() } },
+                    ),
+                ) { fraction ->
+                    update(task.taskId) { it.copy(progressFraction = fraction) }
+                }.onSuccess { path ->
+                    // 片段入队时不知道产物大小，totalBytes 一直是 0，列表会显示 0 B，完成后按实际文件补上
+                    val size = runSuspendCatching { storage.existingLength(task.fileName) }.getOrDefault(0L)
+                    update(task.taskId) {
+                        it.copy(
+                            status = DownloadStatus.COMPLETED,
+                            destinationPath = path,
+                            progressFraction = 1f,
+                            totalBytes = size,
+                            downloadedBytes = size,
+                        )
+                    }
+                }.onFailure { error ->
+                    update(task.taskId) { it.copy(status = DownloadStatus.FAILED, errorMessage = error.message) }
+                }
+            } finally {
+                prepared?.close()
             }
         }
     }
@@ -311,5 +416,7 @@ class PikoDownloadCoordinator(
 
     private companion object {
         const val PROGRESS_INTERVAL_MS = 500L
+        val json = Json { ignoreUnknownKeys = true }
+        val taskListSerializer = ListSerializer(DownloadTask.serializer())
     }
 }

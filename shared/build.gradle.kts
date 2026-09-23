@@ -10,7 +10,7 @@ kotlin {
     android {
         namespace = "dev.piko.shared"
         compileSdk {
-            version = release(37)
+            version = release(37) { minorApiLevel = 1 }
         }
     }
     jvm("desktop")
@@ -18,6 +18,8 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             implementation(libs.kotlinx.coroutines.core)
+            // 下载任务表以 JSON 存入偏好。SDK 以 implementation 声明它，不会传递过来
+            implementation(libs.kotlinx.serialization.json)
             implementation(libs.kotlinx.datetime)
             implementation(libs.kotlinx.io.core)
             // PikPakClient 的构造参数里有 HttpClient，SDK 却只把 Ktor 声明为 runtime 依赖

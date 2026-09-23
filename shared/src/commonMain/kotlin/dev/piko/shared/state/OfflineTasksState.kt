@@ -67,6 +67,30 @@ class OfflineTasksState(
         }
     }
 
+    /** 以原链接重新提交，旧记录随之删除。成功后先从列表里摘掉旧记录，新任务由重新拉取带回。 */
+    fun resubmit(task: OfflineTask) {
+        scope.launch {
+            taskRepo.resubmitTask(task)
+                .onSuccess {
+                    tasks = tasks.filterNot { it.id == task.id }
+                    launchFetch(notifyFailure = false)
+                }
+                .onFailure { err -> _messages.tryEmit("重新提交失败") }
+        }
+    }
+
+    /** 删除任务记录，不删已产出的文件。 */
+    fun delete(taskId: String) {
+        scope.launch {
+            taskRepo.deleteTasks(listOf(taskId))
+                .onSuccess {
+                    tasks = tasks.filterNot { it.id == taskId }
+                    launchFetch(notifyFailure = false)
+                }
+                .onFailure { err -> _messages.tryEmit("删除任务失败") }
+        }
+    }
+
     private fun launchFetch(notifyFailure: Boolean) {
         // 连点刷新只保留最后一次，旧请求晚到的结果不能盖掉新的
         refreshJob?.cancel()
@@ -83,7 +107,7 @@ class OfflineTasksState(
                 .onFailure { err ->
                     val reason = err.message ?: "网络错误"
                     loadError = reason
-                    if (notifyFailure) _messages.tryEmit("加载离线任务失败: $reason")
+                    if (notifyFailure) _messages.tryEmit("加载离线任务失败")
                 }
         } finally {
             isLoading = false
