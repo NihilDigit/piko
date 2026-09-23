@@ -63,8 +63,8 @@ class MobilePlayerControlsTest {
     fun doubleTapSeeksTowardTheTappedSide() {
         setControls()
         // 25% 而不是更靠边：左缘中部是锁定键
-        rule.onRoot().performTouchInput { doubleClick(Offset(width * 0.25f, centerY)) }
-        rule.onRoot().performTouchInput { doubleClick(Offset(width * 0.9f, centerY)) }
+        rule.onRoot().performTouchInput { doubleClick(Offset(width * 0.25f, height * GESTURE_Y_FRACTION)) }
+        rule.onRoot().performTouchInput { doubleClick(Offset(width * 0.9f, height * GESTURE_Y_FRACTION)) }
         rule.waitForIdle()
 
         assertEquals(START_MILLIS - SEEK_STEP_MILLIS, seeks[0])
@@ -77,7 +77,7 @@ class MobilePlayerControlsTest {
     fun horizontalDragPreviewsAndCommitsOnlyOnRelease() {
         setControls()
         rule.onRoot().performTouchInput {
-            down(Offset(width * 0.3f, centerY))
+            down(Offset(width * 0.3f, height * GESTURE_Y_FRACTION))
             moveBy(Offset(width * 0.25f, 0f))
         }
         rule.waitForIdle()
@@ -132,5 +132,9 @@ class MobilePlayerControlsTest {
         const val START_MILLIS = 60_000L
         const val DURATION_MILLIS = 600_000L
         const val LONG_PRESS_WAIT_MILLIS = 1_000L
+
+        // 手势要落在手势层上。控件初始可见，垂直居中那一行是后退、播放、前进按钮，
+        // 点在那一行会被按钮接走：双击变成两次按钮 seek，拖动也到不了手势层
+        const val GESTURE_Y_FRACTION = 0.3f
     }
 }
