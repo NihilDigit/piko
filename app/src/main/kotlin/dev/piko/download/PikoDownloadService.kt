@@ -21,7 +21,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 /**
@@ -49,18 +48,34 @@ class PikoDownloadService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val initialNotification = buildNotification("正在准备下载...", 0, 0, 0L)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
+        try {
+            ServiceCompat.startForeground(
+                this,
                 NOTIFICATION_ID,
                 initialNotification,
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
             )
-        } else {
-            startForeground(NOTIFICATION_ID, initialNotification)
+        } catch (e: RuntimeException) {
+            // Android 12 起应用在后台时不能进入前台服务（ForegroundServiceStartNotAllowedException），
+            // Android 15 起 dataSync 用满当日时长后也会被拒。下载协程本身不依赖服务，
+            // 应用回到前台后下一次启动下载会重新拉起服务
+            stopSelf()
+            return START_NOT_STICKY
         }
 
         startObservingDownloadsIfNeeded()
         return START_NOT_STICKY
+    }
+
+    /**
+     * Android 15 起 dataSync 类型 24 小时内累计只能运行 6 小时，到时系统回调这里，
+     * 几秒内不停止服务应用就会崩溃。任务转为暂停而不是失败：文件长度即断点，
+     * 用户回到应用可以原地继续。
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        PikoApplication.instance.downloadManager.pauseAll()
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        stopSelf()
     }
 
     private fun startObservingDownloadsIfNeeded() {
@@ -68,12 +83,18 @@ class PikoDownloadService : Service() {
 
         observeJob = serviceScope.launch {
             val downloadManager = PikoApplication.instance.downloadManager
-            downloadManager.tasks.collectLatest { tasksMap ->
+            // 用 collect 而非 collectLatest，每轮末尾等一秒：StateFlow 本身是合并的，等待期间的
+            // 中间值直接跳过，通知更新被压到每秒一次。系统对单个应用的通知更新有频率上限，
+            // 超出的直接丢弃，多发只是白白重建 Notification
+            downloadManager.tasks.collect { tasksMap ->
                 val activeTasks = tasksMap.values.filter { it.status == DownloadStatus.DOWNLOADING }
                 if (activeTasks.isEmpty()) {
-                    // 没有正在下载的任务，延迟 2 秒后若仍无任务则优雅退出前台
+                    // 没有正在下载的任务，延迟 2 秒后若仍无任务则优雅退出前台。
+                    // PENDING 也算活跃：新任务要先查一次本地长度才转为 DOWNLOADING
                     delay(2000)
-                    val stillActive = downloadManager.tasks.value.values.any { it.status == DownloadStatus.DOWNLOADING }
+                    val stillActive = downloadManager.tasks.value.values.any {
+                        it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.PENDING
+                    }
                     if (!stillActive) {
                         ServiceCompat.stopForeground(this@PikoDownloadService, ServiceCompat.STOP_FOREGROUND_REMOVE)
                         stopSelf()
@@ -101,6 +122,7 @@ class PikoDownloadService : Service() {
                         totalBytes = totalBytes,
                     )
                     notificationManager.notify(NOTIFICATION_ID, notification)
+                    delay(NOTIFICATION_INTERVAL_MS)
                 }
             }
         }
@@ -167,6 +189,7 @@ class PikoDownloadService : Service() {
 
     companion object {
         private const val NOTIFICATION_ID = 9527
+        private const val NOTIFICATION_INTERVAL_MS = 1_000L
         private const val CHANNEL_ID = "piko_download_channel"
 
         fun start(context: Context) {

@@ -25,7 +25,15 @@ data class DownloadTask(
     val startMs: Long = 0L,
     val endMs: Long = 0L,
     val streamUrl: String? = null,
+    /** 源文件所在目录。云端文件对象失效时 SDK 在这里重建，缺省会落到网盘根目录。 */
+    val parentId: String = "",
+    /**
+     * 按比例上报的进度。片段抽取事先不知道产物大小，totalBytes 为 0，
+     * 按字节算的进度会一直停在 0。
+     */
+    val progressFraction: Float? = null,
 ) {
     val progress: Float
-        get() = if (totalBytes > 0) (downloadedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f) else 0f
+        get() = progressFraction?.coerceIn(0f, 1f)
+            ?: if (totalBytes > 0) (downloadedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f) else 0f
 }
