@@ -3,10 +3,12 @@ name: Windows Desktop
 on:
   push:
     branches: [main]
-    # 发版 tag 与 Android release.yml 共用 vMAJOR.MINOR.PATCH；
-    # tag 构建会把版本号喂给 MSI/zip，并把 zip 挂到 GitHub Release 上。
-    tags:
-      - 'v*'
+    # 发版 tag 暂不触发：compose-fluent v0.1.0 按 CMP 1.12 编译，在 CMP 1.13 上调用
+    # BlurEffect.convertRadiusToSigma 抛 NoSuchMethodError，窗口一画带阴影的组件就崩。
+    # 桌面端改用 commonMain 的 M3 界面后恢复下面两行；tag 构建会把版本号喂给 MSI/zip，
+    # 并把 zip 挂到 Android release.yml 建的 GitHub Release 上。
+    # tags:
+    #   - 'v*'
   pull_request:
 
 concurrency:
