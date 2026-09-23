@@ -224,7 +224,7 @@ private val SortChoices = listOf(
 )
 
 /**
- * 列表页眉：条目统计、排序、视图切换。
+ * 列表页眉：搜索时的结果说明、排序、视图切换。
  *
  * 排序与视图切换原先挤在顶栏，与新建、搜索一起共四个图标。M3 顶栏规范建议只放一到
  * 两个动作；这两个是作用于列表本身的控件，放进随列表滚走的页眉，不再常驻占位。
@@ -232,7 +232,7 @@ private val SortChoices = listOf(
  */
 @Composable
 internal fun DriveListHeader(
-    summary: String,
+    summary: String?,
     sortOrder: FileSortOrder,
     onSortChange: (FileSortOrder) -> Unit,
     isGridMode: Boolean,
@@ -245,14 +245,18 @@ internal fun DriveListHeader(
             .heightIn(min = 48.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = summary,
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
+        if (summary != null) {
+            Text(
+                text = summary,
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+        } else {
+            Spacer(modifier = Modifier.weight(1f))
+        }
         Box {
             TextButton(onClick = { showSortMenu = true }) {
                 Icon(

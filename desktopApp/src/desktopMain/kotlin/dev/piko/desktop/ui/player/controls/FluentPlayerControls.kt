@@ -51,6 +51,7 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.piko.shared.media.player.PlayerAspectRatio
 import io.github.composefluent.FluentTheme
 import io.github.composefluent.animation.FluentDuration
 import io.github.composefluent.animation.FluentEasing

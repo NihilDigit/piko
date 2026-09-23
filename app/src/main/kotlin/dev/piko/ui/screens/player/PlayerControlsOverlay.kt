@@ -29,6 +29,7 @@ import androidx.compose.ui.platform.LocalAccessibilityManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import dev.piko.shared.media.player.PlayerAspectRatio
 import kotlinx.coroutines.delay
 
 /**

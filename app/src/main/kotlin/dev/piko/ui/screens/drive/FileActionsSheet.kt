@@ -33,7 +33,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.ui.components.FileTypeIcon
-import dev.piko.ui.components.metaLine
+import dev.piko.ui.components.MetaRow
+import dev.piko.ui.components.metaParts
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.launch
 
@@ -98,11 +99,18 @@ internal fun FileActionsSheet(
                     )
                 }
                 Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = file.metaLine(includeDate = false) + modifiedLabel(file),
+                MetaRow(
+                    parts = file.metaParts(includeDate = false),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                modifiedLabel(file)?.let { label ->
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 if (!locationLabel.isNullOrEmpty()) {
                     Text(
                         text = locationLabel,
@@ -128,10 +136,10 @@ internal fun FileActionsSheet(
     }
 }
 
-private fun modifiedLabel(file: FileStat): String {
-    if (file.modifiedTime.isEmpty()) return ""
+private fun modifiedLabel(file: FileStat): String? {
+    if (file.modifiedTime.isEmpty()) return null
     // ISO 8601 取到分钟：2024-05-01T12:34:56.789+08:00 -> 2024-05-01 12:34
-    return " · 修改于 " + file.modifiedTime.take(16).replace('T', ' ')
+    return "修改于 " + file.modifiedTime.take(16).replace('T', ' ')
 }
 
 @Composable

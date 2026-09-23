@@ -4,7 +4,9 @@ import android.os.Build
 import androidx.annotation.RequiresApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
@@ -16,7 +18,9 @@ import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.remember
@@ -29,6 +33,8 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
@@ -62,17 +68,49 @@ fun FileStat.extensionLabel(): String? {
 fun FileStat.displayTitle(): String =
     if (extensionLabel() != null) name.substringBeforeLast('.') else name
 
-/** 副标题：文件为「类型 · 大小 · 日期」，文件夹为「文件夹 · 日期」。 */
-fun FileStat.metaLine(includeDate: Boolean = true): String = buildString {
+/** 副标题的各段：文件为类型、大小、日期，文件夹为「文件夹」、日期。由 [MetaRow] 排成一行。 */
+fun FileStat.metaParts(includeDate: Boolean = true): List<String> = buildList {
     if (isFolder) {
-        append("文件夹")
+        add("文件夹")
     } else {
-        extensionLabel()?.let { append(it).append(" · ") }
-        append(sizeBytes.toReadableSize())
+        extensionLabel()?.let { add(it) }
+        add(sizeBytes.toReadableSize())
     }
-    if (includeDate && modifiedTime.isNotEmpty()) {
-        append(" · ")
-        append(modifiedTime.take(10))
+    if (includeDate && modifiedTime.isNotEmpty()) add(modifiedTime.take(10))
+}
+
+// 元数据各段之间的间距，取 M3 列表项内部元素间距 12dp
+private val MetaPartSpacing = 12.dp
+
+/**
+ * 把几段元数据排成一行，段与段之间只靠间距分开，不插分隔符。
+ *
+ * 宽度不够时（窄屏或大字号）只让最后一段省略，前面的类型与大小总是完整的。
+ * 文字样式与颜色默认继承所在槽位，放进 ListItem 的 supportingContent 时自动是副文本样式。
+ */
+@Composable
+fun MetaRow(
+    parts: List<String>,
+    modifier: Modifier = Modifier,
+    style: TextStyle = LocalTextStyle.current,
+    color: Color = Color.Unspecified,
+) {
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(MetaPartSpacing),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        parts.forEachIndexed { index, part ->
+            Text(
+                text = part,
+                style = style,
+                color = color,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
+                modifier = if (index == parts.lastIndex) Modifier.weight(1f, fill = false) else Modifier,
+            )
+        }
     }
 }
 

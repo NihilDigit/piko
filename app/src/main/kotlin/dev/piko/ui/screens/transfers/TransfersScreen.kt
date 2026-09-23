@@ -81,7 +81,6 @@ fun TransfersScreen(
         ModalBottomSheet(
             onDismissRequest = { showCloudTasksSheet = false },
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            shape = MaterialTheme.shapes.large,
         ) {
             CloudTasksSheetContent(
                 runningTasks = runningTasks,

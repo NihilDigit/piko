@@ -58,7 +58,7 @@ import dev.piko.shared.state.InstantSheetState
 import dev.piko.ui.components.FolderPickerDialog
 import dev.piko.ui.components.PikoLoadingIndicator
 import dev.piko.ui.components.toReadableSize
-import dev.piko.ui.theme.LocalFixedColors
+import dev.piko.ui.theme.LocalStatusColors
 
 /**
  * 嵌入在 BottomSheet 里的秒传与磁力确认工作台。
@@ -362,7 +362,7 @@ fun InstantSheetContent(
                                 imageVector = if (item.isInstantReady) Icons.Outlined.Check else Icons.Outlined.ErrorOutline,
                                 contentDescription = if (item.isInstantReady) "云端已有，可秒传" else "云端没有，需下载",
                                 tint = if (item.isInstantReady) {
-                                    LocalFixedColors.current.InstantMatchGreen
+                                    LocalStatusColors.current.success
                                 } else {
                                     MaterialTheme.colorScheme.onSurfaceVariant
                                 },

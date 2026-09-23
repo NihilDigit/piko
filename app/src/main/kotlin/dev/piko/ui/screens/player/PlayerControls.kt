@@ -87,6 +87,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import dev.piko.shared.media.player.PlayerAspectRatio
 import kotlinx.coroutines.delay
 import java.math.BigDecimal
 import java.math.RoundingMode

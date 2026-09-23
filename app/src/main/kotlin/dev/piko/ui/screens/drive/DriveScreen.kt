@@ -331,7 +331,7 @@ fun DriveScreen(
                                 bottomPadding = bottomPadding,
                                 header = {
                                     DriveListHeader(
-                                        summary = listSummary(state, displayedFiles),
+                                        summary = searchSummary(state, displayedFiles),
                                         sortOrder = state.sortOrder,
                                         onSortChange = { state.changeSortOrder(it) },
                                         isGridMode = isGridMode,
@@ -496,18 +496,15 @@ fun DriveScreen(
 // 能完整滚出 FAB 的遮挡。
 private val FabClearance = 88.dp
 
-private fun listSummary(state: DriveScreenState, files: List<FileStat>): String {
-    if (state.isGlobalSearchActive) {
-        return if (state.isGlobalSearching) "全盘搜索中，已找到 ${files.size} 项" else "全盘找到 ${files.size} 项"
-    }
-    if (state.searchQuery.isNotBlank()) return "当前文件夹找到 ${files.size} 项"
-    val folderCount = files.count(FileStat::isFolder)
-    val fileCount = files.size - folderCount
-    return when {
-        folderCount == 0 -> "$fileCount 个文件"
-        fileCount == 0 -> "$folderCount 个文件夹"
-        else -> "$folderCount 个文件夹 · $fileCount 个文件"
-    }
+/**
+ * 页眉左侧的说明，只在搜索时出现：全盘搜索是逐层遍历，需要告诉用户仍在进行、已找到多少。
+ * 平时不显示条目计数，文件夹与文件的区分由各行的图标承担。
+ */
+private fun searchSummary(state: DriveScreenState, files: List<FileStat>): String? = when {
+    state.isGlobalSearchActive ->
+        if (state.isGlobalSearching) "全盘搜索中，已找到 ${files.size} 项" else "全盘找到 ${files.size} 项"
+    state.searchQuery.isNotBlank() -> "当前文件夹找到 ${files.size} 项"
+    else -> null
 }
 
 private fun foldBannerOrNull(state: DriveScreenState): (@Composable () -> Unit)? {

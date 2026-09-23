@@ -230,23 +230,34 @@ private fun DownloadTaskCard(
                             text = task.fileName,
                             style = FluentTheme.typography.bodyStrong,
                         )
-                        val statusDesc = when (task.status) {
-                            DownloadStatus.DOWNLOADING -> {
-                                val dlStr = formatBytes(task.downloadedBytes)
+                        // 状态词与各段数据各占一个 Text，靠间距分开，不拼分隔符
+                        val statusParts = when (task.status) {
+                            DownloadStatus.DOWNLOADING -> buildList {
                                 val totalStr = if (task.totalBytes > 0) formatBytes(task.totalBytes) else "未知"
-                                val speedStr = if (task.speedBytesPerSec > 0) " (${formatBytes(task.speedBytesPerSec)}/s)" else ""
-                                "下载中 · $dlStr / $totalStr$speedStr"
+                                add("下载中")
+                                add("${formatBytes(task.downloadedBytes)} / $totalStr")
+                                if (task.speedBytesPerSec > 0) add("${formatBytes(task.speedBytesPerSec)}/s")
                             }
-                            DownloadStatus.COMPLETED -> "已完成 · ${formatBytes(task.totalBytes.coerceAtLeast(task.downloadedBytes))}"
-                            DownloadStatus.PAUSED -> "已暂停 · ${formatBytes(task.downloadedBytes)} / ${formatBytes(task.totalBytes)}"
-                            DownloadStatus.FAILED -> "失败 · ${task.errorMessage ?: "未知错误"}"
-                            DownloadStatus.PENDING -> "等待中…"
+                            DownloadStatus.COMPLETED -> listOf(
+                                "已完成",
+                                formatBytes(task.totalBytes.coerceAtLeast(task.downloadedBytes)),
+                            )
+                            DownloadStatus.PAUSED -> listOf(
+                                "已暂停",
+                                "${formatBytes(task.downloadedBytes)} / ${formatBytes(task.totalBytes)}",
+                            )
+                            DownloadStatus.FAILED -> listOf("失败", task.errorMessage ?: "未知错误")
+                            DownloadStatus.PENDING -> listOf("等待中")
                         }
-                        Text(
-                            text = statusDesc,
-                            style = FluentTheme.typography.caption,
-                            color = FluentTheme.colors.text.text.secondary,
-                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            statusParts.forEach { part ->
+                                Text(
+                                    text = part,
+                                    style = FluentTheme.typography.caption,
+                                    color = FluentTheme.colors.text.text.secondary,
+                                )
+                            }
+                        }
                     }
                 }
 

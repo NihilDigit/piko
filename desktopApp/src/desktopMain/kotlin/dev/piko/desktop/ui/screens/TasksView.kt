@@ -294,18 +294,23 @@ private fun TaskCard(task: OfflineTask) {
                             text = displayName,
                             style = FluentTheme.typography.bodyStrong,
                         )
-                        val statusDesc = when (task.phase) {
-                            TaskPhase.COMPLETE -> "已完成 · 云端就绪"
-                            TaskPhase.RUNNING -> "云端下载中 · ${task.progress}%"
-                            TaskPhase.PENDING -> "排队等待中…"
-                            TaskPhase.ERROR -> "下载失败 · ${task.message.ifEmpty { "未知错误" }}"
-                            else -> task.phase
+                        // 状态词与详情各占一个 Text，靠间距分开，不拼分隔符
+                        val statusParts = when (task.phase) {
+                            TaskPhase.COMPLETE -> listOf("已完成", "云端就绪")
+                            TaskPhase.RUNNING -> listOf("云端下载中", "${task.progress}%")
+                            TaskPhase.PENDING -> listOf("排队等待中")
+                            TaskPhase.ERROR -> listOf("下载失败", task.message.ifEmpty { "未知错误" })
+                            else -> listOf(task.phase)
                         }
-                        Text(
-                            text = statusDesc,
-                            style = FluentTheme.typography.caption,
-                            color = FluentTheme.colors.text.text.secondary,
-                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            statusParts.forEach { part ->
+                                Text(
+                                    text = part,
+                                    style = FluentTheme.typography.caption,
+                                    color = FluentTheme.colors.text.text.secondary,
+                                )
+                            }
+                        }
                     }
                 }
 

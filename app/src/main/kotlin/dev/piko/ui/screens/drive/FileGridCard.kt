@@ -40,7 +40,8 @@ import dev.piko.ui.components.GridSpoilerBlur
 import dev.piko.ui.components.HighlightBadge
 import dev.piko.ui.components.SpoilerThumbnail
 import dev.piko.ui.components.displayTitle
-import dev.piko.ui.components.metaLine
+import dev.piko.ui.components.MetaRow
+import dev.piko.ui.components.metaParts
 import io.github.nihildigit.pikpak.FileStat
 
 @Composable
@@ -229,12 +230,10 @@ internal fun FileGridCard(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Text(
-                    text = file.metaLine(includeDate = false),
+                MetaRow(
+                    parts = file.metaParts(includeDate = false),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
                 )
             }
             CardTrailing(isSelectionMode, isSelected, onMoreClick)

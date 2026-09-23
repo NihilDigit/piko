@@ -98,11 +98,7 @@ fun FileItemRow(
     }
     val supporting: @Composable () -> Unit = {
         Column {
-            Text(
-                text = file.metaLine(),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            MetaRow(parts = file.metaParts())
             if (!locationLabel.isNullOrEmpty()) {
                 // 路径从头截断：离命中项最近的几级目录最有辨识度
                 Text(

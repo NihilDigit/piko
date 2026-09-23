@@ -11,6 +11,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.use
+import dev.piko.shared.media.player.PlayerAspectRatio
 import io.github.composefluent.FluentTheme
 import io.github.composefluent.darkColors
 import java.io.File

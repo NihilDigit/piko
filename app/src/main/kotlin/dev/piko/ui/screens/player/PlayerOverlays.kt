@@ -361,7 +361,7 @@ internal fun PlayerPlaylistSheet(
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
     ) {
         Text(
-            text = "同目录视频 · ${videos.size}",
+            text = "同目录视频",
             style = MaterialTheme.typography.titleMedium,
             modifier = Modifier.padding(start = 24.dp, end = 24.dp, bottom = 8.dp),
         )

@@ -146,17 +146,19 @@ class PikoDownloadService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
+        // 速度放进 subText 这个独立字段，由系统排在通知头部，不在正文里拼分隔符
         val speedText = if (speedBytesPerSec > 0) "${speedBytesPerSec.toReadableSize()}/s" else "--/s"
         val contentText = if (totalBytes > 0) {
-            "${downloadedBytes.toReadableSize()} / ${totalBytes.toReadableSize()} • $speedText"
+            "${downloadedBytes.toReadableSize()} / ${totalBytes.toReadableSize()}"
         } else {
-            "传输中 • $speedText"
+            "传输中"
         }
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setContentTitle(title)
             .setContentText(contentText)
+            .setSubText(speedText)
             .setProgress(total, progress, total == 0)
             .setOngoing(true)
             .setOnlyAlertOnce(true)

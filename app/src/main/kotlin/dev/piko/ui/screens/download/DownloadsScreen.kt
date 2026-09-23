@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -62,6 +63,7 @@ import dev.piko.PikoApplication
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
+import dev.piko.ui.components.MetaRow
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.toReadableSize
@@ -142,18 +144,29 @@ private fun DownloadTask.typeIcon(): ImageVector = when {
     else -> Icons.Outlined.Description
 }
 
-private fun DownloadTask.statusLine(): String = when (status) {
-    DownloadStatus.COMPLETED -> "已完成 · ${totalBytes.toReadableSize()}"
-    DownloadStatus.DOWNLOADING -> buildString {
-        append("${downloadedBytes.toReadableSize()} / ${totalBytes.toReadableSize()}")
-        if (speedBytesPerSec > 0) {
-            append(" · ")
-            append("${String.format("%.2f", speedBytesPerSec / (1024 * 1024f))} MB/s")
+/** 状态词。下载中没有状态词：进度条与速度已经说明它在下载。 */
+private fun DownloadTask.statusLabel(): String? = when (status) {
+    DownloadStatus.COMPLETED -> "已完成"
+    DownloadStatus.DOWNLOADING -> null
+    DownloadStatus.PAUSED -> "已暂停"
+    DownloadStatus.PENDING -> "等待中"
+    DownloadStatus.FAILED -> "下载失败"
+}
+
+/** 状态词之后的各段数据。失败原因可能很长，不在这里，单独占一行。 */
+private fun DownloadTask.statusDetails(): List<String> {
+    val progress = "${downloadedBytes.toReadableSize()} / ${totalBytes.toReadableSize()}"
+    return when (status) {
+        DownloadStatus.COMPLETED, DownloadStatus.PENDING -> listOf(totalBytes.toReadableSize())
+        DownloadStatus.DOWNLOADING -> buildList {
+            add(progress)
+            if (speedBytesPerSec > 0) {
+                add("${String.format("%.2f", speedBytesPerSec / (1024 * 1024f))} MB/s")
+            }
         }
+        DownloadStatus.PAUSED -> listOf(progress)
+        DownloadStatus.FAILED -> emptyList()
     }
-    DownloadStatus.PAUSED -> "已暂停 · ${downloadedBytes.toReadableSize()} / ${totalBytes.toReadableSize()}"
-    DownloadStatus.PENDING -> "等待中 · ${totalBytes.toReadableSize()}"
-    DownloadStatus.FAILED -> "下载失败：${errorMessage ?: "网络中断"}"
 }
 
 @Composable
@@ -219,12 +232,26 @@ private fun DownloadTaskRow(
                         color = MaterialTheme.colorScheme.primary,
                     )
                 }
-                Text(
-                    text = task.statusLine(),
-                    color = statusColor,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    task.statusLabel()?.let { label ->
+                        Text(text = label, color = statusColor, maxLines = 1)
+                    }
+                    MetaRow(
+                        parts = task.statusDetails(),
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                }
+                if (task.status == DownloadStatus.FAILED) {
+                    Text(
+                        text = task.errorMessage ?: "网络中断",
+                        color = statusColor,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 if (task.status != DownloadStatus.COMPLETED) {
                     Spacer(modifier = Modifier.height(6.dp))
                     LinearProgressIndicator(
