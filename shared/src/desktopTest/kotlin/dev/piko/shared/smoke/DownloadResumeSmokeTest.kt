@@ -1,15 +1,19 @@
 package dev.piko.shared.smoke
 
 import dev.piko.download.DownloadStatus
+import dev.piko.download.DownloadTask
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.download.PikoDownloadStorage
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
 import java.io.File
 import java.nio.file.Files
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /** 与 DesktopPikoDownloadStorage 同样的落盘方式：普通目录，写入即最终位置。 */
@@ -58,4 +62,56 @@ class DownloadResumeSmokeTest {
         assertContentEquals(content, local.readBytes())
         directory.deleteRecursively()
     }
+
+    /**
+     * 防的是重启后任务表失真：上次在下载的任务协程已不在，却仍显示「下载中」且无法暂停；
+     * 已完成但文件被删的任务留在列表里，点开是坏链接。同时核对清理结果写回了偏好。
+     */
+    @Test
+    fun `restoring the saved table pauses interrupted tasks and drops missing files`() = smoke { scope ->
+        val directory = Files.createTempDirectory("piko-smoke").toFile()
+        directory.resolve("partial.mkv").writeBytes(ByteArray(100))
+        directory.resolve("kept.mkv").writeBytes(ByteArray(300))
+        val serializer = ListSerializer(DownloadTask.serializer())
+        val prefs = MemoryPreferences()
+        prefs.downloadTasks = Json.encodeToString(
+            serializer,
+            listOf(
+                savedTask("partial", totalBytes = 1_000, status = DownloadStatus.DOWNLOADING, downloadedBytes = 40),
+                savedTask("kept", totalBytes = 300, status = DownloadStatus.COMPLETED, downloadedBytes = 300),
+                savedTask("gone", totalBytes = 300, status = DownloadStatus.COMPLETED, downloadedBytes = 300),
+            ),
+        )
+
+        val coordinator = PikoDownloadCoordinator(
+            FakePikPakServer().provider(),
+            prefs,
+            DirectoryStorage(directory),
+            scope,
+        )
+        awaitUntil("任务表恢复完成") { coordinator.tasks.value.isNotEmpty() }
+
+        val restored = coordinator.tasks.value
+        assertEquals(setOf("partial", "kept"), restored.keys)
+        assertEquals(DownloadStatus.PAUSED, restored.getValue("partial").status)
+        assertEquals(100L, restored.getValue("partial").downloadedBytes, "续传点应以磁盘上的文件长度为准")
+        awaitUntil("清理结果写回偏好") {
+            Json.decodeFromString(serializer, prefs.downloadTasks).map { it.taskId }.toSet() == restored.keys
+        }
+        assertFalse(prefs.downloadTasks.contains("gone"))
+        directory.deleteRecursively()
+    }
+
+    private fun savedTask(name: String, totalBytes: Long, status: DownloadStatus, downloadedBytes: Long) =
+        DownloadTask(
+            taskId = name,
+            fileId = name,
+            fileName = "$name.mkv",
+            gcid = "GCID$name",
+            totalBytes = totalBytes,
+            downloadedBytes = downloadedBytes,
+            speedBytesPerSec = 1_024,
+            status = status,
+            destinationPath = "$name.mkv",
+        )
 }

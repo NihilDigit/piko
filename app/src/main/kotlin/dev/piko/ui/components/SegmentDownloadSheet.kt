@@ -1,72 +1,57 @@
-@file:OptIn(
-    androidx.compose.material3.ExperimentalMaterial3Api::class,
-)
-
 package dev.piko.ui.components
 
-import kotlin.OptIn
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.ContentCut
 import androidx.compose.material.icons.outlined.Download
-import androidx.compose.material.icons.outlined.Speed
-import androidx.compose.material.icons.outlined.Timer
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RangeSlider
-import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.material3.ToggleButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.PikoApplication
 import dev.piko.shared.media.PlayableMediaInfo
-import io.github.nihildigit.pikpak.FileStat
-import java.util.Locale
 import dev.piko.shared.media.player.PlaybackTarget
 import dev.piko.ui.screens.player.MpvPlaybackBackend
 import dev.piko.ui.screens.player.MpvVideoSurface
+import io.github.nihildigit.pikpak.FileStat
+import kotlinx.coroutines.delay
+import java.util.Locale
 
 fun formatTimeMs(ms: Long): String {
     val totalSec = (ms / 1000L).coerceAtLeast(0L)
@@ -80,10 +65,17 @@ fun formatTimeMs(ms: Long): String {
     }
 }
 
+private enum class Handle(val label: String) { START("起点"), END("终点") }
+
+// 片段至少这么长：再短抽出来只剩关键帧前后的零头
+private const val MIN_CLIP_MS = 500L
+
 /**
- * 视频段落下载配置弹窗：
- * 提供起点与终点两处画面的实时帧预览，微调步进控制与时长/文件体积估算，
- * 确认后交由 SDK 的 8 连接并发分块滑动窗口机制进行段落流式写入。
+ * 下载视频片段：选起点与终点，原画质无损抽取为 MP4。
+ *
+ * 只放一个预览，用「起点 | 终点」切换它显示哪一端；拖动区间滑块时自动跟随被拖的那一端。
+ * 原先两张半屏宽的预览并排，画面小到看不清，且各开一个代理会话，白占一份账号连接预算。
+ * 取消靠下滑关闭面板，不另设按钮。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -97,374 +89,241 @@ fun SegmentDownloadSheet(
 
     var mediaInfo by remember { mutableStateOf<PlayableMediaInfo?>(null) }
     var isLoading by remember { mutableStateOf(true) }
-
     var totalDurationMs by remember { mutableLongStateOf(0L) }
     var startPosMs by remember { mutableLongStateOf(0L) }
     var endPosMs by remember { mutableLongStateOf(0L) }
+    var editing by remember { mutableStateOf(Handle.START) }
 
-    // 初始化获取视频直链与时长
     LaunchedEffect(file.id) {
         isLoading = true
-        val res = mediaRepo.prepareMedia(file.id)
-        isLoading = false
-        res.onSuccess { info ->
+        mediaRepo.prepareMedia(file.id).onSuccess { info ->
             mediaInfo = info
-            val dur = info.durationSeconds * 1000L
-            if (dur > 0) {
-                totalDurationMs = dur
+            val duration = info.durationSeconds * 1000L
+            if (duration > 0) {
+                totalDurationMs = duration
                 startPosMs = 0L
-                endPosMs = minOf(dur, 60_000L) // 默认前 1 分钟段落
+                endPosMs = minOf(duration, 60_000L)
             }
+        }
+        isLoading = false
+    }
+
+    val editingPosition = if (editing == Handle.START) startPosMs else endPosMs
+    fun nudge(deltaMs: Long) {
+        when (editing) {
+            Handle.START -> startPosMs = (startPosMs + deltaMs).coerceIn(0L, endPosMs - MIN_CLIP_MS)
+            Handle.END -> endPosMs = (endPosMs + deltaMs).coerceIn(startPosMs + MIN_CLIP_MS, totalDurationMs)
         }
     }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-    ) {
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 36.dp)
-                .verticalScroll(rememberScrollState()),
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            // 顶栏标题
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Row(
-                    modifier = Modifier.weight(1f),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer,
-                        modifier = Modifier.size(40.dp),
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = Icons.Outlined.ContentCut,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                modifier = Modifier.size(22.dp),
-                            )
-                        }
-                    }
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column {
-                        Text(
-                            text = "下载指定段落",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                        )
-                        Text(
-                            text = file.name,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-                IconButton(onClick = onDismiss) {
-                    Icon(imageVector = Icons.Outlined.Close, contentDescription = "关闭")
-                }
+            Column {
+                Text("下载片段", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    text = file.name,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
-
-            Spacer(modifier = Modifier.height(16.dp))
 
             if (isLoading) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(200.dp),
+                        .aspectRatio(16f / 9f),
                     contentAlignment = Alignment.Center,
-                ) {
-                    CircularProgressIndicator()
-                }
-            } else {
-                val currentUrl = mediaInfo?.currentUrl.orEmpty()
+                ) { CircularProgressIndicator() }
+                return@Column
+            }
 
-                // 起始点与结束点画面预览区域 (并排双预览)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    // 起点预览卡片
-                    Column(modifier = Modifier.weight(1f)) {
-                        PreviewCard(
-                            label = "起点: ${formatTimeMs(startPosMs)}",
-                            url = currentUrl,
-                            positionMs = startPosMs,
-                            onDurationKnown = { dur ->
-                                if (totalDurationMs <= 0 && dur > 0) {
-                                    totalDurationMs = dur
-                                    if (endPosMs == 0L) endPosMs = minOf(dur, 60_000L)
-                                }
-                            },
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            StepChip(label = "-1s", modifier = Modifier.weight(1f)) {
-                                startPosMs = (startPosMs - 1000L).coerceAtLeast(0L)
-                            }
-                            StepChip(label = "+1s", modifier = Modifier.weight(1f)) {
-                                startPosMs = (startPosMs + 1000L).coerceAtMost(endPosMs - 500L)
-                            }
-                        }
+            SegmentPreview(
+                fileId = file.id,
+                positionMs = editingPosition,
+                onDurationKnown = { duration ->
+                    if (totalDurationMs <= 0 && duration > 0) {
+                        totalDurationMs = duration
+                        if (endPosMs == 0L) endPosMs = minOf(duration, 60_000L)
                     }
+                },
+            )
 
-                    // 终点预览卡片
-                    Column(modifier = Modifier.weight(1f)) {
-                        PreviewCard(
-                            label = "终点: ${formatTimeMs(endPosMs)}",
-                            url = currentUrl,
-                            positionMs = endPosMs,
-                            onDurationKnown = { dur ->
-                                if (totalDurationMs <= 0 && dur > 0) {
-                                    totalDurationMs = dur
-                                    if (endPosMs == 0L) endPosMs = minOf(dur, 60_000L)
-                                }
-                            },
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            StepChip(label = "-1s", modifier = Modifier.weight(1f)) {
-                                endPosMs = (endPosMs - 1000L).coerceAtLeast(startPosMs + 500L)
-                            }
-                            StepChip(label = "+1s", modifier = Modifier.weight(1f)) {
-                                endPosMs = (endPosMs + 1000L).coerceAtMost(totalDurationMs)
-                            }
-                        }
-                    }
+            // 选当前调哪一端，右侧是这一端的时间与按秒微调
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ConnectedToggle(
+                    options = Handle.entries,
+                    selected = editing,
+                    label = { it.label },
+                    onSelect = { editing = it },
+                )
+                Text(
+                    text = formatTimeMs(editingPosition),
+                    style = MaterialTheme.typography.titleLarge,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 12.dp),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)) {
+                    OutlinedButton(
+                        onClick = { nudge(-1000L) },
+                        shape = ButtonGroupDefaults.connectedLeadingButtonShape,
+                    ) { Text("−1") }
+                    OutlinedButton(
+                        onClick = { nudge(1000L) },
+                        shape = ButtonGroupDefaults.connectedTrailingButtonShape,
+                    ) { Text("+1") }
                 }
+            }
 
-                Spacer(modifier = Modifier.height(20.dp))
-
-                // 滑动区间选择器
-                if (totalDurationMs > 0) {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = "时间轴微调范围",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Text(
-                                text = "总时长: ${formatTimeMs(totalDurationMs)}",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                        }
-
-                        RangeSlider(
-                            value = startPosMs.toFloat()..endPosMs.toFloat(),
-                            onValueChange = { range ->
-                                startPosMs = range.start.toLong().coerceIn(0L, totalDurationMs)
-                                endPosMs = range.endInclusive.toLong().coerceIn(startPosMs + 500L, totalDurationMs)
-                            },
-                            valueRange = 0f..totalDurationMs.toFloat(),
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // 段落信息汇总卡片
-                val clipDurationMs = (endPosMs - startPosMs).coerceAtLeast(0L)
-                val estimatedRatio = if (totalDurationMs > 0) (clipDurationMs.toDouble() / totalDurationMs.toDouble()) else 0.0
-                val estimatedBytes = (file.sizeBytes * estimatedRatio).toLong().coerceIn(0L, file.sizeBytes)
-
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Outlined.Timer,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(18.dp),
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = "截取时长: ${formatTimeMs(clipDurationMs)}",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                            }
-
-                            Text(
-                                text = "预计大小: ~ ${estimatedBytes.toReadableSize()}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
+            if (totalDurationMs > 0) {
+                Column {
+                    RangeSlider(
+                        value = startPosMs.toFloat()..endPosMs.toFloat(),
+                        onValueChange = { range ->
+                            val newStart = range.start.toLong().coerceIn(0L, totalDurationMs)
+                            val newEnd = range.endInclusive.toLong().coerceIn(newStart + MIN_CLIP_MS, totalDurationMs)
+                            // 预览跟随被拖动的那一端
+                            if (newStart != startPosMs) editing = Handle.START
+                            else if (newEnd != endPosMs) editing = Handle.END
+                            startPosMs = newStart
+                            endPosMs = newEnd
+                        },
+                        valueRange = 0f..totalDurationMs.toFloat(),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(modifier = Modifier.fillMaxWidth()) {
                         Text(
-                            text = "💡 原画质无损抽取（MP4 容器）：免重新编解码。为防止首帧花屏，实际起点自动对齐至前序同步关键帧（可能提前数秒）。",
-                            style = MaterialTheme.typography.bodySmall,
+                            text = "${formatTimeMs(startPosMs)} 至 ${formatTimeMs(endPosMs)}",
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            text = "全长 ${formatTimeMs(totalDurationMs)}",
+                            style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
-
-                Spacer(modifier = Modifier.height(20.dp))
-
-                // 操作按钮
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    TextButton(
-                        onClick = onDismiss,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("取消")
-                    }
-
-                    Button(
-                        onClick = {
-                            val startRatio = if (totalDurationMs > 0) (startPosMs.toDouble() / totalDurationMs.toDouble()) else 0.0
-                            val endRatio = if (totalDurationMs > 0) (endPosMs.toDouble() / totalDurationMs.toDouble()) else 1.0
-                            val startByte = (startRatio * file.sizeBytes).toLong().coerceIn(0L, file.sizeBytes)
-                            val endByte = (endRatio * file.sizeBytes).toLong().coerceIn(startByte, file.sizeBytes)
-                            val lengthBytes = (endByte - startByte).coerceAtLeast(1024L)
-                            val label = "${formatTimeMs(startPosMs)}_${formatTimeMs(endPosMs)}"
-
-                            onConfirmDownload(startByte, lengthBytes, label, startPosMs, endPosMs, mediaInfo?.currentUrl)
-                        },
-                        modifier = Modifier.weight(2f),
-                    ) {
-                        Icon(imageVector = Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("下载指定段落")
-                    }
-                }
             }
+
+            val clipDurationMs = (endPosMs - startPosMs).coerceAtLeast(0L)
+            val ratio = if (totalDurationMs > 0) clipDurationMs.toDouble() / totalDurationMs else 0.0
+            val estimatedBytes = (file.sizeBytes * ratio).toLong().coerceIn(0L, file.sizeBytes)
+            Column {
+                MetaRow(
+                    parts = listOf("时长 ${formatTimeMs(clipDurationMs)}", "约 ${estimatedBytes.toReadableSize()}"),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    text = "原画质无损抽取，起点会对齐到之前最近的关键帧",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            Button(
+                onClick = {
+                    val startRatio = if (totalDurationMs > 0) startPosMs.toDouble() / totalDurationMs else 0.0
+                    val endRatio = if (totalDurationMs > 0) endPosMs.toDouble() / totalDurationMs else 1.0
+                    val startByte = (startRatio * file.sizeBytes).toLong().coerceIn(0L, file.sizeBytes)
+                    val endByte = (endRatio * file.sizeBytes).toLong().coerceIn(startByte, file.sizeBytes)
+                    val lengthBytes = (endByte - startByte).coerceAtLeast(1024L)
+                    val label = "${formatTimeMs(startPosMs)}_${formatTimeMs(endPosMs)}"
+                    onConfirmDownload(startByte, lengthBytes, label, startPosMs, endPosMs, mediaInfo?.currentUrl)
+                },
+                enabled = totalDurationMs > 0,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp),
+            ) {
+                Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(20.dp))
+                Text("下载片段", modifier = Modifier.padding(start = 8.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun <T> ConnectedToggle(
+    options: List<T>,
+    selected: T,
+    label: (T) -> String,
+    onSelect: (T) -> Unit,
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)) {
+        options.forEachIndexed { index, option ->
+            ToggleButton(
+                checked = option == selected,
+                onCheckedChange = { onSelect(option) },
+                shapes = when (index) {
+                    0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                    options.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
+                    else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
+                },
+            ) { Text(label(option)) }
         }
     }
 }
 
 /**
- * 带有实时帧定位与加载态的预览卡片
+ * 片段一端的画面预览。经本机代理读：直读 CDN 直链会绕过账号的连接预算，与之后的片段抽取
+ * 抢连接。拖动滑块时位置变化很密，停顿片刻再 seek，免得 mpv 被成串的定位请求拖住。
  */
 @Composable
-private fun PreviewCard(
-    label: String,
-    url: String,
+private fun SegmentPreview(
+    fileId: String,
     positionMs: Long,
     onDurationKnown: (Long) -> Unit,
-    modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    val previewPlayer = remember { MpvPlaybackBackend(context.applicationContext, preview = true) }
+    val player = remember { MpvPlaybackBackend(context.applicationContext, preview = true) }
     val latestOnDurationKnown by rememberUpdatedState(onDurationKnown)
+    val latestPosition by rememberUpdatedState(positionMs)
 
+    val url by produceState("", fileId) {
+        val prepared = PikoApplication.instance.mediampMediaRepository.preparePlayback(fileId).getOrNull()
+        value = prepared?.let { it.proxyUrl ?: it.info.currentUrl }.orEmpty()
+        awaitDispose { prepared?.close() }
+    }
     LaunchedEffect(url) {
-        if (url.isNotBlank()) {
-            previewPlayer.open(PlaybackTarget.Url(url), startMillis = positionMs, playWhenReady = false)
-        }
+        if (url.isNotBlank()) player.open(PlaybackTarget.Url(url), startMillis = latestPosition, playWhenReady = false)
     }
-
     LaunchedEffect(positionMs) {
-        previewPlayer.seekTo(positionMs)
+        delay(SEEK_SETTLE_MS)
+        player.seekTo(positionMs)
+    }
+    DisposableEffect(player) { onDispose { player.release() } }
+    LaunchedEffect(player) {
+        snapshotFlow { player.durationMillis }.collect { if (it > 0L) latestOnDurationKnown(it) }
     }
 
-    DisposableEffect(previewPlayer) {
-        onDispose { previewPlayer.release() }
-    }
-
-    LaunchedEffect(previewPlayer) {
-        snapshotFlow { previewPlayer.durationMillis }.collect { if (it > 0L) latestOnDurationKnown(it) }
-    }
-
-    Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHighest,
-        modifier = modifier.fillMaxWidth(),
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(16f / 9f)
+            .clip(MaterialTheme.shapes.large)
+            .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+        contentAlignment = Alignment.Center,
     ) {
-        Column {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(16f / 9f)
-                    .background(MaterialTheme.colorScheme.surfaceDim),
-                contentAlignment = Alignment.Center,
-            ) {
-                if (url.isNotBlank()) {
-                    MpvVideoSurface(previewPlayer, Modifier.fillMaxSize(), useTextureView = true)
-                    if (previewPlayer.isBuffering) CircularProgressIndicator(modifier = Modifier.size(24.dp))
-                } else {
-                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
-                }
-            }
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = label,
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+        if (url.isNotBlank()) {
+            MpvVideoSurface(player, Modifier.fillMaxSize(), useTextureView = true)
+            if (player.isBuffering) CircularProgressIndicator(modifier = Modifier.size(32.dp))
+        } else {
+            CircularProgressIndicator(modifier = Modifier.size(32.dp))
         }
     }
 }
 
-@Composable
-private fun StepChip(
-    label: String,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHighest,
-        modifier = modifier,
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 6.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Medium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
+private const val SEEK_SETTLE_MS = 120L

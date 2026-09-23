@@ -347,7 +347,7 @@ class PlayerScreenState(
                 preferDirectLink = false
                 requestedQuality = transcode
                 isRecovering = true
-                _messages.tryEmit("原画无法播放，已切换到转码画质")
+                _messages.tryEmit("原画无法播放，已切换转码")
                 reload()
                 return
             }

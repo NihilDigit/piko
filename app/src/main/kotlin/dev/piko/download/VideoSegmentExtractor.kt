@@ -2,6 +2,7 @@ package dev.piko.download
 
 import android.content.Context
 import android.media.MediaCodec
+import android.media.MediaDataSource
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
@@ -39,11 +40,15 @@ object VideoSegmentExtractor {
         startMs: Long,
         endMs: Long,
         onProgress: (Float) -> Unit,
+        /** 给了就从它读，不再按 [sourceUrlOrPath] 打开。 */
+        dataSource: MediaDataSource? = null,
     ): Result<Unit> = withContext(Dispatchers.IO) {
         runSuspendCatching {
             val extractor = MediaExtractor()
             try {
-                if (sourceUrlOrPath.startsWith("http://") || sourceUrlOrPath.startsWith("https://")) {
+                if (dataSource != null) {
+                    extractor.setDataSource(dataSource)
+                } else if (sourceUrlOrPath.startsWith("http://") || sourceUrlOrPath.startsWith("https://")) {
                     extractor.setDataSource(context, Uri.parse(sourceUrlOrPath), mapOf("User-Agent" to "Piko/1.0"))
                 } else {
                     extractor.setDataSource(sourceUrlOrPath)
@@ -103,7 +108,6 @@ object VideoSegmentExtractor {
 
                     val buffer = ByteBuffer.allocateDirect(maxTrackBufSize)
                     val bufferInfo = MediaCodec.BufferInfo()
-                    val lastPtsMap = mutableMapOf<Int, Long>()
 
                     while (coroutineContext.isActive) {
                         val trackIndex = extractor.sampleTrackIndex
@@ -125,15 +129,18 @@ object VideoSegmentExtractor {
                             val sampleSize = extractor.readSampleData(buffer, 0)
                             if (sampleSize < 0) break
 
-                            val rawAdjustedPts = (sampleTime - basePts).coerceAtLeast(0L)
-
-                            // 保证单轨道内时间戳单调非递减，规避系统 Muxer 异常
-                            val lastPts = lastPtsMap.getOrDefault(trackIndex, -1L)
-                            val safePts = if (rawAdjustedPts > lastPts) rawAdjustedPts else lastPts + 1000L
-                            lastPtsMap[trackIndex] = safePts
+                            // 原样写入显示时间戳，不做单调化。HEVC 与 H.264 的 B 帧按解码顺序读出，
+                            // 显示时间本来就前后交错，由 muxer 写成 ctts；强行递增会把帧的显示顺序
+                            // 打乱，播放时一帧紧挨一帧只差 1ms（2026-09-23 实测）。早于起始关键帧的
+                            // 前导帧引用上一组画面，本就解不出来，直接丢掉
+                            val pts = sampleTime - basePts
+                            if (pts < 0) {
+                                extractor.advance()
+                                continue
+                            }
 
                             val flags = extractor.sampleFlags
-                            bufferInfo.set(0, sampleSize, safePts, flags)
+                            bufferInfo.set(0, sampleSize, pts, flags)
                             muxer.writeSampleData(muxerTrack, buffer, bufferInfo)
 
                             val progress = ((sampleTime - startUs).toFloat() / durationUs.toFloat()).coerceIn(0f, 1f)

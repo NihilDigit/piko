@@ -66,7 +66,8 @@ fun MediampVideoPlayerScreen(
             initialFileName = initialFileName,
             initialLocalPath = initialLocalPath,
             resolveLocalPath = { fileId, hint ->
-                hint?.takeIf { File(it).exists() }
+                // SAF 目录里的下载是 content: URI，File 判断不了存在与否，交给后端去打开
+                hint?.takeIf { it.startsWith("content:") || File(it).exists() }
                     ?: completedDownloadPath(fileId)
                     ?: siblingVideos.find { it.id == fileId }?.let { app.downloadManager.findCompletedLocalPath(it) }
             },
@@ -101,7 +102,7 @@ fun MediampVideoPlayerScreen(
     }
 
     LaunchedEffect(state) {
-        state.messages.collect { snackbarHostState.showSnackbar(it) }
+        state.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
     }
 
     LaunchedEffect(isLandscape) {

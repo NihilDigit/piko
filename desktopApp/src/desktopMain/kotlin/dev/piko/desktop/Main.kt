@@ -150,17 +150,18 @@ private fun MainAppContent(
     val storage = remember(settingsStore.downloadDirectory) {
         DesktopPikoDownloadStorage(settingsStore.downloadDirectory)
     }
-    val downloadCoordinator = remember(manager, preferences, storage) {
+    val mediaRepo = remember(manager, preferences) { PikoMediaRepository(manager, preferences) }
+    val downloadCoordinator = remember(manager, preferences, storage, mediaRepo) {
         PikoDownloadCoordinator(
             manager,
             preferences,
             storage,
             scope,
             segmentDownloader = DesktopPikoSegmentDownloader(),
+            mediaRepository = mediaRepo,
         )
     }
     val driveRepo = remember(manager, preferences) { PikoDriveRepository(manager, preferences) }
-    val mediaRepo = remember(manager, preferences) { PikoMediaRepository(manager, preferences) }
 
     // 协议唤起（magnet: 链接）直接落到离线任务页，带着这条链打开秒传对话框。
     var currentSection by remember {

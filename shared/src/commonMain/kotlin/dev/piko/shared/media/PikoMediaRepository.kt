@@ -115,6 +115,39 @@ class PikoMediaRepository(
         detail: FileDetail,
         resolved: ResolvedVariant,
     ): ProxyStream? {
+        val source = openByteSource(client, detail, resolved) ?: return null
+        return try {
+            proxy.register(source, fileName = detail.name.takeIf { resolved.isOrigin })
+        } catch (e: CancellationException) {
+            source.close()
+            throw e
+        } catch (_: Exception) {
+            source.close()
+            null
+        }
+    }
+
+    /**
+     * 按偏移读取原画，不经本机代理。给 Android 的片段抽取用，原因见 [RandomAccessMediaSource]。
+     * 调用方负责关闭。
+     */
+    suspend fun openRandomAccess(fileId: String): Result<RandomAccessMediaSource> =
+        withContext(Dispatchers.Default) {
+            runSuspendCatching {
+                val client = client
+                val detail = client.getFile(fileId)
+                val resolved = detail.resolveVariant(VariantPreference.Original)
+                val source = openByteSource(client, detail, resolved) ?: error("文件缺少内容哈希，无法读取")
+                ReaderRandomAccessSource(source)
+            }
+        }
+
+    /** 建 handle 与字节来源。没有 gcid 或拿不到大小时返回 null；取消照常抛出。 */
+    private suspend fun openByteSource(
+        client: PikPakClient,
+        detail: FileDetail,
+        resolved: ResolvedVariant,
+    ): PikPakByteSource? {
         // handle 在直链被拒时按 gcid 重建文件对象，没有 gcid 就失去了它存在的意义
         if (detail.hash.isBlank()) return null
         val handle = PikPakFileHandle(
@@ -130,8 +163,7 @@ class PikoMediaRepository(
         return try {
             // 原画的大小已知；转码流没有，streamSize 会发一次 1 字节探测
             val size = resolved.sizeBytes ?: handle.streamSize()
-            val source = PikPakByteSource(handle, size, proxy.readerContext)
-            proxy.register(source, fileName = detail.name.takeIf { resolved.isOrigin })
+            PikPakByteSource(handle, size, proxy.readerContext)
         } catch (e: CancellationException) {
             handle.close()
             throw e

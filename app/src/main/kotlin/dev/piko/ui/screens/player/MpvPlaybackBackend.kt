@@ -1,6 +1,7 @@
 package dev.piko.ui.screens.player
 
 import android.content.Context
+import android.net.Uri
 import android.view.Surface
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -34,7 +35,7 @@ import kotlin.math.abs
  * 不需要 Surface 就开播，只解码不出画面，供没有可靠 GPU 的环境（模拟器冒烟）使用。
  */
 internal class MpvPlaybackBackend(
-    context: Context,
+    private val context: Context,
     private val preview: Boolean = false,
     private val headless: Boolean = false,
 ) : PlaybackBackend, MPVLib.EventObserver, MPVLib.LogObserver {
@@ -138,7 +139,7 @@ internal class MpvPlaybackBackend(
     override suspend fun open(target: PlaybackTarget, startMillis: Long, playWhenReady: Boolean) {
         if (released) return
         val uri = when (target) {
-            is PlaybackTarget.LocalFile -> target.path
+            is PlaybackTarget.LocalFile -> localUri(target.path) ?: return
             is PlaybackTarget.Url -> target.url
         }
         val start = String.format(Locale.US, "%.3f", startMillis.coerceAtLeast(0L) / 1000.0)
@@ -155,6 +156,17 @@ internal class MpvPlaybackBackend(
             pendingLoad = command
             isLoadingFile = true
         }
+    }
+
+    /**
+     * SAF 目录里的文件是 content: URI，mpv 读不了。按 mpv-android 的做法由 ContentResolver
+     * 打开描述符交给 mpv，fdclose:// 表示描述符归 mpv，播完由它关闭。打不开时返回 null。
+     */
+    private fun localUri(path: String): String? {
+        if (!path.startsWith("content:")) return path
+        val descriptor = runCatching { context.contentResolver.openFileDescriptor(Uri.parse(path), "r") }.getOrNull()
+            ?: return null
+        return "fdclose://${descriptor.detachFd()}"
     }
 
     override fun stop() {
