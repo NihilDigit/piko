@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Compose 画出第一帧之前，窗口背景由这里决定。框架的 Theme.Material 是深色主题，
+      浅色模式下冷启动会先闪一屏黑。背景色与 Compose 主题的 background 取同一值。
+    -->
+    <style name="Theme.Piko" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/piko_window_background</item>
+    </style>
+</resources>

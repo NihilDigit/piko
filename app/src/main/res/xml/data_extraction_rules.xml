@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DataStore 里存着 access/refresh token 与登录密码。随备份或换机迁移出去，等于把账号交到另一台设备上，
+  而 refresh token 在那边照样能续期。偏好设置与凭据同在一个文件里，没法只排除一半，整个目录都不带走。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="datastore/" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="datastore/" />
+    </device-transfer>
+</data-extraction-rules>

@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  与 AndroidPikoDownloadStorage 的默认下载目录对齐：外部 files/Piko，外部存储不可用时回退到内部 files/Piko。
+  旧配置指向 files/Download 与整个内部 files 目录：前者与实际下载目录对不上，分享或打开已下载文件时
+  getUriForFile 直接抛异常；后者把 DataStore（含会话）所在目录也纳入了可授权范围。
+-->
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
-    <external-files-path name="downloads" path="Download/" />
-    <files-path name="internal_files" path="." />
+    <external-files-path name="downloads" path="Piko/" />
+    <files-path name="internal_downloads" path="Piko/" />
 </paths>

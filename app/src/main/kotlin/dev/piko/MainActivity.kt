@@ -30,7 +30,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        handleIntent(intent)
+        // 重建时（进程被杀后从最近任务回来）系统会把最初的启动 Intent 再交一次，
+        // 不判断的话同一条分享进来的磁力链会再弹一次秒传面板
+        if (savedInstanceState == null) handleIntent(intent)
 
         setContent {
             PikoTheme {

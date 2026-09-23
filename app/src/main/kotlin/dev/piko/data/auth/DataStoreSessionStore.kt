@@ -51,14 +51,25 @@ class DataStoreSessionStore(private val context: Context) : SessionStore {
         context.dataStore.edit { it.remove(stringPreferencesKey("piko_last_account")) }
     }
 
-    suspend fun loadCredentials(account: String): String? =
-        context.dataStore.data.first()[stringPreferencesKey("pikpak_password_$account")]
+    private fun passwordKey(account: String) = stringPreferencesKey("pikpak_password_$account")
+
+    suspend fun loadCredentials(account: String): String? {
+        val stored = context.dataStore.data.first()[passwordKey(account)] ?: return null
+        if (CredentialCipher.isEncrypted(stored)) return CredentialCipher.decrypt(stored)
+        // 旧版本存的是明文。读到就地换成密文，不必等用户下次手动登录
+        saveCredentials(account, stored)
+        return stored
+    }
 
     suspend fun saveCredentials(account: String, password: String) {
-        context.dataStore.edit { it[stringPreferencesKey("pikpak_password_$account")] = password }
+        // 密钥库不可用时宁可不存，也不退回明文；代价只是 refresh token 失效后要手动登录一次
+        val sealed = runCatching { CredentialCipher.encrypt(password) }.getOrNull()
+        context.dataStore.edit {
+            if (sealed != null) it[passwordKey(account)] = sealed else it.remove(passwordKey(account))
+        }
     }
 
     suspend fun clearCredentials(account: String) {
-        context.dataStore.edit { it.remove(stringPreferencesKey("pikpak_password_$account")) }
+        context.dataStore.edit { it.remove(passwordKey(account)) }
     }
 }

@@ -1,3 +1,4 @@
 <resources>
     <color name="ic_launcher_background">#306EFF</color>
+    <color name="piko_window_background">#F7F9FC</color>
 </resources>
