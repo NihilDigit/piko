@@ -34,11 +34,13 @@ class MemoryPreferences(instantTarget: InstantTarget? = null) : PikoUserPreferen
     override suspend fun setSpoilerBlurEnabled(enabled: Boolean) = Unit
     override val heuristicFilterFlow: Flow<Boolean> = MutableStateFlow(false)
     override suspend fun setHeuristicFilterEnabled(enabled: Boolean) = Unit
+    override val bundleSubtitlesFlow: Flow<Boolean> = MutableStateFlow(false)
+    override suspend fun setBundleSubtitlesEnabled(enabled: Boolean) = Unit
     override val gridViewFlow: Flow<Boolean> = MutableStateFlow(false)
     override suspend fun setGridViewEnabled(enabled: Boolean) = Unit
     override val sessionFlow: Flow<UserSession> = MutableStateFlow(UserSession())
     override suspend fun saveSession(token: String, refreshToken: String, userId: String, username: String, avatarUrl: String) = Unit
-    override suspend fun saveProfile(username: String, avatarUrl: String) = Unit
+    override suspend fun saveProfile(username: String, avatarUrl: String, email: String) = Unit
     override val quotaSnapshotFlow: Flow<QuotaSnapshot?> = MutableStateFlow(null)
     override suspend fun saveQuotaSnapshot(usageBytes: Long, limitBytes: Long) = Unit
     override val instantTargetFlow: Flow<InstantTarget?> = instantTargetState
@@ -54,6 +56,11 @@ class MemoryPreferences(instantTarget: InstantTarget? = null) : PikoUserPreferen
     override suspend fun getDownloadDirPath(): String = ""
     override suspend fun setConcurrentAccelerationEnabled(enabled: Boolean) {
         acceleration.value = enabled
+    }
+    @Volatile var downloadTasks: String = ""
+    override suspend fun loadDownloadTasks(): String = downloadTasks
+    override suspend fun saveDownloadTasks(serialized: String) {
+        downloadTasks = serialized
     }
 }
 

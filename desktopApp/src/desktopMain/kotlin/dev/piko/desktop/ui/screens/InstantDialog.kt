@@ -89,7 +89,7 @@ fun InstantDialog(
     }
 
     ContentDialog(
-        title = if (picker != null) "选择保存位置" else "秒传与磁力解析",
+        title = if (picker != null) "选择保存位置" else "添加链接",
         visible = true,
         size = DialogSize.Max,
         primaryButtonText = primaryText,

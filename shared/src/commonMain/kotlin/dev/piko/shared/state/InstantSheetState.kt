@@ -5,7 +5,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.piko.data.auth.PikoUserPreferences
+import dev.piko.data.repository.FileCategory
 import dev.piko.data.repository.FileNameSanitizer
+import dev.piko.data.repository.fileCategory
 import dev.piko.shared.data.InstantFileItem
 import dev.piko.shared.data.InstantMagnetRepository
 import dev.piko.shared.data.MagnetResolutionResult
@@ -55,8 +57,9 @@ class InstantSheetState(
 
     /**
      * 输入框是否展开。外部分享进来的磁力链已经在用户手上，输入框只是让他把同一件事
-     * 再确认一遍，所以先收起；解析失败时再放出来，否则他既看不到那串链接，也没法改、
-     * 没法重试。
+     * 再确认一遍，所以先收起；手动粘贴的链解析成功后同样收起，把高度让给文件列表。
+     * 解析失败时再放出来，否则他既看不到那串链接，也没法改、没法重试。
+     * 成功后不给重新展开的入口：换一条链关掉面板重开即可。
      */
     var isInputVisible by mutableStateOf(initialMagnet.isBlank())
         private set
@@ -126,15 +129,43 @@ class InstantSheetState(
         items.isNotEmpty() && selectedIndices.size == items.size
     }
 
+    /** 偏好项，见 [subtitleBundles]。 */
+    private var isBundleSubtitlesEnabled by mutableStateOf(true)
+
+    /** 视频下标 → 随它打包的字幕下标。关掉偏好时为空，字幕照常单列。 */
+    val subtitleBundles: Map<Int, List<Int>> by derivedStateOf {
+        if (isBundleSubtitlesEnabled) subtitleBundles(items.map { it.file.name }) else emptyMap()
+    }
+
+    private val bundledSubtitles: Set<Int> by derivedStateOf { subtitleBundles.values.flatten().toSet() }
+
+    /** 列表里的条目数：打包进视频的字幕不算，与视图里的行对得上。 */
+    val entryCount: Int by derivedStateOf { items.size - bundledSubtitles.size }
+    val selectedEntryCount: Int by derivedStateOf { selectedIndices.count { it !in bundledSubtitles } }
+
+    /** 文件名按公共前缀折叠出的层级，见 [buildNameTree]。已随视频打包的字幕不单列。 */
+    val nameTree: List<NameNode> by derivedStateOf {
+        buildNameTree(items.map { it.file.name }.withIndex().filter { it.index !in bundledSubtitles })
+    }
+
+    /** 各大类的文件下标，按类整批勾选用。只有一类时没有可筛的，视图不必显示。 */
+    val categoryIndices: Map<FileCategory, List<Int>> by derivedStateOf {
+        items.indices.filter { it !in bundledSubtitles }.groupBy { items[it].file.name.fileCategory() }
+            .toList()
+            .sortedBy { (category, _) -> category.ordinal }
+            .toMap()
+    }
+
     private var resolveJob: Job? = null
     private var resolvedKey: String? = null
 
     init {
         scope.launch { target = resolveTarget() }
+        scope.launch { preferences.bundleSubtitlesFlow.collect { isBundleSubtitlesEnabled = it } }
         if (initialMagnet.isNotBlank()) {
             if (normalizeMagnet(initialMagnet) == null) {
                 // 外部唤起的链不合法时自动解析不会发生，而输入框又是收起的，不兜住就是一个空面板
-                errorMessage = "这不是一条可解析的磁力链接，可直接提交云端离线任务"
+                errorMessage = "非磁力链接，可离线下载"
                 isInputVisible = true
             } else {
                 scheduleResolve()
@@ -158,7 +189,23 @@ class InstantSheetState(
     }
 
     fun setItemSelected(index: Int, selected: Boolean) {
-        selectedIndices = if (selected) selectedIndices + index else selectedIndices - index
+        setItemsSelected(listOf(index), selected)
+    }
+
+    /** 整批勾选或取消，给目录层级与大类用。 */
+    fun setItemsSelected(indices: Collection<Int>, selected: Boolean) {
+        val affected = withBundles(indices)
+        selectedIndices = if (selected) selectedIndices + affected else selectedIndices - affected
+    }
+
+    /** 勾视频就连同它的字幕，取消亦然；视图里字幕不单列，没有别的途径碰到它们。 */
+    private fun withBundles(indices: Collection<Int>): Set<Int> =
+        indices.toSet() + indices.flatMap { subtitleBundles[it].orEmpty() }
+
+    /** 这一类已全选就全部取消，否则补齐。 */
+    fun toggleCategory(category: FileCategory) {
+        val indices = categoryIndices[category].orEmpty()
+        setItemsSelected(indices, selected = !selectedIndices.containsAll(indices))
     }
 
     fun toggleSelectAll() {
@@ -225,7 +272,7 @@ class InstantSheetState(
                 instantRepo.resolve(magnet)
                     .onSuccess { data -> applyResolution(data) }
                     .onFailure { err ->
-                        errorMessage = "解析失败: ${err.message}"
+                        errorMessage = "解析失败：${err.message}"
                         isInputVisible = true
                     }
             } finally {
@@ -237,17 +284,21 @@ class InstantSheetState(
 
     private fun applyResolution(data: MagnetResolutionResult?) {
         if (data == null) {
-            errorMessage = "PikPak 索引暂未收录该资源，可直接提交云端离线任务"
+            errorMessage = "云端未收录，可离线下载"
             isInputVisible = true
             return
         }
         resolution = data
+        isInputVisible = false
         folderName = FileNameSanitizer.sanitize(data.resource.name)
         // 与网盘列表的启发式折叠同一套判据：剔掉 sample/subs 这类次要目录里的文件，
         // 再按最大文件的十分之一卡一道门槛。用户仍可手改。
-        selectedIndices = mainContentIndices(
-            data.items.map { it.file.path },
-            data.items.map { it.file.size },
+        // 主体判据按大小卡门槛，字幕总会被筛掉，靠打包带回来
+        selectedIndices = withBundles(
+            mainContentIndices(
+                data.items.map { it.file.path },
+                data.items.map { it.file.size },
+            ),
         )
     }
 
@@ -259,12 +310,12 @@ class InstantSheetState(
         val saved = preferences.instantTargetFlow.first()
         if (saved != null) {
             // 记下的目录可能已经被删或进了回收站。不验的话要等保存时才暴露，报的还是一句
-            // 原始 API 错误。getFileDetail 对回收站里的条目照样成功，所以要看 trashed。
-            // 根目录是空 id，没有对应的 FileDetail，不验。
+            // 原始 API 错误。回收站里的条目查详情返回 file_in_recycle_bin，与 trashed 同样
+            // 视为失效。根目录是空 id，没有对应的 FileDetail，不验。
             val alive = saved.folderId.isEmpty() ||
                 driveRepo.getFileDetail(saved.folderId).map { !it.trashed }.getOrDefault(false)
             if (alive) return PikoPathBreadcrumb(saved.folderId, saved.folderName)
-            targetNotice = "原保存目标已不存在，已切换到 My Packs"
+            targetNotice = "原位置已不存在，改存 My Packs"
         }
         return driveRepo.getOrCreateMyPacksFolder().getOrDefault(PikoPathBreadcrumb("", "My Packs"))
     }
@@ -275,7 +326,7 @@ class InstantSheetState(
         val saveTarget = if (toSave.size > 1) {
             val name = FileNameSanitizer.sanitize(folderName)
             val folderId = driveRepo.createFolder(target.id, name).getOrElse { err ->
-                errorMessage = "新建文件夹失败: ${err.message}"
+                errorMessage = "新建文件夹失败：${err.message}"
                 return
             }
             PikoPathBreadcrumb(folderId, name)
@@ -284,13 +335,13 @@ class InstantSheetState(
         }
         instantRepo.instantSave(toSave, saveTarget.id)
             .onSuccess { createdIds -> _outcomes.emit(InstantSaveOutcome.InstantSaved(createdIds, saveTarget)) }
-            .onFailure { errorMessage = "保存失败: ${it.message}" }
+            .onFailure { errorMessage = "保存失败：${it.message}" }
     }
 
     private suspend fun enqueueOffline(target: PikoPathBreadcrumb) {
         instantRepo.enqueueOfflineTask(input.trim(), target.id)
             .onSuccess { _outcomes.emit(InstantSaveOutcome.OfflineTaskCreated(target)) }
-            .onFailure { errorMessage = "保存失败: ${it.message}" }
+            .onFailure { errorMessage = "保存失败：${it.message}" }
     }
 
     companion object {
