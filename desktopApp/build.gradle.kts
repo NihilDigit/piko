@@ -33,6 +33,7 @@ kotlin {
                 implementation(compose.material3)
                 implementation(libs.fluent.ui)
                 implementation(libs.fluent.icons.extended)
+                implementation(libs.mediamp.all)
                 implementation(libs.winrt.runtime)
                 implementation(libs.winrt.projections.windows.sdk)
                 implementation(libs.kotlinx.serialization.json)

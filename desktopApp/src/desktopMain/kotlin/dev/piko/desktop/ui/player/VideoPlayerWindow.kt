@@ -28,7 +28,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -51,12 +50,9 @@ import dev.piko.desktop.ui.components.isVideoFile
 import dev.piko.desktop.winrt.WinRTSupport
 import dev.piko.download.DownloadStatus
 import dev.piko.shared.download.PikoDownloadCoordinator
-import dev.piko.shared.media.PlayableMediaInfo
-import dev.piko.shared.media.PlayableMediaKind
 import dev.piko.shared.media.PikoMediaRepository
-import dev.piko.shared.media.PikoSeekableMediaData
-import dev.piko.shared.media.bestTranscodeName
-import dev.piko.shared.media.originNeedsTranscode
+import dev.piko.shared.media.player.PlayerAspectRatio
+import dev.piko.shared.media.player.PlayerScreenState
 import io.github.composefluent.FluentTheme
 import io.github.composefluent.component.BasicSlider
 import io.github.composefluent.component.Button
@@ -91,25 +87,12 @@ import io.github.composefluent.icons.regular.SpeakerMute
 import io.github.nihildigit.pikpak.FileStat
 import java.io.File
 import java.util.Locale
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import org.openani.mediamp.ExperimentalMediampApi
 import org.openani.mediamp.compose.MediampPlayerSurface
 import org.openani.mediamp.compose.rememberMediampPlayer
-import org.openani.mediamp.errorOrNull
-import org.openani.mediamp.features.AspectRatioMode
 import org.openani.mediamp.features.AudioLevelController
-import org.openani.mediamp.features.Buffering
-import org.openani.mediamp.features.PlaybackSpeed
-import org.openani.mediamp.features.VideoAspectRatio
-import org.openani.mediamp.isLoadingOrBuffering
-import org.openani.mediamp.playUri
-import org.openani.mediamp.togglePlayWhenReady
 
 fun formatDuration(ms: Long): String {
     if (ms <= 0L) return "00:00"
@@ -125,17 +108,14 @@ fun formatDuration(ms: Long): String {
 }
 
 private const val SEEK_STEP_MILLIS = 10_000L
-private const val RESUME_THRESHOLD_MILLIS = 3_000L
-private const val NEAR_END_MILLIS = 10_000L
-private const val MIN_PERSIST_MILLIS = 1_500L
 private const val CONTROLS_HIDE_DELAY_MILLIS = 3_500L
 
 private val SPEED_PRESETS = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f)
 
 private val ASPECT_LABELS = listOf(
-    AspectRatioMode.FIT to "适应屏幕",
-    AspectRatioMode.CROP to "裁剪填充",
-    AspectRatioMode.STRETCH to "拉伸全屏",
+    PlayerAspectRatio.Fit to "适应屏幕",
+    PlayerAspectRatio.Crop to "裁剪填充",
+    PlayerAspectRatio.Stretch to "拉伸全屏",
 )
 
 /**
@@ -188,55 +168,36 @@ private fun VideoPlayerContent(
 ) {
     val scope = rememberCoroutineScope()
     val player = rememberMediampPlayer()
-    val playerState by player.state.collectAsState()
-    val positionMillis by player.currentPositionMillis.collectAsState()
-    val mediaProperties by player.mediaProperties.collectAsState()
+    val backend = remember(player) { MediampPlaybackBackend(player, scope) }
+    val state = remember(file.id) {
+        PlayerScreenState(
+            repository = mediaRepository,
+            backend = backend,
+            scope = scope,
+            initialFileId = file.id,
+            initialFileName = file.name,
+            // 本地副本按文件长度验完整性，需要对应的 FileStat，从播放列表里取
+            resolveLocalPath = { fileId, _ ->
+                (playlist + file).find { it.id == fileId }
+                    ?.let { downloadCoordinator?.findCompletedLocalPath(it) }
+                    ?.takeIf { File(it).exists() }
+            },
+        )
+    }
 
-    // 播哪个文件由状态决定：同目录列表可以在播放器里直接换片，不退回网盘。
-    var currentFileId by remember(file.id) { mutableStateOf(file.id) }
-    var currentFileName by remember(file.id) { mutableStateOf(file.name) }
-    // 切片元数据（拿长度验本地完整性用）：列表内切换时跟着换。
-    var currentFileStat by remember(file.id) { mutableStateOf(file) }
-
-    val bufferingFeature = remember(player) { player.features[Buffering.Key] }
-    val speedFeature = remember(player) { player.features[PlaybackSpeed.Key] }
-    val aspectRatioFeature = remember(player) { player.features[VideoAspectRatio.Key] }
     val audioFeature = remember(player) { player.features[AudioLevelController.Key] }
-    val bufferedPercentage by remember(bufferingFeature) {
-        bufferingFeature?.bufferedPercentage ?: flowOf(0)
-    }.collectAsState(0)
-    val aspectRatioMode by (aspectRatioFeature?.mode ?: flowOf(AspectRatioMode.FIT))
-        .collectAsState(AspectRatioMode.FIT)
-    val playbackSpeed by remember(speedFeature) {
-        speedFeature?.valueFlow ?: flowOf(1f)
-    }.collectAsState(1f)
     val volumeLevel by (audioFeature?.volume ?: flowOf(1f)).collectAsState(1f)
     val isMuted by (audioFeature?.isMute ?: flowOf(false)).collectAsState(false)
-
-    var mediaData by remember { mutableStateOf<PikoSeekableMediaData?>(null) }
-    var mediaInfo by remember { mutableStateOf<PlayableMediaInfo?>(null) }
-    var errorMessage by remember { mutableStateOf<String?>(null) }
-    var isPreparing by remember { mutableStateOf(true) }
-    var requestedQuality by remember { mutableStateOf<String?>(null) }
-    var activeQuality by remember { mutableStateOf<String?>(null) }
-    var retryToken by remember { mutableIntStateOf(0) }
-    var pendingStartMillis by remember { mutableStateOf<Long?>(null) }
-    var resumedPositionMillis by remember { mutableLongStateOf(0L) }
-    var showResumeTip by remember { mutableStateOf(false) }
-    var isLocalPlayback by remember { mutableStateOf(false) }
 
     var areControlsVisible by remember { mutableStateOf(true) }
     var lastInteractionTime by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var touchFeedbackText by remember { mutableStateOf<String?>(null) }
     var showPlaylist by remember { mutableStateOf(false) }
 
-    val durationMillis = mediaProperties?.durationMillis
-        ?: mediaInfo?.durationSeconds?.times(1000L)
-        ?: 0L
-    val qualityOptions = mediaInfo?.availableVariants
-        ?.map { it.mediaName.ifBlank { it.resolutionName } }
-        .orEmpty().filter { it.isNotBlank() }
-    val currentQuality = activeQuality ?: mediaInfo?.currentResolution
+    val positionMillis = state.positionMillis
+    val durationMillis = state.durationMillis
+    val playbackSpeed = state.playbackSpeed
+    val errorMessage = if (state.isImage) "桌面播放器暂只支持视频" else state.errorMessage
 
     fun pokeControls() {
         areControlsVisible = true
@@ -244,138 +205,26 @@ private fun VideoPlayerContent(
     }
 
     fun switchFile(target: FileStat) {
-        if (target.id == currentFileId) return
         showPlaylist = false
-        mediaData?.close()
-        mediaData = null
-        mediaInfo = null
-        currentFileId = target.id
-        currentFileName = target.name
-        currentFileStat = target
-        requestedQuality = null
-        activeQuality = null
-        pendingStartMillis = null
-        retryToken += 1
+        state.switchTo(target.id, target.name)
     }
 
-    // 播放防锁屏：有数据且正在播才持有，暂停/关窗自动释放。
-    DisposableEffect(mediaData, playerState.playWhenReady) {
-        val displayLease = if (mediaData != null && playerState.playWhenReady) {
-            WinRTSupport.acquireDisplayRequest()
-        } else null
-
+    // 播放防锁屏：正在播才持有，暂停/关窗自动释放。
+    DisposableEffect(state.isPlaying) {
+        val displayLease = if (state.isPlaying) WinRTSupport.acquireDisplayRequest() else null
         onDispose {
             displayLease?.close()
         }
     }
 
-    // 取流：本地下完的直接播文件，否则走并发 range reader；wmv 这类本机解不开的
-    // 容器自动换转码流（只看服务端元数据，不认扩展名）。
-    LaunchedEffect(currentFileId, requestedQuality, retryToken) {
-        isPreparing = true
-        errorMessage = null
-        showResumeTip = false
-        player.stopPlayback()
-        try {
-            val startMillis = pendingStartMillis
-                ?: mediaRepository.getPlaybackPosition(currentFileId)
-                    .takeIf { it > RESUME_THRESHOLD_MILLIS }
-                ?: 0L
-            pendingStartMillis = null
-
-            val localFile = downloadCoordinator?.findCompletedLocalPath(currentFileStat)
-                ?.let(::File)?.takeIf { it.exists() }
-            isLocalPlayback = localFile != null
-            if (localFile != null) {
-                player.playUri(localFile.toURI().toString(), startPositionMillis = startMillis)
-                isPreparing = false
-            } else {
-                val info = mediaRepository.prepareMedia(currentFileId, requestedQuality).getOrThrow()
-                mediaInfo = info
-                if (info.kind != PlayableMediaKind.Video) {
-                    errorMessage = "桌面播放器暂只支持视频"
-                    isPreparing = false
-                } else {
-                    val autoQuality = if (requestedQuality == null && info.originNeedsTranscode()) {
-                        info.bestTranscodeName()
-                    } else {
-                        null
-                    }
-                    val playedInfo = if (autoQuality != null) {
-                        mediaRepository.prepareMedia(currentFileId, autoQuality).getOrThrow()
-                            .also { mediaInfo = it }
-                    } else {
-                        info
-                    }
-                    val quality = requestedQuality ?: autoQuality
-                    activeQuality = quality
-                    val dataResult = mediaRepository.createMediaData(currentFileId, quality)
-                    if (dataResult.isSuccess) {
-                        mediaData?.close()
-                        mediaData = dataResult.getOrThrow().second
-                        player.setMediaData(
-                            mediaData!!,
-                            playWhenReady = true,
-                            startPositionMillis = startMillis,
-                        )
-                    } else {
-                        // range reader 打不开的，退回直链。
-                        player.playUri(playedInfo.currentUrl, startPositionMillis = startMillis)
-                    }
-                    isPreparing = false
-                }
-            }
-
-            if (startMillis > RESUME_THRESHOLD_MILLIS) {
-                resumedPositionMillis = startMillis
-                showResumeTip = true
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            errorMessage = e.message ?: "无法加载视频媒体流"
-            isPreparing = false
-        }
-    }
-
-    // 断点续播：5 秒写一次，退出补一次；放到最后十秒记 0，下次从头播。
-    LaunchedEffect(player, currentFileId) {
-        suspend fun persistProgress() {
-            val position = player.currentPositionMillis.value
-            val duration = player.mediaProperties.value?.durationMillis ?: 0L
-            if (duration > 0L && position >= duration - NEAR_END_MILLIS) {
-                mediaRepository.savePlaybackPosition(currentFileId, 0L)
-            } else if (position > MIN_PERSIST_MILLIS) {
-                mediaRepository.savePlaybackPosition(currentFileId, position)
-            }
-        }
-
-        try {
-            while (isActive) {
-                delay(5_000)
-                persistProgress()
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            // 持久化失败不能掐掉播放。
-        } finally {
-            withContext(NonCancellable) {
-                runCatching { persistProgress() }
-            }
-        }
-    }
-
-    LaunchedEffect(showResumeTip) {
-        if (showResumeTip) {
-            delay(5_000)
-            showResumeTip = false
-        }
+    // 换源之类的一次性提示借用手势提示气泡
+    LaunchedEffect(state) {
+        state.messages.collect { touchFeedbackText = it }
     }
 
     // 控件自动休眠计时器
-    LaunchedEffect(areControlsVisible, lastInteractionTime, playerState.playWhenReady) {
-        if (areControlsVisible && playerState.playWhenReady) {
+    LaunchedEffect(areControlsVisible, lastInteractionTime, state.isPlaying) {
+        if (areControlsVisible && state.isPlaying) {
             delay(CONTROLS_HIDE_DELAY_MILLIS)
             areControlsVisible = false
         }
@@ -389,11 +238,11 @@ private fun VideoPlayerContent(
         }
     }
 
+    DisposableEffect(state) {
+        onDispose { state.release() }
+    }
     DisposableEffect(player) {
-        onDispose {
-            mediaData?.close()
-            player.close()
-        }
+        onDispose { player.close() }
     }
 
     Box(
@@ -429,16 +278,16 @@ private fun VideoPlayerContent(
                         val fraction = offset.x / size.width.toFloat()
                         when {
                             fraction < 0.35f -> {
-                                player.seekTo((positionMillis - SEEK_STEP_MILLIS).coerceAtLeast(0L))
+                                state.seekBy(-SEEK_STEP_MILLIS)
                                 touchFeedbackText = "快退 10 秒"
                             }
                             fraction > 0.65f -> {
-                                player.seekTo(positionMillis + SEEK_STEP_MILLIS)
+                                state.seekBy(SEEK_STEP_MILLIS)
                                 touchFeedbackText = "快进 10 秒"
                             }
                             else -> {
-                                player.togglePlayWhenReady()
-                                touchFeedbackText = if (playerState.playWhenReady) "暂停" else "播放"
+                                touchFeedbackText = if (state.isPlaying) "暂停" else "播放"
+                                state.togglePlayPause()
                             }
                         }
                         pokeControls()
@@ -450,7 +299,7 @@ private fun VideoPlayerContent(
         MediampPlayerSurface(player, Modifier.fillMaxSize())
 
         // 缓冲转圈
-        if (isPreparing || playerState.isLoadingOrBuffering) {
+        if (state.isLoading) {
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center,
@@ -461,7 +310,6 @@ private fun VideoPlayerContent(
 
         // 错误提示 + 重试
         errorMessage?.let { err ->
-            val decodeError = playerState.errorOrNull?.message
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -473,17 +321,12 @@ private fun VideoPlayerContent(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     Text(
-                        text = decodeError ?: err,
+                        text = err,
                         color = Color.White,
                         style = FluentTheme.typography.subtitle,
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = {
-                                errorMessage = null
-                                retryToken += 1
-                            },
-                        ) {
+                        Button(onClick = state::retry) {
                             Text("重试")
                         }
                         Button(onClick = onClose) {
@@ -513,22 +356,19 @@ private fun VideoPlayerContent(
         }
 
         // 续播提示，附带「从头播放」
-        if (showResumeTip) {
+        state.resumedFromMillis?.let { resumedFrom ->
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
                     .padding(start = 20.dp, bottom = if (areControlsVisible) 120.dp else 36.dp)
                     .clip(RoundedCornerShape(16.dp))
                     .background(Color.Black.copy(alpha = 0.8f))
-                    .clickable {
-                        player.seekTo(0L)
-                        showResumeTip = false
-                    }
+                    .clickable { state.restartFromBeginning() }
                     .padding(horizontal = 14.dp, vertical = 7.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    text = "已恢复至 ${formatDuration(resumedPositionMillis)} · 从头播放",
+                    text = "已恢复至 ${formatDuration(resumedFrom)} · 从头播放",
                     color = Color.White,
                     style = FluentTheme.typography.caption,
                 )
@@ -543,22 +383,19 @@ private fun VideoPlayerContent(
         ) {
             Box(Modifier.fillMaxSize()) {
                 PlayerTopBar(
-                    title = currentFileName,
-                    isLocalPlayback = isLocalPlayback,
-                    aspectRatioMode = aspectRatioMode.takeIf { aspectRatioFeature != null },
-                    qualityOptions = qualityOptions,
-                    currentQuality = currentQuality,
-                    showSpeedEntry = speedFeature != null,
+                    title = state.title,
+                    isLocalPlayback = state.isLocalPlayback,
+                    aspectRatioMode = state.aspectRatio,
+                    qualityOptions = state.qualityOptions,
+                    currentQuality = state.currentQuality,
+                    showSpeedEntry = playbackSpeed != null,
                     showPlaylistEntry = playlist.size > 1,
-                    playbackSpeed = playbackSpeed,
+                    playbackSpeed = playbackSpeed ?: 1f,
                     onPlaylistClick = { showPlaylist = true },
                     onClose = onClose,
-                    onAspectRatioChange = { aspectRatioFeature?.setMode(it) },
-                    onQualityChange = { quality ->
-                        pendingStartMillis = positionMillis
-                        requestedQuality = quality
-                    },
-                    onSpeedChange = { speedFeature?.set(it) },
+                    onAspectRatioChange = state::setAspectRatio,
+                    onQualityChange = state::selectQuality,
+                    onSpeedChange = state::setSpeed,
                     modifier = Modifier.align(Alignment.TopCenter),
                 )
 
@@ -577,7 +414,7 @@ private fun VideoPlayerContent(
                             .clip(CircleShape)
                             .background(Color.Black.copy(alpha = 0.45f))
                             .clickable {
-                                player.seekTo((positionMillis - SEEK_STEP_MILLIS).coerceAtLeast(0L))
+                                state.seekBy(-SEEK_STEP_MILLIS)
                                 touchFeedbackText = "-10 秒"
                                 pokeControls()
                             },
@@ -598,14 +435,14 @@ private fun VideoPlayerContent(
                             .clip(CircleShape)
                             .background(FluentTheme.colors.fillAccent.default.copy(alpha = 0.85f))
                             .clickable {
-                                player.togglePlayWhenReady()
+                                state.togglePlayPause()
                                 pokeControls()
                             },
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
-                            imageVector = if (playerState.playWhenReady) Icons.Regular.Pause else Icons.Regular.Play,
-                            contentDescription = if (playerState.playWhenReady) "暂停" else "播放",
+                            imageVector = if (state.isPlaying) Icons.Regular.Pause else Icons.Regular.Play,
+                            contentDescription = if (state.isPlaying) "暂停" else "播放",
                             tint = Color.White,
                             modifier = Modifier.size(28.dp),
                         )
@@ -617,7 +454,7 @@ private fun VideoPlayerContent(
                             .clip(CircleShape)
                             .background(Color.Black.copy(alpha = 0.45f))
                             .clickable {
-                                player.seekTo(positionMillis + SEEK_STEP_MILLIS)
+                                state.seekBy(SEEK_STEP_MILLIS)
                                 touchFeedbackText = "+10 秒"
                                 pokeControls()
                             },
@@ -633,26 +470,30 @@ private fun VideoPlayerContent(
                 }
 
                 PlayerBottomBar(
-                    isPlaying = playerState.playWhenReady,
+                    isPlaying = state.isPlaying,
                     positionMillis = positionMillis,
                     durationMillis = durationMillis,
-                    bufferedFraction = bufferedPercentage / 100f,
-                    playbackSpeed = playbackSpeed,
-                    speedSupported = speedFeature != null,
+                    bufferedFraction = if (durationMillis > 0L) {
+                        (state.bufferedPositionMillis.toFloat() / durationMillis).coerceIn(0f, 1f)
+                    } else {
+                        0f
+                    },
+                    playbackSpeed = playbackSpeed ?: 1f,
+                    speedSupported = playbackSpeed != null,
                     volumeFraction = (volumeLevel / (audioFeature?.maxVolume?.takeIf { it > 0f } ?: 1f))
                         .coerceIn(0f, 1f),
                     showVolume = audioFeature != null,
                     isMuted = isMuted,
                     isFullscreen = windowState.placement == WindowPlacement.Fullscreen,
                     onPlayPause = {
-                        player.togglePlayWhenReady()
+                        state.togglePlayPause()
                         pokeControls()
                     },
                     onSeekTo = {
-                        player.seekTo(it)
+                        state.seekTo(it)
                         pokeControls()
                     },
-                    onSpeedChange = { speedFeature?.set(it) },
+                    onSpeedChange = state::setSpeed,
                     onToggleFullscreen = {
                         windowState.placement = if (windowState.placement == WindowPlacement.Fullscreen) {
                             WindowPlacement.Floating
@@ -686,7 +527,7 @@ private fun VideoPlayerContent(
                 content = {
                     LazyColumn(modifier = Modifier.fillMaxWidth()) {
                         items(playlist, key = { it.id }) { video ->
-                            val isCurrent = video.id == currentFileId
+                            val isCurrent = video.id == state.fileId
                             // 对话框是浅色底，文字必须用主题色，写死白色会隐形。
                             val rowColor = if (isCurrent) {
                                 FluentTheme.colors.fillAccent.default
@@ -737,7 +578,7 @@ private fun VideoPlayerContent(
 private fun PlayerTopBar(
     title: String,
     isLocalPlayback: Boolean,
-    aspectRatioMode: AspectRatioMode?,
+    aspectRatioMode: PlayerAspectRatio?,
     qualityOptions: List<String>,
     currentQuality: String?,
     showSpeedEntry: Boolean,
@@ -745,7 +586,7 @@ private fun PlayerTopBar(
     playbackSpeed: Float,
     onPlaylistClick: () -> Unit,
     onClose: () -> Unit,
-    onAspectRatioChange: (AspectRatioMode) -> Unit,
+    onAspectRatioChange: (PlayerAspectRatio) -> Unit,
     onQualityChange: (String) -> Unit,
     onSpeedChange: (Float) -> Unit,
     modifier: Modifier = Modifier,
