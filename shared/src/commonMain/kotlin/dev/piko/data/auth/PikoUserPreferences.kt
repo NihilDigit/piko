@@ -8,6 +8,8 @@ data class UserSession(
     val userId: String = "",
     val username: String = "",
     val avatarUrl: String = "",
+    /** 服务端返回时已打码（a***@example.com），API 取不到完整地址。 */
+    val email: String = "",
     val concurrentConnections: Int = 8,
 ) {
     val isLoggedIn: Boolean get() = token.isNotEmpty()
@@ -30,6 +32,10 @@ interface PikoUserPreferences {
     val heuristicFilterFlow: Flow<Boolean>
     suspend fun setHeuristicFilterEnabled(enabled: Boolean)
 
+    /** 添加链接时同名字幕随视频打包成一项，见 subtitleBundles。 */
+    val bundleSubtitlesFlow: Flow<Boolean>
+    suspend fun setBundleSubtitlesEnabled(enabled: Boolean)
+
     /** 网盘列表用网格还是列表。全局记住，不随进出目录或重启复位。 */
     val gridViewFlow: Flow<Boolean>
     suspend fun setGridViewEnabled(enabled: Boolean)
@@ -37,10 +43,10 @@ interface PikoUserPreferences {
     suspend fun saveSession(token: String, refreshToken: String = "", userId: String = "", username: String = "", avatarUrl: String = "")
 
     /**
-     * 只更新昵称与头像。saveSession 会无条件重写 token，
+     * 只更新昵称、头像与邮箱。saveSession 会无条件重写 token，
      * 用它写资料会在刷新资料时把登录态覆盖掉。
      */
-    suspend fun saveProfile(username: String, avatarUrl: String)
+    suspend fun saveProfile(username: String, avatarUrl: String, email: String)
 
     val quotaSnapshotFlow: Flow<QuotaSnapshot?>
     suspend fun saveQuotaSnapshot(usageBytes: Long, limitBytes: Long)
@@ -58,4 +64,8 @@ interface PikoUserPreferences {
     suspend fun setDownloadDirPath(path: String)
     suspend fun getDownloadDirPath(): String
     suspend fun setConcurrentAccelerationEnabled(enabled: Boolean)
+
+    /** 本地下载任务表的 JSON。空串表示从未保存。 */
+    suspend fun loadDownloadTasks(): String
+    suspend fun saveDownloadTasks(serialized: String)
 }

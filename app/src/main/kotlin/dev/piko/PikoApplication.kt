@@ -17,6 +17,7 @@ import dev.piko.shared.data.InstantMagnetRepository
 import dev.piko.shared.data.TaskRepository
 import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.media.PikoMediaRepository
+import dev.piko.update.AppUpdater
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -51,6 +52,9 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
     lateinit var downloadManager: PikoDownloadCoordinator
         private set
 
+    /** 首次用到时才建：多数启动根本不检查更新，不必为它先建一个 HTTP 客户端。 */
+    val appUpdater by lazy { AppUpdater(this) }
+
     override fun onCreate() {
         super.onCreate()
         instance = this
@@ -60,7 +64,7 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
         driveRepository = DriveRepository(clientManager, sessionManager)
         accountRepository = PikoAccountRepository(clientManager, sessionManager)
         instantMagnetRepository = InstantMagnetRepository(clientManager)
-        taskRepository = TaskRepository(clientManager)
+        taskRepository = TaskRepository(clientManager, driveRepository)
         mediampMediaRepository = PikoMediaRepository(clientManager, sessionManager)
         downloadManager = PikoDownloadCoordinator(
             clientProvider = clientManager,
@@ -68,6 +72,7 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
             storage = AndroidPikoDownloadStorage(this, sessionManager, appScope),
             scope = appScope,
             segmentDownloader = AndroidPikoSegmentDownloader(this),
+            mediaRepository = mediampMediaRepository,
             onDownloadStarted = { PikoDownloadService.start(this) },
         )
     }

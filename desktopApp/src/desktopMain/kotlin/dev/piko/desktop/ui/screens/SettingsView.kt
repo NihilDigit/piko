@@ -51,6 +51,7 @@ import io.github.composefluent.component.Text
 import io.github.composefluent.component.TextField
 import io.github.composefluent.icons.Icons
 import io.github.composefluent.icons.regular.ChevronRight
+import io.github.composefluent.icons.regular.ClosedCaption
 import io.github.composefluent.icons.regular.Cloud
 import io.github.composefluent.icons.regular.Code
 import io.github.composefluent.icons.regular.Delete
@@ -83,6 +84,7 @@ fun SettingsView(
     val session by preferences.sessionFlow.collectAsState(null)
     val isSpoilerBlurEnabled by preferences.spoilerBlurFlow.collectAsState(true)
     val isHeuristicFilterEnabled by preferences.heuristicFilterFlow.collectAsState(true)
+    val isBundleSubtitlesEnabled by preferences.bundleSubtitlesFlow.collectAsState(true)
     val isConcurrentAccelerationEnabled by preferences.concurrentAccelerationFlow.collectAsState(true)
     val liveQuota by driveRepository.quotaFlow.collectAsState()
     val cachedQuota by preferences.quotaSnapshotFlow.collectAsState(null)
@@ -154,10 +156,12 @@ fun SettingsView(
                                 fontWeight = FontWeight.Medium,
                             )
                         }
-                        if (!session?.userId.isNullOrBlank()) {
+                        val accountLabel = session?.email?.ifBlank { null }
+                            ?: session?.userId?.ifBlank { null }?.let { "UID: ${it.take(8)}…" }
+                        if (accountLabel != null) {
                             Spacer(Modifier.width(8.dp))
                             Text(
-                                text = "UID: ${session?.userId?.take(8)}…",
+                                text = accountLabel,
                                 style = FluentTheme.typography.caption,
                                 color = FluentTheme.colors.text.text.secondary,
                             )
@@ -281,6 +285,14 @@ fun SettingsView(
                     description = "若存在主体大文件，自动折叠附属小文件，专注核心资源。",
                     checked = isHeuristicFilterEnabled,
                     onCheckedChange = { scope.launch { preferences.setHeuristicFilterEnabled(it) } },
+                )
+                Spacer(Modifier.height(12.dp))
+                SettingSwitchRow(
+                    icon = Icons.Regular.ClosedCaption,
+                    title = "字幕随视频",
+                    description = "添加链接时，同名字幕随视频一并勾选。",
+                    checked = isBundleSubtitlesEnabled,
+                    onCheckedChange = { scope.launch { preferences.setBundleSubtitlesEnabled(it) } },
                 )
                 Spacer(Modifier.height(12.dp))
                 SettingSwitchRow(

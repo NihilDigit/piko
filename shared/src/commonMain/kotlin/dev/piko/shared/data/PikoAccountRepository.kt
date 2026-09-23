@@ -8,7 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * 账户资料。登录态只带回 token 与 user id，昵称和头像要单独取一次。
+ * 账户资料。登录态只带回 token 与 user id，昵称、头像与邮箱要单独取一次。
  *
  * 取回后写进 [PikoUserPreferences.saveProfile] 而非 saveSession：后者会无条件
  * 重写 token，用它写资料等于每次刷新都覆盖一遍登录态。
@@ -25,6 +25,7 @@ class PikoAccountRepository(
             preferences.saveProfile(
                 username = profile.name,
                 avatarUrl = profile.avatarUrl.orEmpty(),
+                email = profile.email,
             )
             Result.success(profile)
         } catch (e: CancellationException) {

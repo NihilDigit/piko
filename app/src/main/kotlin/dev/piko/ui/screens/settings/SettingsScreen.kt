@@ -6,6 +6,7 @@ import android.os.Environment
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,6 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -26,16 +28,25 @@ import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.AutoFixHigh
+import androidx.compose.material.icons.outlined.Subtitles
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Code
+import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Speed
+import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.material.icons.outlined.VisibilityOff
+import androidx.compose.material.icons.outlined.Wallpaper
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItemDefaults
@@ -43,9 +54,15 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedListItem
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.ToggleButton
+import androidx.compose.material3.ToggleButtonDefaults
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -61,6 +78,9 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
@@ -70,8 +90,16 @@ import dev.piko.BuildConfig
 import dev.piko.PikoApplication
 import dev.piko.R
 import dev.piko.data.auth.QuotaSnapshot
-import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.toReadableSize
+import dev.piko.ui.theme.Appearance
+import dev.piko.ui.theme.LocalAppearance
+import dev.piko.ui.theme.SeedTheme
+import dev.piko.ui.theme.ThemeMode
+import dev.piko.ui.theme.effectiveSeed
+import dev.piko.ui.theme.isDark
+import dev.piko.ui.theme.supportsDynamicColor
+import dev.piko.update.AvailableUpdate
+import dev.piko.update.UpdateStatus
 import kotlinx.coroutines.launch
 import java.util.Locale
 
@@ -100,6 +128,7 @@ fun SettingsScreen(
     val session by sessionManager.sessionFlow.collectAsStateWithLifecycle(initialValue = null)
     val isSpoilerBlurEnabled by sessionManager.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = true)
     val isHeuristicFilterEnabled by sessionManager.heuristicFilterFlow.collectAsStateWithLifecycle(initialValue = true)
+    val isBundleSubtitlesEnabled by sessionManager.bundleSubtitlesFlow.collectAsStateWithLifecycle(initialValue = true)
     val isConcurrentAccelerationEnabled by sessionManager.concurrentAccelerationFlow.collectAsStateWithLifecycle(initialValue = true)
     val downloadDirPath by sessionManager.downloadDirPathFlow.collectAsStateWithLifecycle(initialValue = "")
     val scope = rememberCoroutineScope()
@@ -126,6 +155,17 @@ fun SettingsScreen(
         }
     }
 
+    val updater = PikoApplication.instance.appUpdater
+    var updateInSheet by remember { mutableStateOf<AvailableUpdate?>(null) }
+    val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(updater) {
+        updater.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
+    }
+    // 进页面静默查一次：失败不打扰，手动点「检查更新」时才报错
+    LaunchedEffect(updater) {
+        if (updater.status == UpdateStatus.Idle) updater.check(silent = true)
+    }
+
     LaunchedEffect(Unit) {
         driveRepo.getQuota()
         // 昵称与头像不随登录态返回，每次进入本页取一次。
@@ -133,11 +173,11 @@ fun SettingsScreen(
         accountRepo.refreshProfile()
     }
 
+    // 不设顶栏：标题与底部导航选中的「我的」重复，本页也没有页面级动作。
+    // Scaffold 的内容边距已含状态栏，账号卡片直接从状态栏下方开始
     Scaffold(
         modifier = modifier.fillMaxSize(),
-        topBar = {
-            PikoTopBar(title = "我的")
-        },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { innerPadding ->
         Column(
             modifier = Modifier
@@ -145,11 +185,12 @@ fun SettingsScreen(
                 .padding(innerPadding)
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp)
-                .padding(top = 4.dp, bottom = 24.dp),
+                .padding(top = 16.dp, bottom = 24.dp),
         ) {
             AccountCard(
                 username = session?.username,
-                userId = session?.userId,
+                accountLabel = session?.email?.ifBlank { null }
+                    ?: session?.userId?.ifBlank { null }?.let { "UID $it" },
                 avatarUrl = session?.avatarUrl,
                 quota = quota,
             )
@@ -164,20 +205,40 @@ fun SettingsScreen(
                 )
             }
 
+            SettingsGroup(title = "外观") {
+                val appearance = LocalAppearance.current
+                ThemeModeRow(
+                    mode = appearance.mode,
+                    onModeChange = { scope.launch { sessionManager.setThemeMode(it.name) } },
+                )
+                ThemeColorRow(
+                    appearance = appearance,
+                    onSeedChange = { scope.launch { sessionManager.setThemeSeed(it?.name) } },
+                )
+            }
+
             SettingsGroup(title = "浏览") {
                 SettingsSwitchRow(
-                    index = 0, count = 2,
+                    index = 0, count = 3,
                     icon = Icons.Outlined.AutoFixHigh,
                     title = "启发式折叠",
-                    supporting = "存在主体大文件时，折叠样片、字幕等附属文件",
+                    supporting = "折叠疑似广告的小文件",
                     checked = isHeuristicFilterEnabled,
                     onCheckedChange = { scope.launch { sessionManager.setHeuristicFilterEnabled(it) } },
                 )
                 SettingsSwitchRow(
-                    index = 1, count = 2,
+                    index = 1, count = 3,
+                    icon = Icons.Outlined.Subtitles,
+                    title = "字幕随视频",
+                    supporting = "添加链接时同名字幕与视频合为一项",
+                    checked = isBundleSubtitlesEnabled,
+                    onCheckedChange = { scope.launch { sessionManager.setBundleSubtitlesEnabled(it) } },
+                )
+                SettingsSwitchRow(
+                    index = 2, count = 3,
                     icon = Icons.Outlined.VisibilityOff,
                     title = "缩略图防窥",
-                    supporting = "缩略图默认遮蔽，点按后显示",
+                    supporting = "模糊显示缩略图",
                     checked = isSpoilerBlurEnabled,
                     onCheckedChange = { scope.launch { sessionManager.setSpoilerBlurEnabled(it) } },
                 )
@@ -188,7 +249,7 @@ fun SettingsScreen(
                     index = 0, count = 2,
                     icon = Icons.Outlined.Speed,
                     title = "并发加速",
-                    supporting = if (isConcurrentAccelerationEnabled) "分 8 个连接并行下载" else "单连接下载",
+                    supporting = "多连接下载，提升速度",
                     checked = isConcurrentAccelerationEnabled,
                     onCheckedChange = { scope.launch { sessionManager.setConcurrentAccelerationEnabled(it) } },
                 )
@@ -203,23 +264,32 @@ fun SettingsScreen(
 
             SettingsGroup(title = "关于") {
                 SegmentedListItem(
-                    shapes = ListItemDefaults.segmentedShapes(index = 0, count = 2),
+                    shapes = ListItemDefaults.segmentedShapes(index = 0, count = 3),
                     colors = settingsRowColors(),
                     leadingContent = {
                         Icon(
-                            painter = painterResource(R.drawable.ic_piko_logo),
+                            painter = painterResource(R.drawable.ic_piko_glyph),
                             contentDescription = null,
-                            tint = Color.Unspecified,
-                            modifier = Modifier
-                                .size(24.dp)
-                                .clip(MaterialTheme.shapes.extraSmall),
                         )
                     },
                     supportingContent = { Text("版本 ${BuildConfig.VERSION_NAME}") },
                     content = { Text("Piko") },
                 )
+                UpdateRow(
+                    status = updater.status,
+                    onClick = {
+                        when (val current = updater.status) {
+                            is UpdateStatus.Available -> updateInSheet = current.update
+                            is UpdateStatus.Downloading -> updateInSheet = current.update
+                            is UpdateStatus.Installing -> updateInSheet = current.update
+                            is UpdateStatus.Failed -> current.update?.let { updateInSheet = it }
+                                ?: scope.launch { updater.check() }
+                            else -> scope.launch { updater.check() }
+                        }
+                    },
+                )
                 SettingsNavigationRow(
-                    index = 1, count = 2,
+                    index = 2, count = 3,
                     icon = Icons.Outlined.Code,
                     title = "开源仓库",
                     supporting = "github.com/NihilDigit/piko",
@@ -245,6 +315,10 @@ fun SettingsScreen(
                 Text("退出登录")
             }
         }
+    }
+
+    updateInSheet?.let { update ->
+        UpdateSheet(updater = updater, update = update, onDismiss = { updateInSheet = null })
     }
 
     if (showLogoutDialog) {
@@ -334,7 +408,8 @@ fun SettingsScreen(
 @Composable
 private fun AccountCard(
     username: String?,
-    userId: String?,
+    /** 邮箱，没有邮箱时退回 UID。 */
+    accountLabel: String?,
     avatarUrl: String?,
     quota: QuotaSnapshot?,
 ) {
@@ -377,9 +452,9 @@ private fun AccountCard(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    if (!userId.isNullOrBlank()) {
+                    if (accountLabel != null) {
                         Text(
-                            text = "UID $userId",
+                            text = accountLabel,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -434,9 +509,159 @@ private fun SettingsGroup(title: String, content: @Composable ColumnScope.() -> 
     )
 }
 
+// 选中色与底色取同一值：开关行用 checked 重载拿开关语义，而它把 checked 当作选中，
+// 开着的行会换成选中底色与选中形状，一组设置里亮一块暗一块。开关状态由 Switch 表达。
 @Composable
 private fun settingsRowColors() =
-    ListItemDefaults.segmentedColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
+    ListItemDefaults.segmentedColors(
+        containerColor = MaterialTheme.colorScheme.surfaceContainer,
+        selectedContainerColor = MaterialTheme.colorScheme.surfaceContainer,
+    )
+
+/** 深色模式三选一，用 M3 Expressive 的连体按钮组，与播放器倍速选择的写法一致。 */
+@Composable
+private fun ThemeModeRow(mode: ThemeMode, onModeChange: (ThemeMode) -> Unit) {
+    SegmentedListItem(
+        shapes = ListItemDefaults.segmentedShapes(index = 0, count = 2),
+        colors = settingsRowColors(),
+        leadingContent = { Icon(Icons.Outlined.DarkMode, contentDescription = null) },
+        supportingContent = {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
+            ) {
+                ThemeMode.entries.forEachIndexed { index, option ->
+                    ToggleButton(
+                        checked = option == mode,
+                        onCheckedChange = { onModeChange(option) },
+                        shapes = when (index) {
+                            0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                            ThemeMode.entries.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
+                            else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
+                        },
+                        colors = ToggleButtonDefaults.colors(),
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(option.label, maxLines = 1)
+                    }
+                }
+            }
+        },
+        content = { Text("深色模式") },
+    )
+}
+
+/**
+ * 主题色：系统取色加内置主题，一排圆形色块，选中的打勾，名字写在标题下方。
+ *
+ * 色块显示的是该主题在当前深浅下的 primary，即选中后按钮与强调色的实际颜色，而非种子色：
+ * 种子色经 TonalSpot 调和后会变淡，按种子色画会与结果对不上。
+ * 触控区按 48dp 下限给，七个在窄屏上放不下一行，改为横向滚动。
+ */
+@Composable
+private fun ThemeColorRow(appearance: Appearance, onSeedChange: (SeedTheme?) -> Unit) {
+    val dark = appearance.isDark()
+    val context = LocalContext.current
+    val selectedLabel = appearance.effectiveSeed?.label ?: "系统取色"
+    SegmentedListItem(
+        shapes = ListItemDefaults.segmentedShapes(index = 1, count = 2),
+        colors = settingsRowColors(),
+        leadingContent = { Icon(Icons.Outlined.Palette, contentDescription = null) },
+        supportingContent = {
+            Column {
+                Text(selectedLabel)
+                Row(
+                    modifier = Modifier
+                        .padding(top = 4.dp)
+                        .horizontalScroll(rememberScrollState()),
+                ) {
+                    if (supportsDynamicColor) {
+                        val scheme = if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+                        ColorSwatch(
+                            color = scheme.primary,
+                            onColor = scheme.onPrimary,
+                            label = "系统取色",
+                            selected = appearance.seed == null,
+                            idleIcon = Icons.Outlined.Wallpaper,
+                            onClick = { onSeedChange(null) },
+                        )
+                    }
+                    SeedTheme.entries.forEach { theme ->
+                        val scheme = if (dark) theme.dark else theme.light
+                        ColorSwatch(
+                            color = scheme.primary,
+                            onColor = scheme.onPrimary,
+                            label = theme.label,
+                            selected = appearance.effectiveSeed == theme,
+                            onClick = { onSeedChange(theme) },
+                        )
+                    }
+                }
+            }
+        },
+        content = { Text("主题色") },
+    )
+}
+
+@Composable
+private fun ColorSwatch(
+    color: Color,
+    onColor: Color,
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    idleIcon: ImageVector? = null,
+) {
+    Box(
+        modifier = Modifier
+            .size(48.dp)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
+            .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(CircleShape)
+                .background(color),
+            contentAlignment = Alignment.Center,
+        ) {
+            val icon = if (selected) Icons.Outlined.Check else idleIcon
+            if (icon != null) Icon(icon, contentDescription = null, tint = onColor, modifier = Modifier.size(20.dp))
+        }
+    }
+}
+
+/** 检查更新。发现新版本时尾部亮一个圆点，点开是更新面板。 */
+@Composable
+private fun UpdateRow(status: UpdateStatus, onClick: () -> Unit) {
+    val supporting = when (status) {
+        UpdateStatus.Idle -> "点按检查"
+        UpdateStatus.Checking -> "正在检查"
+        UpdateStatus.UpToDate -> "已是最新版本"
+        is UpdateStatus.Available -> "发现新版本 ${status.update.version}"
+        is UpdateStatus.Downloading -> "正在下载 ${(status.progress * 100).toInt()}%"
+        is UpdateStatus.Installing -> "等待安装确认"
+        is UpdateStatus.Failed -> status.message
+    }
+    SegmentedListItem(
+        onClick = onClick,
+        shapes = ListItemDefaults.segmentedShapes(index = 1, count = 3),
+        colors = settingsRowColors(),
+        leadingContent = { Icon(Icons.Outlined.SystemUpdate, contentDescription = null) },
+        trailingContent = {
+            when (status) {
+                UpdateStatus.Checking -> CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                is UpdateStatus.Available -> Badge()
+                else -> Unit
+            }
+        },
+        supportingContent = { Text(supporting) },
+        content = { Text("检查更新") },
+    )
+}
 
 @Composable
 private fun SettingsSwitchRow(
@@ -451,7 +676,7 @@ private fun SettingsSwitchRow(
     SegmentedListItem(
         checked = checked,
         onCheckedChange = onCheckedChange,
-        shapes = ListItemDefaults.segmentedShapes(index = index, count = count),
+        shapes = ListItemDefaults.segmentedShapes(index = index, count = count).let { it.copy(selectedShape = it.shape) },
         colors = settingsRowColors(),
         leadingContent = { Icon(icon, contentDescription = null) },
         // 开关只作指示，整行的 checked 语义已由列表项提供

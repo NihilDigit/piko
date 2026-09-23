@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.asStateFlow
 class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoUserPreferences {
     private val spoiler = MutableStateFlow(settings.get(KEY_SPOILER, "true").toBoolean())
     private val heuristic = MutableStateFlow(settings.get(KEY_HEURISTIC, "true").toBoolean())
+    private val bundleSubtitles = MutableStateFlow(settings.get(KEY_BUNDLE_SUBTITLES, "true").toBoolean())
     private val gridView = MutableStateFlow(settings.get(KEY_GRID_VIEW, "false").toBoolean())
     private val acceleration = MutableStateFlow(settings.get(KEY_ACCELERATION, "true").toBoolean())
     private val connections = MutableStateFlow(settings.get(KEY_CONNECTIONS, "8").toIntOrNull() ?: 8)
@@ -75,6 +76,12 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         heuristic.value = enabled
     }
 
+    override val bundleSubtitlesFlow: Flow<Boolean> = bundleSubtitles.asStateFlow()
+    override suspend fun setBundleSubtitlesEnabled(enabled: Boolean) {
+        settings.set(KEY_BUNDLE_SUBTITLES, enabled.toString())
+        bundleSubtitles.value = enabled
+    }
+
     override val gridViewFlow: Flow<Boolean> = gridView.asStateFlow()
     override suspend fun setGridViewEnabled(enabled: Boolean) {
         settings.set(KEY_GRID_VIEW, enabled.toString())
@@ -88,13 +95,15 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         settings.set(KEY_SESSION_USER_ID, userId)
         settings.set(KEY_SESSION_USERNAME, username)
         settings.set(KEY_SESSION_AVATAR, avatarUrl)
-        session.value = loadSession()
+        // 邮箱只在内存里，重写会话时带过去，否则令牌刷新后要等下次取资料才重新出现
+        session.value = loadSession().copy(email = session.value.email)
     }
 
-    override suspend fun saveProfile(username: String, avatarUrl: String) {
+    override suspend fun saveProfile(username: String, avatarUrl: String, email: String) {
         session.value = session.value.copy(
             username = username.ifEmpty { session.value.username },
             avatarUrl = avatarUrl.ifEmpty { session.value.avatarUrl },
+            email = email.ifEmpty { session.value.email },
         )
     }
 
@@ -135,10 +144,18 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         acceleration.value = enabled
     }
 
+    override suspend fun loadDownloadTasks(): String = settings.get(KEY_DOWNLOAD_TASKS)
+
+    override suspend fun saveDownloadTasks(serialized: String) {
+        settings.set(KEY_DOWNLOAD_TASKS, serialized)
+    }
+
     private companion object {
         const val MAX_PLAYBACK_ENTRIES = 500
+        const val KEY_DOWNLOAD_TASKS = "download.tasks"
         const val KEY_SPOILER = "ui.spoilerBlur"
         const val KEY_HEURISTIC = "ui.heuristicFilter"
+        const val KEY_BUNDLE_SUBTITLES = "ui.bundleSubtitles"
         const val KEY_GRID_VIEW = "ui.gridView"
         const val KEY_ACCELERATION = "download.concurrentAcceleration"
         const val KEY_CONNECTIONS = "download.concurrentConnections"

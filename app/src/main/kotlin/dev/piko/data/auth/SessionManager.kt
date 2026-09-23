@@ -34,6 +34,14 @@ private val Context.playbackDataStore: DataStore<Preferences> by preferencesData
     produceMigrations = { context -> listOf(LegacyPlaybackPositionMigration(context.dataStore)) },
 )
 
+/** 下载任务表同理单独一个文件：整张表一个键，随任务数增长，每次状态变化都整份重写。 */
+private val Context.downloadsDataStore: DataStore<Preferences> by preferencesDataStore(
+    name = "piko_downloads",
+    corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+)
+
+private val DOWNLOAD_TASKS = stringPreferencesKey("download_tasks")
+
 private const val PLAYBACK_KEY_PREFIX = "playback_pos_"
 
 private fun playbackKey(fileId: String) = longPreferencesKey("$PLAYBACK_KEY_PREFIX$fileId")
@@ -74,12 +82,16 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val USER_ID = stringPreferencesKey("user_id")
         val USERNAME = stringPreferencesKey("username")
         val AVATAR_URL = stringPreferencesKey("avatar_url")
+        val EMAIL = stringPreferencesKey("email")
         val CONCURRENT_CONNECTIONS = intPreferencesKey("concurrent_connections")
         val CONCURRENT_ACCELERATION = booleanPreferencesKey("concurrent_acceleration")
         val DOWNLOAD_DIR_PATH = stringPreferencesKey("download_dir_path")
         val SPOILER_BLUR_ENABLED = booleanPreferencesKey("spoiler_blur_enabled")
         val HEURISTIC_FILTER_ENABLED = booleanPreferencesKey("heuristic_filter_enabled")
-        val GRID_VIEW_ENABLED = booleanPreferencesKey("grid_view_enabled")
+        val BUNDLE_SUBTITLES_ENABLED = booleanPreferencesKey("bundle_subtitles_enabled")
+        val WATERFALL_VIEW_ENABLED = booleanPreferencesKey("waterfall_view_enabled")
+        val THEME_MODE = stringPreferencesKey("theme_mode")
+        val THEME_SEED = stringPreferencesKey("theme_seed")
         val INSTANT_TARGET_ID = stringPreferencesKey("instant_target_id")
         val INSTANT_TARGET_NAME = stringPreferencesKey("instant_target_name")
         val QUOTA_USAGE_BYTES = longPreferencesKey("quota_usage_bytes")
@@ -145,13 +157,40 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
+    override val bundleSubtitlesFlow: Flow<Boolean> = preference { preferences ->
+        preferences[PreferencesKeys.BUNDLE_SUBTITLES_ENABLED] ?: true
+    }
+
+    override suspend fun setBundleSubtitlesEnabled(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.BUNDLE_SUBTITLES_ENABLED] = enabled
+        }
+    }
+
+    // 外观只有 Android 用，不进 PikoUserPreferences：Desktop 的主题模式在它自己的设置存储里。
+    // 存枚举名的原始字符串，解析在主题层，数据层不依赖界面的类型。
+    val themeModeFlow: Flow<String?> = preference { it[PreferencesKeys.THEME_MODE] }
+
+    suspend fun setThemeMode(mode: String) {
+        context.dataStore.edit { it[PreferencesKeys.THEME_MODE] = mode }
+    }
+
+    /** 内置主题的名字，null 表示系统取色。 */
+    val themeSeedFlow: Flow<String?> = preference { it[PreferencesKeys.THEME_SEED] }
+
+    suspend fun setThemeSeed(seed: String?) {
+        context.dataStore.edit { preferences ->
+            if (seed == null) preferences.remove(PreferencesKeys.THEME_SEED) else preferences[PreferencesKeys.THEME_SEED] = seed
+        }
+    }
+
     override val gridViewFlow: Flow<Boolean> = preference { preferences ->
-        preferences[PreferencesKeys.GRID_VIEW_ENABLED] ?: false // 默认列表视图
+        preferences[PreferencesKeys.WATERFALL_VIEW_ENABLED] ?: true // 默认瀑布流
     }
 
     override suspend fun setGridViewEnabled(enabled: Boolean) {
         context.dataStore.edit { preferences ->
-            preferences[PreferencesKeys.GRID_VIEW_ENABLED] = enabled
+            preferences[PreferencesKeys.WATERFALL_VIEW_ENABLED] = enabled
         }
     }
 
@@ -162,6 +201,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
             userId = preferences[PreferencesKeys.USER_ID].orEmpty(),
             username = preferences[PreferencesKeys.USERNAME].orEmpty(),
             avatarUrl = preferences[PreferencesKeys.AVATAR_URL].orEmpty(),
+            email = preferences[PreferencesKeys.EMAIL].orEmpty(),
             concurrentConnections = preferences[PreferencesKeys.CONCURRENT_CONNECTIONS] ?: 8,
         )
     }
@@ -217,10 +257,11 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
-    override suspend fun saveProfile(username: String, avatarUrl: String) {
+    override suspend fun saveProfile(username: String, avatarUrl: String, email: String) {
         context.dataStore.edit { preferences ->
             if (username.isNotEmpty()) preferences[PreferencesKeys.USERNAME] = username
             if (avatarUrl.isNotEmpty()) preferences[PreferencesKeys.AVATAR_URL] = avatarUrl
+            if (email.isNotEmpty()) preferences[PreferencesKeys.EMAIL] = email
         }
     }
 
@@ -253,6 +294,15 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
+    override suspend fun loadDownloadTasks(): String =
+        context.downloadsDataStore.data.first()[DOWNLOAD_TASKS].orEmpty()
+
+    override suspend fun saveDownloadTasks(serialized: String) {
+        context.downloadsDataStore.edit { preferences ->
+            preferences[DOWNLOAD_TASKS] = serialized
+        }
+    }
+
     override suspend fun clearSession() {
         context.dataStore.edit { preferences ->
             preferences.remove(PreferencesKeys.TOKEN)
@@ -260,6 +310,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
             preferences.remove(PreferencesKeys.USER_ID)
             preferences.remove(PreferencesKeys.USERNAME)
             preferences.remove(PreferencesKeys.AVATAR_URL)
+            preferences.remove(PreferencesKeys.EMAIL)
         }
     }
 }
