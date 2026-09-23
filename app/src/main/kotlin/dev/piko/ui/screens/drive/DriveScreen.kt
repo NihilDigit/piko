@@ -68,6 +68,7 @@ import dev.piko.ui.components.MoveTargetDialog
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.SegmentDownloadSheet
+import dev.piko.ui.screens.instant.InstantSheetContent
 import dev.piko.ui.theme.PikoMotion
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.delay
