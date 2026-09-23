@@ -58,24 +58,10 @@ Piko 是 PikPak 的第三方跨平台客户端。Android 走 Material 3 Expressi
   Windows 用 Fluent 的 InfoBar）。用状态表达会在重组时重放。
 - 长驻的错误态（如 `loadError`）才用状态，它描述的是「眼前这份数据是旧的」。
 
-新增屏幕状态时照这个形状做。下沉是分刀进行的，`DriveScreenState` 是第一刀，尚未下沉的见下节。
-
-### 还没下沉的状态
-
-按投入产出排序，前两条是 Desktop 功能缺失的根因，后两条是整洁性收益：
-
-- **秒传与磁力解析**。Android 的 `InstantSheetContent` 是完整状态机：解析、勾选、启发式默认
-  选择、目标目录解析与失效校验、多文件建目录、秒传与离线分流；其中没有一行平台相关。Desktop
-  的 `TasksView` 只有「粘 URL 提交」。下沉后 Desktop 直接获得整个秒传能力，这是它当前最缺的。
-- **播放器的准备策略**。Android 的取流顺序是本地已下载优先 → `prepareMedia` + `createMediaData`
-  → 失败回退直链，外加续播位置的读写与播放到末尾归零。Desktop 的 `VideoPlayerWindow` 只调了
-  一次 `createMediaData`，没有续播、没有本地优先、没有回退。缺的是策略不是控件，控件仍各写各的。
-- **云端离线任务**。两端各有一份轮询与任务状态（Android 在 `TransfersScreen`，Desktop 在
-  `TasksView`），做的是同一件事。SDK 还缺任务删除与重试接口，补上后这块只会更大。
-- **回收站**。Android 是独立页面 `TrashScreen`，Desktop 是 `DriveView` 里的 `showTrash` 分支，
-  各自持有列表与加载态。
-- **登录**。两端都是 account / password / error / isLoggingIn 四个字段加一次 `manager.login`，
-  逻辑相同但很小，收益主要是一致性。
+新增屏幕状态时照这个形状做。已下沉的 state holder 都在 `shared/.../shared/state/`：
+`DriveScreenState`、`InstantSheetState`（秒传与磁力解析）、`OfflineTasksState`（云端离线任务，
+轮询由调用方的协程控制启停）、`TrashScreenState`、`LoginState`、`FolderPickerState`（自带路径栈）。
+播放器的准备策略是 `shared/.../shared/media/player/PlayerScreenState`，见「播放器」一节。
 
 **不要下沉这两处**：下载列表的状态本就在 `PikoDownloadCoordinator`（已在 shared），视图只做渲染；
 设置页看着重复实则不然，Desktop 是主题模式、WinRT 通知测试与 `File` 形式的下载目录，Android 是
@@ -85,7 +71,7 @@ DataStore 开关加配额与资料卡片，真正共用的部分已经在仓库�
 
 `PikoUserPreferences`、`PikoSessionStore`、`PikoDownloadStorage`、`PikoSegmentDownloader`
 都是 commonMain 的接口，Android 与 Desktop 各有实现。**加一个偏好项要同时改三处**：接口、
-`SessionManager`（Android，DataStore）、`DesktopPikoPreferences`（Desktop，内存）。
+`SessionManager`（Android，DataStore）、`DesktopPikoPreferences`（Desktop，`DesktopSettingsStore`）。
 
 ### 全局导航栈在仓库层
 
@@ -108,9 +94,29 @@ DataStore 开关加配额与资料卡片，真正共用的部分已经在仓库�
 
 ## 播放器
 
-Android 与 Desktop 都基于 MediaMP。`player.features` 里的能力**按后端注册，取不到要优雅降级**：
-ExoPlayer 后端只注册了 Buffering、FramePreview、MediaMetadata、PlaybackSpeed、VideoAspectRatio，
-`AudioLevelController` 与 `Screenshots` 没有实现，所以音量走 `AudioManager`。
+两端解码都是 libmpv，Kotlin 绑定各走各的：
 
-Android 播放器的控件在 `app/.../ui/screens/player/` 下拆成四个文件，手势的平台胶水在
-`PlayerGestures.kt`。
+- **Android** 用预编译的 `dev.jdtech.mpv:libmpv`，适配层是 `MpvPlaybackBackend` 与 `MpvVideoSurface`。
+  不用 MediaMP 的 Android mpv 后端：它的 Compose 表面是空实现，也不发布 .so。
+- **Desktop** 用 MediaMP 的 mpv 后端（`MediampPlaybackBackend`），因为它提供了 D3D11 零拷贝进 Skia 的表面，
+  这部分自己写的成本最高。
+
+两者都实现 commonMain 的薄接口 `PlaybackBackend`，策略在 `PlayerScreenState`：取流顺序为本地副本 →
+回环代理 → 新取的直链 → 转码流，只有首帧前失败才换下一个来源；播放中途失败按退避重连；续播位置
+每 5 秒保存，末尾归零。控件是无状态的（Android `MobilePlayerControls`，Desktop `FluentPlayerControls`），
+两端参数同名，数据全部来自 `PlayerScreenState`。
+
+**所有网盘读取都经 `shared/.../media/proxy/` 的本机回环 HTTP 代理**，播放器只拿到一个 `http://127.0.0.1`
+URL。直链过期重取、连接预算、预读与缓存都在 SDK 的 `PikPakFileHandle` / `PikPakStreamReader` 里；
+代理负责把它们暴露成 HTTP Range。reader 只允许单个读者，而 mpv 拖动时新旧连接会短暂重叠，所以同一会话
+只有一个 reader，新请求先取消并等待旧请求，再 seek。
+
+**Android 分发包是 GPLv3**：jdtech 包里的 FFmpeg 以 `--enable-gpl --enable-version3` 构建，mpv 也是 GPL 构建。
+piko 源码仍是 MIT，但发版时要附 GPLv3 与第三方声明，并指明对应源码的获取方式。
+
+## 冒烟测试
+
+`.github/workflows/smoke.yml` 在每次推送时运行：Linux 上的 `:shared:desktopTest`，以及 x86_64 模拟器
+（API 26 与 34）上的 `:app:connectedDebugAndroidTest`。这些是端到端行为冒烟，不是单元测试：走真实 libmpv、
+真实代理，PikPak 服务端用 MockEngine 顶替，SDK 的请求、鉴权与解析仍走真实代码。本地不必跑，以 CI 结果为准。
+老格式样片在 `testdata/media/`，直接提交，生成方式见 `generate.sh`；没有 WMV3/VC-1 样片，因为 ffmpeg 没有它的编码器。
