@@ -177,7 +177,7 @@ fun SettingsScreen(
                     index = 1, count = 2,
                     icon = Icons.Outlined.VisibilityOff,
                     title = "缩略图防窥",
-                    supporting = "缩略图默认模糊，点按后显示",
+                    supporting = "缩略图默认遮蔽，点按后显示",
                     checked = isSpoilerBlurEnabled,
                     onCheckedChange = { scope.launch { sessionManager.setSpoilerBlurEnabled(it) } },
                 )

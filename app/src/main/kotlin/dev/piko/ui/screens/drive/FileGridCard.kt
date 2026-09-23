@@ -36,7 +36,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.ui.components.FileLeadingVisual
 import dev.piko.ui.components.FileTypeIcon
-import dev.piko.ui.components.GRID_BLUR_SAMPLE_PX
+import dev.piko.ui.components.GridSpoilerBlur
 import dev.piko.ui.components.HighlightBadge
 import dev.piko.ui.components.SpoilerThumbnail
 import dev.piko.ui.components.displayTitle
@@ -197,7 +197,7 @@ internal fun FileGridCard(
                     url = file.thumbnailLink,
                     isBlurred = isSpoilerBlurred,
                     onReveal = onToggleSpoiler,
-                    blurredSamplePx = GRID_BLUR_SAMPLE_PX,
+                    blur = GridSpoilerBlur,
                     revealOnClick = false,
                     modifier = Modifier.fillMaxSize(),
                 )

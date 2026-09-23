@@ -1,5 +1,7 @@
 package dev.piko.ui.components
 
+import android.os.Build
+import androidx.annotation.RequiresApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -16,10 +18,14 @@ import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.BlurredEdgeTreatment
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -108,7 +114,7 @@ fun FileLeadingVisual(
                 url = file.thumbnailLink,
                 isBlurred = isSpoilerBlurred,
                 onReveal = onToggleSpoiler,
-                blurredSamplePx = LIST_BLUR_SAMPLE_PX,
+                blur = ListSpoilerBlur,
                 modifier = Modifier.fillMaxSize(),
             )
         } else {
@@ -147,29 +153,38 @@ fun FileTypeIcon(
     }
 }
 
-// 模糊态解码的目标宽度（像素）。列表缩略图约 144px 宽，缩到 12px 后每个源像素被放大
-// 约 12 倍；网格封面约 500px 宽，取 24px。数值越小越糊，也越难辨认内容。
-internal const val LIST_BLUR_SAMPLE_PX = 12
-internal const val GRID_BLUR_SAMPLE_PX = 24
+/**
+ * 防窥模糊的参数。decodePx 是 Coil 解码的目标边长，radius 是绘制时的高斯模糊半径。
+ *
+ * 半径按显示尺寸给，不按解码尺寸：RenderEffect 作用在已经放大到显示尺寸的图层上。
+ * 两档都取显示宽度的约六分之一（列表 48dp 取 8dp，网格封面 130 到 200dp 取 24dp），
+ * 这个比例下人脸与文字已不成形，只剩大块色调。解码尺寸取到 48 与 64px，
+ * 比清晰图小一个数量级，高频细节在解码时就已丢掉，模糊只需要抹平放大后的块状边。
+ */
+@Immutable
+class SpoilerBlur internal constructor(val decodePx: Int, val radius: Dp)
+
+val ListSpoilerBlur = SpoilerBlur(decodePx = 48, radius = 8.dp)
+val GridSpoilerBlur = SpoilerBlur(decodePx = 64, radius = 24.dp)
 
 /**
  * 防窥缩略图。
  *
- * 模糊不用 Modifier.blur：它依赖 RenderEffect，API 31 以下直接不生效，minSdk 26 上
- * 等于把原图原样露出来；API 31 以上每帧都要在 GPU 上跑一次高斯核，滚动时成本随可见
- * 项数叠加。这里改为让 Coil 把缩略图解码成十几像素宽的小图，再由绘制时的双线性
- * 插值放大，得到的是柔和的色块。效果在所有 API 级别一致，没有逐帧成本，解码出的位图
- * 也只有几百字节。
+ * API 31 及以上：Coil 按 decodePx 解码小图，再用 Modifier.blur 做 RenderEffect 高斯模糊。
+ * 模糊态单独给内存缓存键，避免与清晰图互相命中；磁盘缓存按 URL 共用，揭示时不重新下载。
  *
- * 模糊态单独给一个内存缓存键，避免与清晰图互相命中；磁盘缓存按 URL 共用，揭示时
- * 不会重新下载。
+ * API 31 以下没有 RenderEffect，Modifier.blur 在那里什么都不做。防窥是隐私功能，
+ * 降级不能变成露出原图，所以这一侧不请求缩略图，只画不透明的占位。
+ *
+ * 模糊的图层里只放图片。遮罩与图标是它的兄弟节点，按压、选中这些父级重绘不会让
+ * 模糊图层失效。
  */
 @Composable
 fun SpoilerThumbnail(
     url: String,
     isBlurred: Boolean,
     onReveal: () -> Unit,
-    blurredSamplePx: Int,
+    blur: SpoilerBlur,
     modifier: Modifier = Modifier,
     revealOnClick: Boolean = true,
 ) {
@@ -183,18 +198,11 @@ fun SpoilerThumbnail(
         return
     }
 
-    val context = LocalPlatformContext.current
-    val request = remember(url, blurredSamplePx) {
-        ImageRequest.Builder(context)
-            .data(url)
-            .size(blurredSamplePx)
-            .precision(Precision.EXACT)
-            .memoryCacheKey("spoiler:$blurredSamplePx:$url")
-            .build()
-    }
     val fixedColors = LocalFixedColors.current
+    val supportsRenderEffect = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
     Box(
         modifier = modifier
+            .clipToBounds()
             .background(MaterialTheme.colorScheme.surfaceContainerHighest)
             .then(
                 if (revealOnClick) {
@@ -205,23 +213,47 @@ fun SpoilerThumbnail(
             ),
         contentAlignment = Alignment.Center,
     ) {
-        AsyncImage(
-            model = request,
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize(),
-        )
-        // 遮罩压低色块对比度，并给图标一个在任何底色上都成立的衬底
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.28f)),
-        )
+        if (supportsRenderEffect) {
+            BlurredThumbnail(url = url, blur = blur, modifier = Modifier.fillMaxSize())
+            // 遮罩压低色块对比度，并给图标一个在任何底色上都成立的衬底
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.28f)),
+            )
+        }
         Icon(
             imageVector = Icons.Outlined.VisibilityOff,
             contentDescription = "预览已遮蔽",
-            tint = fixedColors.OnMedia,
+            tint = if (supportsRenderEffect) fixedColors.OnMedia else MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(20.dp),
         )
     }
+}
+
+/**
+ * 用 Modifier.blur 而不是手写 graphicsLayer { renderEffect = BlurEffect(...) }：
+ * 1.12 的 Modifier.blur 本身就是 graphicsLayer 的 lambda 形式，按 edgeTreatment 选
+ * TileMode（Rectangle 对应 Clamp）并同时设 shape 与 clip = true。手写只是把这三件事
+ * 再抄一遍。Clamp 把边缘像素向外延伸参与卷积，四周不会被透明像素拉出一圈暗边；
+ * clip 把卷积溢出的部分裁在图层边界内。
+ */
+@RequiresApi(Build.VERSION_CODES.S)
+@Composable
+private fun BlurredThumbnail(url: String, blur: SpoilerBlur, modifier: Modifier) {
+    val context = LocalPlatformContext.current
+    val request = remember(url, blur.decodePx) {
+        ImageRequest.Builder(context)
+            .data(url)
+            .size(blur.decodePx)
+            .precision(Precision.EXACT)
+            .memoryCacheKey("spoiler:${blur.decodePx}:$url")
+            .build()
+    }
+    AsyncImage(
+        model = request,
+        contentDescription = null,
+        contentScale = ContentScale.Crop,
+        modifier = modifier.blur(blur.radius, edgeTreatment = BlurredEdgeTreatment.Rectangle),
+    )
 }
