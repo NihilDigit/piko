@@ -1,0 +1,114 @@
+name: Smoke
+
+# 端到端行为冒烟，不是单元测试：每条用例都走真实链路（真实 libmpv、真实回环代理、
+# 真实模拟器），断言的是用户可观察的结果。任何一次推送都跑，代替手动上真机。
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  jvm:
+    # 代理与共用 state holder 的冒烟都在 shared 的 desktop 测试里，不依赖 Windows，
+    # 放 Linux 上跑得最快。WinRT 等 Windows 专属用例留在 desktop.yml。
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: temurin
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Shared smoke tests
+        run: ./gradlew :shared:desktopTest --no-daemon --stacktrace
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jvm-smoke-reports
+          path: shared/build/reports/tests/
+          if-no-files-found: ignore
+
+  android:
+    # 模拟器是 x86_64，验证的是 libmpv 的 x86_64 .so；arm64 与 x86_64 出自同一套构建脚本，
+    # 打包或格式覆盖出问题时两者一起坏，差异只在机型硬解，这部分 CI 本来就测不到。
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # 26 是 minSdk；34 覆盖前台服务类型与 predictive back 等新平台行为
+        api-level: [26, 34]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Build test APKs
+        # 先在模拟器外编好，模拟器启动的那段时间不被 Gradle 占着
+        run: ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest -Ppiko.enableAbiSplits=false --no-daemon --stacktrace
+
+      - name: AVD cache
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-${{ matrix.api-level }}-x86_64-v1
+
+      - name: Create AVD snapshot
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api-level }}
+          arch: x86_64
+          target: default
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          script: echo "AVD snapshot created"
+
+      - name: Instrumented smoke tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api-level }}
+          arch: x86_64
+          target: default
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: ./gradlew :app:connectedDebugAndroidTest -Ppiko.enableAbiSplits=false --no-daemon --stacktrace
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-smoke-reports-api${{ matrix.api-level }}
+          path: |
+            app/build/reports/androidTests/
+            app/build/outputs/androidTest-results/
+          if-no-files-found: ignore

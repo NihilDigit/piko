@@ -19,3 +19,4 @@ release-secrets.*
 !gradle/wrapper/gradle-wrapper.jar
 *.bak
 *-mirror/
+.claude/worktrees/
