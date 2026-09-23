@@ -16,6 +16,17 @@ private val SUBTITLE_EXTENSIONS = setOf("srt", "ass", "ssa", "vtt", "sub", "sup"
 /** 只按扩展名的文件大类。网盘列表的图标、秒传面板的按类勾选共用这一套。 */
 enum class FileCategory { VIDEO, AUDIO, IMAGE, ARCHIVE, SUBTITLE, DOCUMENT }
 
+/** 按类勾选时的名称，两端共用。 */
+val FileCategory.label: String
+    get() = when (this) {
+        FileCategory.VIDEO -> "视频"
+        FileCategory.AUDIO -> "音频"
+        FileCategory.IMAGE -> "图片"
+        FileCategory.ARCHIVE -> "压缩包"
+        FileCategory.SUBTITLE -> "字幕"
+        FileCategory.DOCUMENT -> "其他"
+    }
+
 fun String.fileCategory(): FileCategory {
     val ext = substringAfterLast('.', "").lowercase()
     return when (ext) {
@@ -42,6 +53,20 @@ fun FileStat.isPlayableVideo(): Boolean = !isFolder && (
         mimeType.startsWith("video/") ||
         (params.containsKey("duration") && params.containsKey("width"))
     )
+
+/**
+ * 网盘文件的大类。除扩展名外还认服务端的 mime 与元数据（见 [isPlayableVideo]），扩展名非标时
+ * 也能归对类；磁力解析出的文件只有名字，用 String 的版本。对文件夹无意义，调用方先分开。
+ */
+fun FileStat.fileCategory(): FileCategory {
+    val byName = name.fileCategory()
+    return when {
+        isPlayableVideo() -> FileCategory.VIDEO
+        byName == FileCategory.AUDIO -> FileCategory.AUDIO
+        isPreviewableImage() -> FileCategory.IMAGE
+        else -> byName
+    }
+}
 
 fun FileStat.isPreviewableImage(): Boolean = !isFolder && (
     name.isPreviewableImage() || mimeType.startsWith("image/")

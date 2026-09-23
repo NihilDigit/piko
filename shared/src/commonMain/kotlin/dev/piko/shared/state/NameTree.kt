@@ -200,3 +200,32 @@ fun subtitleBundles(names: List<String>): Map<Int, List<Int>> {
         }
         .groupBy({ it.first }, { it.second })
 }
+
+/**
+ * 顶层的组名若就是资源名的开头（常见的是字幕组名），去掉这一层：它已写在文件夹名里，
+ * 单列一行只多一级缩进。组上有剥下来的公共结尾时保留，那是子项里不再出现的信息。
+ */
+fun List<NameNode>.withoutRedundantGroups(resourceName: String): List<NameNode> = flatMap { node ->
+    if (node is NameGroup && node.suffix.isEmpty() && resourceName.startsWith(node.label)) node.children else listOf(node)
+}
+
+/** 层级摊平后的一行。[key] 取自从顶层到这一层的标签路径，展开状态按它记。 */
+data class NameTreeRow(val node: NameNode, val depth: Int, val key: String)
+
+fun flattenNameTree(
+    nodes: List<NameNode>,
+    isExpanded: (key: String, depth: Int) -> Boolean,
+    depth: Int = 0,
+    parentKey: String = "",
+): List<NameTreeRow> = nodes.flatMap { node ->
+    val key = when (node) {
+        is NameLeaf -> "f${node.index}"
+        is NameGroup -> "$parentKey/${node.label}"
+    }
+    val row = NameTreeRow(node, depth, key)
+    if (node is NameGroup && isExpanded(key, depth)) {
+        listOf(row) + flattenNameTree(node.children, isExpanded, depth + 1, key)
+    } else {
+        listOf(row)
+    }
+}

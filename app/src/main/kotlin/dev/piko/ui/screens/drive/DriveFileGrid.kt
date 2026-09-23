@@ -1,5 +1,8 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.shared.data.PikoSortField
+import dev.piko.shared.data.field
+import dev.piko.shared.data.isAscending
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -218,23 +221,6 @@ private fun coverAspectFor(index: Int): Float =
  * 排序字段与方向。ascending 与 descending 分别是该字段两个方向的枚举值，
  * defaultOrder 是切到这个字段时的起始方向：名称从 A 到 Z，时间与大小从新到旧、从大到小。
  */
-private enum class SortField(
-    val label: String,
-    val ascending: FileSortOrder,
-    val descending: FileSortOrder,
-    val defaultOrder: FileSortOrder,
-) {
-    TIME("创建时间", FileSortOrder.TIME_ASC, FileSortOrder.TIME_DESC, FileSortOrder.TIME_DESC),
-    NAME("名称", FileSortOrder.NAME_ASC, FileSortOrder.NAME_DESC, FileSortOrder.NAME_ASC),
-    SIZE("大小", FileSortOrder.SIZE_ASC, FileSortOrder.SIZE_DESC, FileSortOrder.SIZE_DESC),
-    ;
-
-    fun owns(order: FileSortOrder) = order == ascending || order == descending
-}
-
-private val FileSortOrder.field: SortField get() = SortField.entries.first { it.owns(this) }
-private val FileSortOrder.isAscending: Boolean get() = this == field.ascending
-
 @Composable
 private fun SortDirectionIcon(order: FileSortOrder, modifier: Modifier = Modifier) {
     Icon(
@@ -293,20 +279,14 @@ internal fun DriveListHeader(
                     SortDirectionIcon(sortOrder, modifier = Modifier.size(16.dp))
                 }
                 DropdownMenu(expanded = showSortMenu, onDismissRequest = { showSortMenu = false }) {
-                    SortField.entries.forEach { field ->
+                    PikoSortField.entries.forEach { field ->
                         val isCurrent = field.owns(sortOrder)
                         DropdownMenuItem(
                             text = { Text(field.label) },
                             trailingIcon = { if (isCurrent) SortDirectionIcon(sortOrder) },
                             onClick = {
                                 showSortMenu = false
-                                onSortChange(
-                                    when {
-                                        !isCurrent -> field.defaultOrder
-                                        sortOrder.isAscending -> field.descending
-                                        else -> field.ascending
-                                    },
-                                )
+                                onSortChange(field.selectFrom(sortOrder))
                             },
                         )
                     }

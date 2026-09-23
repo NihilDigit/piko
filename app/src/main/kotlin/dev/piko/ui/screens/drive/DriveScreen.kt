@@ -81,7 +81,6 @@ import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.SegmentDownloadSheet
 import dev.piko.shared.state.InstantSaveOutcome
 import dev.piko.ui.components.FileNameField
-import dev.piko.ui.screens.instant.InstantSession
 import dev.piko.ui.screens.instant.InstantSheetContent
 import dev.piko.ui.screens.instant.InstantSheetHandle
 import dev.piko.ui.theme.PikoMotion
@@ -116,6 +115,7 @@ fun DriveScreen(
 ) {
     val driveRepo = PikoApplication.instance.driveRepository
     val instantRepo = PikoApplication.instance.instantMagnetRepository
+    val instantSession = PikoApplication.instance.instantSession
     val downloadManager = PikoApplication.instance.downloadManager
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -196,16 +196,16 @@ fun DriveScreen(
     LaunchedEffect(pendingMagnet) {
         val magnet = pendingMagnet
         if (!magnet.isNullOrBlank()) {
-            InstantSession.start(magnet)
+            instantSession.start(magnet)
             instantRepo.clearPendingMagnet()
         }
     }
 
     // 保存结果在这里收而不在面板里：面板可能正收起着
-    val instantState = InstantSession.state
+    val instantState = instantSession.state
     LaunchedEffect(instantState) {
         instantState?.outcomes?.collect { outcome ->
-            InstantSession.end()
+            instantSession.end()
             state.navigateToFolder(outcome.target)
             when (outcome) {
                 is InstantSaveOutcome.InstantSaved -> {
@@ -292,11 +292,11 @@ fun DriveScreen(
             .nestedScroll(topBarScrollBehavior.nestedScrollConnection),
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         bottomBar = {
-            if (instantState != null && !InstantSession.isSheetOpen) {
+            if (instantState != null && !instantSession.isSheetOpen) {
                 InstantSheetHandle(
                     state = instantState,
-                    onExpand = InstantSession::reopen,
-                    onClose = InstantSession::end,
+                    onExpand = instantSession::reopen,
+                    onClose = instantSession::end,
                 )
             }
         },
@@ -365,7 +365,7 @@ fun DriveScreen(
                     FloatingActionButtonMenuItem(
                         onClick = {
                             isFabMenuExpanded = false
-                            InstantSession.start()
+                            instantSession.start()
                         },
                         icon = { Icon(Icons.Outlined.Bolt, contentDescription = null) },
                         text = { Text("添加链接") },
@@ -482,9 +482,9 @@ fun DriveScreen(
     }
 
     // 秒传面板。划走只是收起，会话还在，底部留把手，见 InstantSession
-    if (instantState != null && InstantSession.isSheetOpen) {
+    if (instantState != null && instantSession.isSheetOpen) {
         ModalBottomSheet(
-            onDismissRequest = InstantSession::collapse,
+            onDismissRequest = instantSession::collapse,
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         ) {
             InstantSheetContent(state = instantState)

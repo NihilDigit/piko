@@ -21,7 +21,6 @@ import dev.piko.ui.theme.PikoMotion
 import dev.piko.ui.theme.PikoTheme
 import dev.piko.ui.theme.appearanceFlow
 import dev.piko.ui.theme.isDark
-import dev.piko.ui.screens.instant.InstantSession
 import dev.piko.util.PikPakAppLink
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -82,7 +81,7 @@ class MainActivity : ComponentActivity() {
                         // 登录成功后 currentClient 变为非空，根状态随之切到 MAIN，不需要回调
                         AppState.LOGIN -> {
                             // 未完成的添加链接属于上一个账号，保存目标也是那边的目录
-                            LaunchedEffect(Unit) { InstantSession.end() }
+                            LaunchedEffect(Unit) { PikoApplication.instance.instantSession.end() }
                             LoginScreen()
                         }
                         AppState.MAIN -> {

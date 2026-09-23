@@ -132,17 +132,7 @@ private fun FileCategory.toKind(): FileKind = when (this) {
 /** 文件大类的图标，秒传面板的按类勾选也用它。 */
 fun FileCategory.icon(): ImageVector = toKind().icon()
 
-/** 网盘条目另认服务端的 mime 与元数据，扩展名非标时也能归对类。 */
-private fun FileStat.kind(): FileKind {
-    val byName = fileNameKind(name)
-    return when {
-        isFolder -> FileKind.FOLDER
-        isPlayableVideo() -> FileKind.VIDEO
-        byName == FileKind.AUDIO -> FileKind.AUDIO
-        isPreviewableImage() -> FileKind.IMAGE
-        else -> byName
-    }
-}
+private fun FileStat.kind(): FileKind = if (isFolder) FileKind.FOLDER else fileCategory().toKind()
 
 private fun FileKind.icon(): ImageVector = when (this) {
     FileKind.FOLDER -> Icons.Filled.Folder

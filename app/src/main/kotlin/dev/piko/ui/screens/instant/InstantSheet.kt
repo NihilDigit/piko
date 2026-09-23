@@ -66,7 +66,6 @@ import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -81,12 +80,14 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import dev.piko.data.repository.FileCategory
+import dev.piko.data.repository.label
 import dev.piko.data.repository.PathBreadcrumb
 import dev.piko.shared.state.InstantSheetState
 import dev.piko.shared.state.NameGroup
 import dev.piko.shared.state.NameLeaf
-import dev.piko.shared.state.NameNode
+import dev.piko.shared.state.InstantActionKind
+import dev.piko.shared.state.InstantPrimaryAction
+import dev.piko.shared.state.NameGroupSummary
 import dev.piko.ui.components.FileNameField
 import dev.piko.ui.components.FolderPickerDialog
 import dev.piko.ui.components.MetaRow
@@ -169,7 +170,7 @@ fun InstantSheetContent(state: InstantSheetState) {
             ResolutionSection(state = state, resourceName = result.resource.name)
         }
 
-        val action = primaryAction(state)
+        val action = state.primaryAction
         if (action != null) {
             TargetRow(
                 target = state.target,
@@ -178,7 +179,7 @@ fun InstantSheetContent(state: InstantSheetState) {
                 onClick = { showTargetPicker = true },
             )
             Button(
-                onClick = action.onClick,
+                onClick = state::performPrimaryAction,
                 enabled = action.enabled,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -191,9 +192,9 @@ fun InstantSheetContent(state: InstantSheetState) {
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("正在保存")
                 } else {
-                    Icon(action.icon, contentDescription = null, modifier = Modifier.size(20.dp))
+                    Icon(action.kind.icon(), contentDescription = null, modifier = Modifier.size(20.dp))
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text(action.label)
+                    Text(action.label())
                 }
             }
         }
@@ -212,33 +213,15 @@ fun InstantSheetContent(state: InstantSheetState) {
     }
 }
 
-private class PrimaryAction(
-    val label: String,
-    val icon: ImageVector,
-    val enabled: Boolean,
-    val onClick: () -> Unit,
-)
+private fun InstantActionKind.icon(): ImageVector = when (this) {
+    InstantActionKind.INSTANT_SAVE -> Icons.Outlined.Bolt
+    InstantActionKind.OFFLINE_SAVE, InstantActionKind.SUBMIT_OFFLINE -> Icons.Outlined.CloudDownload
+}
 
-/**
- * 面板底部唯一的主按钮。原先顶部有「解析 / 提交离线」、底部又有「保存」，失败时两个同时出现，
- * 要读完两行文案才知道该点哪个；重新解析已挪进错误提示。
- * 返回 null 表示眼下没有可提交的东西：输入为空，或磁力链还在解析。
- */
-private fun primaryAction(state: InstantSheetState): PrimaryAction? {
-    val ready = state.target != null && !state.isSaving
-    return when {
-        state.resolution != null -> {
-            val count = state.selectedItems.size
-            if (state.canInstantSaveAll || count == 0) {
-                PrimaryAction("秒传 $count 个文件", Icons.Outlined.Bolt, state.canSaveSelection, state::saveSelection)
-            } else {
-                PrimaryAction("离线下载 $count 个文件", Icons.Outlined.CloudDownload, state.canSaveSelection, state::saveSelection)
-            }
-        }
-        state.input.isBlank() -> null
-        state.normalizedMagnet != null && state.errorMessage == null -> null
-        else -> PrimaryAction("离线下载", Icons.Outlined.CloudDownload, ready && !state.isResolving, state::submitOfflineTask)
-    }
+private fun InstantPrimaryAction.label(): String = when (kind) {
+    InstantActionKind.INSTANT_SAVE -> "秒传 $fileCount 个文件"
+    InstantActionKind.OFFLINE_SAVE -> "离线下载 $fileCount 个文件"
+    InstantActionKind.SUBMIT_OFFLINE -> "离线下载"
 }
 
 @Composable
@@ -402,7 +385,7 @@ private fun CategoryChips(state: InstantSheetState) {
             FilterChip(
                 selected = selected,
                 onClick = { state.toggleCategory(category) },
-                label = { Text("${category.label()} ${indices.size}") },
+                label = { Text("${category.label} ${indices.size}") },
                 leadingIcon = {
                     Icon(
                         imageVector = if (selected) Icons.Outlined.Check else category.icon(),
@@ -415,55 +398,11 @@ private fun CategoryChips(state: InstantSheetState) {
     }
 }
 
-private fun FileCategory.label(): String = when (this) {
-    FileCategory.VIDEO -> "视频"
-    FileCategory.AUDIO -> "音频"
-    FileCategory.IMAGE -> "图片"
-    FileCategory.ARCHIVE -> "压缩包"
-    FileCategory.SUBTITLE -> "字幕"
-    FileCategory.DOCUMENT -> "其他"
-}
 
-/**
- * 顶层的组名若就是资源名的开头（常见的是字幕组名），去掉这一层：它已写在上面的文件夹名里，
- * 单列一行只多一级缩进。组上有剥下来的公共结尾时保留，那是子项里不再出现的信息。
- */
-private fun List<NameNode>.unwrapRedundantGroups(resourceName: String): List<NameNode> = flatMap { node ->
-    if (node is NameGroup && node.suffix.isEmpty() && resourceName.startsWith(node.label)) node.children else listOf(node)
-}
-
-/** 层级摊平后的一行。key 取自从顶层到这一层的标签路径，展开状态按它记。 */
-private class TreeRow(val node: NameNode, val depth: Int, val key: String)
-
-private fun flatten(
-    nodes: List<NameNode>,
-    isExpanded: (key: String, depth: Int) -> Boolean,
-    depth: Int = 0,
-    parentKey: String = "",
-): List<TreeRow> = nodes.flatMap { node ->
-    val key = when (node) {
-        is NameLeaf -> "f${node.index}"
-        is NameGroup -> "$parentKey/${node.label}"
-    }
-    val row = TreeRow(node, depth, key)
-    if (node is NameGroup && isExpanded(key, depth)) {
-        listOf(row) + flatten(node.children, isExpanded, depth + 1, key)
-    } else {
-        listOf(row)
-    }
-}
-
-/**
- * 顶层只有一个组时默认展开它，其余一律收起：一个资源常分正片、剧场版、特典几组，
- * 全展开时第一屏只看得到第一组的头几行，收起时是一张目录，一组一行。
- */
+/** 层级、展开状态与组统计都在 [InstantSheetState]，这里只按行渲染。 */
 @Composable
 private fun FileTreeList(state: InstantSheetState, modifier: Modifier = Modifier) {
-    val tree = state.nameTree.unwrapRedundantGroups(state.resolution?.resource?.name.orEmpty())
-    val expanded = remember(tree) { mutableStateMapOf<String, Boolean>() }
-    val expandByDefault = tree.count { it is NameGroup } == 1
-    fun isExpanded(key: String, depth: Int) = expanded[key] ?: (expandByDefault && depth == 0)
-    val rows = flatten(tree, isExpanded = ::isExpanded)
+    val rows = state.treeRows
 
     Surface(
         shape = MaterialTheme.shapes.large,
@@ -477,15 +416,12 @@ private fun FileTreeList(state: InstantSheetState, modifier: Modifier = Modifier
             items(rows, key = { it.key }) { row ->
                 when (val node = row.node) {
                     is NameGroup -> {
-                        val isExpanded = isExpanded(row.key, row.depth)
                         GroupRow(
                             group = node,
                             depth = row.depth,
-                            isExpanded = isExpanded,
-                            selectedCount = node.indices.count { it in state.selectedIndices },
-                            totalSize = node.indices.sumOf { state.items[it].file.size },
-                            hasUnindexed = node.indices.any { !state.items[it].isInstantReady },
-                            onToggleExpanded = { expanded[row.key] = !isExpanded },
+                            isExpanded = state.isGroupExpanded(row.key, row.depth),
+                            summary = state.summaryOf(node),
+                            onToggleExpanded = { state.toggleGroupExpanded(row.key, row.depth) },
                             onSelectAll = { state.setItemsSelected(node.indices, it) },
                         )
                     }
@@ -522,13 +458,12 @@ private fun GroupRow(
     group: NameGroup,
     depth: Int,
     isExpanded: Boolean,
-    selectedCount: Int,
-    totalSize: Long,
-    hasUnindexed: Boolean,
+    summary: NameGroupSummary,
     onToggleExpanded: () -> Unit,
     onSelectAll: (Boolean) -> Unit,
 ) {
-    val total = group.indices.size
+    val selectedCount = summary.selected
+    val total = summary.total
     val checkState = when (selectedCount) {
         0 -> ToggleableState.Off
         total -> ToggleableState.On
@@ -568,13 +503,13 @@ private fun GroupRow(
             MetaRow(
                 parts = listOf(
                     if (selectedCount == total || selectedCount == 0) "$total 项" else "已选 $selectedCount / $total",
-                    totalSize.toReadableSize(),
+                    summary.bytes.toReadableSize(),
                 ),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        if (hasUnindexed) {
+        if (summary.hasUnindexed) {
             UnindexedMark()
         }
         Icon(

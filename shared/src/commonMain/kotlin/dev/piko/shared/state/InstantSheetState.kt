@@ -2,6 +2,7 @@ package dev.piko.shared.state
 
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.piko.data.auth.PikoUserPreferences
@@ -21,6 +22,22 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+
+data class NameGroupSummary(val selected: Int, val total: Int, val bytes: Long, val hasUnindexed: Boolean)
+
+enum class InstantActionKind {
+    /** 勾选项全部可秒传。 */
+    INSTANT_SAVE,
+
+    /** 勾选项里有未收录的，整条链交给离线任务。 */
+    OFFLINE_SAVE,
+
+    /** 没有解析结果（非磁力链接，或云端未收录），整条输入交给离线任务。 */
+    SUBMIT_OFFLINE,
+}
+
+/** [fileCount] 是实际要存的文件数，含随视频打包的字幕；整条提交离线时为 0。 */
+data class InstantPrimaryAction(val kind: InstantActionKind, val fileCount: Int, val enabled: Boolean)
 
 /** 一次保存的结果。导航与提示由调用方处理，这里只报告存到了哪里。 */
 sealed interface InstantSaveOutcome {
@@ -146,6 +163,66 @@ class InstantSheetState(
     /** 文件名按公共前缀折叠出的层级，见 [buildNameTree]。已随视频打包的字幕不单列。 */
     val nameTree: List<NameNode> by derivedStateOf {
         buildNameTree(items.map { it.file.name }.withIndex().filter { it.index !in bundledSubtitles })
+    }
+
+    /** 视图上显示的层级：去掉了与资源名重复的顶层组，见 [withoutRedundantGroups]。 */
+    val displayTree: List<NameNode> by derivedStateOf {
+        nameTree.withoutRedundantGroups(resolution?.resource?.name.orEmpty())
+    }
+
+    // 用户手动展开或收起过的组；没记录的按 isGroupExpanded 的默认规则。换一次解析结果就清空
+    private val expandedGroups = mutableStateMapOf<String, Boolean>()
+
+    /**
+     * 顶层只有一个组时默认展开它，其余一律收起：一个资源常分正片、剧场版、特典几组，
+     * 全展开时第一屏只看得到第一组的头几行，收起时是一张目录，一组一行。
+     * 放在状态里而不是视图里：面板收起再展开、两端各自的视图，看到的展开状态都一致。
+     */
+    fun isGroupExpanded(key: String, depth: Int): Boolean =
+        expandedGroups[key] ?: (depth == 0 && displayTree.count { it is NameGroup } == 1)
+
+    fun toggleGroupExpanded(key: String, depth: Int) {
+        expandedGroups[key] = !isGroupExpanded(key, depth)
+    }
+
+    val treeRows: List<NameTreeRow> by derivedStateOf { flattenNameTree(displayTree, ::isGroupExpanded) }
+
+    /** 组行上显示的统计。条目数不含打包进视频的字幕，与行对得上。 */
+    fun summaryOf(group: NameGroup): NameGroupSummary = NameGroupSummary(
+        selected = group.indices.count { it in selectedIndices },
+        total = group.indices.size,
+        bytes = group.indices.sumOf { items[it].file.size },
+        hasUnindexed = group.indices.any { !items[it].isInstantReady },
+    )
+
+    /**
+     * 面板底部唯一的主操作。原先顶部有「解析 / 提交离线」、底部又有「保存」，失败时两个同时
+     * 出现，要读完两行文案才知道该点哪个；重新解析挪进了错误提示。
+     * 为 null 表示眼下没有可提交的：输入为空，或磁力链还在解析。
+     */
+    val primaryAction: InstantPrimaryAction? by derivedStateOf {
+        when {
+            resolution != null -> InstantPrimaryAction(
+                kind = if (canInstantSaveAll || selectedItems.isEmpty()) InstantActionKind.INSTANT_SAVE else InstantActionKind.OFFLINE_SAVE,
+                fileCount = selectedItems.size,
+                enabled = canSaveSelection,
+            )
+            input.isBlank() -> null
+            normalizedMagnet != null && errorMessage == null -> null
+            else -> InstantPrimaryAction(
+                kind = InstantActionKind.SUBMIT_OFFLINE,
+                fileCount = 0,
+                enabled = target != null && !isSaving && !isResolving,
+            )
+        }
+    }
+
+    fun performPrimaryAction() {
+        when (primaryAction?.kind) {
+            InstantActionKind.INSTANT_SAVE, InstantActionKind.OFFLINE_SAVE -> saveSelection()
+            InstantActionKind.SUBMIT_OFFLINE -> submitOfflineTask()
+            null -> Unit
+        }
     }
 
     /** 各大类的文件下标，按类整批勾选用。只有一类时没有可筛的，视图不必显示。 */
@@ -289,6 +366,7 @@ class InstantSheetState(
             return
         }
         resolution = data
+        expandedGroups.clear()
         isInputVisible = false
         folderName = FileNameSanitizer.sanitize(data.resource.name)
         // 与网盘列表的启发式折叠同一套判据：剔掉 sample/subs 这类次要目录里的文件，

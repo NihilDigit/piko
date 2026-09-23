@@ -17,6 +17,8 @@ import dev.piko.shared.data.InstantMagnetRepository
 import dev.piko.shared.data.TaskRepository
 import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.media.PikoMediaRepository
+import dev.piko.shared.state.InstantSession
+import dev.piko.shared.state.InstantSheetState
 import dev.piko.update.AppUpdater
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -51,6 +53,15 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
 
     lateinit var downloadManager: PikoDownloadCoordinator
         private set
+
+    val instantSession by lazy {
+        InstantSession(
+            newScope = { CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate) },
+            newState = { scope, magnet ->
+                InstantSheetState(instantMagnetRepository, driveRepository, sessionManager, scope, magnet)
+            },
+        )
+    }
 
     /** 首次用到时才建：多数启动根本不检查更新，不必为它先建一个 HTTP 客户端。 */
     val appUpdater by lazy { AppUpdater(this) }
