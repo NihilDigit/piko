@@ -116,9 +116,9 @@ android {
 }
 
 dependencies {
-    // Shared KMP domain and media primitives. Android-specific UI and services
-    // remain in this application module while migration proceeds incrementally.
+    // 状态与业务在 shared，界面在 ui；这里只剩 Activity 入口、平台实现与播放器
     implementation(project(":shared"))
+    implementation(project(":ui"))
 
     // PikPak SDK (KMP)
     implementation(libs.pikpak.kotlin)
@@ -141,13 +141,7 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.androidx.compose.foundation)
-    implementation(libs.androidx.compose.material3.adaptive.navigation.suite)
     debugImplementation(libs.androidx.compose.ui.tooling)
-
-    // Navigation 3
-    implementation(libs.androidx.navigation3.runtime)
-    implementation(libs.androidx.navigation3.ui)
-    implementation(libs.androidx.lifecycle.viewmodel.navigation3)
 
     // DataStore
     implementation(libs.androidx.datastore.preferences)

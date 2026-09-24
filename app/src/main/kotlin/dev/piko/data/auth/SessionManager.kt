@@ -167,18 +167,17 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
-    // 外观只有 Android 用，不进 PikoUserPreferences：Desktop 的主题模式在它自己的设置存储里。
     // 存枚举名的原始字符串，解析在主题层，数据层不依赖界面的类型。
-    val themeModeFlow: Flow<String?> = preference { it[PreferencesKeys.THEME_MODE] }
+    override val themeModeFlow: Flow<String?> = preference { it[PreferencesKeys.THEME_MODE] }
 
-    suspend fun setThemeMode(mode: String) {
+    override suspend fun setThemeMode(mode: String) {
         context.dataStore.edit { it[PreferencesKeys.THEME_MODE] = mode }
     }
 
     /** 内置主题的名字，null 表示系统取色。 */
-    val themeSeedFlow: Flow<String?> = preference { it[PreferencesKeys.THEME_SEED] }
+    override val themeSeedFlow: Flow<String?> = preference { it[PreferencesKeys.THEME_SEED] }
 
-    suspend fun setThemeSeed(seed: String?) {
+    override suspend fun setThemeSeed(seed: String?) {
         context.dataStore.edit { preferences ->
             if (seed == null) preferences.remove(PreferencesKeys.THEME_SEED) else preferences[PreferencesKeys.THEME_SEED] = seed
         }

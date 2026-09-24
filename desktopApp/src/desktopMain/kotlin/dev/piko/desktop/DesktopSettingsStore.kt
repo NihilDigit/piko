@@ -25,13 +25,6 @@ class DesktopSettingsStore(
             save()
         }
 
-    var themeMode: String
-        get() = properties.getProperty("themeMode") ?: "system"
-        set(value) {
-            properties.setProperty("themeMode", value)
-            save()
-        }
-
     /** 通用 KV：给 DesktopPikoPreferences 做写穿持久化。调用方约定 key 命名空间。 */
     fun get(key: String, default: String = ""): String =
         properties.getProperty(key) ?: default

@@ -1,12 +1,9 @@
 package dev.piko.desktop.winrt
 
-import androidx.compose.ui.graphics.Color
 import io.github.composefluent.winrt.runtime.RuntimeScope
 import windows.data.xml.dom.XmlDocument
 import windows.ui.notifications.ToastNotification
 import windows.ui.notifications.ToastNotificationManager
-import windows.ui.viewmanagement.UIColorType
-import windows.ui.viewmanagement.UISettings
 import java.awt.Desktop
 import java.io.File
 import java.util.concurrent.Callable
@@ -47,37 +44,6 @@ object WinRTSupport {
                 RuntimeScope.initializeSingleThreaded().use(action)
             },
         ).get(15, TimeUnit.SECONDS)
-
-    fun getSystemAccentColor(): Color? {
-        if (!isWindows) return null
-        return runCatching {
-            onComThread { _ ->
-                val settings = UISettings()
-                val color = settings.getColorValue(UIColorType.Accent)
-                Color(
-                    red = (color.r.toInt() and 0xFF) / 255f,
-                    green = (color.g.toInt() and 0xFF) / 255f,
-                    blue = (color.b.toInt() and 0xFF) / 255f,
-                    alpha = 1f,
-                )
-            }
-        }.getOrNull()
-    }
-
-    fun isSystemInDarkMode(): Boolean {
-        if (!isWindows) return false
-        return runCatching {
-            onComThread { _ ->
-                val settings = UISettings()
-                val bg = settings.getColorValue(UIColorType.Background)
-                val r = bg.r.toInt() and 0xFF
-                val g = bg.g.toInt() and 0xFF
-                val b = bg.b.toInt() and 0xFF
-                val luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
-                luminance < 0.5
-            }
-        }.getOrDefault(false)
-    }
 
     /**
      * 设置进程级 AppUserModelID。经典桌面应用弹 Toast 的前提之一，
@@ -260,6 +226,22 @@ object WinRTSupport {
             if (isWindows) {
                 // start "" <path> 经 shell 走默认关联，比 explorer 更稳。
                 ProcessBuilder("cmd", "/c", "start", "", file.absolutePath).start()
+            }
+        }
+    }
+
+    /** 在资源管理器里打开所在文件夹并选中该文件；文件已不在时退回打开文件夹。 */
+    fun revealInExplorer(file: File) {
+        if (!file.exists()) {
+            file.parentFile?.let(::openFolder)
+            return
+        }
+        runCatching {
+            if (isWindows) {
+                // /select 与路径之间是逗号，整段作为一个参数交给 explorer
+                ProcessBuilder("explorer", "/select,${file.absolutePath}").start()
+            } else {
+                openFolder(file.parentFile ?: file)
             }
         }
     }

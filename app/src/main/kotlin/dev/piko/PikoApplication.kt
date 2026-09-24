@@ -11,20 +11,19 @@ import dev.piko.data.repository.DriveRepository
 import dev.piko.download.AndroidPikoDownloadStorage
 import dev.piko.download.AndroidPikoSegmentDownloader
 import dev.piko.download.PikoDownloadService
-import dev.piko.shared.data.PikoAccountRepository
-import dev.piko.shared.data.PikoClientManager
+import dev.piko.platform.AndroidPikoPlatform
 import dev.piko.shared.data.InstantMagnetRepository
-import dev.piko.shared.data.TaskRepository
+import dev.piko.shared.data.PikoClientManager
 import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.state.InstantSession
-import dev.piko.shared.state.InstantSheetState
+import dev.piko.ui.PikoServices
 import dev.piko.update.AppUpdater
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import okhttp3.OkHttpClient
-import java.util.concurrent.TimeUnit
 
 class PikoApplication : Application(), SingletonImageLoader.Factory {
 
@@ -33,35 +32,20 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
     lateinit var sessionManager: SessionManager
         private set
 
-    lateinit var clientManager: PikoClientManager
+    /** 共享界面用到的进程级对象，经 LocalPikoServices 交给界面。 */
+    lateinit var services: PikoServices
         private set
 
-    lateinit var driveRepository: DriveRepository
+    lateinit var platform: AndroidPikoPlatform
         private set
 
-    lateinit var accountRepository: PikoAccountRepository
-        private set
-
-    lateinit var instantMagnetRepository: InstantMagnetRepository
-        private set
-
-    lateinit var taskRepository: TaskRepository
-        private set
-
-    lateinit var mediampMediaRepository: PikoMediaRepository
-        private set
-
-    lateinit var downloadManager: PikoDownloadCoordinator
-        private set
-
-    val instantSession by lazy {
-        InstantSession(
-            newScope = { CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate) },
-            newState = { scope, magnet ->
-                InstantSheetState(instantMagnetRepository, driveRepository, sessionManager, scope, magnet)
-            },
-        )
-    }
+    // 以下几项是 services 的别名：播放器与下载服务还在 app 模块里，经这里取用
+    val clientManager: PikoClientManager get() = services.clientManager
+    val driveRepository: DriveRepository get() = services.driveRepository
+    val instantMagnetRepository: InstantMagnetRepository get() = services.instantMagnetRepository
+    val mediampMediaRepository: PikoMediaRepository get() = services.mediaRepository
+    val downloadManager: PikoDownloadCoordinator get() = services.downloadManager
+    val instantSession: InstantSession get() = services.instantSession
 
     /** 首次用到时才建：多数启动根本不检查更新，不必为它先建一个 HTTP 客户端。 */
     val appUpdater by lazy { AppUpdater(this) }
@@ -71,21 +55,23 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
         instance = this
 
         sessionManager = SessionManager(this)
-        clientManager = PikoClientManager(AndroidPikoSessionStore(this, sessionManager), appScope)
-        driveRepository = DriveRepository(clientManager, sessionManager)
-        accountRepository = PikoAccountRepository(clientManager, sessionManager)
-        instantMagnetRepository = InstantMagnetRepository(clientManager)
-        taskRepository = TaskRepository(clientManager, driveRepository)
-        mediampMediaRepository = PikoMediaRepository(clientManager, sessionManager)
-        downloadManager = PikoDownloadCoordinator(
-            clientProvider = clientManager,
+        val clientManager = PikoClientManager(AndroidPikoSessionStore(this, sessionManager), appScope)
+        val mediaRepository = PikoMediaRepository(clientManager, sessionManager)
+        services = PikoServices(
             preferences = sessionManager,
-            storage = AndroidPikoDownloadStorage(this, sessionManager, appScope),
-            scope = appScope,
-            segmentDownloader = AndroidPikoSegmentDownloader(this),
-            mediaRepository = mediampMediaRepository,
-            onDownloadStarted = { PikoDownloadService.start(this) },
+            clientManager = clientManager,
+            mediaRepository = mediaRepository,
+            downloadManager = PikoDownloadCoordinator(
+                clientProvider = clientManager,
+                preferences = sessionManager,
+                storage = AndroidPikoDownloadStorage(this, sessionManager, appScope),
+                scope = appScope,
+                segmentDownloader = AndroidPikoSegmentDownloader(this),
+                mediaRepository = mediaRepository,
+                onDownloadStarted = { PikoDownloadService.start(this) },
+            ),
         )
+        platform = AndroidPikoPlatform(this) { appUpdater }
     }
 
     override fun newImageLoader(context: PlatformContext): ImageLoader {

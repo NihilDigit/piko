@@ -7,18 +7,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.animation.Crossfade
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import dev.piko.ui.PikoMainScaffold
-import dev.piko.ui.components.FullScreenLoading
-import dev.piko.ui.screens.auth.LoginScreen
-import dev.piko.ui.theme.PikoMotion
-import dev.piko.ui.theme.PikoTheme
+import dev.piko.ui.PikoApp
+import dev.piko.ui.VideoPlayerHost
+import dev.piko.ui.screens.player.MediampVideoPlayerScreen
 import dev.piko.ui.theme.appearanceFlow
 import dev.piko.ui.theme.isDark
 import dev.piko.util.PikPakAppLink
@@ -43,9 +37,19 @@ class MainActivity : ComponentActivity() {
         // 不判断的话同一条分享进来的磁力链会再弹一次秒传面板
         if (savedInstanceState == null) handleIntent(intent)
 
-        val appearanceFlow = PikoApplication.instance.sessionManager.appearanceFlow()
+        val app = PikoApplication.instance
+        val appearanceFlow = app.sessionManager.appearanceFlow(app.platform.supportsDynamicColor)
         // 同步读一次再 setContent：异步给初值的话，首帧按系统取色画出来，随即跳成用户选的主题
         val initialAppearance = runBlocking { appearanceFlow.first() }
+        // 播放器仍在 app 模块，以应用内覆盖层的方式交给共享主界面
+        val videoPlayer = VideoPlayerHost.InApp { screen, onClose ->
+            MediampVideoPlayerScreen(
+                initialFileId = screen.fileId,
+                initialFileName = screen.fileName,
+                initialLocalPath = screen.localPath,
+                onBackClick = onClose,
+            )
+        }
 
         setContent {
             val appearance by appearanceFlow.collectAsStateWithLifecycle(initialAppearance)
@@ -59,41 +63,12 @@ class MainActivity : ComponentActivity() {
                 )
                 onDispose {}
             }
-            PikoTheme(appearance = appearance) {
-                val clientManager = PikoApplication.instance.clientManager
-                val currentClient by clientManager.currentClient.collectAsStateWithLifecycle()
-                val isInitializing by clientManager.isInitializing.collectAsStateWithLifecycle()
-
-                Crossfade(
-                    targetState = when {
-                        isInitializing -> AppState.INITIALIZING
-                        currentClient != null -> AppState.MAIN
-                        else -> AppState.LOGIN
-                    },
-                    animationSpec = PikoMotion.StateCrossfadeSpec,
-                    label = "app_root_state",
-                    modifier = Modifier.fillMaxSize(),
-                ) { state ->
-                    when (state) {
-                        AppState.INITIALIZING -> {
-                            FullScreenLoading()
-                        }
-                        // 登录成功后 currentClient 变为非空，根状态随之切到 MAIN，不需要回调
-                        AppState.LOGIN -> {
-                            // 未完成的添加链接属于上一个账号，保存目标也是那边的目录
-                            LaunchedEffect(Unit) { PikoApplication.instance.instantSession.end() }
-                            LoginScreen()
-                        }
-                        AppState.MAIN -> {
-                            PikoMainScaffold(
-                                onLogout = {
-                                    // 退出登录后 StateFlow 会自动更新至 AppState.LOGIN
-                                },
-                            )
-                        }
-                    }
-                }
-            }
+            PikoApp(
+                services = app.services,
+                platform = app.platform,
+                appearance = appearance,
+                videoPlayer = videoPlayer,
+            )
         }
     }
 
@@ -148,12 +123,6 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private val MAGNET_REGEX = Regex("""magnet:\?[^\s"']+""", RegexOption.IGNORE_CASE)
-    }
-
-    private enum class AppState {
-        INITIALIZING,
-        LOGIN,
-        MAIN,
     }
 }
 

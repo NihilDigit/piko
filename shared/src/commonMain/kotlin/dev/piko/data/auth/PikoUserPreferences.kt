@@ -36,6 +36,14 @@ interface PikoUserPreferences {
     val bundleSubtitlesFlow: Flow<Boolean>
     suspend fun setBundleSubtitlesEnabled(enabled: Boolean)
 
+    /** 深浅模式，存 ThemeMode 的名字。为 null 表示跟随系统。 */
+    val themeModeFlow: Flow<String?>
+    suspend fun setThemeMode(mode: String)
+
+    /** 内置主题色，存 SeedTheme 的名字。为 null 表示系统取色。 */
+    val themeSeedFlow: Flow<String?>
+    suspend fun setThemeSeed(seed: String?)
+
     /** 网盘列表用网格还是列表。全局记住，不随进出目录或重启复位。 */
     val gridViewFlow: Flow<Boolean>
     suspend fun setGridViewEnabled(enabled: Boolean)

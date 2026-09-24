@@ -32,29 +32,6 @@ import kotlinx.serialization.json.Json
 import java.io.File
 import java.security.MessageDigest
 
-/** 可供更新的版本。[apkUrl] 已按本机 ABI 选好。 */
-data class AvailableUpdate(
-    val version: String,
-    val notes: String,
-    val pageUrl: String,
-    val apkName: String,
-    val apkUrl: String,
-    val apkSize: Long,
-    val checksumsUrl: String?,
-)
-
-sealed interface UpdateStatus {
-    data object Idle : UpdateStatus
-    data object Checking : UpdateStatus
-    data object UpToDate : UpdateStatus
-    data class Available(val update: AvailableUpdate) : UpdateStatus
-    data class Downloading(val update: AvailableUpdate, val progress: Float) : UpdateStatus
-
-    /** 已交给系统安装器，等用户确认。 */
-    data class Installing(val update: AvailableUpdate) : UpdateStatus
-    data class Failed(val message: String, val update: AvailableUpdate? = null) : UpdateStatus
-}
-
 /**
  * 从 GitHub Releases 检查并安装新版本。
  *
@@ -66,23 +43,23 @@ sealed interface UpdateStatus {
  * debug 包的包名是 dev.piko.debug，Release 里是 dev.piko，装上去是另一个应用而不是升级，
  * 所以 debug 包只检查、不安装，由界面改为打开 Release 页面。
  */
-class AppUpdater(private val context: Context) {
+class AppUpdater(private val context: Context) : AppUpdateService {
 
-    var status by mutableStateOf<UpdateStatus>(UpdateStatus.Idle)
+    override var status by mutableStateOf<UpdateStatus>(UpdateStatus.Idle)
         private set
 
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
 
     /** 安装器回传的失败原因，由界面用 Snackbar 呈现。 */
-    val messages: SharedFlow<String> = _messages.asSharedFlow()
+    override val messages: SharedFlow<String> = _messages.asSharedFlow()
 
-    val canInstallInApp: Boolean get() = !BuildConfig.DEBUG
+    override val canInstallInApp: Boolean get() = !BuildConfig.DEBUG
 
     private val json = Json { ignoreUnknownKeys = true }
     private val http by lazy { HttpClient(OkHttp) }
 
     /** [silent] 为 true 时失败不改状态：进入页面时的自动检查不该因为没网冒出错误。 */
-    suspend fun check(silent: Boolean = false) {
+    override suspend fun check(silent: Boolean) {
         if (status is UpdateStatus.Checking || status is UpdateStatus.Downloading) return
         status = UpdateStatus.Checking
         fetchLatest()
@@ -114,7 +91,7 @@ class AppUpdater(private val context: Context) {
     }
 
     /** 下载并校验，成功后提交安装。未授予「安装未知应用」时先带用户去授权，授权后需再点一次。 */
-    suspend fun downloadAndInstall(update: AvailableUpdate) {
+    override suspend fun downloadAndInstall(update: AvailableUpdate) {
         if (!canInstallInApp) return
         if (!context.packageManager.canRequestPackageInstalls()) {
             val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}"))

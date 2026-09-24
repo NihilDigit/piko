@@ -41,4 +41,5 @@ dependencyResolutionManagement {
 rootProject.name = "piko"
 include(":app")
 include(":shared")
+include(":ui")
 include(":desktopApp")

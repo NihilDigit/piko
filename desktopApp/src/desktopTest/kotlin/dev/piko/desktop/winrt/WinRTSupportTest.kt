@@ -12,32 +12,6 @@ import kotlin.test.assertTrue
 class WinRTSupportTest {
 
     @Test
-    fun accentColor_matchesPlatform() {
-        val accent = WinRTSupport.getSystemAccentColor()
-        if (WinRTSupport.isWindows) {
-            assertTrue(
-                accent != null,
-                "Windows 上必须能读到系统强调色。读不到说明 FFM 桥没起来，" +
-                    "多半是测试运行时 JDK < 22（要求 JDK 25，见 desktopApp jvmToolchain）。",
-            )
-        } else {
-            assertNull(accent, "非 Windows 必须返回 null，由 Fluent 默认值接管。")
-        }
-    }
-
-    @Test
-    fun darkModeQuery_matchesPlatform() {
-        if (!WinRTSupport.isWindows) {
-            assertFalse(
-                WinRTSupport.isSystemInDarkMode(),
-                "非 Windows 必须返回 false（浅色兜底）。",
-            )
-        }
-        // Windows 上只保证不抛，深/浅取决于 CI 机器主题，不断言具体值。
-        WinRTSupport.isSystemInDarkMode()
-    }
-
-    @Test
     fun displayLease_acquiresAndReleasesCleanly() {
         val lease = WinRTSupport.acquireDisplayRequest()
         try {

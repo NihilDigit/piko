@@ -3,17 +3,25 @@ package dev.piko.desktop.ui.player
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.Icon
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
+import androidx.compose.material3.MaterialExpressiveTheme
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MotionScheme
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -26,27 +34,22 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.WindowState
 import androidx.compose.ui.window.rememberWindowState
-import dev.piko.desktop.ui.player.controls.FluentPlayerControls
+import dev.piko.desktop.ui.player.controls.DesktopPlayerControls
 import dev.piko.desktop.winrt.WinRTSupport
 import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.media.player.PlayerScreenState
-import io.github.composefluent.FluentTheme
-import io.github.composefluent.component.ContentDialog
-import io.github.composefluent.component.Icon
-import io.github.composefluent.component.InfoBar
-import io.github.composefluent.component.InfoBarSeverity
-import io.github.composefluent.component.Text
-import io.github.composefluent.darkColors
-import io.github.composefluent.icons.Icons
-import io.github.composefluent.icons.regular.Play
+import dev.piko.ui.VideoPlayerRequest
+import dev.piko.ui.theme.Appearance
+import dev.piko.ui.theme.PikoTypography
+import dev.piko.ui.theme.colorScheme
 import io.github.nihildigit.pikpak.FileStat
 import java.io.File
 import kotlinx.coroutines.delay
@@ -57,66 +60,78 @@ import org.openani.mediamp.compose.rememberMediampPlayer
 import org.openani.mediamp.features.AudioLevelController
 
 /**
- * 独立的 Windows 视频播放窗口。取流、续播与重连在共用的 [PlayerScreenState]，
- * 控件是无状态的 [FluentPlayerControls]；这里只负责窗口、画面表面、音量与全屏这些平台胶水。
+ * 独立的视频播放窗口。取流、续播与重连在共用的 [PlayerScreenState]，控件是无状态的
+ * [DesktopPlayerControls]；这里只负责窗口、画面表面、音量与全屏这些平台胶水。
  */
 @Composable
-@OptIn(ExperimentalMediampApi::class)
 fun VideoPlayerWindow(
-    file: FileStat,
+    request: VideoPlayerRequest,
     mediaRepository: PikoMediaRepository,
-    themeColors: io.github.composefluent.Colors,
+    downloadCoordinator: PikoDownloadCoordinator,
+    appearance: Appearance,
     onClose: () -> Unit,
-    downloadCoordinator: PikoDownloadCoordinator? = null,
-    playlist: List<FileStat> = emptyList(),
 ) {
     val windowState = rememberWindowState(width = 1000.dp, height = 620.dp)
 
     Window(
         onCloseRequest = onClose,
-        title = "${file.name} - Piko 播放器",
+        title = "${request.fileName} - Piko 播放器",
         state = windowState,
     ) {
-        // 播放器永远深色：控件叠在视频画面上，跟随浅色主题时深色文字在画面上不可读
-        val playerColors = remember(themeColors) { darkColors(themeColors.fillAccent.default) }
-        FluentTheme(colors = playerColors) {
+        PlayerTheme(appearance) {
             VideoPlayerContent(
-                file = file,
+                request = request,
                 mediaRepository = mediaRepository,
                 windowState = windowState,
                 downloadCoordinator = downloadCoordinator,
-                playlist = playlist,
                 onClose = onClose,
             )
         }
     }
 }
 
+/**
+ * 播放器固定用深色：控件叠在视频画面上，跟随浅色主题时深色文字在画面上不可读。
+ * 主题色仍跟随用户的选择，与 Android 播放器的 PlayerTheme 一致。
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun PlayerTheme(appearance: Appearance, content: @Composable () -> Unit) {
+    MaterialExpressiveTheme(
+        colorScheme = appearance.colorScheme(dark = true),
+        motionScheme = MotionScheme.expressive(),
+        typography = PikoTypography,
+        content = content,
+    )
+}
+
 @Composable
 @OptIn(ExperimentalMediampApi::class)
 private fun VideoPlayerContent(
-    file: FileStat,
+    request: VideoPlayerRequest,
     mediaRepository: PikoMediaRepository,
     windowState: WindowState,
-    downloadCoordinator: PikoDownloadCoordinator?,
-    playlist: List<FileStat>,
+    downloadCoordinator: PikoDownloadCoordinator,
     onClose: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val player = rememberMediampPlayer()
     val backend = remember(player) { MediampPlaybackBackend(player, scope) }
-    val state = remember(file.id) {
+    val playlist = request.playlist
+    val state = remember(request) {
         PlayerScreenState(
             repository = mediaRepository,
             backend = backend,
             scope = scope,
-            initialFileId = file.id,
-            initialFileName = file.name,
+            initialFileId = request.fileId,
+            initialFileName = request.fileName,
+            initialLocalPath = request.localPath,
             // 本地副本按文件长度验完整性，需要对应的 FileStat，从播放列表里取
-            resolveLocalPath = { fileId, _ ->
-                (playlist + file).find { it.id == fileId }
-                    ?.let { downloadCoordinator?.findCompletedLocalPath(it) }
-                    ?.takeIf { File(it).exists() }
+            resolveLocalPath = { fileId, hint ->
+                hint?.takeIf { File(it).exists() }
+                    ?: playlist.find { it.id == fileId }
+                        ?.let { downloadCoordinator.findCompletedLocalPath(it) }
+                        ?.takeIf { File(it).exists() }
             },
         )
     }
@@ -141,7 +156,7 @@ private fun VideoPlayerContent(
         }
     }
 
-    // 换源之类的一次性提示用 InfoBar 呈现
+    // 换源之类的一次性提示
     LaunchedEffect(state) {
         state.messages.collect {
             message = it
@@ -169,7 +184,7 @@ private fun VideoPlayerContent(
     ) {
         MediampPlayerSurface(player, Modifier.fillMaxSize())
 
-        FluentPlayerControls(
+        DesktopPlayerControls(
             title = state.title,
             isLocalPlayback = state.isLocalPlayback,
             isPlaying = state.isPlaying,
@@ -207,15 +222,12 @@ private fun VideoPlayerContent(
         )
 
         message?.let {
-            InfoBar(
-                title = { Text(it) },
-                message = {},
-                severity = InfoBarSeverity.Informational,
+            Snackbar(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .padding(top = 64.dp)
                     .widthIn(max = 480.dp),
-            )
+            ) { Text(it) }
         }
 
         if (showPlaylist) {
@@ -232,9 +244,7 @@ private fun VideoPlayerContent(
     }
 }
 
-/**
- * 同目录视频列表。当前这条用强调色标出。
- */
+/** 同目录视频列表。当前这条用主题色标出。 */
 @Composable
 private fun PlaylistDialog(
     playlist: List<FileStat>,
@@ -242,50 +252,42 @@ private fun PlaylistDialog(
     onSelect: (FileStat) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    ContentDialog(
-        title = "同目录视频",
-        visible = true,
-        primaryButtonText = "关闭",
-        onButtonClick = { onDismiss() },
-        content = {
-            LazyColumn(modifier = Modifier.fillMaxWidth()) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("同目录视频") },
+        text = {
+            LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
                 items(playlist, key = { it.id }) { video ->
                     val isCurrent = video.id == currentFileId
-                    // 文字取主题色而不写死：对话框底色跟随主题，写死的颜色换了主题就可能隐形。
-                    val rowColor = if (isCurrent) {
-                        FluentTheme.colors.fillAccent.default
-                    } else {
-                        FluentTheme.colors.text.text.primary
-                    }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(6.dp))
-                            .clickable { if (!isCurrent) onSelect(video) }
-                            .padding(horizontal = 8.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            imageVector = Icons.Regular.Play,
-                            contentDescription = if (isCurrent) "正在播放" else null,
-                            tint = if (isCurrent) {
-                                FluentTheme.colors.fillAccent.default
+                    ListItem(
+                        headlineContent = {
+                            Text(video.name, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
+                        },
+                        leadingContent = {
+                            Icon(
+                                Icons.Outlined.PlayArrow,
+                                contentDescription = if (isCurrent) "正在播放" else null,
+                                tint = if (isCurrent) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )
+                        },
+                        colors = ListItemDefaults.colors(
+                            containerColor = Color.Transparent,
+                            headlineColor = if (isCurrent) {
+                                MaterialTheme.colorScheme.primary
                             } else {
-                                FluentTheme.colors.text.text.secondary
+                                MaterialTheme.colorScheme.onSurface
                             },
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = video.name,
-                            style = FluentTheme.typography.body,
-                            color = rowColor,
-                            maxLines = 1,
-                        )
-                    }
+                        ),
+                        modifier = Modifier.clickable(enabled = !isCurrent) { onSelect(video) },
+                    )
                 }
             }
         },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
     )
 }
 

@@ -27,12 +27,9 @@ kotlin {
         val desktopMain by getting {
             dependencies {
                 implementation(project(":shared"))
+                implementation(project(":ui"))
                 implementation(compose.desktop.currentOs)
-                implementation(compose.runtime)
-                implementation(compose.foundation)
-                implementation(compose.material3)
-                implementation(libs.fluent.ui)
-                implementation(libs.fluent.icons.extended)
+                implementation(libs.cmp.material.icons.extended)
                 implementation(libs.mediamp.all)
                 implementation(libs.winrt.runtime)
                 implementation(libs.winrt.projections.windows.sdk)
