@@ -25,6 +25,7 @@ import dev.piko.ui.VideoPlayerHost
 import dev.piko.ui.VideoPlayerRequest
 import dev.piko.ui.theme.appearanceFlow
 import java.awt.Dimension
+import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -39,7 +40,12 @@ fun main(args: Array<String>) {
         // 进程级 AUMID 必须在建窗口/发 Toast 之前设置；协议注册放后台线程，不挡启动。
         runCatching { WinRTSupport.ensureAppUserModelId() }
         Thread(
-            { runCatching { WinRTSupport.ensureMagnetProtocolHandler() } },
+            {
+                runCatching { WinRTSupport.ensureMagnetProtocolHandler() }
+                // 图标随安装包放在资源目录里，与窗口图标同源
+                val icon = System.getProperty("compose.application.resources.dir")?.let { File(it, "app-icon.png") }
+                runCatching { WinRTSupport.ensureNotificationRegistration(icon) }
+            },
             "Piko-Win32-Setup",
         ).apply { isDaemon = true; start() }
     }

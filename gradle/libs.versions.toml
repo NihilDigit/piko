@@ -35,8 +35,6 @@ cmpAdaptive = "1.3.0-beta02"
 cmpMaterialIcons = "1.7.3"
 mediamp = "0.5.0"
 libmpv = "1.0.0"
-winrt = "0.1.0-SNAPSHOT"
-winrtSdkProjection = "10.0.26100.0-kotlin-winrt-0.1.0-SNAPSHOT"
 
 junit = "4.13.2"
 # 测试 APK 与应用同进程，AGP 把 androidTest 的传递依赖严格钉到应用运行时类路径的版本。
@@ -62,8 +60,6 @@ mediamp-all = { module = "org.openani.mediamp:mediamp-all", version.ref = "media
 libmpv-android = { module = "dev.jdtech.mpv:libmpv", version.ref = "libmpv" }
 mediamp-source-ktxio = { module = "org.openani.mediamp:mediamp-source-ktxio", version.ref = "mediamp" }
 mp4parser-isobox = { module = "com.googlecode.mp4parser:isoparser", version.ref = "mp4parser" }
-winrt-runtime = { module = "io.github.compose-fluent:winrt-runtime", version.ref = "winrt" }
-winrt-projections-windows-sdk = { module = "io.github.compose-fluent:winrt-projections-windows-sdk", version.ref = "winrtSdkProjection" }
 
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
 androidx-documentfile = { module = "androidx.documentfile:documentfile", version.ref = "documentFile" }

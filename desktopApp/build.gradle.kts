@@ -17,7 +17,7 @@ val composeDesktopRuntime = "org.jetbrains.compose.desktop:desktop-jvm-windows-$
 kotlin {
     jvm("desktop")
 
-    // WinRT 原生集成经 kotlin-winrt 的 FFM 桥实现，java.lang.foreign 需要 JDK 22+
+    // Windows 原生能力经 JDK 的 FFM（java.lang.foreign）直调，需要 JDK 22+
     //（JDK 21 上是 preview API，不带 --enable-preview 直接抛异常）。钉死 25，
     // 本地即使 Gradle 跑在 JDK 21 上，desktop 的编译/测试/运行也会走自动供给的 JDK 25。
     jvmToolchain(25)
@@ -30,8 +30,6 @@ kotlin {
                 implementation(composeDesktopRuntime)
                 implementation(libs.cmp.material.icons.extended)
                 implementation(libs.mediamp.all)
-                implementation(libs.winrt.runtime)
-                implementation(libs.winrt.projections.windows.sdk)
                 implementation(libs.kotlinx.serialization.json)
                 implementation(libs.ktor.client.core)
                 implementation(libs.ktor.client.okhttp)

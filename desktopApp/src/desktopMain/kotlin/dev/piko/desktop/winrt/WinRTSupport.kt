@@ -1,9 +1,5 @@
 package dev.piko.desktop.winrt
 
-import io.github.composefluent.winrt.runtime.RuntimeScope
-import windows.data.xml.dom.XmlDocument
-import windows.ui.notifications.ToastNotification
-import windows.ui.notifications.ToastNotificationManager
 import java.awt.Desktop
 import java.io.File
 import java.util.concurrent.Callable
@@ -11,44 +7,41 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /**
- * Windows 原生能力集成（WinRT）。
+ * Windows 原生能力：Toast、AUMID、magnet 协议、防锁屏、在资源管理器里打开。
  *
  * 设计约束（对照 docmirror4a/winrt-capability-map.md）：
  * - 本应用是非打包（unpackaged）桌面应用：Toast 走 Windows.UI.Notifications，
  *   不碰 AppNotifications / StartupTask 等打包独占 API。
- * - kotlin-winrt 的 FFM 桥需要 JDK 22+（见 desktopApp jvmToolchain(25)）。
- *   JDK 不对时所有调用抛异常，这里一律收敛为 null/false，UI 层负责降级显示。
- * - COM apartment 亲和性：所有 WinRT 调用都串行跑在同一条专用线程上，
- *   每次调用独立开关 RuntimeScope；DisplayRequest 这种跨调用 lease 在持有
- *   期间不关闭 scope，release 之后才关。
+ * - 原生调用全部经 JDK 的 FFM（java.lang.foreign），要求 JDK 22+（见 desktopApp jvmToolchain(25)）。
+ *   调用失败一律收敛为 null/false，不向界面抛异常。
+ * - WinRT 调用串行跑在同一条专用线程上，线程首次使用时初始化一次 WinRT，见 [WindowsToast]。
  */
 object WinRTSupport {
     val isWindows: Boolean = System.getProperty("os.name").contains("Windows", ignoreCase = true)
 
     /**
-     * Toast 用的应用标识。经典桌面应用弹 Toast 要求该 AUMID 已在开始菜单
-     * 快捷方式上注册（MSI 安装器负责创建，见 compose nativeDistributions 配置）。
-     * 开发机直接跑 jar 时没有该快捷方式，Toast 会静默失败——此时 showNotification
-     * 返回 false，调用方应降级为应用内 InfoBar 提示。
+     * Toast 用的应用标识。未打包的应用要让系统认这个 AUMID，得在
+     * HKCU\Software\Classes\AppUserModelId 下登记，见 [ensureNotificationRegistration]。
+     * 没登记时 Show 照样返回成功，通知却不会出现，所以开发机上 gradle run 看不到 Toast。
      */
     const val APP_USER_MODEL_ID = "dev.piko.Piko"
 
     private val comThread = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "Piko-WinRT-STA").also { it.isDaemon = true }
+        Thread(runnable, "Piko-WinRT").also { it.isDaemon = true }
     }
 
-    /** 在专用 COM 线程上执行一次 WinRT 调用，自带 scope 开关。 */
-    private fun <T> onComThread(action: (RuntimeScope) -> T): T =
+    /** 在专用线程上执行一次 WinRT 调用。线程第一次用时初始化 WinRT，之后一直保持。 */
+    private fun <T> onComThread(action: () -> T): T =
         comThread.submit(
             Callable {
-                RuntimeScope.initializeSingleThreaded().use(action)
+                WindowsToast.initializeThread()
+                action()
             },
         ).get(15, TimeUnit.SECONDS)
 
     /**
-     * 设置进程级 AppUserModelID。经典桌面应用弹 Toast 的前提之一，
-     * 必须在建窗口/发 Toast 之前调（main() 入口同步调）。
-     * 另一半（开始菜单快捷方式带同名 AUMID）由 MSI 安装器提供。
+     * 设置进程级 AppUserModelID。弹 Toast 的前提之一，必须在建窗口/发 Toast 之前调
+     * （main() 入口同步调）。另一半是注册表里的登记，见 [ensureNotificationRegistration]。
      */
     fun ensureAppUserModelId(): Boolean {
         if (!isWindows) return false
@@ -72,6 +65,22 @@ object WinRTSupport {
                 regAdd("HKCU\\Software\\Classes\\magnet", "/v", "URL Protocol", "/t", "REG_SZ", "/d", "Piko", "/f") &&
                 regAdd("HKCU\\Software\\Classes\\magnet\\shell\\open\\command", "/ve", "/t", "REG_SZ", "/d", expected, "/f")
         }.getOrDefault(false)
+    }
+
+    /**
+     * 在当前用户下登记 AUMID 的显示名与图标，Toast 才会真正显示。jpackage 生成的开始菜单
+     * 快捷方式不带 System.AppUserModel.ID 属性，靠快捷方式登记这条路走不通。
+     * 与 magnet 协议一样只在安装版（exe 启动）时写，开发时直接跑 jar 不碰注册表。
+     */
+    fun ensureNotificationRegistration(icon: File?): Boolean {
+        if (!isWindows) return false
+        val exe = ProcessHandle.current().info().command().orElse(null) ?: return false
+        if (!exe.endsWith(".exe", ignoreCase = true)) return false
+        val key = "HKCU\\Software\\Classes\\AppUserModelId\\$APP_USER_MODEL_ID"
+        val iconOk = icon?.takeIf { it.isFile }?.let {
+            regAdd(key, "/v", "IconUri", "/t", "REG_SZ", "/d", it.absolutePath, "/f")
+        } ?: true
+        return regAdd(key, "/v", "DisplayName", "/t", "REG_SZ", "/d", "Piko", "/f") && iconOk
     }
 
     private fun regAdd(vararg args: String): Boolean =
@@ -130,10 +139,8 @@ object WinRTSupport {
     fun showNotification(title: String, message: String): Boolean {
         if (!isWindows) return false
         return runCatching {
-            onComThread { _ ->
-                val xml = XmlDocument()
-                xml.loadXml(
-                    """
+            onComThread {
+                val xml = """
                     <toast>
                         <visual>
                             <binding template="ToastGeneric">
@@ -142,12 +149,8 @@ object WinRTSupport {
                             </binding>
                         </visual>
                     </toast>
-                    """.trimIndent(),
-                )
-                val toast = ToastNotification(xml)
-                ToastNotificationManager.Metadata
-                    .createToastNotifier(APP_USER_MODEL_ID)
-                    .show(toast)
+                """.trimIndent()
+                WindowsToast.show(APP_USER_MODEL_ID, xml)
             }
             true
         }.getOrDefault(false)
