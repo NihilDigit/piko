@@ -34,6 +34,7 @@ import dev.piko.ui.components.ListLeadingIcon
 import dev.piko.ui.components.ListLeadingMedia
 import dev.piko.ui.components.ListMoreButton
 import dev.piko.ui.components.SheetAction
+import dev.piko.ui.components.MetaRow
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.theme.LocalStatusColors
 
@@ -112,6 +113,8 @@ internal fun PackTransferRow(
                         maxLines = 1,
                     )
                     Text(text = item.statusLabel(), color = job.statusColor(), maxLines = 1)
+                    // 与普通云端任务一样在状态后写大小；失败原因另起一行，见下
+                    MetaRow(parts = listOf(job.totalBytes.toReadableSize()), modifier = Modifier.weight(1f, fill = false))
                 }
                 job.detail()?.let { detail ->
                     Text(
