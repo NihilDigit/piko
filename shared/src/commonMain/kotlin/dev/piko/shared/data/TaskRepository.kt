@@ -3,6 +3,7 @@ package dev.piko.shared.data
 import io.github.nihildigit.pikpak.OfflineTask
 import io.github.nihildigit.pikpak.TaskListResponse
 import io.github.nihildigit.pikpak.TaskPhase
+import io.github.nihildigit.pikpak.clearOfflineTasks
 import io.github.nihildigit.pikpak.createUrlFile
 import io.github.nihildigit.pikpak.deleteOfflineTasks
 import io.github.nihildigit.pikpak.listOfflineTasks
@@ -71,6 +72,11 @@ class TaskRepository(
     /** 只删任务记录。已完成任务的文件留在网盘里，未完成任务的占位文件由服务端一并清掉。 */
     suspend fun deleteTasks(taskIds: List<String>): Result<Unit> = withContext(Dispatchers.Default) {
         runSuspendCatching { client.deleteOfflineTasks(taskIds, deleteFiles = false) }
+    }
+
+    /** 按阶段清除任务记录，与网页端的「清空已完成」「清空失败」相同。产出的文件保留。 */
+    suspend fun clearTasks(phases: List<String>): Result<Unit> = withContext(Dispatchers.Default) {
+        runSuspendCatching { client.clearOfflineTasks(phases, deleteFiles = false) }
     }
 
     private companion object {

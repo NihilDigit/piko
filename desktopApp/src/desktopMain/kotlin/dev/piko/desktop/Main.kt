@@ -22,6 +22,7 @@ import dev.piko.desktop.winrt.WinRTSupport
 import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
 import dev.piko.shared.data.PikoClientManager
+import dev.piko.shared.state.InstantSheetState
 import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.ui.PikoApp
@@ -182,7 +183,13 @@ fun main(args: Array<String>) {
 private val DownloadStatus.isActive: Boolean
     get() = this == DownloadStatus.DOWNLOADING || this == DownloadStatus.PENDING
 
-private fun magnetIn(args: List<String>): String? = args.firstOrNull { it.startsWith("magnet:", ignoreCase = true) }
+/**
+ * 启动参数里的链接：magnet: 经注册的协议唤起时进来；分享链接没法注册成协议（https 归浏览器），
+ * 但用命令行或快捷方式带着它启动时也认。交给添加链接面板，由它分辨两者。
+ */
+private fun magnetIn(args: List<String>): String? = args.firstOrNull {
+    it.startsWith("magnet:", ignoreCase = true) || InstantSheetState.findShareLink(it) != null
+}
 
 private fun backgroundTooltip(tasks: Collection<DownloadTask>): String {
     val active = tasks.filter { it.status.isActive }

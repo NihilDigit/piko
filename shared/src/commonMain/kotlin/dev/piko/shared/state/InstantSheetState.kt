@@ -553,5 +553,17 @@ class InstantSheetState(
                 else -> null
             }
         }
+
+        /**
+         * 一段文本里的 PikPak 分享链接。分享常以「链接：https://mypikpak.com/s/… 提取码：abcd」的整段话转发，
+         * 链接不在开头，SDK 的 shareIdFromUrl 只认以链接开头的串，所以先在这里把它找出来。
+         */
+        fun findShareLink(text: String): String? = SHARE_LINK.find(text)?.value
+
+        /** 与分享链接一起转发的提取码：「提取码：abcd」「密码 abcd」，或链接上的 ?pwd=abcd。 */
+        fun findSharePassCode(text: String): String? = SHARE_PASS_CODE.find(text)?.groupValues?.get(1)
+
+        private val SHARE_LINK = Regex("""https?://(?:www\.)?mypikpak\.com/s/[A-Za-z0-9_-]+""")
+        private val SHARE_PASS_CODE = Regex("""(?:提取码|密码|访问码|pwd|passcode)\s*[:：=]?\s*([A-Za-z0-9]{4,8})""", RegexOption.IGNORE_CASE)
     }
 }

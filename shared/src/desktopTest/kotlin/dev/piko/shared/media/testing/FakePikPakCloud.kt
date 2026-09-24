@@ -190,6 +190,8 @@ internal class RecordedPositions {
                 Unit
             }
             "getPlaybackPosition" -> saved[args[0] as String] ?: 0L
+            // 假服务端没有事件接口，播放记录不同步
+            "getSyncPlayHistoryFlow" -> MutableStateFlow(false)
             else -> throw UnsupportedOperationException(method.name)
         }
     } as PikoUserPreferences

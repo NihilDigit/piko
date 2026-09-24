@@ -43,6 +43,10 @@ interface PikoUserPreferences {
     val bundleSubtitlesFlow: Flow<Boolean>
     suspend fun setBundleSubtitlesEnabled(enabled: Boolean)
 
+    /** 把播放进度上报到 PikPak 的播放历史，与官方客户端共用；没有本机记录时也从那里续播。 */
+    val syncPlayHistoryFlow: Flow<Boolean>
+    suspend fun setSyncPlayHistoryEnabled(enabled: Boolean)
+
     /** 深浅模式，存 ThemeMode 的名字。为 null 表示跟随系统。 */
     val themeModeFlow: Flow<String?>
     suspend fun setThemeMode(mode: String)

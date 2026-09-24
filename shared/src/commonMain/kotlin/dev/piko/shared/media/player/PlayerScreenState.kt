@@ -15,6 +15,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -23,6 +24,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 /**
  * 播放器的取流策略与播放状态，两端共用。
@@ -279,6 +282,11 @@ class PlayerScreenState(
         val previousPosition = lastKnownPositionMillis
         val previousDuration = durationMillis
         scope.launch { persist(previousKey, previousPosition, previousDuration) }
+        // 上一集最后不足一个上报间隔的进度，换片后就报不出去了，这里补一次
+        if (startedThisAttempt && !isImage) {
+            val previousFileId = this.fileId
+            scope.launch { runCatchingNonCancel { repository.reportPlay(previousFileId, previousPosition, previousDuration) } }
+        }
 
         this.fileId = fileId
         title = fileName
@@ -350,13 +358,16 @@ class PlayerScreenState(
         try {
             val pending = pendingStartMillis
             pendingStartMillis = null
-            val saved = if (pending == null) {
-                repository.getPlaybackPosition(positionKey).takeIf { it > RESUME_THRESHOLD_MILLIS }
-            } else {
-                null
+            // 同步开着时优先用 PikPak 播放历史里的位置：它含其他客户端看到的进度。查它要一次请求，
+            // 与取流并行，到开播前才取结果，等不到就退回本机记录
+            val cloudPosition = if (pending == null) scope.async { repository.cloudPlaybackPosition(fileId) } else null
+            var saved: Long? = null
+            suspend fun startPosition(): Long {
+                if (pending != null) return pending.also { attemptStartMillis = it }
+                val cloud = withTimeoutOrNull(CLOUD_RESUME_WAIT_MILLIS) { cloudPosition?.await() }
+                saved = (cloud ?: repository.getPlaybackPosition(positionKey)).takeIf { it > RESUME_THRESHOLD_MILLIS }
+                return (saved ?: 0L).also { attemptStartMillis = it }
             }
-            val startMillis = pending ?: saved ?: 0L
-            attemptStartMillis = startMillis
 
             tracksChosenThisFile = false
             val localPath = resolveLocalPath(fileId, localPathHint)
@@ -364,7 +375,7 @@ class PlayerScreenState(
                 isLocalPlayback = true
                 usingProxy = false
                 activeQuality = null
-                backend.open(PlaybackTarget.LocalFile(localPath), startMillis, subtitles = openSubtitles())
+                backend.open(PlaybackTarget.LocalFile(localPath), startPosition(), subtitles = openSubtitles())
             } else {
                 isLocalPlayback = false
                 val playback = repository.preparePlayback(fileId, requestedQuality).getOrThrow()
@@ -377,11 +388,12 @@ class PlayerScreenState(
                     PlayableMediaKind.Video -> {
                         val proxyUrl = playback.proxyUrl.takeUnless { preferDirectLink }
                         usingProxy = proxyUrl != null
-                        backend.open(PlaybackTarget.Url(proxyUrl ?: playback.info.currentUrl), startMillis, subtitles = openSubtitles())
+                        backend.open(PlaybackTarget.Url(proxyUrl ?: playback.info.currentUrl), startPosition(), subtitles = openSubtitles())
                     }
                 }
             }
-            if (saved != null && !isImage) showResumeTip(saved)
+            cloudPosition?.cancel()
+            saved?.let { if (!isImage) showResumeTip(it) }
             isPreparing = false
         } catch (e: CancellationException) {
             throw e
@@ -485,13 +497,33 @@ class PlayerScreenState(
             while (true) {
                 delay(PERSIST_INTERVAL_MILLIS)
                 persist(positionKey, lastKnownPositionMillis, durationMillis)
+                reportPlay(force = false)
             }
         } finally {
             // 离开播放器时补一次，否则最后不足 5 秒的进度会丢
             withContext(NonCancellable) {
                 persist(positionKey, lastKnownPositionMillis, durationMillis)
+                reportPlay(force = true)
             }
         }
+    }
+
+    // 上一次上报的文件与时刻。服务端丢掉同一文件间隔太短的上报且不报错，所以自己节流
+    private var lastReportedFileId = ""
+    private var lastReportedAt = TimeSource.Monotonic.markNow()
+
+    /**
+     * 把进度报给 PikPak 的播放历史。要在出了第一帧之后、位置确实在走的时候才报：
+     * 换片途中报出去的是上一个文件的位置。[force] 用于离开播放器，这时不看间隔。
+     */
+    private suspend fun reportPlay(force: Boolean) {
+        val id = fileId
+        if (!startedThisAttempt || isImage || id.isBlank()) return
+        val sameFile = id == lastReportedFileId
+        if (!force && sameFile && lastReportedAt.elapsedNow() < PLAY_REPORT_INTERVAL) return
+        lastReportedFileId = id
+        lastReportedAt = TimeSource.Monotonic.markNow()
+        runCatchingNonCancel { repository.reportPlay(id, lastKnownPositionMillis, durationMillis) }
     }
 
     private suspend fun persist(key: String, positionMillis: Long, durationMillis: Long) {
@@ -548,6 +580,12 @@ class PlayerScreenState(
 
         // 打开第一个文件前等播放列表的上限，超过就不带外挂字幕先放
         const val PLAYLIST_WAIT_MILLIS = 3_000L
+
+        // 开播前等云端续播位置的上限。它与取流并行，通常早已回来；网络差时不为它拖住开播
+        const val CLOUD_RESUME_WAIT_MILLIS = 1_500L
+
+        // 实测服务端丢掉间隔约 1.5 秒的上报、收下 6 秒的，留足余量
+        val PLAY_REPORT_INTERVAL = 10.seconds
         const val NEAR_END_MILLIS = 10_000L
         const val MIN_PERSIST_MILLIS = 1_500L
         const val PERSIST_INTERVAL_MILLIS = 5_000L

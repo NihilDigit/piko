@@ -2,6 +2,7 @@ package dev.piko.ui.screens.drive
 
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ContentCut
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
@@ -9,6 +10,8 @@ import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Star
+import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.MaterialTheme
@@ -44,11 +47,13 @@ internal fun FileActionsSheet(
     previewHidden: Boolean?,
     folderUsage: Flow<FolderUsage>?,
     onTogglePreview: () -> Unit,
+    onToggleStar: () -> Unit,
     onDismiss: () -> Unit,
     onDownload: () -> Unit,
     onDownloadSegment: () -> Unit,
     onRename: () -> Unit,
     onMove: () -> Unit,
+    onCopy: () -> Unit,
     onTrash: () -> Unit,
     onCopySource: () -> Unit,
     onOpenSource: () -> Unit,
@@ -68,10 +73,12 @@ internal fun FileActionsSheet(
         file = file,
         previewHidden = previewHidden,
         onTogglePreview = onTogglePreview,
+        onToggleStar = onToggleStar,
         onDownload = onDownload,
         onDownloadSegment = onDownloadSegment,
         onRename = onRename,
         onMove = onMove,
+        onCopy = onCopy,
         onTrash = onTrash,
         onCopySource = onCopySource,
         onOpenSource = onOpenSource,
@@ -98,10 +105,12 @@ internal fun fileActions(
     file: FileStat,
     previewHidden: Boolean?,
     onTogglePreview: () -> Unit,
+    onToggleStar: () -> Unit,
     onDownload: () -> Unit,
     onDownloadSegment: () -> Unit,
     onRename: () -> Unit,
     onMove: () -> Unit,
+    onCopy: () -> Unit,
     onTrash: () -> Unit,
     onCopySource: () -> Unit,
     onOpenSource: () -> Unit,
@@ -115,6 +124,13 @@ internal fun fileActions(
             ),
         )
     }
+    add(
+        SheetAction(
+            icon = if (file.isStarred) Icons.Outlined.StarOutline else Icons.Outlined.Star,
+            label = if (file.isStarred) "取消星标" else "添加星标",
+            onClick = onToggleStar,
+        ),
+    )
     if (!file.isFolder) {
         add(SheetAction(Icons.Outlined.Download, "下载到本地", onDownload))
         if (file.isPlayableVideo()) add(SheetAction(Icons.Outlined.ContentCut, "下载指定段落", onDownloadSegment))
@@ -129,6 +145,7 @@ internal fun fileActions(
     }
     add(SheetAction(Icons.Outlined.Edit, "重命名", onRename))
     add(SheetAction(Icons.Outlined.DriveFileMove, "移动到", onMove))
+    add(SheetAction(Icons.Outlined.ContentCopy, "复制到", onCopy))
     // 移入回收站单独成组，不紧挨着「移动到」被误触
     add(SheetAction(Icons.Outlined.Delete, "移入回收站", onTrash, destructive = true))
 }

@@ -32,6 +32,7 @@ import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Subtitles
@@ -124,6 +125,7 @@ fun SettingsScreen(
     val isHeuristicFilterEnabled by sessionManager.heuristicFilterFlow.collectAsStateWithLifecycle(initialValue = true)
     val isNameParsingEnabled by sessionManager.nameParsingFlow.collectAsStateWithLifecycle(initialValue = true)
     val isBundleSubtitlesEnabled by sessionManager.bundleSubtitlesFlow.collectAsStateWithLifecycle(initialValue = true)
+    val isSyncPlayHistoryEnabled by sessionManager.syncPlayHistoryFlow.collectAsStateWithLifecycle(initialValue = true)
     val isConcurrentAccelerationEnabled by sessionManager.concurrentAccelerationFlow.collectAsStateWithLifecycle(initialValue = true)
     val downloadDirPath by sessionManager.downloadDirPathFlow.collectAsStateWithLifecycle(initialValue = "")
     val scope = rememberCoroutineScope()
@@ -248,6 +250,17 @@ fun SettingsScreen(
                             checked = isBundleSubtitlesEnabled,
                             onCheckedChange = { scope.launch { sessionManager.setBundleSubtitlesEnabled(it) } },
                             enabled = isNameParsingEnabled,
+                        )
+                    }
+
+                    SettingsGroup(SettingsSection.Playback.title, Modifier.trackSection(SettingsSection.Playback)) {
+                        SettingsSwitchRow(
+                            index = 0, count = 1,
+                            icon = Icons.Outlined.History,
+                            title = "同步播放记录",
+                            supporting = "与 PikPak 官方客户端共用播放历史与续播进度",
+                            checked = isSyncPlayHistoryEnabled,
+                            onCheckedChange = { scope.launch { sessionManager.setSyncPlayHistoryEnabled(it) } },
                         )
                     }
 
@@ -410,6 +423,7 @@ private enum class SettingsSection(val title: String) {
     Appearance("外观"),
     Drive("网盘"),
     Links("添加链接"),
+    Playback("播放"),
     Download("下载"),
     About("关于"),
 }

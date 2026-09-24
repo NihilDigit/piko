@@ -23,6 +23,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.SelectAll
@@ -57,6 +58,7 @@ internal fun DriveSelectionTopBar(
     onExit: () -> Unit,
     onSelectAll: () -> Unit,
     onMove: () -> Unit,
+    onCopy: () -> Unit,
     onTrash: () -> Unit,
 ) {
     PikoTopBar(
@@ -68,6 +70,7 @@ internal fun DriveSelectionTopBar(
         actions = {
             TooltipIconButton(Icons.Outlined.SelectAll, "全选", onSelectAll, shortcut = "Ctrl+A")
             TooltipIconButton(Icons.Outlined.DriveFileMove, "移动所选", onMove, enabled = selectedCount > 0)
+            TooltipIconButton(Icons.Outlined.ContentCopy, "复制所选", onCopy, enabled = selectedCount > 0)
             TooltipIconButton(
                 icon = Icons.Outlined.Delete,
                 label = "将所选移入回收站",

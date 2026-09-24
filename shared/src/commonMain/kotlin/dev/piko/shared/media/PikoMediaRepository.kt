@@ -12,9 +12,12 @@ import io.github.nihildigit.pikpak.PikPakFileHandle
 import io.github.nihildigit.pikpak.ResolvedVariant
 import io.github.nihildigit.pikpak.VariantPreference
 import io.github.nihildigit.pikpak.getFile
+import io.github.nihildigit.pikpak.listPlayHistory
+import io.github.nihildigit.pikpak.reportPlay
 import io.github.nihildigit.pikpak.resolveVariant
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 
 enum class PlayableMediaKind { Video, Image, UnsupportedImage }
@@ -115,6 +118,39 @@ class PikoMediaRepository(
                 openProxyStream(client, detail, resolved)
             }.getOrNull()
         }
+
+    private suspend fun isPlayHistorySynced(): Boolean = preferences?.syncPlayHistoryFlow?.first() ?: false
+
+    /**
+     * 把播放进度上报到 PikPak 的播放历史。同步关闭时不做事；失败不抛，上报是附带的，不能打断播放。
+     * 服务端会悄悄丢掉同一文件间隔太短的上报（实测 1.5 秒丢、6 秒收），节流由调用方负责。
+     */
+    suspend fun reportPlay(fileId: String, positionMillis: Long, durationMillis: Long) {
+        if (fileId.isBlank() || positionMillis <= 0L || durationMillis <= 0L) return
+        withContext(Dispatchers.Default) {
+            runSuspendCatching {
+                if (isPlayHistorySynced()) client.reportPlay(fileId, positionMillis / 1000, durationMillis / 1000)
+            }
+        }
+    }
+
+    /**
+     * PikPak 播放历史里这个文件的续播位置，毫秒。同步关闭、没有记录、已看到片尾或取不到时为 null。
+     * 服务端不能按文件查，只看第一页（最近播放的 100 条）：从历史里点进来的一定在里面，更早的就算了。
+     */
+    suspend fun cloudPlaybackPosition(fileId: String): Long? {
+        if (fileId.isBlank()) return null
+        // 读偏好也包在里面：这只是续播的参考，任何一步失败都不该挡住开播
+        return withContext(Dispatchers.Default) {
+            runSuspendCatching {
+                if (!isPlayHistorySynced()) return@runSuspendCatching null
+                val event = client.listPlayHistory().events.firstOrNull { it.fileId == fileId } ?: return@runSuspendCatching null
+                val seconds = event.playSeconds ?: return@runSuspendCatching null
+                val duration = event.playDuration
+                if (duration != null && duration > 0 && seconds * 1000 >= duration * 1000 - CLOUD_NEAR_END_MILLIS) null else seconds * 1000
+            }.getOrNull()
+        }
+    }
 
     suspend fun savePlaybackPosition(fileId: String, positionMillis: Long) {
         preferences?.savePlaybackPosition(fileId, positionMillis)
@@ -221,6 +257,9 @@ class PikoMediaRepository(
 
 /** 清晰度菜单里代表原画的那一项，也是 [PikoMediaRepository] 认的原画标识。 */
 const val ORIGINAL_QUALITY = "Original"
+
+// 云端记录停在片尾这么近时当作看完，从头播；与本机续播的判断一致
+private const val CLOUD_NEAR_END_MILLIS = 10_000L
 
 fun mediaKindOf(name: String): PlayableMediaKind = when (name.substringAfterLast('.', "").lowercase()) {
     "avif", "bmp", "heic", "heif", "jpeg", "jpg", "png", "webp" -> PlayableMediaKind.Image

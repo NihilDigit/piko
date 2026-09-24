@@ -1,6 +1,7 @@
 package dev.piko.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -216,7 +218,16 @@ fun FileListItem(
         onClick = onClick,
         onMoreClick = onMoreClick,
         modifier = modifier,
-        badge = if (isHighlighted) ({ HighlightBadge(text = highlightBadgeText) }) else null,
+        badge = if (isHighlighted || file.isStarred) {
+            {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (file.isStarred) StarMark()
+                    if (isHighlighted) HighlightBadge(text = highlightBadgeText)
+                }
+            }
+        } else {
+            null
+        },
         supporting = {
             Column {
                 if (tags.isNotEmpty() || code != null) MediaTagRow(tags = tags, lead = code, modifier = Modifier.padding(vertical = 2.dp))
@@ -312,6 +323,22 @@ fun ListLeadingIcon(icon: ImageVector, modifier: Modifier = Modifier) {
         )
     }
 }
+
+/**
+ * 加了星标的条目标记：标题旁一颗实心星。用 tertiary：primary 已给了「刚存入」与选中态，
+ * 同色放在一起分不出是哪一种。
+ */
+@Composable
+fun StarMark(modifier: Modifier = Modifier) {
+    Icon(
+        imageVector = Icons.Filled.Star,
+        contentDescription = "已加星标",
+        tint = MaterialTheme.colorScheme.tertiary,
+        modifier = modifier.size(StarMarkSize),
+    )
+}
+
+private val StarMarkSize = 16.dp
 
 /** 刚秒传进来的条目角标。 */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)

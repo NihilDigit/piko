@@ -27,6 +27,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -46,7 +47,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation3.runtime.NavKey
 import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.savedstate.serialization.SavedStateConfiguration
+import dev.piko.data.repository.isPlayableVideo
 import dev.piko.download.DownloadStatus
+import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.navigation.MainTab
@@ -54,12 +57,15 @@ import dev.piko.ui.navigation.Screen
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.screens.drive.DriveScreen
 import dev.piko.ui.screens.files.FilesScreen
+import dev.piko.ui.screens.history.PlayHistoryScreen
 import dev.piko.ui.screens.settings.ProfileScreen
 import dev.piko.ui.screens.settings.SettingsScreen
+import dev.piko.ui.screens.starred.StarredScreen
 import dev.piko.ui.screens.trash.TrashScreen
 import dev.piko.ui.screens.transfers.TransfersScreen
 import dev.piko.ui.theme.PikoMotion
 import io.github.nihildigit.pikpak.FileStat
+import kotlinx.coroutines.launch
 import kotlinx.serialization.modules.SerializersModule
 import kotlinx.serialization.modules.polymorphic
 import kotlinx.serialization.modules.subclass
@@ -90,6 +96,8 @@ private val NavKeyConfiguration = SavedStateConfiguration {
         polymorphic(NavKey::class) {
             subclass(Screen.SubDrive::class)
             subclass(Screen.Trash::class)
+            subclass(Screen.Starred::class)
+            subclass(Screen.PlayHistory::class)
             subclass(Screen.Settings::class)
             subclass(Screen.VideoPlayer::class)
         }
@@ -114,10 +122,12 @@ fun PikoMainScaffold(
     var currentTab by rememberSaveable { mutableStateOf(MainTab.FILES) }
     val backStack = rememberNavBackStack(NavKeyConfiguration)
     val widthClass = currentWidthClass()
+    val coroutineScope = rememberCoroutineScope()
 
     val topScreen = backStack.lastOrNull() as? Screen
-    // 「我的」的详情页（回收站、设置）在宽窗口下不盖住导航栏，而是进内容区；只有 compact 与播放器仍是整窗覆盖层
-    val profilePane = topScreen?.takeIf { it == Screen.Trash || it == Screen.Settings }
+    // 「我的」的详情页（星标、播放历史、回收站、设置）在宽窗口下不盖住导航栏，而是进内容区；
+    // 只有 compact 与播放器仍是整窗覆盖层
+    val profilePane = topScreen?.takeIf { it in ProfilePanes }
     val profilePaneInline = profilePane != null && widthClass != WidthClass.Compact
     val activeOverlayScreen = topScreen?.takeUnless { profilePaneInline }
 
@@ -167,6 +177,26 @@ fun PikoMainScaffold(
             is VideoPlayerHost.InApp -> backStack.add(Screen.VideoPlayer(file.id, file.name, localPath))
             is VideoPlayerHost.Detached -> videoPlayer.open(VideoPlayerRequest(file.id, file.name, localPath, playlist))
         }
+    }
+
+    // 星标与播放历史里的条目：跳到网盘里它所在的位置并高亮它。文件夹则直接进入
+    fun locateInDrive(file: FileStat) {
+        val driveRepo = services.driveRepository
+        coroutineScope.launch {
+            driveRepo.locateFolder(file.id).onSuccess { parents ->
+                val stack = if (file.isFolder) parents + PikoPathBreadcrumb(file.id, file.name) else parents
+                // 先设好栈再切页：网盘页重新组合时直接加载栈顶目录
+                driveRepo.updateFolderStack(stack)
+                if (!file.isFolder) driveRepo.requestHighlight(setOf(file.id))
+                backStack.clear()
+                currentTab = MainTab.FILES
+            }
+        }
+    }
+
+    // 文件夹进入，视频播放，其余文件在网盘里找到它
+    fun openFromProfile(file: FileStat) {
+        if (file.isPlayableVideo()) playVideo(file, listOf(file)) else locateInDrive(file)
     }
 
     fun playLocal(fileId: String, fileName: String, localPath: String?) {
@@ -251,6 +281,9 @@ fun PikoMainScaffold(
                             onLogout = onLogout,
                             onOpenPane = ::openProfilePane,
                             onClosePane = ::closeTop,
+                            onOpenFile = ::openFromProfile,
+                            onPlayFile = { playVideo(it, listOf(it)) },
+                            onLocateFile = ::locateInDrive,
                             openPane = profilePane.takeIf { profilePaneInline },
                             twoPane = widthClass == WidthClass.Expanded,
                         )
@@ -306,6 +339,12 @@ fun PikoMainScaffold(
                         )
                     }
                     is Screen.Trash -> TrashScreen(onBackClick = ::closeTop)
+                    is Screen.Starred -> StarredScreen(onBackClick = ::closeTop, onOpen = ::openFromProfile, onLocate = ::locateInDrive)
+                    is Screen.PlayHistory -> PlayHistoryScreen(
+                        onBackClick = ::closeTop,
+                        onPlay = { playVideo(it, listOf(it)) },
+                        onLocate = ::locateInDrive,
+                    )
                     is Screen.Settings -> SettingsScreen(onBackClick = ::closeTop)
                     is Screen.VideoPlayer -> {
                         (videoPlayer as? VideoPlayerHost.InApp)?.content?.invoke(screen, ::closeTop)
@@ -317,45 +356,53 @@ fun PikoMainScaffold(
     }
 }
 
+/** 「我的」的详情页。它们互相替换，不叠在一起。 */
+private val ProfilePanes = setOf<Screen>(Screen.Starred, Screen.PlayHistory, Screen.Trash, Screen.Settings)
+
 /**
- * 「我的」与它的详情页（回收站、设置）。medium 窗口里详情页替换掉「我的」；expanded 窗口里两者并排，
- * 右栏没有打开的详情页时显示设置，免得半边空着。并排时设置页不给返回按钮：它本就是右栏的默认内容。
+ * 「我的」与它的详情页（星标、播放历史、回收站、设置）。medium 窗口里详情页替换掉「我的」；expanded 窗口里
+ * 两者并排，右栏没有打开的详情页时显示设置，免得半边空着。并排时设置页不给返回按钮：它本就是右栏的默认内容。
  */
 @Composable
 private fun ProfileWithPanes(
     onLogout: () -> Unit,
     onOpenPane: (Screen) -> Unit,
     onClosePane: () -> Unit,
+    onOpenFile: (FileStat) -> Unit,
+    onPlayFile: (FileStat) -> Unit,
+    onLocateFile: (FileStat) -> Unit,
     openPane: Screen?,
     twoPane: Boolean,
 ) {
     val profile: @Composable (Screen?, Modifier) -> Unit = { selected, modifier ->
         ProfileScreen(
             onLogout = onLogout,
-            onOpenTrash = { onOpenPane(Screen.Trash) },
-            onOpenSettings = { onOpenPane(Screen.Settings) },
+            onOpenPane = onOpenPane,
             selectedPane = selected,
             modifier = modifier,
         )
     }
-    if (!twoPane) {
-        when (openPane) {
-            Screen.Trash -> TrashScreen(onBackClick = onClosePane)
-            Screen.Settings -> SettingsScreen(onBackClick = onClosePane)
-            else -> profile(null, Modifier)
+
+    @Composable
+    fun Pane(screen: Screen, onBackClick: (() -> Unit)?, modifier: Modifier) {
+        when (screen) {
+            Screen.Starred -> StarredScreen(onBackClick, onOpen = onOpenFile, onLocate = onLocateFile, modifier = modifier)
+            Screen.PlayHistory -> PlayHistoryScreen(onBackClick, onPlay = onPlayFile, onLocate = onLocateFile, modifier = modifier)
+            Screen.Trash -> TrashScreen(onBackClick = onClosePane, modifier = modifier)
+            else -> SettingsScreen(onBackClick = onBackClick, modifier = modifier)
         }
+    }
+
+    if (!twoPane) {
+        if (openPane != null) Pane(openPane, onClosePane, Modifier) else profile(null, Modifier)
         return
     }
     val shown = openPane ?: Screen.Settings
     Row(modifier = Modifier.fillMaxSize()) {
         profile(shown, Modifier.weight(1f))
         VerticalDivider()
-        val paneModifier = Modifier.weight(1f).fillMaxHeight()
-        if (shown == Screen.Trash) {
-            TrashScreen(onBackClick = onClosePane, modifier = paneModifier)
-        } else {
-            SettingsScreen(onBackClick = null, modifier = paneModifier)
-        }
+        // 右栏的默认内容（设置）没有可返回的地方，其余详情页返回即回到设置
+        Pane(shown, onBackClick = onClosePane.takeIf { openPane != null }, modifier = Modifier.weight(1f).fillMaxHeight())
     }
 }
 

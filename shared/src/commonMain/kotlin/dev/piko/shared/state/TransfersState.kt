@@ -192,6 +192,12 @@ class TransfersState(
     /** 删除任务记录，也用作已完成任务的「移除」。已完成任务的文件保留在网盘里。 */
     fun deleteCloud(taskId: String) = cloud.delete(taskId)
 
+    /** 清除全部已完成的云端任务记录，含列表时间窗之外的。文件保留在网盘里。 */
+    fun clearCompletedCloud() = cloud.clear(listOf(TaskPhase.COMPLETE))
+
+    /** 清除全部失败的云端任务记录。 */
+    fun clearFailedCloud() = cloud.clear(listOf(TaskPhase.ERROR))
+
     /** 取消进行中的整包离线，或移除已结束的记录。已完成的文件保留在网盘里。 */
     fun discardPack(taskId: String) {
         scope.launch {

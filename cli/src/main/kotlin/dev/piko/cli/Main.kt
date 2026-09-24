@@ -26,6 +26,10 @@ private const val USAGE = """piko-cli：Piko 开发工具
 
   parse <文件名>…
       单独解析几个文件名，打印 parseMediaName 的结果。
+
+  share <分享链接> [--pass <提取码>] [--restore]
+      只读地列出一个分享的顶层内容。--restore 实测转存：把其中最小的一个文件转存进
+      根目录下新建的 piko-probe-restore-* 文件夹，等任务结束后列出结果，再永久删除该文件夹。
 """
 
 fun main(args: Array<String>) {
@@ -65,6 +69,15 @@ fun main(args: Array<String>) {
             listWithParams(appClient(), path).forEach(::println)
         }
         "parse" -> options.positional.ifEmpty { usage() }.forEach { name -> println("$name\n  ${parseMediaName(name)}") }
+        "share" -> runBlocking {
+            val url = options.positional.firstOrNull() ?: usage()
+            val passCode = options.value("--pass").orEmpty()
+            if ("--restore" in options.flags) {
+                probeShareRestore(appClient(), url, passCode)
+            } else {
+                describeShare(appClient(), url, passCode).forEach(::println)
+            }
+        }
         else -> usage()
     }
 }
@@ -100,6 +113,6 @@ private class Options(args: List<String>) {
 
     companion object {
         // 不带值的开关
-        val FLAGS = setOf("--visited")
+        val FLAGS = setOf("--visited", "--restore")
     }
 }

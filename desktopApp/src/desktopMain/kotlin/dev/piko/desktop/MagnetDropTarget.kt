@@ -92,7 +92,7 @@ fun MagnetDropTarget(
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
-                            "松开以解析磁力链接或种子",
+                            "松开以打开磁力链接、分享链接或种子",
                             style = MaterialTheme.typography.titleLarge,
                             color = MaterialTheme.colorScheme.primary,
                         )
@@ -113,6 +113,8 @@ private fun magnetIn(event: DragAndDropEvent): String? {
             .firstNotNullOfOrNull(TorrentMagnet::fromFile)
     }
     val text = runCatching { transferable.getTransferData(DataFlavor.stringFlavor) as? String }.getOrNull() ?: return null
+    // 分享链接连同整段文本交出去：提取码常写在链接后面，面板从同一段里认出来
+    if (InstantSheetState.findShareLink(text) != null) return text.trim()
     // 浏览器拖链接时可能带上标题或多行，逐行找第一条像磁力链的
     return text.lineSequence().firstNotNullOfOrNull { InstantSheetState.normalizeMagnet(it) }
 }

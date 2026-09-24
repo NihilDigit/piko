@@ -90,6 +90,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val SPOILER_BLUR_ENABLED = booleanPreferencesKey("spoiler_blur_enabled")
         val HEURISTIC_FILTER_ENABLED = booleanPreferencesKey("heuristic_filter_enabled")
         val BUNDLE_SUBTITLES_ENABLED = booleanPreferencesKey("bundle_subtitles_enabled")
+        val SYNC_PLAY_HISTORY_ENABLED = booleanPreferencesKey("sync_play_history_enabled")
         val NAME_PARSING_ENABLED = booleanPreferencesKey("name_parsing_enabled")
         val WATERFALL_VIEW_ENABLED = booleanPreferencesKey("waterfall_view_enabled")
         val THEME_MODE = stringPreferencesKey("theme_mode")
@@ -176,6 +177,16 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun setBundleSubtitlesEnabled(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.BUNDLE_SUBTITLES_ENABLED] = enabled
+        }
+    }
+
+    override val syncPlayHistoryFlow: Flow<Boolean> = preference { preferences ->
+        preferences[PreferencesKeys.SYNC_PLAY_HISTORY_ENABLED] ?: true
+    }
+
+    override suspend fun setSyncPlayHistoryEnabled(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.SYNC_PLAY_HISTORY_ENABLED] = enabled
         }
     }
 

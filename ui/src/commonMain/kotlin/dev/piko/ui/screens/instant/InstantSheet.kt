@@ -60,6 +60,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -78,6 +79,9 @@ import dev.piko.shared.state.InstantPrimaryAction
 import dev.piko.shared.state.InstantRow
 import dev.piko.shared.state.InstantSheetState
 import dev.piko.shared.state.NameGroupSummary
+import dev.piko.shared.state.ShareSaveState
+import dev.piko.ui.LocalPikoServices
+import io.github.nihildigit.pikpak.shareIdFromUrl
 import dev.piko.ui.components.FileNameField
 import dev.piko.ui.components.FolderPickerDialog
 import dev.piko.ui.components.MediaTagRow
@@ -125,6 +129,15 @@ fun InstantSheetContent(
 
     val pendingMagnet = state.normalizedMagnet
     val result = state.resolution
+    // 分享链接走转存，与磁力的解析、秒传、离线互不相干，下面整段换成分享面板
+    val shareId = remember(state.input) { InstantSheetState.findShareLink(state.input)?.let(::shareIdFromUrl) }
+    val driveRepo = LocalPikoServices.current.driveRepository
+    val shareScope = rememberCoroutineScope()
+    val shareState = remember(shareId) {
+        shareId?.let {
+            ShareSaveState(driveRepo, shareScope, it, initialPassCode = InstantSheetState.findSharePassCode(state.input).orEmpty())
+        }
+    }
 
     val focusManager = LocalFocusManager.current
     Column(
@@ -147,7 +160,7 @@ fun InstantSheetContent(
             OutlinedTextField(
                 value = state.input,
                 onValueChange = state::updateInput,
-                label = { Text("磁力链接或下载地址") },
+                label = { Text("磁力链接、下载地址或分享链接") },
                 placeholder = { Text("magnet:?xt=urn:btih:…") },
                 modifier = Modifier.fillMaxWidth(),
                 shape = MaterialTheme.shapes.largeIncreased,
@@ -164,11 +177,19 @@ fun InstantSheetContent(
             )
         }
 
-        if (state.isResolving) {
+        if (shareState != null) {
+            ShareSaveSection(
+                state = shareState,
+                target = state.target,
+                onPickTarget = { showTargetPicker = true },
+            )
+        }
+
+        if (shareState == null && state.isResolving) {
             ResolvingRow(text = if (state.isAnalyzing) "正在整理文件" else "正在查询云端索引")
         }
 
-        state.errorMessage?.let { err ->
+        if (shareState == null) state.errorMessage?.let { err ->
             // 解析失败与未收录都给重试：未收录的资源过一阵可能就被索引了
             val canRetry = pendingMagnet != null && result == null && !state.isResolving
             ErrorBanner(
@@ -179,12 +200,12 @@ fun InstantSheetContent(
 
         notice?.let { ErrorBanner(message = it, onRetry = null) }
 
-        if (result != null) {
+        if (shareState == null && result != null) {
             ResolutionSection(state = state, resourceName = result.resource.name)
         }
 
         val action = state.primaryAction
-        if (action != null) {
+        if (shareState == null && action != null) {
             TargetRow(
                 target = state.target,
                 notice = state.targetNotice,
@@ -700,7 +721,7 @@ private fun PreviewButton(onClick: () -> Unit, isPreviewing: Boolean) {
  * 原先是 labelSmall 的小胶囊，挤在输入框下，不像能点的东西；改为紧挨主按钮的整行。
  */
 @Composable
-private fun TargetRow(
+internal fun TargetRow(
     target: PathBreadcrumb?,
     notice: String?,
     enabled: Boolean,

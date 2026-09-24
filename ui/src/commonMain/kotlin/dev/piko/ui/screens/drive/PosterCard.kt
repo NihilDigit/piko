@@ -40,6 +40,7 @@ import dev.piko.ui.components.HighlightBadge
 import dev.piko.ui.components.MediaTag
 import dev.piko.ui.components.MediaTagRow
 import dev.piko.ui.components.SpoilerThumbnail
+import dev.piko.ui.components.StarMark
 import dev.piko.ui.components.PosterSpoilerBlur
 import dev.piko.ui.components.displayTitle
 import dev.piko.ui.components.watermarkIcon
@@ -166,6 +167,8 @@ internal fun PosterCard(
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
             verticalAlignment = Alignment.Top,
         ) {
+            // 封面左上角已给「刚存入」，星标放在标题前，对齐首行（bodyMedium 行高 20，图标 16）
+            if (file.isStarred) StarMark(modifier = Modifier.padding(top = 2.dp, end = 4.dp))
             Text(
                 text = title ?: file.displayTitle(),
                 style = MaterialTheme.typography.bodyMedium,

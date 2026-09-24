@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -24,6 +25,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -168,8 +170,8 @@ fun TransfersScreen(
                         }
                     }
                     transferSection("进行中", state.inProgress, renderItem)
-                    transferSection("需要处理", state.needsAttention, renderItem)
-                    transferSection("已完成", state.completed, renderItem)
+                    transferSection("需要处理", state.needsAttention, renderItem, onClearCloud = state::clearFailedCloud)
+                    transferSection("已完成", state.completed, renderItem, onClearCloud = state::clearCompletedCloud)
                     deletedOutputSection(
                         items = state.outputDeleted,
                         expanded = deletedExpanded,
@@ -243,19 +245,31 @@ private fun LazyListScope.transferSection(
     title: String,
     items: List<TransferItem>,
     renderItem: @Composable (TransferItem, Modifier) -> Unit,
+    /** 清除这一段的云端任务记录。只在段内有云端任务时给出，本地下载不受影响。 */
+    onClearCloud: (() -> Unit)? = null,
 ) {
     if (items.isEmpty()) return
+    val hasCloud = items.any { it !is TransferItem.Local }
     item(key = "header:$title", contentType = "header") {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary,
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .animateItem()
-                .padding(horizontal = 16.dp)
-                .padding(top = 16.dp, bottom = 4.dp),
-        )
+                .padding(start = 16.dp, end = 8.dp)
+                .padding(top = 8.dp)
+                .heightIn(min = 40.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.weight(1f),
+            )
+            if (onClearCloud != null && hasCloud) {
+                TextButton(onClick = onClearCloud) { Text("清除云端记录") }
+            }
+        }
     }
     items(items, key = { it.key }) { item ->
         renderItem(item, Modifier.animateItem())

@@ -49,7 +49,19 @@
                 <data android:host="toapp.mypikpak.net" />
                 <data android:path="/toapp" />
             </intent-filter>
-            <!-- 注册接收外部文本分享 (含有磁力链接的文本) -->
+            <!-- PikPak 分享链接：打开后在添加链接面板里浏览、勾选并转存。域名归官方验证所有，
+                 不设 autoVerify；要由 Piko 直接打开，需在系统设置的「默认打开」里添加 -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" />
+                <data android:scheme="http" />
+                <data android:host="mypikpak.com" />
+                <data android:host="www.mypikpak.com" />
+                <data android:pathPrefix="/s/" />
+            </intent-filter>
+            <!-- 注册接收外部文本分享（含磁力链接或分享链接的文本） -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />

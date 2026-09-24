@@ -92,6 +92,20 @@ class OfflineTasksState(
         }
     }
 
+    /** 清除某几个阶段的任务记录，不删产出的文件。先从列表里摘掉，失败再由重新拉取带回。 */
+    fun clear(phases: List<String>) {
+        val cleared = tasks.count { it.phase in phases }
+        scope.launch {
+            taskRepo.clearTasks(phases)
+                .onSuccess {
+                    tasks = tasks.filterNot { it.phase in phases }
+                    _messages.tryEmit("已清除 $cleared 条记录")
+                    launchFetch(notifyFailure = false)
+                }
+                .onFailure { _messages.tryEmit("清除记录失败") }
+        }
+    }
+
     private fun launchFetch(notifyFailure: Boolean) {
         // 连点刷新只保留最后一次，旧请求晚到的结果不能盖掉新的
         refreshJob?.cancel()

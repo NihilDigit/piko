@@ -21,7 +21,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -73,8 +75,8 @@ import kotlinx.coroutines.launch
 @Composable
 fun ProfileScreen(
     onLogout: () -> Unit,
-    onOpenTrash: () -> Unit,
-    onOpenSettings: () -> Unit,
+    /** 打开「我的」的详情页：星标、播放历史、回收站、设置。 */
+    onOpenPane: (Screen) -> Unit,
     selectedPane: Screen?,
     modifier: Modifier = Modifier,
 ) {
@@ -140,13 +142,35 @@ fun ProfileScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
+            // 星标与播放历史是看内容的入口，排在前面；回收站与设置是管理，排在后面，两组之间多空一点
+            Column(verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
+                SettingsNavigationRow(
+                    index = 0, count = 2,
+                    icon = Icons.Outlined.StarOutline,
+                    title = "星标",
+                    supporting = "已加星标的文件与文件夹",
+                    onClick = { onOpenPane(Screen.Starred) },
+                    selected = selectedPane == Screen.Starred,
+                )
+                SettingsNavigationRow(
+                    index = 1, count = 2,
+                    icon = Icons.Outlined.History,
+                    title = "播放历史",
+                    supporting = "与 PikPak 官方客户端同步",
+                    onClick = { onOpenPane(Screen.PlayHistory) },
+                    selected = selectedPane == Screen.PlayHistory,
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
             Column(verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
                 SettingsNavigationRow(
                     index = 0, count = 2,
                     icon = Icons.Outlined.Delete,
                     title = "回收站",
                     supporting = "恢复或彻底删除已移入回收站的文件",
-                    onClick = onOpenTrash,
+                    onClick = { onOpenPane(Screen.Trash) },
                     selected = selectedPane == Screen.Trash,
                 )
                 SettingsNavigationRow(
@@ -154,7 +178,7 @@ fun ProfileScreen(
                     icon = Icons.Outlined.Settings,
                     title = "设置",
                     supporting = availableUpdate?.let { "发现新版本 ${it.version}" } ?: "外观、文件名解析与下载",
-                    onClick = onOpenSettings,
+                    onClick = { onOpenPane(Screen.Settings) },
                     selected = selectedPane == Screen.Settings,
                 )
             }

@@ -2,29 +2,45 @@ package dev.piko.shared.data
 
 import dev.piko.data.repository.NaturalOrder
 import dev.piko.data.auth.PikoUserPreferences
+import io.github.nihildigit.pikpak.EventPage
+import io.github.nihildigit.pikpak.EventType
 import io.github.nihildigit.pikpak.FileDetail
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.QuotaResponse
 import io.github.nihildigit.pikpak.SearchHit
+import io.github.nihildigit.pikpak.ShareInfo
+import io.github.nihildigit.pikpak.TaskPhase
 import io.github.nihildigit.pikpak.TransferQuota
+import io.github.nihildigit.pikpak.batchCopy
 import io.github.nihildigit.pikpak.batchDelete
 import io.github.nihildigit.pikpak.batchMove
 import io.github.nihildigit.pikpak.batchTrash
 import io.github.nihildigit.pikpak.batchUntrash
+import io.github.nihildigit.pikpak.clearEvents
 import io.github.nihildigit.pikpak.createFolder
+import io.github.nihildigit.pikpak.deleteEvents
 import io.github.nihildigit.pikpak.getFile
+import io.github.nihildigit.pikpak.getShareInfo
+import io.github.nihildigit.pikpak.getTask
+import io.github.nihildigit.pikpak.listShareFiles
+import io.github.nihildigit.pikpak.restoreShare
 import io.github.nihildigit.pikpak.getQuota
 import io.github.nihildigit.pikpak.getTransferQuota
 import io.github.nihildigit.pikpak.listFiles
 import io.github.nihildigit.pikpak.listFilesPaged
+import io.github.nihildigit.pikpak.listPlayHistory
+import io.github.nihildigit.pikpak.listStarred
 import io.github.nihildigit.pikpak.listTrash
 import io.github.nihildigit.pikpak.rename
 import io.github.nihildigit.pikpak.searchFiles
 import io.github.nihildigit.pikpak.searchFilesRecursive
+import io.github.nihildigit.pikpak.starFiles
+import io.github.nihildigit.pikpak.unstarFiles
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -354,6 +370,14 @@ open class PikoDriveRepository(
         runSuspendCatching { ids.chunked(BATCH_MOVE_LIMIT).forEach { client.batchMove(it, parentId) } }
     }
 
+    /**
+     * 复制到 [parentId]。服务端按任务执行，小批量在返回时已完成；目标里有同名项时自动改名为「名字(1)」。
+     * 复制到自身或自己的子目录里会被拒绝（file_move_or_copy_to_cur）。SDK 已按 id 上限分批。
+     */
+    suspend fun copy(ids: List<String>, parentId: String): Result<Unit> = withContext(Dispatchers.Default) {
+        runSuspendCatching { client.batchCopy(ids, parentId); Unit }
+    }
+
     suspend fun search(query: String): Result<List<FileStat>> = withContext(Dispatchers.Default) {
         runSuspendCatching { client.searchFiles(query) }
     }
@@ -368,6 +392,67 @@ open class PikoDriveRepository(
 
     suspend fun trashFiles(): Result<List<FileStat>> = withContext(Dispatchers.Default) {
         runSuspendCatching { client.listTrash() }
+    }
+
+    /**
+     * 读分享的顶层与提取码令牌。没带提取码、提取码错、分享已取消时服务端仍回 200，
+     * SDK 据状态抛 [io.github.nihildigit.pikpak.ShareUnavailableException]，这里原样交给调用方分辨。
+     */
+    suspend fun shareInfo(shareId: String, passCode: String): Result<ShareInfo> = withContext(Dispatchers.Default) {
+        runSuspendCatching { client.getShareInfo(shareId, passCode) }
+    }
+
+    /** 分享里某个文件夹的内容。子目录只能经它打开，GET /share 不认 parent_id。 */
+    suspend fun shareFolder(shareId: String, passCodeToken: String, parentId: String): Result<List<FileStat>> =
+        withContext(Dispatchers.Default) {
+            runSuspendCatching { client.listShareFiles(shareId, passCodeToken, parentId = parentId).files }
+        }
+
+    /**
+     * 把分享里的条目转存到 [toParentId]，等任务结束才返回。[ancestorIds] 是条目所在的各级分享目录，
+     * 转存子目录里的条目时要带上。实测 2026-09-25：文件直接落在目标目录下，不带上级目录；
+     * 秒级完成；任务 params 里没有新旧 id 的映射，要找新文件只能列目标目录。
+     */
+    suspend fun restoreFromShare(
+        shareId: String,
+        passCodeToken: String,
+        fileIds: List<String>,
+        toParentId: String,
+        ancestorIds: List<String>,
+    ): Result<Unit> = withContext(Dispatchers.Default) {
+        runSuspendCatching {
+            val restore = client.restoreShare(shareId, passCodeToken, fileIds, toParentId = toParentId, ancestorIds = ancestorIds)
+            if (restore.restoreTaskId.isEmpty()) return@runSuspendCatching
+            repeat(RESTORE_POLL_LIMIT) {
+                val task = client.getTask(restore.restoreTaskId)
+                if (task.phase == TaskPhase.COMPLETE) return@runSuspendCatching
+                if (task.phase == TaskPhase.ERROR) error(task.message.ifBlank { "转存失败" })
+                delay(RESTORE_POLL_INTERVAL_MILLIS)
+            }
+            error("转存超时")
+        }
+    }
+
+    /** 全盘的星标文件与文件夹。服务端按 parent_id=* 一次返回全部，不分页。 */
+    suspend fun starredFiles(): Result<List<FileStat>> = withContext(Dispatchers.Default) {
+        runSuspendCatching { client.listStarred() }
+    }
+
+    suspend fun setStarred(ids: List<String>, starred: Boolean): Result<Unit> = withContext(Dispatchers.Default) {
+        runSuspendCatching { if (starred) client.starFiles(ids) else client.unstarFiles(ids) }
+    }
+
+    /** 播放历史的一页，按最近播放倒序，与官方客户端共用同一份。 */
+    suspend fun playHistory(pageToken: String = ""): Result<EventPage> = withContext(Dispatchers.Default) {
+        runSuspendCatching { client.listPlayHistory(pageToken = pageToken) }
+    }
+
+    suspend fun deletePlayEvents(eventIds: List<String>): Result<Unit> = withContext(Dispatchers.Default) {
+        runSuspendCatching { client.deleteEvents(eventIds) }
+    }
+
+    suspend fun clearPlayHistory(): Result<Unit> = withContext(Dispatchers.Default) {
+        runSuspendCatching { client.clearEvents(listOf(EventType.PLAY)) }
     }
 
     fun folderMeaningless(folderId: String): Boolean? = folderMeaninglessCache[folderId]
@@ -438,6 +523,10 @@ open class PikoDriveRepository(
 
         // 与 SDK 其余批量接口的分批大小一致。实测 200 可以、1000 被拒
         private const val BATCH_MOVE_LIMIT = 100
+
+        // 转存任务实测一秒内完成；给大目录留到一分钟
+        private const val RESTORE_POLL_LIMIT = 60
+        private const val RESTORE_POLL_INTERVAL_MILLIS = 1_000L
 
         // PikPak 各端自动建的保存目录名不一，官方客户端建过的也算
         private val MY_PACKS_FOLDER_NAMES = setOf("my pack", "my packs", "我的资源", "我的离线")

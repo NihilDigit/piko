@@ -448,6 +448,18 @@ class DriveScreenState(
         }
     }
 
+    /** 加或去星标。星标只体现在列表条目的 tags 里，完成后重新列一次，这一项的状态才跟着变。 */
+    fun setStarred(file: FileStat, starred: Boolean) {
+        scope.launch {
+            driveRepo.setStarred(listOf(file.id), starred)
+                .onSuccess {
+                    load()
+                    _messages.tryEmit(if (starred) "已添加星标" else "已取消星标")
+                }
+                .onFailure { _messages.tryEmit(if (starred) "添加星标失败" else "取消星标失败") }
+        }
+    }
+
     fun moveToTrash(ids: List<String>) {
         if (ids.isEmpty()) return
         scope.launch {
@@ -471,6 +483,20 @@ class DriveScreenState(
                     _messages.tryEmit("已移至 $targetName")
                 }
                 .onFailure { _messages.tryEmit("移动失败") }
+        }
+    }
+
+    fun copy(ids: List<String>, targetId: String, targetName: String) {
+        if (ids.isEmpty()) return
+        scope.launch {
+            driveRepo.copy(ids, targetId)
+                .onSuccess {
+                    exitSelection()
+                    // 复制到当前目录时新副本就在眼前，要重新列一次
+                    if (targetId == activeFolderId) load()
+                    _messages.tryEmit("已复制到 $targetName")
+                }
+                .onFailure { _messages.tryEmit("复制失败") }
         }
     }
 }

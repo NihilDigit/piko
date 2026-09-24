@@ -10,6 +10,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.piko.shared.state.InstantSheetState
 import dev.piko.ui.PikoApp
 import dev.piko.ui.VideoPlayerHost
 import dev.piko.ui.screens.player.MediampVideoPlayerScreen
@@ -86,10 +87,24 @@ class MainActivity : ComponentActivity() {
             }
             return
         }
-        val magnet = extractMagnet(intent)
-        if (!magnet.isNullOrBlank()) {
-            PikoApplication.instance.instantMagnetRepository.onIncomingMagnet(magnet)
+        val link = extractShareText(intent) ?: extractMagnet(intent)
+        if (!link.isNullOrBlank()) {
+            // 名为磁力，实际收的是添加链接面板的输入：面板自己分辨磁力、下载地址与分享链接
+            PikoApplication.instance.instantMagnetRepository.onIncomingMagnet(link)
         }
+    }
+
+    /**
+     * 含 PikPak 分享链接的输入：打开 mypikpak.com/s/ 链接，或分享来的一段文本。返回整段文本而不只是链接，
+     * 转发的分享常把提取码写在链接后面，面板从同一段文本里把它认出来。
+     */
+    private fun extractShareText(intent: Intent): String? {
+        val candidates = listOfNotNull(
+            intent.dataString,
+            intent.getStringExtra(Intent.EXTRA_TEXT),
+            intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString(),
+        )
+        return candidates.firstOrNull { InstantSheetState.findShareLink(it) != null }?.trim()
     }
 
     private fun extractMagnet(intent: Intent): String? {

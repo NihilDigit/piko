@@ -91,6 +91,7 @@ import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.components.BreadcrumbBar
 import dev.piko.ui.components.FileNameField
 import dev.piko.ui.components.FullScreenLoading
+import dev.piko.ui.components.FolderPickerDialog
 import dev.piko.ui.components.MoveTargetDialog
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoTopBar
@@ -207,6 +208,7 @@ fun DriveScreen(
     // 待移动的条目。选择器只负责选目录，移动本身与刷新在这里做，
     // 所以单项操作和多选工具栏可以共用同一套状态。
     var moveTargetIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var copyTargetIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var previewImage by remember { mutableStateOf<FileStat?>(null) }
     // 外部打开的磁力链是一次明确的新请求：开新会话并就地取走，面板收起后不再靠它续命
     val pendingMagnet by instantRepo.pendingMagnetFlow.collectAsStateWithLifecycle()
@@ -302,6 +304,7 @@ fun DriveScreen(
                         null
                     },
                     onTogglePreview = { state.toggleSpoiler(file.id) },
+                    onToggleStar = { state.setStarred(file, starred = !file.isStarred) },
                     onDownload = { enqueueDownload(file) },
                     onDownloadSegment = { segmentTargetFile = file },
                     onRename = {
@@ -309,6 +312,7 @@ fun DriveScreen(
                         renameNewName = file.name
                     },
                     onMove = { moveTargetIds = setOf(file.id) },
+                    onCopy = { copyTargetIds = setOf(file.id) },
                     onTrash = { state.moveToTrash(listOf(file.id)) },
                     onCopySource = { copySource(file) },
                     onOpenSource = { file.sourceUrl?.let(platform::openUrl) },
@@ -396,6 +400,7 @@ fun DriveScreen(
                     onExit = { state.exitSelection() },
                     onSelectAll = { state.toggleSelectAll() },
                     onMove = { moveTargetIds = state.selectedFileIds.toSet() },
+                    onCopy = { copyTargetIds = state.selectedFileIds.toSet() },
                     onTrash = { state.moveToTrash(state.selectedFileIds.toList()) },
                 )
 
@@ -566,6 +571,7 @@ fun DriveScreen(
             // remember 住同一个 flow：每次重组新建的话，produceState 会把统计从头再跑一遍
             folderUsage = remember(target.id) { if (target.isFolder) driveRepo.folderUsage(target.id) else null },
             onTogglePreview = { state.toggleSpoiler(target.id) },
+            onToggleStar = { state.setStarred(target, starred = !target.isStarred) },
             onDismiss = { actionTargetFile = null },
             onDownload = { enqueueDownload(target) },
             onDownloadSegment = { segmentTargetFile = target },
@@ -574,6 +580,7 @@ fun DriveScreen(
                 renameNewName = target.name
             },
             onMove = { moveTargetIds = setOf(target.id) },
+            onCopy = { copyTargetIds = setOf(target.id) },
             onTrash = { state.moveToTrash(listOf(target.id)) },
             onCopySource = { copySource(target) },
             onOpenSource = { target.sourceUrl?.let(platform::openUrl) },
@@ -642,6 +649,23 @@ fun DriveScreen(
                 moveTargetIds = emptySet()
                 state.move(pendingIds.toList(), targetId, targetName)
             },
+        )
+    }
+
+    if (copyTargetIds.isNotEmpty()) {
+        val pendingIds = copyTargetIds
+        // 复制到原目录是允许的（服务端给副本加「(1)」），只挡住复制进自身
+        FolderPickerDialog(
+            title = "复制 ${pendingIds.size} 项",
+            confirmLabel = "复制到这里",
+            onDismiss = { copyTargetIds = emptySet() },
+            onConfirm = { targetId, targetName ->
+                copyTargetIds = emptySet()
+                state.copy(pendingIds.toList(), targetId, targetName)
+            },
+            blockedFolderIds = pendingIds,
+            blockedFolderHint = "待复制项",
+            confirmBlockedReason = { current -> "不能复制到自身".takeIf { current.id in pendingIds } },
         )
     }
 
