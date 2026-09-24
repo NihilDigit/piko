@@ -286,7 +286,7 @@ private fun AccountHeader(
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = username?.ifEmpty { null } ?: "PikPak 用户",
-                style = MaterialTheme.typography.titleLarge,
+                style = MaterialTheme.typography.titleMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -328,13 +328,13 @@ private fun StorageSection(quota: QuotaSnapshot) {
         Row(modifier = Modifier.fillMaxWidth()) {
             Text(
                 text = quota.usageBytes.toReadableSize(),
-                style = MaterialTheme.typography.headlineMedium,
+                style = MaterialTheme.typography.titleLarge,
                 modifier = Modifier.alignByBaseline(),
             )
             Spacer(modifier = Modifier.width(6.dp))
             Text(
                 text = "/ ${quota.limitBytes.toReadableSize()}",
-                style = MaterialTheme.typography.titleSmall,
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.alignByBaseline(),
             )
