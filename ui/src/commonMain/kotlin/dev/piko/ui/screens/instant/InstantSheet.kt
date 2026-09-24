@@ -411,7 +411,7 @@ private fun SelectionHeader(state: InstantSheetState) {
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        text = "$unindexed 项未收录，保存会慢一些",
+                        text = "$unindexed 项需下载，耗时较长",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
