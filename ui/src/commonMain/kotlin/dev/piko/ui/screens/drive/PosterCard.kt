@@ -4,9 +4,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.hoverable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,11 +27,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -48,7 +42,6 @@ import dev.piko.ui.components.SpoilerThumbnail
 import dev.piko.ui.components.PosterSpoilerBlur
 import dev.piko.ui.components.displayTitle
 import dev.piko.ui.components.watermarkIcon
-import dev.piko.ui.platform.LocalPikoPlatform
 import io.github.nihildigit.pikpak.FileStat
 
 /**
@@ -88,9 +81,6 @@ private fun Modifier.cardInteraction(
  * 叠在封面上的：左上角「刚存入」，右上角至多两个标签（调用方已按优先级排好，无码、中字在前），
  * 左下角番号芯片，有封面的文件夹在它前面加文件夹标记。没有封面的文件夹画成叠起的纸张，
  * 其余没有缩略图的画类型图标，封面区照样占 16:9，不另起一种图块。
- *
- * 更多按钮在桌面端悬停时才显示：鼠标有右键菜单，常驻的按钮只是让每张卡多一个图标。位置始终留着，
- * 悬停时标题不跳动。触屏上长按是多选，更多按钮是进详情的唯一入口，所以常驻。
  */
 @Composable
 internal fun PosterCard(
@@ -111,13 +101,9 @@ internal fun PosterCard(
     code: String? = null,
 ) {
     val coverShape = MaterialTheme.shapes.medium
-    val hover = remember { MutableInteractionSource() }
-    val hovered by hover.collectIsHoveredAsState()
-    val showMore = isSelectionMode || !LocalPikoPlatform.current.revealsActionsOnHover || hovered
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .hoverable(hover)
             .clip(coverShape)
             .cardInteraction(isSelectionMode, isSelected, onClick, onLongClick, onSelectToggle),
     ) {
@@ -185,7 +171,7 @@ internal fun PosterCard(
                 isSelectionMode = isSelectionMode,
                 isSelected = isSelected,
                 onMoreClick = onMoreClick,
-                modifier = Modifier.offset(x = 12.dp, y = (-12).dp).alpha(if (showMore) 1f else 0f),
+                modifier = Modifier.offset(x = 12.dp, y = (-12).dp),
             )
         }
     }
