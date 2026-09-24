@@ -80,6 +80,9 @@ private val OfflinePackJob.canOpen: Boolean
 @Composable
 internal fun PackTransferRow(
     item: TransferItem.Pack,
+    /** 产出的缩略图，取不到时为 null，显示状态图标。 */
+    thumbnail: String?,
+    isSpoilerBlurred: Boolean,
     onOpen: () -> Unit,
     onRetry: () -> Unit,
     onMoreClick: () -> Unit,
@@ -88,7 +91,13 @@ internal fun PackTransferRow(
     val job = item.job
     FileListItem(
         headline = job.folderName,
-        leading = { ListLeadingMedia(thumbnail = null, fallback = { ListLeadingIcon(job.icon()) }) },
+        leading = {
+            ListLeadingMedia(
+                thumbnail = thumbnail,
+                fallback = { ListLeadingIcon(job.icon()) },
+                isSpoilerBlurred = isSpoilerBlurred,
+            )
+        },
         onClick = {
             when {
                 job.canOpen -> onOpen()

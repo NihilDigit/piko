@@ -72,7 +72,7 @@ fun TransfersScreen(
     val scope = rememberCoroutineScope()
     val services = LocalPikoServices.current
     val state = remember {
-        TransfersState(services.downloadManager, services.taskRepository, services.offlinePacks, scope)
+        TransfersState(services.downloadManager, services.taskRepository, services.offlinePacks, scope, services.driveRepository)
     }
     val snackbarHostState = remember { SnackbarHostState() }
     // 找不到文件的提示走本页的 Snackbar，不用系统 Toast：Toast 不跟随 M3 主题与配色
@@ -149,6 +149,8 @@ fun TransfersScreen(
                             )
                             is TransferItem.Cloud -> CloudTransferRow(
                                 task = item.task,
+                                thumbnail = state.thumbnailOf(item.task.fileId),
+                                isSpoilerBlurred = isSpoilerBlurEnabled && item.key !in revealedKeys,
                                 onResubmit = resubmitAction(item.task),
                                 onOpen = { openCloudFile(item.task) },
                                 onMoreClick = { detailsKey = item.key },
@@ -156,6 +158,8 @@ fun TransfersScreen(
                             )
                             is TransferItem.Pack -> PackTransferRow(
                                 item = item,
+                                thumbnail = state.thumbnailOf(item.job.outputId),
+                                isSpoilerBlurred = isSpoilerBlurEnabled && item.key !in revealedKeys,
                                 onOpen = { openCloudFileById(item.job.outputId, item.job.folderName) },
                                 onRetry = { state.retryPack(item.job.taskId) },
                                 onMoreClick = { detailsKey = item.key },

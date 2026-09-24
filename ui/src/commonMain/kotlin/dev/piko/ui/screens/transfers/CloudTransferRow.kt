@@ -90,6 +90,9 @@ private fun OfflineTask.phaseIcon(): ImageVector = when {
 @Composable
 internal fun CloudTransferRow(
     task: OfflineTask,
+    /** 产出的缩略图，取不到时为 null，显示状态图标。 */
+    thumbnail: String?,
+    isSpoilerBlurred: Boolean,
     onResubmit: (() -> Unit)?,
     onOpen: () -> Unit,
     onMoreClick: () -> Unit,
@@ -99,7 +102,13 @@ internal fun CloudTransferRow(
     FileListItem(
         headline = task.displayName,
         // ListLeadingIcon 填满父级，要由 ListLeadingMedia 定出 56dp；直接放进 leading 会撑满整行
-        leading = { ListLeadingMedia(thumbnail = null, fallback = { ListLeadingIcon(task.phaseIcon()) }) },
+        leading = {
+            ListLeadingMedia(
+                thumbnail = thumbnail,
+                fallback = { ListLeadingIcon(task.phaseIcon()) },
+                isSpoilerBlurred = isSpoilerBlurred,
+            )
+        },
         onClick = {
             when {
                 task.canOpen -> onOpen()

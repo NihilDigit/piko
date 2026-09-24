@@ -4,11 +4,13 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
 import dev.piko.shared.data.OfflinePackJob
 import dev.piko.shared.data.OfflinePackStage
 import dev.piko.shared.data.OfflinePackTracker
+import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.TaskRepository
 import dev.piko.shared.download.PikoDownloadCoordinator
 import io.github.nihildigit.pikpak.OfflineTask
@@ -64,6 +66,7 @@ class TransfersState(
     taskRepo: TaskRepository,
     private val packTracker: OfflinePackTracker,
     private val scope: CoroutineScope,
+    private val driveRepo: PikoDriveRepository,
 ) {
     private val cloud = OfflineTasksState(taskRepo, scope)
 
@@ -117,6 +120,27 @@ class TransfersState(
         )
     }
 
+    /**
+     * 已完成任务产出的缩略图，按产出文件 id。查过但没有缩略图的记为空串，不再重查。
+     *
+     * 任务本身不带缩略图，产出的文件详情也靠不住：文件夹的 thumbnail_link 在详情里常为空，
+     * 在父目录的列表里却有，网盘列表的文件夹封面用的就是后者。所以先查详情拿到父目录，
+     * 再列父目录取缩略图；同一父目录只列一次，产出多半都落在同一个保存目录里。
+     */
+    private var thumbnails by mutableStateOf<Map<String, String>>(emptyMap())
+
+    fun thumbnailOf(fileId: String): String? = thumbnails[fileId]?.ifEmpty { null }
+
+    private val completedOutputIds: List<String> by derivedStateOf {
+        completed.mapNotNull { item ->
+            when (item) {
+                is TransferItem.Cloud -> item.task.fileId
+                is TransferItem.Pack -> item.job.outputId
+                is TransferItem.Local -> null
+            }?.takeIf { it.isNotEmpty() }
+        }
+    }
+
     val isEmpty: Boolean by derivedStateOf {
         inProgress.isEmpty() && needsAttention.isEmpty() && completed.isEmpty() && outputDeleted.isEmpty()
     }
@@ -131,6 +155,22 @@ class TransfersState(
         scope.launch {
             cloud.messages.collect { _messages.emit(it) }
         }
+        scope.launch {
+            snapshotFlow { completedOutputIds }.collect { ids -> loadThumbnails(ids) }
+        }
+    }
+
+    private suspend fun loadThumbnails(ids: List<String>) {
+        val missing = ids.filter { it !in thumbnails }.take(THUMBNAIL_BATCH)
+        if (missing.isEmpty()) return
+        val parents = missing.associateWith { id -> driveRepo.getFileDetail(id).getOrNull()?.parentId }
+        val found = mutableMapOf<String, String>()
+        for (parentId in parents.values.filterNotNull().distinct()) {
+            val listing = driveRepo.listAllFiles(parentId).getOrNull() ?: continue
+            listing.filter { it.id in missing }.forEach { found[it.id] = it.thumbnailLink }
+        }
+        // 取不到的也记下，免得每次列表变动都重查同一批
+        thumbnails = thumbnails + missing.associateWith { found[it].orEmpty() }
     }
 
     /** 可见期间轮询云端任务，挂起直到调用方的协程被取消。 */
@@ -181,6 +221,9 @@ class TransfersState(
     private fun nowMs(): Long = Clock.System.now().toEpochMilliseconds()
 
     companion object {
+        /** 一次最多补查多少个产出，已完成列表只列最近一周，通常远不到这个数。 */
+        const val THUMBNAIL_BATCH = 40
+
         /**
          * 云端已完成任务的展示窗口。按查看次数划界的话，看过一眼的完成项切页回来就消失了；
          * 按时间划界，一周内完成的都还算新近，窗口又有上限，不会倒出整份历史。
