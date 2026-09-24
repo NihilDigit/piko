@@ -117,7 +117,19 @@ data class AvInfo(
     val site: String? = null,
     /** 认不出含义的后缀，原样保留，如「AI」「YP」。 */
     val marks: List<String> = emptyList(),
-)
+    /** 番号后面的片名，已去掉「【無】」「※特典高画質」这类标记与附注；名字里没写时为 null。 */
+    val title: String? = null,
+) {
+    /**
+     * 列表里的行标题。常规番号写「番号 片名」：番号是厂牌加编号，大家也按它找片，但光有番号认不出是哪部。
+     * FC2 的编号只是流水号，有片名时只写片名，编号留在详情里。名字里没写片名时只能写番号
+     */
+    fun displayTitle(): String {
+        val codeLabel = listOfNotNull(code, part).joinToString(" ")
+        val name = title ?: return codeLabel
+        return if (code.startsWith("FC2-")) listOfNotNull(name, part).joinToString(" ") else "$codeLabel $name"
+    }
+}
 
 /**
  * 单个文件名的解析结果。

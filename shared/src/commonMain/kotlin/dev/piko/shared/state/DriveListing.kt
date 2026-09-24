@@ -221,7 +221,8 @@ private fun buildViews(batch: MediaBatch, files: List<FileStat>): Map<String, Dr
 }
 
 private fun fileView(work: MediaWork, section: Section, entry: MediaEntry, file: EntryFile): DriveFileView {
-    val title = entry.label?.let(::stripBrackets) ?: file.name.fileName.substringBeforeLast('.')
+    val avTitle = file.name.av?.takeIf { work.kind == WorkKind.AV }?.displayTitle()
+    val title = avTitle ?: entry.label?.let(::stripBrackets) ?: file.name.fileName.substringBeforeLast('.')
     // 番号一部一作品，作品级的公共标签就是这个文件自己的，逐行显示；「中字」「无码」排在最前
     val ownTags = if (work.kind == WorkKind.AV) (file.tags + work.commonTags).distinct().sortedBy { if (it.pinned) 0 else 1 } else file.tags
     val languages = attachmentTags(file)
@@ -257,6 +258,8 @@ private fun parsedFields(work: MediaWork, section: Section, entry: MediaEntry, f
     val subtitles = (all.filter { it.kind == TagKind.SUBTITLES }.map(MediaTag::text) + attachedLanguages).distinct()
     return listOfNotNull(
         work.title?.let { DriveParsedField(if (work.kind == WorkKind.AV) "番号" else "作品", it) },
+        // 行里的片名会被截断，详情里给全文
+        name.av?.title?.let { DriveParsedField("片名", it) },
         DriveParsedField("分区", section.label).takeIf { work.kind == WorkKind.SERIES },
         episode?.let { DriveParsedField("集号", it.shortText) },
         entry.av?.part?.let { DriveParsedField("分段", it) },

@@ -14,6 +14,8 @@ data class FolderDescription(
     val tags: List<MediaTag>,
     val episodeRange: String?,
     val extras: List<Section>,
+    /** 番号文件夹的番号本身；[title] 是行标题，带着片名，FC2 只有片名。 */
+    val code: String? = null,
 ) {
     val recognized: Boolean get() = title != null
 }
@@ -26,7 +28,7 @@ data class FolderDescription(
  */
 fun describeFolder(folderName: String, contentNames: List<String> = emptyList()): FolderDescription {
     matchAv(folderName.trim(), allowLanguageSuffix = false)?.let { match ->
-        return FolderDescription(match.info.code, WorkKind.AV, match.tags, episodeRange = null, extras = emptyList())
+        return FolderDescription(match.info.displayTitle(), WorkKind.AV, match.tags, episodeRange = null, extras = emptyList(), code = match.info.code)
     }
     val washed = stripSiteNoise(folderName.trim())
     val fromName = parseSeriesStem(washed)
@@ -44,7 +46,9 @@ fun describeFolder(folderName: String, contentNames: List<String> = emptyList())
     )
 
     if (mainWork?.kind == WorkKind.AV) {
-        return FolderDescription(mainWork.title, WorkKind.AV, mergeTags(mainWork.commonTags, nameTags), null, emptyList())
+        val av = mainWork.sections.firstOrNull()?.entries?.firstOrNull()?.primary?.name?.av
+        val title = av?.copy(part = null)?.displayTitle() ?: mainWork.title
+        return FolderDescription(title, WorkKind.AV, mergeTags(mainWork.commonTags, nameTags), null, emptyList(), code = mainWork.title)
     }
 
     // 解析器把季号从作品名里拆进了集号，文件夹只剩「Yuru Camp」就和第一季、剧场版同名了，这里拼回去

@@ -25,7 +25,7 @@ fun renderScore(snapshot: Snapshot, out: Appendable) {
             val structure = analyzeDriveFolder(files)
             val titles = buildDriveItems(files, structure, hideFolded = false, isExpanded = { true })
                 .filterIsInstance<DriveListItem.File>()
-                .associate { it.file.id to (it.view?.title ?: it.file.name) }
+                .associate { it.file.id to recognizedCode(it) }
             child.files.filter { VIDEO.containsMatchIn(it.name) }.forEach { file ->
                 val title = titles[file.id] ?: file.name
                 when {
@@ -39,6 +39,16 @@ fun renderScore(snapshot: Snapshot, out: Appendable) {
     val total = hit + misses.size
     out.appendLine("文件名含番号的视频 $total 个，认对 $hit 个（${if (total == 0) 0 else hit * 100 / total}%）；另有 $codeless 个文件名里没有番号")
     misses.forEach(out::appendLine)
+}
+
+/**
+ * 这一行认出的番号，取详情里的「番号」与「分段」字段：行标题带着片名，FC2 的行标题只有片名。
+ * 没认成番号的行退回行标题或原名，好在失败样本里看到它被认成了什么
+ */
+private fun recognizedCode(item: DriveListItem.File): String {
+    val fields = item.view?.fields.orEmpty()
+    val code = fields.firstOrNull { it.label == "番号" }?.value ?: return item.view?.title ?: item.file.name
+    return listOfNotNull(code, fields.firstOrNull { it.label == "分段" }?.value).joinToString(" ")
 }
 
 /** 文件名里出现了番号的数字部分，才算有番号可认。只比数字：前缀的写法五花八门，正是要考的东西。 */

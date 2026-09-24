@@ -66,7 +66,7 @@ private fun avTags(description: FolderDescription, contentNames: List<String>): 
     val counts = buildList {
         if (contentNames.isEmpty()) return@buildList
         val batch = analyzeMediaBatch(contentNames.map { MediaFileInput(it, 0) })
-        val entries = batch.works.firstOrNull { it.kind == WorkKind.AV && it.title == description.title }
+        val entries = batch.works.firstOrNull { it.kind == WorkKind.AV && it.title == description.code }
             ?.sections?.flatMap { it.entries }.orEmpty()
         if (entries.size > 1) add("${entries.size} 段")
         val versions = entries.maxOfOrNull { it.files.size } ?: 0
@@ -76,7 +76,7 @@ private fun avTags(description: FolderDescription, contentNames: List<String>): 
 }
 
 private fun folderFields(description: FolderDescription): List<DriveParsedField> = listOfNotNull(
-    description.title?.let { DriveParsedField(if (description.kind == WorkKind.AV) "番号" else "作品", it) },
+    (description.code ?: description.title)?.let { DriveParsedField(if (description.kind == WorkKind.AV) "番号" else "作品", it) },
     description.episodeRange?.let { DriveParsedField("集数", it) },
     description.extras.takeIf { it.isNotEmpty() }?.let { extras -> DriveParsedField("包含", extras.joinToString(" ") { it.label }) },
     description.tags.takeIf { it.isNotEmpty() }?.let { tags -> DriveParsedField("标签", tags.joinToString(" ") { it.text }) },

@@ -76,6 +76,20 @@ private val PART_DIGIT = Regex("""^0?[1-9]$""")
 private val PART_QUALITY = Regex("""^f?hd(\d{1,2})$""", RegexOption.IGNORE_CASE)
 private val IGNORED_SUFFIXES = setOf("full", "hd", "pl", "ps", "jp", "mosaic", "high", "low")
 
+// 片名两端的标记与附注：「【無】」「『完全顔出し』」「~ vol.48 ~」在前，「※特典高画質」「【個人撮影】」在后。
+// 无码、中字已经成了标签，这里不再重复
+// 开头只去掉短标记（【無】『完全顔出し』【個撮】），「【 あの人気シリーズ 】」这种长的是片名的一部分
+private val LEADING_MARK = Regex("""^\s*(?:[【『\[(（]\s*[^】』\])）\s]{1,7}\s*[】』\])）]|~[^~]{1,12}~|vol\.?\s*\d{1,3}\s*~?)\s*""", RegexOption.IGNORE_CASE)
+private val TRAILING_NOTE = Regex("""\s*※.*$""")
+private val TRAILING_MARK = Regex("""\s*[【『\[(（][^】』\])）]{1,12}[】』\])）]\s*$""")
+
+private fun cleanAvTitle(description: String): String? {
+    var title = description.replace(TRAILING_NOTE, "")
+    while (LEADING_MARK.containsMatchIn(title)) title = title.replaceFirst(LEADING_MARK, "")
+    while (TRAILING_MARK.containsMatchIn(title)) title = title.replaceFirst(TRAILING_MARK, "")
+    return title.trim(' ', '　', '-', '_', '.').takeIf { it.count(Char::isLetter) >= 2 }
+}
+
 internal class AvMatch(val info: AvInfo, val tags: List<MediaTag>)
 
 /**
@@ -195,7 +209,8 @@ internal fun matchAv(stem: String, allowLanguageSuffix: Boolean): AvMatch? {
         part = glued.uppercase()
         suffixText = tail.substring(1)
     }
-    val pieces = SUFFIX_PIECE.findAll(suffixText).map { it.groupValues[1] to it.groupValues[2] }.toList()
+    val pieceMatches = SUFFIX_PIECE.findAll(suffixText).toList()
+    val pieces = pieceMatches.map { it.groupValues[1] to it.groupValues[2] }
     var consumed = 0
     for ((separator, piece) in pieces) {
         val lower = piece.lowercase()
@@ -212,8 +227,11 @@ internal fun matchAv(stem: String, allowLanguageSuffix: Boolean): AvMatch? {
                 val found = lookupTagWord(piece)
                 // 「-AI」「-YP」这类紧跟番号、以连字符相连的短后缀含义不明，原样保留；空格隔开的是片名描述
                 val gluedMark = consumed == 0 && ('-' in separator || '_' in separator) && piece.length <= 3 && piece.all { it.isLetter() && it.code < 128 }
+                // 一长段中日韩文是片名：「『無』『完全顔出し』スレンダー…流出110分物語」里有「流出」，
+                // 按标签词吃掉的话片名就没了。标签照样会从片名里扫出来
+                val longCjk = piece.count(::isCjk) > 8
                 when {
-                    found != null -> { tags += found; true }
+                    found != null && !longCjk -> { tags += found; true }
                     gluedMark -> { marks += piece.uppercase(); true }
                     else -> false
                 }
@@ -244,6 +262,10 @@ internal fun matchAv(stem: String, allowLanguageSuffix: Boolean): AvMatch? {
     chinese = chinese || tags.any { it.kind == TagKind.SUBTITLES && it.text == MediaTag.CHINESE_SUBTITLES }
     if (uncensored) tags += MediaTag(TagKind.CENSORSHIP, MediaTag.UNCENSORED)
     if (chinese) tags += MediaTag(TagKind.SUBTITLES, MediaTag.CHINESE_SUBTITLES)
-    val info = AvInfo(code = code, uncensored = uncensored, chineseSubtitles = chinese, part = part, site = site, marks = marks)
+    val info = AvInfo(
+        code = code, uncensored = uncensored, chineseSubtitles = chinese, part = part, site = site, marks = marks,
+        // 片名取原文：按分隔符切开再拼回来，「vol.48」的点与片名里的连字符都丢了
+        title = cleanAvTitle(pieceMatches.getOrNull(consumed)?.let { suffixText.substring(it.groups[2]!!.range.first) }.orEmpty()),
+    )
     return AvMatch(info, tags.distinct())
 }
