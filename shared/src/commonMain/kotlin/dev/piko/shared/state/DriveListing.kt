@@ -29,12 +29,14 @@ class DriveFileView(
     val tags: List<String>,
     /** 番号芯片，排在标签前面；标题就是番号或没有番号时为 null。 */
     val code: String? = null,
+    /** 清晰度，也在 [tags] 里。封面卡片把它单独放在右下角。 */
+    val resolution: String? = null,
     /** 详情面板的标题：作品名加行标题，如「Steins;Gate 01」。 */
     val heading: String,
     val fields: List<DriveParsedField>,
 )
 
-internal fun DriveFileView.withTitle(title: String) = DriveFileView(title, tags, code, heading, fields)
+internal fun DriveFileView.withTitle(title: String) = DriveFileView(title, tags, code, resolution, heading, fields)
 
 /** 列表里的一项。结构化时在文件之间插入作品头与分区标题，二者都占满整行。 */
 sealed interface DriveListItem {
@@ -241,7 +243,11 @@ private fun fileView(work: MediaWork, section: Section, entry: MediaEntry, file:
     } else {
         title
     }
-    return DriveFileView(title = title, tags = tags, code = av?.chip, heading = heading, fields = parsedFields(work, section, entry, file, languages))
+    val resolution = ownTags.firstOrNull { it.kind == TagKind.RESOLUTION }?.text
+    return DriveFileView(
+        title = title, tags = tags, code = av?.chip, resolution = resolution, heading = heading,
+        fields = parsedFields(work, section, entry, file, languages),
+    )
 }
 
 /** 外挂字幕与音轨化作宿主行上的标签：「简日」「繁日」，没有语言后缀的记作「字幕」。 */

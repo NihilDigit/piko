@@ -80,7 +80,8 @@ private fun Modifier.cardInteraction(
  * 只是看上去像瀑布流。标题固定占两行高，同一排卡片底边对齐；日期、大小不上卡片，在详情面板里看。
  *
  * 叠在封面上的：左上角「刚存入」，右上角至多两个标签（调用方已按优先级排好，无码、中字在前），
- * 左下角番号芯片，有封面的文件夹在它前面加文件夹标记。没有封面的文件夹画成叠起的纸张，
+ * 左下角番号芯片，有封面的文件夹在它前面加文件夹标记，右下角清晰度。清晰度单独放一角，
+ * 不和其余标签抢右上角的两个位置。没有封面的文件夹画成叠起的纸张，
  * 其余没有缩略图的画类型图标，封面区照样占 16:9，不另起一种图块。
  */
 @Composable
@@ -100,6 +101,8 @@ internal fun PosterCard(
     tags: List<String> = emptyList(),
     /** 番号芯片，放在封面左下角。 */
     code: String? = null,
+    /** 清晰度，放在封面右下角；[tags] 里的同一项不再重复显示。 */
+    resolution: String? = null,
 ) {
     val coverShape = MaterialTheme.shapes.medium
     Column(
@@ -129,10 +132,11 @@ internal fun PosterCard(
             if (isHighlighted) {
                 HighlightBadge(text = highlightBadgeText, modifier = Modifier.align(Alignment.TopStart).padding(6.dp))
             }
-            if (tags.isNotEmpty()) {
+            val cornerTags = tags.filter { it != resolution }.take(COVER_CORNER_TAGS)
+            if (cornerTags.isNotEmpty()) {
                 // 与左上角的「刚存入」各占一半宽，放不下的整个丢掉
                 MediaTagRow(
-                    tags = tags.take(COVER_CORNER_TAGS),
+                    tags = cornerTags,
                     onMedia = true,
                     modifier = Modifier
                         .align(Alignment.TopEnd)
@@ -142,14 +146,18 @@ internal fun PosterCard(
                 )
             }
             val folderMark = file.isFolder && hasCover
-            if (folderMark || code != null) {
+            if (folderMark || code != null || resolution != null) {
+                // 左右两角放在同一行：窄卡片上长番号会碰到清晰度，同一行里番号先让出位置
                 Row(
-                    modifier = Modifier.align(Alignment.BottomStart).padding(6.dp),
+                    modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(6.dp),
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     if (folderMark) FolderCoverMark()
-                    if (code != null) MediaTag(code, onMedia = true, emphasized = true)
+                    Box(Modifier.weight(1f)) {
+                        if (code != null) MediaTag(code, onMedia = true, emphasized = true)
+                    }
+                    if (resolution != null) MediaTag(resolution, onMedia = true)
                 }
             }
         }
@@ -210,7 +218,7 @@ private fun FolderCoverMark(modifier: Modifier = Modifier) {
             imageVector = Icons.Filled.Folder,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSecondaryContainer,
-            modifier = Modifier.padding(3.dp).size(16.dp),
+            modifier = Modifier.padding(4.dp).size(20.dp),
         )
     }
 }
@@ -231,7 +239,7 @@ private fun StackedSheets(modifier: Modifier = Modifier) {
     val middleSheet = colors.secondary.copy(alpha = 0.34f).compositeOver(backdrop)
     Box(modifier.background(backdrop), contentAlignment = Alignment.Center) {
         // 整叠往下挪半个露边的高度，视觉上居中
-        Box(Modifier.fillMaxWidth(0.5f).aspectRatio(COVER_ASPECT).offset(y = SHEET_STEP)) {
+        Box(Modifier.fillMaxWidth(0.58f).aspectRatio(COVER_ASPECT).offset(y = SHEET_STEP)) {
             Box(
                 Modifier.matchParentSize().padding(horizontal = SHEET_STEP * 2).offset(y = -SHEET_STEP * 2)
                     .clip(shape).background(backSheet),
@@ -248,7 +256,7 @@ private fun StackedSheets(modifier: Modifier = Modifier) {
                     imageVector = Icons.Filled.Folder,
                     contentDescription = null,
                     tint = colors.onSecondaryContainer.copy(alpha = PLACEHOLDER_ICON_ALPHA),
-                    modifier = Modifier.size(28.dp),
+                    modifier = Modifier.size(40.dp),
                 )
             }
         }
@@ -263,7 +271,7 @@ private fun TypePlaceholder(file: FileStat, modifier: Modifier = Modifier) {
             imageVector = file.watermarkIcon(),
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = PLACEHOLDER_ICON_ALPHA),
-            modifier = Modifier.size(36.dp),
+            modifier = Modifier.size(56.dp),
         )
     }
 }
