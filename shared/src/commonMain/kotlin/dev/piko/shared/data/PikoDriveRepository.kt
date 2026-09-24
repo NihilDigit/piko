@@ -36,6 +36,8 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -138,6 +140,37 @@ open class PikoDriveRepository(
     fun cachedFiles(folderId: String, sortOrder: PikoFileSortOrder): List<FileStat>? =
         listingCache.value[folderId]?.let { sortFiles(it, sortOrder, folderId) }
 
+    /**
+     * 文件夹里的文件名，只供文件夹行解析作品名（describeFolder）。列表接口只给文件夹的缩略图，
+     * 不给其中的文件名，所以来源只有两处：本会话列过的目录，以及 [fetchChildNames] 补取的一页。
+     * 与 [listingCache] 不同，不随路径栈出栈丢弃：返回上级时正要用它描述刚离开的目录。
+     */
+    private val childNames = MutableStateFlow<Map<String, List<String>>>(emptyMap())
+    private val childNameFetches = Semaphore(CHILD_NAME_CONCURRENCY)
+
+    fun knownChildNames(folderId: String): List<String>? = childNames.value[folderId]
+
+    private fun rememberChildNames(folderId: String, files: List<FileStat>) {
+        val names = files.filterNot(FileStat::isFolder).take(MAX_REMEMBERED_CHILD_NAMES).map(FileStat::name)
+        childNames.update { it + (folderId to names) }
+    }
+
+    /**
+     * 补取一页文件名。只取一页、至多 [CHILD_NAME_PAGE] 项，并发至多 [CHILD_NAME_CONCURRENCY]；
+     * 失败记为空列表，不重试，调用方退回只用文件夹名。
+     */
+    suspend fun fetchChildNames(folderId: String): List<String> = withContext(Dispatchers.Default) {
+        childNames.value[folderId]?.let { return@withContext it }
+        childNameFetches.withPermit {
+            // 排队期间可能已有同一目录的请求完成
+            childNames.value[folderId]?.let { return@withPermit it }
+            val files = runSuspendCatching { client.listFilesPaged(parentId = folderId, pageSize = CHILD_NAME_PAGE).files }
+                .getOrDefault(emptyList())
+            rememberChildNames(folderId, files)
+            childNames.value[folderId].orEmpty()
+        }
+    }
+
     fun scrollAnchor(folderId: String): ScrollAnchor? = scrollAnchors.value[folderId]
 
     fun saveScrollAnchor(folderId: String, anchor: ScrollAnchor) {
@@ -220,6 +253,7 @@ open class PikoDriveRepository(
             val files = client.listFiles(parentId)
             // 只缓存路径栈上的目录。目录选择器等其他调用方也走这里，它们的目录不该留在缓存里
             if (folderStackFlow.value.any { it.id == parentId }) listingCache.update { it + (parentId to files) }
+            rememberChildNames(parentId, files)
             sortFiles(files, sortOrder, parentId)
         }
     }
@@ -396,6 +430,9 @@ open class PikoDriveRepository(
     companion object {
         val ROOT_BREADCRUMB = PikoPathBreadcrumb("", "网盘")
         private const val MAX_LOCATE_DEPTH = 64
+        private const val CHILD_NAME_PAGE = 20
+        private const val CHILD_NAME_CONCURRENCY = 2
+        private const val MAX_REMEMBERED_CHILD_NAMES = 200
 
         private const val MY_PACKS_FOLDER_NAME = "My Packs"
 
