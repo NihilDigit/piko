@@ -5,6 +5,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -32,6 +33,7 @@ import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -227,87 +229,193 @@ private fun AccountCard(
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (!avatarUrl.isNullOrBlank()) {
-                    AsyncImage(
-                        model = avatarUrl,
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .size(48.dp)
-                            .clip(CircleShape),
-                    )
-                } else {
-                    Box(
-                        modifier = Modifier
-                            .size(48.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primaryContainer),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = username?.take(1)?.uppercase(Locale.getDefault()) ?: "P",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        )
-                    }
-                }
-                Spacer(modifier = Modifier.width(16.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = username?.ifEmpty { null } ?: "PikPak 用户",
-                        style = MaterialTheme.typography.titleMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    if (accountLabel != null) {
-                        Text(
-                            text = accountLabel,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-            }
-
-            val usages = buildList {
-                quota?.let { add(Usage("空间", it.usageBytes, it.limitBytes)) }
-                allowances?.let {
-                    add(Usage("离线", it.offline.usedBytes, it.offline.limitBytes))
-                    add(Usage("下载", it.download.usedBytes, it.download.limitBytes))
-                    add(Usage("上传", it.upload.usedBytes, it.upload.limitBytes))
-                    if (it.downloadDaily.limitBytes > 0) add(Usage("每日下载", it.downloadDaily.usedBytes, it.downloadDaily.limitBytes))
-                }
-            }
-            if (usages.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(16.dp))
-                // 两列：空间与三项流量额度各占一格，比逐行排列短一半
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    usages.chunked(2).forEach { pair ->
-                        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                            pair.forEach { UsageTile(it, Modifier.weight(1f)) }
-                            if (pair.size == 1) Spacer(modifier = Modifier.weight(1f))
-                        }
-                    }
-                }
-            }
-
-            val footnotes = listOfNotNull(
-                allowances?.expireTime?.let(::formatExpireDate)?.let { "会员至 $it" },
-                allowances?.let { "流量 ${nextTransferQuotaReset()}重置" },
+        Column(modifier = Modifier.padding(20.dp)) {
+            AccountHeader(
+                username = username,
+                accountLabel = accountLabel,
+                avatarUrl = avatarUrl,
+                memberUntil = allowances?.expireTime?.let(::formatExpireDate),
             )
-            if (footnotes.isNotEmpty() || allowancesError != null) {
-                Spacer(modifier = Modifier.height(12.dp))
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    if (allowancesError != null) {
-                        Text(text = allowancesError, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                    }
-                    footnotes.forEach {
-                        Text(text = it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
+
+            if (quota != null) {
+                Spacer(modifier = Modifier.height(24.dp))
+                StorageSection(quota)
+            }
+
+            if (allowances != null || allowancesError != null) {
+                Spacer(modifier = Modifier.height(24.dp))
+                TransferSection(allowances, allowancesError)
+            }
+        }
+    }
+}
+
+@Composable
+private fun AccountHeader(
+    username: String?,
+    accountLabel: String?,
+    avatarUrl: String?,
+    memberUntil: String?,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        if (!avatarUrl.isNullOrBlank()) {
+            AsyncImage(
+                model = avatarUrl,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(CircleShape),
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primaryContainer),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = username?.take(1)?.uppercase(Locale.getDefault()) ?: "P",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+            }
+        }
+        Spacer(modifier = Modifier.width(16.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = username?.ifEmpty { null } ?: "PikPak 用户",
+                style = MaterialTheme.typography.titleLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (accountLabel != null) {
+                Text(
+                    text = accountLabel,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (memberUntil != null) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                ) {
+                    Text(
+                        text = "会员至 $memberUntil",
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StorageSection(quota: QuotaSnapshot) {
+    val fraction = usedFraction(quota.usageBytes, quota.limitBytes)
+    val nearlyFull = fraction >= NEARLY_FULL_FRACTION
+    val accent = if (nearlyFull) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+    Column {
+        SectionLabel("网盘空间")
+        Spacer(modifier = Modifier.height(4.dp))
+        Row(modifier = Modifier.fillMaxWidth()) {
+            Text(
+                text = quota.usageBytes.toReadableSize(),
+                style = MaterialTheme.typography.headlineMedium,
+                modifier = Modifier.alignByBaseline(),
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = "/ ${quota.limitBytes.toReadableSize()}",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.alignByBaseline(),
+            )
+            Spacer(modifier = Modifier.weight(1f))
+            if (quota.limitBytes > 0) {
+                Text(
+                    text = "剩余 ${(quota.limitBytes - quota.usageBytes).coerceAtLeast(0).toReadableSize()}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (nearlyFull) accent else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.alignByBaseline(),
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+        LinearProgressIndicator(
+            progress = { fraction },
+            color = accent,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(8.dp),
+        )
+    }
+}
+
+@Composable
+private fun TransferSection(allowances: TransferAllowances?, error: String?) {
+    Column {
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            SectionLabel("本月流量", Modifier.weight(1f))
+            if (allowances != null) {
+                Text(
+                    text = "${nextTransferQuotaReset()}重置",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        if (error != null) {
+            Text(text = error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        if (allowances != null) {
+            val usages = buildList {
+                add(Usage("离线", allowances.offline.usedBytes, allowances.offline.limitBytes))
+                add(Usage("下载", allowances.download.usedBytes, allowances.download.limitBytes))
+                add(Usage("上传", allowances.upload.usedBytes, allowances.upload.limitBytes))
+                if (allowances.downloadDaily.limitBytes > 0) {
+                    add(Usage("每日下载", allowances.downloadDaily.usedBytes, allowances.downloadDaily.limitBytes))
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            UsageGrid(usages)
+        }
+    }
+}
+
+@Composable
+private fun SectionLabel(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = modifier,
+    )
+}
+
+/**
+ * 小格按宽度换行，但各行格数取均匀：四格放不下一行时排成 2 + 2，而不是 3 + 1。
+ * 不用 FlowRow：它只按剩余空间换行，末行那一格会被 weight 拉满整行，与上一行宽度对不上。
+ */
+@Composable
+private fun UsageGrid(usages: List<Usage>) {
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val spacing = 8.dp
+        val maxColumns = ((maxWidth + spacing) / (USAGE_TILE_MIN_WIDTH + spacing)).toInt().coerceIn(1, usages.size)
+        val rows = (usages.size + maxColumns - 1) / maxColumns
+        val columns = (usages.size + rows - 1) / rows
+        Column(verticalArrangement = Arrangement.spacedBy(spacing)) {
+            usages.chunked(columns).forEach { row ->
+                Row(horizontalArrangement = Arrangement.spacedBy(spacing)) {
+                    row.forEach { UsageTile(it, Modifier.weight(1f)) }
+                    repeat(columns - row.size) { Spacer(modifier = Modifier.weight(1f)) }
                 }
             }
         }
@@ -315,28 +423,52 @@ private fun AccountCard(
 }
 
 /**
- * 网盘空间与月度流量额度（离线下载、下载、上传）的一格。流量额度是官方网页流量配额弹窗在客户端的对应物；
+ * 月度流量额度（离线下载、下载、上传）的一格。流量额度是官方网页流量配额弹窗在客户端的对应物；
  * 第三方应用共享的 `connectedApps` 那 25% 不显示：piko 走的是账号自身额度，不占用那一份。
  */
 private class Usage(val title: String, val usedBytes: Long, val limitBytes: Long)
 
+private val USAGE_TILE_MIN_WIDTH = 88.dp
+
+/** 空间用到这个比例起，进度条与剩余量改用 error 色。 */
+private const val NEARLY_FULL_FRACTION = 0.95f
+
+private fun usedFraction(usedBytes: Long, limitBytes: Long): Float =
+    if (limitBytes > 0) (usedBytes.toFloat() / limitBytes).coerceIn(0f, 1f) else 0f
+
 @Composable
 private fun UsageTile(usage: Usage, modifier: Modifier = Modifier) {
-    val fraction = if (usage.limitBytes > 0) (usage.usedBytes.toFloat() / usage.limitBytes).coerceIn(0f, 1f) else 0f
-    Column(modifier = modifier) {
-        Text(
-            text = usage.title,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
-            text = "${usage.usedBytes.toReadableSize()} / ${usage.limitBytes.toReadableSize()}",
-            style = MaterialTheme.typography.bodyMedium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Spacer(modifier = Modifier.height(6.dp))
-        LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
+    Surface(
+        modifier = modifier,
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                text = usage.title,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+            Text(
+                text = usage.usedBytes.toReadableSize(),
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = "/ ${usage.limitBytes.toReadableSize()}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            LinearProgressIndicator(
+                progress = { usedFraction(usage.usedBytes, usage.limitBytes) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
     }
 }
 
