@@ -3,12 +3,9 @@ name: Windows Desktop
 on:
   push:
     branches: [main]
-    # 发版 tag 暂不触发：compose-fluent v0.1.0 按 CMP 1.12 编译，在 CMP 1.13 上调用
-    # BlurEffect.convertRadiusToSigma 抛 NoSuchMethodError，窗口一画带阴影的组件就崩。
-    # 桌面端改用 commonMain 的 M3 界面后恢复下面两行；tag 构建会把版本号喂给 MSI/zip，
-    # 并把 zip 挂到 Android release.yml 建的 GitHub Release 上。
-    # tags:
-    #   - 'v*'
+    # tag 构建把版本号喂给 MSI 与 zip，并挂到 Android release.yml 建的 GitHub Release 上。
+    tags:
+      - 'v*'
   pull_request:
 
 concurrency:
@@ -40,7 +37,7 @@ jobs:
             java-distribution: zulu
     runs-on: ${{ matrix.runner }}
     permissions:
-      # tag 构建要往 Release 挂 zip 包。
+      # tag 构建要往 Release 挂安装包与 zip。
       contents: write
     steps:
       - name: Checkout
@@ -75,11 +72,10 @@ jobs:
         run: choco install wixtoolset -y --no-progress
 
       - name: Build MSI installer
-        # MSI 仍在联调阶段（需 WiX+签名），失败不挡 zip 出包；红了单独修。
-        continue-on-error: true
+        # 未签名，安装时 SmartScreen 会提示。安装包元数据只能用 ASCII，见 build.gradle.kts 的 description
         run: .\gradlew.bat :desktopApp:packageReleaseMsi -PpikoDesktopVersion="$env:PIKO_DESKTOP_VERSION" --no-daemon --stacktrace
 
-      - name: Zip portable package (exe + bundled JRE, no install)
+      - name: Stage release files (portable zip and installer)
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -91,7 +87,11 @@ jobs:
           $zip = "dist/piko-windows-${{ matrix.arch }}-$env:PIKO_DESKTOP_VERSION.zip"
           if (Test-Path $zip) { Remove-Item $zip }
           Compress-Archive -Path $appDir -DestinationPath $zip
-          Get-Item $zip | Format-Table Name, Length
+          # 两个架构的 MSI 同名，按架构改名，挂到同一个 Release 上才不会互相覆盖
+          $msi = Get-ChildItem 'desktopApp/build/compose/binaries/main-release/msi/*.msi' | Select-Object -First 1
+          if (-not $msi) { throw 'packageReleaseMsi output missing' }
+          Copy-Item $msi.FullName "dist/piko-windows-${{ matrix.arch }}-$env:PIKO_DESKTOP_VERSION.msi"
+          Get-ChildItem dist | Format-Table Name, Length
 
       - name: Upload Windows portable jar
         uses: actions/upload-artifact@v4
@@ -111,11 +111,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: piko-windows-${{ matrix.arch }}-installer
-          path: desktopApp/build/compose/binaries/main-release/msi/*.msi
-          # MSI 联调中：没有产出只告警，不 fail（zip 已经是必出的）。
-          if-no-files-found: warn
+          path: dist/*.msi
+          if-no-files-found: error
 
-      - name: Attach zip to GitHub Release
+      - name: Attach installer and zip to GitHub Release
         if: github.ref_type == 'tag'
         shell: bash
         env:
@@ -126,4 +125,4 @@ jobs:
             gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 && break
             sleep 30
           done
-          gh release upload "$GITHUB_REF_NAME" dist/*.zip --clobber
+          gh release upload "$GITHUB_REF_NAME" dist/*.zip dist/*.msi --clobber

@@ -129,7 +129,8 @@ compose.desktop {
             packageName = "Piko"
             packageVersion = providers.gradleProperty("pikoDesktopVersion").getOrElse("0.1.0")
             vendor = "NihilDigit"
-            description = "轻量、极速、现代的第三方 PikPak 跨平台客户端"
+            // MSI 按 en-us 生成，数据库代码页 1252 容不下汉字，WiX 报 LGHT0311；描述只能用 ASCII
+            description = "Lightweight, modern PikPak client"
             copyright = "Copyright (C) NihilDigit"
             windows {
                 menuGroup = "Piko"
