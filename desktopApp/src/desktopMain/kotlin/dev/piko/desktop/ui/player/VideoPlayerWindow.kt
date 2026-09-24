@@ -41,7 +41,7 @@ import dev.piko.ui.screens.player.PlayerLevelControl
 import dev.piko.ui.screens.player.PlayerTheme
 import dev.piko.ui.screens.player.PlayerTopBar
 import dev.piko.ui.screens.player.playlistOf
-import dev.piko.ui.screens.player.siblingVideos
+import dev.piko.ui.screens.player.siblingMedia
 import dev.piko.ui.theme.Appearance
 import dev.piko.ui.theme.PikoTheme
 import java.awt.Point
@@ -144,8 +144,10 @@ private fun VideoPlayerContent(
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(request) {
-        if (siblingVideos.isEmpty()) siblingVideos = services.driveRepository.siblingVideos(request.fileId)
-        state.playlist = playlistOf(siblingVideos, services.preferences)
+        // 主界面给的只有视频，字幕文件总要自己列一次目录取
+        val siblings = services.driveRepository.siblingMedia(request.fileId)
+        if (siblingVideos.isEmpty()) siblingVideos = siblings.videos
+        state.playlist = playlistOf(siblingVideos, services.preferences, siblings.subtitles)
     }
 
     // 与 Android 相同：同目录元数据到了之后再验一次磁盘，下好的片子从当前位置换到本地文件
@@ -226,6 +228,12 @@ private fun VideoPlayerContent(
                 onNext = state::playNext,
                 onSelectEntry = state::playEntry,
                 hideEpisodeThumbnails = isSpoilerBlurEnabled,
+                audioTracks = state.audioTracks,
+                selectedAudioTrackId = state.selectedAudioTrackId,
+                onSelectAudioTrack = state::selectAudioTrack,
+                subtitleTracks = state.subtitleTracks,
+                selectedSubtitleTrackId = state.selectedSubtitleTrackId,
+                onSelectSubtitleTrack = state::selectSubtitleTrack,
                 volume = volume,
                 showLockToggle = false,
                 idleCursor = BlankPointerIcon,

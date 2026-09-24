@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.outlined.Subtitles
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material3.ButtonDefaults
@@ -122,6 +123,8 @@ fun PlayerTopBar(
     onBackClick: () -> Unit,
     modifier: Modifier = Modifier,
     onSettingsClick: (() -> Unit)? = null,
+    /** 音轨与字幕。没有字幕、音轨也只有一条时为 null，不给入口。 */
+    onTracksClick: (() -> Unit)? = null,
 ) {
     Row(
         modifier = modifier
@@ -175,6 +178,14 @@ fun PlayerTopBar(
                     }
                 }
             }
+        }
+        if (onTracksClick != null) {
+            PlayerIconButton(
+                icon = Icons.Outlined.Subtitles,
+                label = "音轨与字幕",
+                onClick = onTracksClick,
+                tooltipBelow = true,
+            )
         }
         if (onSettingsClick != null) {
             PlayerIconButton(

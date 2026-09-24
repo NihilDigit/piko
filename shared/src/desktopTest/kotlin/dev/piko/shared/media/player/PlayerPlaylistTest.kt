@@ -31,6 +31,24 @@ class PlayerPlaylistTest {
         assertEquals("正片", list.first().sectionLabel)
     }
 
+    /** 字幕只挂到自己那集，不进播放列表；语言取自解析器，mpv 按它匹配 slang。 */
+    @Test
+    fun `subtitle files attach to their own episode and stay out of the list`() {
+        val videos = listOf(1, 2).map { n ->
+            PlaylistEntry(fileId = "v$n", name = "[Grp] Show - 0$n [1080p].mkv", label = "", size = 700L shl 20)
+        }
+        val subtitles = listOf(
+            SubtitleRef("s1", "[Grp] Show - 01 [1080p].chs.ass", null),
+            SubtitleRef("s1t", "[Grp] Show - 01 [1080p].cht.ass", null),
+            SubtitleRef("s2", "[Grp] Show - 02 [1080p].chs.ass", null),
+        )
+        val list = buildPlaylist(videos, subtitles)
+        assertEquals(listOf("v1", "v2"), list.map { it.fileId })
+        assertEquals(setOf("s1", "s1t"), list[0].subtitles.map { it.fileId }.toSet())
+        assertEquals(listOf("s2"), list[1].subtitles.map { it.fileId })
+        assertEquals("简", list[1].subtitles.single().language)
+    }
+
     @Test
     fun `a name that is a prefix of another is not stripped to nothing`() {
         assertEquals(listOf("Movie", "Movie Extended"), distinctLabels(listOf("Movie.mkv", "Movie Extended.mkv")))

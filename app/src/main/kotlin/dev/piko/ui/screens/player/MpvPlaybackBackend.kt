@@ -11,10 +11,15 @@ import androidx.compose.runtime.setValue
 import dev.jdtech.mpv.MPVLib
 import dev.jdtech.mpv.MPVLib.MpvEvent
 import dev.jdtech.mpv.MPVLib.MpvFormat
+import dev.piko.shared.media.player.ExternalSubtitle
+import dev.piko.shared.media.player.MPV_SUBTITLE_LANGUAGES
+import dev.piko.shared.media.player.MediaTrack
 import dev.piko.shared.media.player.PlaybackBackend
 import dev.piko.shared.media.player.PlaybackBackendEvent
 import dev.piko.shared.media.player.PlaybackTarget
 import dev.piko.shared.media.player.PlayerAspectRatio
+import dev.piko.shared.media.player.mpvSubtitleAddCommands
+import dev.piko.shared.media.player.readMpvTracks
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -61,6 +66,18 @@ internal class MpvPlaybackBackend(
         private set
     private var currentVolume by mutableFloatStateOf(1f)
     override val volume: Float get() = currentVolume
+
+    override var audioTracks by mutableStateOf<List<MediaTrack>>(emptyList())
+        private set
+    override var subtitleTracks by mutableStateOf<List<MediaTrack>>(emptyList())
+        private set
+    override var selectedAudioTrackId by mutableStateOf<String?>(null)
+        private set
+    override var selectedSubtitleTrackId by mutableStateOf<String?>(null)
+        private set
+
+    // 当前文件的外挂字幕，等 FILE_LOADED 再挂：loadfile 之前 sub-add 会挂到上一个文件上
+    @Volatile private var pendingSubtitles: List<ExternalSubtitle> = emptyList()
 
     private var isLoadingFile by mutableStateOf(false)
     private var isSeeking by mutableStateOf(false)
@@ -111,7 +128,7 @@ internal class MpvPlaybackBackend(
         mpv.setOptionString("input-vo-keyboard", "no")
         mpv.setOptionString("save-position-on-quit", "no")
         mpv.setOptionString("sub-font-provider", "fontconfig")
-        mpv.setOptionString("slang", "zh-CN,zh-Hans,chs,sc,zh,chi,zho,zh-TW,zh-Hant,cht,tc")
+        mpv.setOptionString("slang", MPV_SUBTITLE_LANGUAGES)
         mpv.setOptionString("network-timeout", "30")
         // 代理背后的 SDK reader 已经预读 32 MiB，mpv 这层不必再囤太多
         mpv.setOptionString("cache", "yes")
@@ -151,10 +168,21 @@ internal class MpvPlaybackBackend(
         mpv.observeProperty("volume", MpvFormat.MPV_FORMAT_DOUBLE)
         mpv.observeProperty("video-params/aspect", MpvFormat.MPV_FORMAT_DOUBLE)
         mpv.observeProperty("video-params/rotate", MpvFormat.MPV_FORMAT_INT64)
+        // 轨道增减（含 sub-add）改 count，切换改 aid、sid；任何一个变了都整份重读
+        mpv.observeProperty("track-list/count", MpvFormat.MPV_FORMAT_INT64)
+        mpv.observeProperty("aid", MpvFormat.MPV_FORMAT_STRING)
+        mpv.observeProperty("sid", MpvFormat.MPV_FORMAT_STRING)
     }
 
-    override suspend fun open(target: PlaybackTarget, startMillis: Long, playWhenReady: Boolean) {
+    override suspend fun open(
+        target: PlaybackTarget,
+        startMillis: Long,
+        playWhenReady: Boolean,
+        subtitles: List<ExternalSubtitle>,
+    ) {
         if (released) return
+        // 段落预览关着音轨与字幕，挂了也不显示
+        pendingSubtitles = if (preview) emptyList() else subtitles
         val uri = when (target) {
             is PlaybackTarget.LocalFile -> localUri(target.path) ?: return
             is PlaybackTarget.Url -> target.url
@@ -243,6 +271,33 @@ internal class MpvPlaybackBackend(
         mpv.setPropertyDouble("volume", volume.coerceIn(0f, 1f) * 100.0)
     }
 
+    override fun selectAudioTrack(id: String) {
+        if (released) return
+        mpv.setPropertyString("aid", id)
+    }
+
+    override fun selectSubtitleTrack(id: String?) {
+        if (released) return
+        mpv.setPropertyString("sid", id ?: "no")
+    }
+
+    private fun refreshTracks() {
+        if (released) return
+        val snapshot = readMpvTracks { mpv.getPropertyString(it) }
+        audioTracks = snapshot.audio
+        subtitleTracks = snapshot.subtitles
+        selectedAudioTrackId = snapshot.selectedAudioId
+        selectedSubtitleTrackId = snapshot.selectedSubtitleId
+    }
+
+    private fun attachPendingSubtitles() {
+        val subtitles = pendingSubtitles
+        pendingSubtitles = emptyList()
+        if (subtitles.isEmpty() || released) return
+        val hasSelected = readMpvTracks { mpv.getPropertyString(it) }.selectedSubtitleId != null
+        mpvSubtitleAddCommands(subtitles, hasSelected).forEach { mpv.command(it) }
+    }
+
     fun attachSurface(surface: Surface) {
         if (released) return
         mpv.attachSurface(surface)
@@ -312,9 +367,12 @@ internal class MpvPlaybackBackend(
     }
 
     override fun eventProperty(property: String, value: Long) {
-        if (property == "video-params/rotate") {
-            rotateDegrees = value
-            updateVideoAspect()
+        when (property) {
+            "video-params/rotate" -> {
+                rotateDegrees = value
+                updateVideoAspect()
+            }
+            "track-list/count" -> refreshTracks()
         }
     }
 
@@ -345,11 +403,14 @@ internal class MpvPlaybackBackend(
         }
     }
 
-    override fun eventProperty(property: String, value: String) = Unit
+    override fun eventProperty(property: String, value: String) {
+        if (property == "aid" || property == "sid") refreshTracks()
+    }
 
     override fun event(eventId: Int) {
         when (eventId) {
             MpvEvent.MPV_EVENT_START_FILE -> isLoadingFile = true
+            MpvEvent.MPV_EVENT_FILE_LOADED -> attachPendingSubtitles()
             MpvEvent.MPV_EVENT_SEEK -> isSeeking = true
             MpvEvent.MPV_EVENT_PLAYBACK_RESTART -> {
                 isLoadingFile = false

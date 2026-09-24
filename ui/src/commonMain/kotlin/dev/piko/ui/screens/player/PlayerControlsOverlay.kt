@@ -42,6 +42,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalAccessibilityManager
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.dp
+import dev.piko.shared.media.player.MediaTrack
 import dev.piko.shared.media.player.PlayerAspectRatio
 import dev.piko.shared.media.player.PlaylistEntry
 import kotlinx.coroutines.delay
@@ -101,6 +102,12 @@ fun MobilePlayerControls(
     onNext: () -> Unit = {},
     onSelectEntry: (PlaylistEntry) -> Unit = {},
     hideEpisodeThumbnails: Boolean = true,
+    audioTracks: List<MediaTrack> = emptyList(),
+    selectedAudioTrackId: String? = null,
+    onSelectAudioTrack: (MediaTrack) -> Unit = {},
+    subtitleTracks: List<MediaTrack> = emptyList(),
+    selectedSubtitleTrackId: String? = null,
+    onSelectSubtitleTrack: (MediaTrack?) -> Unit = {},
     brightness: PlayerLevelControl? = null,
     volume: PlayerLevelControl? = null,
     // 锁定只防触屏误触，鼠标与键盘用不上
@@ -350,6 +357,10 @@ fun MobilePlayerControls(
                             interacted()
                             openSheet = PlayerSheet.Settings
                         }.takeIf { playbackSpeed != null || qualityOptions.isNotEmpty() || aspectRatio != null },
+                        onTracksClick = {
+                            interacted()
+                            openSheet = PlayerSheet.Tracks
+                        }.takeIf { subtitleTracks.isNotEmpty() || audioTracks.size > 1 },
                         modifier = Modifier.align(Alignment.TopCenter),
                     )
 
@@ -472,6 +483,15 @@ fun MobilePlayerControls(
                         },
                         aspectRatio = aspectRatio,
                         onAspectRatioChange = onAspectRatioChange,
+                    )
+                    // 选完不收面板：换字幕要看一眼效果，不对再换
+                    PlayerSheet.Tracks -> TracksPanel(
+                        audioTracks = audioTracks,
+                        selectedAudioTrackId = selectedAudioTrackId,
+                        onSelectAudio = onSelectAudioTrack,
+                        subtitleTracks = subtitleTracks,
+                        selectedSubtitleTrackId = selectedSubtitleTrackId,
+                        onSelectSubtitle = onSelectSubtitleTrack,
                     )
                 }
             }

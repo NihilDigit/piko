@@ -45,7 +45,32 @@ interface PlaybackBackend {
     /** 一次性事件。错误与播放结束不能用状态表达：重连期间同一个错误会被反复读到。 */
     val events: Flow<PlaybackBackendEvent>
 
-    suspend fun open(target: PlaybackTarget, startMillis: Long, playWhenReady: Boolean = true)
+    /** 当前文件的音轨，含外挂的。换文件后清空，重新读到之前为空。 */
+    val audioTracks: List<MediaTrack> get() = emptyList()
+
+    /** 当前文件的字幕轨，内封与外挂都在里面。 */
+    val subtitleTracks: List<MediaTrack> get() = emptyList()
+
+    val selectedAudioTrackId: String? get() = null
+
+    /** 为 null 表示字幕关闭。 */
+    val selectedSubtitleTrackId: String? get() = null
+
+    /**
+     * [subtitles] 是随文件一起加载的外挂字幕，加载后出现在 [subtitleTracks] 里。
+     * 选哪条由后端按语言偏好决定，调用方有偏好时在 Ready 之后再调 [selectSubtitleTrack]。
+     */
+    suspend fun open(
+        target: PlaybackTarget,
+        startMillis: Long,
+        playWhenReady: Boolean = true,
+        subtitles: List<ExternalSubtitle> = emptyList(),
+    )
+
+    fun selectAudioTrack(id: String) = Unit
+
+    /** [id] 为 null 时关闭字幕。 */
+    fun selectSubtitleTrack(id: String?) = Unit
 
     fun stop()
 
@@ -61,6 +86,20 @@ interface PlaybackBackend {
 
     fun setVolume(volume: Float)
 }
+
+/**
+ * 一条音轨或字幕轨。[id] 是后端内部的编号，只在同一个文件内有效，换集后要按语言与标题重新找。
+ * [title] 与 [language] 是容器里写的原文，可能为空，也可能是「jpn」这类代码；显示名见 [trackDisplayName]。
+ */
+data class MediaTrack(
+    val id: String,
+    val title: String?,
+    val language: String?,
+    val isExternal: Boolean = false,
+)
+
+/** 随视频一起加载的外挂字幕。[url] 是后端能直接读的地址，[title] 用来在列表里区分。 */
+data class ExternalSubtitle(val url: String, val title: String, val language: String?)
 
 sealed interface PlaybackTarget {
     /** 本机文件的绝对路径。 */

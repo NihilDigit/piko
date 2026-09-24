@@ -88,8 +88,9 @@ fun MediampVideoPlayerScreen(
     val isSpoilerBlurEnabled by app.sessionManager.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = true)
 
     LaunchedEffect(initialFileId) {
-        siblingVideos = driveRepo.siblingVideos(initialFileId)
-        state.playlist = playlistOf(siblingVideos, app.sessionManager)
+        val siblings = driveRepo.siblingMedia(initialFileId)
+        siblingVideos = siblings.videos
+        state.playlist = playlistOf(siblingVideos, app.sessionManager, siblings.subtitles)
     }
 
     // 内存任务表 App 重启就空：同目录元数据到了之后，用磁盘再验一次，
@@ -185,6 +186,12 @@ fun MediampVideoPlayerScreen(
                 onNext = state::playNext,
                 onSelectEntry = state::playEntry,
                 hideEpisodeThumbnails = isSpoilerBlurEnabled,
+                audioTracks = state.audioTracks,
+                selectedAudioTrackId = state.selectedAudioTrackId,
+                onSelectAudioTrack = state::selectAudioTrack,
+                subtitleTracks = state.subtitleTracks,
+                selectedSubtitleTrackId = state.selectedSubtitleTrackId,
+                onSelectSubtitleTrack = state::selectSubtitleTrack,
                 brightness = brightness,
                 volume = mediaVolume,
                 snackbarHost = { SnackbarHost(snackbarHostState) },

@@ -1,6 +1,7 @@
 package dev.piko.shared.media.player
 
 import dev.piko.data.repository.NaturalOrder
+import dev.piko.shared.naming.AttachmentKind
 import dev.piko.shared.naming.EntryFile
 import dev.piko.shared.naming.MediaFileInput
 import dev.piko.shared.naming.Section
@@ -32,7 +33,12 @@ data class PlaylistEntry(
     val versionLabel: String = "",
     /** 组里体积最大的那个。点集这一行、没有版本偏好时播它。 */
     val primary: Boolean = true,
+    /** 解析器挂在这个视频下的外挂字幕文件，播放时一并加载。 */
+    val subtitles: List<SubtitleRef> = emptyList(),
 )
+
+/** 网盘里的一个字幕文件。[language] 是解析器从文件名读出的语言（「简」「繁日」），读不出时为 null。 */
+data class SubtitleRef(val fileId: String, val name: String, val language: String?)
 
 /**
  * 按文件名解析出的「作品 → 分区 → 条目」排好，并给出短标签与分区。传入的顺序不重要。
@@ -41,10 +47,17 @@ data class PlaylistEntry(
  * 的正片用作品名，其余分区在不重名时也直接用分区名，重名才加作品名。
  * 同一集有多个压制版本时都保留，标签后面附上能区分它们的标签。
  * 解析器没归入任何作品的文件放在最后的「其他」分区，标签退回按公共前后缀剥离。
+ *
+ * [subtitles] 是同目录的字幕文件，与视频一起交给解析器，由它按集号与文件名挂到视频上；
+ * 它们本身不进播放列表。
  */
-fun buildPlaylist(files: List<PlaylistEntry>): List<PlaylistEntry> {
+fun buildPlaylist(files: List<PlaylistEntry>, subtitles: List<SubtitleRef> = emptyList()): List<PlaylistEntry> {
     if (files.isEmpty()) return emptyList()
-    val batch = analyzeMediaBatch(files.map { MediaFileInput(path = it.name, size = it.size) })
+    val inputs = files.map { MediaFileInput(path = it.name, size = it.size) } + subtitles.map { MediaFileInput(path = it.name, size = 0) }
+    val batch = analyzeMediaBatch(inputs)
+    fun subtitlesOf(file: EntryFile): List<SubtitleRef> = file.attachments
+        .filter { it.kind == AttachmentKind.SUBTITLE && it.index >= files.size }
+        .map { attachment -> subtitles[attachment.index - files.size].copy(language = attachment.language) }
     val placed = mutableSetOf<Int>()
     val ordered = mutableListOf<PlaylistEntry>()
     val usedLabels = mutableSetOf<String>()
@@ -77,6 +90,7 @@ fun buildPlaylist(files: List<PlaylistEntry>): List<PlaylistEntry> {
                             groupKey = files[file.index].fileId,
                             versionLabel = versionLabels[index],
                             primary = index == 0,
+                            subtitles = subtitlesOf(member),
                         )
                     }
                 }

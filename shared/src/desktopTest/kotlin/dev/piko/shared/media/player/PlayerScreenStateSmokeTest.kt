@@ -62,7 +62,10 @@ class PlayerScreenStateSmokeTest {
                 initialFileId = "f1",
                 initialFileName = cloud.fileName,
                 resolveLocalPath = resolveLocalPath,
-            )
+            ).apply {
+                // 与两端调用方一致：列表总会填一次。不填时第一次打开要等满播放列表的超时
+                playlist = emptyList()
+            }
         }
 
     /** 离开播放器：作用域取消时补写续播位置。 */
@@ -208,7 +211,12 @@ class PlayerScreenStateSmokeTest {
             return opens.toList()
         }
 
-        override suspend fun open(target: PlaybackTarget, startMillis: Long, playWhenReady: Boolean) {
+        override suspend fun open(
+            target: PlaybackTarget,
+            startMillis: Long,
+            playWhenReady: Boolean,
+            subtitles: List<ExternalSubtitle>,
+        ) {
             opens += Opened(target, startMillis)
             positionMillis = 0L
             onOpen()

@@ -102,6 +102,20 @@ class PikoMediaRepository(
             }
         }
 
+    /**
+     * 为外挂字幕开一个代理会话，与视频走同一个本机代理：播放器读的是 127.0.0.1，不碰会过期的直链，
+     * 地址里带着文件名，mpv 按扩展名认格式。开不起来返回 null，调用方跳过这一条。
+     */
+    suspend fun prepareSubtitle(fileId: String): ProxyStream? =
+        withContext(Dispatchers.Default) {
+            runSuspendCatching {
+                val client = client
+                val detail = client.getFile(fileId)
+                val resolved = detail.resolveVariant(VariantPreference.Original)
+                openProxyStream(client, detail, resolved)
+            }.getOrNull()
+        }
+
     suspend fun savePlaybackPosition(fileId: String, positionMillis: Long) {
         preferences?.savePlaybackPosition(fileId, positionMillis)
     }

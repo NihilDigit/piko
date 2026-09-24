@@ -42,10 +42,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.outlined.Movie
@@ -74,6 +76,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -81,15 +84,17 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.media.ORIGINAL_QUALITY
+import dev.piko.shared.media.player.MediaTrack
 import dev.piko.shared.media.player.PlayerAspectRatio
 import dev.piko.shared.media.player.PlaylistEntry
 import dev.piko.shared.media.player.preferredVersion
+import dev.piko.shared.media.player.trackDisplayName
 import dev.piko.ui.components.ListSpoilerBlur
 import dev.piko.ui.components.SpoilerThumbnail
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-internal enum class PlayerSheet { Episodes, Speed, Settings }
+internal enum class PlayerSheet { Episodes, Speed, Settings, Tracks }
 
 /**
  * 播放器的面板容器：横屏是贴右侧的浮动 side sheet，竖屏是 bottom sheet。
@@ -139,6 +144,7 @@ private val PlayerSheet.title: String
         PlayerSheet.Episodes -> "选集"
         PlayerSheet.Speed -> "倍速"
         PlayerSheet.Settings -> "播放设置"
+        PlayerSheet.Tracks -> "音轨与字幕"
     }
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
@@ -664,6 +670,95 @@ internal fun PlayerSettingsPanel(
                     onSelect = onAspectRatioChange,
                 )
             }
+        }
+    }
+}
+
+/**
+ * 音轨与字幕。轨道名常带语言、字幕组与「外挂」，长短不一，按钮组放不下，所以一行一条、单选。
+ * 音轨只有一条时整节不出现；字幕第一项是关闭。
+ */
+@Composable
+internal fun TracksPanel(
+    audioTracks: List<MediaTrack>,
+    selectedAudioTrackId: String?,
+    onSelectAudio: (MediaTrack) -> Unit,
+    subtitleTracks: List<MediaTrack>,
+    selectedSubtitleTrackId: String?,
+    onSelectSubtitle: (MediaTrack?) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(start = 12.dp, end = 12.dp, bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        if (audioTracks.size > 1) {
+            TrackSection("音轨") {
+                audioTracks.forEachIndexed { index, track ->
+                    TrackRow(
+                        label = trackDisplayName(track, index),
+                        selected = track.id == selectedAudioTrackId,
+                        onClick = { onSelectAudio(track) },
+                    )
+                }
+            }
+        }
+        TrackSection("字幕") {
+            TrackRow(label = "关闭", selected = selectedSubtitleTrackId == null, onClick = { onSelectSubtitle(null) })
+            subtitleTracks.forEachIndexed { index, track ->
+                TrackRow(
+                    label = trackDisplayName(track, index),
+                    selected = track.id == selectedSubtitleTrackId,
+                    onClick = { onSelectSubtitle(track) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TrackSection(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Column {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 12.dp, bottom = 4.dp),
+        )
+        content()
+    }
+}
+
+@Composable
+private fun TrackRow(label: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.large)
+            .background(if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
+            .heightIn(min = 48.dp)
+            .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyLarge,
+            color = if (selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurface,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        if (selected) {
+            Icon(
+                imageVector = Icons.Filled.Check,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.padding(start = 12.dp).size(20.dp),
+            )
         }
     }
 }

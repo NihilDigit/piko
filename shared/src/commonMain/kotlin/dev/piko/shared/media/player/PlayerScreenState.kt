@@ -19,8 +19,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * 播放器的取流策略与播放状态，两端共用。
@@ -109,8 +111,36 @@ class PlayerScreenState(
         backend.videoAspect?.let { it > 1f } ?: mediaInfo?.isLandscapeVideo
     }
 
-    /** 同目录的视频，按自然顺序，由调用方取来填入。只有一项或为空时控件不给选集入口。 */
-    var playlist by mutableStateOf<List<PlaylistEntry>>(emptyList())
+    /**
+     * 同目录的视频，按自然顺序，由调用方取来填入。只有一项或为空时控件不给选集入口。
+     * 取不到时也要填一次空列表：打开第一个文件前会等它，好带上外挂字幕。
+     */
+    var playlist: List<PlaylistEntry>
+        get() = playlistState
+        set(value) {
+            playlistState = value
+            isPlaylistLoaded = true
+        }
+    private var playlistState by mutableStateOf<List<PlaylistEntry>>(emptyList())
+    private var isPlaylistLoaded by mutableStateOf(false)
+
+    // 只在第一次打开时等播放列表；等过一次仍没有，之后的换集、重试都不再等
+    private var waitedForPlaylist = false
+
+    val audioTracks: List<MediaTrack> get() = backend.audioTracks
+    val subtitleTracks: List<MediaTrack> get() = backend.subtitleTracks
+    val selectedAudioTrackId: String? get() = backend.selectedAudioTrackId
+    val selectedSubtitleTrackId: String? get() = backend.selectedSubtitleTrackId
+
+    // 用户选过的轨道，跨集沿用。编号在文件之间不稳定，存的是整条轨道，换集后按标题与语言找对应的
+    private var preferredAudio: MediaTrack? = null
+    private var preferredSubtitle: MediaTrack? = null
+    private var prefersSubtitlesOff = false
+
+    // 这个文件里用户是否亲手换过轨道。换过就不再按上一集的偏好改回去
+    private var tracksChosenThisFile = false
+
+    private var subtitleStreams: List<AutoCloseable> = emptyList()
 
     val currentEntry by derivedStateOf { playlist.find { it.fileId == fileId } }
 
@@ -162,7 +192,42 @@ class PlayerScreenState(
             }
         }
         scope.launch { persistLoop() }
+        scope.launch {
+            // 外挂字幕在文件加载之后才挂上，列表会分几次变长，每次都重新套用
+            snapshotFlow { backend.audioTracks to backend.subtitleTracks }.collect { applyTrackPreferences() }
+        }
         reload()
+    }
+
+    fun selectAudioTrack(track: MediaTrack) {
+        preferredAudio = track
+        tracksChosenThisFile = true
+        backend.selectAudioTrack(track.id)
+    }
+
+    /** [track] 为 null 时关闭字幕。 */
+    fun selectSubtitleTrack(track: MediaTrack?) {
+        preferredSubtitle = track
+        prefersSubtitlesOff = track == null
+        tracksChosenThisFile = true
+        backend.selectSubtitleTrack(track?.id)
+    }
+
+    private fun applyTrackPreferences() {
+        if (tracksChosenThisFile) return
+        preferredAudio?.let { preferred ->
+            matchTrack(backend.audioTracks, preferred)?.takeIf { it.id != backend.selectedAudioTrackId }
+                ?.let { backend.selectAudioTrack(it.id) }
+        }
+        when {
+            prefersSubtitlesOff -> if (backend.selectedSubtitleTrackId != null && backend.subtitleTracks.isNotEmpty()) {
+                backend.selectSubtitleTrack(null)
+            }
+            else -> preferredSubtitle?.let { preferred ->
+                matchTrack(backend.subtitleTracks, preferred)?.takeIf { it.id != backend.selectedSubtitleTrackId }
+                    ?.let { backend.selectSubtitleTrack(it.id) }
+            }
+        }
     }
 
     fun togglePlayPause() {
@@ -293,12 +358,13 @@ class PlayerScreenState(
             val startMillis = pending ?: saved ?: 0L
             attemptStartMillis = startMillis
 
+            tracksChosenThisFile = false
             val localPath = resolveLocalPath(fileId, localPathHint)
             if (localPath != null) {
                 isLocalPlayback = true
                 usingProxy = false
                 activeQuality = null
-                backend.open(PlaybackTarget.LocalFile(localPath), startMillis)
+                backend.open(PlaybackTarget.LocalFile(localPath), startMillis, subtitles = openSubtitles())
             } else {
                 isLocalPlayback = false
                 val playback = repository.preparePlayback(fileId, requestedQuality).getOrThrow()
@@ -311,7 +377,7 @@ class PlayerScreenState(
                     PlayableMediaKind.Video -> {
                         val proxyUrl = playback.proxyUrl.takeUnless { preferDirectLink }
                         usingProxy = proxyUrl != null
-                        backend.open(PlaybackTarget.Url(proxyUrl ?: playback.info.currentUrl), startMillis)
+                        backend.open(PlaybackTarget.Url(proxyUrl ?: playback.info.currentUrl), startMillis, subtitles = openSubtitles())
                     }
                 }
             }
@@ -443,6 +509,28 @@ class PlayerScreenState(
     private fun closePrepared() {
         prepared?.close()
         prepared = null
+        subtitleStreams.forEach { it.close() }
+        subtitleStreams = emptyList()
+    }
+
+    /**
+     * 当前视频挂着的外挂字幕，各开一个代理会话。播放列表还没取到时最多等一会儿：
+     * 桌面端的后端只在打开文件时收外挂字幕，开播后再加不进去。开不起来的那条跳过。
+     */
+    private suspend fun openSubtitles(): List<ExternalSubtitle> {
+        if (!isPlaylistLoaded && !waitedForPlaylist) {
+            waitedForPlaylist = true
+            withTimeoutOrNull(PLAYLIST_WAIT_MILLIS) { snapshotFlow { isPlaylistLoaded }.first { it } }
+        }
+        val refs = currentEntry?.subtitles.orEmpty()
+        val opened = mutableListOf<AutoCloseable>()
+        val subtitles = refs.mapNotNull { ref ->
+            val stream = repository.prepareSubtitle(ref.fileId) ?: return@mapNotNull null
+            opened += stream
+            ExternalSubtitle(url = stream.url, title = ref.language ?: "外挂字幕", language = ref.language?.let(::subtitleLanguageCode))
+        }
+        subtitleStreams = opened
+        return subtitles
     }
 
     private suspend fun runCatchingNonCancel(block: suspend () -> Unit) {
@@ -457,6 +545,9 @@ class PlayerScreenState(
 
     private companion object {
         const val RESUME_THRESHOLD_MILLIS = 3_000L
+
+        // 打开第一个文件前等播放列表的上限，超过就不带外挂字幕先放
+        const val PLAYLIST_WAIT_MILLIS = 3_000L
         const val NEAR_END_MILLIS = 10_000L
         const val MIN_PERSIST_MILLIS = 1_500L
         const val PERSIST_INTERVAL_MILLIS = 5_000L
@@ -464,4 +555,13 @@ class PlayerScreenState(
         const val STABLE_PLAYBACK_MILLIS = 15_000L
         val RECOVERY_DELAYS_MILLIS = longArrayOf(500L, 1_500L, 4_000L)
     }
+}
+
+/** 解析器给的字幕语言（「简」「繁日」）换成 mpv 按 slang 匹配用的代码。 */
+private fun subtitleLanguageCode(label: String): String? = when {
+    label.startsWith("简") -> "chs"
+    label.startsWith("繁") -> "cht"
+    label.startsWith("英") -> "eng"
+    label.startsWith("日") -> "jpn"
+    else -> null
 }
