@@ -61,7 +61,7 @@ import kotlinx.coroutines.delay
  * 全屏由 [onToggleFullscreen] 交给调用方（Android 切横竖屏，桌面切窗口全屏），[isFullscreen]
  * 只决定全屏键的图标；[isLandscapeVideo] 决定竖屏时是否给出全屏入口。
  * 触屏与鼠标的点击、双击、拖动都走同一个手势层。鼠标悬停不产生点击，所以另外监听鼠标移动来
- * 唤出控件；[idleCursor] 不为 null 时，播放中鼠标一段时间没动，指针换成它（桌面传一个透明指针）。
+ * 唤出控件；[idleCursor] 不为 null 时，播放中控件收起、鼠标又一段时间没动，指针换成它（桌面传一个透明指针）。
  * 键盘：空格播放暂停，左右方向键快退快进（与双击同样累加），上下方向键调音量，F 切换全屏。
  * 全屏时返回（Android 的返回手势、桌面的 Esc）先退出全屏；其余时候返回的含义由调用方决定。
  */
@@ -260,9 +260,9 @@ fun MobilePlayerControls(
         ?.let { if (it.matches(PLAIN_EPISODE)) "第 $it 集" else it }
 
     val hud = activeGesture ?: keyVolume?.let { PlayerGesture.Adjust(VerticalAdjust.Volume, it) }
-    // 指针只看鼠标自己：一段时间没动才藏。原先跟着控件收起一起藏，单击画面收起控件时指针也立刻消失，
-    // 手还在鼠标上就找不到指针
-    val hideCursor = idleCursor != null && isMouseIdle && isPlaying
+    // 控件收起且鼠标一段时间没动才藏指针。只看控件时，单击画面收起控件指针也立刻消失，手还在鼠标上
+    // 就找不到它；只看鼠标时，控件还显示着指针却没了
+    val hideCursor = idleCursor != null && isMouseIdle && !controlsVisible && isPlaying
 
     PlayerTheme {
         val motion = MaterialTheme.motionScheme
