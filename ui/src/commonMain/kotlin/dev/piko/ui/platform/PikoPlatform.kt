@@ -2,6 +2,7 @@ package dev.piko.ui.platform
 
 import androidx.compose.material3.ColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import dev.piko.shared.media.player.PlaybackBackend
@@ -30,6 +31,12 @@ interface PikoPlatform {
      * 这时界面只画不透明占位，而不是露出原图。
      */
     val supportsBlur: Boolean
+
+    /**
+     * 界面字体。汉字不在其中时由系统按系统语言挑后备字体，英文系统上会逐字混用日文与中文字体，
+     * 需要的平台在这里给出一款带简体中文的字体。
+     */
+    val fontFamily: FontFamily get() = FontFamily.Default
 
     fun openUrl(url: String)
 

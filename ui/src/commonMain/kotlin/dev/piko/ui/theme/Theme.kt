@@ -7,7 +7,9 @@ import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
+import dev.piko.ui.platform.LocalPikoPlatform
 
 val LocalFixedColors = staticCompositionLocalOf { FixedColors }
 val LocalStatusColors = staticCompositionLocalOf { PikoLightStatusColors }
@@ -30,11 +32,13 @@ fun PikoTheme(
     val darkTheme = appearance.isDark()
     val motionScheme = MotionScheme.expressive()
     val colorScheme = animateColorScheme(appearance.colorScheme(darkTheme), motionScheme)
+    val fontFamily = LocalPikoPlatform.current.fontFamily
+    val typography = remember(fontFamily) { pikoTypography(fontFamily) }
 
     MaterialExpressiveTheme(
         colorScheme = colorScheme,
         motionScheme = motionScheme,
-        typography = PikoTypography,
+        typography = typography,
         shapes = PikoShapes,
     ) {
         CompositionLocalProvider(

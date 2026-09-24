@@ -8,6 +8,8 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.ExperimentalTextApi
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import dev.piko.desktop.ui.player.MediampPlaybackBackend
@@ -48,6 +50,12 @@ class DesktopPikoPlatform(
         error("桌面端不支持系统取色，外观会落到内置主题上")
 
     override val supportsBlur: Boolean = true
+
+    // 中文 Windows 自己的界面字体，西文部分取自 Segoe UI。默认字体族在 Windows 上只有 Segoe UI 与
+    // Arial，汉字全靠系统后备，英文系统按英文 locale 挑，常用字落到日文字体、简体字落到雅黑，
+    // 一个词里两种字体。Compose 1.12 不把 TextStyle 的 localeList 交给 Skia，标注语言也改不了后备的选择
+    @OptIn(ExperimentalTextApi::class)
+    override val fontFamily: FontFamily = FontFamily("Microsoft YaHei UI")
 
     override fun openUrl(url: String) {
         runCatching { Desktop.getDesktop().browse(URI(url)) }
