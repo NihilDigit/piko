@@ -35,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
@@ -69,6 +70,7 @@ fun VideoPlayerWindow(
     mediaRepository: PikoMediaRepository,
     downloadCoordinator: PikoDownloadCoordinator,
     appearance: Appearance,
+    icon: Painter?,
     onClose: () -> Unit,
 ) {
     val windowState = rememberWindowState(width = 1000.dp, height = 620.dp)
@@ -76,6 +78,7 @@ fun VideoPlayerWindow(
     Window(
         onCloseRequest = onClose,
         title = "${request.fileName} - Piko 播放器",
+        icon = icon,
         state = windowState,
     ) {
         PlayerTheme(appearance) {

@@ -26,14 +26,27 @@ import dev.piko.ui.VideoPlayerRequest
 import dev.piko.ui.theme.appearanceFlow
 import java.awt.Dimension
 import java.io.File
+import kotlin.system.exitProcess
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import org.openani.mediamp.mpv.MpvMediampPlayer
+
+/**
+ * 打包 release 时 Compose 以这个系统属性跑一遍 AOT 训练。训练进程要自己退出，JVM 在退出时
+ * 写出 AOT 缓存；给它足够的时间走完开窗、首屏与列表这段启动路径。
+ */
+private const val AOT_TRAINING_PROPERTY = "compose.aot.training-run"
+private const val AOT_TRAINING_MILLIS = 12_000L
 
 fun main(args: Array<String>) {
+    if (System.getProperty(AOT_TRAINING_PROPERTY) == "true") {
+        Thread({ Thread.sleep(AOT_TRAINING_MILLIS); exitProcess(0) }, "Piko-Aot-Training")
+            .apply { isDaemon = true; start() }
+    }
     // magnet: 链接经 MSI 注册的协议唤起时，URL 以启动参数进来。
     val magnetArg = args.firstOrNull { it.startsWith("magnet:", ignoreCase = true) }
     if (WinRTSupport.isWindows) {
@@ -49,6 +62,8 @@ fun main(args: Array<String>) {
             "Piko-Win32-Setup",
         ).apply { isDaemon = true; start() }
     }
+
+    useBundledMpvRuntime()
 
     val settings = DesktopSettingsStore()
     val preferences = DesktopPikoPreferences(settings)
@@ -96,11 +111,26 @@ fun main(args: Array<String>) {
                     mediaRepository = services.mediaRepository,
                     downloadCoordinator = services.downloadManager,
                     appearance = appearance,
+                    icon = appIcon,
                     onClose = { players.remove(request) },
                 )
             }
         }
     }
+}
+
+/**
+ * 安装包把 mpv 与 FFmpeg 的 DLL 放在资源目录的 mpv 子目录里，这里指给 mediamp，免得它每次
+ * 首次播放都把 DLL 从 jar 解压到新的临时目录。资源目录里没有时（测试进程）沿用它的默认行为。
+ */
+private fun useBundledMpvRuntime() {
+    val dir = System.getProperty("compose.application.resources.dir")?.let { File(it, "mpv") } ?: return
+    if (!dir.resolve("mediampv.dll").isFile) return
+    // 设置目录时 mediamp 会校验并加载封装层 DLL，连带 mpv 与 FFmpeg 一串依赖，放后台线程，不挡开窗
+    Thread(
+        { runCatching { MpvMediampPlayer.prepareLibraries(dir.absolutePath, false) } },
+        "Piko-Mpv-Setup",
+    ).apply { isDaemon = true; start() }
 }
 
 private fun createServices(settings: DesktopSettingsStore, preferences: DesktopPikoPreferences): PikoServices {

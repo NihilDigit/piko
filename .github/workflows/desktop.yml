@@ -65,7 +65,7 @@ jobs:
       - name: Build, test and stage portable package
         # 注意：windows-11-arm 镜像没有 Android SDK，所以这里只跑 shared/desktop 的测试，
         # 不用裸 test（会连带 :app:testDebugUnitTest，在 arm 上直接挂）。Android 单测归 Android 流水线。
-        run: .\gradlew.bat :shared:desktopTest :desktopApp:desktopTest :shared:compileKotlinDesktop :desktopApp:packageUberJarForCurrentOS :desktopApp:createDistributable -PpikoDesktopVersion="$env:PIKO_DESKTOP_VERSION" --no-daemon --stacktrace
+        run: .\gradlew.bat :shared:desktopTest :desktopApp:desktopTest :shared:compileKotlinDesktop :desktopApp:packageUberJarForCurrentOS :desktopApp:createReleaseDistributable -PpikoDesktopVersion="$env:PIKO_DESKTOP_VERSION" --no-daemon --stacktrace
 
       - name: Install WiX Toolset (MSI only)
         continue-on-error: true
@@ -74,15 +74,15 @@ jobs:
       - name: Build MSI installer
         # MSI 仍在联调阶段（需 WiX+签名），失败不挡 zip 出包；红了单独修。
         continue-on-error: true
-        run: .\gradlew.bat :desktopApp:packageMsi -PpikoDesktopVersion="$env:PIKO_DESKTOP_VERSION" --no-daemon --stacktrace
+        run: .\gradlew.bat :desktopApp:packageReleaseMsi -PpikoDesktopVersion="$env:PIKO_DESKTOP_VERSION" --no-daemon --stacktrace
 
       - name: Zip portable package (exe + bundled JRE, no install)
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $appDir = 'desktopApp/build/compose/binaries/main/app/Piko'
+          $appDir = 'desktopApp/build/compose/binaries/main-release/app/Piko'
           if (-not (Test-Path "$appDir/Piko.exe")) {
-            throw "createDistributable output missing: $appDir/Piko.exe"
+            throw "createReleaseDistributable output missing: $appDir/Piko.exe"
           }
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           $zip = "dist/piko-windows-${{ matrix.arch }}-$env:PIKO_DESKTOP_VERSION.zip"
@@ -108,7 +108,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: piko-windows-${{ matrix.arch }}-installer
-          path: desktopApp/build/compose/binaries/main/msi/*.msi
+          path: desktopApp/build/compose/binaries/main-release/msi/*.msi
           # MSI 联调中：没有产出只告警，不 fail（zip 已经是必出的）。
           if-no-files-found: warn
 

@@ -1,5 +1,6 @@
 import org.gradle.api.tasks.JavaExec
 import org.gradle.api.tasks.testing.Test
+import org.jetbrains.compose.desktop.application.dsl.AotMode
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 
 plugins {
@@ -40,13 +41,14 @@ kotlin {
                 implementation(libs.coil.network.okhttp)
                 // MP4 无损切片（流复制，不断点转码）：纯 JVM，无需捆绑 ffmpeg。
                 implementation(libs.mp4parser.isobox)
-                runtimeOnly(windowsMpvRuntime)
             }
         }
         val desktopTest by getting {
             dependencies {
                 implementation(kotlin("test"))
                 implementation(libs.junit)
+                // 测试进程没有打包好的资源目录，mpv 的 DLL 仍从类路径解压
+                runtimeOnly(windowsMpvRuntime)
             }
         }
     }
@@ -65,16 +67,64 @@ afterEvaluate {
     }
 }
 
+// Compose 的桌面运行库与 MediaMP 带进了 ui-test，连带 junit、truth、guava 与
+// kotlinx-coroutines-test，全部进了安装包。coroutines-test 还注册了一个 MainDispatcherFactory。
+// 运行时一个都用不到，只从打包用的运行时类路径里排除，测试类路径不受影响
+configurations.named("desktopRuntimeClasspath") {
+    exclude(group = "org.jetbrains.compose.ui", module = "ui-test")
+    exclude(group = "org.jetbrains.compose.ui", module = "ui-test-desktop")
+    exclude(group = "org.jetbrains.compose.ui", module = "ui-test-junit4")
+    exclude(group = "org.jetbrains.compose.ui", module = "ui-test-junit4-desktop")
+    exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-test")
+    exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-test-jvm")
+    exclude(group = "junit", module = "junit")
+    exclude(group = "org.hamcrest")
+    exclude(group = "com.google.truth")
+}
+
+// mpv 与 FFmpeg 的 DLL 解开放进应用资源目录。mediamp 默认在每次启动后首次播放时把近 40MB 的 DLL
+// 从 jar 解压到新建的临时目录，DLL 被进程占用，deleteOnExit 删不掉，每次运行都在 %TEMP% 留一份。
+// 改为安装时就位，启动时经 MpvMediampPlayer.prepareLibraries 指过去，不再解压
+val windowsMpvRuntimeJar = configurations.detachedConfiguration(dependencies.create(windowsMpvRuntime)).apply {
+    isTransitive = false
+}
+val bundledAppResources by tasks.registering(Sync::class) {
+    from({ windowsMpvRuntimeJar.map { zipTree(it) } }) {
+        include("*.dll", "*.txt")
+        into("mpv")
+    }
+    // Toast 的 AUMID 登记要一个磁盘上的图标文件，exe 里内嵌的那份用不上
+    from("src/desktopMain/resources/app-icon.png")
+    into(layout.buildDirectory.dir("appResources/common"))
+}
+
 compose.desktop {
     application {
         mainClass = "dev.piko.desktop.MainKt"
         // 写进 exe/.cfg 启动器：跟 run/test 的 jvmArgs 对齐，否则 FFM 受限方法告警。
         jvmArgs += "--enable-native-access=ALL-UNNAMED"
+        buildTypes.release.proguard {
+            isEnabled = true
+            configurationFiles.from(project.file("proguard-rules.pro"))
+            // 只裁剪：优化轮次在这套依赖上耗时十几分钟，换来的体积差别很小
+            optimize = false
+            obfuscate = false
+            joinOutputJars = true
+        }
+        // JDK 25 的 AOT 缓存（JEP 483/514）：打包时跑一遍训练，把启动路径上的类预先加载、链接好
+        // 存进 app.aot，启动时直接映射。训练运行由 Main 在开窗后自行退出，见 AOT_TRAINING_PROPERTY
+        buildTypes.release.aot {
+            mode = AotMode.AotPrebuild
+        }
         nativeDistributions {
-            // MSI 安装器是 Windows 原生能力地基：开始菜单快捷方式（Toast AUMID 前提）、
-            // magnet: 协议注册、bundle JDK 25 运行时（WinRT FFM 要求）。
+            appResourcesRootDir = layout.buildDirectory.dir("appResources")
+            // Compose 默认的 jlink 模块集之外只补 jdk.unsupported（sun.misc.Unsafe）。
+            // suggestRuntimeModules 还列了 java.instrument 与 java.management，只有协程调试代理用到
+            modules("jdk.unsupported")
+            // MSI 安装器：开始菜单快捷方式、按用户安装（magnet 协议与 Toast 的 AUMID 都登记在 HKCU），
+            // 并自带 JDK 25 运行时（FFM 原生调用与 AOT 缓存都要求）。
             // packageVersion 与 release tag（vMAJOR.MINOR.PATCH）对齐，CI 打包时可覆写：
-            //   ./gradlew :desktopApp:packageMsi -PpikoDesktopVersion=1.2.3
+            //   ./gradlew :desktopApp:packageReleaseMsi -PpikoDesktopVersion=1.2.3
             targetFormats(TargetFormat.Msi)
             packageName = "Piko"
             packageVersion = providers.gradleProperty("pikoDesktopVersion").getOrElse("0.1.0")
@@ -105,6 +155,18 @@ tasks.withType<Test> {
 tasks.withType<JavaExec> {
     jvmArgs("--enable-native-access=ALL-UNNAMED")
 }
+// AOT 缓存按 jar 的修改时间校验，差一毫秒也整份作废。MSI 的 cab 与 zip 只存到偶数秒，
+// 安装后的 jar 时间被取整，缓存随之失效（实测 msiexec /a 解出的 jar 比训练时晚了两秒）。
+// 训练之前先把 jar 的时间取整到偶数秒，打包前后就是同一个值
+tasks.matching { it.name == "createReleaseAotArchive" }.configureEach {
+    doFirst {
+        layout.buildDirectory.dir("compose/binaries/main-release/app").get().asFile
+            .walkTopDown()
+            .filter { it.isFile && it.extension == "jar" }
+            .forEach { it.setLastModified(it.lastModified() / 2000 * 2000) }
+    }
+}
+tasks.matching { it.name == "prepareAppResources" }.configureEach { dependsOn(bundledAppResources) }
 // compose 的 run 任务在 afterEvaluate 里重写 jvmArgs，会盖掉上面的配置，
 // 这里后注册、后执行，把 flag 补回去（注册顺序：插件先、脚本后）。
 project.afterEvaluate {
