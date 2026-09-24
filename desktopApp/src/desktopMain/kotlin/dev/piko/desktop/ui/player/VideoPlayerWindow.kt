@@ -20,11 +20,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPlacement
-import androidx.compose.ui.window.rememberWindowState
 import coil3.compose.AsyncImage
+import dev.piko.desktop.DesktopSettingsStore
+import dev.piko.desktop.TitleBarThemeEffect
+import dev.piko.desktop.rememberRememberedWindowState
 import dev.piko.desktop.winrt.WinRTSupport
 import dev.piko.shared.media.player.PlaybackBackend
 import dev.piko.shared.media.player.PlayerScreenState
@@ -61,11 +64,13 @@ fun VideoPlayerWindow(
     request: VideoPlayerRequest,
     services: PikoServices,
     platform: PikoPlatform,
+    settings: DesktopSettingsStore,
     appearance: Appearance,
     icon: Painter?,
     onClose: () -> Unit,
 ) {
-    val windowState = rememberWindowState(width = 1000.dp, height = 620.dp)
+    // 所有播放窗口共用一份记忆，下一个窗口开在上一个关掉时的位置与大小
+    val windowState = rememberRememberedWindowState(settings, "player", DpSize(1000.dp, 620.dp))
     // 换集后标题跟着当前这集走
     var title by remember { mutableStateOf(request.fileName) }
 
@@ -75,6 +80,8 @@ fun VideoPlayerWindow(
         icon = icon,
         state = windowState,
     ) {
+        // 画面四周是黑的，标题栏不随应用主题，始终用深色
+        TitleBarThemeEffect(window, dark = true)
         CompositionLocalProvider(
             LocalPikoServices provides services,
             LocalPikoPlatform provides platform,

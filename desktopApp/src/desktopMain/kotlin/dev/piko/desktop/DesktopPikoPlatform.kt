@@ -13,6 +13,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import dev.piko.desktop.ui.player.MediampPlaybackBackend
+import dev.piko.desktop.winrt.FolderPickResult
+import dev.piko.desktop.winrt.FolderPicker
 import dev.piko.desktop.winrt.WinRTSupport
 import dev.piko.shared.media.player.PlaybackBackend
 import dev.piko.ui.platform.DownloadLocationPicker
@@ -22,6 +24,7 @@ import dev.piko.ui.platform.PreviewBackend
 import dev.piko.ui.platform.VideoPreviewSupport
 import dev.piko.update.AppUpdateService
 import java.awt.Desktop
+import java.awt.KeyboardFocusManager
 import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
@@ -29,6 +32,7 @@ import java.io.File
 import java.net.URI
 import javax.swing.JFileChooser
 import javax.swing.UIManager
+import kotlinx.coroutines.launch
 import org.openani.mediamp.compose.MediampPlayerSurface
 import org.openani.mediamp.compose.rememberMediampPlayer
 
@@ -94,8 +98,20 @@ class DesktopPikoPlatform(
             storedPath.ifBlank { settings.downloadDirectory.absolutePath }
 
         @Composable
-        override fun rememberLauncher(onPicked: (String) -> Unit): () -> Unit = {
-            chooseDirectory(settings.downloadDirectory)?.let { onPicked(it.absolutePath) }
+        override fun rememberLauncher(onPicked: (String) -> Unit): () -> Unit {
+            val scope = rememberCoroutineScope()
+            return {
+                // 点击发生在哪个窗口，对话框就模态于哪个窗口
+                val owner = KeyboardFocusManager.getCurrentKeyboardFocusManager().activeWindow
+                scope.launch {
+                    val initial = settings.downloadDirectory
+                    when (val result = FolderPicker.pickFolder(owner, initial, "选择下载位置")) {
+                        is FolderPickResult.Picked -> onPicked(result.folder.absolutePath)
+                        FolderPickResult.Cancelled -> Unit
+                        FolderPickResult.Unavailable -> chooseDirectory(initial)?.let { onPicked(it.absolutePath) }
+                    }
+                }
+            }
         }
     }
 
@@ -135,7 +151,7 @@ class DesktopPikoPlatform(
 }
 
 /**
- * 系统风格的目录选择框。AWT 的 FileDialog 在 Windows 上选不了目录，只能用 Swing 的；
+ * 原生目录框弹不出来时的退路。AWT 的 FileDialog 在 Windows 上选不了目录，只能用 Swing 的；
  * 换成系统外观，免得弹出 Metal 风格的窗口。
  */
 private fun chooseDirectory(initial: File): File? {
