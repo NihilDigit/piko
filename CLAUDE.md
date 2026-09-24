@@ -119,13 +119,17 @@ expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以
   不用 MediaMP 的 Android mpv 后端：它的 Compose 表面是空实现，也不发布 .so。
 - **Desktop** 用 MediaMP 的 mpv 后端（`MediampPlaybackBackend`），因为它提供了 D3D11 零拷贝进 Skia 的表面，
   这部分自己写的成本最高。播放器开独立窗口（`VideoPlayerWindow`），主界面经 `VideoPlayerHost.Detached`
-  把播放请求交给它；Android 仍是应用内的压栈页（`VideoPlayerHost.InApp`）。播放器代码暂留在 `app` 与
-  `desktopApp`，统一进 `ui` 是后续工作。
+  把播放请求交给它；Android 仍是应用内的压栈页（`VideoPlayerHost.InApp`）。两端只各自保留后端、画面表面
+  与系统能力（Android 的亮度、媒体音量、方向与系统栏在 `PlayerSystemControls`），控件在 `ui`。
 
 两者都实现 commonMain 的薄接口 `PlaybackBackend`，策略在 `PlayerScreenState`：取流顺序为本地副本 →
 回环代理 → 新取的直链 → 转码流，只有首帧前失败才换下一个来源；播放中途失败按退避重连；续播位置
-每 5 秒保存，末尾归零。控件是无状态的（Android `MobilePlayerControls`，Desktop `DesktopPlayerControls`），
-两端参数同名，数据全部来自 `PlayerScreenState`。
+每 5 秒保存，末尾归零。控件是无状态的 `MobilePlayerControls`，
+两端共用，数据全部来自 `PlayerScreenState`。横竖屏按窗口宽高比判断，所以桌面窗口得到横屏布局；
+鼠标复用触屏手势层，另加悬停显示控件与键盘快捷键。垂直拖动调节的量经 `PlayerLevelControl` 由平台提供。
+
+选集按文件名解析器分成作品与分区（`buildPlaylist`），上一集、下一集与自动连播不跨分区。
+解析总开关关闭时退回按文件名自然排序（`buildRawPlaylist`）。
 
 **所有网盘读取都经 `shared/.../media/proxy/` 的本机回环 HTTP 代理**，播放器只拿到一个 `http://127.0.0.1`
 URL。直链过期重取、连接预算、预读与缓存都在 SDK 的 `PikPakFileHandle` / `PikPakStreamReader` 里；
