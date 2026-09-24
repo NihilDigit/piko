@@ -30,6 +30,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
@@ -215,34 +216,41 @@ private fun FolderCoverMark(modifier: Modifier = Modifier) {
 }
 
 /**
- * 没有封面的文件夹：两张纸叠在后面，从顶上露出两道边。画在 16:9 的封面区里面，
- * 卡片高度与有封面的一样，网格照样对齐。
+ * 没有封面的文件夹：封面区中间一叠缩小的 16:9 纸，后两张逐层收窄、上移，露出上沿。
+ * 底色与无缩略图的文件相同，整面墙的空白封面是一个色调，文件夹靠这叠纸区分。
+ *
+ * 纸张铺满整个封面区只露顶边时，看上去是几道横条，不像一叠纸，所以缩在中间，四周留出底色。
  */
 @Composable
 private fun StackedSheets(modifier: Modifier = Modifier) {
     val colors = MaterialTheme.colorScheme
+    val backdrop = colors.surfaceContainerHigh
     val shape = MaterialTheme.shapes.small
-    // 后两张纸用比最上面那张深的色调，边要看得出来：surfaceContainer 一族彼此太接近，叠起来像一整块
-    Box(modifier.background(colors.surfaceContainerLow)) {
-        Box(
-            Modifier.fillMaxSize().padding(start = 20.dp, end = 20.dp, top = 6.dp)
-                .clip(shape).background(colors.outlineVariant),
-        )
-        Box(
-            Modifier.fillMaxSize().padding(start = 12.dp, end = 12.dp, top = 12.dp)
-                .clip(shape).background(colors.secondary.copy(alpha = 0.35f)),
-        )
-        Box(
-            Modifier.fillMaxSize().padding(start = 4.dp, end = 4.dp, top = 18.dp)
-                .clip(shape).background(colors.secondaryContainer),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                imageVector = Icons.Filled.Folder,
-                contentDescription = null,
-                tint = colors.onSecondaryContainer.copy(alpha = PLACEHOLDER_ICON_ALPHA),
-                modifier = Modifier.size(36.dp),
+    // 后面的纸是 secondary 与底色的混合，先合成为不透明色：半透明的纸叠在一起，后一张会透过前一张
+    val backSheet = colors.secondary.copy(alpha = 0.18f).compositeOver(backdrop)
+    val middleSheet = colors.secondary.copy(alpha = 0.34f).compositeOver(backdrop)
+    Box(modifier.background(backdrop), contentAlignment = Alignment.Center) {
+        // 整叠往下挪半个露边的高度，视觉上居中
+        Box(Modifier.fillMaxWidth(0.5f).aspectRatio(COVER_ASPECT).offset(y = SHEET_STEP)) {
+            Box(
+                Modifier.matchParentSize().padding(horizontal = SHEET_STEP * 2).offset(y = -SHEET_STEP * 2)
+                    .clip(shape).background(backSheet),
             )
+            Box(
+                Modifier.matchParentSize().padding(horizontal = SHEET_STEP).offset(y = -SHEET_STEP)
+                    .clip(shape).background(middleSheet),
+            )
+            Box(
+                Modifier.matchParentSize().clip(shape).background(colors.secondaryContainer),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Folder,
+                    contentDescription = null,
+                    tint = colors.onSecondaryContainer.copy(alpha = PLACEHOLDER_ICON_ALPHA),
+                    modifier = Modifier.size(28.dp),
+                )
+            }
         }
     }
 }
@@ -264,3 +272,4 @@ private const val COVER_ASPECT = 16f / 9f
 private const val TITLE_LINES = 2
 private const val COVER_CORNER_TAGS = 2
 private const val PLACEHOLDER_ICON_ALPHA = 0.6f
+private val SHEET_STEP = 6.dp
