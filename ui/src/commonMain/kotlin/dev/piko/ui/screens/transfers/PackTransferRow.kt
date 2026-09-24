@@ -70,6 +70,11 @@ private fun OfflinePackJob.statusColor(): Color = when (stage) {
     else -> MaterialTheme.colorScheme.onSurfaceVariant
 }
 
+/** 「保留 / 整包」。只勾了一部分时整包大小会误导，旧记录没有保留大小就只写整包。 */
+private fun OfflinePackJob.sizeLabel(): String =
+    if (keptBytes in 1 until totalBytes) "${keptBytes.toReadableSize()} / ${totalBytes.toReadableSize()}"
+    else totalBytes.toReadableSize()
+
 private val OfflinePackJob.canOpen: Boolean
     get() = stage == OfflinePackStage.DONE && outputId.isNotEmpty()
 
@@ -123,7 +128,7 @@ internal fun PackTransferRow(
                     )
                     Text(text = item.statusLabel(), color = job.statusColor(), maxLines = 1)
                     // 与普通云端任务一样在状态后写大小；失败原因另起一行，见下
-                    MetaRow(parts = listOf(job.totalBytes.toReadableSize()), modifier = Modifier.weight(1f, fill = false))
+                    MetaRow(parts = listOf(job.sizeLabel()), modifier = Modifier.weight(1f, fill = false))
                 }
                 job.detail()?.let { detail ->
                     Text(
@@ -188,7 +193,7 @@ internal fun PackTransferSheet(
         headerIcon = { ListLeadingIcon(job.icon()) },
         actions = actions,
         onDismiss = onDismiss,
-        metaParts = listOf("云端", item.statusLabel(), job.totalBytes.toReadableSize()),
+        metaParts = listOf("云端", item.statusLabel(), job.sizeLabel()),
         extraLines = {
             job.detail()?.let {
                 Text(text = it, color = if (job.stage == OfflinePackStage.FAILED) statusColor else Color.Unspecified)

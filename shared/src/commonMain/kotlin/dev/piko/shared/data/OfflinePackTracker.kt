@@ -44,6 +44,8 @@ data class OfflinePackJob(
     val totalFiles: Int,
     val totalBytes: Long,
     val createdAtMs: Long,
+    /** 勾选部分的大小。早先的记录没有这个字段，读回为 0，界面只显示整包大小。 */
+    val keptBytes: Long = 0,
     val stage: OfflinePackStage = OfflinePackStage.QUEUED,
     val progress: Int = 0,
     val outputId: String = "",
@@ -129,6 +131,7 @@ class OfflinePackTracker(
         keep: Set<String>,
         totalFiles: Int,
         totalBytes: Long,
+        keptBytes: Long,
     ): Result<OfflinePackJob?> {
         val owner = lock.withLock { account } ?: return Result.failure(IllegalStateException("未登录"))
         val created = instantRepo.enqueueOfflineTask(url, targetId).getOrElse { return Result.failure(it) }
@@ -143,6 +146,7 @@ class OfflinePackTracker(
             totalFiles = totalFiles,
             totalBytes = totalBytes,
             createdAtMs = now(),
+            keptBytes = keptBytes,
         )
         lock.withLock {
             all = listOf(job) + all.orEmpty()

@@ -533,6 +533,7 @@ class InstantSheetState(
             keep = toSave.map { it.file.path }.toSet(),
             totalFiles = allItems.size,
             totalBytes = packBytes,
+            keptBytes = toSave.sumOf { it.file.size },
         )
             .onSuccess { _outcomes.emit(InstantSaveOutcome.OfflineTaskCreated(target)) }
             .onFailure { errorMessage = "保存失败：${it.message}" }
