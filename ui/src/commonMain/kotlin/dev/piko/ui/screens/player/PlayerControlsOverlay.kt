@@ -129,6 +129,7 @@ fun MobilePlayerControls(
     var activeGesture by remember { mutableStateOf<PlayerGesture?>(null) }
     var isScrubbing by remember { mutableStateOf(false) }
     var openSheet by remember { mutableStateOf<PlayerSheet?>(null) }
+    var isSpeedPopupOpen by remember { mutableStateOf(false) }
     // 每次用户操作控件时加一，让自动隐藏重新计时
     var interactionCount by remember { mutableIntStateOf(0) }
 
@@ -201,7 +202,8 @@ fun MobilePlayerControls(
             containsControls = true,
         ) ?: CONTROLS_HIDE_DELAY_MILLIS
     }
-    val holdControls = !isPlaying || isScrubbing || openSheet != null || errorMessage != null
+    // 倍速浮层挂在底栏上，底栏一收起它就跟着消失，开着时同样不收
+    val holdControls = !isPlaying || isScrubbing || openSheet != null || isSpeedPopupOpen || errorMessage != null
     LaunchedEffect(controlsVisible, holdControls, interactionCount, hideDelayMillis) {
         if (controlsVisible && !holdControls && hideDelayMillis != Long.MAX_VALUE) {
             delay(hideDelayMillis)
@@ -376,7 +378,15 @@ fun MobilePlayerControls(
                             interacted()
                             onSeek(it)
                         },
-                        onSpeedClick = { openSheet = PlayerSheet.Speed },
+                        isSpeedPopupOpen = isSpeedPopupOpen,
+                        onSpeedPopupOpenChange = {
+                            interacted()
+                            isSpeedPopupOpen = it
+                        },
+                        onSpeedChange = {
+                            interacted()
+                            onSpeedChange(it)
+                        },
                         onEpisodesClick = { openSheet = PlayerSheet.Episodes },
                         onToggleFullscreen = {
                             interacted()
@@ -469,9 +479,6 @@ fun MobilePlayerControls(
                             onSelectEntry(it)
                         },
                     )
-                    PlayerSheet.Speed -> if (playbackSpeed != null) {
-                        PlaybackSpeedPanel(playbackSpeed = playbackSpeed, onSpeedChange = onSpeedChange)
-                    }
                     PlayerSheet.Settings -> PlayerSettingsPanel(
                         playbackSpeed = playbackSpeed,
                         onSpeedChange = onSpeedChange,

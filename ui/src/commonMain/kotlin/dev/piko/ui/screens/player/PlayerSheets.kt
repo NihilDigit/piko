@@ -80,7 +80,6 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.media.ORIGINAL_QUALITY
@@ -94,7 +93,7 @@ import dev.piko.ui.components.SpoilerThumbnail
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-internal enum class PlayerSheet { Episodes, Speed, Settings, Tracks }
+internal enum class PlayerSheet { Episodes, Settings, Tracks }
 
 /**
  * 播放器的面板容器：横屏是贴右侧的浮动 side sheet，竖屏是 bottom sheet。
@@ -142,7 +141,6 @@ internal fun PlayerSheetHost(
 private val PlayerSheet.title: String
     get() = when (this) {
         PlayerSheet.Episodes -> "选集"
-        PlayerSheet.Speed -> "倍速"
         PlayerSheet.Settings -> "播放设置"
         PlayerSheet.Tracks -> "音轨与字幕"
     }
@@ -578,34 +576,11 @@ private fun EpisodeRow(
 }
 
 /**
- * 底栏倍速按钮打开的快速调节：只有数值与一条铺满的滑块。常用值与其他设置在右上角的完整面板里，
- * 两个入口内容不同，不会让人以为点错了地方。
- */
-@Composable
-internal fun PlaybackSpeedPanel(
-    playbackSpeed: Float,
-    onSpeedChange: (Float) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Column(modifier = modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, bottom = 24.dp)) {
-        Text(
-            text = formatSpeed(playbackSpeed),
-            style = MaterialTheme.typography.displaySmallEmphasized.copy(fontFeatureSettings = "tnum"),
-            color = MaterialTheme.colorScheme.primary,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(8.dp))
-        SpeedSlider(playbackSpeed, onSpeedChange)
-    }
-}
-
-/**
  * 滑块负责预设之外的值，步进 0.05。不设 stops：0.5 到 3.5 按 0.05 分是 59 个停止点，
- * 规范明确不建议过密。
+ * 规范明确不建议过密。底栏的倍速浮层与播放设置面板共用。
  */
 @Composable
-private fun SpeedSlider(playbackSpeed: Float, onSpeedChange: (Float) -> Unit) {
+internal fun SpeedSlider(playbackSpeed: Float, onSpeedChange: (Float) -> Unit) {
     Slider(
         value = playbackSpeed,
         onValueChange = { raw -> onSpeedChange((raw / SPEED_SLIDER_STEP).roundToInt() * SPEED_SLIDER_STEP) },

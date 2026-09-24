@@ -10,6 +10,7 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -30,6 +31,7 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.safeGestures
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -76,6 +78,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -85,6 +88,14 @@ import androidx.compose.ui.graphics.drawscope.inset
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
@@ -475,7 +486,9 @@ internal fun PlayerBottomBar(
     playbackSpeed: Float?,
     showEpisodes: Boolean,
     onSeek: (Long) -> Unit,
-    onSpeedClick: () -> Unit,
+    isSpeedPopupOpen: Boolean,
+    onSpeedPopupOpenChange: (Boolean) -> Unit,
+    onSpeedChange: (Float) -> Unit,
     onEpisodesClick: () -> Unit,
     onToggleFullscreen: () -> Unit,
     modifier: Modifier = Modifier,
@@ -528,11 +541,21 @@ internal fun PlayerBottomBar(
             }
 
             if (playbackSpeed != null) {
-                PlayerChipButton(
-                    text = formatSpeed(playbackSpeed),
-                    onClick = onSpeedClick,
-                    modifier = Modifier.semantics { contentDescription = "倍速 ${formatSpeed(playbackSpeed)}" },
-                )
+                // 浮层锚在这个 Box 上，出现在按钮正上方
+                Box {
+                    PlayerChipButton(
+                        text = formatSpeed(playbackSpeed),
+                        onClick = { onSpeedPopupOpenChange(!isSpeedPopupOpen) },
+                        modifier = Modifier.semantics { contentDescription = "倍速 ${formatSpeed(playbackSpeed)}" },
+                    )
+                    if (isSpeedPopupOpen) {
+                        SpeedPopup(
+                            playbackSpeed = playbackSpeed,
+                            onSpeedChange = onSpeedChange,
+                            onDismiss = { onSpeedPopupOpenChange(false) },
+                        )
+                    }
+                }
             }
             if (showEpisodes) {
                 PlayerChipButton(text = "选集", icon = Icons.Outlined.VideoLibrary, onClick = onEpisodesClick)
@@ -545,6 +568,64 @@ internal fun PlayerBottomBar(
         }
     }
 }
+
+/**
+ * 倍速的浮动滑块：贴在「1x」按钮正上方，只有当前值与一条滑块，点数值回到 1x。
+ * 不用面板：调倍速时要看着画面，横屏的侧边面板与竖屏的底部面板都会盖住一大块。常用预设在右上角的播放设置里。
+ */
+@Composable
+private fun SpeedPopup(playbackSpeed: Float, onSpeedChange: (Float) -> Unit, onDismiss: () -> Unit) {
+    val gap = with(LocalDensity.current) { SpeedPopupGap.roundToPx() }
+    Popup(
+        popupPositionProvider = remember(gap) { AboveAnchorPositionProvider(gap) },
+        onDismissRequest = onDismiss,
+        properties = PopupProperties(focusable = true),
+    ) {
+        Surface(
+            shape = MaterialTheme.shapes.large,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            shadowElevation = 6.dp,
+        ) {
+            Row(
+                modifier = Modifier.width(SpeedPopupWidth).padding(start = 8.dp, end = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = formatSpeed(playbackSpeed),
+                    style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"),
+                    color = MaterialTheme.colorScheme.primary,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .clip(MaterialTheme.shapes.small)
+                        .clickable(onClickLabel = "恢复 1x") { onSpeedChange(1f) }
+                        .widthIn(min = 56.dp)
+                        .padding(vertical = 12.dp),
+                )
+                Box(Modifier.weight(1f)) {
+                    SpeedSlider(playbackSpeed, onSpeedChange)
+                }
+            }
+        }
+    }
+}
+
+/** 浮层放在锚点正上方居中，靠窗口边时往里收，不超出窗口。 */
+private class AboveAnchorPositionProvider(private val gap: Int) : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize,
+    ): IntOffset {
+        val maxX = (windowSize.width - popupContentSize.width).coerceAtLeast(0)
+        val x = (anchorBounds.center.x - popupContentSize.width / 2).coerceIn(0, maxX)
+        val y = (anchorBounds.top - popupContentSize.height - gap).coerceAtLeast(0)
+        return IntOffset(x, y)
+    }
+}
+
+private val SpeedPopupWidth = 280.dp
+private val SpeedPopupGap = 8.dp
 
 /** 时间码用等宽数字：比例数字随秒数跳动，右侧按钮会跟着左右抖。 */
 @Composable
