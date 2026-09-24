@@ -2,6 +2,7 @@ package dev.piko.ui.components
 
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -26,11 +27,23 @@ fun MediaTag(
     text: String,
     modifier: Modifier = Modifier,
     onMedia: Boolean = false,
+    /** 番号：换成主题色，与发布组、清晰度这类标签区分开。 */
+    emphasized: Boolean = false,
 ) {
+    val colors = MaterialTheme.colorScheme
     Surface(
         shape = RoundedCornerShape(MediaTagCorner),
-        color = if (onMedia) Color.Black.copy(alpha = ON_MEDIA_ALPHA) else MaterialTheme.colorScheme.secondaryContainer,
-        contentColor = if (onMedia) Color.White else MaterialTheme.colorScheme.onSecondaryContainer,
+        color = when {
+            onMedia -> Color.Black.copy(alpha = ON_MEDIA_ALPHA)
+            emphasized -> colors.primaryContainer
+            else -> colors.secondaryContainer
+        },
+        contentColor = when {
+            onMedia -> Color.White
+            emphasized -> colors.onPrimaryContainer
+            else -> colors.onSecondaryContainer
+        },
+        border = if (emphasized && onMedia) BorderStroke(1.dp, Color.White.copy(alpha = 0.7f)) else null,
         modifier = modifier.widthIn(max = MediaTagMaxWidth),
     ) {
         Text(
@@ -52,10 +65,15 @@ fun MediaTagRow(
     tags: List<String>,
     modifier: Modifier = Modifier,
     onMedia: Boolean = false,
+    /** 排在最前的番号芯片，强调显示；空间不够时先丢后面的标签。 */
+    lead: String? = null,
 ) {
-    if (tags.isEmpty()) return
+    if (tags.isEmpty() && lead == null) return
     Layout(
-        content = { tags.forEach { MediaTag(it, onMedia = onMedia) } },
+        content = {
+            lead?.let { MediaTag(it, onMedia = onMedia, emphasized = true) }
+            tags.forEach { MediaTag(it, onMedia = onMedia) }
+        },
         modifier = modifier,
     ) { measurables, constraints ->
         val gap = MediaTagGap.roundToPx()

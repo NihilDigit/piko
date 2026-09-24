@@ -41,7 +41,7 @@ private fun renderFolder(folder: SnapshotFolder, byId: Map<String, SnapshotFolde
                 renderFolderRow(item.file.name, byId[item.file.id], visited, out)
             } else {
                 val view = item.view
-                val parsed = if (view == null) "（原样）" else "${view.title}${tagText(view.tags)}"
+                val parsed = if (view == null) "（原样）" else "${chipText(view.code)}${view.title}${tagText(view.tags)}"
                 out.appendLine("    ${item.file.name}")
                 out.appendLine("      → $parsed")
             }
@@ -79,8 +79,10 @@ private fun renderFolderRow(name: String, listed: SnapshotFolder?, visited: Bool
     }
     val note = if (byName.wantsContent && listed == null) "，要补取内容但不在快照里" else ""
     out.appendLine("    [文件夹] $name")
-    out.appendLine("      → ${view.title ?: "（原样）"}${tagText(view.tags)}$note")
+    out.appendLine("      → ${chipText(view.code)}${view.title ?: "（原样）"}${tagText(view.tags)}$note")
 }
+
+private fun chipText(code: String?): String = code?.let { "⟨$it⟩ " }.orEmpty()
 
 private fun tagText(tags: List<String>): String = if (tags.isEmpty()) "" else "  〔${tags.joinToString("｜")}〕"
 

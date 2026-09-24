@@ -132,12 +132,15 @@ internal fun WaterfallCard(
     title: String? = null,
     tags: List<String> = emptyList(),
     resolution: String? = null,
+    /** 番号芯片，排在标签最前。 */
+    code: String? = null,
 ) {
     if (file.thumbnailLink.isEmpty()) {
         CompactWaterfallTile(
             file = file,
             title = title,
             tags = tags,
+            code = code,
             isSelectionMode = isSelectionMode,
             isSelected = isSelected,
             isHighlighted = isHighlighted,
@@ -184,11 +187,12 @@ internal fun WaterfallCard(
                         .padding(8.dp),
                 )
                 val cornerTags = tags.filter { it != resolution }.take(COVER_CORNER_TAGS)
-                if (cornerTags.isNotEmpty()) {
+                if (cornerTags.isNotEmpty() || code != null) {
                     // 与左上角的「刚存入」角标各占一半宽，放不下的整个丢掉
                     MediaTagRow(
                         tags = cornerTags,
                         onMedia = true,
+                        lead = code,
                         modifier = Modifier
                             .align(Alignment.TopEnd)
                             .padding(6.dp)
@@ -230,7 +234,9 @@ internal fun WaterfallCard(
                     maxLines = TITLE_MAX_LINES,
                     overflow = TextOverflow.Ellipsis,
                 )
-                if (!file.isFolder && tags.isNotEmpty()) MediaTagRow(tags = tags, modifier = Modifier.padding(vertical = 2.dp))
+                if (!file.isFolder && (tags.isNotEmpty() || code != null)) {
+                    MediaTagRow(tags = tags, lead = code, modifier = Modifier.padding(vertical = 2.dp))
+                }
                 MetaRow(
                     parts = file.waterfallMetaParts(),
                     style = MaterialTheme.typography.labelSmall,
@@ -284,6 +290,7 @@ private fun CompactWaterfallTile(
     file: FileStat,
     title: String?,
     tags: List<String>,
+    code: String?,
     isSelectionMode: Boolean,
     isSelected: Boolean,
     isHighlighted: Boolean,
@@ -331,7 +338,7 @@ private fun CompactWaterfallTile(
                     maxLines = TITLE_MAX_LINES,
                     overflow = TextOverflow.Ellipsis,
                 )
-                if (tags.isNotEmpty()) MediaTagRow(tags = tags, modifier = Modifier.padding(vertical = 2.dp))
+                if (tags.isNotEmpty() || code != null) MediaTagRow(tags = tags, lead = code, modifier = Modifier.padding(vertical = 2.dp))
                 MetaRow(
                     parts = file.waterfallMetaParts(),
                     style = MaterialTheme.typography.labelSmall,

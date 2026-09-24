@@ -199,16 +199,16 @@ internal fun DriveFileGrid(
 }
 
 /** 单元格上的文字：解析出的标题与标签。[title] 为 null 时照原样显示名字。 */
-private class CellText(val title: String?, val tags: List<String>, val resolution: String?)
+private class CellText(val title: String?, val tags: List<String>, val resolution: String?, val code: String? = null)
 
 private val RawCellText = CellText(null, emptyList(), null)
 
 private fun cellText(item: DriveListItem.File, folder: DriveFolderView?): CellText {
     val view = item.view
     return when {
-        view != null -> CellText(view.title, view.tags, null)
+        view != null -> CellText(view.title, view.tags, null, view.code)
         folder != null && (folder.title != null || folder.tags.isNotEmpty()) ->
-            CellText(folder.title ?: item.file.name, folder.tags, folder.resolution)
+            CellText(folder.title ?: item.file.name, folder.tags, folder.resolution, folder.code)
         else -> RawCellText
     }
 }
@@ -294,6 +294,7 @@ private fun DriveCell(
                 title = text.title,
                 tags = text.tags,
                 resolution = text.resolution,
+                code = text.code,
             )
         } else {
             FileListItem(
@@ -310,6 +311,7 @@ private fun DriveCell(
                 onMoreClick = { callbacks.onMore(file) },
                 title = text.title,
                 tags = text.tags,
+                code = text.code,
             )
         }
     }

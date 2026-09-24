@@ -120,15 +120,13 @@ data class AvInfo(
     /** 番号后面的片名，已去掉「【無】」「※特典高画質」这类标记与附注；名字里没写时为 null。 */
     val title: String? = null,
 ) {
-    /**
-     * 列表里的行标题。常规番号写「番号 片名」：番号是厂牌加编号，大家也按它找片，但光有番号认不出是哪部。
-     * FC2 的编号只是流水号，有片名时只写片名，编号留在详情里。名字里没写片名时只能写番号
-     */
-    fun displayTitle(): String {
-        val codeLabel = listOfNotNull(code, part).joinToString(" ")
-        val name = title ?: return codeLabel
-        return if (code.startsWith("FC2-")) listOfNotNull(name, part).joinToString(" ") else "$codeLabel $name"
-    }
+    private val codeLabel: String get() = listOfNotNull(code, part).joinToString(" ")
+
+    /** 列表里的行标题：有片名就写片名，光有番号认不出是哪部；名字里没写片名时只能写番号。 */
+    fun displayTitle(): String = title ?: codeLabel
+
+    /** 行上的番号芯片，分段号也在里面。番号已经是标题时不重复。 */
+    val chip: String? get() = codeLabel.takeIf { title != null }
 }
 
 /**

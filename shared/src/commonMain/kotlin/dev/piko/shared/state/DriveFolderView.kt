@@ -18,6 +18,8 @@ class DriveFolderView(
     /** 认不出时为 null，界面显示原文件夹名。 */
     val title: String?,
     val tags: List<String>,
+    /** 番号芯片：带片名的常规番号文件夹才有，见 AvInfo.chip。 */
+    val code: String? = null,
     val resolution: String?,
     val fields: List<DriveParsedField>,
     /**
@@ -43,6 +45,7 @@ fun describeDriveFolder(name: String, contentNames: List<String>?): DriveFolderV
     return DriveFolderView(
         title = description.title,
         tags = tags,
+        code = description.code?.takeIf { description.kind == WorkKind.AV && it != description.title },
         resolution = resolution,
         fields = folderFields(description),
         wantsContent = description.title == null && hasReleaseHints && contentNames == null,

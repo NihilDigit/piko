@@ -201,19 +201,25 @@ class AvNamingTest {
     }
 
     @Test
-    fun `rows show the title next to the code and fc2 shows only the title`() {
-        fun row(name: String) = parseMediaName(name).av!!.displayTitle()
-        assertEquals("ABC-123 某部片名 演员", row("ABC-123 某部片名 演员.mp4"))
-        // FC2 的编号是流水号；开头的短标记与结尾的附注去掉
-        assertEquals("片名正文", row("FC2-PPV-1234567 【無】片名正文　※特典高画質.mp4"))
+    fun `rows show the title and the code goes to a chip`() {
+        fun av(name: String) = parseMediaName(name).av!!
+        with(av("ABC-123 某部片名 演员.mp4")) {
+            assertEquals("某部片名 演员", displayTitle())
+            assertEquals("ABC-123", chip)
+        }
+        // 开头的短标记与结尾的附注去掉
+        assertEquals("片名正文", av("FC2-PPV-1234567 【無】片名正文　※特典高画質.mp4").displayTitle())
         // 开头的长方括号是片名的一部分
-        assertEquals("【 某个很受欢迎的系列 】 的片名", row("FC2-PPV-1234567 ~ vol.48 ~【 某个很受欢迎的系列 】 的片名.mp4"))
+        assertEquals("【 某个很受欢迎的系列 】 的片名", av("FC2-PPV-1234567 ~ vol.48 ~【 某个很受欢迎的系列 】 的片名.mp4").displayTitle())
         // 一长段日文里夹着「流出」，是片名，不是后缀标签
-        with(parseMediaName("FC2-PPV-1234567 『無』很长很长的一段日文片名里有流出两个字.mp4").av!!) {
+        with(av("FC2-PPV-1234567 『無』很长很长的一段日文片名里有流出两个字.mp4")) {
             assertEquals("很长很长的一段日文片名里有流出两个字", title)
             assertTrue(uncensored)
         }
-        // 没写片名时只能写番号
-        assertEquals("FC2-PPV-1234567 1", row("site.com@FC2-PPV-1234567_1.mp4"))
+        // 没写片名时番号就是标题，不再重复一个芯片
+        with(av("site.com@FC2-PPV-1234567_1.mp4")) {
+            assertEquals("FC2-PPV-1234567 1", displayTitle())
+            assertNull(chip)
+        }
     }
 }

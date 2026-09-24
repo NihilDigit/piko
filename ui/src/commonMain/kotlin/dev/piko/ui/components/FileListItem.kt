@@ -205,6 +205,8 @@ fun FileListItem(
     locationLabel: String? = null,
     title: String? = null,
     tags: List<String> = emptyList(),
+    /** 番号芯片，排在标签行最前。 */
+    code: String? = null,
 ) {
     FileListItem(
         headline = title ?: file.displayTitle(),
@@ -217,7 +219,7 @@ fun FileListItem(
         badge = if (isHighlighted) ({ HighlightBadge(text = highlightBadgeText) }) else null,
         supporting = {
             Column {
-                if (tags.isNotEmpty()) MediaTagRow(tags = tags, modifier = Modifier.padding(vertical = 2.dp))
+                if (tags.isNotEmpty() || code != null) MediaTagRow(tags = tags, lead = code, modifier = Modifier.padding(vertical = 2.dp))
                 if (tags.isEmpty() || !file.isFolder) MetaRow(parts = file.metaParts())
                 if (!locationLabel.isNullOrEmpty()) {
                     // 路径从头截断：离命中项最近的几级目录最有辨识度

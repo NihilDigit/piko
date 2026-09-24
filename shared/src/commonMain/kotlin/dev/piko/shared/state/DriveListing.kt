@@ -27,6 +27,8 @@ data class DriveParsedField(val label: String, val value: String)
 class DriveFileView(
     val title: String,
     val tags: List<String>,
+    /** 番号芯片，排在标签前面；标题就是番号或没有番号时为 null。 */
+    val code: String? = null,
     /** 详情面板的标题：作品名加行标题，如「Steins;Gate 01」。 */
     val heading: String,
     val fields: List<DriveParsedField>,
@@ -221,7 +223,8 @@ private fun buildViews(batch: MediaBatch, files: List<FileStat>): Map<String, Dr
 }
 
 private fun fileView(work: MediaWork, section: Section, entry: MediaEntry, file: EntryFile): DriveFileView {
-    val avTitle = file.name.av?.takeIf { work.kind == WorkKind.AV }?.displayTitle()
+    val av = file.name.av?.takeIf { work.kind == WorkKind.AV }
+    val avTitle = av?.displayTitle()
     val title = avTitle ?: entry.label?.let(::stripBrackets) ?: file.name.fileName.substringBeforeLast('.')
     // 番号一部一作品，作品级的公共标签就是这个文件自己的，逐行显示；「中字」「无码」排在最前
     val ownTags = if (work.kind == WorkKind.AV) (file.tags + work.commonTags).distinct().sortedBy { if (it.pinned) 0 else 1 } else file.tags
@@ -234,7 +237,7 @@ private fun fileView(work: MediaWork, section: Section, entry: MediaEntry, file:
     } else {
         title
     }
-    return DriveFileView(title = title, tags = tags, heading = heading, fields = parsedFields(work, section, entry, file, languages))
+    return DriveFileView(title = title, tags = tags, code = av?.chip, heading = heading, fields = parsedFields(work, section, entry, file, languages))
 }
 
 /** 外挂字幕与音轨化作宿主行上的标签：「简日」「繁日」，没有语言后缀的记作「字幕」。 */
