@@ -3,6 +3,10 @@ package dev.piko.ui.screens.player
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
@@ -373,7 +377,13 @@ fun MobilePlayerControls(
                             interacted()
                             openSheet = PlayerSheet.Tracks
                         }.takeIf { subtitleTracks.isNotEmpty() || audioTracks.size > 1 },
-                        modifier = Modifier.align(Alignment.TopCenter),
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            // 淡入之外各自朝外滑半个栏高：整栏从屏幕外滑进来动作太大，只淡入又显得平
+                            .animateEnterExit(
+                                enter = slideInVertically(motion.defaultSpatialSpec()) { -it / 2 },
+                                exit = slideOutVertically(motion.fastSpatialSpec()) { -it / 2 },
+                            ),
                     )
 
                     PlayerBottomBar(
@@ -403,7 +413,12 @@ fun MobilePlayerControls(
                             onToggleFullscreen()
                         },
                         onScrubbingChange = { isScrubbing = it },
-                        modifier = Modifier.align(Alignment.BottomCenter),
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .animateEnterExit(
+                                enter = slideInVertically(motion.defaultSpatialSpec()) { it / 2 },
+                                exit = slideOutVertically(motion.fastSpatialSpec()) { it / 2 },
+                            ),
                     )
                 }
             }
@@ -412,8 +427,8 @@ fun MobilePlayerControls(
             // 不再另叠一个指示器。两侧按钮随控件栏显隐，由组件自己处理
             AnimatedVisibility(
                 visible = (chromeVisible || isLoading) && hud == null && errorMessage == null,
-                enter = fadeIn(motion.defaultEffectsSpec()),
-                exit = fadeOut(motion.fastEffectsSpec()),
+                enter = fadeIn(motion.defaultEffectsSpec()) + scaleIn(motion.defaultSpatialSpec(), initialScale = CENTER_ENTER_SCALE),
+                exit = fadeOut(motion.fastEffectsSpec()) + scaleOut(motion.fastSpatialSpec(), targetScale = CENTER_ENTER_SCALE),
                 modifier = Modifier.align(Alignment.Center),
             ) {
                 PlayerCenterControls(
@@ -517,6 +532,9 @@ fun MobilePlayerControls(
 }
 
 private const val CONTROLS_HIDE_DELAY_MILLIS = 4_500L
+
+// 中央按钮组进出时的缩放起点：略小一点再放大，与两侧按钮 0.6 的进场区分开，整组不会像是弹出来的
+private const val CENTER_ENTER_SCALE = 0.9f
 // 与控件同时收：指针先没了而控件还在，想点控件时要先晃一下鼠标
 private const val CURSOR_HIDE_DELAY_MILLIS = CONTROLS_HIDE_DELAY_MILLIS
 private const val RESUME_TIP_DURATION_MILLIS = 5_000L
