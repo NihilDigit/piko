@@ -57,7 +57,6 @@ class InstantTreeTest {
 
         fun nameOf(index: Int) = state.items[index].file.path
         val selected = state.selectedIndices.map(::nameOf)
-        assertEquals("Steins;Gate", state.folderName)
         assertTrue(selected.any { it == "[DBD-Raws][Steins;Gate][01][1080P][BDRip][HEVC-10bit][FLAC].scjp.ass" }, "正片的字幕随正片勾选")
         assertTrue(selected.none { it.startsWith("PV/") || it.startsWith("menu/") || it.startsWith("NCOP&NCED/") || it.startsWith("Fonts/") })
         assertEquals(29, state.selectedEntryCount, "Steins;Gate 正片 25 行加 Soumei 4 行，字幕不算行")
@@ -92,7 +91,8 @@ class InstantTreeTest {
     fun `heike keeps cds and scans out of the episode list`() {
         val files = NamingFixtures.load("heike-vcb")
         val tree = buildInstantTree(files, "[Nekomoe kissaten&VCB-Studio] Heike Monogatari [Ma10p_1080p]")
-        assertEquals("Heike Monogatari", tree.folderName)
+        // 认出了作品名也不拿它命名文件夹：解析只改呈现，种子名里的发布组、画质不能丢
+        assertEquals("[Nekomoe kissaten&VCB-Studio] Heike Monogatari [Ma10p_1080p]", tree.folderName)
 
         val work = tree.group("Heike Monogatari")
         assertEquals(listOf("Nekomoe kissaten&VCB-Studio", "1080p", "HEVC", "10bit", "FLAC"), work.tags)
@@ -127,13 +127,12 @@ class InstantTreeTest {
     }
 
     @Test
-    fun `a pack of several codes keeps the torrent name for its folder`() {
+    fun `a pack of several codes lists one row per code`() {
         val files = listOf(
             MediaFileInput("ABC-123/ABC-123.mp4", 4L shl 30),
             MediaFileInput("XYZ-456/XYZ-456.mp4", 5L shl 30),
         )
         val tree = buildInstantTree(files, "精选合集")
-        assertEquals("精选合集", tree.folderName)
         assertEquals(listOf("ABC-123", "XYZ-456"), tree.rows.map { it.label })
     }
 }

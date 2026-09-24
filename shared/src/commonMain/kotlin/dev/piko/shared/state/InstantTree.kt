@@ -56,7 +56,9 @@ data class InstantTreeRow(val key: String, val depth: Int, val node: InstantNode
 /**
  * 磁链面板的文件树，由 [buildInstantTree] 一次算好，之后只随展开状态展平。
  *
- * [folderName] 是多项保存时新建文件夹的默认名：主作品的标题，认不出时退回种子名。
+ * [folderName] 是多项保存时新建文件夹的默认名，就是种子名本身。解析只改变呈现，不改数据：
+ * 换成解析出的作品名，发布组、画质这些信息就从网盘里的真实名字上永久丢了，而网盘列表
+ * 自会把这个文件夹显示成作品名加标签。
  */
 class InstantTree(
     val roots: List<InstantNode>,
@@ -124,7 +126,7 @@ private class InstantTreeBuilder(private val files: List<MediaFileInput>, privat
         secondaryNode()?.let { roots += it }
 
         val selection = batch.defaultSelection().ifEmpty { files.indices.toSet() }
-        return InstantTree(roots, selection, folderNameOf(known, resourceName))
+        return InstantTree(roots, selection, FileNameSanitizer.sanitize(resourceName))
     }
 
     private val MediaWork.isSingleEntry: Boolean
@@ -233,20 +235,6 @@ private class InstantTreeBuilder(private val files: List<MediaFileInput>, privat
             },
             defaultExpanded = false,
         )
-    }
-
-    /**
-     * 主作品取正片体积最大的一部。它若只有一个条目而同批还有别的作品，说明这是番号合集或几部作品拼成的包，
-     * 拿其中一部的名字命名整包文件夹是错的，退回种子名。
-     */
-    private fun folderNameOf(known: List<MediaWork>, resourceName: String): String {
-        val fallback = FileNameSanitizer.sanitize(resourceName)
-        val main = known.filter { it.title != null }.maxByOrNull { work ->
-            val sections = work.sections.filter { it.section == Section.MAIN }.ifEmpty { work.sections }
-            sections.flatMap { it.entries }.flatMap { it.files }.sumOf { files[it.index].size }
-        }
-        if (main == null || main.isSingleEntry && known.size > 1) return fallback
-        return main.title?.let(FileNameSanitizer::sanitize)?.takeIf { it.isNotBlank() } ?: fallback
     }
 
     private fun fileNameOf(index: Int): String = files[index].path.substringAfterLast('/')
