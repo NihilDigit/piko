@@ -9,7 +9,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -58,7 +57,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.SliderState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TooltipAnchorPosition
@@ -77,10 +75,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.inset
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
@@ -575,8 +575,15 @@ private fun PlayerChipButton(
  * 轨道按 SliderTokens 的几何自绘（16dp 高、4dp 手柄、手柄两侧 6dp 间隙、末端停止点），
  * 在未播放段上叠缓冲段。拖动期间只预览时间，松手才 seek：
  * 网络流每次 seek 都要重开 range 请求，跟手 seek 会连续打断缓冲。
+ *
+ * 自绘轨道画在滑块背后，滑块自带的轨道全部设成透明，只留手柄。能传入自定义 track 的重载
+ * 两端没有交集：Android 的 1.5.0-alpha28 隐藏了按 value 传值且可换 track 的那几个，连同不带回调的
+ * SliderState 重载与 SliderState.onValueChange 属性；桌面的 CMP 1.12.0-alpha03 又没有
+ * alpha28 新加的、带回调的 SliderState 重载。两端都在的只有最基本的按 value 传值的重载，
+ * 它在 alpha28 标了废弃但仍可用。
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Suppress("DEPRECATION")
 @Composable
 internal fun PlayerSeekBar(
     positionMillis: Long,
@@ -589,7 +596,6 @@ internal fun PlayerSeekBar(
     var dragFraction by remember { mutableStateOf<Float?>(null) }
     // 松手到新位置回报之间有一段延迟，这段时间里滑块停在目标处，不回跳到旧位置
     var pendingSeekMillis by remember { mutableStateOf<Long?>(null) }
-    val currentOnScrub by rememberUpdatedState(onScrub)
 
     LaunchedEffect(pendingSeekMillis, positionMillis) {
         val pending = pendingSeekMillis ?: return@LaunchedEffect
@@ -607,27 +613,32 @@ internal fun PlayerSeekBar(
 
     val fraction = dragFraction ?: fractionOf(pendingSeekMillis ?: positionMillis)
     val bufferedFraction = fractionOf(bufferedPositionMillis)
+    val trackColors = SeekTrackColors(
+        active = MaterialTheme.colorScheme.primary,
+        inactive = MaterialTheme.colorScheme.secondaryContainer,
+        buffered = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = BUFFERED_ALPHA),
+        stop = MaterialTheme.colorScheme.primary,
+    )
     val colors = SliderDefaults.colors(
         thumbColor = MaterialTheme.colorScheme.primary,
-        activeTrackColor = MaterialTheme.colorScheme.primary,
-        inactiveTrackColor = MaterialTheme.colorScheme.secondaryContainer,
+        activeTrackColor = Color.Transparent,
+        inactiveTrackColor = Color.Transparent,
+        activeTickColor = Color.Transparent,
+        inactiveTickColor = Color.Transparent,
+        disabledActiveTrackColor = Color.Transparent,
+        disabledInactiveTrackColor = Color.Transparent,
+        disabledActiveTickColor = Color.Transparent,
+        disabledInactiveTickColor = Color.Transparent,
     )
-    val bufferedColor = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = BUFFERED_ALPHA)
-    val interactionSource = remember { MutableInteractionSource() }
-    // 按 value 传值并自定义 thumb 与 track 的重载在 1.5.0-alpha28 被隐藏，只能经 SliderState。
-    // 每次重组把外部进度写回，与被隐藏的重载内部做法相同。
-    val sliderState = remember { SliderState() }
-    sliderState.value = fraction
     val positionText = formatTime((fraction * durationMillis).toLong())
     val durationText = formatTime(durationMillis)
 
     BoxWithConstraints(modifier = modifier) {
         Slider(
-            state = sliderState,
+            value = fraction,
             onValueChange = {
-                sliderState.value = it
                 dragFraction = it
-                currentOnScrub((it * durationMillis).toLong())
+                onScrub((it * durationMillis).toLong())
             },
             onValueChangeFinished = {
                 dragFraction?.let { target ->
@@ -636,31 +647,20 @@ internal fun PlayerSeekBar(
                     onSeek(millis)
                 }
                 dragFraction = null
-                currentOnScrub(null)
+                onScrub(null)
             },
             enabled = enabled,
             colors = colors,
-            interactionSource = interactionSource,
-            thumb = {
-                SliderDefaults.Thumb(
-                    interactionSource = interactionSource,
-                    colors = colors,
-                    enabled = enabled,
-                )
-            },
-            track = { state ->
-                val trackColors = SeekTrackColors(
-                    active = colors.activeTrackColor,
-                    inactive = colors.inactiveTrackColor,
-                    buffered = bufferedColor,
-                    stop = colors.activeTrackColor,
-                )
-                Canvas(Modifier.fillMaxWidth().height(SeekTrackHeight)) {
-                    drawSeekTrack(state.coercedValueAsFraction, bufferedFraction, trackColors)
-                }
-            },
             modifier = Modifier
                 .fillMaxWidth()
+                // 滑块把轨道放在两端各让出半个手柄宽、垂直居中的位置，这里按同样的几何画
+                .drawBehind {
+                    val handleInset = SeekHandleWidth.toPx() / 2
+                    val verticalInset = (size.height - SeekTrackHeight.toPx()) / 2
+                    inset(handleInset, verticalInset, handleInset, verticalInset) {
+                        drawSeekTrack(fraction, bufferedFraction, trackColors)
+                    }
+                }
                 .semantics {
                     contentDescription = "播放进度"
                     stateDescription = "$positionText / $durationText"
