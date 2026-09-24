@@ -3,13 +3,7 @@ package dev.piko.ui.screens.player
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.animation.fadeIn
@@ -87,11 +81,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -125,10 +116,8 @@ import kotlinx.coroutines.delay
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.util.Locale
-import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.roundToInt
-import kotlin.math.sin
 
 /**
  * 播放器顶栏：返回、标题与副标题、播放设置。
@@ -507,7 +496,7 @@ private val PortraitCenterSizes = CenterSizes(
 internal fun PlayerBottomBar(
     isLandscape: Boolean,
     isFullscreen: Boolean,
-    isPlaying: Boolean,
+    thumbOnHoverOnly: Boolean,
     positionMillis: Long,
     durationMillis: Long,
     bufferedPositionMillis: Long,
@@ -539,7 +528,7 @@ internal fun PlayerBottomBar(
             durationMillis = durationMillis,
             bufferedPositionMillis = bufferedPositionMillis,
             onSeek = onSeek,
-            isPlaying = isPlaying,
+            thumbOnHoverOnly = thumbOnHoverOnly,
             onScrub = { target ->
                 val wasScrubbing = scrubPositionMillis != null
                 scrubPositionMillis = target
@@ -692,11 +681,12 @@ private fun PlayerChipButton(
 }
 
 /**
- * 进度条：细轨道，靠近时变粗；播放中已播放段是一条流动的细波浪，暂停、拖动、悬停时拉平。
+ * 进度条：细轨道，靠近时变粗，未播放段与缓冲段用半透明的前景色，透出画面。
  *
- * 原先是 Expressive 标准滑块（16dp 高的轨道、竖条手柄、不透明的 secondaryContainer 底色），
- * 压在画面上又粗又闷。这里未播放段与缓冲段用半透明的前景色，透出画面；波浪取自 Android 13 起
- * 系统媒体控件的进度条，播放与暂停一眼可辨。
+ * 原先是 M3 的 XS 滑块（16dp 高的轨道、竖条手柄、不透明的 secondaryContainer 底色），
+ * 压在画面上又粗又闷。细轨道不在 M3 滑块的规格里，是视频播放器的通行做法。已播放段不用波浪：
+ * M3 的波浪是进度指示器表示「过程在进行」的外观，滑块没有这一项，放在可拖动的进度条上是误用。
+ * [thumbOnHoverOnly] 时手柄平时隐藏、悬停才出现（鼠标）；触屏没有悬停，手柄一直显示，否则看不出能拖。
  *
  * 不用 Material 的 Slider：换手柄与轨道的重载两端没有交集（Android 的 1.5.0-alpha28 与桌面的
  * 1.12.0-alpha03 各缺一半），手柄固定是 44dp 高的竖条，配不了细轨道。手势自己接：按下即跳到该处，
@@ -710,7 +700,7 @@ internal fun PlayerSeekBar(
     bufferedPositionMillis: Long,
     onSeek: (Long) -> Unit,
     modifier: Modifier = Modifier,
-    isPlaying: Boolean = false,
+    thumbOnHoverOnly: Boolean = false,
     onScrub: (Long?) -> Unit = {},
 ) {
     var dragFraction by remember { mutableStateOf<Float?>(null) }
@@ -743,14 +733,13 @@ internal fun PlayerSeekBar(
     )
     val motion = MaterialTheme.motionScheme
     val thickness by animateDpAsState(if (isEngaged) SeekTrackEngagedThickness else SeekTrackThickness, motion.fastSpatialSpec())
-    val thumbRadius by animateDpAsState(if (dragFraction != null) SeekThumbDraggingRadius else SeekThumbRadius, motion.fastSpatialSpec())
-    // 波幅按 0 到 1 渐变：暂停、拖动时慢慢拉平，恢复播放时再慢慢起伏，不会一下子弹直
-    val waveAmount by animateFloatAsState(if (isPlaying && !isEngaged && enabled) 1f else 0f, motion.slowEffectsSpec())
-    // 相位只在绘制阶段读：它每帧都变，在组合里读会让整条进度条每帧重组
-    val wavePhase = rememberInfiniteTransition().animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(WAVE_PERIOD_MILLIS, easing = LinearEasing)),
+    val thumbRadius by animateDpAsState(
+        when {
+            dragFraction != null -> SeekThumbDraggingRadius
+            thumbOnHoverOnly && hoverFraction == null -> 0.dp
+            else -> SeekThumbRadius
+        },
+        motion.fastSpatialSpec(),
     )
     val positionText = formatTime((fraction * durationMillis).toLong())
     val durationText = formatTime(durationMillis)
@@ -812,8 +801,6 @@ internal fun PlayerSeekBar(
                         colors = trackColors,
                         thickness = thickness.toPx(),
                         thumbRadius = thumbRadius.toPx(),
-                        waveAmount = waveAmount,
-                        wavePhase = wavePhase.value,
                         inset = SeekThumbDraggingRadius.toPx(),
                     )
                 }
@@ -868,7 +855,7 @@ private fun seekFractionAt(x: Float, width: Float, inset: Float): Float =
 private class SeekTrackColors(val active: Color, val inactive: Color, val buffered: Color)
 
 /**
- * 轨道从左到右：已播放段（播放中是波浪）、手柄、缓冲段、未播放段。[inset] 是两端给手柄留的边，
+ * 轨道从左到右：已播放段、手柄、缓冲段、未播放段。[inset] 是两端给手柄留的边，
  * 与 [seekFractionAt] 的换算一致，手柄画在哪、点下去就是哪。
  */
 private fun DrawScope.drawSeekTrack(
@@ -877,8 +864,6 @@ private fun DrawScope.drawSeekTrack(
     colors: SeekTrackColors,
     thickness: Float,
     thumbRadius: Float,
-    waveAmount: Float,
-    wavePhase: Float,
     inset: Float,
 ) {
     val centerY = size.height / 2
@@ -893,29 +878,9 @@ private fun DrawScope.drawSeekTrack(
     }
 
     if (thumbX > start) {
-        val amplitude = WaveAmplitude.toPx() * waveAmount
-        if (amplitude < MIN_VISIBLE_AMPLITUDE_PX) {
-            drawLine(colors.active, Offset(start, centerY), Offset(thumbX, centerY), thickness, StrokeCap.Round)
-        } else {
-            val wavelength = WaveLength.toPx()
-            // 起点与手柄前各用一个波长把波幅收到 0：两端落在中线上，与手柄、轨道起点接得上
-            fun yAt(x: Float): Float {
-                val taper = minOf(1f, (x - start) / wavelength, (thumbX - x) / wavelength).coerceAtLeast(0f)
-                return centerY + amplitude * taper * sin(2 * PI.toFloat() * (x / wavelength - wavePhase))
-            }
-            val path = Path().apply {
-                moveTo(start, yAt(start))
-                var x = start
-                while (x < thumbX) {
-                    x = minOf(x + WAVE_STEP_PX, thumbX)
-                    lineTo(x, yAt(x))
-                }
-            }
-            drawPath(path, colors.active, style = Stroke(width = thickness, cap = StrokeCap.Round, join = StrokeJoin.Round))
-        }
+        drawLine(colors.active, Offset(start, centerY), Offset(thumbX, centerY), thickness, StrokeCap.Round)
     }
-
-    drawCircle(colors.active, thumbRadius, Offset(thumbX, centerY))
+    if (thumbRadius > 0f) drawCircle(colors.active, thumbRadius, Offset(thumbX, centerY))
 }
 
 /** 浮在视频上的控件容器色。半透明：既保证图标对比度，又不整块挡住画面。 */
@@ -992,13 +957,6 @@ private val SeekTrackThickness = 4.dp
 private val SeekTrackEngagedThickness = 8.dp
 private val SeekThumbRadius = 6.dp
 private val SeekThumbDraggingRadius = 9.dp
-
-// 波浪：波幅、波长与流过一个波长的时间，取 Android 系统媒体控件进度条的量级，细而慢，不抢画面
-private val WaveAmplitude = 3.dp
-private val WaveLength = 24.dp
-private const val WAVE_PERIOD_MILLIS = 1_600
-private const val WAVE_STEP_PX = 2f
-private const val MIN_VISIBLE_AMPLITUDE_PX = 0.5f
 private const val INACTIVE_TRACK_ALPHA = 0.28f
 private const val BUFFERED_TRACK_ALPHA = 0.55f
 

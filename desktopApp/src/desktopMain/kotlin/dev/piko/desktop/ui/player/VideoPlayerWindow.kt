@@ -236,6 +236,7 @@ private fun VideoPlayerContent(
                 onSelectSubtitleTrack = state::selectSubtitleTrack,
                 volume = volume,
                 showLockToggle = false,
+                seekThumbOnHoverOnly = true,
                 idleCursor = BlankPointerIcon,
                 snackbarHost = { SnackbarHost(snackbarHostState) },
             )

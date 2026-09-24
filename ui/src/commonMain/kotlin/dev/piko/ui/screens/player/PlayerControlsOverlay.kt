@@ -116,6 +116,8 @@ fun MobilePlayerControls(
     volume: PlayerLevelControl? = null,
     // 锁定只防触屏误触，鼠标与键盘用不上
     showLockToggle: Boolean = true,
+    // 进度条手柄平时隐藏、鼠标悬停才出现。触屏没有悬停，要一直显示
+    seekThumbOnHoverOnly: Boolean = false,
     idleCursor: PointerIcon? = null,
     // 调用方的消息提示放进底部提示区，与续播提示、全屏入口一起排布，不各自定位
     snackbarHost: @Composable () -> Unit = {},
@@ -389,7 +391,7 @@ fun MobilePlayerControls(
                     PlayerBottomBar(
                         isLandscape = isLandscape,
                         isFullscreen = isFullscreen,
-                        isPlaying = isPlaying,
+                        thumbOnHoverOnly = seekThumbOnHoverOnly,
                         positionMillis = positionMillis,
                         durationMillis = durationMillis,
                         bufferedPositionMillis = bufferedPositionMillis,
