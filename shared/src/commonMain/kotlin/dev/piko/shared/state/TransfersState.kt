@@ -63,7 +63,7 @@ sealed interface TransferItem {
  */
 class TransfersState(
     private val coordinator: PikoDownloadCoordinator,
-    taskRepo: TaskRepository,
+    private val taskRepo: TaskRepository,
     private val packTracker: OfflinePackTracker,
     private val scope: CoroutineScope,
     private val driveRepo: PikoDriveRepository,
@@ -127,7 +127,7 @@ class TransfersState(
      * 在父目录的列表里却有，网盘列表的文件夹封面用的就是后者。所以先查详情拿到父目录，
      * 再列父目录取缩略图；同一父目录只列一次，产出多半都落在同一个保存目录里。
      */
-    private var thumbnails by mutableStateOf<Map<String, String>>(emptyMap())
+    private var thumbnails by mutableStateOf<Map<String, String>>(taskRepo.outputThumbnails.toMap())
 
     fun thumbnailOf(fileId: String): String? = thumbnails[fileId]?.ifEmpty { null }
 
@@ -170,7 +170,9 @@ class TransfersState(
             listing.filter { it.id in missing }.forEach { found[it.id] = it.thumbnailLink }
         }
         // 取不到的也记下，免得每次列表变动都重查同一批
-        thumbnails = thumbnails + missing.associateWith { found[it].orEmpty() }
+        val loaded = missing.associateWith { found[it].orEmpty() }
+        taskRepo.outputThumbnails.putAll(loaded)
+        thumbnails = thumbnails + loaded
     }
 
     /** 可见期间轮询云端任务，挂起直到调用方的协程被取消。 */

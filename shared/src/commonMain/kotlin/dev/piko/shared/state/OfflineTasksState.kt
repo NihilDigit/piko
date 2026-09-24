@@ -26,11 +26,12 @@ class OfflineTasksState(
     private val taskRepo: TaskRepository,
     private val scope: CoroutineScope,
 ) {
-    var tasks by mutableStateOf<List<OfflineTask>>(emptyList())
+    // 上次的列表先铺底；有缓存就不算首次加载，不显示整页加载态
+    var tasks by mutableStateOf<List<OfflineTask>>(taskRepo.cachedTasks().orEmpty())
         private set
 
     /** 首次加载。之后的刷新与轮询都不再切回整页加载态，列表保持可见。 */
-    var isLoading by mutableStateOf(true)
+    var isLoading by mutableStateOf(taskRepo.cachedTasks() == null)
         private set
     var isRefreshing by mutableStateOf(false)
         private set

@@ -15,14 +15,30 @@ class TaskRepository(
 ) {
     private val client get() = clientManager.currentClient.value ?: error("Not logged in")
 
+    /**
+     * 最近一次拉到的首页任务，连同所属账号。传输页的状态随页面重建，每次进入都从空列表开始
+     * 会先闪一下加载态；用它先铺底，再照常刷新。只放内存，换账号即失效。
+     */
+    private var lastTasks: Pair<String, List<OfflineTask>>? = null
+
+    /** 当前账号上次拉到的任务，没有时为 null。 */
+    fun cachedTasks(): List<OfflineTask>? {
+        val account = clientManager.currentClient.value?.account ?: return null
+        return lastTasks?.takeIf { it.first == account }?.second
+    }
+
+    /** 已完成任务产出的缩略图，按产出文件 id；查过而没有的记为空串。文件 id 不跨账号重复。 */
+    val outputThumbnails: MutableMap<String, String> = mutableMapOf()
+
     suspend fun getTasks(pageToken: String = ""): Result<TaskListResponse> = withContext(Dispatchers.Default) {
         runSuspendCatching {
-            client.listOfflineTasks(
+            val current = client
+            current.listOfflineTasks(
                 limit = 50,
                 pageToken = pageToken.ifEmpty { null },
                 // SDK 的默认值只含 RUNNING 与 ERROR，排队中的任务会从列表里消失
                 phaseFilter = ALL_PHASES,
-            )
+            ).also { if (pageToken.isEmpty()) lastTasks = current.account to it.tasks }
         }
     }
 
