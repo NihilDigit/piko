@@ -72,6 +72,7 @@ internal class MpvPlaybackBackend(
     private var videoOutputDisabled = false
     private var pendingLoad: Array<String>? = null
     private var released = false
+    private var observing = false
 
     // mpv 每个 loadfile 恰好对应一个 END_FILE，且按提交顺序到达。换片或停止前记下
     // 已提交的数量，此前的 END_FILE 都是我们自己替换掉的；超出部分才是当前文件异常结束。
@@ -124,7 +125,20 @@ internal class MpvPlaybackBackend(
         mpv.addObserver(this)
         mpv.addLogObserver(this)
         mpv.init()
+    }
 
+    /**
+     * 属性订阅推迟到第一次 open，不放在构造函数里。
+     *
+     * 后端通常在 remember 里构造，此时处于组合的快照中，下面这些 Compose state 是在这个尚未提交的
+     * 快照里创建的。订阅一注册，mpv 线程马上回报初始值（pause=false），写进的是全局快照；
+     * 等组合快照提交，它那份新建时的初值更新，把 mpv 写的值盖掉。pause 的初始值只报这一次，
+     * isPlaying 于是一直是 false，播放键点下去调的是 play()，看起来就是暂停不了。
+     * open 在协程里调用，那时组合早已提交。
+     */
+    private fun observePropertiesOnce() {
+        if (observing) return
+        observing = true
         mpv.observeProperty("time-pos", MpvFormat.MPV_FORMAT_DOUBLE)
         mpv.observeProperty("duration", MpvFormat.MPV_FORMAT_DOUBLE)
         mpv.observeProperty("demuxer-cache-time", MpvFormat.MPV_FORMAT_DOUBLE)
@@ -142,6 +156,7 @@ internal class MpvPlaybackBackend(
             is PlaybackTarget.LocalFile -> localUri(target.path) ?: return
             is PlaybackTarget.Url -> target.url
         }
+        observePropertiesOnce()
         val start = String.format(Locale.US, "%.3f", startMillis.coerceAtLeast(0L) / 1000.0)
         mpv.setPropertyBoolean("pause", !playWhenReady)
         positionMillis = startMillis.coerceAtLeast(0L)
