@@ -109,6 +109,13 @@ class PlayerScreenState(
         backend.videoAspect?.let { it > 1f } ?: mediaInfo?.isLandscapeVideo
     }
 
+    /** 同目录的视频，按自然顺序，由调用方取来填入。只有一项或为空时控件不给选集入口。 */
+    var playlist by mutableStateOf<List<PlaylistEntry>>(emptyList())
+
+    private val playlistIndex by derivedStateOf { playlist.indexOfFirst { it.fileId == fileId } }
+    val previousEntry by derivedStateOf { playlist.getOrNull(playlistIndex - 1)?.takeIf { playlistIndex > 0 } }
+    val nextEntry by derivedStateOf { playlist.getOrNull(playlistIndex + 1)?.takeIf { playlistIndex >= 0 } }
+
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val messages: SharedFlow<String> = _messages.asSharedFlow()
 
@@ -208,6 +215,19 @@ class PlayerScreenState(
         lastKnownPositionMillis = 0L
         resetRecovery()
         reload()
+    }
+
+    /** 点到正在放的那集只收起面板：它若是本地副本，按 fileId 重开会丢掉本地路径的提示并从头取流。 */
+    fun playEntry(entry: PlaylistEntry) {
+        if (entry.fileId != fileId) switchTo(entry.fileId, entry.name)
+    }
+
+    fun playPrevious() {
+        previousEntry?.let(::playEntry)
+    }
+
+    fun playNext() {
+        nextEntry?.let(::playEntry)
     }
 
     /** 播放途中才发现本机有完整副本（如下载刚完成），从当前位置换到本地文件。 */
@@ -315,6 +335,8 @@ class PlayerScreenState(
             PlaybackBackendEvent.Ended -> {
                 val key = positionKey
                 scope.launch { runCatchingNonCancel { repository.savePlaybackPosition(key, 0L) } }
+                // 放完接着放下一集。switchTo 会按片尾位置再存一次，而片尾位置存的也是 0
+                nextEntry?.let(::playEntry)
             }
 
             is PlaybackBackendEvent.Error -> onPlaybackError(event.detail)

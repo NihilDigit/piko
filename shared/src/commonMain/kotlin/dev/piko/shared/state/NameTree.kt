@@ -157,7 +157,7 @@ private const val TOKEN_END = "])}-_ "
 private const val BRACKET_CLOSE = "])}"
 private const val BRACKET_OPEN = "[({"
 
-private fun tokenize(name: String): List<String> {
+internal fun tokenize(name: String): List<String> {
     val tokens = mutableListOf<String>()
     val current = StringBuilder()
     var depth = 0

@@ -1,6 +1,7 @@
 package dev.piko.ui.screens.player
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -10,7 +11,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -26,41 +27,36 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeMute
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.BrightnessMedium
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalIconToggleButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -70,7 +66,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import io.github.nihildigit.pikpak.FileStat
 
 /**
  * 手势 HUD：竖滑显示亮度或音量，横滑显示目标时间与偏移量。
@@ -258,14 +253,13 @@ internal fun BoxScope.SpeedBoostCapsule(
 /**
  * 竖屏放横屏片子时的全屏入口，落在画面下方的黑边里。
  *
- * 全屏入口在底栏那排图标里太小也太远，这里给一个落在拇指位置的 Medium 按钮。
- * 位置随控件栏让路：控件栏出来时抬到它上面，收起后回到贴近画面的位置。
+ * 全屏入口在底栏那排图标里太远，这里在拇指位置再给一个。用 Small 规格：Medium 在黑边里
+ * 比中央的播放键还抢眼，而它只是个次要入口。位置由 [PlayerBottomStack] 统一安排。
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-internal fun BoxScope.FullscreenPromptButton(
+internal fun FullscreenPromptButton(
     visible: Boolean,
-    controlsVisible: Boolean,
     onClick: () -> Unit,
 ) {
     val motion = MaterialTheme.motionScheme
@@ -273,23 +267,15 @@ internal fun BoxScope.FullscreenPromptButton(
         visible = visible,
         enter = fadeIn(motion.defaultEffectsSpec()) + slideInVertically(motion.defaultSpatialSpec()) { it / 2 },
         exit = fadeOut(motion.fastEffectsSpec()) + slideOutVertically(motion.fastSpatialSpec()) { it / 2 },
-        modifier = Modifier
-            .align(Alignment.BottomCenter)
-            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
-            .padding(bottom = if (controlsVisible) 132.dp else 48.dp),
     ) {
-        Button(
-            onClick = onClick,
-            modifier = Modifier.height(ButtonDefaults.MediumContainerHeight),
-            contentPadding = ButtonDefaults.contentPaddingFor(ButtonDefaults.MediumContainerHeight),
-        ) {
+        Button(onClick = onClick, shapes = ButtonDefaults.shapes()) {
             Icon(
                 imageVector = Icons.Filled.Fullscreen,
                 contentDescription = null,
-                modifier = Modifier.size(ButtonDefaults.MediumIconSize),
+                modifier = Modifier.size(ButtonDefaults.IconSize),
             )
-            Spacer(Modifier.width(8.dp))
-            Text("全屏播放", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.width(ButtonDefaults.IconSpacing))
+            Text("全屏播放")
         }
     }
 }
@@ -298,39 +284,30 @@ internal fun BoxScope.FullscreenPromptButton(
  * 续播提示：「从 xx 继续播放」，附带「从头播放」。
  *
  * 形式上就是一条带操作的 Snackbar：短暂、不打断播放、只有一个操作，
- * 用 Snackbar 组件本身而不是自己拼一个胶囊。
+ * 用 Snackbar 组件本身而不是自己拼一个胶囊。位置由 [PlayerBottomStack] 统一安排。
  */
 @Composable
-internal fun BoxScope.ResumeTipCapsule(
+internal fun ResumeTipCapsule(
     visible: Boolean,
     resumedPositionMillis: Long,
-    isLandscape: Boolean,
-    controlsVisible: Boolean,
     onRestart: () -> Unit,
+    onDismiss: () -> Unit,
 ) {
     val motion = MaterialTheme.motionScheme
     AnimatedVisibility(
         visible = visible,
         enter = fadeIn(motion.defaultEffectsSpec()) + slideInVertically(motion.defaultSpatialSpec()) { it },
         exit = fadeOut(motion.fastEffectsSpec()) + slideOutVertically(motion.fastSpatialSpec()) { it },
-        modifier = Modifier
-            .align(Alignment.BottomStart)
-            .windowInsetsPadding(
-                WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom),
-            )
-            .padding(
-                start = 16.dp,
-                end = 16.dp,
-                bottom = when {
-                    controlsVisible && isLandscape -> 104.dp
-                    controlsVisible -> 120.dp
-                    else -> 16.dp
-                },
-            ),
     ) {
+        // 与 SnackbarHost 里 withDismissAction 的提示保持同一形态：操作之外再给一个关闭
         Snackbar(
             action = {
                 TextButton(onClick = onRestart) { Text("从头播放") }
+            },
+            dismissAction = {
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Filled.Close, contentDescription = "关闭")
+                }
             },
             modifier = Modifier.widthIn(max = 480.dp),
         ) {
@@ -340,80 +317,36 @@ internal fun BoxScope.ResumeTipCapsule(
 }
 
 /**
- * 同目录视频列表。播放中换片不必退回网盘列表再进来一次。
+ * 画面底部的提示区：消息提示、续播提示、全屏入口自上而下排成一列。
  *
- * 当前这条用 primaryContainer 标出来，并在打开时滚到它那里：一个目录里几十集的
- * 情况很常见，落在顶部等于每次都要自己翻。
+ * 三者原先各自按固定的底部间距定位，同时出现就会叠在一起。放进同一列后由布局
+ * 负责让位；整列在控件栏出现时抬到底栏上方，收起后落回贴近底边的位置。
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun PlayerPlaylistSheet(
-    videos: List<FileStat>,
-    currentFileId: String,
-    onSelect: (FileStat) -> Unit,
-    onDismiss: () -> Unit,
+internal fun BoxScope.PlayerBottomStack(
+    controlsVisible: Boolean,
+    isLandscape: Boolean,
+    content: @Composable ColumnScope.() -> Unit,
 ) {
-    val currentIndex = videos.indexOfFirst { it.id == currentFileId }.coerceAtLeast(0)
-    val listState = rememberLazyListState(initialFirstVisibleItemIndex = currentIndex)
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-    ) {
-        Text(
-            text = "同目录视频",
-            style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.padding(start = 24.dp, end = 24.dp, bottom = 8.dp),
-        )
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxWidth(),
-            contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
-        ) {
-            itemsIndexed(videos, key = { _, item -> item.id }) { index, video ->
-                val isCurrent = video.id == currentFileId
-                val contentColor = if (isCurrent) {
-                    MaterialTheme.colorScheme.onPrimaryContainer
-                } else {
-                    MaterialTheme.colorScheme.onSurface
-                }
-                Surface(
-                    onClick = { onSelect(video) },
-                    shape = MaterialTheme.shapes.large,
-                    color = if (isCurrent) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
-                    contentColor = contentColor,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = "${index + 1}",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = if (isCurrent) contentColor else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.width(36.dp),
-                        )
-                        Text(
-                            text = video.name,
-                            style = MaterialTheme.typography.bodyLarge,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f),
-                        )
-                        if (isCurrent) {
-                            Icon(
-                                imageVector = Icons.Filled.PlayArrow,
-                                contentDescription = "正在播放",
-                                modifier = Modifier.padding(start = 8.dp).size(20.dp),
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
+    val motion = MaterialTheme.motionScheme
+    val clearance by animateDpAsState(
+        targetValue = when {
+            controlsVisible && isLandscape -> BOTTOM_BAR_CLEARANCE_LANDSCAPE
+            controlsVisible -> BOTTOM_BAR_CLEARANCE_PORTRAIT
+            else -> 16.dp
+        },
+        animationSpec = motion.defaultSpatialSpec(),
+    )
+    Column(
+        modifier = Modifier
+            .align(Alignment.BottomCenter)
+            .fillMaxWidth()
+            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))
+            .padding(start = 16.dp, end = 16.dp, bottom = clearance),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        content = content,
+    )
 }
 
 /**
@@ -439,20 +372,6 @@ internal fun LockToggle(
             contentDescription = if (isLocked) "解锁屏幕" else "锁定屏幕",
         )
     }
-}
-
-/**
- * 加载指示。控件栏收起时单独显示在画面中央；控件栏展开时由播放键原位替代，不重复显示。
- */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-internal fun PlayerLoadingIndicator(modifier: Modifier = Modifier) {
-    LoadingIndicator(
-        modifier = modifier
-            .size(LOADING_INDICATOR_SIZE)
-            .semantics { liveRegion = LiveRegionMode.Polite },
-        color = MaterialTheme.colorScheme.primary,
-    )
 }
 
 /**
@@ -507,5 +426,6 @@ internal fun PlaybackErrorCard(
 }
 
 private const val HUD_CONTAINER_ALPHA = 0.9f
+private val BOTTOM_BAR_CLEARANCE_PORTRAIT = 120.dp
+private val BOTTOM_BAR_CLEARANCE_LANDSCAPE = 104.dp
 private const val DOUBLE_TAP_ARC_ALPHA = 0.16f
-private val LOADING_INDICATOR_SIZE = 64.dp

@@ -1,19 +1,30 @@
 package dev.piko.ui.screens.player
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -23,44 +34,36 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
-import androidx.compose.material.icons.filled.AspectRatio
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay10
-import androidx.compose.material.icons.outlined.HighQuality
-import androidx.compose.material.icons.outlined.Speed
-import androidx.compose.material3.ButtonGroupDefaults
-import androidx.compose.material3.ContainedLoadingIndicator
-import androidx.compose.material3.DropdownMenuGroup
-import androidx.compose.material3.DropdownMenuPopup
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.outlined.VideoLibrary
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.FilledIconToggleButton
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonColors
 import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.IconButtonShapes
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.MenuDefaults
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.PlainTooltip
-import androidx.compose.material3.SelectableDropdownMenuItem
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.SliderState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.ToggleButton
-import androidx.compose.material3.ToggleButtonDefaults
 import androidx.compose.material3.TooltipAnchorPosition
 import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -81,14 +84,18 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
-import dev.piko.shared.media.player.PlayerAspectRatio
 import kotlinx.coroutines.delay
 import java.math.BigDecimal
 import java.math.RoundingMode
@@ -97,28 +104,26 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
- * 播放器顶栏：返回、标题、画面比例、清晰度、同目录列表。
+ * 播放器顶栏：返回、标题与副标题、播放设置。
+ *
+ * 标题区单独包一层带 weight 的 Box：TooltipBox 不把 weight 的 parent data 交给 Row，
+ * 直接给它 weight 时标题按内容宽度摆放，右侧按钮会紧跟在标题后面，而不是贴到右边。
  *
  * 标题单行、中间省略：视频文件名的区分信息（集数、分辨率）通常在末尾，
  * 末尾省略会把几十集截成同一个前缀。完整标题在长按提示里。
+ * 按钮浮在视频上，规范要求带容器，否则对比度随画面变化没有保证。
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 internal fun PlayerTopBar(
     title: String,
+    episodeLabel: String?,
     isLocalPlayback: Boolean,
-    aspectRatio: PlayerAspectRatio?,
-    qualityOptions: List<String>,
-    currentQuality: String?,
-    showPlaylistEntry: Boolean,
-    onPlaylistClick: () -> Unit,
     onBackClick: () -> Unit,
-    onAspectRatioChange: (PlayerAspectRatio) -> Unit,
-    onQualityChange: (String) -> Unit,
     modifier: Modifier = Modifier,
-    onMenuOpenChange: (Boolean) -> Unit = {},
+    onSettingsClick: (() -> Unit)? = null,
 ) {
-    Box(
+    Row(
         modifier = modifier
             .fillMaxWidth()
             .background(Brush.verticalGradient(TopScrim))
@@ -127,86 +132,83 @@ internal fun PlayerTopBar(
             .windowInsetsPadding(
                 WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top),
             )
-            .padding(horizontal = 4.dp, vertical = 4.dp),
+            .padding(horizontal = 8.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            PlayerIconButton(
-                icon = Icons.AutoMirrored.Filled.ArrowBack,
-                label = "返回",
-                onClick = onBackClick,
-                tooltipBelow = true,
-            )
+        PlayerIconButton(
+            icon = Icons.AutoMirrored.Filled.ArrowBack,
+            label = "返回",
+            onClick = onBackClick,
+            tooltipBelow = true,
+            containerSize = IconButtonDefaults.smallContainerSize(IconButtonDefaults.IconButtonWidthOption.Narrow),
+        )
+        Box(Modifier.weight(1f).padding(horizontal = 12.dp)) {
             TooltipBox(
                 positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
                 tooltip = { PlainTooltip { Text(title) } },
                 state = rememberTooltipState(),
-                modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
             ) {
                 Column {
                     Text(
                         text = title,
-                        style = MaterialTheme.typography.titleMedium,
+                        style = MaterialTheme.typography.titleMediumEmphasized,
                         color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.MiddleEllipsis,
                     )
-                    if (isLocalPlayback) {
-                        Text(
-                            text = "本地文件",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                        )
+                    if (episodeLabel != null || isLocalPlayback) {
+                        Row(
+                            modifier = Modifier.padding(top = 2.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (episodeLabel != null) {
+                                Text(
+                                    text = episodeLabel,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                )
+                            }
+                            if (isLocalPlayback) LocalPlaybackBadge()
+                        }
                     }
                 }
             }
-
-            // 后端不支持画面比例时整个入口隐藏，避免点了没反应
-            if (aspectRatio != null) {
-                SelectionMenuButton(
-                    icon = Icons.Filled.AspectRatio,
-                    label = "画面比例",
-                    options = PlayerAspectRatio.entries,
-                    selected = aspectRatio,
-                    optionLabel = { it.label },
-                    onSelect = onAspectRatioChange,
-                    onOpenChange = onMenuOpenChange,
-                )
-            }
-
-            if (qualityOptions.isNotEmpty()) {
-                SelectionMenuButton(
-                    icon = Icons.Outlined.HighQuality,
-                    label = "清晰度",
-                    options = qualityOptions,
-                    selected = currentQuality,
-                    optionLabel = { it },
-                    onSelect = onQualityChange,
-                    onOpenChange = onMenuOpenChange,
-                )
-            }
-
-            if (showPlaylistEntry) {
-                PlayerIconButton(
-                    icon = Icons.AutoMirrored.Filled.PlaylistPlay,
-                    label = "同目录视频",
-                    onClick = onPlaylistClick,
-                    tooltipBelow = true,
-                )
-            }
+        }
+        if (onSettingsClick != null) {
+            PlayerIconButton(
+                icon = Icons.Outlined.Tune,
+                label = "播放设置",
+                onClick = onSettingsClick,
+                tooltipBelow = true,
+            )
         }
     }
 }
 
+@Composable
+private fun LocalPlaybackBadge() {
+    Surface(
+        shape = MaterialTheme.shapes.extraSmall,
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+    ) {
+        Text(
+            text = "本地文件",
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+        )
+    }
+}
+
 /**
- * 画面中央的播放控制：后退、播放/暂停、前进。
+ * 画面中央的播放控制：上一集、后退、播放/暂停、前进、下一集。
  *
- * 播放键用 Expressive 的可切换形状：暂停态为圆形，播放态为方角，状态变化本身有形变反馈。
- * 加载中播放键原位换成带容器的加载指示器，尺寸不变，三个按钮不会跳动。
- * 横屏画面大，用 Large 规格；竖屏画面只占屏幕中间一条，用 Medium。
+ * 尺寸拉开层级：播放键最大，快进快退次之，换集最小，与使用频率一致。
+ * 换集按钮在没有上一集或下一集时禁用而不是隐藏，整排不会跳动。
+ * [showSideButtons] 为 false 时只留播放键：控件收起而仍在加载时，它独自留在画面中央承载加载指示。
+ * 两侧按钮对称进出，播放键始终居中。
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -214,95 +216,244 @@ internal fun PlayerCenterControls(
     isPlaying: Boolean,
     isLoading: Boolean,
     isLandscape: Boolean,
+    showSideButtons: Boolean,
+    showEpisodeSkip: Boolean,
+    hasPrevious: Boolean,
+    hasNext: Boolean,
     onPlayPause: () -> Unit,
     onSeekBackward: () -> Unit,
     onSeekForward: () -> Unit,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val playContainer = if (isLandscape) {
-        IconButtonDefaults.largeContainerSize()
-    } else {
-        IconButtonDefaults.mediumContainerSize(IconButtonDefaults.IconButtonWidthOption.Wide)
-    }
-    val playIconSize = if (isLandscape) IconButtonDefaults.largeIconSize else IconButtonDefaults.mediumIconSize
-    val seekContainer = if (isLandscape) {
-        IconButtonDefaults.mediumContainerSize()
-    } else {
-        IconButtonDefaults.smallContainerSize()
-    }
-    val seekIconSize = if (isLandscape) IconButtonDefaults.mediumIconSize else IconButtonDefaults.smallIconSize
-    val shapes = if (isLandscape) {
-        IconButtonDefaults.toggleableShapes(
-            shape = IconButtonDefaults.largeRoundShape,
-            pressedShape = IconButtonDefaults.largePressedShape,
-            checkedShape = IconButtonDefaults.largeSquareShape,
-        )
-    } else {
-        IconButtonDefaults.toggleableShapes(
-            shape = IconButtonDefaults.mediumRoundShape,
-            pressedShape = IconButtonDefaults.mediumPressedShape,
-            checkedShape = IconButtonDefaults.mediumSquareShape,
-        )
+    val sizes = if (isLandscape) LandscapeCenterSizes else PortraitCenterSizes
+    val motion = MaterialTheme.motionScheme
+
+    @Composable
+    fun RowScope.Side(content: @Composable () -> Unit) {
+        AnimatedVisibility(
+            visible = showSideButtons,
+            enter = fadeIn(motion.defaultEffectsSpec()) + scaleIn(motion.defaultSpatialSpec(), initialScale = 0.6f),
+            exit = fadeOut(motion.fastEffectsSpec()) + scaleOut(motion.fastSpatialSpec(), targetScale = 0.6f),
+        ) {
+            content()
+        }
     }
 
     Row(
         modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(if (isLandscape) 32.dp else 24.dp),
+        horizontalArrangement = Arrangement.spacedBy(sizes.spacing),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        PlayerIconButton(
-            icon = Icons.Filled.Replay10,
-            label = "后退 ${SEEK_STEP_MILLIS / 1000} 秒",
-            onClick = onSeekBackward,
-            containerSize = seekContainer,
-            iconSize = seekIconSize,
-        )
-
-        Box(modifier = Modifier.size(playContainer), contentAlignment = Alignment.Center) {
-            if (isLoading) {
-                ContainedLoadingIndicator(
-                    modifier = Modifier.size(playContainer.height),
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    indicatorColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        if (showEpisodeSkip) {
+            Side {
+                PlayerIconButton(
+                    icon = Icons.Filled.SkipPrevious,
+                    label = "上一集",
+                    onClick = onPrevious,
+                    enabled = hasPrevious,
+                    containerSize = sizes.skipContainer(),
+                    iconSize = sizes.skipIcon,
                 )
-            } else {
-                FilledIconToggleButton(
-                    checked = isPlaying,
-                    onCheckedChange = { onPlayPause() },
-                    shapes = shapes,
-                    colors = IconButtonDefaults.filledIconToggleButtonColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        contentColor = MaterialTheme.colorScheme.onPrimary,
-                        checkedContainerColor = MaterialTheme.colorScheme.primary,
-                        checkedContentColor = MaterialTheme.colorScheme.onPrimary,
-                    ),
-                    modifier = Modifier.size(playContainer),
-                ) {
-                    Icon(
-                        imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                        contentDescription = if (isPlaying) "暂停" else "播放",
-                        modifier = Modifier.size(playIconSize),
-                    )
-                }
             }
         }
+        Side {
+            PlayerIconButton(
+                icon = Icons.Filled.Replay10,
+                label = "后退 ${SEEK_STEP_MILLIS / 1000} 秒",
+                onClick = onSeekBackward,
+                containerSize = sizes.seekContainer(),
+                iconSize = sizes.seekIcon,
+                shapes = sizes.seekShapes(),
+            )
+        }
 
-        PlayerIconButton(
-            icon = Icons.Filled.Forward10,
-            label = "前进 ${SEEK_STEP_MILLIS / 1000} 秒",
-            onClick = onSeekForward,
-            containerSize = seekContainer,
-            iconSize = seekIconSize,
+        PlayPauseButton(
+            isPlaying = isPlaying,
+            isLoading = isLoading,
+            size = sizes.playContainer(),
+            iconSize = sizes.playIcon,
+            squareCorner = sizes.playSquareCorner,
+            pressedCorner = sizes.playPressedCorner,
+            onClick = onPlayPause,
         )
+
+        Side {
+            PlayerIconButton(
+                icon = Icons.Filled.Forward10,
+                label = "前进 ${SEEK_STEP_MILLIS / 1000} 秒",
+                onClick = onSeekForward,
+                containerSize = sizes.seekContainer(),
+                iconSize = sizes.seekIcon,
+                shapes = sizes.seekShapes(),
+            )
+        }
+        if (showEpisodeSkip) {
+            Side {
+                PlayerIconButton(
+                    icon = Icons.Filled.SkipNext,
+                    label = "下一集",
+                    onClick = onNext,
+                    enabled = hasNext,
+                    containerSize = sizes.skipContainer(),
+                    iconSize = sizes.skipIcon,
+                )
+            }
+        }
     }
 }
 
 /**
- * 播放器底栏：进度条在上，时间、倍速、全屏在下。
+ * 播放键，加载时自己变成加载指示的容器，而不是在上面或旁边另叠一个指示器。
+ *
+ * 三种形态由同一个容器的形状、宽度、颜色连续过渡：暂停为圆形，播放为方角（与 toggle 按钮
+ * 选中态的形变一致），加载时收成正圆、换成 primaryContainer，里面是 Expressive 的形变
+ * LoadingIndicator。按下时圆角再收紧一级。形状与尺寸走 spatial 弹簧，颜色走 effects 弹簧，
+ * 与规范对两类属性的分工一致。
+ *
+ * 不用 FilledIconToggleButton：它的形状只在 checked 与 pressed 间切换，接不进第三种形态，
+ * 容器宽度也不能动画。加载中仍可点击，缓冲时暂停是合理操作。
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun PlayPauseButton(
+    isPlaying: Boolean,
+    isLoading: Boolean,
+    size: DpSize,
+    iconSize: Dp,
+    squareCorner: Dp,
+    pressedCorner: Dp,
+    onClick: () -> Unit,
+) {
+    val motion = MaterialTheme.motionScheme
+    val colors = MaterialTheme.colorScheme
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+
+    val roundCorner = size.height / 2
+    val corner by animateDpAsState(
+        targetValue = when {
+            isLoading -> roundCorner
+            pressed -> pressedCorner
+            isPlaying -> squareCorner
+            else -> roundCorner
+        },
+        animationSpec = motion.fastSpatialSpec(),
+    )
+    // 宽版容器在加载时收成正圆，指示器的形变图形在正圆里才居中匀称
+    val width by animateDpAsState(
+        targetValue = if (isLoading) size.height else size.width,
+        animationSpec = motion.defaultSpatialSpec(),
+    )
+    val containerColor by animateColorAsState(
+        targetValue = if (isLoading) colors.primaryContainer else colors.primary,
+        animationSpec = motion.defaultEffectsSpec(),
+    )
+    val contentColor = if (isLoading) colors.onPrimaryContainer else colors.onPrimary
+    val description = when {
+        isLoading -> "加载中"
+        isPlaying -> "暂停"
+        else -> "播放"
+    }
+
+    // 外框固定为静止尺寸，容器在里面伸缩，两侧按钮不会随之挪动
+    Box(Modifier.size(size), contentAlignment = Alignment.Center) {
+        Surface(
+            onClick = onClick,
+            shape = RoundedCornerShape(corner),
+            color = containerColor,
+            contentColor = contentColor,
+            interactionSource = interactionSource,
+            modifier = Modifier
+                .size(width, size.height)
+                .semantics {
+                    contentDescription = description
+                    if (isLoading) liveRegion = LiveRegionMode.Polite
+                },
+        ) {
+            AnimatedContent(
+                targetState = isLoading,
+                transitionSpec = {
+                    (fadeIn(motion.defaultEffectsSpec()) + scaleIn(motion.defaultSpatialSpec(), initialScale = 0.5f))
+                        .togetherWith(fadeOut(motion.fastEffectsSpec()) + scaleOut(motion.fastSpatialSpec(), targetScale = 0.5f))
+                },
+                contentAlignment = Alignment.Center,
+                label = "playLoading",
+            ) { loading ->
+                Box(contentAlignment = Alignment.Center) {
+                    if (loading) {
+                        LoadingIndicator(
+                            color = contentColor,
+                            modifier = Modifier.size(size.height * LOADING_INDICATOR_FRACTION),
+                        )
+                    } else {
+                        Icon(
+                            imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                            contentDescription = null,
+                            modifier = Modifier.size(iconSize),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 中央按钮组在两种方向下的规格。横屏画面大，播放键用 Large；竖屏画面只占屏幕中间一条，
+ * 整组降一级，360dp 宽的屏幕上五个按钮仍排得下。播放键的方角与按压圆角取自 icon button
+ * 规格（Large 为 28 与 16，Medium 为 16 与 12）。
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+private class CenterSizes(
+    val spacing: Dp,
+    val playContainer: @Composable () -> DpSize,
+    val playIcon: Dp,
+    val playSquareCorner: Dp,
+    val playPressedCorner: Dp,
+    val seekContainer: @Composable () -> DpSize,
+    val seekIcon: Dp,
+    val seekShapes: @Composable () -> IconButtonShapes,
+    val skipContainer: @Composable () -> DpSize,
+    val skipIcon: Dp,
+)
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+private val LandscapeCenterSizes = CenterSizes(
+    spacing = 24.dp,
+    playContainer = { IconButtonDefaults.largeContainerSize() },
+    playIcon = IconButtonDefaults.largeIconSize,
+    playSquareCorner = 28.dp,
+    playPressedCorner = 16.dp,
+    seekContainer = { IconButtonDefaults.mediumContainerSize() },
+    seekIcon = IconButtonDefaults.mediumIconSize,
+    seekShapes = { IconButtonDefaults.shapes(IconButtonDefaults.mediumRoundShape, IconButtonDefaults.mediumPressedShape) },
+    skipContainer = { IconButtonDefaults.smallContainerSize() },
+    skipIcon = IconButtonDefaults.smallIconSize,
+)
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+private val PortraitCenterSizes = CenterSizes(
+    spacing = 16.dp,
+    playContainer = { IconButtonDefaults.mediumContainerSize(IconButtonDefaults.IconButtonWidthOption.Wide) },
+    playIcon = IconButtonDefaults.mediumIconSize,
+    playSquareCorner = 16.dp,
+    playPressedCorner = 12.dp,
+    seekContainer = { IconButtonDefaults.smallContainerSize() },
+    seekIcon = IconButtonDefaults.smallIconSize,
+    seekShapes = { IconButtonDefaults.shapes() },
+    skipContainer = { IconButtonDefaults.extraSmallContainerSize() },
+    skipIcon = IconButtonDefaults.extraSmallIconSize,
+)
+
+/**
+ * 播放器底栏：进度条在上，时间与选集、倍速、全屏在下。
  *
  * 系统手势区的处理分两层：整栏让出 safeDrawing；进度条额外让出左右两侧的系统手势区，
  * 那里的横向拖动会被系统返回手势先拿走。按钮只响应点击，不受手势区影响，不必让。
  */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 internal fun PlayerBottomBar(
     isLandscape: Boolean,
@@ -310,8 +461,10 @@ internal fun PlayerBottomBar(
     durationMillis: Long,
     bufferedPositionMillis: Long,
     playbackSpeed: Float?,
+    showEpisodes: Boolean,
     onSeek: (Long) -> Unit,
     onSpeedClick: () -> Unit,
+    onEpisodesClick: () -> Unit,
     onToggleFullscreen: () -> Unit,
     modifier: Modifier = Modifier,
     onScrubbingChange: (Boolean) -> Unit = {},
@@ -326,7 +479,7 @@ internal fun PlayerBottomBar(
             .windowInsetsPadding(
                 WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom),
             )
-            .padding(horizontal = 12.dp, vertical = if (isLandscape) 4.dp else 8.dp),
+            .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = if (isLandscape) 8.dp else 12.dp),
     ) {
         PlayerSeekBar(
             positionMillis = positionMillis,
@@ -342,27 +495,35 @@ internal fun PlayerBottomBar(
                 .fillMaxWidth()
                 .windowInsetsPadding(WindowInsets.safeGestures.only(WindowInsetsSides.Horizontal)),
         )
-
+        Spacer(Modifier.height(4.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = formatTime(shownPosition),
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.padding(start = 4.dp),
-            )
-            Text(
-                text = " / ${formatTime(durationMillis)}",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                modifier = Modifier.weight(1f),
-            )
+            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = formatTime(shownPosition),
+                    style = TimeTextStyle(),
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = " / ${formatTime(durationMillis)}",
+                    style = TimeTextStyle(),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
 
             if (playbackSpeed != null) {
-                SpeedButton(speed = playbackSpeed, onClick = onSpeedClick)
+                PlayerChipButton(
+                    text = formatSpeed(playbackSpeed),
+                    onClick = onSpeedClick,
+                    modifier = Modifier.semantics { contentDescription = "倍速 ${formatSpeed(playbackSpeed)}" },
+                )
+            }
+            if (showEpisodes) {
+                PlayerChipButton(text = "选集", icon = Icons.Outlined.VideoLibrary, onClick = onEpisodesClick)
             }
             PlayerIconButton(
                 icon = if (isLandscape) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
@@ -370,6 +531,41 @@ internal fun PlayerBottomBar(
                 onClick = onToggleFullscreen,
             )
         }
+    }
+}
+
+/** 时间码用等宽数字：比例数字随秒数跳动，右侧按钮会跟着左右抖。 */
+@Composable
+private fun TimeTextStyle(): TextStyle =
+    MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum")
+
+/**
+ * 底栏的文字按钮。浮在视频上不能用无容器的 TextButton，改用 XS 高度的 tonal 按钮，
+ * 与旁边的图标按钮同为半透明容器，按压时有形变。
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun PlayerChipButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    icon: ImageVector? = null,
+) {
+    FilledTonalButton(
+        onClick = onClick,
+        shapes = ButtonDefaults.shapes(),
+        colors = ButtonDefaults.filledTonalButtonColors(
+            containerColor = playerContainerColor(),
+            contentColor = MaterialTheme.colorScheme.onSurface,
+        ),
+        contentPadding = ButtonDefaults.ExtraSmallContentPadding,
+        modifier = modifier.heightIn(min = ButtonDefaults.ExtraSmallContainerHeight),
+    ) {
+        if (icon != null) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(ButtonDefaults.ExtraSmallIconSize))
+            Spacer(Modifier.width(ButtonDefaults.ExtraSmallIconSpacing))
+        }
+        Text(text, style = MaterialTheme.typography.labelLarge, maxLines = 1)
     }
 }
 
@@ -480,7 +676,7 @@ internal fun PlayerSeekBar(
             Surface(
                 shape = MaterialTheme.shapes.small,
                 color = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.inverseOnSurface,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
                 modifier = Modifier.layout { measurable, constraints ->
                     val placeable = measurable.measure(constraints.copy(minWidth = 0, minHeight = 0))
                     val maxX = (constraints.maxWidth - placeable.width).coerceAtLeast(0)
@@ -490,7 +686,7 @@ internal fun PlayerSeekBar(
             ) {
                 Text(
                     text = formatTime((dragging * durationMillis).toLong()),
-                    style = MaterialTheme.typography.labelLarge,
+                    style = TimeTextStyle(),
                     fontWeight = FontWeight.Medium,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                 )
@@ -556,114 +752,22 @@ private fun DrawScope.drawTrackSegment(start: Float, end: Float, color: Color, s
     drawPath(path, color)
 }
 
-/** 底栏的倍速入口，直接显示当前倍速，1x 以外的值一眼可见。 */
+/** 浮在视频上的控件容器色。半透明：既保证图标对比度，又不整块挡住画面。 */
 @Composable
-private fun SpeedButton(speed: Float, onClick: () -> Unit) {
-    TextButton(onClick = onClick) {
-        Icon(
-            imageVector = Icons.Outlined.Speed,
-            contentDescription = null,
-            modifier = Modifier.size(18.dp),
-        )
-        Spacer(Modifier.width(6.dp))
-        Text(
-            text = formatSpeed(speed),
-            style = MaterialTheme.typography.labelLarge,
-            modifier = Modifier.semantics { contentDescription = "倍速 ${formatSpeed(speed)}" },
-        )
-    }
-}
+internal fun playerContainerColor(): Color =
+    MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = CONTAINER_ALPHA)
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun playerIconButtonColors(): IconButtonColors = IconButtonDefaults.filledTonalIconButtonColors(
+    containerColor = playerContainerColor(),
+    contentColor = MaterialTheme.colorScheme.onSurface,
+    disabledContainerColor = playerContainerColor().copy(alpha = CONTAINER_ALPHA / 2),
+    disabledContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = DISABLED_CONTENT_ALPHA),
+)
 
 /**
- * 倍速面板：连续滑块加一组常用值。
- *
- * 常用值用 Expressive 的连接式按钮组做单选，滑块负责预设之外的值，步进 0.05。
- * 滑块不设 stops：0.5 到 3.5 按 0.05 分是 59 个停止点，规范明确不建议过密。
- */
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-internal fun PlaybackSpeedSheet(
-    speed: Float,
-    onSpeedChange: (Float) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 24.dp, end = 24.dp, bottom = 24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text(
-                text = "播放倍速",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = formatSpeed(speed),
-                style = MaterialTheme.typography.displaySmall,
-                color = MaterialTheme.colorScheme.primary,
-            )
-            Spacer(Modifier.height(8.dp))
-            Slider(
-                value = speed,
-                onValueChange = { raw -> onSpeedChange((raw / SPEED_SLIDER_STEP).roundToInt() * SPEED_SLIDER_STEP) },
-                valueRange = MIN_SPEED..MAX_SPEED,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .semantics { contentDescription = "播放倍速" },
-            )
-            Row(modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    text = formatSpeed(MIN_SPEED),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    text = formatSpeed(MAX_SPEED),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Spacer(Modifier.height(16.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
-            ) {
-                PresetSpeeds.forEachIndexed { index, preset ->
-                    val checked = abs(speed - preset) < SPEED_MATCH_TOLERANCE
-                    ToggleButton(
-                        checked = checked,
-                        onCheckedChange = { onSpeedChange(preset) },
-                        shapes = when (index) {
-                            0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
-                            PresetSpeeds.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
-                            else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
-                        },
-                        colors = ToggleButtonDefaults.colors(),
-                        // 六个预设要在 360dp 宽的竖屏里排成一行，默认的 24dp 水平内边距放不下
-                        contentPadding = PaddingValues(horizontal = 0.dp),
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text(
-                            text = formatSpeedPreset(preset),
-                            maxLines = 1,
-                            style = MaterialTheme.typography.labelLarge,
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-/**
- * 带长按提示的图标按钮。
+ * 带长按提示与半透明容器的图标按钮。
  *
  * 控件栏全是纯图标按钮，提示是这类按钮在触屏上唯一的文字说明；
  * 触控目标由 IconButton 自带的最小交互尺寸保证不低于 48dp。
@@ -676,9 +780,9 @@ internal fun PlayerIconButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
-    tint: Color = Color.Unspecified,
-    containerSize: androidx.compose.ui.unit.DpSize? = null,
+    containerSize: DpSize? = null,
     iconSize: Dp = 24.dp,
+    shapes: IconButtonShapes = IconButtonDefaults.shapes(),
     tooltipBelow: Boolean = false,
 ) {
     TooltipBox(
@@ -689,90 +793,31 @@ internal fun PlayerIconButton(
         state = rememberTooltipState(),
         modifier = modifier,
     ) {
-        IconButton(
+        FilledTonalIconButton(
             onClick = onClick,
-            shapes = IconButtonDefaults.shapes(),
+            shapes = shapes,
+            colors = playerIconButtonColors(),
             enabled = enabled,
             modifier = if (containerSize != null) Modifier.size(containerSize) else Modifier,
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = label,
-                tint = if (tint == Color.Unspecified) MaterialTheme.colorScheme.onSurface else tint,
                 modifier = Modifier.size(iconSize),
             )
         }
     }
 }
 
-/**
- * 单选菜单入口。选中项用 Expressive 菜单的选中态标出（形状与配色变化加前置勾），
- * 不再在文字后面拼符号。
- */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-private fun <T> SelectionMenuButton(
-    icon: ImageVector,
-    label: String,
-    options: List<T>,
-    selected: T?,
-    optionLabel: (T) -> String,
-    onSelect: (T) -> Unit,
-    onOpenChange: (Boolean) -> Unit,
-) {
-    var expanded by remember { mutableStateOf(false) }
-    fun setExpanded(value: Boolean) {
-        expanded = value
-        onOpenChange(value)
-    }
-
-    Box {
-        PlayerIconButton(
-            icon = icon,
-            label = label,
-            onClick = { setExpanded(true) },
-            tooltipBelow = true,
-        )
-        DropdownMenuPopup(
-            expanded = expanded,
-            onDismissRequest = { setExpanded(false) },
-        ) {
-            DropdownMenuGroup(shapes = MenuDefaults.groupShape(0, 1)) {
-                options.forEachIndexed { index, option ->
-                    SelectableDropdownMenuItem(
-                        selected = option == selected,
-                        onClick = {
-                            setExpanded(false)
-                            onSelect(option)
-                        },
-                        text = { Text(optionLabel(option)) },
-                        shapes = MenuDefaults.itemShape(index, options.size),
-                        selectedLeadingIcon = {
-                            Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(20.dp))
-                        },
-                    )
-                }
-            }
-        }
-    }
-}
-
-internal val PlayerAspectRatio.label: String
-    get() = when (this) {
-        PlayerAspectRatio.Fit -> "适应屏幕"
-        PlayerAspectRatio.Crop -> "裁剪填充"
-        PlayerAspectRatio.Stretch -> "拉伸全屏"
-    }
-
 private val TopScrim = listOf(
-    Color.Black.copy(alpha = 0.8f),
-    Color.Black.copy(alpha = 0.4f),
+    Color.Black.copy(alpha = 0.7f),
+    Color.Black.copy(alpha = 0.3f),
     Color.Transparent,
 )
 private val BottomScrim = listOf(
     Color.Transparent,
-    Color.Black.copy(alpha = 0.5f),
-    Color.Black.copy(alpha = 0.85f),
+    Color.Black.copy(alpha = 0.45f),
+    Color.Black.copy(alpha = 0.8f),
 )
 
 // 以下几何取自 SliderTokens（XS 规格）：轨道高、手柄宽、手柄与轨道间隙、停止点直径；
@@ -783,6 +828,9 @@ private val SeekThumbTrackGap = 6.dp
 private val SeekStopIndicatorSize = 4.dp
 private val SeekTrackInsideCorner = 2.dp
 
+private const val CONTAINER_ALPHA = 0.72f
+private const val LOADING_INDICATOR_FRACTION = 0.75f
+private const val DISABLED_CONTENT_ALPHA = 0.38f
 private const val BUFFERED_ALPHA = 0.38f
 private const val SEEK_SETTLE_TOLERANCE_MILLIS = 1_500L
 private const val SEEK_SETTLE_TIMEOUT_MILLIS = 1_500L
@@ -791,15 +839,11 @@ internal const val SEEK_STEP_MILLIS = 10_000L
 internal const val MIN_SPEED = 0.5f
 internal const val MAX_SPEED = 3.5f
 internal const val LONG_PRESS_BOOST_SPEED = 2.0f
-private const val SPEED_SLIDER_STEP = 0.05f
-private const val SPEED_MATCH_TOLERANCE = 0.005f
-
-private val PresetSpeeds = listOf(0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 3.0f)
 
 internal fun formatSpeed(speed: Float): String = formatSpeedPreset(speed) + "x"
 
 // 按两位小数取整后去掉末尾的 0：1.00 显示为 1，1.50 显示为 1.5
-private fun formatSpeedPreset(speed: Float): String =
+internal fun formatSpeedPreset(speed: Float): String =
     BigDecimal(speed.toDouble()).setScale(2, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString()
 
 internal fun formatTime(millis: Long): String {

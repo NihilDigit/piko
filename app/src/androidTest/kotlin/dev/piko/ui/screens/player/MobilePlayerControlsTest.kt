@@ -62,7 +62,7 @@ class MobilePlayerControlsTest {
     @Test
     fun doubleTapSeeksTowardTheTappedSide() {
         setControls()
-        // 25% 而不是更靠边：左缘中部是锁定键
+        // 锁定键在右缘中部，GESTURE_Y_FRACTION 的高度已避开它
         rule.onRoot().performTouchInput { doubleClick(Offset(width * 0.25f, height * GESTURE_Y_FRACTION)) }
         rule.onRoot().performTouchInput { doubleClick(Offset(width * 0.9f, height * GESTURE_Y_FRACTION)) }
         rule.waitForIdle()

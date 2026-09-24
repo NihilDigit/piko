@@ -26,11 +26,14 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import dev.piko.PikoApplication
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.download.DownloadStatus
 import dev.piko.shared.media.player.PlayerScreenState
+import dev.piko.shared.media.player.PlaylistEntry
+import dev.piko.shared.media.player.buildPlaylist
 import io.github.nihildigit.pikpak.FileStat
 import java.io.File
 
@@ -83,14 +86,17 @@ fun MediampVideoPlayerScreen(
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val orientationController = rememberOrientationController()
     val snackbarHostState = remember { SnackbarHostState() }
+    val isSpoilerBlurEnabled by app.sessionManager.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = true)
 
-    var showPlaylist by remember { mutableStateOf(false) }
     LaunchedEffect(initialFileId) {
         val parentId = driveRepo.getFileDetail(initialFileId).getOrNull()?.parentId ?: return@LaunchedEffect
         siblingVideos = driveRepo.listAllFiles(parentId)
             .getOrNull()
             .orEmpty()
             .filter { it.isPlayableVideo() }
+        state.playlist = buildPlaylist(
+            siblingVideos.map { PlaylistEntry(fileId = it.id, name = it.name, label = "", thumbnailUrl = it.thumbnailLink) },
+        )
     }
 
     // 内存任务表 App 重启就空：同目录元数据到了之后，用磁盘再验一次，
@@ -133,7 +139,6 @@ fun MediampVideoPlayerScreen(
         orientationController.resetOrientation()
         onBackClick()
     }
-    val showPlaylistEntry = siblingVideos.size > 1
 
     Box(modifier.fillMaxSize().background(Color.Black)) {
         if (state.isImage) {
@@ -145,15 +150,9 @@ fun MediampVideoPlayerScreen(
             PlayerTheme {
                 PlayerTopBar(
                     title = state.title,
+                    episodeLabel = null,
                     isLocalPlayback = state.isLocalPlayback,
-                    aspectRatio = null,
-                    qualityOptions = emptyList(),
-                    currentQuality = null,
-                    showPlaylistEntry = false,
-                    onPlaylistClick = {},
                     onBackClick = leave,
-                    onAspectRatioChange = {},
-                    onQualityChange = {},
                     modifier = Modifier.align(Alignment.TopCenter),
                 )
             }
@@ -184,28 +183,16 @@ fun MediampVideoPlayerScreen(
                 onBack = leave,
                 onToggleFullscreen = { orientationController.toggleOrientation(isLandscape) },
                 isLandscapeVideo = state.isLandscapeVideo,
-                showPlaylistEntry = showPlaylistEntry,
-                onPlaylistClick = { showPlaylist = true },
+                playlist = state.playlist,
+                currentFileId = state.fileId,
+                hasPrevious = state.previousEntry != null,
+                hasNext = state.nextEntry != null,
+                onPrevious = state::playPrevious,
+                onNext = state::playNext,
+                onSelectEntry = state::playEntry,
+                hideEpisodeThumbnails = isSpoilerBlurEnabled,
+                snackbarHost = { SnackbarHost(snackbarHostState) },
             )
-        }
-
-        SnackbarHost(
-            hostState = snackbarHostState,
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 96.dp),
-        )
-
-        if (showPlaylist) {
-            PlayerTheme {
-                PlayerPlaylistSheet(
-                    videos = siblingVideos,
-                    currentFileId = state.fileId,
-                    onSelect = { target ->
-                        showPlaylist = false
-                        state.switchTo(target.id, target.name, completedDownloadPath(target.id))
-                    },
-                    onDismiss = { showPlaylist = false },
-                )
-            }
         }
     }
 }

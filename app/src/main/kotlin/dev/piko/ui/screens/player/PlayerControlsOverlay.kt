@@ -30,6 +30,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.media.player.PlayerAspectRatio
+import dev.piko.shared.media.player.PlaylistEntry
 import kotlinx.coroutines.delay
 
 /**
@@ -38,7 +39,7 @@ import kotlinx.coroutines.delay
  * 无状态于播放器：只接收下面这组基础类型的值与回调，不引用任何播放器对象。
  * Desktop 的 FluentPlayerControls 接收同一组值与回调，两端可由同一个 shared state holder 驱动。
  * 这里自己持有的只有纯界面状态：控件显隐与自动隐藏计时、锁定、手势 HUD、双击累计、
- * 长按加速、续播提示计时、菜单与倍速面板的开合。
+ * 长按加速、续播提示计时、选集与设置面板的开合。
  *
  * 平台附加项：亮度与系统音量由手势层直接改窗口与 AudioManager；横竖屏由 [onToggleFullscreen]
  * 交给调用方的 ScreenOrientationController；[isLandscapeVideo] 决定竖屏时是否给出全屏入口。
@@ -71,8 +72,16 @@ fun MobilePlayerControls(
     onToggleFullscreen: () -> Unit,
     modifier: Modifier = Modifier,
     isLandscapeVideo: Boolean? = null,
-    showPlaylistEntry: Boolean = false,
-    onPlaylistClick: () -> Unit = {},
+    playlist: List<PlaylistEntry> = emptyList(),
+    currentFileId: String = "",
+    hasPrevious: Boolean = false,
+    hasNext: Boolean = false,
+    onPrevious: () -> Unit = {},
+    onNext: () -> Unit = {},
+    onSelectEntry: (PlaylistEntry) -> Unit = {},
+    hideEpisodeThumbnails: Boolean = true,
+    // 调用方的消息提示放进底部提示区，与续播提示、全屏入口一起排布，不各自定位
+    snackbarHost: @Composable () -> Unit = {},
 ) {
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val context = LocalContext.current
@@ -87,8 +96,7 @@ fun MobilePlayerControls(
     var isLocked by remember { mutableStateOf(false) }
     var activeGesture by remember { mutableStateOf<PlayerGesture?>(null) }
     var isScrubbing by remember { mutableStateOf(false) }
-    var isMenuOpen by remember { mutableStateOf(false) }
-    var showSpeedSheet by remember { mutableStateOf(false) }
+    var openSheet by remember { mutableStateOf<PlayerSheet?>(null) }
     // 每次用户操作控件时加一，让自动隐藏重新计时
     var interactionCount by remember { mutableIntStateOf(0) }
 
@@ -123,7 +131,7 @@ fun MobilePlayerControls(
             containsControls = true,
         ) ?: CONTROLS_HIDE_DELAY_MILLIS
     }
-    val holdControls = !isPlaying || isScrubbing || isMenuOpen || showSpeedSheet || errorMessage != null
+    val holdControls = !isPlaying || isScrubbing || openSheet != null || errorMessage != null
     LaunchedEffect(controlsVisible, holdControls, interactionCount, hideDelayMillis) {
         if (controlsVisible && !holdControls && hideDelayMillis != Long.MAX_VALUE) {
             delay(hideDelayMillis)
@@ -150,6 +158,11 @@ fun MobilePlayerControls(
     }
 
     val chromeVisible = controlsVisible && !isLocked
+    val hasPlaylist = playlist.size > 1
+    // 显示区分段而不是「第几个 / 共几个」：目录里混着剧场版与特典时，序号对不上集数
+    val episodeLabel = playlist.find { it.fileId == currentFileId }
+        ?.takeIf { hasPlaylist && it.label.length <= SUBTITLE_LABEL_MAX_LENGTH }
+        ?.label
 
     PlayerTheme {
         val motion = MaterialTheme.motionScheme
@@ -194,10 +207,6 @@ fun MobilePlayerControls(
                 },
             )
 
-            if (isLoading && !chromeVisible && errorMessage == null) {
-                PlayerLoadingIndicator(Modifier.align(Alignment.Center))
-            }
-
             activeGesture?.let { PlayerGestureHud(it, durationMillis) }
 
             AnimatedVisibility(
@@ -211,23 +220,23 @@ fun MobilePlayerControls(
 
             SpeedBoostCapsule(visible = isBoosting, isLandscape = isLandscape, speed = LONG_PRESS_BOOST_SPEED)
 
-            // 竖屏放横屏片子时画面只占中间一条，下面整片黑边闲着，这里给一个大目标
-            FullscreenPromptButton(
-                visible = !isLocked && !isLandscape && isLandscapeVideo == true && errorMessage == null,
-                controlsVisible = chromeVisible,
-                onClick = onToggleFullscreen,
-            )
-
-            if (resumedFromMillis != null) {
-                ResumeTipCapsule(
-                    visible = showResumeTip && !isLocked,
-                    resumedPositionMillis = resumedFromMillis,
-                    isLandscape = isLandscape,
-                    controlsVisible = chromeVisible,
-                    onRestart = {
-                        onRestartFromBeginning()
-                        showResumeTip = false
-                    },
+            PlayerBottomStack(controlsVisible = chromeVisible, isLandscape = isLandscape) {
+                snackbarHost()
+                if (resumedFromMillis != null) {
+                    ResumeTipCapsule(
+                        visible = showResumeTip && !isLocked,
+                        resumedPositionMillis = resumedFromMillis,
+                        onRestart = {
+                            onRestartFromBeginning()
+                            showResumeTip = false
+                        },
+                        onDismiss = { showResumeTip = false },
+                    )
+                }
+                // 竖屏放横屏片子时画面只占中间一条，下面整片黑边闲着，这里再给一个全屏入口
+                FullscreenPromptButton(
+                    visible = !isLocked && !isLandscape && isLandscapeVideo == true && errorMessage == null,
+                    onClick = onToggleFullscreen,
                 )
             }
 
@@ -240,42 +249,15 @@ fun MobilePlayerControls(
                 Box(Modifier.fillMaxSize()) {
                     PlayerTopBar(
                         title = title,
+                        episodeLabel = episodeLabel,
                         isLocalPlayback = isLocalPlayback,
-                        aspectRatio = aspectRatio,
-                        qualityOptions = qualityOptions,
-                        currentQuality = currentQuality,
-                        showPlaylistEntry = showPlaylistEntry,
-                        onPlaylistClick = {
-                            interacted()
-                            onPlaylistClick()
-                        },
                         onBackClick = onBack,
-                        onAspectRatioChange = {
+                        onSettingsClick = {
                             interacted()
-                            onAspectRatioChange(it)
-                        },
-                        onQualityChange = {
-                            interacted()
-                            onQualityChange(it)
-                        },
-                        onMenuOpenChange = { isMenuOpen = it },
+                            openSheet = PlayerSheet.Settings
+                        }.takeIf { playbackSpeed != null || qualityOptions.isNotEmpty() || aspectRatio != null },
                         modifier = Modifier.align(Alignment.TopCenter),
                     )
-
-                    if (activeGesture == null && errorMessage == null) {
-                        PlayerCenterControls(
-                            isPlaying = isPlaying,
-                            isLoading = isLoading,
-                            isLandscape = isLandscape,
-                            onPlayPause = {
-                                interacted()
-                                onPlayPause()
-                            },
-                            onSeekBackward = { seekBy(-SEEK_STEP_MILLIS) },
-                            onSeekForward = { seekBy(SEEK_STEP_MILLIS) },
-                            modifier = Modifier.align(Alignment.Center),
-                        )
-                    }
 
                     PlayerBottomBar(
                         isLandscape = isLandscape,
@@ -283,11 +265,13 @@ fun MobilePlayerControls(
                         durationMillis = durationMillis,
                         bufferedPositionMillis = bufferedPositionMillis,
                         playbackSpeed = playbackSpeed,
+                        showEpisodes = hasPlaylist,
                         onSeek = {
                             interacted()
                             onSeek(it)
                         },
-                        onSpeedClick = { showSpeedSheet = true },
+                        onSpeedClick = { openSheet = PlayerSheet.Speed },
+                        onEpisodesClick = { openSheet = PlayerSheet.Episodes },
                         onToggleFullscreen = {
                             interacted()
                             onToggleFullscreen()
@@ -298,15 +282,53 @@ fun MobilePlayerControls(
                 }
             }
 
+            // 中央按钮组不在控件栏的淡入淡出里：加载时播放键要单独留在画面中央，变形后承载加载指示，
+            // 不再另叠一个指示器。两侧按钮随控件栏显隐，由组件自己处理
+            AnimatedVisibility(
+                visible = (chromeVisible || isLoading) && activeGesture == null && errorMessage == null,
+                enter = fadeIn(motion.defaultEffectsSpec()),
+                exit = fadeOut(motion.fastEffectsSpec()),
+                modifier = Modifier.align(Alignment.Center),
+            ) {
+                PlayerCenterControls(
+                    isPlaying = isPlaying,
+                    isLoading = isLoading,
+                    isLandscape = isLandscape,
+                    showSideButtons = chromeVisible,
+                    showEpisodeSkip = hasPlaylist,
+                    hasPrevious = hasPrevious,
+                    hasNext = hasNext,
+                    onPlayPause = {
+                        // 控件收起时只剩这个按钮在转，点它先唤出控件，与点画面其他地方一致
+                        if (chromeVisible) {
+                            interacted()
+                            onPlayPause()
+                        } else {
+                            controlsVisible = true
+                        }
+                    },
+                    onSeekBackward = { seekBy(-SEEK_STEP_MILLIS) },
+                    onSeekForward = { seekBy(SEEK_STEP_MILLIS) },
+                    onPrevious = {
+                        interacted()
+                        onPrevious()
+                    },
+                    onNext = {
+                        interacted()
+                        onNext()
+                    },
+                )
+            }
+
             // 锁定键跟随控件栏显隐；锁定后单击只唤出它自己
             AnimatedVisibility(
                 visible = controlsVisible && errorMessage == null,
                 enter = fadeIn(motion.defaultEffectsSpec()),
                 exit = fadeOut(motion.fastEffectsSpec()),
                 modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Start))
-                    .padding(start = 16.dp),
+                    .align(Alignment.CenterEnd)
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.End))
+                    .padding(end = 16.dp),
             ) {
                 LockToggle(
                     isLocked = isLocked,
@@ -326,12 +348,37 @@ fun MobilePlayerControls(
                 )
             }
 
-            if (showSpeedSheet && playbackSpeed != null) {
-                PlaybackSpeedSheet(
-                    speed = playbackSpeed,
-                    onSpeedChange = onSpeedChange,
-                    onDismiss = { showSpeedSheet = false },
-                )
+            PlayerSheetHost(
+                sheet = openSheet,
+                isLandscape = isLandscape,
+                onDismiss = { openSheet = null },
+            ) { sheet ->
+                when (sheet) {
+                    PlayerSheet.Episodes -> EpisodePanel(
+                        entries = playlist,
+                        currentFileId = currentFileId,
+                        hideThumbnails = hideEpisodeThumbnails,
+                        onSelect = {
+                            openSheet = null
+                            onSelectEntry(it)
+                        },
+                    )
+                    PlayerSheet.Speed -> if (playbackSpeed != null) {
+                        PlaybackSpeedPanel(playbackSpeed = playbackSpeed, onSpeedChange = onSpeedChange)
+                    }
+                    PlayerSheet.Settings -> PlayerSettingsPanel(
+                        playbackSpeed = playbackSpeed,
+                        onSpeedChange = onSpeedChange,
+                        qualityOptions = qualityOptions,
+                        currentQuality = currentQuality,
+                        onQualityChange = {
+                            openSheet = null
+                            onQualityChange(it)
+                        },
+                        aspectRatio = aspectRatio,
+                        onAspectRatioChange = onAspectRatioChange,
+                    )
+                }
             }
         }
     }
@@ -340,3 +387,4 @@ fun MobilePlayerControls(
 private const val CONTROLS_HIDE_DELAY_MILLIS = 4_500L
 private const val RESUME_TIP_DURATION_MILLIS = 5_000L
 private const val DOUBLE_TAP_FEEDBACK_MILLIS = 700L
+private const val SUBTITLE_LABEL_MAX_LENGTH = 16
