@@ -331,8 +331,8 @@ internal fun PlayerCenterControls(
 /**
  * 播放键，加载时自己变成加载指示的容器，而不是在上面或旁边另叠一个指示器。
  *
- * 三种形态由同一个容器的形状、宽度、颜色连续过渡：暂停为圆形，播放为方角（与 toggle 按钮
- * 选中态的形变一致），加载时收成正圆、换成 primaryContainer，里面是 Expressive 的形变
+ * 三种形态由同一个容器的形状、宽度、颜色连续过渡：暂停为正圆，播放为展宽的方角（与 toggle 按钮
+ * 选中态的形变一致），加载时也是正圆、换成 primaryContainer，里面是 Expressive 的形变
  * LoadingIndicator。按下时圆角再收紧一级。形状与尺寸走 spatial 弹簧，颜色走 effects 弹簧，
  * 与规范对两类属性的分工一致。
  *
@@ -366,9 +366,11 @@ private fun PlayPauseButton(
         },
         animationSpec = motion.fastSpatialSpec(),
     )
-    // 宽版容器在加载时收成正圆，指示器的形变图形在正圆里才居中匀称
+    // 圆形态（暂停、加载）收成正圆，不是两头圆的胶囊；方角形态（播放中）才展开到 [size] 的宽度。
+    // 按下只收紧圆角不动宽度，否则按一下左右抖
+    val isRoundForm = isLoading || !isPlaying
     val width by animateDpAsState(
-        targetValue = if (isLoading) size.height else size.width,
+        targetValue = if (isRoundForm) size.height else size.width,
         animationSpec = motion.defaultSpatialSpec(),
     )
     val containerColor by animateColorAsState(
