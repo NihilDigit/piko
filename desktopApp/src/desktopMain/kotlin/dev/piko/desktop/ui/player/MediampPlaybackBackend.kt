@@ -105,6 +105,10 @@ internal class MediampPlaybackBackend(
 
     init {
         mpv?.setPropertyString("slang", MPV_SUBTITLE_LANGUAGES)
+        // libass 缺字时经 DirectWrite 找回退字体，传的语言是空串，非中文系统上给汉字挑的多是日文字体：
+        // 繁体字在里面有，「这」「们」这类简体字没有，回退失败后落到 sub-font。默认的 sans-serif 也不含中文，
+        // 简体字幕就缺字。换成雅黑，简繁都全，Windows 各语言版都自带
+        mpv?.setPropertyString("sub-font", SUBTITLE_FALLBACK_FONT)
         scope.launch { player.currentPositionMillis.collect { positionMillis = it } }
         metadataFeature?.let { feature ->
             // MediaMP 自己读的轨道丢了音轨语言与外挂标志，只拿它的变化当通知，列表从 mpv 重读
@@ -263,6 +267,8 @@ private fun AspectRatioMode.toShared(): PlayerAspectRatio = when (this) {
 private fun mpvHandleOf(player: MediampPlayer): MPVHandle? = runCatching {
     JvmMpvMediampPlayer::class.java.getMethod("getHandle" + "$" + "mediamp_mpv").invoke(player) as? MPVHandle
 }.getOrNull()
+
+private const val SUBTITLE_FALLBACK_FONT = "Microsoft YaHei"
 
 /** 句柄取不到时退回 MediaMP 读的轨道：音轨没有语言，也分不出外挂。 */
 private fun snapshotOf(feature: MediaMetadata, audio: List<AudioTrack>, subtitles: List<SubtitleTrack>) = MpvTrackSnapshot(
