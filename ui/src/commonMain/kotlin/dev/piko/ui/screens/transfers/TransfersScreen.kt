@@ -72,18 +72,19 @@ fun TransfersScreen(
     val scope = rememberCoroutineScope()
     val services = LocalPikoServices.current
     val state = remember {
-        TransfersState(services.downloadManager, services.taskRepository, scope)
+        TransfersState(services.downloadManager, services.taskRepository, services.offlinePacks, scope)
     }
     val snackbarHostState = remember { SnackbarHostState() }
     // 找不到文件的提示走本页的 Snackbar，不用系统 Toast：Toast 不跟随 M3 主题与配色
-    val openCloudFile = { task: OfflineTask ->
+    val openCloudFileById = { fileId: String, fileName: String ->
         scope.launch {
-            if (!onOpenCloudFile(task.fileId, task.fileName)) {
+            if (!onOpenCloudFile(fileId, fileName)) {
                 snackbarHostState.showSnackbar("文件已不存在", withDismissAction = true)
             }
         }
         Unit
     }
+    val openCloudFile = { task: OfflineTask -> openCloudFileById(task.fileId, task.fileName) }
     // 下载与网盘同受防窥开关约束。逐项揭示只在本次查看内有效，与网盘页的做法一致
     val isSpoilerBlurEnabled by services.preferences.spoilerBlurFlow
         .collectAsStateWithLifecycle(initialValue = true)
@@ -153,6 +154,13 @@ fun TransfersScreen(
                                 onMoreClick = { detailsKey = item.key },
                                 modifier = itemModifier,
                             )
+                            is TransferItem.Pack -> PackTransferRow(
+                                item = item,
+                                onOpen = { openCloudFileById(item.job.outputId, item.job.folderName) },
+                                onRetry = { state.retryPack(item.job.taskId) },
+                                onMoreClick = { detailsKey = item.key },
+                                modifier = itemModifier,
+                            )
                         }
                     }
                     transferSection("进行中", state.inProgress, renderItem)
@@ -214,6 +222,13 @@ fun TransfersScreen(
             onResubmit = resubmitAction(detailsItem.task),
             onDelete = { state.deleteCloud(detailsItem.task.id) },
             onOpen = { openCloudFile(detailsItem.task) },
+            onDismiss = closeDetails,
+        )
+        is TransferItem.Pack -> PackTransferSheet(
+            item = detailsItem,
+            onOpen = { openCloudFileById(detailsItem.job.outputId, detailsItem.job.folderName) },
+            onRetry = { state.retryPack(detailsItem.job.taskId) },
+            onDiscard = { state.discardPack(detailsItem.job.taskId) },
             onDismiss = closeDetails,
         )
     }

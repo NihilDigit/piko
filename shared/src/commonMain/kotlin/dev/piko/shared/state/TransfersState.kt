@@ -6,12 +6,17 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
+import dev.piko.shared.data.OfflinePackJob
+import dev.piko.shared.data.OfflinePackStage
+import dev.piko.shared.data.OfflinePackTracker
 import dev.piko.shared.data.TaskRepository
 import dev.piko.shared.download.PikoDownloadCoordinator
 import io.github.nihildigit.pikpak.OfflineTask
 import io.github.nihildigit.pikpak.TaskPhase
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.days
@@ -32,6 +37,18 @@ sealed interface TransferItem {
         override val key: String get() = "cloud:${task.id}"
         override val createdAtMs: Long get() = parseEpochMillis(task.createdTime) ?: 0L
     }
+
+    /**
+     * 整包离线：一个云端任务加上完成后的清理与改名。[task] 是传输页列表里同一任务的快照，
+     * 可见期间它每 4 秒刷新一次，下载进度取它的；跟踪器按退避轮询，不够及时。
+     */
+    data class Pack(val job: OfflinePackJob, val task: OfflineTask?) : TransferItem {
+        // 与 Cloud 同一命名空间：同一任务只该出现一次
+        override val key: String get() = "cloud:${job.taskId}"
+        override val createdAtMs: Long get() = job.createdAtMs
+
+        val progress: Int get() = if (task?.phase == TaskPhase.RUNNING) task.progress else job.progress
+    }
 }
 
 /**
@@ -45,14 +62,19 @@ sealed interface TransferItem {
 class TransfersState(
     private val coordinator: PikoDownloadCoordinator,
     taskRepo: TaskRepository,
+    private val packTracker: OfflinePackTracker,
     private val scope: CoroutineScope,
 ) {
     private val cloud = OfflineTasksState(taskRepo, scope)
 
     private var localTasks by mutableStateOf(coordinator.tasks.value.values.toList())
 
-    /** 操作失败等提示。目前只有云端操作会失败，本地任务的失败体现在任务状态上。 */
-    val messages: SharedFlow<String> get() = cloud.messages
+    private var packJobs by mutableStateOf(packTracker.jobs.value)
+
+    private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
+
+    /** 操作失败等提示。本地任务的失败体现在任务状态上，不走这里。 */
+    val messages: SharedFlow<String> = _messages.asSharedFlow()
 
     /** 云端列表尚未取回过。此时三段都空也不该显示空状态。 */
     val isLoading: Boolean get() = cloud.isLoading
@@ -64,6 +86,7 @@ class TransfersState(
         section(
             localFilter = { it.status in IN_PROGRESS_LOCAL },
             cloudFilter = { it.phase == TaskPhase.PENDING || it.phase == TaskPhase.RUNNING },
+            packFilter = { it.isActive },
         )
     }
 
@@ -71,12 +94,13 @@ class TransfersState(
         section(
             localFilter = { it.status == DownloadStatus.FAILED },
             cloudFilter = { it.phase == TaskPhase.ERROR && !it.isOutputDeleted },
+            packFilter = { it.stage == OfflinePackStage.FAILED },
         )
     }
 
     /** 已完成但产出文件后来被删的云端任务。不是失败，排在最后弱化显示。 */
     val outputDeleted: List<TransferItem> by derivedStateOf {
-        section(localFilter = { false }, cloudFilter = { it.isOutputDeleted })
+        section(localFilter = { false }, cloudFilter = { it.isOutputDeleted }, packFilter = { false })
     }
 
     // 窗口起点在重算时取当前时刻，不随时钟自行推进；任务表一变就会重算，
@@ -89,6 +113,7 @@ class TransfersState(
                 val finishedAt = parseEpochMillis(task.updatedTime)
                 task.phase == TaskPhase.COMPLETE && finishedAt != null && finishedAt >= windowStartMs
             },
+            packFilter = { it.stage == OfflinePackStage.DONE && it.finishedAtMs >= windowStartMs },
         )
     }
 
@@ -99,6 +124,12 @@ class TransfersState(
     init {
         scope.launch {
             coordinator.tasks.collect { localTasks = it.values.toList() }
+        }
+        scope.launch {
+            packTracker.jobs.collect { packJobs = it }
+        }
+        scope.launch {
+            cloud.messages.collect { _messages.emit(it) }
         }
     }
 
@@ -119,13 +150,32 @@ class TransfersState(
     /** 删除任务记录，也用作已完成任务的「移除」。已完成任务的文件保留在网盘里。 */
     fun deleteCloud(taskId: String) = cloud.delete(taskId)
 
+    /** 取消进行中的整包离线，或移除已结束的记录。已完成的文件保留在网盘里。 */
+    fun discardPack(taskId: String) {
+        scope.launch {
+            packTracker.discard(taskId).onFailure { _messages.tryEmit("操作失败：${it.message}") }
+        }
+    }
+
+    /** 清理失败的重做清理，下载失败的以原链接重新离线。 */
+    fun retryPack(taskId: String) {
+        scope.launch {
+            packTracker.retry(taskId).onFailure { _messages.tryEmit("重试失败：${it.message}") }
+        }
+    }
+
     private fun section(
         localFilter: (DownloadTask) -> Boolean,
         cloudFilter: (OfflineTask) -> Boolean,
+        packFilter: (OfflinePackJob) -> Boolean,
     ): List<TransferItem> {
         val localItems = localTasks.filter(localFilter).map { TransferItem.Local(it) }
-        val cloudItems = cloud.tasks.filter(cloudFilter).map { TransferItem.Cloud(it) }
-        return (localItems + cloudItems).sortedByDescending { it.createdAtMs }
+        // 被整包离线跟踪的任务只以 Pack 出现：列表接口仍会返回它，不滤掉就是两行
+        val packIds = packJobs.mapTo(HashSet()) { it.taskId }
+        val cloudItems = cloud.tasks.filter { it.id !in packIds && cloudFilter(it) }.map { TransferItem.Cloud(it) }
+        val tasksById = cloud.tasks.associateBy { it.id }
+        val packItems = packJobs.filter(packFilter).map { TransferItem.Pack(it, tasksById[it.taskId]) }
+        return (localItems + cloudItems + packItems).sortedByDescending { it.createdAtMs }
     }
 
     private fun nowMs(): Long = Clock.System.now().toEpochMilliseconds()
