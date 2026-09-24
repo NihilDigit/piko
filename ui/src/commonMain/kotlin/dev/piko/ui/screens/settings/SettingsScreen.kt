@@ -579,12 +579,14 @@ private fun StaticSegmentedRow(
                 leadingContent()
             }
             Spacer(modifier = Modifier.width(StaticRowLeadingGap))
+            // 颜色走 LocalContentColor，不写进 TextStyle：副标题里嵌着按钮组，按钮靠 LocalContentColor
+            // 给选中项换浅色字，TextStyle 里的颜色优先级更高，会把它盖掉
             Column(modifier = Modifier.weight(1f)) {
-                ProvideTextStyle(MaterialTheme.typography.bodyLarge.copy(color = colors.onSurface)) {
-                    content()
+                CompositionLocalProvider(LocalContentColor provides colors.onSurface) {
+                    ProvideTextStyle(MaterialTheme.typography.bodyLarge) { content() }
                 }
-                ProvideTextStyle(MaterialTheme.typography.bodyMedium.copy(color = colors.onSurfaceVariant)) {
-                    supportingContent()
+                CompositionLocalProvider(LocalContentColor provides colors.onSurfaceVariant) {
+                    ProvideTextStyle(MaterialTheme.typography.bodyMedium) { supportingContent() }
                 }
             }
         }
