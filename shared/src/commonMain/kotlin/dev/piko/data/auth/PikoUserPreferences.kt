@@ -32,6 +32,10 @@ interface PikoUserPreferences {
     val heuristicFilterFlow: Flow<Boolean>
     suspend fun setHeuristicFilterEnabled(enabled: Boolean)
 
+    /** 网盘列表照原样显示文件名：不分区、不改标题、不挂解析出的标签。默认关。 */
+    val rawFileNamesFlow: Flow<Boolean>
+    suspend fun setRawFileNamesEnabled(enabled: Boolean)
+
     /** 添加链接时同名字幕随视频打包成一项，见 subtitleBundles。 */
     val bundleSubtitlesFlow: Flow<Boolean>
     suspend fun setBundleSubtitlesEnabled(enabled: Boolean)

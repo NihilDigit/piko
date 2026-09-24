@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.asStateFlow
 class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoUserPreferences {
     private val spoiler = MutableStateFlow(settings.get(KEY_SPOILER, "true").toBoolean())
     private val heuristic = MutableStateFlow(settings.get(KEY_HEURISTIC, "true").toBoolean())
+    private val rawFileNames = MutableStateFlow(settings.get(KEY_RAW_FILE_NAMES, "false").toBoolean())
     private val bundleSubtitles = MutableStateFlow(settings.get(KEY_BUNDLE_SUBTITLES, "true").toBoolean())
     private val themeMode = MutableStateFlow(settings.get(KEY_THEME_MODE).ifEmpty { null })
     private val themeSeed = MutableStateFlow(settings.get(KEY_THEME_SEED).ifEmpty { null })
@@ -76,6 +77,12 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
     override suspend fun setHeuristicFilterEnabled(enabled: Boolean) {
         settings.set(KEY_HEURISTIC, enabled.toString())
         heuristic.value = enabled
+    }
+
+    override val rawFileNamesFlow: Flow<Boolean> = rawFileNames.asStateFlow()
+    override suspend fun setRawFileNamesEnabled(enabled: Boolean) {
+        settings.set(KEY_RAW_FILE_NAMES, enabled.toString())
+        rawFileNames.value = enabled
     }
 
     override val bundleSubtitlesFlow: Flow<Boolean> = bundleSubtitles.asStateFlow()
@@ -177,6 +184,7 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         const val KEY_SPOILER = "ui.spoilerBlur"
         const val KEY_HEURISTIC = "ui.heuristicFilter"
         const val KEY_BUNDLE_SUBTITLES = "ui.bundleSubtitles"
+        const val KEY_RAW_FILE_NAMES = "ui.rawFileNames"
         const val KEY_GRID_VIEW = "ui.gridView"
         // 沿用 Fluent 版设置页的键，旧值是小写的 system、light、dark，解析时不分大小写
         const val KEY_THEME_MODE = "themeMode"

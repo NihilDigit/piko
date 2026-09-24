@@ -31,6 +31,7 @@ import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Subtitles
+import androidx.compose.material.icons.outlined.TextFields
 import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.outlined.Wallpaper
@@ -126,6 +127,7 @@ fun SettingsScreen(
     val session by sessionManager.sessionFlow.collectAsStateWithLifecycle(initialValue = null)
     val isSpoilerBlurEnabled by sessionManager.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = true)
     val isHeuristicFilterEnabled by sessionManager.heuristicFilterFlow.collectAsStateWithLifecycle(initialValue = true)
+    val isRawFileNamesEnabled by sessionManager.rawFileNamesFlow.collectAsStateWithLifecycle(initialValue = false)
     val isBundleSubtitlesEnabled by sessionManager.bundleSubtitlesFlow.collectAsStateWithLifecycle(initialValue = true)
     val isConcurrentAccelerationEnabled by sessionManager.concurrentAccelerationFlow.collectAsStateWithLifecycle(initialValue = true)
     val downloadDirPath by sessionManager.downloadDirPathFlow.collectAsStateWithLifecycle(initialValue = "")
@@ -224,15 +226,23 @@ fun SettingsScreen(
 
             SettingsGroup(title = "浏览") {
                 SettingsSwitchRow(
-                    index = 0, count = 3,
+                    index = 0, count = 4,
                     icon = Icons.Outlined.AutoFixHigh,
                     title = "启发式折叠",
-                    supporting = "折叠疑似广告的小文件",
+                    supporting = "折叠广告、样片、说明文件等次要项",
                     checked = isHeuristicFilterEnabled,
                     onCheckedChange = { scope.launch { sessionManager.setHeuristicFilterEnabled(it) } },
                 )
                 SettingsSwitchRow(
-                    index = 1, count = 3,
+                    index = 1, count = 4,
+                    icon = Icons.Outlined.TextFields,
+                    title = "显示原始文件名",
+                    supporting = "不分区，不解析标题与标签",
+                    checked = isRawFileNamesEnabled,
+                    onCheckedChange = { scope.launch { sessionManager.setRawFileNamesEnabled(it) } },
+                )
+                SettingsSwitchRow(
+                    index = 2, count = 4,
                     icon = Icons.Outlined.Subtitles,
                     title = "字幕随视频",
                     supporting = "添加链接时同名字幕与视频合为一项",
@@ -240,7 +250,7 @@ fun SettingsScreen(
                     onCheckedChange = { scope.launch { sessionManager.setBundleSubtitlesEnabled(it) } },
                 )
                 SettingsSwitchRow(
-                    index = 2, count = 3,
+                    index = 3, count = 4,
                     icon = Icons.Outlined.VisibilityOff,
                     title = "缩略图防窥",
                     supporting = "模糊显示缩略图",
