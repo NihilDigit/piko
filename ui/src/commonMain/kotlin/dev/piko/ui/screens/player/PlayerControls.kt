@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.animation.fadeIn
@@ -69,6 +70,8 @@ import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -81,10 +84,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.layout
@@ -116,8 +124,10 @@ import kotlinx.coroutines.delay
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.util.Locale
+import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 /**
  * 播放器顶栏：返回、标题与副标题、播放设置。
@@ -398,6 +408,7 @@ private fun PlayPauseButton(
             interactionSource = interactionSource,
             modifier = Modifier
                 .size(width, size.height)
+                .handCursor()
                 .semantics {
                     contentDescription = description
                     if (isLoading) liveRegion = LiveRegionMode.Polite
@@ -496,6 +507,7 @@ private val PortraitCenterSizes = CenterSizes(
 internal fun PlayerBottomBar(
     isLandscape: Boolean,
     isFullscreen: Boolean,
+    isPlaying: Boolean,
     thumbOnHoverOnly: Boolean,
     positionMillis: Long,
     durationMillis: Long,
@@ -528,6 +540,8 @@ internal fun PlayerBottomBar(
             durationMillis = durationMillis,
             bufferedPositionMillis = bufferedPositionMillis,
             onSeek = onSeek,
+            isPlaying = isPlaying,
+            playbackSpeed = playbackSpeed ?: 1f,
             thumbOnHoverOnly = thumbOnHoverOnly,
             onScrub = { target ->
                 val wasScrubbing = scrubPositionMillis != null
@@ -670,7 +684,7 @@ private fun PlayerChipButton(
             contentColor = MaterialTheme.colorScheme.onSurface,
         ),
         contentPadding = ButtonDefaults.ExtraSmallContentPadding,
-        modifier = modifier.heightIn(min = ButtonDefaults.ExtraSmallContainerHeight),
+        modifier = modifier.heightIn(min = ButtonDefaults.ExtraSmallContainerHeight).handCursor(),
     ) {
         if (icon != null) {
             Icon(icon, contentDescription = null, modifier = Modifier.size(ButtonDefaults.ExtraSmallIconSize))
@@ -684,8 +698,11 @@ private fun PlayerChipButton(
  * 进度条：细轨道，靠近时变粗，未播放段与缓冲段用半透明的前景色，透出画面。
  *
  * 原先是 M3 的 XS 滑块（16dp 高的轨道、竖条手柄、不透明的 secondaryContainer 底色），
- * 压在画面上又粗又闷。细轨道不在 M3 滑块的规格里，是视频播放器的通行做法。已播放段不用波浪：
- * M3 的波浪是进度指示器表示「过程在进行」的外观，滑块没有这一项，放在可拖动的进度条上是误用。
+ * 压在画面上又粗又闷。细轨道不在 M3 滑块的规格里，是视频播放器的通行做法。
+ *
+ * 播放中已播放段是一条平缓的波浪，暂停、拖动、悬停时拉平。M3 里波浪属于进度指示器（表示过程在进行），
+ * 滑块没有这一项；这里是有意借用，让播放与暂停一眼可辨，所以压得很克制：波幅小、波长长，
+ * 流速跟着播放倍速走，暂停时不动。
  * [thumbOnHoverOnly] 时手柄平时隐藏、悬停才出现（鼠标）；触屏没有悬停，手柄一直显示，否则看不出能拖。
  *
  * 不用 Material 的 Slider：换手柄与轨道的重载两端没有交集（Android 的 1.5.0-alpha28 与桌面的
@@ -700,6 +717,8 @@ internal fun PlayerSeekBar(
     bufferedPositionMillis: Long,
     onSeek: (Long) -> Unit,
     modifier: Modifier = Modifier,
+    isPlaying: Boolean = false,
+    playbackSpeed: Float = 1f,
     thumbOnHoverOnly: Boolean = false,
     onScrub: (Long?) -> Unit = {},
 ) {
@@ -741,6 +760,24 @@ internal fun PlayerSeekBar(
         },
         motion.fastSpatialSpec(),
     )
+    // 波幅按 0 到 1 渐变：暂停、拖动时慢慢拉平，恢复播放时再慢慢起伏
+    val waveTarget = if (isPlaying && !isEngaged && enabled) 1f else 0f
+    val waveAmount by animateFloatAsState(waveTarget, motion.slowEffectsSpec())
+    // 相位逐帧累加而不是用无限动画：无限动画的时长固定，流速没法跟着倍速平滑变化。
+    // 只在绘制阶段读，每帧变化只触发重绘，不触发重组
+    val wavePhase = remember { mutableFloatStateOf(0f) }
+    val currentSpeed by rememberUpdatedState(playbackSpeed)
+    val isWaving = waveTarget > 0f || waveAmount > 0f
+    LaunchedEffect(isWaving) {
+        if (!isWaving) return@LaunchedEffect
+        var last = withFrameNanos { it }
+        while (true) {
+            val now = withFrameNanos { it }
+            val advance = (now - last) / 1_000_000f / WAVE_PERIOD_MILLIS * currentSpeed
+            wavePhase.floatValue = (wavePhase.floatValue + advance) % 1f
+            last = now
+        }
+    }
     val positionText = formatTime((fraction * durationMillis).toLong())
     val durationText = formatTime(durationMillis)
     val currentOnSeek by rememberUpdatedState(onSeek)
@@ -756,6 +793,7 @@ internal fun PlayerSeekBar(
         Box(
             Modifier
                 .fillMaxSize()
+                .handCursor(enabled)
                 // 按下即跳到该处并开始拖动，松手才真正 seek
                 .pointerInput(enabled, durationMillis) {
                     if (!enabled) return@pointerInput
@@ -801,6 +839,8 @@ internal fun PlayerSeekBar(
                         colors = trackColors,
                         thickness = thickness.toPx(),
                         thumbRadius = thumbRadius.toPx(),
+                        waveAmount = waveAmount,
+                        wavePhase = wavePhase.floatValue,
                         inset = SeekThumbDraggingRadius.toPx(),
                     )
                 }
@@ -855,7 +895,7 @@ private fun seekFractionAt(x: Float, width: Float, inset: Float): Float =
 private class SeekTrackColors(val active: Color, val inactive: Color, val buffered: Color)
 
 /**
- * 轨道从左到右：已播放段、手柄、缓冲段、未播放段。[inset] 是两端给手柄留的边，
+ * 轨道从左到右：已播放段（播放中是波浪）、手柄、缓冲段、未播放段。[inset] 是两端给手柄留的边，
  * 与 [seekFractionAt] 的换算一致，手柄画在哪、点下去就是哪。
  */
 private fun DrawScope.drawSeekTrack(
@@ -864,6 +904,8 @@ private fun DrawScope.drawSeekTrack(
     colors: SeekTrackColors,
     thickness: Float,
     thumbRadius: Float,
+    waveAmount: Float,
+    wavePhase: Float,
     inset: Float,
 ) {
     val centerY = size.height / 2
@@ -878,7 +920,26 @@ private fun DrawScope.drawSeekTrack(
     }
 
     if (thumbX > start) {
-        drawLine(colors.active, Offset(start, centerY), Offset(thumbX, centerY), thickness, StrokeCap.Round)
+        val amplitude = WaveAmplitude.toPx() * waveAmount
+        if (amplitude < MIN_VISIBLE_AMPLITUDE_PX) {
+            drawLine(colors.active, Offset(start, centerY), Offset(thumbX, centerY), thickness, StrokeCap.Round)
+        } else {
+            val wavelength = WaveLength.toPx()
+            // 起点与手柄前各用一个波长把波幅收到 0：两端落在中线上，与轨道起点、手柄接得上
+            fun yAt(x: Float): Float {
+                val taper = minOf(1f, (x - start) / wavelength, (thumbX - x) / wavelength).coerceAtLeast(0f)
+                return centerY + amplitude * taper * sin(2 * PI.toFloat() * (x / wavelength - wavePhase))
+            }
+            val path = Path().apply {
+                moveTo(start, yAt(start))
+                var x = start
+                while (x < thumbX) {
+                    x = minOf(x + WAVE_STEP_PX, thumbX)
+                    lineTo(x, yAt(x))
+                }
+            }
+            drawPath(path, colors.active, style = Stroke(width = thickness, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        }
     }
     if (thumbRadius > 0f) drawCircle(colors.active, thumbRadius, Offset(thumbX, centerY))
 }
@@ -929,7 +990,7 @@ internal fun PlayerIconButton(
             shapes = shapes,
             colors = playerIconButtonColors(),
             enabled = enabled,
-            modifier = if (containerSize != null) Modifier.size(containerSize) else Modifier,
+            modifier = (if (containerSize != null) Modifier.size(containerSize) else Modifier).handCursor(enabled),
         ) {
             Icon(
                 imageVector = icon,
@@ -939,6 +1000,13 @@ internal fun PlayerIconButton(
         }
     }
 }
+
+/**
+ * 鼠标悬停在可点的控件上时换成手型。Compose 的按钮默认不换，浮在画面上的半透明按钮
+ * 与画面本身难以分辨，指针变化是鼠标用户判断「这里能点」的依据。触屏上没有影响。
+ */
+internal fun Modifier.handCursor(enabled: Boolean = true): Modifier =
+    if (enabled) pointerHoverIcon(PointerIcon.Hand) else this
 
 private val TopScrim = listOf(
     Color.Black.copy(alpha = 0.7f),
@@ -953,10 +1021,18 @@ private val BottomScrim = listOf(
 
 // 进度条的触控高度与轨道几何。触控区比轨道高得多：细轨道要能点中
 private val SeekBarHeight = 32.dp
-private val SeekTrackThickness = 4.dp
+private val SeekTrackThickness = 6.dp
 private val SeekTrackEngagedThickness = 8.dp
 private val SeekThumbRadius = 6.dp
 private val SeekThumbDraggingRadius = 9.dp
+
+// 波浪：波幅小于轨道厚度的一半、波长是它的五倍多，看上去是轨道在轻轻起伏，而不是一条曲线。
+// 1x 时每 2 秒流过一个波长，倍速越高越快
+private val WaveAmplitude = 1.5.dp
+private val WaveLength = 32.dp
+private const val WAVE_PERIOD_MILLIS = 2_000f
+private const val WAVE_STEP_PX = 2f
+private const val MIN_VISIBLE_AMPLITUDE_PX = 0.3f
 private const val INACTIVE_TRACK_ALPHA = 0.28f
 private const val BUFFERED_TRACK_ALPHA = 0.55f
 

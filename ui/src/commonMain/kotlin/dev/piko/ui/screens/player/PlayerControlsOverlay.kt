@@ -391,6 +391,7 @@ fun MobilePlayerControls(
                     PlayerBottomBar(
                         isLandscape = isLandscape,
                         isFullscreen = isFullscreen,
+                        isPlaying = isPlaying,
                         thumbOnHoverOnly = seekThumbOnHoverOnly,
                         positionMillis = positionMillis,
                         durationMillis = durationMillis,

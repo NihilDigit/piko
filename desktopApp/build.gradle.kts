@@ -47,6 +47,8 @@ kotlin {
             dependencies {
                 implementation(kotlin("test"))
                 implementation(libs.junit)
+                // 控件的鼠标悬停只能用真实的指针事件序列验证；版本跟界面库走，理由同 composeDesktopRuntime
+                implementation("org.jetbrains.compose.ui:ui-test:${libs.versions.composeMultiplatform.get()}")
                 // 测试进程没有打包好的资源目录，mpv 的 DLL 仍从类路径解压
                 runtimeOnly(windowsMpvRuntime)
             }
