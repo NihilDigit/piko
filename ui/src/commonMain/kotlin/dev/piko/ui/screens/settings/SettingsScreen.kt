@@ -207,7 +207,8 @@ fun SettingsScreen(
                     }
 
                     SettingsGroup(SettingsSection.Drive.title, Modifier.trackSection(SettingsSection.Drive)) {
-                        // 启发式折叠只在解析开着时有意义，关掉解析就收起这一项，不留一行灰掉的开关
+                        // 启发式折叠只在解析开着时有意义，关掉解析就收起这一项，不留一行灰掉的开关。
+                        // 不缩进表示从属：行背景是整条分段，只缩内容读起来像错位
                         val driveCount = if (isNameParsingEnabled) 3 else 2
                         SettingsSwitchRow(
                             index = 0, count = driveCount,
@@ -225,7 +226,6 @@ fun SettingsScreen(
                                 supporting = "收起广告、样片、说明文件等次要项",
                                 checked = isHeuristicFilterEnabled,
                                 onCheckedChange = { scope.launch { sessionManager.setHeuristicFilterEnabled(it) } },
-                                nested = true,
                             )
                         }
                         SettingsSwitchRow(
@@ -709,9 +709,6 @@ private fun ColorSwatch(
     }
 }
 
-// 子项图标缩进到父项标题的起点附近
-private val NestedIndent = 24.dp
-
 @Composable
 private fun SettingsSwitchRow(
     index: Int,
@@ -722,8 +719,6 @@ private fun SettingsSwitchRow(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     enabled: Boolean = true,
-    /** 从属于上一行的开关：图标缩进一级，读得出它跟着上一行走。 */
-    nested: Boolean = false,
 ) {
     SegmentedListItem(
         checked = checked,
@@ -731,12 +726,7 @@ private fun SettingsSwitchRow(
         enabled = enabled,
         shapes = ListItemDefaults.segmentedShapes(index = index, count = count).let { it.copy(selectedShape = it.shape) },
         colors = settingsRowColors(),
-        leadingContent = {
-            Row {
-                if (nested) Spacer(modifier = Modifier.width(NestedIndent))
-                Icon(icon, contentDescription = null)
-            }
-        },
+        leadingContent = { Icon(icon, contentDescription = null) },
         // 开关只作指示，整行的 checked 语义已由列表项提供
         trailingContent = { Switch(checked = checked, onCheckedChange = null, enabled = enabled) },
         supportingContent = { Text(supporting) },
