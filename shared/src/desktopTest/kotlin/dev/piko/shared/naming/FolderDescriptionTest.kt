@@ -73,4 +73,16 @@ class FolderDescriptionTest {
         assertEquals(WorkKind.AV, folder.kind)
         assertTrue(folder.tags.any { it.text == MediaTag.CHINESE_SUBTITLES })
     }
+
+    @Test
+    fun `a season folder keeps its season so it does not share a title with season one`() {
+        val group = "[Airota&Nekomoe kissaten&VCB-Studio]"
+        val folder = "$group Yuru Camp Season 2 [Ma10p_1080p]"
+        val content = (1..3).map { "$group Yuru Camp Season 2 [0$it][Ma10p_1080p][x265_flac].mkv" }
+        assertEquals("Yuru Camp Season 2", describeFolder(folder).title)
+        assertEquals("Yuru Camp Season 2", describeFolder(folder, content).title)
+        assertEquals("Yuru Camp", describeFolder("$group Yuru Camp [Ma10p_1080p]").title)
+        // 季的范围不是某一季
+        assertTrue("Season" !in describeFolder("[G] Show S01-04 [1080p]").title.orEmpty())
+    }
 }

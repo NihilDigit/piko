@@ -41,7 +41,10 @@ fun describeFolder(folderName: String, contentNames: List<String> = emptyList())
         return FolderDescription(mainWork.title, WorkKind.AV, mergeTags(mainWork.commonTags, nameTags), null, emptyList())
     }
 
-    val title = mainWork?.title?.takeIf(::hasLatin) ?: fromName.title?.let(::latinAlternative)
+    val bareTitle = mainWork?.title?.takeIf(::hasLatin) ?: fromName.title?.let(::latinAlternative)?.let(::stripSeasonWord)
+    // 解析器把季号从作品名里拆进了集号，文件夹只剩「Yuru Camp」就和第一季、剧场版同名了，这里拼回去
+    val season = mainWork?.let(::uniformSeason) ?: folderSeason(folderName)
+    val title = bareTitle?.let { if (season != null && season > 0) "$it Season $season" else it }
     val contentRange = mainWork?.let(::mainRange)
     val range = folderRange(folderName) ?: contentRange
     val extras = (sectionsMentioned(folderName) + mainWork?.sections.orEmpty().map { it.section })
@@ -101,6 +104,23 @@ private fun folderRange(name: String): String? {
     }
     return null
 }
+
+/** 正片各集的季号一致时返回它。 */
+private fun uniformSeason(work: MediaWork): Int? =
+    work.sections.firstOrNull { it.section == Section.MAIN }?.entries?.map { it.episode?.season }?.distinct()?.singleOrNull()
+
+// 「S01-04」「Season 1-4」是季的范围，不是某一季，交给 folderRange
+private val FOLDER_SEASON = Regex(
+    """(?i)(?<![a-z\d])(?:season\s*(\d{1,2})|s(\d{1,2})|(\d{1,2})(?:st|nd|rd|th)\s+season)(?!\d|\s*[-~～]\s*\d|e\d)""",
+)
+
+private fun folderSeason(name: String): Int? =
+    FOLDER_SEASON.find(name)?.groupValues?.drop(1)?.firstOrNull { it.isNotEmpty() }?.toInt()
+
+// 文件夹名「Yuru Camp Season 2」里的 2 会被当成集号，作品名剩下一个悬空的「Season」
+private val DANGLING_SEASON = Regex("""(?i)\s+(?:season|s)$""")
+
+private fun stripSeasonWord(title: String): String = title.replace(DANGLING_SEASON, "").ifBlank { title }
 
 private fun mainRange(work: MediaWork): String? {
     val episodes = work.sections.firstOrNull { it.section == Section.MAIN }?.entries?.mapNotNull { it.episode }.orEmpty()
