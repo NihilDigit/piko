@@ -20,6 +20,27 @@ class AvNamingTest {
     }
 
     @Test
+    fun `site specific codes are normalized`() {
+        fun code(name: String) = parseMediaName(name).av?.code
+        fun part(name: String) = parseMediaName(name).av?.part
+        // fc 后面紧跟的数字整体是编号，打头的 2 不是 FC2 的 2
+        assertEquals("FC2-PPV-2765224", code("fc2765224_1.mp4"))
+        assertEquals("FC2-PPV-980638", code("FC980638_01.mp4"))
+        assertEquals("1", part("FC980638_01.mp4"))
+        listOf("hey4017_244-fhd1.wmv", "heydouga 4017-244_1.wmv", "HeyDouga-4017-244.mp4", "しろハメ Heydouga 4017-244.wmv")
+            .forEach { assertEquals("HEYDOUGA-4017-244", code(it), it) }
+        assertEquals("1", part("hey4017_244-fhd1.wmv"))
+        listOf("021014-540-carib-high_1.mp4", "Caribbean-021014-540.mp4", "加勒比 021014-540 片名.mp4")
+            .forEach { assertEquals("CARIB-021014-540", code(it), it) }
+        assertEquals("1", part("021014-540-carib-high_1.mp4"))
+        assertEquals("1PON-092415_001", code("1pon-092415_001-fhd1_(new).mp4"))
+        assertEquals("N0421", code("n0421_name_surname_ta1.mp4"))
+        assertEquals("N0397", code("[NoDRM]-n0397_name_ei1_n.wmv"))
+        assertEquals("N0781", code("[Tokyo Hot] n0781 Some Title.wmv"))
+        assertNull(code("k1080p.mp4"), "单字母前缀后紧跟字母的不是 Tokyo-Hot")
+    }
+
+    @Test
     fun `digits keep their original width except for dmm padding`() {
         assertEquals("HEYZO-0123", normalizeAvCode("HEYZO_0123"))
         assertEquals("HEYZO-0123", normalizeAvCode("heyzo_hd_0123_full"))

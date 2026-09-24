@@ -5,6 +5,22 @@ package dev.piko.shared.naming
 // 「Naruto_198」「HEVC-10」当成番号。
 
 private val FC2 = Regex("""^FC2[\s_-]*(?:PPV[\s_-]*)?(\d{5,8})(?![0-9])""", RegexOption.IGNORE_CASE)
+
+// 「fc2765224」「FC980638」：FC 后面紧跟的数字整体是编号，其中打头的 2 不是 FC2 的 2。
+// 网盘里人手整理过的目录名（FC2-PPV-2765224）给出了这个答案；FC2 的 2 只在后面有分隔或 PPV 时才算前缀
+private val FC_GLUED = Regex("""^FC(\d{6,8})(?![0-9])""", RegexOption.IGNORE_CASE)
+// 日期加序号的站点：一本道 092415_001、加勒比 021014-540，站点名在前或在后都有
+private val ONE_PONDO = Regex("""^(?:1pon(?:do)?|一本道)[\s_-]*(\d{6})[-_](\d{3})(?![0-9])""", RegexOption.IGNORE_CASE)
+private val CARIB = Regex("""^(?:carib(?:bean(?:com)?|com)?|加勒比)[\s_-]*(\d{6})[-_](\d{3})(?![0-9])""", RegexOption.IGNORE_CASE)
+private val CARIB_TRAILING = Regex("""^(\d{6})[-_](\d{3})[-_]carib""", RegexOption.IGNORE_CASE)
+
+// Heydouga 的写法最乱：hey4017_244、heydouga 4017-175、HeyDouga-4017-228；「しろハメ」是 4017 这个频道的名字
+private val HEYDOUGA = Regex("""^(?:しろハメ[\s_-]*(?:hey(?:douga)?)?|hey(?:douga)?)[\s_-]*(\d{4})[\s_-]+(\d{2,5})(?![0-9])""", RegexOption.IGNORE_CASE)
+
+// Tokyo-Hot：单字母 n 或 k 加四位数，如 n0421。单字母前缀太宽，四位数后面紧跟字母的不算，
+// 否则「k1080p」会被认成 K1080
+private val TOKYO_HOT = Regex("""^([nk])(\d{4})(?=$|[\s_.\-\[(])""", RegexOption.IGNORE_CASE)
+
 private val HEYZO = Regex("""^HEYZO[\s_-]*(?:HD[\s_-]*)?(\d{3,5})(?![0-9])""", RegexOption.IGNORE_CASE)
 
 // 分隔写法：字母段与数字段之间有 - 或 _。字母段须全大写或全小写，「Naruto_198」这种首字母大写的
@@ -15,6 +31,9 @@ private val SEPARATED = Regex("""^([A-Za-z]{2,6})[-_](\d{2,5})(?![0-9])""")
 // 或数字后紧跟已知后缀（C 中字、pl/ps 封面）的写法
 private val GLUED_DMM = Regex("""^([A-Za-z]{2,6})(0\d{4})(?![0-9])""")
 private val GLUED_SUFFIXED = Regex("""^([A-Za-z]{2,6})(\d{3})(C|pl|ps)$""")
+
+// 「image-2026.04.01」：数字后面接着月和日，是日期，不是番号
+private val DATE_CONTINUATION = Regex("""[._-](0[1-9]|1[0-2])[._-]\d{2}(?!\d)""")
 
 private val NOT_A_PREFIX = setOf(
     "HEVC", "AVC", "AAC", "FLAC", "DTS", "AC", "EAC", "MP", "FHD", "UHD", "HD", "SD", "BD", "DVD", "WEB", "CD",
@@ -36,8 +55,10 @@ private val UNCENSORED_WORDS = setOf("u", "uncensored", "ucensored", "uncen", "l
 private val CHINESE_WORDS = setOf("c", "ch", "chs", "cht", "中文字幕", "中字", "sub", "zh")
 private val PART = Regex("""^(?:cd|part|pt|disc|disk)[\s.]?(\d{1,2})$""", RegexOption.IGNORE_CASE)
 private val PART_LETTER = Regex("""^[A-Fa-f]$""")
-private val PART_DIGIT = Regex("""^[1-9]$""")
-private val IGNORED_SUFFIXES = setOf("full", "hd", "pl", "ps", "jp", "mosaic")
+private val PART_DIGIT = Regex("""^0?[1-9]$""")
+// Heydouga 的分段写成 fhd1、hd2
+private val PART_QUALITY = Regex("""^f?hd(\d{1,2})$""", RegexOption.IGNORE_CASE)
+private val IGNORED_SUFFIXES = setOf("full", "hd", "pl", "ps", "jp", "mosaic", "high", "low")
 
 internal class AvMatch(val info: AvInfo, val tags: List<MediaTag>)
 
@@ -68,7 +89,8 @@ private fun stripSitePrefix(stem: String): Pair<String?, String> {
     while (true) {
         val match = LEADING_BRACKET.find(rest) ?: break
         val content = match.groupValues[1].trim()
-        val strippable = DOMAIN.matches(content) || content.lowercase() in SITE_WORDS || scanTags(content).isTagText
+        val strippable = DOMAIN.matches(content) || content.lowercase() in SITE_WORDS || content.lowercase() in RELEASE_MARKS ||
+            scanTags(content).isTagText
         if (!strippable || matchCode(content, strict = true) != null) break
         if (DOMAIN.matches(content) || content.lowercase() in SITE_WORDS) site = content
         rest = rest.substring(match.range.last + 1)
@@ -76,15 +98,25 @@ private fun stripSitePrefix(stem: String): Pair<String?, String> {
     return site to rest.trimStart(' ', '-', '_', '.')
 }
 
-private val SITE_WORDS = setOf("3xplanet", "jav", "javhd", "thz", "sis001", "hjd2048", "fc2")
+private val SITE_WORDS = setOf("3xplanet", "jav", "javhd", "thz", "sis001", "hjd2048", "fc2", "tokyo hot", "tokyo-hot")
+
+// 开头方括号里的发布标记，剥掉但不算站点
+private val RELEASE_MARKS = setOf("nodrm")
 
 /** 返回（归一后的番号，番号在文本里的结束位置）。 */
 private fun matchCode(text: String, strict: Boolean): Pair<String, Int>? {
+    FC_GLUED.find(text)?.let { return "FC2-PPV-${it.groupValues[1]}" to it.range.last + 1 }
     FC2.find(text)?.let { return "FC2-PPV-${it.groupValues[1]}" to it.range.last + 1 }
+    ONE_PONDO.find(text)?.let { return "1PON-${it.groupValues[1]}_${it.groupValues[2]}" to it.range.last + 1 }
+    CARIB.find(text)?.let { return "CARIB-${it.groupValues[1]}-${it.groupValues[2]}" to it.range.last + 1 }
+    CARIB_TRAILING.find(text)?.let { return "CARIB-${it.groupValues[1]}-${it.groupValues[2]}" to it.range.last + 1 }
+    HEYDOUGA.find(text)?.let { return "HEYDOUGA-${it.groupValues[1]}-${it.groupValues[2]}" to it.range.last + 1 }
+    TOKYO_HOT.find(text)?.let { return "${it.groupValues[1].uppercase()}${it.groupValues[2]}" to it.range.last + 1 }
     HEYZO.find(text)?.let { return "HEYZO-${it.groupValues[1]}" to it.range.last + 1 }
     SEPARATED.find(text)?.let { match ->
         val letters = match.groupValues[1]
-        if (acceptablePrefix(letters)) return "${letters.uppercase()}-${match.groupValues[2]}" to match.range.last + 1
+        val date = DATE_CONTINUATION.matchesAt(text, match.range.last + 1)
+        if (acceptablePrefix(letters) && !date) return "${letters.uppercase()}-${match.groupValues[2]}" to match.range.last + 1
     }
     GLUED_DMM.find(text)?.let { match ->
         val letters = match.groupValues[1]
@@ -139,7 +171,8 @@ internal fun matchAv(stem: String, allowLanguageSuffix: Boolean): AvMatch? {
             lower in CHINESE_WORDS && !(allowLanguageSuffix && lower == "zh") -> { chinese = true; true }
             PART.matches(piece) -> { part = "CD" + PART.find(piece)!!.groupValues[1]; true }
             PART_LETTER.matches(piece) && separator.isNotBlank() -> { part = piece.uppercase(); true }
-            PART_DIGIT.matches(piece) && separator.isNotBlank() -> { part = piece; true }
+            PART_DIGIT.matches(piece) && separator.isNotBlank() -> { part = piece.trimStart('0'); true }
+            PART_QUALITY.matches(piece) -> { part = PART_QUALITY.find(piece)!!.groupValues[1]; true }
             lower in IGNORED_SUFFIXES -> true
             else -> {
                 val found = lookupTagWord(piece)
