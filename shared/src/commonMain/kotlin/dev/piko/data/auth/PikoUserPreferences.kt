@@ -32,9 +32,12 @@ interface PikoUserPreferences {
     val heuristicFilterFlow: Flow<Boolean>
     suspend fun setHeuristicFilterEnabled(enabled: Boolean)
 
-    /** 网盘列表照原样显示文件名：不分区、不改标题、不挂解析出的标签。默认关。 */
-    val rawFileNamesFlow: Flow<Boolean>
-    suspend fun setRawFileNamesEnabled(enabled: Boolean)
+    /**
+     * 文件名解析总开关，默认开。关闭后网盘列表、磁力面板与选集都照原样列出文件名：不分区、不改标题、
+     * 不挂标签；启发式折叠与配套字幕依赖解析，一并失效。
+     */
+    val nameParsingFlow: Flow<Boolean>
+    suspend fun setNameParsingEnabled(enabled: Boolean)
 
     /** 添加链接时一并保存视频的外挂字幕。字幕在面板里挂在视频行下，不单独勾选，关闭后保存时跳过它们。 */
     val bundleSubtitlesFlow: Flow<Boolean>

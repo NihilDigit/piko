@@ -90,7 +90,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val SPOILER_BLUR_ENABLED = booleanPreferencesKey("spoiler_blur_enabled")
         val HEURISTIC_FILTER_ENABLED = booleanPreferencesKey("heuristic_filter_enabled")
         val BUNDLE_SUBTITLES_ENABLED = booleanPreferencesKey("bundle_subtitles_enabled")
-        val RAW_FILE_NAMES_ENABLED = booleanPreferencesKey("raw_file_names_enabled")
+        val NAME_PARSING_ENABLED = booleanPreferencesKey("name_parsing_enabled")
         val WATERFALL_VIEW_ENABLED = booleanPreferencesKey("waterfall_view_enabled")
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val THEME_SEED = stringPreferencesKey("theme_seed")
@@ -159,13 +159,13 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
-    override val rawFileNamesFlow: Flow<Boolean> = preference { preferences ->
-        preferences[PreferencesKeys.RAW_FILE_NAMES_ENABLED] ?: false
+    override val nameParsingFlow: Flow<Boolean> = preference { preferences ->
+        preferences[PreferencesKeys.NAME_PARSING_ENABLED] ?: true
     }
 
-    override suspend fun setRawFileNamesEnabled(enabled: Boolean) {
+    override suspend fun setNameParsingEnabled(enabled: Boolean) {
         context.dataStore.edit { preferences ->
-            preferences[PreferencesKeys.RAW_FILE_NAMES_ENABLED] = enabled
+            preferences[PreferencesKeys.NAME_PARSING_ENABLED] = enabled
         }
     }
 

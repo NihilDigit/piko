@@ -138,7 +138,7 @@ private fun VideoPlayerContent(
 
     LaunchedEffect(request) {
         if (siblingVideos.isEmpty()) siblingVideos = services.driveRepository.siblingVideos(request.fileId)
-        state.playlist = playlistOf(siblingVideos)
+        state.playlist = playlistOf(siblingVideos, services.preferences)
     }
 
     // 与 Android 相同：同目录元数据到了之后再验一次磁盘，下好的片子从当前位置换到本地文件

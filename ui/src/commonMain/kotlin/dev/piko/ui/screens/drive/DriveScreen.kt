@@ -502,7 +502,7 @@ fun DriveScreen(
                         } else {
                             DriveFileGrid(
                                 items = state.displayItems,
-                                folderView = { if (state.isRawFileNames) null else state.folderViews[it.id] },
+                                folderView = { if (!state.isNameParsing) null else state.folderViews[it.id] },
                                 isWaterfallMode = isWaterfallMode,
                                 gridState = gridState,
                                 isSelectionMode = state.isSelectionMode,
@@ -544,7 +544,7 @@ fun DriveScreen(
 
     actionTargetFile?.let { target ->
         val fileParsed = state.fileView(target.id)
-        val folderParsed = if (target.isFolder && !state.isRawFileNames) state.folderViews[target.id] else null
+        val folderParsed = if (target.isFolder && state.isNameParsing) state.folderViews[target.id] else null
         FileActionsSheet(
             file = target,
             locationLabel = state.hitLocations[target.id],

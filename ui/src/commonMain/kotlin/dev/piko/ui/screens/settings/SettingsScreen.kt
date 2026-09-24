@@ -126,7 +126,7 @@ fun SettingsScreen(
     val session by sessionManager.sessionFlow.collectAsStateWithLifecycle(initialValue = null)
     val isSpoilerBlurEnabled by sessionManager.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = true)
     val isHeuristicFilterEnabled by sessionManager.heuristicFilterFlow.collectAsStateWithLifecycle(initialValue = true)
-    val isRawFileNamesEnabled by sessionManager.rawFileNamesFlow.collectAsStateWithLifecycle(initialValue = false)
+    val isNameParsingEnabled by sessionManager.nameParsingFlow.collectAsStateWithLifecycle(initialValue = true)
     val isBundleSubtitlesEnabled by sessionManager.bundleSubtitlesFlow.collectAsStateWithLifecycle(initialValue = true)
     val isConcurrentAccelerationEnabled by sessionManager.concurrentAccelerationFlow.collectAsStateWithLifecycle(initialValue = true)
     val downloadDirPath by sessionManager.downloadDirPathFlow.collectAsStateWithLifecycle(initialValue = "")
@@ -230,10 +230,10 @@ fun SettingsScreen(
                 SettingsSwitchRow(
                     index = 1, count = 4,
                     icon = Icons.Outlined.TextFields,
-                    title = "显示原始文件名",
-                    supporting = "不分区，不解析标题与标签",
-                    checked = isRawFileNamesEnabled,
-                    onCheckedChange = { scope.launch { sessionManager.setRawFileNamesEnabled(it) } },
+                    title = "文件名解析",
+                    supporting = "按作品、分区与集数整理，标出发布组与清晰度",
+                    checked = isNameParsingEnabled,
+                    onCheckedChange = { scope.launch { sessionManager.setNameParsingEnabled(it) } },
                 )
                 SettingsSwitchRow(
                     index = 2, count = 4,

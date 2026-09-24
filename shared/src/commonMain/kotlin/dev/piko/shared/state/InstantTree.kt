@@ -1,6 +1,7 @@
 package dev.piko.shared.state
 
 import dev.piko.data.repository.FileNameSanitizer
+import dev.piko.data.repository.NaturalOrder
 import dev.piko.shared.naming.AttachmentKind
 import dev.piko.shared.naming.EntryFile
 import dev.piko.shared.naming.FileKind
@@ -100,6 +101,22 @@ class InstantTree(
 fun buildInstantTree(files: List<MediaFileInput>, resourceName: String): InstantTree {
     val batch = analyzeMediaBatch(files)
     return InstantTreeBuilder(files, batch).build(resourceName)
+}
+
+/** 文件名解析关闭时用：按原始路径逐个平铺，不分组、不挂附件，默认全选。 */
+fun buildRawInstantTree(files: List<MediaFileInput>, resourceName: String): InstantTree {
+    val rows = files.indices.sortedWith(compareBy(NaturalOrder) { files[it].path }).map { index ->
+        InstantRow(
+            index = index,
+            label = files[index].path,
+            tags = emptyList(),
+            indices = listOf(index),
+            subtitleCount = 0,
+            audioTrackCount = 0,
+            bytes = files[index].size,
+        )
+    }
+    return InstantTree(rows, files.indices.toSet(), FileNameSanitizer.sanitize(resourceName))
 }
 
 private class InstantTreeBuilder(private val files: List<MediaFileInput>, private val batch: MediaBatch) {

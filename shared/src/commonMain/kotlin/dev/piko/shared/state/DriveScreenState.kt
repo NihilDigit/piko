@@ -85,7 +85,7 @@ class DriveScreenState(
     var isHeuristicFilterEnabled by mutableStateOf(true)
         private set
 
-    var isRawFileNames by mutableStateOf(false)
+    var isNameParsing by mutableStateOf(true)
         private set
 
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
@@ -108,7 +108,7 @@ class DriveScreenState(
 
     private val currentAnalysis: DriveStructure? by derivedStateOf { analysis?.takeIf { analyzedFiles === files } }
 
-    /** 按文件夹 id 的显示信息，后台算好逐个填入。原始文件名模式下界面不读它。 */
+    /** 按文件夹 id 的显示信息，后台算好逐个填入。解析关闭时界面不读它。 */
     val folderViews = mutableStateMapOf<String, DriveFolderView>()
 
     // 以下都用 derivedStateOf 而不是 getter：这些值每帧会被读到多次（列表、空态判断、
@@ -116,7 +116,7 @@ class DriveScreenState(
     // 整层都是次要项时不折叠（原盘的 CLIPINF/ 全是结构文件）：折光了列表为空，连折叠横幅也没处放
     private val isFoldingActive: Boolean by derivedStateOf {
         val folded = currentAnalysis?.foldedIds ?: return@derivedStateOf false
-        isHeuristicFilterEnabled && folded.size < files.size && isFoldingScope(files)
+        isHeuristicFilterEnabled && isNameParsing && folded.size < files.size && isFoldingScope(files)
     }
 
     val potentialHiddenCount: Int by derivedStateOf {
@@ -125,7 +125,7 @@ class DriveScreenState(
 
     private val isSearching: Boolean by derivedStateOf { isGlobalSearchActive || searchQuery.isNotBlank() }
 
-    /** 列表项：作品头、分区标题与文件。搜索与原始文件名模式下照原样平铺，认不出任何作品时也平铺。 */
+    /** 列表项：作品头、分区标题与文件。搜索与解析关闭时照原样平铺，认不出任何作品时也平铺。 */
     val displayItems: List<DriveListItem> by derivedStateOf {
         val structure = currentAnalysis
         val hideFolded = isFoldingActive && !showAllFilesTemporarily
@@ -133,7 +133,7 @@ class DriveScreenState(
             isGlobalSearchActive -> globalSearchHits.map { DriveListItem.File(it.file, null) }
             searchQuery.isNotBlank() -> files.filter { it.name.contains(searchQuery.trim(), ignoreCase = true) }.map { DriveListItem.File(it, null) }
             structure == null -> files.map { DriveListItem.File(it, null) }
-            isRawFileNames || structure.blocks.isEmpty() ->
+            !isNameParsing || structure.blocks.isEmpty() ->
                 filterDriveFiles(files, structure.foldedIds, enabled = hideFolded, revealAll = false).map { DriveListItem.File(it, null) }
             else -> buildDriveItems(files, structure, hideFolded) { block -> isBlockExpanded(block) }
         }
@@ -145,7 +145,7 @@ class DriveScreenState(
      */
     val displayedFiles: List<FileStat> by derivedStateOf {
         val structure = currentAnalysis
-        if (isSearching || structure == null || isRawFileNames || structure.blocks.isEmpty()) {
+        if (isSearching || structure == null || !isNameParsing || structure.blocks.isEmpty()) {
             return@derivedStateOf displayItems.mapNotNull { (it as? DriveListItem.File)?.file }
         }
         val hideFolded = isFoldingActive && !showAllFilesTemporarily
@@ -175,8 +175,8 @@ class DriveScreenState(
         DriveViewMemory.expanded[expandKey(blockId)] = true
     }
 
-    /** 文件的解析结果，详情面板用。原始文件名模式或未识别时为 null。 */
-    fun fileView(fileId: String): DriveFileView? = if (isRawFileNames) null else currentAnalysis?.views?.get(fileId)
+    /** 文件的解析结果，详情面板用。解析关闭或未识别时为 null。 */
+    fun fileView(fileId: String): DriveFileView? = if (!isNameParsing) null else currentAnalysis?.views?.get(fileId)
 
     /**
      * 全盘命中所在的目录路径。SDK 给的 parentPath 不含根，根目录下的命中拿到的是
@@ -195,7 +195,7 @@ class DriveScreenState(
             preferences.heuristicFilterFlow.collect { isHeuristicFilterEnabled = it }
         }
         scope.launch {
-            preferences.rawFileNamesFlow.collect { isRawFileNames = it }
+            preferences.nameParsingFlow.collect { isNameParsing = it }
         }
         scope.launch {
             driveRepo.folderStackFlow.collect { stack -> activeFolderId = stack.lastOrNull()?.id.orEmpty() }
@@ -374,7 +374,7 @@ class DriveScreenState(
      * 补取一页文件名再解析；每个文件夹至多请求一次，其余文件夹不发请求。
      */
     fun onFolderVisible(folder: FileStat) {
-        if (isRawFileNames || folderViews[folder.id]?.wantsContent != true) return
+        if (!isNameParsing || folderViews[folder.id]?.wantsContent != true) return
         if (!contentRequests.add(folder.id)) return
         scope.launch {
             val content = driveRepo.fetchChildNames(folder.id)

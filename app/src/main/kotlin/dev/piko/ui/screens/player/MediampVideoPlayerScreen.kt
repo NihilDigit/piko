@@ -89,7 +89,7 @@ fun MediampVideoPlayerScreen(
 
     LaunchedEffect(initialFileId) {
         siblingVideos = driveRepo.siblingVideos(initialFileId)
-        state.playlist = playlistOf(siblingVideos)
+        state.playlist = playlistOf(siblingVideos, app.sessionManager)
     }
 
     // 内存任务表 App 重启就空：同目录元数据到了之后，用磁盘再验一次，

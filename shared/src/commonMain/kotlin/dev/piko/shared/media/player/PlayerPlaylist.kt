@@ -64,12 +64,19 @@ fun buildPlaylist(files: List<PlaylistEntry>): List<PlaylistEntry> {
             }
         }
     }
-    val rest = files.indices.filter { it !in placed }.map { files[it] }.sortedWith(compareBy(NaturalOrder) { it.name })
-    val restLabels = distinctLabels(rest.map { it.name })
-    rest.forEachIndexed { i, entry ->
-        ordered += entry.copy(label = restLabels[i], sectionKey = OTHER_SECTION_KEY, sectionLabel = Section.OTHER.label)
-    }
+    val rest = files.indices.filter { it !in placed }.map { files[it] }
+    ordered += buildRawPlaylist(rest).map { it.copy(sectionKey = OTHER_SECTION_KEY, sectionLabel = Section.OTHER.label) }
     return ordered
+}
+
+/**
+ * 文件名解析关闭时用，也是解析器认不出的文件的退路：按文件名自然排序，不分区，
+ * 标签是剥掉公共前后缀后剩下的那一段。
+ */
+fun buildRawPlaylist(files: List<PlaylistEntry>): List<PlaylistEntry> {
+    val sorted = files.sortedWith(compareBy(NaturalOrder) { it.name })
+    val labels = distinctLabels(sorted.map { it.name })
+    return sorted.mapIndexed { i, entry -> entry.copy(label = labels[i]) }
 }
 
 private const val OTHER_SECTION_KEY = "other"

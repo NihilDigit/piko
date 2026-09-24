@@ -457,7 +457,11 @@ class InstantSheetState(
         }
         isAnalyzing = true
         val inputs = data.items.map { MediaFileInput(it.file.path, it.file.size) }
-        val built = withContext(Dispatchers.Default) { buildInstantTree(inputs, data.resource.name) }
+        // 在这里现读而不是在 init 里订阅：打开面板时带着链接会立刻开始解析，订阅未必已经收到值
+        val parse = preferences.nameParsingFlow.first()
+        val built = withContext(Dispatchers.Default) {
+            if (parse) buildInstantTree(inputs, data.resource.name) else buildRawInstantTree(inputs, data.resource.name)
+        }
         // 树与解析结果一起就位，面板不会先闪一个没有分组的列表
         tree = built
         resolution = data

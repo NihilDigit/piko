@@ -1,11 +1,14 @@
 package dev.piko.ui.screens.player
 
+import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.repository.DriveRepository
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.media.player.PlaylistEntry
 import dev.piko.shared.media.player.buildPlaylist
+import dev.piko.shared.media.player.buildRawPlaylist
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 
 /**
@@ -18,11 +21,14 @@ suspend fun DriveRepository.siblingVideos(fileId: String): List<FileStat> {
     return listAllFiles(parentId).getOrNull().orEmpty().filter { it.isPlayableVideo() }
 }
 
-/** 按文件名解析出作品、分区与集数排好。大合集有上千个文件，解析要几秒，不能占着主线程。 */
-suspend fun playlistOf(videos: List<FileStat>): List<PlaylistEntry> = withContext(Dispatchers.Default) {
-    buildPlaylist(
-        videos.map {
-            PlaylistEntry(fileId = it.id, name = it.name, label = "", thumbnailUrl = it.thumbnailLink, size = it.sizeBytes)
-        },
-    )
+/**
+ * 按文件名解析出作品、分区与集数排好；解析总开关关闭时只按文件名排序。
+ * 大合集有上千个文件，解析要几秒，不能占着主线程。
+ */
+suspend fun playlistOf(videos: List<FileStat>, preferences: PikoUserPreferences): List<PlaylistEntry> {
+    val parse = preferences.nameParsingFlow.first()
+    val entries = videos.map {
+        PlaylistEntry(fileId = it.id, name = it.name, label = "", thumbnailUrl = it.thumbnailLink, size = it.sizeBytes)
+    }
+    return withContext(Dispatchers.Default) { if (parse) buildPlaylist(entries) else buildRawPlaylist(entries) }
 }
