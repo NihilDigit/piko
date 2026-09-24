@@ -58,25 +58,16 @@ internal fun FileActionsSheet(
         }
     }
 
-    val actions = buildList {
-        if (previewHidden != null) {
-            add(
-                SheetAction(
-                    icon = if (previewHidden) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
-                    label = if (previewHidden) "显示预览" else "隐藏预览",
-                    onClick = onTogglePreview,
-                ),
-            )
-        }
-        if (!file.isFolder) {
-            add(SheetAction(Icons.Outlined.Download, "下载到本地", onDownload))
-            if (file.isPlayableVideo()) add(SheetAction(Icons.Outlined.ContentCut, "下载指定段落", onDownloadSegment))
-        }
-        add(SheetAction(Icons.Outlined.Edit, "重命名", onRename))
-        add(SheetAction(Icons.Outlined.DriveFileMove, "移动到", onMove))
-        // 移入回收站单独成组，不紧挨着「移动到」被误触
-        add(SheetAction(Icons.Outlined.Delete, "移入回收站", onTrash, destructive = true))
-    }
+    val actions = fileActions(
+        file = file,
+        previewHidden = previewHidden,
+        onTogglePreview = onTogglePreview,
+        onDownload = onDownload,
+        onDownloadSegment = onDownloadSegment,
+        onRename = onRename,
+        onMove = onMove,
+        onTrash = onTrash,
+    )
 
     ItemDetailsSheet(
         title = file.name,
@@ -91,6 +82,36 @@ internal fun FileActionsSheet(
             }
         },
     )
+}
+
+/** 网盘条目的操作。底部面板与桌面的右键菜单用同一份，两处不会漏项。 */
+internal fun fileActions(
+    file: FileStat,
+    previewHidden: Boolean?,
+    onTogglePreview: () -> Unit,
+    onDownload: () -> Unit,
+    onDownloadSegment: () -> Unit,
+    onRename: () -> Unit,
+    onMove: () -> Unit,
+    onTrash: () -> Unit,
+): List<SheetAction> = buildList {
+    if (previewHidden != null) {
+        add(
+            SheetAction(
+                icon = if (previewHidden) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
+                label = if (previewHidden) "显示预览" else "隐藏预览",
+                onClick = onTogglePreview,
+            ),
+        )
+    }
+    if (!file.isFolder) {
+        add(SheetAction(Icons.Outlined.Download, "下载到本地", onDownload))
+        if (file.isPlayableVideo()) add(SheetAction(Icons.Outlined.ContentCut, "下载指定段落", onDownloadSegment))
+    }
+    add(SheetAction(Icons.Outlined.Edit, "重命名", onRename))
+    add(SheetAction(Icons.Outlined.DriveFileMove, "移动到", onMove))
+    // 移入回收站单独成组，不紧挨着「移动到」被误触
+    add(SheetAction(Icons.Outlined.Delete, "移入回收站", onTrash, destructive = true))
 }
 
 private sealed interface FolderUsageResult {

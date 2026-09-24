@@ -7,6 +7,7 @@ import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.window.core.layout.WindowSizeClass
 
@@ -36,3 +37,10 @@ fun Modifier.readableWidth(): Modifier =
     fillMaxWidth()
         .wrapContentWidth(Alignment.CenterHorizontally)
         .widthIn(max = ReadableContentMaxWidth)
+
+/**
+ * 列表用的两侧留白：列表本身仍铺满窗口，滚轮在两侧空白处也能滚动，只是行内容收在
+ * [ReadableContentMaxWidth] 以内居中。给 LazyColumn 的 contentPadding 用。
+ */
+fun readableSidePadding(containerWidth: Dp): Dp =
+    ((containerWidth - ReadableContentMaxWidth) / 2).coerceAtLeast(0.dp)

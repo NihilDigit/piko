@@ -33,6 +33,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import dev.piko.ui.components.PikoLoadingIndicator
 import dev.piko.ui.components.PikoTopBar
+import dev.piko.ui.components.TooltipIconButton
 
 /** 多选态顶栏。三个动作都作用于整批选中项，没有可以下放到别处的。 */
 @Composable
@@ -48,24 +49,19 @@ internal fun DriveSelectionTopBar(
         scrollBehavior = scrollBehavior,
         title = "已选择 $selectedCount 项",
         navigationIcon = {
-            IconButton(onClick = onExit) {
-                Icon(Icons.Outlined.Close, contentDescription = "退出多选")
-            }
+            TooltipIconButton(Icons.Outlined.Close, "退出多选", onExit, shortcut = "Esc")
         },
         actions = {
-            IconButton(onClick = onSelectAll) {
-                Icon(Icons.Outlined.SelectAll, contentDescription = "全选")
-            }
-            IconButton(onClick = onMove, enabled = selectedCount > 0) {
-                Icon(Icons.Outlined.DriveFileMove, contentDescription = "移动所选")
-            }
-            IconButton(onClick = onTrash, enabled = selectedCount > 0) {
-                Icon(
-                    Icons.Outlined.Delete,
-                    contentDescription = "将所选移入回收站",
-                    tint = if (selectedCount > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            TooltipIconButton(Icons.Outlined.SelectAll, "全选", onSelectAll, shortcut = "Ctrl+A")
+            TooltipIconButton(Icons.Outlined.DriveFileMove, "移动所选", onMove, enabled = selectedCount > 0)
+            TooltipIconButton(
+                icon = Icons.Outlined.Delete,
+                label = "将所选移入回收站",
+                onClick = onTrash,
+                shortcut = "Delete",
+                enabled = selectedCount > 0,
+                tint = if (selectedCount > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         },
     )
 }

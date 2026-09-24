@@ -3,6 +3,7 @@ package dev.piko.ui.screens.transfers
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -44,11 +45,12 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
-import dev.piko.ui.LocalPikoServices
 import dev.piko.download.DownloadTask
 import dev.piko.shared.data.sourceUrl
 import dev.piko.shared.state.TransferItem
 import dev.piko.shared.state.TransfersState
+import dev.piko.ui.LocalPikoServices
+import dev.piko.ui.adaptive.readableSidePadding
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoTopBar
 import io.github.nihildigit.pikpak.OfflineTask
@@ -124,41 +126,45 @@ fun TransfersScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { innerPadding ->
         when {
-            !state.isEmpty -> LazyColumn(
+            !state.isEmpty -> BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding),
-                contentPadding = PaddingValues(vertical = 8.dp),
             ) {
-                val renderItem: @Composable (TransferItem, Modifier) -> Unit = { item, itemModifier ->
-                    when (item) {
-                        is TransferItem.Local -> LocalTransferRow(
-                            task = item.task,
-                            onPlay = { playLocal(item.task) },
-                            onStart = { state.resumeLocal(item.task.taskId) },
-                            onPause = { state.pauseLocal(item.task.taskId) },
-                            onMoreClick = { detailsKey = item.key },
-                            isSpoilerBlurred = isSpoilerBlurEnabled && item.key !in revealedKeys,
-                            modifier = itemModifier,
-                        )
-                        is TransferItem.Cloud -> CloudTransferRow(
-                            task = item.task,
-                            onResubmit = resubmitAction(item.task),
-                            onOpen = { openCloudFile(item.task) },
-                            onMoreClick = { detailsKey = item.key },
-                            modifier = itemModifier,
-                        )
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = readableSidePadding(maxWidth), vertical = 8.dp),
+                ) {
+                    val renderItem: @Composable (TransferItem, Modifier) -> Unit = { item, itemModifier ->
+                        when (item) {
+                            is TransferItem.Local -> LocalTransferRow(
+                                task = item.task,
+                                onPlay = { playLocal(item.task) },
+                                onStart = { state.resumeLocal(item.task.taskId) },
+                                onPause = { state.pauseLocal(item.task.taskId) },
+                                onMoreClick = { detailsKey = item.key },
+                                isSpoilerBlurred = isSpoilerBlurEnabled && item.key !in revealedKeys,
+                                modifier = itemModifier,
+                            )
+                            is TransferItem.Cloud -> CloudTransferRow(
+                                task = item.task,
+                                onResubmit = resubmitAction(item.task),
+                                onOpen = { openCloudFile(item.task) },
+                                onMoreClick = { detailsKey = item.key },
+                                modifier = itemModifier,
+                            )
+                        }
                     }
+                    transferSection("进行中", state.inProgress, renderItem)
+                    transferSection("需要处理", state.needsAttention, renderItem)
+                    transferSection("已完成", state.completed, renderItem)
+                    deletedOutputSection(
+                        items = state.outputDeleted,
+                        expanded = deletedExpanded,
+                        onToggle = { deletedExpanded = !deletedExpanded },
+                        renderItem = renderItem,
+                    )
                 }
-                transferSection("进行中", state.inProgress, renderItem)
-                transferSection("需要处理", state.needsAttention, renderItem)
-                transferSection("已完成", state.completed, renderItem)
-                deletedOutputSection(
-                    items = state.outputDeleted,
-                    expanded = deletedExpanded,
-                    onToggle = { deletedExpanded = !deletedExpanded },
-                    renderItem = renderItem,
-                )
             }
             // 云端列表首次取回之前不下结论，免得空状态一闪而过
             state.isLoading -> Unit

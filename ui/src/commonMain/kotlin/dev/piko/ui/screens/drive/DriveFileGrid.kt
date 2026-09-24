@@ -1,8 +1,5 @@
 package dev.piko.ui.screens.drive
 
-import dev.piko.shared.data.PikoSortField
-import dev.piko.shared.data.field
-import dev.piko.shared.data.isAscending
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -49,7 +46,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.piko.data.repository.FileSortOrder
+import dev.piko.shared.data.PikoSortField
+import dev.piko.shared.data.field
+import dev.piko.shared.data.isAscending
+import dev.piko.ui.components.ContextMenuArea
 import dev.piko.ui.components.FileListItem
+import dev.piko.ui.components.SheetAction
 import io.github.nihildigit.pikpak.FileStat
 
 /**
@@ -76,6 +78,8 @@ internal class DriveItemCallbacks(
     val onMore: (FileStat) -> Unit,
     val onLongPress: (FileStat) -> Unit,
     val onSelect: (FileStat, Boolean) -> Unit,
+    /** 右键菜单的内容，与操作面板相同。 */
+    val contextActions: (FileStat) -> List<SheetAction>,
 )
 
 @Composable
@@ -173,6 +177,34 @@ private fun DriveCell(
     callbacks: DriveItemCallbacks,
     modifier: Modifier,
 ) {
+    ContextMenuArea(actions = { callbacks.contextActions(file) }, modifier = modifier) {
+        DriveCellContent(
+            file = file,
+            isWaterfallMode = isWaterfallMode,
+            coverAspectRatio = coverAspectRatio,
+            isSelectionMode = isSelectionMode,
+            isSelected = isSelected,
+            isHighlighted = isHighlighted,
+            isBlurred = isBlurred,
+            locationLabel = locationLabel,
+            callbacks = callbacks,
+        )
+    }
+}
+
+@Composable
+private fun DriveCellContent(
+    file: FileStat,
+    isWaterfallMode: Boolean,
+    coverAspectRatio: Float,
+    isSelectionMode: Boolean,
+    isSelected: Boolean,
+    isHighlighted: Boolean,
+    isBlurred: Boolean,
+    locationLabel: String?,
+    callbacks: DriveItemCallbacks,
+) {
+    val modifier = Modifier
     if (isWaterfallMode) {
         WaterfallCard(
             file = file,

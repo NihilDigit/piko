@@ -1,7 +1,7 @@
 package dev.piko.ui.screens.drive
 
-import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.animation.Crossfade
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -27,6 +27,7 @@ import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.SearchOff
 import androidx.compose.material3.AlertDialog
@@ -63,24 +64,38 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.backhandler.BackHandler
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import dev.piko.ui.LocalPikoServices
 import dev.piko.data.repository.PathBreadcrumb
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.data.repository.isPreviewableImage
 import dev.piko.shared.data.ScrollAnchor
 import dev.piko.shared.state.DriveScreenState
+import dev.piko.shared.state.InstantSaveOutcome
+import dev.piko.ui.LocalPikoServices
+import dev.piko.ui.adaptive.WidthClass
+import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.components.BreadcrumbBar
+import dev.piko.ui.components.FileNameField
 import dev.piko.ui.components.FullScreenLoading
 import dev.piko.ui.components.MoveTargetDialog
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.SegmentDownloadSheet
-import dev.piko.shared.state.InstantSaveOutcome
-import dev.piko.ui.components.FileNameField
+import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.screens.instant.InstantSheetContent
 import dev.piko.ui.screens.instant.InstantSheetHandle
 import dev.piko.ui.theme.PikoMotion
@@ -268,7 +283,46 @@ fun DriveScreen(
             onMore = { actionTargetFile = it },
             onLongPress = { state.enterSelection(it.id) },
             onSelect = { file, selected -> state.setSelected(file.id, selected) },
+            contextActions = { file ->
+                fileActions(
+                    file = file,
+                    previewHidden = if (isSpoilerBlurEnabled && file.thumbnailLink.isNotEmpty()) {
+                        file.id !in state.revealedFileIds
+                    } else {
+                        null
+                    },
+                    onTogglePreview = { state.toggleSpoiler(file.id) },
+                    onDownload = { enqueueDownload(file) },
+                    onDownloadSegment = { segmentTargetFile = file },
+                    onRename = {
+                        renameTargetFile = file
+                        renameNewName = file.name
+                    },
+                    onMove = { moveTargetIds = setOf(file.id) },
+                    onTrash = { state.moveToTrash(listOf(file.id)) },
+                )
+            },
         )
+    }
+
+    // 桌面快捷键。挂在页面根上的 onKeyEvent 收的是冒泡上来的事件：搜索框有焦点时，
+    // 退格与 Ctrl+A 先由输入框处理，不会误删文件或全选列表
+    val shortcutFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { shortcutFocus.requestFocus() } }
+    fun handleShortcut(event: KeyEvent): Boolean {
+        if (event.type != KeyEventType.KeyDown) return false
+        val ctrl = event.isCtrlPressed
+        when {
+            ctrl && event.key == Key.F -> isSearchOpen = true
+            event.key == Key.F5 || (ctrl && event.key == Key.R) -> state.load(refresh = true)
+            ctrl && event.key == Key.A -> state.toggleSelectAll()
+            event.key == Key.Delete && state.isSelectionMode && state.selectedFileIds.isNotEmpty() ->
+                state.moveToTrash(state.selectedFileIds.toList())
+            (event.key == Key.Backspace || (event.isAltPressed && event.key == Key.DirectionLeft)) &&
+                folderStack.size > 1 -> state.navigateUp()
+            else -> return false
+        }
+        return true
     }
 
     // 列表滚动后顶栏换上填充色与内容分开，M3 app bar 规范的滚动态
@@ -290,6 +344,9 @@ fun DriveScreen(
     Scaffold(
         modifier = modifier
             .fillMaxSize()
+            .focusRequester(shortcutFocus)
+            .focusable()
+            .onKeyEvent(::handleShortcut)
             .nestedScroll(topBarScrollBehavior.nestedScrollConnection),
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         bottomBar = {
@@ -327,16 +384,21 @@ fun DriveScreen(
                     title = activeFolder.name,
                     navigationIcon = if (folderStack.size > 1) {
                         {
-                            IconButton(onClick = { state.navigateUp() }) {
-                                Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回上一级")
-                            }
+                            TooltipIconButton(
+                                icon = Icons.AutoMirrored.Outlined.ArrowBack,
+                                label = "返回上一级",
+                                onClick = { state.navigateUp() },
+                                shortcut = "Backspace",
+                            )
                         }
                     } else null,
                     actions = {
                         // 顶栏只留搜索：M3 顶栏放一到两个动作，新建与秒传同属「往网盘里添东西」，
                         // 一起收进 FAB 菜单；排序与视图切换作用于列表，放在列表页眉
-                        IconButton(onClick = { isSearchOpen = true }) {
-                            Icon(Icons.Outlined.Search, contentDescription = "搜索")
+                        TooltipIconButton(Icons.Outlined.Search, "搜索", { isSearchOpen = true }, shortcut = "Ctrl+F")
+                        // 下拉刷新只在触屏上用得了；宽窗口多半用鼠标，给一个按钮
+                        if (currentWidthClass() != WidthClass.Compact) {
+                            TooltipIconButton(Icons.Outlined.Refresh, "刷新", { state.load(refresh = true) }, shortcut = "F5")
                         }
                     },
                 )

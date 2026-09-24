@@ -1,6 +1,5 @@
 package dev.piko.ui.screens.trash
 
-import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -46,12 +45,16 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import dev.piko.ui.LocalPikoServices
 import dev.piko.shared.state.TrashScreenState
+import dev.piko.ui.LocalPikoServices
+import dev.piko.ui.adaptive.readableSidePadding
 import dev.piko.ui.components.FileLeadingVisual
 import dev.piko.ui.components.FileListItem
 import dev.piko.ui.components.FileTypeIcon
@@ -200,16 +203,24 @@ fun TrashScreen(
                 if (loading) {
                     FullScreenLoading()
                 } else {
+                    // 宽窗口里行内容收窄居中，列表本身仍铺满，两侧空白处也能滚动
+                    var containerWidth by remember { mutableStateOf(0.dp) }
+                    val density = LocalDensity.current
                     PullToRefreshBox(
                         isRefreshing = state.isRefreshing,
                         onRefresh = { state.load(refresh = true) },
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .onSizeChanged { containerWidth = with(density) { it.width.toDp() } },
                     ) {
+                        val sidePadding = readableSidePadding(containerWidth)
                         // 空态也放进 LazyColumn，否则没有可滚动的子项，下拉刷新在空回收站里无法触发
                         LazyColumn(
                             state = listState,
                             modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(
+                                start = sidePadding,
+                                end = sidePadding,
                                 // 末项上方留出 FAB 的高度，否则最后一行被它盖住
                                 bottom = innerPadding.calculateBottomPadding() + 88.dp,
                             ),
