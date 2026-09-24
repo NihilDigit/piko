@@ -93,7 +93,6 @@ import dev.piko.ui.theme.effectiveSeed
 import dev.piko.ui.theme.isDark
 import dev.piko.update.AvailableUpdate
 import dev.piko.update.UpdateStatus
-import io.github.nihildigit.pikpak.TransferAllowance
 import io.github.nihildigit.pikpak.TransferAllowances
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
@@ -193,13 +192,8 @@ fun SettingsScreen(
                     ?: session?.userId?.ifBlank { null }?.let { "UID $it" },
                 avatarUrl = session?.avatarUrl,
                 quota = quota,
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            TransferQuotaCard(
                 allowances = transferQuota?.account,
-                errorMessage = transferQuotaError,
+                allowancesError = transferQuotaError,
             )
 
             SettingsGroup(title = "文件") {
@@ -414,6 +408,8 @@ private fun AccountCard(
     accountLabel: String?,
     avatarUrl: String?,
     quota: QuotaSnapshot?,
+    allowances: TransferAllowances?,
+    allowancesError: String?,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -466,31 +462,41 @@ private fun AccountCard(
                 }
             }
 
-            quota?.let { q ->
-                val fraction = if (q.limitBytes > 0) {
-                    (q.usageBytes.toFloat() / q.limitBytes.toFloat()).coerceIn(0f, 1f)
-                } else {
-                    0f
+            val usages = buildList {
+                quota?.let { add(Usage("空间", it.usageBytes, it.limitBytes)) }
+                allowances?.let {
+                    add(Usage("离线", it.offline.usedBytes, it.offline.limitBytes))
+                    add(Usage("下载", it.download.usedBytes, it.download.limitBytes))
+                    add(Usage("上传", it.upload.usedBytes, it.upload.limitBytes))
+                    if (it.downloadDaily.limitBytes > 0) add(Usage("每日下载", it.downloadDaily.usedBytes, it.downloadDaily.limitBytes))
                 }
-                val remaining = (q.limitBytes - q.usageBytes).coerceAtLeast(0L)
+            }
+            if (usages.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(16.dp))
-                LinearProgressIndicator(
-                    progress = { fraction },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        text = "已用 ${q.usageBytes.toReadableSize()} / ${q.limitBytes.toReadableSize()}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text(
-                        text = "剩余 ${remaining.toReadableSize()}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                // 两列：空间与三项流量额度各占一格，比逐行排列短一半
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    usages.chunked(2).forEach { pair ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                            pair.forEach { UsageTile(it, Modifier.weight(1f)) }
+                            if (pair.size == 1) Spacer(modifier = Modifier.weight(1f))
+                        }
+                    }
+                }
+            }
+
+            val footnotes = listOfNotNull(
+                allowances?.expireTime?.let(::formatExpireDate)?.let { "会员至 $it" },
+                allowances?.let { "流量 ${nextTransferQuotaReset()}重置" },
+            )
+            if (footnotes.isNotEmpty() || allowancesError != null) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    if (allowancesError != null) {
+                        Text(text = allowancesError, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    }
+                    footnotes.forEach {
+                        Text(text = it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
         }
@@ -498,86 +504,32 @@ private fun AccountCard(
 }
 
 /**
- * 三项月度流量额度（离线下载、下载、上传），官方网页的流量配额弹窗在客户端的对应物。
- * 接口不返回重置时间，[nextTransferQuotaReset] 按官方页面写的规则（每月 1 日 0 点，新加坡时间）算出来。
- *
+ * 网盘空间与月度流量额度（离线下载、下载、上传）的一格。流量额度是官方网页流量配额弹窗在客户端的对应物；
  * 第三方应用共享的 `connectedApps` 那 25% 不显示：piko 走的是账号自身额度，不占用那一份。
  */
-@Composable
-private fun TransferQuotaCard(allowances: TransferAllowances?, errorMessage: String?) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(text = "流量额度", style = MaterialTheme.typography.titleMedium)
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = "离线下载按文件大小全额计入离线额度，秒传按文件大小的 15% 计入上传额度，播放与下载计入下载额度。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            if (allowances == null) {
-                if (errorMessage != null) {
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text(
-                        text = errorMessage,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
-            } else {
-                Spacer(modifier = Modifier.height(16.dp))
-                TransferAllowanceRow(title = "离线下载", allowance = allowances.offline)
-                Spacer(modifier = Modifier.height(12.dp))
-                TransferAllowanceRow(title = "下载", allowance = allowances.download)
-                Spacer(modifier = Modifier.height(12.dp))
-                TransferAllowanceRow(title = "上传", allowance = allowances.upload)
-                if (allowances.downloadDaily.limitBytes > 0) {
-                    Spacer(modifier = Modifier.height(12.dp))
-                    TransferAllowanceRow(title = "每日下载", allowance = allowances.downloadDaily)
-                }
-                Spacer(modifier = Modifier.height(12.dp))
-                Text(
-                    text = "下次重置：${nextTransferQuotaReset()}（新加坡时间零点）",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                formatExpireDate(allowances.expireTime)?.let { expireDate ->
-                    Text(
-                        text = "会员到期：$expireDate",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-    }
-}
+private class Usage(val title: String, val usedBytes: Long, val limitBytes: Long)
 
 @Composable
-private fun TransferAllowanceRow(title: String, allowance: TransferAllowance) {
-    val fraction = if (allowance.limitBytes > 0) {
-        (allowance.usedBytes.toFloat() / allowance.limitBytes.toFloat()).coerceIn(0f, 1f)
-    } else {
-        0f
-    }
-    Column {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(text = title, style = MaterialTheme.typography.bodyMedium)
-            Text(
-                text = "${allowance.usedBytes.toReadableSize()} / ${allowance.limitBytes.toReadableSize()}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Spacer(modifier = Modifier.height(4.dp))
+private fun UsageTile(usage: Usage, modifier: Modifier = Modifier) {
+    val fraction = if (usage.limitBytes > 0) (usage.usedBytes.toFloat() / usage.limitBytes).coerceIn(0f, 1f) else 0f
+    Column(modifier = modifier) {
+        Text(
+            text = usage.title,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = "${usage.usedBytes.toReadableSize()} / ${usage.limitBytes.toReadableSize()}",
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(modifier = Modifier.height(6.dp))
         LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
     }
 }
 
-/** 下一次月度重置的日期。minSdk 26 起自带 java.time，不必再引入 kotlinx-datetime。 */
+/** 下一次月度重置的日期（每月 1 日 0 点，新加坡时间；接口不返回）。minSdk 26 起自带 java.time，不必再引入 kotlinx-datetime。 */
 private fun nextTransferQuotaReset(): String {
     val nowInSingapore = OffsetDateTime.now(ZoneOffset.ofHours(8))
     val reset = nowInSingapore.toLocalDate().plusMonths(1).withDayOfMonth(1)
