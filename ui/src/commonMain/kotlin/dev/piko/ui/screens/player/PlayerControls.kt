@@ -291,6 +291,7 @@ internal fun PlayerCenterControls(
             )
         }
 
+        // 播放键两侧比其他按钮之间多留一段：它是这一组的主角，贴得和两侧一样近就分不出主次
         PlayPauseButton(
             isPlaying = isPlaying,
             isLoading = isLoading,
@@ -299,6 +300,7 @@ internal fun PlayerCenterControls(
             squareCorner = sizes.playSquareCorner,
             pressedCorner = sizes.playPressedCorner,
             onClick = onPlayPause,
+            modifier = Modifier.padding(horizontal = sizes.playSpacing - sizes.spacing),
         )
 
         Side {
@@ -347,6 +349,7 @@ private fun PlayPauseButton(
     squareCorner: Dp,
     pressedCorner: Dp,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val motion = MaterialTheme.motionScheme
     val colors = MaterialTheme.colorScheme
@@ -380,7 +383,7 @@ private fun PlayPauseButton(
     }
 
     // 外框固定为静止尺寸，容器在里面伸缩，两侧按钮不会随之挪动
-    Box(Modifier.size(size), contentAlignment = Alignment.Center) {
+    Box(modifier.size(size), contentAlignment = Alignment.Center) {
         Surface(
             onClick = onClick,
             shape = RoundedCornerShape(corner),
@@ -423,12 +426,17 @@ private fun PlayPauseButton(
 }
 
 /**
- * 中央按钮组在两种方向下的规格。播放键两边都是 Medium，只比快进快退大一号，方角与按压圆角取自
+ * 中央按钮组在两种方向下的规格。播放键两边都是 Medium 高度，只比快进快退大一号，方角与按压圆角取自
  * icon button 规格的 16 与 12；竖屏的换集按钮再小一级，360dp 宽的屏幕上五个按钮仍排得下。
  */
+
+// Medium 的 56 高，宽度取标准 56 与宽版 72 之间：方形显得局促，宽版又抢过了两侧
+private val PlayContainerSize = DpSize(64.dp, 56.dp)
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 private class CenterSizes(
     val spacing: Dp,
+    /** 播放键与两侧按钮之间的距离，大于 [spacing]。 */
+    val playSpacing: Dp,
     val playContainer: @Composable () -> DpSize,
     val playIcon: Dp,
     val playSquareCorner: Dp,
@@ -444,7 +452,8 @@ private class CenterSizes(
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 private val LandscapeCenterSizes = CenterSizes(
     spacing = 16.dp,
-    playContainer = { IconButtonDefaults.mediumContainerSize() },
+    playSpacing = 28.dp,
+    playContainer = { PlayContainerSize },
     playIcon = IconButtonDefaults.mediumIconSize,
     playSquareCorner = 16.dp,
     playPressedCorner = 12.dp,
@@ -458,7 +467,8 @@ private val LandscapeCenterSizes = CenterSizes(
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 private val PortraitCenterSizes = CenterSizes(
     spacing = 16.dp,
-    playContainer = { IconButtonDefaults.mediumContainerSize() },
+    playSpacing = 24.dp,
+    playContainer = { PlayContainerSize },
     playIcon = IconButtonDefaults.mediumIconSize,
     playSquareCorner = 16.dp,
     playPressedCorner = 12.dp,
