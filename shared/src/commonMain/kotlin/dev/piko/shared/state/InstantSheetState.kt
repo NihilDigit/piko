@@ -158,6 +158,22 @@ class InstantSheetState(
         selectedIndices.sorted().mapNotNull(items::getOrNull)
     }
 
+    /** 「保存配套字幕」开关，读自偏好。 */
+    private var saveAttachedSubtitles by mutableStateOf(true)
+
+    /**
+     * 实际要保存的文件。开关关闭时去掉挂在视频下的字幕：勾选和面板显示照旧，
+     * 只在保存这一步生效，免得用户来回切开关时丢了自己的勾选。
+     */
+    private val itemsToSave: List<InstantFileItem> by derivedStateOf {
+        if (saveAttachedSubtitles) {
+            selectedItems
+        } else {
+            val attached = tree?.rows?.flatMap { it.subtitleIndices }?.toSet().orEmpty()
+            selectedIndices.filter { it !in attached }.sorted().mapNotNull(items::getOrNull)
+        }
+    }
+
     /**
      * 这次保存是否存进新建的一层目录。只选一项时直接存进目标目录，不必再套一层。
      * 整包离线的目录是 PikPak 以种子名建的，完成后改成这里填的名字。
@@ -251,6 +267,7 @@ class InstantSheetState(
             if (usedPreviewFolder) previewFolder.clearInBackground()
         }
         scope.launch { target = resolveTarget() }
+        scope.launch { preferences.bundleSubtitlesFlow.collect { saveAttachedSubtitles = it } }
         if (initialMagnet.isNotBlank()) {
             if (normalizeMagnet(initialMagnet) == null) {
                 // 外部唤起的链不合法时自动解析不会发生，而输入框又是收起的，不兜住就是一个空面板
@@ -346,7 +363,7 @@ class InstantSheetState(
     fun saveSelection() {
         val plan = savePlan ?: return
         if (isSaving || plan.lacksSpace) return
-        val toSave = selectedItems
+        val toSave = itemsToSave
         isSaving = true
         scope.launch {
             try {
@@ -367,7 +384,7 @@ class InstantSheetState(
      */
     fun saveSelectionInstantly() {
         if (isSaving || savePlan?.fallback == null) return
-        val toSave = selectedItems.filter { it.isInstantReady }
+        val toSave = itemsToSave.filter { it.isInstantReady }
         isSaving = true
         scope.launch {
             try {

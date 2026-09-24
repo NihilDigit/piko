@@ -30,6 +30,8 @@ data class InstantRow(
     val subtitleCount: Int,
     val audioTrackCount: Int,
     val bytes: Long,
+    /** 挂在这一行下的字幕文件。「保存配套字幕」关闭时保存会跳过它们，勾选与显示不受影响。 */
+    val subtitleIndices: List<Int> = emptyList(),
 ) : InstantNode {
     override val key: String get() = "f:$index"
 }
@@ -186,6 +188,7 @@ private class InstantTreeBuilder(private val files: List<MediaFileInput>, privat
             subtitleCount = file.attachments.count { it.kind == AttachmentKind.SUBTITLE },
             audioTrackCount = file.attachments.count { it.kind == AttachmentKind.AUDIO_TRACK },
             bytes = indices.sumOf { files[it].size },
+            subtitleIndices = file.attachments.filter { it.kind == AttachmentKind.SUBTITLE }.map { it.index },
         )
     }
 
