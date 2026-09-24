@@ -54,6 +54,7 @@ import dev.piko.ui.navigation.Screen
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.screens.drive.DriveScreen
 import dev.piko.ui.screens.files.FilesScreen
+import dev.piko.ui.screens.settings.ProfileScreen
 import dev.piko.ui.screens.settings.SettingsScreen
 import dev.piko.ui.screens.trash.TrashScreen
 import dev.piko.ui.screens.transfers.TransfersScreen
@@ -89,6 +90,7 @@ private val NavKeyConfiguration = SavedStateConfiguration {
         polymorphic(NavKey::class) {
             subclass(Screen.SubDrive::class)
             subclass(Screen.Trash::class)
+            subclass(Screen.Settings::class)
             subclass(Screen.VideoPlayer::class)
         }
     }
@@ -98,8 +100,8 @@ private val NavKeyConfiguration = SavedStateConfiguration {
  * 主界面：导航套件加压栈页面。
  *
  * 导航随窗口宽度变化：compact 是底部导航栏，medium 与 expanded 换成侧边导航栏。
- * 回收站在 compact 上是盖住整个窗口的压栈页；更宽时留在导航栏右侧的内容区里，
- * expanded 窗口下与「我的」并排成列表加详情两栏。
+ * 回收站与设置是「我的」的两个详情页：compact 上是盖住整个窗口的压栈页；更宽时留在导航栏右侧的
+ * 内容区里，expanded 窗口下与「我的」并排成列表加详情两栏。
  */
 @Composable
 fun PikoMainScaffold(
@@ -114,12 +116,20 @@ fun PikoMainScaffold(
     val widthClass = currentWidthClass()
 
     val topScreen = backStack.lastOrNull() as? Screen
-    // 宽窗口下回收站不再盖住导航栏，而是进内容区；只有 compact 与播放器仍是整窗覆盖层
-    val trashInPane = topScreen == Screen.Trash && widthClass != WidthClass.Compact
-    val activeOverlayScreen = topScreen?.takeUnless { trashInPane }
+    // 「我的」的详情页（回收站、设置）在宽窗口下不盖住导航栏，而是进内容区；只有 compact 与播放器仍是整窗覆盖层
+    val profilePane = topScreen?.takeIf { it == Screen.Trash || it == Screen.Settings }
+    val profilePaneInline = profilePane != null && widthClass != WidthClass.Compact
+    val activeOverlayScreen = topScreen?.takeUnless { profilePaneInline }
 
     fun closeTop() {
         backStack.removeLastOrNull()
+    }
+
+    // 两个详情页互相替换，不叠在一起：从回收站点到设置，返回应当回到「我的」而不是回收站
+    fun openProfilePane(screen: Screen) {
+        if (topScreen == screen) return
+        if (profilePane != null) closeTop()
+        backStack.add(screen)
     }
 
     // 监听外部传入的磁力链接，自动切到文件页并关闭覆盖层
@@ -140,7 +150,7 @@ fun PikoMainScaffold(
         }
     }
 
-    BackHandler(enabled = trashInPane) { closeTop() }
+    BackHandler(enabled = profilePaneInline) { closeTop() }
 
     // 若当前不在文件主页且未打开覆盖页面，按下返回键优先回到文件页
     BackHandler(enabled = currentTab != MainTab.FILES && topScreen == null) {
@@ -185,9 +195,6 @@ fun PikoMainScaffold(
         if (currentTab != MainTab.FILES) runCatching { shortcutFocus.requestFocus() }
     }
 
-    val trashPane: @Composable (Modifier) -> Unit = { paneModifier ->
-        TrashScreen(onBackClick = ::closeTop, modifier = paneModifier)
-    }
 
     Box(
         modifier = modifier
@@ -240,14 +247,12 @@ fun PikoMainScaffold(
                         )
                     }
                     MainTab.SETTINGS -> {
-                        SettingsWithTrash(
+                        ProfileWithPanes(
                             onLogout = onLogout,
-                            onNavigateToTrash = {
-                                if (topScreen != Screen.Trash) backStack.add(Screen.Trash)
-                            },
-                            trashOpen = trashInPane,
+                            onOpenPane = ::openProfilePane,
+                            onClosePane = ::closeTop,
+                            openPane = profilePane.takeIf { profilePaneInline },
                             twoPane = widthClass == WidthClass.Expanded,
-                            trashPane = trashPane,
                         )
                     }
                 }
@@ -263,8 +268,8 @@ fun PikoMainScaffold(
                         selected = selected,
                         onClick = {
                             currentTab = tab
-                            // 宽窗口里回收站挂在「我的」下面，换页时一并收起
-                            if (trashInPane) closeTop()
+                            // 宽窗口里详情页挂在「我的」下面，换页时一并收起
+                            if (profilePaneInline) closeTop()
                         },
                         icon = { Icon(imageVector = tab.icon(selected), contentDescription = null) },
                         label = { Text(tab.title) },
@@ -300,7 +305,8 @@ fun PikoMainScaffold(
                             onNavigateToVideoPlayer = ::playVideo,
                         )
                     }
-                    is Screen.Trash -> trashPane(Modifier)
+                    is Screen.Trash -> TrashScreen(onBackClick = ::closeTop)
+                    is Screen.Settings -> SettingsScreen(onBackClick = ::closeTop)
                     is Screen.VideoPlayer -> {
                         (videoPlayer as? VideoPlayerHost.InApp)?.content?.invoke(screen, ::closeTop)
                     }
@@ -312,34 +318,43 @@ fun PikoMainScaffold(
 }
 
 /**
- * 「我的」与回收站。medium 窗口里回收站替换掉设置列表，expanded 窗口里两者并排：
- * 设置列表不因打开回收站而消失，换一项设置不必先退出回收站。
+ * 「我的」与它的详情页（回收站、设置）。medium 窗口里详情页替换掉「我的」；expanded 窗口里两者并排，
+ * 右栏没有打开的详情页时显示设置，免得半边空着。并排时设置页不给返回按钮：它本就是右栏的默认内容。
  */
 @Composable
-private fun SettingsWithTrash(
+private fun ProfileWithPanes(
     onLogout: () -> Unit,
-    onNavigateToTrash: () -> Unit,
-    trashOpen: Boolean,
+    onOpenPane: (Screen) -> Unit,
+    onClosePane: () -> Unit,
+    openPane: Screen?,
     twoPane: Boolean,
-    trashPane: @Composable (Modifier) -> Unit,
 ) {
+    val profile: @Composable (Screen?, Modifier) -> Unit = { selected, modifier ->
+        ProfileScreen(
+            onLogout = onLogout,
+            onOpenTrash = { onOpenPane(Screen.Trash) },
+            onOpenSettings = { onOpenPane(Screen.Settings) },
+            selectedPane = selected,
+            modifier = modifier,
+        )
+    }
     if (!twoPane) {
-        if (trashOpen) {
-            trashPane(Modifier)
-        } else {
-            SettingsScreen(onLogout = onLogout, onNavigateToTrash = onNavigateToTrash)
+        when (openPane) {
+            Screen.Trash -> TrashScreen(onBackClick = onClosePane)
+            Screen.Settings -> SettingsScreen(onBackClick = onClosePane)
+            else -> profile(null, Modifier)
         }
         return
     }
+    val shown = openPane ?: Screen.Settings
     Row(modifier = Modifier.fillMaxSize()) {
-        SettingsScreen(
-            onLogout = onLogout,
-            onNavigateToTrash = onNavigateToTrash,
-            modifier = Modifier.weight(1f),
-        )
-        if (trashOpen) {
-            VerticalDivider()
-            trashPane(Modifier.weight(1f).fillMaxHeight())
+        profile(shown, Modifier.weight(1f))
+        VerticalDivider()
+        val paneModifier = Modifier.weight(1f).fillMaxHeight()
+        if (shown == Screen.Trash) {
+            TrashScreen(onBackClick = onClosePane, modifier = paneModifier)
+        } else {
+            SettingsScreen(onBackClick = null, modifier = paneModifier)
         }
     }
 }
