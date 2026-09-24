@@ -92,6 +92,11 @@ import dev.piko.ui.theme.effectiveSeed
 import dev.piko.ui.theme.isDark
 import dev.piko.update.AvailableUpdate
 import dev.piko.update.UpdateStatus
+import io.github.nihildigit.pikpak.TransferAllowance
+import io.github.nihildigit.pikpak.TransferAllowances
+import java.time.OffsetDateTime
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlinx.coroutines.launch
 
@@ -130,6 +135,9 @@ fun SettingsScreen(
     val liveQuota by driveRepo.quotaFlow.collectAsStateWithLifecycle()
     val cachedQuota by sessionManager.quotaSnapshotFlow.collectAsStateWithLifecycle(initialValue = null)
     val quota = liveQuota?.let { QuotaSnapshot(it.quota.usageBytes, it.quota.limitBytes) } ?: cachedQuota
+    // 不落盘，只在本页存活期间保留；失败时留着上一次的值，只在旁边补一行错误文字
+    val transferQuota by driveRepo.transferQuotaFlow.collectAsStateWithLifecycle()
+    var transferQuotaError by remember { mutableStateOf<String?>(null) }
     var showLogoutDialog by remember { mutableStateOf(false) }
     var showDownloadDirDialog by remember { mutableStateOf(false) }
     val downloadLocation = platform.downloadLocation
@@ -156,6 +164,11 @@ fun SettingsScreen(
         // 失败不提示：头像本就有首字母兜底，为它弹一条错误反而扰人。
         accountRepo.refreshProfile()
     }
+    LaunchedEffect(Unit) {
+        driveRepo.getTransferQuota()
+            .onSuccess { transferQuotaError = null }
+            .onFailure { transferQuotaError = "流量额度加载失败" }
+    }
 
     // 不设顶栏：标题与底部导航选中的「我的」重复，本页也没有页面级动作。
     // Scaffold 的内容边距已含状态栏，账号卡片直接从状态栏下方开始
@@ -178,6 +191,13 @@ fun SettingsScreen(
                     ?: session?.userId?.ifBlank { null }?.let { "UID $it" },
                 avatarUrl = session?.avatarUrl,
                 quota = quota,
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            TransferQuotaCard(
+                allowances = transferQuota?.account,
+                errorMessage = transferQuotaError,
             )
 
             SettingsGroup(title = "文件") {
@@ -465,6 +485,101 @@ private fun AccountCard(
             }
         }
     }
+}
+
+/**
+ * 三项月度流量额度（离线下载、下载、上传），官方网页的流量配额弹窗在客户端的对应物。
+ * 接口不返回重置时间，[nextTransferQuotaReset] 按官方页面写的规则（每月 1 日 0 点，新加坡时间）算出来。
+ *
+ * 第三方应用共享的 `connectedApps` 那 25% 不显示：piko 走的是账号自身额度，不占用那一份。
+ */
+@Composable
+private fun TransferQuotaCard(allowances: TransferAllowances?, errorMessage: String?) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(text = "流量额度", style = MaterialTheme.typography.titleMedium)
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "离线下载按文件大小全额计入离线额度，秒传按文件大小的 15% 计入上传额度，播放与下载计入下载额度。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (allowances == null) {
+                if (errorMessage != null) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = errorMessage,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            } else {
+                Spacer(modifier = Modifier.height(16.dp))
+                TransferAllowanceRow(title = "离线下载", allowance = allowances.offline)
+                Spacer(modifier = Modifier.height(12.dp))
+                TransferAllowanceRow(title = "下载", allowance = allowances.download)
+                Spacer(modifier = Modifier.height(12.dp))
+                TransferAllowanceRow(title = "上传", allowance = allowances.upload)
+                if (allowances.downloadDaily.limitBytes > 0) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    TransferAllowanceRow(title = "每日下载", allowance = allowances.downloadDaily)
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = "下次重置：${nextTransferQuotaReset()}（新加坡时间零点）",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                formatExpireDate(allowances.expireTime)?.let { expireDate ->
+                    Text(
+                        text = "会员到期：$expireDate",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TransferAllowanceRow(title: String, allowance: TransferAllowance) {
+    val fraction = if (allowance.limitBytes > 0) {
+        (allowance.usedBytes.toFloat() / allowance.limitBytes.toFloat()).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+    Column {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(text = title, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                text = "${allowance.usedBytes.toReadableSize()} / ${allowance.limitBytes.toReadableSize()}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(modifier = Modifier.height(4.dp))
+        LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
+    }
+}
+
+/** 下一次月度重置的日期。minSdk 26 起自带 java.time，不必再引入 kotlinx-datetime。 */
+private fun nextTransferQuotaReset(): String {
+    val nowInSingapore = OffsetDateTime.now(ZoneOffset.ofHours(8))
+    val reset = nowInSingapore.toLocalDate().plusMonths(1).withDayOfMonth(1)
+    return reset.format(DateTimeFormatter.ofPattern("M 月 d 日", Locale.getDefault()))
+}
+
+/** 非会员时 [TransferAllowances.expireTime] 为空字符串，解析失败也一并按「没有」处理。 */
+private fun formatExpireDate(expireTime: String): String? {
+    if (expireTime.isBlank()) return null
+    return runCatching {
+        OffsetDateTime.parse(expireTime).format(DateTimeFormatter.ofPattern("yyyy 年 M 月 d 日", Locale.getDefault()))
+    }.getOrNull()
 }
 
 @Composable

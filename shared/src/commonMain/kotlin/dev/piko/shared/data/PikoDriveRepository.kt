@@ -6,6 +6,7 @@ import io.github.nihildigit.pikpak.FileDetail
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.QuotaResponse
 import io.github.nihildigit.pikpak.SearchHit
+import io.github.nihildigit.pikpak.TransferQuota
 import io.github.nihildigit.pikpak.batchDelete
 import io.github.nihildigit.pikpak.batchMove
 import io.github.nihildigit.pikpak.batchTrash
@@ -13,6 +14,7 @@ import io.github.nihildigit.pikpak.batchUntrash
 import io.github.nihildigit.pikpak.createFolder
 import io.github.nihildigit.pikpak.getFile
 import io.github.nihildigit.pikpak.getQuota
+import io.github.nihildigit.pikpak.getTransferQuota
 import io.github.nihildigit.pikpak.listFiles
 import io.github.nihildigit.pikpak.listFilesPaged
 import io.github.nihildigit.pikpak.listTrash
@@ -65,6 +67,9 @@ open class PikoDriveRepository(
     protected val folderMeaninglessCache: Map<String, Boolean> get() = folderMeaninglessCacheFlow.value
     private val _quotaFlow = MutableStateFlow<QuotaResponse?>(null)
     val quotaFlow: StateFlow<QuotaResponse?> = _quotaFlow.asStateFlow()
+    // 不落盘：与存储配额不同，官方也没有把它算进「上次已知值」这类离线展示的必要
+    private val _transferQuotaFlow = MutableStateFlow<TransferQuota?>(null)
+    val transferQuotaFlow: StateFlow<TransferQuota?> = _transferQuotaFlow.asStateFlow()
     private val _folderStackFlow = MutableStateFlow(listOf(ROOT_BREADCRUMB))
     val folderStackFlow: StateFlow<List<PikoPathBreadcrumb>> = _folderStackFlow.asStateFlow()
 
@@ -273,6 +278,11 @@ open class PikoDriveRepository(
                 preferences?.saveQuotaSnapshot(it.quota.usageBytes, it.quota.limitBytes)
             }
         }
+    }
+
+    /** 离线下载、下载、上传三项月度流量额度，见 [TransferQuota] 上的计费实测结论。 */
+    suspend fun getTransferQuota(): Result<TransferQuota> = withContext(Dispatchers.Default) {
+        runSuspendCatching { client.getTransferQuota().also { _transferQuotaFlow.value = it } }
     }
 
     /**
