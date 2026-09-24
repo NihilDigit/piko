@@ -20,12 +20,13 @@ fun parseMediaName(fileName: String): ParsedName {
             )
         }
     }
+    val washed = stripSiteNoise(stem)
     // 应用与相机自动起的名字不进剧集解析：LINE_MOVIE 的「MOVIE」会被当成剧场版，长串数字会被当成集号
-    generatedName(stem)?.let { generated ->
+    generatedName(washed)?.let { generated ->
         val title = when (generated) {
             is GeneratedName.Timed -> generated.label
             is GeneratedName.Posted -> generated.account
-            GeneratedName.Opaque -> stem
+            GeneratedName.Opaque -> washed
         }
         val label = (generated as? GeneratedName.Posted)?.label ?: title
         return ParsedName(
@@ -35,7 +36,7 @@ fun parseMediaName(fileName: String): ParsedName {
             timed = generated is GeneratedName.Timed,
         )
     }
-    val series = parseSeriesStem(stem)
+    val series = parseSeriesStem(washed)
     return ParsedName(
         fileName = fileName, fileKind = kind, kind = series.kind, confidence = series.confidence,
         title = series.title, group = series.group, episode = series.episode, episodeTitle = series.episodeTitle,

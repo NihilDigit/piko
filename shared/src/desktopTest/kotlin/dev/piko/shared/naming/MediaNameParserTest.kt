@@ -193,9 +193,25 @@ class MediaNameParserTest {
         // 相机名里的时间是当地时间，不随时区换算
         assertEquals("相机 2026-09-13 09:08", (generatedName("VID_20260913_090829_383", utc) as GeneratedName.Timed).label)
         assertEquals(GeneratedName.Opaque, generatedName("5_6190741636838855047_(new)", utc))
+        assertEquals("2023-12-06 18:03", (generatedName("2023-12-06 18-03-01", utc) as GeneratedName.Timed).label)
         assertEquals(GeneratedName.Opaque, generatedName("cd03bb5bbf8d6d0f", utc))
         // 纯数字不当哈希，也不在合理年份内时不当时间戳
         assertNull(generatedName("20240101", utc))
         assertNull(generatedName("99999999999999", utc))
+    }
+
+    @Test
+    fun `forum and ad addresses are washed but studio brackets stay`() {
+        assertEquals("国风10", stripSiteNoise("www.98T.la@国风10"))
+        assertEquals("国风10", stripSiteNoise("www.98T.la@www.98T.la@国风10"))
+        assertEquals("2023-12-06 18-03-01", stripSiteNoise("kcf9.com-2023-12-06 18-03-01"))
+        assertEquals("heydouga4017-240-34", stripSiteNoise("[thz.la]heydouga4017-240-34"))
+        assertEquals("某人 [标签] 标题", stripSiteNoise("某人 [标签] www.98T.la@标题"))
+        assertEquals("某个标题", stripSiteNoise("某个标题 - Pornhub.com"))
+        assertEquals("(33)", stripSiteNoise("美库meiku.vip内购首发@ (33)"))
+        // 出品方是内容信息，作品名以常见词结尾的不是网址，点连接的 scene 名也不是
+        assertEquals("[Studio.com] Name - Title", stripSiteNoise("[Studio.com] Name - Title"))
+        assertEquals("Sword.Art.Online - 01", stripSiteNoise("Sword.Art.Online - 01"))
+        assertEquals("Site.19.05.17.Name.XXX", stripSiteNoise("Site.19.05.17.Name.XXX"))
     }
 }

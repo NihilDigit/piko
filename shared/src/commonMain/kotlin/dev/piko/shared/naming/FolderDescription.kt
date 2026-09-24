@@ -28,8 +28,9 @@ fun describeFolder(folderName: String, contentNames: List<String> = emptyList())
     matchAv(folderName.trim(), allowLanguageSuffix = false)?.let { match ->
         return FolderDescription(match.info.code, WorkKind.AV, match.tags, episodeRange = null, extras = emptyList())
     }
-    val fromName = parseSeriesStem(folderName)
-    val nameTags = fromName.tags + scanFolderTags(folderName)
+    val washed = stripSiteNoise(folderName.trim())
+    val fromName = parseSeriesStem(washed)
+    val nameTags = fromName.tags + scanFolderTags(washed)
 
     val content = contentNames.takeIf { it.isNotEmpty() }?.let { names -> analyzeMediaBatch(names.map { MediaFileInput(it, 0) }) }
     val mainWork = content?.works?.filter { it.kind != WorkKind.UNKNOWN }?.maxWithOrNull(
@@ -53,6 +54,7 @@ fun describeFolder(folderName: String, contentNames: List<String> = emptyList())
     val bareTitle = mainWork?.title?.takeIf(::hasLatin)
         ?: fromName.title?.takeIf { worthRewriting(folderName, fromName, nameTags, nameRange, season, extras) }?.let(::latinAlternative)?.let(::stripSeasonWord)
     val title = bareTitle?.let { if (season != null && season > 0) "$it Season $season" else it }
+        ?: washed.takeIf { it != folderName.trim() }
     return FolderDescription(
         title = title,
         kind = if (title != null || mainWork != null) WorkKind.SERIES else WorkKind.UNKNOWN,

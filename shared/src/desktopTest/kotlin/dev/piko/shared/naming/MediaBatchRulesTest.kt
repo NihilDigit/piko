@@ -147,4 +147,34 @@ class MediaBatchRulesTest {
         val result = batch("某人  IMG_5845 (1) 6669.mp4" to 1, "某人  IMG_5850 (1) 6669.mp4" to 1)
         assertTrue(result.parsed.all { it.episode?.number != 1 }, result.parsed.toString())
     }
+
+    @Test
+    fun `sibling alignment finds parts written after a description`() {
+        val parts = batch(
+            "Heydouga 4017-226 (某人)_4k5.wmv" to 1,
+            "Heydouga 4017-226 (某人)_4k6.wmv" to 1,
+            "Heydouga 4017-226 (某人)_4k7.wmv" to 1,
+        )
+        // 分段写在描述后面，后缀扫描认不出；没有对齐的话三段是同一条目的三个版本
+        assertEquals(3, parts.works.single().sections.single().entries.size)
+    }
+
+    @Test
+    fun `quality variants stay versions of one entry`() {
+        val versions = batch("ABC-123 1080p.mp4" to 2, "ABC-123 720p.mp4" to 1)
+        assertEquals(1, versions.works.single().sections.single().entries.size, "1080 与 720 不是分段号")
+    }
+
+    @Test
+    fun `aligned works take their title from the constant text`() {
+        // 编号打头时作品名在后面
+        val leading = batch("0499-Someone_HEVC.mp4" to 1, "0501-Someone_HEVC.mp4" to 1, "0510-Someone_HEVC.mp4" to 1)
+        assertEquals("Someone", leading.works.single().title)
+        // 逐文件一致解析成站点前缀的残渣时，用不变文字
+        val site = batch("www.site.la@分类甲1.mp4" to 1, "www.site.la@分类甲2.mp4" to 1, "www.site.la@分类甲3.mp4" to 1)
+        assertEquals("分类甲", site.works.single().title)
+        // 时间之后的毫秒不是编号
+        val recorded = batch("主播_20220907-015242-325.mp4" to 1, "主播_20220908-011502-812.mp4" to 1, "主播_20220909-020012-104.mp4" to 1)
+        assertTrue(recorded.parsed.none { it.episode != null }, recorded.parsed.map { it.label }.toString())
+    }
 }

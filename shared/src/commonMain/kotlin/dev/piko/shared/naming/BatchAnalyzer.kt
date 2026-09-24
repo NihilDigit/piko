@@ -62,6 +62,7 @@ private class BatchAnalyzer(inputs: List<MediaFileInput>) {
         assignWorks()
         rejectCopyMarkers()
         rejectUploaderNumbering()
+        alignSiblingNames()
         nameOpaqueFiles()
         numberSameTimes()
         validateWeakEpisodes()
@@ -340,6 +341,59 @@ private class BatchAnalyzer(inputs: List<MediaFileInput>) {
                     .flatten()
                     .forEach(::makeStandalone)
             }
+    }
+
+    /**
+     * 兄弟文件对齐（见 SiblingAlignment）。补上逐文件解析看不出的两件事：
+     * - 同一番号的一簇文件里逐个在变的小数字是分段号：「(素人…)_4k6」「_6fhd」「ei3_n」的分段写在描述后面或粘着别的词，
+     *   后缀扫描认不出，第 5、6 段就成了同一条目的两个版本，合并版本时只剩一个能点开；
+     * - 逐文件只拿到弱集号或没有集号的剧集，按簇里的编号槽位定集号，不变的前缀作作品名。
+     * 高置信度的集号（S01E02、[01]）与已经分得开的分段不动。
+     */
+    private fun alignSiblingNames() {
+        contentItems().filter { it.isVideoLike && it.discRoot == null && !it.parsed.opaque && !it.parsed.timed }
+            .groupBy { it.folder }.values.forEach { folderItems ->
+                alignSiblings(folderItems.map { stripSiteNoise(it.name.substringBeforeLast('.')) }, minSize = 2).forEach { cluster ->
+                    val members = cluster.members.map { folderItems[it] }
+                    val sequence = cluster.sequence ?: return@forEach
+                    val codes = members.map { it.parsed.av?.code }.distinct()
+                    if (codes.size == 1 && codes.single() != null) {
+                        numberParts(members, sequence)
+                    } else if (members.size >= 3 && members.all { it.workKind == WorkKind.SERIES } && !cluster.timeVariesBeforeSequence) {
+                        numberEpisodes(members, sequence, alignedTitle(cluster.head) ?: alignedTitle(cluster.tail), "${folderItems.first().folder}/${cluster.members.first()}")
+                    }
+                }
+            }
+    }
+
+    private fun numberParts(members: List<Item>, sequence: List<String>) {
+        // 已有的分段能把成员分开，说明后缀扫描认对了，不动
+        if (members.map { it.parsed.av!!.part }.distinct().size == members.size) return
+        members.forEachIndexed { index, item ->
+            val av = item.parsed.av!!.copy(part = sequence[index].trimStart('0').ifEmpty { "0" })
+            item.parsed = item.parsed.copy(av = av, label = "${av.code} ${av.part}")
+        }
+    }
+
+    /**
+     * 整簇定为一部作品。作品名为 null 时不起作品头，但成员仍共用一个作品键：退回各自的解析标题的话，
+     * 标题里带着各不相同的编号（「0499-Misa」「0501-Misa」），又碎成一个文件一部
+     */
+    private fun numberEpisodes(members: List<Item>, sequence: List<String>, alignedTitle: String?, clusterKey: String) {
+        if (members.all { it.parsed.episode != null && it.parsed.confidence == Confidence.HIGH }) return
+        // 逐文件解析给出的作品名彼此一致、且被簇里的不变文字包含时沿用它：它认得发布组方括号与标签，
+        // 拼出来的文字认不得（「【三个小乖乖】3个…」会多出半个括号）。不被包含的是解析错了，
+        // 如「www.98T.la@胶衣1」一致解析成「www」，而不变文字是「胶衣」
+        val agreed = members.map { it.parsed.title }.distinct().singleOrNull()
+        val title = agreed?.takeIf { alignedTitle == null || workKeyOf(it) in workKeyOf(alignedTitle) } ?: alignedTitle
+        val workKey = title?.let { "s:" + workKeyOf(it) } ?: "s:aligned:$clusterKey"
+        members.forEachIndexed { index, item ->
+            val text = sequence[index]
+            val episode = EpisodeNumber(number = text.toInt(), text = text, decimal = null, lastText = null, season = null, suffix = "", version = null)
+            item.parsed = item.parsed.copy(kind = NameKind.EPISODE, episode = episode, title = title, label = text)
+            item.workTitle = title
+            item.workKey = workKey
+        }
     }
 
     /** 改回独立文件，标题取整个名字。 */

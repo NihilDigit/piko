@@ -39,6 +39,8 @@ private val EPOCH_SECONDS = Regex("""^(\d{10})$""")
 
 // 名字里直接写着当地时间：VID_20260913_090829、PXL_20240101_123456789、Screenrecorder-2024-01-01-12-30-45
 private val CAMERA = Regex("""(?i)^(?:VID|IMG|PXL|MVIMG)_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})""")
+// 整个名字就是日期加时刻：「2023-12-06 18-03-01」（洗掉「kcf9.com-」之后）
+private val DATE_TIME = Regex("""^(\d{4})-(\d{2})-(\d{2})[ _T](\d{2})[-:.](\d{2})[-:.](\d{2})$""")
 private val SCREEN_RECORDER = Regex("""(?i)^Screen_?recorder[-_](\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})""")
 
 private val TWEET_MEDIA = Regex("""^(.+?)_(\d{8})__(\d{15,20})_(\d{1,2})_\d{15,25}$""")
@@ -75,6 +77,7 @@ internal fun generatedName(stem: String, timeZone: TimeZone = TimeZone.currentSy
     }
     CAMERA.find(stem)?.let { match -> localTime(match)?.let { return GeneratedName.Timed("相机", it) } }
     SCREEN_RECORDER.find(stem)?.let { match -> localTime(match)?.let { return GeneratedName.Timed("录屏", it) } }
+    DATE_TIME.find(stem)?.let { match -> localTime(match)?.let { return GeneratedName.Timed(null, it) } }
     if (TELEGRAM.matches(stem) || UUID.matches(stem)) return GeneratedName.Opaque
     // 全是数字的串交给上面的时间戳判断，这里只收真正混有字母的哈希，免得「20240101」这类被吞掉
     if (HEX_HASH.matches(stem) && stem.any { it.isLetter() }) return GeneratedName.Opaque

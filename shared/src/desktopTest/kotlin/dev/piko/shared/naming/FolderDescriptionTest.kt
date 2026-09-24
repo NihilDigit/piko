@@ -96,7 +96,10 @@ class FolderDescriptionTest {
 
     @Test
     fun `names with nothing extracted are not rewritten`() {
-        listOf("www.example.la@P", "some_user", "x.com_2029391789397033374").forEach { assertNull(describeFolder(it).title, it) }
+        // 只换分隔符不算提取出东西
+        listOf("some_user", "some.user.name").forEach { assertNull(describeFolder(it).title, it) }
+        // 论坛前缀洗掉就是提取
+        assertEquals("P", describeFolder("www.example.la@P").title)
     }
 
     @Test
