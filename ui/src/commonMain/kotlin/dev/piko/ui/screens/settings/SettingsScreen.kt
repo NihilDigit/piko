@@ -244,8 +244,8 @@ fun SettingsScreen(
                 SettingsSwitchRow(
                     index = 2, count = 4,
                     icon = Icons.Outlined.Subtitles,
-                    title = "字幕随视频",
-                    supporting = "添加链接时同名字幕与视频合为一项",
+                    title = "保存配套字幕",
+                    supporting = "添加链接时一并保存视频的外挂字幕",
                     checked = isBundleSubtitlesEnabled,
                     onCheckedChange = { scope.launch { sessionManager.setBundleSubtitlesEnabled(it) } },
                 )

@@ -36,7 +36,7 @@ interface PikoUserPreferences {
     val rawFileNamesFlow: Flow<Boolean>
     suspend fun setRawFileNamesEnabled(enabled: Boolean)
 
-    /** 添加链接时同名字幕随视频打包成一项，见 subtitleBundles。 */
+    /** 添加链接时一并保存视频的外挂字幕。字幕在面板里挂在视频行下，不单独勾选，关闭后保存时跳过它们。 */
     val bundleSubtitlesFlow: Flow<Boolean>
     suspend fun setBundleSubtitlesEnabled(enabled: Boolean)
 
