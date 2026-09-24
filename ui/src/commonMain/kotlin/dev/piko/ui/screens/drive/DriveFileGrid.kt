@@ -24,6 +24,8 @@ import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -50,7 +52,10 @@ import dev.piko.shared.data.PikoSortField
 import dev.piko.shared.data.field
 import dev.piko.shared.data.isAscending
 import dev.piko.ui.components.ContextMenuArea
+import dev.piko.shared.state.DriveFolderView
+import dev.piko.shared.state.DriveListItem
 import dev.piko.ui.components.FileListItem
+import dev.piko.ui.components.MediaTagRow
 import dev.piko.ui.components.SheetAction
 import io.github.nihildigit.pikpak.FileStat
 
@@ -80,11 +85,17 @@ internal class DriveItemCallbacks(
     val onSelect: (FileStat, Boolean) -> Unit,
     /** 右键菜单的内容，与操作面板相同。 */
     val contextActions: (FileStat) -> List<SheetAction>,
+    val onToggleSection: (blockId: String) -> Unit,
+    /** 文件夹进入可见区域，见 DriveScreenState.onFolderVisible。 */
+    val onFolderVisible: (FileStat) -> Unit,
 )
+
+/** 列表前面固定的几项：页眉，以及有时出现的折叠横幅。分区跳转与副标题反查要扣掉它们。 */
+internal fun driveLeadingItemCount(hasFoldBanner: Boolean): Int = 1 + (if (hasFoldBanner) 1 else 0)
 
 @Composable
 internal fun DriveFileGrid(
-    files: List<FileStat>,
+    items: List<DriveListItem>,
     isWaterfallMode: Boolean,
     gridState: LazyStaggeredGridState,
     isSelectionMode: Boolean,
@@ -92,30 +103,24 @@ internal fun DriveFileGrid(
     highlightedIds: Set<String>,
     isBlurred: (FileStat) -> Boolean,
     hitLocations: Map<String, String>,
+    /** 文件夹的解析结果；原始文件名模式下恒为 null。 */
+    folderView: (FileStat) -> DriveFolderView?,
     callbacks: DriveItemCallbacks,
     bottomPadding: Dp,
     header: @Composable () -> Unit,
     foldBanner: (@Composable () -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
-    // 文件夹始终排在前面。目录列表在仓库层已经这样排好；全盘搜索的结果按到达顺序，
-    // 这里一并归拢。两组之间不另起一行：最后一排文件夹留下的空位由文件接着填上。
-    val (folders, regularFiles) = remember(files) { files.partition(FileStat::isFolder) }
-    val leadingItemCount = 1 + (if (foldBanner != null) 1 else 0)
-
-    // 刚秒传成功时滚到新条目。视图模式是异步读出来的偏好，首帧拿到的还是默认值，
-    // 所以它也要进 key，否则真值到达前的滚动会停在错误的位置。
+    val leadingItemCount = driveLeadingItemCount(foldBanner != null)
     val horizontalPadding = if (isWaterfallMode) 16.dp else 0.dp
     val itemSpacing = if (isWaterfallMode) 8.dp else 0.dp
 
     Box(modifier = modifier.fillMaxSize()) {
-        val entries = remember(folders, regularFiles) { folders + regularFiles }
-
         // 刚秒传成功时滚到新条目。视图模式是异步读出来的偏好，首帧拿到的还是默认值，
         // 所以它也要进 key，否则真值到达前的滚动会停在错误的位置。
-        LaunchedEffect(entries, highlightedIds, isWaterfallMode) {
+        LaunchedEffect(items, highlightedIds, isWaterfallMode) {
             if (highlightedIds.isEmpty()) return@LaunchedEffect
-            val entryIndex = entries.indexOfFirst { it.id in highlightedIds }
+            val entryIndex = items.indexOfFirst { it is DriveListItem.File && it.file.id in highlightedIds }
             if (entryIndex >= 0) gridState.animateScrollToItem(leadingItemCount + entryIndex)
         }
 
@@ -146,20 +151,115 @@ internal fun DriveFileGrid(
                 }
             }
 
-        itemsIndexed(entries, key = { _, file -> file.id }, contentType = { _, file -> if (file.isFolder) "folder" else "file" }) { index, file ->
-                DriveCell(
-                    file = file,
-                    isWaterfallMode = isWaterfallMode,
-                    coverAspectRatio = coverAspectFor(index),
-                    isSelectionMode = isSelectionMode,
-                    isSelected = file.id in selectedIds,
-                    isHighlighted = file.id in highlightedIds,
-                    isBlurred = isBlurred(file),
-                    locationLabel = hitLocations[file.id],
-                    callbacks = callbacks,
-                    modifier = Modifier.animateItem(),
-                )
+            itemsIndexed(
+                items,
+                key = { _, item -> item.key },
+                span = { _, item -> if (item is DriveListItem.File) StaggeredGridItemSpan.SingleLane else StaggeredGridItemSpan.FullLine },
+                contentType = { _, item ->
+                    when (item) {
+                        is DriveListItem.WorkHeader -> "work"
+                        is DriveListItem.SectionHeader -> "section"
+                        is DriveListItem.File -> if (item.file.isFolder) "folder" else "file"
+                    }
+                },
+            ) { index, item ->
+                when (item) {
+                    is DriveListItem.WorkHeader -> WorkHeaderRow(
+                        header = item,
+                        modifier = Modifier.animateItem().padding(horizontal = if (isWaterfallMode) 0.dp else 16.dp),
+                    )
+                    is DriveListItem.SectionHeader -> SectionHeaderRow(
+                        header = item,
+                        // 瀑布流的网格已有 16dp 边距，文字与卡片左缘对齐即可
+                        inset = if (isWaterfallMode) 4.dp else 16.dp,
+                        onClick = { callbacks.onToggleSection(item.blockId) },
+                        modifier = Modifier.animateItem(),
+                    )
+                    is DriveListItem.File -> {
+                        val file = item.file
+                        if (file.isFolder) LaunchedEffect(file.id) { callbacks.onFolderVisible(file) }
+                        DriveCell(
+                            file = file,
+                            text = cellText(item, if (file.isFolder) folderView(file) else null),
+                            isWaterfallMode = isWaterfallMode,
+                            coverAspectRatio = coverAspectFor(index),
+                            isSelectionMode = isSelectionMode,
+                            isSelected = file.id in selectedIds,
+                            isHighlighted = file.id in highlightedIds,
+                            isBlurred = isBlurred(file),
+                            locationLabel = hitLocations[file.id],
+                            callbacks = callbacks,
+                            modifier = Modifier.animateItem(),
+                        )
+                    }
+                }
             }
+        }
+    }
+}
+
+/** 单元格上的文字：解析出的标题与标签。[title] 为 null 时照原样显示名字。 */
+private class CellText(val title: String?, val tags: List<String>, val resolution: String?)
+
+private val RawCellText = CellText(null, emptyList(), null)
+
+private fun cellText(item: DriveListItem.File, folder: DriveFolderView?): CellText {
+    val view = item.view
+    return when {
+        view != null -> CellText(view.title, view.tags, null)
+        folder != null && (folder.title != null || folder.tags.isNotEmpty()) ->
+            CellText(folder.title ?: item.file.name, folder.tags, folder.resolution)
+        else -> RawCellText
+    }
+}
+
+/** 作品头：作品名与作品内共有的标签，只出现一次，各行因此只挂有区分度的标签。 */
+@Composable
+private fun WorkHeaderRow(header: DriveListItem.WorkHeader, modifier: Modifier = Modifier) {
+    Column(modifier = modifier.fillMaxWidth().padding(top = 12.dp, bottom = 4.dp)) {
+        header.title?.let { title ->
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (header.tags.isNotEmpty()) MediaTagRow(tags = header.tags, modifier = Modifier.padding(top = 4.dp))
+    }
+}
+
+/** 分区标题，点按展开或收起。瀑布流网格没有吸顶标题，它随内容滚走；当前所在的分区由顶栏副标题给出。 */
+@Composable
+private fun SectionHeaderRow(header: DriveListItem.SectionHeader, inset: Dp, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(
+        onClick = onClick,
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surface,
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier
+                .heightIn(min = 48.dp)
+                .padding(horizontal = inset, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = header.label,
+                    style = if (header.isWork) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleSmall,
+                    color = if (header.isWork) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.primary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (header.tags.isNotEmpty()) MediaTagRow(tags = header.tags, modifier = Modifier.padding(top = 4.dp))
+            }
+            Icon(
+                imageVector = if (header.expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                contentDescription = if (header.expanded) "收起" else "展开",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -167,6 +267,7 @@ internal fun DriveFileGrid(
 @Composable
 private fun DriveCell(
     file: FileStat,
+    text: CellText,
     isWaterfallMode: Boolean,
     coverAspectRatio: Float,
     isSelectionMode: Boolean,
@@ -178,62 +279,39 @@ private fun DriveCell(
     modifier: Modifier,
 ) {
     ContextMenuArea(actions = { callbacks.contextActions(file) }, modifier = modifier) {
-        DriveCellContent(
-            file = file,
-            isWaterfallMode = isWaterfallMode,
-            coverAspectRatio = coverAspectRatio,
-            isSelectionMode = isSelectionMode,
-            isSelected = isSelected,
-            isHighlighted = isHighlighted,
-            isBlurred = isBlurred,
-            locationLabel = locationLabel,
-            callbacks = callbacks,
-        )
-    }
-}
-
-@Composable
-private fun DriveCellContent(
-    file: FileStat,
-    isWaterfallMode: Boolean,
-    coverAspectRatio: Float,
-    isSelectionMode: Boolean,
-    isSelected: Boolean,
-    isHighlighted: Boolean,
-    isBlurred: Boolean,
-    locationLabel: String?,
-    callbacks: DriveItemCallbacks,
-) {
-    val modifier = Modifier
-    if (isWaterfallMode) {
-        WaterfallCard(
-            file = file,
-            isSelectionMode = isSelectionMode,
-            isSelected = isSelected,
-            isSpoilerBlurred = isBlurred,
-            isHighlighted = isHighlighted,
-            coverAspectRatio = coverAspectRatio,
-            onClick = { callbacks.onOpen(file) },
-            onLongClick = { callbacks.onLongPress(file) },
-            onSelectToggle = { callbacks.onSelect(file, it) },
-            onMoreClick = { callbacks.onMore(file) },
-            modifier = modifier,
-        )
-    } else {
-        FileListItem(
-            file = file,
-            isSelectionMode = isSelectionMode,
-            isSelected = isSelected,
-            isHighlighted = isHighlighted,
-            // 文件夹没有缩略图，不走防窥
-            isSpoilerBlurred = isBlurred && !file.isFolder,
-            locationLabel = locationLabel,
-            onClick = { callbacks.onOpen(file) },
-            onLongClick = { callbacks.onLongPress(file) },
-            onSelectToggle = { callbacks.onSelect(file, it) },
-            onMoreClick = { callbacks.onMore(file) },
-            modifier = modifier,
-        )
+        if (isWaterfallMode) {
+            WaterfallCard(
+                file = file,
+                isSelectionMode = isSelectionMode,
+                isSelected = isSelected,
+                isSpoilerBlurred = isBlurred,
+                isHighlighted = isHighlighted,
+                coverAspectRatio = coverAspectRatio,
+                onClick = { callbacks.onOpen(file) },
+                onLongClick = { callbacks.onLongPress(file) },
+                onSelectToggle = { callbacks.onSelect(file, it) },
+                onMoreClick = { callbacks.onMore(file) },
+                title = text.title,
+                tags = text.tags,
+                resolution = text.resolution,
+            )
+        } else {
+            FileListItem(
+                file = file,
+                isSelectionMode = isSelectionMode,
+                isSelected = isSelected,
+                isHighlighted = isHighlighted,
+                // 文件夹没有缩略图，不走防窥
+                isSpoilerBlurred = isBlurred && !file.isFolder,
+                locationLabel = locationLabel,
+                onClick = { callbacks.onOpen(file) },
+                onLongClick = { callbacks.onLongPress(file) },
+                onSelectToggle = { callbacks.onSelect(file, it) },
+                onMoreClick = { callbacks.onMore(file) },
+                title = text.title,
+                tags = text.tags,
+            )
+        }
     }
 }
 

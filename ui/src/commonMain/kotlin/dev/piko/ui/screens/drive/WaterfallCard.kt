@@ -37,6 +37,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.ui.components.WaterfallSpoilerBlur
 import dev.piko.ui.components.HighlightBadge
+import dev.piko.ui.components.MediaTag
+import dev.piko.ui.components.MediaTagRow
 import dev.piko.ui.components.MetaRow
 import dev.piko.ui.components.SpoilerThumbnail
 import dev.piko.ui.components.displayTitle
@@ -107,6 +109,10 @@ private fun CardTrailing(
  *
  * 名字至多五行：卡片排在瀑布流里，高度不必与邻卡对齐，五行已能读全绝大多数名字；
  * 不设上限时，带站点前缀与参数串的长名字会把一张卡拉到半屏高。全名在详情面板里读。
+ *
+ * [title] 与 [tags] 是解析结果，为空时照原样显示名字。有封面的文件夹把标签叠在封面上：
+ * 清晰度 [resolution] 在右下角，其余至多两个在右上角，左下角留给文件夹标记、左上角留给
+ * 「刚存入」角标。其余情况标签整行排在名字下面，放不下的丢掉，卡片因此高一些。
  */
 @Composable
 internal fun WaterfallCard(
@@ -123,10 +129,15 @@ internal fun WaterfallCard(
     highlightBadgeText: String = "刚存入",
     /** 封面宽高比。瀑布流靠它排出高低交错，见 DriveFileGrid 的 coverAspectFor。 */
     coverAspectRatio: Float = 16f / 10f,
+    title: String? = null,
+    tags: List<String> = emptyList(),
+    resolution: String? = null,
 ) {
     if (file.thumbnailLink.isEmpty()) {
         CompactWaterfallTile(
             file = file,
+            title = title,
+            tags = tags,
             isSelectionMode = isSelectionMode,
             isSelected = isSelected,
             isHighlighted = isHighlighted,
@@ -172,6 +183,28 @@ internal fun WaterfallCard(
                         .align(Alignment.BottomStart)
                         .padding(8.dp),
                 )
+                val cornerTags = tags.filter { it != resolution }.take(COVER_CORNER_TAGS)
+                if (cornerTags.isNotEmpty()) {
+                    // 与左上角的「刚存入」角标各占一半宽，放不下的整个丢掉
+                    MediaTagRow(
+                        tags = cornerTags,
+                        onMedia = true,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(6.dp)
+                            .fillMaxWidth(if (isHighlighted) 0.5f else 1f)
+                            .wrapContentSize(Alignment.TopEnd),
+                    )
+                }
+                if (resolution != null) {
+                    MediaTag(
+                        text = resolution,
+                        onMedia = true,
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(8.dp),
+                    )
+                }
             }
             if (isHighlighted) {
                 HighlightBadge(
@@ -191,12 +224,13 @@ internal fun WaterfallCard(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = file.displayTitle(),
+                    text = title ?: file.displayTitle(),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = TITLE_MAX_LINES,
                     overflow = TextOverflow.Ellipsis,
                 )
+                if (!file.isFolder && tags.isNotEmpty()) MediaTagRow(tags = tags, modifier = Modifier.padding(vertical = 2.dp))
                 MetaRow(
                     parts = file.waterfallMetaParts(),
                     style = MaterialTheme.typography.labelSmall,
@@ -248,6 +282,8 @@ private fun FileStat.waterfallMetaParts(): List<String> =
 @Composable
 private fun CompactWaterfallTile(
     file: FileStat,
+    title: String?,
+    tags: List<String>,
     isSelectionMode: Boolean,
     isSelected: Boolean,
     isHighlighted: Boolean,
@@ -289,12 +325,13 @@ private fun CompactWaterfallTile(
             Column(modifier = Modifier.weight(1f)) {
                 if (isHighlighted) HighlightBadge(text = highlightBadgeText, modifier = Modifier.padding(bottom = 4.dp))
                 Text(
-                    text = file.displayTitle(),
+                    text = title ?: file.displayTitle(),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = TITLE_MAX_LINES,
                     overflow = TextOverflow.Ellipsis,
                 )
+                if (tags.isNotEmpty()) MediaTagRow(tags = tags, modifier = Modifier.padding(vertical = 2.dp))
                 MetaRow(
                     parts = file.waterfallMetaParts(),
                     style = MaterialTheme.typography.labelSmall,
@@ -313,5 +350,7 @@ private fun CompactWaterfallTile(
 }
 
 private const val TITLE_MAX_LINES = 5
+
+private const val COVER_CORNER_TAGS = 2
 
 private const val WATERMARK_ALPHA = 0.1f

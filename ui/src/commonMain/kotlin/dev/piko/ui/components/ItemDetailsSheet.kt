@@ -11,7 +11,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItemDefaults
@@ -61,6 +63,10 @@ fun ItemDetailsSheet(
     onDismiss: () -> Unit,
     metaParts: List<String> = emptyList(),
     extraLines: @Composable ColumnScope.() -> Unit = {},
+    /** 解析结果，按顺序排成「名称 值」两列；为空时不显示这一块。 */
+    parsedFields: List<Pair<String, String>> = emptyList(),
+    /** 完整的原始文件名，放在解析结果最下面。标题已是原名时传 null。 */
+    originalName: String? = null,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
@@ -78,54 +84,105 @@ fun ItemDetailsSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .padding(bottom = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
+        // 多了解析结果一块，矮屏上放不下全部操作，整块可滚动
+        Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+            Row(
                 modifier = Modifier
-                    .size(40.dp)
-                    .clip(MaterialTheme.shapes.small),
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                headerIcon()
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(MaterialTheme.shapes.small),
+                ) {
+                    headerIcon()
+                }
+                Spacer(modifier = Modifier.width(16.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    SelectionContainer {
+                        Text(
+                            text = title,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(2.dp))
+                    if (metaParts.isNotEmpty()) {
+                        MetaRow(
+                            parts = metaParts,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    ProvideTextStyle(MaterialTheme.typography.bodyMedium) {
+                        extraLines()
+                    }
+                }
             }
-            Spacer(modifier = Modifier.width(16.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                SelectionContainer {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                }
-                Spacer(modifier = Modifier.height(2.dp))
-                if (metaParts.isNotEmpty()) {
-                    MetaRow(
-                        parts = metaParts,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                ProvideTextStyle(MaterialTheme.typography.bodyMedium) {
-                    extraLines()
-                }
+            if (parsedFields.isNotEmpty() || originalName != null) {
+                ParsedResultBlock(parsedFields, originalName)
             }
-        }
-        val (regular, destructive) = actions.partition { !it.destructive }
-        Column(
-            modifier = Modifier
-                .padding(horizontal = 16.dp)
-                .padding(bottom = 16.dp),
-        ) {
-            if (regular.isNotEmpty()) SheetActionGroup(regular, onAction = ::dismissThen)
-            if (regular.isNotEmpty() && destructive.isNotEmpty()) Spacer(modifier = Modifier.height(12.dp))
-            if (destructive.isNotEmpty()) SheetActionGroup(destructive, onAction = ::dismissThen)
+            val (regular, destructive) = actions.partition { !it.destructive }
+            Column(
+                modifier = Modifier
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 16.dp),
+            ) {
+                if (regular.isNotEmpty()) SheetActionGroup(regular, onAction = ::dismissThen)
+                if (regular.isNotEmpty() && destructive.isNotEmpty()) Spacer(modifier = Modifier.height(12.dp))
+                if (destructive.isNotEmpty()) SheetActionGroup(destructive, onAction = ::dismissThen)
+            }
         }
     }
 }
+
+/** 解析结果：名称一列定宽，值可选中复制。原始文件名单列在最后，可能很长，占满整行。 */
+@Composable
+private fun ParsedResultBlock(fields: List<Pair<String, String>>, originalName: String?) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .padding(bottom = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(
+            text = "解析结果",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(bottom = 4.dp),
+        )
+        SelectionContainer {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                fields.forEach { (label, value) ->
+                    Row {
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.width(ParsedLabelWidth),
+                        )
+                        Text(text = value, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
+                    }
+                }
+                if (originalName != null) {
+                    Text(
+                        text = "原始文件名",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                    Text(text = originalName, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
+                }
+            }
+        }
+    }
+}
+
+private val ParsedLabelWidth = 72.dp
 
 @Composable
 private fun SheetActionGroup(actions: List<SheetAction>, onAction: (() -> Unit) -> Unit) {

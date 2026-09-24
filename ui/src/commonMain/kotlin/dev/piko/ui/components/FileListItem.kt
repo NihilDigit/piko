@@ -184,6 +184,9 @@ fun ListMoreButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
 /**
  * 网盘文件的一行。名字最多两行，扩展名移到副标题单列，所以截断发生时丢掉的是名字中段
  * 而不是类型。
+ *
+ * 给出 [title] 时是解析后的短标题（「01」、罗马音作品名），只占一行，[tags] 整行排在其下，
+ * 放不下的从尾部丢弃；文件在标签下仍有类型与大小，文件夹的类型已由图标表明，不再写。
  */
 @Composable
 fun FileListItem(
@@ -200,9 +203,12 @@ fun FileListItem(
     isSpoilerBlurred: Boolean = false,
     /** 全盘搜索结果所在的目录路径。仅搜索结果需要，平时为 null。 */
     locationLabel: String? = null,
+    title: String? = null,
+    tags: List<String> = emptyList(),
 ) {
     FileListItem(
-        headline = file.displayTitle(),
+        headline = title ?: file.displayTitle(),
+        headlineMaxLines = if (title != null) 1 else 2,
         headlineFontWeight = if (file.isFolder) FontWeight.Medium else null,
         leading = { FileLeadingVisual(file = file, isSpoilerBlurred = isSpoilerBlurred) },
         onClick = onClick,
@@ -211,7 +217,8 @@ fun FileListItem(
         badge = if (isHighlighted) ({ HighlightBadge(text = highlightBadgeText) }) else null,
         supporting = {
             Column {
-                MetaRow(parts = file.metaParts())
+                if (tags.isNotEmpty()) MediaTagRow(tags = tags, modifier = Modifier.padding(vertical = 2.dp))
+                if (tags.isEmpty() || !file.isFolder) MetaRow(parts = file.metaParts())
                 if (!locationLabel.isNullOrEmpty()) {
                     // 路径从头截断：离命中项最近的几级目录最有辨识度
                     Text(

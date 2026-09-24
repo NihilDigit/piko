@@ -302,7 +302,25 @@ fun DriveScreen(
                     onTrash = { state.moveToTrash(listOf(file.id)) },
                 )
             },
+            onToggleSection = state::toggleSection,
+            onFolderVisible = state::onFolderVisible,
         )
+    }
+
+    // 顶栏副标题：首个可见项之前最近的分区标题。停在文件夹或作品头上时取第一个分区
+    val foldBanner = foldBannerOrNull(state)
+    val leadingItemCount = driveLeadingItemCount(foldBanner != null)
+    val currentSection by remember(gridState, leadingItemCount) {
+        derivedStateOf {
+            val headers = state.sectionHeaders
+            val first = gridState.firstVisibleItemIndex - leadingItemCount
+            (headers.lastOrNull { it.index <= first } ?: headers.firstOrNull())?.value?.menuLabel
+        }
+    }
+    fun jumpToSection(position: Int) {
+        val target = state.sectionHeaders.getOrNull(position) ?: return
+        state.expandSection(target.value.blockId)
+        scope.launch { gridState.animateScrollToItem(leadingItemCount + target.index) }
     }
 
     // 桌面快捷键。挂在页面根上的 onKeyEvent 收的是冒泡上来的事件：搜索框有焦点时，
@@ -379,9 +397,12 @@ fun DriveScreen(
                     onCancelGlobalSearch = { state.cancelGlobalSearch() },
                 )
 
-                else -> PikoTopBar(
+                else -> DriveBrowseTopBar(
                     scrollBehavior = topBarScrollBehavior,
                     title = activeFolder.name,
+                    currentSection = currentSection,
+                    sections = state.sectionHeaders.map { it.value.menuLabel },
+                    onSectionSelected = ::jumpToSection,
                     navigationIcon = if (folderStack.size > 1) {
                         {
                             TooltipIconButton(
@@ -474,13 +495,14 @@ fun DriveScreen(
                         }
 
                         val bottomPadding = innerPadding.calculateBottomPadding() + FabClearance
-                        if (displayedFiles.isEmpty()) {
+                        if (state.displayItems.isEmpty()) {
                             // 空目录没有列表页眉，面包屑单独放在空状态上方
                             breadcrumbs()
                             DriveEmptyState(state = state, modifier = Modifier.weight(1f))
                         } else {
                             DriveFileGrid(
-                                files = displayedFiles,
+                                items = state.displayItems,
+                                folderView = { if (state.isRawFileNames) null else state.folderViews[it.id] },
                                 isWaterfallMode = isWaterfallMode,
                                 gridState = gridState,
                                 isSelectionMode = state.isSelectionMode,
@@ -510,7 +532,7 @@ fun DriveScreen(
                                         }
                                     }
                                 },
-                                foldBanner = foldBannerOrNull(state),
+                                foldBanner = foldBanner,
                                 modifier = Modifier.weight(1f),
                             )
                         }
@@ -521,6 +543,8 @@ fun DriveScreen(
     }
 
     actionTargetFile?.let { target ->
+        val fileParsed = state.fileView(target.id)
+        val folderParsed = if (target.isFolder && !state.isRawFileNames) state.folderViews[target.id] else null
         FileActionsSheet(
             file = target,
             locationLabel = state.hitLocations[target.id],
@@ -541,6 +565,8 @@ fun DriveScreen(
             },
             onMove = { moveTargetIds = setOf(target.id) },
             onTrash = { state.moveToTrash(listOf(target.id)) },
+            parsedTitle = if (target.isFolder) folderParsed?.title else fileParsed?.heading,
+            parsedFields = if (target.isFolder) folderParsed?.fields.orEmpty() else fileParsed?.fields.orEmpty(),
         )
     }
 

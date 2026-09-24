@@ -18,6 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.data.FolderUsage
+import dev.piko.shared.state.DriveParsedField
 import dev.piko.ui.components.FileTypeIcon
 import dev.piko.ui.components.ItemDetailsSheet
 import dev.piko.ui.components.SheetAction
@@ -32,6 +33,7 @@ import kotlinx.coroutines.flow.Flow
  *
  * previewHidden 为 null 表示没有可切换的预览（防窥关闭或没有缩略图），不显示该项。
  * folderUsage 只对文件夹给出，面板打开期间收集，关闭即取消统计。
+ * parsedTitle 与 parsedFields 是文件名解析的结果，认不出或开了原始文件名时为空，标题退回原名。
  */
 @Composable
 internal fun FileActionsSheet(
@@ -46,6 +48,8 @@ internal fun FileActionsSheet(
     onRename: () -> Unit,
     onMove: () -> Unit,
     onTrash: () -> Unit,
+    parsedTitle: String? = null,
+    parsedFields: List<DriveParsedField> = emptyList(),
 ) {
     val usage by produceState<FolderUsageResult?>(null, folderUsage) {
         folderUsage ?: return@produceState
@@ -70,7 +74,7 @@ internal fun FileActionsSheet(
     )
 
     ItemDetailsSheet(
-        title = file.name,
+        title = parsedTitle ?: file.name,
         headerIcon = { FileTypeIcon(file = file, iconSize = 24.dp, modifier = Modifier.fillMaxSize()) },
         actions = actions,
         onDismiss = onDismiss,
@@ -81,6 +85,8 @@ internal fun FileActionsSheet(
                 Text(text = locationLabel, color = MaterialTheme.colorScheme.primary)
             }
         },
+        parsedFields = parsedFields.map { it.label to it.value },
+        originalName = file.name.takeIf { parsedFields.isNotEmpty() || parsedTitle != null },
     )
 }
 

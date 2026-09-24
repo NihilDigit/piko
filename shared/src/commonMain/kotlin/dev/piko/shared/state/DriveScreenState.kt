@@ -3,21 +3,25 @@ package dev.piko.shared.state
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import dev.piko.data.auth.PikoUserPreferences
-import dev.piko.data.repository.HeuristicFileFilter
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoFileSortOrder
 import dev.piko.shared.data.PikoPathBreadcrumb
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.SearchHit
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 网盘浏览的全部状态与动作，两端共用。
@@ -72,10 +76,16 @@ class DriveScreenState(
     var highlightedFileIds by mutableStateOf(driveRepo.takePendingHighlight())
         private set
 
-    var showAllFilesTemporarily by mutableStateOf(false)
-        private set
+    /**
+     * 「显示全部」按目录记住：规则仍可能误判，用户在某个目录里点开过，回到这里时应当还是展开的。
+     * 记在进程内存里而不是偏好里：目录 id 会越积越多，重启后按默认折叠也说得过去。
+     */
+    val showAllFilesTemporarily: Boolean by derivedStateOf { DriveViewMemory.showAll[activeFolderId] == true }
 
     var isHeuristicFilterEnabled by mutableStateOf(true)
+        private set
+
+    var isRawFileNames by mutableStateOf(false)
         private set
 
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
@@ -87,36 +97,86 @@ class DriveScreenState(
     val activeFolder: PikoPathBreadcrumb
         get() = driveRepo.folderStackFlow.value.lastOrNull() ?: PikoPathBreadcrumb("", "网盘")
 
+    private var activeFolderId by mutableStateOf(driveRepo.folderStackFlow.value.lastOrNull()?.id.orEmpty())
+
     /**
-     * 启发式折叠只在叶目录、或子目录全是次要目录时启用。上层目录里折叠文件
-     * 会把用户真正要找的东西藏起来。
+     * [files] 的分析结果。只在 [analyzedFiles] 与 [files] 是同一个列表时可用：换目录后、新结果
+     * 算出来之前，不能拿上一个目录的结构去排这一个目录的文件。
      */
+    private var analyzedFiles by mutableStateOf<List<FileStat>?>(null)
+    private var analysis by mutableStateOf<DriveStructure?>(null)
+
+    private val currentAnalysis: DriveStructure? by derivedStateOf { analysis?.takeIf { analyzedFiles === files } }
+
+    /** 按文件夹 id 的显示信息，后台算好逐个填入。原始文件名模式下界面不读它。 */
+    val folderViews = mutableStateMapOf<String, DriveFolderView>()
+
     // 以下都用 derivedStateOf 而不是 getter：这些值每帧会被读到多次（列表、空态判断、
     // 全选、折叠提示各读一次），纯 getter 意味着同一帧内把千项目录过滤好几遍。
-    private val heuristicScope: Boolean by derivedStateOf {
-        val childFolders = files.filter(FileStat::isFolder)
-        childFolders.isEmpty() || childFolders.all { isLikelyNoiseFolderName(it.name) }
-    }
-
-    private val heuristicVisibleFiles: List<FileStat> by derivedStateOf {
-        filterDriveFiles(
-            files,
-            enabled = isHeuristicFilterEnabled && heuristicScope,
-            revealAll = false,
-        )
+    // 整层都是次要项时不折叠（原盘的 CLIPINF/ 全是结构文件）：折光了列表为空，连折叠横幅也没处放
+    private val isFoldingActive: Boolean by derivedStateOf {
+        val folded = currentAnalysis?.foldedIds ?: return@derivedStateOf false
+        isHeuristicFilterEnabled && folded.size < files.size && isFoldingScope(files)
     }
 
     val potentialHiddenCount: Int by derivedStateOf {
-        (files.size - heuristicVisibleFiles.size).coerceAtLeast(0)
+        if (isFoldingActive) currentAnalysis?.foldedIds?.size ?: 0 else 0
     }
 
-    val displayedFiles: List<FileStat> by derivedStateOf {
+    private val isSearching: Boolean by derivedStateOf { isGlobalSearchActive || searchQuery.isNotBlank() }
+
+    /** 列表项：作品头、分区标题与文件。搜索与原始文件名模式下照原样平铺，认不出任何作品时也平铺。 */
+    val displayItems: List<DriveListItem> by derivedStateOf {
+        val structure = currentAnalysis
+        val hideFolded = isFoldingActive && !showAllFilesTemporarily
         when {
-            isGlobalSearchActive -> globalSearchHits.map { it.file }
-            searchQuery.isBlank() -> if (showAllFilesTemporarily) files else heuristicVisibleFiles
-            else -> files.filter { it.name.contains(searchQuery.trim(), ignoreCase = true) }
+            isGlobalSearchActive -> globalSearchHits.map { DriveListItem.File(it.file, null) }
+            searchQuery.isNotBlank() -> files.filter { it.name.contains(searchQuery.trim(), ignoreCase = true) }.map { DriveListItem.File(it, null) }
+            structure == null -> files.map { DriveListItem.File(it, null) }
+            isRawFileNames || structure.blocks.isEmpty() ->
+                filterDriveFiles(files, structure.foldedIds, enabled = hideFolded, revealAll = false).map { DriveListItem.File(it, null) }
+            else -> buildDriveItems(files, structure, hideFolded) { block -> isBlockExpanded(block) }
         }
     }
+
+    /**
+     * 当前可见的文件，顺序与界面一致。收起的分区与挂在视频下的附件也算在内：它们只是没单独占一行，
+     * 全选、播放列表与图片翻页都该包括它们。
+     */
+    val displayedFiles: List<FileStat> by derivedStateOf {
+        val structure = currentAnalysis
+        if (isSearching || structure == null || isRawFileNames || structure.blocks.isEmpty()) {
+            return@derivedStateOf displayItems.mapNotNull { (it as? DriveListItem.File)?.file }
+        }
+        val hideFolded = isFoldingActive && !showAllFilesTemporarily
+        val shown = buildDriveItems(files, structure, hideFolded) { true }.mapNotNull { (it as? DriveListItem.File)?.file }
+        val shownIds = shown.mapTo(HashSet()) { it.id }
+        val attachments = files.filter { file -> structure.attachedTo[file.id]?.let { it in shownIds } == true }
+        shown + attachments
+    }
+
+    /** 列表项里的分区标题及其下标。顶栏副标题按首个可见项反查，分区菜单据此跳转。 */
+    val sectionHeaders: List<IndexedValue<DriveListItem.SectionHeader>> by derivedStateOf {
+        displayItems.withIndex().mapNotNull { (index, item) -> (item as? DriveListItem.SectionHeader)?.let { IndexedValue(index, it) } }
+    }
+
+    private fun isBlockExpanded(block: DriveBlock): Boolean =
+        DriveViewMemory.expanded[expandKey(block.id)] ?: block.defaultExpanded
+
+    private fun expandKey(blockId: String) = "$activeFolderId|$blockId"
+
+    fun toggleSection(blockId: String) {
+        val block = currentAnalysis?.blocks?.firstOrNull { it.id == blockId }
+        val current = block?.let(::isBlockExpanded) ?: true
+        DriveViewMemory.expanded[expandKey(blockId)] = !current
+    }
+
+    fun expandSection(blockId: String) {
+        DriveViewMemory.expanded[expandKey(blockId)] = true
+    }
+
+    /** 文件的解析结果，详情面板用。原始文件名模式或未识别时为 null。 */
+    fun fileView(fileId: String): DriveFileView? = if (isRawFileNames) null else currentAnalysis?.views?.get(fileId)
 
     /**
      * 全盘命中所在的目录路径。SDK 给的 parentPath 不含根，根目录下的命中拿到的是
@@ -133,6 +193,25 @@ class DriveScreenState(
     init {
         scope.launch {
             preferences.heuristicFilterFlow.collect { isHeuristicFilterEnabled = it }
+        }
+        scope.launch {
+            preferences.rawFileNamesFlow.collect { isRawFileNames = it }
+        }
+        scope.launch {
+            driveRepo.folderStackFlow.collect { stack -> activeFolderId = stack.lastOrNull()?.id.orEmpty() }
+        }
+        // 解析放到后台：上千个文件的目录要算几秒。按内容缓存，重组、刷新与返回上级都不重算
+        scope.launch {
+            snapshotFlow { files }.collectLatest { list ->
+                val key = DriveViewMemory.fingerprint(list)
+                val structure = DriveViewMemory.structure(key)
+                    ?: withContext(Dispatchers.Default) { analyzeDriveFolder(list) }.also { DriveViewMemory.putStructure(key, it) }
+                analysis = structure
+                analyzedFiles = list
+            }
+        }
+        scope.launch {
+            snapshotFlow { files }.collectLatest { list -> describeFolders(list.filter(FileStat::isFolder)) }
         }
         // 回收站恢复这类界面外的改动由仓库层广播过来，订阅放在这里，
         // 免得每个平台的视图各订阅一遍
@@ -230,7 +309,6 @@ class DriveScreenState(
         stopGlobalSearch()
         exitSelection()
         revealedFileIds.clear()
-        showAllFilesTemporarily = false
         load()
     }
 
@@ -276,7 +354,32 @@ class DriveScreenState(
     }
 
     fun setShowAllFiles(value: Boolean) {
-        showAllFilesTemporarily = value
+        DriveViewMemory.showAll[activeFolderId] = value
+    }
+
+    private suspend fun describeFolders(folders: List<FileStat>) {
+        folders.forEach { folder -> folderViews[folder.id] = folderView(folder, driveRepo.knownChildNames(folder.id)) }
+    }
+
+    private suspend fun folderView(folder: FileStat, content: List<String>?): DriveFolderView {
+        val key = DriveViewMemory.folderKey(folder, content)
+        return DriveViewMemory.folderView(key)
+            ?: withContext(Dispatchers.Default) { describeDriveFolder(folder.name, content) }.also { DriveViewMemory.putFolderView(key, it) }
+    }
+
+    private val contentRequests = HashSet<String>()
+
+    /**
+     * 文件夹进入可见区域时调用。文件夹名看得出是一个发布、作品名却解析不出（多半写成了中文）时，
+     * 补取一页文件名再解析；每个文件夹至多请求一次，其余文件夹不发请求。
+     */
+    fun onFolderVisible(folder: FileStat) {
+        if (isRawFileNames || folderViews[folder.id]?.wantsContent != true) return
+        if (!contentRequests.add(folder.id)) return
+        scope.launch {
+            val content = driveRepo.fetchChildNames(folder.id)
+            if (content.isNotEmpty()) folderViews[folder.id] = folderView(folder, content)
+        }
     }
 
     fun toggleSpoiler(fileId: String) {
