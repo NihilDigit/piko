@@ -36,6 +36,12 @@ interface PlaybackBackend {
     /** 显示宽高比（已计入旋转），画面参数未知时为 null。 */
     val videoAspect: Float?
 
+    /**
+     * 播放器自身的软件音量，0 到 1，1 是原始响度（mpv 的 100）。不放大：超过 100 会削波。
+     * 后端不支持时为 null。Android 的音量手势调的是系统媒体音量，不走这里；桌面没有那一路，只能调它。
+     */
+    val volume: Float?
+
     /** 一次性事件。错误与播放结束不能用状态表达：重连期间同一个错误会被反复读到。 */
     val events: Flow<PlaybackBackendEvent>
 
@@ -52,6 +58,8 @@ interface PlaybackBackend {
     fun setSpeed(speed: Float)
 
     fun setAspectRatio(mode: PlayerAspectRatio)
+
+    fun setVolume(volume: Float)
 }
 
 sealed interface PlaybackTarget {

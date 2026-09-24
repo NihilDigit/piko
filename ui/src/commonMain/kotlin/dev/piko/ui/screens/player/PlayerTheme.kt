@@ -17,7 +17,7 @@ import dev.piko.ui.theme.colorScheme
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-internal fun PlayerTheme(content: @Composable () -> Unit) {
+fun PlayerTheme(content: @Composable () -> Unit) {
     // 深色方案跟随用户选的主题色，深浅则不跟随：固定取深色
     val colorScheme = LocalAppearance.current.colorScheme(dark = true)
     MaterialExpressiveTheme(

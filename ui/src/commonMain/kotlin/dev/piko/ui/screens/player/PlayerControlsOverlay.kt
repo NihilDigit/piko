@@ -1,6 +1,5 @@
 package dev.piko.ui.screens.player
 
-import android.content.res.Configuration
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -26,27 +25,30 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalAccessibilityManager
-import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.media.player.PlayerAspectRatio
 import dev.piko.shared.media.player.PlaylistEntry
 import kotlinx.coroutines.delay
 
 /**
- * Android 播放器的完整控件层，叠在视频画面之上。
+ * 播放器的完整控件层，叠在视频画面之上。Android 与桌面共用，名字沿用只有 Android 时的叫法。
  *
- * 无状态于播放器：只接收下面这组基础类型的值与回调，不引用任何播放器对象。
- * Desktop 的 FluentPlayerControls 接收同一组值与回调，两端可由同一个 shared state holder 驱动。
- * 这里自己持有的只有纯界面状态：控件显隐与自动隐藏计时、锁定、手势 HUD、双击累计、
- * 长按加速、续播提示计时、选集与设置面板的开合。
+ * 无状态于播放器：只接收下面这组基础类型的值与回调，不引用任何播放器对象，数据全部来自
+ * PlayerScreenState。这里自己持有的只有纯界面状态：控件显隐与自动隐藏计时、锁定、手势 HUD、
+ * 双击累计、长按加速、续播提示计时、选集与设置面板的开合。
  *
- * 平台附加项：亮度与系统音量由手势层直接改窗口与 AudioManager；横竖屏由 [onToggleFullscreen]
- * 交给调用方的 ScreenOrientationController；[isLandscapeVideo] 决定竖屏时是否给出全屏入口。
+ * 布局按所在窗口的宽高比分横竖，不看设备朝向：桌面窗口通常是横的，用的就是 Android 横屏
+ * 那一套（侧边面板、大号中央按钮）。
+ *
+ * 平台附加项：[brightness] 与 [volume] 是竖滑手势调节的对象，平台没有就传 null；
+ * 全屏由 [onToggleFullscreen] 交给调用方（Android 切横竖屏，桌面切窗口全屏），[isFullscreen]
+ * 只决定全屏键的图标；[isLandscapeVideo] 决定竖屏时是否给出全屏入口。
+ * 触屏与鼠标的点击、双击、拖动都走同一个手势层。
  */
 @Composable
 fun MobilePlayerControls(
-    // 播放器数据契约（与 Desktop 一致）
+    // 播放器数据契约
     title: String,
     isLocalPlayback: Boolean,
     isPlaying: Boolean,
@@ -71,6 +73,7 @@ fun MobilePlayerControls(
     onBack: () -> Unit,
     onToggleFullscreen: () -> Unit,
     modifier: Modifier = Modifier,
+    isFullscreen: Boolean = false,
     isLandscapeVideo: Boolean? = null,
     playlist: List<PlaylistEntry> = emptyList(),
     currentFileId: String = "",
@@ -80,13 +83,15 @@ fun MobilePlayerControls(
     onNext: () -> Unit = {},
     onSelectEntry: (PlaylistEntry) -> Unit = {},
     hideEpisodeThumbnails: Boolean = true,
+    brightness: PlayerLevelControl? = null,
+    volume: PlayerLevelControl? = null,
+    // 锁定只防触屏误触，鼠标与键盘用不上
+    showLockToggle: Boolean = true,
     // 调用方的消息提示放进底部提示区，与续播提示、全屏入口一起排布，不各自定位
     snackbarHost: @Composable () -> Unit = {},
 ) {
-    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-    val context = LocalContext.current
-    val brightness = rememberWindowBrightness()
-    val volume = rememberMediaVolume(context)
+    val windowSize = LocalWindowInfo.current.containerSize
+    val isLandscape = windowSize.width > windowSize.height
     val accessibilityManager = LocalAccessibilityManager.current
 
     val currentPosition by rememberUpdatedState(positionMillis)
@@ -120,6 +125,21 @@ fun MobilePlayerControls(
         val limit = durationMillis.coerceAtLeast(0L)
         onSeek((currentPosition + deltaMillis).coerceIn(0L, limit))
         interacted()
+    }
+
+    // 连续同向双击累加，反馈显示本轮累计的秒数
+    fun stepSeek(forward: Boolean) {
+        val continuing = doubleTapVisible && doubleTapForward == forward
+        val base = if (continuing) doubleTapTargetMillis else currentPosition
+        val step = if (forward) SEEK_STEP_MILLIS else -SEEK_STEP_MILLIS
+        val target = (base + step).coerceIn(0L, durationMillis.coerceAtLeast(0L))
+        val stepSeconds = (SEEK_STEP_MILLIS / 1000).toInt()
+        doubleTapTargetMillis = target
+        doubleTapSeconds = if (continuing) doubleTapSeconds + stepSeconds else stepSeconds
+        doubleTapForward = forward
+        doubleTapVisible = true
+        doubleTapCount += 1
+        onSeek(target)
     }
 
     val hideDelayMillis = remember(accessibilityManager) {
@@ -179,22 +199,7 @@ fun MobilePlayerControls(
                 onToggleControls = { controlsVisible = !controlsVisible },
                 onSeekTo = onSeek,
                 onDoubleTap = { zone ->
-                    if (zone == DoubleTapZone.PlayPause) {
-                        onPlayPause()
-                        return@PlayerGestureLayer
-                    }
-                    val forward = zone == DoubleTapZone.Forward
-                    val continuing = doubleTapVisible && doubleTapForward == forward
-                    val base = if (continuing) doubleTapTargetMillis else currentPosition
-                    val step = if (forward) SEEK_STEP_MILLIS else -SEEK_STEP_MILLIS
-                    val target = (base + step).coerceIn(0L, durationMillis.coerceAtLeast(0L))
-                    val stepSeconds = (SEEK_STEP_MILLIS / 1000).toInt()
-                    doubleTapTargetMillis = target
-                    doubleTapSeconds = if (continuing) doubleTapSeconds + stepSeconds else stepSeconds
-                    doubleTapForward = forward
-                    doubleTapVisible = true
-                    doubleTapCount += 1
-                    onSeek(target)
+                    if (zone == DoubleTapZone.PlayPause) onPlayPause() else stepSeek(forward = zone == DoubleTapZone.Forward)
                 },
                 onSpeedBoost = { active ->
                     val speed = currentSpeed ?: return@PlayerGestureLayer
@@ -263,6 +268,7 @@ fun MobilePlayerControls(
 
                     PlayerBottomBar(
                         isLandscape = isLandscape,
+                        isFullscreen = isFullscreen,
                         positionMillis = positionMillis,
                         durationMillis = durationMillis,
                         bufferedPositionMillis = bufferedPositionMillis,
@@ -324,7 +330,7 @@ fun MobilePlayerControls(
 
             // 锁定键跟随控件栏显隐；锁定后单击只唤出它自己
             AnimatedVisibility(
-                visible = controlsVisible && errorMessage == null,
+                visible = showLockToggle && controlsVisible && errorMessage == null,
                 enter = fadeIn(motion.defaultEffectsSpec()),
                 exit = fadeOut(motion.fastEffectsSpec()),
                 modifier = Modifier

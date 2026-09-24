@@ -29,19 +29,15 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import dev.piko.PikoApplication
-import dev.piko.data.repository.isPlayableVideo
 import dev.piko.download.DownloadStatus
 import dev.piko.shared.media.player.PlayerScreenState
-import dev.piko.shared.media.player.PlaylistEntry
-import dev.piko.shared.media.player.buildPlaylist
 import io.github.nihildigit.pikpak.FileStat
 import java.io.File
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 /**
  * Android 播放器。取流策略、续播与重连在共用的 [PlayerScreenState]，播放后端是 libmpv，
- * 控件是无状态的 [MobilePlayerControls]；这里只负责画面表面与系统胶水（横竖屏、常亮、生命周期）。
+ * 控件是 ui 模块里两端共用的 [MobilePlayerControls]；这里只负责画面表面与系统胶水
+ * （横竖屏、常亮、生命周期、窗口亮度与系统媒体音量）。
  *
  * 名字沿用 MediaMP 时期的入口，导航处的调用无需改动。
  */
@@ -58,7 +54,6 @@ fun MediampVideoPlayerScreen(
     val scope = rememberCoroutineScope()
     val driveRepo = app.driveRepository
 
-    // 同目录的其他视频。取一次即可：播放期间目录内容变了也不该让播放列表在脚下重排
     var siblingVideos by remember(initialFileId) { mutableStateOf<List<FileStat>>(emptyList()) }
 
     val backend = remember { MpvPlaybackBackend(context.applicationContext) }
@@ -87,23 +82,14 @@ fun MediampVideoPlayerScreen(
 
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val orientationController = rememberOrientationController()
+    val brightness = rememberWindowBrightness()
+    val mediaVolume = rememberMediaVolume()
     val snackbarHostState = remember { SnackbarHostState() }
     val isSpoilerBlurEnabled by app.sessionManager.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = true)
 
     LaunchedEffect(initialFileId) {
-        val parentId = driveRepo.getFileDetail(initialFileId).getOrNull()?.parentId ?: return@LaunchedEffect
-        siblingVideos = driveRepo.listAllFiles(parentId)
-            .getOrNull()
-            .orEmpty()
-            .filter { it.isPlayableVideo() }
-        // 大合集有上千个文件，解析要几秒，不能占着主线程
-        state.playlist = withContext(Dispatchers.Default) {
-            buildPlaylist(
-                siblingVideos.map {
-                    PlaylistEntry(fileId = it.id, name = it.name, label = "", thumbnailUrl = it.thumbnailLink, size = it.sizeBytes)
-                },
-            )
-        }
+        siblingVideos = driveRepo.siblingVideos(initialFileId)
+        state.playlist = playlistOf(siblingVideos)
     }
 
     // 内存任务表 App 重启就空：同目录元数据到了之后，用磁盘再验一次，
@@ -189,6 +175,7 @@ fun MediampVideoPlayerScreen(
                 onRestartFromBeginning = state::restartFromBeginning,
                 onBack = leave,
                 onToggleFullscreen = { orientationController.toggleOrientation(isLandscape) },
+                isFullscreen = isLandscape,
                 isLandscapeVideo = state.isLandscapeVideo,
                 playlist = state.playlist,
                 currentFileId = state.fileId,
@@ -198,6 +185,8 @@ fun MediampVideoPlayerScreen(
                 onNext = state::playNext,
                 onSelectEntry = state::playEntry,
                 hideEpisodeThumbnails = isSpoilerBlurEnabled,
+                brightness = brightness,
+                volume = mediaVolume,
                 snackbarHost = { SnackbarHost(snackbarHostState) },
             )
         }

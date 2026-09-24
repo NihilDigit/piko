@@ -115,7 +115,7 @@ import kotlin.math.roundToInt
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-internal fun PlayerTopBar(
+fun PlayerTopBar(
     title: String,
     episodeLabel: String?,
     isLocalPlayback: Boolean,
@@ -457,6 +457,7 @@ private val PortraitCenterSizes = CenterSizes(
 @Composable
 internal fun PlayerBottomBar(
     isLandscape: Boolean,
+    isFullscreen: Boolean,
     positionMillis: Long,
     durationMillis: Long,
     bufferedPositionMillis: Long,
@@ -526,8 +527,8 @@ internal fun PlayerBottomBar(
                 PlayerChipButton(text = "选集", icon = Icons.Outlined.VideoLibrary, onClick = onEpisodesClick)
             }
             PlayerIconButton(
-                icon = if (isLandscape) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
-                label = if (isLandscape) "退出全屏" else "全屏",
+                icon = if (isFullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
+                label = if (isFullscreen) "退出全屏" else "全屏",
                 onClick = onToggleFullscreen,
             )
         }
@@ -835,10 +836,11 @@ private const val BUFFERED_ALPHA = 0.38f
 private const val SEEK_SETTLE_TOLERANCE_MILLIS = 1_500L
 private const val SEEK_SETTLE_TIMEOUT_MILLIS = 1_500L
 
-internal const val SEEK_STEP_MILLIS = 10_000L
+// 公开给 app 模块里的控件测试用
+const val SEEK_STEP_MILLIS = 10_000L
 internal const val MIN_SPEED = 0.5f
 internal const val MAX_SPEED = 3.5f
-internal const val LONG_PRESS_BOOST_SPEED = 2.0f
+const val LONG_PRESS_BOOST_SPEED = 2.0f
 
 internal fun formatSpeed(speed: Float): String = formatSpeedPreset(speed) + "x"
 

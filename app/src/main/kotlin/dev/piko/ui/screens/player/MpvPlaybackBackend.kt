@@ -59,6 +59,8 @@ internal class MpvPlaybackBackend(
     override val aspectRatio: PlayerAspectRatio get() = currentAspectRatio
     override var videoAspect by mutableStateOf<Float?>(null)
         private set
+    private var currentVolume by mutableFloatStateOf(1f)
+    override val volume: Float get() = currentVolume
 
     private var isLoadingFile by mutableStateOf(false)
     private var isSeeking by mutableStateOf(false)
@@ -146,6 +148,7 @@ internal class MpvPlaybackBackend(
         mpv.observeProperty("paused-for-cache", MpvFormat.MPV_FORMAT_FLAG)
         mpv.observeProperty("eof-reached", MpvFormat.MPV_FORMAT_FLAG)
         mpv.observeProperty("speed", MpvFormat.MPV_FORMAT_DOUBLE)
+        mpv.observeProperty("volume", MpvFormat.MPV_FORMAT_DOUBLE)
         mpv.observeProperty("video-params/aspect", MpvFormat.MPV_FORMAT_DOUBLE)
         mpv.observeProperty("video-params/rotate", MpvFormat.MPV_FORMAT_INT64)
     }
@@ -235,6 +238,11 @@ internal class MpvPlaybackBackend(
         currentAspectRatio = mode
     }
 
+    override fun setVolume(volume: Float) {
+        if (released) return
+        mpv.setPropertyDouble("volume", volume.coerceIn(0f, 1f) * 100.0)
+    }
+
     fun attachSurface(surface: Surface) {
         if (released) return
         mpv.attachSurface(surface)
@@ -321,6 +329,7 @@ internal class MpvPlaybackBackend(
             "duration" -> durationMillis = (value * 1000).toLong().coerceAtLeast(0L)
             "demuxer-cache-time" -> bufferedPositionMillis = (value * 1000).toLong().coerceAtLeast(0L)
             "speed" -> currentSpeed = value.toFloat()
+            "volume" -> currentVolume = (value / 100).toFloat().coerceIn(0f, 1f)
             "video-params/aspect" -> {
                 rawAspect = value
                 updateVideoAspect()

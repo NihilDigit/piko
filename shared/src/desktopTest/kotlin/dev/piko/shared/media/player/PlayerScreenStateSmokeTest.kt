@@ -181,6 +181,7 @@ class PlayerScreenStateSmokeTest {
         override val supportsSpeed: Boolean = true
         override val aspectRatio: PlayerAspectRatio = PlayerAspectRatio.Fit
         override val videoAspect: Float? = null
+        override val volume: Float? = null
 
         private val _events = MutableSharedFlow<PlaybackBackendEvent>(extraBufferCapacity = 64)
         override val events = _events.asSharedFlow()
@@ -221,5 +222,6 @@ class PlayerScreenStateSmokeTest {
         }
         override fun setSpeed(speed: Float) = Unit
         override fun setAspectRatio(mode: PlayerAspectRatio) = Unit
+        override fun setVolume(volume: Float) = Unit
     }
 }

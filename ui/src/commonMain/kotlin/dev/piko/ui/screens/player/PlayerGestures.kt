@@ -1,19 +1,10 @@
 package dev.piko.ui.screens.player
 
-import android.app.Activity
-import android.content.Context
-import android.content.ContextWrapper
-import android.content.pm.ActivityInfo
-import android.media.AudioManager
-import android.provider.Settings
-import android.view.Window
-import android.view.WindowManager
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -24,20 +15,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import kotlin.math.abs
-import kotlin.math.roundToInt
 
-/*
- * 播放器的手势层与系统胶水：亮度、媒体音量、横竖屏与沉浸式系统栏。
- *
- * 亮度与音量走窗口属性和 AudioManager，而不是播放器后端：ExoPlayer 与 libmpv
- * 的音量都只是软件增益，系统音量键调的是另一路，两者叠加会出现「系统满格却很小声」。
+/**
+ * 竖滑手势与上下方向键调节的一路电平，取值 0 到 1。由平台实现：Android 的亮度是窗口属性、
+ * 音量是系统媒体音量；桌面没有可调的屏幕亮度，音量是播放器自身的软件音量。
  */
+interface PlayerLevelControl {
+    fun current(): Float
+
+    /** 设置并返回实际落到的值。系统音量只有十几档，HUD 显示实际档位才不会与音量键对不上。 */
+    fun set(fraction: Float): Float
+}
 
 internal enum class VerticalAdjust {
     Brightness,
@@ -60,142 +50,11 @@ internal sealed interface PlayerGesture {
 }
 
 /**
- * 窗口级亮度控制。离开播放器时自动还原。
- */
-internal class WindowBrightness(private val window: Window?) {
-    fun current(): Float {
-        val override = window?.attributes?.screenBrightness ?: -1f
-        if (override >= 0f) return override.coerceIn(0f, 1f)
-        return runCatching {
-            val resolver = window?.context?.contentResolver ?: return@runCatching 0.5f
-            Settings.System.getInt(resolver, Settings.System.SCREEN_BRIGHTNESS).toFloat() / 255f
-        }.getOrDefault(0.5f).coerceIn(0f, 1f)
-    }
-
-    fun set(fraction: Float) {
-        val w = window ?: return
-        w.attributes = w.attributes.apply {
-            // 0 会让部分机型直接关背光，留一点下限
-            screenBrightness = fraction.coerceIn(0.02f, 1f)
-        }
-    }
-
-    fun release() {
-        val w = window ?: return
-        w.attributes = w.attributes.apply {
-            screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
-        }
-    }
-}
-
-/**
- * 系统媒体音量控制。
- */
-internal class MediaVolume(context: Context) {
-    private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-    private val max: Int = (audioManager?.getStreamMaxVolume(AudioManager.STREAM_MUSIC) ?: 15).coerceAtLeast(1)
-
-    fun current(): Float =
-        ((audioManager?.getStreamVolume(AudioManager.STREAM_MUSIC) ?: 0).toFloat() / max).coerceIn(0f, 1f)
-
-    /** 设置音量，返回实际落到的档位比例。系统音量只有十几档，HUD 显示实际档位才不会与音量键对不上。 */
-    fun set(fraction: Float): Float {
-        val index = (fraction.coerceIn(0f, 1f) * max).roundToInt().coerceIn(0, max)
-        runCatching {
-            audioManager?.setStreamVolume(AudioManager.STREAM_MUSIC, index, 0)
-        }
-        return index.toFloat() / max
-    }
-}
-
-internal fun Context.findActivity(): Activity? {
-    var ctx = this
-    while (ctx is ContextWrapper) {
-        if (ctx is Activity) return ctx
-        ctx = ctx.baseContext
-    }
-    return null
-}
-
-@Composable
-internal fun rememberWindowBrightness(): WindowBrightness {
-    val context = LocalContext.current
-    val window = remember(context) { context.findActivity()?.window }
-    val brightness = remember(window) { WindowBrightness(window) }
-    DisposableEffect(brightness) {
-        onDispose { brightness.release() }
-    }
-    return brightness
-}
-
-@Composable
-internal fun rememberMediaVolume(context: Context): MediaVolume =
-    remember(context) { MediaVolume(context) }
-
-/**
- * 控制屏幕沉浸式全屏与横竖屏旋转
- */
-internal class ScreenOrientationController(private val activity: Activity?) {
-    private val initialRequestedOrientation =
-        activity?.requestedOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-
-    fun setLandscape() {
-        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-        hideSystemBars()
-    }
-
-    fun setPortrait() {
-        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-        showSystemBars()
-    }
-
-    fun resetOrientation() {
-        activity?.requestedOrientation = initialRequestedOrientation
-        showSystemBars()
-    }
-
-    fun toggleOrientation(isCurrentlyLandscape: Boolean) {
-        if (isCurrentlyLandscape) {
-            setPortrait()
-        } else {
-            setLandscape()
-        }
-    }
-
-    fun hideSystemBars() {
-        val window = activity?.window ?: return
-        val insetsController = WindowCompat.getInsetsController(window, window.decorView)
-        insetsController.systemBarsBehavior =
-            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        insetsController.hide(WindowInsetsCompat.Type.systemBars())
-    }
-
-    fun showSystemBars() {
-        val window = activity?.window ?: return
-        val insetsController = WindowCompat.getInsetsController(window, window.decorView)
-        insetsController.show(WindowInsetsCompat.Type.systemBars())
-    }
-}
-
-@Composable
-internal fun rememberOrientationController(): ScreenOrientationController {
-    val context = LocalContext.current
-    val activity = remember(context) { context.findActivity() }
-    val controller = remember(activity) { ScreenOrientationController(activity) }
-    DisposableEffect(controller) {
-        onDispose {
-            controller.resetOrientation()
-            controller.showSystemBars()
-        }
-    }
-    return controller
-}
-
-/**
  * 覆盖整个播放区域的手势层。
  *
  * 单击显隐控件，双击两侧快退/快进、中间播放暂停，长按加速，横滑 seek，
- * 左右半屏竖滑调亮度/音量。锁定时只保留单击，其余手势一律不识别。
+ * 左右半屏竖滑调亮度/音量；平台没有亮度时整个宽度都调音量，两样都没有时竖滑不起作用。
+ * 锁定时只保留单击，其余手势一律不识别。鼠标的点击与拖动也走这里，不另写一套。
  *
  * 方向判定只做一次：detectDragGestures 已经等过系统 touchSlop，越过 slop 的那一刻
  * 按位移的主方向锁定，之后不再切换。旧实现在 slop 之后又叠了 24px 的固定阈值，
@@ -206,8 +65,8 @@ internal fun PlayerGestureLayer(
     isLocked: Boolean,
     durationMillis: Long,
     positionProvider: () -> Long,
-    brightness: WindowBrightness,
-    volume: MediaVolume,
+    brightness: PlayerLevelControl?,
+    volume: PlayerLevelControl?,
     onGestureChange: (PlayerGesture?) -> Unit,
     onToggleControls: () -> Unit,
     onSeekTo: (Long) -> Unit,
@@ -225,6 +84,8 @@ internal fun PlayerGestureLayer(
     val seekTo by rememberUpdatedState(onSeekTo)
     val doubleTap by rememberUpdatedState(onDoubleTap)
     val speedBoost by rememberUpdatedState(onSpeedBoost)
+    val brightnessControl by rememberUpdatedState(brightness)
+    val volumeControl by rememberUpdatedState(volume)
 
     var gesture by remember { mutableStateOf<PlayerGesture?>(null) }
     var dragTotal by remember { mutableStateOf(Offset.Zero) }
@@ -273,10 +134,13 @@ internal fun PlayerGestureLayer(
             }
             .pointerInput(isLocked) {
                 if (isLocked) return@pointerInput
+                // 方向只判一次；竖滑而平台没有对应电平时，这次拖动整个忽略
+                var directionDecided = false
                 detectDragGestures(
                     onDragStart = { offset ->
                         dragOrigin = offset
                         dragTotal = Offset.Zero
+                        directionDecided = false
                         publish(null)
                     },
                     onDragEnd = {
@@ -290,16 +154,25 @@ internal fun PlayerGestureLayer(
                         change.consume()
                         dragTotal += dragAmount
 
-                        if (gesture == null) {
-                            val horizontal = abs(dragTotal.x) >= abs(dragTotal.y)
-                            haptic.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
-                            if (horizontal) {
-                                publish(PlayerGesture.Seek(readPosition(), 0L))
+                        if (!directionDecided) {
+                            directionDecided = true
+                            val started = if (abs(dragTotal.x) >= abs(dragTotal.y)) {
+                                PlayerGesture.Seek(readPosition(), 0L)
                             } else {
                                 val leftSide = dragOrigin.x < size.width / 2
-                                val kind = if (leftSide) VerticalAdjust.Brightness else VerticalAdjust.Volume
-                                adjustBaseValue = if (leftSide) brightness.current() else volume.current()
-                                publish(PlayerGesture.Adjust(kind, adjustBaseValue))
+                                val kind = if (leftSide && brightnessControl != null) {
+                                    VerticalAdjust.Brightness
+                                } else {
+                                    VerticalAdjust.Volume
+                                }
+                                levelFor(kind, brightnessControl, volumeControl)?.let { control ->
+                                    adjustBaseValue = control.current()
+                                    PlayerGesture.Adjust(kind, adjustBaseValue)
+                                }
+                            }
+                            if (started != null) {
+                                haptic.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
+                                publish(started)
                             }
                         }
 
@@ -312,12 +185,8 @@ internal fun PlayerGestureLayer(
                             is PlayerGesture.Adjust -> {
                                 val requested = (adjustBaseValue - dragTotal.y / (size.height * ADJUST_TRAVEL_RATIO))
                                     .coerceIn(0f, 1f)
-                                val applied = if (active.kind == VerticalAdjust.Brightness) {
-                                    brightness.set(requested)
-                                    requested
-                                } else {
-                                    volume.set(requested)
-                                }
+                                val applied = levelFor(active.kind, brightnessControl, volumeControl)?.set(requested)
+                                    ?: requested
                                 if (applied != active.fraction && (applied == 0f || applied == 1f)) {
                                     haptic.performHapticFeedback(HapticFeedbackType.SegmentTick)
                                 }
@@ -331,6 +200,12 @@ internal fun PlayerGestureLayer(
             },
     )
 }
+
+private fun levelFor(
+    kind: VerticalAdjust,
+    brightness: PlayerLevelControl?,
+    volume: PlayerLevelControl?,
+): PlayerLevelControl? = if (kind == VerticalAdjust.Brightness) brightness else volume
 
 internal const val SIDE_ZONE_FRACTION = 0.35f
 

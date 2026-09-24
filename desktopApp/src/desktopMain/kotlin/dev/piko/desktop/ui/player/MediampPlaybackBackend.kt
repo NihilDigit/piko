@@ -18,6 +18,7 @@ import kotlinx.coroutines.launch
 import org.openani.mediamp.MediampPlayer
 import org.openani.mediamp.PlaybackEvent
 import org.openani.mediamp.features.AspectRatioMode
+import org.openani.mediamp.features.AudioLevelController
 import org.openani.mediamp.features.Buffering
 import org.openani.mediamp.features.PlaybackSpeed
 import org.openani.mediamp.features.VideoAspectRatio
@@ -30,7 +31,7 @@ import java.io.File
  * MediaMP（mpv 后端）到共用播放接口的转接。
  *
  * 能力按后端注册，取不到的特性在这里降级：倍速取不到就报 supportsSpeed = false，
- * 画面比例取不到就报 null，控件据此隐藏入口。
+ * 画面比例与音量取不到就报 null，控件据此隐藏入口。
  */
 internal class MediampPlaybackBackend(
     val player: MediampPlayer,
@@ -39,6 +40,7 @@ internal class MediampPlaybackBackend(
     private val bufferingFeature = player.features[Buffering.Key]
     private val speedFeature = player.features[PlaybackSpeed.Key]
     private val aspectRatioFeature = player.features[VideoAspectRatio.Key]
+    private val audioFeature = player.features[AudioLevelController.Key]
 
     override var positionMillis by mutableLongStateOf(0L)
         private set
@@ -61,6 +63,10 @@ internal class MediampPlaybackBackend(
     override val aspectRatio: PlayerAspectRatio? get() = currentAspectRatio
     override var videoAspect by mutableStateOf<Float?>(null)
         private set
+
+    // MediaMP 的音量以 1 为 mpv 的 100，上限是 2；共用接口不放大，只用到 1
+    private var currentVolume by mutableStateOf(audioFeature?.volume?.value?.coerceIn(0f, 1f))
+    override val volume: Float? get() = currentVolume
 
     private val _events = MutableSharedFlow<PlaybackBackendEvent>(extraBufferCapacity = 16)
     override val events: Flow<PlaybackBackendEvent> = _events.asSharedFlow()
@@ -97,6 +103,7 @@ internal class MediampPlaybackBackend(
         }
         speedFeature?.let { feature -> scope.launch { feature.valueFlow.collect { currentSpeed = it } } }
         aspectRatioFeature?.let { feature -> scope.launch { feature.mode.collect { currentAspectRatio = it.toShared() } } }
+        audioFeature?.let { feature -> scope.launch { feature.volume.collect { currentVolume = it.coerceIn(0f, 1f) } } }
         scope.launch {
             player.events.collect { event ->
                 when (event) {
@@ -130,6 +137,16 @@ internal class MediampPlaybackBackend(
 
     override fun setSpeed(speed: Float) {
         speedFeature?.set(speed)
+    }
+
+    override fun setVolume(volume: Float) {
+        val feature = audioFeature ?: return
+        val clamped = volume.coerceIn(0f, 1f)
+        feature.setVolume(clamped)
+        // 读数经协程回报会慢一拍，连按方向键时下一次要在这次的值上累加，先行写入
+        currentVolume = clamped
+        // 静音时调音量，意图是要听见
+        if (volume > 0f && feature.isMute.value) feature.setMute(false)
     }
 
     override fun setAspectRatio(mode: PlayerAspectRatio) {
