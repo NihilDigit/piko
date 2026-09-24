@@ -1,5 +1,6 @@
 package dev.piko.shared.media.player
 
+import dev.piko.shared.naming.NamingFixtures
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -15,21 +16,19 @@ class PlayerPlaylistTest {
     }
 
     @Test
-    fun `movies beside a season do not stop the episodes from shrinking`() {
-        val labels = distinctLabels(
-            listOf(
-                "[DBD-Raws][Steins;Gate][01][1080P][FLAC].mkv",
-                "[DBD-Raws][Steins;Gate][23][1080P][FLAC].mkv",
-                "[DBD-Raws][Steins;Gate][23][Beta.Ver][1080P][FLAC].mkv",
-                "[DBD-Raws][Steins;Gate][25(SP)][1080P][FLAC].mkv",
-                "[DBD-Raws][Steins;Gate][PV].mp4",
-                "[DBD-Raws][Steins;Gate Fuka Ryouiki no Deja vu][Movie][1080P][FLAC].mkv",
-            ),
-        )
-        assertEquals(
-            listOf("01", "23", "[23][Beta.Ver]", "25(SP)", "PV", "[DBD-Raws][Steins;Gate Fuka Ryouiki no Deja vu][Movie]"),
-            labels,
-        )
+    fun `a flattened bd pack splits into sections the player can stay inside`() {
+        // 网盘里被拍平后的样子：没有目录，只剩视频
+        val videos = NamingFixtures.flatten(NamingFixtures.load("steins-gate-dbd"))
+            .filter { it.path.endsWith(".mkv") || it.path.endsWith(".mp4") }
+        val list = buildPlaylist(videos.mapIndexed { i, f -> PlaylistEntry("id$i", f.path, "", size = f.size) })
+        val bySection = list.groupBy { it.sectionLabel }
+
+        val main = bySection.getValue("正片").map { it.label }
+        assertEquals((1..23).map { it.toString().padStart(2, '0') } + listOf("23 Beta", "24"), main)
+        assertEquals(listOf("25(SP)"), bySection.getValue("SP").map { it.label })
+        // 剧场版另起一部作品，但分区名不必带上长长的作品名
+        assertEquals(listOf("Steins;Gate Fuka Ryouiki no Deja vu"), bySection.getValue("剧场版").map { it.label })
+        assertEquals("正片", list.first().sectionLabel)
     }
 
     @Test

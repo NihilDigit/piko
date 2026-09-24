@@ -112,9 +112,16 @@ class PlayerScreenState(
     /** 同目录的视频，按自然顺序，由调用方取来填入。只有一项或为空时控件不给选集入口。 */
     var playlist by mutableStateOf<List<PlaylistEntry>>(emptyList())
 
-    private val playlistIndex by derivedStateOf { playlist.indexOfFirst { it.fileId == fileId } }
-    val previousEntry by derivedStateOf { playlist.getOrNull(playlistIndex - 1)?.takeIf { playlistIndex > 0 } }
-    val nextEntry by derivedStateOf { playlist.getOrNull(playlistIndex + 1)?.takeIf { playlistIndex >= 0 } }
+    val currentEntry by derivedStateOf { playlist.find { it.fileId == fileId } }
+
+    // 上一集、下一集与自动连播都只在当前分区里走：正片放完不该跳进 PV 或菜单
+    private val sectionPlaylist by derivedStateOf {
+        val key = currentEntry?.sectionKey ?: return@derivedStateOf emptyList()
+        playlist.filter { it.sectionKey == key }
+    }
+    private val sectionIndex by derivedStateOf { sectionPlaylist.indexOfFirst { it.fileId == fileId } }
+    val previousEntry by derivedStateOf { sectionPlaylist.getOrNull(sectionIndex - 1)?.takeIf { sectionIndex > 0 } }
+    val nextEntry by derivedStateOf { sectionPlaylist.getOrNull(sectionIndex + 1)?.takeIf { sectionIndex >= 0 } }
 
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val messages: SharedFlow<String> = _messages.asSharedFlow()

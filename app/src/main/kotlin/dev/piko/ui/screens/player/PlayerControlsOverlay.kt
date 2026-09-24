@@ -163,6 +163,8 @@ fun MobilePlayerControls(
     val episodeLabel = playlist.find { it.fileId == currentFileId }
         ?.takeIf { hasPlaylist && it.label.length <= SUBTITLE_LABEL_MAX_LENGTH }
         ?.label
+        // 纯数字集号写成「第 24 集」；「25(SP)」「23 Beta」这类照原样，套上「第…集」反而别扭
+        ?.let { if (it.matches(PLAIN_EPISODE)) "第 $it 集" else it }
 
     PlayerTheme {
         val motion = MaterialTheme.motionScheme
@@ -388,3 +390,4 @@ private const val CONTROLS_HIDE_DELAY_MILLIS = 4_500L
 private const val RESUME_TIP_DURATION_MILLIS = 5_000L
 private const val DOUBLE_TAP_FEEDBACK_MILLIS = 700L
 private const val SUBTITLE_LABEL_MAX_LENGTH = 16
+private val PLAIN_EPISODE = Regex("""\d+(\.\d+)?""")

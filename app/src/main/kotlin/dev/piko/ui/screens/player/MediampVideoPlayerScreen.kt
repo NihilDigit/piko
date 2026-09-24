@@ -36,6 +36,8 @@ import dev.piko.shared.media.player.PlaylistEntry
 import dev.piko.shared.media.player.buildPlaylist
 import io.github.nihildigit.pikpak.FileStat
 import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Android 播放器。取流策略、续播与重连在共用的 [PlayerScreenState]，播放后端是 libmpv，
@@ -94,9 +96,14 @@ fun MediampVideoPlayerScreen(
             .getOrNull()
             .orEmpty()
             .filter { it.isPlayableVideo() }
-        state.playlist = buildPlaylist(
-            siblingVideos.map { PlaylistEntry(fileId = it.id, name = it.name, label = "", thumbnailUrl = it.thumbnailLink) },
-        )
+        // 大合集有上千个文件，解析要几秒，不能占着主线程
+        state.playlist = withContext(Dispatchers.Default) {
+            buildPlaylist(
+                siblingVideos.map {
+                    PlaylistEntry(fileId = it.id, name = it.name, label = "", thumbnailUrl = it.thumbnailLink, size = it.sizeBytes)
+                },
+            )
+        }
     }
 
     // 内存任务表 App 重启就空：同目录元数据到了之后，用磁盘再验一次，

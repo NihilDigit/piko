@@ -9,9 +9,9 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -51,6 +52,7 @@ import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -63,6 +65,7 @@ import androidx.compose.material3.ToggleButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -77,10 +80,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.media.ORIGINAL_QUALITY
-import dev.piko.ui.components.ListSpoilerBlur
-import dev.piko.ui.components.SpoilerThumbnail
 import dev.piko.shared.media.player.PlayerAspectRatio
 import dev.piko.shared.media.player.PlaylistEntry
+import dev.piko.ui.components.ListSpoilerBlur
+import dev.piko.ui.components.SpoilerThumbnail
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -205,6 +208,46 @@ private fun PlayerSideSheet(
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 internal fun EpisodePanel(
+    entries: List<PlaylistEntry>,
+    currentFileId: String,
+    hideThumbnails: Boolean,
+    onSelect: (PlaylistEntry) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    // 分区按播放列表里出现的先后排列：正片在前，其后是 SP、外传、剧场版、PV 等
+    val sections = remember(entries) { entries.map { it.sectionKey to it.sectionLabel }.distinct() }
+    val currentSection = entries.find { it.fileId == currentFileId }?.sectionKey ?: sections.firstOrNull()?.first
+    var selected by remember(currentSection) { mutableStateOf(currentSection) }
+    val shown = remember(entries, selected) { entries.filter { it.sectionKey == selected } }
+
+    Column(modifier) {
+        if (sections.size > 1) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                sections.forEach { (key, label) ->
+                    FilterChip(
+                        selected = key == selected,
+                        onClick = { selected = key },
+                        label = { Text(label, maxLines = 1) },
+                    )
+                }
+            }
+        }
+        // 换分区时列表重建，才能按新分区里当前这集的位置重新定位
+        key(selected) {
+            EpisodeEntries(shown, currentFileId, hideThumbnails, onSelect, Modifier.weight(1f))
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun EpisodeEntries(
     entries: List<PlaylistEntry>,
     currentFileId: String,
     hideThumbnails: Boolean,
