@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
-import androidx.compose.material.icons.outlined.CleaningServices
 import androidx.compose.material.icons.outlined.CloudDone
 import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.Delete
@@ -41,9 +40,9 @@ import dev.piko.ui.theme.LocalStatusColors
 private fun TransferItem.Pack.statusLabel(): String = when (job.stage) {
     OfflinePackStage.QUEUED -> "排队中"
     OfflinePackStage.DOWNLOADING -> "$progress%"
-    OfflinePackStage.PRUNING -> "清理中"
+    OfflinePackStage.PRUNING -> "处理中"
     OfflinePackStage.DONE -> "已完成"
-    OfflinePackStage.FAILED -> if (job.cleanupFailed) "清理失败" else "离线失败"
+    OfflinePackStage.FAILED -> if (job.cleanupFailed) "处理失败" else "离线失败"
 }
 
 /**
@@ -58,7 +57,7 @@ private fun OfflinePackJob.detail(): String? = when (stage) {
 
 private fun OfflinePackJob.icon(): ImageVector = when (stage) {
     OfflinePackStage.QUEUED, OfflinePackStage.DOWNLOADING -> Icons.Outlined.CloudDownload
-    OfflinePackStage.PRUNING -> Icons.Outlined.CleaningServices
+    OfflinePackStage.PRUNING -> Icons.Outlined.CloudDownload
     OfflinePackStage.DONE -> Icons.Outlined.CloudDone
     OfflinePackStage.FAILED -> Icons.Outlined.ErrorOutline
 }
@@ -165,7 +164,7 @@ internal fun PackTransferSheet(
     val actions = buildList {
         if (job.canOpen) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "打开", onOpen))
         if (job.stage == OfflinePackStage.FAILED) {
-            add(SheetAction(Icons.Outlined.Refresh, if (job.cleanupFailed) "重新清理" else "重试", onRetry))
+            add(SheetAction(Icons.Outlined.Refresh, "重试", onRetry))
         }
         // 取消会连同服务端的占位文件一起删掉；已完成的只删任务记录，文件留在网盘里
         val discardLabel = if (job.isActive) "取消任务" else "移除"
