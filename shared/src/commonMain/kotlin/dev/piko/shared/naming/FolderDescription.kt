@@ -158,8 +158,9 @@ private val FOLDER_SEASON = Regex(
 private fun folderSeason(name: String): Int? =
     FOLDER_SEASON.find(name)?.groupValues?.drop(1)?.firstOrNull { it.isNotEmpty() }?.toInt()
 
-// 文件夹名「Yuru Camp Season 2」里的 2 会被当成集号，作品名剩下一个悬空的「Season」
-private val DANGLING_SEASON = Regex("""(?i)\s+(?:season|s)$""")
+// 文件夹名「Yuru Camp Season 2」里的 2 会被当成集号，作品名剩下一个悬空的「Season」。
+// 季号写在单独的方括号里时（「[Sousou no Frieren Season 2]」）不会被当成集号，季号连同数字留在作品名里
+private val DANGLING_SEASON = Regex("""(?i)\s+(?:season|s)(?:\s*\d{1,2})?$""")
 
 private fun stripSeasonWord(title: String): String = title.replace(DANGLING_SEASON, "").ifBlank { title }
 

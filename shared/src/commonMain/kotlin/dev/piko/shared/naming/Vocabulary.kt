@@ -160,7 +160,7 @@ private val WEAK_TITLE_WORDS = setOf(
 private val RESOLUTION_P = Regex("""^(\d{3,4})[pPiI]$""")
 
 // 「NNNp」只认常见的画面高度：合集名里的「200P」「435P」是图片张数
-private val STANDARD_HEIGHTS = setOf(240, 288, 360, 480, 540, 576, 720, 900, 1080, 1440, 2160, 4320)
+internal val STANDARD_HEIGHTS = setOf(240, 288, 360, 480, 540, 576, 720, 900, 1080, 1440, 2160, 4320)
 
 // 合集的体积与数量：「45.7G」「69.2 GB」「154V」「42P+17V」「338V81P51G」。认得但不显示，
 // 这样整段方括号才会被当作标签段，从标题里去掉；数字后面的 GB 也就不会被当成简体字幕的 GB

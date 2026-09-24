@@ -378,7 +378,8 @@ private fun bracketHits(tokens: List<NameToken>, i: Int, bodyStart: Int): Hit? {
     if (i == bodyStart || (tokens[i] as NameToken.Bracket).tagScan.isTagText || !content.any { it.isLetter() }) return null
     val mentioned = sectionMentioned(content)
     DESCRIBED_WITH_NUMBER.matchEntire(content)?.let { m ->
-        if (!isYearNumber(m.groupValues[2])) {
+        // 「[Sousou no Frieren Season 2]」：数字是季号，这个方括号是带季号的作品名
+        if (!isYearNumber(m.groupValues[2]) && !SEASON_TAIL.containsMatchIn(content)) {
             return Hit(i, i + 1, episodeOf(m.groupValues[2]), mentioned ?: Section.OTHER, m.groupValues[1].trim(), content, STRENGTH_DESCRIBED)
         }
     }
@@ -696,7 +697,7 @@ private fun chooseHit(tokens: List<NameToken>, hits: List<Hit>, bodyStart: Int, 
     // 标签段之后的「数字」多半是声道、年份一类，只接受 SxxEyy 与标记
     val usable = hits.filter { it.start < tagStart || it.strength >= STRENGTH_SE }
     val best = usable.maxWithOrNull(compareBy<Hit> { it.strength }.thenByDescending { it.start })
-        ?: return weakHit(tokens, bodyStart, tagStart)
+        ?: return weakHit(tokens, bodyStart, tagStart) ?: taggedBracketNumber(tokens, tagStart)
     if (best.strength == STRENGTH_SE) {
         val dash = usable.firstOrNull { it.strength == STRENGTH_DASH && it.start < best.start && it.episode != null }
         if (dash != null) {
@@ -749,6 +750,25 @@ private fun weakHit(tokens: List<NameToken>, bodyStart: Int, tagStart: Int): Hit
     }
     return null
 }
+
+/**
+ * 夹在标签段里的方括号集号：「[LinRip][Show][BDRip][1920x1080][37][HEVC-10bit]」「[38 Fin]」。
+ * 标签段之后的数字多半是声道、年份，所以只在别处都没有集号时才取，只认两三位整数，
+ * 置信度记低，由批量分析按同作品的其他文件核对。
+ */
+private fun taggedBracketNumber(tokens: List<NameToken>, tagStart: Int): Hit? {
+    for (i in tagStart until tokens.size) {
+        val bracket = tokens[i] as? NameToken.Bracket ?: continue
+        val m = TAGGED_EPISODE.matchEntire(bracket.content.trim()) ?: continue
+        // 「[720]」是分辨率
+        if (m.groupValues[1].toInt() in STANDARD_HEIGHTS) continue
+        return Hit(i, i + 1, episodeOf(m.groupValues[1]), null, null, m.groupValues[1], STRENGTH_WEAK)
+    }
+    return null
+}
+
+// 只收两三位：写在这个位置的集号都补零到两位，一位数与音轨数一类分不开
+private val TAGGED_EPISODE = Regex("""^(\d{2,3})(?:\s*(?:Fin|END|完))?$""", RegexOption.IGNORE_CASE)
 
 /** 第一个标签段的位置：方括号整体是标签，或词在标签词表里。没有时为记号总数。 */
 private fun firstTagIndex(tokens: List<NameToken>, from: Int): Int {
@@ -813,7 +833,11 @@ private fun buildTitle(tokens: List<NameToken>, from: Int, to: Int): Pair<String
     val brackets = range.filterIsInstance<NameToken.Bracket>().filter { !isTagBracket(it) && bracketHit(it.content, 1) == null }
     if (brackets.isEmpty()) return null to used
     used += brackets
-    return brackets.joinToString(" ") { it.content.trim() } to used
+    // 「[葬送的芙莉莲 第二季][Sousou no Frieren Season 2]」：中文名与罗马字名各占一个方括号，是同一个名字的两种写法。
+    // 拼起来既长又会把季号埋在中间，取罗马字名，与文件夹名的双语取舍一致
+    val latin = brackets.filter { bracket -> bracket.content.none(::isCjk) }
+    val named = if (latin.isNotEmpty() && latin.size < brackets.size) latin else brackets
+    return named.joinToString(" ") { it.content.trim() } to used
 }
 
 private val TITLE_HEAD_MARKERS = listOf("gekijouban", "gekijou-ban", "劇場版", "剧场版", "映画")

@@ -186,6 +186,15 @@ class MediaNameParserTest {
     )
 
     @Test
+    fun `episode inside the tag run and season in its own bracket`() = assertParses(
+        // 集号写在分辨率之后，季号单独一个方括号；中文名与罗马字名并列时取罗马字名
+        "[Grp][某番 第二季][Some Show Season 2][BDRip][1920x1080][37][HEVC-10bit 2Audio MKV].mkv" to "Some Show | 37 | -",
+        "[Grp][某番 第二季][Some Show Season 2][BDRip][1920x1080][38 Fin][HEVC-10bit 2Audio MKV].mkv" to "Some Show | 38 | -",
+        // 标签段里的分辨率数字不是集号
+        "[Grp][Some Show][BDRip][720][HEVC].mkv" to "Some Show | Some Show | -",
+    )
+
+    @Test
     fun `generated names become a source and a time`() {
         val utc = TimeZone.UTC
         // 2020-07-28T12:00:00Z，东西十一区内都是同一天
