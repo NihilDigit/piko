@@ -46,12 +46,13 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.ListItemShapes
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedListItem
 import androidx.compose.material3.SnackbarHost
@@ -62,6 +63,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ToggleButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -559,6 +561,9 @@ internal fun settingsRowColors() =
  *
  * 不直接用 SegmentedListItem 的无点击重载：桌面端的 material3 停在 1.12.0-alpha03（原因见
  * libs.versions.toml），那一版的 SegmentedListItem 只有带 onClick 与带 checked 的两种。
+ * 也不套经典 ListItem：它把图标放在整行垂直居中，这两行下面挂着按钮组与色块，图标会悬在
+ * 标题与控件之间；它的图标与文字间距也比分段列表宽，标题和相邻开关行对不齐。
+ * 所以自己排：图标与标题首行顶端对齐，间距取分段列表的数值。
  */
 @Composable
 private fun StaticSegmentedRow(
@@ -567,15 +572,27 @@ private fun StaticSegmentedRow(
     supportingContent: @Composable () -> Unit,
     content: @Composable () -> Unit,
 ) {
-    Surface(shape = shapes.shape, color = MaterialTheme.colorScheme.surfaceContainer) {
-        ListItem(
-            headlineContent = content,
-            leadingContent = leadingContent,
-            supportingContent = supportingContent,
-            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-        )
+    val colors = MaterialTheme.colorScheme
+    Surface(shape = shapes.shape, color = colors.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
+        Row(modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 12.dp)) {
+            CompositionLocalProvider(LocalContentColor provides colors.onSurfaceVariant) {
+                leadingContent()
+            }
+            Spacer(modifier = Modifier.width(StaticRowLeadingGap))
+            Column(modifier = Modifier.weight(1f)) {
+                ProvideTextStyle(MaterialTheme.typography.bodyLarge.copy(color = colors.onSurface)) {
+                    content()
+                }
+                ProvideTextStyle(MaterialTheme.typography.bodyMedium.copy(color = colors.onSurfaceVariant)) {
+                    supportingContent()
+                }
+            }
+        }
     }
 }
+
+// SegmentedListItem 图标与标题之间的距离，经典 ListItem 是 16dp
+private val StaticRowLeadingGap = 12.dp
 
 /** 深色模式三选一，用 M3 Expressive 的连体按钮组，与播放器倍速选择的写法一致。 */
 @Composable
