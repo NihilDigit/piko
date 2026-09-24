@@ -16,10 +16,10 @@ serialization = "1.11.0"
 coil = "3.6.3"
 kotlinxCoroutines = "1.11.0"
 kotlinxDatetime = "0.7.1"
-# 与 pikpak-kotlin 0.6.8 所依赖的版本一致。SDK 的 downloadTo 以 kotlinx.io.files.Path 为参数，
+# 与 pikpak-kotlin 0.7.0 所依赖的版本一致。SDK 的 downloadTo 以 kotlinx.io.files.Path 为参数，
 # 却只把 kotlinx-io 声明为 runtime 依赖，调用方编译时要自己引入
 kotlinxIo = "0.9.0"
-pikpakSdk = "0.6.8"
+pikpakSdk = "0.7.0"
 # 桌面端停在 CMP 1.12，与 Animeko 一致：1.13 的 alpha 带的 skiko 0.152 把各渲染后端包进
 # OnScreenRedrawer，mediamp（0.5.0 仍是）的 mpv D3D11 画面表面要直接拿 Direct3DRedrawer，
 # 一开播放器窗口就抛 IllegalStateException。Android 端的 Compose 版本由 BOM 决定，不受影响。
