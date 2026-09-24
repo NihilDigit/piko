@@ -25,9 +25,12 @@ jobs:
       matrix:
         include:
           # x64：windows-latest 常备 runner，兜底架构。
+          # 也用 Zulu 而不是 Temurin：Temurin 25 上 release 变体的 ProGuard 读不到
+          # JDK 自身的类（报 can't find superclass java.lang.Object），它和 jlink
+          # 都从 jmods 取 JDK 类库；Zulu 25 带 jmods，arm64 那一格因此一直能过
           - runner: windows-latest
             arch: x64
-            java-distribution: temurin
+            java-distribution: zulu
           # arm64：用户主力机就是 ARM64 Windows；mpv/skiko 都有 windows-arm64，
           # 构建机 arch 会自动选中对的 runtime（见 desktopApp/build.gradle.kts）。
           # 注意 Temurin 不发 Windows-ARM64 的 25，只能用 Zulu。
