@@ -26,8 +26,6 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CornerSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
-import androidx.compose.material.icons.filled.Bolt
-import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CloudDownload
@@ -71,7 +69,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.Role
@@ -81,14 +78,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.data.repository.PathBreadcrumb
 import dev.piko.data.repository.label
-import dev.piko.shared.state.InstantActionKind
 import dev.piko.shared.state.InstantPrimaryAction
 import dev.piko.shared.state.InstantSheetState
 import dev.piko.shared.state.NameGroup
 import dev.piko.shared.state.NameGroupSummary
 import dev.piko.shared.state.NameLeaf
-import dev.piko.shared.state.SavePlan
-import dev.piko.shared.state.SaveRoute
 import dev.piko.ui.components.FileNameField
 import dev.piko.ui.components.FolderPickerDialog
 import dev.piko.ui.components.MetaRow
@@ -219,29 +213,10 @@ fun InstantSheetContent(
     }
 }
 
-private fun InstantActionKind.icon(): ImageVector = when (this) {
-    InstantActionKind.INSTANT_SAVE -> Icons.Outlined.Bolt
-    InstantActionKind.OFFLINE_PACK, InstantActionKind.SUBMIT_OFFLINE -> Icons.Outlined.CloudDownload
-}
-
-private fun InstantPrimaryAction.label(): String = when (kind) {
-    InstantActionKind.INSTANT_SAVE -> "秒传 $fileCount 个文件"
-    InstantActionKind.OFFLINE_PACK -> "整包离线"
-    InstantActionKind.SUBMIT_OFFLINE -> "离线下载"
-}
-
-/** 按钮下的代价说明。两条路扣的是不同的月度额度，按钮上只写路线，代价写在这里。 */
-private fun SavePlan.caption(): String = when (route) {
-    SaveRoute.INSTANT -> "占用上传额度约 ${uploadCostBytes.toReadableSize()}"
-    SaveRoute.OFFLINE_PACK -> buildString {
-        append("占用离线额度 ${packBytes.toReadableSize()}")
-        append(if (prunedCount > 0) "，完成后删除 $prunedCount 个未选文件" else "，保留全部文件")
-    }
-}
-
 /**
- * 保存栏：主按钮写明走哪条路，下面一行小字写代价。整包放不进网盘时不让提交，
- * 说明缺多少，并给出只秒传选中文件的退路。
+ * 保存栏只有一个「保存」。走秒传还是整包离线由 [planSave] 决定，用户不必知道，
+ * 两条路各扣哪项额度也不预先说明：额度充裕时这些信息只是噪声。
+ * 只有碰到限制才出声：整包放不进网盘时不让提交，说明缺多少，并给出只存选中文件的退路。
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -251,37 +226,33 @@ private fun SaveBar(state: InstantSheetState, action: InstantPrimaryAction) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (plan != null && plan.lacksSpace) {
             ErrorBanner(
-                message = "网盘空间不足：整包 ${plan.packBytes.toReadableSize()}，" +
+                message = "网盘空间不足：需要 ${plan.packBytes.toReadableSize()}，" +
                     "剩余 ${(state.remainingBytes ?: 0L).coerceAtLeast(0L).toReadableSize()}",
                 onRetry = null,
             )
         }
         if (fallback != null) {
             SaveButton(
-                label = "改用秒传 ${fallback.fileCount} 个文件",
-                icon = Icons.Outlined.Bolt,
+                label = "只保存所选文件",
                 enabled = state.canSaveSelection,
                 isSaving = state.isSaving,
                 onClick = state::saveSelectionInstantly,
             )
-            val skipped = if (fallback.skippedCount > 0) "，跳过 ${fallback.skippedCount} 个未收录文件" else ""
-            SaveCaption("占用上传额度约 ${fallback.uploadCostBytes.toReadableSize()}$skipped")
+            if (fallback.skippedCount > 0) SaveCaption("将跳过 ${fallback.skippedCount} 个未收录文件")
         } else {
             SaveButton(
-                label = action.label(),
-                icon = action.kind.icon(),
+                label = "保存",
                 enabled = action.enabled,
                 isSaving = state.isSaving,
                 onClick = state::performPrimaryAction,
             )
-            if (plan != null && !plan.lacksSpace) SaveCaption(plan.caption())
         }
     }
 }
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun SaveButton(label: String, icon: ImageVector, enabled: Boolean, isSaving: Boolean, onClick: () -> Unit) {
+private fun SaveButton(label: String, enabled: Boolean, isSaving: Boolean, onClick: () -> Unit) {
     Button(
         onClick = onClick,
         enabled = enabled && !isSaving,
@@ -296,7 +267,7 @@ private fun SaveButton(label: String, icon: ImageVector, enabled: Boolean, isSav
             Spacer(modifier = Modifier.width(8.dp))
             Text("正在保存")
         } else {
-            Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
+            Icon(Icons.Outlined.CloudDownload, contentDescription = null, modifier = Modifier.size(20.dp))
             Spacer(modifier = Modifier.width(8.dp))
             Text(label)
         }
@@ -429,19 +400,22 @@ private fun SelectionHeader(state: InstantSheetState) {
                 color = MaterialTheme.colorScheme.onSurface,
             )
             val unindexed = state.items.count { !it.isInstantReady }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = if (unindexed == 0) Icons.Filled.Bolt else Icons.Outlined.CloudDownload,
-                    contentDescription = null,
-                    tint = if (unindexed == 0) LocalStatusColors.current.success else MaterialTheme.colorScheme.outline,
-                    modifier = Modifier.size(14.dp),
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = if (unindexed == 0) "全部可秒传" else "$unindexed 项未收录",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            // 全部已收录时不说话：怎么保存是程序的事。未收录的要从头下载，会慢，值得提一句
+            if (unindexed > 0) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Outlined.CloudDownload,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.outline,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "$unindexed 项未收录，保存会慢一些",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
         TextButton(onClick = state::toggleSelectAll) {

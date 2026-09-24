@@ -226,7 +226,7 @@ fun DriveScreen(
             when (outcome) {
                 is InstantSaveOutcome.InstantSaved -> {
                     state.highlight(outcome.createdIds.toSet())
-                    snackbarHostState.showSnackbar("已秒传 ${outcome.createdIds.size} 个文件", withDismissAction = true)
+                    snackbarHostState.showSnackbar("已保存 ${outcome.createdIds.size} 个文件", withDismissAction = true)
                 }
                 is InstantSaveOutcome.OfflineTaskCreated ->
                     snackbarHostState.showSnackbar("已加入离线任务", withDismissAction = true)

@@ -24,6 +24,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.data.OfflinePackJob
 import dev.piko.shared.data.OfflinePackStage
@@ -33,7 +34,6 @@ import dev.piko.ui.components.ItemDetailsSheet
 import dev.piko.ui.components.ListLeadingIcon
 import dev.piko.ui.components.ListLeadingMedia
 import dev.piko.ui.components.ListMoreButton
-import dev.piko.ui.components.MetaRow
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.theme.LocalStatusColors
@@ -46,10 +46,9 @@ private fun TransferItem.Pack.statusLabel(): String = when (job.stage) {
     OfflinePackStage.FAILED -> if (job.cleanupFailed) "清理失败" else "离线失败"
 }
 
-/** 状态之外的一句说明：进行中说完成后会删几个，结束后说结果或原因。 */
+/** 结束后的一句说明：删了几个未选文件，或失败原因。进行中不预告，删文件是保存的实现细节。 */
 private fun OfflinePackJob.detail(): String? = when (stage) {
-    OfflinePackStage.QUEUED, OfflinePackStage.DOWNLOADING, OfflinePackStage.PRUNING ->
-        if (prunedCount > 0) "完成后删除 $prunedCount 个未选文件" else null
+    OfflinePackStage.QUEUED, OfflinePackStage.DOWNLOADING, OfflinePackStage.PRUNING -> null
     OfflinePackStage.DONE -> message.ifEmpty { if (prunedCount > 0) "已删除 $prunedCount 个未选文件" else null }
     OfflinePackStage.FAILED -> message.ifEmpty { "服务端未给出原因" }
 }
@@ -103,16 +102,22 @@ internal fun PackTransferRow(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    // 与普通云端任务同一个标签：秒传与整包离线的区别用户不必知道
                     Text(
-                        text = "整包离线",
+                        text = "云端",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary,
                         maxLines = 1,
                     )
                     Text(text = item.statusLabel(), color = job.statusColor(), maxLines = 1)
-                    MetaRow(
-                        parts = listOfNotNull(job.detail()?.lineSequence()?.first()),
-                        modifier = Modifier.weight(1f, fill = false),
+                }
+                job.detail()?.let { detail ->
+                    Text(
+                        text = detail.lineSequence().first(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
                 when (job.stage) {
@@ -169,7 +174,7 @@ internal fun PackTransferSheet(
         headerIcon = { ListLeadingIcon(job.icon()) },
         actions = actions,
         onDismiss = onDismiss,
-        metaParts = listOf("整包离线", item.statusLabel(), job.totalBytes.toReadableSize()),
+        metaParts = listOf("云端", item.statusLabel(), job.totalBytes.toReadableSize()),
         extraLines = {
             job.detail()?.let {
                 Text(text = it, color = if (job.stage == OfflinePackStage.FAILED) statusColor else Color.Unspecified)
