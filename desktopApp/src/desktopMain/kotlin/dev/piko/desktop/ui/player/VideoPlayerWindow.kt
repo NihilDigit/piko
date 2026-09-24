@@ -19,6 +19,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPlacement
@@ -40,6 +41,9 @@ import dev.piko.ui.screens.player.playlistOf
 import dev.piko.ui.screens.player.siblingVideos
 import dev.piko.ui.theme.Appearance
 import dev.piko.ui.theme.PikoTheme
+import java.awt.Point
+import java.awt.Toolkit
+import java.awt.image.BufferedImage
 import java.io.File
 import org.openani.mediamp.ExperimentalMediampApi
 import org.openani.mediamp.compose.MediampPlayerSurface
@@ -217,6 +221,7 @@ private fun VideoPlayerContent(
                 hideEpisodeThumbnails = isSpoilerBlurEnabled,
                 volume = volume,
                 showLockToggle = false,
+                idleCursor = BlankPointerIcon,
                 snackbarHost = { SnackbarHost(snackbarHostState) },
             )
         }
@@ -233,3 +238,11 @@ private class BackendVolume(private val backend: PlaybackBackend) : PlayerLevelC
     }
 }
 
+// 控件收起后连指针一起藏起来，全屏看片时指针停在画面中央很碍眼
+private val BlankPointerIcon = PointerIcon(
+    Toolkit.getDefaultToolkit().createCustomCursor(
+        BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB),
+        Point(0, 0),
+        "piko-blank",
+    ),
+)

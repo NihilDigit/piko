@@ -24,6 +24,21 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.backhandler.BackHandler
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusTarget
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.pointerHoverIcon
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalAccessibilityManager
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.dp
@@ -41,10 +56,13 @@ import kotlinx.coroutines.delay
  * 布局按所在窗口的宽高比分横竖，不看设备朝向：桌面窗口通常是横的，用的就是 Android 横屏
  * 那一套（侧边面板、大号中央按钮）。
  *
- * 平台附加项：[brightness] 与 [volume] 是竖滑手势调节的对象，平台没有就传 null；
+ * 平台附加项：[brightness] 与 [volume] 是竖滑手势与上下方向键调节的对象，平台没有就传 null；
  * 全屏由 [onToggleFullscreen] 交给调用方（Android 切横竖屏，桌面切窗口全屏），[isFullscreen]
  * 只决定全屏键的图标；[isLandscapeVideo] 决定竖屏时是否给出全屏入口。
- * 触屏与鼠标的点击、双击、拖动都走同一个手势层。
+ * 触屏与鼠标的点击、双击、拖动都走同一个手势层。鼠标悬停不产生点击，所以另外监听鼠标移动来
+ * 唤出控件；[idleCursor] 不为 null 时，控件收起后指针换成它（桌面传一个透明指针）。
+ * 键盘：空格播放暂停，左右方向键快退快进（与双击同样累加），上下方向键调音量，F 切换全屏。
+ * 全屏时返回（Android 的返回手势、桌面的 Esc）先退出全屏；其余时候返回的含义由调用方决定。
  */
 @Composable
 fun MobilePlayerControls(
@@ -87,12 +105,14 @@ fun MobilePlayerControls(
     volume: PlayerLevelControl? = null,
     // 锁定只防触屏误触，鼠标与键盘用不上
     showLockToggle: Boolean = true,
+    idleCursor: PointerIcon? = null,
     // 调用方的消息提示放进底部提示区，与续播提示、全屏入口一起排布，不各自定位
     snackbarHost: @Composable () -> Unit = {},
 ) {
     val windowSize = LocalWindowInfo.current.containerSize
     val isLandscape = windowSize.width > windowSize.height
     val accessibilityManager = LocalAccessibilityManager.current
+    val focusRequester = remember { FocusRequester() }
 
     val currentPosition by rememberUpdatedState(positionMillis)
     val currentSpeed by rememberUpdatedState(playbackSpeed)
@@ -117,6 +137,10 @@ fun MobilePlayerControls(
 
     var showResumeTip by remember(resumedFromMillis) { mutableStateOf(resumedFromMillis != null) }
 
+    // 方向键调音量时借用手势 HUD 显示数值，停手一会儿后收起
+    var keyVolume by remember { mutableStateOf<Float?>(null) }
+    var keyVolumeCount by remember { mutableIntStateOf(0) }
+
     fun interacted() {
         interactionCount += 1
     }
@@ -127,7 +151,7 @@ fun MobilePlayerControls(
         interacted()
     }
 
-    // 连续同向双击累加，反馈显示本轮累计的秒数
+    // 双击两侧与左右方向键共用：连续同向操作累加，反馈显示本轮累计的秒数
     fun stepSeek(forward: Boolean) {
         val continuing = doubleTapVisible && doubleTapForward == forward
         val base = if (continuing) doubleTapTargetMillis else currentPosition
@@ -140,6 +164,25 @@ fun MobilePlayerControls(
         doubleTapVisible = true
         doubleTapCount += 1
         onSeek(target)
+    }
+
+    fun stepVolume(delta: Float) {
+        val control = volume ?: return
+        keyVolume = control.set((control.current() + delta).coerceIn(0f, 1f))
+        keyVolumeCount += 1
+    }
+
+    fun handleKey(key: Key): Boolean {
+        when (key) {
+            Key.Spacebar -> onPlayPause()
+            Key.DirectionLeft -> stepSeek(forward = false)
+            Key.DirectionRight -> stepSeek(forward = true)
+            Key.DirectionUp -> stepVolume(VOLUME_KEY_STEP)
+            Key.DirectionDown -> stepVolume(-VOLUME_KEY_STEP)
+            Key.F -> onToggleFullscreen()
+            else -> return false
+        }
+        return true
     }
 
     val hideDelayMillis = remember(accessibilityManager) {
@@ -176,8 +219,22 @@ fun MobilePlayerControls(
             doubleTapVisible = false
         }
     }
+    LaunchedEffect(keyVolumeCount) {
+        if (keyVolume != null) {
+            delay(KEY_VOLUME_HUD_MILLIS)
+            keyVolume = null
+        }
+    }
 
     val chromeVisible = controlsVisible && !isLocked
+    // 面板的 BackHandler 在它之后组合，面板开着时先关面板
+    BackHandler(enabled = isFullscreen, onBack = onToggleFullscreen)
+
+    // 焦点在点过的按钮上时，按钮随控件栏收起或面板关闭，焦点也跟着没了，之后的按键无处可去。
+    // 每逢这两种变化把焦点收回根节点
+    LaunchedEffect(chromeVisible, openSheet) {
+        runCatching { focusRequester.requestFocus() }
+    }
     val hasPlaylist = playlist.size > 1
     // 显示区分段而不是「第几个 / 共几个」：目录里混着剧场版与特典时，序号对不上集数
     val episodeLabel = playlist.find { it.fileId == currentFileId }
@@ -186,9 +243,39 @@ fun MobilePlayerControls(
         // 纯数字集号写成「第 24 集」；「25(SP)」「23 Beta」这类照原样，套上「第…集」反而别扭
         ?.let { if (it.matches(PLAIN_EPISODE)) "第 $it 集" else it }
 
+    val hud = activeGesture ?: keyVolume?.let { PlayerGesture.Adjust(VerticalAdjust.Volume, it) }
+    val hideCursor = idleCursor != null && !controlsVisible && isPlaying
+
     PlayerTheme {
         val motion = MaterialTheme.motionScheme
-        Box(modifier = modifier.fillMaxSize()) {
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                // 在根节点先行拦截：焦点落在某个按钮上时，空格不该变成「点一下那个按钮」
+                .onPreviewKeyEvent { event -> event.type == KeyEventType.KeyDown && handleKey(event.key) }
+                // 只接焦点不进无障碍树：focusable 会让读屏在整个画面上多停一站
+                .focusRequester(focusRequester)
+                .focusTarget()
+                // Initial 阶段只观察不消费，停在按钮与面板上的移动也算。只认没按键、位置真变了的
+                // 鼠标移动：触屏的移动都是拖动，不该顺带唤出控件；指针不动而底下的布局变了时，
+                // 桌面端可能补发原地的移动，不滤掉的话控件收起后会被它重新唤出
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val hovering = event.type == PointerEventType.Move &&
+                                event.changes.any {
+                                    it.type == PointerType.Mouse && !it.pressed && it.position != it.previousPosition
+                                }
+                            if (hovering) {
+                                controlsVisible = true
+                                interacted()
+                            }
+                        }
+                    }
+                }
+                .then(if (hideCursor) Modifier.pointerHoverIcon(idleCursor) else Modifier),
+        ) {
             PlayerGestureLayer(
                 isLocked = isLocked,
                 durationMillis = durationMillis,
@@ -214,7 +301,7 @@ fun MobilePlayerControls(
                 },
             )
 
-            activeGesture?.let { PlayerGestureHud(it, durationMillis) }
+            hud?.let { PlayerGestureHud(it, durationMillis) }
 
             AnimatedVisibility(
                 visible = doubleTapVisible,
@@ -293,7 +380,7 @@ fun MobilePlayerControls(
             // 中央按钮组不在控件栏的淡入淡出里：加载时播放键要单独留在画面中央，变形后承载加载指示，
             // 不再另叠一个指示器。两侧按钮随控件栏显隐，由组件自己处理
             AnimatedVisibility(
-                visible = (chromeVisible || isLoading) && activeGesture == null && errorMessage == null,
+                visible = (chromeVisible || isLoading) && hud == null && errorMessage == null,
                 enter = fadeIn(motion.defaultEffectsSpec()),
                 exit = fadeOut(motion.fastEffectsSpec()),
                 modifier = Modifier.align(Alignment.Center),
@@ -395,5 +482,7 @@ fun MobilePlayerControls(
 private const val CONTROLS_HIDE_DELAY_MILLIS = 4_500L
 private const val RESUME_TIP_DURATION_MILLIS = 5_000L
 private const val DOUBLE_TAP_FEEDBACK_MILLIS = 700L
+private const val KEY_VOLUME_HUD_MILLIS = 800L
+private const val VOLUME_KEY_STEP = 0.05f
 private const val SUBTITLE_LABEL_MAX_LENGTH = 16
 private val PLAIN_EPISODE = Regex("""\d+(\.\d+)?""")
