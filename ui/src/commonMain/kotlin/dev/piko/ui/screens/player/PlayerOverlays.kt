@@ -52,6 +52,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -302,7 +303,12 @@ internal fun ResumeTipCapsule(
         // 与 SnackbarHost 里 withDismissAction 的提示保持同一形态：操作之外再给一个关闭
         Snackbar(
             action = {
-                TextButton(onClick = onRestart) { Text("从头播放") }
+                // TextButton 自带的内容色是 primary，会盖掉 Snackbar 给操作区的 inversePrimary；
+                // 在反色的提示条上要用后者，与 SnackbarHost 默认的写法一致
+                TextButton(
+                    onClick = onRestart,
+                    colors = ButtonDefaults.textButtonColors(contentColor = SnackbarDefaults.actionColor),
+                ) { Text("从头播放") }
             },
             dismissAction = {
                 IconButton(onClick = onDismiss) {
