@@ -423,8 +423,8 @@ private fun PlayPauseButton(
 }
 
 /**
- * 中央按钮组在两种方向下的规格。播放键两边都是 Medium 宽版，方角与按压圆角取自 icon button
- * 规格的 16 与 12；竖屏的换集按钮再小一级，360dp 宽的屏幕上五个按钮仍排得下。
+ * 中央按钮组在两种方向下的规格。播放键两边都是 Medium，只比快进快退大一号，方角与按压圆角取自
+ * icon button 规格的 16 与 12；竖屏的换集按钮再小一级，360dp 宽的屏幕上五个按钮仍排得下。
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 private class CenterSizes(
@@ -444,7 +444,7 @@ private class CenterSizes(
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 private val LandscapeCenterSizes = CenterSizes(
     spacing = 16.dp,
-    playContainer = { IconButtonDefaults.mediumContainerSize(IconButtonDefaults.IconButtonWidthOption.Wide) },
+    playContainer = { IconButtonDefaults.mediumContainerSize() },
     playIcon = IconButtonDefaults.mediumIconSize,
     playSquareCorner = 16.dp,
     playPressedCorner = 12.dp,
@@ -458,7 +458,7 @@ private val LandscapeCenterSizes = CenterSizes(
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 private val PortraitCenterSizes = CenterSizes(
     spacing = 16.dp,
-    playContainer = { IconButtonDefaults.mediumContainerSize(IconButtonDefaults.IconButtonWidthOption.Wide) },
+    playContainer = { IconButtonDefaults.mediumContainerSize() },
     playIcon = IconButtonDefaults.mediumIconSize,
     playSquareCorner = 16.dp,
     playPressedCorner = 12.dp,
