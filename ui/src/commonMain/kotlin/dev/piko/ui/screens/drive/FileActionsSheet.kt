@@ -6,6 +6,8 @@ import androidx.compose.material.icons.outlined.ContentCut
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.DriveFileMove
+import androidx.compose.material.icons.outlined.Link
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
@@ -18,7 +20,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.data.FolderUsage
-import dev.piko.shared.state.DriveParsedField
 import dev.piko.ui.components.FileTypeIcon
 import dev.piko.ui.components.ItemDetailsSheet
 import dev.piko.ui.components.SheetAction
@@ -33,7 +34,8 @@ import kotlinx.coroutines.flow.Flow
  *
  * previewHidden 为 null 表示没有可切换的预览（防窥关闭或没有缩略图），不显示该项。
  * folderUsage 只对文件夹给出，面板打开期间收集，关闭即取消统计。
- * parsedTitle 与 parsedFields 是文件名解析的结果，认不出或开了原始文件名时为空，标题退回原名。
+ * 标题是原始文件名：列表里显示的是解析后的短标题，这里给全名，可选中复制。
+ * 离线下载与分享转存来的条目，头部注明来源，操作里给出复制或打开来源链接。
  */
 @Composable
 internal fun FileActionsSheet(
@@ -48,8 +50,8 @@ internal fun FileActionsSheet(
     onRename: () -> Unit,
     onMove: () -> Unit,
     onTrash: () -> Unit,
-    parsedTitle: String? = null,
-    parsedFields: List<DriveParsedField> = emptyList(),
+    onCopySource: () -> Unit,
+    onOpenSource: () -> Unit,
 ) {
     val usage by produceState<FolderUsageResult?>(null, folderUsage) {
         folderUsage ?: return@produceState
@@ -71,10 +73,12 @@ internal fun FileActionsSheet(
         onRename = onRename,
         onMove = onMove,
         onTrash = onTrash,
+        onCopySource = onCopySource,
+        onOpenSource = onOpenSource,
     )
 
     ItemDetailsSheet(
-        title = parsedTitle ?: file.name,
+        title = file.name,
         headerIcon = { FileTypeIcon(file = file, iconSize = 24.dp, modifier = Modifier.fillMaxSize()) },
         actions = actions,
         onDismiss = onDismiss,
@@ -84,9 +88,8 @@ internal fun FileActionsSheet(
             if (!locationLabel.isNullOrEmpty()) {
                 Text(text = locationLabel, color = MaterialTheme.colorScheme.primary)
             }
+            file.source?.let { Text(text = it.label, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         },
-        parsedFields = parsedFields.map { it.label to it.value },
-        originalName = file.name.takeIf { parsedFields.isNotEmpty() || parsedTitle != null },
     )
 }
 
@@ -100,6 +103,8 @@ internal fun fileActions(
     onRename: () -> Unit,
     onMove: () -> Unit,
     onTrash: () -> Unit,
+    onCopySource: () -> Unit,
+    onOpenSource: () -> Unit,
 ): List<SheetAction> = buildList {
     if (previewHidden != null) {
         add(
@@ -114,11 +119,35 @@ internal fun fileActions(
         add(SheetAction(Icons.Outlined.Download, "下载到本地", onDownload))
         if (file.isPlayableVideo()) add(SheetAction(Icons.Outlined.ContentCut, "下载指定段落", onDownloadSegment))
     }
+    when (file.source) {
+        FileSource.Magnet -> add(SheetAction(Icons.Outlined.Link, "复制磁力链接", onCopySource))
+        FileSource.Share -> {
+            add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "打开来源分享", onOpenSource))
+            add(SheetAction(Icons.Outlined.Link, "复制分享链接", onCopySource))
+        }
+        null -> Unit
+    }
     add(SheetAction(Icons.Outlined.Edit, "重命名", onRename))
     add(SheetAction(Icons.Outlined.DriveFileMove, "移动到", onMove))
     // 移入回收站单独成组，不紧挨着「移动到」被误触
     add(SheetAction(Icons.Outlined.Delete, "移入回收站", onTrash, destructive = true))
 }
+
+/**
+ * 条目从哪来。列目录接口的 params.url 记着来源：离线下载的是原始磁力链接，从分享转存的是
+ * mypikpak.com/s/ 分享链接；自己上传或新建的没有。离线任务生成的顶层文件夹与其中的文件都带着
+ */
+internal enum class FileSource(val label: String) { Magnet("来源：离线下载"), Share("来源：从分享转存") }
+
+internal val FileStat.source: FileSource?
+    get() {
+        val url = sourceUrl?.takeIf { it.isNotBlank() } ?: return null
+        return when {
+            url.startsWith("magnet:", ignoreCase = true) -> FileSource.Magnet
+            url.startsWith("http", ignoreCase = true) -> FileSource.Share
+            else -> null
+        }
+    }
 
 private sealed interface FolderUsageResult {
     data class Counted(val usage: FolderUsage) : FolderUsageResult

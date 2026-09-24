@@ -100,6 +100,7 @@ import dev.piko.ui.screens.instant.InstantSheetContent
 import dev.piko.ui.screens.instant.InstantSheetHandle
 import dev.piko.ui.theme.PikoMotion
 import io.github.nihildigit.pikpak.FileStat
+import dev.piko.ui.platform.LocalPikoPlatform
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -262,6 +263,15 @@ fun DriveScreen(
         state.clearHighlight()
     }
 
+    val platform = LocalPikoPlatform.current
+
+    // 磁力链接与分享链接都只复制；复制完给个回执，剪贴板本身看不见
+    fun copySource(file: FileStat) {
+        val url = file.sourceUrl ?: return
+        platform.copyToClipboard("来源链接", url)
+        scope.launch { snackbarHostState.showSnackbar(if (url.startsWith("magnet:", true)) "已复制磁力链接" else "已复制分享链接", withDismissAction = true) }
+    }
+
     fun enqueueDownload(file: FileStat) {
         downloadManager.enqueue(file)
         scope.launch { snackbarHostState.showSnackbar("已加入下载", withDismissAction = true) }
@@ -300,6 +310,8 @@ fun DriveScreen(
                     },
                     onMove = { moveTargetIds = setOf(file.id) },
                     onTrash = { state.moveToTrash(listOf(file.id)) },
+                    onCopySource = { copySource(file) },
+                    onOpenSource = { file.sourceUrl?.let(platform::openUrl) },
                 )
             },
             onToggleSection = state::toggleSection,
@@ -543,8 +555,6 @@ fun DriveScreen(
     }
 
     actionTargetFile?.let { target ->
-        val fileParsed = state.fileView(target.id)
-        val folderParsed = if (target.isFolder && state.isNameParsing) state.folderViews[target.id] else null
         FileActionsSheet(
             file = target,
             locationLabel = state.hitLocations[target.id],
@@ -565,8 +575,8 @@ fun DriveScreen(
             },
             onMove = { moveTargetIds = setOf(target.id) },
             onTrash = { state.moveToTrash(listOf(target.id)) },
-            parsedTitle = if (target.isFolder) folderParsed?.title else fileParsed?.heading,
-            parsedFields = if (target.isFolder) folderParsed?.fields.orEmpty() else fileParsed?.fields.orEmpty(),
+            onCopySource = { copySource(target) },
+            onOpenSource = { target.sourceUrl?.let(platform::openUrl) },
         )
     }
 

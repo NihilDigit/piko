@@ -63,10 +63,6 @@ fun ItemDetailsSheet(
     onDismiss: () -> Unit,
     metaParts: List<String> = emptyList(),
     extraLines: @Composable ColumnScope.() -> Unit = {},
-    /** 解析结果，按顺序排成「名称 值」两列；为空时不显示这一块。 */
-    parsedFields: List<Pair<String, String>> = emptyList(),
-    /** 完整的原始文件名，放在解析结果最下面。标题已是原名时传 null。 */
-    originalName: String? = null,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
@@ -84,7 +80,7 @@ fun ItemDetailsSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
     ) {
-        // 多了解析结果一块，矮屏上放不下全部操作，整块可滚动
+        // 矮屏上放不下全部操作，整块可滚动
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
             Row(
                 modifier = Modifier
@@ -122,9 +118,6 @@ fun ItemDetailsSheet(
                     }
                 }
             }
-            if (parsedFields.isNotEmpty() || originalName != null) {
-                ParsedResultBlock(parsedFields, originalName)
-            }
             val (regular, destructive) = actions.partition { !it.destructive }
             Column(
                 modifier = Modifier
@@ -139,50 +132,6 @@ fun ItemDetailsSheet(
     }
 }
 
-/** 解析结果：名称一列定宽，值可选中复制。原始文件名单列在最后，可能很长，占满整行。 */
-@Composable
-private fun ParsedResultBlock(fields: List<Pair<String, String>>, originalName: String?) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp)
-            .padding(bottom = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        Text(
-            text = "解析结果",
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(bottom = 4.dp),
-        )
-        SelectionContainer {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                fields.forEach { (label, value) ->
-                    Row {
-                        Text(
-                            text = label,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.width(ParsedLabelWidth),
-                        )
-                        Text(text = value, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
-                    }
-                }
-                if (originalName != null) {
-                    Text(
-                        text = "原始文件名",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 4.dp),
-                    )
-                    Text(text = originalName, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
-                }
-            }
-        }
-    }
-}
-
-private val ParsedLabelWidth = 72.dp
 
 @Composable
 private fun SheetActionGroup(actions: List<SheetAction>, onAction: (() -> Unit) -> Unit) {
