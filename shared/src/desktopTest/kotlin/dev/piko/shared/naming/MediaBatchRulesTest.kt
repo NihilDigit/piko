@@ -2,6 +2,7 @@ package dev.piko.shared.naming
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /** 成批分析里靠兄弟文件或目录才能定下来的规则，用合成的小例子逐条验证。 */
@@ -128,6 +129,17 @@ class MediaBatchRulesTest {
         )
         assertTrue(result.works.all { work -> work.sections.single().section == Section.MAIN })
         assertEquals("SP02 另一个标题", result.parsed[1].title)
+    }
+
+    @Test
+    fun `a leading uploader number leaves the trailing number in the title`() {
+        val result = batch(
+            "22 Cyberthing 2077.mp4" to 1,
+            "23 另一个片子.mp4" to 1,
+            "26 第三个标题.mp4" to 1,
+        )
+        assertEquals("22 Cyberthing 2077", result.parsed[0].title)
+        assertNull(result.parsed[0].episode, "2077 是标题的一部分，不是集号")
     }
 
     @Test
