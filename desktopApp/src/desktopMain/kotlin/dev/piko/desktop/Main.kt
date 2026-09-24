@@ -108,8 +108,8 @@ fun main(args: Array<String>) {
             key(request) {
                 VideoPlayerWindow(
                     request = request,
-                    mediaRepository = services.mediaRepository,
-                    downloadCoordinator = services.downloadManager,
+                    services = services,
+                    platform = platform,
                     appearance = appearance,
                     icon = appIcon,
                     onClose = { players.remove(request) },

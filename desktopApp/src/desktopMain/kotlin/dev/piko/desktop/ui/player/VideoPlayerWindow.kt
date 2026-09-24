@@ -1,33 +1,16 @@
 package dev.piko.desktop.ui.player
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.PlayArrow
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.Icon
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.ListItemDefaults
-import androidx.compose.material3.MaterialExpressiveTheme
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.MotionScheme
-import androidx.compose.material3.Snackbar
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -36,141 +19,141 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.Painter
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPlacement
-import androidx.compose.ui.window.WindowState
 import androidx.compose.ui.window.rememberWindowState
-import dev.piko.desktop.ui.player.controls.DesktopPlayerControls
+import coil3.compose.AsyncImage
 import dev.piko.desktop.winrt.WinRTSupport
-import dev.piko.shared.download.PikoDownloadCoordinator
-import dev.piko.shared.media.PikoMediaRepository
+import dev.piko.shared.media.player.PlaybackBackend
 import dev.piko.shared.media.player.PlayerScreenState
+import dev.piko.ui.LocalPikoServices
+import dev.piko.ui.PikoServices
 import dev.piko.ui.VideoPlayerRequest
+import dev.piko.ui.platform.LocalPikoPlatform
+import dev.piko.ui.platform.PikoPlatform
+import dev.piko.ui.screens.player.MobilePlayerControls
+import dev.piko.ui.screens.player.PlayerLevelControl
+import dev.piko.ui.screens.player.PlayerTheme
+import dev.piko.ui.screens.player.PlayerTopBar
+import dev.piko.ui.screens.player.playlistOf
+import dev.piko.ui.screens.player.siblingVideos
 import dev.piko.ui.theme.Appearance
-import dev.piko.ui.theme.PikoTypography
-import dev.piko.ui.theme.colorScheme
-import io.github.nihildigit.pikpak.FileStat
+import dev.piko.ui.theme.PikoTheme
 import java.io.File
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.flowOf
 import org.openani.mediamp.ExperimentalMediampApi
 import org.openani.mediamp.compose.MediampPlayerSurface
 import org.openani.mediamp.compose.rememberMediampPlayer
-import org.openani.mediamp.features.AudioLevelController
 
 /**
- * 独立的视频播放窗口。取流、续播与重连在共用的 [PlayerScreenState]，控件是无状态的
- * [DesktopPlayerControls]；这里只负责窗口、画面表面、音量与全屏这些平台胶水。
+ * 独立的视频播放窗口。取流、续播与重连在共用的 [PlayerScreenState]，控件是与 Android 共用的
+ * [MobilePlayerControls]；这里只负责窗口、画面表面、窗口全屏、防锁屏与播放器音量这些平台胶水。
+ *
+ * 独立窗口不在主窗口的 PikoApp 之下，主题与 [LocalPikoServices]、[LocalPikoPlatform] 要自己再提供一遍：
+ * 选集缩略图的防窥模糊要问平台支不支持。
  */
 @Composable
 fun VideoPlayerWindow(
     request: VideoPlayerRequest,
-    mediaRepository: PikoMediaRepository,
-    downloadCoordinator: PikoDownloadCoordinator,
+    services: PikoServices,
+    platform: PikoPlatform,
     appearance: Appearance,
     icon: Painter?,
     onClose: () -> Unit,
 ) {
     val windowState = rememberWindowState(width = 1000.dp, height = 620.dp)
+    // 换集后标题跟着当前这集走
+    var title by remember { mutableStateOf(request.fileName) }
 
     Window(
         onCloseRequest = onClose,
-        title = "${request.fileName} - Piko 播放器",
+        title = "$title - Piko 播放器",
         icon = icon,
         state = windowState,
     ) {
-        PlayerTheme(appearance) {
-            VideoPlayerContent(
-                request = request,
-                mediaRepository = mediaRepository,
-                windowState = windowState,
-                downloadCoordinator = downloadCoordinator,
-                onClose = onClose,
-            )
+        CompositionLocalProvider(
+            LocalPikoServices provides services,
+            LocalPikoPlatform provides platform,
+        ) {
+            PikoTheme(appearance = appearance) {
+                VideoPlayerContent(
+                    request = request,
+                    services = services,
+                    isFullscreen = windowState.placement == WindowPlacement.Fullscreen,
+                    onToggleFullscreen = {
+                        windowState.placement = if (windowState.placement == WindowPlacement.Fullscreen) {
+                            WindowPlacement.Floating
+                        } else {
+                            WindowPlacement.Fullscreen
+                        }
+                    },
+                    onTitleChange = { title = it },
+                    onClose = onClose,
+                )
+            }
         }
     }
-}
-
-/**
- * 播放器固定用深色：控件叠在视频画面上，跟随浅色主题时深色文字在画面上不可读。
- * 主题色仍跟随用户的选择，与 Android 播放器的 PlayerTheme 一致。
- */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-private fun PlayerTheme(appearance: Appearance, content: @Composable () -> Unit) {
-    MaterialExpressiveTheme(
-        colorScheme = appearance.colorScheme(dark = true),
-        motionScheme = MotionScheme.expressive(),
-        typography = PikoTypography,
-        content = content,
-    )
 }
 
 @Composable
 @OptIn(ExperimentalMediampApi::class)
 private fun VideoPlayerContent(
     request: VideoPlayerRequest,
-    mediaRepository: PikoMediaRepository,
-    windowState: WindowState,
-    downloadCoordinator: PikoDownloadCoordinator,
+    services: PikoServices,
+    isFullscreen: Boolean,
+    onToggleFullscreen: () -> Unit,
+    onTitleChange: (String) -> Unit,
     onClose: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val player = rememberMediampPlayer()
     val backend = remember(player) { MediampPlaybackBackend(player, scope) }
-    val playlist = request.playlist
+    val downloads = services.downloadManager
+    // 主界面给的同目录视频；从传输页打开时为空，进来后再按父目录取
+    var siblingVideos by remember(request) { mutableStateOf(request.playlist) }
     val state = remember(request) {
         PlayerScreenState(
-            repository = mediaRepository,
+            repository = services.mediaRepository,
             backend = backend,
             scope = scope,
             initialFileId = request.fileId,
             initialFileName = request.fileName,
             initialLocalPath = request.localPath,
-            // 本地副本按文件长度验完整性，需要对应的 FileStat，从播放列表里取
+            // 本地副本按文件长度验完整性，需要对应的 FileStat，从同目录列表里取
             resolveLocalPath = { fileId, hint ->
                 hint?.takeIf { File(it).exists() }
-                    ?: playlist.find { it.id == fileId }
-                        ?.let { downloadCoordinator.findCompletedLocalPath(it) }
+                    ?: siblingVideos.find { it.id == fileId }
+                        ?.let { downloads.findCompletedLocalPath(it) }
                         ?.takeIf { File(it).exists() }
             },
         )
     }
+    val volume = remember(backend) { backend.volume?.let { BackendVolume(backend) } }
+    val isSpoilerBlurEnabled by services.preferences.spoilerBlurFlow.collectAsState(initial = true)
+    val snackbarHostState = remember { SnackbarHostState() }
 
-    // 音量走 mpv 自身的软件音量：桌面端没有系统媒体音量那一路可借
-    val audioFeature = remember(player) { player.features[AudioLevelController.Key] }
-    val volumeLevel by (audioFeature?.volume ?: flowOf(1f)).collectAsState(1f)
-    val isMuted by (audioFeature?.isMute ?: flowOf(false)).collectAsState(false)
-    val maxVolume = audioFeature?.maxVolume?.takeIf { it > 0f } ?: 1f
+    LaunchedEffect(request) {
+        if (siblingVideos.isEmpty()) siblingVideos = services.driveRepository.siblingVideos(request.fileId)
+        state.playlist = playlistOf(siblingVideos)
+    }
 
-    var showPlaylist by remember { mutableStateOf(false) }
-    var message by remember { mutableStateOf<String?>(null) }
-    var messageCount by remember { mutableIntStateOf(0) }
+    // 与 Android 相同：同目录元数据到了之后再验一次磁盘，下好的片子从当前位置换到本地文件
+    LaunchedEffect(state.fileId, siblingVideos) {
+        if (state.isLocalPlayback) return@LaunchedEffect
+        val stat = siblingVideos.find { it.id == state.fileId } ?: return@LaunchedEffect
+        downloads.findCompletedLocalPath(stat)?.takeIf { File(it).exists() }?.let(state::useLocalCopy)
+    }
 
-    val isFullscreen = windowState.placement == WindowPlacement.Fullscreen
+    LaunchedEffect(state.title) { onTitleChange(state.title) }
 
-    // 播放防锁屏：正在播才持有，暂停/关窗自动释放。
+    LaunchedEffect(state) {
+        state.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
+    }
+
+    // 播放防锁屏：正在播才持有，暂停与关窗时释放
     DisposableEffect(state.isPlaying) {
         val displayLease = if (state.isPlaying) WinRTSupport.acquireDisplayRequest() else null
-        onDispose {
-            displayLease?.close()
-        }
-    }
-
-    // 换源之类的一次性提示
-    LaunchedEffect(state) {
-        state.messages.collect {
-            message = it
-            messageCount += 1
-        }
-    }
-    LaunchedEffect(messageCount) {
-        if (message != null) {
-            delay(MESSAGE_DURATION_MILLIS)
-            message = null
-        }
+        onDispose { displayLease?.close() }
     }
 
     DisposableEffect(state) {
@@ -180,118 +163,73 @@ private fun VideoPlayerContent(
         onDispose { player.close() }
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black),
-    ) {
-        MediampPlayerSurface(player, Modifier.fillMaxSize())
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        if (state.isImage) {
+            AsyncImage(
+                model = state.mediaInfo?.currentUrl,
+                contentDescription = state.title,
+                modifier = Modifier.fillMaxSize(),
+            )
+            PlayerTheme {
+                PlayerTopBar(
+                    title = state.title,
+                    episodeLabel = null,
+                    isLocalPlayback = state.isLocalPlayback,
+                    onBackClick = onClose,
+                    modifier = Modifier.align(Alignment.TopCenter),
+                )
+            }
+        } else {
+            MediampPlayerSurface(backend.player, Modifier.fillMaxSize())
 
-        DesktopPlayerControls(
-            title = state.title,
-            isLocalPlayback = state.isLocalPlayback,
-            isPlaying = state.isPlaying,
-            isLoading = state.isLoading,
-            positionMillis = state.positionMillis,
-            durationMillis = state.durationMillis,
-            bufferedPositionMillis = state.bufferedPositionMillis,
-            playbackSpeed = state.playbackSpeed,
-            aspectRatio = state.aspectRatio,
-            qualityOptions = state.qualityOptions,
-            currentQuality = state.currentQuality,
-            errorMessage = if (state.isImage) "桌面播放器暂只支持视频" else state.errorMessage,
-            resumedFromMillis = state.resumedFromMillis,
-            onPlayPause = state::togglePlayPause,
-            onSeek = state::seekTo,
-            onSpeedChange = state::setSpeed,
-            onAspectRatioChange = state::setAspectRatio,
-            onQualityChange = state::selectQuality,
-            onRetry = state::retry,
-            onRestartFromBeginning = state::restartFromBeginning,
-            volume = if (audioFeature != null) (volumeLevel / maxVolume).coerceIn(0f, 1f) else null,
-            isMuted = isMuted,
-            isFullscreen = isFullscreen,
-            onVolumeChange = { fraction ->
-                audioFeature?.setVolume(fraction * maxVolume)
-                if (fraction > 0f && isMuted) audioFeature?.setMute(false)
-            },
-            onToggleMute = { audioFeature?.setMute(!isMuted) },
-            onToggleFullscreen = {
-                windowState.placement = if (isFullscreen) WindowPlacement.Floating else WindowPlacement.Fullscreen
-            },
-            onClose = onClose,
-            showPlaylistEntry = playlist.size > 1,
-            onPlaylistClick = { showPlaylist = true },
-        )
-
-        message?.let {
-            Snackbar(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 64.dp)
-                    .widthIn(max = 480.dp),
-            ) { Text(it) }
-        }
-
-        if (showPlaylist) {
-            PlaylistDialog(
-                playlist = playlist,
+            MobilePlayerControls(
+                title = state.title,
+                isLocalPlayback = state.isLocalPlayback,
+                isPlaying = state.isPlaying,
+                isLoading = state.isLoading,
+                positionMillis = state.positionMillis,
+                durationMillis = state.durationMillis,
+                bufferedPositionMillis = state.bufferedPositionMillis,
+                playbackSpeed = state.playbackSpeed,
+                aspectRatio = state.aspectRatio,
+                qualityOptions = state.qualityOptions,
+                currentQuality = state.currentQuality,
+                errorMessage = state.errorMessage,
+                resumedFromMillis = state.resumedFromMillis,
+                onPlayPause = state::togglePlayPause,
+                onSeek = state::seekTo,
+                onSpeedChange = state::setSpeed,
+                onAspectRatioChange = state::setAspectRatio,
+                onQualityChange = state::selectQuality,
+                onRetry = state::retry,
+                onRestartFromBeginning = state::restartFromBeginning,
+                onBack = onClose,
+                onToggleFullscreen = onToggleFullscreen,
+                isFullscreen = isFullscreen,
+                isLandscapeVideo = state.isLandscapeVideo,
+                playlist = state.playlist,
                 currentFileId = state.fileId,
-                onSelect = { target ->
-                    showPlaylist = false
-                    state.switchTo(target.id, target.name)
-                },
-                onDismiss = { showPlaylist = false },
+                hasPrevious = state.previousEntry != null,
+                hasNext = state.nextEntry != null,
+                onPrevious = state::playPrevious,
+                onNext = state::playNext,
+                onSelectEntry = state::playEntry,
+                hideEpisodeThumbnails = isSpoilerBlurEnabled,
+                volume = volume,
+                showLockToggle = false,
+                snackbarHost = { SnackbarHost(snackbarHostState) },
             )
         }
     }
 }
 
-/** 同目录视频列表。当前这条用主题色标出。 */
-@Composable
-private fun PlaylistDialog(
-    playlist: List<FileStat>,
-    currentFileId: String,
-    onSelect: (FileStat) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("同目录视频") },
-        text = {
-            LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
-                items(playlist, key = { it.id }) { video ->
-                    val isCurrent = video.id == currentFileId
-                    ListItem(
-                        headlineContent = {
-                            Text(video.name, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
-                        },
-                        leadingContent = {
-                            Icon(
-                                Icons.Outlined.PlayArrow,
-                                contentDescription = if (isCurrent) "正在播放" else null,
-                                tint = if (isCurrent) {
-                                    MaterialTheme.colorScheme.primary
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                            )
-                        },
-                        colors = ListItemDefaults.colors(
-                            containerColor = Color.Transparent,
-                            headlineColor = if (isCurrent) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurface
-                            },
-                        ),
-                        modifier = Modifier.clickable(enabled = !isCurrent) { onSelect(video) },
-                    )
-                }
-            }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
-    )
+/** 桌面没有系统媒体音量可借，音量手势与方向键调的是 mpv 自身的音量。 */
+private class BackendVolume(private val backend: PlaybackBackend) : PlayerLevelControl {
+    override fun current(): Float = backend.volume ?: 1f
+
+    override fun set(fraction: Float): Float {
+        backend.setVolume(fraction)
+        return fraction
+    }
 }
 
-private const val MESSAGE_DURATION_MILLIS = 4_000L
