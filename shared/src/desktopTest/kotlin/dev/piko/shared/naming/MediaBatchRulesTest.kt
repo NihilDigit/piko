@@ -67,6 +67,12 @@ class MediaBatchRulesTest {
     }
 
     @Test
+    fun `korean smi subtitles attach to their episode instead of folding as documents`() {
+        val result = batch("Show.E01.avi" to 700_000_000, "Show.E01.smi" to 80_000, "Show.E02.avi" to 700_000_000)
+        assertEquals(listOf(FileRole.CONTENT, FileRole.ATTACHMENT, FileRole.CONTENT), result.roles)
+    }
+
+    @Test
     fun `unrecognized files keep a null label so the ui shows the full name`() {
         val result = batch("output/c1.mkv" to 1_000_000, "output/0000-0049.mov" to 1_000_000)
         val work = result.works.single()
