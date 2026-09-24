@@ -423,9 +423,8 @@ private fun PlayPauseButton(
 }
 
 /**
- * 中央按钮组在两种方向下的规格。横屏画面大，播放键用 Large；竖屏画面只占屏幕中间一条，
- * 整组降一级，360dp 宽的屏幕上五个按钮仍排得下。播放键的方角与按压圆角取自 icon button
- * 规格（Large 为 28 与 16，Medium 为 16 与 12）。
+ * 中央按钮组在两种方向下的规格。播放键两边都是 Medium 宽版，方角与按压圆角取自 icon button
+ * 规格的 16 与 12；竖屏的换集按钮再小一级，360dp 宽的屏幕上五个按钮仍排得下。
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 private class CenterSizes(
@@ -441,16 +440,17 @@ private class CenterSizes(
     val skipIcon: Dp,
 )
 
+// 横屏原先整组大一级（播放键 Large、快进快退 Medium），在桌面窗口里压过画面，现在与竖屏只差换集按钮
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 private val LandscapeCenterSizes = CenterSizes(
-    spacing = 24.dp,
-    playContainer = { IconButtonDefaults.largeContainerSize() },
-    playIcon = IconButtonDefaults.largeIconSize,
-    playSquareCorner = 28.dp,
-    playPressedCorner = 16.dp,
-    seekContainer = { IconButtonDefaults.mediumContainerSize() },
-    seekIcon = IconButtonDefaults.mediumIconSize,
-    seekShapes = { IconButtonDefaults.shapes(IconButtonDefaults.mediumRoundShape, IconButtonDefaults.mediumPressedShape) },
+    spacing = 16.dp,
+    playContainer = { IconButtonDefaults.mediumContainerSize(IconButtonDefaults.IconButtonWidthOption.Wide) },
+    playIcon = IconButtonDefaults.mediumIconSize,
+    playSquareCorner = 16.dp,
+    playPressedCorner = 12.dp,
+    seekContainer = { IconButtonDefaults.smallContainerSize() },
+    seekIcon = IconButtonDefaults.smallIconSize,
+    seekShapes = { IconButtonDefaults.shapes() },
     skipContainer = { IconButtonDefaults.smallContainerSize() },
     skipIcon = IconButtonDefaults.smallIconSize,
 )
