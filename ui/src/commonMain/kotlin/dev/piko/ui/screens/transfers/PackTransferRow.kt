@@ -46,10 +46,13 @@ private fun TransferItem.Pack.statusLabel(): String = when (job.stage) {
     OfflinePackStage.FAILED -> if (job.cleanupFailed) "清理失败" else "离线失败"
 }
 
-/** 结束后的一句说明：删了几个未选文件，或失败原因。进行中不预告，删文件是保存的实现细节。 */
+/**
+ * 结束后的一句说明，只在有话要说时出现：完成时是改名失败这类附注，失败时是原因。
+ * 删掉未选文件是保存的实现细节，不写。
+ */
 private fun OfflinePackJob.detail(): String? = when (stage) {
     OfflinePackStage.QUEUED, OfflinePackStage.DOWNLOADING, OfflinePackStage.PRUNING -> null
-    OfflinePackStage.DONE -> message.ifEmpty { if (prunedCount > 0) "已删除 $prunedCount 个未选文件" else null }
+    OfflinePackStage.DONE -> message.ifEmpty { null }
     OfflinePackStage.FAILED -> message.ifEmpty { "服务端未给出原因" }
 }
 
