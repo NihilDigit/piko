@@ -7,7 +7,7 @@ import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.unit.dp
 
 /**
- * 瀑布流图块底纹用的类型图标，取自 Material Symbols Rounded（FILL 1，24px）。
+ * 海报墙里没有缩略图的文件画在封面区的类型图标，取自 Material Symbols Rounded（FILL 1，24px）。
  *
  * material-icons-extended 只有旧版 Material Icons：Folder 的页签是直角斜切，
  * 放大到 88dp 后棱角生硬；Outlined 线条按比例放大后只剩几道细线，压到一成透明度近乎不见。

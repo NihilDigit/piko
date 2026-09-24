@@ -266,7 +266,7 @@ private fun ZoomableImagePage(
     var fullUrl by remember(file.id) { mutableStateOf<String?>(null) }
     var isFullReady by remember(file.id) { mutableStateOf(false) }
     // 全屏查看器里不再受防窥遮蔽拦一道：点进来本身就是「我要看这张」，
-    // 再要求点一次「显示图片」只是多一步。遮蔽仍然作用在列表和瀑布流的缩略图上。
+    // 再要求点一次「显示图片」只是多一步。遮蔽仍然作用在列表和海报墙的缩略图上。
     LaunchedEffect(file.id) {
         if (fullUrl == null) fullUrl = driveRepo.originalImageUrl(file.id)
     }

@@ -106,7 +106,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 
 /**
- * 网盘主界面：目录导航、列表与瀑布流两种视图、防窥遮蔽、秒传入口与批量操作。
+ * 网盘主界面：目录导航、列表与海报墙两种视图、防窥遮蔽、秒传入口与批量操作。
  *
  * 布局上把常驻的界面元素压到最少：顶栏之下只有子目录里才出现的面包屑，
  * 排序、视图切换、折叠提示都作为列表的首几项随内容滚走，搜索框只在点开搜索后
@@ -147,10 +147,10 @@ fun DriveScreen(
     }
 
     // 视图模式存进偏好，切 Tab 与重启后保持上次的选择
-    // 初值同步读：异步给默认值的话，选了列表的用户每次进来都先闪一帧瀑布流。DataStore 在
+    // 初值同步读：异步给默认值的话，选了列表的用户每次进来都先闪一帧海报墙。DataStore 在
     // MainActivity 读外观时已载入，这里只是取内存里的值
-    val initialWaterfallMode = remember { runBlocking { sessionManager.gridViewFlow.first() } }
-    val isWaterfallMode by sessionManager.gridViewFlow.collectAsStateWithLifecycle(initialWaterfallMode)
+    val initialPosterMode = remember { runBlocking { sessionManager.gridViewFlow.first() } }
+    val isPosterMode by sessionManager.gridViewFlow.collectAsStateWithLifecycle(initialPosterMode)
 
     // 目录导航栈：持久化并与全局单例共享，切 Tab / 重启不丢失
     val folderStack by state.folderStack.collectAsStateWithLifecycle()
@@ -503,7 +503,7 @@ fun DriveScreen(
                             DriveFileGrid(
                                 items = state.displayItems,
                                 folderView = { if (!state.isNameParsing) null else state.folderViews[it.id] },
-                                isWaterfallMode = isWaterfallMode,
+                                isPosterMode = isPosterMode,
                                 gridState = gridState,
                                 isSelectionMode = state.isSelectionMode,
                                 selectedIds = selectedIdSet,
@@ -524,9 +524,9 @@ fun DriveScreen(
                                                 summary = searchSummary(state, displayedFiles),
                                                 sortOrder = state.sortOrder,
                                                 onSortChange = { state.changeSortOrder(it) },
-                                                isWaterfallMode = isWaterfallMode,
-                                                onToggleWaterfallMode = {
-                                                    scope.launch { sessionManager.setGridViewEnabled(!isWaterfallMode) }
+                                                isPosterMode = isPosterMode,
+                                                onTogglePosterMode = {
+                                                    scope.launch { sessionManager.setGridViewEnabled(!isPosterMode) }
                                                 },
                                             )
                                         }

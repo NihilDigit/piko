@@ -45,7 +45,7 @@ import dev.piko.ui.components.HighlightBadge
 import dev.piko.ui.components.MediaTag
 import dev.piko.ui.components.MediaTagRow
 import dev.piko.ui.components.SpoilerThumbnail
-import dev.piko.ui.components.WaterfallSpoilerBlur
+import dev.piko.ui.components.PosterSpoilerBlur
 import dev.piko.ui.components.displayTitle
 import dev.piko.ui.components.watermarkIcon
 import dev.piko.ui.platform.LocalPikoPlatform
@@ -93,7 +93,7 @@ private fun Modifier.cardInteraction(
  * 悬停时标题不跳动。触屏上长按是多选，更多按钮是进详情的唯一入口，所以常驻。
  */
 @Composable
-internal fun WaterfallCard(
+internal fun PosterCard(
     file: FileStat,
     isSelectionMode: Boolean,
     isSelected: Boolean,
@@ -133,7 +133,7 @@ internal fun WaterfallCard(
                 hasCover -> SpoilerThumbnail(
                     model = file.thumbnailLink,
                     isBlurred = isSpoilerBlurred,
-                    blur = WaterfallSpoilerBlur,
+                    blur = PosterSpoilerBlur,
                     modifier = Modifier.fillMaxSize(),
                 )
                 file.isFolder -> StackedSheets(Modifier.fillMaxSize())

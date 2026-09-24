@@ -148,7 +148,7 @@ fun FileStat.typeIcon(): ImageVector = kind().icon()
 /** 只有文件名时的类型图标，如磁力解析结果。 */
 fun fileNameTypeIcon(name: String): ImageVector = fileNameKind(name).icon()
 
-/** 瀑布流图块的放大底纹，见 WatermarkIcons。 */
+/** 海报墙里没有缩略图的文件，封面区画的类型图标，见 WatermarkIcons。 */
 fun FileStat.watermarkIcon(): ImageVector = when (kind()) {
     FileKind.FOLDER -> WatermarkIcons.Folder
     FileKind.VIDEO -> WatermarkIcons.Movie
@@ -182,7 +182,7 @@ fun FileLeadingVisual(
     )
 }
 
-/** 无缩略图时的类型图标块，瀑布流卡片的封面区也用它。 */
+/** 无缩略图时的类型图标块。 */
 @Composable
 fun FileTypeIcon(
     file: FileStat,
@@ -216,15 +216,16 @@ fun FileTypeIcon(
  * 防窥模糊的参数。decodePx 是 Coil 解码的目标边长，radius 是绘制时的高斯模糊半径。
  *
  * 半径按显示尺寸给，不按解码尺寸：RenderEffect 作用在已经放大到显示尺寸的图层上。
- * 两档都取显示宽度的约六分之一（列表 56dp 取 9dp，瀑布流封面 130 到 200dp 取 24dp），
- * 这个比例下人脸与文字已不成形，只剩大块色调。解码尺寸取到 48 与 64px，
+ * 列表 56dp 取 9dp，约为显示宽度的六分之一，这个比例下人脸与文字已不成形，只剩大块色调。
+ * 海报封面 150 到约 330dp 取 24dp，宽的一端比例低到十二分之一，实测照样认不出人脸：
+ * 64px 的解码尺寸已先把细节抹掉。解码尺寸取到 48 与 64px，
  * 比清晰图小一个数量级，高频细节在解码时就已丢掉，模糊只需要抹平放大后的块状边。
  */
 @Immutable
 class SpoilerBlur internal constructor(val decodePx: Int, val radius: Dp)
 
 val ListSpoilerBlur = SpoilerBlur(decodePx = 48, radius = 9.dp)
-val WaterfallSpoilerBlur = SpoilerBlur(decodePx = 64, radius = 24.dp)
+val PosterSpoilerBlur = SpoilerBlur(decodePx = 64, radius = 24.dp)
 
 /**
  * 防窥缩略图。

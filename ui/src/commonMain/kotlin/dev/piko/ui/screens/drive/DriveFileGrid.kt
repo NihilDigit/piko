@@ -20,7 +20,7 @@ import androidx.compose.foundation.lazy.staggeredgrid.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.automirrored.outlined.Sort
-import androidx.compose.material.icons.filled.Dashboard
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.AutoAwesome
@@ -62,26 +62,23 @@ import dev.piko.ui.components.SheetAction
 import io.github.nihildigit.pikpak.FileStat
 
 /**
- * 两种视图都用 LazyVerticalStaggeredGrid，共用同一个状态。瀑布流视图不用
- * 规整网格：规整网格同一行各项顶端对齐、不拉成等高，名字一行与两行的卡片并排时一边底下
- * 空一行；瀑布流各列各自往下排，卡片多高都行，名字因此不必截断。代价是同一段里的左右
- * 顺序随卡片高度略有交错，文件夹在前、文件在后的分段不受影响。
+ * 两种视图都用 LazyVerticalStaggeredGrid，共用同一个状态与作品头、分区标题这些整行项。
+ * 海报墙的卡片等高（16:9 封面加两行标题），在这个网格里排出来就是齐整的行。
  *
  * 列表视图单列宽度下限 360dp，手机上始终一列，横屏平板上自动排成两列以上。M3 列表规范
  * 要求宽窗口下控制行长或改为多栏，否则一行名字会被拉得很长。
  *
- * 瀑布流列宽下限 160dp，手机上两列。原先 128dp 在 432dp 宽的手机上排成三列，卡片扣掉
- * 内边距与行尾更多按钮后，名字只剩约 68dp，一行四个汉字。
+ * 海报墙的卡宽下限：手机上 160dp，排两列（原先 128dp 在 432dp 宽的手机上排成三列，名字只剩
+ * 一行四个汉字）；宽窗口里 240dp，封面够大，模糊时也辨得出轮廓。
  */
 private val ListColumnMinWidth = 360.dp
-// 海报墙的最小卡宽：手机上两列（160dp 会在窄手机上只剩一列），宽窗口里封面够大，模糊时也辨得出轮廓
-private val PosterColumnMinWidthCompact = 150.dp
+private val PosterColumnMinWidthCompact = 160.dp
 private val PosterColumnMinWidth = 240.dp
 
 private const val KEY_HEADER = "drive_header"
 private const val KEY_FOLD = "drive_fold"
 
-/** 列表或瀑布流里的每一项需要的回调，由 DriveScreen 按条目绑定。 */
+/** 列表或海报墙里的每一项需要的回调，由 DriveScreen 按条目绑定。 */
 internal class DriveItemCallbacks(
     val onOpen: (FileStat) -> Unit,
     val onMore: (FileStat) -> Unit,
@@ -100,7 +97,7 @@ internal fun driveLeadingItemCount(hasFoldBanner: Boolean): Int = 1 + (if (hasFo
 @Composable
 internal fun DriveFileGrid(
     items: List<DriveListItem>,
-    isWaterfallMode: Boolean,
+    isPosterMode: Boolean,
     gridState: LazyStaggeredGridState,
     isSelectionMode: Boolean,
     selectedIds: Set<String>,
@@ -116,13 +113,13 @@ internal fun DriveFileGrid(
     modifier: Modifier = Modifier,
 ) {
     val leadingItemCount = driveLeadingItemCount(foldBanner != null)
-    val horizontalPadding = if (isWaterfallMode) 16.dp else 0.dp
-    val itemSpacing = if (isWaterfallMode) 8.dp else 0.dp
+    val horizontalPadding = if (isPosterMode) 16.dp else 0.dp
+    val itemSpacing = if (isPosterMode) 8.dp else 0.dp
 
     Box(modifier = modifier.fillMaxSize()) {
         // 刚秒传成功时滚到新条目。视图模式是异步读出来的偏好，首帧拿到的还是默认值，
         // 所以它也要进 key，否则真值到达前的滚动会停在错误的位置。
-        LaunchedEffect(items, highlightedIds, isWaterfallMode) {
+        LaunchedEffect(items, highlightedIds, isPosterMode) {
             if (highlightedIds.isEmpty()) return@LaunchedEffect
             val entryIndex = items.indexOfFirst { it is DriveListItem.File && it.file.id in highlightedIds }
             if (entryIndex >= 0) gridState.animateScrollToItem(leadingItemCount + entryIndex)
@@ -131,7 +128,7 @@ internal fun DriveFileGrid(
         val posterMinWidth = if (currentWidthClass() == WidthClass.Compact) PosterColumnMinWidthCompact else PosterColumnMinWidth
         LazyVerticalStaggeredGrid(
             state = gridState,
-            columns = StaggeredGridCells.Adaptive(if (isWaterfallMode) posterMinWidth else ListColumnMinWidth),
+            columns = StaggeredGridCells.Adaptive(if (isPosterMode) posterMinWidth else ListColumnMinWidth),
             modifier = modifier.fillMaxSize(),
             contentPadding = PaddingValues(
                 start = horizontalPadding,
@@ -142,15 +139,15 @@ internal fun DriveFileGrid(
             verticalItemSpacing = itemSpacing,
         ) {
             item(key = KEY_HEADER, span = StaggeredGridItemSpan.FullLine, contentType = KEY_HEADER) {
-                // 页眉总是整行宽，内边距由它自己决定，两种视图下排布一致。瀑布流模式的
+                // 页眉总是整行宽，内边距由它自己决定，两种视图下排布一致。海报墙模式的
                 // contentPadding 会把它缩进 16dp，这里向两侧撑回去
-                Box(modifier = if (isWaterfallMode) Modifier.bleedHorizontal(horizontalPadding) else Modifier) {
+                Box(modifier = if (isPosterMode) Modifier.bleedHorizontal(horizontalPadding) else Modifier) {
                     header()
                 }
             }
             if (foldBanner != null) {
                 item(key = KEY_FOLD, span = StaggeredGridItemSpan.FullLine, contentType = KEY_FOLD) {
-                    Box(modifier = Modifier.padding(horizontal = if (isWaterfallMode) 0.dp else 16.dp)) {
+                    Box(modifier = Modifier.padding(horizontal = if (isPosterMode) 0.dp else 16.dp)) {
                         foldBanner()
                     }
                 }
@@ -171,12 +168,12 @@ internal fun DriveFileGrid(
                 when (item) {
                     is DriveListItem.WorkHeader -> WorkHeaderRow(
                         header = item,
-                        modifier = Modifier.animateItem().padding(horizontal = if (isWaterfallMode) 0.dp else 16.dp),
+                        modifier = Modifier.animateItem().padding(horizontal = if (isPosterMode) 0.dp else 16.dp),
                     )
                     is DriveListItem.SectionHeader -> SectionHeaderRow(
                         header = item,
-                        // 瀑布流的网格已有 16dp 边距，文字与卡片左缘对齐即可
-                        inset = if (isWaterfallMode) 4.dp else 16.dp,
+                        // 海报墙的网格已有 16dp 边距，文字与卡片左缘对齐即可
+                        inset = if (isPosterMode) 4.dp else 16.dp,
                         onClick = { callbacks.onToggleSection(item.blockId) },
                         modifier = Modifier.animateItem(),
                     )
@@ -186,7 +183,7 @@ internal fun DriveFileGrid(
                         DriveCell(
                             file = file,
                             text = cellText(item, if (file.isFolder) folderView(file) else null),
-                            isWaterfallMode = isWaterfallMode,
+                            isPosterMode = isPosterMode,
                             isSelectionMode = isSelectionMode,
                             isSelected = file.id in selectedIds,
                             isHighlighted = file.id in highlightedIds,
@@ -234,7 +231,7 @@ private fun WorkHeaderRow(header: DriveListItem.WorkHeader, modifier: Modifier =
     }
 }
 
-/** 分区标题，点按展开或收起。瀑布流网格没有吸顶标题，它随内容滚走；当前所在的分区由顶栏副标题给出。 */
+/** 分区标题，点按展开或收起。海报墙没有吸顶标题，它随内容滚走；当前所在的分区由顶栏副标题给出。 */
 @Composable
 private fun SectionHeaderRow(header: DriveListItem.SectionHeader, inset: Dp, onClick: () -> Unit, modifier: Modifier = Modifier) {
     Surface(
@@ -272,7 +269,7 @@ private fun SectionHeaderRow(header: DriveListItem.SectionHeader, inset: Dp, onC
 private fun DriveCell(
     file: FileStat,
     text: CellText,
-    isWaterfallMode: Boolean,
+    isPosterMode: Boolean,
     isSelectionMode: Boolean,
     isSelected: Boolean,
     isHighlighted: Boolean,
@@ -282,8 +279,8 @@ private fun DriveCell(
     modifier: Modifier,
 ) {
     ContextMenuArea(actions = { callbacks.contextActions(file) }, modifier = modifier) {
-        if (isWaterfallMode) {
-            WaterfallCard(
+        if (isPosterMode) {
+            PosterCard(
                 file = file,
                 isSelectionMode = isSelectionMode,
                 isSelected = isSelected,
@@ -344,8 +341,8 @@ internal fun DriveListHeader(
     summary: String?,
     sortOrder: FileSortOrder,
     onSortChange: (FileSortOrder) -> Unit,
-    isWaterfallMode: Boolean,
-    onToggleWaterfallMode: () -> Unit,
+    isPosterMode: Boolean,
+    onTogglePosterMode: () -> Unit,
 ) {
     var showSortMenu by remember { mutableStateOf(false) }
     Column(modifier = Modifier.fillMaxWidth()) {
@@ -394,30 +391,30 @@ internal fun DriveListHeader(
                 }
             }
             Spacer(modifier = Modifier.weight(1f))
-            ViewModeToggle(isWaterfallMode = isWaterfallMode, onToggleWaterfallMode = onToggleWaterfallMode)
+            ViewModeToggle(isPosterMode = isPosterMode, onTogglePosterMode = onTogglePosterMode)
         }
     }
 }
 
-/** 列表与瀑布流二选一，M3 Expressive 连体按钮组，当前视图为选中态。 */
+/** 列表与海报墙二选一，M3 Expressive 连体按钮组，当前视图为选中态。 */
 @Composable
-private fun ViewModeToggle(isWaterfallMode: Boolean, onToggleWaterfallMode: () -> Unit) {
+private fun ViewModeToggle(isPosterMode: Boolean, onTogglePosterMode: () -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)) {
         ToggleButton(
-            checked = !isWaterfallMode,
-            onCheckedChange = { if (isWaterfallMode) onToggleWaterfallMode() },
+            checked = !isPosterMode,
+            onCheckedChange = { if (isPosterMode) onTogglePosterMode() },
             shapes = ButtonGroupDefaults.connectedLeadingButtonShapes(),
             contentPadding = ViewToggleContentPadding,
         ) {
             Icon(Icons.AutoMirrored.Filled.ViewList, contentDescription = "列表视图", modifier = Modifier.size(20.dp))
         }
         ToggleButton(
-            checked = isWaterfallMode,
-            onCheckedChange = { if (!isWaterfallMode) onToggleWaterfallMode() },
+            checked = isPosterMode,
+            onCheckedChange = { if (!isPosterMode) onTogglePosterMode() },
             shapes = ButtonGroupDefaults.connectedTrailingButtonShapes(),
             contentPadding = ViewToggleContentPadding,
         ) {
-            Icon(Icons.Filled.Dashboard, contentDescription = "瀑布流视图", modifier = Modifier.size(20.dp))
+            Icon(Icons.Filled.GridView, contentDescription = "海报视图", modifier = Modifier.size(20.dp))
         }
     }
 }

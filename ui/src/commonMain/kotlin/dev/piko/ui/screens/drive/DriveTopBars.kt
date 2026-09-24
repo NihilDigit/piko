@@ -172,7 +172,7 @@ internal fun DriveSearchTopBar(
 /**
  * 浏览态顶栏：目录名，以及结构化列表下当前滚动到的分区。点副标题弹出分区菜单，选哪个跳到哪个。
  *
- * 分区标题随网格滚走（瀑布流网格没有吸顶标题），所以「身在哪一区」由这里常驻给出。
+ * 分区标题随网格滚走（海报墙没有吸顶标题），所以「身在哪一区」由这里常驻给出。
  * PikoTopBar 只有单行标题，这里直接用 TopAppBar，配色与它一致。
  */
 @OptIn(ExperimentalMaterial3Api::class)

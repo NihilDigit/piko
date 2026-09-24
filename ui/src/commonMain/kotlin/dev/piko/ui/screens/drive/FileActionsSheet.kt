@@ -29,7 +29,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 
 /**
- * 网盘条目的操作面板，列表与瀑布流共用。外壳是 [ItemDetailsSheet]。
+ * 网盘条目的操作面板，列表与海报墙共用。外壳是 [ItemDetailsSheet]。
  *
  * previewHidden 为 null 表示没有可切换的预览（防窥关闭或没有缩略图），不显示该项。
  * folderUsage 只对文件夹给出，面板打开期间收集，关闭即取消统计。

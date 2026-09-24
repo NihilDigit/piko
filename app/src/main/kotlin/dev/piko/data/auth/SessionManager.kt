@@ -196,7 +196,8 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     }
 
     override val gridViewFlow: Flow<Boolean> = preference { preferences ->
-        preferences[PreferencesKeys.WATERFALL_VIEW_ENABLED] ?: true // 默认瀑布流
+        // 默认海报墙。键名沿用瀑布流时期的写法，改名会丢掉已存的选择
+        preferences[PreferencesKeys.WATERFALL_VIEW_ENABLED] ?: true
     }
 
     override suspend fun setGridViewEnabled(enabled: Boolean) {
