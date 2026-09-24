@@ -389,6 +389,7 @@ fun MobilePlayerControls(
                     PlayerBottomBar(
                         isLandscape = isLandscape,
                         isFullscreen = isFullscreen,
+                        isPlaying = isPlaying,
                         positionMillis = positionMillis,
                         durationMillis = durationMillis,
                         bufferedPositionMillis = bufferedPositionMillis,
