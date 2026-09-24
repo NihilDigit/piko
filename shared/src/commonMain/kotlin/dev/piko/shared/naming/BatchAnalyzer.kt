@@ -42,6 +42,11 @@ private val COPY_MARKER = Regex("""\s*\((\d{1,2})\)""")
 
 private val WHITESPACE_RUN = Regex("""\s+""")
 
+// [发布组] 作品名 [条目名] 其后全是方括号
+private val BRACKET_ENTRY = Regex("""^\[([^\]]+)\]\s*([^\[\]]+?)\s*\[([^\]]+)\]((?:\s*\[[^\]]*\])*)\s*$""")
+private val TRAILING_SEASON = Regex("""(?i)\s+(?:season\s*\d{1,2}|s\d{1,2})$""")
+private val BRACKET_SEGMENT = Regex("""\[([^\]]*)\]""")
+
 // 「22 标题」：开头一到三位数字、空格、再接标题
 private val LEADING_SEQUENCE = Regex("""^(\d{1,3})\s+(\S.*?)(?:\.[^.]+)?$""")
 
@@ -60,6 +65,7 @@ private class BatchAnalyzer(inputs: List<MediaFileInput>) {
         attachAvByCode()
         classifyByFolderKind()
         assignWorks()
+        adoptBracketEntries()
         rejectCopyMarkers()
         rejectUploaderNumbering()
         alignSiblingNames()
@@ -351,7 +357,7 @@ private class BatchAnalyzer(inputs: List<MediaFileInput>) {
      * 高置信度的集号（S01E02、[01]）与已经分得开的分段不动。
      */
     private fun alignSiblingNames() {
-        contentItems().filter { it.isVideoLike && it.discRoot == null && !it.parsed.opaque && !it.parsed.timed }
+        contentItems().filter { it.isVideoLike && it.discRoot == null && !it.parsed.opaque && !it.parsed.timed && it.labelOverride == null }
             .groupBy { it.folder }.values.forEach { folderItems ->
                 alignSiblings(folderItems.map { stripSiteNoise(it.name.substringBeforeLast('.')) }, minSize = 2).forEach { cluster ->
                     val members = cluster.members.map { folderItems[it] }
@@ -394,6 +400,69 @@ private class BatchAnalyzer(inputs: List<MediaFileInput>) {
             item.workTitle = title
             item.workKey = workKey
         }
+    }
+
+    /**
+     * 「[发布组] 作品名 [条目名][技术标签]」：VCB-Studio 一类的发布把条目名单独放在一个方括号里。
+     * 条目名是数字时就是集号，逐文件解析认得；是文字时（[Survival Camp]、[Making Documentary]、[IV01]、[CM]）
+     * 逐文件解析读不出来，特别篇、访谈、特典便各自成了一部作品，或者全都叫「Movie」。
+     *
+     * 同一目录里几个文件共享发布组与作品名，或者作品名就是已有剧集的名字（季号与剧场版标记不算），
+     * 就把那个方括号当条目名，归进同名的作品。分区先看条目名里的标记词，再看所在目录，都没有就是特别篇
+     */
+    private fun adoptBracketEntries() {
+        val candidates = contentItems().filter { it.isVideoLike && it.discRoot == null && it.parsed.av == null }.mapNotNull { item ->
+            val match = BRACKET_ENTRY.matchEntire(stripSiteNoise(item.name.substringBeforeLast('.'))) ?: return@mapNotNull null
+            val (group, rawTitle, entry, rest) = match.destructured
+            val techTail = BRACKET_SEGMENT.findAll(rest).map { it.groupValues[1] }.toList()
+            val entryIsName = entry.isNotBlank() && !scanTags(entry).isTagText && entry.any(Char::isLetter)
+            if (!entryIsName || techTail.none { scanTags(it).isTagText }) return@mapNotNull null
+            BracketEntry(item, group.trim(), rawTitle.trim(), entry.trim())
+        }
+        // 只认正片的剧集：「[Menu01]」也带编号，它的作品名是拆掉季号的「Yuru Camp」，第二季的 SPs 就会被并过去
+        val seriesTitles = contentItems()
+            .filter { it.workKind == WorkKind.SERIES && it.section == Section.MAIN && it.parsed.episode != null && it.workTitle != null }
+            .associateBy({ workKeyOf(it.workTitle!!) }, { it.workTitle!! })
+        candidates.groupBy { Triple(it.item.folder, it.group.lowercase(), workKeyOf(baseTitle(it.title))) }.values.forEach { family ->
+            val key = workKeyOf(baseTitle(family.first().title))
+            val known = seriesTitles[key]
+            if (known == null && family.size < 2) return@forEach
+            // 没有同名剧集可并时照原样写作品名：第二季的 SPs 目录里没有正片，季号拆掉就只剩「Yuru Camp Season」
+            val title = known ?: family.first().title
+            family.forEach { candidate ->
+                val item = candidate.item
+                item.workKind = WorkKind.SERIES
+                item.workTitle = title
+                item.workKey = "s:" + workKeyOf(title)
+                item.section = entrySection(item, candidate.entry)
+                item.labelOverride = candidate.entry
+                item.parsed = item.parsed.copy(kind = NameKind.STANDALONE, episode = null, title = title, label = candidate.entry)
+            }
+        }
+    }
+
+    /**
+     * 条目名里的标记词优先，但服从专属目录；通用目录只细化「Special」：SPs/ 里写着 Special 的是特典，
+     * 与 resolveSection 对文件名标记的处理一致
+     */
+    private fun entrySection(item: Item, entry: String): Section {
+        val fromEntry = bracketEntrySection(entry)
+        val fromDir = item.dirSection
+        return when {
+            fromDir != null && item.dirAuthoritative -> fromDir
+            fromEntry == null -> fromDir ?: Section.SPECIAL
+            fromDir != null && fromEntry == Section.SPECIAL -> fromDir
+            else -> fromEntry
+        }
+    }
+
+    private class BracketEntry(val item: Item, val group: String, val title: String, val entry: String)
+
+    /** 作品名去掉季号与剧场版标记，才能与剧集的作品名对上：「Yuru Camp Season 2」「Yuru Camp Movie」都是「Yuru Camp」。 */
+    private fun baseTitle(title: String): String {
+        val withoutSeason = title.replace(TRAILING_SEASON, "").trim()
+        val parsed = parseSeriesStem(withoutSeason)
+        return parsed.title?.takeIf { it.isNotBlank() } ?: withoutSeason
     }
 
     /** 改回独立文件，标题取整个名字。 */

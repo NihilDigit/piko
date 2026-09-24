@@ -96,6 +96,7 @@ internal fun alignSiblings(stems: List<String>, minSize: Int = 3): List<AlignedC
         }
 }
 
+private val LEADING_GROUP = Regex("""^\s*\[[^\]]*\]\s*""")
 private val ALIGN_SEPARATORS = Regex("""[\s_.\-]+""")
 private val EDGE_PUNCTUATION = charArrayOf(' ', '(', ')', '（', '）', '[', ']', '【', '】', '#', '@', '-', '_', '.', ',', '，')
 
@@ -104,7 +105,8 @@ private val EDGE_PUNCTUATION = charArrayOf(' ', '(', ')', '（', '）', '[', ']'
  * 剩下不到两个字母时返回 null，这簇就不起作品名。
  */
 internal fun alignedTitle(text: String): String? {
-    val words = stripSiteNoise(text).split(ALIGN_SEPARATORS)
+    // 开头的发布组方括号不是作品名：「[Airota&…&VCB-Studio] Yuru Camp [IV01]」
+    val words = stripSiteNoise(text).replace(LEADING_GROUP, "").split(ALIGN_SEPARATORS)
         .filter { word -> word.isNotBlank() && !scanTags(word).isTagText }
     val title = words.joinToString(" ").trim(*EDGE_PUNCTUATION)
     return title.takeIf { candidate -> candidate.count { it.isLetter() } >= 2 }

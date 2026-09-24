@@ -177,4 +177,28 @@ class MediaBatchRulesTest {
         val recorded = batch("主播_20220907-015242-325.mp4" to 1, "主播_20220908-011502-812.mp4" to 1, "主播_20220909-020012-104.mp4" to 1)
         assertTrue(recorded.parsed.none { it.episode != null }, recorded.parsed.map { it.label }.toString())
     }
+
+    @Test
+    fun `a named bracket after the title is the entry name`() {
+        val g = "[Grp]"
+        val root = batch(
+            "$g Show [01][1080p][x265_flac].mkv" to 1_000,
+            "$g Show [02][1080p][x265_flac].mkv" to 1_000,
+            "$g Show [Survival Special][1080p][x265_flac].mkv" to 500,
+            "$g Show [Another Short][1080p][x265_flac].mkv" to 500,
+        )
+        val show = root.works.single()
+        assertEquals(listOf("Another Short", "Survival Special"), show.sections.single { it.section == Section.SPECIAL }.entries.mapNotNull { it.label }.sorted())
+
+        val sps = batch(
+            "Show S2/SPs/$g Show Season 2 [CM][1080p][x265_flac].mkv" to 1,
+            "Show S2/SPs/$g Show Season 2 [IV01][1080p][x265_aac].mkv" to 1,
+            "Show S2/SPs/$g Show Season 2 [Making Documentary][1080p][x265_aac].mkv" to 1,
+        )
+        // 没有正片可并时照原样写作品名，季号不丢
+        assertEquals("Show Season 2", sps.works.single().title)
+        val sections = sps.works.single().sections.associate { section -> section.section to section.entries.mapNotNull { it.label } }
+        assertEquals(listOf("CM"), sections[Section.PREVIEW])
+        assertEquals(listOf("IV01", "Making Documentary"), sections[Section.BONUS]?.sorted())
+    }
 }

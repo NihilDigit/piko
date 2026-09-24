@@ -133,11 +133,14 @@ private val WORDS: Map<String, List<MediaTag>> = buildMap {
     put(TagKind.CENSORSHIP, MediaTag.UNCENSORED, "uncensored", "ucensored", "uncen", "uncensor")
     put(TagKind.CENSORSHIP, "减码", "reducing-mosaic")
     put(TagKind.EDITION, "重制", "remaster", "remastered")
-    put(TagKind.EDITION, "HDR", "hdr", "hdr10", "dv")
+    put(TagKind.EDITION, "HDR", "hdr", "hdr10")
+    // 同一部片子常同时发 SDR、HDR10、杜比视界几个版本，它们得是标签，版本合并才认得出来
+    put(TagKind.EDITION, "DoVi", "dovi", "dv")
+    put(TagKind.EDITION, "SDR", "sdr")
     put(TagKind.EDITION, "Uncut", "uncut")
     noise(
         "end", "fin", "batch", "complete", "completo", "unofficial", "mkv", "mp4", "avi", "chap", "sub", "subs",
-        "pseudo", "rev", "reseed", "hq", "hbr", "sdr", "hi-fi", "mono", "stereo", "x2", "cc", "raw", "raws",
+        "pseudo", "rev", "reseed", "hq", "hbr", "hi-fi", "mono", "stereo", "x2", "cc", "raw", "raws",
         "vfr", "cfr", "nvenc", "ma", "hdma", "hd-ma", "softsubs", "softsub", "ass", "srt", "assx2", "srtx2",
         "ass×2", "upscale", "upscaled", "jpn", "japanese", "english", "chinese", "mp4/720p", "uncropped", "cropped",
         "tri-audio", "hevc_aac", "regrade", "retail",

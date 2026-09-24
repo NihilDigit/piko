@@ -277,6 +277,21 @@ private val MARKER_WITH_NUMBER = Regex(
 
 private fun markerSection(text: String): Section? = MARKERS[text.lowercase().replace(MARKER_SPACES, " ").trim()]
 
+// 访谈：VCB-Studio 写作 IV01、IV02_1
+private val INTERVIEW_ENTRY = Regex("""^IV\d{1,2}(?:[_-]\d{1,2})?$""", RegexOption.IGNORE_CASE)
+
+/**
+ * 方括号里的条目名属于哪个分区：「[CM]」「[PV Collection]」「[Menu01_1]」「[IV02_1]」「[Making Documentary]」。
+ * 条目名单独占一个方括号，意思已经很明确，所以「CM」「Making」这类单独出现时多半是普通用词的标记也照认。
+ * 认不出时返回 null，由调用方按所在目录或默认分区处理
+ */
+internal fun bracketEntrySection(content: String): Section? {
+    bracketHit(content, 0)?.section?.let { return it }
+    markerSection(content)?.let { return it }
+    if (INTERVIEW_ENTRY.matches(content.trim())) return Section.BONUS
+    return markerSection(content.trim().split(' ', '_').first())
+}
+
 /** 一段文字里出现的分区标记词（取第一个），供「Cast & Staff Interview 01」这类描述性条目归类。 */
 private fun sectionMentioned(text: String): Section? =
     text.lowercase().split(MENTION_SEPARATORS).firstNotNullOfOrNull { word -> markerSection(word)?.takeIf { word !in AMBIGUOUS_MARKERS } }

@@ -13,9 +13,10 @@ private const val USAGE = """piko-cli：Piko 开发工具
       从 --root（默认 /）起列 --depth 层（默认 1，即根目录与其下一层）；
       --deep 里的 root 直属子目录递归到底。会话取自 ~/.piko，与桌面端共用。
 
-  dryrun <快照> [--path <前缀>] [-o <文件>]
+  dryrun <快照> [--path <前缀>] [--visited] [-o <文件>]
       离线对快照跑网盘页的解析流水线，逐行写出原名与界面上的样子。
-      --path 只看路径以此开头的目录。
+      --path 只看路径以此开头的目录。--visited 模拟每个目录都点进去过，
+      文件夹行用里面的文件名描述，与 app 记住内容之后的样子一致。
 
   score <快照>
       以整理过的文件夹名为标注，统计里面视频的番号识别率，列出认错的。
@@ -49,7 +50,7 @@ fun main(args: Array<String>) {
             val input = File(options.positional.firstOrNull() ?: usage())
             val snapshot = snapshotJson.decodeFromString(Snapshot.serializer(), input.readText())
             val report = StringBuilder()
-            renderDryRun(snapshot, options.value("--path"), report)
+            renderDryRun(snapshot, options.value("--path"), visited = "--visited" in options.flags, report)
             options.value("-o")?.let { File(it).writeText(report.toString()) } ?: print(report)
         }
         "score" -> {
@@ -69,12 +70,16 @@ private fun usage(): Nothing {
 private class Options(args: List<String>) {
     private val named = mutableMapOf<String, String>()
     val positional = mutableListOf<String>()
+    val flags = mutableSetOf<String>()
 
     init {
         var i = 0
         while (i < args.size) {
             val arg = args[i]
-            if (arg.startsWith("-") && i + 1 < args.size) {
+            if (arg in FLAGS) {
+                flags += arg
+                i++
+            } else if (arg.startsWith("-") && i + 1 < args.size) {
                 named[arg] = args[i + 1]
                 i += 2
             } else {
@@ -85,4 +90,9 @@ private class Options(args: List<String>) {
     }
 
     fun value(name: String): String? = named[name]
+
+    companion object {
+        // 不带值的开关
+        val FLAGS = setOf("--visited")
+    }
 }

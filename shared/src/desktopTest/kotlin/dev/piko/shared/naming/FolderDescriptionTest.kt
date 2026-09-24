@@ -110,4 +110,12 @@ class FolderDescriptionTest {
         assertNull(describeFolder("【某组】7月28-29号 活动").episodeRange, "月日范围是日期")
         assertFalse(MediaTag.UNCENSORED in tags("【未流出】某片"))
     }
+
+    @Test
+    fun `unrelated content does not rename a folder`() {
+        // 一堆互不相干的独立视频，不能随便挑一个当文件夹名
+        assertNull(describeFolder("Pack From Friends", listOf("some clip.mp4", "another video.mp4", "third thing.mp4")).title)
+        // 记住的内容不含子文件夹，只剩一个文件时撑不起文件夹名
+        assertNull(describeFolder("My Stuff", listOf("site.com@ABC-123.mp4")).title)
+    }
 }

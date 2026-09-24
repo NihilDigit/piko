@@ -33,7 +33,12 @@ fun describeFolder(folderName: String, contentNames: List<String> = emptyList())
     val nameTags = fromName.tags + scanFolderTags(washed)
 
     val content = contentNames.takeIf { it.isNotEmpty() }?.let { names -> analyzeMediaBatch(names.map { MediaFileInput(it, 0) }) }
-    val mainWork = content?.works?.filter { it.kind != WorkKind.UNKNOWN }?.maxWithOrNull(
+    // 内容真成一部作品时才用它的名字：一堆互不相干的独立视频里随便挑一个的名字当文件夹名，
+    // 「Pack From Shared」就被改成了其中一个视频的名字。须有集号或多个条目，且占内容的大多数。
+    // 内容只有一个文件时不算：记住的内容不含子文件夹，「My Pack」里三个子文件夹加一个番号视频，
+    // 看上去就只有那个视频
+    val contentCount = content?.works?.sumOf { work -> work.sections.sumOf { it.entries.size } } ?: 0
+    val mainWork = content?.works?.filter { it.kind != WorkKind.UNKNOWN && representsFolder(it, contentCount) }?.maxWithOrNull(
         compareBy<MediaWork> { work -> work.sections.firstOrNull { it.section == Section.MAIN }?.entries?.size ?: 0 }
             .thenBy { work -> work.sections.sumOf { it.entries.size } },
     )
@@ -85,6 +90,12 @@ private fun worthRewriting(
 }
 
 private val FOLDER_PART = Regex("""(?i)(?<![a-z])(?:pt|part)[\s.-]?\d""")
+
+private fun representsFolder(work: MediaWork, contentCount: Int): Boolean {
+    val entries = work.sections.flatMap { it.entries }
+    val isWork = work.kind == WorkKind.AV || entries.size >= 2 || entries.any { it.episode != null }
+    return isWork && contentCount >= 2 && entries.size * 2 >= contentCount
+}
 
 private fun hasLatin(text: String): Boolean = text.count { it in 'A'..'Z' || it in 'a'..'z' } >= 2
 

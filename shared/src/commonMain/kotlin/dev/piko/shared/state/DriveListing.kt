@@ -136,15 +136,16 @@ private fun buildBlocks(batch: MediaBatch, files: List<FileStat>): List<DriveBlo
     val blocks = mutableListOf<DriveBlock>()
     series.forEach { work ->
         val workTags = work.commonTags.map(MediaTag::text)
+        val workTitle = displayTitle(work)
         work.sections.forEach { section ->
             val label = section.section.label
             blocks += DriveBlock(
                 id = "w:${work.key}/${section.section.name}",
                 label = label,
-                menuLabel = if (manyWorks && work.title != null) "${work.title} $label" else label,
+                menuLabel = if (manyWorks && workTitle != null) "$workTitle $label" else label,
                 defaultExpanded = section.section in EXPANDED_BY_DEFAULT,
                 workKey = work.key,
-                workTitle = work.title,
+                workTitle = workTitle,
                 workTags = workTags,
                 fileIds = section.entries.flatMap { entry -> entry.distinctFiles().map { files[it.index].id } },
             )
@@ -186,6 +187,16 @@ private fun withoutCollidingStandalone(views: Map<String, DriveFileView>, batch:
         .flatMap { entry -> entry.files.map { files[it.index].id } }
     val colliding = standaloneIds.groupBy { views[it]?.title }.filterKeys { it != null }.values.filter { it.size > 1 }.flatten().toSet()
     return if (colliding.isEmpty()) views else views - colliding
+}
+
+/**
+ * 作品头上的作品名。解析器把季号拆进了集号，第二季的目录里作品头只剩「Yuru Camp」，与第一季同名；
+ * 正片全是同一季（第二季起）时拼回去
+ */
+private fun displayTitle(work: MediaWork): String? {
+    val title = work.title ?: return null
+    val season = work.sections.firstOrNull { it.section == Section.MAIN }?.entries?.map { it.episode?.season }?.distinct()?.singleOrNull()
+    return if (season != null && season >= 2) "$title Season $season" else title
 }
 
 private fun isStandalone(work: MediaWork): Boolean {

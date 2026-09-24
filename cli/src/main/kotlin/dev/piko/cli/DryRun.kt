@@ -12,14 +12,14 @@ import dev.piko.shared.state.describeDriveFolder
  * 分区一律展开，收起的分区标上「默认收起」，免得看不到里面解析成了什么。折叠开关按默认的「隐藏」算，
  * 被折叠的条目单列在目录末尾。
  */
-fun renderDryRun(snapshot: Snapshot, pathFilter: String?, out: Appendable) {
+fun renderDryRun(snapshot: Snapshot, pathFilter: String?, visited: Boolean, out: Appendable) {
     val byId = snapshot.folders.associateBy { it.id }
     snapshot.folders
         .filter { pathFilter == null || it.path.startsWith(pathFilter) }
-        .forEach { folder -> renderFolder(folder, byId, out) }
+        .forEach { folder -> renderFolder(folder, byId, visited, out) }
 }
 
-private fun renderFolder(folder: SnapshotFolder, byId: Map<String, SnapshotFolder>, out: Appendable) {
+private fun renderFolder(folder: SnapshotFolder, byId: Map<String, SnapshotFolder>, visited: Boolean, out: Appendable) {
     val files = folder.files.map { it.toFileStat(folder.id) }
     out.appendLine("══ ${folder.path.ifEmpty { "/" }}（${files.size} 项）")
     if (files.isEmpty()) return
@@ -38,7 +38,7 @@ private fun renderFolder(folder: SnapshotFolder, byId: Map<String, SnapshotFolde
                 out.appendLine("  ▸$kind ${item.label}${tagText(item.tags)}$collapsed")
             }
             is DriveListItem.File -> if (item.file.isFolder) {
-                renderFolderRow(item.file.name, byId[item.file.id], out)
+                renderFolderRow(item.file.name, byId[item.file.id], visited, out)
             } else {
                 val view = item.view
                 val parsed = if (view == null) "（原样）" else "${view.title}${tagText(view.tags)}"
@@ -65,11 +65,14 @@ private fun renderFolder(folder: SnapshotFolder, byId: Map<String, SnapshotFolde
 
 /**
  * 文件夹行。app 在文件夹名看得出是发布、作品名却认不出时，补取一页文件名再解析；快照里有这个子目录就照做，
- * 没有（超出抓取范围）时如实标出。
+ * 没有（超出抓取范围）时如实标出。[visited] 模拟每个目录都点进去过：app 记住了里面至多 200 个文件名，
+ * 之后描述文件夹行时一律用上。
  */
-private fun renderFolderRow(name: String, listed: SnapshotFolder?, out: Appendable) {
+private fun renderFolderRow(name: String, listed: SnapshotFolder?, visited: Boolean, out: Appendable) {
     val byName = describeDriveFolder(name, null)
-    val view = if (byName.wantsContent && listed != null) {
+    val view = if (visited && listed != null) {
+        describeDriveFolder(name, listed.files.filterNot { it.kind == FOLDER_KIND }.take(REMEMBERED_CHILD_NAMES).map { it.name })
+    } else if (byName.wantsContent && listed != null) {
         describeDriveFolder(name, listed.files.take(CHILD_NAME_PAGE).filterNot { it.kind == FOLDER_KIND }.map { it.name })
     } else {
         byName
@@ -83,3 +86,6 @@ private fun tagText(tags: List<String>): String = if (tags.isEmpty()) "" else " 
 
 // 与 PikoDriveRepository 补取文件名时的一页大小一致：一页 20 项，文件夹也占名额
 private const val CHILD_NAME_PAGE = 20
+
+// 与 PikoDriveRepository 记住的文件名个数一致
+private const val REMEMBERED_CHILD_NAMES = 200
