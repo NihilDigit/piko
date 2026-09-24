@@ -46,7 +46,7 @@ class FakePikPakServer {
     class Node(
         val id: String,
         @Volatile var parentId: String,
-        val name: String,
+        @Volatile var name: String,
         val isFolder: Boolean,
         @Volatile var trashed: Boolean = false,
         val hash: String = "",
@@ -54,7 +54,11 @@ class FakePikPakServer {
         val size: Long = content.size.toLong(),
     )
 
-    class Task(val id: String, val name: String, val phase: String, val parentId: String, val url: String)
+    class Task(val id: String, val name: String, phase: String, val parentId: String, val url: String) {
+        @Volatile var phase: String = phase
+        @Volatile var fileId: String = ""
+        @Volatile var fileName: String = ""
+    }
 
     private val lock = Any()
     private val nodes = LinkedHashMap<String, Node>()
@@ -67,6 +71,13 @@ class FakePikPakServer {
 
     /** 为真时所有请求在传输层失败，模拟断网。 */
     @Volatile var offline = false
+
+    /** /drive/v1/about 报告的空间上限与已用量。 */
+    @Volatile var quotaLimit: Long = 10L shl 40
+    @Volatile var quotaUsage: Long = 0
+
+    /** 秒传建出的文件数。只数带 hash 的建文件请求，建目录与离线任务不算。 */
+    val instantCreates = AtomicInteger(0)
 
     /** 为真时密码登录被服务端拒绝。 */
     @Volatile var rejectSignIn = false
@@ -103,6 +114,35 @@ class FakePikPakServer {
     }
 
     fun tasksSnapshot(): List<Task> = tasks.toList()
+
+    /**
+     * 让离线任务完成：在任务的保存目录下按种子结构建出产出，与线上一致是一个以种子名
+     * 命名的文件夹，里面是 resolveMagnet 报告的相对路径。
+     */
+    fun completeTask(taskId: String, rootName: String, paths: List<String>) {
+        val task = tasks.first { it.id == taskId }
+        val root = addFolder(rootName, task.parentId)
+        val dirs = HashMap<String, String>().apply { put("", root.id) }
+        for (path in paths) {
+            val segments = path.split('/')
+            var prefix = ""
+            for (segment in segments.dropLast(1)) {
+                val next = if (prefix.isEmpty()) segment else "$prefix/$segment"
+                if (next !in dirs) dirs[next] = addFolder(segment, dirs.getValue(prefix)).id
+                prefix = next
+            }
+            addFile(segments.last(), dirs.getValue(prefix), hash = "H-$path")
+        }
+        task.fileId = root.id
+        task.fileName = rootName
+        task.phase = "PHASE_TYPE_COMPLETE"
+    }
+
+    /** 某目录下所有文件的相对路径，递归。 */
+    fun tree(folderId: String, prefix: String = ""): List<String> = children(folderId).flatMap { node ->
+        val path = if (prefix.isEmpty()) node.name else "$prefix/${node.name}"
+        if (node.isFolder) tree(node.id, path) else listOf(path)
+    }
 
     fun count(prefix: String): Int = calls.count { it.startsWith(prefix) }
 
@@ -141,13 +181,58 @@ class FakePikPakServer {
             path.endsWith("/v1/auth/token") -> tokenResponse()
             request.url.host == CDN_HOST -> cdn(request, path.removePrefix("/"))
             path.endsWith("/drive/v1/resource/list") -> resolveMagnet(request)
+            path.endsWith("/drive/v1/about") -> about()
+            path.endsWith("/drive/v1/tasks") && request.method == HttpMethod.Delete -> deleteTasks(request)
             path.endsWith("/drive/v1/tasks") -> listTasks(request)
+            path.contains("/drive/v1/tasks/") -> taskDetail(path.substringAfterLast('/'))
             path.contains("/drive/v1/files:") -> batch(request, path.substringAfterLast(':'))
             path.endsWith("/drive/v1/files") && request.method == HttpMethod.Post -> createFile(request)
             path.endsWith("/drive/v1/files") -> listFiles(request)
+            path.contains("/drive/v1/files/") && request.method == HttpMethod.Patch ->
+                rename(request, path.substringAfterLast('/'))
             path.contains("/drive/v1/files/") -> fileDetail(path.substringAfterLast('/'))
             else -> json("""{"error":"not_found"}""", HttpStatusCode.NotFound)
         }
+    }
+
+    private fun MockRequestHandleScope.about(): HttpResponseData = json(
+        buildJsonObject {
+            put("kind", "drive#about")
+            put("quota", buildJsonObject {
+                put("kind", "drive#quota")
+                put("limit", quotaLimit.toString())
+                put("usage", quotaUsage.toString())
+                put("usage_in_trash", "0")
+            })
+        }.toString(),
+    )
+
+    private fun MockRequestHandleScope.taskDetail(id: String): HttpResponseData {
+        val task = tasks.firstOrNull { it.id == id }
+            ?: return json("""{"error_code":4,"error":"task_not_found"}""", HttpStatusCode.NotFound)
+        return json(taskJson(task).toString())
+    }
+
+    private fun MockRequestHandleScope.deleteTasks(request: HttpRequestData): HttpResponseData {
+        val ids = request.url.parameters.getAll("task_ids").orEmpty().toSet()
+        tasks.removeIf { it.id in ids }
+        return json("{}")
+    }
+
+    private suspend fun MockRequestHandleScope.rename(request: HttpRequestData, id: String): HttpResponseData {
+        val name = Json.parseToJsonElement(request.body.text()).jsonObject["name"]?.jsonPrimitive?.content.orEmpty()
+        val node = node(id) ?: return json("""{"error_code":3,"error":"file_not_found"}""", HttpStatusCode.NotFound)
+        node.name = name
+        return json(buildJsonObject { putNode(node) }.toString())
+    }
+
+    private fun taskJson(task: Task) = buildJsonObject {
+        put("id", task.id)
+        put("name", task.name)
+        put("phase", task.phase)
+        put("file_id", task.fileId)
+        put("file_name", task.fileName)
+        put("file_size", "0")
     }
 
     private fun MockRequestHandleScope.tokenResponse() =
@@ -212,6 +297,7 @@ class FakePikPakServer {
             }
             else -> {
                 val hash = body["hash"]?.jsonPrimitive?.content.orEmpty()
+                instantCreates.incrementAndGet()
                 val file = addFile(name, parentId, hash = hash)
                 json(buildJsonObject {
                     put("upload_type", "UPLOAD_TYPE_RESUMABLE")
@@ -225,18 +311,26 @@ class FakePikPakServer {
     }
 
     private suspend fun MockRequestHandleScope.batch(request: HttpRequestData, op: String): HttpResponseData {
-        val ids = Json.parseToJsonElement(request.body.text()).jsonObject["ids"]?.jsonArray
-            ?.map { it.jsonPrimitive.content }.orEmpty()
+        val body = Json.parseToJsonElement(request.body.text()).jsonObject
+        val ids = body["ids"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()
+        val moveTo = body["to"]?.jsonObject?.get("parent_id")?.jsonPrimitive?.content.orEmpty()
         synchronized(lock) {
             ids.forEach { id ->
                 when (op) {
                     "batchTrash" -> nodes[id]?.trashed = true
                     "batchUntrash" -> nodes[id]?.trashed = false
-                    "batchDelete" -> nodes.remove(id)
+                    // 目录连同其下的一切一并删掉，与线上的永久删除一致
+                    "batchDelete" -> removeSubtree(id)
+                    "batchMove" -> nodes[id]?.parentId = moveTo
                 }
             }
         }
         return json("{}")
+    }
+
+    private fun removeSubtree(id: String) {
+        nodes.values.filter { it.parentId == id }.map { it.id }.forEach(::removeSubtree)
+        nodes.remove(id)
     }
 
     private suspend fun MockRequestHandleScope.resolveMagnet(request: HttpRequestData): HttpResponseData {
@@ -256,14 +350,7 @@ class FakePikPakServer {
         val body = buildJsonObject {
             put("next_page_token", "")
             put("tasks", buildJsonArray {
-                listed.forEach { task ->
-                    add(buildJsonObject {
-                        put("id", task.id)
-                        put("name", task.name)
-                        put("phase", task.phase)
-                        put("file_size", "0")
-                    })
-                }
+                listed.forEach { task -> add(taskJson(task)) }
             })
         }
         return json(body.toString())

@@ -37,6 +37,7 @@ import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Link
+import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -65,6 +66,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -74,6 +76,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.state.ToggleableState
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.data.repository.PathBreadcrumb
@@ -84,10 +87,13 @@ import dev.piko.shared.state.InstantSheetState
 import dev.piko.shared.state.NameGroup
 import dev.piko.shared.state.NameGroupSummary
 import dev.piko.shared.state.NameLeaf
+import dev.piko.shared.state.SavePlan
+import dev.piko.shared.state.SaveRoute
 import dev.piko.ui.components.FileNameField
 import dev.piko.ui.components.FolderPickerDialog
 import dev.piko.ui.components.MetaRow
 import dev.piko.ui.components.PikoLoadingIndicator
+import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.fileNameTypeIcon
 import dev.piko.ui.components.icon
 import dev.piko.ui.components.toReadableSize
@@ -104,9 +110,29 @@ import kotlinx.coroutines.delay
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-fun InstantSheetContent(state: InstantSheetState) {
+fun InstantSheetContent(
+    state: InstantSheetState,
+    /** 预览的文件已秒传进 Piko-Temp，交给播放器打开。 */
+    onPreview: (fileId: String, fileName: String) -> Unit,
+) {
     val platform = LocalPikoPlatform.current
     var showTargetPicker by remember { mutableStateOf(false) }
+
+    val currentOnPreview by rememberUpdatedState(onPreview)
+    LaunchedEffect(state) {
+        state.previewRequests.collect { currentOnPreview(it.fileId, it.fileName) }
+    }
+    // 面板盖在网盘页的 Snackbar 之上，一次性提示就地显示几秒
+    var notice by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(state) {
+        state.messages.collect { notice = it }
+    }
+    LaunchedEffect(notice) {
+        if (notice != null) {
+            delay(4000)
+            notice = null
+        }
+    }
 
     val pendingMagnet = state.normalizedMagnet
     val result = state.resolution
@@ -162,6 +188,8 @@ fun InstantSheetContent(state: InstantSheetState) {
             )
         }
 
+        notice?.let { ErrorBanner(message = it, onRetry = null) }
+
         if (result != null) {
             ResolutionSection(state = state, resourceName = result.resource.name)
         }
@@ -174,25 +202,7 @@ fun InstantSheetContent(state: InstantSheetState) {
                 enabled = !state.isSaving,
                 onClick = { showTargetPicker = true },
             )
-            Button(
-                onClick = state::performPrimaryAction,
-                enabled = action.enabled,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(ButtonDefaults.MediumContainerHeight),
-                contentPadding = ButtonDefaults.contentPaddingFor(ButtonDefaults.MediumContainerHeight),
-                shapes = ButtonDefaults.shapes(),
-            ) {
-                if (state.isSaving) {
-                    PikoLoadingIndicator(size = 20.dp)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("正在保存")
-                } else {
-                    Icon(action.kind.icon(), contentDescription = null, modifier = Modifier.size(20.dp))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(action.label())
-                }
-            }
+            SaveBar(state = state, action = action)
         }
     }
 
@@ -211,13 +221,97 @@ fun InstantSheetContent(state: InstantSheetState) {
 
 private fun InstantActionKind.icon(): ImageVector = when (this) {
     InstantActionKind.INSTANT_SAVE -> Icons.Outlined.Bolt
-    InstantActionKind.OFFLINE_SAVE, InstantActionKind.SUBMIT_OFFLINE -> Icons.Outlined.CloudDownload
+    InstantActionKind.OFFLINE_PACK, InstantActionKind.SUBMIT_OFFLINE -> Icons.Outlined.CloudDownload
 }
 
 private fun InstantPrimaryAction.label(): String = when (kind) {
     InstantActionKind.INSTANT_SAVE -> "秒传 $fileCount 个文件"
-    InstantActionKind.OFFLINE_SAVE -> "离线下载 $fileCount 个文件"
+    InstantActionKind.OFFLINE_PACK -> "整包离线"
     InstantActionKind.SUBMIT_OFFLINE -> "离线下载"
+}
+
+/** 按钮下的代价说明。两条路扣的是不同的月度额度，按钮上只写路线，代价写在这里。 */
+private fun SavePlan.caption(): String = when (route) {
+    SaveRoute.INSTANT -> "占用上传额度约 ${uploadCostBytes.toReadableSize()}"
+    SaveRoute.OFFLINE_PACK -> buildString {
+        append("占用离线额度 ${packBytes.toReadableSize()}")
+        append(if (prunedCount > 0) "，完成后删除 $prunedCount 个未选文件" else "，保留全部文件")
+    }
+}
+
+/**
+ * 保存栏：主按钮写明走哪条路，下面一行小字写代价。整包放不进网盘时不让提交，
+ * 说明缺多少，并给出只秒传选中文件的退路。
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun SaveBar(state: InstantSheetState, action: InstantPrimaryAction) {
+    val plan = state.savePlan.takeIf { state.resolution != null }
+    val fallback = plan?.fallback
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        if (plan != null && plan.lacksSpace) {
+            ErrorBanner(
+                message = "网盘空间不足：整包 ${plan.packBytes.toReadableSize()}，" +
+                    "剩余 ${(state.remainingBytes ?: 0L).coerceAtLeast(0L).toReadableSize()}",
+                onRetry = null,
+            )
+        }
+        if (fallback != null) {
+            SaveButton(
+                label = "改用秒传 ${fallback.fileCount} 个文件",
+                icon = Icons.Outlined.Bolt,
+                enabled = state.canSaveSelection,
+                isSaving = state.isSaving,
+                onClick = state::saveSelectionInstantly,
+            )
+            val skipped = if (fallback.skippedCount > 0) "，跳过 ${fallback.skippedCount} 个未收录文件" else ""
+            SaveCaption("占用上传额度约 ${fallback.uploadCostBytes.toReadableSize()}$skipped")
+        } else {
+            SaveButton(
+                label = action.label(),
+                icon = action.kind.icon(),
+                enabled = action.enabled,
+                isSaving = state.isSaving,
+                onClick = state::performPrimaryAction,
+            )
+            if (plan != null && !plan.lacksSpace) SaveCaption(plan.caption())
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun SaveButton(label: String, icon: ImageVector, enabled: Boolean, isSaving: Boolean, onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        enabled = enabled && !isSaving,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(ButtonDefaults.MediumContainerHeight),
+        contentPadding = ButtonDefaults.contentPaddingFor(ButtonDefaults.MediumContainerHeight),
+        shapes = ButtonDefaults.shapes(),
+    ) {
+        if (isSaving) {
+            PikoLoadingIndicator(size = 20.dp)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("正在保存")
+        } else {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(label)
+        }
+    }
+}
+
+@Composable
+private fun SaveCaption(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        textAlign = TextAlign.Center,
+        modifier = Modifier.fillMaxWidth(),
+    )
 }
 
 @Composable
@@ -318,16 +412,6 @@ private fun ColumnScope.ResolutionSection(state: InstantSheetState, resourceName
             CategoryChips(state)
         }
         FileTreeList(state, modifier = Modifier.weight(1f, fill = false))
-        // 秒传与离线不能拆着来（见 InstantSheetState.canInstantSaveAll），勾上一项未收录的，
-        // 按钮就从「秒传」变成「离线下载」。不说明的话，这个切换看起来毫无来由
-        if (!state.canInstantSaveAll && state.selectedItems.isNotEmpty()) {
-            Text(
-                text = "所选含未收录文件，将整体离线下载",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = 16.dp, top = 8.dp),
-            )
-        }
     }
 }
 
@@ -432,6 +516,12 @@ private fun FileTreeList(state: InstantSheetState, modifier: Modifier = Modifier
                             isInstantReady = item.isInstantReady,
                             checked = node.index in state.selectedIndices,
                             onCheckedChange = { state.setItemSelected(node.index, it) },
+                            onPreview = if (state.canPreview(node.index)) {
+                                { state.preview(node.index) }
+                            } else {
+                                null
+                            },
+                            isPreviewing = state.previewingIndex == node.index,
                         )
                     }
                 }
@@ -576,6 +666,8 @@ private fun InstantFileRow(
     isInstantReady: Boolean,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
+    onPreview: (() -> Unit)?,
+    isPreviewing: Boolean,
 ) {
     val isCompact = label.length <= SHORT_LABEL
     // 整行是一个复选项，Checkbox 只作显示，免得同一次点击被行与复选框各处理一遍
@@ -636,9 +728,30 @@ private fun InstantFileRow(
                 }
             }
         }
+        if (onPreview != null) {
+            PreviewButton(onClick = onPreview, isPreviewing = isPreviewing)
+        }
         if (!isInstantReady) {
             UnindexedMark()
         }
+    }
+}
+
+/** 预览按钮。秒传进 Piko-Temp 要一两秒，期间换成转圈，免得连点。 */
+@Composable
+private fun PreviewButton(onClick: () -> Unit, isPreviewing: Boolean) {
+    if (isPreviewing) {
+        Box(modifier = Modifier.padding(start = 4.dp).size(48.dp), contentAlignment = Alignment.Center) {
+            PikoLoadingIndicator(size = 24.dp)
+        }
+    } else {
+        TooltipIconButton(
+            icon = Icons.Outlined.PlayCircle,
+            label = "预览",
+            onClick = onClick,
+            modifier = Modifier.padding(start = 4.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

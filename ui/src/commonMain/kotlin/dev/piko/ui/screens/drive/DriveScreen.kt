@@ -550,7 +550,14 @@ fun DriveScreen(
             onDismissRequest = instantSession::collapse,
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         ) {
-            InstantSheetContent(state = instantState)
+            InstantSheetContent(
+                state = instantState,
+                // 先收起面板：Android 上它是独立窗口，会盖在应用内的播放器上面
+                onPreview = { fileId, fileName ->
+                    instantSession.collapse()
+                    navigateToPlayer(FileStat(id = fileId, name = fileName), emptyList())
+                },
+            )
         }
     }
 

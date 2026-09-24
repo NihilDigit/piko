@@ -12,8 +12,10 @@ import dev.piko.data.repository.fileCategory
 import dev.piko.shared.data.InstantFileItem
 import dev.piko.shared.data.InstantMagnetRepository
 import dev.piko.shared.data.MagnetResolutionResult
+import dev.piko.shared.data.OfflinePackTracker
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoPathBreadcrumb
+import dev.piko.shared.data.PreviewTempFolder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -26,11 +28,11 @@ import kotlinx.coroutines.launch
 data class NameGroupSummary(val selected: Int, val total: Int, val bytes: Long, val hasUnindexed: Boolean)
 
 enum class InstantActionKind {
-    /** 勾选项全部可秒传。 */
+    /** 只选了一项且已收录，秒传。 */
     INSTANT_SAVE,
 
-    /** 勾选项里有未收录的，整条链交给离线任务。 */
-    OFFLINE_SAVE,
+    /** 多于一项，或含未收录的：整条链离线，完成后删掉未选的文件。 */
+    OFFLINE_PACK,
 
     /** 没有解析结果（非磁力链接，或云端未收录），整条输入交给离线任务。 */
     SUBMIT_OFFLINE,
@@ -51,11 +53,17 @@ sealed interface InstantSaveOutcome {
     data class OfflineTaskCreated(override val target: PikoPathBreadcrumb) : InstantSaveOutcome
 }
 
+/** 预览播放的请求：文件已秒传进 Piko-Temp，由视图交给播放器。 */
+data class InstantPreviewRequest(val fileId: String, val fileName: String)
+
 /**
  * 秒传与磁力解析的工作台状态，两端共用。
  *
  * 流程：粘上磁力链自动解析（防抖），按启发式预选主体文件，确定保存目标（记住的目标、
- * 失效则回退 My Packs），然后整单秒传或整单交给离线任务。
+ * 失效则回退 My Packs），然后按 [planSave] 定的路线秒传或整包离线。
+ *
+ * 视频行可以预览：秒传进 Piko-Temp 再播放，同一会话内不重复秒传，保存时直接移过去。
+ * 会话结束（作用域取消）时，用过 Piko-Temp 就把它整个删掉。
  *
  * 这里只保存、不导航：结果经 [outcomes] 交给调用方，由它通过 DriveScreenState 切到
  * 目标目录，顺带清掉搜索与选中。在这里直接改仓库的目录栈会绕过那一步。
@@ -66,6 +74,8 @@ class InstantSheetState(
     private val instantRepo: InstantMagnetRepository,
     private val driveRepo: PikoDriveRepository,
     private val preferences: PikoUserPreferences,
+    private val previewFolder: PreviewTempFolder,
+    private val packTracker: OfflinePackTracker,
     private val scope: CoroutineScope,
     initialMagnet: String = "",
 ) {
@@ -102,12 +112,31 @@ class InstantSheetState(
     var targetNotice by mutableStateOf<String?>(null)
         private set
 
-    /** 多文件秒传时新建目录的名字，解析成功后以资源名预填。 */
+    /** 多项保存时的文件夹名，解析成功后以资源名预填。整包离线完成后产出文件夹改成这个名字。 */
     var folderName by mutableStateOf("")
         private set
 
+    /** 网盘剩余空间，解析成功后查一次。null 表示还没查到或查询失败，此时不拦整包离线。 */
+    var remainingBytes by mutableStateOf<Long?>(null)
+        private set
+
+    /** 正在秒传进 Piko-Temp 的那一行。同一时刻只预览一个。 */
+    var previewingIndex by mutableStateOf<Int?>(null)
+        private set
+
+    // gcid 到 Piko-Temp 里的文件 id。同一会话内再预览、或保存这一项时直接复用
+    private val previewedIds = mutableMapOf<String, String>()
+    private var usedPreviewFolder = false
+
     private val _outcomes = MutableSharedFlow<InstantSaveOutcome>(extraBufferCapacity = 1)
     val outcomes: SharedFlow<InstantSaveOutcome> = _outcomes.asSharedFlow()
+
+    private val _previewRequests = MutableSharedFlow<InstantPreviewRequest>(extraBufferCapacity = 1)
+    val previewRequests: SharedFlow<InstantPreviewRequest> = _previewRequests.asSharedFlow()
+
+    /** 预览失败等一次性提示。 */
+    private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val messages: SharedFlow<String> = _messages.asSharedFlow()
 
     /**
      * 归一化后的磁力链，兼作解析的去重键：同一条链不会重复解析。非磁力的输入
@@ -122,24 +151,19 @@ class InstantSheetState(
     }
 
     /**
-     * 勾选项里只要有一项云端没收录，整单就走离线，不做「能秒传的先秒传、其余离线」。
-     * createUrlFile 只收整条磁力 URL，ResolvedFile 也不带文件索引，离线任务没法只取
-     * 选中的那几个；两者并用会把刚秒传的文件再下一遍，目录里留下重复项。取舍是用户
-     * 定的：宁可放弃那几项的秒传，也不要重复。
+     * 这次保存是否存进新建的一层目录。只选一项时直接存进目标目录，不必再套一层。
+     * 整包离线的目录是 PikPak 以种子名建的，完成后改成这里填的名字。
      */
-    val canInstantSaveAll: Boolean by derivedStateOf {
-        selectedItems.isNotEmpty() && selectedItems.all { it.isInstantReady }
-    }
-
-    /**
-     * 这次保存是否会新建一层目录。只有这时才让人改目录名：走离线那条路目录是 PikPak
-     * 自己建的，摆一个可编辑的名字只会让人以为能生效。
-     */
-    val willCreateFolder: Boolean by derivedStateOf { canInstantSaveAll && selectedItems.size > 1 }
+    val willCreateFolder: Boolean by derivedStateOf { resolution != null && selectedEntryCount > 1 }
 
     val canSaveSelection: Boolean by derivedStateOf {
         !isSaving && selectedItems.isNotEmpty() && target != null &&
             !(willCreateFolder && folderName.isBlank())
+    }
+
+    /** 路线与代价，见 [planSave]。没勾任何一项时为 null。 */
+    val savePlan: SavePlan? by derivedStateOf {
+        planSave(items, selectedIndices, selectedEntryCount, remainingBytes)
     }
 
     val isAllSelected: Boolean by derivedStateOf {
@@ -202,11 +226,14 @@ class InstantSheetState(
      */
     val primaryAction: InstantPrimaryAction? by derivedStateOf {
         when {
-            resolution != null -> InstantPrimaryAction(
-                kind = if (canInstantSaveAll || selectedItems.isEmpty()) InstantActionKind.INSTANT_SAVE else InstantActionKind.OFFLINE_SAVE,
-                fileCount = selectedItems.size,
-                enabled = canSaveSelection,
-            )
+            resolution != null -> {
+                val plan = savePlan
+                InstantPrimaryAction(
+                    kind = if (plan?.route == SaveRoute.OFFLINE_PACK) InstantActionKind.OFFLINE_PACK else InstantActionKind.INSTANT_SAVE,
+                    fileCount = plan?.fileCount ?: 0,
+                    enabled = canSaveSelection && plan?.lacksSpace != true,
+                )
+            }
             input.isBlank() -> null
             normalizedMagnet != null && errorMessage == null -> null
             else -> InstantPrimaryAction(
@@ -219,7 +246,7 @@ class InstantSheetState(
 
     fun performPrimaryAction() {
         when (primaryAction?.kind) {
-            InstantActionKind.INSTANT_SAVE, InstantActionKind.OFFLINE_SAVE -> saveSelection()
+            InstantActionKind.INSTANT_SAVE, InstantActionKind.OFFLINE_PACK -> saveSelection()
             InstantActionKind.SUBMIT_OFFLINE -> submitOfflineTask()
             null -> Unit
         }
@@ -237,6 +264,10 @@ class InstantSheetState(
     private var resolvedKey: String? = null
 
     init {
+        // 面板关闭即会话结束，作用域随之取消。清理要在它之后跑完，交给 Piko-Temp 自己的作用域
+        scope.coroutineContext[Job]?.invokeOnCompletion {
+            if (usedPreviewFolder) previewFolder.clearInBackground()
+        }
         scope.launch { target = resolveTarget() }
         scope.launch { preferences.bundleSubtitlesFlow.collect { isBundleSubtitlesEnabled = it } }
         if (initialMagnet.isNotBlank()) {
@@ -300,16 +331,77 @@ class InstantSheetState(
         scope.launch { preferences.saveInstantTarget(breadcrumb.id, breadcrumb.name) }
     }
 
-    /** 保存当前勾选：全部可秒传就秒传，否则整条链交给离线任务。 */
+    /** 可以预览的行：已收录的视频。未收录的秒传不了，也就没法先放进网盘里播。 */
+    fun canPreview(index: Int): Boolean {
+        val item = items.getOrNull(index) ?: return false
+        return item.isInstantReady && item.file.name.fileCategory() == FileCategory.VIDEO
+    }
+
+    /**
+     * 秒传进 Piko-Temp 后交给播放器。本会话已放进去过的直接复用：秒传按大小的 15%
+     * 扣上传额度，同一个文件看两次不该扣两次。
+     */
+    fun preview(index: Int) {
+        val item = items.getOrNull(index) ?: return
+        val gcid = item.file.gcid ?: return
+        previewedIds[gcid]?.let { fileId ->
+            _previewRequests.tryEmit(InstantPreviewRequest(fileId, item.file.name))
+            return
+        }
+        if (previewingIndex != null) return
+        previewingIndex = index
+        // 请求发出去就可能已经建好了文件，哪怕随后被取消，所以在发请求之前记下
+        usedPreviewFolder = true
+        scope.launch {
+            try {
+                previewFolder.put(item.file)
+                    .onSuccess { fileId ->
+                        previewedIds[gcid] = fileId
+                        _previewRequests.emit(InstantPreviewRequest(fileId, item.file.name))
+                    }
+                    .onFailure { _messages.emit("预览失败：${it.message}") }
+            } finally {
+                previewingIndex = null
+            }
+        }
+    }
+
+    /** 按 [savePlan] 的路线保存当前勾选。 */
     fun saveSelection() {
-        if (isSaving || selectedItems.isEmpty()) return
+        val plan = savePlan ?: return
+        if (isSaving || plan.lacksSpace) return
         val toSave = selectedItems
-        val instantAll = canInstantSaveAll
         isSaving = true
         scope.launch {
             try {
                 val targetBread = target ?: resolveTarget()
-                if (instantAll) instantSave(targetBread, toSave) else enqueueOffline(targetBread)
+                when (plan.route) {
+                    SaveRoute.INSTANT -> instantSave(targetBread, toSave, keepStructure = false)
+                    SaveRoute.OFFLINE_PACK -> packSave(targetBread, toSave)
+                }
+            } finally {
+                isSaving = false
+            }
+        }
+    }
+
+    /**
+     * 空间放不下整包时的退路：只秒传选中的文件，按种子里的目录结构存进新建的文件夹。
+     * 未收录的文件没有 gcid，这条路存不了，保存栏已写明会跳过几个。
+     */
+    fun saveSelectionInstantly() {
+        if (isSaving || savePlan?.fallback == null) return
+        val toSave = selectedItems.filter { it.isInstantReady }
+        isSaving = true
+        scope.launch {
+            try {
+                val targetBread = target ?: resolveTarget()
+                val name = FileNameSanitizer.sanitize(folderName)
+                val folderId = driveRepo.createFolder(targetBread.id, name).getOrElse { err ->
+                    errorMessage = "新建文件夹失败：${err.message}"
+                    return@launch
+                }
+                instantSave(PikoPathBreadcrumb(folderId, name), toSave, keepStructure = true)
             } finally {
                 isSaving = false
             }
@@ -325,7 +417,10 @@ class InstantSheetState(
         isSaving = true
         scope.launch {
             try {
-                enqueueOffline(target ?: resolveTarget())
+                val targetBread = target ?: resolveTarget()
+                instantRepo.enqueueOfflineTask(submittedUrl(), targetBread.id)
+                    .onSuccess { _outcomes.emit(InstantSaveOutcome.OfflineTaskCreated(targetBread)) }
+                    .onFailure { errorMessage = "保存失败：${it.message}" }
             } finally {
                 isSaving = false
             }
@@ -378,7 +473,19 @@ class InstantSheetState(
                 data.items.map { it.file.size },
             ),
         )
+        scope.launch { refreshRemainingBytes() }
     }
+
+    /** 查一次网盘余量。limit 为 0 的账号当作不限；查询失败保留上一次的数。 */
+    private suspend fun refreshRemainingBytes(): Long? {
+        driveRepo.getQuota().onSuccess { response ->
+            remainingBytes = response.quota.takeIf { it.limitBytes > 0 }?.remainingBytes
+        }
+        return remainingBytes
+    }
+
+    // 只粘了 infohash 的输入要补成磁力链再交给离线，createUrlFile 不认裸的 hash
+    private fun submittedUrl(): String = normalizedMagnet ?: input.trim()
 
     /**
      * 记住过的目标优先，没配置过才退回 My Packs。只取一次而不是持续收集，否则用户在
@@ -398,26 +505,35 @@ class InstantSheetState(
         return driveRepo.getOrCreateMyPacksFolder().getOrDefault(PikoPathBreadcrumb("", "My Packs"))
     }
 
-    private suspend fun instantSave(target: PikoPathBreadcrumb, toSave: List<InstantFileItem>) {
-        // 多个文件平铺进目标目录会把它和别的资源混在一起，先建一层再存。名字取自输入框，
-        // 仍要过一遍 sanitize：用户可能敲进 / : * 这类建不出来的字符。
-        val saveTarget = if (toSave.size > 1) {
-            val name = FileNameSanitizer.sanitize(folderName)
-            val folderId = driveRepo.createFolder(target.id, name).getOrElse { err ->
-                errorMessage = "新建文件夹失败：${err.message}"
-                return
+    private suspend fun instantSave(
+        target: PikoPathBreadcrumb,
+        toSave: List<InstantFileItem>,
+        keepStructure: Boolean,
+    ) {
+        instantRepo.instantSave(toSave, target.id, reuse = previewedIds.toMap(), keepStructure = keepStructure)
+            .onSuccess { createdIds ->
+                // 移出 Piko-Temp 的不能再当作预览副本：下次预览会指向保存目录里的这份
+                toSave.forEach { item -> item.file.gcid?.let(previewedIds::remove) }
+                _outcomes.emit(InstantSaveOutcome.InstantSaved(createdIds, target))
             }
-            PikoPathBreadcrumb(folderId, name)
-        } else {
-            target
-        }
-        instantRepo.instantSave(toSave, saveTarget.id)
-            .onSuccess { createdIds -> _outcomes.emit(InstantSaveOutcome.InstantSaved(createdIds, saveTarget)) }
             .onFailure { errorMessage = "保存失败：${it.message}" }
     }
 
-    private suspend fun enqueueOffline(target: PikoPathBreadcrumb) {
-        instantRepo.enqueueOfflineTask(input.trim(), target.id)
+    private suspend fun packSave(target: PikoPathBreadcrumb, toSave: List<InstantFileItem>) {
+        val allItems = items
+        val packBytes = allItems.sumOf { it.file.size }
+        // 提交前再查一次：解析时查到的余量可能已经过时，而离线一旦提交就是整包落盘。
+        // 放不下时 savePlan 随 remainingBytes 变为 lacksSpace，保存栏换成空间不足的说明
+        val remaining = refreshRemainingBytes()
+        if (remaining != null && packBytes > remaining) return
+        packTracker.submit(
+            url = submittedUrl(),
+            targetId = target.id,
+            folderName = FileNameSanitizer.sanitize(folderName),
+            keep = toSave.map { it.file.path }.toSet(),
+            totalFiles = allItems.size,
+            totalBytes = packBytes,
+        )
             .onSuccess { _outcomes.emit(InstantSaveOutcome.OfflineTaskCreated(target)) }
             .onFailure { errorMessage = "保存失败：${it.message}" }
     }
