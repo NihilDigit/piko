@@ -1,10 +1,12 @@
 package dev.piko.shared.media.player
 
 import dev.piko.data.repository.NaturalOrder
+import dev.piko.shared.naming.EntryFile
 import dev.piko.shared.naming.MediaFileInput
 import dev.piko.shared.naming.Section
 import dev.piko.shared.naming.analyzeMediaBatch
 import dev.piko.shared.naming.distinctFiles
+import dev.piko.shared.naming.versionsOfPrimary
 import dev.piko.shared.state.distinctSpans
 import dev.piko.shared.state.tokenize
 
@@ -22,6 +24,14 @@ data class PlaylistEntry(
     val size: Long = 0,
     val sectionKey: String = "",
     val sectionLabel: String = "",
+    /**
+     * 同一内容的几个版本共用一个键；没有其他版本时就是 [fileId]。上一集、下一集按组走，每组算一集。
+     */
+    val groupKey: String = fileId,
+    /** 能区分同组各版本的那段标签：「HDR10」「720p」。没有其他版本时为空串。 */
+    val versionLabel: String = "",
+    /** 组里体积最大的那个。点集这一行、没有版本偏好时播它。 */
+    val primary: Boolean = true,
 )
 
 /**
@@ -50,19 +60,25 @@ fun buildPlaylist(files: List<PlaylistEntry>): List<PlaylistEntry> {
             }
             usedLabels += sectionLabel
             val sectionKey = "${work.key}/${workSection.section.name}"
-            // 同一内容的几个版本只放体积最大的一个：PikPak 本来就转码，低画质版本单独播没有意义，
-            // 逐个列出的话自动连播会把同一集再放一遍。编号相同而内容不同的文件照旧各占一项
+            // 同一内容的几个版本成一组，组里体积最大的排在最前；编号相同而内容不同的文件各自成组
             for (entry in workSection.entries) {
                 val distinct = entry.distinctFiles()
                 for (file in distinct) {
-                    val source = files[file.index]
-                    val base = entry.label ?: stemOf(source.name)
+                    val base = entry.label ?: stemOf(files[file.index].name)
                     val variant = if (distinct.size > 1) file.tags.joinToString(" ") { it.text } else ""
-                    ordered += source.copy(
-                        label = listOf(base, variant).filter { it.isNotBlank() }.joinToString(" "),
-                        sectionKey = sectionKey,
-                        sectionLabel = sectionLabel,
-                    )
+                    val label = listOf(base, variant).filter { it.isNotBlank() }.joinToString(" ")
+                    val group = if (file == entry.primary) listOf(file) + entry.versionsOfPrimary() else listOf(file)
+                    val versionLabels = versionLabels(group, files)
+                    group.forEachIndexed { index, member ->
+                        ordered += files[member.index].copy(
+                            label = label,
+                            sectionKey = sectionKey,
+                            sectionLabel = sectionLabel,
+                            groupKey = files[file.index].fileId,
+                            versionLabel = versionLabels[index],
+                            primary = index == 0,
+                        )
+                    }
                 }
                 entry.files.forEach { placed += it.index }
             }
@@ -71,6 +87,34 @@ fun buildPlaylist(files: List<PlaylistEntry>): List<PlaylistEntry> {
     val rest = files.indices.filter { it !in placed }.map { files[it] }
     ordered += buildRawPlaylist(rest).map { it.copy(sectionKey = OTHER_SECTION_KEY, sectionLabel = Section.OTHER.label) }
     return ordered
+}
+
+/**
+ * 一组里该放哪个版本：沿用正在放的版本（第 3 集切到 720p，第 4 集也放 720p），这一组没有时放体积最大的。
+ * 自动连播与选集里点「集」那一行都按这个挑
+ */
+fun preferredVersion(group: List<PlaylistEntry>, currentVersionLabel: String?): PlaylistEntry =
+    group.firstOrNull { !currentVersionLabel.isNullOrEmpty() && it.versionLabel == currentVersionLabel }
+        ?: group.first { it.primary }
+
+/**
+ * 同组各版本的名字：各自标签里别人没有的那几个（「SDR」「HDR10」「DoVi」，「1080p」「720p」）。
+ * 标签分不开时退回体积，再分不开就按先后编号。只有一个成员时为空串
+ */
+private fun versionLabels(group: List<EntryFile>, files: List<PlaylistEntry>): List<String> {
+    if (group.size < 2) return listOf("")
+    val tagSets = group.map { file -> file.tags.map { it.text }.toSet() }
+    val common = tagSets.reduce { acc, tags -> acc intersect tags }
+    val byTags = tagSets.map { (it - common).joinToString(" ") }
+    if (byTags.all { it.isNotEmpty() } && byTags.distinct().size == group.size) return byTags
+    val bySize = group.map { formatSize(files[it.index].size) }
+    if (bySize.distinct().size == group.size) return bySize
+    return group.indices.map { "版本 ${it + 1}" }
+}
+
+private fun formatSize(bytes: Long): String = when {
+    bytes >= 1L shl 30 -> "${(bytes * 10 / (1L shl 30)) / 10.0} GB"
+    else -> "${bytes / (1L shl 20)} MB"
 }
 
 /**

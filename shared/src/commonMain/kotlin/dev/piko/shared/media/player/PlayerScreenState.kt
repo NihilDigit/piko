@@ -114,14 +114,17 @@ class PlayerScreenState(
 
     val currentEntry by derivedStateOf { playlist.find { it.fileId == fileId } }
 
-    // 上一集、下一集与自动连播都只在当前分区里走：正片放完不该跳进 PV 或菜单
-    private val sectionPlaylist by derivedStateOf {
+    // 上一集、下一集与自动连播都只在当前分区里走：正片放完不该跳进 PV 或菜单。
+    // 同一内容的几个版本算一集，按组走
+    private val sectionGroups by derivedStateOf {
         val key = currentEntry?.sectionKey ?: return@derivedStateOf emptyList()
-        playlist.filter { it.sectionKey == key }
+        playlist.filter { it.sectionKey == key }.groupBy { it.groupKey }.values.toList()
     }
-    private val sectionIndex by derivedStateOf { sectionPlaylist.indexOfFirst { it.fileId == fileId } }
-    val previousEntry by derivedStateOf { sectionPlaylist.getOrNull(sectionIndex - 1)?.takeIf { sectionIndex > 0 } }
-    val nextEntry by derivedStateOf { sectionPlaylist.getOrNull(sectionIndex + 1)?.takeIf { sectionIndex >= 0 } }
+    private val groupIndex by derivedStateOf { sectionGroups.indexOfFirst { group -> group.any { it.fileId == fileId } } }
+    val previousEntry by derivedStateOf { sectionGroups.getOrNull(groupIndex - 1)?.takeIf { groupIndex > 0 }?.let(::preferredIn) }
+    val nextEntry by derivedStateOf { sectionGroups.getOrNull(groupIndex + 1)?.takeIf { groupIndex >= 0 }?.let(::preferredIn) }
+
+    private fun preferredIn(group: List<PlaylistEntry>): PlaylistEntry = preferredVersion(group, currentEntry?.versionLabel)
 
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val messages: SharedFlow<String> = _messages.asSharedFlow()

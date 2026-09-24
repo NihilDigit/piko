@@ -38,6 +38,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -82,6 +83,7 @@ import androidx.compose.ui.unit.dp
 import dev.piko.shared.media.ORIGINAL_QUALITY
 import dev.piko.shared.media.player.PlayerAspectRatio
 import dev.piko.shared.media.player.PlaylistEntry
+import dev.piko.shared.media.player.preferredVersion
 import dev.piko.ui.components.ListSpoilerBlur
 import dev.piko.ui.components.SpoilerThumbnail
 import kotlin.math.abs
@@ -254,10 +256,15 @@ private fun EpisodeEntries(
     onSelect: (PlaylistEntry) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val groups = remember(entries) { entries.groupBy { it.groupKey }.values.toList() }
+    // 版本得缩进在所属那集下面，网格排不出层级，有版本就用列表
+    val hasVersions = groups.any { it.size > 1 }
     val currentIndex = entries.indexOfFirst { it.fileId == currentFileId }.coerceAtLeast(0)
-    val useGrid = entries.all { it.label.length <= GRID_LABEL_MAX_LENGTH }
+    val useGrid = !hasVersions && entries.all { it.label.length <= GRID_LABEL_MAX_LENGTH }
 
-    if (useGrid) {
+    if (hasVersions) {
+        EpisodeVersionList(groups, currentFileId, hideThumbnails, onSelect, modifier)
+    } else if (useGrid) {
         val gridState = rememberLazyGridState(initialFirstVisibleItemIndex = currentIndex)
         LazyVerticalGrid(
             columns = GridCells.Adaptive(minSize = EPISODE_CARD_MIN_WIDTH),
@@ -293,6 +300,114 @@ private fun EpisodeEntries(
                     count = entries.size,
                     onClick = { onSelect(entry) },
                 )
+            }
+        }
+    }
+}
+
+/** 选集列表里的一行：一集，或缩进在它下面的一个版本。 */
+private sealed interface EpisodeListRow {
+    val key: String
+
+    class Episode(val group: List<PlaylistEntry>, val index: Int, val count: Int) : EpisodeListRow {
+        override val key: String get() = "g:" + group.first().groupKey
+    }
+
+    class Version(val entry: PlaylistEntry) : EpisodeListRow {
+        override val key: String get() = "v:" + entry.fileId
+    }
+}
+
+/**
+ * 有版本的选集：每集一行，其下缩进列出各个版本（「SDR」「HDR10」「DoVi」）。点集那一行按版本偏好挑
+ * （沿用正在放的版本，没有就放体积最大的），点版本行就放那个版本。整个分区只有一集时直接列版本，
+ * 顶上那一行只是把同一个名字再写一遍。
+ */
+@Composable
+private fun EpisodeVersionList(
+    groups: List<List<PlaylistEntry>>,
+    currentFileId: String,
+    hideThumbnails: Boolean,
+    onSelect: (PlaylistEntry) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val currentVersion = groups.flatten().find { it.fileId == currentFileId }?.versionLabel
+    val rows = remember(groups) {
+        if (groups.size == 1) {
+            groups.single().map { EpisodeListRow.Version(it) }
+        } else {
+            groups.flatMapIndexed { index, group ->
+                listOf(EpisodeListRow.Episode(group, index, groups.size)) +
+                    if (group.size > 1) group.map { EpisodeListRow.Version(it) } else emptyList()
+            }
+        }
+    }
+    val currentRow = rows.indexOfFirst { row ->
+        when (row) {
+            is EpisodeListRow.Episode -> row.group.any { it.fileId == currentFileId }
+            is EpisodeListRow.Version -> row.entry.fileId == currentFileId
+        }
+    }.coerceAtLeast(0)
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = currentRow)
+    LazyColumn(
+        state = listState,
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(SEGMENT_GAP),
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        items(rows.size, key = { rows[it].key }) { index ->
+            when (val row = rows[index]) {
+                is EpisodeListRow.Episode -> {
+                    val shown = preferredVersion(row.group, currentVersion)
+                    EpisodeRow(
+                        entry = shown,
+                        isCurrent = row.group.any { it.fileId == currentFileId },
+                        hideThumbnail = hideThumbnails,
+                        index = row.index,
+                        count = row.count,
+                        onClick = { onSelect(shown) },
+                    )
+                }
+                is EpisodeListRow.Version -> VersionRow(
+                    entry = row.entry,
+                    isCurrent = row.entry.fileId == currentFileId,
+                    indented = groups.size > 1,
+                    onClick = { onSelect(row.entry) },
+                )
+            }
+        }
+    }
+}
+
+/** 一集下面的一个版本：缩进、比集那一行矮，只写能区分它的那段标签。 */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun VersionRow(entry: PlaylistEntry, isCurrent: Boolean, indented: Boolean, onClick: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(12.dp),
+        color = if (isCurrent) colors.primaryContainer else colors.surfaceContainerLow,
+        contentColor = if (isCurrent) colors.onPrimaryContainer else colors.onSurface,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = if (indented) VERSION_INDENT else 0.dp)
+            .heightIn(min = 44.dp)
+            .semantics {
+                contentDescription = entry.name
+                selected = isCurrent
+            },
+    ) {
+        Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = entry.versionLabel.ifEmpty { entry.label },
+                style = if (isCurrent) MaterialTheme.typography.labelLargeEmphasized else MaterialTheme.typography.labelLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            if (isCurrent) {
+                Icon(Icons.Filled.GraphicEq, contentDescription = "正在播放", modifier = Modifier.size(18.dp))
             }
         }
     }
@@ -666,5 +781,8 @@ private const val LABEL_CONTAINER_ALPHA = 0.85f
 private const val EPISODE_SHEET_HEIGHT_FRACTION = 0.7f
 
 private val SEGMENT_GAP = 2.dp
+
+// 版本行缩进，看得出它们属于上面那一集
+private val VERSION_INDENT = 24.dp
 private val SEGMENT_OUTER_CORNER = 16.dp
 private val SEGMENT_INNER_CORNER = 4.dp

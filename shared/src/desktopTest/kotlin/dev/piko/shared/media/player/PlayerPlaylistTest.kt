@@ -35,4 +35,21 @@ class PlayerPlaylistTest {
     fun `a name that is a prefix of another is not stripped to nothing`() {
         assertEquals(listOf("Movie", "Movie Extended"), distinctLabels(listOf("Movie.mkv", "Movie Extended.mkv")))
     }
+
+    @Test
+    fun `versions of one episode form a group named by what sets them apart`() {
+        val names = listOf(
+            "[G] Show - 01 [1080p].mkv" to 2_000L, "[G] Show - 01 [720p].mkv" to 1_000L,
+            "[G] Show - 02 [1080p].mkv" to 2_000L, "[G] Show - 02 [720p].mkv" to 1_000L,
+        )
+        val list = buildPlaylist(names.mapIndexed { i, (name, size) -> PlaylistEntry("id$i", name, "", size = size) })
+        val first = list.filter { it.label == "01" }
+        assertEquals(1, first.map { it.groupKey }.distinct().size)
+        assertEquals(listOf("1080p", "720p"), first.map { it.versionLabel })
+        assertEquals(listOf(true, false), first.map { it.primary })
+        // 切到 720p 之后，下一集也放 720p；没有 720p 的组放体积最大的
+        val second = list.filter { it.label == "02" }
+        assertEquals("720p", preferredVersion(second, "720p").versionLabel)
+        assertEquals("1080p", preferredVersion(second, "480p").versionLabel)
+    }
 }
