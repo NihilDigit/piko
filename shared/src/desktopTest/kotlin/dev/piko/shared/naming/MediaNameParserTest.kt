@@ -1,5 +1,6 @@
 package dev.piko.shared.naming
 
+import kotlinx.datetime.TimeZone
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -170,5 +171,31 @@ class MediaNameParserTest {
         assertEquals(workKeyOf("Black Clover"), workKeyOf("Black Clover (TV)"))
         assertEquals(workKeyOf("Baka_Test Shoukanjuu"), workKeyOf("baka test shoukanjuu"))
         assertEquals(false, workKeyOf("Steins;Gate") == workKeyOf("Steins;Gate 0"))
+    }
+
+    @Test
+    fun `dates and prose are not episodes or title ends`() = assertParses(
+        // scene release 的两位年份日期
+        "site.25.08.26.some.performer.scene.xxx.mp4" to "site | site | -",
+        "Site 21 02 23 performer and friend.mp4" to "Site | Site | -",
+        // 整个主干只是「名字.编号」
+        "sitestreets.121.mp4" to "sitestreets | 121 | -",
+        // 年份后面还有正文时，年份是句子里的日期
+        "ABC - Jan 2, 2013 - Name One, Name Two.wmv" to "ABC - Jan 2, 2013 - Name One, Name Two | ABC - Jan 2, 2013 - Name One, Name Two | -",
+        "Show 2013 1080p.mkv" to "Show | Show | -",
+    )
+
+    @Test
+    fun `generated names become a source and a time`() {
+        val utc = TimeZone.UTC
+        // 2020-07-28T12:00:00Z，东西十一区内都是同一天
+        assertEquals("LINE 视频 2020-07-28 12:00", (generatedName("LINE_MOVIE_1595937600000", utc) as GeneratedName.Timed).label)
+        // 相机名里的时间是当地时间，不随时区换算
+        assertEquals("相机 2026-09-13 09:08", (generatedName("VID_20260913_090829_383", utc) as GeneratedName.Timed).label)
+        assertEquals(GeneratedName.Opaque, generatedName("5_6190741636838855047_(new)", utc))
+        assertEquals(GeneratedName.Opaque, generatedName("cd03bb5bbf8d6d0f", utc))
+        // 纯数字不当哈希，也不在合理年份内时不当时间戳
+        assertNull(generatedName("20240101", utc))
+        assertNull(generatedName("99999999999999", utc))
     }
 }

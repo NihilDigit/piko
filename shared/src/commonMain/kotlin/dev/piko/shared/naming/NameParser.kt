@@ -20,6 +20,16 @@ fun parseMediaName(fileName: String): ParsedName {
             )
         }
     }
+    // 应用与相机自动起的名字不进剧集解析：LINE_MOVIE 的「MOVIE」会被当成剧场版，长串数字会被当成集号
+    generatedName(stem)?.let { generated ->
+        val title = (generated as? GeneratedName.Timed)?.label ?: stem
+        return ParsedName(
+            fileName = fileName, fileKind = kind, kind = NameKind.STANDALONE, confidence = Confidence.LOW,
+            title = title, group = null, episode = null, episodeTitle = null, section = null, marker = null, label = title,
+            av = null, tags = emptyList(), language = language, languageCode = languageCode, opaque = generated == GeneratedName.Opaque,
+            timed = generated is GeneratedName.Timed,
+        )
+    }
     val series = parseSeriesStem(stem)
     return ParsedName(
         fileName = fileName, fileKind = kind, kind = series.kind, confidence = series.confidence,
@@ -76,6 +86,10 @@ private val WHITESPACE = Regex("""\s+""")
 // 「archlinux-2026.04.01」的 04、「VID_20260913_090829_383」的 383
 private val DOTTED_DATE = Regex("""(?<!\d)((?:19|20)\d{2})[._](0[1-9]|1[0-2])[._](0[1-9]|[12]\d|3[01])(?!\d)""")
 private val CAMERA_TIMESTAMP = Regex("""(?<!\d)((?:19|20)\d{6})_(\d{6})(?:_(\d{1,3}))?(?!\d)""")
+// scene release 的两位年份日期：「blacked.25.08.26.name」「Hegre 21 02 23 name」。补成四位年份，交给词表当日期噪声
+private val SCENE_DATE = Regex("""(?<=[A-Za-z][._ ])(\d{2})[. ](0[1-9]|1[0-2])[. ](0[1-9]|[12]\d|3[01])(?=[._ ]|$)""")
+// 整个主干只是「名字.编号」：czechstreets.121
+private val NAME_DOT_NUMBER = Regex("""^([A-Za-z]{2,})\.(\d{2,4})$""")
 private val PARENTHESIZED = Regex("""[(（][^)）]*[)）]""")
 
 private val BRACKET_PAIRS = mapOf('[' to ']', '(' to ')', '【' to '】', '{' to '}', '（' to '）')
@@ -84,6 +98,8 @@ internal fun normalizeStem(raw: String): String {
     var s = raw.replace('–', '-').replace('—', '-').replace('‒', '-').replace('－', '-').replace('　', ' ')
     s = H26_DOTTED.replace(s, "H26$1")
     s = DOTTED_DATE.replace(s, "$1-$2-$3")
+    s = SCENE_DATE.replace(s, "20$1-$2-$3")
+    s = NAME_DOT_NUMBER.replace(s, "$1 $2")
     // 下划线稍后会换成空格，x86_64 得先连成一个词，交给词表认作架构名
     s = s.replace("x86_64", "x86-64", ignoreCase = true)
     s = CAMERA_TIMESTAMP.replace(s) { m -> m.groupValues.drop(1).filter(String::isNotEmpty).joinToString("-") }
@@ -719,7 +735,7 @@ private fun firstTagIndex(tokens: List<NameToken>, from: Int): Int {
         when (val token = tokens[i]) {
             is NameToken.Bracket -> if (isStrongTagBracket(token) && !isYearOnly(token.content)) return i
             // 「BD Menu」「DVD Menu」里的 BD 是标记的一部分，不是片源标签
-            is NameToken.Word -> if (i > from && isTitleStoppingTag(token.text) && !startsMarkerPhrase(tokens, i)) return i
+            is NameToken.Word -> if (i > from && isTitleStoppingTag(token.text) && !startsMarkerPhrase(tokens, i) && !isYearInProse(tokens, i)) return i
             NameToken.Dash -> Unit
         }
     }
@@ -727,6 +743,16 @@ private fun firstTagIndex(tokens: List<NameToken>, from: Int): Int {
 }
 
 private fun isYearOnly(text: String) = isYearNumber(text.trim())
+
+/**
+ * 年份后面全是标签时才是标签段的起点（「Show 2013 1080p」）；后面还有正文，年份就是句子里的日期，
+ * 在这里截断会把正文整段丢掉：「HGB - Jan 2, 2013 - 一串演员名」只剩「HGB - Jan 2」
+ */
+private fun isYearInProse(tokens: List<NameToken>, i: Int): Boolean {
+    val word = (tokens[i] as NameToken.Word).text.trim(',', '.', ';')
+    if (!isYearNumber(word)) return false
+    return tokens.drop(i + 1).any { it is NameToken.Word && !isTitleStoppingTag(it.text) && isMeaningfulTitle(it.text) }
+}
 
 private fun startsMarkerPhrase(tokens: List<NameToken>, i: Int): Boolean {
     val word = (tokens[i] as? NameToken.Word)?.text ?: return false
@@ -793,7 +819,8 @@ private fun cleanTitle(title: String): String = title
     .replace(WHITESPACE, " ")
     .trim(' ', '-', '_', '~', '～', '|', ':', '：', ',')
 
-private val NOT_A_TITLE = setOf("episode", "ep", "ep.", "e", "part", "vol", "disc", "track")
+// 容器名也不是作品名：「mp4_ (3).avi」这类导出名只剩编号，不该顶着一个叫「mp4」的作品头
+private val NOT_A_TITLE = setOf("episode", "ep", "ep.", "e", "part", "vol", "disc", "track", "mp4", "mkv", "avi", "mov", "wmv", "video", "视频")
 
 /** 纯数字、单个字符、「Episode」这类词或只剩标点的「标题」不算数。 */
 private fun isMeaningfulTitle(title: String): Boolean {

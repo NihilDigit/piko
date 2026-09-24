@@ -65,6 +65,8 @@ private val WORDS: Map<String, List<MediaTag>> = buildMap {
 
     // 系统镜像的架构名，其中的数字不是集号
     noise("x86_64", "x86-64", "x64", "amd64", "arm64", "aarch64", "i386", "i686")
+    // scene release 的惯用词
+    noise("xxx", "siterip", "rarbg")
     put(TagKind.VIDEO_CODEC, "HEVC", "hevc", "h265", "x265", "h.265", "hevc10")
     put(TagKind.VIDEO_CODEC, "AVC", "avc", "h264", "x264", "h.264")
     put(TagKind.VIDEO_CODEC, "AV1", "av1")

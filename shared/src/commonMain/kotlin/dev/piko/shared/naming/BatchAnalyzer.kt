@@ -55,6 +55,8 @@ private class BatchAnalyzer(inputs: List<MediaFileInput>) {
         classifyByFolderKind()
         assignWorks()
         rejectCopyMarkers()
+        nameOpaqueFiles()
+        numberSameTimes()
         validateWeakEpisodes()
         adoptOrphans()
         inferMovies()
@@ -306,6 +308,46 @@ private class BatchAnalyzer(inputs: List<MediaFileInput>) {
     }
 
     /**
+     * 没有任何可读信息的自动生成名（Telegram 导出、哈希）按目录里的顺序编号：「视频 1」「视频 2」。
+     * 按文件名的自然顺序而不是界面上当前的排序编号，换个排序方式，同一个文件的编号不变。
+     * 每个都自成一部独立作品，与其他独立文件一起平铺。
+     */
+    private fun nameOpaqueFiles() {
+        contentItems().filter { it.parsed.opaque && it.workKind == WorkKind.SERIES }
+            .groupBy { it.folder to opaqueNoun(it.kind) }
+            .forEach { (key, group) ->
+                group.sortedWith { a, b -> NaturalOrder.compare(a.name, b.name) }.forEachIndexed { index, item ->
+                    val title = "${key.second} ${index + 1}"
+                    item.parsed = item.parsed.copy(title = title, label = title)
+                    item.workTitle = title
+                    item.workKey = "s:opaque:${key.first}/$title"
+                }
+            }
+    }
+
+    /** 同一分钟里拍的几段（VID_20260913_090829_383 与 _470）解出同一个时间，按文件名顺序加序号区分。 */
+    private fun numberSameTimes() {
+        contentItems().filter { it.parsed.timed && it.workKind == WorkKind.SERIES }
+            .groupBy { it.folder to it.parsed.title }
+            .values.filter { it.size > 1 }
+            .forEach { group ->
+                group.sortedWith { a, b -> NaturalOrder.compare(a.name, b.name) }.forEachIndexed { index, item ->
+                    val title = "${item.parsed.title} (${index + 1})"
+                    item.parsed = item.parsed.copy(title = title, label = title)
+                    item.workTitle = title
+                    // workKeyOf 会忽略括号里的内容，三个就又合成一部了
+                    item.workKey = "s:timed:${item.folder}/$title"
+                }
+            }
+    }
+
+    private fun opaqueNoun(kind: FileKind): String = when (kind) {
+        FileKind.VIDEO, FileKind.DISC_IMAGE -> "视频"
+        FileKind.IMAGE -> "图片"
+        else -> "文件"
+    }
+
+    /**
      * 裸数字集号的核对：同一作品里有两个以上这类文件而数字全相同，说明数字是作品名的一部分
      * （「Mob Psycho 100」的正片与特典），改回无集号。
      */
@@ -395,9 +437,12 @@ private class BatchAnalyzer(inputs: List<MediaFileInput>) {
         if (episodic.size < 3) return
         val median = episodic.map { it.size }.sorted()[episodic.size / 2]
         if (median <= 0) return
+        // 发布组须与分集一致：动画发布里那部电影与分集出自同一组。自拍合集里的文件没有发布组，
+        // 几段「(1)…(8)」的小分段拉低中位数，其余整段视频就全成了剧场版
+        val group = episodic.mapNotNull { it.parsed.group }.groupingBy { it }.eachCount().maxByOrNull { it.value }?.key ?: return
         content.filter {
             it.workKind == WorkKind.SERIES && it.section == Section.MAIN && it.parsed.kind == NameKind.STANDALONE &&
-                it.discRoot == null && it.isVideoLike && it.size >= median * 3
+                it.discRoot == null && it.isVideoLike && it.size >= median * 3 && it.parsed.group == group
         }.forEach { it.section = Section.MOVIE }
     }
 

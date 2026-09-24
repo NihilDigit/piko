@@ -79,4 +79,30 @@ class MediaBatchRulesTest {
         assertEquals(WorkKind.UNKNOWN, work.kind)
         assertEquals(listOf(null, null), work.sections.flatMap { it.entries }.map { it.label })
     }
+
+    @Test
+    fun `large files without the episodes group are not movies`() {
+        // 几段小分段拉低中位数，其余整段视频没有发布组，不是剧场版
+        val collection = batch(
+            "Clip Name (1).mp4" to 50_000_000,
+            "Clip Name (2).mp4" to 50_000_000,
+            "Clip Name (3).mp4" to 50_000_000,
+            "Some Long Video.mp4" to 2_000_000_000,
+        )
+        assertEquals(Section.MAIN, collection.work("Some Long Video").sections.single().section)
+    }
+
+    @Test
+    fun `opaque names are numbered by name and same times get a suffix`() {
+        val result = batch(
+            "5_6190741636838855061_(new).avi" to 1,
+            "5_6190741636838855047_(new).avi" to 1,
+            "VID_20260913_090829_470.mp4" to 1,
+            "VID_20260913_090829_383.mp4" to 1,
+        )
+        val labels = result.parsed.map { it.label }
+        assertEquals(listOf("视频 2", "视频 1"), labels.take(2), "按文件名的自然顺序编号，与输入顺序无关")
+        assertEquals(listOf("相机 2026-09-13 09:08 (2)", "相机 2026-09-13 09:08 (1)"), labels.drop(2))
+        assertEquals(4, result.works.size, "各自成一部，才能与其他独立文件一起平铺")
+    }
 }

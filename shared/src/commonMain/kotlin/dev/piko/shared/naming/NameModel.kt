@@ -144,6 +144,10 @@ data class ParsedName(
     val language: String?,
     /** 语言后缀原文，如「scjp」「zh」。 */
     val languageCode: String?,
+    /** 自动生成、没有任何可读信息的名字（Telegram 导出、哈希），由批量分析按顺序编号。 */
+    val opaque: Boolean = false,
+    /** 标题是从自动生成名里解出的时间，如「LINE 视频 2020-07-29 00:15」。 */
+    val timed: Boolean = false,
 ) {
     val recognized: Boolean get() = kind != NameKind.UNKNOWN
 }
