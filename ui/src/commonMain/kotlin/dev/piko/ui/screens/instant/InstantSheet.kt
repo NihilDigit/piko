@@ -4,7 +4,6 @@ import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,7 +20,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CornerSize
 import androidx.compose.material.icons.Icons
@@ -42,8 +40,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -77,19 +73,18 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.data.repository.PathBreadcrumb
-import dev.piko.data.repository.label
+import dev.piko.shared.state.InstantGroup
 import dev.piko.shared.state.InstantPrimaryAction
+import dev.piko.shared.state.InstantRow
 import dev.piko.shared.state.InstantSheetState
-import dev.piko.shared.state.NameGroup
 import dev.piko.shared.state.NameGroupSummary
-import dev.piko.shared.state.NameLeaf
 import dev.piko.ui.components.FileNameField
 import dev.piko.ui.components.FolderPickerDialog
+import dev.piko.ui.components.MediaTagRow
 import dev.piko.ui.components.MetaRow
 import dev.piko.ui.components.PikoLoadingIndicator
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.fileNameTypeIcon
-import dev.piko.ui.components.icon
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.theme.LocalStatusColors
@@ -170,7 +165,7 @@ fun InstantSheetContent(
         }
 
         if (state.isResolving) {
-            ResolvingRow()
+            ResolvingRow(text = if (state.isAnalyzing) "正在整理文件" else "正在查询云端索引")
         }
 
         state.errorMessage?.let { err ->
@@ -286,12 +281,12 @@ private fun SaveCaption(text: String) {
 }
 
 @Composable
-private fun ResolvingRow() {
+private fun ResolvingRow(text: String) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         PikoLoadingIndicator(size = 20.dp)
         Spacer(modifier = Modifier.width(8.dp))
         Text(
-            text = "正在查询云端索引",
+            text = text,
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -379,9 +374,6 @@ private fun ColumnScope.ResolutionSection(state: InstantSheetState, resourceName
     // 定高时列表里只看得到两三行。fill = false 让短列表照常收缩
     Column(modifier = Modifier.weight(1f, fill = false)) {
         SelectionHeader(state)
-        if (state.categoryIndices.size > 1) {
-            CategoryChips(state)
-        }
         FileTreeList(state, modifier = Modifier.weight(1f, fill = false))
     }
 }
@@ -424,35 +416,6 @@ private fun SelectionHeader(state: InstantSheetState) {
     }
 }
 
-/** 按大类整批勾选。字幕组的种子里常见的需求是「只要视频」或「视频加字幕」，逐行勾要点几十下。 */
-@Composable
-private fun CategoryChips(state: InstantSheetState) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(bottom = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        state.categoryIndices.forEach { (category, indices) ->
-            val selected = state.selectedIndices.containsAll(indices)
-            FilterChip(
-                selected = selected,
-                onClick = { state.toggleCategory(category) },
-                label = { Text("${category.label} ${indices.size}") },
-                leadingIcon = {
-                    Icon(
-                        imageVector = if (selected) Icons.Outlined.Check else category.icon(),
-                        contentDescription = null,
-                        modifier = Modifier.size(FilterChipDefaults.IconSize),
-                    )
-                },
-            )
-        }
-    }
-}
-
-
 /** 层级、展开状态与组统计都在 [InstantSheetState]，这里只按行渲染。 */
 @Composable
 private fun FileTreeList(state: InstantSheetState, modifier: Modifier = Modifier) {
@@ -469,25 +432,22 @@ private fun FileTreeList(state: InstantSheetState, modifier: Modifier = Modifier
         ) {
             items(rows, key = { it.key }) { row ->
                 when (val node = row.node) {
-                    is NameGroup -> {
+                    is InstantGroup -> {
                         GroupRow(
                             group = node,
                             depth = row.depth,
-                            isExpanded = state.isGroupExpanded(row.key, row.depth),
+                            isExpanded = state.isGroupExpanded(node),
                             summary = state.summaryOf(node),
-                            onToggleExpanded = { state.toggleGroupExpanded(row.key, row.depth) },
-                            onSelectAll = { state.setItemsSelected(node.indices, it) },
+                            onToggleExpanded = { state.toggleGroupExpanded(node) },
+                            onSelectAll = { state.setGroupSelected(node, it) },
                         )
                     }
-                    is NameLeaf -> {
-                        val item = state.items[node.index]
+                    is InstantRow -> {
                         InstantFileRow(
-                            bundledSubtitles = state.subtitleBundles[node.index]?.size ?: 0,
-                            label = node.label.ifEmpty { item.file.name },
-                            fullName = item.file.name,
-                            size = item.file.size.toReadableSize(),
+                            row = node,
+                            fullName = state.items[node.index].file.name,
                             depth = row.depth,
-                            isInstantReady = item.isInstantReady,
+                            isInstantReady = node.indices.all { state.items[it].isInstantReady },
                             checked = node.index in state.selectedIndices,
                             onCheckedChange = { state.setItemSelected(node.index, it) },
                             onPreview = if (state.canPreview(node.index)) {
@@ -515,7 +475,7 @@ private const val UNSELECTED_ALPHA = 0.6f
 
 @Composable
 private fun GroupRow(
-    group: NameGroup,
+    group: InstantGroup,
     depth: Int,
     isExpanded: Boolean,
     summary: NameGroupSummary,
@@ -544,22 +504,14 @@ private fun GroupRow(
                 .alpha(if (selectedCount == 0) UNSELECTED_ALPHA else 1f),
         ) {
             Text(
-                text = group.label,
+                text = group.title,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            // 子项里剥掉的公共结尾写在这里，否则展开后看不出这些是什么格式
-            if (group.suffix.isNotEmpty()) {
-                Text(
-                    text = "…" + group.suffix,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+            // 作品共有的标签只在这里出现一次，行里只剩有区分度的
+            MediaTagRow(tags = group.tags, modifier = Modifier.padding(vertical = 2.dp))
             MetaRow(
                 parts = listOf(
                     if (selectedCount == total || selectedCount == 0) "$total 项" else "已选 $selectedCount / $total",
@@ -632,10 +584,8 @@ private fun CopyLinkButton(link: String, modifier: Modifier = Modifier) {
 
 @Composable
 private fun InstantFileRow(
-    bundledSubtitles: Int,
-    label: String,
+    row: InstantRow,
     fullName: String,
-    size: String,
     depth: Int,
     isInstantReady: Boolean,
     checked: Boolean,
@@ -643,7 +593,12 @@ private fun InstantFileRow(
     onPreview: (() -> Unit)?,
     isPreviewing: Boolean,
 ) {
-    val isCompact = label.length <= SHORT_LABEL
+    val isCompact = row.label.length <= SHORT_LABEL
+    val meta = listOfNotNull(
+        row.bytes.toReadableSize(),
+        "+${row.subtitleCount} 字幕".takeIf { row.subtitleCount > 0 },
+        "+${row.audioTrackCount} 音轨".takeIf { row.audioTrackCount > 0 },
+    )
     // 整行是一个复选项，Checkbox 只作显示，免得同一次点击被行与复选框各处理一遍
     Row(
         modifier = Modifier
@@ -660,8 +615,7 @@ private fun InstantFileRow(
                 .alpha(if (checked) 1f else UNSELECTED_ALPHA),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // 种子里视频、字幕、图片、nfo 常混在一起，只读文件名分不快。类型按全名判断：
-            // 折叠后的片段可能只剩「.sc.ass」，也可能是不带扩展名的中段
+            // 视频、图片、压缩包、nfo 常混在一起，短标签看不出类型，图标按原始文件名判断
             Icon(
                 imageVector = fileNameTypeIcon(fullName),
                 contentDescription = null,
@@ -669,36 +623,48 @@ private fun InstantFileRow(
                 modifier = Modifier.size(24.dp),
             )
             Spacer(modifier = Modifier.width(12.dp))
-            val meta = listOfNotNull(size, "+$bundledSubtitles 字幕".takeIf { bundledSubtitles > 0 })
-            // 公共前后缀剥掉之后，剧集常只剩「[01]」，再给大小单占一行，一集就是两行高。
-            // 短名字把大小放到同一行右侧，二十几集的列表矮一半
+            // 短标签（「01」「23 Beta」）与标签、大小排成一行，二十几集的列表矮一半；
+            // 原始文件名放不下，标签与大小另起一行
             if (isCompact) {
                 Text(
-                    text = label,
+                    text = row.label,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
-                    modifier = Modifier.weight(1f),
                 )
+                Spacer(modifier = Modifier.width(8.dp))
+                // 标签只占剩下的宽度，放不下就整个丢掉，不挤压大小
+                Box(modifier = Modifier.weight(1f)) {
+                    MediaTagRow(tags = row.tags)
+                }
                 MetaRow(
                     parts = meta,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 8.dp),
                 )
             } else {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = label,
+                        text = row.label,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    MetaRow(
-                        parts = meta,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        MetaRow(
+                            parts = meta,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        if (row.tags.isNotEmpty()) {
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Box(modifier = Modifier.weight(1f)) {
+                                MediaTagRow(tags = row.tags)
+                            }
+                        }
+                    }
                 }
             }
         }

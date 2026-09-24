@@ -16,7 +16,9 @@ import dev.piko.shared.data.OfflinePackTracker
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.PreviewTempFolder
+import dev.piko.shared.naming.MediaFileInput
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -24,6 +26,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class NameGroupSummary(val selected: Int, val total: Int, val bytes: Long, val hasUnindexed: Boolean)
 
@@ -59,8 +62,8 @@ data class InstantPreviewRequest(val fileId: String, val fileName: String)
 /**
  * 秒传与磁力解析的工作台状态，两端共用。
  *
- * 流程：粘上磁力链自动解析（防抖），按启发式预选主体文件，确定保存目标（记住的目标、
- * 失效则回退 My Packs），然后按 [planSave] 定的路线秒传或整包离线。
+ * 流程：粘上磁力链自动解析（防抖），按文件名解析器组织成「作品 → 分区 → 条目」并预选正片，
+ * 确定保存目标（记住的目标、失效则回退 My Packs），然后按 [planSave] 定的路线秒传或整包离线。
  *
  * 视频行可以预览：秒传进 Piko-Temp 再播放，同一会话内不重复秒传，保存时直接移过去。
  * 会话结束（作用域取消）时，用过 Piko-Temp 就把它整个删掉。
@@ -93,6 +96,11 @@ class InstantSheetState(
 
     var isResolving by mutableStateOf(false)
         private set
+
+    /** 云端已返回文件列表，正在后台按文件名整理。属于 [isResolving] 的后半段。 */
+    var isAnalyzing by mutableStateOf(false)
+        private set
+
     var isSaving by mutableStateOf(false)
         private set
     var resolution by mutableStateOf<MagnetResolutionResult?>(null)
@@ -112,7 +120,7 @@ class InstantSheetState(
     var targetNotice by mutableStateOf<String?>(null)
         private set
 
-    /** 多项保存时的文件夹名，解析成功后以资源名预填。整包离线完成后产出文件夹改成这个名字。 */
+    /** 多项保存时的文件夹名，解析成功后以主作品的标题预填。整包离线完成后产出文件夹改成这个名字。 */
     var folderName by mutableStateOf("")
         private set
 
@@ -170,51 +178,33 @@ class InstantSheetState(
         items.isNotEmpty() && selectedIndices.size == items.size
     }
 
-    /** 偏好项，见 [subtitleBundles]。 */
-    private var isBundleSubtitlesEnabled by mutableStateOf(true)
+    /** 解析结果的文件树，与 [resolution] 同时就位。 */
+    var tree by mutableStateOf<InstantTree?>(null)
+        private set
 
-    /** 视频下标 → 随它打包的字幕下标。关掉偏好时为空，字幕照常单列。 */
-    val subtitleBundles: Map<Int, List<Int>> by derivedStateOf {
-        if (isBundleSubtitlesEnabled) subtitleBundles(items.map { it.file.name }) else emptyMap()
-    }
+    /** 列表里的行数：字幕等附件随视频成一行，不单算，与视图对得上。 */
+    val entryCount: Int by derivedStateOf { tree?.rows?.size ?: 0 }
+    val selectedEntryCount: Int by derivedStateOf { tree?.rows?.count { it.index in selectedIndices } ?: 0 }
 
-    private val bundledSubtitles: Set<Int> by derivedStateOf { subtitleBundles.values.flatten().toSet() }
-
-    /** 列表里的条目数：打包进视频的字幕不算，与视图里的行对得上。 */
-    val entryCount: Int by derivedStateOf { items.size - bundledSubtitles.size }
-    val selectedEntryCount: Int by derivedStateOf { selectedIndices.count { it !in bundledSubtitles } }
-
-    /** 文件名按公共前缀折叠出的层级，见 [buildNameTree]。已随视频打包的字幕不单列。 */
-    val nameTree: List<NameNode> by derivedStateOf {
-        buildNameTree(items.map { it.file.name }.withIndex().filter { it.index !in bundledSubtitles })
-    }
-
-    /** 视图上显示的层级：去掉了与资源名重复的顶层组，见 [withoutRedundantGroups]。 */
-    val displayTree: List<NameNode> by derivedStateOf {
-        nameTree.withoutRedundantGroups(resolution?.resource?.name.orEmpty())
-    }
-
-    // 用户手动展开或收起过的组；没记录的按 isGroupExpanded 的默认规则。换一次解析结果就清空
+    // 用户手动展开或收起过的组；没记录的按组自带的默认值。换一次解析结果就清空
     private val expandedGroups = mutableStateMapOf<String, Boolean>()
 
     /**
-     * 顶层只有一个组时默认展开它，其余一律收起：一个资源常分正片、剧场版、特典几组，
-     * 全展开时第一屏只看得到第一组的头几行，收起时是一张目录，一组一行。
      * 放在状态里而不是视图里：面板收起再展开、两端各自的视图，看到的展开状态都一致。
+     * 默认值见 [buildInstantTree]：正片、SP、剧场版展开，PV、特典、菜单与「其他文件」收起。
      */
-    fun isGroupExpanded(key: String, depth: Int): Boolean =
-        expandedGroups[key] ?: (depth == 0 && displayTree.count { it is NameGroup } == 1)
+    fun isGroupExpanded(group: InstantGroup): Boolean = expandedGroups[group.key] ?: group.defaultExpanded
 
-    fun toggleGroupExpanded(key: String, depth: Int) {
-        expandedGroups[key] = !isGroupExpanded(key, depth)
+    fun toggleGroupExpanded(group: InstantGroup) {
+        expandedGroups[group.key] = !isGroupExpanded(group)
     }
 
-    val treeRows: List<NameTreeRow> by derivedStateOf { flattenNameTree(displayTree, ::isGroupExpanded) }
+    val treeRows: List<InstantTreeRow> by derivedStateOf { tree?.flatten(::isGroupExpanded).orEmpty() }
 
-    /** 组行上显示的统计。条目数不含打包进视频的字幕，与行对得上。 */
-    fun summaryOf(group: NameGroup): NameGroupSummary = NameGroupSummary(
-        selected = group.indices.count { it in selectedIndices },
-        total = group.indices.size,
+    /** 组行上显示的统计。条目数按行计，不含随视频的字幕。 */
+    fun summaryOf(group: InstantGroup): NameGroupSummary = NameGroupSummary(
+        selected = group.rows.count { it.index in selectedIndices },
+        total = group.rows.size,
         bytes = group.indices.sumOf { items[it].file.size },
         hasUnindexed = group.indices.any { !items[it].isInstantReady },
     )
@@ -252,14 +242,6 @@ class InstantSheetState(
         }
     }
 
-    /** 各大类的文件下标，按类整批勾选用。只有一类时没有可筛的，视图不必显示。 */
-    val categoryIndices: Map<FileCategory, List<Int>> by derivedStateOf {
-        items.indices.filter { it !in bundledSubtitles }.groupBy { items[it].file.name.fileCategory() }
-            .toList()
-            .sortedBy { (category, _) -> category.ordinal }
-            .toMap()
-    }
-
     private var resolveJob: Job? = null
     private var resolvedKey: String? = null
 
@@ -269,7 +251,6 @@ class InstantSheetState(
             if (usedPreviewFolder) previewFolder.clearInBackground()
         }
         scope.launch { target = resolveTarget() }
-        scope.launch { preferences.bundleSubtitlesFlow.collect { isBundleSubtitlesEnabled = it } }
         if (initialMagnet.isNotBlank()) {
             if (normalizeMagnet(initialMagnet) == null) {
                 // 外部唤起的链不合法时自动解析不会发生，而输入框又是收起的，不兜住就是一个空面板
@@ -300,20 +281,15 @@ class InstantSheetState(
         setItemsSelected(listOf(index), selected)
     }
 
-    /** 整批勾选或取消，给目录层级与大类用。 */
-    fun setItemsSelected(indices: Collection<Int>, selected: Boolean) {
-        val affected = withBundles(indices)
-        selectedIndices = if (selected) selectedIndices + affected else selectedIndices - affected
+    /** 整组勾选或取消，给作品、分区与「其他文件」用。 */
+    fun setGroupSelected(group: InstantGroup, selected: Boolean) {
+        setItemsSelected(group.indices, selected)
     }
 
-    /** 勾视频就连同它的字幕，取消亦然；视图里字幕不单列，没有别的途径碰到它们。 */
-    private fun withBundles(indices: Collection<Int>): Set<Int> =
-        indices.toSet() + indices.flatMap { subtitleBundles[it].orEmpty() }
-
-    /** 这一类已全选就全部取消，否则补齐。 */
-    fun toggleCategory(category: FileCategory) {
-        val indices = categoryIndices[category].orEmpty()
-        setItemsSelected(indices, selected = !selectedIndices.containsAll(indices))
+    /** 勾视频就连同挂在它下面的字幕，取消亦然；视图里字幕不单列，没有别的途径碰到它们。 */
+    private fun setItemsSelected(indices: Collection<Int>, selected: Boolean) {
+        val affected = indices.flatMap { index -> tree?.rowOf(index)?.indices ?: listOf(index) }.toSet()
+        selectedIndices = if (selected) selectedIndices + affected else selectedIndices - affected
     }
 
     fun toggleSelectAll() {
@@ -433,6 +409,7 @@ class InstantSheetState(
         resolvedKey = magnet
         resolveJob?.cancel()
         resolution = null
+        tree = null
         selectedIndices = emptySet()
         errorMessage = null
         if (magnet == null) return
@@ -450,29 +427,27 @@ class InstantSheetState(
             } finally {
                 // 换链取消上一次解析时也要走到这里，否则指示器会一直转
                 isResolving = false
+                isAnalyzing = false
             }
         }
     }
 
-    private fun applyResolution(data: MagnetResolutionResult?) {
+    private suspend fun applyResolution(data: MagnetResolutionResult?) {
         if (data == null) {
             errorMessage = "云端未收录，可离线下载"
             isInputVisible = true
             return
         }
+        isAnalyzing = true
+        val inputs = data.items.map { MediaFileInput(it.file.path, it.file.size) }
+        val built = withContext(Dispatchers.Default) { buildInstantTree(inputs, data.resource.name) }
+        // 树与解析结果一起就位，面板不会先闪一个没有分组的列表
+        tree = built
         resolution = data
         expandedGroups.clear()
         isInputVisible = false
-        folderName = FileNameSanitizer.sanitize(data.resource.name)
-        // 与网盘列表的启发式折叠同一套判据：剔掉 sample/subs 这类次要目录里的文件，
-        // 再按最大文件的十分之一卡一道门槛。用户仍可手改。
-        // 主体判据按大小卡门槛，字幕总会被筛掉，靠打包带回来
-        selectedIndices = withBundles(
-            mainContentIndices(
-                data.items.map { it.file.path },
-                data.items.map { it.file.size },
-            ),
-        )
+        folderName = built.folderName
+        selectedIndices = built.defaultSelection
         scope.launch { refreshRemainingBytes() }
     }
 
