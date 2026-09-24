@@ -6,6 +6,7 @@ import dev.piko.shared.naming.AttachmentKind
 import dev.piko.shared.naming.EntryFile
 import dev.piko.shared.naming.FileKind
 import dev.piko.shared.naming.MediaBatch
+import dev.piko.shared.naming.MediaEntry
 import dev.piko.shared.naming.MediaFileInput
 import dev.piko.shared.naming.MediaWork
 import dev.piko.shared.naming.Section
@@ -13,6 +14,8 @@ import dev.piko.shared.naming.SecondaryReason
 import dev.piko.shared.naming.WorkKind
 import dev.piko.shared.naming.WorkSection
 import dev.piko.shared.naming.analyzeMediaBatch
+import dev.piko.shared.naming.distinctFiles
+import dev.piko.shared.naming.versionsOfPrimary
 
 sealed interface InstantNode {
     val key: String
@@ -22,6 +25,7 @@ sealed interface InstantNode {
  * 可勾选的一行：一个视频（或其他正文文件）连同挂在它下面的字幕、音轨、封面、原盘文件。
  * [indices] 是勾这一行时一并勾上的全部文件，首项是 [index] 本身。
  * [label] 是解析器给的短标签；解析器没认出来的与次要文件用原始文件名。
+ * [versions] 是同一内容的其他版本，缩进显示在这一行下面，默认不勾。
  */
 data class InstantRow(
     val index: Int,
@@ -33,6 +37,9 @@ data class InstantRow(
     val bytes: Long,
     /** 挂在这一行下的字幕文件。「保存配套字幕」关闭时保存会跳过它们，勾选与显示不受影响。 */
     val subtitleIndices: List<Int> = emptyList(),
+    /** 番号芯片，与网盘列表相同：标题是片名时才有。 */
+    val code: String? = null,
+    val versions: List<InstantRow> = emptyList(),
 ) : InstantNode {
     override val key: String get() = "f:$index"
 }
@@ -47,7 +54,7 @@ data class InstantGroup(
 ) : InstantNode {
     val rows: List<InstantRow> = children.flatMap { child ->
         when (child) {
-            is InstantRow -> listOf(child)
+            is InstantRow -> listOf(child) + child.versions
             is InstantGroup -> child.rows
         }
     }
@@ -70,7 +77,7 @@ class InstantTree(
 ) {
     val rows: List<InstantRow> = roots.flatMap { node ->
         when (node) {
-            is InstantRow -> listOf(node)
+            is InstantRow -> listOf(node) + node.versions
             is InstantGroup -> node.rows
         }
     }
@@ -83,7 +90,11 @@ class InstantTree(
     fun flatten(isExpanded: (InstantGroup) -> Boolean): List<InstantTreeRow> = buildList {
         fun visit(node: InstantNode, depth: Int) {
             add(InstantTreeRow(node.key, depth, node))
-            if (node is InstantGroup && isExpanded(node)) node.children.forEach { visit(it, depth + 1) }
+            when (node) {
+                is InstantGroup -> if (isExpanded(node)) node.children.forEach { visit(it, depth + 1) }
+                // 版本不收起：它们是这一行的选项，藏起来就看不出存的是哪个
+                is InstantRow -> node.versions.forEach { visit(it, depth + 1) }
+            }
         }
         roots.forEach { visit(it, 0) }
     }
@@ -95,6 +106,8 @@ class InstantTree(
  * 形状：
  * - 每部作品一组，组行带作品共有的标签；只有一个分区时不再套分区一层，只有一个条目时连作品一层也不要，
  *   直接是一行（单文件种子、番号合集里的每个番号）；
+ * - 作品名、番号行与版本合并同网盘列表：第二季起作品名带季号，番号行是片名加番号芯片，
+ *   同一内容的几个版本收在体积最大的那行下面，默认只勾它。PikPak 播放时自己转码，低画质版本另存一份没有用；
  * - 解析器认不出的放在最后的「其他」组，行上是原始文件名；整批都认不出时不套这一层；
  * - 次要文件（广告、字体、sample、扫图……）放进收起的「其他文件」，不止一种原因时按原因再分组。
  */
@@ -121,6 +134,7 @@ fun buildRawInstantTree(files: List<MediaFileInput>, resourceName: String): Inst
 
 private class InstantTreeBuilder(private val files: List<MediaFileInput>, private val batch: MediaBatch) {
     private val placed = HashSet<Int>()
+    private val versionIndices = HashSet<Int>()
 
     fun build(resourceName: String): InstantTree {
         val known = batch.works.filter { it.kind != WorkKind.UNKNOWN }
@@ -131,7 +145,7 @@ private class InstantTreeBuilder(private val files: List<MediaFileInput>, privat
 
         val unknownRows = batch.works.filter { it.kind == WorkKind.UNKNOWN }
             .flatMap { work -> work.sections.flatMap { it.entries } }
-            .flatMap { entry -> entry.files.map { contentRow(it, label = null, extraTags = emptyList()) } }
+            .flatMap { entry -> entry.files.map { contentRow(work = null, file = it, label = null, extraTags = emptyList()) } }
         val secondaryIndices = batch.secondary.map { it.index }.toSet()
         // 解析器理应把每个文件放进作品、附件或次要文件之一；万一漏了，也要让它出现在面板上，否则勾不到也存不了
         val strays = files.indices.filter { it !in placed && it !in secondaryIndices }.map { rawRow(it) }
@@ -144,7 +158,7 @@ private class InstantTreeBuilder(private val files: List<MediaFileInput>, privat
 
         secondaryNode()?.let { roots += it }
 
-        val selection = batch.defaultSelection().ifEmpty { files.indices.toSet() }
+        val selection = (batch.defaultSelection() - versionIndices).ifEmpty { files.indices.toSet() }
         return InstantTree(roots, selection, FileNameSanitizer.sanitize(resourceName))
     }
 
@@ -157,22 +171,23 @@ private class InstantTreeBuilder(private val files: List<MediaFileInput>, privat
             // 单独成行时没有组行来放作品名与公共标签，并回行里。番号与剧场版的行标题就是作品名，不重复
             val entry = work.sections.single().entries.single()
             val label = entry.label?.let { label ->
-                val title = work.title
+                val title = displayTitle(work)
                 if (title == null || label.contains(title, ignoreCase = true)) label else "$title $label"
             }
-            return entry.files.map { contentRow(it, label, extraTags = commonTags) }
+            // 番号的公共标签已由 rowTags 并进行里
+            return entryRows(work, entry, label, extraTags = if (work.kind == WorkKind.AV) emptyList() else commonTags)
         }
-        val title = work.title ?: resourceName
+        val title = displayTitle(work) ?: resourceName
         val workKey = "w:" + work.key
         val children: List<InstantNode> = if (work.sections.size == 1) {
-            sectionRows(work.sections.single())
+            sectionRows(work, work.sections.single())
         } else {
             work.sections.map { section ->
                 InstantGroup(
                     key = workKey + "|" + section.section.name,
                     title = section.section.label,
                     tags = emptyList(),
-                    children = sectionRows(section),
+                    children = sectionRows(work, section),
                     defaultExpanded = section.section in EXPANDED_SECTIONS,
                 )
             }
@@ -189,18 +204,44 @@ private class InstantTreeBuilder(private val files: List<MediaFileInput>, privat
         )
     }
 
-    private fun sectionRows(section: WorkSection): List<InstantRow> =
-        section.entries.flatMap { entry -> entry.files.map { contentRow(it, entry.label, extraTags = emptyList()) } }
+    private fun sectionRows(work: MediaWork, section: WorkSection): List<InstantRow> =
+        section.entries.flatMap { entry -> entryRows(work, entry, entry.label, extraTags = emptyList()) }
 
-    private fun contentRow(file: EntryFile, label: String?, extraTags: List<String>): InstantRow {
+    /** 一个条目的行：各自该占一行的文件（主文件，加上编号相同、内容不同的文件），主文件的其他版本挂在它下面。 */
+    private fun entryRows(work: MediaWork, entry: MediaEntry, label: String?, extraTags: List<String>): List<InstantRow> {
+        val versions = entry.versionsOfPrimary()
+        val names = versionNames(listOf(entry.primary) + versions)
+        return entry.distinctFiles().map { file ->
+            if (file != entry.primary || versions.isEmpty()) return@map contentRow(work, file, label, extraTags)
+            val versionRows = versions.mapIndexed { i, version ->
+                versionIndices += listOf(version.index) + version.attachments.map { it.index }
+                contentRow(work, version, names[i + 1], extraTags = emptyList())
+            }
+            contentRow(work, file, label, extraTags + "${versions.size + 1} 版本").copy(versions = versionRows)
+        }
+    }
+
+    /** 版本行的名字：各自标签里别人没有的那几个（「1080p」「720p」）。标签分不开时按先后编号，大小行上本来就有。 */
+    private fun versionNames(group: List<EntryFile>): List<String> {
+        val tagSets = group.map { file -> file.tags.map { it.text }.toSet() }
+        val common = tagSets.reduce { acc, tags -> acc intersect tags }
+        val byTags = tagSets.map { (it - common).joinToString(" ") }
+        if (byTags.all { it.isNotEmpty() } && byTags.distinct().size == group.size) return byTags
+        return group.indices.map { "版本 ${it + 1}" }
+    }
+
+    private fun contentRow(work: MediaWork?, file: EntryFile, label: String?, extraTags: List<String>): InstantRow {
         val indices = listOf(file.index) + file.attachments.map { it.index }
         placed += indices
-        val shortLabel = label?.let(::withoutBrackets)
+        val av = file.name.av?.takeIf { work?.kind == WorkKind.AV }
+        val shortLabel = av?.displayTitle() ?: label?.let(::withoutBrackets)
+        val ownTags = if (work != null) rowTags(work, file) else file.tags
         return InstantRow(
             index = file.index,
             label = shortLabel ?: fileNameOf(file.index),
+            code = av?.chip,
             // 标签行放不下时从后往前丢，有区分度的排前面，作品公共标签垫底
-            tags = file.tags.map { it.text } + listOfNotNull(file.languageTag) + extraTags,
+            tags = (ownTags.map { it.text } + listOfNotNull(file.languageTag) + extraTags).distinct(),
             indices = indices,
             subtitleCount = file.attachments.count { it.kind == AttachmentKind.SUBTITLE },
             audioTrackCount = file.attachments.count { it.kind == AttachmentKind.AUDIO_TRACK },

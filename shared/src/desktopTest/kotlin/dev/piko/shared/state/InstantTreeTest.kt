@@ -135,4 +135,29 @@ class InstantTreeTest {
         val tree = buildInstantTree(files, "精选合集")
         assertEquals(listOf("ABC-123", "XYZ-456"), tree.rows.map { it.label })
     }
+
+    @Test
+    fun `a code with a title shows the title and a code chip`() {
+        val tree = buildInstantTree(listOf(MediaFileInput("ABC-123 某个片名.mp4", 4L shl 30)), "ABC-123")
+        val row = tree.rows.single()
+        assertEquals("某个片名", row.label)
+        assertEquals("ABC-123", row.code)
+    }
+
+    /** 同一集的两种画质收成一行，低画质缩进在下面、默认不勾：PikPak 自己转码，另存一份没有用。 */
+    @Test
+    fun `lower quality versions sit under the largest one and stay unchecked`() {
+        val files = listOf(
+            MediaFileInput("[Group] Show - 01 [1080p].mkv", 1400L shl 20),
+            MediaFileInput("[Group] Show - 01 [720p].mkv", 700L shl 20),
+            MediaFileInput("[Group] Show - 02 [1080p].mkv", 1400L shl 20),
+        )
+        val tree = buildInstantTree(files, "Show")
+        val episode01 = tree.rows.single { it.index == 0 }
+        assertEquals(listOf(1), episode01.versions.map { it.index })
+        assertEquals("720p", episode01.versions.single().label)
+        assertEquals(setOf(0, 2), tree.defaultSelection)
+        val flat = tree.flatten { true }
+        assertEquals(flat.single { it.key == "f:0" }.depth + 1, flat.single { it.key == "f:1" }.depth)
+    }
 }

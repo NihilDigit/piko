@@ -203,11 +203,15 @@ private fun withoutCollidingStandalone(views: Map<String, DriveFileView>, batch:
     return if (colliding.isEmpty()) views else views - colliding
 }
 
+/** 一行文件的标签。番号一部一作品，作品级的公共标签就是这个文件自己的，逐行显示；「中字」「无码」排在最前。 */
+internal fun rowTags(work: MediaWork, file: EntryFile): List<MediaTag> =
+    if (work.kind == WorkKind.AV) (file.tags + work.commonTags).distinct().sortedBy { if (it.pinned) 0 else 1 } else file.tags
+
 /**
  * 作品头上的作品名。解析器把季号拆进了集号，第二季的目录里作品头只剩「Yuru Camp」，与第一季同名；
  * 正片全是同一季（第二季起）时拼回去
  */
-private fun displayTitle(work: MediaWork): String? {
+internal fun displayTitle(work: MediaWork): String? {
     val title = work.title ?: return null
     val season = work.sections.firstOrNull { it.section == Section.MAIN }?.entries?.map { it.episode?.season }?.distinct()?.singleOrNull()
     return if (season != null && season >= 2) "$title Season $season" else title
@@ -232,8 +236,7 @@ private fun fileView(work: MediaWork, section: Section, entry: MediaEntry, file:
     val av = file.name.av?.takeIf { work.kind == WorkKind.AV }
     val avTitle = av?.displayTitle()
     val title = avTitle ?: entry.label?.let(::stripBrackets) ?: file.name.fileName.substringBeforeLast('.')
-    // 番号一部一作品，作品级的公共标签就是这个文件自己的，逐行显示；「中字」「无码」排在最前
-    val ownTags = if (work.kind == WorkKind.AV) (file.tags + work.commonTags).distinct().sortedBy { if (it.pinned) 0 else 1 } else file.tags
+    val ownTags = rowTags(work, file)
     val languages = attachmentTags(file)
     val versionCount = if (file == entry.primary) entry.versionsOfPrimary().size + 1 else 1
     val versions = listOfNotNull("$versionCount 版本".takeIf { versionCount > 1 })

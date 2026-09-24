@@ -635,7 +635,7 @@ private fun InstantFileRow(
                 Spacer(modifier = Modifier.width(8.dp))
                 // 标签只占剩下的宽度，放不下就整个丢掉，不挤压大小
                 Box(modifier = Modifier.weight(1f)) {
-                    MediaTagRow(tags = row.tags)
+                    MediaTagRow(tags = row.tags, lead = row.code)
                 }
                 MetaRow(
                     parts = meta,
@@ -658,10 +658,10 @@ private fun InstantFileRow(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        if (row.tags.isNotEmpty()) {
+                        if (row.tags.isNotEmpty() || row.code != null) {
                             Spacer(modifier = Modifier.width(8.dp))
                             Box(modifier = Modifier.weight(1f)) {
-                                MediaTagRow(tags = row.tags)
+                                MediaTagRow(tags = row.tags, lead = row.code)
                             }
                         }
                     }
