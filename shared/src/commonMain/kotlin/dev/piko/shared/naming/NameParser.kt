@@ -72,6 +72,10 @@ private val AMBIGUOUS_MARKERS = setOf("op", "ed", "sp", "cm", "cf")
 private val SHORT_NUMBER = Regex("""^\d{1,2}$""")
 private val ABSOLUTE_NUMBER = Regex("""^\d{2,4}$""")
 private val WHITESPACE = Regex("""\s+""")
+// 完整日期与拍摄时间戳合成一个记号，否则点与下划线换成空格后月份、日子、毫秒各自成了集号候选：
+// 「archlinux-2026.04.01」的 04、「VID_20260913_090829_383」的 383
+private val DOTTED_DATE = Regex("""(?<!\d)((?:19|20)\d{2})[._](0[1-9]|1[0-2])[._](0[1-9]|[12]\d|3[01])(?!\d)""")
+private val CAMERA_TIMESTAMP = Regex("""(?<!\d)((?:19|20)\d{6})_(\d{6})(?:_(\d{1,3}))?(?!\d)""")
 private val PARENTHESIZED = Regex("""[(（][^)）]*[)）]""")
 
 private val BRACKET_PAIRS = mapOf('[' to ']', '(' to ')', '【' to '】', '{' to '}', '（' to '）')
@@ -79,6 +83,10 @@ private val BRACKET_PAIRS = mapOf('[' to ']', '(' to ')', '【' to '】', '{' to
 internal fun normalizeStem(raw: String): String {
     var s = raw.replace('–', '-').replace('—', '-').replace('‒', '-').replace('－', '-').replace('　', ' ')
     s = H26_DOTTED.replace(s, "H26$1")
+    s = DOTTED_DATE.replace(s, "$1-$2-$3")
+    // 下划线稍后会换成空格，x86_64 得先连成一个词，交给词表认作架构名
+    s = s.replace("x86_64", "x86-64", ignoreCase = true)
+    s = CAMERA_TIMESTAMP.replace(s) { m -> m.groupValues.drop(1).filter(String::isNotEmpty).joinToString("-") }
     // 没有空格（或空格远少于点）的名字才把 _ 与 . 当作空格：「[AonE]_Naruto_198」「Dragon.Ball.Z.S01E19」
     // 「Space.Brothers.S01EP13.3-D Ant.1080p」。空格多时它们多半是名字的一部分，如「Tai-Ari Deshita.」「Beta.Ver」。
     // 两个判断都看原名：先换了下划线，点号那一步就会以为名字里本来有空格

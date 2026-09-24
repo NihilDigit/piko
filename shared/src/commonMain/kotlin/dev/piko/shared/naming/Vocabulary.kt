@@ -63,6 +63,8 @@ private val WORDS: Map<String, List<MediaTag>> = buildMap {
     fun put(kind: TagKind, text: String, vararg keys: String) = keys.forEach { put(it, tag(kind, text)) }
     fun noise(vararg keys: String) = keys.forEach { put(it, emptyList()) }
 
+    // 系统镜像的架构名，其中的数字不是集号
+    noise("x86_64", "x86-64", "x64", "amd64", "arm64", "aarch64", "i386", "i686")
     put(TagKind.VIDEO_CODEC, "HEVC", "hevc", "h265", "x265", "h.265", "hevc10")
     put(TagKind.VIDEO_CODEC, "AVC", "avc", "h264", "x264", "h.264")
     put(TagKind.VIDEO_CODEC, "AV1", "av1")
@@ -151,6 +153,14 @@ private val WEAK_TITLE_WORDS = setOf(
 )
 
 private val RESOLUTION_P = Regex("""^(\d{3,4})[pPiI]$""")
+
+// 「NNNp」只认常见的画面高度：合集名里的「200P」「435P」是图片张数
+private val STANDARD_HEIGHTS = setOf(240, 288, 360, 480, 540, 576, 720, 900, 1080, 1440, 2160, 4320)
+
+// 合集的体积与数量：「45.7G」「69.2 GB」「154V」「42P+17V」「338V81P51G」。认得但不显示，
+// 这样整段方括号才会被当作标签段，从标题里去掉；数字后面的 GB 也就不会被当成简体字幕的 GB
+private val SIZE_OR_COUNT = Regex("""^(?:\d+(?:\.\d+)?[VPGMT]B?)+$""", RegexOption.IGNORE_CASE)
+private val SIZE_UNITS = setOf("gb", "mb", "tb", "g", "m", "t")
 private val RESOLUTION_WXH = Regex("""^(\d{3,4})[xX×*](\d{3,4})$""")
 private val CRC = Regex("""^[0-9A-Fa-f]{8}$""")
 private val AUDIO_WITH_CHANNELS = Regex("""^(aac|flac|ac3|eac3|e-ac3|dd|ddp|dd\+|dts|opus|lpcm|pcm|truehd)[\d.x]+$""", RegexOption.IGNORE_CASE)
@@ -195,7 +205,11 @@ internal fun lookupTagWord(word: String): List<MediaTag>? {
     if (token.isEmpty()) return emptyList()
     val lower = token.lowercase()
     WORDS[lower]?.let { return it }
-    RESOLUTION_P.matchEntire(token)?.let { return listOf(resolutionTag(it.groupValues[1].toInt())) }
+    RESOLUTION_P.matchEntire(token)?.let { match ->
+        val height = match.groupValues[1].toInt()
+        if (height in STANDARD_HEIGHTS) return listOf(resolutionTag(height))
+    }
+    if (SIZE_OR_COUNT.matches(token)) return emptyList()
     RESOLUTION_WXH.matchEntire(token)?.let { return listOf(resolutionTag(it.groupValues[2].toInt())) }
     FRAME_RATE.matchEntire(token)?.let { return tag(TagKind.FRAME_RATE, "${it.groupValues[1]}fps") }
     AUDIO_WITH_CHANNELS.matchEntire(token)?.let { match ->
@@ -219,7 +233,8 @@ private fun cjkTag(token: String): List<MediaTag>? {
             "繁体" in token || "繁體" in token || "繁中" in token || token == "繁" -> add(MediaTag(TagKind.SUBTITLES, "繁"))
         }
         if ("中文字幕" in token || "中字" in token) add(MediaTag(TagKind.SUBTITLES, MediaTag.CHINESE_SUBTITLES))
-        if (listOf("无码", "無碼", "无修正", "無修正", "破解", "流出").any { it in token }) {
+        // 「未流出」是没流出过，不是无码
+        if (listOf("无码", "無碼", "无修正", "無修正", "破解", "流出").any { it in token } && "未流出" !in token) {
             add(MediaTag(TagKind.CENSORSHIP, MediaTag.UNCENSORED))
         }
     }
@@ -241,7 +256,14 @@ internal fun scanTags(text: String): TagScan {
     var known = 0
     var unknown = 0
     var version: String? = null
+    var previous: String? = null
     normalizeTagPhrases(text).split(TAG_SEPARATORS).filter { it.isNotBlank() }.forEach { raw ->
+        val afterNumber = previous?.toDoubleOrNull() != null
+        previous = raw
+        if (afterNumber && raw.lowercase() in SIZE_UNITS) {
+            known++
+            return@forEach
+        }
         if (VERSION_WORD.matches(raw)) {
             version = raw.lowercase()
             known++

@@ -37,6 +37,8 @@ private class Item(val index: Int, val path: String, val size: Long) {
     val isEpisodic: Boolean get() = isVideoLike || kind == FileKind.SUBTITLE || discRoot != null
 }
 
+private val COPY_MARKER = Regex("""^(.*?)\s*\((\d{1,2})\)$""")
+
 private class BatchAnalyzer(inputs: List<MediaFileInput>) {
     private val items = inputs.mapIndexed { index, input -> Item(index, input.path.replace('\\', '/').trim('/'), input.size) }
     private val meanings = HashMap<String, DirectoryMeaning>()
@@ -52,6 +54,7 @@ private class BatchAnalyzer(inputs: List<MediaFileInput>) {
         attachAvByCode()
         classifyByFolderKind()
         assignWorks()
+        rejectCopyMarkers()
         validateWeakEpisodes()
         adoptOrphans()
         inferMovies()
@@ -278,6 +281,28 @@ private class BatchAnalyzer(inputs: List<MediaFileInput>) {
             item.workKind == WorkKind.UNKNOWN -> Section.OTHER
             else -> Section.MAIN
         }
+    }
+
+    /**
+     * 结尾的「(1)」「(2)」多半是浏览器或网盘给重名文件加的序号，不是集号。两种情形改回无集号：
+     * 同目录里有去掉序号后同名的文件（archlinux.iso 与 archlinux(1).iso）；或者这部「作品」只有它一个文件
+     * （「…_source(1).mp4」一个一个都不同名）。一串「(1)」到「(42)」而没有本体的，仍按集号处理。
+     */
+    private fun rejectCopyMarkers() {
+        val stems = items.map { it.name.substringBeforeLast('.') }.toSet()
+        contentItems().filter { it.workKind == WorkKind.SERIES && it.parsed.episode != null }
+            .groupBy { it.workKey }.values.forEach { group ->
+                group.forEach { item ->
+                    val marker = COPY_MARKER.matchEntire(item.name.substringBeforeLast('.')) ?: return@forEach
+                    if (marker.groupValues[2].toInt() != item.parsed.episode!!.number) return@forEach
+                    val base = marker.groupValues[1].trimEnd()
+                    if (group.size > 1 && base !in stems) return@forEach
+                    val title = item.parsed.title ?: base
+                    item.parsed = item.parsed.copy(kind = NameKind.STANDALONE, episode = null, title = title, label = title)
+                    item.workTitle = title
+                    item.workKey = "s:" + workKeyOf(title)
+                }
+            }
     }
 
     /**
