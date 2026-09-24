@@ -59,4 +59,20 @@ class DriveListingTest {
         val parts = items(listOf("ABC-PPV-1166282A.mp4", "ABC-PPV-1166282B.mp4"))
         assertEquals(2, parts.filterIsInstance<DriveListItem.File>().size)
     }
+
+    @Test
+    fun `an untitled series has no header and comes first`() {
+        val listed = items(listOf("A Clip Name.mp4", "site.vip@01.mp4", "site.vip@02.mp4", "site.vip@03.mp4", "Another Thing.mp4"))
+        assertTrue(listed.none { it is DriveListItem.SectionHeader && it.label == "正片" }, listed.toString())
+        assertEquals("01", (listed.first() as DriveListItem.File).view?.title, "无名系列排在最前，不会像接在别的作品下面")
+    }
+
+    @Test
+    fun `photos next to a series stay visible`() {
+        // 以照片为主的目录里夹着几段视频：视频聚成系列后，照片不能被收进默认收起的「其他文件」
+        val files = listOf("clip_1.mov", "clip_2.mov", "clip_3.mov", "beach.jpg", "hill.jpg", "lake.jpg", "sea.jpg").map { file(it) }
+        val structure = analyzeDriveFolder(files)
+        val others = structure.blocks.single { it.id == "unknown" }
+        assertTrue(others.defaultExpanded, "照片是内容，不像字体说明那样默认收起")
+    }
 }

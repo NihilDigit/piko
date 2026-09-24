@@ -122,11 +122,13 @@ private class BatchAnalyzer(inputs: List<MediaFileInput>) {
     /**
      * 番号目录里夹带的引流视频：文件名没有番号，且不到同目录最大视频（有番号）的五分之一。
      * 两个条件缺一不可：单看体积会把 PV、NCOP 当成广告，单看番号会误伤无番号的正片。
+     * 只看一部片子一个目录的情形：几十个番号放在一起的合集目录里，没有番号的小视频是正常收藏，不是夹带
      */
     private fun markAdVideos() {
         items.filter { it.isVideoLike && it.secondary == null && it.discRoot == null }.groupBy { it.folder }.values.forEach { videos ->
             val largest = videos.maxByOrNull { it.size } ?: return@forEach
             if (largest.parsed.av == null) return@forEach
+            if (videos.mapNotNull { it.parsed.av?.code }.distinct().size > 1) return@forEach
             videos.forEach { video ->
                 if (video.parsed.av == null && video.size * 5 < largest.size) video.secondary = SecondaryReason.AD
             }

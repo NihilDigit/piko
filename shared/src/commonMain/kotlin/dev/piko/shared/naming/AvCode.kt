@@ -29,6 +29,9 @@ private val LETTER_IN_NUMBER = Regex("""^([A-Z]{2,6})-([A-Z]\d{2,4})(?![0-9]|E\d
 // 四位补零的连写：xss0057
 private val GLUED_PADDED = Regex("""^([A-Za-z]{2,6})(0\d{3})(?![0-9])""")
 
+// 素人系列带数字前缀：104DANDAN-015、300MIUM-123、259LUXU-1234
+private val NUMBERED_LABEL = Regex("""^(\d{3}[A-Za-z]{2,8})[-_](\d{3,4})(?![0-9])""")
+
 // Tokyo-Hot：单字母 n 或 k 加四位数，如 n0421。单字母前缀太宽，四位数后面紧跟字母的不算，
 // 否则「k1080p」会被认成 K1080
 private val TOKYO_HOT = Regex("""^([nk])(\d{4})(?=$|[\s_.\-\[(])""", RegexOption.IGNORE_CASE)
@@ -125,6 +128,10 @@ private fun matchCode(text: String, strict: Boolean): Pair<String, Int>? {
     CARIB_TRAILING.find(text)?.let { return "CARIB-${it.groupValues[1]}-${it.groupValues[2]}" to it.range.last + 1 }
     HEYDOUGA.find(text)?.let { return "HEYDOUGA-${it.groupValues[1]}-${it.groupValues[2]}" to it.range.last + 1 }
     TOKYO_HOT.find(text)?.let { return "${it.groupValues[1].uppercase()}${it.groupValues[2]}" to it.range.last + 1 }
+    NUMBERED_LABEL.find(text)?.let { match ->
+        val label = match.groupValues[1]
+        if (label.drop(3).let { it == it.uppercase() || it == it.lowercase() }) return "${label.uppercase()}-${match.groupValues[2]}" to match.range.last + 1
+    }
     BARE_DATED.find(text)?.let { return "${it.groupValues[1]}${it.groupValues[2]}${it.groupValues[3]}" to it.range.last + 1 }
     DIGIT_IN_PREFIX.find(text)?.let { return "${it.groupValues[1]}-${it.groupValues[2]}" to it.range.last + 1 }
     LETTER_IN_NUMBER.find(text)?.let { match ->

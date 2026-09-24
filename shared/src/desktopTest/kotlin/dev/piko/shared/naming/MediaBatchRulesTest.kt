@@ -201,4 +201,17 @@ class MediaBatchRulesTest {
         assertEquals(listOf("CM"), sections[Section.PREVIEW])
         assertEquals(listOf("IV01", "Making Documentary"), sections[Section.BONUS]?.sorted())
     }
+
+    @Test
+    fun `small videos in a collection of many codes are not ads`() {
+        val collection = batch(
+            "ABC-123 片名.mp4" to 5_000_000_000,
+            "DEF-456 片名.mp4" to 5_000_000_000,
+            "Some Performer.mp4" to 300_000_000,
+        )
+        assertTrue(collection.secondary.isEmpty(), "合集目录里没有番号的小视频是收藏，不是夹带的引流视频")
+        // 一部片子一个目录时照旧认引流
+        val release = batch("ABC-123.mp4" to 5_000_000_000, "推广.mp4" to 30_000_000)
+        assertEquals(1, release.secondary.size)
+    }
 }

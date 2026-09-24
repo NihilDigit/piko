@@ -46,6 +46,8 @@ class AvNamingTest {
         assertNull(code("Show-S01.mkv"), "首字母大写的是季号写法")
         assertEquals("XYZ-057", code("xyz0057_02.wmv"))
         assertEquals("B", part("FC2-PPV-1166282B.mp4"))
+        assertEquals("104DANDAN-015", code("104dandan-015-C 片名.mp4"))
+        assertEquals("300MIUM-123", code("300MIUM-123.mp4"))
         assertTrue(parseMediaName("SSIS-123C.mp4").av!!.chineseSubtitles, "粘着的 C 仍是中字")
     }
 

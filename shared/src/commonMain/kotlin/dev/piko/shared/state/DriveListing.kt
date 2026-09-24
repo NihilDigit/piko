@@ -2,6 +2,7 @@ package dev.piko.shared.state
 
 import dev.piko.shared.naming.AttachmentKind
 import dev.piko.shared.naming.EntryFile
+import dev.piko.shared.naming.FileKind as NamingFileKind
 import dev.piko.shared.naming.FileRole
 import dev.piko.shared.naming.MediaBatch
 import dev.piko.shared.naming.MediaEntry
@@ -125,6 +126,8 @@ fun analyzeDriveFolder(files: List<FileStat>): DriveStructure {
     )
 }
 
+private val CONTENT_KINDS = setOf(NamingFileKind.VIDEO, NamingFileKind.IMAGE, NamingFileKind.AUDIO, NamingFileKind.DISC_IMAGE)
+
 /** 正片、SP、OVA、剧场版默认展开；PV、NCOP、特典、菜单、其他默认收起。 */
 private val EXPANDED_BY_DEFAULT = setOf(Section.MAIN, Section.SPECIAL, Section.OVA, Section.MOVIE)
 
@@ -134,7 +137,8 @@ private fun buildBlocks(batch: MediaBatch, files: List<FileStat>): List<DriveBlo
     val (standalone, series) = batch.works.filter { it.kind == WorkKind.SERIES }.partition(::isStandalone)
     val manyWorks = series.size > 1
     val blocks = mutableListOf<DriveBlock>()
-    series.forEach { work ->
+    // 没有作品名的系列排在最前：它不起标题（见 buildDriveItems），排在别的作品后面，它的行就像接在那部作品下面
+    series.sortedBy { it.title != null }.forEach { work ->
         val workTags = work.commonTags.map(MediaTag::text)
         val workTitle = displayTitle(work)
         work.sections.forEach { section ->
@@ -166,9 +170,11 @@ private fun buildBlocks(batch: MediaBatch, files: List<FileStat>): List<DriveBlo
         .flatMap { entry -> entry.distinctFiles().map { it.index } }
         .sorted()
     if (others.isNotEmpty()) {
+        // 只剩文档、压缩包一类时默认收起：动画发布里认不出的零散文件多是说明与字体。
+        // 有图片、视频或音频就展开，个人目录里的照片本身就是内容
+        val hasMedia = others.any { batch.parsed[it].fileKind in CONTENT_KINDS }
         blocks += DriveBlock(
-            // 只有未识别文件时默认收起：剧集目录里的扫图、字体说明之类，平时不必看
-            id = "unknown", label = "其他文件", menuLabel = "其他文件", defaultExpanded = standalone.isNotEmpty(),
+            id = "unknown", label = "其他文件", menuLabel = "其他文件", defaultExpanded = standalone.isNotEmpty() || hasMedia,
             workKey = null, workTitle = null, workTags = emptyList(),
             fileIds = others.map { files[it].id },
         )
@@ -296,13 +302,16 @@ fun buildDriveItems(
         var previousWork: String? = null
         blocks.forEach { block ->
             val soleSectionOfWork = withHeaders && block.workKey != null && blocksPerWork[block.workKey] == 1
+            // 没有作品名、只有正片的系列不起标题：标题只能写「正片」，什么也没说。它排在最前（见 buildBlocks），
+            // 也就不会被看成上一部作品的内容；没有标题就收不起来，所以始终展开
+            val untitled = soleSectionOfWork && block.workTitle == null && block.label == Section.MAIN.label
             val hasWorkInfo = block.workTitle != null || block.workTags.isNotEmpty()
             if (block.workKey != null && block.workKey != previousWork && hasWorkInfo && !soleSectionOfWork) {
                 add(DriveListItem.WorkHeader("work:${block.workKey}", block.workTitle, block.workTags))
             }
             previousWork = block.workKey
-            val expanded = !withHeaders || isExpanded(block)
-            if (soleSectionOfWork) {
+            val expanded = !withHeaders || untitled || isExpanded(block)
+            if (soleSectionOfWork && !untitled) {
                 // 正片不必点明；只有 PV 或剧场版的作品要写出来，否则收起时看不出里面是什么
                 val workLabel = listOfNotNull(block.workTitle, block.label.takeIf { it != Section.MAIN.label }).joinToString(" ")
                 add(
@@ -313,7 +322,7 @@ fun buildDriveItems(
                         expanded = expanded, isWork = true, tags = block.workTags,
                     ),
                 )
-            } else if (withHeaders) {
+            } else if (withHeaders && !untitled) {
                 add(DriveListItem.SectionHeader("section:${block.id}", block.id, block.label, block.menuLabel, expanded))
             }
             if (expanded) {
