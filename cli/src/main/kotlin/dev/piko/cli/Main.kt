@@ -17,6 +17,9 @@ private const val USAGE = """piko-cli：Piko 开发工具
       离线对快照跑网盘页的解析流水线，逐行写出原名与界面上的样子。
       --path 只看路径以此开头的目录。
 
+  score <快照>
+      以整理过的文件夹名为标注，统计里面视频的番号识别率，列出认错的。
+
   parse <文件名>…
       单独解析几个文件名，打印 parseMediaName 的结果。
 """
@@ -48,6 +51,10 @@ fun main(args: Array<String>) {
             val report = StringBuilder()
             renderDryRun(snapshot, options.value("--path"), report)
             options.value("-o")?.let { File(it).writeText(report.toString()) } ?: print(report)
+        }
+        "score" -> {
+            val input = File(options.positional.firstOrNull() ?: usage())
+            renderScore(snapshotJson.decodeFromString(Snapshot.serializer(), input.readText()), System.out)
         }
         "parse" -> options.positional.ifEmpty { usage() }.forEach { name -> println("$name\n  ${parseMediaName(name)}") }
         else -> usage()

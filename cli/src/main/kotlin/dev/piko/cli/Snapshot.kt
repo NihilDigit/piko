@@ -26,6 +26,8 @@ data class SnapshotFile(val id: String, val name: String, val kind: String, val 
     fun toFileStat(parentId: String) = FileStat(kind = kind, id = id, parentId = parentId, name = name, size = size.toString())
 }
 
+internal const val FOLDER_KIND = "drive#folder"
+
 internal val snapshotJson = Json { prettyPrint = true; ignoreUnknownKeys = true }
 
 /**

@@ -81,7 +81,5 @@ private fun renderFolderRow(name: String, listed: SnapshotFolder?, out: Appendab
 
 private fun tagText(tags: List<String>): String = if (tags.isEmpty()) "" else "  〔${tags.joinToString("｜")}〕"
 
-private const val FOLDER_KIND = "drive#folder"
-
 // 与 PikoDriveRepository 补取文件名时的一页大小一致：一页 20 项，文件夹也占名额
 private const val CHILD_NAME_PAGE = 20
