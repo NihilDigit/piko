@@ -33,6 +33,12 @@ interface PikoPlatform {
     val supportsBlur: Boolean
 
     /**
+     * 卡片上的更多按钮是否只在指针悬停时显示。有鼠标的平台有右键菜单，常驻按钮只是多一个图标；
+     * 触屏上长按是多选，更多按钮是进详情的唯一入口，得常驻
+     */
+    val revealsActionsOnHover: Boolean get() = false
+
+    /**
      * 界面字体。汉字不在其中时由系统按系统语言挑后备字体，英文系统上会逐字混用日文与中文字体，
      * 需要的平台在这里给出一款带简体中文的字体。
      */

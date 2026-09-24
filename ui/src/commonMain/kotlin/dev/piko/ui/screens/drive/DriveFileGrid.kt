@@ -47,6 +47,8 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import dev.piko.ui.adaptive.WidthClass
+import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.data.repository.FileSortOrder
 import dev.piko.shared.data.PikoSortField
 import dev.piko.shared.data.field
@@ -72,7 +74,9 @@ import io.github.nihildigit.pikpak.FileStat
  * 内边距与行尾更多按钮后，名字只剩约 68dp，一行四个汉字。
  */
 private val ListColumnMinWidth = 360.dp
-private val WaterfallColumnMinWidth = 160.dp
+// 海报墙的最小卡宽：手机上两列（160dp 会在窄手机上只剩一列），宽窗口里封面够大，模糊时也辨得出轮廓
+private val PosterColumnMinWidthCompact = 150.dp
+private val PosterColumnMinWidth = 240.dp
 
 private const val KEY_HEADER = "drive_header"
 private const val KEY_FOLD = "drive_fold"
@@ -124,9 +128,10 @@ internal fun DriveFileGrid(
             if (entryIndex >= 0) gridState.animateScrollToItem(leadingItemCount + entryIndex)
         }
 
+        val posterMinWidth = if (currentWidthClass() == WidthClass.Compact) PosterColumnMinWidthCompact else PosterColumnMinWidth
         LazyVerticalStaggeredGrid(
             state = gridState,
-            columns = StaggeredGridCells.Adaptive(if (isWaterfallMode) WaterfallColumnMinWidth else ListColumnMinWidth),
+            columns = StaggeredGridCells.Adaptive(if (isWaterfallMode) posterMinWidth else ListColumnMinWidth),
             modifier = modifier.fillMaxSize(),
             contentPadding = PaddingValues(
                 start = horizontalPadding,
@@ -182,7 +187,6 @@ internal fun DriveFileGrid(
                             file = file,
                             text = cellText(item, if (file.isFolder) folderView(file) else null),
                             isWaterfallMode = isWaterfallMode,
-                            coverAspectRatio = coverAspectFor(index),
                             isSelectionMode = isSelectionMode,
                             isSelected = file.id in selectedIds,
                             isHighlighted = file.id in highlightedIds,
@@ -199,16 +203,16 @@ internal fun DriveFileGrid(
 }
 
 /** 单元格上的文字：解析出的标题与标签。[title] 为 null 时照原样显示名字。 */
-private class CellText(val title: String?, val tags: List<String>, val resolution: String?, val code: String? = null)
+private class CellText(val title: String?, val tags: List<String>, val code: String? = null)
 
-private val RawCellText = CellText(null, emptyList(), null)
+private val RawCellText = CellText(null, emptyList())
 
 private fun cellText(item: DriveListItem.File, folder: DriveFolderView?): CellText {
     val view = item.view
     return when {
-        view != null -> CellText(view.title, view.tags, null, view.code)
+        view != null -> CellText(view.title, view.tags, view.code)
         folder != null && (folder.title != null || folder.tags.isNotEmpty()) ->
-            CellText(folder.title ?: item.file.name, folder.tags, folder.resolution, folder.code)
+            CellText(folder.title ?: item.file.name, folder.tags, folder.code)
         else -> RawCellText
     }
 }
@@ -269,7 +273,6 @@ private fun DriveCell(
     file: FileStat,
     text: CellText,
     isWaterfallMode: Boolean,
-    coverAspectRatio: Float,
     isSelectionMode: Boolean,
     isSelected: Boolean,
     isHighlighted: Boolean,
@@ -286,14 +289,12 @@ private fun DriveCell(
                 isSelected = isSelected,
                 isSpoilerBlurred = isBlurred,
                 isHighlighted = isHighlighted,
-                coverAspectRatio = coverAspectRatio,
                 onClick = { callbacks.onOpen(file) },
                 onLongClick = { callbacks.onLongPress(file) },
                 onSelectToggle = { callbacks.onSelect(file, it) },
                 onMoreClick = { callbacks.onMore(file) },
                 title = text.title,
                 tags = text.tags,
-                resolution = text.resolution,
                 code = text.code,
             )
         } else {
@@ -316,18 +317,6 @@ private fun DriveCell(
         }
     }
 }
-
-/**
- * 封面高度按「矮、高、高、矮」轮换，矮为 16:10，高为 1:1。
- *
- * M3 卡片规范里的 staggered 与 mosaic 网格，各列都从顶端齐平开始，错落来自卡片本身的
- * 高矮；先前在第二列顶上垫一块空白来制造错位，右上角空着一块，规范里没有这种排法。
- * 这个节奏配合瀑布流「放进最矮的列」：第一排一矮一高，第二排各补一张与对面相反的，
- * 两列交替错开。高卡不取图示那样的竖幅：视频缩略图多为横幅，裁成竖幅损失太多画面。
- * 按位置而不是随机取，同一目录每次打开排法相同。
- */
-private fun coverAspectFor(index: Int): Float =
-    if (index % 4 == 1 || index % 4 == 2) 1f else 16f / 10f
 
 /**
  * 排序字段与方向。ascending 与 descending 分别是该字段两个方向的枚举值，
