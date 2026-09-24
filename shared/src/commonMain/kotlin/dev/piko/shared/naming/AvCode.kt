@@ -66,6 +66,7 @@ private val LEADING_BRACKET = Regex("""^\s*[\[【(]([^\]】)]*)[\]】)]\s*""")
 private val UNCENSORED_WORDS = setOf("u", "uncensored", "ucensored", "uncen", "leak", "leaked", "无码", "無碼", "無修正", "无修正", "破解", "流出")
 private val CHINESE_WORDS = setOf("c", "ch", "chs", "cht", "中文字幕", "中字", "sub", "zh")
 private val PART = Regex("""^(?:cd|part|pt|disc|disk)[\s.]?(\d{1,2})$""", RegexOption.IGNORE_CASE)
+private val GLUED_PART_LETTERS = setOf("A", "B", "D", "E", "F")
 private val PART_LETTER = Regex("""^[A-Fa-f]$""")
 private val PART_DIGIT = Regex("""^0?[1-9]$""")
 // Heydouga 的分段写成 fhd1、hd2
@@ -181,6 +182,11 @@ internal fun matchAv(stem: String, allowLanguageSuffix: Boolean): AvMatch? {
         if (glued.contains('U', ignoreCase = true)) uncensored = true
         if (glued.contains('C', ignoreCase = true)) chinese = true
         suffixText = tail.substring(glued.length)
+    }
+    // 粘着的单个字母是分段：「FC2-PPV-1166282A」「…B」。C 已表示中字，不在其列
+    if (glued.length == 1 && glued.uppercase() in GLUED_PART_LETTERS) {
+        part = glued.uppercase()
+        suffixText = tail.substring(1)
     }
     val pieces = SUFFIX_PIECE.findAll(suffixText).map { it.groupValues[1] to it.groupValues[2] }.toList()
     var consumed = 0

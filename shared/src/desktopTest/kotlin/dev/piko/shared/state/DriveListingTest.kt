@@ -44,4 +44,19 @@ class DriveListingTest {
         val singles = items(listOf("3081 - abc_source(1).mp4", "3087 - def_source(1).mp4"))
         assertTrue(singles.none { it is DriveListItem.SectionHeader }, singles.toString())
     }
+
+    @Test
+    fun `only the same content collapses into versions`() {
+        val listed = items(listOf("[G] Show - 01 [1080p].mkv", "[G] Show - 01 [720p].mkv", "[G] Show - 02 [1080p].mkv"))
+        val rows = listed.filterIsInstance<DriveListItem.File>()
+        assertEquals(2, rows.size, "01 的 720p 挂在 1080p 下面")
+        assertTrue("2 版本" in rows.first { it.file.name.contains("01") }.view!!.tags)
+
+        // 编号相同而内容不同的，照旧各占一行
+        val different = items(listOf("3 (14).mp4", "4 (14).mp4", "5 (14).mp4"))
+        assertEquals(3, different.filterIsInstance<DriveListItem.File>().size)
+        // 形似 CRC 的 1166282A 与 1166282B 是两段
+        val parts = items(listOf("ABC-PPV-1166282A.mp4", "ABC-PPV-1166282B.mp4"))
+        assertEquals(2, parts.filterIsInstance<DriveListItem.File>().size)
+    }
 }

@@ -12,6 +12,8 @@ import dev.piko.shared.naming.Section
 import dev.piko.shared.naming.TagKind
 import dev.piko.shared.naming.WorkKind
 import dev.piko.shared.naming.analyzeMediaBatch
+import dev.piko.shared.naming.distinctFiles
+import dev.piko.shared.naming.versionsOfPrimary
 import io.github.nihildigit.pikpak.FileStat
 
 /** 解析结果面板里的一行，如「分区」「SP」。 */
@@ -106,6 +108,8 @@ fun analyzeDriveFolder(files: List<FileStat>): DriveStructure {
             work.sections.forEach { section ->
                 section.entries.forEach { entry ->
                     entry.files.forEach { file -> file.attachments.forEach { put(regular[it.index].id, regular[file.index].id) } }
+                    // 同一内容的其他版本挂在体积最大的那个下面，列表里只占一行，点开播放最大的
+                    entry.versionsOfPrimary().forEach { put(regular[it.index].id, regular[entry.primary.index].id) }
                 }
             }
         }
@@ -142,7 +146,7 @@ private fun buildBlocks(batch: MediaBatch, files: List<FileStat>): List<DriveBlo
                 workKey = work.key,
                 workTitle = work.title,
                 workTags = workTags,
-                fileIds = section.entries.flatMap { entry -> entry.files.map { files[it.index].id } },
+                fileIds = section.entries.flatMap { entry -> entry.distinctFiles().map { files[it.index].id } },
             )
         }
     }
@@ -152,13 +156,13 @@ private fun buildBlocks(batch: MediaBatch, files: List<FileStat>): List<DriveBlo
         blocks += DriveBlock(
             id = "av", label = "番号", menuLabel = "番号", defaultExpanded = true,
             workKey = null, workTitle = null, workTags = emptyList(),
-            fileIds = av.flatMap { work -> work.sections.flatMap { it.entries } }.flatMap { entry -> entry.files.map { files[it.index].id } },
+            fileIds = av.flatMap { work -> work.sections.flatMap { it.entries } }.flatMap { entry -> entry.distinctFiles().map { files[it.index].id } },
         )
     }
     // 不按解析器的路径顺序，而按用户选的排序：输入顺序就是它
     val others = (batch.works.filter { it.kind == WorkKind.UNKNOWN } + standalone)
         .flatMap { work -> work.sections.flatMap { it.entries } }
-        .flatMap { entry -> entry.files.map { it.index } }
+        .flatMap { entry -> entry.distinctFiles().map { it.index } }
         .sorted()
     if (others.isNotEmpty()) {
         blocks += DriveBlock(
@@ -204,7 +208,9 @@ private fun fileView(work: MediaWork, section: Section, entry: MediaEntry, file:
     // 番号一部一作品，作品级的公共标签就是这个文件自己的，逐行显示；「中字」「无码」排在最前
     val ownTags = if (work.kind == WorkKind.AV) (file.tags + work.commonTags).distinct().sortedBy { if (it.pinned) 0 else 1 } else file.tags
     val languages = attachmentTags(file)
-    val tags = (ownTags.map(MediaTag::text) + languages).distinct()
+    val versionCount = if (file == entry.primary) entry.versionsOfPrimary().size + 1 else 1
+    val versions = listOfNotNull("$versionCount 版本".takeIf { versionCount > 1 })
+    val tags = (ownTags.map(MediaTag::text) + languages + versions).distinct()
     val heading = if (work.kind == WorkKind.SERIES && work.title != null && entry.label != null && entry.label != work.title) {
         "${work.title} $title"
     } else {

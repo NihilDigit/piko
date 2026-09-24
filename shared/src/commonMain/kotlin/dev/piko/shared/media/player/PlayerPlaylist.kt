@@ -4,6 +4,7 @@ import dev.piko.data.repository.NaturalOrder
 import dev.piko.shared.naming.MediaFileInput
 import dev.piko.shared.naming.Section
 import dev.piko.shared.naming.analyzeMediaBatch
+import dev.piko.shared.naming.distinctFiles
 import dev.piko.shared.state.distinctSpans
 import dev.piko.shared.state.tokenize
 
@@ -49,18 +50,21 @@ fun buildPlaylist(files: List<PlaylistEntry>): List<PlaylistEntry> {
             }
             usedLabels += sectionLabel
             val sectionKey = "${work.key}/${workSection.section.name}"
+            // 同一内容的几个版本只放体积最大的一个：PikPak 本来就转码，低画质版本单独播没有意义，
+            // 逐个列出的话自动连播会把同一集再放一遍。编号相同而内容不同的文件照旧各占一项
             for (entry in workSection.entries) {
-                for (file in entry.files) {
+                val distinct = entry.distinctFiles()
+                for (file in distinct) {
                     val source = files[file.index]
                     val base = entry.label ?: stemOf(source.name)
-                    val variant = if (entry.files.size > 1) file.tags.joinToString(" ") { it.text } else ""
+                    val variant = if (distinct.size > 1) file.tags.joinToString(" ") { it.text } else ""
                     ordered += source.copy(
                         label = listOf(base, variant).filter { it.isNotBlank() }.joinToString(" "),
                         sectionKey = sectionKey,
                         sectionLabel = sectionLabel,
                     )
-                    placed += file.index
                 }
+                entry.files.forEach { placed += it.index }
             }
         }
     }

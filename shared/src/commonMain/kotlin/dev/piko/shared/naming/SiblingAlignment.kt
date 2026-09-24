@@ -109,3 +109,33 @@ internal fun alignedTitle(text: String): String? {
     val title = words.joinToString(" ").trim(*EDGE_PUNCTUATION)
     return title.takeIf { candidate -> candidate.count { it.isLetter() } >= 2 }
 }
+
+private val CONTAINERS = setOf("mp4", "mkv", "avi", "ts", "mov", "wmv", "m4v", "flv", "webm", "rmvb")
+private val COPY_SUFFIX = Regex("""\s*\(\d{1,2}\)""")
+private val VERSION_SEPARATORS = Regex("""[\s_.\-\[\]()【】（）+,]+""")
+
+/**
+ * 去掉技术标签、容器扩展名、重复序号与网址之后的名字。同一条目下的文件这个键相同才是同一内容的几个版本：
+ * 「…① [230721].ts」与「….mp4」、「IMG_5630」与「IMG_5630 (1)」。条目键相同而这个键不同的，
+ * 是恰好编号相同的不同视频（几个来源各自的「(14)」），不能合并
+ */
+internal fun versionKey(fileName: String): String =
+    stripSiteNoise(fileName.substringBeforeLast('.'))
+        .replace(COPY_SUFFIX, " ")
+        .split(VERSION_SEPARATORS)
+        // 只丢能打出标签的技术词与容器名。词表里「认得但不显示」的还有 CRC 与日期，它们可能恰好是区分内容的部分：
+        // 「FC2-PPV-1166282A」的 1166282A 形似 CRC，丢掉的话 A、B 两段就成了同一内容
+        .filter { word -> word.isNotBlank() && lookupTagWord(word).isNullOrEmpty() && word.lowercase() !in CONTAINERS }
+        .joinToString(" ") { it.lowercase() }
+
+/** 条目里与主文件是同一内容的其他版本。 */
+internal fun MediaEntry.versionsOfPrimary(): List<EntryFile> {
+    val key = versionKey(primary.name.fileName)
+    return files.drop(1).filter { versionKey(it.name.fileName) == key }
+}
+
+/** 条目里各自该占一行的文件：主文件，加上恰好编号相同、内容不同的其他文件。 */
+internal fun MediaEntry.distinctFiles(): List<EntryFile> {
+    val versions = versionsOfPrimary().map { it.index }.toSet()
+    return files.filter { it.index !in versions }
+}
