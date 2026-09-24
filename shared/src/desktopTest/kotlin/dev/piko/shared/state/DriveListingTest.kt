@@ -26,7 +26,7 @@ class DriveListingTest {
 
     @Test
     fun `a series keeps its header next to standalone files`() {
-        val listed = items(listOf("[G] Show - 01 [1080p].mkv", "[G] Show - 02 [1080p].mkv", "Lonely Clip.mp4"))
+        val listed = items(listOf("[G] Show - 01 [1080p].mkv", "[G] Show - 02 [1080p].mkv", "[G] Show - 03 [1080p].mkv", "Lonely Clip.mp4"))
         assertTrue(listed.any { it is DriveListItem.SectionHeader && it.isWork && it.label == "Show" })
         val lonely = listed.filterIsInstance<DriveListItem.File>().single { it.file.name == "Lonely Clip.mp4" }
         assertEquals("Lonely Clip", lonely.view?.title)
@@ -61,10 +61,13 @@ class DriveListingTest {
     }
 
     @Test
-    fun `an untitled series has no header and comes first`() {
-        val listed = items(listOf("A Clip Name.mp4", "site.vip@01.mp4", "site.vip@02.mp4", "site.vip@03.mp4", "Another Thing.mp4"))
-        assertTrue(listed.none { it is DriveListItem.SectionHeader && it.label == "正片" }, listed.toString())
-        assertEquals("01", (listed.first() as DriveListItem.File).view?.title, "无名系列排在最前，不会像接在别的作品下面")
+    fun `small groups and the rest lie flat without headers`() {
+        // 两集的剧集、没有作品名的系列与其余文件都平铺，不起标题
+        val listed = items(listOf("A Clip Name.mp4", "site.vip@01.mp4", "site.vip@02.mp4", "site.vip@03.mp4", "[G] Show - 01.mkv", "[G] Show - 02.mkv"))
+        assertTrue(listed.none { it is DriveListItem.SectionHeader || it is DriveListItem.WorkHeader }, listed.toString())
+        // 拆散的剧集行标题带上作品名，光一个「01」认不出是哪部
+        val show = listed.filterIsInstance<DriveListItem.File>().first { it.file.name.startsWith("[G] Show - 01") }
+        assertEquals("Show 01", show.view?.title)
     }
 
     @Test

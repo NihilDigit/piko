@@ -34,6 +34,8 @@ class DriveFileView(
     val fields: List<DriveParsedField>,
 )
 
+internal fun DriveFileView.withTitle(title: String) = DriveFileView(title, tags, code, heading, fields)
+
 /** 列表里的一项。结构化时在文件之间插入作品头与分区标题，二者都占满整行。 */
 sealed interface DriveListItem {
     val key: String
@@ -93,6 +95,8 @@ class DriveStructure(
 )
 
 internal const val SECONDARY_BLOCK_ID = "secondary"
+private const val OTHERS_BLOCK_ID = "unknown"
+private const val FLAT_BLOCK_MAX = 2
 
 /**
  * 分析一个目录。文件只给名字不给目录：网盘里一层就是一批，上级目录名在这里帮倒忙，
@@ -176,7 +180,7 @@ private fun buildBlocks(batch: MediaBatch, files: List<FileStat>): List<DriveBlo
         // 有图片、视频或音频就展开，个人目录里的照片本身就是内容
         val hasMedia = others.any { batch.parsed[it].fileKind in CONTENT_KINDS }
         blocks += DriveBlock(
-            id = "unknown", label = "其他文件", menuLabel = "其他文件", defaultExpanded = standalone.isNotEmpty() || hasMedia,
+            id = OTHERS_BLOCK_ID, label = "其他文件", menuLabel = "其他文件", defaultExpanded = standalone.isNotEmpty() || hasMedia,
             workKey = null, workTitle = null, workTags = emptyList(),
             fileIds = others.map { files[it].id },
         )
@@ -300,24 +304,36 @@ fun buildDriveItems(
     } else {
         null
     }
-    val blocks = structure.blocks + listOfNotNull(secondaryBlock)
-    val withHeaders = blocks.size > 1
+    // 「其他文件」与至多两个文件的块不起标题，平铺在最前：为一两个文件起一个标题只是多一行，
+    // 放在最前也就不会被看成上一部作品的内容。拆散的剧集行标题改用「作品名 集号」，没了作品头，
+    // 光一个「01」认不出是哪部
+    // 没有作品名、只有正片的系列本来就不起标题（写出来只是「正片」），一并平铺
+    val worksWithOneBlock = structure.blocks.groupingBy { it.workKey }.eachCount()
+    val (flat, grouped) = structure.blocks.partition { block ->
+        val untitled = block.workKey != null && block.workTitle == null && block.label == Section.MAIN.label && worksWithOneBlock[block.workKey] == 1
+        block.id == OTHERS_BLOCK_ID || block.fileIds.size <= FLAT_BLOCK_MAX || untitled
+    }
+    val flatIds = flat.flatMap { it.fileIds }.sortedBy { id -> files.indexOfFirst { it.id == id } }
+    val flatWorks = flat.filter { it.id != OTHERS_BLOCK_ID }.flatMap { it.fileIds }.toSet()
+    val blocks = grouped + listOfNotNull(secondaryBlock)
+    val withHeaders = blocks.size > 1 || (blocks.isNotEmpty() && flatIds.isNotEmpty())
     val blocksPerWork = blocks.groupingBy { it.workKey }.eachCount()
     return buildList {
         folders.forEach { add(DriveListItem.File(it, null)) }
+        flatIds.forEach { id ->
+            val view = structure.views[id]?.let { if (id in flatWorks) it.withTitle(it.heading) else it }
+            byId[id]?.let { add(DriveListItem.File(it, view)) }
+        }
         var previousWork: String? = null
         blocks.forEach { block ->
             val soleSectionOfWork = withHeaders && block.workKey != null && blocksPerWork[block.workKey] == 1
-            // 没有作品名、只有正片的系列不起标题：标题只能写「正片」，什么也没说。它排在最前（见 buildBlocks），
-            // 也就不会被看成上一部作品的内容；没有标题就收不起来，所以始终展开
-            val untitled = soleSectionOfWork && block.workTitle == null && block.label == Section.MAIN.label
             val hasWorkInfo = block.workTitle != null || block.workTags.isNotEmpty()
             if (block.workKey != null && block.workKey != previousWork && hasWorkInfo && !soleSectionOfWork) {
                 add(DriveListItem.WorkHeader("work:${block.workKey}", block.workTitle, block.workTags))
             }
             previousWork = block.workKey
-            val expanded = !withHeaders || untitled || isExpanded(block)
-            if (soleSectionOfWork && !untitled) {
+            val expanded = !withHeaders || isExpanded(block)
+            if (soleSectionOfWork) {
                 // 正片不必点明；只有 PV 或剧场版的作品要写出来，否则收起时看不出里面是什么
                 val workLabel = listOfNotNull(block.workTitle, block.label.takeIf { it != Section.MAIN.label }).joinToString(" ")
                 add(
@@ -328,7 +344,7 @@ fun buildDriveItems(
                         expanded = expanded, isWork = true, tags = block.workTags,
                     ),
                 )
-            } else if (withHeaders && !untitled) {
+            } else if (withHeaders) {
                 add(DriveListItem.SectionHeader("section:${block.id}", block.id, block.label, block.menuLabel, expanded))
             }
             if (expanded) {
