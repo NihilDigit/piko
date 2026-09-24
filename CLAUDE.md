@@ -172,7 +172,11 @@ piko 源码仍是 MIT，但发版时要附 GPLv3 与第三方声明，并指明�
   只含文件名、类型、大小。会话取自 `~/.piko`，token 轮换后写回，与桌面端共用。
 - `dryrun <快照> [--path <前缀>] [-o <文件>]`：离线对快照跑网盘页的解析流水线，逐行写出原名与界面上的样子。
   调的是 `DriveScreenState` 同一组函数（`analyzeDriveFolder`、`buildDriveItems`、`describeDriveFolder`）。
+- `ls <路径>`：只读列一个目录，打印每项的 `params`。列目录接口在这里带回来源链接（离线下载的磁力、
+  分享转存的 `mypikpak.com/s/` 链接）与视频的 `duration`、`width`、`height`，不必另查详情。
 - `parse <文件名>…`：单独解析文件名。
+
+Git Bash 会把以 `/` 开头的参数改写成 Windows 路径，传网盘路径时前面加 `MSYS_NO_PATHCONV=1`。
 
 快照含真实文件名，放在仓库外，不要提交。改解析规则后重跑 `dryrun` 对比即可，不必重新请求网盘。
 

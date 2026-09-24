@@ -21,6 +21,9 @@ private const val USAGE = """piko-cli：Piko 开发工具
   score <快照>
       以整理过的文件夹名为标注，统计里面视频的番号识别率，列出认错的。
 
+  ls <路径>
+      只读地列出网盘一个目录，逐项打印名字与服务端给的 params（来源链接、时长、宽高等）。
+
   parse <文件名>…
       单独解析几个文件名，打印 parseMediaName 的结果。
 """
@@ -56,6 +59,10 @@ fun main(args: Array<String>) {
         "score" -> {
             val input = File(options.positional.firstOrNull() ?: usage())
             renderScore(snapshotJson.decodeFromString(Snapshot.serializer(), input.readText()), System.out)
+        }
+        "ls" -> runBlocking {
+            val path = options.positional.firstOrNull() ?: usage()
+            listWithParams(appClient(), path).forEach(::println)
         }
         "parse" -> options.positional.ifEmpty { usage() }.forEach { name -> println("$name\n  ${parseMediaName(name)}") }
         else -> usage()
