@@ -76,4 +76,8 @@ interface PikoUserPreferences {
     /** 本地下载任务表的 JSON。空串表示从未保存。 */
     suspend fun loadDownloadTasks(): String
     suspend fun saveDownloadTasks(serialized: String)
+
+    /** 整包离线任务的跟踪记录，JSON，见 OfflinePackTracker。空串表示从未保存。 */
+    suspend fun loadOfflinePacks(): String
+    suspend fun saveOfflinePacks(serialized: String)
 }

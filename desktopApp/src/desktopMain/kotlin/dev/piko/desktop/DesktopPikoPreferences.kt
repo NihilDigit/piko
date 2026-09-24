@@ -164,9 +164,16 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         settings.set(KEY_DOWNLOAD_TASKS, serialized)
     }
 
+    override suspend fun loadOfflinePacks(): String = settings.get(KEY_OFFLINE_PACKS)
+
+    override suspend fun saveOfflinePacks(serialized: String) {
+        settings.set(KEY_OFFLINE_PACKS, serialized)
+    }
+
     private companion object {
         const val MAX_PLAYBACK_ENTRIES = 500
         const val KEY_DOWNLOAD_TASKS = "download.tasks"
+        const val KEY_OFFLINE_PACKS = "download.offlinePacks"
         const val KEY_SPOILER = "ui.spoilerBlur"
         const val KEY_HEURISTIC = "ui.heuristicFilter"
         const val KEY_BUNDLE_SUBTITLES = "ui.bundleSubtitles"

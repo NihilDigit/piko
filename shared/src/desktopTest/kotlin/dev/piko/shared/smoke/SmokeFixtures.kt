@@ -66,6 +66,11 @@ class MemoryPreferences(instantTarget: InstantTarget? = null) : PikoUserPreferen
     override suspend fun saveDownloadTasks(serialized: String) {
         downloadTasks = serialized
     }
+    @Volatile var offlinePacks: String = ""
+    override suspend fun loadOfflinePacks(): String = offlinePacks
+    override suspend fun saveOfflinePacks(serialized: String) {
+        offlinePacks = serialized
+    }
 }
 
 /** 内存会话存储，行为与两端的实现一致：会话、上次账号、密码三份各自独立。 */
