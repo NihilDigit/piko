@@ -2,8 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Piko 是 PikPak 的第三方跨平台客户端。Android 走 Material 3 Expressive，Windows 走 Fluent 2，
-业务逻辑与屏幕状态在 `shared` 模块共用。
+Piko 是 PikPak 的第三方跨平台客户端。Android 与 Windows 共用一套 Material 3 Expressive 界面，
+按窗口宽度自适应；业务逻辑与屏幕状态在 `shared`，界面在 `ui`，两端只剩入口与平台实现。
 
 ## 常用命令
 
@@ -16,7 +16,8 @@ Piko 是 PikPak 的第三方跨平台客户端。Android 走 Material 3 Expressi
 ./gradlew :app:testDebugUnitTest --tests '*FileNameSanitizerTest*'   # 跑单个测试
 ```
 
-改完务必两端都编译：`shared` 的改动会同时波及 `app` 与 `desktopApp`，只编译一端看不出来。
+改完务必两端都编译：`shared` 与 `ui` 的改动会同时波及 `app` 与 `desktopApp`，只编译一端看不出来。
+`ui` 的桌面端与 Android 端用的 material3 版本不同（见「桌面端」一节），同一行代码可能只在一端报错。
 
 版本号来自环境变量 `PIKO_VERSION_NAME` / `PIKO_VERSION_CODE`，本地不设则用默认值，无需配置。
 
@@ -40,22 +41,22 @@ Piko 是 PikPak 的第三方跨平台客户端。Android 走 Material 3 Expressi
 
 ## 架构
 
-三个模块：`shared`（commonMain + android/desktop 两个 target）、`app`（Android）、
-`desktopApp`（Windows）。
+四个模块：`shared`（状态与业务，commonMain + android/desktop 两个 target）、`ui`（共享界面，
+同样两个 target）、`app`（Android 入口、平台实现与播放器）、`desktopApp`（Windows 入口、
+平台实现与播放器窗口）。
 
-### 屏幕状态在 commonMain，UI 各自实现
+### 界面写一次
 
-`shared/.../shared/state/DriveScreenState.kt` 是核心接缝：文件列表、加载态、排序、搜索、
-多选、启发式折叠、防窥揭示、目录导航与增删改动作都在这里，两端共用。Android 与 Windows
-只负责布局与外观——**两套 UI 是刻意的产品选择（README 把「双端原生设计哲学」写为卖点），
-不是该消除的重复**。真正该消除的是状态逻辑写两遍。
+`ui/src/commonMain` 是全部界面：主题、导航、网盘、传输、设置、回收站、登录与各组件，两端共用。
+入口是 `PikoApp`：`MainActivity` 与桌面的 `Main.kt` 各自拼好 `PikoServices`（进程级的仓库与调度器）
+与 `PikoPlatform`（平台能力），传进去即可。屏幕里经 `LocalPikoServices`、`LocalPikoPlatform` 取用，
+不要再引用 `PikoApplication.instance`。
 
-约定：
-- 状态用 Compose 的 `State` 而非 `StateFlow`，因为两端视图层都是 Compose；为此 `shared`
-  对 `compose.runtime` 用的是 `api` 而不是 `implementation`。
+`shared/.../shared/state/DriveScreenState.kt` 仍是核心接缝：文件列表、加载态、排序、搜索、多选、
+启发式折叠、防窥揭示、目录导航与增删改动作都在这里。约定：
+- 状态用 Compose 的 `State` 而非 `StateFlow`；为此 `shared` 对 compose runtime 用的是 `api`。
 - 派生值用 `derivedStateOf`，不要写成 getter——它们每帧会被读到多次。
-- 面向用户的提示走 `messages: SharedFlow<String>` 事件流，各端自行呈现（Android 用 Snackbar，
-  Windows 用 Fluent 的 InfoBar）。用状态表达会在重组时重放。
+- 面向用户的提示走 `messages: SharedFlow<String>` 事件流，界面用 Snackbar 呈现。用状态表达会在重组时重放。
 - 长驻的错误态（如 `loadError`）才用状态，它描述的是「眼前这份数据是旧的」。
 
 新增屏幕状态时照这个形状做。已下沉的 state holder 都在 `shared/.../shared/state/`：
@@ -63,14 +64,30 @@ Piko 是 PikPak 的第三方跨平台客户端。Android 走 Material 3 Expressi
 轮询由调用方的协程控制启停）、`TrashScreenState`、`LoginState`、`FolderPickerState`（自带路径栈）。
 播放器的准备策略是 `shared/.../shared/media/player/PlayerScreenState`，见「播放器」一节。
 
-**不要下沉这两处**：下载列表的状态本就在 `PikoDownloadCoordinator`（已在 shared），视图只做渲染；
-设置页看着重复实则不然，Desktop 是主题模式、WinRT 通知测试与 `File` 形式的下载目录，Android 是
-DataStore 开关加配额与资料卡片，真正共用的部分已经在仓库层。
+### 响应式布局
+
+布局只看窗口宽度，不看设备：`ui/.../adaptive/WindowWidth.kt` 按 M3 断点给出 compact、medium、
+expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以 Android 平板为准。
+- 导航：`NavigationSuiteScaffold` 在 compact 下是底部导航栏，更宽时换成侧边导航栏。
+- 回收站：compact 下是盖住整窗的压栈页；medium 在导航栏右侧的内容区里；expanded 与「我的」并排成两栏。
+- 行长：设置、传输、回收站的行内容收在 840dp 以内居中。列表本身仍铺满窗口（用 `readableSidePadding`
+  算 contentPadding），两侧空白处滚轮也能滚。
+- 对话框：目录选择器在 compact 下全屏，更宽时是居中的基本对话框。
+
+鼠标与键盘：条目右键弹出与操作面板相同的菜单（`ContextMenuArea`，动作列表 `fileActions` 两处共用）；
+图标按钮用 `TooltipIconButton`，快捷键写在提示里；Esc 经 `BackHandler` 触发返回；网盘页快捷键见
+`DriveScreen` 的 `handleShortcut`。新加的界面同时照顾触屏与鼠标：下拉刷新之类只有触屏能用的操作，
+宽窗口要另给按钮。
 
 ### 平台差异用接口，不用 expect/actual
 
 `PikoUserPreferences`、`PikoSessionStore`、`PikoDownloadStorage`、`PikoSegmentDownloader`
-都是 commonMain 的接口，Android 与 Desktop 各有实现。**加一个偏好项要同时改三处**：接口、
+都是 commonMain 的接口，Android 与 Desktop 各有实现。界面要的平台能力（剪贴板、系统取色、
+下载位置选择、本地文件的打开与分享、片段预览的播放后端、全屏对话框、应用内更新）集中在
+`ui/.../platform/PikoPlatform.kt`，实现是 `AndroidPikoPlatform` 与 `DesktopPikoPlatform`。
+平台没有的能力返回 null 或 false，界面据此隐藏入口，例如桌面端没有应用内更新与系统分享。
+
+**加一个偏好项要同时改三处**：接口、
 `SessionManager`（Android，DataStore）、`DesktopPikoPreferences`（Desktop，`DesktopSettingsStore`）。
 
 ### 全局导航栈在仓库层
@@ -101,11 +118,13 @@ DataStore 开关加配额与资料卡片，真正共用的部分已经在仓库�
 - **Android** 用预编译的 `dev.jdtech.mpv:libmpv`，适配层是 `MpvPlaybackBackend` 与 `MpvVideoSurface`。
   不用 MediaMP 的 Android mpv 后端：它的 Compose 表面是空实现，也不发布 .so。
 - **Desktop** 用 MediaMP 的 mpv 后端（`MediampPlaybackBackend`），因为它提供了 D3D11 零拷贝进 Skia 的表面，
-  这部分自己写的成本最高。
+  这部分自己写的成本最高。播放器开独立窗口（`VideoPlayerWindow`），主界面经 `VideoPlayerHost.Detached`
+  把播放请求交给它；Android 仍是应用内的压栈页（`VideoPlayerHost.InApp`）。播放器代码暂留在 `app` 与
+  `desktopApp`，统一进 `ui` 是后续工作。
 
 两者都实现 commonMain 的薄接口 `PlaybackBackend`，策略在 `PlayerScreenState`：取流顺序为本地副本 →
 回环代理 → 新取的直链 → 转码流，只有首帧前失败才换下一个来源；播放中途失败按退避重连；续播位置
-每 5 秒保存，末尾归零。控件是无状态的（Android `MobilePlayerControls`，Desktop `FluentPlayerControls`），
+每 5 秒保存，末尾归零。控件是无状态的（Android `MobilePlayerControls`，Desktop `DesktopPlayerControls`），
 两端参数同名，数据全部来自 `PlayerScreenState`。
 
 **所有网盘读取都经 `shared/.../media/proxy/` 的本机回环 HTTP 代理**，播放器只拿到一个 `http://127.0.0.1`
@@ -115,6 +134,26 @@ URL。直链过期重取、连接预算、预读与缓存都在 SDK 的 `PikPakF
 
 **Android 分发包是 GPLv3**：jdtech 包里的 FFmpeg 以 `--enable-gpl --enable-version3` 构建，mpv 也是 GPL 构建。
 piko 源码仍是 MIT，但发版时要附 GPLv3 与第三方声明，并指明对应源码的获取方式。
+
+## 桌面端
+
+- **版本**：界面库停在 CMP 1.12.0、material3 1.12.0-alpha03、MediaMP 0.5.0，与 Animeko 一致。CMP 1.13 的
+  alpha 带的 skiko 0.152 把渲染后端包进 `OnScreenRedrawer`，MediaMP 的 D3D11 画面表面要直接拿
+  `Direct3DRedrawer`，一开播放器就崩。打包插件单独用 1.13 的 alpha，因为 release 的 AOT 缓存 DSL 从这一版才有；
+  所以 `desktopApp` 不用 `compose.desktop.currentOs`，而是按版本号写出运行库坐标。1.12 的 material3 里
+  部分 API 仍是实验性，`ui` 模块已统一 opt-in；它也缺少无点击的 `SegmentedListItem`，设置页用
+  `StaticSegmentedRow` 顶替。
+- **release**：`./gradlew :desktopApp:packageReleaseMsi`（或 `createReleaseDistributable`）。ProGuard 只裁剪不混淆，
+  规则在 `desktopApp/proguard-rules.pro`，JNA、MediaMP、ServiceLoader 实现、isoparser 必须保留。
+  打包时会跑一遍 AOT 训练（进程带 `compose.aot.training-run`，由 `Main.kt` 在 12 秒后自行退出），
+  得到 `app.aot`。AOT 缓存按 jar 的修改时间校验，MSI 与 zip 只存到偶数秒，训练前先把 jar 的时间取整，
+  否则安装后缓存作废（`msiexec /a` 解出安装包即可验证）。
+- **原生**：mpv 与 FFmpeg 的 DLL 解开放在应用资源目录的 `mpv/` 下，启动时经
+  `MpvMediampPlayer.prepareLibraries` 指过去；MediaMP 默认每次运行都解压一份到 `%TEMP%` 且删不掉。
+  Toast 经 FFM 直调 combase 与 COM 虚表（`WindowsToast`），不用 kotlin-winrt。未打包应用的 AUMID
+  要在 `HKCU\Software\Classes\AppUserModelId` 登记才会显示通知，安装版首次启动时写入。
+- Compose 与 MediaMP 的桌面依赖带进了 ui-test、junit、truth 与 kotlinx-coroutines-test，
+  在 `desktopRuntimeClasspath` 里排除，测试类路径不受影响。
 
 ## 冒烟测试
 
