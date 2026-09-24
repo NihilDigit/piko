@@ -111,7 +111,7 @@ fun analyzeDriveFolder(files: List<FileStat>): DriveStructure {
         }
     }
     val blocks = if (batch.works.any { it.kind != WorkKind.UNKNOWN }) buildBlocks(batch, regular) else emptyList()
-    val views = if (blocks.isEmpty()) emptyMap() else buildViews(batch, regular)
+    val views = if (blocks.isEmpty()) emptyMap() else withoutCollidingStandalone(buildViews(batch, regular), batch, regular)
     return DriveStructure(
         blocks = blocks,
         secondaryIds = secondaryIds,
@@ -125,7 +125,9 @@ fun analyzeDriveFolder(files: List<FileStat>): DriveStructure {
 private val EXPANDED_BY_DEFAULT = setOf(Section.MAIN, Section.SPECIAL, Section.OVA, Section.MOVIE)
 
 private fun buildBlocks(batch: MediaBatch, files: List<FileStat>): List<DriveBlock> {
-    val series = batch.works.filter { it.kind == WorkKind.SERIES }
+    // 独立文件（一部电影、一段没有编号的视频）在解析器里也是一部 SERIES 作品，照剧集那样逐部起作品头，
+    // 七个互不相干的视频就是七个与行标题一模一样的标题。它们与未识别文件并成一块，平铺显示
+    val (standalone, series) = batch.works.filter { it.kind == WorkKind.SERIES }.partition(::isStandalone)
     val manyWorks = series.size > 1
     val blocks = mutableListOf<DriveBlock>()
     series.forEach { work ->
@@ -153,20 +155,38 @@ private fun buildBlocks(batch: MediaBatch, files: List<FileStat>): List<DriveBlo
             fileIds = av.flatMap { work -> work.sections.flatMap { it.entries } }.flatMap { entry -> entry.files.map { files[it.index].id } },
         )
     }
-    // 未识别的文件不按解析器的路径顺序，而按用户选的排序：输入顺序就是它
-    val unknown = batch.works.filter { it.kind == WorkKind.UNKNOWN }
+    // 不按解析器的路径顺序，而按用户选的排序：输入顺序就是它
+    val others = (batch.works.filter { it.kind == WorkKind.UNKNOWN } + standalone)
         .flatMap { work -> work.sections.flatMap { it.entries } }
         .flatMap { entry -> entry.files.map { it.index } }
         .sorted()
-    if (unknown.isNotEmpty()) {
+    if (others.isNotEmpty()) {
         blocks += DriveBlock(
-            id = "unknown", label = "其他文件", menuLabel = "其他文件", defaultExpanded = false,
+            // 只有未识别文件时默认收起：剧集目录里的扫图、字体说明之类，平时不必看
+            id = "unknown", label = "其他文件", menuLabel = "其他文件", defaultExpanded = standalone.isNotEmpty(),
             workKey = null, workTitle = null, workTags = emptyList(),
-            fileIds = unknown.map { files[it].id },
+            fileIds = others.map { files[it].id },
         )
     }
     // 整个目录都是默认收起的分区（用户进了 PV/ 或 menu/ 目录），收起就只剩几个标题
     return if (blocks.none { it.defaultExpanded }) blocks.map { it.copy(defaultExpanded = true) } else blocks
+}
+
+/**
+ * 独立文件的行标题只是把原名清理一遍：去掉日期、清晰度、架构名。同目录里清理后撞名的
+ * （archlinux-2026.04.01.iso 与它的 (1)、(2) 都成了「archlinux」），清理就是在丢信息，改回显示原名。
+ */
+private fun withoutCollidingStandalone(views: Map<String, DriveFileView>, batch: MediaBatch, files: List<FileStat>): Map<String, DriveFileView> {
+    val standaloneIds = batch.works.filter { it.kind == WorkKind.SERIES && isStandalone(it) }
+        .flatMap { work -> work.sections.flatMap { it.entries } }
+        .flatMap { entry -> entry.files.map { files[it.index].id } }
+    val colliding = standaloneIds.groupBy { views[it]?.title }.filterKeys { it != null }.values.filter { it.size > 1 }.flatten().toSet()
+    return if (colliding.isEmpty()) views else views - colliding
+}
+
+private fun isStandalone(work: MediaWork): Boolean {
+    val entry = work.sections.singleOrNull()?.entries?.singleOrNull() ?: return false
+    return entry.section == Section.MAIN && entry.episode == null && entry.av == null
 }
 
 private fun buildViews(batch: MediaBatch, files: List<FileStat>): Map<String, DriveFileView> = buildMap {

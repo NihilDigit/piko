@@ -41,17 +41,18 @@ fun describeFolder(folderName: String, contentNames: List<String> = emptyList())
         return FolderDescription(mainWork.title, WorkKind.AV, mergeTags(mainWork.commonTags, nameTags), null, emptyList())
     }
 
-    val bareTitle = mainWork?.title?.takeIf(::hasLatin) ?: fromName.title?.let(::latinAlternative)?.let(::stripSeasonWord)
     // 解析器把季号从作品名里拆进了集号，文件夹只剩「Yuru Camp」就和第一季、剧场版同名了，这里拼回去
     val season = mainWork?.let(::uniformSeason) ?: folderSeason(folderName)
-    val title = bareTitle?.let { if (season != null && season > 0) "$it Season $season" else it }
-    val contentRange = mainWork?.let(::mainRange)
-    val range = folderRange(folderName) ?: contentRange
+    val nameRange = folderRange(folderName)
+    val range = nameRange ?: mainWork?.let(::mainRange)
     val extras = (sectionsMentioned(folderName) + mainWork?.sections.orEmpty().map { it.section })
         .filter { it != Section.MAIN }
         .distinct()
         .sortedBy { it.ordinal }
     val tags = mergeTags(mainWork?.commonTags.orEmpty(), nameTags)
+    val bareTitle = mainWork?.title?.takeIf(::hasLatin)
+        ?: fromName.title?.takeIf { worthRewriting(folderName, fromName, nameTags, nameRange, season, extras) }?.let(::latinAlternative)?.let(::stripSeasonWord)
+    val title = bareTitle?.let { if (season != null && season > 0) "$it Season $season" else it }
     return FolderDescription(
         title = title,
         kind = if (title != null || mainWork != null) WorkKind.SERIES else WorkKind.UNKNOWN,
@@ -60,6 +61,28 @@ fun describeFolder(folderName: String, contentNames: List<String> = emptyList())
         extras = extras,
     )
 }
+
+/**
+ * 解析单个剧集文件的规则用在文件夹名上，只有提取出了东西才值得改写：发布组、标签、集数范围、季、分区。
+ * 什么也没提取出来时，改写只剩把分隔符换成空格（「www.98T.la@P」成了「www 98T la@P」），不如原名。
+ *
+ * 单个集号只拆方括号、「- 03」这类明确的写法。粘在词尾或夹在句中的数字（置信度低）是文件夹自己的编号：
+ * 「jujuswing9」与「jujuswing11」拆掉编号就撞名了。「Pt1」「Part 2」同理，给文件夹分篇的编号不拆
+ */
+private fun worthRewriting(
+    folderName: String,
+    fromName: SeriesParse,
+    nameTags: List<MediaTag>,
+    range: String?,
+    season: Int?,
+    extras: List<Section>,
+): Boolean {
+    val singleEpisode = fromName.episode != null && range == null && season == null
+    if (singleEpisode && (fromName.confidence == Confidence.LOW || FOLDER_PART.containsMatchIn(folderName))) return false
+    return fromName.group != null || nameTags.isNotEmpty() || range != null || season != null || extras.isNotEmpty()
+}
+
+private val FOLDER_PART = Regex("""(?i)(?<![a-z])(?:pt|part)[\s.-]?\d""")
 
 private fun hasLatin(text: String): Boolean = text.count { it in 'A'..'Z' || it in 'a'..'z' } >= 2
 
@@ -85,7 +108,8 @@ private fun mergeTags(primary: List<MediaTag>, secondary: List<MediaTag>): List<
         .sortedBy { it.kind.ordinal }
 }
 
-private val FOLDER_RANGE = Regex("""(?<![\d.])(?:第|E|EP)?(\d{1,4})\s*(?:-|~|～|到)\s*(?:E|EP)?(\d{1,4})(?![\d]|-?bit|p\b)""", RegexOption.IGNORE_CASE)
+// 后面跟着「号」「日」的是日期：「7月28-29号」
+private val FOLDER_RANGE = Regex("""(?<![\d.月])(?:第|E|EP)?(\d{1,4})\s*(?:-|~|～|到)\s*(?:E|EP)?(\d{1,4})(?![\d]|-?bit|p\b|\s*[号號日])""", RegexOption.IGNORE_CASE)
 
 private val SEASON_PREFIX = Regex("""(?i)(?:\b(?:season|part|vol\.?|set|disc)\s*|(?:^|[^a-z])s)$""")
 

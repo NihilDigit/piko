@@ -2,6 +2,7 @@ package dev.piko.shared.naming
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -84,5 +85,26 @@ class FolderDescriptionTest {
         assertEquals("Yuru Camp", describeFolder("$group Yuru Camp [Ma10p_1080p]").title)
         // 季的范围不是某一季
         assertTrue("Season" !in describeFolder("[G] Show S01-04 [1080p]").title.orEmpty())
+    }
+
+    @Test
+    fun `a folder keeps the number that tells it apart from its siblings`() {
+        // 拆掉编号，同级的两个文件夹就同名了
+        listOf("somebody9", "somebody11", "Studio758", "Scene Title Pt1 January-3rd-2021", "FC2(制作商)")
+            .forEach { assertNull(describeFolder(it).title, it) }
+    }
+
+    @Test
+    fun `names with nothing extracted are not rewritten`() {
+        listOf("www.example.la@P", "some_user", "x.com_2029391789397033374").forEach { assertNull(describeFolder(it).title, it) }
+    }
+
+    @Test
+    fun `sizes counts and dates are not tags`() {
+        fun tags(name: String) = describeFolder(name).tags.map { it.text }
+        assertFalse("200p" in tags("合集【80V+200P 8.5G】"), "200P 是图片张数")
+        assertFalse("简" in tags("@someone(69.2 GB)"), "数字后面的 GB 是容量")
+        assertNull(describeFolder("【某组】7月28-29号 活动").episodeRange, "月日范围是日期")
+        assertFalse(MediaTag.UNCENSORED in tags("【未流出】某片"))
     }
 }
