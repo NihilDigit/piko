@@ -17,6 +17,18 @@ private val CARIB_TRAILING = Regex("""^(\d{6})[-_](\d{3})[-_]carib""", RegexOpti
 // Heydouga 的写法最乱：hey4017_244、heydouga 4017-175、HeyDouga-4017-228；「しろハメ」是 4017 这个频道的名字
 private val HEYDOUGA = Regex("""^(?:しろハメ[\s_-]*(?:hey(?:douga)?)?|hey(?:douga)?)[\s_-]*(\d{4})[\s_-]+(\d{2,5})(?![0-9])""", RegexOption.IGNORE_CASE)
 
+// 没写站点名的日期番号：月日年六位加三位序号，如 123014_949、072815-931。月日须合法，
+// 否则「202401-001」这类编号也会被当成番号
+private val BARE_DATED = Regex("""^((?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{2})([-_])(\d{3})(?![0-9])""")
+
+// 字母段里夹一位数字（MCB3DBD-47），或数字段前带一个字母（MKBD-S94）。只收全大写，
+// 与「Show-S01」这类季号写法区分
+private val DIGIT_IN_PREFIX = Regex("""^([A-Z]{2,5}\d[A-Z]{2,5})-(\d{2,4})(?![0-9])""")
+private val LETTER_IN_NUMBER = Regex("""^([A-Z]{2,6})-([A-Z]\d{2,4})(?![0-9]|E\d)""")
+
+// 四位补零的连写：xss0057
+private val GLUED_PADDED = Regex("""^([A-Za-z]{2,6})(0\d{3})(?![0-9])""")
+
 // Tokyo-Hot：单字母 n 或 k 加四位数，如 n0421。单字母前缀太宽，四位数后面紧跟字母的不算，
 // 否则「k1080p」会被认成 K1080
 private val TOKYO_HOT = Regex("""^([nk])(\d{4})(?=$|[\s_.\-\[(])""", RegexOption.IGNORE_CASE)
@@ -112,6 +124,11 @@ private fun matchCode(text: String, strict: Boolean): Pair<String, Int>? {
     CARIB_TRAILING.find(text)?.let { return "CARIB-${it.groupValues[1]}-${it.groupValues[2]}" to it.range.last + 1 }
     HEYDOUGA.find(text)?.let { return "HEYDOUGA-${it.groupValues[1]}-${it.groupValues[2]}" to it.range.last + 1 }
     TOKYO_HOT.find(text)?.let { return "${it.groupValues[1].uppercase()}${it.groupValues[2]}" to it.range.last + 1 }
+    BARE_DATED.find(text)?.let { return "${it.groupValues[1]}${it.groupValues[2]}${it.groupValues[3]}" to it.range.last + 1 }
+    DIGIT_IN_PREFIX.find(text)?.let { return "${it.groupValues[1]}-${it.groupValues[2]}" to it.range.last + 1 }
+    LETTER_IN_NUMBER.find(text)?.let { match ->
+        if (acceptablePrefix(match.groupValues[1])) return "${match.groupValues[1]}-${match.groupValues[2]}" to match.range.last + 1
+    }
     HEYZO.find(text)?.let { return "HEYZO-${it.groupValues[1]}" to it.range.last + 1 }
     SEPARATED.find(text)?.let { match ->
         val letters = match.groupValues[1]
@@ -124,6 +141,10 @@ private fun matchCode(text: String, strict: Boolean): Pair<String, Int>? {
             val digits = match.groupValues[2].trimStart('0').padStart(3, '0')
             return "${letters.uppercase()}-$digits" to match.range.last + 1
         }
+    }
+    GLUED_PADDED.find(text)?.let { match ->
+        val letters = match.groupValues[1]
+        if (acceptablePrefix(letters)) return "${letters.uppercase()}-${match.groupValues[2].trimStart('0').padStart(3, '0')}" to match.range.last + 1
     }
     GLUED_SUFFIXED.find(text)?.let { match ->
         val letters = match.groupValues[1]

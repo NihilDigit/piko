@@ -2,6 +2,7 @@ package dev.piko.shared.naming
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /** 成批分析里靠兄弟文件或目录才能定下来的规则，用合成的小例子逐条验证。 */
 class MediaBatchRulesTest {
@@ -104,5 +105,34 @@ class MediaBatchRulesTest {
         assertEquals(listOf("视频 2", "视频 1"), labels.take(2), "按文件名的自然顺序编号，与输入顺序无关")
         assertEquals(listOf("相机 2026-09-13 09:08 (2)", "相机 2026-09-13 09:08 (1)"), labels.drop(2))
         assertEquals(4, result.works.size, "各自成一部，才能与其他独立文件一起平铺")
+    }
+
+    @Test
+    fun `tweet media downloads group under the account by post time`() {
+        val result = batch(
+            "someone_20220625__1540494487322931201_1_15404944110159339520.mp4" to 1,
+            "someone_20220625__1540651516796604416_1_15406514479764643840.mp4" to 1,
+        )
+        val work = result.works.single()
+        assertEquals("someone", work.title)
+        // 同一天的两条推靠推文 ID 里的时间分开，不会并成一个条目的两个版本
+        assertEquals(2, work.sections.single().entries.size)
+    }
+
+    @Test
+    fun `uploader numbering of unrelated clips is not a special section`() {
+        val result = batch(
+            "SP01 第一个短片.mp4" to 1,
+            "SP02 另一个标题.mp4" to 1,
+            "SP03 完全不同的片子.mp4" to 1,
+        )
+        assertTrue(result.works.all { work -> work.sections.single().section == Section.MAIN })
+        assertEquals("SP02 另一个标题", result.parsed[1].title)
+    }
+
+    @Test
+    fun `a copy marker in the middle of a name is not an episode`() {
+        val result = batch("某人  IMG_5845 (1) 6669.mp4" to 1, "某人  IMG_5850 (1) 6669.mp4" to 1)
+        assertTrue(result.parsed.all { it.episode?.number != 1 }, result.parsed.toString())
     }
 }

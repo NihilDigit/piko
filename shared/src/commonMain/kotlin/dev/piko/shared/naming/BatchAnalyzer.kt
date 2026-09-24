@@ -37,7 +37,10 @@ private class Item(val index: Int, val path: String, val size: Long) {
     val isEpisodic: Boolean get() = isVideoLike || kind == FileKind.SUBTITLE || discRoot != null
 }
 
-private val COPY_MARKER = Regex("""^(.*?)\s*\((\d{1,2})\)$""")
+// 序号多在结尾，也有夹在中间的：「绿裙子  IMG_5845 (1) 6669」
+private val COPY_MARKER = Regex("""\s*\((\d{1,2})\)""")
+
+private val WHITESPACE_RUN = Regex("""\s+""")
 
 private class BatchAnalyzer(inputs: List<MediaFileInput>) {
     private val items = inputs.mapIndexed { index, input -> Item(index, input.path.replace('\\', '/').trim('/'), input.size) }
@@ -55,6 +58,7 @@ private class BatchAnalyzer(inputs: List<MediaFileInput>) {
         classifyByFolderKind()
         assignWorks()
         rejectCopyMarkers()
+        rejectUploaderNumbering()
         nameOpaqueFiles()
         numberSameTimes()
         validateWeakEpisodes()
@@ -295,15 +299,39 @@ private class BatchAnalyzer(inputs: List<MediaFileInput>) {
         contentItems().filter { it.workKind == WorkKind.SERIES && it.parsed.episode != null }
             .groupBy { it.workKey }.values.forEach { group ->
                 group.forEach { item ->
-                    val marker = COPY_MARKER.matchEntire(item.name.substringBeforeLast('.')) ?: return@forEach
-                    if (marker.groupValues[2].toInt() != item.parsed.episode!!.number) return@forEach
-                    val base = marker.groupValues[1].trimEnd()
+                    val stem = item.name.substringBeforeLast('.')
+                    val marker = COPY_MARKER.findAll(stem).lastOrNull() ?: return@forEach
+                    if (marker.groupValues[1].toInt() != item.parsed.episode!!.number) return@forEach
+                    val base = stem.removeRange(marker.range).trim()
                     if (group.size > 1 && base !in stems) return@forEach
                     val title = item.parsed.title ?: base
                     item.parsed = item.parsed.copy(kind = NameKind.STANDALONE, episode = null, title = title, label = title)
                     item.workTitle = title
                     item.workKey = "s:" + workKeyOf(title)
                 }
+            }
+    }
+
+    /**
+     * 「SP01 标题甲」「SP02 标题乙」…：上传者给一批互不相干的短片编的号，不是某部作品的特别篇。
+     * 同一目录里三部以上作品各只有一个条目、都在同一个非正片分区、标题各不相同，就是这种情形，
+     * 改回独立文件，标题取整个名字。动画里的 SP 与所属作品同名，不会各成一部
+     */
+    private fun rejectUploaderNumbering() {
+        contentItems().filter { it.workKind == WorkKind.SERIES && it.isVideoLike }
+            .groupBy { it.folder }.values.forEach { folderItems ->
+                val works = folderItems.groupBy { it.workKey }.values.filter { it.size == 1 }.map { it.single() }
+                works.filter { it.section != Section.MAIN && it.parsed.episode != null }
+                    .groupBy { it.section }.values
+                    .filter { group -> group.size >= 3 && group.map { it.workTitle }.distinct().size == group.size }
+                    .flatten()
+                    .forEach { item ->
+                        val title = item.name.substringBeforeLast('.').replace(WHITESPACE_RUN, " ").trim()
+                        item.parsed = item.parsed.copy(kind = NameKind.STANDALONE, episode = null, section = null, title = title, label = title)
+                        item.section = Section.MAIN
+                        item.workTitle = title
+                        item.workKey = "s:" + workKeyOf(title)
+                    }
             }
     }
 

@@ -15,6 +15,14 @@ internal sealed interface GeneratedName {
         val label: String get() = listOfNotNull(source, formatTime(time)).joinToString(" ")
     }
 
+    /**
+     * Twitter 媒体下载器的名字：账号_日期__推文ID_序号_媒体ID。作品是账号，行标题是发推时间；
+     * 同一条推文有多段时 [index] 从 1 起，只有一段时为 null。
+     */
+    data class Posted(val account: String, val time: LocalDateTime, val index: Int?) : GeneratedName {
+        val label: String get() = listOfNotNull(formatTime(time), index?.let { "($it)" }).joinToString(" ")
+    }
+
     /** Telegram 的「5_6190741636838855047」、十六进制哈希、UUID：没有任何可读信息。 */
     data object Opaque : GeneratedName
 }
@@ -33,6 +41,11 @@ private val EPOCH_SECONDS = Regex("""^(\d{10})$""")
 private val CAMERA = Regex("""(?i)^(?:VID|IMG|PXL|MVIMG)_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})""")
 private val SCREEN_RECORDER = Regex("""(?i)^Screen_?recorder[-_](\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})""")
 
+private val TWEET_MEDIA = Regex("""^(.+?)_(\d{8})__(\d{15,20})_(\d{1,2})_\d{15,25}$""")
+
+// Twitter 的 snowflake ID 右移 22 位是自 Twitter 纪元起的毫秒数，比名字里只到日的日期精确，同一天的两条推不会撞名
+private const val TWITTER_EPOCH_MILLIS = 1288834974657L
+
 private val TELEGRAM = Regex("""^\d_\d{15,20}(?:_\(new\))?$""")
 private val HEX_HASH = Regex("""(?i)^[0-9a-f]{12,64}$""")
 private val UUID = Regex("""(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$""")
@@ -45,6 +58,13 @@ private val PLAUSIBLE_YEARS = 2005..2040
  * 相机名里的时间本来就是拍摄地的当地时间，原样使用。
  */
 internal fun generatedName(stem: String, timeZone: TimeZone = TimeZone.currentSystemDefault()): GeneratedName? {
+    TWEET_MEDIA.find(stem)?.let { match ->
+        val millis = (match.groupValues[3].toLongOrNull() ?: return@let) shr 22
+        val index = match.groupValues[4].toInt()
+        epochTime(Instant.fromEpochMilliseconds(millis + TWITTER_EPOCH_MILLIS), timeZone)?.let {
+            return GeneratedName.Posted(match.groupValues[1], it, index.takeIf { n -> n > 1 })
+        }
+    }
     EPOCH_MILLIS.forEach { pattern ->
         pattern.regex.find(stem)?.let { match ->
             epochTime(Instant.fromEpochMilliseconds(match.groupValues[1].toLong()), timeZone)?.let { return GeneratedName.Timed(pattern.source, it) }

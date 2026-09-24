@@ -22,10 +22,15 @@ fun parseMediaName(fileName: String): ParsedName {
     }
     // 应用与相机自动起的名字不进剧集解析：LINE_MOVIE 的「MOVIE」会被当成剧场版，长串数字会被当成集号
     generatedName(stem)?.let { generated ->
-        val title = (generated as? GeneratedName.Timed)?.label ?: stem
+        val title = when (generated) {
+            is GeneratedName.Timed -> generated.label
+            is GeneratedName.Posted -> generated.account
+            GeneratedName.Opaque -> stem
+        }
+        val label = (generated as? GeneratedName.Posted)?.label ?: title
         return ParsedName(
             fileName = fileName, fileKind = kind, kind = NameKind.STANDALONE, confidence = Confidence.LOW,
-            title = title, group = null, episode = null, episodeTitle = null, section = null, marker = null, label = title,
+            title = title, group = null, episode = null, episodeTitle = null, section = null, marker = null, label = label,
             av = null, tags = emptyList(), language = language, languageCode = languageCode, opaque = generated == GeneratedName.Opaque,
             timed = generated is GeneratedName.Timed,
         )
@@ -820,7 +825,7 @@ private fun cleanTitle(title: String): String = title
     .trim(' ', '-', '_', '~', '～', '|', ':', '：', ',')
 
 // 容器名也不是作品名：「mp4_ (3).avi」这类导出名只剩编号，不该顶着一个叫「mp4」的作品头
-private val NOT_A_TITLE = setOf("episode", "ep", "ep.", "e", "part", "vol", "disc", "track", "mp4", "mkv", "avi", "mov", "wmv", "video", "视频")
+private val NOT_A_TITLE = setOf("episode", "ep", "ep.", "e", "part", "vol", "disc", "track", "mp4", "mkv", "avi", "mov", "wmv", "video", "视频", "img")
 
 /** 纯数字、单个字符、「Episode」这类词或只剩标点的「标题」不算数。 */
 private fun isMeaningfulTitle(title: String): Boolean {

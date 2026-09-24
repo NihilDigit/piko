@@ -38,6 +38,13 @@ class AvNamingTest {
         assertEquals("N0397", code("[NoDRM]-n0397_name_ei1_n.wmv"))
         assertEquals("N0781", code("[Tokyo Hot] n0781 Some Title.wmv"))
         assertNull(code("k1080p.mp4"), "单字母前缀后紧跟字母的不是 Tokyo-Hot")
+        assertEquals("123014_949", code("123014_949 片名.mp4"))
+        assertEquals("072815-931", code("072815-931 片名.mp4"))
+        assertNull(code("202401-001.mp4"), "月日不合法的六位数不是日期番号")
+        assertEquals("ABC3DEF-47", code("ABC3DEF-47 片名.mp4"))
+        assertEquals("ABCD-S94", code("ABCD-S94 片名.mkv"))
+        assertNull(code("Show-S01.mkv"), "首字母大写的是季号写法")
+        assertEquals("XYZ-057", code("xyz0057_02.wmv"))
     }
 
     @Test
