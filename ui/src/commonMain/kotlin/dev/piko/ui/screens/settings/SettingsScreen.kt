@@ -1,18 +1,19 @@
 package dev.piko.ui.screens.settings
 
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -49,6 +50,8 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.ListItemShapes
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedListItem
 import androidx.compose.material3.SnackbarHost
@@ -60,14 +63,20 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.ToggleButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -131,6 +140,23 @@ fun SettingsScreen(
     LaunchedEffect(updater) {
         updater?.messages?.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
     }
+    val scrollState = rememberScrollState()
+    // 各分组在滚动内容里的纵向位置，供左侧目录跳转与高亮
+    val sectionOffsets = remember { mutableStateMapOf<SettingsSection, Int>() }
+    val currentSection by remember {
+        derivedStateOf {
+            // 滚到底时最后几组可能永远到不了顶端，此时高亮最后一组
+            if (scrollState.value >= scrollState.maxValue && scrollState.maxValue > 0) {
+                SettingsSection.entries.last()
+            } else {
+                sectionOffsets.entries.filter { it.value <= scrollState.value + SECTION_ACTIVATION_SLOP }
+                    .maxByOrNull { it.value }?.key ?: SettingsSection.entries.first()
+            }
+        }
+    }
+    fun Modifier.trackSection(section: SettingsSection) =
+        onGloballyPositioned { sectionOffsets[section] = it.positionInParent().y.toInt() }
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -147,124 +173,120 @@ fun SettingsScreen(
             )
         },
     ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp)
-                .padding(top = 16.dp, bottom = 24.dp)
-                .readableWidth(),
-        ) {
-            SettingsGroup(title = "外观") {
-                val appearance = LocalAppearance.current
-                ThemeModeRow(
-                    mode = appearance.mode,
-                    onModeChange = { scope.launch { sessionManager.setThemeMode(it.name) } },
-                )
-                ThemeColorRow(
-                    appearance = appearance,
-                    onSeedChange = { scope.launch { sessionManager.setThemeSeed(it?.name) } },
-                )
-            }
-
-            SettingsGroup(title = "文件名") {
-                SettingsSwitchRow(
-                    index = 0, count = 3,
-                    icon = Icons.Outlined.TextFields,
-                    title = "文件名解析",
-                    supporting = "按作品、分区与集数整理，标出发布组与清晰度",
-                    checked = isNameParsingEnabled,
-                    onCheckedChange = { scope.launch { sessionManager.setNameParsingEnabled(it) } },
-                )
-                SettingsSwitchRow(
-                    index = 1, count = 3,
-                    icon = Icons.Outlined.AutoFixHigh,
-                    title = "启发式折叠",
-                    supporting = "折叠广告、样片、说明文件等次要项",
-                    checked = isHeuristicFilterEnabled,
-                    onCheckedChange = { scope.launch { sessionManager.setHeuristicFilterEnabled(it) } },
-                    enabled = isNameParsingEnabled,
-                )
-                SettingsSwitchRow(
-                    index = 2, count = 3,
-                    icon = Icons.Outlined.Subtitles,
-                    title = "保存配套字幕",
-                    supporting = "添加链接时一并保存视频的外挂字幕",
-                    checked = isBundleSubtitlesEnabled,
-                    onCheckedChange = { scope.launch { sessionManager.setBundleSubtitlesEnabled(it) } },
-                    enabled = isNameParsingEnabled,
-                )
-            }
-
-            SettingsGroup(title = "浏览") {
-                SettingsSwitchRow(
-                    index = 0, count = 1,
-                    icon = Icons.Outlined.VisibilityOff,
-                    title = "缩略图防窥",
-                    supporting = "模糊显示缩略图",
-                    checked = isSpoilerBlurEnabled,
-                    onCheckedChange = { scope.launch { sessionManager.setSpoilerBlurEnabled(it) } },
-                )
-            }
-
-            SettingsGroup(title = "下载") {
-                SettingsSwitchRow(
-                    index = 0, count = 2,
-                    icon = Icons.Outlined.Speed,
-                    title = "并发加速",
-                    supporting = "多连接下载，提升速度",
-                    checked = isConcurrentAccelerationEnabled,
-                    onCheckedChange = { scope.launch { sessionManager.setConcurrentAccelerationEnabled(it) } },
-                )
-                SettingsNavigationRow(
-                    index = 1, count = 2,
-                    icon = Icons.Outlined.FolderOpen,
-                    title = "下载位置",
-                    supporting = resolvedDownloadPath,
-                    onClick = { showDownloadDirDialog = true },
-                )
-            }
-
-            SettingsGroup(title = "关于") {
-                // 没有应用内更新的平台少一行，分段圆角按实际行数算
-                val aboutCount = if (updater != null) 3 else 2
-                StaticSegmentedRow(
-                    shapes = ListItemDefaults.segmentedShapes(index = 0, count = aboutCount),
-                    leadingContent = {
-                        Icon(
-                            imageVector = PikoBrandIcons.Glyph,
-                            contentDescription = null,
-                        )
-                    },
-                    supportingContent = { Text("版本 ${platform.appVersion}") },
-                    content = { Text("Piko") },
-                )
-                if (updater != null) {
-                    UpdateRow(
-                        status = updater.status,
-                        onClick = {
-                            when (val current = updater.status) {
-                                is UpdateStatus.Available -> updateInSheet = current.update
-                                is UpdateStatus.Downloading -> updateInSheet = current.update
-                                is UpdateStatus.Installing -> updateInSheet = current.update
-                                is UpdateStatus.Failed -> current.update?.let { updateInSheet = it }
-                                    ?: scope.launch { updater.check() }
-                                else -> scope.launch { updater.check() }
-                            }
-                        },
+        BoxWithConstraints(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+            val showIndex = maxWidth >= SettingsIndexMinWidth
+            Row(modifier = Modifier.fillMaxSize()) {
+                if (showIndex) {
+                    SettingsIndex(
+                        current = currentSection,
+                        onSelect = { section -> scope.launch { scrollState.animateScrollTo(sectionOffsets[section] ?: 0) } },
+                        modifier = Modifier.width(SettingsIndexWidth).padding(start = 12.dp, top = 8.dp),
                     )
                 }
-                SettingsNavigationRow(
-                    index = aboutCount - 1, count = aboutCount,
-                    icon = Icons.Outlined.Code,
-                    title = "开源仓库",
-                    supporting = "github.com/NihilDigit/piko",
-                    trailingIcon = Icons.AutoMirrored.Outlined.OpenInNew,
-                    onClick = { platform.openUrl("https://github.com/NihilDigit/piko") },
-                )
-            }
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .verticalScroll(scrollState)
+                        .padding(horizontal = 16.dp)
+                        .padding(bottom = 24.dp)
+                        .readableWidth(),
+                ) {
+                    SettingsGroup(SettingsSection.Appearance.title, Modifier.trackSection(SettingsSection.Appearance)) {
+                        val appearance = LocalAppearance.current
+                        ThemeModeRow(
+                            mode = appearance.mode,
+                            onModeChange = { scope.launch { sessionManager.setThemeMode(it.name) } },
+                        )
+                        ThemeColorRow(
+                            appearance = appearance,
+                            onSeedChange = { scope.launch { sessionManager.setThemeSeed(it?.name) } },
+                        )
+                    }
 
+                    SettingsGroup(SettingsSection.Drive.title, Modifier.trackSection(SettingsSection.Drive)) {
+                        // 启发式折叠只在解析开着时有意义，关掉解析就收起这一项，不留一行灰掉的开关
+                        val driveCount = if (isNameParsingEnabled) 3 else 2
+                        SettingsSwitchRow(
+                            index = 0, count = driveCount,
+                            icon = Icons.Outlined.TextFields,
+                            title = "文件名解析",
+                            supporting = "按作品、分区与集数整理，标出发布组与清晰度",
+                            checked = isNameParsingEnabled,
+                            onCheckedChange = { scope.launch { sessionManager.setNameParsingEnabled(it) } },
+                        )
+                        if (isNameParsingEnabled) {
+                            SettingsSwitchRow(
+                                index = 1, count = driveCount,
+                                icon = Icons.Outlined.AutoFixHigh,
+                                title = "启发式折叠",
+                                supporting = "收起广告、样片、说明文件等次要项",
+                                checked = isHeuristicFilterEnabled,
+                                onCheckedChange = { scope.launch { sessionManager.setHeuristicFilterEnabled(it) } },
+                                nested = true,
+                            )
+                        }
+                        SettingsSwitchRow(
+                            index = driveCount - 1, count = driveCount,
+                            icon = Icons.Outlined.VisibilityOff,
+                            title = "缩略图防窥",
+                            supporting = "模糊显示缩略图与封面",
+                            checked = isSpoilerBlurEnabled,
+                            onCheckedChange = { scope.launch { sessionManager.setSpoilerBlurEnabled(it) } },
+                        )
+                    }
+
+                    SettingsGroup(SettingsSection.Links.title, Modifier.trackSection(SettingsSection.Links)) {
+                        // 字幕靠解析配到视频上。它在另一组，关掉解析时写明原因，而不是只把开关灰掉
+                        SettingsSwitchRow(
+                            index = 0, count = 1,
+                            icon = Icons.Outlined.Subtitles,
+                            title = "保存配套字幕",
+                            supporting = if (isNameParsingEnabled) "保存视频时一并保存外挂字幕" else "需先开启文件名解析",
+                            checked = isBundleSubtitlesEnabled,
+                            onCheckedChange = { scope.launch { sessionManager.setBundleSubtitlesEnabled(it) } },
+                            enabled = isNameParsingEnabled,
+                        )
+                    }
+
+                    SettingsGroup(SettingsSection.Download.title, Modifier.trackSection(SettingsSection.Download)) {
+                        SettingsSwitchRow(
+                            index = 0, count = 2,
+                            icon = Icons.Outlined.Speed,
+                            title = "并发加速",
+                            supporting = "多连接下载，提升速度",
+                            checked = isConcurrentAccelerationEnabled,
+                            onCheckedChange = { scope.launch { sessionManager.setConcurrentAccelerationEnabled(it) } },
+                        )
+                        SettingsNavigationRow(
+                            index = 1, count = 2,
+                            icon = Icons.Outlined.FolderOpen,
+                            title = "下载位置",
+                            supporting = resolvedDownloadPath,
+                            onClick = { showDownloadDirDialog = true },
+                        )
+                    }
+
+                    SettingsGroup(SettingsSection.About.title, Modifier.trackSection(SettingsSection.About)) {
+                        AboutCard(
+                            version = platform.appVersion,
+                            updateStatus = updater?.status,
+                            onUpdateClick = {
+                                if (updater == null) return@AboutCard
+                                when (val current = updater.status) {
+                                    is UpdateStatus.Available -> updateInSheet = current.update
+                                    is UpdateStatus.Downloading -> updateInSheet = current.update
+                                    is UpdateStatus.Installing -> updateInSheet = current.update
+                                    is UpdateStatus.Failed -> current.update?.let { updateInSheet = it }
+                                        ?: scope.launch { updater.check() }
+                                    else -> scope.launch { updater.check() }
+                                }
+                            },
+                            onOpenRepository = { platform.openUrl(REPOSITORY_URL) },
+                        )
+                    }
+                }
+            }
         }
     }
 
@@ -381,18 +403,146 @@ private fun DownloadLocationCard(path: String, isDefault: Boolean) {
     }
 }
 
+/** 设置的分组，也是宽窗口左侧目录的条目。 */
+private enum class SettingsSection(val title: String) {
+    Appearance("外观"),
+    Drive("网盘"),
+    Links("添加链接"),
+    Download("下载"),
+    About("关于"),
+}
+
+private const val REPOSITORY_URL = "https://github.com/NihilDigit/piko"
+
+// 设置页自身宽到这个程度才放左侧目录。expanded 窗口里设置页只是「我的」旁边的详情栏，多数时候放不下
+private val SettingsIndexMinWidth = 900.dp
+private val SettingsIndexWidth = 200.dp
+
+// 分组顶端滚到离页顶这么近就算进入该组，否则点目录跳过去后高亮会停在上一组
+private const val SECTION_ACTIVATION_SLOP = 8
+
 @Composable
-internal fun SettingsGroup(title: String, content: @Composable ColumnScope.() -> Unit) {
-    Text(
-        text = title,
-        style = MaterialTheme.typography.titleSmall,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(start = 16.dp, top = 24.dp, bottom = 8.dp),
-    )
-    Column(
-        verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap),
-        content = content,
-    )
+private fun SettingsGroup(title: String, modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+    Column(modifier = modifier) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(start = 16.dp, top = 24.dp, bottom = 8.dp),
+        )
+        Column(
+            verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap),
+            content = content,
+        )
+    }
+}
+
+/** 宽窗口左侧的分组目录，点击滚到对应分组，滚动时高亮当前所在的组。 */
+@Composable
+private fun SettingsIndex(current: SettingsSection, onSelect: (SettingsSection) -> Unit, modifier: Modifier = Modifier) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        SettingsSection.entries.forEach { section ->
+            NavigationDrawerItem(
+                label = { Text(section.title) },
+                selected = section == current,
+                onClick = { onSelect(section) },
+            )
+        }
+    }
+}
+
+/**
+ * 关于：一张小卡片收在页尾，版本、更新状态与两个动作放在一起。
+ * 原先是三行列表，版本号占一整行，「检查更新」的状态又要另读一行副标题。
+ */
+@Composable
+private fun AboutCard(
+    version: String,
+    /** 没有应用内更新的平台为 null，不显示更新按钮。 */
+    updateStatus: UpdateStatus?,
+    onUpdateClick: () -> Unit,
+    onOpenRepository: () -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        color = colors.surfaceContainer,
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier.size(48.dp).clip(CircleShape).background(colors.primaryContainer),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(PikoBrandIcons.Glyph, contentDescription = null, tint = colors.onPrimaryContainer)
+                }
+                Spacer(modifier = Modifier.width(16.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Piko", style = MaterialTheme.typography.titleMedium)
+                    Text("版本 $version", style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+                    updateStatus?.let(::updateStatusText)?.let { (text, emphasis) ->
+                        Text(
+                            text = text,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = when (emphasis) {
+                                UpdateEmphasis.Normal -> colors.onSurfaceVariant
+                                UpdateEmphasis.Positive -> colors.primary
+                                UpdateEmphasis.Error -> colors.error
+                            },
+                        )
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (updateStatus != null) {
+                    FilledTonalButton(onClick = onUpdateClick, enabled = updateStatus != UpdateStatus.Checking) {
+                        if (updateStatus == UpdateStatus.Checking) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Outlined.SystemUpdate, contentDescription = null, modifier = Modifier.size(18.dp))
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            when (updateStatus) {
+                                is UpdateStatus.Available -> "查看更新"
+                                is UpdateStatus.Downloading, is UpdateStatus.Installing -> "查看进度"
+                                else -> "检查更新"
+                            },
+                        )
+                        if (updateStatus is UpdateStatus.Available) {
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Badge()
+                        }
+                    }
+                }
+                OutlinedButton(onClick = onOpenRepository) {
+                    Icon(Icons.Outlined.Code, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("开源仓库")
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                }
+            }
+        }
+    }
+}
+
+private enum class UpdateEmphasis { Normal, Positive, Error }
+
+/** 更新状态写在版本号下面一行；还没检查过时不写。 */
+private fun updateStatusText(status: UpdateStatus): Pair<String, UpdateEmphasis>? = when (status) {
+    UpdateStatus.Idle -> null
+    UpdateStatus.Checking -> "正在检查更新" to UpdateEmphasis.Normal
+    UpdateStatus.UpToDate -> "已是最新版本" to UpdateEmphasis.Normal
+    is UpdateStatus.Available -> "发现新版本 ${status.update.version}" to UpdateEmphasis.Positive
+    is UpdateStatus.Downloading -> "正在下载 ${(status.progress * 100).toInt()}%" to UpdateEmphasis.Normal
+    is UpdateStatus.Installing -> "等待安装确认" to UpdateEmphasis.Normal
+    is UpdateStatus.Failed -> status.message to UpdateEmphasis.Error
 }
 
 // 选中色与底色取同一值：开关行用 checked 重载拿开关语义，而它把 checked 当作选中，
@@ -540,34 +690,8 @@ private fun ColorSwatch(
     }
 }
 
-/** 检查更新。发现新版本时尾部亮一个圆点，点开是更新面板。 */
-@Composable
-private fun UpdateRow(status: UpdateStatus, onClick: () -> Unit) {
-    val supporting = when (status) {
-        UpdateStatus.Idle -> "点按检查"
-        UpdateStatus.Checking -> "正在检查"
-        UpdateStatus.UpToDate -> "已是最新版本"
-        is UpdateStatus.Available -> "发现新版本 ${status.update.version}"
-        is UpdateStatus.Downloading -> "正在下载 ${(status.progress * 100).toInt()}%"
-        is UpdateStatus.Installing -> "等待安装确认"
-        is UpdateStatus.Failed -> status.message
-    }
-    SegmentedListItem(
-        onClick = onClick,
-        shapes = ListItemDefaults.segmentedShapes(index = 1, count = 3),
-        colors = settingsRowColors(),
-        leadingContent = { Icon(Icons.Outlined.SystemUpdate, contentDescription = null) },
-        trailingContent = {
-            when (status) {
-                UpdateStatus.Checking -> CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                is UpdateStatus.Available -> Badge()
-                else -> Unit
-            }
-        },
-        supportingContent = { Text(supporting) },
-        content = { Text("检查更新") },
-    )
-}
+// 子项图标缩进到父项标题的起点附近
+private val NestedIndent = 24.dp
 
 @Composable
 private fun SettingsSwitchRow(
@@ -579,6 +703,8 @@ private fun SettingsSwitchRow(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     enabled: Boolean = true,
+    /** 从属于上一行的开关：图标缩进一级，读得出它跟着上一行走。 */
+    nested: Boolean = false,
 ) {
     SegmentedListItem(
         checked = checked,
@@ -586,7 +712,12 @@ private fun SettingsSwitchRow(
         enabled = enabled,
         shapes = ListItemDefaults.segmentedShapes(index = index, count = count).let { it.copy(selectedShape = it.shape) },
         colors = settingsRowColors(),
-        leadingContent = { Icon(icon, contentDescription = null) },
+        leadingContent = {
+            Row {
+                if (nested) Spacer(modifier = Modifier.width(NestedIndent))
+                Icon(icon, contentDescription = null)
+            }
+        },
         // 开关只作指示，整行的 checked 语义已由列表项提供
         trailingContent = { Switch(checked = checked, onCheckedChange = null, enabled = enabled) },
         supportingContent = { Text(supporting) },
