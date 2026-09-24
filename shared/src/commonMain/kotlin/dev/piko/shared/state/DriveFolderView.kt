@@ -11,7 +11,7 @@ import dev.piko.shared.naming.describeFolder
 /**
  * 文件夹行与卡片的显示信息。
  *
- * [tags] 按优先级排好：动画是集数范围、「+SP」一类、发布组、清晰度，其后是其余技术标签；
+ * [tags] 按优先级排好：动画是集数范围、「SP」一类、发布组、清晰度，其后是其余技术标签；
  * 番号是中字、无码，其后是分段与版本数。[resolution] 单独给出，封面卡片把它放在右下角。
  */
 class DriveFolderView(
@@ -29,10 +29,10 @@ class DriveFolderView(
 
 /** 正片之外值得在标签里点明的分区。PV、NCOP、菜单几乎每个 BD 合集都有，写出来只是噪声。 */
 private val NOTABLE_EXTRAS = mapOf(
-    Section.SPECIAL to "+SP",
-    Section.OVA to "+OVA",
-    Section.MOVIE to "+剧场版",
-    Section.BONUS to "+特典",
+    Section.SPECIAL to "SP",
+    Section.OVA to "OVA",
+    Section.MOVIE to "剧场版",
+    Section.BONUS to "特典",
 )
 
 internal fun describeDriveFolder(name: String, contentNames: List<String>?): DriveFolderView {

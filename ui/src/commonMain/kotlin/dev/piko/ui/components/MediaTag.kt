@@ -1,6 +1,7 @@
 package dev.piko.ui.components
 
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -18,6 +19,7 @@ import androidx.compose.ui.unit.dp
  *
  * 纯展示，不用 Chip：M3 的 Chip 是可点击的筛选或操作，拿来展示会让人以为能点。
  * [onMedia] 为 true 时叠在封面上用：深色半透明底加浅色字，任何画面上都保持 3:1 以上的对比度。
+ * 宽度设上限：联合发布组的名字（「Airota&Nekomoe kissaten&VCB-Studio」）能占满整张卡片，把其余标签全挤掉。
  */
 @Composable
 fun MediaTag(
@@ -29,7 +31,7 @@ fun MediaTag(
         shape = RoundedCornerShape(MediaTagCorner),
         color = if (onMedia) Color.Black.copy(alpha = ON_MEDIA_ALPHA) else MaterialTheme.colorScheme.secondaryContainer,
         contentColor = if (onMedia) Color.White else MaterialTheme.colorScheme.onSecondaryContainer,
-        modifier = modifier,
+        modifier = modifier.widthIn(max = MediaTagMaxWidth),
     ) {
         Text(
             text = text,
@@ -80,4 +82,5 @@ fun MediaTagRow(
 
 private val MediaTagCorner = 4.dp
 private val MediaTagGap = 4.dp
+private val MediaTagMaxWidth = 120.dp
 private const val ON_MEDIA_ALPHA = 0.6f
