@@ -19,7 +19,7 @@ class SeekBarHoverTest {
             MobilePlayerControls(
                 title = "测试视频.mkv",
                 isLocalPlayback = false,
-                // 暂停：播放中控件 4.5 秒后自动收起，而波浪逐帧推进，测试时钟等空闲时会一路推过去
+                // 暂停：播放中控件 4.5 秒后自动收起，只要有动画在跑，测试时钟等空闲时就可能推过这个点
                 isPlaying = false,
                 isLoading = false,
                 positionMillis = 10_000L,

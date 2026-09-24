@@ -576,8 +576,8 @@ private fun EpisodeRow(
 }
 
 /**
- * 滑块负责预设之外的值，步进 0.05。不设 stops：0.5 到 3.5 按 0.05 分是 59 个停止点，
- * 规范明确不建议过密。底栏的倍速浮层与播放设置面板共用。
+ * 滑块负责预设之外的值，步进 0.01，拖动时按它取整。不设 stops：0.5 到 3.5 按 0.01 分是 300 个
+ * 停止点，规范明确不建议过密。底栏的倍速浮层与播放设置面板共用。
  */
 @Composable
 internal fun SpeedSlider(playbackSpeed: Float, onSpeedChange: (Float) -> Unit) {
@@ -835,7 +835,7 @@ internal val PlayerAspectRatio.label: String
     }
 
 private val PresetSpeeds = listOf(0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 3.0f)
-private const val SPEED_SLIDER_STEP = 0.05f
+private const val SPEED_SLIDER_STEP = 0.01f
 private const val SPEED_MATCH_TOLERANCE = 0.005f
 private const val CONNECTED_MAX_OPTIONS = 4
 
