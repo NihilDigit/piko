@@ -44,18 +44,20 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
+import androidx.compose.material3.ListItemShapes
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedListItem
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ToggleButton
-import androidx.compose.material3.ToggleButtonDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -248,9 +250,8 @@ fun SettingsScreen(
             SettingsGroup(title = "关于") {
                 // 没有应用内更新的平台少一行，分段圆角按实际行数算
                 val aboutCount = if (updater != null) 3 else 2
-                SegmentedListItem(
+                StaticSegmentedRow(
                     shapes = ListItemDefaults.segmentedShapes(index = 0, count = aboutCount),
-                    colors = settingsRowColors(),
                     leadingContent = {
                         Icon(
                             imageVector = PikoBrandIcons.Glyph,
@@ -489,12 +490,34 @@ private fun settingsRowColors() =
         selectedContainerColor = MaterialTheme.colorScheme.surfaceContainer,
     )
 
+/**
+ * 不可点的分段行：外观与可点的 SegmentedListItem 一致，只是没有点击态。
+ *
+ * 不直接用 SegmentedListItem 的无点击重载：桌面端的 material3 停在 1.12.0-alpha03（原因见
+ * libs.versions.toml），那一版的 SegmentedListItem 只有带 onClick 与带 checked 的两种。
+ */
+@Composable
+private fun StaticSegmentedRow(
+    shapes: ListItemShapes,
+    leadingContent: @Composable () -> Unit,
+    supportingContent: @Composable () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    Surface(shape = shapes.shape, color = MaterialTheme.colorScheme.surfaceContainer) {
+        ListItem(
+            headlineContent = content,
+            leadingContent = leadingContent,
+            supportingContent = supportingContent,
+            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+        )
+    }
+}
+
 /** 深色模式三选一，用 M3 Expressive 的连体按钮组，与播放器倍速选择的写法一致。 */
 @Composable
 private fun ThemeModeRow(mode: ThemeMode, onModeChange: (ThemeMode) -> Unit) {
-    SegmentedListItem(
+    StaticSegmentedRow(
         shapes = ListItemDefaults.segmentedShapes(index = 0, count = 2),
-        colors = settingsRowColors(),
         leadingContent = { Icon(Icons.Outlined.DarkMode, contentDescription = null) },
         supportingContent = {
             Row(
@@ -512,7 +535,6 @@ private fun ThemeModeRow(mode: ThemeMode, onModeChange: (ThemeMode) -> Unit) {
                             ThemeMode.entries.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
                             else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
                         },
-                        colors = ToggleButtonDefaults.colors(),
                         modifier = Modifier.weight(1f),
                     ) {
                         Text(option.label, maxLines = 1)
@@ -536,9 +558,8 @@ private fun ThemeColorRow(appearance: Appearance, onSeedChange: (SeedTheme?) -> 
     val dark = appearance.isDark()
     val platform = LocalPikoPlatform.current
     val selectedLabel = appearance.effectiveSeed?.label ?: "系统取色"
-    SegmentedListItem(
+    StaticSegmentedRow(
         shapes = ListItemDefaults.segmentedShapes(index = 1, count = 2),
-        colors = settingsRowColors(),
         leadingContent = { Icon(Icons.Outlined.Palette, contentDescription = null) },
         supportingContent = {
             Column {

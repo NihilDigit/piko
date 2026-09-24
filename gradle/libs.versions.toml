@@ -20,14 +20,20 @@ kotlinxDatetime = "0.7.1"
 # 却只把 kotlinx-io 声明为 runtime 依赖，调用方编译时要自己引入
 kotlinxIo = "0.9.0"
 pikpakSdk = "0.6.8"
-composeMultiplatform = "1.13.0-alpha01"
-# JetBrains 的 material3 与 CMP 同号发布，Android 端重定向到 androidx material3 1.5.0-alpha27，
-# 桌面端是同一份源码的 skiko 构建。compose 插件自带的 compose.material3 别名仍指向 1.10，缺 Expressive API
-cmpMaterial3 = "1.13.0-alpha01"
-cmpAdaptive = "1.3.0-rc01"
+# 桌面端停在 CMP 1.12，与 Animeko 一致：1.13 的 alpha 带的 skiko 0.152 把各渲染后端包进
+# OnScreenRedrawer，mediamp（0.5.0 仍是）的 mpv D3D11 画面表面要直接拿 Direct3DRedrawer，
+# 一开播放器窗口就抛 IllegalStateException。Android 端的 Compose 版本由 BOM 决定，不受影响。
+# 打包插件单独留在 1.13 的 alpha：release 的 AOT 缓存（buildTypes.release.aot）从这一版才有，
+# 插件只管打包与 DSL，界面库的版本由下面的坐标决定
+composeMultiplatform = "1.12.0"
+composeGradlePlugin = "1.13.0-alpha01"
+# JetBrains 的 material3 单独发版，Android 端重定向到 androidx material3，桌面端是同一份源码的
+# skiko 构建。compose 插件自带的 compose.material3 别名指向更旧的版本，缺 Expressive API
+cmpMaterial3 = "1.12.0-alpha03"
+cmpAdaptive = "1.3.0-beta02"
 # 图标库停在 1.7.3 不再更新，Android 端经重定向取 BOM 里的版本
 cmpMaterialIcons = "1.7.3"
-mediamp = "0.4.0"
+mediamp = "0.5.0"
 libmpv = "1.0.0"
 winrt = "0.1.0-SNAPSHOT"
 winrtSdkProjection = "10.0.26100.0-kotlin-winrt-0.1.0-SNAPSHOT"
@@ -43,6 +49,9 @@ androidxTestExtJunit = "1.2.1"
 mp4parser = "1.1.22"
 
 [libraries]
+cmp-runtime = { module = "org.jetbrains.compose.runtime:runtime", version.ref = "composeMultiplatform" }
+cmp-foundation = { module = "org.jetbrains.compose.foundation:foundation", version.ref = "composeMultiplatform" }
+cmp-ui = { module = "org.jetbrains.compose.ui:ui", version.ref = "composeMultiplatform" }
 cmp-material3 = { module = "org.jetbrains.compose.material3:material3", version.ref = "cmpMaterial3" }
 cmp-material3-adaptive-navigation-suite = { module = "org.jetbrains.compose.material3:material3-adaptive-navigation-suite", version.ref = "cmpMaterial3" }
 cmp-adaptive = { module = "org.jetbrains.compose.material3.adaptive:adaptive", version.ref = "cmpAdaptive" }
@@ -112,5 +121,5 @@ android-kotlin-multiplatform-library = { id = "com.android.kotlin.multiplatform.
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
-compose = { id = "org.jetbrains.compose", version.ref = "composeMultiplatform" }
+compose = { id = "org.jetbrains.compose", version.ref = "composeGradlePlugin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }

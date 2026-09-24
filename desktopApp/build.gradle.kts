@@ -9,11 +9,10 @@ plugins {
     alias(libs.plugins.compose)
 }
 
-val windowsMpvRuntime = if (System.getProperty("os.arch") == "aarch64") {
-    "org.openani.mediamp:mediamp-mpv-runtime-windows-arm64:${libs.versions.mediamp.get()}"
-} else {
-    "org.openani.mediamp:mediamp-mpv-runtime-windows-x64:${libs.versions.mediamp.get()}"
-}
+val windowsArch = if (System.getProperty("os.arch") == "aarch64") "arm64" else "x64"
+val windowsMpvRuntime = "org.openani.mediamp:mediamp-mpv-runtime-windows-$windowsArch:${libs.versions.mediamp.get()}"
+// 等同 compose.desktop.currentOs，但版本跟界面库走，而不是跟打包插件走（两者版本不同，见 libs.versions.toml）
+val composeDesktopRuntime = "org.jetbrains.compose.desktop:desktop-jvm-windows-$windowsArch:${libs.versions.composeMultiplatform.get()}"
 
 kotlin {
     jvm("desktop")
@@ -28,7 +27,7 @@ kotlin {
             dependencies {
                 implementation(project(":shared"))
                 implementation(project(":ui"))
-                implementation(compose.desktop.currentOs)
+                implementation(composeDesktopRuntime)
                 implementation(libs.cmp.material.icons.extended)
                 implementation(libs.mediamp.all)
                 implementation(libs.winrt.runtime)
