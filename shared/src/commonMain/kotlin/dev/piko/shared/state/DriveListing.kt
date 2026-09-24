@@ -93,7 +93,7 @@ internal const val SECONDARY_BLOCK_ID = "secondary"
  * 分析一个目录。文件只给名字不给目录：网盘里一层就是一批，上级目录名在这里帮倒忙，
  * 「My Pack」会被当成「01.mp4」的作品名。
  */
-internal fun analyzeDriveFolder(files: List<FileStat>): DriveStructure {
+fun analyzeDriveFolder(files: List<FileStat>): DriveStructure {
     val regular = files.filterNot(FileStat::isFolder)
     val secondaryFolders = files.filter { it.isFolder && isSecondaryFolderName(it.name) }.map { it.id }
     if (regular.isEmpty()) {
@@ -238,7 +238,7 @@ private fun stripBrackets(label: String): String {
  * 只有一个块时不插分区标题，也不收起：「CDs」目录整块是「其他」，收起就什么都看不到了。
  * 次要文件只在不折叠时出现，排在最后自成一块，默认展开：用户点了「显示全部」就是要看它们。
  */
-internal fun buildDriveItems(
+fun buildDriveItems(
     files: List<FileStat>,
     structure: DriveStructure,
     hideFolded: Boolean,

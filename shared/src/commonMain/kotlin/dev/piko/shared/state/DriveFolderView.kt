@@ -35,7 +35,7 @@ private val NOTABLE_EXTRAS = mapOf(
     Section.BONUS to "特典",
 )
 
-internal fun describeDriveFolder(name: String, contentNames: List<String>?): DriveFolderView {
+fun describeDriveFolder(name: String, contentNames: List<String>?): DriveFolderView {
     val description = describeFolder(name, contentNames.orEmpty())
     val resolution = description.tags.firstOrNull { it.kind == TagKind.RESOLUTION }?.text
     val tags = if (description.kind == WorkKind.AV) avTags(description, contentNames.orEmpty()) else seriesTags(description)

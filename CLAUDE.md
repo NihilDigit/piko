@@ -164,6 +164,18 @@ piko 源码仍是 MIT，但发版时要附 GPLv3 与第三方声明，并指明�
 - Compose 与 MediaMP 的桌面依赖带进了 ui-test、junit、truth 与 kotlinx-coroutines-test，
   在 `desktopRuntimeClasspath` 里排除，测试类路径不受影响。
 
+## 开发用 CLI
+
+`:cli` 是开发工具，不随应用发布。`./gradlew :cli:installDist` 后执行 `cli/build/install/piko-cli/bin/piko-cli`：
+
+- `snapshot -o <文件> [--root <路径>] [--depth <层数>] [--deep <名字,…>]`：只读列网盘目录，存成快照，
+  只含文件名、类型、大小。会话取自 `~/.piko`，token 轮换后写回，与桌面端共用。
+- `dryrun <快照> [--path <前缀>] [-o <文件>]`：离线对快照跑网盘页的解析流水线，逐行写出原名与界面上的样子。
+  调的是 `DriveScreenState` 同一组函数（`analyzeDriveFolder`、`buildDriveItems`、`describeDriveFolder`）。
+- `parse <文件名>…`：单独解析文件名。
+
+快照含真实文件名，放在仓库外，不要提交。改解析规则后重跑 `dryrun` 对比即可，不必重新请求网盘。
+
 ## 冒烟测试
 
 `.github/workflows/smoke.yml` 在每次推送时运行：Linux 上的 `:shared:desktopTest`，以及 x86_64 模拟器
