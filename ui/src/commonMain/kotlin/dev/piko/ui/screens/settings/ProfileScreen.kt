@@ -63,6 +63,7 @@ import io.github.nihildigit.pikpak.TransferAllowances
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 import java.util.Locale
 import kotlinx.coroutines.launch
 
@@ -394,7 +395,7 @@ private fun TransferSection(allowances: TransferAllowances?, error: String?) {
             SectionLabel("本月流量", Modifier.weight(1f))
             if (allowances != null) {
                 Text(
-                    text = "${nextTransferQuotaReset()}重置",
+                    text = transferQuotaResetLabel(),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -500,11 +501,15 @@ private fun UsageTile(usage: Usage, modifier: Modifier = Modifier) {
     }
 }
 
-/** 下一次月度重置的日期（每月 1 日 0 点，新加坡时间；接口不返回）。minSdk 26 起自带 java.time，不必再引入 kotlinx-datetime。 */
-private fun nextTransferQuotaReset(): String {
-    val nowInSingapore = OffsetDateTime.now(ZoneOffset.ofHours(8))
-    val reset = nowInSingapore.toLocalDate().plusMonths(1).withDayOfMonth(1)
-    return reset.format(DateTimeFormatter.ofPattern("M 月 d 日", Locale.getDefault()))
+/**
+ * 距下一次月度重置还有几天（每月 1 日 0 点，新加坡时间；接口不返回）。写天数不写日期：看额度时
+ * 要掂量的是「还能撑几天」，日期还得自己再减一次。按新加坡的日历日算，月末最后一天是「1 天后」。
+ * minSdk 26 起自带 java.time，不必再引入 kotlinx-datetime。
+ */
+private fun transferQuotaResetLabel(): String {
+    val today = OffsetDateTime.now(ZoneOffset.ofHours(8)).toLocalDate()
+    val reset = today.plusMonths(1).withDayOfMonth(1)
+    return "${ChronoUnit.DAYS.between(today, reset)} 天后重置"
 }
 
 /** 非会员时 [TransferAllowances.expireTime] 为空字符串，解析失败也一并按「没有」处理。 */
