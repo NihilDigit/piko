@@ -25,6 +25,7 @@ import androidx.compose.ui.draganddrop.DragAndDropTarget
 import androidx.compose.ui.draganddrop.awtTransferable
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.state.InstantSheetState
+import dev.piko.shared.state.extractLinks
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.PikoPlatform
 import dev.piko.ui.theme.Appearance
@@ -115,6 +116,7 @@ private fun magnetIn(event: DragAndDropEvent): String? {
     val text = runCatching { transferable.getTransferData(DataFlavor.stringFlavor) as? String }.getOrNull() ?: return null
     // 分享链接连同整段文本交出去：提取码常写在链接后面，面板从同一段里认出来
     if (InstantSheetState.findShareLink(text) != null) return text.trim()
-    // 浏览器拖链接时可能带上标题或多行，逐行找第一条像磁力链的
-    return text.lineSequence().firstNotNullOfOrNull { InstantSheetState.normalizeMagnet(it) }
+    // 浏览器拖链接时可能带上标题或多行。只取磁力链，多条时一并交出去，面板列成批量清单
+    val magnets = extractLinks(text).filter { it.isMagnet }
+    return magnets.takeIf { it.isNotEmpty() }?.joinToString("\n") { it.uri }
 }

@@ -11,6 +11,7 @@ import dev.piko.shared.data.PreviewTempFolder
 import dev.piko.shared.data.TaskRepository
 import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.media.PikoMediaRepository
+import dev.piko.shared.state.ArchiveExtractSession
 import dev.piko.shared.state.InstantSession
 import dev.piko.shared.state.InstantSheetState
 import kotlinx.coroutines.CoroutineScope
@@ -54,6 +55,16 @@ class PikoServices(
                     magnet,
                 )
             },
+        )
+    }
+
+    // 主线程且与进程同寿：会话在这个作用域上改 Compose 状态，离开网盘页后解压仍要继续
+    val archiveExtractSession: ArchiveExtractSession by lazy {
+        ArchiveExtractSession(
+            clientProvider = clientManager,
+            driveRepository = driveRepository,
+            preferences = preferences,
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
         )
     }
 

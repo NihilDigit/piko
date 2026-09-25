@@ -98,13 +98,8 @@ fun ProfileScreen(
     var transferQuotaError by remember { mutableStateOf<String?>(null) }
     var showLogoutDialog by remember { mutableStateOf(false) }
 
-    val updater = platform.updater
-    // 进页面静默查一次：失败不打扰，在设置页手动点「检查更新」时才报错。放在这里而不是设置页，
-    // 新版本才能写在「设置」入口上，不必点进去才知道
-    LaunchedEffect(updater) {
-        if (updater?.status == UpdateStatus.Idle) updater.check(silent = true)
-    }
-    val availableUpdate = (updater?.status as? UpdateStatus.Available)?.update
+    // 开屏检查（见 StartupUpdatePrompt）查到的新版本写在「设置」入口上，不必点进去才知道
+    val availableUpdate = (platform.updater?.status as? UpdateStatus.Available)?.update
 
     LaunchedEffect(Unit) {
         driveRepo.getQuota()

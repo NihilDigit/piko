@@ -93,6 +93,7 @@ import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.theme.LocalStatusColors
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.merge
 
 /**
  * 嵌入在 BottomSheet 里的秒传与磁力确认工作台。
@@ -111,14 +112,17 @@ fun InstantSheetContent(
     val platform = LocalPikoPlatform.current
     var showTargetPicker by remember { mutableStateOf(false) }
 
+    val batch = state.batch
+    // 批量时预览与提示来自各行的子实例，与本体的一起收
+    val sheets = remember(state, batch?.rows) { listOf(state) + batch?.rows?.map { it.state }.orEmpty() }
     val currentOnPreview by rememberUpdatedState(onPreview)
-    LaunchedEffect(state) {
-        state.previewRequests.collect { currentOnPreview(it.fileId, it.fileName) }
+    LaunchedEffect(sheets) {
+        sheets.map { it.previewRequests }.merge().collect { currentOnPreview(it.fileId, it.fileName) }
     }
     // 面板盖在网盘页的 Snackbar 之上，一次性提示就地显示几秒
     var notice by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(state) {
-        state.messages.collect { notice = it }
+    LaunchedEffect(sheets) {
+        sheets.map { it.messages }.merge().collect { notice = it }
     }
     LaunchedEffect(notice) {
         if (notice != null) {
@@ -149,6 +153,16 @@ fun InstantSheetContent(
             .padding(bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        val openedRow = batch?.openedRow
+        if (batch != null) {
+            if (openedRow != null) {
+                BatchRowDetail(batch, openedRow, notice)
+            } else {
+                BatchList(batch, state, notice, onPickTarget = { showTargetPicker = true })
+            }
+            return@Column
+        }
+
         // 面板有拖动条，下滑、点遮罩、返回都能关，标题行不再放关闭按钮
         Text(
             text = "添加链接",
@@ -201,7 +215,7 @@ fun InstantSheetContent(
         notice?.let { ErrorBanner(message = it, onRetry = null) }
 
         if (shareState == null && result != null) {
-            ResolutionSection(state = state, resourceName = result.resource.name)
+            ResolutionSection(state = state, resourceName = result.resource.name, showCopyLink = !state.isInputVisible)
         }
 
         val action = state.primaryAction
@@ -268,7 +282,7 @@ private fun SaveBar(state: InstantSheetState, action: InstantPrimaryAction) {
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun SaveButton(label: String, enabled: Boolean, isSaving: Boolean, onClick: () -> Unit) {
+internal fun SaveButton(label: String, enabled: Boolean, isSaving: Boolean, onClick: () -> Unit) {
     Button(
         onClick = onClick,
         enabled = enabled && !isSaving,
@@ -291,7 +305,7 @@ private fun SaveButton(label: String, enabled: Boolean, isSaving: Boolean, onCli
 }
 
 @Composable
-private fun SaveCaption(text: String) {
+internal fun SaveCaption(text: String) {
     Text(
         text = text,
         style = MaterialTheme.typography.bodySmall,
@@ -302,7 +316,7 @@ private fun SaveCaption(text: String) {
 }
 
 @Composable
-private fun ResolvingRow(text: String) {
+internal fun ResolvingRow(text: String) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         PikoLoadingIndicator(size = 20.dp)
         Spacer(modifier = Modifier.width(8.dp))
@@ -315,7 +329,7 @@ private fun ResolvingRow(text: String) {
 }
 
 @Composable
-private fun ErrorBanner(message: String, onRetry: (() -> Unit)?) {
+internal fun ErrorBanner(message: String, onRetry: (() -> Unit)?) {
     Surface(
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.errorContainer,
@@ -351,7 +365,7 @@ private fun ErrorBanner(message: String, onRetry: (() -> Unit)?) {
 
 /** 解析结果：资源名（多文件秒传时即新建目录名，可改）与文件勾选列表。 */
 @Composable
-private fun ColumnScope.ResolutionSection(state: InstantSheetState, resourceName: String) {
+internal fun ColumnScope.ResolutionSection(state: InstantSheetState, resourceName: String, showCopyLink: Boolean) {
     // 输入框收起后链接就看不到了，标题右侧留一个复制入口，好转发或换设备打开
     Row(verticalAlignment = Alignment.Top) {
         Box(modifier = Modifier.weight(1f)) {
@@ -379,9 +393,9 @@ private fun ColumnScope.ResolutionSection(state: InstantSheetState, resourceName
                 )
             }
         }
-        if (!state.isInputVisible) {
+        if (showCopyLink) {
             CopyLinkButton(
-                link = state.input.trim(),
+                link = state.normalizedMagnet ?: state.input.trim(),
                 // 输入框顶上留 8dp 给浮动标签，框的中线在 36dp，按钮下移 12dp 对上；
                 // 右移 12dp 让图标贴齐内容右缘，触控区不变
                 modifier = Modifier
@@ -573,8 +587,10 @@ private fun UnindexedMark() {
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun CopyLinkButton(link: String, modifier: Modifier = Modifier) {
+internal fun CopyLinkButton(link: String, modifier: Modifier = Modifier) {
     val platform = LocalPikoPlatform.current
+    // 批量列表里也有 http 与 ed2k 链接
+    val kind = if (link.startsWith("magnet:", ignoreCase = true)) "磁力链接" else "链接"
     var copied by remember { mutableStateOf(false) }
     LaunchedEffect(copied) {
         if (copied) {
@@ -584,18 +600,18 @@ private fun CopyLinkButton(link: String, modifier: Modifier = Modifier) {
     }
     TooltipBox(
         positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
-        tooltip = { PlainTooltip { Text("复制磁力链接") } },
+        tooltip = { PlainTooltip { Text("复制$kind") } },
         state = rememberTooltipState(),
         modifier = modifier,
     ) {
         IconButton(onClick = {
-            platform.copyToClipboard("磁力链接", link)
+            platform.copyToClipboard(kind, link)
             copied = true
         }) {
             Crossfade(targetState = copied, label = "copy-link") { done ->
                 Icon(
                     imageVector = if (done) Icons.Outlined.Check else Icons.Outlined.Link,
-                    contentDescription = if (done) "已复制" else "复制磁力链接",
+                    contentDescription = if (done) "已复制" else "复制$kind",
                     tint = if (done) LocalStatusColors.current.success else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -785,9 +801,15 @@ fun InstantSheetHandle(
     modifier: Modifier = Modifier,
 ) {
     val result = state.resolution
-    val title = result?.resource?.name ?: state.input.trim().ifEmpty { "添加链接" }
+    val batch = state.batch
+    val isSaving = state.isSaving || batch?.isSaving == true
+    val title = when {
+        batch != null -> "${batch.rows.size} 条链接"
+        else -> result?.resource?.name ?: state.input.trim().ifEmpty { "添加链接" }
+    }
     val status = when {
-        state.isSaving -> "正在保存"
+        isSaving -> "正在保存"
+        batch != null -> batch.blockedReason ?: "可保存 ${batch.submittableCount} 项"
         state.isResolving -> "正在查询云端索引"
         state.errorMessage != null -> state.errorMessage
         result != null -> "已选 ${state.selectedEntryCount} / ${state.entryCount}"
@@ -832,7 +854,7 @@ fun InstantSheetHandle(
                         )
                     }
                 }
-                IconButton(onClick = onClose, enabled = !state.isSaving) {
+                IconButton(onClick = onClose, enabled = !isSaving) {
                     Icon(Icons.Outlined.Close, contentDescription = "放弃这次添加")
                 }
             }

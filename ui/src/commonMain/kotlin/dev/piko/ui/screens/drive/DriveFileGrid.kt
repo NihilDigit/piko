@@ -26,6 +26,8 @@ import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.FileCopy
+import dev.piko.ui.components.TooltipIconButton
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -344,6 +346,7 @@ internal fun DriveListHeader(
     onSortChange: (FileSortOrder) -> Unit,
     isPosterMode: Boolean,
     onTogglePosterMode: () -> Unit,
+    onFindDuplicates: (() -> Unit)?,
 ) {
     var showSortMenu by remember { mutableStateOf(false) }
     Column(modifier = Modifier.fillMaxWidth()) {
@@ -392,6 +395,9 @@ internal fun DriveListHeader(
                 }
             }
             Spacer(modifier = Modifier.weight(1f))
+            if (onFindDuplicates != null) {
+                TooltipIconButton(Icons.Outlined.FileCopy, "在此文件夹查找重复", onFindDuplicates)
+            }
             ViewModeToggle(isPosterMode = isPosterMode, onTogglePosterMode = onTogglePosterMode)
         }
     }

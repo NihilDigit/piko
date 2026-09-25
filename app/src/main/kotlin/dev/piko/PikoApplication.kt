@@ -47,7 +47,7 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
     val downloadManager: PikoDownloadCoordinator get() = services.downloadManager
     val instantSession: InstantSession get() = services.instantSession
 
-    /** 首次用到时才建：多数启动根本不检查更新，不必为它先建一个 HTTP 客户端。 */
+    /** 首次用到时才建：开屏检查要等界面第一次组合，不必在 onCreate 里就先建一个 HTTP 客户端。 */
     val appUpdater by lazy { AppUpdater(this) }
 
     override fun onCreate() {

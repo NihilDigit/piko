@@ -26,6 +26,8 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 
 data class NameGroupSummary(val selected: Int, val total: Int, val bytes: Long, val hasUnindexed: Boolean)
@@ -53,11 +55,34 @@ sealed interface InstantSaveOutcome {
         override val target: PikoPathBreadcrumb,
     ) : InstantSaveOutcome
 
-    data class OfflineTaskCreated(override val target: PikoPathBreadcrumb) : InstantSaveOutcome
+    /** [submittedCount] 是批量保存时提交的链接数，单条为 1。 */
+    data class OfflineTaskCreated(
+        override val target: PikoPathBreadcrumb,
+        val submittedCount: Int = 1,
+    ) : InstantSaveOutcome
 }
 
 /** 预览播放的请求：文件已秒传进 Piko-Temp，由视图交给播放器。 */
 data class InstantPreviewRequest(val fileId: String, val fileName: String)
+
+/** 一次会话里各条链接共用的部分。批量时每条链接各有一个 [InstantSheetState]，共用这一份。 */
+internal class InstantSharedContext {
+    /** 保存目标对全部链接生效，在任一处更换都改这一份。 */
+    val target = mutableStateOf<PikoPathBreadcrumb?>(null)
+    val targetNotice = mutableStateOf<String?>(null)
+
+    // gcid 到 Piko-Temp 里的文件 id。同一会话内再预览、或保存这一项时直接复用；
+    // 两条链接里的同一个文件也共用这一份
+    val previewedIds = mutableMapOf<String, String>()
+    var usedPreviewFolder = false
+
+    // 一次粘几十条时不同时压给服务端；单条时只有一个请求，不受影响
+    val resolvePermits = Semaphore(RESOLVE_CONCURRENCY)
+
+    private companion object {
+        const val RESOLVE_CONCURRENCY = 3
+    }
+}
 
 /**
  * 秒传与磁力解析的工作台状态，两端共用。
@@ -72,16 +97,33 @@ data class InstantPreviewRequest(val fileId: String, val fileName: String)
  * 目标目录，顺带清掉搜索与选中。在这里直接改仓库的目录栈会绕过那一步。
  *
  * 解析失败与目标失效是长驻的说明文字，用状态表达；保存结果是一次性事件，用事件流。
+ *
+ * 一次粘进两条以上链接时，这一个实例只作输入，列表在 [batch]：每条链接另有一个子实例，
+ * 与单条时的工作台完全相同，勾选、文件夹名与预览各自保留；保存目标与预览副本经
+ * [InstantSharedContext] 共用。
  */
-class InstantSheetState(
+class InstantSheetState private constructor(
     private val instantRepo: InstantMagnetRepository,
     private val driveRepo: PikoDriveRepository,
     private val preferences: PikoUserPreferences,
     private val previewFolder: PreviewTempFolder,
     private val packTracker: OfflinePackTracker,
     private val scope: CoroutineScope,
-    initialMagnet: String = "",
+    initialMagnet: String,
+    private val shared: InstantSharedContext,
+    /** 面板直接持有的那个实例；批量列表里各行的子实例为 false。 */
+    private val isRoot: Boolean,
 ) {
+    constructor(
+        instantRepo: InstantMagnetRepository,
+        driveRepo: PikoDriveRepository,
+        preferences: PikoUserPreferences,
+        previewFolder: PreviewTempFolder,
+        packTracker: OfflinePackTracker,
+        scope: CoroutineScope,
+        initialMagnet: String = "",
+    ) : this(instantRepo, driveRepo, preferences, previewFolder, packTracker, scope, initialMagnet, InstantSharedContext(), isRoot = true)
+
     var input by mutableStateOf(initialMagnet)
         private set
 
@@ -112,12 +154,20 @@ class InstantSheetState(
     var errorMessage by mutableStateOf<String?>(null)
         private set
 
+    /** 解析成功但云端没有这个资源，只能整条离线。批量列表据此与解析失败区分开。 */
+    var isUnindexed by mutableStateOf(false)
+        private set
+
     /** 保存目标。为 null 表示还在确认，此时不拿 My Packs 顶替，免得闪一个可能是错的名字。 */
-    var target by mutableStateOf<PikoPathBreadcrumb?>(null)
+    var target: PikoPathBreadcrumb? by shared.target
         private set
 
     /** 记住的目标已失效、已回退到默认目录时的说明。 */
-    var targetNotice by mutableStateOf<String?>(null)
+    var targetNotice: String? by shared.targetNotice
+        private set
+
+    /** 粘进两条以上链接时的批量列表，为 null 时是单条链接的工作台。 */
+    var batch by mutableStateOf<InstantBatchState?>(null)
         private set
 
     /** 多项保存时的文件夹名，解析成功后以主作品的标题预填。整包离线完成后产出文件夹改成这个名字。 */
@@ -132,9 +182,7 @@ class InstantSheetState(
     var previewingIndex by mutableStateOf<Int?>(null)
         private set
 
-    // gcid 到 Piko-Temp 里的文件 id。同一会话内再预览、或保存这一项时直接复用
-    private val previewedIds = mutableMapOf<String, String>()
-    private var usedPreviewFolder = false
+    private val previewedIds get() = shared.previewedIds
 
     private val _outcomes = MutableSharedFlow<InstantSaveOutcome>(extraBufferCapacity = 1)
     val outcomes: SharedFlow<InstantSaveOutcome> = _outcomes.asSharedFlow()
@@ -262,13 +310,16 @@ class InstantSheetState(
     private var resolvedKey: String? = null
 
     init {
-        // 面板关闭即会话结束，作用域随之取消。清理要在它之后跑完，交给 Piko-Temp 自己的作用域
-        scope.coroutineContext[Job]?.invokeOnCompletion {
-            if (usedPreviewFolder) previewFolder.clearInBackground()
+        if (isRoot) {
+            // 面板关闭即会话结束，作用域随之取消。清理要在它之后跑完，交给 Piko-Temp 自己的作用域。
+            // 子实例不登记：移除一行只取消那一行，Piko-Temp 里可能还有别的行预览过的文件
+            scope.coroutineContext[Job]?.invokeOnCompletion {
+                if (shared.usedPreviewFolder) previewFolder.clearInBackground()
+            }
+            scope.launch { target = resolveTarget() }
         }
-        scope.launch { target = resolveTarget() }
         scope.launch { preferences.bundleSubtitlesFlow.collect { saveAttachedSubtitles = it } }
-        if (initialMagnet.isNotBlank()) {
+        if (initialMagnet.isNotBlank() && !startBatchIfMany()) {
             if (normalizeMagnet(initialMagnet) == null) {
                 // 外部唤起的链不合法时自动解析不会发生，而输入框又是收起的，不兜住就是一个空面板
                 errorMessage = "非磁力链接，可离线下载"
@@ -281,7 +332,44 @@ class InstantSheetState(
 
     fun updateInput(value: String) {
         input = value
+        // 多条链接时 normalizeMagnet 为 null，这一步顺带清掉单条的解析结果
         scheduleResolve()
+        startBatchIfMany()
+    }
+
+    /**
+     * 输入里有两条以上链接就换成批量列表，返回是否换了。分享链接仍走转存，不进列表。
+     * 输入框随之收起，与单条解析成功后一致：要换一批链接就关掉面板重开。
+     */
+    private fun startBatchIfMany(): Boolean {
+        if (!isRoot || findShareLink(input) != null) return false
+        val links = extractLinks(input)
+        if (links.size < 2) return false
+        // 逐字输入时每多识别出一条链接就会走到这里
+        batch?.dispose()
+        batch = InstantBatchState(
+            links = links,
+            newRow = ::newBatchRow,
+            driveRepo = driveRepo,
+            shared = shared,
+            scope = scope,
+            emitOutcome = { _outcomes.emit(it) },
+            emitMessage = { _messages.emit(it) },
+            onEmpty = ::leaveBatch,
+        )
+        isInputVisible = false
+        return true
+    }
+
+    private fun newBatchRow(link: PastedLink, rowScope: CoroutineScope) = InstantSheetState(
+        instantRepo, driveRepo, preferences, previewFolder, packTracker, rowScope, link.uri, shared, isRoot = false,
+    )
+
+    /** 列表里的行删光了，回到空的输入框。 */
+    private fun leaveBatch() {
+        batch = null
+        input = ""
+        isInputVisible = true
     }
 
     /** 对同一条链再解析一次。自动解析只在链接变化时触发，失败后的重试走这里。 */
@@ -344,7 +432,7 @@ class InstantSheetState(
         if (previewingIndex != null) return
         previewingIndex = index
         // 请求发出去就可能已经建好了文件，哪怕随后被取消，所以在发请求之前记下
-        usedPreviewFolder = true
+        shared.usedPreviewFolder = true
         scope.launch {
             try {
                 previewFolder.put(item.file)
@@ -370,7 +458,15 @@ class InstantSheetState(
                 val targetBread = target ?: resolveTarget()
                 when (plan.route) {
                     SaveRoute.INSTANT -> instantSave(targetBread, toSave, keepStructure = false)
-                    SaveRoute.OFFLINE_PACK -> packSave(targetBread, toSave)
+                        .onSuccess { _outcomes.emit(InstantSaveOutcome.InstantSaved(it, targetBread)) }
+                    SaveRoute.OFFLINE_PACK -> {
+                        // 提交前再查一次：解析时查到的余量可能已经过时，而离线一旦提交就是整包落盘。
+                        // 放不下时 savePlan 随 remainingBytes 变为 lacksSpace，保存栏换成空间不足的说明
+                        val remaining = refreshRemainingBytes()
+                        if (remaining != null && plan.packBytes > remaining) return@launch
+                        packSave(targetBread, toSave)
+                            .onSuccess { _outcomes.emit(InstantSaveOutcome.OfflineTaskCreated(targetBread)) }
+                    }
                 }
             } finally {
                 isSaving = false
@@ -394,7 +490,9 @@ class InstantSheetState(
                     errorMessage = "新建文件夹失败：${err.message}"
                     return@launch
                 }
-                instantSave(PikoPathBreadcrumb(folderId, name), toSave, keepStructure = true)
+                val folder = PikoPathBreadcrumb(folderId, name)
+                instantSave(folder, toSave, keepStructure = true)
+                    .onSuccess { _outcomes.emit(InstantSaveOutcome.InstantSaved(it, folder)) }
             } finally {
                 isSaving = false
             }
@@ -411,14 +509,39 @@ class InstantSheetState(
         scope.launch {
             try {
                 val targetBread = target ?: resolveTarget()
-                instantRepo.enqueueOfflineTask(submittedUrl(), targetBread.id)
+                submitWhole(targetBread)
                     .onSuccess { _outcomes.emit(InstantSaveOutcome.OfflineTaskCreated(targetBread)) }
-                    .onFailure { errorMessage = "保存失败：${it.message}" }
             } finally {
                 isSaving = false
             }
         }
     }
+
+    /**
+     * 批量保存时由 [InstantBatchState] 逐行调用，路线与单条时的主操作相同，只是结果交回给列表汇总，
+     * 不发 [outcomes]。空间由列表按全部整包合计后检查，这里不再逐条查。
+     * 秒传成功返回新文件的 id，离线返回 null。
+     */
+    internal suspend fun submitForBatch(target: PikoPathBreadcrumb): Result<List<String>?> {
+        val plan = savePlan
+        val toSave = itemsToSave
+        isSaving = true
+        try {
+            return when {
+                resolution == null -> submitWhole(target).map { null }
+                plan == null -> Result.failure(IllegalStateException("未勾选文件"))
+                plan.route == SaveRoute.INSTANT -> instantSave(target, toSave, keepStructure = false)
+                else -> packSave(target, toSave).map { null }
+            }
+        } finally {
+            isSaving = false
+        }
+    }
+
+    private suspend fun submitWhole(target: PikoPathBreadcrumb): Result<Unit> =
+        instantRepo.enqueueOfflineTask(submittedUrl(), target.id)
+            .map { }
+            .onFailure { errorMessage = "保存失败：${it.message}" }
 
     private fun scheduleResolve(debounce: Boolean = true) {
         val magnet = normalizeMagnet(input)
@@ -429,13 +552,14 @@ class InstantSheetState(
         tree = null
         selectedIndices = emptySet()
         errorMessage = null
+        isUnindexed = false
         if (magnet == null) return
         resolveJob = scope.launch {
             // 防抖。粘贴一次就是一条完整的链，等待只为压掉手敲时中途的半条链接，所以取短值。
             if (debounce) delay(AUTO_RESOLVE_DEBOUNCE_MS)
             isResolving = true
             try {
-                instantRepo.resolve(magnet)
+                shared.resolvePermits.withPermit { instantRepo.resolve(magnet) }
                     .onSuccess { data -> applyResolution(data) }
                     .onFailure { err ->
                         errorMessage = "解析失败：${err.message}"
@@ -451,6 +575,7 @@ class InstantSheetState(
 
     private suspend fun applyResolution(data: MagnetResolutionResult?) {
         if (data == null) {
+            isUnindexed = true
             errorMessage = "云端未收录，可离线下载"
             isInputVisible = true
             return
@@ -469,7 +594,8 @@ class InstantSheetState(
         isInputVisible = false
         folderName = built.folderName
         selectedIndices = built.defaultSelection
-        scope.launch { refreshRemainingBytes() }
+        // 批量时余量由列表按合计查，逐行查只是多发请求
+        if (isRoot) scope.launch { refreshRemainingBytes() }
     }
 
     /** 查一次网盘余量。limit 为 0 的账号当作不限；查询失败保留上一次的数。 */
@@ -480,8 +606,9 @@ class InstantSheetState(
         return remainingBytes
     }
 
-    // 只粘了 infohash 的输入要补成磁力链再交给离线，createUrlFile 不认裸的 hash
-    private fun submittedUrl(): String = normalizedMagnet ?: input.trim()
+    // 只粘了 infohash 的输入要补成磁力链再交给离线，createUrlFile 不认裸的 hash。
+    // 夹在一段话里的单条链接只交链接本身
+    private fun submittedUrl(): String = normalizedMagnet ?: extractLinks(input).singleOrNull()?.uri ?: input.trim()
 
     /**
      * 记住过的目标优先，没配置过才退回 My Packs。只取一次而不是持续收集，否则用户在
@@ -505,24 +632,18 @@ class InstantSheetState(
         target: PikoPathBreadcrumb,
         toSave: List<InstantFileItem>,
         keepStructure: Boolean,
-    ) {
+    ): Result<List<String>> =
         instantRepo.instantSave(toSave, target.id, reuse = previewedIds.toMap(), keepStructure = keepStructure)
-            .onSuccess { createdIds ->
+            .onSuccess {
                 // 移出 Piko-Temp 的不能再当作预览副本：下次预览会指向保存目录里的这份
                 toSave.forEach { item -> item.file.gcid?.let(previewedIds::remove) }
-                _outcomes.emit(InstantSaveOutcome.InstantSaved(createdIds, target))
             }
             .onFailure { errorMessage = "保存失败：${it.message}" }
-    }
 
-    private suspend fun packSave(target: PikoPathBreadcrumb, toSave: List<InstantFileItem>) {
+    private suspend fun packSave(target: PikoPathBreadcrumb, toSave: List<InstantFileItem>): Result<Unit> {
         val allItems = items
         val packBytes = allItems.sumOf { it.file.size }
-        // 提交前再查一次：解析时查到的余量可能已经过时，而离线一旦提交就是整包落盘。
-        // 放不下时 savePlan 随 remainingBytes 变为 lacksSpace，保存栏换成空间不足的说明
-        val remaining = refreshRemainingBytes()
-        if (remaining != null && packBytes > remaining) return
-        packTracker.submit(
+        return packTracker.submit(
             url = submittedUrl(),
             targetId = target.id,
             folderName = FileNameSanitizer.sanitize(folderName),
@@ -531,7 +652,7 @@ class InstantSheetState(
             totalBytes = packBytes,
             keptBytes = toSave.sumOf { it.file.size },
         )
-            .onSuccess { _outcomes.emit(InstantSaveOutcome.OfflineTaskCreated(target)) }
+            .map { }
             .onFailure { errorMessage = "保存失败：${it.message}" }
     }
 
@@ -539,20 +660,13 @@ class InstantSheetState(
         private const val AUTO_RESOLVE_DEBOUNCE_MS = 350L
 
         /**
-         * 输入框里的内容归一化成可解析的磁力链，不像磁力链就返回 null，不解析也不报错。
+         * 输入框里的内容归一化成可解析的磁力链。文本里恰好只有一条链接且是磁力时返回它，
+         * 否则返回 null，不解析也不报错；两条以上由批量列表处理。
          *
-         * 只粘 infohash 的情况不少，所以补全一条磁力链；但限定 40 位十六进制，否则随手敲的
-         * 任意长串都会发一次请求。
+         * 只粘 infohash 的情况不少，所以补全一条磁力链；但限定 40 位十六进制或 32 位 Base32，
+         * 否则随手敲的任意长串都会发一次请求。
          */
-        fun normalizeMagnet(raw: String): String? {
-            val trimmed = raw.trim()
-            return when {
-                trimmed.startsWith("magnet:?xt=urn:btih:") -> trimmed
-                trimmed.length == 40 && trimmed.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' } ->
-                    "magnet:?xt=urn:btih:$trimmed"
-                else -> null
-            }
-        }
+        fun normalizeMagnet(raw: String): String? = extractLinks(raw).singleOrNull()?.takeIf { it.isMagnet }?.uri
 
         /**
          * 一段文本里的 PikPak 分享链接。分享常以「链接：https://mypikpak.com/s/… 提取码：abcd」的整段话转发，

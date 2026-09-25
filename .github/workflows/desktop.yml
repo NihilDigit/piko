@@ -71,9 +71,10 @@ jobs:
         continue-on-error: true
         run: choco install wixtoolset -y --no-progress
 
-      - name: Build MSI installer
-        # 未签名，安装时 SmartScreen 会提示。安装包元数据只能用 ASCII，见 build.gradle.kts 的 description
-        run: .\gradlew.bat :desktopApp:packageReleaseMsi -PpikoDesktopVersion="$env:PIKO_DESKTOP_VERSION" --no-daemon --stacktrace
+      - name: Build MSI installer and update artifacts
+        # 未签名，安装时 SmartScreen 会提示。安装包元数据只能用 ASCII，见 build.gradle.kts 的 description。
+        # 增量更新的清单与 app.zip 在同一次调用里生成，与 MSI 取自同一份应用目录
+        run: .\gradlew.bat :desktopApp:packageReleaseMsi :desktopApp:packageReleaseUpdate -PpikoDesktopVersion="$env:PIKO_DESKTOP_VERSION" --no-daemon --stacktrace
 
       - name: Stage release files (portable zip and installer)
         shell: powershell
@@ -91,6 +92,8 @@ jobs:
           $msi = Get-ChildItem 'desktopApp/build/compose/binaries/main-release/msi/*.msi' | Select-Object -First 1
           if (-not $msi) { throw 'packageReleaseMsi output missing' }
           Copy-Item $msi.FullName "dist/piko-windows-${{ matrix.arch }}-$env:PIKO_DESKTOP_VERSION.msi"
+          # 应用内增量更新：files.json 与 app.zip，由 packageReleaseUpdate 按架构与版本命名
+          Copy-Item 'desktopApp/build/compose/binaries/main-release/update/*' dist/
           Get-ChildItem dist | Format-Table Name, Length
 
       - name: Upload Windows portable jar
@@ -104,7 +107,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: piko-windows-${{ matrix.arch }}-zip
-          path: dist/*.zip
+          path: dist/piko-windows-${{ matrix.arch }}-${{ env.PIKO_DESKTOP_VERSION }}.zip
           if-no-files-found: error
 
       - name: Upload Windows installer
@@ -125,4 +128,6 @@ jobs:
             gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 && break
             sleep 30
           done
+          # 清单最后上传：客户端见到清单才认这个版本，此前 app.zip 与 MSI 必须已经挂好
           gh release upload "$GITHUB_REF_NAME" dist/*.zip dist/*.msi --clobber
+          gh release upload "$GITHUB_REF_NAME" dist/*-files.json --clobber

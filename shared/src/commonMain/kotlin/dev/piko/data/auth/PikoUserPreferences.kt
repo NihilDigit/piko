@@ -91,4 +91,12 @@ interface PikoUserPreferences {
     /** 整包离线任务的跟踪记录，JSON，见 OfflinePackTracker。空串表示从未保存。 */
     suspend fun loadOfflinePacks(): String
     suspend fun saveOfflinePacks(serialized: String)
+
+    /** 解压成功过的压缩包密码，JSON，见 ArchivePasswordVault。空串表示从未保存。 */
+    val archivePasswordsFlow: Flow<String>
+    suspend fun saveArchivePasswords(serialized: String)
+
+    /** 开屏提示里点了「忽略此版本」的版本号。只比相等，更新的版本出来照常提示。 */
+    suspend fun getIgnoredUpdateVersion(): String?
+    suspend fun setIgnoredUpdateVersion(version: String)
 }

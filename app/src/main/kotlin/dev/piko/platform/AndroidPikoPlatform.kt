@@ -53,7 +53,7 @@ class AndroidPikoPlatform(
 ) : PikoPlatform {
     override val appVersion: String = BuildConfig.VERSION_NAME
 
-    // 首次打开设置页才建：多数启动根本不检查更新，不必为它先建一个 HTTP 客户端
+    // 开屏检查时才建，不挡 Application.onCreate
     private val lazyUpdater by lazy(updater)
     override val updater: AppUpdateService get() = lazyUpdater
 

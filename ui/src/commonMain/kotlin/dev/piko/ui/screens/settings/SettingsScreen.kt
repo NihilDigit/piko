@@ -33,6 +33,7 @@ import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Subtitles
@@ -86,11 +87,13 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.piko.shared.data.ArchivePasswordVault
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.readableWidth
 import dev.piko.ui.components.PikoBrandIcons
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.platform.LocalPikoPlatform
+import dev.piko.ui.screens.archive.SavedArchivePasswordsDialog
 import dev.piko.ui.theme.Appearance
 import dev.piko.ui.theme.LocalAppearance
 import dev.piko.ui.theme.SeedTheme
@@ -98,6 +101,7 @@ import dev.piko.ui.theme.ThemeMode
 import dev.piko.ui.theme.effectiveSeed
 import dev.piko.ui.theme.isDark
 import dev.piko.update.AvailableUpdate
+import dev.piko.update.UpdateDialog
 import dev.piko.update.UpdateStatus
 import kotlinx.coroutines.launch
 
@@ -129,6 +133,10 @@ fun SettingsScreen(
     val isConcurrentAccelerationEnabled by sessionManager.concurrentAccelerationFlow.collectAsStateWithLifecycle(initialValue = true)
     val downloadDirPath by sessionManager.downloadDirPathFlow.collectAsStateWithLifecycle(initialValue = "")
     val scope = rememberCoroutineScope()
+
+    val archivePasswordVault = remember(sessionManager) { ArchivePasswordVault(sessionManager) }
+    val archivePasswords by archivePasswordVault.passwords.collectAsStateWithLifecycle(initialValue = emptyList())
+    var showArchivePasswords by remember { mutableStateOf(false) }
 
     var showDownloadDirDialog by remember { mutableStateOf(false) }
     val downloadLocation = platform.downloadLocation
@@ -211,7 +219,7 @@ fun SettingsScreen(
                     SettingsGroup(SettingsSection.Drive.title, Modifier.trackSection(SettingsSection.Drive)) {
                         // 启发式折叠只在解析开着时有意义，关掉解析就收起这一项，不留一行灰掉的开关。
                         // 不缩进表示从属：行背景是整条分段，只缩内容读起来像错位
-                        val driveCount = if (isNameParsingEnabled) 3 else 2
+                        val driveCount = if (isNameParsingEnabled) 4 else 3
                         SettingsSwitchRow(
                             index = 0, count = driveCount,
                             icon = Icons.Outlined.TextFields,
@@ -231,12 +239,19 @@ fun SettingsScreen(
                             )
                         }
                         SettingsSwitchRow(
-                            index = driveCount - 1, count = driveCount,
+                            index = driveCount - 2, count = driveCount,
                             icon = Icons.Outlined.VisibilityOff,
                             title = "缩略图防窥",
                             supporting = "模糊显示缩略图与封面",
                             checked = isSpoilerBlurEnabled,
                             onCheckedChange = { scope.launch { sessionManager.setSpoilerBlurEnabled(it) } },
+                        )
+                        SettingsNavigationRow(
+                            index = driveCount - 1, count = driveCount,
+                            icon = Icons.Outlined.Key,
+                            title = "解压密码",
+                            supporting = if (archivePasswords.isEmpty()) "尚无保存的密码" else "已保存 ${archivePasswords.size} 个",
+                            onClick = { showArchivePasswords = true },
                         )
                     }
 
@@ -292,6 +307,7 @@ fun SettingsScreen(
                                     is UpdateStatus.Available -> updateInSheet = current.update
                                     is UpdateStatus.Downloading -> updateInSheet = current.update
                                     is UpdateStatus.Installing -> updateInSheet = current.update
+                                    is UpdateStatus.ReadyToRestart -> updateInSheet = current.update
                                     is UpdateStatus.Failed -> current.update?.let { updateInSheet = it }
                                         ?: scope.launch { updater.check() }
                                     else -> scope.launch { updater.check() }
@@ -307,8 +323,17 @@ fun SettingsScreen(
 
     if (updater != null) {
         updateInSheet?.let { update ->
-            UpdateSheet(updater = updater, update = update, onDismiss = { updateInSheet = null })
+            // 与开屏提示同一个对话框，这里不给「忽略此版本」：是用户自己点进来看的
+            UpdateDialog(updater = updater, update = update, onDismiss = { updateInSheet = null })
         }
+    }
+
+    if (showArchivePasswords) {
+        SavedArchivePasswordsDialog(
+            passwords = archivePasswords,
+            onDelete = { scope.launch { archivePasswordVault.forget(it) } },
+            onDismiss = { showArchivePasswords = false },
+        )
     }
 
     if (showDownloadDirDialog) {
@@ -525,7 +550,7 @@ private fun AboutCard(
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             when (updateStatus) {
-                                is UpdateStatus.Available -> "查看更新"
+                                is UpdateStatus.Available, is UpdateStatus.ReadyToRestart -> "查看更新"
                                 is UpdateStatus.Downloading, is UpdateStatus.Installing -> "查看进度"
                                 else -> "检查更新"
                             },
@@ -558,6 +583,7 @@ private fun updateStatusText(status: UpdateStatus): Pair<String, UpdateEmphasis>
     is UpdateStatus.Available -> "发现新版本 ${status.update.version}" to UpdateEmphasis.Positive
     is UpdateStatus.Downloading -> "正在下载 ${(status.progress * 100).toInt()}%" to UpdateEmphasis.Normal
     is UpdateStatus.Installing -> "等待安装确认" to UpdateEmphasis.Normal
+    is UpdateStatus.ReadyToRestart -> "已下载，重启后完成更新" to UpdateEmphasis.Positive
     is UpdateStatus.Failed -> status.message to UpdateEmphasis.Error
 }
 

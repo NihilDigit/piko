@@ -102,6 +102,8 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val LAST_FOLDER_ID = stringPreferencesKey("last_folder_id")
         val LAST_FOLDER_NAME = stringPreferencesKey("last_folder_name")
         val LAST_FOLDER_STACK_SERIALIZED = stringPreferencesKey("last_folder_stack")
+        val ARCHIVE_PASSWORDS = stringPreferencesKey("archive_passwords")
+        val IGNORED_UPDATE_VERSION = stringPreferencesKey("ignored_update_version")
     }
 
     /**
@@ -332,6 +334,23 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun saveOfflinePacks(serialized: String) {
         context.downloadsDataStore.edit { preferences ->
             preferences[OFFLINE_PACKS] = serialized
+        }
+    }
+
+    override val archivePasswordsFlow: Flow<String> = preference { it[PreferencesKeys.ARCHIVE_PASSWORDS].orEmpty() }
+
+    override suspend fun saveArchivePasswords(serialized: String) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.ARCHIVE_PASSWORDS] = serialized
+        }
+    }
+
+    override suspend fun getIgnoredUpdateVersion(): String? =
+        context.dataStore.data.first()[PreferencesKeys.IGNORED_UPDATE_VERSION]
+
+    override suspend fun setIgnoredUpdateVersion(version: String) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.IGNORED_UPDATE_VERSION] = version
         }
     }
 

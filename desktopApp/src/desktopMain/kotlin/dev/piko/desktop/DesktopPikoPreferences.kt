@@ -28,6 +28,7 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
     private val session = MutableStateFlow(loadSession())
     private val quota = MutableStateFlow<QuotaSnapshot?>(null)
     private val instantTarget = MutableStateFlow<InstantTarget?>(null)
+    private val archivePasswords = MutableStateFlow(settings.get(KEY_ARCHIVE_PASSWORDS))
     private val downloadPath = MutableStateFlow(
         settings.get(KEY_DOWNLOAD_DIR, settings.downloadDirectory.absolutePath),
     )
@@ -184,10 +185,24 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         settings.set(KEY_OFFLINE_PACKS, serialized)
     }
 
+    override val archivePasswordsFlow: Flow<String> = archivePasswords.asStateFlow()
+    override suspend fun saveArchivePasswords(serialized: String) {
+        settings.set(KEY_ARCHIVE_PASSWORDS, serialized)
+        archivePasswords.value = serialized
+    }
+
+    override suspend fun getIgnoredUpdateVersion(): String? = settings.get(KEY_IGNORED_UPDATE).ifEmpty { null }
+
+    override suspend fun setIgnoredUpdateVersion(version: String) {
+        settings.set(KEY_IGNORED_UPDATE, version)
+    }
+
     private companion object {
         const val MAX_PLAYBACK_ENTRIES = 500
         const val KEY_DOWNLOAD_TASKS = "download.tasks"
         const val KEY_OFFLINE_PACKS = "download.offlinePacks"
+        const val KEY_ARCHIVE_PASSWORDS = "drive.archivePasswords"
+        const val KEY_IGNORED_UPDATE = "update.ignoredVersion"
         const val KEY_SPOILER = "ui.spoilerBlur"
         const val KEY_HEURISTIC = "ui.heuristicFilter"
         const val KEY_BUNDLE_SUBTITLES = "ui.bundleSubtitles"

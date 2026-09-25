@@ -13,6 +13,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import dev.piko.desktop.ui.player.MediampPlaybackBackend
+import dev.piko.desktop.update.DesktopAppUpdater
 import dev.piko.desktop.winrt.FolderPickResult
 import dev.piko.desktop.winrt.FolderPicker
 import dev.piko.desktop.winrt.WinRTSupport
@@ -22,7 +23,6 @@ import dev.piko.ui.platform.LocalFileActions
 import dev.piko.ui.platform.PikoPlatform
 import dev.piko.ui.platform.PreviewBackend
 import dev.piko.ui.platform.VideoPreviewSupport
-import dev.piko.update.AppUpdateService
 import java.awt.Desktop
 import java.awt.KeyboardFocusManager
 import java.awt.Toolkit
@@ -43,8 +43,7 @@ class DesktopPikoPlatform(
     // jpackage 启动器写进 -Djpackage.app-version；gradle run 时没有，显示为开发版
     override val appVersion: String = System.getProperty("jpackage.app-version") ?: "开发版"
 
-    // 安装包走 MSI，没有应用内更新
-    override val updater: AppUpdateService? = null
+    override val updater: DesktopAppUpdater = DesktopAppUpdater.create()
 
     // Windows 没有 Monet 那样的整套取色，强调色只有一个值，撑不起 M3 的色调方案
     override val supportsDynamicColor: Boolean = false

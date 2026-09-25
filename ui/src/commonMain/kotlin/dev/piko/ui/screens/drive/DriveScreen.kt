@@ -86,6 +86,8 @@ import dev.piko.shared.data.ScrollAnchor
 import dev.piko.shared.state.DriveScreenState
 import dev.piko.shared.state.InstantSaveOutcome
 import dev.piko.ui.LocalPikoServices
+import dev.piko.shared.data.isExtractableArchive
+import dev.piko.ui.screens.archive.ArchiveExtractStatus
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.components.BreadcrumbBar
@@ -93,6 +95,7 @@ import dev.piko.ui.components.FileNameField
 import dev.piko.ui.components.FullScreenLoading
 import dev.piko.ui.components.FolderPickerDialog
 import dev.piko.ui.components.MoveTargetDialog
+import dev.piko.ui.screens.duplicates.DuplicatesDialog
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.SegmentDownloadSheet
@@ -146,6 +149,11 @@ fun DriveScreen(
 
     LaunchedEffect(state) {
         state.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
+    }
+
+    val archiveSession = LocalPikoServices.current.archiveExtractSession
+    LaunchedEffect(archiveSession) {
+        archiveSession.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
     }
 
     // 视图模式存进偏好，切 Tab 与重启后保持上次的选择
@@ -208,6 +216,10 @@ fun DriveScreen(
     // 待移动的条目。选择器只负责选目录，移动本身与刷新在这里做，
     // 所以单项操作和多选工具栏可以共用同一套状态。
     var moveTargetIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var duplicatesRoot by remember { mutableStateOf<PathBreadcrumb?>(null) }
+    val selectedArchives by remember(state) {
+        derivedStateOf { state.displayedFiles.filter { it.id in state.selectedFileIds && it.isExtractableArchive } }
+    }
     var copyTargetIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var previewImage by remember { mutableStateOf<FileStat?>(null) }
     // 外部打开的磁力链是一次明确的新请求：开新会话并就地取走，面板收起后不再靠它续命
@@ -231,8 +243,10 @@ fun DriveScreen(
                     state.highlight(outcome.createdIds.toSet())
                     snackbarHostState.showSnackbar("已保存 ${outcome.createdIds.size} 个文件", withDismissAction = true)
                 }
-                is InstantSaveOutcome.OfflineTaskCreated ->
-                    snackbarHostState.showSnackbar("已加入离线任务", withDismissAction = true)
+                is InstantSaveOutcome.OfflineTaskCreated -> snackbarHostState.showSnackbar(
+                    if (outcome.submittedCount > 1) "已提交 ${outcome.submittedCount} 项" else "已加入离线任务",
+                    withDismissAction = true,
+                )
             }
         }
     }
@@ -316,6 +330,8 @@ fun DriveScreen(
                     onTrash = { state.moveToTrash(listOf(file.id)) },
                     onCopySource = { copySource(file) },
                     onOpenSource = { file.sourceUrl?.let(platform::openUrl) },
+                    onFindDuplicates = { duplicatesRoot = PathBreadcrumb(file.id, file.name) },
+                    onExtract = { archiveSession.extract(listOf(file)) },
                 )
             },
             onToggleSection = state::toggleSection,
@@ -384,12 +400,16 @@ fun DriveScreen(
             .nestedScroll(topBarScrollBehavior.nestedScrollConnection),
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         bottomBar = {
-            if (instantState != null && !instantSession.isSheetOpen) {
-                InstantSheetHandle(
-                    state = instantState,
-                    onExpand = instantSession::reopen,
-                    onClose = instantSession::end,
-                )
+            Column {
+                // 队列为空时不占位
+                ArchiveExtractStatus(archiveSession, Modifier.fillMaxWidth())
+                if (instantState != null && !instantSession.isSheetOpen) {
+                    InstantSheetHandle(
+                        state = instantState,
+                        onExpand = instantSession::reopen,
+                        onClose = instantSession::end,
+                    )
+                }
             }
         },
         topBar = {
@@ -402,6 +422,12 @@ fun DriveScreen(
                     onMove = { moveTargetIds = state.selectedFileIds.toSet() },
                     onCopy = { copyTargetIds = state.selectedFileIds.toSet() },
                     onTrash = { state.moveToTrash(state.selectedFileIds.toList()) },
+                    onExtract = selectedArchives.takeIf { it.isNotEmpty() }?.let { archives ->
+                        {
+                            archiveSession.extract(archives)
+                            state.exitSelection()
+                        }
+                    },
                 )
 
                 isSearchOpen -> DriveSearchTopBar(
@@ -545,6 +571,12 @@ fun DriveScreen(
                                                 onTogglePosterMode = {
                                                     scope.launch { sessionManager.setGridViewEnabled(!isPosterMode) }
                                                 },
+                                                // 搜索结果不是一个目录，查重的范围说不清，这时不给入口
+                                                onFindDuplicates = if (searchSummary(state, displayedFiles) == null) {
+                                                    { duplicatesRoot = activeFolder }
+                                                } else {
+                                                    null
+                                                },
                                             )
                                         }
                                     }
@@ -584,7 +616,13 @@ fun DriveScreen(
             onTrash = { state.moveToTrash(listOf(target.id)) },
             onCopySource = { copySource(target) },
             onOpenSource = { target.sourceUrl?.let(platform::openUrl) },
+            onFindDuplicates = { duplicatesRoot = PathBreadcrumb(target.id, target.name) },
+            onExtract = { archiveSession.extract(listOf(target)) },
         )
+    }
+
+    duplicatesRoot?.let { root ->
+        DuplicatesDialog(root = root, onDismiss = { duplicatesRoot = null })
     }
 
     // 秒传面板。划走只是收起，会话还在，底部留把手，见 InstantSession

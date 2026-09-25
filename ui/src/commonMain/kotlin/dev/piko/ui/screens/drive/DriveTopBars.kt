@@ -27,6 +27,7 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.SelectAll
+import androidx.compose.material.icons.outlined.Unarchive
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -50,7 +51,10 @@ import dev.piko.ui.components.PikoLoadingIndicator
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.TooltipIconButton
 
-/** 多选态顶栏。三个动作都作用于整批选中项，没有可以下放到别处的。 */
+/**
+ * 多选态顶栏。动作都作用于整批选中项，没有可以下放到别处的。
+ * [onExtract] 为 null 表示所选里没有压缩包，不显示解压。
+ */
 @Composable
 internal fun DriveSelectionTopBar(
     scrollBehavior: TopAppBarScrollBehavior,
@@ -60,6 +64,7 @@ internal fun DriveSelectionTopBar(
     onMove: () -> Unit,
     onCopy: () -> Unit,
     onTrash: () -> Unit,
+    onExtract: (() -> Unit)?,
 ) {
     PikoTopBar(
         scrollBehavior = scrollBehavior,
@@ -69,6 +74,7 @@ internal fun DriveSelectionTopBar(
         },
         actions = {
             TooltipIconButton(Icons.Outlined.SelectAll, "全选", onSelectAll, shortcut = "Ctrl+A")
+            if (onExtract != null) TooltipIconButton(Icons.Outlined.Unarchive, "解压所选压缩包", onExtract)
             TooltipIconButton(Icons.Outlined.DriveFileMove, "移动所选", onMove, enabled = selectedCount > 0)
             TooltipIconButton(Icons.Outlined.ContentCopy, "复制所选", onCopy, enabled = selectedCount > 0)
             TooltipIconButton(

@@ -75,6 +75,10 @@ class MemoryPreferences(instantTarget: InstantTarget? = null) : PikoUserPreferen
     override suspend fun saveOfflinePacks(serialized: String) {
         offlinePacks = serialized
     }
+    override val archivePasswordsFlow: Flow<String> = MutableStateFlow("")
+    override suspend fun saveArchivePasswords(serialized: String) = Unit
+    override suspend fun getIgnoredUpdateVersion(): String? = null
+    override suspend fun setIgnoredUpdateVersion(version: String) = Unit
 }
 
 /** 内存会话存储，行为与两端的实现一致：会话、上次账号、密码三份各自独立。 */

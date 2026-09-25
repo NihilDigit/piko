@@ -11,6 +11,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.shared.state.InstantSheetState
+import dev.piko.shared.state.extractLinks
 import dev.piko.ui.PikoApp
 import dev.piko.ui.VideoPlayerHost
 import dev.piko.ui.screens.player.MediampVideoPlayerScreen
@@ -113,31 +114,13 @@ class MainActivity : ComponentActivity() {
             return dataUri
         }
 
-        val extraText = intent.getStringExtra(Intent.EXTRA_TEXT)
-        if (!extraText.isNullOrBlank()) {
-            val match = MAGNET_REGEX.find(extraText)?.value
-            if (match != null) return match
-            val trimmed = extraText.trim()
-            if (trimmed.startsWith("magnet:", ignoreCase = true)) return trimmed
-            if (trimmed.length == 40 && trimmed.all { it.isLetterOrDigit() }) {
-                return "magnet:?xt=urn:btih:$trimmed"
-            }
-        }
-
-        val clip = intent.clipData
-        if (clip != null && clip.itemCount > 0) {
-            val clipText = clip.getItemAt(0)?.text?.toString()
-            if (!clipText.isNullOrBlank()) {
-                val match = MAGNET_REGEX.find(clipText)?.value
-                if (match != null) return match
-            }
-        }
-
-        return null
-    }
-
-    companion object {
-        private val MAGNET_REGEX = Regex("""magnet:\?[^\s"']+""", RegexOption.IGNORE_CASE)
+        val texts = listOfNotNull(
+            intent.getStringExtra(Intent.EXTRA_TEXT),
+            intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString(),
+        )
+        // 只取磁力链：分享来的网页地址不该弹出离线下载面板。多条时一并交出去，面板列成批量清单
+        val magnets = texts.firstNotNullOfOrNull { text -> extractLinks(text).filter { it.isMagnet }.takeIf { it.isNotEmpty() } }
+        return magnets?.joinToString("\n") { it.uri }
     }
 }
 

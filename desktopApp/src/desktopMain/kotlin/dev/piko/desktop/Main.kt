@@ -109,6 +109,10 @@ fun main(args: Array<String>) {
         LaunchedEffect(isInBackground, hasActiveDownloads) {
             if (isInBackground && !hasActiveDownloads) exitApplication()
         }
+        // 更新脚本等本进程退出后才替换文件。下载会被中断，更新对话框已先征得用户同意
+        LaunchedEffect(Unit) {
+            platform.updater.exitRequests.collect { exitApplication() }
+        }
 
         if (isInBackground) {
             Tray(

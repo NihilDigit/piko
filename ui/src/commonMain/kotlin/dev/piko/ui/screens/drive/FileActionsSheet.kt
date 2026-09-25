@@ -10,8 +10,11 @@ import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.StarOutline
+import androidx.compose.material.icons.outlined.Unarchive
+import dev.piko.shared.data.isExtractableArchive
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.MaterialTheme
@@ -57,6 +60,8 @@ internal fun FileActionsSheet(
     onTrash: () -> Unit,
     onCopySource: () -> Unit,
     onOpenSource: () -> Unit,
+    onFindDuplicates: () -> Unit,
+    onExtract: () -> Unit,
 ) {
     val usage by produceState<FolderUsageResult?>(null, folderUsage) {
         folderUsage ?: return@produceState
@@ -82,6 +87,8 @@ internal fun FileActionsSheet(
         onTrash = onTrash,
         onCopySource = onCopySource,
         onOpenSource = onOpenSource,
+        onFindDuplicates = onFindDuplicates,
+        onExtract = onExtract,
     )
 
     ItemDetailsSheet(
@@ -114,6 +121,8 @@ internal fun fileActions(
     onTrash: () -> Unit,
     onCopySource: () -> Unit,
     onOpenSource: () -> Unit,
+    onFindDuplicates: () -> Unit,
+    onExtract: () -> Unit,
 ): List<SheetAction> = buildList {
     if (previewHidden != null) {
         add(
@@ -131,6 +140,7 @@ internal fun fileActions(
             onClick = onToggleStar,
         ),
     )
+    if (file.isExtractableArchive) add(SheetAction(Icons.Outlined.Unarchive, "解压到当前位置", onExtract))
     if (!file.isFolder) {
         add(SheetAction(Icons.Outlined.Download, "下载到本地", onDownload))
         if (file.isPlayableVideo()) add(SheetAction(Icons.Outlined.ContentCut, "下载指定段落", onDownloadSegment))
@@ -143,6 +153,7 @@ internal fun fileActions(
         }
         null -> Unit
     }
+    if (file.isFolder) add(SheetAction(Icons.Outlined.FileCopy, "查找重复", onFindDuplicates))
     add(SheetAction(Icons.Outlined.Edit, "重命名", onRename))
     add(SheetAction(Icons.Outlined.DriveFileMove, "移动到", onMove))
     add(SheetAction(Icons.Outlined.ContentCopy, "复制到", onCopy))

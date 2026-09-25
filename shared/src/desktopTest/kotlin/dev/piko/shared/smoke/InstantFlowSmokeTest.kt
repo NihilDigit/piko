@@ -6,6 +6,7 @@ import dev.piko.shared.data.OfflinePackStage
 import dev.piko.shared.data.OfflinePackTracker
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PreviewTempFolder
+import dev.piko.shared.state.InstantBatchRowStatus
 import dev.piko.shared.state.InstantSaveOutcome
 import dev.piko.shared.state.InstantSheetState
 import dev.piko.shared.state.SaveRoute
@@ -162,6 +163,45 @@ class InstantFlowSmokeTest {
         sessionScope.cancel()
         awaitUntil("Piko-Temp 被删除") { server.node(tempFolder.id) == null }
         assertNotNull(server.node(previewId), "已保存的文件不能随 Piko-Temp 一起删掉")
+    }
+
+    /**
+     * 防的是批量保存逐条查空间：两个整包各自放得下、合起来放不下时仍全部提交。
+     * 也防未收录的链接被当成解析失败而挡住保存，以及移除的行照样被提交。
+     */
+    @Test
+    fun `pasted links are checked for space together and saved by their own routes`() = smoke { scope ->
+        val server = FakePikPakServer()
+        // 一季约 1.7 GiB，剩 2 GiB：单个放得下，两个放不下
+        server.quotaUsage = server.quotaLimit - (2L shl 30)
+        val magnetB = "magnet:?xt=urn:btih:" + "b".repeat(40)
+        val unindexed = "magnet:?xt=urn:btih:" + "c".repeat(40)
+        server.indexMagnet(magnet, resourceListBody("Show S01", season))
+        server.indexMagnet(magnetB, resourceListBody("Show S02", season))
+        val rig = Rig(server, MemoryPreferences(), scope)
+        scope.launch { rig.tracker.run("smoke@piko.dev") }
+        val state = rig.sheet(scope, "第一季 $magnet\n第二季 $magnetB\n花絮 ${"c".repeat(40)}")
+        val outcome = scope.async(start = CoroutineStart.UNDISPATCHED) { state.outcomes.first() }
+
+        val batch = assertNotNull(state.batch)
+        assertEquals(3, batch.rows.size)
+        awaitUntil("各行解析完成、目标与余量确定") {
+            batch.rows.none { it.status == InstantBatchRowStatus.RESOLVING } &&
+                state.target != null && batch.remainingBytes != null
+        }
+        assertEquals(
+            listOf(InstantBatchRowStatus.READY, InstantBatchRowStatus.READY, InstantBatchRowStatus.WHOLE_OFFLINE),
+            batch.rows.map { it.status },
+        )
+        assertTrue(batch.lacksSpace)
+        assertTrue(!batch.canSaveAll)
+
+        batch.remove(batch.rows[1])
+        assertTrue(batch.canSaveAll)
+        batch.saveAll()
+        val created = assertIs<InstantSaveOutcome.OfflineTaskCreated>(outcome.await())
+        assertEquals(2, created.submittedCount)
+        assertEquals(setOf(magnet, unindexed), server.tasksSnapshot().map { it.url }.toSet())
     }
 
     /** 防的是外部分享进来的链接云端没收录时面板卡死：输入框收起、没有可点的出口。 */

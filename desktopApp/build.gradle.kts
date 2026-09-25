@@ -1,3 +1,8 @@
+import groovy.json.JsonOutput
+import java.nio.file.attribute.FileTime
+import java.security.MessageDigest
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import org.gradle.api.tasks.JavaExec
 import org.gradle.api.tasks.testing.Test
 import org.jetbrains.compose.desktop.application.dsl.AotMode
@@ -100,11 +105,19 @@ val bundledAppResources by tasks.registering(Sync::class) {
     into(layout.buildDirectory.dir("appResources/common"))
 }
 
+// 升级唯一标识：换了它，已安装版本会被当成另一个产品。切勿修改。
+// 可覆写只为在本机测试 MSI 更新：另起一个产品，不碰已安装的 Piko
+val msiUpgradeUuid = providers.gradleProperty("pikoDesktopUpgradeUuid").getOrElse("6d8d332e-f0f4-4ee0-bc2d-fb3ebf3d4267")
+val desktopPackageName = providers.gradleProperty("pikoDesktopPackageName").getOrElse("Piko")
+val desktopPackageVersion = providers.gradleProperty("pikoDesktopVersion").getOrElse("0.1.0")
+
 compose.desktop {
     application {
         mainClass = "dev.piko.desktop.MainKt"
         // 写进 exe/.cfg 启动器：跟 run/test 的 jvmArgs 对齐，否则 FFM 受限方法告警。
         jvmArgs += "--enable-native-access=ALL-UNNAMED"
+        // 应用内更新据此在 Windows Installer 的登记里认出自己是不是 MSI 装的，见 DesktopAppUpdater
+        jvmArgs += "-Dpiko.upgrade-code=$msiUpgradeUuid"
         buildTypes.release.proguard {
             isEnabled = true
             configurationFiles.from(project.file("proguard-rules.pro"))
@@ -128,19 +141,18 @@ compose.desktop {
             // packageVersion 与 release tag（vMAJOR.MINOR.PATCH）对齐，CI 打包时可覆写：
             //   ./gradlew :desktopApp:packageReleaseMsi -PpikoDesktopVersion=1.2.3
             targetFormats(TargetFormat.Msi)
-            packageName = "Piko"
-            packageVersion = providers.gradleProperty("pikoDesktopVersion").getOrElse("0.1.0")
+            packageName = desktopPackageName
+            packageVersion = desktopPackageVersion
             vendor = "NihilDigit"
             // MSI 按 en-us 生成，数据库代码页 1252 容不下汉字，WiX 报 LGHT0311；描述只能用 ASCII
             description = "Lightweight, modern PikPak client"
             copyright = "Copyright (C) NihilDigit"
             windows {
-                menuGroup = "Piko"
+                menuGroup = desktopPackageName
                 // exe/快捷方式/“添加或删除程序”图标：docs/icon.svg 渲染的多尺寸 .ico。
                 // 生成命令见 desktopApp/package/windows/README.md（改 SVG 后重跑）。
                 iconFile.set(project.file("package/windows/icon.ico"))
-                // 升级唯一标识：换了它，已安装版本会被当成另一个产品。切勿修改。
-                upgradeUuid = "6d8d332e-f0f4-4ee0-bc2d-fb3ebf3d4267"
+                upgradeUuid = msiUpgradeUuid
                 // 按用户安装：免 UAC，装到 LocalAppData，HKCU 协议注册无需管理员权限。
                 perUserInstall = true
             }
@@ -170,6 +182,86 @@ tasks.matching { it.name == "createReleaseAotArchive" }.configureEach {
     }
 }
 tasks.matching { it.name == "prepareAppResources" }.configureEach { dependsOn(bundledAppResources) }
+
+/**
+ * 应用内增量更新的两个 Release 附件：应用目录里每个文件的清单（路径、大小、SHA-256、修改时间），
+ * 与只含易变文件的 app.zip。实测两次构建之间只有 exe（版本资源）、jar、AOT 缓存、Piko.cfg 与
+ * .jpackage.xml 不同，运行时与 mpv 等 180MB 逐字节相同，客户端据清单判断能否只换这几个。
+ * 修改时间记在清单里而不是只靠 zip：zip 的时间戳按本地时区存，CI 与用户的时区不同。
+ */
+abstract class UpdateArtifactsTask : DefaultTask() {
+    @get:InputDirectory
+    abstract val appImage: DirectoryProperty
+
+    @get:Input
+    abstract val version: Property<String>
+
+    @get:Input
+    abstract val artifactPrefix: Property<String>
+
+    @get:OutputDirectory
+    abstract val outputDir: DirectoryProperty
+
+    @TaskAction
+    fun write() {
+        val root = appImage.get().asFile
+        val out = outputDir.get().asFile.apply { deleteRecursively(); mkdirs() }
+        val files = root.walkTopDown().filter { it.isFile }
+            .map { it.relativeTo(root).invariantSeparatorsPath to it }
+            .sortedBy { it.first }
+            .toList()
+        val entries = files.map { (path, file) ->
+            linkedMapOf(
+                "path" to path,
+                "size" to file.length(),
+                "sha256" to sha256(file),
+                "mtime" to file.lastModified(),
+                "patch" to isPatch(path),
+            )
+        }
+        val prefix = artifactPrefix.get()
+        out.resolve("$prefix-files.json").writeText(
+            JsonOutput.prettyPrint(JsonOutput.toJson(mapOf("version" to version.get(), "files" to entries))),
+        )
+        ZipOutputStream(out.resolve("$prefix-app.zip").outputStream().buffered()).use { zip ->
+            files.filter { isPatch(it.first) }.forEach { (path, file) ->
+                zip.putNextEntry(ZipEntry(path).apply {
+                    lastModifiedTime = FileTime.fromMillis(file.lastModified())
+                })
+                file.inputStream().use { it.copyTo(zip) }
+                zip.closeEntry()
+            }
+        }
+    }
+
+    /** 每次构建都会变的文件：根目录的启动器与 app 目录下的类路径 jar、AOT 缓存和启动配置。 */
+    private fun isPatch(path: String): Boolean =
+        Regex("[^/]+\\.exe").matches(path) ||
+            Regex("app/[^/]+\\.(jar|cfg|aot)").matches(path) ||
+            path == "app/.jpackage.xml"
+
+    private fun sha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(256 * 1024)
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+}
+
+// CI 在打出 MSI 的同一次调用里跑它：同一份应用目录，jar 的修改时间与 AOT 训练时一致
+tasks.register<UpdateArtifactsTask>("packageReleaseUpdate") {
+    dependsOn("createReleaseDistributable")
+    appImage = layout.buildDirectory.dir("compose/binaries/main-release/app/$desktopPackageName")
+    version = desktopPackageVersion
+    artifactPrefix = "piko-windows-$windowsArch-$desktopPackageVersion"
+    outputDir = layout.buildDirectory.dir("compose/binaries/main-release/update")
+}
 // compose 的 run 任务在 afterEvaluate 里重写 jvmArgs，会盖掉上面的配置，
 // 这里后注册、后执行，把 flag 补回去（注册顺序：插件先、脚本后）。
 project.afterEvaluate {
