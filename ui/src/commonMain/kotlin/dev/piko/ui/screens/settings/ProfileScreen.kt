@@ -273,15 +273,17 @@ private fun AccountCard(
         color = MaterialTheme.colorScheme.surfaceContainer,
     ) {
         Column(modifier = Modifier.padding(20.dp)) {
-            AccountHeader(
-                username = username,
-                avatarUrl = avatarUrl,
-                memberUntil = allowances?.expireTime?.let(::formatExpireDate),
-            )
-
-            if (quota != null) {
-                Spacer(modifier = Modifier.height(24.dp))
-                StorageSection(quota)
+            // 头像、会员期与空间并成一行：名字挪到顶栏之后，头像旁边只剩一枚会员期，单独占一行太空。
+            // 会员期缩成小胶囊挂在「网盘空间」那一行的尾部，它和空间同属「这个账号有多少」
+            val memberUntil = allowances?.expireTime?.let(::formatExpireDate)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Avatar(username = username, avatarUrl = avatarUrl)
+                Spacer(modifier = Modifier.width(16.dp))
+                if (quota != null) {
+                    StorageSection(quota, memberUntil, Modifier.weight(1f))
+                } else if (memberUntil != null) {
+                    MemberChip(memberUntil)
+                }
             }
 
             if (allowances != null || allowancesError != null) {
@@ -293,73 +295,74 @@ private fun AccountCard(
 }
 
 @Composable
-private fun AccountHeader(
-    username: String?,
-    avatarUrl: String?,
-    memberUntil: String?,
-) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        if (!avatarUrl.isNullOrBlank()) {
-            AsyncImage(
-                model = avatarUrl,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .size(56.dp)
-                    .clip(CircleShape),
+private fun Avatar(username: String?, avatarUrl: String?) {
+    if (!avatarUrl.isNullOrBlank()) {
+        AsyncImage(
+            model = avatarUrl,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .size(AvatarSize)
+                .clip(CircleShape),
+        )
+    } else {
+        Box(
+            modifier = Modifier
+                .size(AvatarSize)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.primaryContainer),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = username?.take(1)?.uppercase(Locale.getDefault()) ?: "P",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
             )
-        } else {
-            Box(
-                modifier = Modifier
-                    .size(56.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primaryContainer),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = username?.take(1)?.uppercase(Locale.getDefault()) ?: "P",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                )
-            }
-        }
-        Spacer(modifier = Modifier.width(16.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            if (memberUntil != null) {
-                Surface(
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.secondaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                ) {
-                    Text(
-                        text = "会员至 $memberUntil",
-                        style = MaterialTheme.typography.labelMedium,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                    )
-                }
-            }
         }
     }
 }
 
+/** 与右侧空间块的三行（标签、用量、进度条）同高，头像不把这一行撑高。 */
+private val AvatarSize = 48.dp
+
 @Composable
-private fun StorageSection(quota: QuotaSnapshot) {
+private fun MemberChip(memberUntil: String, modifier: Modifier = Modifier) {
+    Surface(
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        modifier = modifier,
+    ) {
+        Text(
+            text = "会员至 $memberUntil",
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+        )
+    }
+}
+
+@Composable
+private fun StorageSection(quota: QuotaSnapshot, memberUntil: String?, modifier: Modifier = Modifier) {
     val fraction = usedFraction(quota.usageBytes, quota.limitBytes)
     val nearlyFull = fraction >= NEARLY_FULL_FRACTION
     val accent = if (nearlyFull) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-    Column {
-        SectionLabel("网盘空间")
-        Spacer(modifier = Modifier.height(4.dp))
+    Column(modifier = modifier) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SectionLabel("网盘空间", Modifier.weight(1f))
+            if (memberUntil != null) MemberChip(memberUntil)
+        }
+        Spacer(modifier = Modifier.height(2.dp))
         Row(modifier = Modifier.fillMaxWidth()) {
             Text(
                 text = quota.usageBytes.toReadableSize(),
-                style = MaterialTheme.typography.titleLarge,
+                style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.alignByBaseline(),
             )
-            Spacer(modifier = Modifier.width(6.dp))
+            Spacer(modifier = Modifier.width(4.dp))
             Text(
                 text = "/ ${quota.limitBytes.toReadableSize()}",
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.alignByBaseline(),
             )
@@ -367,19 +370,19 @@ private fun StorageSection(quota: QuotaSnapshot) {
             if (quota.limitBytes > 0) {
                 Text(
                     text = "剩余 ${(quota.limitBytes - quota.usageBytes).coerceAtLeast(0).toReadableSize()}",
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = MaterialTheme.typography.bodySmall,
                     color = if (nearlyFull) accent else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.alignByBaseline(),
                 )
             }
         }
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(6.dp))
         LinearProgressIndicator(
             progress = { fraction },
             color = accent,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(8.dp),
+                .height(6.dp),
         )
     }
 }
