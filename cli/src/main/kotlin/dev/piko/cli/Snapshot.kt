@@ -55,12 +55,16 @@ suspend fun takeSnapshot(client: PikPakClient, rootPath: String, depth: Int, dee
     return Snapshot(folders)
 }
 
-/** 一个目录下每项的类型、名字与 params，查接口到底返回了什么时用。 */
+/**
+ * 一个目录下每项的类型、名字与 params，查接口到底返回了什么时用。文件另附大小、phase 与 gcid，
+ * 核对上传的内容是否与本机一致。
+ */
 suspend fun listWithParams(client: PikPakClient, path: String): List<String> =
     client.listFiles(parentId = resolvePath(client, path)).map { file ->
         val kind = if (file.isFolder) "目录" else "文件"
+        val content = if (file.isFolder) "" else "  ${file.sizeBytes} B  ${file.phase}  gcid=${file.hash}"
         val params = file.params.entries.joinToString("  ") { (key, value) -> "$key=${value.take(120)}" }.ifEmpty { "（无 params）" }
-        "$kind  ${file.name}\n      $params"
+        "$kind  ${file.name}$content\n      $params"
     }
 
 private suspend fun resolvePath(client: PikPakClient, path: String): String {

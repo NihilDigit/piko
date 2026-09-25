@@ -879,7 +879,7 @@ private fun DriveEmptyState(state: DriveScreenState, modifier: Modifier = Modifi
                 } else {
                     PikoEmptyState(
                         title = "此文件夹为空",
-                        description = "可用右下角「添加链接」保存资源，或新建文件夹",
+                        description = "可用右下角的按钮添加链接、上传文件或新建文件夹",
                         icon = Icons.Outlined.FolderOpen,
                     )
                 }

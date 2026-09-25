@@ -56,8 +56,8 @@ private fun UploadTask.statusDetails(): List<String> {
             add(progress)
             if (speedBytesPerSec > 0) add("${speedBytesPerSec.toReadableSize()}/s")
         }
-        // 暂停时的字节数是上次运行的进度，续传会先问 OSS 收下了多少，不代表续传点
-        UploadStatus.PAUSED -> if (session != null) listOf(progress) else listOf(size.toReadableSize())
+        // 重启后读回的任务不带进度（见调度器的 restore），只显示大小
+        UploadStatus.PAUSED -> if (processedBytes > 0) listOf(progress) else listOf(size.toReadableSize())
         UploadStatus.FAILED -> emptyList()
     }
 }

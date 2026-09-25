@@ -222,8 +222,13 @@ class PikoUploadCoordinator(
             json.decodeFromString(taskListSerializer, preferences.loadUploadTasks())
         }.getOrDefault(emptyList())
         if (saved.isEmpty()) return
+        // 存下的进度只在状态变化时写，比实际落后，续传时 OSS 会给出准数，这之前不显示
         val restored = saved.map { task ->
-            if (task.status.isActive) task.copy(status = UploadStatus.PAUSED, speedBytesPerSec = 0L) else task.copy(speedBytesPerSec = 0L)
+            when {
+                task.status == UploadStatus.COMPLETED -> task.copy(speedBytesPerSec = 0L)
+                task.status.isActive -> task.copy(status = UploadStatus.PAUSED, processedBytes = 0L, speedBytesPerSec = 0L)
+                else -> task.copy(processedBytes = 0L, speedBytesPerSec = 0L)
+            }
         }
         _tasks.update { current -> restored.associateBy { it.taskId } + current }
     }
@@ -313,7 +318,9 @@ class PikoUploadCoordinator(
         }
         var retried = false
         while (true) {
-            update(taskId) { it.copy(status = UploadStatus.UPLOADING, session = session) }
+            // 进度归零：此前的数值是校验读过的字节数，continueUpload 随即报出 OSS 已收下的量
+            progress.value = 0L
+            update(taskId) { it.copy(status = UploadStatus.UPLOADING, session = session, processedBytes = 0L) }
             try {
                 client.continueUpload(
                     session,
