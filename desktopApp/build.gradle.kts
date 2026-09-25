@@ -50,6 +50,8 @@ kotlin {
                 implementation(libs.coil.network.okhttp)
                 // MP4 无损切片（流复制，不断点转码）：纯 JVM，无需捆绑 ffmpeg。
                 implementation(libs.mp4parser.isobox)
+                // PikoUploadSources.open 返回 RawSource，shared 只以 implementation 引入
+                implementation(libs.kotlinx.io.core)
             }
         }
         val desktopTest by getting {

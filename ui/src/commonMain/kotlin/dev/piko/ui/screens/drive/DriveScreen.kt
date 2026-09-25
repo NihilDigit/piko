@@ -25,11 +25,13 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.CreateNewFolder
+import androidx.compose.material.icons.outlined.DriveFolderUpload
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.SearchOff
+import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -85,7 +87,10 @@ import dev.piko.data.repository.isPreviewableImage
 import dev.piko.shared.data.ScrollAnchor
 import dev.piko.shared.state.DriveScreenState
 import dev.piko.shared.state.InstantSaveOutcome
+import dev.piko.shared.upload.UploadSelection
+import dev.piko.shared.upload.isUploading
 import dev.piko.ui.LocalPikoServices
+import dev.piko.shared.data.isArchiveVolume
 import dev.piko.shared.data.isExtractableArchive
 import dev.piko.ui.screens.archive.ArchiveExtractStatus
 import dev.piko.ui.adaptive.WidthClass
@@ -218,7 +223,7 @@ fun DriveScreen(
     var moveTargetIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var duplicatesRoot by remember { mutableStateOf<PathBreadcrumb?>(null) }
     val selectedArchives by remember(state) {
-        derivedStateOf { state.displayedFiles.filter { it.id in state.selectedFileIds && it.isExtractableArchive } }
+        derivedStateOf { state.displayedFiles.filter { it.id in state.selectedFileIds && (it.isExtractableArchive || it.isArchiveVolume) } }
     }
     var copyTargetIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var previewImage by remember { mutableStateOf<FileStat?>(null) }
@@ -288,6 +293,18 @@ fun DriveScreen(
         scope.launch { snackbarHostState.showSnackbar(if (url.startsWith("magnet:", true)) "已复制磁力链接" else "已复制分享链接", withDismissAction = true) }
     }
 
+    // 从网盘页发起的上传就传到眼前这个目录，不再问目标；应用外进来的由 UploadRequestHost 问
+    val uploadManager = LocalPikoServices.current.uploadManager
+    LaunchedEffect(uploadManager) {
+        uploadManager.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
+    }
+    fun upload(selection: UploadSelection) {
+        uploadManager.enqueue(selection, activeFolderId, activeFolder.name)
+        scope.launch { snackbarHostState.showSnackbar("已加入上传", withDismissAction = true) }
+    }
+    val pickFiles = platform.uploadPicker.rememberFilesLauncher { upload(UploadSelection(files = it)) }
+    val pickFolder = platform.uploadPicker.rememberFolderLauncher { upload(UploadSelection(folders = listOf(it))) }
+
     fun enqueueDownload(file: FileStat) {
         downloadManager.enqueue(file)
         scope.launch { snackbarHostState.showSnackbar("已加入下载", withDismissAction = true) }
@@ -300,6 +317,7 @@ fun DriveScreen(
             onOpen = { file ->
                 when {
                     file.isFolder -> state.openFolder(file.id, file.name)
+                    file.isUploading -> scope.launch { snackbarHostState.showSnackbar("文件仍在上传", withDismissAction = true) }
                     file.isPlayableVideo() -> navigateToPlayer(file, state.displayedFiles.filter { it.isPlayableVideo() })
                     file.isPreviewableImage() && file.thumbnailLink.isNotBlank() -> previewImage = file
                     // 其余类型没有应用内的打开方式，单击等同于下载
@@ -505,6 +523,22 @@ fun DriveScreen(
                         },
                         icon = { Icon(Icons.Outlined.CreateNewFolder, contentDescription = null) },
                         text = { Text("新建文件夹") },
+                    )
+                    FloatingActionButtonMenuItem(
+                        onClick = {
+                            isFabMenuExpanded = false
+                            pickFiles()
+                        },
+                        icon = { Icon(Icons.Outlined.UploadFile, contentDescription = null) },
+                        text = { Text("上传文件") },
+                    )
+                    FloatingActionButtonMenuItem(
+                        onClick = {
+                            isFabMenuExpanded = false
+                            pickFolder()
+                        },
+                        icon = { Icon(Icons.Outlined.DriveFolderUpload, contentDescription = null) },
+                        text = { Text("上传文件夹") },
                     )
                 }
             }

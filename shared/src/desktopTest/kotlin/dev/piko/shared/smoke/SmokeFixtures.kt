@@ -70,6 +70,11 @@ class MemoryPreferences(instantTarget: InstantTarget? = null) : PikoUserPreferen
     override suspend fun saveDownloadTasks(serialized: String) {
         downloadTasks = serialized
     }
+    @Volatile var uploadTasks: String = ""
+    override suspend fun loadUploadTasks(): String = uploadTasks
+    override suspend fun saveUploadTasks(serialized: String) {
+        uploadTasks = serialized
+    }
     @Volatile var offlinePacks: String = ""
     override suspend fun loadOfflinePacks(): String = offlinePacks
     override suspend fun saveOfflinePacks(serialized: String) {

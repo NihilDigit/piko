@@ -14,6 +14,7 @@ import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material.icons.outlined.Unarchive
+import dev.piko.shared.data.isArchiveVolume
 import dev.piko.shared.data.isExtractableArchive
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
@@ -140,7 +141,7 @@ internal fun fileActions(
             onClick = onToggleStar,
         ),
     )
-    if (file.isExtractableArchive) add(SheetAction(Icons.Outlined.Unarchive, "解压到当前位置", onExtract))
+    if (file.isExtractableArchive || file.isArchiveVolume) add(SheetAction(Icons.Outlined.Unarchive, "解压到当前位置", onExtract))
     if (!file.isFolder) {
         add(SheetAction(Icons.Outlined.Download, "下载到本地", onDownload))
         if (file.isPlayableVideo()) add(SheetAction(Icons.Outlined.ContentCut, "下载指定段落", onDownloadSegment))

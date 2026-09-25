@@ -179,6 +179,12 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         settings.set(KEY_DOWNLOAD_TASKS, serialized)
     }
 
+    override suspend fun loadUploadTasks(): String = settings.get(KEY_UPLOAD_TASKS)
+
+    override suspend fun saveUploadTasks(serialized: String) {
+        settings.set(KEY_UPLOAD_TASKS, serialized)
+    }
+
     override suspend fun loadOfflinePacks(): String = settings.get(KEY_OFFLINE_PACKS)
 
     override suspend fun saveOfflinePacks(serialized: String) {
@@ -201,6 +207,7 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         const val MAX_PLAYBACK_ENTRIES = 500
         const val KEY_DOWNLOAD_TASKS = "download.tasks"
         const val KEY_OFFLINE_PACKS = "download.offlinePacks"
+        const val KEY_UPLOAD_TASKS = "upload.tasks"
         const val KEY_ARCHIVE_PASSWORDS = "drive.archivePasswords"
         const val KEY_IGNORED_UPDATE = "update.ignoredVersion"
         const val KEY_SPOILER = "ui.spoilerBlur"

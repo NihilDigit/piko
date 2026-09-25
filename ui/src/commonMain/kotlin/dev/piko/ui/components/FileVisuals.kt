@@ -44,6 +44,7 @@ import dev.piko.data.repository.FileCategory
 import dev.piko.data.repository.fileCategory
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.data.repository.isPreviewableImage
+import dev.piko.shared.upload.isUploading
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.theme.LocalFixedColors
 import io.github.nihildigit.pikpak.FileStat
@@ -70,6 +71,7 @@ fun FileStat.displayTitle(): String =
 
 /** 副标题的各段：文件为类型、大小、日期，文件夹为「文件夹」、日期。由 [MetaRow] 排成一行。 */
 fun FileStat.metaParts(includeDate: Boolean = true): List<String> = buildList {
+    if (isUploading) add("上传中")
     if (isFolder) {
         add("文件夹")
     } else {

@@ -41,6 +41,7 @@ private val Context.downloadsDataStore: DataStore<Preferences> by preferencesDat
 )
 
 private val DOWNLOAD_TASKS = stringPreferencesKey("download_tasks")
+private val UPLOAD_TASKS = stringPreferencesKey("upload_tasks")
 private val OFFLINE_PACKS = stringPreferencesKey("offline_packs")
 
 private const val PLAYBACK_KEY_PREFIX = "playback_pos_"
@@ -325,6 +326,15 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun saveDownloadTasks(serialized: String) {
         context.downloadsDataStore.edit { preferences ->
             preferences[DOWNLOAD_TASKS] = serialized
+        }
+    }
+
+    override suspend fun loadUploadTasks(): String =
+        context.downloadsDataStore.data.first()[UPLOAD_TASKS].orEmpty()
+
+    override suspend fun saveUploadTasks(serialized: String) {
+        context.downloadsDataStore.edit { preferences ->
+            preferences[UPLOAD_TASKS] = serialized
         }
     }
 

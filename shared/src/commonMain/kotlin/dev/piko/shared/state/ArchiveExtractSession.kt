@@ -9,6 +9,7 @@ import dev.piko.shared.data.ArchivePasswordVault
 import dev.piko.shared.data.ArchiveRepository
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.data.isArchiveVolume
 import dev.piko.shared.data.isExtractableArchive
 import io.github.nihildigit.pikpak.ArchivePasswordException
 import io.github.nihildigit.pikpak.FileStat
@@ -94,8 +95,10 @@ class ArchiveExtractSession(
     fun extract(files: List<FileStat>) {
         val queued = jobs.map { it.id }.toSet()
         val archives = files.filter { it.isExtractableArchive && it.id !in queued }.distinctBy { it.id }
+        val volumes = files.count { it.isArchiveVolume }
+        if (volumes > 0) _messages.tryEmit(if (volumes == files.size) VOLUME_UNSUPPORTED else "已跳过 $volumes 个分卷：$VOLUME_UNSUPPORTED")
         if (archives.isEmpty()) {
-            if (files.none { it.isExtractableArchive }) _messages.tryEmit("所选文件中没有可解压的压缩包")
+            if (volumes == 0 && files.none { it.isExtractableArchive }) _messages.tryEmit("所选文件中没有可解压的压缩包")
             return
         }
         jobs = jobs + archives.map { ArchiveJob(it) }
@@ -176,6 +179,8 @@ class ArchiveExtractSession(
                     val cause = repository.failureCause(taskId)
                     if (cause == ArchiveRepository.INVALID_PASSWORD) {
                         update(job.id) { it.copy(status = ArchiveJobStatus.NeedsPassword(incorrect = job.password.isNotEmpty())) }
+                    } else if (cause == ArchiveRepository.INVALID_FORMAT) {
+                        finish(job, "${job.file.name} 解压失败：$INVALID_FORMAT_REASON")
                     } else {
                         finish(job, "${job.file.name} 解压失败：${progress.errorDescription.ifEmpty { cause ?: "服务端未说明原因" }}")
                     }
@@ -201,14 +206,20 @@ class ArchiveExtractSession(
     private companion object {
         const val MAX_POLL_FAILURES = 5
         val POLL_RETRY_DELAY = 3.seconds
+        const val VOLUME_UNSUPPORTED = "PikPak 不支持解压分卷压缩包"
     }
 }
 
 /** 服务端给的 expires_in 当作下次查询的间隔：进行中是 1 到 2 秒。异常值收在 1 到 5 秒之间。 */
 private fun pollDelay(expiresIn: Int): Duration = expiresIn.coerceIn(1, 5).seconds
 
+// 服务端对损坏的包与分卷给的是同一个结果，分不出来，两种都说
+private const val INVALID_FORMAT_REASON = "格式无法识别，压缩包可能已损坏或是分卷"
+
 private fun failureReason(err: Throwable): String = when {
     err is PikPakException && err.errorMessage == "NEED_MORE_QUOTA" -> "解压额度不足"
+    // 同步拒绝时 status_text 是英文的「Current zip format is not supported or it's corrupted」
+    err is PikPakException && err.errorMessage == "INVALID_FILE_FORMAT" -> INVALID_FORMAT_REASON
     err is PikPakException -> err.errorDescription?.takeIf { it.isNotBlank() } ?: err.errorMessage
     err is IllegalStateException -> err.message ?: "未知错误"
     else -> "网络异常"

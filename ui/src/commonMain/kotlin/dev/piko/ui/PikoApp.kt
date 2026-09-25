@@ -13,6 +13,7 @@ import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.PikoPlatform
 import dev.piko.ui.screens.archive.ArchiveExtractHost
 import dev.piko.ui.screens.auth.LoginScreen
+import dev.piko.ui.screens.upload.UploadRequestHost
 import dev.piko.ui.theme.Appearance
 import dev.piko.ui.theme.PikoMotion
 import dev.piko.ui.theme.PikoTheme
@@ -67,7 +68,10 @@ fun PikoApp(
                 }
             }
             // 解压的密码框放在网盘页之外：离开网盘页后，加密包仍要能问到密码
-            if (currentClient != null) ArchiveExtractHost(services.archiveExtractSession)
+            if (currentClient != null) {
+                ArchiveExtractHost(services.archiveExtractSession)
+                UploadRequestHost(services.uploadManager, services.driveRepository)
+            }
             // 放在根状态之外：登录前后切换时弹窗不跟着重建
             platform.updater?.let { updater ->
                 StartupUpdatePrompt(updater = updater, preferences = services.preferences)

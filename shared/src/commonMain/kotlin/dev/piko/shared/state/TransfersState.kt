@@ -13,6 +13,9 @@ import dev.piko.shared.data.OfflinePackTracker
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.TaskRepository
 import dev.piko.shared.download.PikoDownloadCoordinator
+import dev.piko.shared.upload.PikoUploadCoordinator
+import dev.piko.shared.upload.UploadStatus
+import dev.piko.shared.upload.UploadTask
 import io.github.nihildigit.pikpak.OfflineTask
 import io.github.nihildigit.pikpak.TaskPhase
 import kotlinx.coroutines.CoroutineScope
@@ -24,7 +27,7 @@ import kotlin.time.Clock
 import kotlin.time.Duration.Companion.days
 import kotlin.time.Instant
 
-/** 传输列表中的一项：本地下载或云端离线任务。 */
+/** 传输列表中的一项：本地下载、上传或云端离线任务。 */
 sealed interface TransferItem {
     /** 列表 key。两类任务的 id 来自不同命名空间，加前缀防撞。 */
     val key: String
@@ -32,6 +35,11 @@ sealed interface TransferItem {
 
     data class Local(val task: DownloadTask) : TransferItem {
         override val key: String get() = "local:${task.taskId}"
+        override val createdAtMs: Long get() = task.createdAtMs
+    }
+
+    data class Upload(val task: UploadTask) : TransferItem {
+        override val key: String get() = "upload:${task.taskId}"
         override val createdAtMs: Long get() = task.createdAtMs
     }
 
@@ -54,7 +62,7 @@ sealed interface TransferItem {
 }
 
 /**
- * 传输页：本地下载与云端离线任务合并为「进行中」「需要处理」「已完成」三段。
+ * 传输页：本地下载、上传与云端离线任务合并为「进行中」「需要处理」「已完成」三段。
  *
  * 云端已完成的任务只列出最近 [COMPLETED_CLOUD_WINDOW] 内完成的，本地已完成的始终保留：
  * 后者对应磁盘上的文件，是用户找回下载的入口。
@@ -67,10 +75,15 @@ class TransfersState(
     private val packTracker: OfflinePackTracker,
     private val scope: CoroutineScope,
     private val driveRepo: PikoDriveRepository,
+    private val uploads: PikoUploadCoordinator,
+    /** 上传任务按账号记，只列当前账号的。 */
+    private val account: String,
 ) {
     private val cloud = OfflineTasksState(taskRepo, scope)
 
     private var localTasks by mutableStateOf(coordinator.tasks.value.values.toList())
+
+    private var uploadTasks by mutableStateOf(uploads.tasks.value.values.filter { it.account == account })
 
     private var packJobs by mutableStateOf(packTracker.jobs.value)
 
@@ -88,6 +101,7 @@ class TransfersState(
     val inProgress: List<TransferItem> by derivedStateOf {
         section(
             localFilter = { it.status in IN_PROGRESS_LOCAL },
+            uploadFilter = { it.status.isActive || it.status == UploadStatus.PAUSED },
             cloudFilter = { it.phase == TaskPhase.PENDING || it.phase == TaskPhase.RUNNING },
             packFilter = { it.isActive },
         )
@@ -96,6 +110,7 @@ class TransfersState(
     val needsAttention: List<TransferItem> by derivedStateOf {
         section(
             localFilter = { it.status == DownloadStatus.FAILED },
+            uploadFilter = { it.status == UploadStatus.FAILED },
             cloudFilter = { it.phase == TaskPhase.ERROR && !it.isOutputDeleted },
             packFilter = { it.stage == OfflinePackStage.FAILED },
         )
@@ -103,7 +118,7 @@ class TransfersState(
 
     /** 已完成但产出文件后来被删的云端任务。不是失败，排在最后弱化显示。 */
     val outputDeleted: List<TransferItem> by derivedStateOf {
-        section(localFilter = { false }, cloudFilter = { it.isOutputDeleted }, packFilter = { false })
+        section(localFilter = { false }, uploadFilter = { false }, cloudFilter = { it.isOutputDeleted }, packFilter = { false })
     }
 
     // 窗口起点在重算时取当前时刻，不随时钟自行推进；任务表一变就会重算，
@@ -112,6 +127,7 @@ class TransfersState(
         val windowStartMs = nowMs() - COMPLETED_CLOUD_WINDOW.inWholeMilliseconds
         section(
             localFilter = { it.status == DownloadStatus.COMPLETED },
+            uploadFilter = { it.status == UploadStatus.COMPLETED },
             cloudFilter = { task ->
                 val finishedAt = parseEpochMillis(task.updatedTime)
                 task.phase == TaskPhase.COMPLETE && finishedAt != null && finishedAt >= windowStartMs
@@ -136,7 +152,7 @@ class TransfersState(
             when (item) {
                 is TransferItem.Cloud -> item.task.fileId
                 is TransferItem.Pack -> item.job.outputId
-                is TransferItem.Local -> null
+                is TransferItem.Local, is TransferItem.Upload -> null
             }?.takeIf { it.isNotEmpty() }
         }
     }
@@ -151,6 +167,9 @@ class TransfersState(
         }
         scope.launch {
             packTracker.jobs.collect { packJobs = it }
+        }
+        scope.launch {
+            uploads.tasks.collect { tasks -> uploadTasks = tasks.values.filter { it.account == account } }
         }
         scope.launch {
             cloud.messages.collect { _messages.emit(it) }
@@ -186,6 +205,14 @@ class TransfersState(
     /** 取消并删除本地文件。已完成的任务删的是成品，未完成的删的是半截文件。 */
     fun removeLocal(taskId: String) = coordinator.cancelDownload(taskId)
 
+    fun pauseUpload(taskId: String) = uploads.pause(taskId)
+
+    /** 继续暂停的上传，或重试失败的上传。 */
+    fun resumeUpload(taskId: String) = uploads.resume(taskId)
+
+    /** 未完成的一并放弃网盘里上传中的文件，已完成的只删记录。 */
+    fun removeUpload(taskId: String) = uploads.remove(taskId)
+
     /** 以原链接重新提交，旧记录随之删除。任务缺少 sourceUrl 时视图应隐藏此操作。 */
     fun resubmitCloud(task: OfflineTask) = cloud.resubmit(task)
 
@@ -214,10 +241,12 @@ class TransfersState(
 
     private fun section(
         localFilter: (DownloadTask) -> Boolean,
+        uploadFilter: (UploadTask) -> Boolean,
         cloudFilter: (OfflineTask) -> Boolean,
         packFilter: (OfflinePackJob) -> Boolean,
     ): List<TransferItem> {
-        val localItems = localTasks.filter(localFilter).map { TransferItem.Local(it) }
+        val localItems = localTasks.filter(localFilter).map { TransferItem.Local(it) } +
+            uploadTasks.filter(uploadFilter).map { TransferItem.Upload(it) }
         // 被整包离线跟踪的任务只以 Pack 出现：列表接口仍会返回它，不滤掉就是两行
         val packIds = packJobs.mapTo(HashSet()) { it.taskId }
         val cloudItems = cloud.tasks.filter { it.id !in packIds && cloudFilter(it) }.map { TransferItem.Cloud(it) }

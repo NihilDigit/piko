@@ -73,8 +73,18 @@ fun TransfersScreen(
 ) {
     val scope = rememberCoroutineScope()
     val services = LocalPikoServices.current
-    val state = remember {
-        TransfersState(services.downloadManager, services.taskRepository, services.offlinePacks, scope, services.driveRepository)
+    val client by services.clientManager.currentClient.collectAsStateWithLifecycle()
+    val account = client?.account.orEmpty()
+    val state = remember(account) {
+        TransfersState(
+            services.downloadManager,
+            services.taskRepository,
+            services.offlinePacks,
+            scope,
+            services.driveRepository,
+            services.uploadManager,
+            account,
+        )
     }
     val snackbarHostState = remember { SnackbarHostState() }
     // 找不到文件的提示走本页的 Snackbar，不用系统 Toast：Toast 不跟随 M3 主题与配色
@@ -149,6 +159,14 @@ fun TransfersScreen(
                                 isSpoilerBlurred = isSpoilerBlurEnabled && item.key !in revealedKeys,
                                 modifier = itemModifier,
                             )
+                            is TransferItem.Upload -> UploadTransferRow(
+                                task = item.task,
+                                onOpen = { item.task.fileId?.let { openCloudFileById(it, item.task.fileName) } },
+                                onResume = { state.resumeUpload(item.task.taskId) },
+                                onPause = { state.pauseUpload(item.task.taskId) },
+                                onMoreClick = { detailsKey = item.key },
+                                modifier = itemModifier,
+                            )
                             is TransferItem.Cloud -> CloudTransferRow(
                                 task = item.task,
                                 thumbnail = state.thumbnailOf(item.task.fileId),
@@ -190,7 +208,7 @@ fun TransfersScreen(
             ) {
                 PikoEmptyState(
                     title = "暂无传输任务",
-                    description = "本地下载与云端离线任务将显示于此",
+                    description = "下载、上传与云端离线任务将显示于此",
                     icon = Icons.Outlined.SyncAlt,
                     actionText = "新建离线任务",
                     onActionClick = onNavigateToInstant,
@@ -223,6 +241,14 @@ fun TransfersScreen(
                 if (!revealedKeys.remove(detailsItem.key)) revealedKeys.add(detailsItem.key)
             },
         )
+        is TransferItem.Upload -> UploadTransferSheet(
+            task = detailsItem.task,
+            onOpen = { detailsItem.task.fileId?.let { openCloudFileById(it, detailsItem.task.fileName) } },
+            onResume = { state.resumeUpload(detailsItem.task.taskId) },
+            onPause = { state.pauseUpload(detailsItem.task.taskId) },
+            onRemove = { state.removeUpload(detailsItem.task.taskId) },
+            onDismiss = closeDetails,
+        )
         is TransferItem.Cloud -> CloudTransferSheet(
             task = detailsItem.task,
             onResubmit = resubmitAction(detailsItem.task),
@@ -249,7 +275,7 @@ private fun LazyListScope.transferSection(
     onClearCloud: (() -> Unit)? = null,
 ) {
     if (items.isEmpty()) return
-    val hasCloud = items.any { it !is TransferItem.Local }
+    val hasCloud = items.any { it is TransferItem.Cloud || it is TransferItem.Pack }
     item(key = "header:$title", contentType = "header") {
         Row(
             modifier = Modifier

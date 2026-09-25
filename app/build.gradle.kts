@@ -157,6 +157,8 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
+    // PikoUploadSources.open 返回 RawSource，shared 只以 implementation 引入
+    implementation(libs.kotlinx.io.core)
 
     // Coil 3
     implementation(libs.coil.compose)

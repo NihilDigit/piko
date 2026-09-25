@@ -22,10 +22,15 @@ import dev.piko.ui.platform.DownloadLocationPicker
 import dev.piko.ui.platform.LocalFileActions
 import dev.piko.ui.platform.PikoPlatform
 import dev.piko.ui.platform.PreviewBackend
+import dev.piko.ui.platform.UploadPicker
 import dev.piko.ui.platform.VideoPreviewSupport
 import java.awt.Desktop
+import java.awt.Dialog
+import java.awt.FileDialog
+import java.awt.Frame
 import java.awt.KeyboardFocusManager
 import java.awt.Toolkit
+import java.awt.Window
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
 import java.io.File
@@ -101,15 +106,36 @@ class DesktopPikoPlatform(
         override fun rememberLauncher(onPicked: (String) -> Unit): () -> Unit {
             val scope = rememberCoroutineScope()
             return {
-                // 点击发生在哪个窗口，对话框就模态于哪个窗口
-                val owner = KeyboardFocusManager.getCurrentKeyboardFocusManager().activeWindow
+                val owner = activeWindow()
                 scope.launch {
-                    val initial = settings.downloadDirectory
-                    when (val result = FolderPicker.pickFolder(owner, initial, "选择下载位置")) {
-                        is FolderPickResult.Picked -> onPicked(result.folder.absolutePath)
-                        FolderPickResult.Cancelled -> Unit
-                        FolderPickResult.Unavailable -> chooseDirectory(initial)?.let { onPicked(it.absolutePath) }
-                    }
+                    pickFolder(owner, settings.downloadDirectory, "选择下载位置")?.let { onPicked(it.absolutePath) }
+                }
+            }
+        }
+    }
+
+    override val uploadPicker: UploadPicker = object : UploadPicker {
+        @Composable
+        override fun rememberFilesLauncher(onPicked: (List<String>) -> Unit): () -> Unit {
+            val scope = rememberCoroutineScope()
+            return {
+                val owner = activeWindow()
+                // FileDialog 在事件线程上阻塞，但模态期间自己转发 AWT 事件，界面照常绘制，不必像
+                // 目录框那样另开线程。经 launch 推迟一拍，是为了不在 Compose 的点击回调里嵌套一轮事件循环
+                scope.launch {
+                    val files = chooseFiles(owner, "选择要上传的文件")
+                    if (files.isNotEmpty()) onPicked(files.map { it.absolutePath })
+                }
+            }
+        }
+
+        @Composable
+        override fun rememberFolderLauncher(onPicked: (String) -> Unit): () -> Unit {
+            val scope = rememberCoroutineScope()
+            return {
+                val owner = activeWindow()
+                scope.launch {
+                    pickFolder(owner, null, "选择要上传的文件夹")?.let { onPicked(it.absolutePath) }
                 }
             }
         }
@@ -150,15 +176,41 @@ class DesktopPikoPlatform(
     }
 }
 
+/** 点击发生在哪个窗口，对话框就模态于哪个窗口。要在点击的当下取，launch 之后焦点可能已经变了。 */
+private fun activeWindow(): Window? = KeyboardFocusManager.getCurrentKeyboardFocusManager().activeWindow
+
+/** 系统目录框，弹不出来时退回 Swing 的。取消时为 null。 */
+private suspend fun pickFolder(owner: Window?, initial: File?, title: String): File? =
+    when (val result = FolderPicker.pickFolder(owner, initial, title)) {
+        is FolderPickResult.Picked -> result.folder
+        FolderPickResult.Cancelled -> null
+        FolderPickResult.Unavailable -> chooseDirectory(owner, initial, title)
+    }
+
 /**
  * 原生目录框弹不出来时的退路。AWT 的 FileDialog 在 Windows 上选不了目录，只能用 Swing 的；
  * 换成系统外观，免得弹出 Metal 风格的窗口。
  */
-private fun chooseDirectory(initial: File): File? {
+private fun chooseDirectory(owner: Window?, initial: File?, title: String): File? {
     runCatching { UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName()) }
     val chooser = JFileChooser(initial).apply {
         fileSelectionMode = JFileChooser.DIRECTORIES_ONLY
-        dialogTitle = "选择下载位置"
+        dialogTitle = title
     }
-    return if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) chooser.selectedFile else null
+    return if (chooser.showOpenDialog(owner) == JFileChooser.APPROVE_OPTION) chooser.selectedFile else null
+}
+
+/** 系统的多选文件框。FileDialog 的构造要区分属主是 Frame 还是 Dialog。取消时为空。 */
+private fun chooseFiles(owner: Window?, title: String): List<File> {
+    val dialog = when (owner) {
+        is Dialog -> FileDialog(owner, title, FileDialog.LOAD)
+        else -> FileDialog(owner as? Frame, title, FileDialog.LOAD)
+    }
+    dialog.isMultipleMode = true
+    try {
+        dialog.isVisible = true
+        return dialog.files.toList()
+    } finally {
+        dialog.dispose()
+    }
 }

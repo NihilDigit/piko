@@ -88,6 +88,10 @@ interface PikoUserPreferences {
     suspend fun loadDownloadTasks(): String
     suspend fun saveDownloadTasks(serialized: String)
 
+    /** 上传任务表的 JSON，见 PikoUploadCoordinator。含 12 小时有效的 OSS 凭据，与会话同等看待。空串表示从未保存。 */
+    suspend fun loadUploadTasks(): String
+    suspend fun saveUploadTasks(serialized: String)
+
     /** 整包离线任务的跟踪记录，JSON，见 OfflinePackTracker。空串表示从未保存。 */
     suspend fun loadOfflinePacks(): String
     suspend fun saveOfflinePacks(serialized: String)

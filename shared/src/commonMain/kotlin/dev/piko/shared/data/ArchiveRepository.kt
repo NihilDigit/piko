@@ -1,5 +1,6 @@
 package dev.piko.shared.data
 
+import dev.piko.shared.upload.isUploading
 import io.github.nihildigit.pikpak.DecompressProgress
 import io.github.nihildigit.pikpak.DecompressTask
 import io.github.nihildigit.pikpak.FileStat
@@ -46,27 +47,40 @@ class ArchiveRepository(private val clientManager: PikoClientProvider) {
 
     companion object {
         const val INVALID_PASSWORD = "E_INVALID_PASSWORD"
+
+        /** 列得出目录、解压时才发现读不了：zip span 的最后一卷就是这样。 */
+        const val INVALID_FORMAT = "E_INVALID_FORMAT"
     }
 }
 
 private val ARCHIVE_EXTENSIONS = setOf("zip", "rar", "7z")
 
-// 新式 RAR 分卷：name.part1.rar、name.part01.rar ……
-private val RAR_VOLUME = Regex("""\.part(\d+)\.rar$""", RegexOption.IGNORE_CASE)
+private val VOLUME_PATTERNS = listOf(
+    // 新式 RAR 分卷：name.part1.rar、name.part01.rar
+    Regex("""\.part\d+\.rar$""", RegexOption.IGNORE_CASE),
+    // 7-Zip 按字节切的分卷：name.7z.001、name.zip.001
+    Regex("""\.(7z|zip|rar)\.\d{3}$""", RegexOption.IGNORE_CASE),
+    // zip 的 span 分卷 name.z01 与旧式 RAR 分卷 name.r00
+    Regex("""\.[zr]\d{2}$""", RegexOption.IGNORE_CASE),
+)
 
 /**
- * 能交给服务端解压的压缩包：zip、rar、7z。
- *
- * RAR 分卷只认第一卷。后续卷的扩展名同样是 .rar，却不是独立的压缩包，单独提交只会失败。
- * 服务端能否顺着第一卷读到同目录的其余分卷未经实测；读不到时按失败显示原因。
- * 7z 与 zip 的分卷（.7z.001、.z01）扩展名是数字，不在此列。tar 不认：服务端读不了
- * packFolder 产出的 tar（HTTP 500），其他来源的 tar 也未验证。
+ * 分卷压缩包的一卷。服务端解不了任何分卷：它只读交给它的那一个文件，不去同目录找其余分卷，
+ * 各卷都放在同一目录里与只传第一卷的结果相同（2026-09-25 实测 7z、zip、RAR5 分卷）。
+ * zip span 的最后一卷就叫 name.zip，单看名字认不出来；它能列出目录，解压任务却以
+ * E_INVALID_FORMAT 失败，由 [ArchiveRepository.INVALID_FORMAT] 兜住。
  */
-fun isExtractableArchive(name: String): Boolean {
-    val extension = name.substringAfterLast('.', "").lowercase()
-    if (extension !in ARCHIVE_EXTENSIONS) return false
-    val volume = RAR_VOLUME.find(name) ?: return true
-    return volume.groupValues[1].toIntOrNull() == 1
-}
+fun isArchiveVolume(name: String): Boolean = VOLUME_PATTERNS.any { it.containsMatchIn(name) }
 
-val FileStat.isExtractableArchive: Boolean get() = !isFolder && isExtractableArchive(name)
+/**
+ * 能交给服务端解压的压缩包：单文件的 zip、rar、7z。tar 不认：服务端读不了 packFolder 产出的
+ * tar（HTTP 500），其他来源的 tar 也未验证。
+ */
+fun isExtractableArchive(name: String): Boolean =
+    name.substringAfterLast('.', "").lowercase() in ARCHIVE_EXTENSIONS && !isArchiveVolume(name)
+
+/** 上传中的不算：内容还不完整，解压服务回 file not complete。 */
+val FileStat.isExtractableArchive: Boolean get() = !isFolder && !isUploading && isExtractableArchive(name)
+
+/** 解压入口对它照样给出，点了说明为什么不行：只是隐藏的话，用户找不到原因。 */
+val FileStat.isArchiveVolume: Boolean get() = !isFolder && isArchiveVolume(name)

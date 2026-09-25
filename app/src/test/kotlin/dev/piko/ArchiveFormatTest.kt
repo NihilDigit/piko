@@ -1,5 +1,6 @@
 package dev.piko
 
+import dev.piko.shared.data.isArchiveVolume
 import dev.piko.shared.data.isExtractableArchive
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -8,22 +9,19 @@ import org.junit.Test
 class ArchiveFormatTest {
 
     @Test
-    fun rarVolumesAfterTheFirstAreNotStandaloneArchives() {
-        assertTrue(isExtractableArchive("Show.part1.rar"))
-        assertTrue(isExtractableArchive("Show.part01.rar"))
-        assertTrue(isExtractableArchive("Show.PART001.RAR"))
-        assertFalse(isExtractableArchive("Show.part2.rar"))
-        assertFalse(isExtractableArchive("Show.part10.rar"))
-        // 名字里碰巧带 part 字样的普通 rar
-        assertTrue(isExtractableArchive("part2.rar"))
-        assertTrue(isExtractableArchive("Show.part.rar"))
+    fun everyVolumeIsRecognisedIncludingTheFirst() {
+        for (name in listOf("Show.part1.rar", "Show.PART001.RAR", "Show.part10.rar", "Pack.7z.001", "Pack.zip.002", "Pack.z01", "Old.r00")) {
+            assertTrue(name, isArchiveVolume(name))
+            assertFalse(name, isExtractableArchive(name))
+        }
     }
 
     @Test
-    fun numberedVolumesAndUnreadableFormatsAreExcluded() {
+    fun namesThatOnlyLookLikeVolumesStayPlainArchives() {
+        assertTrue(isExtractableArchive("part2.rar"))
+        assertTrue(isExtractableArchive("Show.part.rar"))
         assertTrue(isExtractableArchive("Pack.ZIP"))
-        assertFalse(isExtractableArchive("Pack.7z.001"))
-        assertFalse(isExtractableArchive("Pack.z01"))
+        assertFalse(isArchiveVolume("Episode.2019.mkv"))
         assertFalse(isExtractableArchive("Folder.tar"))
         assertFalse(isExtractableArchive("zip"))
     }

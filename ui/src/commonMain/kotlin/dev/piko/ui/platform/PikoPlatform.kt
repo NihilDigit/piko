@@ -53,6 +53,8 @@ interface PikoPlatform {
 
     val downloadLocation: DownloadLocationPicker
 
+    val uploadPicker: UploadPicker
+
     /** 为 null 表示该平台不提供片段下载的画面预览，入口随之隐藏。 */
     val videoPreview: VideoPreviewSupport?
 
@@ -101,6 +103,19 @@ interface DownloadLocationPicker {
      */
     @Composable
     fun rememberLauncher(onPicked: (String) -> Unit): () -> Unit
+}
+
+/**
+ * 选要上传的本机文件与文件夹。回调给的是 PikoUploadSources 认得的 uri，取消时不回调。
+ * 做成 Composable 的理由同 [DownloadLocationPicker.rememberLauncher]。
+ */
+interface UploadPicker {
+    /** 可多选。 */
+    @Composable
+    fun rememberFilesLauncher(onPicked: (List<String>) -> Unit): () -> Unit
+
+    @Composable
+    fun rememberFolderLauncher(onPicked: (String) -> Unit): () -> Unit
 }
 
 /** 片段下载面板里的画面预览：一个不出声、不自动播放的播放后端，加上它的画面表面。 */

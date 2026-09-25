@@ -14,6 +14,8 @@ import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.state.ArchiveExtractSession
 import dev.piko.shared.state.InstantSession
 import dev.piko.shared.state.InstantSheetState
+import dev.piko.shared.upload.PikoUploadCoordinator
+import dev.piko.shared.upload.PikoUploadSources
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -29,6 +31,9 @@ class PikoServices(
     val clientManager: PikoClientManager,
     val downloadManager: PikoDownloadCoordinator,
     val mediaRepository: PikoMediaRepository,
+    uploadSources: PikoUploadSources,
+    /** Android 在这里拉起前台服务。 */
+    onUploadStarted: (() -> Unit)? = null,
     val driveRepository: DriveRepository = DriveRepository(clientManager, preferences),
     val accountRepository: PikoAccountRepository = PikoAccountRepository(clientManager, preferences),
     val instantMagnetRepository: InstantMagnetRepository = InstantMagnetRepository(clientManager),
@@ -40,6 +45,8 @@ class PikoServices(
     val previewTempFolder = PreviewTempFolder(driveRepository, instantMagnetRepository, backgroundScope)
 
     val offlinePacks = OfflinePackTracker(instantMagnetRepository, driveRepository, preferences)
+
+    val uploadManager = PikoUploadCoordinator(clientManager, preferences, uploadSources, driveRepository, backgroundScope, onUploadStarted)
 
     val instantSession: InstantSession by lazy {
         InstantSession(

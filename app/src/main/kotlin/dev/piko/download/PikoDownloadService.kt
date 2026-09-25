@@ -21,12 +21,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.launch
 
 /**
- * Foreground Service managing background downloading and lossless video segment extraction.
+ * Foreground Service managing background downloading, uploading and lossless video segment extraction.
  *
- * Maintains a foreground service with continuous notification while tasks are DOWNLOADING,
+ * Maintains a foreground service with continuous notification while downloads or uploads are active,
  * displaying real-time aggregated throughput and progress. Gracefully steps down when idle.
  *
  * Documentation References:
@@ -47,7 +49,7 @@ class PikoDownloadService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val initialNotification = buildNotification("正在准备下载...", 0, 0, 0L)
+        val initialNotification = buildNotification("正在准备传输", 0, 0, 0L)
         try {
             ServiceCompat.startForeground(
                 this,
@@ -74,6 +76,7 @@ class PikoDownloadService : Service() {
      */
     override fun onTimeout(startId: Int, fgsType: Int) {
         PikoApplication.instance.downloadManager.pauseAll()
+        PikoApplication.instance.uploadManager.pauseAll()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -83,34 +86,40 @@ class PikoDownloadService : Service() {
 
         observeJob = serviceScope.launch {
             val downloadManager = PikoApplication.instance.downloadManager
-            // 用 collect 而非 collectLatest，每轮末尾等一秒：StateFlow 本身是合并的，等待期间的
-            // 中间值直接跳过，通知更新被压到每秒一次。系统对单个应用的通知更新有频率上限，
-            // 超出的直接丢弃，多发只是白白重建 Notification
-            downloadManager.tasks.collect { tasksMap ->
-                val activeTasks = tasksMap.values.filter { it.status == DownloadStatus.DOWNLOADING }
-                if (activeTasks.isEmpty()) {
-                    // 没有正在下载的任务，延迟 2 秒后若仍无任务则优雅退出前台。
+            val uploadManager = PikoApplication.instance.uploadManager
+            // 用 collect 而非 collectLatest，每轮末尾等一秒：conflate 让等待期间的中间值直接跳过，
+            // 通知更新被压到每秒一次。系统对单个应用的通知更新有频率上限，超出的直接丢弃，
+            // 多发只是白白重建 Notification。combine 自身不合并，要显式 conflate
+            combine(downloadManager.tasks, uploadManager.tasks) { downloads, uploads ->
+                downloads.values.filter { it.status == DownloadStatus.DOWNLOADING } to
+                    uploads.values.filter { it.status.isActive }
+            }.conflate().collect { (downloads, uploads) ->
+                if (downloads.isEmpty() && uploads.isEmpty()) {
+                    // 没有进行中的任务，延迟 2 秒后若仍无任务则优雅退出前台。
                     // PENDING 也算活跃：新任务要先查一次本地长度才转为 DOWNLOADING
                     delay(2000)
-                    val stillActive = downloadManager.tasks.value.values.any {
+                    val stillDownloading = downloadManager.tasks.value.values.any {
                         it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.PENDING
                     }
-                    if (!stillActive) {
+                    val stillUploading = uploadManager.tasks.value.values.any { it.status.isActive }
+                    if (!stillDownloading && !stillUploading) {
                         ServiceCompat.stopForeground(this@PikoDownloadService, ServiceCompat.STOP_FOREGROUND_REMOVE)
                         stopSelf()
                     }
                 } else {
-                    val totalSpeed = activeTasks.sumOf { it.speedBytesPerSec }
-                    val totalDownloaded = activeTasks.sumOf { it.downloadedBytes }
-                    val totalBytes = activeTasks.sumOf { it.totalBytes }
+                    val totalSpeed = downloads.sumOf { it.speedBytesPerSec } + uploads.sumOf { it.speedBytesPerSec }
+                    val totalProcessed = downloads.sumOf { it.downloadedBytes } + uploads.sumOf { it.processedBytes }
+                    val totalBytes = downloads.sumOf { it.totalBytes } + uploads.sumOf { it.size }
                     val progressPercent = if (totalBytes > 0) {
-                        ((totalDownloaded.toDouble() / totalBytes.toDouble()) * 100).toInt().coerceIn(0, 100)
+                        ((totalProcessed.toDouble() / totalBytes.toDouble()) * 100).toInt().coerceIn(0, 100)
                     } else 0
 
-                    val title = if (activeTasks.size == 1) {
-                        activeTasks.first().fileName
-                    } else {
-                        "正在下载 ${activeTasks.size} 个任务"
+                    val title = when {
+                        uploads.isEmpty() && downloads.size == 1 -> downloads.first().fileName
+                        uploads.isEmpty() -> "正在下载 ${downloads.size} 个任务"
+                        downloads.isEmpty() && uploads.size == 1 -> uploads.first().fileName
+                        downloads.isEmpty() -> "正在上传 ${uploads.size} 个文件"
+                        else -> "正在下载 ${downloads.size} 个任务，上传 ${uploads.size} 个文件"
                     }
 
                     val notification = buildNotification(
@@ -118,8 +127,9 @@ class PikoDownloadService : Service() {
                         progress = progressPercent,
                         total = 100,
                         speedBytesPerSec = totalSpeed,
-                        downloadedBytes = totalDownloaded,
+                        processedBytes = totalProcessed,
                         totalBytes = totalBytes,
+                        uploadOnly = downloads.isEmpty(),
                     )
                     notificationManager.notify(NOTIFICATION_ID, notification)
                     delay(NOTIFICATION_INTERVAL_MS)
@@ -133,8 +143,9 @@ class PikoDownloadService : Service() {
         progress: Int,
         total: Int,
         speedBytesPerSec: Long,
-        downloadedBytes: Long = 0L,
+        processedBytes: Long = 0L,
         totalBytes: Long = 0L,
+        uploadOnly: Boolean = false,
     ): Notification {
         val openIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -149,13 +160,13 @@ class PikoDownloadService : Service() {
         // 速度放进 subText 这个独立字段，由系统排在通知头部，不在正文里拼分隔符
         val speedText = if (speedBytesPerSec > 0) "${speedBytesPerSec.toReadableSize()}/s" else "--/s"
         val contentText = if (totalBytes > 0) {
-            "${downloadedBytes.toReadableSize()} / ${totalBytes.toReadableSize()}"
+            "${processedBytes.toReadableSize()} /${totalBytes.toReadableSize()}"
         } else {
             "传输中"
         }
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setSmallIcon(if (uploadOnly) android.R.drawable.stat_sys_upload else android.R.drawable.stat_sys_download)
             .setContentTitle(title)
             .setContentText(contentText)
             .setSubText(speedText)
@@ -171,10 +182,10 @@ class PikoDownloadService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "文件传输与下载",
+                "文件传输",
                 NotificationManager.IMPORTANCE_LOW,
             ).apply {
-                description = "显示后台文件并发下载与无损切片实时进度"
+                description = "后台下载、上传与无损切片的进度"
                 setShowBadge(false)
             }
             notificationManager.createNotificationChannel(channel)

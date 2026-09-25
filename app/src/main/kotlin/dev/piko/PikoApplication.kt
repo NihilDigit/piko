@@ -17,7 +17,9 @@ import dev.piko.shared.data.PikoClientManager
 import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.state.InstantSession
+import dev.piko.shared.upload.PikoUploadCoordinator
 import dev.piko.ui.PikoServices
+import dev.piko.upload.AndroidPikoUploadSources
 import dev.piko.update.AppUpdater
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
@@ -45,6 +47,7 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
     val instantMagnetRepository: InstantMagnetRepository get() = services.instantMagnetRepository
     val mediampMediaRepository: PikoMediaRepository get() = services.mediaRepository
     val downloadManager: PikoDownloadCoordinator get() = services.downloadManager
+    val uploadManager: PikoUploadCoordinator get() = services.uploadManager
     val instantSession: InstantSession get() = services.instantSession
 
     /** 首次用到时才建：开屏检查要等界面第一次组合，不必在 onCreate 里就先建一个 HTTP 客户端。 */
@@ -70,6 +73,8 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
                 mediaRepository = mediaRepository,
                 onDownloadStarted = { PikoDownloadService.start(this) },
             ),
+            uploadSources = AndroidPikoUploadSources(this),
+            onUploadStarted = { PikoDownloadService.start(this) },
         )
         platform = AndroidPikoPlatform(this) { appUpdater }
     }

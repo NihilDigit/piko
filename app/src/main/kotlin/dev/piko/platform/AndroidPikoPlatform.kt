@@ -36,6 +36,7 @@ import dev.piko.ui.platform.DownloadLocationPicker
 import dev.piko.ui.platform.LocalFileActions
 import dev.piko.ui.platform.PikoPlatform
 import dev.piko.ui.platform.PreviewBackend
+import dev.piko.ui.platform.UploadPicker
 import dev.piko.ui.platform.VideoPreviewSupport
 import dev.piko.ui.screens.player.MpvPlaybackBackend
 import dev.piko.ui.screens.player.MpvVideoSurface
@@ -92,6 +93,8 @@ class AndroidPikoPlatform(
     override val localFiles: LocalFileActions = AndroidLocalFiles()
 
     override val downloadLocation: DownloadLocationPicker = AndroidDownloadLocation()
+
+    override val uploadPicker: UploadPicker = AndroidUploadPicker()
 
     override val videoPreview: VideoPreviewSupport = MpvPreviewSupport()
 
@@ -215,6 +218,33 @@ class AndroidPikoPlatform(
                     },
                 )
             }
+        }
+    }
+
+    /** 选中后持久化读授权：任务表里存的是 URI，进程被杀后续传还要凭它读文件。 */
+    private inner class AndroidUploadPicker : UploadPicker {
+        @Composable
+        override fun rememberFilesLauncher(onPicked: (List<String>) -> Unit): () -> Unit {
+            val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+                if (uris.isEmpty()) return@rememberLauncherForActivityResult
+                uris.forEach(::persistReadPermission)
+                onPicked(uris.map(Uri::toString))
+            }
+            return { launcher.launch(arrayOf("*/*")) }
+        }
+
+        @Composable
+        override fun rememberFolderLauncher(onPicked: (String) -> Unit): () -> Unit {
+            val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+                if (uri == null) return@rememberLauncherForActivityResult
+                persistReadPermission(uri)
+                onPicked(uri.toString())
+            }
+            return { launcher.launch(null) }
+        }
+
+        private fun persistReadPermission(uri: Uri) {
+            runCatching { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
         }
     }
 
