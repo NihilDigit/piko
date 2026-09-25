@@ -18,6 +18,7 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.Tray
 import dev.piko.desktop.ui.player.VideoPlayerWindow
+import dev.piko.desktop.update.WindowsInstaller
 import dev.piko.desktop.winrt.WinRTSupport
 import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
@@ -63,7 +64,9 @@ fun main(args: Array<String>) {
         runCatching { WinRTSupport.ensureAppUserModelId() }
         Thread(
             {
-                runCatching { WinRTSupport.ensureMagnetProtocolHandler() }
+                // 只有 MSI 装的那份写登记：便携版、测试镜像与 gradle run 写的话，会盖掉安装版的协议与通知图标
+                val installed = runCatching { WindowsInstaller.installedExecutable() }.getOrNull() ?: return@Thread
+                runCatching { WinRTSupport.ensureMagnetProtocolHandler(installed) }
                 // 图标随安装包放在资源目录里，与窗口图标同源
                 val icon = System.getProperty("compose.application.resources.dir")?.let { File(it, "app-icon.png") }
                 runCatching { WinRTSupport.ensureNotificationRegistration(icon) }

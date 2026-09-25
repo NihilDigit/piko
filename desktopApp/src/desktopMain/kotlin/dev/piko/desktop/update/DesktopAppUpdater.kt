@@ -207,15 +207,12 @@ class DesktopAppUpdater private constructor(
     private fun stagingDir(update: DesktopUpdate) = stagingRoot.resolve(update.version)
 
     private fun isMsiInstall(dir: File): Boolean {
-        val upgradeCode = System.getProperty(UPGRADE_CODE_PROPERTY) ?: return false
+        val upgradeCode = System.getProperty(WindowsInstaller.UPGRADE_CODE_PROPERTY) ?: return false
         return WindowsInstaller.isInstalledAt(upgradeCode, dir)
     }
 
     companion object {
         private const val PATCH_DIR = "files"
-
-        /** 构建写进启动配置的 MSI UpgradeCode，见 desktopApp/build.gradle.kts。 */
-        private const val UPGRADE_CODE_PROPERTY = "piko.upgrade-code"
 
         /** 换掉 Release 接口地址，用于在本机对着假的 Release 走一遍更新。 */
         private const val API_OVERRIDE_PROPERTY = "piko.update.api"

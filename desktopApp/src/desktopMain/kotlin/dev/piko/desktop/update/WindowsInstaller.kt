@@ -21,6 +21,19 @@ internal object WindowsInstaller {
     private const val ERROR_MORE_DATA = 234
     private const val GUID_CHARS = 39
 
+    /**
+     * 当前进程若是 MSI 装好的那份 Piko，返回它的启动器；便携版、测试镜像、gradle run 都是 null。
+     * 启动器路径取 jpackage 写的 jpackage.app-path：它会另起一个 JVM 子进程，进程命令行未必是 Piko.exe。
+     */
+    fun installedExecutable(): File? {
+        val exe = System.getProperty("jpackage.app-path")?.let(::File)?.takeIf { it.isFile } ?: return null
+        val upgradeCode = System.getProperty(UPGRADE_CODE_PROPERTY) ?: return null
+        return exe.takeIf { isInstalledAt(upgradeCode, it.parentFile) }
+    }
+
+    /** 构建写进启动配置的 MSI UpgradeCode，见 desktopApp/build.gradle.kts。 */
+    const val UPGRADE_CODE_PROPERTY = "piko.upgrade-code"
+
     fun isInstalledAt(upgradeCode: String, installDir: File): Boolean = runCatching {
         val expected = installDir.canonicalPath.trimEnd('\\')
         installLocations(upgradeCode).any { it.trimEnd('\\').equals(expected, ignoreCase = true) }

@@ -1,5 +1,6 @@
 package dev.piko.desktop.winrt
 
+import dev.piko.desktop.update.WindowsInstaller
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
@@ -49,9 +50,9 @@ class WinRTSupportTest {
     }
 
     @Test
-    fun magnetProtocolCheck_neverThrows() {
-        // 测试进程是 java.exe（非安装版），只保证只读检查不抛、不写注册表。
-        // 真正的注册发生在 MSI 安装版首次启动，Windows 真机联调时验证。
-        WinRTSupport.ensureMagnetProtocolHandler()
+    fun nonInstalledProcess_isNotTreatedAsInstalled() {
+        // 协议与通知登记只由 MSI 装的那份写。先前按「命令行以 .exe 结尾」判断，测试进程的 java.exe
+        // 也算，跑一次测试就把本机的 magnet 协议改成 java.exe
+        assertNull(WindowsInstaller.installedExecutable())
     }
 }

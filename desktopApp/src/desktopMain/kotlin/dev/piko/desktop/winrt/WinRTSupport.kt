@@ -49,17 +49,15 @@ object WinRTSupport {
     }
 
     /**
-     * 注册 magnet: 协议到当前用户（HKCU，无需管理员权限）。
-     * 只有安装版（exe 启动）才注册；jar/gradle 直接跑的不碰注册表。
-     * 已注册且指向自己时直接返回 true。
+     * 把 magnet: 协议登记到当前用户（HKCU，无需管理员权限），指向 [exe]。已登记且指向它时直接返回 true。
+     *
+     * 只该由 MSI 装的那份调用（见 WindowsInstaller.installedExecutable）。原先按进程命令行是否以 .exe
+     * 结尾判断，gradle run 的 java.exe 也算，一次开发运行就把协议改成打不开链接的 java.exe。
      */
-    fun ensureMagnetProtocolHandler(): Boolean {
+    fun ensureMagnetProtocolHandler(exe: File): Boolean {
         if (!isWindows) return false
         return runCatching {
-            val exe = ProcessHandle.current().info().command().orElse(null)
-                ?: return false
-            if (!exe.endsWith(".exe", ignoreCase = true)) return false
-            val expected = "\"$exe\" \"%1\""
+            val expected = "\"${exe.absolutePath}\" \"%1\""
             if (currentMagnetCommand()?.equals(expected, ignoreCase = true) == true) return true
             regAdd("HKCU\\Software\\Classes\\magnet", "/ve", "/t", "REG_SZ", "/d", "URL:Magnet Protocol", "/f") &&
                 regAdd("HKCU\\Software\\Classes\\magnet", "/v", "URL Protocol", "/t", "REG_SZ", "/d", "Piko", "/f") &&
@@ -70,12 +68,10 @@ object WinRTSupport {
     /**
      * 在当前用户下登记 AUMID 的显示名与图标，Toast 才会真正显示。jpackage 生成的开始菜单
      * 快捷方式不带 System.AppUserModel.ID 属性，靠快捷方式登记这条路走不通。
-     * 与 magnet 协议一样只在安装版（exe 启动）时写，开发时直接跑 jar 不碰注册表。
+     * 与 magnet 协议一样只由 MSI 装的那份调用：便携版或测试镜像写的话，图标会指向它们的目录。
      */
     fun ensureNotificationRegistration(icon: File?): Boolean {
         if (!isWindows) return false
-        val exe = ProcessHandle.current().info().command().orElse(null) ?: return false
-        if (!exe.endsWith(".exe", ignoreCase = true)) return false
         val key = "HKCU\\Software\\Classes\\AppUserModelId\\$APP_USER_MODEL_ID"
         val iconOk = icon?.takeIf { it.isFile }?.let {
             regAdd(key, "/v", "IconUri", "/t", "REG_SZ", "/d", it.absolutePath, "/f")
