@@ -7,6 +7,10 @@ import org.gradle.api.tasks.JavaExec
 import org.gradle.api.tasks.testing.Test
 import org.jetbrains.compose.desktop.application.dsl.AotMode
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
+import org.jetbrains.compose.desktop.application.tasks.AbstractCheckNativeDistributionRuntime
+import org.jetbrains.compose.desktop.application.tasks.AbstractJvmToolOperationTask
+import org.jetbrains.compose.desktop.application.tasks.AbstractProguardTask
+import org.jetbrains.compose.desktop.application.tasks.AbstractSuggestModulesTask
 
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
@@ -72,6 +76,22 @@ afterEvaluate {
     tasks.named<JavaExec>("run") {
         executable(desktopJavaLauncher.get().executablePath.asFile)
     }
+}
+
+// jlink、jpackage 与 ProGuard 默认用运行 Gradle 的那个 JDK。本机的 Gradle 跑在 JBR 21 上，打不了包；
+// 而 JDK 25 里 Temurin 的发行包不带 jmods，ProGuard 读不到 java.lang.Object（desktop.yml 选 Zulu 也是因此）。
+// 这里按 Azul 的 25 取工具链，缺了由 foojay 下载。用 Provider 绑定而不写 application.javaHome：
+// 后者是 String，配置期就要解析，只装了 JDK 21 的 Android CI 也会配置本工程。
+// 放进 afterEvaluate：插件在它自己的 afterEvaluate 里给这些任务设 javaHome，先登记的会被盖掉
+val packagingJdkHome = javaToolchains.launcherFor {
+    languageVersion = JavaLanguageVersion.of(25)
+    vendor = JvmVendorSpec.AZUL
+}.map { it.metadata.installationPath.asFile.absolutePath }
+afterEvaluate {
+    tasks.withType<AbstractJvmToolOperationTask>().configureEach { javaHome.set(packagingJdkHome) }
+    tasks.withType<AbstractProguardTask>().configureEach { javaHome.set(packagingJdkHome) }
+    tasks.withType<AbstractSuggestModulesTask>().configureEach { javaHome.set(packagingJdkHome) }
+    tasks.withType<AbstractCheckNativeDistributionRuntime>().configureEach { jdkHome.set(packagingJdkHome) }
 }
 
 // Compose 的桌面运行库与 MediaMP 带进了 ui-test，连带 junit、truth、guava 与
@@ -182,6 +202,22 @@ tasks.matching { it.name == "createReleaseAotArchive" }.configureEach {
     }
 }
 tasks.matching { it.name == "prepareAppResources" }.configureEach { dependsOn(bundledAppResources) }
+
+// jpackage 的 MSI 先卸旧版、单独提交，再装新版：新版装失败时旧版已经没了。打完即把卸载挪进
+// 安装事务，失败时整体回滚，理由见脚本。用 pwsh 跑：Windows PowerShell 按 ANSI 读无 BOM 的脚本
+val transactionalUpgradeScript = file("package/windows/transactional-upgrade.ps1")
+val releaseMsiDir = layout.buildDirectory.dir("compose/binaries/main-release/msi").get().asFile
+tasks.matching { it.name == "packageReleaseMsi" }.configureEach {
+    doLast {
+        releaseMsiDir.listFiles { f -> f.extension == "msi" }.orEmpty().forEach { msi ->
+            val exit = ProcessBuilder("pwsh", "-NoProfile", "-File", transactionalUpgradeScript.absolutePath, "-Msi", msi.absolutePath)
+                .inheritIO()
+                .start()
+                .waitFor()
+            check(exit == 0) { "改写 ${msi.name} 的安装序列失败（pwsh 退出码 $exit）" }
+        }
+    }
+}
 
 /**
  * 应用内增量更新的两个 Release 附件：应用目录里每个文件的清单（路径、大小、SHA-256、修改时间），

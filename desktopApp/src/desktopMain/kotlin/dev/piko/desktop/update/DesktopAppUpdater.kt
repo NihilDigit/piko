@@ -206,6 +206,15 @@ class DesktopAppUpdater private constructor(
 
     private fun stagingDir(update: DesktopUpdate) = stagingRoot.resolve(update.version)
 
+    // apply-update.ps1 失败时在暂存目录留下这个文件；暂存目录要到下一次下载才清
+    override fun takePreviousFailure(version: String): Boolean {
+        val marker = stagingRoot.resolve(version).resolve("failed")
+        if (!marker.isFile) return false
+        log("上次更新到 $version 未完成：${marker.readText().trim()}", null)
+        marker.delete()
+        return true
+    }
+
     private fun isMsiInstall(dir: File): Boolean {
         val upgradeCode = System.getProperty(WindowsInstaller.UPGRADE_CODE_PROPERTY) ?: return false
         return WindowsInstaller.isInstalledAt(upgradeCode, dir)

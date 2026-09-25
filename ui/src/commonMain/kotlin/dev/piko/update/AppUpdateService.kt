@@ -129,8 +129,20 @@ abstract class GithubUpdateService<U : AvailableUpdate>(
         startupChecked = true
         check(silent = true)
         val update = (status as? UpdateStatus.Available)?.update ?: return
-        if (!isIgnored(update.version)) startupUpdate = update
+        // 上次装这一版没成功：照样弹出，忽略过也不算数，用户点过更新，说明并没有打算跳过它
+        if (takePreviousFailure(update.version)) {
+            status = UpdateStatus.Failed("上次更新未完成，当前版本未受影响", update)
+            startupUpdate = update
+        } else if (!isIgnored(update.version)) {
+            startupUpdate = update
+        }
     }
+
+    /**
+     * 上次更新到 [version] 是否失败过，读过即清掉。更新在应用退出后才进行，失败时应用已经不在，
+     * 只能留下记号、下次启动再说。只有桌面端会这样。
+     */
+    protected open fun takePreviousFailure(version: String): Boolean = false
 
     override fun dismissStartupUpdate() {
         startupUpdate = null

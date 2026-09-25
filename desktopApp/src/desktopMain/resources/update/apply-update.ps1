@@ -97,9 +97,14 @@ try {
 } catch {
     Write-Log "update failed: $_"
     $exitCode = 1
+    # Read by DesktopAppUpdater on the next launch, which then says the update did not finish.
+    Set-Content -LiteralPath (Join-Path (Split-Path -Parent $LogFile) 'failed') -Value "$_" -Encoding UTF8
 }
 
-# Start the app either way: after a failure the old version is still intact.
+# Start the app either way: after a failure the old version is still intact. For the msi mode
+# that holds because the MSI removes the old version inside its install transaction (see
+# desktopApp/package/windows/transactional-upgrade.ps1); Windows Installer then keeps the old
+# version's files but only as advertised, so later updates offer the download page.
 $exe = Join-Path $InstallDir $Executable
 try {
     Start-Process -FilePath $exe -WorkingDirectory $InstallDir
