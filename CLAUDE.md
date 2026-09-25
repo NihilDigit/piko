@@ -60,8 +60,10 @@ Piko 是 PikPak 的第三方跨平台客户端。Android 与 Windows 共用一�
 - 长驻的错误态（如 `loadError`）才用状态，它描述的是「眼前这份数据是旧的」。
 
 新增屏幕状态时照这个形状做。已下沉的 state holder 都在 `shared/.../shared/state/`：
-`DriveScreenState`、`InstantSheetState`（秒传与磁力解析）、`OfflineTasksState`（云端离线任务，
-轮询由调用方的协程控制启停）、`TrashScreenState`、`LoginState`、`FolderPickerState`（自带路径栈）。
+`DriveScreenState`、`InstantSheetState`（秒传与磁力解析，多条链接时由 `InstantBatchState` 为每条各建一个）、
+`OfflineTasksState`（云端离线任务，轮询由调用方的协程控制启停）、`TrashScreenState`、`LoginState`、
+`FolderPickerState`（自带路径栈）、`DuplicateFinderState`（查重）、`ArchiveExtractSession`（服务端解压，
+进程级，挂在 `PikoServices` 上，离开网盘页照常进行）。
 播放器的准备策略是 `shared/.../shared/media/player/PlayerScreenState`，见「播放器」一节。
 
 ### 响应式布局
@@ -85,7 +87,9 @@ expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以
 都是 commonMain 的接口，Android 与 Desktop 各有实现。界面要的平台能力（剪贴板、系统取色、
 下载位置选择、本地文件的打开与分享、片段预览的播放后端、全屏对话框、应用内更新）集中在
 `ui/.../platform/PikoPlatform.kt`，实现是 `AndroidPikoPlatform` 与 `DesktopPikoPlatform`。
-平台没有的能力返回 null 或 false，界面据此隐藏入口，例如桌面端没有应用内更新与系统分享。
+平台没有的能力返回 null 或 false，界面据此隐藏入口，例如桌面端没有系统分享。应用内更新两端都有，
+检查与版本比较在 `shared/.../shared/update`，安装各走各的：Android 交给 PackageInstaller，桌面端按文件清单
+决定只换 jar、AOT 缓存等五个文件还是整包 MSI，由 `apply-update.ps1` 在应用退出后执行。
 
 **加一个偏好项要同时改三处**：接口、
 `SessionManager`（Android，DataStore）、`DesktopPikoPreferences`（Desktop，`DesktopSettingsStore`）。
