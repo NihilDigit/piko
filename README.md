@@ -104,6 +104,13 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ---
 
+## 🙏 致谢
+
+- [52funny/pikpakcli](https://github.com/52funny/pikpakcli)：PikPak 接口的请求格式、验证码签名与上传协议均取自此项目。Piko 的网盘能力来自 [pikpak-kotlin](https://github.com/NihilDigit/pikpak-kotlin)，该 SDK 即以此为起点。
+- [digbug82/PikPak_Enhancement_Master](https://github.com/digbug82/PikPak_Enhancement_Master)：PikPak 网页端增强脚本，Piko 的多项功能设计参考了它。
+
+---
+
 ## 📄 开源许可
 
 本项目基于 [MIT](LICENSE) 许可证开源。
