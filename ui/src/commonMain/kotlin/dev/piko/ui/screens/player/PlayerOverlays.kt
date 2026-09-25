@@ -44,13 +44,13 @@ import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconToggleButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarDefaults
 import androidx.compose.material3.Surface
@@ -421,11 +421,13 @@ internal fun PlaybackErrorCard(
                 textAlign = TextAlign.Center,
             )
             Spacer(Modifier.height(24.dp))
+            // 卡片是不透明的 surfaceContainerHigh，取自 PlayerTheme 的深色配色，按钮用默认色即可，
+            // 与底下的画面无关。重试用 tonal：一次播放失败不该渲染成需要下决心的主按钮
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (onBack != null) {
-                    OutlinedButton(onClick = onBack) { Text("返回") }
+                    TextButton(onClick = onBack) { Text("返回") }
                 }
-                Button(onClick = onRetry) { Text("重试") }
+                FilledTonalButton(onClick = onRetry) { Text("重试") }
             }
         }
     }

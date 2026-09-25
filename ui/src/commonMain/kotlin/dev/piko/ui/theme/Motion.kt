@@ -24,6 +24,12 @@ object PikoMotion {
 
         /** md.sys.motion.easing.standard */
         val Standard = CubicBezierEasing(0.2f, 0f, 0f, 1f)
+
+        /** md.sys.motion.easing.standard.decelerate */
+        val StandardDecelerate = CubicBezierEasing(0f, 0f, 0f, 1f)
+
+        /** md.sys.motion.easing.standard.accelerate */
+        val StandardAccelerate = CubicBezierEasing(0.3f, 0f, 1f, 1f)
     }
 
     object Duration {
@@ -45,6 +51,16 @@ object PikoMotion {
 
     /** 压栈滑动距离：屏幕宽度的五分之一 */
     const val ForwardSlideFraction = 5
+
+    /**
+     * 切换底栏的根页面。M3 的 top level 模式：旧页快速淡出，然后新页淡入，不交叉，也不横滑。
+     * 两页内容无关，交叉淡化时两页叠在一起读不出是哪一页；横滑暗示能左右划着切，会和可滑动的
+     * 列表项抢手势。所以进入那一档延后一个退出时长，合起来仍在规范说的 quick fade 之内。
+     */
+    val TopLevelExitFade: FiniteAnimationSpec<Float> =
+        tween(Duration.Short3, easing = Easing.StandardAccelerate)
+    val TopLevelEnterFade: FiniteAnimationSpec<Float> =
+        tween(Duration.Medium1, delayMillis = Duration.Short3, easing = Easing.StandardDecelerate)
 
     /** 首屏三态切换 (转圈 / 错误 / 列表) 的 Crossfade 时长 */
     val StateCrossfadeSpec: FiniteAnimationSpec<Float> =

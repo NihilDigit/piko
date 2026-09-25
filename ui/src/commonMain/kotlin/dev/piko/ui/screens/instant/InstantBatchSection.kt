@@ -37,7 +37,7 @@ import dev.piko.shared.state.InstantBatchRowStatus
 import dev.piko.shared.state.InstantBatchState
 import dev.piko.shared.state.InstantSheetState
 import dev.piko.ui.components.MetaRow
-import dev.piko.ui.components.PikoLoadingIndicator
+import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.toReadableSize
 
@@ -194,7 +194,7 @@ private fun BatchRowItem(
 private fun BatchStatusIcon(status: InstantBatchRowStatus) {
     Box(modifier = Modifier.size(24.dp), contentAlignment = Alignment.Center) {
         when (status) {
-            InstantBatchRowStatus.RESOLVING -> PikoLoadingIndicator(size = 24.dp)
+            InstantBatchRowStatus.RESOLVING -> InlineLoadingIndicator()
             InstantBatchRowStatus.FAILED, InstantBatchRowStatus.NEEDS_NAME -> Icon(
                 imageVector = Icons.Outlined.ErrorOutline,
                 contentDescription = null,

@@ -1,11 +1,14 @@
 package dev.piko.ui
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -21,10 +24,14 @@ import androidx.compose.material.icons.outlined.SyncAlt
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
+import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
+import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteItem
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
+import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffoldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -42,6 +49,7 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation3.runtime.NavKey
@@ -218,6 +226,23 @@ fun PikoMainScaffold(
         Modifier.onSizeChanged { contentSize = it }
     }
 
+    // 再点一次当前页回到列表顶部，M3 导航栏的明文要求。每页一个计数器：共用一个的话，在网盘页
+    // 连点几下再切到传输页，传输页看到的是变过的计数，会跟着滚一次它自己没被点过的
+    var filesScrollToTop by remember { mutableIntStateOf(0) }
+    var transfersScrollToTop by remember { mutableIntStateOf(0) }
+    fun onTabClick(tab: MainTab) {
+        if (tab == currentTab) {
+            when (tab) {
+                MainTab.FILES -> filesScrollToTop++
+                MainTab.TRANSFERS -> transfersScrollToTop++
+                MainTab.SETTINGS -> Unit
+            }
+        }
+        currentTab = tab
+        // 宽窗口里详情页挂在「我的」下面，换页时一并收起
+        if (profilePaneInline) closeTop()
+    }
+
     // 快捷键的兜底落点：网盘页有自己的焦点目标，其余页面没有可聚焦的内容时，
     // 按键要有个地方落，Ctrl+数字切换页面才能生效
     val shortcutFocus = remember { FocusRequester() }
@@ -248,17 +273,23 @@ fun PikoMainScaffold(
         // 始终留在 NavigationSuiteScaffold 里调用，不搬到外面去。搬动意味着换组合
         // 位置，整棵子树会被销毁重建，列表滚动位置与已加载的文件全部丢失。
         val mainContent: @Composable () -> Unit = {
-            Box(
+            // M3 的 top level 模式：旧页淡出走完再淡入新页，见 PikoMotion.TopLevelEnterFade。
+            // 原来是 when 直接换子树，跳切被规范单列为要避免的做法：读者得不到任何线索说明换了页
+            AnimatedContent(
+                targetState = currentTab,
+                transitionSpec = { fadeIn(PikoMotion.TopLevelEnterFade) togetherWith fadeOut(PikoMotion.TopLevelExitFade) },
                 modifier = Modifier
                     .fillMaxSize()
                     .then(frozenSizeModifier),
-            ) {
-                when (currentTab) {
+                label = "mainTab",
+            ) { tab ->
+                when (tab) {
                     MainTab.FILES -> {
-                        FilesScreen(onNavigateToVideoPlayer = ::playVideo)
+                        FilesScreen(onNavigateToVideoPlayer = ::playVideo, scrollToTopRequests = filesScrollToTop)
                     }
                     MainTab.TRANSFERS -> {
                         TransfersScreen(
+                            scrollToTopRequests = transfersScrollToTop,
                             onNavigateToInstant = {
                                 currentTab = MainTab.FILES
                             },
@@ -292,23 +323,28 @@ fun PikoMainScaffold(
             }
         }
 
+        // 导航栏的款式交给库按窗口挑：compact 是 64dp 的 ShortNavigationBar，更宽是收起态的
+        // WideNavigationRail。不用旧重载的 calculateFromAdaptiveInfo，它给的是 80dp 的 NavigationBar
+        // 与 NavigationRail，M3 Expressive 已把这两款标为不再推荐
+        val navigationSuiteType = NavigationSuiteScaffoldDefaults.navigationSuiteType(currentWindowAdaptiveInfo())
         NavigationSuiteScaffold(
-            // 图标不写 contentDescription：每项都有文字标签，图标再给一次会被读屏念两遍
-            navigationSuiteItems = {
+            navigationItems = {
                 MainTab.entries.forEach { tab ->
                     val selected = currentTab == tab
-                    item(
+                    NavigationSuiteItem(
                         selected = selected,
-                        onClick = {
-                            currentTab = tab
-                            // 宽窗口里详情页挂在「我的」下面，换页时一并收起
-                            if (profilePaneInline) closeTop()
-                        },
+                        onClick = { onTabClick(tab) },
+                        navigationSuiteType = navigationSuiteType,
+                        // 图标不写 contentDescription：每项都有文字标签，图标再给一次会被读屏念两遍
                         icon = { Icon(imageVector = tab.icon(selected), contentDescription = null) },
-                        label = { Text(tab.title) },
+                        // M3 要求选中项的标签加粗，而导航项的样式只有一档字重，不分选中态
+                        label = { Text(tab.title, fontWeight = if (selected) FontWeight.Bold else null) },
                     )
                 }
             },
+            navigationSuiteType = navigationSuiteType,
+            // 侧栏的三格居中：平板横握时手在两侧中部，贴顶的话要伸到最远处
+            navigationItemVerticalArrangement = Arrangement.Center,
             content = mainContent,
         )
 

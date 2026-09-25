@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.outlined.ArrowDropDown
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -47,8 +46,10 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
-import dev.piko.ui.components.PikoLoadingIndicator
+import dev.piko.ui.components.InlineLoadingIndicator
+import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.PikoTopBar
+import dev.piko.ui.components.menuItemShape
 import dev.piko.ui.components.TooltipIconButton
 
 /**
@@ -148,7 +149,7 @@ internal fun DriveSearchTopBar(
         actions = {
             when {
                 isGlobalSearching -> {
-                    PikoLoadingIndicator(size = 24.dp)
+                    InlineLoadingIndicator()
                     // 只取消遍历，已找到的结果留在列表里
                     TextButton(onClick = onCancelGlobalSearch, contentPadding = PaddingValues(horizontal = 12.dp)) {
                         Text("停止")
@@ -228,10 +229,11 @@ internal fun DriveBrowseTopBar(
                                 modifier = Modifier.size(20.dp),
                             )
                         }
-                        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                        PikoDropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
                             sections.forEachIndexed { index, label ->
                                 DropdownMenuItem(
                                     text = { Text(label) },
+                                    shape = menuItemShape(index, sections.size),
                                     onClick = {
                                         showMenu = false
                                         onSectionSelected(index)

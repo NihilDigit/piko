@@ -26,6 +26,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedSecureTextField
 import androidx.compose.material3.OutlinedTextField
@@ -52,7 +53,7 @@ import androidx.compose.ui.unit.dp
 import dev.piko.shared.state.LoginState
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.components.PikoBrandIcons
-import dev.piko.ui.components.PikoLoadingIndicator
+import dev.piko.ui.components.InlineLoadingIndicator
 
 /**
  * Login screen supporting account (email/username) and password authentication.
@@ -183,7 +184,7 @@ fun LoginScreen(
                     shapes = ButtonDefaults.shapes(),
                 ) {
                     if (isLoading) {
-                        PikoLoadingIndicator(size = 20.dp)
+                        InlineLoadingIndicator(color = LocalContentColor.current)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("正在登录")
                     } else {

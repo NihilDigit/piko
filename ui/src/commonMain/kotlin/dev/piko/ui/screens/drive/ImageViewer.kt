@@ -74,7 +74,7 @@ import coil3.compose.AsyncImage
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
-import dev.piko.ui.components.PikoLoadingIndicator
+import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.platform.LocalPikoPlatform
 import io.github.nihildigit.pikpak.FileStat
 import kotlin.math.abs
@@ -422,8 +422,8 @@ private fun ZoomableImagePage(
 
         // 进度指示不进变换层，否则会跟着图一起放大
         if (!isFullReady) {
-            PikoLoadingIndicator(
-                size = 24.dp,
+            // 底下已垫着缩略图，这里等的只是清晰度，用行内一档，不用整屏首载那个
+            InlineLoadingIndicator(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .windowInsetsPadding(WindowInsets.safeDrawing)

@@ -1,6 +1,5 @@
 package dev.piko.ui.screens.history
 
-import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -9,7 +8,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -22,9 +20,7 @@ import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -36,7 +32,6 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -58,16 +53,18 @@ import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.readableSidePadding
 import dev.piko.ui.components.FileLeadingVisual
 import dev.piko.ui.components.FileListItem
+import dev.piko.ui.components.FileListSkeleton
 import dev.piko.ui.components.FileTypeIcon
-import dev.piko.ui.components.FullScreenLoading
+import dev.piko.ui.components.FirstScreenState
+import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.ItemDetailsSheet
 import dev.piko.ui.components.MetaRow
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoTopBar
+import dev.piko.ui.components.RefreshBox
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.screens.player.formatTime
-import dev.piko.ui.theme.PikoMotion
 import io.github.nihildigit.pikpak.DriveEvent
 import io.github.nihildigit.pikpak.FileStat
 import java.time.LocalDate
@@ -160,60 +157,61 @@ fun PlayHistoryScreen(
             )
         },
     ) { innerPadding ->
+        var containerWidth by remember { mutableStateOf(0.dp) }
+        val density = LocalDensity.current
+        val sidePadding = readableSidePadding(containerWidth)
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(top = innerPadding.calculateTopPadding())
-                .consumeWindowInsets(innerPadding),
+                .consumeWindowInsets(innerPadding)
+                .onSizeChanged { containerWidth = with(density) { it.width.toDp() } },
         ) {
-            Crossfade(targetState = state.isLoading, animationSpec = PikoMotion.StateCrossfadeSpec, label = "history_loading") { loading ->
-                if (loading) {
-                    FullScreenLoading()
-                } else {
-                    var containerWidth by remember { mutableStateOf(0.dp) }
-                    val density = LocalDensity.current
-                    PullToRefreshBox(
-                        isRefreshing = state.isRefreshing,
-                        onRefresh = { state.load(refresh = true) },
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .onSizeChanged { containerWidth = with(density) { it.width.toDp() } },
+            FirstScreenState(
+                isLoading = state.isLoading,
+                error = state.loadError,
+                isEmpty = state.events.isEmpty(),
+                onRetry = { state.load() },
+                skeleton = { FileListSkeleton(Modifier.padding(horizontal = sidePadding)) },
+            ) {
+                RefreshBox(
+                    isRefreshing = state.isRefreshing,
+                    onRefresh = { state.load(refresh = true) },
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(
+                            start = sidePadding,
+                            end = sidePadding,
+                            bottom = innerPadding.calculateBottomPadding() + 16.dp,
+                        ),
                     ) {
-                        val sidePadding = readableSidePadding(containerWidth)
-                        LazyColumn(
-                            state = listState,
-                            modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(
-                                start = sidePadding,
-                                end = sidePadding,
-                                bottom = innerPadding.calculateBottomPadding() + 16.dp,
-                            ),
-                        ) {
-                            if (state.events.isEmpty()) {
-                                item {
-                                    Box(modifier = Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
-                                        PikoEmptyState(
-                                            title = if (state.loadError != null) "加载失败" else "暂无播放记录",
-                                            description = state.loadError ?: "包含 PikPak 各客户端的播放记录",
-                                            icon = Icons.Outlined.History,
-                                        )
-                                    }
-                                }
-                            } else {
-                                items(items = state.events, key = { it.id }) { event ->
-                                    HistoryRow(
-                                        event = event,
-                                        isSpoilerBlurred = isSpoilerBlurEnabled,
-                                        onClick = { play(event) },
-                                        onMoreClick = { detailsFor = event },
-                                        modifier = Modifier.animateItem(),
+                        if (state.events.isEmpty()) {
+                            item {
+                                Box(modifier = Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
+                                    PikoEmptyState(
+                                        title = "暂无播放记录",
+                                        description = "包含 PikPak 各客户端的播放记录",
+                                        icon = Icons.Outlined.History,
                                     )
                                 }
-                                if (state.isLoadingMore) {
-                                    item(key = "loading_more") {
-                                        Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
-                                            CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-                                        }
+                            }
+                        } else {
+                            items(items = state.events, key = { it.id }) { event ->
+                                HistoryRow(
+                                    event = event,
+                                    isSpoilerBlurred = isSpoilerBlurEnabled,
+                                    onClick = { play(event) },
+                                    onMoreClick = { detailsFor = event },
+                                    modifier = Modifier.animateItem(),
+                                )
+                            }
+                            if (state.isLoadingMore) {
+                                item(key = "loading_more") {
+                                    Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                                        InlineLoadingIndicator()
                                     }
                                 }
                             }
@@ -249,15 +247,12 @@ fun PlayHistoryScreen(
             title = { Text("清空播放历史") },
             text = { Text("将删除全部播放记录，官方客户端同步清空，无法恢复。") },
             confirmButton = {
-                Button(
+                TextButton(
                     onClick = {
                         confirmClear = false
                         state.clearAll()
                     },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.error,
-                        contentColor = MaterialTheme.colorScheme.onError,
-                    ),
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
                 ) { Text("清空") }
             },
             dismissButton = {

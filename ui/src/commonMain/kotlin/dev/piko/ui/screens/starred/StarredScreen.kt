@@ -1,6 +1,5 @@
 package dev.piko.ui.screens.starred
 
-import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -23,7 +22,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -45,17 +43,18 @@ import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.readableSidePadding
 import dev.piko.ui.components.FileLeadingVisual
 import dev.piko.ui.components.FileListItem
+import dev.piko.ui.components.FileListSkeleton
 import dev.piko.ui.components.FileTypeIcon
-import dev.piko.ui.components.FullScreenLoading
+import dev.piko.ui.components.FirstScreenState
 import dev.piko.ui.components.ItemDetailsSheet
 import dev.piko.ui.components.MetaRow
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoTopBar
+import dev.piko.ui.components.RefreshBox
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.displayTitle
 import dev.piko.ui.components.metaParts
 import dev.piko.ui.components.TooltipIconButton
-import dev.piko.ui.theme.PikoMotion
 import io.github.nihildigit.pikpak.FileStat
 
 /**
@@ -117,56 +116,57 @@ fun StarredScreen(
             )
         },
     ) { innerPadding ->
+        var containerWidth by remember { mutableStateOf(0.dp) }
+        val density = LocalDensity.current
+        val sidePadding = readableSidePadding(containerWidth)
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(top = innerPadding.calculateTopPadding())
-                .consumeWindowInsets(innerPadding),
+                .consumeWindowInsets(innerPadding)
+                .onSizeChanged { containerWidth = with(density) { it.width.toDp() } },
         ) {
-            Crossfade(targetState = state.isLoading, animationSpec = PikoMotion.StateCrossfadeSpec, label = "starred_loading") { loading ->
-                if (loading) {
-                    FullScreenLoading()
-                } else {
-                    var containerWidth by remember { mutableStateOf(0.dp) }
-                    val density = LocalDensity.current
-                    PullToRefreshBox(
-                        isRefreshing = state.isRefreshing,
-                        onRefresh = { state.load(refresh = true) },
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .onSizeChanged { containerWidth = with(density) { it.width.toDp() } },
+            FirstScreenState(
+                isLoading = state.isLoading,
+                error = state.loadError,
+                isEmpty = state.files.isEmpty(),
+                onRetry = { state.load() },
+                skeleton = { FileListSkeleton(Modifier.padding(horizontal = sidePadding)) },
+            ) {
+                RefreshBox(
+                    isRefreshing = state.isRefreshing,
+                    onRefresh = { state.load(refresh = true) },
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(
+                            start = sidePadding,
+                            end = sidePadding,
+                            bottom = innerPadding.calculateBottomPadding() + 16.dp,
+                        ),
                     ) {
-                        val sidePadding = readableSidePadding(containerWidth)
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(
-                                start = sidePadding,
-                                end = sidePadding,
-                                bottom = innerPadding.calculateBottomPadding() + 16.dp,
-                            ),
-                        ) {
-                            if (state.files.isEmpty()) {
-                                item {
-                                    Box(modifier = Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
-                                        PikoEmptyState(
-                                            title = if (state.loadError != null) "加载失败" else "暂无星标",
-                                            description = state.loadError ?: "在文件菜单中添加星标后显示于此",
-                                        )
-                                    }
-                                }
-                            } else {
-                                items(items = state.files, key = { it.id }, contentType = { if (it.isFolder) "folder" else "file" }) { file ->
-                                    val blurred = isSpoilerBlurEnabled && file.thumbnailLink.isNotEmpty() && file.id !in revealedIds
-                                    FileListItem(
-                                        headline = file.displayTitle(),
-                                        headlineFontWeight = if (file.isFolder) FontWeight.Medium else null,
-                                        leading = { FileLeadingVisual(file = file, isSpoilerBlurred = blurred) },
-                                        supporting = { MetaRow(parts = file.metaParts()) },
-                                        onClick = { onOpen(file) },
-                                        onMoreClick = { detailsFor = file },
-                                        modifier = Modifier.animateItem(),
+                        if (state.files.isEmpty()) {
+                            item {
+                                Box(modifier = Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
+                                    PikoEmptyState(
+                                        title = "暂无星标",
+                                        description = "在文件菜单中添加星标后显示于此",
                                     )
                                 }
+                            }
+                        } else {
+                            items(items = state.files, key = { it.id }, contentType = { if (it.isFolder) "folder" else "file" }) { file ->
+                                val blurred = isSpoilerBlurEnabled && file.thumbnailLink.isNotEmpty() && file.id !in revealedIds
+                                FileListItem(
+                                    headline = file.displayTitle(),
+                                    headlineFontWeight = if (file.isFolder) FontWeight.Medium else null,
+                                    leading = { FileLeadingVisual(file = file, isSpoilerBlurred = blurred) },
+                                    supporting = { MetaRow(parts = file.metaParts()) },
+                                    onClick = { onOpen(file) },
+                                    onMoreClick = { detailsFor = file },
+                                    modifier = Modifier.animateItem(),
+                                )
                             }
                         }
                     }

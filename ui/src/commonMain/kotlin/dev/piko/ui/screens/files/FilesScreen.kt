@@ -9,11 +9,14 @@ import io.github.nihildigit.pikpak.FileStat
 fun FilesScreen(
     onNavigateToVideoPlayer: (file: FileStat, playlist: List<FileStat>) -> Unit,
     onNavigateToFolder: (folderId: String, folderName: String) -> Unit = { _, _ -> },
+    /** 见 DriveScreen 的同名参数。 */
+    scrollToTopRequests: Int = 0,
     modifier: Modifier = Modifier,
 ) {
     DriveScreen(
         onNavigateToFolder = onNavigateToFolder,
         onNavigateToVideoPlayer = onNavigateToVideoPlayer,
+        scrollToTopRequests = scrollToTopRequests,
         modifier = modifier,
     )
 }

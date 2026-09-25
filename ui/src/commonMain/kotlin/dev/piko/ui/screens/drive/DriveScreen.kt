@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -33,7 +34,6 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.SearchOff
 import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButtonMenu
 import androidx.compose.material3.FloatingActionButtonMenuItem
@@ -51,7 +51,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.ToggleFloatingActionButton
 import androidx.compose.material3.ToggleFloatingActionButtonDefaults.animateIcon
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -97,20 +96,21 @@ import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.components.BreadcrumbBar
 import dev.piko.ui.components.FileNameField
-import dev.piko.ui.components.FullScreenLoading
 import dev.piko.ui.components.FolderPickerDialog
 import dev.piko.ui.components.MoveTargetDialog
 import dev.piko.ui.screens.duplicates.DuplicatesDialog
 import dev.piko.ui.components.PikoEmptyState
+import dev.piko.ui.components.PikoErrorState
+import dev.piko.ui.components.RefreshBox
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.SegmentDownloadSheet
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.screens.instant.InstantSheetContent
 import dev.piko.ui.screens.instant.InstantSheetHandle
-import dev.piko.ui.theme.PikoMotion
 import io.github.nihildigit.pikpak.FileStat
 import dev.piko.ui.platform.LocalPikoPlatform
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -137,6 +137,11 @@ fun DriveScreen(
     onNavigateToFolder: (folderId: String, folderName: String) -> Unit,
     /** playlist 是当前列表里可播的视频，顺序与眼前看到的一致。 */
     onNavigateToVideoPlayer: (file: FileStat, playlist: List<FileStat>) -> Unit,
+    /**
+     * 再点一次底栏的「文件」时加一：回到列表顶部。计数而不是布尔，连点两下要滚两次，
+     * 而布尔第二下没有变化。
+     */
+    scrollToTopRequests: Int = 0,
     modifier: Modifier = Modifier,
 ) {
     val driveRepo = LocalPikoServices.current.driveRepository
@@ -268,6 +273,12 @@ fun DriveScreen(
         val folderId = loadedFolderId ?: return@LaunchedEffect
         snapshotFlow { ScrollAnchor(gridState.firstVisibleItemIndex, gridState.firstVisibleItemScrollOffset) }
             .collect { driveRepo.saveScrollAnchor(folderId, it) }
+    }
+    // 只响应计数的变化：snapshotFlow 的首个值是组合时的初值，不是请求，照滚会把刚恢复的位置冲回顶部。
+    // gridState 按目录重建，以它为 key，滚的总是眼前这份列表
+    val latestScrollToTop by rememberUpdatedState(scrollToTopRequests)
+    LaunchedEffect(gridState) {
+        snapshotFlow { latestScrollToTop }.drop(1).collect { gridState.animateScrollToItem(0) }
     }
     var isFabMenuExpanded by rememberSaveable { mutableStateOf(false) }
     BackHandler(enabled = isFabMenuExpanded) { isFabMenuExpanded = false }
@@ -550,16 +561,41 @@ fun DriveScreen(
                 .padding(top = innerPadding.calculateTopPadding())
                 .consumeWindowInsets(innerPadding),
         ) {
+            // 首屏三态。换的是同一块区域的三种填充，没有方向，AnimatedContent 还会多一次尺寸过渡；
+            // 淡入淡出属于效果而非位移，取 effects 档。已有内容时的刷新走下拉，不回到骨架
+            val phase = when {
+                state.isLoading -> DrivePhase.Loading
+                // 只认目录里确实什么都没读到：files 未经搜索与折叠筛选，筛空了仍是内容态
+                state.files.isEmpty() && state.loadError != null -> DrivePhase.Failed(state.loadError.orEmpty())
+                else -> DrivePhase.Content
+            }
             Crossfade(
-                targetState = state.isLoading,
-                animationSpec = PikoMotion.StateCrossfadeSpec,
-                label = "drive_loading",
-            ) { loading ->
-                if (loading) {
-                    FullScreenLoading()
+                targetState = phase,
+                animationSpec = MaterialTheme.motionScheme.defaultEffectsSpec(),
+                label = "drive_phase",
+            ) { current ->
+                if (current is DrivePhase.Loading) {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        // 面包屑与页眉的位置先空出来，内容换上时各行不挪
+                        breadcrumbs()
+                        Spacer(modifier = Modifier.height(DriveListHeaderHeight))
+                        DriveGridSkeleton(isPosterMode = isPosterMode, modifier = Modifier.weight(1f))
+                    }
                     return@Crossfade
                 }
-                PullToRefreshBox(
+                if (current is DrivePhase.Failed) {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        breadcrumbs()
+                        // 不带 refresh：重新走一次首载，重试期间回到骨架，而不是停在错误页上没有反馈
+                        PikoErrorState(
+                            message = current.message,
+                            onRetry = { state.load() },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    return@Crossfade
+                }
+                RefreshBox(
                     isRefreshing = state.isRefreshing,
                     onRefresh = { state.load(refresh = true) },
                     modifier = Modifier.fillMaxSize(),
@@ -783,6 +819,18 @@ fun DriveScreen(
     }
 }
 
+/** 网盘页首屏的三态。失败文案随态带进 Crossfade 的 target：淡出未完时旧分支仍在组合，那一刻 loadError 可能已清空。 */
+private sealed interface DrivePhase {
+    data object Loading : DrivePhase
+
+    data class Failed(val message: String) : DrivePhase
+
+    data object Content : DrivePhase
+}
+
+// 列表页眉那一行（排序与视图切换）的高度，骨架据此空出位置。与 DriveListHeader 的最小行高一致
+private val DriveListHeaderHeight = 48.dp
+
 // 列表末尾为 Extended FAB 留出的空间：56dp 高度加 16dp 外边距，再留一段让最后一项
 // 能完整滚出 FAB 的遮挡。
 private val FabClearance = 88.dp
@@ -848,7 +896,7 @@ private fun StaleDataBanner(reason: String, onRetry: () -> Unit) {
 }
 
 /**
- * 空目录与无搜索结果。外层包一层可滚动容器：PullToRefreshBox 依赖子项的嵌套滚动，
+ * 空目录与无搜索结果。外层包一层可滚动容器：下拉刷新依赖子项的嵌套滚动，
  * 不可滚动的空态下拉不会触发刷新，空目录就没法手动刷新。
  */
 @Composable
@@ -912,7 +960,7 @@ private fun NameInputDialog(
             )
         },
         confirmButton = {
-            Button(onClick = onConfirm, enabled = confirmEnabled) { Text(confirmLabel) }
+            TextButton(onClick = onConfirm, enabled = confirmEnabled) { Text(confirmLabel) }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("取消") }

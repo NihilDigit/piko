@@ -25,19 +25,18 @@ import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MediumFlexibleTopAppBar
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
@@ -46,6 +45,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.style.TextOverflow
@@ -113,22 +113,44 @@ fun ProfileScreen(
             .onFailure { transferQuotaError = "流量额度加载失败" }
     }
 
-    // 不设顶栏：标题与导航栏选中的「我的」重复，本页也没有页面级动作。
-    // Scaffold 的内容边距已含状态栏，账号卡片直接从状态栏下方开始
-    Scaffold(modifier = modifier.fillMaxSize()) { innerPadding ->
+    // 顶栏写的是账号名而不是「我的」：写「我的」只是把导航栏标签抄一遍，账号名才是这一页在讲的
+    // 东西。展开时用 headline 字号立起全应用唯一的标题锚点，滚上去收成一行，让出的高度归下面的
+    // 内容。副标题在收起态也在（flexible 顶栏的 subtitle 同时用作收起态的小副标题），只放一行短字，
+    // 头像与会员期留在下面的账号卡里
+    val topBarScrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+    val accountLabel = session?.email?.ifBlank { null }
+        ?: session?.userId?.ifBlank { null }?.let { "UID $it" }
+    Scaffold(
+        modifier = modifier
+            .fillMaxSize()
+            .nestedScroll(topBarScrollBehavior.nestedScrollConnection),
+        topBar = {
+            MediumFlexibleTopAppBar(
+                title = {
+                    Text(
+                        text = session?.username?.ifEmpty { null } ?: "PikPak 用户",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
+                subtitle = accountLabel?.let { label ->
+                    { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                },
+                scrollBehavior = topBarScrollBehavior,
+            )
+        },
+    ) { innerPadding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp)
-                .padding(top = 16.dp, bottom = 24.dp)
+                .padding(top = 8.dp, bottom = 24.dp)
                 .readableWidth(),
         ) {
             AccountCard(
                 username = session?.username,
-                accountLabel = session?.email?.ifBlank { null }
-                    ?: session?.userId?.ifBlank { null }?.let { "UID $it" },
                 avatarUrl = session?.avatarUrl,
                 quota = quota,
                 allowances = transferQuota?.account,
@@ -206,8 +228,10 @@ fun ProfileScreen(
             },
             title = { Text("退出登录") },
             text = { Text("退出后将清除本机保存的 PikPak 登录凭据。") },
+            // 对话框的按钮一律是 text button，破坏性确认也一样：对话框本身已经拦了一道，
+            // 确认键不必再用一块红色抢视线，error 色的文字足以说明后果
             confirmButton = {
-                Button(
+                TextButton(
                     onClick = {
                         showLogoutDialog = false
                         scope.launch {
@@ -215,10 +239,7 @@ fun ProfileScreen(
                             onLogout()
                         }
                     },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.error,
-                        contentColor = MaterialTheme.colorScheme.onError,
-                    ),
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
                 ) {
                     Text("退出")
                 }
@@ -232,26 +253,28 @@ fun ProfileScreen(
     }
 }
 
-/** 账号、网盘空间与月度流量额度合为一张卡。 */
+/**
+ * 头像、会员期、网盘空间与月度流量额度合为一块。名字与邮箱在顶栏上，这里不再重复。
+ *
+ * 是 Surface 不是 Card：M3 的 card 是可以点进去的单一主题入口，这一块不可点，只是个容器。
+ */
 @Composable
 private fun AccountCard(
+    /** 只用来给没有头像时的首字母占位。 */
     username: String?,
-    /** 邮箱，没有邮箱时退回 UID。 */
-    accountLabel: String?,
     avatarUrl: String?,
     quota: QuotaSnapshot?,
     allowances: TransferAllowances?,
     allowancesError: String?,
 ) {
-    Card(
+    Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+        color = MaterialTheme.colorScheme.surfaceContainer,
     ) {
         Column(modifier = Modifier.padding(20.dp)) {
             AccountHeader(
                 username = username,
-                accountLabel = accountLabel,
                 avatarUrl = avatarUrl,
                 memberUntil = allowances?.expireTime?.let(::formatExpireDate),
             )
@@ -272,7 +295,6 @@ private fun AccountCard(
 @Composable
 private fun AccountHeader(
     username: String?,
-    accountLabel: String?,
     avatarUrl: String?,
     memberUntil: String?,
 ) {
@@ -303,23 +325,7 @@ private fun AccountHeader(
         }
         Spacer(modifier = Modifier.width(16.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = username?.ifEmpty { null } ?: "PikPak 用户",
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (accountLabel != null) {
-                Text(
-                    text = accountLabel,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
             if (memberUntil != null) {
-                Spacer(modifier = Modifier.height(6.dp))
                 Surface(
                     shape = CircleShape,
                     color = MaterialTheme.colorScheme.secondaryContainer,

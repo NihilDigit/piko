@@ -17,9 +17,9 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -35,6 +35,7 @@ import dev.piko.data.repository.PathBreadcrumb
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.state.ShareSaveState
 import dev.piko.ui.components.FileTypeIcon
+import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.toReadableSize
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.delay
@@ -69,7 +70,7 @@ internal fun ShareSaveSection(
 
         if (state.isLoading) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                InlineLoadingIndicator()
                 Spacer(Modifier.width(12.dp))
                 Text("正在读取分享", style = MaterialTheme.typography.bodyMedium)
             }
@@ -93,7 +94,7 @@ internal fun ShareSaveSection(
                 modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
             ) {
                 if (state.isSaving) {
-                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    InlineLoadingIndicator(color = LocalContentColor.current)
                     Spacer(Modifier.width(8.dp))
                     Text("正在转存")
                 } else {

@@ -21,7 +21,6 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.TaskAlt
 import androidx.compose.material3.AlertDialog
@@ -29,6 +28,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -63,8 +63,10 @@ import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.components.HighlightBadge
+import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.MetaRow
 import dev.piko.ui.components.PikoEmptyState
+import dev.piko.ui.components.PikoErrorState
 import dev.piko.ui.components.PikoLoadingIndicator
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.TooltipIconButton
@@ -161,12 +163,10 @@ private fun DuplicatesContent(state: DuplicateFinderState, onDismiss: () -> Unit
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
             when (state.phase) {
                 Phase.SCANNING, Phase.ANALYZING -> ScanningPane(state)
-                Phase.FAILED -> PikoEmptyState(
+                Phase.FAILED -> PikoErrorState(
                     title = "扫描失败",
-                    description = state.errorMessage,
-                    icon = Icons.Outlined.ErrorOutline,
-                    actionText = "重试",
-                    onActionClick = state::rescan,
+                    message = state.errorMessage.orEmpty(),
+                    onRetry = state::rescan,
                     modifier = Modifier.align(Alignment.Center),
                 )
                 Phase.DONE -> if (hasGroups) {
@@ -198,15 +198,12 @@ private fun DuplicatesContent(state: DuplicateFinderState, onDismiss: () -> Unit
                 )
             },
             confirmButton = {
-                Button(
+                TextButton(
                     onClick = {
                         confirming = false
                         state.trashSelected()
                     },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.error,
-                        contentColor = MaterialTheme.colorScheme.onError,
-                    ),
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
                 ) { Text("移入回收站") }
             },
             dismissButton = {
@@ -310,10 +307,12 @@ private fun LazyListScope.groups(groups: List<DuplicateGroup>, state: DuplicateF
                 onToggle = { state.toggle(row.file.id) },
             )
         }
+        // 组与组之间没有容器区分，分割线是唯一的边界。不用 alpha 兑色：兑出来的对比度取决于底下是
+        // surface 还是对话框的 surfaceContainerHigh，深色主题下几乎看不见
         item(key = "$prefix:divider") {
             HorizontalDivider(
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                color = MaterialTheme.colorScheme.outlineVariant,
             )
         }
     }
@@ -440,7 +439,7 @@ private fun SelectionBar(count: Int, bytes: Long, busy: Boolean, onTrash: () -> 
                     contentColor = MaterialTheme.colorScheme.onError,
                 ),
             ) {
-                if (busy) PikoLoadingIndicator(size = 20.dp) else Text("移入回收站")
+                if (busy) InlineLoadingIndicator(color = LocalContentColor.current) else Text("移入回收站")
             }
         }
     }

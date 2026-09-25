@@ -44,7 +44,6 @@ import androidx.compose.material.icons.outlined.Wallpaper
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.ButtonGroupDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -90,6 +89,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.shared.data.ArchivePasswordVault
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.readableWidth
+import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.PikoBrandIcons
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.platform.LocalPikoPlatform
@@ -543,7 +543,8 @@ private fun AboutCard(
                 if (updateStatus != null) {
                     FilledTonalButton(onClick = onUpdateClick, enabled = updateStatus != UpdateStatus.Checking) {
                         if (updateStatus == UpdateStatus.Checking) {
-                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                            // 按钮在检查期间是禁用态，指示器跟着用禁用的内容色，不然一块亮色压在灰按钮上
+                            InlineLoadingIndicator(color = LocalContentColor.current)
                         } else {
                             Icon(Icons.Outlined.SystemUpdate, contentDescription = null, modifier = Modifier.size(18.dp))
                         }

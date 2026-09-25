@@ -1,6 +1,5 @@
 package dev.piko.ui.screens.trash
 
-import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -20,7 +19,6 @@ import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
@@ -33,7 +31,6 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -57,16 +54,17 @@ import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.readableSidePadding
 import dev.piko.ui.components.FileLeadingVisual
 import dev.piko.ui.components.FileListItem
+import dev.piko.ui.components.FileListSkeleton
 import dev.piko.ui.components.FileTypeIcon
-import dev.piko.ui.components.FullScreenLoading
+import dev.piko.ui.components.FirstScreenState
 import dev.piko.ui.components.ItemDetailsSheet
 import dev.piko.ui.components.MetaRow
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoTopBar
+import dev.piko.ui.components.RefreshBox
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.displayTitle
 import dev.piko.ui.components.metaParts
-import dev.piko.ui.theme.PikoMotion
 import io.github.nihildigit.pikpak.FileStat
 
 /**
@@ -189,82 +187,79 @@ fun TrashScreen(
             }
         },
     ) { innerPadding ->
+        // 宽窗口里行内容收窄居中，列表本身仍铺满，两侧空白处也能滚动
+        var containerWidth by remember { mutableStateOf(0.dp) }
+        val density = LocalDensity.current
+        val sidePadding = readableSidePadding(containerWidth)
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(top = innerPadding.calculateTopPadding())
-                .consumeWindowInsets(innerPadding),
+                .consumeWindowInsets(innerPadding)
+                .onSizeChanged { containerWidth = with(density) { it.width.toDp() } },
         ) {
-            Crossfade(
-                targetState = state.isLoading,
-                animationSpec = PikoMotion.StateCrossfadeSpec,
-                label = "trash_loading",
-            ) { loading ->
-                if (loading) {
-                    FullScreenLoading()
-                } else {
-                    // 宽窗口里行内容收窄居中，列表本身仍铺满，两侧空白处也能滚动
-                    var containerWidth by remember { mutableStateOf(0.dp) }
-                    val density = LocalDensity.current
-                    PullToRefreshBox(
-                        isRefreshing = state.isRefreshing,
-                        onRefresh = { state.load(refresh = true) },
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .onSizeChanged { containerWidth = with(density) { it.width.toDp() } },
+            FirstScreenState(
+                isLoading = state.isLoading,
+                error = state.loadError,
+                isEmpty = files.isEmpty(),
+                onRetry = { state.load() },
+                skeleton = { FileListSkeleton(Modifier.padding(horizontal = sidePadding)) },
+            ) {
+                RefreshBox(
+                    isRefreshing = state.isRefreshing,
+                    onRefresh = { state.load(refresh = true) },
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    // 空态也放进 LazyColumn，否则没有可滚动的子项，下拉刷新在空回收站里无法触发
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(
+                            start = sidePadding,
+                            end = sidePadding,
+                            // 末项上方留出 FAB 的高度，否则最后一行被它盖住
+                            bottom = innerPadding.calculateBottomPadding() + 88.dp,
+                        ),
                     ) {
-                        val sidePadding = readableSidePadding(containerWidth)
-                        // 空态也放进 LazyColumn，否则没有可滚动的子项，下拉刷新在空回收站里无法触发
-                        LazyColumn(
-                            state = listState,
-                            modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(
-                                start = sidePadding,
-                                end = sidePadding,
-                                // 末项上方留出 FAB 的高度，否则最后一行被它盖住
-                                bottom = innerPadding.calculateBottomPadding() + 88.dp,
-                            ),
-                        ) {
-                            if (files.isEmpty()) {
-                                item {
-                                    Box(
-                                        modifier = Modifier.fillParentMaxSize(),
-                                        contentAlignment = Alignment.Center,
-                                    ) {
-                                        PikoEmptyState(
-                                            title = "回收站为空",
-                                            description = "移入回收站的文件会显示在这里，可随时恢复或彻底删除",
-                                        )
-                                    }
-                                }
-                            } else {
-                                items(
-                                    items = files,
-                                    key = { it.id },
-                                    contentType = { if (it.isFolder) "folder" else "file" },
-                                ) { file ->
-                                    val isSelected = selectedFileIds.contains(file.id)
-                                    TrashItemRow(
-                                        file = file,
-                                        isSelectionMode = isSelectionMode,
-                                        isSelected = isSelected,
-                                        previewHidden = if (isSpoilerBlurEnabled && file.thumbnailLink.isNotEmpty()) {
-                                            file.id !in revealedIds
-                                        } else {
-                                            null
-                                        },
-                                        onTogglePreview = {
-                                            if (!revealedIds.remove(file.id)) revealedIds.add(file.id)
-                                        },
-                                        onLongClick = { state.enterSelection(file.id) },
-                                        onSelectToggle = { selected -> state.setSelected(file.id, selected) },
-                                        onRestore = { restoreFiles(listOf(file.id)) },
-                                        onDeleteForever = {
-                                            deleteRequest = PermanentDeleteRequest(listOf(file.id))
-                                        },
-                                        modifier = Modifier.animateItem(),
+                        if (files.isEmpty()) {
+                            item {
+                                Box(
+                                    modifier = Modifier.fillParentMaxSize(),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    PikoEmptyState(
+                                        title = "回收站为空",
+                                        description = "移入回收站的文件会显示在这里，可随时恢复或彻底删除",
                                     )
                                 }
+                            }
+                        } else {
+                            items(
+                                items = files,
+                                key = { it.id },
+                                contentType = { if (it.isFolder) "folder" else "file" },
+                            ) { file ->
+                                val isSelected = selectedFileIds.contains(file.id)
+                                TrashItemRow(
+                                    file = file,
+                                    isSelectionMode = isSelectionMode,
+                                    isSelected = isSelected,
+                                    previewHidden = if (isSpoilerBlurEnabled && file.thumbnailLink.isNotEmpty()) {
+                                        file.id !in revealedIds
+                                    } else {
+                                        null
+                                    },
+                                    onTogglePreview = {
+                                        if (!revealedIds.remove(file.id)) revealedIds.add(file.id)
+                                    },
+                                    onLongClick = { state.enterSelection(file.id) },
+                                    onSelectToggle = { selected -> state.setSelected(file.id, selected) },
+                                    onRestore = { restoreFiles(listOf(file.id)) },
+                                    onDeleteForever = {
+                                        deleteRequest = PermanentDeleteRequest(listOf(file.id))
+                                    },
+                                    modifier = Modifier.animateItem(),
+                                )
                             }
                         }
                     }
@@ -287,16 +282,13 @@ fun TrashScreen(
                 )
             },
             confirmButton = {
-                Button(
+                TextButton(
                     onClick = {
                         val ids = request.ids
                         deleteRequest = null
                         deleteFiles(ids)
                     },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.error,
-                        contentColor = MaterialTheme.colorScheme.onError,
-                    ),
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
                 ) {
                     Text("彻底删除")
                 }

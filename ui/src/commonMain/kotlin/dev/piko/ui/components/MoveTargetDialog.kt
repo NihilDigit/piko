@@ -312,7 +312,9 @@ private fun FolderPickerContent(
                 breadcrumbs = path.drop(1),
                 onBreadcrumbClick = { index -> path = path.take(index + 1) },
             )
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+            // 面包屑固定、下面的列表滚动，两者之间没有容器可以区分，只能靠这条线。
+            // 不用 alpha 兑色：对比度会随底下是 surface 还是对话框的容器色变，深色主题下几乎看不见
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
             Crossfade(
                 targetState = isLoading,
@@ -357,7 +359,7 @@ private fun FolderPickerContent(
                                         .height(56.dp),
                                     contentAlignment = Alignment.Center,
                                 ) {
-                                    PikoLoadingIndicator(size = 24.dp)
+                                    InlineLoadingIndicator()
                                 }
                             }
                         }
@@ -391,7 +393,7 @@ private fun FolderPickerContent(
                 }
             },
             confirmButton = {
-                Button(
+                TextButton(
                     enabled = newFolderName.isNotBlank() && !isCreatingFolder,
                     onClick = {
                         val name = newFolderName.trim()

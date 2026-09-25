@@ -8,12 +8,15 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
@@ -42,6 +45,8 @@ import dev.piko.ui.components.MediaTagRow
 import dev.piko.ui.components.SpoilerThumbnail
 import dev.piko.ui.components.StarMark
 import dev.piko.ui.components.PosterSpoilerBlur
+import dev.piko.ui.components.SkeletonBlock
+import dev.piko.ui.components.SkeletonTextLine
 import dev.piko.ui.components.displayTitle
 import dev.piko.ui.components.watermarkIcon
 import io.github.nihildigit.pikpak.FileStat
@@ -189,6 +194,28 @@ internal fun PosterCard(
     }
 }
 
+/**
+ * [PosterCard] 的骨架：同样的 16:9 封面，标题区同高。标题行的高度由尾部 48dp 的「更多」按钮撑起，
+ * 不是两行字的 40dp；按钮虽向右上偏移，布局仍按 48dp 宽占位，文字止于它的左缘。
+ */
+@Composable
+internal fun PosterCardSkeleton(titleFraction: Float, modifier: Modifier = Modifier) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        SkeletonBlock(Modifier.fillMaxWidth().aspectRatio(COVER_ASPECT), MaterialTheme.shapes.medium)
+        Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp).height(CARD_TRAILING_SIZE)) {
+            // bodyMedium 行高 20dp、字形约 12dp，上留 4dp、行间 8dp，两条正好落在两行字的位置
+            Column(
+                modifier = Modifier.weight(1f).padding(top = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                SkeletonTextLine(0.9f)
+                SkeletonTextLine(titleFraction)
+            }
+            Spacer(modifier = Modifier.width(CARD_TRAILING_SIZE))
+        }
+    }
+}
+
 @Composable
 private fun CardTrailing(
     isSelectionMode: Boolean,
@@ -275,3 +302,4 @@ private const val TITLE_LINES = 2
 private const val COVER_CORNER_TAGS = 2
 private const val PLACEHOLDER_ICON_ALPHA = 0.6f
 private val SHEET_STEP = 7.dp
+private val CARD_TRAILING_SIZE = 48.dp

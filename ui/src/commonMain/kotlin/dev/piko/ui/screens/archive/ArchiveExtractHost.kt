@@ -5,11 +5,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Lock
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -24,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.shared.state.ArchiveExtractSession
 import dev.piko.shared.state.ArchiveJobStatus
+import dev.piko.ui.components.InlineLoadingIndicator
 
 /**
  * 加密压缩包的密码框。放在一直在组合里的地方：离开网盘页后密码框仍要能弹出，
@@ -63,7 +62,7 @@ fun ArchiveExtractStatus(session: ArchiveExtractSession, modifier: Modifier = Mo
             if (status is ArchiveJobStatus.NeedsPassword) {
                 Icon(Icons.Outlined.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary)
             } else {
-                CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                InlineLoadingIndicator()
             }
             Spacer(modifier = Modifier.width(16.dp))
             Column(modifier = Modifier.weight(1f)) {

@@ -17,8 +17,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonGroupDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -141,7 +141,7 @@ fun SegmentDownloadSheet(
                         .fillMaxWidth()
                         .aspectRatio(16f / 9f),
                     contentAlignment = Alignment.Center,
-                ) { CircularProgressIndicator() }
+                ) { if (rememberLoadingVisible()) PikoLoadingIndicator() }
                 return@Column
             }
 
@@ -323,11 +323,12 @@ private fun SegmentPreview(
     ) {
         if (url.isNotBlank()) {
             videoPreview.Surface(player, Modifier.fillMaxSize())
-            if (player.isBuffering) CircularProgressIndicator(modifier = Modifier.size(32.dp))
+            if (player.isBuffering) MediaLoadingIndicator()
         } else {
-            CircularProgressIndicator(modifier = Modifier.size(32.dp))
+            MediaLoadingIndicator()
         }
     }
 }
+
 
 private const val SEEK_SETTLE_MS = 120L

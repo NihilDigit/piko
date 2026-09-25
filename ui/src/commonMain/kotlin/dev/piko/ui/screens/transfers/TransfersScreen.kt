@@ -1,5 +1,6 @@
 package dev.piko.ui.screens.transfers
 
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.SyncAlt
@@ -26,7 +28,6 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -41,7 +42,6 @@ import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -53,8 +53,8 @@ import dev.piko.shared.state.TransferItem
 import dev.piko.shared.state.TransfersState
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.readableSidePadding
+import dev.piko.ui.components.FileListSkeleton
 import dev.piko.ui.components.PikoEmptyState
-import dev.piko.ui.components.PikoTopBar
 import io.github.nihildigit.pikpak.OfflineTask
 import kotlinx.coroutines.launch
 
@@ -69,6 +69,8 @@ fun TransfersScreen(
     onNavigateToInstant: () -> Unit = {},
     /** 跳到网盘里该文件所在目录。找不到（已移动或删除）时返回 false，由本页提示。 */
     onOpenCloudFile: suspend (fileId: String, fileName: String) -> Boolean = { _, _ -> false },
+    /** 再点一次底栏的「传输」时加一：回到列表顶部。 */
+    scrollToTopRequests: Int = 0,
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
@@ -130,89 +132,113 @@ fun TransfersScreen(
     // 记 key 而不是条目本身：进度每半秒刷新，面板要跟着显示最新状态；条目被移除时面板随之关闭
     var detailsKey by rememberSaveable { mutableStateOf<String?>(null) }
 
-    val topBarScrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
+    val renderItem: @Composable (TransferItem, Modifier) -> Unit = { item, itemModifier ->
+        when (item) {
+            is TransferItem.Local -> LocalTransferRow(
+                task = item.task,
+                onPlay = { playLocal(item.task) },
+                onStart = { state.resumeLocal(item.task.taskId) },
+                onPause = { state.pauseLocal(item.task.taskId) },
+                onMoreClick = { detailsKey = item.key },
+                isSpoilerBlurred = isSpoilerBlurEnabled && item.key !in revealedKeys,
+                modifier = itemModifier,
+            )
+            is TransferItem.Upload -> UploadTransferRow(
+                task = item.task,
+                onOpen = { item.task.fileId?.let { openCloudFileById(it, item.task.fileName) } },
+                onResume = { state.resumeUpload(item.task.taskId) },
+                onPause = { state.pauseUpload(item.task.taskId) },
+                onMoreClick = { detailsKey = item.key },
+                modifier = itemModifier,
+            )
+            is TransferItem.Cloud -> CloudTransferRow(
+                task = item.task,
+                thumbnail = state.thumbnailOf(item.task.fileId),
+                isSpoilerBlurred = isSpoilerBlurEnabled && item.key !in revealedKeys,
+                onResubmit = resubmitAction(item.task),
+                onOpen = { openCloudFile(item.task) },
+                onMoreClick = { detailsKey = item.key },
+                modifier = itemModifier,
+            )
+            is TransferItem.Pack -> PackTransferRow(
+                item = item,
+                thumbnail = state.thumbnailOf(item.job.outputId),
+                isSpoilerBlurred = isSpoilerBlurEnabled && item.key !in revealedKeys,
+                onOpen = { openCloudFileById(item.job.outputId, item.job.folderName) },
+                onRetry = { state.retryPack(item.job.taskId) },
+                onMoreClick = { detailsKey = item.key },
+                modifier = itemModifier,
+            )
+        }
+    }
+
+    val listState = rememberLazyListState()
+    // 只响应进页之后的变化：计数器由主界面持有，切回本页时它已是旧值，不该再滚一次
+    val initialScrollRequests = remember { scrollToTopRequests }
+    LaunchedEffect(scrollToTopRequests) {
+        if (scrollToTopRequests != initialScrollRequests) listState.animateScrollToItem(0)
+    }
+
+    // 没有顶栏：标题「传输」与底栏标签逐字重复，页上也没有页级动作，顶栏只是一段白占的高度。
+    // 状态栏的避让由 Scaffold 的 contentWindowInsets 照常给出，innerPadding 里带着
     Scaffold(
-        modifier = modifier
-            .fillMaxSize()
-            .nestedScroll(topBarScrollBehavior.nestedScrollConnection),
-        topBar = { PikoTopBar(title = "传输", scrollBehavior = topBarScrollBehavior) },
+        modifier = modifier.fillMaxSize(),
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { innerPadding ->
-        when {
-            !state.isEmpty -> BoxWithConstraints(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding),
-            ) {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(horizontal = readableSidePadding(maxWidth), vertical = 8.dp),
-                ) {
-                    val renderItem: @Composable (TransferItem, Modifier) -> Unit = { item, itemModifier ->
-                        when (item) {
-                            is TransferItem.Local -> LocalTransferRow(
-                                task = item.task,
-                                onPlay = { playLocal(item.task) },
-                                onStart = { state.resumeLocal(item.task.taskId) },
-                                onPause = { state.pauseLocal(item.task.taskId) },
-                                onMoreClick = { detailsKey = item.key },
-                                isSpoilerBlurred = isSpoilerBlurEnabled && item.key !in revealedKeys,
-                                modifier = itemModifier,
-                            )
-                            is TransferItem.Upload -> UploadTransferRow(
-                                task = item.task,
-                                onOpen = { item.task.fileId?.let { openCloudFileById(it, item.task.fileName) } },
-                                onResume = { state.resumeUpload(item.task.taskId) },
-                                onPause = { state.pauseUpload(item.task.taskId) },
-                                onMoreClick = { detailsKey = item.key },
-                                modifier = itemModifier,
-                            )
-                            is TransferItem.Cloud -> CloudTransferRow(
-                                task = item.task,
-                                thumbnail = state.thumbnailOf(item.task.fileId),
-                                isSpoilerBlurred = isSpoilerBlurEnabled && item.key !in revealedKeys,
-                                onResubmit = resubmitAction(item.task),
-                                onOpen = { openCloudFile(item.task) },
-                                onMoreClick = { detailsKey = item.key },
-                                modifier = itemModifier,
-                            )
-                            is TransferItem.Pack -> PackTransferRow(
-                                item = item,
-                                thumbnail = state.thumbnailOf(item.job.outputId),
-                                isSpoilerBlurred = isSpoilerBlurEnabled && item.key !in revealedKeys,
-                                onOpen = { openCloudFileById(item.job.outputId, item.job.folderName) },
-                                onRetry = { state.retryPack(item.job.taskId) },
-                                onMoreClick = { detailsKey = item.key },
-                                modifier = itemModifier,
-                            )
-                        }
+        val phase = when {
+            !state.isEmpty -> TransfersPhase.CONTENT
+            // 云端列表首次取回之前不下结论，免得空状态一闪而过
+            state.isLoading -> TransfersPhase.LOADING
+            else -> TransfersPhase.EMPTY
+        }
+        Crossfade(
+            targetState = phase,
+            animationSpec = MaterialTheme.motionScheme.defaultEffectsSpec(),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding),
+            label = "transfersPhase",
+        ) { current ->
+            when (current) {
+                TransfersPhase.CONTENT -> BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(horizontal = readableSidePadding(maxWidth), vertical = 8.dp),
+                    ) {
+                        transferSection("进行中", state.inProgress, renderItem)
+                        transferSection("需要处理", state.needsAttention, renderItem, onClearCloud = state::clearFailedCloud)
+                        transferSection("已完成", state.completed, renderItem, onClearCloud = state::clearCompletedCloud)
+                        deletedOutputSection(
+                            items = state.outputDeleted,
+                            expanded = deletedExpanded,
+                            onToggle = { deletedExpanded = !deletedExpanded },
+                            renderItem = renderItem,
+                        )
                     }
-                    transferSection("进行中", state.inProgress, renderItem)
-                    transferSection("需要处理", state.needsAttention, renderItem, onClearCloud = state::clearFailedCloud)
-                    transferSection("已完成", state.completed, renderItem, onClearCloud = state::clearCompletedCloud)
-                    deletedOutputSection(
-                        items = state.outputDeleted,
-                        expanded = deletedExpanded,
-                        onToggle = { deletedExpanded = !deletedExpanded },
-                        renderItem = renderItem,
+                }
+                // 骨架与真实列表对齐：同样的两侧留白，头一格让出分段标题那一行
+                TransfersPhase.LOADING -> BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                    FileListSkeleton(
+                        modifier = Modifier.padding(
+                            start = readableSidePadding(maxWidth),
+                            end = readableSidePadding(maxWidth),
+                            top = 8.dp + SectionHeaderHeight,
+                        ),
                     )
                 }
-            }
-            // 云端列表首次取回之前不下结论，免得空状态一闪而过
-            state.isLoading -> Unit
-            else -> Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding),
-                contentAlignment = Alignment.Center,
-            ) {
-                PikoEmptyState(
-                    title = "暂无传输任务",
-                    description = "下载、上传与云端离线任务将显示于此",
-                    icon = Icons.Outlined.SyncAlt,
-                    actionText = "新建离线任务",
-                    onActionClick = onNavigateToInstant,
-                )
+                TransfersPhase.EMPTY -> Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    PikoEmptyState(
+                        title = "暂无传输任务",
+                        description = "下载、上传与云端离线任务将显示于此",
+                        icon = Icons.Outlined.SyncAlt,
+                        actionText = "新建离线任务",
+                        onActionClick = onNavigateToInstant,
+                    )
+                }
             }
         }
     }
@@ -266,6 +292,10 @@ fun TransfersScreen(
     }
 }
 
+private enum class TransfersPhase { LOADING, EMPTY, CONTENT }
+
+/** 分段标题一行的高度：上边距 8 加最小高度 40。骨架要让出同样的位置，内容换上来时才不跳。 */
+private val SectionHeaderHeight = 48.dp
 
 private fun LazyListScope.transferSection(
     title: String,
@@ -283,7 +313,7 @@ private fun LazyListScope.transferSection(
                 .animateItem()
                 .padding(start = 16.dp, end = 8.dp)
                 .padding(top = 8.dp)
-                .heightIn(min = 40.dp),
+                .heightIn(min = SectionHeaderHeight - 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(

@@ -42,6 +42,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBarDefaults
 import androidx.compose.material3.OutlinedTextField
@@ -86,7 +87,7 @@ import dev.piko.ui.components.FileNameField
 import dev.piko.ui.components.FolderPickerDialog
 import dev.piko.ui.components.MediaTagRow
 import dev.piko.ui.components.MetaRow
-import dev.piko.ui.components.PikoLoadingIndicator
+import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.fileNameTypeIcon
 import dev.piko.ui.components.toReadableSize
@@ -293,7 +294,7 @@ internal fun SaveButton(label: String, enabled: Boolean, isSaving: Boolean, onCl
         shapes = ButtonDefaults.shapes(),
     ) {
         if (isSaving) {
-            PikoLoadingIndicator(size = 20.dp)
+            InlineLoadingIndicator(color = LocalContentColor.current)
             Spacer(modifier = Modifier.width(8.dp))
             Text("正在保存")
         } else {
@@ -318,7 +319,7 @@ internal fun SaveCaption(text: String) {
 @Composable
 internal fun ResolvingRow(text: String) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        PikoLoadingIndicator(size = 20.dp)
+        InlineLoadingIndicator()
         Spacer(modifier = Modifier.width(8.dp))
         Text(
             text = text,
@@ -719,7 +720,7 @@ private fun InstantFileRow(
 private fun PreviewButton(onClick: () -> Unit, isPreviewing: Boolean) {
     if (isPreviewing) {
         Box(modifier = Modifier.padding(start = 4.dp).size(48.dp), contentAlignment = Alignment.Center) {
-            PikoLoadingIndicator(size = 24.dp)
+            InlineLoadingIndicator()
         }
     } else {
         TooltipIconButton(

@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.staggeredgrid.LazyStaggeredGridState
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
+import androidx.compose.foundation.lazy.staggeredgrid.items
 import androidx.compose.foundation.lazy.staggeredgrid.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ViewList
@@ -29,7 +30,6 @@ import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.FileCopy
 import dev.piko.ui.components.TooltipIconButton
 import androidx.compose.material3.ButtonGroupDefaults
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -59,8 +59,12 @@ import dev.piko.ui.components.ContextMenuArea
 import dev.piko.shared.state.DriveFolderView
 import dev.piko.shared.state.DriveListItem
 import dev.piko.ui.components.FileListItem
+import dev.piko.ui.components.FileRowSkeleton
+import dev.piko.ui.components.SkeletonGroup
 import dev.piko.ui.components.MediaTagRow
+import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.SheetAction
+import dev.piko.ui.components.menuItemShape
 import io.github.nihildigit.pikpak.FileStat
 
 /**
@@ -115,8 +119,8 @@ internal fun DriveFileGrid(
     modifier: Modifier = Modifier,
 ) {
     val leadingItemCount = driveLeadingItemCount(foldBanner != null)
-    val horizontalPadding = if (isPosterMode) 16.dp else 0.dp
-    val itemSpacing = if (isPosterMode) 8.dp else 0.dp
+    val horizontalPadding = gridHorizontalPadding(isPosterMode)
+    val itemSpacing = gridItemSpacing(isPosterMode)
 
     Box(modifier = modifier.fillMaxSize()) {
         // 刚秒传成功时滚到新条目。视图模式是异步读出来的偏好，首帧拿到的还是默认值，
@@ -127,10 +131,9 @@ internal fun DriveFileGrid(
             if (entryIndex >= 0) gridState.animateScrollToItem(leadingItemCount + entryIndex)
         }
 
-        val posterMinWidth = if (currentWidthClass() == WidthClass.Compact) PosterColumnMinWidthCompact else PosterColumnMinWidth
         LazyVerticalStaggeredGrid(
             state = gridState,
-            columns = StaggeredGridCells.Adaptive(if (isPosterMode) posterMinWidth else ListColumnMinWidth),
+            columns = gridCells(isPosterMode),
             modifier = modifier.fillMaxSize(),
             contentPadding = PaddingValues(
                 start = horizontalPadding,
@@ -200,6 +203,46 @@ internal fun DriveFileGrid(
         }
     }
 }
+
+@Composable
+private fun gridCells(isPosterMode: Boolean): StaggeredGridCells {
+    val posterMinWidth = if (currentWidthClass() == WidthClass.Compact) PosterColumnMinWidthCompact else PosterColumnMinWidth
+    return StaggeredGridCells.Adaptive(if (isPosterMode) posterMinWidth else ListColumnMinWidth)
+}
+
+private fun gridHorizontalPadding(isPosterMode: Boolean): Dp = if (isPosterMode) 16.dp else 0.dp
+
+private fun gridItemSpacing(isPosterMode: Boolean): Dp = if (isPosterMode) 8.dp else 0.dp
+
+/**
+ * 首载时的骨架，不含页眉。网格本身也是同一种 LazyVerticalStaggeredGrid，列数、边距与间距取真实网格
+ * 的同一套参数：宽窗口里列表排成多列，海报墙按卡宽下限换列数，另算一遍迟早与真实网格对不上。
+ * 不可滚动，条目数给够一屏，多出来的懒加载不会组合。
+ */
+@Composable
+internal fun DriveGridSkeleton(isPosterMode: Boolean, modifier: Modifier = Modifier) {
+    val itemSpacing = gridItemSpacing(isPosterMode)
+    SkeletonGroup(modifier = modifier.fillMaxSize()) {
+        LazyVerticalStaggeredGrid(
+            columns = gridCells(isPosterMode),
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(horizontal = gridHorizontalPadding(isPosterMode)),
+            horizontalArrangement = Arrangement.spacedBy(itemSpacing),
+            verticalItemSpacing = itemSpacing,
+            userScrollEnabled = false,
+        ) {
+            items(SKELETON_ITEM_COUNT) { index ->
+                val titleFraction = SkeletonTitleWidths[index % SkeletonTitleWidths.size]
+                if (isPosterMode) PosterCardSkeleton(titleFraction) else FileRowSkeleton(titleFraction = titleFraction)
+            }
+        }
+    }
+}
+
+private const val SKELETON_ITEM_COUNT = 40
+
+// 标题宽度逐项错开，一排等长的色块读起来像表格
+private val SkeletonTitleWidths = listOf(0.62f, 0.45f, 0.74f, 0.52f, 0.68f, 0.4f)
 
 /** 单元格上的文字：解析出的标题与标签。[title] 为 null 时照原样显示名字。 */
 private class CellText(val title: String?, val tags: List<String>, val code: String? = null, val resolution: String? = null)
@@ -380,16 +423,24 @@ internal fun DriveListHeader(
                     Spacer(modifier = Modifier.width(2.dp))
                     SortDirectionIcon(sortOrder, modifier = Modifier.size(16.dp))
                 }
-                DropdownMenu(expanded = showSortMenu, onDismissRequest = { showSortMenu = false }) {
-                    PikoSortField.entries.forEach { field ->
+                PikoDropdownMenu(expanded = showSortMenu, onDismissRequest = { showSortMenu = false }) {
+                    val fields = PikoSortField.entries
+                    fields.forEachIndexed { index, field ->
                         val isCurrent = field.owns(sortOrder)
+                        // 参数按位置传：带 shape 的这个重载，尾部槽位在桌面端的 material3 里叫 trailingIcon，
+                        // Android 端已改名 trailingContent，没有两端通用的参数名。可选中的菜单项
+                        // （selected 与 shapes）两端同样对不上，Android 端已挪去 SelectableDropdownMenuItem，
+                        // 所以当前字段仍只靠尾部的方向箭头标出
                         DropdownMenuItem(
-                            text = { Text(field.label) },
-                            trailingIcon = { if (isCurrent) SortDirectionIcon(sortOrder) },
-                            onClick = {
+                            {
                                 showSortMenu = false
                                 onSortChange(field.selectFrom(sortOrder))
                             },
+                            { Text(field.label) },
+                            menuItemShape(index, fields.size),
+                            Modifier,
+                            null,
+                            { if (isCurrent) SortDirectionIcon(sortOrder) },
                         )
                     }
                 }
