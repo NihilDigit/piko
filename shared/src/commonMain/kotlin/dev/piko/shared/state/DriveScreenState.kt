@@ -259,7 +259,18 @@ class DriveScreenState(
         }
         loadJob?.cancel()
         loadJob = scope.launch {
-            driveRepo.listAllFiles(parentId = folderId, sortOrder = sortOrder)
+            val listing = driveRepo.listAllFiles(parentId = folderId, sortOrder = sortOrder)
+            // 空列表可能是目录已经不在了：上次退出时停在的目录后来被删，或在别的客户端进了回收站。
+            // 这时退回上一级，而不是把一个不存在的目录画成「此文件夹为空」。上一级也不在的话，
+            // 它的加载会再退一级。只在列表为空时才多查一次详情，平常的目录不多花请求
+            val empty = listing.getOrNull()?.isEmpty() == true
+            if (empty && folderId.isNotEmpty() && driveRepo.isFolderGone(folderId)) {
+                isLoading = false
+                isRefreshing = false
+                if (navigateUp()) _messages.tryEmit("文件夹已不存在，已返回上一级")
+                return@launch
+            }
+            listing
                 .onSuccess {
                     files = it
                     loadedFolderId = folderId

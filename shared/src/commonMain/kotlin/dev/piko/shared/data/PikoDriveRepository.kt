@@ -6,6 +6,7 @@ import io.github.nihildigit.pikpak.EventPage
 import io.github.nihildigit.pikpak.EventType
 import io.github.nihildigit.pikpak.FileDetail
 import io.github.nihildigit.pikpak.FileStat
+import io.github.nihildigit.pikpak.PikPakException
 import io.github.nihildigit.pikpak.QuotaResponse
 import io.github.nihildigit.pikpak.SearchHit
 import io.github.nihildigit.pikpak.ShareInfo
@@ -320,6 +321,14 @@ open class PikoDriveRepository(
     suspend fun getFileDetail(fileId: String): Result<FileDetail> = withContext(Dispatchers.Default) {
         runSuspendCatching { client.getFile(fileId) }
     }
+
+    /**
+     * 目录已被删除或移入回收站。列一个不存在的目录不报错，只回一个空列表，与空目录分不开，
+     * 只能另查详情：彻底删除的查不到，回收站里的回 file_in_recycle_bin，也可能查到但带着 trashed。
+     * 只认服务端明确的拒绝，网络失败说不准，按还在处理，免得断一下网就把人退出目录。
+     */
+    suspend fun isFolderGone(folderId: String): Boolean =
+        getFileDetail(folderId).fold(onSuccess = { it.trashed }, onFailure = { it is PikPakException })
 
     suspend fun getQuota(): Result<QuotaResponse> = withContext(Dispatchers.Default) {
         runSuspendCatching {
