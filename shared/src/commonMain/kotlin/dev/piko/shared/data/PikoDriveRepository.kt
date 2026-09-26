@@ -9,7 +9,12 @@ import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.PikPakException
 import io.github.nihildigit.pikpak.QuotaResponse
 import io.github.nihildigit.pikpak.SearchHit
+import io.github.nihildigit.pikpak.CreatedShare
 import io.github.nihildigit.pikpak.ShareInfo
+import io.github.nihildigit.pikpak.ShareListPage
+import io.github.nihildigit.pikpak.createShare
+import io.github.nihildigit.pikpak.deleteShares
+import io.github.nihildigit.pikpak.listMyShares
 import io.github.nihildigit.pikpak.TaskPhase
 import io.github.nihildigit.pikpak.TransferQuota
 import io.github.nihildigit.pikpak.batchCopy
@@ -454,6 +459,32 @@ open class PikoDriveRepository(
             }
             error("转存超时")
         }
+    }
+
+    /**
+     * 把 [fileIds] 分享为一条链接，文件与文件夹可以混在一起、不必同目录。
+     * [passCode] 为 null 是公开链接，空串由服务端生成四位提取码，否则用它。[expirationDays] 为 -1 永久有效。
+     */
+    suspend fun createShare(fileIds: List<String>, passCode: String?, expirationDays: Int): Result<CreatedShare> =
+        withContext(Dispatchers.Default) {
+            runSuspendCatching {
+                client.createShare(
+                    fileIds = fileIds,
+                    requirePassCode = passCode != null,
+                    customPassCode = passCode.orEmpty(),
+                    expirationDays = expirationDays,
+                )
+            }
+        }
+
+    /** 自己的分享，一页，新的在前。取消了的不在里面；文件被删的仍在，状态是 DELETED。 */
+    suspend fun myShares(pageToken: String = ""): Result<ShareListPage> = withContext(Dispatchers.Default) {
+        runSuspendCatching { client.listMyShares(pageToken = pageToken) }
+    }
+
+    /** 取消分享，文件留在网盘里。 */
+    suspend fun cancelShares(shareIds: List<String>): Result<Unit> = withContext(Dispatchers.Default) {
+        runSuspendCatching { client.deleteShares(shareIds) }
     }
 
     /** 全盘的星标文件与文件夹。服务端按 parent_id=* 一次返回全部，不分页。 */

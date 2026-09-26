@@ -20,6 +20,14 @@ class ShareLinkTextTest {
         assertEquals("zq47", InstantSheetState.findSharePassCode("https://www.mypikpak.com/s/VPxyz 密码 zq47"))
     }
 
+    // 自定义提取码最长 10 位，截成 8 位就打不开
+    @Test
+    fun `text piko copies out is read back whole`() {
+        val text = ShareCreateState.shareText("某个合集 等 3 项", "https://mypikpak.com/s/VPabc_123-x", "abcde12345")
+        assertEquals("https://mypikpak.com/s/VPabc_123-x", InstantSheetState.findShareLink(text))
+        assertEquals("abcde12345", InstantSheetState.findSharePassCode(text))
+    }
+
     @Test
     fun `other links are not shares`() {
         assertNull(InstantSheetState.findShareLink("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"))

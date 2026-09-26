@@ -91,6 +91,7 @@ import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.InstantSaveOutcome
 import dev.piko.shared.upload.UploadSelection
 import dev.piko.shared.upload.isUploading
+import dev.piko.ui.screens.share.ShareDialog
 import dev.piko.ui.LocalPikoServices
 import dev.piko.shared.data.isArchiveVolume
 import dev.piko.shared.data.isExtractableArchive
@@ -245,6 +246,7 @@ fun DriveScreen(
         derivedStateOf { state.displayedFiles.filter { it.id in state.selectedFileIds && (it.isExtractableArchive || it.isArchiveVolume) } }
     }
     var copyTargetIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var shareTargets by remember { mutableStateOf<List<FileStat>>(emptyList()) }
     var previewImage by remember { mutableStateOf<FileStat?>(null) }
     // 外部打开的磁力链是一次明确的新请求：开新会话并就地取走，面板收起后不再靠它续命
     val pendingMagnet by instantRepo.pendingMagnetFlow.collectAsStateWithLifecycle()
@@ -375,6 +377,7 @@ fun DriveScreen(
                     onOpenSource = { file.sourceUrl?.let(platform::openUrl) },
                     onFindDuplicates = { duplicateSession.open(PathBreadcrumb(file.id, file.name)) },
                     onExtract = { archiveSession.extract(listOf(file)) },
+                    onShare = { shareTargets = listOf(file) },
                 )
             },
             onToggleSection = state::toggleSection,
@@ -479,6 +482,10 @@ fun DriveScreen(
                             archiveSession.extract(archives)
                             state.exitSelection()
                         }
+                    },
+                    onShare = {
+                        // 按列表顺序：服务端取第一项的名字作分享标题
+                        shareTargets = state.displayedFiles.filter { it.id in state.selectedFileIds && !it.isUploading }
                     },
                 )
 
@@ -715,6 +722,18 @@ fun DriveScreen(
             onOpenSource = { target.sourceUrl?.let(platform::openUrl) },
             onFindDuplicates = { duplicateSession.open(PathBreadcrumb(target.id, target.name)) },
             onExtract = { archiveSession.extract(listOf(target)) },
+            onShare = { shareTargets = listOf(target) },
+        )
+    }
+
+    if (shareTargets.isNotEmpty()) {
+        ShareDialog(
+            files = shareTargets,
+            onDismiss = { shareTargets = emptyList() },
+            onCopied = {
+                if (state.isSelectionMode) state.exitSelection()
+                scope.launch { snackbarHostState.showSnackbar("已复制分享链接", withDismissAction = true) }
+            },
         )
     }
 

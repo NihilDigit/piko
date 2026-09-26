@@ -11,6 +11,8 @@ import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FileCopy
+import androidx.compose.material.icons.outlined.Share
+import dev.piko.shared.upload.isUploading
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material.icons.outlined.Unarchive
@@ -63,6 +65,7 @@ internal fun FileActionsSheet(
     onOpenSource: () -> Unit,
     onFindDuplicates: () -> Unit,
     onExtract: () -> Unit,
+    onShare: () -> Unit,
 ) {
     val usage by produceState<FolderUsageResult?>(null, folderUsage) {
         folderUsage ?: return@produceState
@@ -90,6 +93,7 @@ internal fun FileActionsSheet(
         onOpenSource = onOpenSource,
         onFindDuplicates = onFindDuplicates,
         onExtract = onExtract,
+        onShare = onShare,
     )
 
     ItemDetailsSheet(
@@ -124,6 +128,7 @@ internal fun fileActions(
     onOpenSource: () -> Unit,
     onFindDuplicates: () -> Unit,
     onExtract: () -> Unit,
+    onShare: () -> Unit,
 ): List<SheetAction> = buildList {
     if (previewHidden != null) {
         add(
@@ -155,6 +160,8 @@ internal fun fileActions(
         null -> Unit
     }
     if (file.isFolder) add(SheetAction(Icons.Outlined.FileCopy, "查找重复", onFindDuplicates))
+    // 上传中的文件分享出去对方打不开
+    if (!file.isUploading) add(SheetAction(Icons.Outlined.Share, "分享", onShare))
     add(SheetAction(Icons.Outlined.Edit, "重命名", onRename))
     add(SheetAction(Icons.Outlined.DriveFileMove, "移动到", onMove))
     add(SheetAction(Icons.Outlined.ContentCopy, "复制到", onCopy))

@@ -687,6 +687,6 @@ class InstantSheetState private constructor(
         fun findSharePassCode(text: String): String? = SHARE_PASS_CODE.find(text)?.groupValues?.get(1)
 
         private val SHARE_LINK = Regex("""https?://(?:www\.)?mypikpak\.com/s/[A-Za-z0-9_-]+""")
-        private val SHARE_PASS_CODE = Regex("""(?:提取码|密码|访问码|pwd|passcode)\s*[:：=]?\s*([A-Za-z0-9]{4,8})""", RegexOption.IGNORE_CASE)
+        private val SHARE_PASS_CODE = Regex("""(?:提取码|密码|访问码|pwd|passcode)\s*[:：=]?\s*([A-Za-z0-9]{4,10})""", RegexOption.IGNORE_CASE)
     }
 }

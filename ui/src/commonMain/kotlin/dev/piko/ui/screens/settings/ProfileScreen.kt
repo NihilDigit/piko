@@ -23,6 +23,7 @@ import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
@@ -76,7 +77,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun ProfileScreen(
     onLogout: () -> Unit,
-    /** 打开「我的」的详情页：星标、播放历史、回收站、设置。 */
+    /** 打开「我的」的详情页：星标、播放历史、我的分享、回收站、设置。 */
     onOpenPane: (Screen) -> Unit,
     selectedPane: Screen?,
     modifier: Modifier = Modifier,
@@ -160,7 +161,7 @@ fun ProfileScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // 星标与播放历史是看内容的入口，排在前面；回收站与设置是管理，排在后面，两组之间多空一点
+            // 星标与播放历史是看内容的入口，排在前面；分享、回收站与设置是管理，排在后面，两组之间多空一点
             Column(verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
                 SettingsNavigationRow(
                     index = 0, count = 2,
@@ -184,7 +185,15 @@ fun ProfileScreen(
 
             Column(verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
                 SettingsNavigationRow(
-                    index = 0, count = 2,
+                    index = 0, count = 3,
+                    icon = Icons.Outlined.Share,
+                    title = "我的分享",
+                    supporting = "复制或取消已创建的分享链接",
+                    onClick = { onOpenPane(Screen.MyShares) },
+                    selected = selectedPane == Screen.MyShares,
+                )
+                SettingsNavigationRow(
+                    index = 1, count = 3,
                     icon = Icons.Outlined.Delete,
                     title = "回收站",
                     supporting = "恢复或彻底删除已移入回收站的文件",
@@ -192,7 +201,7 @@ fun ProfileScreen(
                     selected = selectedPane == Screen.Trash,
                 )
                 SettingsNavigationRow(
-                    index = 1, count = 2,
+                    index = 2, count = 3,
                     icon = Icons.Outlined.Settings,
                     title = "设置",
                     supporting = availableUpdate?.let { "发现新版本 ${it.version}" } ?: "外观、文件名解析与下载",

@@ -40,6 +40,9 @@ sealed interface Screen : NavKey {
     data object PlayHistory : Screen
 
     @Serializable
+    data object MyShares : Screen
+
+    @Serializable
     data class VideoPlayer(
         val fileId: String,
         val fileName: String,

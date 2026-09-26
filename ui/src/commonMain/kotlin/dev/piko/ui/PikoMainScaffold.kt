@@ -67,6 +67,7 @@ import dev.piko.ui.screens.files.FilesScreen
 import dev.piko.ui.screens.history.PlayHistoryScreen
 import dev.piko.ui.screens.settings.ProfileScreen
 import dev.piko.ui.screens.settings.SettingsScreen
+import dev.piko.ui.screens.share.MySharesScreen
 import dev.piko.ui.screens.starred.StarredScreen
 import dev.piko.ui.screens.trash.TrashScreen
 import dev.piko.ui.screens.transfers.TransfersScreen
@@ -105,6 +106,7 @@ private val NavKeyConfiguration = SavedStateConfiguration {
             subclass(Screen.Trash::class)
             subclass(Screen.Starred::class)
             subclass(Screen.PlayHistory::class)
+            subclass(Screen.MyShares::class)
             subclass(Screen.Settings::class)
             subclass(Screen.VideoPlayer::class)
         }
@@ -133,7 +135,7 @@ fun PikoMainScaffold(
     val coroutineScope = rememberCoroutineScope()
 
     val topScreen = backStack.lastOrNull() as? Screen
-    // 「我的」的详情页（星标、播放历史、回收站、设置）在宽窗口下不盖住导航栏，而是进内容区；
+    // 「我的」的详情页（星标、播放历史、我的分享、回收站、设置）在宽窗口下不盖住导航栏，而是进内容区；
     // 只有 compact 与播放器仍是整窗覆盖层
     val profilePane = topScreen?.takeIf { it in ProfilePanes }
     val profilePaneInline = profilePane != null && widthClass != WidthClass.Compact
@@ -381,6 +383,7 @@ fun PikoMainScaffold(
                         onPlay = { playVideo(it, listOf(it)) },
                         onLocate = ::locateInDrive,
                     )
+                    is Screen.MyShares -> MySharesScreen(onBackClick = ::closeTop)
                     is Screen.Settings -> SettingsScreen(onBackClick = ::closeTop)
                     is Screen.VideoPlayer -> {
                         (videoPlayer as? VideoPlayerHost.InApp)?.content?.invoke(screen, ::closeTop)
@@ -393,10 +396,10 @@ fun PikoMainScaffold(
 }
 
 /** 「我的」的详情页。它们互相替换，不叠在一起。 */
-private val ProfilePanes = setOf<Screen>(Screen.Starred, Screen.PlayHistory, Screen.Trash, Screen.Settings)
+private val ProfilePanes = setOf<Screen>(Screen.Starred, Screen.PlayHistory, Screen.MyShares, Screen.Trash, Screen.Settings)
 
 /**
- * 「我的」与它的详情页（星标、播放历史、回收站、设置）。medium 窗口里详情页替换掉「我的」；expanded 窗口里
+ * 「我的」与它的详情页（星标、播放历史、我的分享、回收站、设置）。medium 窗口里详情页替换掉「我的」；expanded 窗口里
  * 两者并排，右栏没有打开的详情页时显示设置，免得半边空着。并排时设置页不给返回按钮：它本就是右栏的默认内容。
  */
 @Composable
@@ -424,6 +427,7 @@ private fun ProfileWithPanes(
         when (screen) {
             Screen.Starred -> StarredScreen(onBackClick, onOpen = onOpenFile, onLocate = onLocateFile, modifier = modifier)
             Screen.PlayHistory -> PlayHistoryScreen(onBackClick, onPlay = onPlayFile, onLocate = onLocateFile, modifier = modifier)
+            Screen.MyShares -> MySharesScreen(onBackClick, modifier = modifier)
             Screen.Trash -> TrashScreen(onBackClick = onClosePane, modifier = modifier)
             else -> SettingsScreen(onBackClick = onBackClick, modifier = modifier)
         }

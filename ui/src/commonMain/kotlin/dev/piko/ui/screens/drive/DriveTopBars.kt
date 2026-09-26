@@ -26,6 +26,7 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.SelectAll
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Unarchive
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -67,6 +68,7 @@ internal fun DriveSelectionTopBar(
     onCopy: () -> Unit,
     onTrash: () -> Unit,
     onExtract: (() -> Unit)?,
+    onShare: () -> Unit,
 ) {
     PikoTopBar(
         scrollBehavior = scrollBehavior,
@@ -78,6 +80,7 @@ internal fun DriveSelectionTopBar(
             val shortcutModifier = LocalPikoPlatform.current.shortcutModifier
             TooltipIconButton(Icons.Outlined.SelectAll, "全选", onSelectAll, shortcut = shortcutModifier.label("A"))
             if (onExtract != null) TooltipIconButton(Icons.Outlined.Unarchive, "解压所选压缩包", onExtract)
+            TooltipIconButton(Icons.Outlined.Share, "分享所选", onShare, enabled = selectedCount > 0)
             TooltipIconButton(Icons.Outlined.DriveFileMove, "移动所选", onMove, enabled = selectedCount > 0)
             TooltipIconButton(Icons.Outlined.ContentCopy, "复制所选", onCopy, enabled = selectedCount > 0)
             TooltipIconButton(
