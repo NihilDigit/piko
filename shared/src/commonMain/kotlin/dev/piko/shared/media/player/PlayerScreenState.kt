@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFile
 import dev.piko.shared.media.ORIGINAL_QUALITY
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.media.PlayableMediaInfo
@@ -376,7 +377,7 @@ class PlayerScreenState(
                 isLocalPlayback = true
                 usingProxy = false
                 activeQuality = null
-                PikoLog.i(TAG, "打开本地副本：$title")
+                PikoLog.i(TAG, "打开本地副本：${logFile(fileId, title)}")
                 backend.open(PlaybackTarget.LocalFile(localPath), startPosition(), subtitles = openSubtitles())
             } else {
                 isLocalPlayback = false
@@ -393,7 +394,7 @@ class PlayerScreenState(
                         val info = playback.info
                         PikoLog.i(
                             TAG,
-                            "打开：$title，${if (usingProxy) "经代理" else "直链"}，${if (info.isOrigin) "原画" else info.currentResolution + "p 转码"}，" +
+                            "打开：${logFile(fileId, title)}，${if (usingProxy) "经代理" else "直链"}，${if (info.isOrigin) "原画" else info.currentResolution + "p 转码"}，" +
                                 "${info.width}x${info.height}，${info.sizeBytes} B",
                         )
                         backend.open(PlaybackTarget.Url(proxyUrl ?: playback.info.currentUrl), startPosition(), subtitles = openSubtitles())
@@ -406,7 +407,7 @@ class PlayerScreenState(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            PikoLog.w(TAG, "取流失败：$title", e)
+            PikoLog.w(TAG, "取流失败：${logFile(fileId, title)}", e)
             failure = e.message ?: "无法打开媒体"
             isPreparing = false
             // 这一轮连流都没拿到，退避到此为止，否则失败卡片会被加载态一直挡着

@@ -8,6 +8,7 @@ import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.data.ArchivePasswordVault
 import dev.piko.shared.log.LogLevel
 import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFile
 import dev.piko.shared.data.ArchiveRepository
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
@@ -151,7 +152,7 @@ class ArchiveExtractSession(
     private suspend fun process(job: ArchiveJob) {
         update(job.id) { it.copy(status = ArchiveJobStatus.Submitting) }
         val task = repository.start(job.file, job.password).getOrElse { err ->
-            PikoLog.w(TAG, "提交解压失败：${job.file.name}", err)
+            PikoLog.w(TAG, "提交解压失败：${logFile(job.file.id, job.file.name)}", err)
             if (err is ArchivePasswordException) {
                 // 没带密码时服务端报的是「缺少」；带了还被拒才算输错
                 update(job.id) { it.copy(status = ArchiveJobStatus.NeedsPassword(incorrect = job.password.isNotEmpty())) }
@@ -170,7 +171,7 @@ class ArchiveExtractSession(
         var failures = 0
         while (true) {
             val progress = repository.progress(taskId).getOrElse { err ->
-                PikoLog.w(TAG, "查询解压进度失败：${job.file.name}，第 ${failures + 1} 次", err)
+                PikoLog.w(TAG, "查询解压进度失败：${logFile(job.file.id, job.file.name)}，第 ${failures + 1} 次", err)
                 failures++
                 if (failures >= MAX_POLL_FAILURES) {
                     finish(job, "${job.file.name} 解压进度查询失败：${failureReason(err)}")
@@ -208,7 +209,9 @@ class ArchiveExtractSession(
 
     private fun finish(job: ArchiveJob, message: String, succeeded: Boolean = false) {
         jobs = jobs.filterNot { it.id == job.id }
-        PikoLog.log(if (succeeded) LogLevel.INFO else LogLevel.WARN, TAG, message, null)
+        // 提示里带着压缩包的名字，写进日志前换成 ID
+        val logged = message.replace(job.file.name, logFile(job.file.id, job.file.name))
+        PikoLog.log(if (succeeded) LogLevel.INFO else LogLevel.WARN, TAG, logged, null)
         _messages.tryEmit(message)
         _outcomes.tryEmit(ArchiveOutcome(job.file.name, succeeded, message))
     }

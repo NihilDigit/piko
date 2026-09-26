@@ -342,7 +342,7 @@ fun SettingsScreen(
                             count = 1,
                             icon = Icons.Outlined.BugReport,
                             title = "导出日志",
-                            supporting = "反馈问题时请附上。记录文件名与操作经过，不含密码与登录凭据",
+                            supporting = "反馈问题时请附上。只记录操作经过，不含文件名、账号与密码",
                             onClick = { scope.launch { exportLogs(platform) } },
                             trailingIcon = Icons.Outlined.FileDownload,
                         )

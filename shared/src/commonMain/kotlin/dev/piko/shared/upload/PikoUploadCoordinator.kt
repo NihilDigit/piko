@@ -5,6 +5,7 @@ import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.runSuspendCatching
 import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFile
 import dev.piko.shared.update.isNetworkFailure
 import io.github.nihildigit.pikpak.PikPakClient
 import io.github.nihildigit.pikpak.PikPakException
@@ -291,7 +292,8 @@ class PikoUploadCoordinator(
             update(taskId) { if (it.status.isActive) it.copy(status = UploadStatus.PAUSED, speedBytesPerSec = 0L) else it }
             throw e
         } catch (e: Throwable) {
-            PikoLog.w(TAG, "上传失败：${_tasks.value[taskId]?.fileName}", e)
+            // 上传完成前网盘里还没有这个文件，用任务 ID 指代
+            PikoLog.w(TAG, "上传失败：${logFile(taskId, _tasks.value[taskId]?.fileName.orEmpty())}", e)
             update(taskId) { it.copy(status = UploadStatus.FAILED, speedBytesPerSec = 0L, errorMessage = failureMessage(e)) }
         }
     }

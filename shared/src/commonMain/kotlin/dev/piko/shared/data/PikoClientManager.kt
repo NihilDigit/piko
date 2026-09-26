@@ -58,7 +58,7 @@ class PikoClientManager(
                 return
             }
             val credentials = sessionStore.loadCredentials(account)
-            PikoLog.i(TAG, "启动：恢复 ${maskAccount(account)}，${credentialState(account, credentials?.password != null)}")
+            PikoLog.i(TAG, "启动：恢复上次的账号，${credentialState(account, credentials?.password != null)}")
             val client = clientFor(account, credentials?.password)
             when (val failure = tryLogin(client, "恢复会话")) {
                 null -> _currentClient.value = client
@@ -85,7 +85,7 @@ class PikoClientManager(
             val password = passwordSupplier()
             val client = clientFor(account, password)
             val started = TimeSource.Monotonic.markNow()
-            PikoLog.i(TAG, "密码登录：${maskAccount(account)}")
+            PikoLog.i(TAG, "密码登录")
             try {
                 client.login()
                 PikoLog.i(TAG, "密码登录成功，用时 ${started.elapsedNow().inWholeMilliseconds} ms")
@@ -112,7 +112,7 @@ class PikoClientManager(
                 ),
             )
             val client = clientFor(account)
-            PikoLog.i(TAG, "令牌登录：${maskAccount(account)}，${if (refreshToken.isBlank()) "无" else "有"}刷新令牌")
+            PikoLog.i(TAG, "令牌登录，${if (refreshToken.isBlank()) "无" else "有"}刷新令牌")
             try {
                 client.login()
                 PikoLog.i(TAG, "令牌登录成功")
@@ -249,17 +249,6 @@ class PikoClientManager(
         const val RECONNECT_INITIAL_DELAY_MS = 2_000L
         const val RECONNECT_MAX_DELAY_MS = 60_000L
     }
-}
-
-/**
- * 日志里的账号只留首尾：导出的日志会发给别人，完整的邮箱或手机号用不上，
- * 同一台设备上切换过账号时又要分得清是哪个。
- */
-private fun maskAccount(account: String): String {
-    val name = account.substringBefore('@')
-    val domain = account.substringAfter('@', "").let { if (it.isEmpty()) "" else "@$it" }
-    val kept = if (name.length <= 3) name.take(1) else name.take(2) + "…" + name.takeLast(1)
-    return kept + "***" + domain
 }
 
 /** 服务端的错误码与名称比异常文案有用：同一句「登录失败」背后是验证码、限流还是密码错，只看得到这里。 */

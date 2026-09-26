@@ -92,10 +92,38 @@ object PikoLog {
             append(time.date).append(' ')
             append(time.hour.pad(2)).append(':').append(time.minute.pad(2)).append(':').append(time.second.pad(2))
             append('.').append((time.nanosecond / 1_000_000).pad(3))
-            append(' ').append(line.level.letter).append(' ').append(line.tag).append(": ").append(line.message).append('\n')
-            if (line.error != null) append(line.error.stackTraceToString().trimEnd()).append('\n')
+            append(' ').append(line.level.letter).append(' ').append(line.tag).append(": ").append(redact(line.message)).append('\n')
+            if (line.error != null) append(redact(line.error.stackTraceToString().trimEnd())).append('\n')
         }
     }
+
+    /**
+     * 写进文件之前的兜底脱敏。打日志的地方已经不写账号与文件名，可异常信息与堆栈不归我们措辞：
+     * 读写失败的异常带着本机路径（含用户名与文件名），服务端的错误说明偶尔带着邮箱。
+     * 路径只留扩展名，播放与解压走哪条路要看它。
+     */
+    private fun redact(text: String): String =
+        text.replace(REMOTE_URL) { "${it.groupValues[1]}/<略>" }
+            .replace(EMAIL, "<邮箱>")
+            .replace(PHONE, "<手机号>")
+            .replace(LOCAL_PATH) { match ->
+                val extension = match.value.substringAfterLast('.', "").takeIf { it.length in 1..8 && it.all(Char::isLetterOrDigit) }
+                "<路径>" + (extension?.let { ".$it" } ?: "")
+            }
+
+    // 网络异常的信息里常带着请求地址。直链的签名参数在有效期内就是下载凭据，路径里还可能有文件名，
+    // 只留协议与域名，排查时知道是哪台服务器就够了。本机回环代理的地址不含这些，照原样留着
+    private val REMOTE_URL = Regex("""(https?://(?!127\.0\.0\.1|localhost)[^/\s"'<>]+)/[^\s"'<>]*""")
+    private val EMAIL = Regex("""[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}""")
+    private val PHONE = Regex("""(?<!\d)1[3-9]\d{9}(?!\d)""")
+
+    // Windows 盘符路径、Android 与桌面的常见绝对路径、content: 与 file: URI。文件名里可以有空格，
+    // 所以一直吃到行尾、引号或 Java 异常惯用的「 (原因)」之前
+    private val LOCAL_PATH = Regex(
+        """(?:[A-Za-z]:[\\/]|/(?:storage|sdcard|data|Users|home|mnt|Volumes|private|var|tmp)/|content://|file:/)""" +
+            """[^"'<>|\r\n]*?(?=\s\(|["'<>|]|$)""",
+        RegexOption.MULTILINE,
+    )
 
     /** 等此前的日志都写进文件。崩溃处理在进程结束前调用，否则最后那几行、包括崩溃本身，还在内存里。 */
     suspend fun flush() {
@@ -114,6 +142,15 @@ object PikoLog {
     }
 
     private fun Int.pad(width: Int) = toString().padStart(width, '0')
+}
+
+/**
+ * 日志里指代一个文件：只写 ID 与扩展名，不写文件名。网盘里的文件名是用户的隐私，而导出的日志要发给
+ * 别人；ID 足以在网盘里对上是哪一个，扩展名决定走哪条播放与解压路径，排查时要看。
+ */
+fun logFile(id: String?, name: String): String {
+    val extension = name.substringAfterLast('.', "").takeIf { it.isNotEmpty() && it.length <= 8 }
+    return "文件 ${id ?: "?"}" + (extension?.let { "（.${it.lowercase()}）" } ?: "")
 }
 
 /** 失败时记一条警告并原样返回，接在给用户看的 onFailure 前面：提示只有一句话，异常本身留在日志里。 */
