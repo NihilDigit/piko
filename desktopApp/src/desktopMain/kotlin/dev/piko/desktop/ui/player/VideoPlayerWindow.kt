@@ -26,6 +26,7 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPlacement
 import coil3.compose.AsyncImage
 import dev.piko.desktop.DesktopSettingsStore
+import dev.piko.desktop.MacOs
 import dev.piko.desktop.TitleBarThemeEffect
 import dev.piko.desktop.isMacOs
 import dev.piko.desktop.rememberRememberedWindowState
@@ -185,7 +186,11 @@ private fun VideoPlayerContent(
 
     // 播放防锁屏：正在播才持有，暂停与关窗时释放
     DisposableEffect(state.isPlaying) {
-        val displayLease = if (state.isPlaying) WinRTSupport.acquireDisplayRequest() else null
+        val displayLease = when {
+            !state.isPlaying -> null
+            isMacOs -> MacOs.preventSleep()
+            else -> WinRTSupport.acquireDisplayRequest()
+        }
         onDispose { displayLease?.close() }
     }
 

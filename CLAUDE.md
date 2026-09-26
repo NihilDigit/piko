@@ -194,7 +194,9 @@ piko 源码仍是 MIT，但发版时要附 GPLv3 与第三方声明，并指明�
   不能交叉构建，DMG 只在 `macos.yml` 的 macos-15 runner 上打。mpv 运行库照 Animeko 用 MediaMP 的
   `mediamp-mpv-runtime-macos-arm64`，画面走 Metal。与 Windows 的差别：不做 AOT 缓存（训练晚于 jpackage 签名，
   写进去会破坏签名封印）；播放器全屏用 `WindowPlacement.Fullscreen`；magnet 链接、Cmd+Q 与点 Dock 图标
-  经 Apple 事件进来，见 `MacOs.kt`；更新器只给下载页。没有开发者证书，包未经签名与公证。
+  经 Apple 事件进来；通知经 osascript（署名为脚本编辑器，自己署名要签过名的 bundle），防休眠经 caffeinate；
+  快捷键的主修饰键由 `PikoPlatform.shortcutModifier` 给出，mac 上是 ⌘。平台胶水集中在 `MacOs.kt`。
+  更新器只给下载页。没有开发者证书，包未经签名与公证。
 
 ## 开发用 CLI
 

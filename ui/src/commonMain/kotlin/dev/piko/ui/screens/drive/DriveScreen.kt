@@ -75,7 +75,6 @@ import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isAltPressed
-import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
@@ -405,14 +404,16 @@ fun DriveScreen(
     LaunchedEffect(Unit) { runCatching { shortcutFocus.requestFocus() } }
     fun handleShortcut(event: KeyEvent): Boolean {
         if (event.type != KeyEventType.KeyDown) return false
-        val ctrl = event.isCtrlPressed
+        val primary = platform.shortcutModifier.isPressed(event)
+        // Mac 键盘没有独立的 Delete 键，照 Finder 用 ⌘⌫
+        val trashKey = event.key == Key.Delete || (primary && event.key == Key.Backspace)
         when {
-            ctrl && event.key == Key.F -> isSearchOpen = true
-            event.key == Key.F5 || (ctrl && event.key == Key.R) -> state.load(refresh = true)
-            ctrl && event.key == Key.A -> state.toggleSelectAll()
-            event.key == Key.Delete && state.isSelectionMode && state.selectedFileIds.isNotEmpty() ->
+            primary && event.key == Key.F -> isSearchOpen = true
+            event.key == Key.F5 || (primary && event.key == Key.R) -> state.load(refresh = true)
+            primary && event.key == Key.A -> state.toggleSelectAll()
+            trashKey && state.isSelectionMode && state.selectedFileIds.isNotEmpty() ->
                 state.moveToTrash(state.selectedFileIds.toList())
-            (event.key == Key.Backspace || (event.isAltPressed && event.key == Key.DirectionLeft)) &&
+            ((event.key == Key.Backspace && !primary) || (event.isAltPressed && event.key == Key.DirectionLeft)) &&
                 folderStack.size > 1 -> state.navigateUp()
             else -> return false
         }
@@ -510,7 +511,7 @@ fun DriveScreen(
                     actions = {
                         // 顶栏只留搜索：M3 顶栏放一到两个动作，新建与秒传同属「往网盘里添东西」，
                         // 一起收进 FAB 菜单；排序与视图切换作用于列表，放在列表页眉
-                        TooltipIconButton(Icons.Outlined.Search, "搜索", { isSearchOpen = true }, shortcut = "Ctrl+F")
+                        TooltipIconButton(Icons.Outlined.Search, "搜索", { isSearchOpen = true }, shortcut = platform.shortcutModifier.label("F"))
                         if (showsRefreshButton()) {
                             TooltipIconButton(Icons.Outlined.Refresh, "刷新", { state.load(refresh = true) }, shortcut = "F5")
                         }

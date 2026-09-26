@@ -41,6 +41,8 @@ interface PikoPlatform {
      */
     val fontFamily: FontFamily get() = FontFamily.Default
 
+    val shortcutModifier: ShortcutModifier get() = ShortcutModifier.Ctrl
+
     fun openUrl(url: String)
 
     /** 软键盘是否弹出。桌面端没有软键盘，恒为 false。 */

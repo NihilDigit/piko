@@ -19,18 +19,22 @@ import java.awt.Window
 @Composable
 fun TitleBarThemeEffect(window: Window, dark: Boolean) {
     DisposableEffect(window, dark) {
-        WindowChrome.setDarkTitleBar(window, dark)
+        if (isMacOs) MacOs.setWindowAppearance(window, dark) else WindowChrome.setDarkTitleBar(window, dark)
         onDispose {}
     }
 }
 
-/** 任务栏按钮上显示正在进行的下载的总进度。暂停与失败的任务不计入，没有进行中的任务时清除。 */
+/** 任务栏按钮（macOS 是 Dock 图标）上显示正在进行的下载的总进度。暂停与失败的任务不计入，没有进行中的任务时清除。 */
 @Composable
 fun TaskbarDownloadProgress(window: Window, downloads: PikoDownloadCoordinator) {
     LaunchedEffect(window, downloads) {
         downloads.tasks.collect { tasks ->
             val active = tasks.values.filter { it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.PENDING }
             val total = active.sumOf { it.totalBytes }
+            if (isMacOs) {
+                MacOs.setDockProgress(if (active.isEmpty() || total <= 0) null else (active.sumOf { it.downloadedBytes } * 100 / total).toInt())
+                return@collect
+            }
             when {
                 active.isEmpty() -> TaskbarProgress.clear(window)
                 // 总大小未知，给不出百分比

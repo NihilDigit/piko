@@ -154,7 +154,9 @@ fun main(args: Array<String>) {
                 isInBackground = true
                 // Toast 同步等系统结果，不能压在界面线程上
                 Thread {
-                    WinRTSupport.showNotification("Piko 在后台继续传输", "传输完成后自动退出，可从通知区域图标重新打开。")
+                    // macOS 的托盘图标在菜单栏
+                    val trayPlace = if (isMacOs) "菜单栏" else "通知区域"
+                    showSystemNotification("Piko 在后台继续传输", "传输完成后自动退出，可从${trayPlace}图标重新打开。")
                 }.start()
             } else {
                 exitApplication()
@@ -304,7 +306,10 @@ private fun WorkNotifications(services: PikoServices, shouldNotify: () -> Boolea
         services.workNotices().collect { notice ->
             if (!currentShouldNotify()) return@collect
             // Toast 在 WinRT 专用线程上同步等结果，最长 15 秒，不能压在界面线程上
-            withContext(Dispatchers.IO) { WinRTSupport.showNotification(notice.title, notice.message) }
+            withContext(Dispatchers.IO) { showSystemNotification(notice.title, notice.message) }
         }
     }
 }
+
+private fun showSystemNotification(title: String, message: String): Boolean =
+    if (isMacOs) MacOs.showNotification(title, message) else WinRTSupport.showNotification(title, message)

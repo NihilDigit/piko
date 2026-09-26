@@ -51,6 +51,7 @@ import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.menuItemShape
 import dev.piko.ui.components.TooltipIconButton
+import dev.piko.ui.platform.LocalPikoPlatform
 
 /**
  * 多选态顶栏。动作都作用于整批选中项，没有可以下放到别处的。
@@ -74,7 +75,8 @@ internal fun DriveSelectionTopBar(
             TooltipIconButton(Icons.Outlined.Close, "退出多选", onExit, shortcut = "Esc")
         },
         actions = {
-            TooltipIconButton(Icons.Outlined.SelectAll, "全选", onSelectAll, shortcut = "Ctrl+A")
+            val shortcutModifier = LocalPikoPlatform.current.shortcutModifier
+            TooltipIconButton(Icons.Outlined.SelectAll, "全选", onSelectAll, shortcut = shortcutModifier.label("A"))
             if (onExtract != null) TooltipIconButton(Icons.Outlined.Unarchive, "解压所选压缩包", onExtract)
             TooltipIconButton(Icons.Outlined.DriveFileMove, "移动所选", onMove, enabled = selectedCount > 0)
             TooltipIconButton(Icons.Outlined.ContentCopy, "复制所选", onCopy, enabled = selectedCount > 0)
@@ -82,7 +84,7 @@ internal fun DriveSelectionTopBar(
                 icon = Icons.Outlined.Delete,
                 label = "将所选移入回收站",
                 onClick = onTrash,
-                shortcut = "Delete",
+                shortcut = shortcutModifier.trashLabel,
                 enabled = selectedCount > 0,
                 tint = if (selectedCount > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
             )

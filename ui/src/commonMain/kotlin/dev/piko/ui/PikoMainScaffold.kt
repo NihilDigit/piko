@@ -43,7 +43,6 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
@@ -127,6 +126,7 @@ fun PikoMainScaffold(
 ) {
     val services = LocalPikoServices.current
     val localFiles = LocalPikoPlatform.current.localFiles
+    val shortcutModifier = LocalPikoPlatform.current.shortcutModifier
     var currentTab by rememberSaveable { mutableStateOf(MainTab.FILES) }
     val backStack = rememberNavBackStack(NavKeyConfiguration)
     val widthClass = currentWidthClass()
@@ -257,7 +257,7 @@ fun PikoMainScaffold(
             .focusRequester(shortcutFocus)
             .focusable()
             .onKeyEvent { event ->
-                if (event.type != KeyEventType.KeyDown || !event.isCtrlPressed) return@onKeyEvent false
+                if (event.type != KeyEventType.KeyDown || !shortcutModifier.isPressed(event)) return@onKeyEvent false
                 val tab = when (event.key) {
                     Key.One -> MainTab.FILES
                     Key.Two -> MainTab.TRANSFERS

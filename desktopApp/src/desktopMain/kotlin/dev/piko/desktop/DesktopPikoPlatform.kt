@@ -24,6 +24,7 @@ import dev.piko.ui.platform.DownloadLocationPicker
 import dev.piko.ui.platform.LocalFileActions
 import dev.piko.ui.platform.PikoPlatform
 import dev.piko.ui.platform.PreviewBackend
+import dev.piko.ui.platform.ShortcutModifier
 import dev.piko.ui.platform.UploadPicker
 import dev.piko.ui.platform.VideoPreviewSupport
 import java.awt.Desktop
@@ -69,6 +70,8 @@ class DesktopPikoPlatform(
     @OptIn(ExperimentalTextApi::class)
     override val fontFamily: FontFamily = FontFamily(if (isMacOs) "PingFang SC" else "Microsoft YaHei UI")
 
+    override val shortcutModifier: ShortcutModifier = if (isMacOs) ShortcutModifier.Command else ShortcutModifier.Ctrl
+
     override fun openUrl(url: String) {
         runCatching { Desktop.getDesktop().browse(URI(url)) }
     }
@@ -91,7 +94,10 @@ class DesktopPikoPlatform(
 
         override fun openExternally(path: String, isMedia: Boolean) = WinRTSupport.openFile(File(path))
 
-        override fun openContainingFolder(path: String) = WinRTSupport.revealInExplorer(File(path))
+        override fun openContainingFolder(path: String) {
+            val file = File(path)
+            if (isMacOs && file.exists()) MacOs.revealInFinder(file) else WinRTSupport.revealInExplorer(file)
+        }
 
         // Windows 的共享面板要 WinRT 的 DataTransferManager 挂在窗口句柄上，收益不抵这套接线
         override val canShare: Boolean = false
@@ -190,12 +196,14 @@ class DesktopPikoPlatform(
 private fun activeWindow(): Window? = KeyboardFocusManager.getCurrentKeyboardFocusManager().activeWindow
 
 /** 系统目录框，弹不出来时退回 Swing 的。取消时为 null。 */
-private suspend fun pickFolder(owner: Window?, initial: File?, title: String): File? =
-    when (val result = FolderPicker.pickFolder(owner, initial, title)) {
+private suspend fun pickFolder(owner: Window?, initial: File?, title: String): File? {
+    if (isMacOs) return MacOs.pickFolder(owner, initial, title)
+    return when (val result = FolderPicker.pickFolder(owner, initial, title)) {
         is FolderPickResult.Picked -> result.folder
         FolderPickResult.Cancelled -> null
         FolderPickResult.Unavailable -> chooseDirectory(owner, initial, title)
     }
+}
 
 /**
  * 原生目录框弹不出来时的退路。AWT 的 FileDialog 在 Windows 上选不了目录，只能用 Swing 的；
