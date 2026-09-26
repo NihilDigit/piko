@@ -39,11 +39,16 @@ Piko 是 PikPak 的第三方跨平台客户端。Android、Windows 与 macOS（�
 
 自有仓库不走 PR，直接在 `main` 上提交。
 
+tag 只触发 `release.yml`：Android、Windows（x64、arm64）、macOS 并行构建，产物汇到 `release` job 统一算
+`SHA256SUMS.txt`、做两份构建来源证明（`attest-build-provenance` 与 SLSA Build L3），建一个**草稿** release。
+草稿对 `releases/latest` 不可见，应用内更新在公开前不会提示。push 与 PR 只跑 `ci.yml` 的单测与 `smoke.yml` 的冒烟，不打包。
+
 Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下载` 起是按设备列出的附件表与校验说明。
-**更新日志发版后手写，放在正文最前面、`## 下载` 之前**：应用内
+**更新日志在草稿公开前手写，放在正文最前面、`## 下载` 之前**：应用内
 更新弹窗读到这个标题就截断（`GithubReleases.kt` 的 `updateNotesOf`），标题改动要两边一起改，`ReleaseNotesTest` 会报错。
-`gh release edit --notes-file` 替换整段正文而不是追加，改之前先用 `gh release view <tag> --json body` 读回原文，
-把更新日志拼在前面再写回，否则附件表就丢了。
+`gh release edit --notes-file` 替换整段正文而不是追加，改之前先读回原文，把更新日志拼在前面再写回，否则附件表就丢了。
+写完后 `gh release edit <tag> --draft=false` 公开。按 tag 的 REST 接口不返回草稿，gh 按 tag 找不到时改用
+`gh api repos/NihilDigit/piko/releases` 的列表按 `tag_name` 取 id。
 
 更新日志写给下载的人看，照 Bilby 的格式：一行概述，然后 `## 修复` 与 `## 变化`，每条一句书面语，写读者能察觉的
 现象或行为变化，不写文件名、类型名与提交标题，读者看不到的重构不写。`## 修复` 只列已发布版本里存在的问题：
@@ -199,7 +204,7 @@ piko 源码仍是 MIT，但发版时要附 GPLv3 与第三方声明，并指明�
   同时写入 `-Dpiko.release-build=true`，更新器只在带这个标记时启动即检查。不传时默认 1.0.0：macOS 的
   CFBundleVersion 首位必须大于 0，jpackage 拒绝 0.x；它可能与正式版同号，所以不能靠版本号认开发构建。
 - **macOS（实验性，仅 Apple 芯片）**：同一个 `desktopApp`，原生库与 Compose 运行库按宿主系统取，jpackage
-  不能交叉构建，DMG 只在 `macos.yml` 的 macos-15 runner 上打。mpv 运行库照 Animeko 用 MediaMP 的
+  不能交叉构建，DMG 只在 `release.yml` 的 macos-15 runner 上打。mpv 运行库照 Animeko 用 MediaMP 的
   `mediamp-mpv-runtime-macos-arm64`，画面走 Metal。与 Windows 的差别：不做 AOT 缓存（训练晚于 jpackage 签名，
   写进去会破坏签名封印）；播放器全屏用 `WindowPlacement.Fullscreen`；magnet 链接、Cmd+Q 与点 Dock 图标
   经 Apple 事件进来；通知经 osascript（署名为脚本编辑器，自己署名要签过名的 bundle），防休眠经 caffeinate；

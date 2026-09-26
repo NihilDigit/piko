@@ -1,4 +1,21 @@
-name: Android Release
+name: Release
+
+# 打 tag 发版。安装包只在这里构建：本机不产出、也拿不到签名密钥，所以「这个安装包是从这份
+# 源码编出来的」有据可查。
+#
+# android、windows（x64 与 arm64）、macos 三个 job 并行构建，只产出、不发布；产物交给 release
+# 统一算校验和、生成构建来源证明，再建一个草稿 release。附件先齐、后公开：此前各平台各自往一个
+# 已公开的 Release 上挂附件，中间有一段时间 Release 已可见而附件不全，应用内更新可能看到缺了
+# 自己平台安装包的版本。
+#
+# 两份构建来源证明：release job 里的 attest-build-provenance（GitHub 自己核，快），以及
+# provenance job 经 slsa-github-generator 出的 SLSA Build L3 证明。后者跑在隔离的可复用
+# workflow 里，拿不到本仓库的构建脚本与签名密钥，证明因此不可由构建过程伪造，这是 L2 与 L3 的区别。
+#
+# 草稿公开前，按 CLAUDE.md 的「发版」一节把更新日志写进正文。
+#
+# 触发：推一个 vMAJOR.MINOR.PATCH 形式的 tag。版本号取自 tag，不写在源码里。
+# 需要仓库 Secret：ANDROID_KEYSTORE_BASE64、ANDROID_KEYSTORE_PASSWORD、ANDROID_KEY_ALIAS、ANDROID_KEY_PASSWORD
 
 on:
   push:
@@ -6,46 +23,21 @@ on:
       - 'v*'
 
 concurrency:
-  group: android-release-${{ github.ref }}
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  version:
     runs-on: ubuntu-latest
-    env:
-      ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/piko-release.jks
-      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-
+    outputs:
+      name: ${{ steps.derive.outputs.name }}
+      code: ${{ steps.derive.outputs.code }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v5
-
-      - name: Set up JDK 21
-        uses: actions/setup-java@v5
-        with:
-          java-version: '21'
-          distribution: 'temurin'
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v5
-
-      - name: Decode release keystore
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        run: |
-          test -n "$ANDROID_KEYSTORE_BASE64"
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE_PATH"
-          chmod 600 "$ANDROID_KEYSTORE_PATH"
-
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-
-      - name: Derive Android version from tag
+      - name: Derive version from tag
+        id: derive
         run: |
           if [[ ! "$GITHUB_REF_NAME" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
             echo "Release tags must use vMAJOR.MINOR.PATCH format."
@@ -58,24 +50,54 @@ jobs:
             echo "Release tag components exceed the supported Android versionCode range."
             exit 1
           fi
-          echo "PIKO_VERSION_NAME=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
-          echo "PIKO_VERSION_CODE=$((major * 1000000 + minor * 1000 + patch))" >> "$GITHUB_ENV"
+          echo "name=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "code=$((major * 1000000 + minor * 1000 + patch))" >> "$GITHUB_OUTPUT"
+
+  # 签名密钥只进这个 job，负责汇总发布的 release 不碰它。
+  android:
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/piko-release.jks
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      PIKO_VERSION_NAME: ${{ needs.version.outputs.name }}
+      PIKO_VERSION_CODE: ${{ needs.version.outputs.code }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      # 停在 v5：v6 把缓存拆成了闭源的 gradle-actions-caching，升上去等于接受 Gradle 的商业条款，
+      # 不为一个构建缓存把它引进发布链路。v5 与 v4 的差别只是 Node 24。
+      - uses: gradle/actions/setup-gradle@v5
+
+      # 密钥只在这一步落到磁盘，用完随 runner 一起销毁
+      - name: Decode release keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$ANDROID_KEYSTORE_BASE64"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE_PATH"
+          chmod 600 "$ANDROID_KEYSTORE_PATH"
 
       - name: Build signed release APKs
         run: ./gradlew assembleRelease --no-daemon --stacktrace
 
+      # 装错架构会装不上，文件名要一眼看出是哪个变体
       - name: Collect artifacts
         run: |
           mkdir -p dist
-          version="${PIKO_VERSION_NAME}"
           for apk in app/build/outputs/apk/release/*.apk; do
             variant=$(basename "$apk" | sed -E 's/^app-(.*)-release\.apk$/\1/')
-            cp "$apk" "dist/piko-$version-$variant.apk"
+            cp "$apk" "dist/piko-$PIKO_VERSION_NAME-$variant.apk"
           done
-          if [ -f app/build/outputs/mapping/release/mapping.txt ]; then
-            cp app/build/outputs/mapping/release/mapping.txt "dist/piko-$version-mapping.txt"
-          fi
-          (cd dist && sha256sum * > SHA256SUMS.txt)
+          # R8 的 mapping 一起发：release 崩溃栈是混淆过的，没有它读不了用户贴的日志
+          cp app/build/outputs/mapping/release/mapping.txt "dist/piko-$PIKO_VERSION_NAME-mapping.txt"
           ls -lh dist
 
       - name: Verify signed release APKs
@@ -85,26 +107,233 @@ jobs:
           test "${#apks[@]}" -gt 0
           build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
           for apk in "${apks[@]}"; do
-            test -s "$apk"
             "$build_tools/apksigner" verify --verbose "$apk"
           done
 
-      - name: Upload signed release artifacts
-        uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v6
         with:
-          name: piko-${{ github.ref_name }}
+          name: android-dist
           path: dist/*
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 7
 
-      # 正文由 .github/release-notes.md 填入版本号生成。更新日志发版后手写在最前面、「## 下载」之前：
-      # 应用内更新弹窗读到这个标题就截断，见 GithubReleases.kt。
-      - name: Create GitHub release
+  windows:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            arch: x64
+          # 用户主力机就是 ARM64 Windows；mpv 与 skiko 都有 windows-arm64，构建机的架构决定取哪份
+          - runner: windows-11-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    env:
+      # Gradle 把 ORG_GRADLE_PROJECT_ 前缀的环境变量读作项目属性；带了它才是发布构建，见 build.gradle.kts
+      ORG_GRADLE_PROJECT_pikoDesktopVersion: ${{ needs.version.outputs.name }}
+      VERSION: ${{ needs.version.outputs.name }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # Zulu 而不是 Temurin：Temurin 25 的发行包不带 jmods，release 变体的 ProGuard 读不到
+      # java.lang.Object，jlink 也无从取模块；Temurin 也不发 Windows ARM64 的 25
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: zulu
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      # ci.yml 已跑过；这里再跑一遍，WinRT 与原生库的问题在打包机上也要先暴露
+      - name: Test
+        run: .\gradlew.bat :desktopApp:desktopTest --no-daemon --stacktrace
+
+      - name: Install WiX Toolset
+        continue-on-error: true
+        run: choco install wixtoolset -y --no-progress
+
+      # MSI 与应用内更新的两个附件在同一次调用里生成，取自同一份应用目录。MSI 未签名，
+      # 安装时 SmartScreen 会提示；安装包元数据只能用 ASCII，见 build.gradle.kts 的 description
+      - name: Build
+        run: .\gradlew.bat :desktopApp:packageReleaseMsi :desktopApp:packageReleaseUpdate --no-daemon --stacktrace
+
+      # 打包出的类逐个让 JVM 校验。ProGuard 改写过的字节码可能校验不过，而那只在装上之后
+      # 进到某一页才崩，gradle run 与单测都走不到（见 desktopApp/package/VerifyClasses.java）
+      - name: Verify classes
+        run: java -Xverify:all desktopApp/package/VerifyClasses.java desktopApp/build/compose/binaries/main-release/app/Piko/app
+
+      - name: Collect artifacts
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $binaries = 'desktopApp/build/compose/binaries/main-release'
+          $appDir = "$binaries/app/Piko"
+          if (-not (Test-Path "$appDir/Piko.exe")) { throw "缺少 $appDir/Piko.exe" }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          # 便携版：整个应用目录打包，解压即得 Piko 目录
+          Compress-Archive -Path $appDir -DestinationPath "dist/piko-windows-${{ matrix.arch }}-$env:VERSION.zip"
+          # 两个架构的 MSI 同名，按架构改名
+          $msi = Get-ChildItem "$binaries/msi/*.msi" | Select-Object -First 1
+          if (-not $msi) { throw 'packageReleaseMsi 没有产出 MSI' }
+          Copy-Item $msi.FullName "dist/piko-windows-${{ matrix.arch }}-$env:VERSION.msi"
+          # 应用内更新的 files.json 与 app.zip，名字由 packageReleaseUpdate 定好
+          Copy-Item "$binaries/update/*" dist/
+          Get-ChildItem dist | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: windows-${{ matrix.arch }}-dist
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # Apple 芯片。jpackage 不能交叉构建，Intel Mac 要另起 macos-15-intel runner，暂不出
+  macos:
+    needs: version
+    runs-on: macos-15
+    env:
+      ORG_GRADLE_PROJECT_pikoDesktopVersion: ${{ needs.version.outputs.name }}
+      VERSION: ${{ needs.version.outputs.name }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # 与 Windows 相同用 Zulu：打包的 jlink 与 ProGuard 要 jmods
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: zulu
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Build
+        run: ./gradlew :desktopApp:packageReleaseDmg --no-daemon --stacktrace
+
+      - name: Verify classes
+        run: java -Xverify:all desktopApp/package/VerifyClasses.java desktopApp/build/compose/binaries/main-release/app/Piko.app/Contents/app
+
+      - name: Collect artifacts
+        run: |
+          set -euo pipefail
+          dmg=$(ls desktopApp/build/compose/binaries/main-release/dmg/*.dmg | head -n 1)
+          mkdir -p dist
+          cp "$dmg" "dist/piko-macos-arm64-$VERSION.dmg"
+          # 没有开发者证书，包是 ad-hoc 签名；打印出来，Gatekeeper 报错时对照
+          codesign -dv desktopApp/build/compose/binaries/main-release/app/Piko.app 2>&1 || true
+          ls -l dist
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: macos-dist
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: [version, android, windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # 构建来源证明要签名，需要这两项
+      id-token: write
+      attestations: write
+    outputs:
+      # 交给隔离的 provenance job。传的是摘要清单的句柄，不是产物：generator 不需要也不信任产物本身
+      subjects-as-file: ${{ steps.subjects.outputs.handle }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # 各平台的产物落进同一个 dist，校验和与证明才会一并算上
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: '*-dist'
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums and SLSA subjects
+        run: |
+          (cd dist && sha256sum * > SHA256SUMS.txt)
+          ls -l dist
+          # generator 要 base64 过的 sha256sum 输出。只列会被安装或执行的文件：APK、MSI、DMG、
+          # 便携 zip 与应用内更新解开的 app.zip；files.json 与 mapping 由 SHA256SUMS.txt 覆盖。
+          # 写进文件而不走 job 输出：这一长串 base64 偶然含有某个较短 secret 的值时，Actions 会
+          # 以「可能含 secret」为由丢掉整条输出（Bilby 发版时撞上过）。文件放在 dist 外，免得被当成附件
+          (cd dist && sha256sum *.apk *.msi *.dmg *.zip | base64 -w0) > slsa-subjects.b64
+
+      - name: Share SLSA subjects
+        id: subjects
+        uses: slsa-framework/slsa-github-generator/actions/generator/generic/create-base64-subjects-from-file@v2.1.0
+        with:
+          path: slsa-subjects.b64
+
+      # 证明这些文件确实由这个 workflow、从这个 commit 构建
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            dist/*.apk
+            dist/*.msi
+            dist/*.dmg
+            dist/*.zip
+
+      # 正文是附件表与校验说明，更新日志由人在公开前写在最前面
+      - name: Render release notes
+        run: sed "s/{{version}}/${{ needs.version.outputs.name }}/g" .github/release-notes.md > release-notes.md
+
+      # 草稿：releases/latest 看不到它，应用内更新在公开之前不会提示，公开时附件已经齐全
+      - name: Publish draft release
+        uses: softprops/action-gh-release@v3
+        with:
+          draft: true
+          name: ${{ github.ref_name }}
+          body_path: release-notes.md
+          files: dist/*
+
+  # SLSA Build Level 3。release 里的 attest-build-provenance 与构建同属本仓库的 workflow，构建过程
+  # 能影响生成证明的过程，只到 L2。这里用 slsa-github-generator 的可复用 workflow，它在自己的上下文里跑，
+  # 拿不到本仓库的构建脚本与签名密钥。两份证明回答的不是同一个问题，都留着：
+  #   gh attestation verify <文件> --repo <owner>/<repo>
+  #   slsa-verifier verify-artifact <文件> --provenance-path multiple.intoto.jsonl --source-uri github.com/<owner>/<repo>
+  # 这个 job 的日志里 Node.js 20 的弃用警告来自 generator 内部，v2.1.0 已是上游最新版，本仓库改不了
+  provenance:
+    needs: [release]
+    permissions:
+      id-token: write
+      contents: write
+      actions: read
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects-as-file: ${{ needs.release.outputs.subjects-as-file }}
+      # 不让 generator 自己上传：它按 tag 查 release，而按 tag 的接口看不到草稿，查不到就会新建并公开
+      # 一个只有证明文件的同名 release（Bilby 在 v0.7.0 上发生过）。证明留作 workflow 产物，由下面挂到草稿上
+      upload-assets: false
+
+  # 按 release id 找草稿：按 tag 的接口不返回草稿，只有列表接口看得到
+  attach-provenance:
+    needs: [release, provenance]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: ${{ needs.provenance.outputs.provenance-name }}
+
+      - name: Attach provenance to the draft release
         env:
           GH_TOKEN: ${{ github.token }}
+          NAME: ${{ needs.provenance.outputs.provenance-name }}
         run: |
-          sed "s/{{version}}/${PIKO_VERSION_NAME}/g" .github/release-notes.md > release-notes.md
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
-            --notes-file release-notes.md \
-            dist/*
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | .id" | head -1)
+          if [ -z "$id" ]; then
+            echo "找不到 $GITHUB_REF_NAME 的 release" >&2
+            exit 1
+          fi
+          # 附件要传到 uploads 主机，api.github.com 不收
+          curl -sS --fail-with-body -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary "@$NAME" \
+            "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$id/assets?name=$NAME" \
+            > /dev/null

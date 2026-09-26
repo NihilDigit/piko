@@ -84,7 +84,7 @@ afterEvaluate {
 }
 
 // jlink、jpackage 与 ProGuard 默认用运行 Gradle 的那个 JDK。本机的 Gradle 跑在 JBR 21 上，打不了包；
-// 而 JDK 25 里 Temurin 的发行包不带 jmods，ProGuard 读不到 java.lang.Object（desktop.yml 选 Zulu 也是因此）。
+// 而 JDK 25 里 Temurin 的发行包不带 jmods，ProGuard 读不到 java.lang.Object（release.yml 选 Zulu 也是因此）。
 // 这里按 Azul 的 25 取工具链，缺了由 foojay 下载。用 Provider 绑定而不写 application.javaHome：
 // 后者是 String，配置期就要解析，只装了 JDK 21 的 Android CI 也会配置本工程。
 // 放进 afterEvaluate：插件在它自己的 afterEvaluate 里给这些任务设 javaHome，先登记的会被盖掉

@@ -1,0 +1,73 @@
+name: CI
+
+# 单元测试。改动落到 main 或提出 PR 时各跑一次；端到端行为冒烟在 smoke.yml。
+#
+# 只跑测试，不出包。安装包只在 release.yml 里打：tag 通常紧跟着 main 推，两边都打一遍等于同一份
+# 代码在 GitHub 的机器上过两次 ProGuard 与 AOT 训练。编译错误测试任务本来就会先撞上，拿不到的只有
+# release 独有的那类失败（keep 规则、类校验），留给发版时的构建。
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+
+# 连着推几个 commit 时只留最后一次
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # WinRT、窗口过程与 Windows 原生库的用例只能在 Windows 上跑；shared 的用例 smoke.yml 在 Linux 上跑过
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: zulu
+
+      # 停在 v5 的理由见 release.yml
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Test
+        run: .\gradlew.bat :desktopApp:desktopTest --no-daemon --stacktrace
+
+      - name: Upload test report
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: desktop-test-report
+          path: desktopApp/build/reports/tests
+          retention-days: 7
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Test
+        run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Upload test report
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: android-test-report
+          path: app/build/reports/tests
+          retention-days: 7
