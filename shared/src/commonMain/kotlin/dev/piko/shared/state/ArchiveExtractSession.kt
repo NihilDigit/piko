@@ -48,6 +48,9 @@ data class ArchiveJob(
     val id: String get() = file.id
 }
 
+/** 一个压缩包的结局：解压完成，或以某种原因失败。[message] 与 Snackbar 上的提示相同。 */
+class ArchiveOutcome(val fileName: String, val succeeded: Boolean, val message: String)
+
 /**
  * 压缩包的服务端解压，进程级：离开网盘页、切到别处，解压照常进行。
  *
@@ -77,6 +80,11 @@ class ArchiveExtractSession(
 
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val messages: SharedFlow<String> = _messages.asSharedFlow()
+
+    private val _outcomes = MutableSharedFlow<ArchiveOutcome>(extraBufferCapacity = 16)
+
+    /** 每个压缩包的结局，供不在前台时发通知。[messages] 里还混着「已跳过分卷」这类即时反馈，通知不要那些。 */
+    val outcomes: SharedFlow<ArchiveOutcome> = _outcomes.asSharedFlow()
 
     /**
      * 该弹密码框的压缩包。刚输过密码的那个还没验证完时先不弹下一个：同一批分包常用同一个密码，
@@ -170,7 +178,7 @@ class ArchiveExtractSession(
             failures = 0
             when (progress.phase) {
                 TaskPhase.COMPLETE -> {
-                    finish(job, "已解压 ${job.file.name}")
+                    finish(job, "已解压 ${job.file.name}", succeeded = true)
                     driveRepository.requestRefresh()
                     return
                 }
@@ -194,9 +202,10 @@ class ArchiveExtractSession(
         }
     }
 
-    private fun finish(job: ArchiveJob, message: String) {
+    private fun finish(job: ArchiveJob, message: String, succeeded: Boolean = false) {
         jobs = jobs.filterNot { it.id == job.id }
         _messages.tryEmit(message)
+        _outcomes.tryEmit(ArchiveOutcome(job.file.name, succeeded, message))
     }
 
     private fun update(jobId: String, transform: (ArchiveJob) -> ArchiveJob) {

@@ -1,27 +1,41 @@
 package dev.piko
 
+import android.Manifest
 import android.content.ContentResolver
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.piko.download.DownloadStatus
+import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.InstantSheetState
 import dev.piko.shared.state.extractLinks
 import dev.piko.shared.upload.UploadSelection
 import dev.piko.ui.PikoApp
+import dev.piko.ui.PikoServices
 import dev.piko.ui.VideoPlayerHost
 import dev.piko.ui.screens.player.MediampVideoPlayerScreen
 import dev.piko.ui.theme.appearanceFlow
 import dev.piko.ui.theme.isDark
 import dev.piko.util.PikPakAppLink
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 
@@ -75,6 +89,7 @@ class MainActivity : ComponentActivity() {
                 appearance = appearance,
                 videoPlayer = videoPlayer,
             )
+            AskForNotificationsOnFirstWork(app.services)
         }
     }
 
@@ -146,6 +161,32 @@ class MainActivity : ComponentActivity() {
         // 只取磁力链：分享来的网页地址不该弹出离线下载面板。多条时一并交出去，面板列成批量清单
         val magnets = texts.firstNotNullOfOrNull { text -> extractLinks(text).filter { it.isMagnet }.takeIf { it.isNotEmpty() } }
         return magnets?.joinToString("\n") { it.uri }
+    }
+}
+
+/**
+ * Android 13 起通知要在运行时授权，只在清单里声明的话，传输进度与任务结果的通知都发不出来。
+ * 等第一次有工作要在后台跑时再问：这时说得清为什么要通知，一打开应用就问多半会被拒。
+ * 每个进程只问一次；拒绝两次后系统自己也不再弹。
+ */
+@Composable
+private fun AskForNotificationsOnFirstWork(services: PikoServices) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+    val context = LocalContext.current
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    LaunchedEffect(services) {
+        val serverWork = snapshotFlow {
+            val scanning = services.duplicateSession.state?.phase.let {
+                it == DuplicateFinderState.Phase.SCANNING || it == DuplicateFinderState.Phase.ANALYZING
+            }
+            services.archiveExtractSession.jobs.isNotEmpty() || scanning
+        }
+        combine(services.downloadManager.tasks, services.uploadManager.tasks, serverWork) { downloads, uploads, busy ->
+            busy || downloads.values.any { it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.PENDING } ||
+                uploads.values.any { it.status.isActive }
+        }.first { it }
+        val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        if (!granted) launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 }
 

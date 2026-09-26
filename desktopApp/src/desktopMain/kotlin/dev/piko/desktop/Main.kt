@@ -7,8 +7,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.res.loadImageBitmap
@@ -22,17 +25,18 @@ import dev.piko.desktop.update.WindowsInstaller
 import dev.piko.desktop.winrt.WinRTSupport
 import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
+import dev.piko.shared.data.FilePikoCacheStore
 import dev.piko.shared.data.PikoClientManager
 import dev.piko.shared.state.InstantSheetState
 import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.media.PikoMediaRepository
-import dev.piko.shared.upload.PikoUploadCoordinator
-import dev.piko.shared.upload.UploadStatus
 import dev.piko.shared.upload.UploadTask
 import dev.piko.ui.PikoApp
 import dev.piko.ui.PikoServices
 import dev.piko.ui.VideoPlayerHost
 import dev.piko.ui.VideoPlayerRequest
+import dev.piko.ui.anyActiveFor
+import dev.piko.ui.workNotices
 import dev.piko.ui.theme.appearanceFlow
 import dev.piko.ui.theme.isDark
 import java.awt.Dimension
@@ -111,9 +115,10 @@ fun main(args: Array<String>) {
         val hasActiveTransfers = downloads.values.any { it.status.isActive } || uploads.values.anyActiveFor(account)
         // 关窗时下载或上传还在跑，就藏进托盘传完再退出；传完之前随时可以从托盘叫回来或直接退出
         var isInBackground by remember { mutableStateOf(false) }
+        var isMainWindowFocused by remember { mutableStateOf(true) }
 
-        DownloadNotifications(services.downloadManager)
-        UploadNotifications(services.uploadManager, services.clientManager)
+        // 主窗口在前台时列表与 Snackbar 已经说明了，不再弹 Toast
+        WorkNotifications(services) { isInBackground || !isMainWindowFocused }
 
         LaunchedEffect(isInBackground, hasActiveTransfers) {
             if (isInBackground && !hasActiveTransfers) exitApplication()
@@ -154,6 +159,8 @@ fun main(args: Array<String>) {
         ) {
             // 再窄就放不下 compact 布局的底部导航与列表了；宽度下限等于一台窄手机
             LaunchedEffect(Unit) { window.minimumSize = Dimension(360, 560) }
+            val focused = LocalWindowInfo.current.isWindowFocused
+            SideEffect { isMainWindowFocused = focused }
             TitleBarThemeEffect(window, appearance.isDark())
             TaskbarDownloadProgress(window, services.downloadManager)
             LaunchedEffect(Unit) {
@@ -196,13 +203,6 @@ fun main(args: Array<String>) {
 
 private val DownloadStatus.isActive: Boolean
     get() = this == DownloadStatus.DOWNLOADING || this == DownloadStatus.PENDING
-
-/**
- * 上传队列只跑当前账号的任务，换号时正在传的转为暂停，其余账号排着的一直是 QUEUED。
- * 不按账号过滤的话，换过号就永远有活跃任务，藏进托盘后不会退出。
- */
-private fun Collection<UploadTask>.anyActiveFor(account: String?): Boolean =
-    any { it.account == account && it.status.isActive }
 
 /**
  * 启动参数里的链接：magnet: 经注册的协议唤起时进来；分享链接没法注册成协议（https 归浏览器），
@@ -272,87 +272,22 @@ private fun createServices(settings: DesktopSettingsStore, preferences: DesktopP
             mediaRepository = mediaRepository,
         ),
         uploadSources = DesktopPikoUploadSources(),
+        cacheStore = FilePikoCacheStore(File(System.getProperty("user.home"), ".piko/cache").path),
     )
 }
 
-/** 下载完成或失败时发系统 Toast。应用内的列表已有状态，Toast 是给切到别处的人看的。 */
-@Composable
-private fun DownloadNotifications(downloadCoordinator: PikoDownloadCoordinator) {
-    LaunchedEffect(downloadCoordinator) {
-        var previousStatuses = emptyMap<String, DownloadStatus>()
-        downloadCoordinator.tasks.collect { tasks ->
-            tasks.forEach { (id, task) ->
-                val previous = previousStatuses[id]
-                if (previous == null || previous == task.status) return@forEach
-                val (title, message) = when (task.status) {
-                    DownloadStatus.COMPLETED -> "下载完成" to "${task.fileName} 已下载到本机"
-                    DownloadStatus.FAILED -> "下载失败" to "${task.fileName}：${task.errorMessage ?: "未知错误"}"
-                    else -> return@forEach
-                }
-                // Toast 在 WinRT 专用线程上同步等结果，最长 15 秒，不能压在界面线程上
-                withContext(Dispatchers.IO) { WinRTSupport.showNotification(title, message) }
-            }
-            previousStatuses = tasks.mapValues { it.value.status }
-        }
-    }
-}
-
 /**
- * 上传完成或失败时发 Toast。一个文件夹常有成百个文件，秒传时一秒完成好几个，逐个发会刷屏，
- * 所以攒到队列排空时汇总成一条；只有一个文件时写出文件名。
+ * 下载、上传、解压、查找重复结束时发系统 Toast，汇总逻辑见 workNotices。[shouldNotify] 在发送那一刻判断：
+ * 主窗口在前台时列表与 Snackbar 已经说明了。
  */
 @Composable
-private fun UploadNotifications(uploadCoordinator: PikoUploadCoordinator, clientManager: PikoClientManager) {
-    LaunchedEffect(uploadCoordinator) {
-        val startedAtMs = System.currentTimeMillis()
-        var previousStatuses = emptyMap<String, UploadStatus>()
-        val finished = mutableMapOf<String, UploadTask>()
-        uploadCoordinator.tasks.collect { tasks ->
-            tasks.forEach { (id, task) ->
-                val previous = previousStatuses[id]
-                if (previous == task.status) return@forEach
-                // 没见过的任务有两种：启动时读回的旧记录，不该报；刚入队就在两次收集之间秒传完的，要报
-                if (previous == null && task.createdAtMs < startedAtMs) return@forEach
-                if (task.status == UploadStatus.COMPLETED || task.status == UploadStatus.FAILED) {
-                    finished[id] = task
-                } else {
-                    // 失败后重试，等它再次结束
-                    finished -= id
-                }
-            }
-            finished.keys.retainAll(tasks.keys)
-            previousStatuses = tasks.mapValues { it.value.status }
-            if (finished.isEmpty() || tasks.values.anyActiveFor(clientManager.currentClient.value?.account)) return@collect
-            val (title, message) = uploadSummary(finished.values.toList())
-            finished.clear()
+private fun WorkNotifications(services: PikoServices, shouldNotify: () -> Boolean) {
+    val currentShouldNotify by rememberUpdatedState(shouldNotify)
+    LaunchedEffect(services) {
+        services.workNotices().collect { notice ->
+            if (!currentShouldNotify()) return@collect
             // Toast 在 WinRT 专用线程上同步等结果，最长 15 秒，不能压在界面线程上
-            withContext(Dispatchers.IO) { WinRTSupport.showNotification(title, message) }
+            withContext(Dispatchers.IO) { WinRTSupport.showNotification(notice.title, notice.message) }
         }
     }
-}
-
-private fun uploadSummary(tasks: List<UploadTask>): Pair<String, String> {
-    val completed = tasks.filter { it.status == UploadStatus.COMPLETED }
-    val failed = tasks.filter { it.status == UploadStatus.FAILED }
-    tasks.singleOrNull()?.let { task ->
-        return when {
-            failed.isNotEmpty() -> "上传失败" to "${task.fileName}：${task.errorMessage ?: "未知错误"}"
-            task.isInstant -> "秒传完成" to "${task.fileName} 已秒传到「${task.parentName}」"
-            else -> "上传完成" to "${task.fileName} 已上传到「${task.parentName}」"
-        }
-    }
-    val title = when {
-        failed.isEmpty() -> "上传完成"
-        completed.isEmpty() -> "上传失败"
-        else -> "上传结束"
-    }
-    val instantCount = completed.count { it.isInstant }
-    val completedPart = when {
-        completed.isEmpty() -> null
-        instantCount == completed.size -> "${completed.size} 个文件已秒传"
-        instantCount > 0 -> "${completed.size} 个文件已上传，其中 $instantCount 个秒传"
-        else -> "${completed.size} 个文件已上传"
-    }
-    val failedPart = failed.takeIf { it.isNotEmpty() }?.let { "${it.size} 个失败" }
-    return title to listOfNotNull(completedPart, failedPart).joinToString("；")
 }

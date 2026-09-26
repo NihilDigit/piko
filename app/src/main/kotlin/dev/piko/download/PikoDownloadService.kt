@@ -10,11 +10,14 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import androidx.compose.runtime.snapshotFlow
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import dev.piko.MainActivity
 import dev.piko.PikoApplication
+import dev.piko.shared.state.DuplicateFinderState
+import dev.piko.ui.PikoServices
 import dev.piko.ui.components.toReadableSize
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -49,7 +52,9 @@ class PikoDownloadService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val initialNotification = buildNotification("正在准备传输", 0, 0, 0L)
+        // 第一条就写眼下在做的事：观察循环的第一次更新之前工作可能已经结束（小目录的查找重复只要几秒），
+        // 写死成「传输」的话，查找重复时看到的就一直是它
+        val initialNotification = buildNotification(currentTitle(), 0, 0, 0L)
         try {
             ServiceCompat.startForeground(
                 this,
@@ -85,16 +90,18 @@ class PikoDownloadService : Service() {
         if (observeJob?.isActive == true) return
 
         observeJob = serviceScope.launch {
-            val downloadManager = PikoApplication.instance.downloadManager
-            val uploadManager = PikoApplication.instance.uploadManager
+            val services = PikoApplication.instance.services
+            val downloadManager = services.downloadManager
+            val uploadManager = services.uploadManager
+            // 解压与查找重复不传字节，只算作「有活在干」，常驻通知里写明，进度条不定
+            val serverWork = snapshotFlow { ServerWork.of(services) }
             // 用 collect 而非 collectLatest，每轮末尾等一秒：conflate 让等待期间的中间值直接跳过，
             // 通知更新被压到每秒一次。系统对单个应用的通知更新有频率上限，超出的直接丢弃，
             // 多发只是白白重建 Notification。combine 自身不合并，要显式 conflate
-            combine(downloadManager.tasks, uploadManager.tasks) { downloads, uploads ->
-                downloads.values.filter { it.status == DownloadStatus.DOWNLOADING } to
-                    uploads.values.filter { it.status.isActive }
-            }.conflate().collect { (downloads, uploads) ->
-                if (downloads.isEmpty() && uploads.isEmpty()) {
+            combine(downloadManager.tasks, uploadManager.tasks, serverWork) { downloads, uploads, work ->
+                Triple(downloads.values.filter { it.status == DownloadStatus.DOWNLOADING }, uploads.values.filter { it.status.isActive }, work)
+            }.conflate().collect { (downloads, uploads, work) ->
+                if (downloads.isEmpty() && uploads.isEmpty() && work.isIdle) {
                     // 没有进行中的任务，延迟 2 秒后若仍无任务则优雅退出前台。
                     // PENDING 也算活跃：新任务要先查一次本地长度才转为 DOWNLOADING
                     delay(2000)
@@ -102,7 +109,7 @@ class PikoDownloadService : Service() {
                         it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.PENDING
                     }
                     val stillUploading = uploadManager.tasks.value.values.any { it.status.isActive }
-                    if (!stillDownloading && !stillUploading) {
+                    if (!stillDownloading && !stillUploading && ServerWork.of(services).isIdle) {
                         ServiceCompat.stopForeground(this@PikoDownloadService, ServiceCompat.STOP_FOREGROUND_REMOVE)
                         stopSelf()
                     }
@@ -114,18 +121,11 @@ class PikoDownloadService : Service() {
                         ((totalProcessed.toDouble() / totalBytes.toDouble()) * 100).toInt().coerceIn(0, 100)
                     } else 0
 
-                    val title = when {
-                        uploads.isEmpty() && downloads.size == 1 -> downloads.first().fileName
-                        uploads.isEmpty() -> "正在下载 ${downloads.size} 个任务"
-                        downloads.isEmpty() && uploads.size == 1 -> uploads.first().fileName
-                        downloads.isEmpty() -> "正在上传 ${uploads.size} 个文件"
-                        else -> "正在下载 ${downloads.size} 个任务，上传 ${uploads.size} 个文件"
-                    }
-
                     val notification = buildNotification(
-                        title = title,
+                        title = workTitle(downloads.map { it.fileName }, uploads.map { it.fileName }, work),
                         progress = progressPercent,
-                        total = 100,
+                        // 只有解压或查找重复时没有字节可算，进度条改为不定
+                        total = if (totalBytes > 0) 100 else 0,
                         speedBytesPerSec = totalSpeed,
                         processedBytes = totalProcessed,
                         totalBytes = totalBytes,
@@ -136,6 +136,39 @@ class PikoDownloadService : Service() {
                 }
             }
         }
+    }
+
+    /** 在服务端进行、不传字节的工作：解压中的压缩包数，正在查找重复的目录名。 */
+    private data class ServerWork(val extractions: Int, val scanningRoot: String?) {
+        val isIdle: Boolean get() = extractions == 0 && scanningRoot == null
+
+        companion object {
+            fun of(services: PikoServices): ServerWork {
+                val finder = services.duplicateSession.state
+                val scanning = finder?.phase == DuplicateFinderState.Phase.SCANNING || finder?.phase == DuplicateFinderState.Phase.ANALYZING
+                return ServerWork(services.archiveExtractSession.jobs.size, finder?.root?.name?.takeIf { scanning })
+            }
+        }
+    }
+
+    private fun currentTitle(): String {
+        val services = PikoApplication.instance.services
+        val downloads = services.downloadManager.tasks.value.values
+            .filter { it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.PENDING }.map { it.fileName }
+        val uploads = services.uploadManager.tasks.value.values.filter { it.status.isActive }.map { it.fileName }
+        return workTitle(downloads, uploads, ServerWork.of(services))
+    }
+
+    /** 只有一种工作且只有一个文件时写文件名，否则按种类列出；什么都还没有时写「正在准备」。 */
+    private fun workTitle(downloads: List<String>, uploads: List<String>, work: ServerWork): String {
+        if (downloads.isEmpty() && uploads.isEmpty() && work.isIdle) return "正在准备"
+        (downloads + uploads).singleOrNull()?.let { if (work.isIdle) return it }
+        return listOfNotNull(
+            downloads.takeIf { it.isNotEmpty() }?.let { "下载 ${it.size} 个任务" },
+            uploads.takeIf { it.isNotEmpty() }?.let { "上传 ${it.size} 个文件" },
+            work.extractions.takeIf { it > 0 }?.let { "解压 $it 个压缩包" },
+            work.scanningRoot?.let { "查找「$it」中的重复" },
+        ).joinToString("，", prefix = "正在")
     }
 
     private fun buildNotification(
@@ -162,7 +195,7 @@ class PikoDownloadService : Service() {
         val contentText = if (totalBytes > 0) {
             "${processedBytes.toReadableSize()} /${totalBytes.toReadableSize()}"
         } else {
-            "传输中"
+            "进行中"
         }
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
@@ -173,6 +206,9 @@ class PikoDownloadService : Service() {
             .setProgress(total, progress, total == 0)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            // Android 12 起前台服务的通知默认延迟至多 10 秒才显示，好让很快结束的服务不出通知；
+            // 这里的工作都是用户刚发起、要跑一阵的，延迟只会让人以为没开始
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setContentIntent(pendingIntent)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
