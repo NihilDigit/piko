@@ -429,20 +429,14 @@ internal fun DriveListHeader(
                     val fields = PikoSortField.entries
                     fields.forEachIndexed { index, field ->
                         val isCurrent = field.owns(sortOrder)
-                        // 参数按位置传：带 shape 的这个重载，尾部槽位在桌面端的 material3 里叫 trailingIcon，
-                        // Android 端已改名 trailingContent，没有两端通用的参数名。可选中的菜单项
-                        // （selected 与 shapes）两端同样对不上，Android 端已挪去 SelectableDropdownMenuItem，
-                        // 所以当前字段仍只靠尾部的方向箭头标出
                         DropdownMenuItem(
-                            {
+                            onClick = {
                                 showSortMenu = false
                                 onSortChange(field.selectFrom(sortOrder))
                             },
-                            { Text(field.label) },
-                            menuItemShape(index, fields.size),
-                            Modifier,
-                            null,
-                            { if (isCurrent) SortDirectionIcon(sortOrder) },
+                            text = { Text(field.label) },
+                            shape = menuItemShape(index, fields.size),
+                            trailingIcon = { if (isCurrent) SortDirectionIcon(sortOrder) },
                         )
                     }
                 }

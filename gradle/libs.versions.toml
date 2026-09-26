@@ -7,6 +7,9 @@ coreKtx = "1.19.0"
 documentFile = "1.1.0"
 activityCompose = "1.13.0"
 lifecycle = "2.11.0"
+# 用稳定版 BOM，ui 与 foundation 落在 1.12.x。1.13 的 alpha 在列表快速滚动时崩溃：可交互 ListItem
+# 测量时读副文本的基线，为对齐而摆放的子节点去 RectList 查尚未入表的父节点。material3 的
+# 版本不看 BOM，由 cmp-material3 重定向拉到 1.5.0-alpha22，与桌面端同一版 API
 composeBom = "2026.09.00"
 navigation3 = "1.1.5"
 
@@ -68,7 +71,7 @@ androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-ru
 androidx-lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }
 
 # Compose BOM & Material 3 Expressive (1.5.0-alpha28)
-androidx-compose-bom = { module = "androidx.compose:compose-bom-alpha", version.ref = "composeBom" }
+androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
 androidx-compose-ui = { module = "androidx.compose.ui:ui" }
 androidx-compose-ui-graphics = { module = "androidx.compose.ui:ui-graphics" }
 androidx-compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
