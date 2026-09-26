@@ -39,11 +39,11 @@ Piko 是 PikPak 的第三方跨平台客户端。Android 与 Windows 共用一�
 
 自有仓库不走 PR，直接在 `main` 上提交。
 
-Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下载` 起是按设备列出的附件表与校验说明，
-GitHub 自动生成的 Full Changelog 接在最后。**更新日志发版后手写，放在正文最前面、`## 下载` 之前**：应用内
+Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下载` 起是按设备列出的附件表与校验说明。
+**更新日志发版后手写，放在正文最前面、`## 下载` 之前**：应用内
 更新弹窗读到这个标题就截断（`GithubReleases.kt` 的 `updateNotesOf`），标题改动要两边一起改，`ReleaseNotesTest` 会报错。
 `gh release edit --notes-file` 替换整段正文而不是追加，改之前先用 `gh release view <tag> --json body` 读回原文，
-把更新日志拼在前面再写回，否则附件表与 Full Changelog 就丢了。
+把更新日志拼在前面再写回，否则附件表就丢了。
 
 更新日志写给下载的人看，照 Bilby 的格式：一行概述，然后 `## 修复` 与 `## 变化`，每条一句书面语，写读者能察觉的
 现象或行为变化，不写文件名、类型名与提交标题，读者看不到的重构不写。`## 修复` 只列已发布版本里存在的问题：
