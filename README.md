@@ -1,116 +1,91 @@
-<p align="center">
-  <img src="docs/icon.svg" width="96" height="96" alt="Piko Icon" />
-</p>
+<p align="center"><img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/icon.png" alt="Piko" width="96"></p>
 
 <h1 align="center">Piko</h1>
 
-<p align="center">
-  <strong>轻量、极速、现代的第三方 PikPak 跨平台客户端</strong>
-</p>
+<p align="center"><b>简体中文</b> | <a href="README.en.md">English</a></p>
 
 <p align="center">
-  <a href="https://github.com/NihilDigit/piko/releases/latest"><img src="https://img.shields.io/github/v/release/NihilDigit/piko?style=flat-square&color=306EFF" alt="Latest Release" /></a>
-  <a href="https://github.com/NihilDigit/piko/releases"><img src="https://img.shields.io/badge/Android-8.0%2B-306EFF?style=flat-square&logo=android&logoColor=white" alt="Android 8.0+" /></a>
-  <a href="#"><img src="https://img.shields.io/badge/Windows%20Desktop-开发中-orange?style=flat-square&logo=windows&logoColor=white" alt="Windows Desktop (In Development)" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/NihilDigit/piko?style=flat-square&color=306EFF" alt="License" /></a>
+<a href="#安装"><img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-306EFF?style=flat-square&logo=android&logoColor=white"></a>
+<a href="#安装"><img alt="Windows 10+ x64 | arm64" src="https://img.shields.io/badge/Windows-10%2B%20x64%20%7C%20arm64-306EFF?style=flat-square&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0yIDJoOS41djkuNUgyek0xMi41IDJIMjJ2OS41aC05LjV6TTIgMTIuNWg5LjVWMjJIMnpNMTIuNSAxMi41SDIyVjIyaC05LjV6Ii8+PC9zdmc+"></a>
+<a href="https://github.com/NihilDigit/piko/releases/latest"><img alt="Latest Release" src="https://img.shields.io/github/v/release/NihilDigit/piko?style=flat-square&color=306EFF"></a>
+<a href="LICENSE"><img alt="MIT" src="https://img.shields.io/github/license/NihilDigit/piko?style=flat-square&color=306EFF"></a>
+<br>
+<img alt="Kotlin Multiplatform" src="https://img.shields.io/badge/Kotlin%20Multiplatform-306EFF?style=flat-square&logo=kotlin&logoColor=white">
+<img alt="Compose Multiplatform" src="https://img.shields.io/badge/Compose%20Multiplatform-306EFF?style=flat-square&logo=jetpackcompose&logoColor=white">
+<img alt="Material 3 Expressive" src="https://img.shields.io/badge/Material%203%20Expressive-306EFF?style=flat-square&logo=materialdesign&logoColor=white">
 </p>
+
+<p align="center"><b>高性能、多平台的 PikPak 客户端</b></p>
+
+## 双端支持
+
+基于 Kotlin Multiplatform 构建，两端共用界面与业务代码，界面遵循 Material 3 Expressive 设计规范：
+- **Android**：原生实现，界面基于 Jetpack Compose，播放基于 libmpv。
+- **Windows**：基于 Compose Multiplatform 的 GPU 加速界面，视频画面经 D3D11 直通 Skia，零拷贝合成。
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Kotlin-2.4%2B%20KMP-306EFF?style=flat-square&logo=kotlin&logoColor=white" alt="Kotlin KMP" />
-  <img src="https://img.shields.io/badge/Compose%20Multiplatform-Desktop%20%26%20Android-306EFF?style=flat-square&logo=jetpackcompose&logoColor=white" alt="Compose Multiplatform" />
-  <img src="https://img.shields.io/badge/UI-Material%203%20Expressive-306EFF?style=flat-square&logo=materialdesign&logoColor=white" alt="Material 3 Expressive" />
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/desktop.jpg" height="380" alt="Windows：海报墙">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/phone.jpg" height="380" alt="Android：海报墙">
 </p>
 
----
+## 离线下载
 
-## 平台支持与开发状态
+磁力链接按作品、分区与集数解析，字幕随视频归组。已收录的视频可在保存前完整预览，保存时只保留勾选的文件。
 
-两端共用同一套 Material 3 Expressive 界面，布局按窗口宽度自适应：手机上是底部导航，平板与桌面窗口换成侧边导航与多栏。
+<p align="center">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/magnet.jpg" height="528" alt="磁力解析">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/magnet-sections.jpg" height="528" alt="多部作品与分区">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/preview.jpg" height="528" alt="保存前预览">
+</p>
 
-| 平台 | 状态 | 说明 |
-| :--- | :--- | :--- |
-| **Android** | ✅ **正式支持** | 完整功能，支持后台服务、段落抽取、手势播放与离线任务 |
-| **Windows Desktop** | 🚧 **开发中 (In Development)** | 与 Android 平板同样的界面，补上右键菜单、键盘快捷键与悬停提示；独立播放器窗口、系统通知与防锁屏 |
+## 按作品浏览网盘
 
----
+网盘目录同样按作品、分区与集数分组，支持海报墙视图与全盘搜索。
 
-## ✨ 特性亮点
+<p align="center">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/drive.jpg" height="528" alt="列表视图">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/search.jpg" height="528" alt="全盘搜索">
+</p>
 
-- 🚀 **并发流式播放**：两端都以 libmpv 解码，经本机回环代理并发分段取流，拖动秒级响应。Android 端是沉浸式手势播放器，Desktop 端是可与主界面并排的独立窗口。
-- ✂️ **视频指定段落无损抽取下载**（Android）：视频文件提供专属段落下载功能，支持开始/结束双时间点实时帧画面预览与微调；底层基于原生 `MediaExtractor` 与 `MediaMuxer` 进行无损流复制（免重编码），自动对齐前序关键帧生成标准合规 MP4 文件。
-- ⚡ **可调并发多任务下载**：内置高性能分块下载引擎，支持 1~32 线程连接预算调节与自定义存储路径；Android 具备前台常驻通知服务，Windows 在下载完成或失败时发系统通知。
-- 🧲 **极速磁力离线**：支持应用内一键秒存磁力链接，支持捕获系统外部 `magnet:` 链接与文本分享。
-- 🎨 **一套界面，随窗口伸缩**：遵循 Material 3 Expressive 规范，Android 12 起支持系统取色，另有六套内置主题色。窄窗口单栏、宽窗口多栏，桌面窗口缩放与平板分屏效果一致；鼠标与键盘有右键菜单、快捷键与悬停提示。
+## 播放
 
----
+选集按作品与分区划分，播放进度与 PikPak 官方客户端同步。Android 支持手势调节亮度、音量与进度，Windows 支持鼠标与键盘操作。
 
-## 📦 下载与安装
+<p align="center">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/player.jpg" width="410" alt="横屏播放">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/episodes.jpg" width="410" alt="选集">
+</p>
 
-前往 [Releases 页面](https://github.com/NihilDigit/piko/releases/latest) 下载最新版本的 APK（Windows 桌面版本随测试进度发布）：
+## 传输与整理
 
-| 产物名称 | 架构说明 | 适用场景 |
-| :--- | :--- | :--- |
-| `piko-*-arm64-v8a.apk` | 64 位 ARM 架构 | **推荐**。绝大部分现代 Android 手机与平板 |
-| `piko-*-universal.apk` | 全架构集成通用包 | 适用于任何设备，体积稍大 |
-| `piko-*-armeabi-v7a.apk` | 32 位 ARM 架构 | 较老的 32 位安卓设备 |
-| `piko-*-x86_64.apk` | 64 位 x86 架构 | PC Android 模拟器或 x86 设备 |
+下载与在线播放以 8 条连接并发读取，弱网下也能用满带宽。另支持无损截取视频片段、上传、服务端解压与查找重复。
 
----
+<p align="center">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/segment.jpg" height="528" alt="片段下载">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/duplicates.jpg" height="528" alt="查找重复">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/account.jpg" height="528" alt="网盘与流量">
+</p>
 
-## 🛠 技术栈
+## 安装
 
-核心依赖及在 Piko 中的用途：
+前往 [Releases](https://github.com/NihilDigit/piko/releases/latest) 下载。所有安装包均由 GitHub Actions 从仓库源码构建，校验值见 `SHA256SUMS.txt`。
 
-- **语言与构建**：[Kotlin Multiplatform](https://github.com/JetBrains/kotlin)（`shared` 业务与屏幕状态 + `ui` 两端共用的界面）、[kotlinx.coroutines](https://github.com/Kotlin/kotlinx.coroutines) / [kotlinx.serialization](https://github.com/Kotlin/kotlinx.serialization) / [kotlinx-datetime](https://github.com/Kotlin/kotlinx-datetime)
-- **界面**：[Compose Multiplatform](https://github.com/JetBrains/compose-multiplatform)（Material 3 Expressive + 自适应导航套件）+ [Navigation 3](https://developer.android.com/jetpack/compose/navigation)；Android 端另用 AndroidX（activity / lifecycle / DataStore / DocumentFile）
-- **播放器**：两端都是 libmpv。Android 用 [libmpv-android](https://github.com/jarnedemeulemeester/libmpv-android)，桌面用 [mediamp](https://github.com/open-ani/mediamp)（OpenAni，D3D11 画面直接进 Skia，x64/arm64 双架构）
-- **Windows 原生**：JDK FFM 直调 WinRT 与 Win32（Toast 通知、防锁屏常醒、AUMID、magnet 协议关联）
-- **网盘协议**：[pikpak-kotlin](https://github.com/nihildigit/pikpak-kotlin)（登录、文件、离线任务、回收站等全套 PikPak API）
-- **网络与图片**：[Ktor Client](https://github.com/ktorio/ktor)（OkHttp 引擎）+ [Coil 3](https://github.com/coil-kt/coil)（跨平台图片加载）
-- **视频片段**：[mp4parser](https://github.com/sannies/mp4parser)（纯 JVM 无损流复制切片，无需捆绑 ffmpeg）
+- **Android**：需要 Android 8.0 或更高版本。按设备架构选择 APK，无法确定时选 `universal`。
+- **Windows**：需要 Windows 10 或更高版本，提供 x64 与 arm64 两种架构。
+  - `.msi`：安装到当前用户目录，无需管理员权限，支持应用内更新。
+  - `.zip`：便携版，解压后运行 `Piko.exe`。
 
----
+## 贡献
 
-## 🔨 本地构建
+欢迎提交 Issue 与 PR。小的 Bug 修复、崩溃排查与文档补充可以直接提交。
 
-### 前置要求
-- JDK 17 或以上（Android / shared 模块）
-- JDK 25（desktopApp 模块：FFM 原生调用要求 JDK 22+，release 的 AOT 缓存要求 JDK 25；已钉死 toolchain 25，Gradle 自动供给）
-- Android SDK 34+
-- Windows 打包另需 WiX Toolset 3.x（CI 自带，`packageMsi` 用）
+计划新增功能或调整架构时，请先提交 Issue，说明使用场景与拟定方案，确认方向后再实现。
 
-### 本地编译
-```bash
-# 克隆仓库
-git clone https://github.com/nihildigit/piko.git
-cd piko
+使用 LLM 辅助编写代码时，请理解新增代码的逻辑，并在真机上验证。
 
-# 编译 Debug APK
-./gradlew assembleDebug
+## 许可与致谢
 
-# 安装到连接的 Android 设备
-adb install -r app/build/outputs/apk/debug/app-debug.apk
-
-# 跑桌面端（Windows，需 JDK 25，原生冒烟测试一并执行）
-./gradlew :desktopApp:run :desktopApp:desktopTest
-
-# 打 Windows 安装包（需 WiX 3.x；ProGuard 裁剪并附 AOT 缓存，打包时会启动一次应用做训练）
-./gradlew :desktopApp:packageReleaseMsi
-
-# 打 Windows 绿色包（exe + 自带 JRE 25，解压即跑，CI 出 zip 用的就是它）
-./gradlew :desktopApp:createReleaseDistributable
-# 产物：desktopApp/build/compose/binaries/main-release/app/Piko/Piko.exe
-```
-
----
-
-## 🙏 致谢
-
-- [52funny/pikpakcli](https://github.com/52funny/pikpakcli)：PikPak 接口的请求格式、验证码签名与上传协议均取自此项目。Piko 的网盘能力来自 [pikpak-kotlin](https://github.com/NihilDigit/pikpak-kotlin)，该 SDK 即以此为起点。
-- [digbug82/PikPak_Enhancement_Master](https://github.com/digbug82/PikPak_Enhancement_Master)：PikPak 网页端增强脚本，Piko 的多项功能设计参考了它。
-
----
-
-## 📄 开源许可
-
-本项目基于 [MIT](LICENSE) 许可证开源。
+- 源码以 [MIT](LICENSE) 许可证开源。Android 安装包内置以 GPL 构建的 mpv 与 FFmpeg，整体按 GPLv3 分发。
+- PikPak 接口实现参考了 [52funny/pikpakcli](https://github.com/52funny/pikpakcli)。
+- 多项功能设计参考了 PikPak 网页端增强脚本 [digbug82/PikPak_Enhancement_Master](https://github.com/digbug82/PikPak_Enhancement_Master)。
+- Windows 端 mpv 的零拷贝渲染由 [MediaMP](https://github.com/open-ani/mediamp) 实现。
