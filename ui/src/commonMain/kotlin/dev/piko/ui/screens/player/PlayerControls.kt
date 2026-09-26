@@ -38,14 +38,17 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Subtitles
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.VideoLibrary
@@ -114,6 +117,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
+import dev.piko.ui.platform.LocalFramelessWindow
+import dev.piko.ui.platform.windowDragArea
 import kotlinx.coroutines.delay
 import java.math.BigDecimal
 import java.math.RoundingMode
@@ -143,6 +148,8 @@ fun PlayerTopBar(
     /** 音轨与字幕。没有字幕、音轨也只有一条时为 null，不给入口。 */
     onTracksClick: (() -> Unit)? = null,
 ) {
+    // 桌面端独立的播放窗口没有标题栏：关窗按钮放在右上角，与其他按钮同款，左边的返回键与它重复，不再显示
+    val framelessWindow = LocalFramelessWindow.current
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -155,14 +162,17 @@ fun PlayerTopBar(
             .padding(horizontal = 8.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        PlayerIconButton(
-            icon = Icons.AutoMirrored.Filled.ArrowBack,
-            label = "返回",
-            onClick = onBackClick,
-            tooltipBelow = true,
-            containerSize = IconButtonDefaults.smallContainerSize(IconButtonDefaults.IconButtonWidthOption.Narrow),
-        )
-        Box(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+        if (framelessWindow == null) {
+            PlayerIconButton(
+                icon = Icons.AutoMirrored.Filled.ArrowBack,
+                label = "返回",
+                onClick = onBackClick,
+                tooltipBelow = true,
+                containerSize = IconButtonDefaults.smallContainerSize(IconButtonDefaults.IconButtonWidthOption.Narrow),
+            )
+        }
+        // 标题这一块兼做拖动窗口的地方（仅限没有标题栏的桌面窗口）
+        Box(Modifier.weight(1f).windowDragArea().padding(horizontal = 12.dp)) {
             TooltipBox(
                 positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
                 tooltip = { PlainTooltip { Text(title) } },
@@ -209,6 +219,21 @@ fun PlayerTopBar(
                 icon = Icons.Outlined.Tune,
                 label = "播放设置",
                 onClick = onSettingsClick,
+                tooltipBelow = true,
+            )
+        }
+        if (framelessWindow != null) {
+            val onTop = framelessWindow.isAlwaysOnTop
+            PlayerIconButton(
+                icon = if (onTop) Icons.Filled.PushPin else Icons.Outlined.PushPin,
+                label = if (onTop) "取消置顶" else "置顶",
+                onClick = { framelessWindow.setAlwaysOnTop(!onTop) },
+                tooltipBelow = true,
+            )
+            PlayerIconButton(
+                icon = Icons.Filled.Close,
+                label = "关闭",
+                onClick = framelessWindow::close,
                 tooltipBelow = true,
             )
         }

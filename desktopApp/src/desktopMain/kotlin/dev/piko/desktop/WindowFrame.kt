@@ -20,10 +20,14 @@ import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
@@ -41,6 +45,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.FrameWindowScope
 import dev.piko.desktop.winrt.WinRTSupport
 import dev.piko.desktop.winrt.WindowsCaption
+import dev.piko.ui.platform.FramelessWindow
+import dev.piko.ui.platform.LocalFramelessWindow
 import java.awt.Container
 import kotlinx.coroutines.delay
 import org.jetbrains.skia.FontMgr
@@ -59,6 +65,10 @@ class TitleBarColors(val container: Color, val content: Color)
  * 红绿灯，内容延伸进标题栏区域，Compose 只画底色与标题。其他系统沿用系统标题栏。
  *
  * [showTitleBar] 为 false 时（全屏）不画标题栏，整个窗口交给内容。
+ *
+ * [onCloseInContent] 不为 null 时（Windows 上的播放窗口）不画标题栏：内容自己已有带标题的顶栏，
+ * 再叠一条标题栏只是重复。窗口经 [LocalFramelessWindow] 交给内容，由它指定拖动区、放关窗按钮。
+ * macOS 上仍画标题栏，红绿灯本就在那里。
  */
 @Composable
 fun FrameWindowScope.WindowFrame(
@@ -66,6 +76,7 @@ fun FrameWindowScope.WindowFrame(
     icon: Painter?,
     colors: TitleBarColors,
     showTitleBar: Boolean = true,
+    onCloseInContent: (() -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
     when {
@@ -73,6 +84,31 @@ fun FrameWindowScope.WindowFrame(
             // 在组合时就接管：此时窗口已有 HWND 而尚未显示，首帧就是去掉系统标题栏后的布局。
             // 接管失败时（拿不到 HWND 或 FFM 调用出错）系统标题栏还在，不再画第二条
             val caption = remember(window) { WindowsCaption(window).takeIf { it.install() } }
+            if (onCloseInContent != null && caption != null) {
+                // 直接设在 AWT 窗口上：Compose 的 Window 参数 alwaysOnTop 只在它自己的值变化时才下发，
+                // 调用方不传它，不会把这里的设置盖回去
+                var alwaysOnTop by remember(window) { mutableStateOf(window.isAlwaysOnTop) }
+                // 全屏时整个窗口都是画面：拖动区不报给窗口过程，否则按住顶栏会把全屏的窗口拖走
+                val frameless = remember(caption, showTitleBar, onCloseInContent) {
+                    object : FramelessWindow {
+                        override fun updateDragArea(bounds: Rect?) {
+                            if (showTitleBar && bounds != null) caption.updateLayout(bounds, emptyMap()) else caption.clearLayout()
+                        }
+
+                        override fun close() = onCloseInContent()
+
+                        override val isAlwaysOnTop: Boolean get() = alwaysOnTop
+
+                        override fun setAlwaysOnTop(onTop: Boolean) {
+                            window.isAlwaysOnTop = onTop
+                            alwaysOnTop = onTop
+                        }
+                    }
+                }
+                DisposableEffect(frameless) { onDispose { caption.clearLayout() } }
+                CompositionLocalProvider(LocalFramelessWindow provides frameless) { content() }
+                return
+            }
             Column(Modifier.fillMaxSize()) {
                 if (showTitleBar && caption != null) WindowsTitleBar(caption, title, icon, colors)
                 Box(Modifier.fillMaxWidth().weight(1f)) { content() }

@@ -40,7 +40,6 @@ class SeekBarHoverTest {
                 onRestartFromBeginning = {},
                 onBack = {},
                 onToggleFullscreen = {},
-                showLockToggle = false,
                 seekThumbOnHoverOnly = true,
             )
         }

@@ -31,6 +31,8 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -49,6 +51,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalAccessibilityManager
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.toSize
 import dev.piko.shared.media.player.MediaTrack
 import dev.piko.shared.media.player.PlayerAspectRatio
 import dev.piko.shared.media.player.PlaylistEntry
@@ -118,8 +121,6 @@ fun MobilePlayerControls(
     onSelectSubtitleTrack: (MediaTrack?) -> Unit = {},
     brightness: PlayerLevelControl? = null,
     volume: PlayerLevelControl? = null,
-    // 锁定只防触屏误触，鼠标与键盘用不上
-    showLockToggle: Boolean = true,
     // 进度条手柄平时隐藏、鼠标悬停才出现。触屏没有悬停，要一直显示
     seekThumbOnHoverOnly: Boolean = false,
     idleCursor: PointerIcon? = null,
@@ -299,20 +300,27 @@ fun MobilePlayerControls(
                 //
                 // 光标离开播放器时立即收起控件，不等计时。控件因故常驻时（暂停、面板开着）不收
                 .pointerInput(Unit) {
+                    // 自己记上一次的鼠标位置：Compose 桌面端悬停移动的 previousPosition 与 position
+                    // 恒相等（CMP 1.12 实测），拿它比较的话任何移动都不算数，控件收起后再也唤不出来
+                    var lastMousePosition: Offset? = null
                     awaitPointerEventScope {
                         while (true) {
                             val event = awaitPointerEvent(PointerEventPass.Initial)
-                            val hovering = event.type == PointerEventType.Move &&
-                                event.changes.any {
-                                    it.type == PointerType.Mouse && !it.pressed && it.position != it.previousPosition
-                                }
+                            val mouse = event.changes.firstOrNull { it.type == PointerType.Mouse }
+                            val hovering = event.type == PointerEventType.Move && mouse != null && !mouse.pressed &&
+                                lastMousePosition.let { it != null && it != mouse.position }
+                            // 进出画面之后的第一次移动只记位置：原地补发的事件也会先经过这里
+                            if (mouse != null) lastMousePosition = if (event.type == PointerEventType.Exit) null else mouse.position
                             if (hovering) {
                                 controlsVisible = true
                                 interacted()
                                 mouseMoveCount += 1
                             }
-                            val left = event.type == PointerEventType.Exit &&
-                                event.changes.any { it.type == PointerType.Mouse }
+                            // 只认真正出了画面的离开：桌面播放窗口的顶栏标题兼做拖动区，系统在那里把鼠标
+                            // 交给窗口过程，Compose 同样收到 Exit，位置却仍在画面内。当作离开的话控件一收，
+                            // 拖动区随之撤销，光标又落回画面把控件唤出，来回闪
+                            val left = event.type == PointerEventType.Exit && mouse != null &&
+                                !Rect(Offset.Zero, size.toSize()).contains(mouse.position)
                             if (left && !currentHoldControls) controlsVisible = false
                         }
                     }
@@ -513,7 +521,7 @@ fun MobilePlayerControls(
 
             // 锁定键跟随控件栏显隐；锁定后单击只唤出它自己
             AnimatedVisibility(
-                visible = showLockToggle && controlsVisible && errorMessage == null,
+                visible = controlsVisible && errorMessage == null,
                 enter = fadeIn(motion.defaultEffectsSpec()),
                 exit = fadeOut(motion.fastEffectsSpec()),
                 modifier = Modifier

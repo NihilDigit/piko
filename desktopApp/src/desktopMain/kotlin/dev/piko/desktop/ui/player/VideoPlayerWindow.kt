@@ -22,11 +22,11 @@ import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPlacement
 import coil3.compose.AsyncImage
 import dev.piko.desktop.DesktopSettingsStore
 import dev.piko.desktop.MacOs
+import dev.piko.desktop.PikoWindow
 import dev.piko.desktop.PixelAlignedContentEffect
 import dev.piko.desktop.TitleBarColors
 import dev.piko.desktop.TitleBarThemeEffect
@@ -85,7 +85,7 @@ fun VideoPlayerWindow(
     // 换集后标题跟着当前这集走
     var title by remember { mutableStateOf(request.fileName) }
 
-    Window(
+    PikoWindow(
         onCloseRequest = onClose,
         title = "$title - Piko 播放器",
         icon = icon,
@@ -109,6 +109,8 @@ fun VideoPlayerWindow(
                     icon = icon,
                     colors = PlayerTitleBarColors,
                     showTitleBar = !inFullscreen,
+                    // 播放器顶栏已有标题，Windows 上不再叠一条标题栏，关窗按钮放进顶栏
+                    onCloseInContent = onClose,
                 ) {
                     VideoPlayerContent(
                         request = request,
@@ -275,7 +277,6 @@ private fun VideoPlayerContent(
                 selectedSubtitleTrackId = state.selectedSubtitleTrackId,
                 onSelectSubtitleTrack = state::selectSubtitleTrack,
                 volume = volume,
-                showLockToggle = false,
                 seekThumbOnHoverOnly = true,
                 idleCursor = BlankPointerIcon,
                 snackbarHost = { SnackbarHost(snackbarHostState) },
