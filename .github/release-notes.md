@@ -8,8 +8,10 @@
 | Android 模拟器、x86 设备 | [piko-{{version}}-x86_64.apk](https://github.com/NihilDigit/piko/releases/download/v{{version}}/piko-{{version}}-x86_64.apk) |
 | Windows 电脑（Intel、AMD 处理器） | [piko-windows-x64-{{version}}.msi](https://github.com/NihilDigit/piko/releases/download/v{{version}}/piko-windows-x64-{{version}}.msi) |
 | Windows on ARM（骁龙等 ARM 处理器） | [piko-windows-arm64-{{version}}.msi](https://github.com/NihilDigit/piko/releases/download/v{{version}}/piko-windows-arm64-{{version}}.msi) |
+| Windows 电脑，便携版 | [piko-windows-x64-{{version}}.zip](https://github.com/NihilDigit/piko/releases/download/v{{version}}/piko-windows-x64-{{version}}.zip) |
+| Windows on ARM，便携版 | [piko-windows-arm64-{{version}}.zip](https://github.com/NihilDigit/piko/releases/download/v{{version}}/piko-windows-arm64-{{version}}.zip) |
 
-`.msi` 安装至当前用户目录，无需管理员权限，支持应用内更新。另提供便携版（[x64](https://github.com/NihilDigit/piko/releases/download/v{{version}}/piko-windows-x64-{{version}}.zip)、[arm64](https://github.com/NihilDigit/piko/releases/download/v{{version}}/piko-windows-arm64-{{version}}.zip)），解压后运行 `Piko.exe`；便携版仅在改动较小的版本支持应用内更新，其余版本需手动下载。
+`.msi` 安装至当前用户目录，无需管理员权限，支持应用内更新。`.zip` 为便携版，解压后运行 `Piko.exe`，仅在改动较小的版本支持应用内更新，其余版本需手动下载。
 
 Windows 安装包未经代码签名，首次运行时 SmartScreen 会拦截，选择「更多信息」→「仍要运行」。
 
