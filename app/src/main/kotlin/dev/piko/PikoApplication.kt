@@ -23,6 +23,7 @@ import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.log.LogLevel
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.media.PikoMediaRepository
+import dev.piko.shared.net.PikoProxySelector
 import dev.piko.shared.state.InstantSession
 import dev.piko.shared.upload.PikoUploadCoordinator
 import dev.piko.ui.PikoServices
@@ -32,6 +33,8 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
@@ -68,6 +71,7 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
         installLog()
 
         sessionManager = SessionManager(this)
+        installProxy()
         val clientManager = PikoClientManager(AndroidPikoSessionStore(this, sessionManager), appScope)
         val mediaRepository = PikoMediaRepository(clientManager, sessionManager)
         services = PikoServices(
@@ -95,6 +99,15 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
      * 日志放在私有的 files/logs，导出时另拷一份到缓存目录再分享。debug 包同时进 logcat；
      * release 包不进，省掉每条一次的 logcat 写入。
      */
+    /**
+     * 要赶在 SDK、图片加载与更新检查建出 OkHttpClient 之前：它们建客户端时取走默认的 ProxySelector。
+     * 同步读一次设置，手动代理从第一个请求起就生效；之后改设置经 flow 跟上。
+     */
+    private fun installProxy() {
+        PikoProxySelector.install(runBlocking { sessionManager.proxySettingFlow.first() })
+        appScope.launch { sessionManager.proxySettingFlow.collect(PikoProxySelector::apply) }
+    }
+
     private fun installLog() {
         val echo: ((LogLevel, String, String, Throwable?) -> Unit)? = if (BuildConfig.DEBUG) {
             { level, tag, message, error ->

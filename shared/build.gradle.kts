@@ -15,6 +15,19 @@ kotlin {
     }
     jvm("desktop")
 
+    // 两个目标都是 JVM：用得到 java.net 的代码（代理选择）放在 jvmShared，只写一份
+    @OptIn(org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi::class)
+    applyDefaultHierarchyTemplate {
+        common {
+            group("jvmShared") {
+                withCompilations {
+                    it.platformType == org.jetbrains.kotlin.gradle.plugin.KotlinPlatformType.jvm ||
+                        it.platformType == org.jetbrains.kotlin.gradle.plugin.KotlinPlatformType.androidJvm
+                }
+            }
+        }
+    }
+
     sourceSets {
         commonMain.dependencies {
             implementation(libs.kotlinx.coroutines.core)

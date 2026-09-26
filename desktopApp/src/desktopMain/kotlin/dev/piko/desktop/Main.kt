@@ -32,6 +32,7 @@ import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.log.LogLevel
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.media.PikoMediaRepository
+import dev.piko.shared.net.PikoProxySelector
 import dev.piko.shared.upload.UploadTask
 import dev.piko.ui.PikoApp
 import dev.piko.ui.PikoServices
@@ -49,6 +50,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -95,6 +97,9 @@ fun main(args: Array<String>) {
 
     val settings = DesktopSettingsStore()
     val preferences = DesktopPikoPreferences(settings)
+    // 赶在任何 OkHttpClient 建出来之前，理由见 PikoProxySelector
+    PikoProxySelector.install(runBlocking { preferences.proxySettingFlow.first() })
+    CoroutineScope(Dispatchers.Default).launch { preferences.proxySettingFlow.collect(PikoProxySelector::apply) }
     val platform = DesktopPikoPlatform(settings)
     val services = createServices(settings, preferences)
     // magnet: 链接经 MSI 注册的协议唤起时，URL 以启动参数进来；已在运行时由后来的进程转交过来

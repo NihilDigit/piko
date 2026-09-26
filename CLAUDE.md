@@ -93,6 +93,10 @@ expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以
 
 ### 平台差异用接口，不用 expect/actual
 
+两端相同、只是要用 JDK API 的代码放 `shared/src/jvmSharedMain`（Android 与 Desktop 共用的中间 source set），
+不必拆成两份实现，例如网络代理的 `PikoProxySelector`：它装成进程默认的 ProxySelector，SDK、图片加载与更新检查
+建 OkHttpClient 时都取走它，所以必须在任何客户端建出来之前装上（`PikoApplication.onCreate` 与桌面 `main`）。
+
 `PikoUserPreferences`、`PikoSessionStore`、`PikoDownloadStorage`、`PikoSegmentDownloader`
 都是 commonMain 的接口，Android 与 Desktop 各有实现。界面要的平台能力（剪贴板、系统取色、
 下载位置选择、本地文件的打开与分享、片段预览的播放后端、全屏对话框、应用内更新）集中在

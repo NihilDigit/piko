@@ -1,5 +1,6 @@
 package dev.piko.data.auth
 
+import dev.piko.shared.net.ProxySetting
 import kotlinx.coroutines.flow.Flow
 
 data class UserSession(
@@ -103,6 +104,10 @@ interface PikoUserPreferences {
     /** 最近移动到过的目录路径，JSON，见 MoveHistory。空串表示从未保存。 */
     val recentMoveTargetsFlow: Flow<String>
     suspend fun saveRecentMoveTargets(serialized: String)
+
+    /** 应用内网络请求用的代理，见 PikoProxySelector。 */
+    val proxySettingFlow: Flow<ProxySetting>
+    suspend fun saveProxySetting(setting: ProxySetting)
 
     /** 开屏提示里点了「忽略此版本」的版本号。只比相等，更新的版本出来照常提示。 */
     suspend fun getIgnoredUpdateVersion(): String?

@@ -3,6 +3,7 @@ package dev.piko.shared.smoke
 import dev.piko.data.auth.InstantTarget
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.auth.QuotaSnapshot
+import dev.piko.shared.net.ProxySetting
 import dev.piko.data.auth.UserSession
 import dev.piko.shared.data.PikoCredentials
 import dev.piko.shared.data.PikoSessionStore
@@ -84,6 +85,8 @@ class MemoryPreferences(instantTarget: InstantTarget? = null) : PikoUserPreferen
     override suspend fun saveArchivePasswords(serialized: String) = Unit
     override val recentMoveTargetsFlow: Flow<String> = MutableStateFlow("")
     override suspend fun saveRecentMoveTargets(serialized: String) = Unit
+    override val proxySettingFlow: Flow<ProxySetting> = MutableStateFlow(ProxySetting())
+    override suspend fun saveProxySetting(setting: ProxySetting) = Unit
     override suspend fun getIgnoredUpdateVersion(): String? = null
     override suspend fun setIgnoredUpdateVersion(version: String) = Unit
 }

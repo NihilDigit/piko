@@ -37,6 +37,7 @@ import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Palette
+import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Subtitles
 import androidx.compose.material.icons.outlined.SystemUpdate
@@ -90,6 +91,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.shared.data.ArchivePasswordVault
 import dev.piko.shared.log.PikoLog
+import dev.piko.shared.net.ProxySetting
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.readableWidth
 import dev.piko.ui.components.InlineLoadingIndicator
@@ -147,6 +149,8 @@ fun SettingsScreen(
     var showArchivePasswords by remember { mutableStateOf(false) }
 
     var showDownloadDirDialog by remember { mutableStateOf(false) }
+    val proxySetting by sessionManager.proxySettingFlow.collectAsStateWithLifecycle(initialValue = ProxySetting())
+    var showProxyDialog by remember { mutableStateOf(false) }
     val downloadLocation = platform.downloadLocation
     val resolvedDownloadPath = remember(downloadDirPath) { downloadLocation.displayName(downloadDirPath) }
     // 选完不关对话框，让用户在卡片上看到新位置再点「完成」
@@ -305,6 +309,16 @@ fun SettingsScreen(
                         )
                     }
 
+                    SettingsGroup(SettingsSection.Network.title, Modifier.trackSection(SettingsSection.Network)) {
+                        SettingsNavigationRow(
+                            index = 0, count = 1,
+                            icon = Icons.Outlined.Public,
+                            title = "网络代理",
+                            supporting = proxySetting.summary(),
+                            onClick = { showProxyDialog = true },
+                        )
+                    }
+
                     SettingsGroup(SettingsSection.About.title, Modifier.trackSection(SettingsSection.About)) {
                         AboutCard(
                             version = platform.appVersion,
@@ -343,6 +357,17 @@ fun SettingsScreen(
             // 与开屏提示同一个对话框，这里不给「忽略此版本」：是用户自己点进来看的
             UpdateDialog(updater = updater, update = update, onDismiss = { updateInSheet = null })
         }
+    }
+
+    if (showProxyDialog) {
+        ProxySettingsDialog(
+            current = proxySetting,
+            onSave = { setting ->
+                showProxyDialog = false
+                scope.launch { sessionManager.saveProxySetting(setting) }
+            },
+            onDismiss = { showProxyDialog = false },
+        )
     }
 
     if (showArchivePasswords) {
@@ -467,6 +492,7 @@ private enum class SettingsSection(val title: String) {
     Links("添加链接"),
     Playback("播放"),
     Download("下载"),
+    Network("网络"),
     About("关于"),
 }
 

@@ -4,6 +4,7 @@ import dev.piko.data.auth.InstantTarget
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.auth.QuotaSnapshot
 import dev.piko.data.auth.UserSession
+import dev.piko.shared.net.ProxySetting
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -30,6 +31,7 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
     private val instantTarget = MutableStateFlow<InstantTarget?>(null)
     private val archivePasswords = MutableStateFlow(settings.get(KEY_ARCHIVE_PASSWORDS))
     private val recentMoveTargets = MutableStateFlow(settings.get(KEY_RECENT_MOVE_TARGETS))
+    private val proxySetting = MutableStateFlow(ProxySetting.decode(settings.get(KEY_PROXY_SETTING)))
     private val downloadPath = MutableStateFlow(
         settings.get(KEY_DOWNLOAD_DIR, settings.downloadDirectory.absolutePath),
     )
@@ -204,6 +206,12 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         recentMoveTargets.value = serialized
     }
 
+    override val proxySettingFlow: Flow<ProxySetting> = proxySetting.asStateFlow()
+    override suspend fun saveProxySetting(setting: ProxySetting) {
+        settings.set(KEY_PROXY_SETTING, setting.encode())
+        proxySetting.value = setting
+    }
+
     override suspend fun getIgnoredUpdateVersion(): String? = settings.get(KEY_IGNORED_UPDATE).ifEmpty { null }
 
     override suspend fun setIgnoredUpdateVersion(version: String) {
@@ -217,6 +225,7 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         const val KEY_UPLOAD_TASKS = "upload.tasks"
         const val KEY_ARCHIVE_PASSWORDS = "drive.archivePasswords"
         const val KEY_RECENT_MOVE_TARGETS = "drive.recentMoveTargets"
+        const val KEY_PROXY_SETTING = "network.proxy"
         const val KEY_IGNORED_UPDATE = "update.ignoredVersion"
         const val KEY_SPOILER = "ui.spoilerBlur"
         const val KEY_HEURISTIC = "ui.heuristicFilter"

@@ -12,6 +12,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import dev.piko.shared.net.ProxySetting
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -105,6 +106,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val LAST_FOLDER_STACK_SERIALIZED = stringPreferencesKey("last_folder_stack")
         val ARCHIVE_PASSWORDS = stringPreferencesKey("archive_passwords")
         val RECENT_MOVE_TARGETS = stringPreferencesKey("recent_move_targets")
+        val PROXY_SETTING = stringPreferencesKey("proxy_setting")
         val IGNORED_UPDATE_VERSION = stringPreferencesKey("ignored_update_version")
     }
 
@@ -361,6 +363,15 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun saveRecentMoveTargets(serialized: String) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.RECENT_MOVE_TARGETS] = serialized
+        }
+    }
+
+    override val proxySettingFlow: Flow<ProxySetting> =
+        preference { ProxySetting.decode(it[PreferencesKeys.PROXY_SETTING].orEmpty()) }
+
+    override suspend fun saveProxySetting(setting: ProxySetting) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.PROXY_SETTING] = setting.encode()
         }
     }
 
