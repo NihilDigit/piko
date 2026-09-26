@@ -67,6 +67,11 @@ jobs:
         # 不用裸 test（会连带 :app:testDebugUnitTest，在 arm 上直接挂）。Android 单测归 Android 流水线。
         run: .\gradlew.bat :shared:desktopTest :desktopApp:desktopTest :shared:compileKotlinDesktop :desktopApp:packageUberJarForCurrentOS :desktopApp:createReleaseDistributable -PpikoDesktopVersion="$env:PIKO_DESKTOP_VERSION" --no-daemon --stacktrace
 
+      # 打包出的类逐个交给 JVM 校验。ProGuard 改写过的字节码可能校验不过，而那只在装上之后
+      # 进到某一页才崩，gradle run 与单测都走不到（见 desktopApp/package/VerifyClasses.java）
+      - name: Verify classes
+        run: java -Xverify:all desktopApp/package/VerifyClasses.java desktopApp/build/compose/binaries/main-release/app/Piko/app
+
       - name: Install WiX Toolset (MSI only)
         continue-on-error: true
         run: choco install wixtoolset -y --no-progress
