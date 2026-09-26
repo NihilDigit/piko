@@ -27,6 +27,7 @@ import androidx.compose.ui.window.WindowPlacement
 import coil3.compose.AsyncImage
 import dev.piko.desktop.DesktopSettingsStore
 import dev.piko.desktop.MacOs
+import dev.piko.desktop.PixelAlignedContentEffect
 import dev.piko.desktop.TitleBarThemeEffect
 import dev.piko.desktop.isMacOs
 import dev.piko.desktop.rememberRememberedWindowState
@@ -90,6 +91,7 @@ fun VideoPlayerWindow(
     ) {
         // 画面四周是黑的，标题栏不随应用主题，始终用深色
         TitleBarThemeEffect(window, dark = true)
+        PixelAlignedContentEffect(window)
         val fullscreen = remember(window) { WindowsFullscreen(window) }
         // 播放窗口是独立的组合树，主窗口根部的输入来源追踪管不到这里
         val pointerSource = remember { PointerSource() }

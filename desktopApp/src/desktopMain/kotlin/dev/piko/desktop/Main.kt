@@ -185,6 +185,7 @@ fun main(args: Array<String>) {
             val focused = LocalWindowInfo.current.isWindowFocused
             SideEffect { isMainWindowFocused = focused }
             TitleBarThemeEffect(window, appearance.isDark())
+            PixelAlignedContentEffect(window)
             TaskbarDownloadProgress(window, services.downloadManager)
             LaunchedEffect(Unit) {
                 activations.collect {
