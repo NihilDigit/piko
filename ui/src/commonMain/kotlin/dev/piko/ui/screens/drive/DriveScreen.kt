@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.consumeWindowInsets
@@ -27,6 +28,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.DriveFolderUpload
+import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Refresh
@@ -44,6 +46,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -85,6 +88,7 @@ import dev.piko.data.repository.isPlayableVideo
 import dev.piko.data.repository.isPreviewableImage
 import dev.piko.shared.data.ScrollAnchor
 import dev.piko.shared.state.DriveScreenState
+import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.InstantSaveOutcome
 import dev.piko.shared.upload.UploadSelection
 import dev.piko.shared.upload.isUploading
@@ -96,7 +100,8 @@ import dev.piko.ui.components.BreadcrumbBar
 import dev.piko.ui.components.FileNameField
 import dev.piko.ui.components.FolderPickerDialog
 import dev.piko.ui.components.MoveTargetDialog
-import dev.piko.ui.screens.duplicates.DuplicatesDialog
+import dev.piko.ui.screens.duplicates.DuplicatesSheetContent
+import dev.piko.ui.screens.duplicates.DuplicatesSheetHandle
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoErrorState
 import dev.piko.ui.components.RefreshBox
@@ -147,6 +152,7 @@ fun DriveScreen(
     val driveRepo = LocalPikoServices.current.driveRepository
     val instantRepo = LocalPikoServices.current.instantMagnetRepository
     val instantSession = LocalPikoServices.current.instantSession
+    val duplicateSession = LocalPikoServices.current.duplicateSession
     val downloadManager = LocalPikoServices.current.downloadManager
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -226,7 +232,16 @@ fun DriveScreen(
     // 待移动的条目。选择器只负责选目录，移动本身与刷新在这里做，
     // 所以单项操作和多选工具栏可以共用同一套状态。
     var moveTargetIds by remember { mutableStateOf<Set<String>>(emptySet()) }
-    var duplicatesRoot by remember { mutableStateOf<PathBreadcrumb?>(null) }
+    val duplicateState = duplicateSession.state
+    // 扫描在面板收起时完成，没人看得到结果，提示一下；面板开着时结果就在眼前
+    LaunchedEffect(duplicateState) {
+        val finder = duplicateState ?: return@LaunchedEffect
+        snapshotFlow { finder.phase }.first { it == DuplicateFinderState.Phase.DONE || it == DuplicateFinderState.Phase.FAILED }
+        if (duplicateSession.isSheetOpen) return@LaunchedEffect
+        val message = if (finder.phase == DuplicateFinderState.Phase.FAILED) "查找重复失败" else "查找重复完成"
+        val result = snackbarHostState.showSnackbar(message, actionLabel = "查看", withDismissAction = true)
+        if (result == SnackbarResult.ActionPerformed) duplicateSession.reopen()
+    }
     val selectedArchives by remember(state) {
         derivedStateOf { state.displayedFiles.filter { it.id in state.selectedFileIds && (it.isExtractableArchive || it.isArchiveVolume) } }
     }
@@ -359,7 +374,7 @@ fun DriveScreen(
                     onTrash = { state.moveToTrash(listOf(file.id)) },
                     onCopySource = { copySource(file) },
                     onOpenSource = { file.sourceUrl?.let(platform::openUrl) },
-                    onFindDuplicates = { duplicatesRoot = PathBreadcrumb(file.id, file.name) },
+                    onFindDuplicates = { duplicateSession.open(PathBreadcrumb(file.id, file.name)) },
                     onExtract = { archiveSession.extract(listOf(file)) },
                 )
             },
@@ -437,6 +452,13 @@ fun DriveScreen(
                         state = instantState,
                         onExpand = instantSession::reopen,
                         onClose = instantSession::end,
+                    )
+                }
+                if (duplicateState != null && !duplicateSession.isSheetOpen) {
+                    DuplicatesSheetHandle(
+                        state = duplicateState,
+                        onExpand = duplicateSession::reopen,
+                        onClose = duplicateSession::end,
                     )
                 }
             }
@@ -550,6 +572,17 @@ fun DriveScreen(
                         icon = { Icon(Icons.Outlined.DriveFolderUpload, contentDescription = null) },
                         text = { Text("上传文件夹") },
                     )
+                    // 搜索结果不是一个目录，查重的范围说不清，这时不给入口
+                    if (searchSummary(state, state.displayedFiles) == null) {
+                        FloatingActionButtonMenuItem(
+                            onClick = {
+                                isFabMenuExpanded = false
+                                duplicateSession.open(activeFolder)
+                            },
+                            icon = { Icon(Icons.Outlined.FileCopy, contentDescription = null) },
+                            text = { Text("查找重复") },
+                        )
+                    }
                 }
             }
         },
@@ -640,12 +673,6 @@ fun DriveScreen(
                                                 onTogglePosterMode = {
                                                     scope.launch { sessionManager.setGridViewEnabled(!isPosterMode) }
                                                 },
-                                                // 搜索结果不是一个目录，查重的范围说不清，这时不给入口
-                                                onFindDuplicates = if (searchSummary(state, displayedFiles) == null) {
-                                                    { duplicatesRoot = activeFolder }
-                                                } else {
-                                                    null
-                                                },
                                             )
                                         }
                                     }
@@ -685,13 +712,22 @@ fun DriveScreen(
             onTrash = { state.moveToTrash(listOf(target.id)) },
             onCopySource = { copySource(target) },
             onOpenSource = { target.sourceUrl?.let(platform::openUrl) },
-            onFindDuplicates = { duplicatesRoot = PathBreadcrumb(target.id, target.name) },
+            onFindDuplicates = { duplicateSession.open(PathBreadcrumb(target.id, target.name)) },
             onExtract = { archiveSession.extract(listOf(target)) },
         )
     }
 
-    duplicatesRoot?.let { root ->
-        DuplicatesDialog(root = root, onDismiss = { duplicatesRoot = null })
+    // 查找重复的面板。划走只是收起，扫描照常进行，底部留把手，见 DuplicateSession
+    if (duplicateState != null && duplicateSession.isSheetOpen) {
+        ModalBottomSheet(
+            onDismissRequest = duplicateSession::collapse,
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            contentWindowInsets = { WindowInsets(0) },
+        ) {
+            Column(Modifier.wheelStaysInSheet()) {
+                DuplicatesSheetContent(duplicateState)
+            }
+        }
     }
 
     // 秒传面板。划走只是收起，会话还在，底部留把手，见 InstantSession

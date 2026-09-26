@@ -7,20 +7,15 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.TaskAlt
 import androidx.compose.material3.AlertDialog
@@ -31,9 +26,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -42,132 +34,70 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.backhandler.BackHandler
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
-import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.ScanStop
 import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.DuplicateFinderState.Phase
 import dev.piko.shared.state.DuplicateGroup
 import dev.piko.shared.state.DuplicateKind
 import dev.piko.shared.state.DuplicateRow
-import dev.piko.ui.LocalPikoServices
-import dev.piko.ui.adaptive.WidthClass
-import dev.piko.ui.adaptive.currentWidthClass
+import dev.piko.ui.components.CollapsedSheetHandle
 import dev.piko.ui.components.HighlightBadge
 import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.MetaRow
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoErrorState
 import dev.piko.ui.components.PikoLoadingIndicator
-import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.toReadableSize
-import dev.piko.ui.platform.LocalPikoPlatform
+import kotlinx.coroutines.delay
 
 /**
- * 在 [root] 下查找重复文件。状态随对话框创建与销毁：关掉即停止扫描，下次打开重新扫描。
- * 扫描结果依赖网盘此刻的内容，留着旧结果反而可能按过期的列表去删。
+ * 查找重复的面板内容，放在 ModalBottomSheet 里：高度随内容，结果多时撑到面板上限，在列表里滚动。
+ * 扫描与勾选都在 DuplicateSession 持有的状态里，面板只是视图，划走不停止扫描。
+ *
+ * 面板不替内容让导航条：底部有操作栏时由操作栏铺到手势横条下面，没有时补一段空白，
+ * 否则操作栏的底色停在横条上方，横条那一截是面板的颜色。宿主须把 contentWindowInsets 设为空。
  */
 @Composable
-fun DuplicatesDialog(root: PikoPathBreadcrumb, onDismiss: () -> Unit) {
-    val services = LocalPikoServices.current
-    val scope = rememberCoroutineScope()
-    val state = remember(root.id) {
-        DuplicateFinderState(services.clientManager, services.driveRepository, scope, root)
-    }
-    DuplicatesDialog(state, onDismiss)
-}
-
-@Composable
-fun DuplicatesDialog(state: DuplicateFinderState, onDismiss: () -> Unit) {
-    // 与目录选择器相同：compact 下全屏，更宽时是居中的大对话框
-    if (currentWidthClass() == WidthClass.Compact) {
-        LocalPikoPlatform.current.FullscreenDialog(
-            onDismiss = onDismiss,
-            immersive = false,
-            systemBarsVisible = true,
-        ) {
-            Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
-                Box(modifier = Modifier.safeDrawingPadding()) { DuplicatesContent(state, onDismiss) }
-            }
-        }
-    } else {
-        Dialog(
-            onDismissRequest = onDismiss,
-            properties = DialogProperties(usePlatformDefaultWidth = false),
-        ) {
-            Surface(
-                modifier = Modifier
-                    .widthIn(max = 840.dp)
-                    .fillMaxWidth(0.92f)
-                    .fillMaxHeight(0.9f),
-                shape = MaterialTheme.shapes.extraLarge,
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            ) {
-                DuplicatesContent(state, onDismiss)
-            }
-        }
-    }
-}
-
-@Composable
-private fun DuplicatesContent(state: DuplicateFinderState, onDismiss: () -> Unit) {
-    val snackbarHostState = remember { SnackbarHostState() }
+fun DuplicatesSheetContent(state: DuplicateFinderState) {
     var confirming by remember { mutableStateOf(false) }
-
-    LaunchedEffect(state) {
-        state.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
+    // 面板盖在网盘页的 Snackbar 之上，一次性提示就地显示几秒，与添加链接面板相同
+    var notice by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(state) { state.messages.collect { notice = it } }
+    LaunchedEffect(notice) {
+        if (notice != null) {
+            delay(4000)
+            notice = null
+        }
     }
-    BackHandler(onBack = onDismiss)
 
     val report = state.report
     val hasGroups = report.identical.isNotEmpty() || report.versions.isNotEmpty()
+    val showsSelectionBar = state.phase == Phase.DONE && hasGroups
 
-    Scaffold(
-        modifier = Modifier.fillMaxSize(),
-        containerColor = Color.Transparent,
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-        topBar = {
-            PikoTopBar(
-                title = "查找重复",
-                navigationIcon = {
-                    TooltipIconButton(icon = Icons.Outlined.Close, label = "关闭", shortcut = "Esc", onClick = onDismiss)
-                },
-                actions = {
-                    if (state.phase == Phase.DONE || state.phase == Phase.FAILED) {
-                        TooltipIconButton(icon = Icons.Outlined.Refresh, label = "重新扫描", onClick = state::rescan)
-                    }
-                },
+    Column(modifier = Modifier.fillMaxWidth()) {
+        SheetHeader(state)
+        notice?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
             )
-        },
-        bottomBar = {
-            if (state.phase == Phase.DONE && hasGroups) {
-                SelectionBar(
-                    count = state.selectedIds.size,
-                    bytes = state.selectedBytes,
-                    busy = state.isTrashing,
-                    onTrash = { confirming = true },
-                )
-            }
-        },
-    ) { padding ->
-        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+        }
+        Box(modifier = Modifier.weight(1f, fill = false).fillMaxWidth()) {
             when (state.phase) {
                 Phase.SCANNING, Phase.ANALYZING -> ScanningPane(state)
                 Phase.FAILED -> PikoErrorState(
                     title = "扫描失败",
                     message = state.errorMessage.orEmpty(),
                     onRetry = state::rescan,
-                    modifier = Modifier.align(Alignment.Center),
+                    modifier = Modifier.align(Alignment.Center).padding(vertical = 32.dp),
                 )
                 Phase.DONE -> if (hasGroups) {
                     ResultList(state)
@@ -176,10 +106,20 @@ private fun DuplicatesContent(state: DuplicateFinderState, onDismiss: () -> Unit
                         title = "没有重复文件",
                         description = scanSummary(state),
                         icon = Icons.Outlined.TaskAlt,
-                        modifier = Modifier.align(Alignment.Center),
+                        modifier = Modifier.align(Alignment.Center).padding(vertical = 32.dp),
                     )
                 }
             }
+        }
+        if (showsSelectionBar) {
+            SelectionBar(
+                count = state.selectedIds.size,
+                bytes = state.selectedBytes,
+                busy = state.isTrashing,
+                onTrash = { confirming = true },
+            )
+        } else {
+            Spacer(Modifier.navigationBarsPadding().height(16.dp))
         }
     }
 
@@ -213,10 +153,60 @@ private fun DuplicatesContent(state: DuplicateFinderState, onDismiss: () -> Unit
     }
 }
 
+/** 面板收起后的把手：扫描中显示进度，扫完显示结果，关闭即结束这次查重。 */
+@Composable
+fun DuplicatesSheetHandle(
+    state: DuplicateFinderState,
+    onExpand: () -> Unit,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val report = state.report
+    val groups = report.identical.size + report.versions.size
+    val status = when (state.phase) {
+        Phase.SCANNING -> "已扫描 ${state.scannedFolders} 个文件夹，${state.scannedFiles} 个文件"
+        Phase.ANALYZING -> "正在比对"
+        Phase.FAILED -> "扫描失败"
+        Phase.DONE -> if (groups == 0) "没有重复文件" else "找到 $groups 组，已选 ${state.selectedIds.size} 个"
+    }
+    CollapsedSheetHandle(
+        title = "查找重复：${state.root.name}",
+        status = status,
+        closeLabel = "结束查找重复",
+        onExpand = onExpand,
+        onClose = onClose,
+        modifier = modifier,
+        closeEnabled = !state.isTrashing,
+    )
+}
+
+/** 标题与范围。面板有拖动条，下滑、点遮罩、返回都能关，与添加链接面板一样不放关闭按钮。 */
+@Composable
+private fun SheetHeader(state: DuplicateFinderState) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 12.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = "查找重复", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface)
+            Text(
+                text = state.root.name,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (state.phase == Phase.DONE || state.phase == Phase.FAILED) {
+            TooltipIconButton(icon = Icons.Outlined.Refresh, label = "重新扫描", onClick = state::rescan)
+        }
+    }
+}
+
 @Composable
 private fun ScanningPane(state: DuplicateFinderState) {
     Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 32.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -243,8 +233,9 @@ private fun ScanningPane(state: DuplicateFinderState) {
 @Composable
 private fun ResultList(state: DuplicateFinderState) {
     val report = state.report
+    // 不铺满：结果少时面板只有内容那么高，多了才撑到面板上限、在列表里滚动
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxWidth(),
         contentPadding = PaddingValues(bottom = 16.dp),
     ) {
         item(key = "summary") {
@@ -263,7 +254,7 @@ private fun ResultList(state: DuplicateFinderState) {
             sectionHeader(
                 key = "identical",
                 title = "完全相同 ${report.identical.size} 组",
-                description = "内容一致，默认只保留最早存入的一份，同时存入时保留路径最短的",
+                description = "内容一致，默认保留名字里没有「(1)」「副本」这类标记的一份，其次最早存入的",
             )
             groups(report.identical, state)
         }

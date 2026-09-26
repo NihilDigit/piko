@@ -4,7 +4,6 @@ import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.data.ScannedFile
 import dev.piko.shared.naming.Confidence
 import dev.piko.shared.naming.EntryLocation
-import dev.piko.shared.naming.MediaFileInput
 import dev.piko.shared.naming.MediaTag
 import dev.piko.shared.naming.NameKind
 import dev.piko.shared.naming.ParsedName
@@ -102,15 +101,31 @@ private fun identicalGroups(files: List<Pair<DuplicateFile, String>>): List<Dupl
         .sortedWith(compareByDescending<DuplicateGroup> { it.reclaimableBytes }.thenBy { it.title })
 
 /**
- * 默认保留哪一份：最早存进网盘的，同时存入的取路径最短的。
+ * 默认保留哪一份：名字里副本标记最少的，其次最早存进网盘的，同时存入的取路径最短的。
+ * 「(1)」「 - Copy」是重名时系统或网盘加的，会一层层叠起来（「x (1)(1)」），叠得最多的最先删；
+ * 存入时间靠不住：先把副本整理进目录、再删掉原件的情形很常见。
  * 最早的那份通常在用户最初整理好的位置，后来的多是重复离线或转存产生的；路径短的一般是
  * 手动放置的，深路径多是种子或分享自带的目录结构。时间解析失败的排在最后。
  */
 internal val KEEP_ORDER: Comparator<DuplicateFile> =
-    compareBy<DuplicateFile, Instant?>(nullsLast()) { parseInstant(it.createdTime) }
+    compareBy<DuplicateFile> { copyMarkerCount(it.name) }
+        .thenBy(nullsLast()) { parseInstant(it.createdTime) }
         .thenBy { it.path.length }
         .thenBy { it.path }
         .thenBy { it.id }
+
+// 扩展名前的「 (1)」「(2)」「 - Copy」「 - 副本」「 copy」，可以连着好几个
+private val COPY_MARKER = Regex("""\s*\(\d{1,3}\)|\s*-\s*(?:copy\b|副本|复制)|\s+copy\b""", RegexOption.IGNORE_CASE)
+
+internal fun copyMarkerCount(name: String): Int {
+    var stem = name.substringBeforeLast('.')
+    var count = 0
+    while (true) {
+        val last = COPY_MARKER.findAll(stem).lastOrNull()?.takeIf { it.range.last == stem.lastIndex } ?: return count
+        stem = stem.removeRange(last.range)
+        count++
+    }
+}
 
 private fun parseInstant(text: String): Instant? =
     text.takeIf { it.isNotEmpty() }?.let { runCatching { Instant.parse(it) }.getOrNull() }
@@ -172,7 +187,7 @@ private fun analyzeFolder(
     val dirs = listOfNotNull(rootName) + folderPath.split('/').filter { it.isNotEmpty() }
     val prefix = dirs.joinToString("/")
     // 同目录的字幕、图片也一起送进去：广告、样片、附件的判定要看兄弟文件
-    val batch = analyzeMediaBatch(members.map { (scanned, _) -> MediaFileInput(if (prefix.isEmpty()) scanned.file.name else "$prefix/${scanned.file.name}", scanned.file.sizeBytes) })
+    val batch = analyzeMediaBatch(members.map { (scanned, _) -> scanned.file.toMediaFileInput(if (prefix.isEmpty()) scanned.file.name else "$prefix/${scanned.file.name}") })
     return members.mapIndexedNotNull { index, (scanned, file) ->
         if (!file.isVideo) return@mapIndexedNotNull null
         val location = batch.locate(index) ?: return@mapIndexedNotNull null

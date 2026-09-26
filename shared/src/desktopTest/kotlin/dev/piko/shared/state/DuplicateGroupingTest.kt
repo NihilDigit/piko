@@ -52,6 +52,22 @@ class DuplicateGroupingTest {
     }
 
     @Test
+    fun `copies with the most stacked markers go first regardless of age`() {
+        val stacked = file("Clip (1)(1).mp4", hash = "Z", size = 800, created = "2025-01-01T00:00:00.000+08:00")
+        val copied = file("Clip - Copy.mp4", hash = "Z", size = 800, created = "2025-02-01T00:00:00.000+08:00")
+        val original = file("sorted/Clip.mp4", hash = "Z", size = 800, created = "2026-01-01T00:00:00.000+08:00")
+
+        val group = findDuplicates(listOf(stacked, copied, original)).identical.single()
+
+        assertEquals(original.file.id, group.keptId)
+        assertEquals(listOf(original, copied, stacked).map { it.file.id }, group.rows.map { it.file.id })
+        assertEquals(2, copyMarkerCount("x - Copy (2).mkv"))
+        assertEquals(1, copyMarkerCount("x - 副本.mkv"))
+        // 年份不是副本序号
+        assertEquals(0, copyMarkerCount("Movie (2019).mkv"))
+    }
+
+    @Test
     fun `the same episode from a fansub and a scene release forms one version group`() {
         val files = listOf(
             file("anime/Title/[Group] Title - 03 [1080p].mkv"),

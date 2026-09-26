@@ -3,7 +3,6 @@ package dev.piko.ui.screens.instant
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,11 +20,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.shape.CornerSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Check
-import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.ErrorOutline
@@ -34,7 +31,6 @@ import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.PlayCircle
-import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
@@ -44,7 +40,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBarDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Surface
@@ -83,6 +78,7 @@ import dev.piko.shared.state.NameGroupSummary
 import dev.piko.shared.state.ShareSaveState
 import dev.piko.ui.LocalPikoServices
 import io.github.nihildigit.pikpak.shareIdFromUrl
+import dev.piko.ui.components.CollapsedSheetHandle
 import dev.piko.ui.components.FileNameField
 import dev.piko.ui.components.FolderPickerDialog
 import dev.piko.ui.components.MediaTagRow
@@ -789,11 +785,7 @@ internal fun TargetRow(
     }
 }
 
-/**
- * 面板收起后留在屏幕底部的把手，外观是一块只露出顶边的面板。点按或上拉重新展开，
- * 右侧的关闭才真正结束这次会话。
- */
-@OptIn(ExperimentalMaterial3Api::class)
+/** 添加链接面板收起后的把手：标题是链接或资源名，状态是解析与勾选的进度。 */
 @Composable
 fun InstantSheetHandle(
     state: InstantSheetState,
@@ -816,50 +808,14 @@ fun InstantSheetHandle(
         result != null -> "已选 ${state.selectedEntryCount} / ${state.entryCount}"
         else -> null
     }
-    Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .pointerInput(Unit) {
-                detectVerticalDragGestures { _, dragAmount -> if (dragAmount < -8f) onExpand() }
-            },
-        onClick = onExpand,
-        shape = MaterialTheme.shapes.extraLarge.copy(bottomStart = CornerSize(0.dp), bottomEnd = CornerSize(0.dp)),
-        // 与底栏同色，看上去是从底栏里探出的一截。用面板本身的 surfaceContainerLow 时，
-        // 它紧贴着更亮的 surfaceContainer 底栏，深色主题下像一条黑带；阴影也会在两者的
-        // 接缝上画出一道线，所以不加
-        color = NavigationBarDefaults.containerColor,
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            BottomSheetDefaults.DragHandle(modifier = Modifier.padding(top = 4.dp))
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 24.dp, end = 12.dp, bottom = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    status?.let {
-                        Text(
-                            text = it,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-                IconButton(onClick = onClose, enabled = !isSaving) {
-                    Icon(Icons.Outlined.Close, contentDescription = "放弃这次添加")
-                }
-            }
-        }
-    }
+    CollapsedSheetHandle(
+        title = title,
+        status = status,
+        closeLabel = "放弃这次添加",
+        onExpand = onExpand,
+        onClose = onClose,
+        modifier = modifier,
+        closeEnabled = !isSaving,
+    )
 }
 

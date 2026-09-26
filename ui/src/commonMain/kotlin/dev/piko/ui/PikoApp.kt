@@ -62,9 +62,10 @@ fun PikoApp(
                     AppState.INITIALIZING -> FullScreenLoading()
                     // 登录成功后 currentClient 变为非空，根状态随之切到 MAIN，不需要回调
                     AppState.LOGIN -> {
-                        // 未完成的添加链接与解压队列都属于上一个账号，保存目标也是那边的目录
+                        // 未完成的添加链接、查重与解压队列都属于上一个账号，保存目标也是那边的目录
                         LaunchedEffect(Unit) {
                             services.instantSession.end()
+                            services.duplicateSession.end()
                             services.archiveExtractSession.clear()
                         }
                         LoginScreen()
