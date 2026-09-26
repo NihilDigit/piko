@@ -26,6 +26,13 @@ val hostPlatform = "${if (isMacHost) "macos" else "windows"}-$hostArch"
 val hostMpvRuntime = "org.openani.mediamp:mediamp-mpv-runtime-$hostPlatform:${libs.versions.mediamp.get()}"
 // 等同 compose.desktop.currentOs，但版本跟界面库走，而不是跟打包插件走（两者版本不同，见 libs.versions.toml）
 val composeDesktopRuntime = "org.jetbrains.compose.desktop:desktop-jvm-$hostPlatform:${libs.versions.composeMultiplatform.get()}"
+// 应用内差分更新的解码器。不带 classifier 的 jar 捆了二十个平台的原生库，按平台的只捆一个，类是同一套
+val hostZstdClassifier = when (hostPlatform) {
+    "windows-x64" -> "win_amd64"
+    "windows-arm64" -> "win_aarch64"
+    else -> "darwin_aarch64"
+}
+val hostZstdJni = "com.github.luben:zstd-jni:${libs.versions.zstdJni.get()}:$hostZstdClassifier"
 
 kotlin {
     jvm("desktop")
@@ -55,6 +62,7 @@ kotlin {
                 implementation(libs.mp4parser.isobox)
                 // PikoUploadSources.open 返回 RawSource，shared 只以 implementation 引入
                 implementation(libs.kotlinx.io.core)
+                implementation(hostZstdJni)
             }
         }
         val desktopTest by getting {
@@ -120,10 +128,23 @@ configurations.named("desktopRuntimeClasspath") {
 val hostMpvRuntimeJar = configurations.detachedConfiguration(dependencies.create(hostMpvRuntime)).apply {
     isTransitive = false
 }
+// zstd-jni 同样默认解压到临时目录，改由 DesktopAppUpdater 经 ZstdNativePath 指过来。
+// 这个 DLL 也是 CI 判断旧版客户端会不会用差分的依据，见 release.yml
+val hostZstdJniJar = configurations.detachedConfiguration(dependencies.create(hostZstdJni)).apply {
+    isTransitive = false
+}
 val bundledAppResources by tasks.registering(Sync::class) {
     from({ hostMpvRuntimeJar.map { zipTree(it) } }) {
         include("*.dll", "*.dylib", "*.txt")
         into("mpv")
+    }
+    // macOS 没有应用内安装，不捆
+    if (!isMacHost) {
+        from({ hostZstdJniJar.map { zipTree(it) } }) {
+            include("**/*.dll")
+            eachFile { path = "zstd/$name" }
+            includeEmptyDirs = false
+        }
     }
     // Toast 的 AUMID 登记要一个磁盘上的图标文件，exe 里内嵌的那份用不上
     from("src/desktopMain/resources/app-icon.png")

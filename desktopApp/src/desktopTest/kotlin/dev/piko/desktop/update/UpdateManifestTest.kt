@@ -84,6 +84,55 @@ class UpdateManifestTest {
         assertEquals(1_700_000_000_000L, jar.lastModified())
     }
 
+    private fun fixture(name: String): ByteArray =
+        checkNotNull(javaClass.getResourceAsStream("/update/$name")) { name }.use { it.readBytes() }
+
+    private val deltaTarget = fixture("delta-target.bin")
+
+    // 只有一个补丁文件的清单，差分包里就只有它
+    private val deltaManifest = UpdateManifest(
+        version = "0.0.2",
+        files = listOf(
+            ManifestFile(
+                path = "app/desktopApp-desktop.jar",
+                size = deltaTarget.size.toLong(),
+                sha256 = MessageDigest.getInstance("SHA-256").digest(deltaTarget).toHex(),
+                mtime = 1_700_000_000_000L,
+                patch = true,
+            ),
+        ),
+    )
+
+    private fun deltaZip(): File = root.resolve("delta.zip").apply {
+        ZipOutputStream(outputStream()).use { out ->
+            out.putNextEntry(ZipEntry("app/desktopApp-desktop.jar.zst"))
+            out.write(fixture("delta-target.bin.zst"))
+            out.closeEntry()
+        }
+    }
+
+    // 夹具由 zstd CLI 的 --patch-from 生成，与 release.yml 相同；验证的是 CLI 压出的差分 zstd-jni 能否还原
+    @Test
+    fun deltaFromCliRestoresAgainstInstalledBase() {
+        install.resolve("app").mkdirs()
+        install.resolve("app/desktopApp-desktop.jar").writeBytes(fixture("delta-base.bin"))
+        val staged = root.resolve("staged")
+        applyDelta(deltaZip(), deltaManifest, install, staged)
+        val jar = staged.resolve("app/desktopApp-desktop.jar")
+        assertTrue(jar.readBytes().contentEquals(deltaTarget))
+        assertEquals(1_700_000_000_000L, jar.lastModified())
+    }
+
+    // 调用方据这个异常退回完整补丁包，换成别的异常就成了更新失败
+    @Test
+    fun deltaAgainstWrongBaseFailsAsChecksumMismatch() {
+        install.resolve("app").mkdirs()
+        install.resolve("app/desktopApp-desktop.jar").writeBytes(fixture("delta-target.bin"))
+        assertFailsWith<ChecksumMismatchException> {
+            applyDelta(deltaZip(), deltaManifest, install, root.resolve("staged"))
+        }
+    }
+
     @Test
     fun extractRejectsIncompleteOrForeignArchives() {
         assertFailsWith<ChecksumMismatchException> {
