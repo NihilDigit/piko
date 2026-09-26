@@ -61,8 +61,9 @@ private object PixelAlignedLayout : LayoutManager {
 }
 
 /**
- * 标题栏跟随应用主题。系统只按自己的深浅色画 Win32 标题栏，应用选了深色而系统是浅色时，
- * 深色界面顶着一条白标题栏。
+ * 系统画的窗口外框跟随应用主题。标题栏已由 [WindowFrame] 自绘，这里管的是剩下仍归系统的部分：
+ * Windows 上是 DWM 画的 1px 边框，macOS 上是红绿灯与窗口边缘。不设的话，系统是浅色而
+ * 应用选了深色时，深色窗口外围一圈浅色描边。
  *
  * 用 DisposableEffect 而不是 LaunchedEffect：前者在组合提交时同步执行，赶在窗口首次显示之前，
  * 后者要等下一帧，窗口会先闪一下浅色标题栏。

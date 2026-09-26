@@ -28,7 +28,9 @@ import coil3.compose.AsyncImage
 import dev.piko.desktop.DesktopSettingsStore
 import dev.piko.desktop.MacOs
 import dev.piko.desktop.PixelAlignedContentEffect
+import dev.piko.desktop.TitleBarColors
 import dev.piko.desktop.TitleBarThemeEffect
+import dev.piko.desktop.WindowFrame
 import dev.piko.desktop.isMacOs
 import dev.piko.desktop.rememberRememberedWindowState
 import dev.piko.desktop.winrt.WinRTSupport
@@ -89,7 +91,7 @@ fun VideoPlayerWindow(
         icon = icon,
         state = windowState,
     ) {
-        // 画面四周是黑的，标题栏不随应用主题，始终用深色
+        // 画面四周是黑的，窗口外框不随应用主题，始终用深色
         TitleBarThemeEffect(window, dark = true)
         PixelAlignedContentEffect(window)
         val fullscreen = remember(window) { WindowsFullscreen(window) }
@@ -100,33 +102,44 @@ fun VideoPlayerWindow(
             LocalPikoPlatform provides platform,
             LocalPointerSource provides pointerSource,
         ) {
+            val inFullscreen = if (isMacOs) windowState.placement == WindowPlacement.Fullscreen else isFullscreen
             PikoTheme(appearance = appearance) {
-                VideoPlayerContent(
-                    request = request,
-                    services = services,
-                    isFullscreen = if (isMacOs) windowState.placement == WindowPlacement.Fullscreen else isFullscreen,
-                    onToggleFullscreen = {
-                        if (isMacOs) {
-                            // macOS 走系统的全屏空间。WindowsFullscreen 绕开的崩溃出在 Skiko 的 D3D 路径上，
-                            // macOS 渲染走 Metal，不经过它；按标题栏绿灯进出全屏时 placement 同样跟着变
-                            windowState.placement = if (windowState.placement == WindowPlacement.Fullscreen) {
-                                WindowPlacement.Floating
+                WindowFrame(
+                    title = "$title - Piko 播放器",
+                    icon = icon,
+                    colors = PlayerTitleBarColors,
+                    showTitleBar = !inFullscreen,
+                ) {
+                    VideoPlayerContent(
+                        request = request,
+                        services = services,
+                        isFullscreen = inFullscreen,
+                        onToggleFullscreen = {
+                            if (isMacOs) {
+                                // macOS 走系统的全屏空间。WindowsFullscreen 绕开的崩溃出在 Skiko 的 D3D 路径上，
+                                // macOS 渲染走 Metal，不经过它；按标题栏绿灯进出全屏时 placement 同样跟着变
+                                windowState.placement = if (windowState.placement == WindowPlacement.Fullscreen) {
+                                    WindowPlacement.Floating
+                                } else {
+                                    WindowPlacement.Fullscreen
+                                }
                             } else {
-                                WindowPlacement.Fullscreen
+                                if (fullscreen.isFullscreen) fullscreen.exit() else fullscreen.enter()
+                                isFullscreen = fullscreen.isFullscreen
                             }
-                        } else {
-                            if (fullscreen.isFullscreen) fullscreen.exit() else fullscreen.enter()
-                            isFullscreen = fullscreen.isFullscreen
-                        }
-                    },
-                    onTitleChange = { title = it },
-                    onClose = onClose,
-                    modifier = Modifier.trackPointerSource(pointerSource),
-                )
+                        },
+                        onTitleChange = { title = it },
+                        onClose = onClose,
+                        modifier = Modifier.trackPointerSource(pointerSource),
+                    )
+                }
             }
         }
     }
 }
+
+// 画面四周是黑的，标题栏与之连成一片，不随应用主题
+private val PlayerTitleBarColors = TitleBarColors(container = Color.Black, content = Color.White)
 
 @Composable
 @OptIn(ExperimentalMediampApi::class)

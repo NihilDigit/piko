@@ -1,6 +1,8 @@
 package dev.piko.desktop
 
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -18,6 +20,7 @@ import androidx.compose.ui.res.loadImageBitmap
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
+import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.Tray
 import dev.piko.desktop.ui.player.VideoPlayerWindow
@@ -40,6 +43,8 @@ import dev.piko.ui.VideoPlayerHost
 import dev.piko.ui.VideoPlayerRequest
 import dev.piko.ui.anyActiveFor
 import dev.piko.ui.workNotices
+import dev.piko.ui.platform.LocalPikoPlatform
+import dev.piko.ui.theme.PikoTheme
 import dev.piko.ui.theme.appearanceFlow
 import dev.piko.ui.theme.isDark
 import java.awt.Dimension
@@ -182,12 +187,13 @@ fun main(args: Array<String>) {
             quitRequests.collect { if (isInBackground) exitApplication() else currentCloseMainWindow() }
         }
 
+        val mainWindowState = rememberRememberedWindowState(settings, "main", DpSize(1120.dp, 760.dp))
         Window(
             onCloseRequest = closeMainWindow,
             visible = !isInBackground,
             title = "Piko",
             icon = appIcon,
-            state = rememberRememberedWindowState(settings, "main", DpSize(1120.dp, 760.dp)),
+            state = mainWindowState,
         ) {
             // 再窄就放不下 compact 布局的底部导航与列表了；宽度下限等于一台窄手机
             LaunchedEffect(Unit) { window.minimumSize = Dimension(360, 560) }
@@ -202,18 +208,32 @@ fun main(args: Array<String>) {
                     bringToFront(window)
                 }
             }
-            MagnetDropTarget(
-                platform = platform,
-                appearance = appearance,
-                onMagnet = services.instantMagnetRepository::onIncomingMagnet,
-                onUpload = services.uploadManager::request,
-            ) {
-                PikoApp(
-                    services = services,
-                    platform = platform,
-                    appearance = appearance,
-                    videoPlayer = videoPlayer,
-                )
+            // 标题栏在 PikoApp 之外，主题要自己再套一层；PikoTheme 读平台字体，平台也要先提供
+            CompositionLocalProvider(LocalPikoPlatform provides platform) {
+                PikoTheme(appearance = appearance) {
+                    WindowFrame(
+                        title = "Piko",
+                        icon = appIcon,
+                        // 与网盘页未滚动时的顶栏、侧边导航栏同色，连成一片
+                        colors = TitleBarColors(MaterialTheme.colorScheme.surface, MaterialTheme.colorScheme.onSurface),
+                        // macOS 的全屏空间里系统收起了红绿灯，标题栏也跟着让出来
+                        showTitleBar = mainWindowState.placement != WindowPlacement.Fullscreen,
+                    ) {
+                        MagnetDropTarget(
+                            platform = platform,
+                            appearance = appearance,
+                            onMagnet = services.instantMagnetRepository::onIncomingMagnet,
+                            onUpload = services.uploadManager::request,
+                        ) {
+                            PikoApp(
+                                services = services,
+                                platform = platform,
+                                appearance = appearance,
+                                videoPlayer = videoPlayer,
+                            )
+                        }
+                    }
+                }
             }
         }
 
