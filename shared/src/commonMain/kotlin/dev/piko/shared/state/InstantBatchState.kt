@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.log.logFailure
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -170,6 +171,7 @@ class InstantBatchState internal constructor(
                             if (ids == null) allInstant = false else createdIds += ids
                             succeeded += row
                         }
+                        .logFailure("Instant", "批量保存失败")
                         .onFailure { saveErrors[row.key] = "保存失败：${it.message}" }
                 }
                 if (saveErrors.isEmpty()) {

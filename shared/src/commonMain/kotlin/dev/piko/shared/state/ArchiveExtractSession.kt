@@ -6,6 +6,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.data.ArchivePasswordVault
+import dev.piko.shared.log.LogLevel
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.data.ArchiveRepository
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
@@ -149,6 +151,7 @@ class ArchiveExtractSession(
     private suspend fun process(job: ArchiveJob) {
         update(job.id) { it.copy(status = ArchiveJobStatus.Submitting) }
         val task = repository.start(job.file, job.password).getOrElse { err ->
+            PikoLog.w(TAG, "提交解压失败：${job.file.name}", err)
             if (err is ArchivePasswordException) {
                 // 没带密码时服务端报的是「缺少」；带了还被拒才算输错
                 update(job.id) { it.copy(status = ArchiveJobStatus.NeedsPassword(incorrect = job.password.isNotEmpty())) }
@@ -167,6 +170,7 @@ class ArchiveExtractSession(
         var failures = 0
         while (true) {
             val progress = repository.progress(taskId).getOrElse { err ->
+                PikoLog.w(TAG, "查询解压进度失败：${job.file.name}，第 ${failures + 1} 次", err)
                 failures++
                 if (failures >= MAX_POLL_FAILURES) {
                     finish(job, "${job.file.name} 解压进度查询失败：${failureReason(err)}")
@@ -204,6 +208,7 @@ class ArchiveExtractSession(
 
     private fun finish(job: ArchiveJob, message: String, succeeded: Boolean = false) {
         jobs = jobs.filterNot { it.id == job.id }
+        PikoLog.log(if (succeeded) LogLevel.INFO else LogLevel.WARN, TAG, message, null)
         _messages.tryEmit(message)
         _outcomes.tryEmit(ArchiveOutcome(job.file.name, succeeded, message))
     }
@@ -213,6 +218,7 @@ class ArchiveExtractSession(
     }
 
     private companion object {
+        const val TAG = "Archive"
         const val MAX_POLL_FAILURES = 5
         val POLL_RETRY_DELAY = 3.seconds
         const val VOLUME_UNSUPPORTED = "PikPak 不支持解压分卷压缩包"

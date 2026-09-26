@@ -4,6 +4,7 @@ import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.runSuspendCatching
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.update.isNetworkFailure
 import io.github.nihildigit.pikpak.PikPakClient
 import io.github.nihildigit.pikpak.PikPakException
@@ -290,6 +291,7 @@ class PikoUploadCoordinator(
             update(taskId) { if (it.status.isActive) it.copy(status = UploadStatus.PAUSED, speedBytesPerSec = 0L) else it }
             throw e
         } catch (e: Throwable) {
+            PikoLog.w(TAG, "上传失败：${_tasks.value[taskId]?.fileName}", e)
             update(taskId) { it.copy(status = UploadStatus.FAILED, speedBytesPerSec = 0L, errorMessage = failureMessage(e)) }
         }
     }
@@ -330,6 +332,7 @@ class PikoUploadCoordinator(
                 break
             } catch (e: PikPakException) {
                 if (e.httpStatus != 403 || retried) throw e
+                PikoLog.w(TAG, "OSS 拒绝上传凭据（403），换新会话重传", e)
                 retried = true
                 abandon(client, session)
                 session = startSession(client, taskId, task, gcid) ?: return
@@ -445,6 +448,7 @@ class PikoUploadCoordinator(
     private class SourceUnavailableException : Exception()
 
     private companion object {
+        const val TAG = "Upload"
         const val PROGRESS_INTERVAL_MS = 500L
 
         /** 一个分片传到一半凭据到期也会被拒，留出余量。 */

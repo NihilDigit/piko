@@ -5,6 +5,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFailure
 import dev.piko.shared.data.PikoPathBreadcrumb
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.CoroutineScope
@@ -102,6 +104,7 @@ class FolderPickerState(
                         reload()
                     }
                 }
+                .logFailure("FolderPicker", "新建文件夹失败")
                 .onFailure { _messages.tryEmit("新建文件夹失败") }
             isCreatingFolder = false
         }
@@ -119,6 +122,7 @@ class FolderPickerState(
             while (true) {
                 val (list, next) = driveRepo.listFiles(parentId = parentId, pageToken = token)
                     .getOrElse { error ->
+                        PikoLog.w("FolderPicker", "读取目录失败", error)
                         loadError = error.message ?: "未知错误"
                         return
                     }

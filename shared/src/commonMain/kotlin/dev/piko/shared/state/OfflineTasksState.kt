@@ -5,6 +5,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.piko.shared.data.TaskRepository
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFailure
 import io.github.nihildigit.pikpak.OfflineTask
 import io.github.nihildigit.pikpak.TaskPhase
 import kotlinx.coroutines.CoroutineScope
@@ -76,7 +78,10 @@ class OfflineTasksState(
                     tasks = tasks.filterNot { it.id == task.id }
                     launchFetch(notifyFailure = false)
                 }
-                .onFailure { err -> _messages.tryEmit("重新提交失败") }
+                .onFailure { err ->
+                    PikoLog.w(TAG, "重新提交离线任务失败", err)
+                    _messages.tryEmit("重新提交失败")
+                }
         }
     }
 
@@ -88,7 +93,10 @@ class OfflineTasksState(
                     tasks = tasks.filterNot { it.id == taskId }
                     launchFetch(notifyFailure = false)
                 }
-                .onFailure { err -> _messages.tryEmit("删除任务失败") }
+                .onFailure { err ->
+                    PikoLog.w(TAG, "删除离线任务失败", err)
+                    _messages.tryEmit("删除任务失败")
+                }
         }
     }
 
@@ -102,6 +110,7 @@ class OfflineTasksState(
                     _messages.tryEmit("已清除 $cleared 条记录")
                     launchFetch(notifyFailure = false)
                 }
+                .logFailure(TAG, "清除离线记录失败")
                 .onFailure { _messages.tryEmit("清除记录失败") }
         }
     }
@@ -120,6 +129,7 @@ class OfflineTasksState(
                     loadError = null
                 }
                 .onFailure { err ->
+                    PikoLog.w(TAG, "加载离线任务失败", err)
                     val reason = err.message ?: "网络错误"
                     loadError = reason
                     if (notifyFailure) _messages.tryEmit("加载离线任务失败")
@@ -132,5 +142,6 @@ class OfflineTasksState(
 
     companion object {
         const val DEFAULT_POLL_INTERVAL_MS = 4_000L
+        private const val TAG = "Offline"
     }
 }

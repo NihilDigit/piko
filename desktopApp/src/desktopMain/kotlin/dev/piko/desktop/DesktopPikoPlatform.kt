@@ -40,7 +40,9 @@ import java.io.File
 import java.net.URI
 import javax.swing.JFileChooser
 import javax.swing.UIManager
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.openani.mediamp.compose.MediampPlayerSurface
 import org.openani.mediamp.compose.rememberMediampPlayer
 
@@ -71,6 +73,27 @@ class DesktopPikoPlatform(
     override val fontFamily: FontFamily = FontFamily(if (isMacOs) "PingFang SC" else "Microsoft YaHei UI")
 
     override val shortcutModifier: ShortcutModifier = if (isMacOs) ShortcutModifier.Command else ShortcutModifier.Ctrl
+
+    override val deviceSummary: String =
+        "${System.getProperty("os.name")} ${System.getProperty("os.version")}，${System.getProperty("os.arch")}，Java ${System.getProperty("java.version")}"
+
+    /** 系统的保存框，默认放在下载目录。FileDialog 在事件线程上模态阻塞，调用方在界面协程里调即可。 */
+    override suspend fun exportLog(fileName: String, content: String): Boolean {
+        val owner = activeWindow()
+        val dialog = when (owner) {
+            is Dialog -> FileDialog(owner, "导出日志", FileDialog.SAVE)
+            else -> FileDialog(owner as? Frame, "导出日志", FileDialog.SAVE)
+        }
+        dialog.directory = settings.downloadDirectory.absolutePath
+        dialog.file = fileName
+        val target = try {
+            dialog.isVisible = true
+            dialog.file?.let { File(dialog.directory, it) }
+        } finally {
+            dialog.dispose()
+        } ?: return false
+        return withContext(Dispatchers.IO) { runCatching { target.writeText(content) }.isSuccess }
+    }
 
     override fun openUrl(url: String) {
         runCatching { Desktop.getDesktop().browse(URI(url)) }

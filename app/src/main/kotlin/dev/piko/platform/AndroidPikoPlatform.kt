@@ -44,6 +44,8 @@ import dev.piko.ui.screens.player.MpvPlaybackBackend
 import dev.piko.ui.screens.player.MpvVideoSurface
 import dev.piko.update.AppUpdateService
 import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * 共享界面在 Android 上的平台能力。动作都从 Application 的 Context 发出，所以启动 Activity
@@ -124,6 +126,26 @@ class AndroidPikoPlatform(
 
     @Composable
     override fun ListScrollbar(state: LazyStaggeredGridState, modifier: Modifier) = Unit
+
+    override val deviceSummary: String =
+        "Android ${Build.VERSION.RELEASE}（API ${Build.VERSION.SDK_INT}），${Build.MANUFACTURER} ${Build.MODEL}，${Build.SUPPORTED_ABIS.firstOrNull()}"
+
+    override suspend fun exportLog(fileName: String, content: String): Boolean = runCatching {
+        // 放在缓存目录的 logs 下，由 file_paths.xml 单独授权给 FileProvider；下次导出时覆盖
+        val file = withContext(Dispatchers.IO) {
+            File(context.cacheDir, "logs").apply { mkdirs() }.resolve(fileName).apply { writeText(content) }
+        }
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            // 选择器经 ClipData 把读权限转给最终选中的应用
+            clipData = ClipData.newRawUri(fileName, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(send, "导出日志").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        true
+    }.getOrDefault(false)
 
     private fun startActivity(intent: Intent) {
         runCatching { context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }

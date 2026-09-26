@@ -2,6 +2,7 @@ package dev.piko.shared.media
 
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.data.PikoClientProvider
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.media.proxy.PikPakByteSource
 import dev.piko.shared.media.proxy.PikoMediaProxy
 import dev.piko.shared.media.proxy.ProxyStream
@@ -171,7 +172,8 @@ class PikoMediaRepository(
         } catch (e: CancellationException) {
             source.close()
             throw e
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            PikoLog.w(TAG, "代理注册失败，退回直链", e)
             source.close()
             null
         }
@@ -217,7 +219,8 @@ class PikoMediaRepository(
         } catch (e: CancellationException) {
             handle.close()
             throw e
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            PikoLog.w(TAG, "打开字节来源失败（${if (resolved.isOrigin) "原画" else "转码"}），退回直链", e)
             handle.close()
             null
         }
@@ -254,6 +257,8 @@ class PikoMediaRepository(
         Result.failure(e)
     }
 }
+
+private const val TAG = "Media"
 
 /** 清晰度菜单里代表原画的那一项，也是 [PikoMediaRepository] 认的原画标识。 */
 const val ORIGINAL_QUALITY = "Original"

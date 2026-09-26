@@ -5,6 +5,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.piko.shared.data.DuplicateScanEvent
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFailure
 import dev.piko.shared.data.DuplicateScanner
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
@@ -121,6 +123,7 @@ class DuplicateFinderState(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
+                PikoLog.w("Duplicates", "查找重复失败", e)
                 errorMessage = e.message ?: "未知错误"
                 phase = Phase.FAILED
             }
@@ -162,6 +165,7 @@ class DuplicateFinderState(
                     driveRepo.requestRefresh()
                     _messages.tryEmit("已将 ${ids.size} 个文件移入回收站")
                 }
+                .logFailure("Duplicates", "移入回收站失败")
                 .onFailure { _messages.tryEmit("移入回收站失败") }
             isTrashing = false
         }

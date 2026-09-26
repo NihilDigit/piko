@@ -1,6 +1,7 @@
 package dev.piko.desktop.update
 
 import dev.piko.desktop.isMacOs
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.update.ChecksumMismatchException
 import dev.piko.shared.update.GithubReleaseClient
 import dev.piko.shared.update.LatestRelease
@@ -67,7 +68,7 @@ class DesktopAppUpdater private constructor(
     releases = releases,
     currentVersion = currentVersion,
     checksOnStartup = checksOnStartup,
-    log = { message, cause -> System.err.println("Piko: $message: $cause") },
+    log = { message, cause -> PikoLog.w("Update", message, cause) },
 ) {
     /** 本机应用目录。[exe] 是启动器，更新后由脚本重新拉起。 */
     private class Installation(val dir: File, val exe: File)

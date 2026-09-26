@@ -1,5 +1,6 @@
 package dev.piko.shared.media.proxy
 
+import dev.piko.shared.log.PikoLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
@@ -65,7 +66,12 @@ internal class ProxySession(private val source: ProxyByteSource) : AutoCloseable
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                if (isClosed || recoveredWithoutProgress) throw e
+                if (isClosed) throw e
+                if (recoveredWithoutProgress) {
+                    PikoLog.w("Proxy", "换过 reader 仍读不出 $position 处的数据，断开这次请求", e)
+                    throw e
+                }
+                PikoLog.w("Proxy", "读取 $position 处失败，换一个 reader 重试", e)
                 reader?.close()
                 reader = null
                 recoveredWithoutProgress = true

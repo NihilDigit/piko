@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.log.logFailure
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -64,6 +65,7 @@ class TrashScreenState(
                 val alive = list.mapTo(HashSet()) { it.id }
                 selectedFileIds.retainAll { it in alive }
             }
+            .logFailure("Trash", "读取回收站失败")
             .onFailure {
                 loadError = it.message ?: "读取回收站失败"
                 _messages.tryEmit("加载失败")
@@ -105,6 +107,7 @@ class TrashScreenState(
                     _messages.tryEmit("已恢复 ${ids.size} 项")
                     fetch()
                 }
+                .logFailure("Trash", "恢复失败")
                 .onFailure { _messages.tryEmit("恢复失败") }
         }
     }
@@ -117,6 +120,7 @@ class TrashScreenState(
                     _messages.tryEmit("已彻底删除 ${ids.size} 项")
                     fetch()
                 }
+                .logFailure("Trash", "永久删除失败")
                 .onFailure { _messages.tryEmit("删除失败") }
         }
     }

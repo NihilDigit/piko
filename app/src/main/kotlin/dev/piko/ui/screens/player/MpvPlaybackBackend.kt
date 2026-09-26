@@ -11,6 +11,8 @@ import androidx.compose.runtime.setValue
 import dev.jdtech.mpv.MPVLib
 import dev.jdtech.mpv.MPVLib.MpvEvent
 import dev.jdtech.mpv.MPVLib.MpvFormat
+import dev.piko.shared.log.LogLevel
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.media.player.ExternalSubtitle
 import dev.piko.shared.media.player.MPV_SUBTITLE_LANGUAGES
 import dev.piko.shared.media.player.MediaTrack
@@ -463,7 +465,18 @@ internal class MpvPlaybackBackend(
     override fun logMessage(prefix: String, level: Int, text: String) {
         // 回调里是 v 级别的全量日志，只留错误作为失败原因
         if (level <= MPV_LOG_LEVEL_ERROR) lastErrorLog = "$prefix: ${text.trim()}"
+        // 警告以上进应用日志。坏流会逐包刷同一句，连着重复的只记一次，免得挤掉日志里别的内容
+        if (level <= MPV_LOG_LEVEL_WARN) {
+            val line = "$prefix: ${text.trim()}"
+            if (line != lastLoggedMpvLine) {
+                lastLoggedMpvLine = line
+                PikoLog.log(if (level <= MPV_LOG_LEVEL_ERROR) LogLevel.ERROR else LogLevel.WARN, "mpv", line, null)
+            }
+        }
     }
+
+    // 只在 mpv 的日志线程上读写
+    private var lastLoggedMpvLine: String? = null
 
     private fun updateVideoAspect() {
         val aspect = rawAspect?.takeIf { it > 0.0 } ?: return
@@ -477,6 +490,7 @@ internal class MpvPlaybackBackend(
 
         // mpv_log_level 的 MPV_LOG_LEVEL_ERROR。1.0.0 的构件没带 MpvLogLevel 常量类
         const val MPV_LOG_LEVEL_ERROR = 20
+        const val MPV_LOG_LEVEL_WARN = 30
     }
 }
 

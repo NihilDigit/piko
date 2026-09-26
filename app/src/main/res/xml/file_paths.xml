@@ -7,4 +7,6 @@
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <external-files-path name="downloads" path="Piko/" />
     <files-path name="internal_downloads" path="Piko/" />
+    <!-- 导出的日志，见 AndroidPikoPlatform.exportLog -->
+    <cache-path name="logs" path="logs/" />
 </paths>

@@ -5,6 +5,7 @@ import dev.piko.data.repository.FileNameSanitizer
 import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
 import dev.piko.shared.data.PikoClientProvider
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.data.runSuspendCatching
 import io.github.nihildigit.pikpak.FileStat
@@ -161,6 +162,7 @@ class PikoDownloadCoordinator(
     fun startDownload(taskId: String) {
         val task = _tasks.value[taskId] ?: return
         onDownloadStarted?.invoke()
+        PikoLog.d(TAG, "开始：${task.fileName}，${task.downloadedBytes}/${task.totalBytes}${if (task.isSegment) "，片段" else ""}")
         // 片段任务要重新抽取，不能走整文件下载：它的 totalBytes 是 0，gcid 属于整个源文件
         if (task.isSegment) startSegment(task) else launchTracked(taskId) { runDownload(task) }
     }
@@ -200,6 +202,7 @@ class PikoDownloadCoordinator(
                 handle.downloadTo(Path(target), task.totalBytes, concurrency = concurrency, progress = progress)
                 reporter.cancel()
                 val destinationPath = storage.commit(task.fileName, target)
+                PikoLog.d(TAG, "完成：${task.fileName}")
                 update(taskId) {
                     it.copy(
                         status = DownloadStatus.COMPLETED,
@@ -215,6 +218,7 @@ class PikoDownloadCoordinator(
             }
             throw e
         } catch (e: Throwable) {
+            PikoLog.w(TAG, "下载失败：${task.fileName}，已下载 ${progress.value}/${task.totalBytes}", e)
             update(taskId) {
                 it.copy(
                     status = DownloadStatus.FAILED,
@@ -307,6 +311,7 @@ class PikoDownloadCoordinator(
             // 抽取器只会不停重试；存下的直链还会过期，恢复出来的任务续做时必然失败。
             val prepared = mediaRepository?.let { repo ->
                 repo.preparePlayback(task.fileId).getOrElse { error ->
+                    PikoLog.w(TAG, "片段抽取取源失败：${task.fileName}", error)
                     update(task.taskId) { it.copy(status = DownloadStatus.FAILED, errorMessage = error.message) }
                     return@launchTracked
                 }
@@ -337,6 +342,7 @@ class PikoDownloadCoordinator(
                         )
                     }
                 }.onFailure { error ->
+                    PikoLog.w(TAG, "片段抽取失败：${task.fileName}，${task.startMs}–${task.endMs} ms", error)
                     update(task.taskId) { it.copy(status = DownloadStatus.FAILED, errorMessage = error.message) }
                 }
             } finally {
@@ -415,6 +421,7 @@ class PikoDownloadCoordinator(
     }
 
     private companion object {
+        const val TAG = "Download"
         const val PROGRESS_INTERVAL_MS = 500L
         val json = Json { ignoreUnknownKeys = true }
         val taskListSerializer = ListSerializer(DownloadTask.serializer())

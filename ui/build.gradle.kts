@@ -38,6 +38,8 @@ kotlin {
             implementation(libs.cmp.material3.adaptive.navigation.suite)
             implementation(libs.cmp.adaptive)
             implementation(libs.cmp.material.icons.extended)
+            // 导出日志的文件名与抬头要本地时间
+            implementation(libs.kotlinx.datetime)
             // Screen 继承 NavKey，Android 入口把播放器页交进来时要看得到它
             api(libs.androidx.navigation3.runtime)
             implementation(libs.androidx.lifecycle.runtime.compose)

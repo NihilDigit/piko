@@ -29,6 +29,8 @@ import dev.piko.shared.data.FilePikoCacheStore
 import dev.piko.shared.data.PikoClientManager
 import dev.piko.shared.state.InstantSheetState
 import dev.piko.shared.download.PikoDownloadCoordinator
+import dev.piko.shared.log.LogLevel
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.upload.UploadTask
 import dev.piko.ui.PikoApp
@@ -49,6 +51,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.openani.mediamp.mpv.MpvMediampPlayer
 
 /**
@@ -66,6 +69,8 @@ fun main(args: Array<String>) {
     }
     // 打包机上可能正开着一个 Piko，训练进程不能把自己当成后来者转交后退出
     val singleInstance = if (isAotTraining) null else SingleInstance.acquireOrForward(args.toList()) ?: return
+    // 拿到单实例锁之后才装：转交完参数就退出的后来者不该和主实例写同一个文件
+    installLog()
     if (WinRTSupport.isWindows) {
         // 进程级 AUMID 必须在建窗口/发 Toast 之前设置；协议注册放后台线程，不挡启动。
         runCatching { WinRTSupport.ensureAppUserModelId() }
@@ -309,6 +314,23 @@ private fun WorkNotifications(services: PikoServices, shouldNotify: () -> Boolea
             withContext(Dispatchers.IO) { showSystemNotification(notice.title, notice.message) }
         }
     }
+}
+
+/** 日志在 ~/.piko/logs。警告以上同时进标准错误，gradle run 时看得到；安装版的标准错误无人读，代价只是一次写入。 */
+private fun installLog() {
+    PikoLog.install(File(System.getProperty("user.home"), ".piko/logs").path) { level, tag, message, error ->
+        if (level >= LogLevel.WARN) System.err.println("Piko/$tag: $message" + (error?.let { "\n" + it.stackTraceToString() } ?: ""))
+    }
+    val previous = Thread.getDefaultUncaughtExceptionHandler()
+    Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+        PikoLog.e("Crash", "线程 ${thread.name} 未捕获的异常", error)
+        runBlocking { withTimeoutOrNull(1_000) { PikoLog.flush() } }
+        previous?.uncaughtException(thread, error) ?: error.printStackTrace()
+    }
+    PikoLog.i(
+        "App",
+        "启动 ${System.getProperty("jpackage.app-version") ?: "开发版"}，${System.getProperty("os.name")} ${System.getProperty("os.version")} ${System.getProperty("os.arch")}",
+    )
 }
 
 private fun showSystemNotification(title: String, message: String): Boolean =

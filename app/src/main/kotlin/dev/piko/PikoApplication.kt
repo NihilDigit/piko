@@ -1,6 +1,8 @@
 package dev.piko
 
 import android.app.Application
+import android.os.Build
+import android.util.Log
 import coil3.ImageLoader
 import coil3.PlatformContext
 import coil3.SingletonImageLoader
@@ -18,6 +20,8 @@ import dev.piko.shared.data.InstantMagnetRepository
 import dev.piko.shared.data.PikoClientManager
 import java.io.File
 import dev.piko.shared.download.PikoDownloadCoordinator
+import dev.piko.shared.log.LogLevel
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.state.InstantSession
 import dev.piko.shared.upload.PikoUploadCoordinator
@@ -28,6 +32,8 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 
 class PikoApplication : Application(), SingletonImageLoader.Factory {
@@ -59,6 +65,7 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        installLog()
 
         sessionManager = SessionManager(this)
         val clientManager = PikoClientManager(AndroidPikoSessionStore(this, sessionManager), appScope)
@@ -82,6 +89,38 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
         )
         platform = AndroidPikoPlatform(this) { appUpdater }
         WorkResultNotifier(this, services, appScope).start()
+    }
+
+    /**
+     * 日志放在私有的 files/logs，导出时另拷一份到缓存目录再分享。debug 包同时进 logcat；
+     * release 包不进，省掉每条一次的 logcat 写入。
+     */
+    private fun installLog() {
+        val echo: ((LogLevel, String, String, Throwable?) -> Unit)? = if (BuildConfig.DEBUG) {
+            { level, tag, message, error ->
+                val priority = when (level) {
+                    LogLevel.DEBUG -> Log.DEBUG
+                    LogLevel.INFO -> Log.INFO
+                    LogLevel.WARN -> Log.WARN
+                    LogLevel.ERROR -> Log.ERROR
+                }
+                Log.println(priority, "Piko/$tag", if (error == null) message else "$message\n${Log.getStackTraceString(error)}")
+            }
+        } else {
+            null
+        }
+        PikoLog.install(File(filesDir, "logs").path, echo)
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            PikoLog.e("Crash", "线程 ${thread.name} 未捕获的异常", error)
+            // 进程马上就没了，等写入协程把这条落盘；卡住也只等一秒，不耽误系统的崩溃处理
+            runBlocking { withTimeoutOrNull(1_000) { PikoLog.flush() } }
+            previous?.uncaughtException(thread, error)
+        }
+        PikoLog.i(
+            "App",
+            "启动 ${BuildConfig.VERSION_NAME}（${BuildConfig.VERSION_CODE}），Android ${Build.VERSION.RELEASE}，${Build.MANUFACTURER} ${Build.MODEL}",
+        )
     }
 
     override fun newImageLoader(context: PlatformContext): ImageLoader {

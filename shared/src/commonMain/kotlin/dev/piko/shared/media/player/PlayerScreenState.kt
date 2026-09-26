@@ -5,6 +5,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.media.ORIGINAL_QUALITY
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.media.PlayableMediaInfo
@@ -375,6 +376,7 @@ class PlayerScreenState(
                 isLocalPlayback = true
                 usingProxy = false
                 activeQuality = null
+                PikoLog.i(TAG, "打开本地副本：$title")
                 backend.open(PlaybackTarget.LocalFile(localPath), startPosition(), subtitles = openSubtitles())
             } else {
                 isLocalPlayback = false
@@ -388,6 +390,12 @@ class PlayerScreenState(
                     PlayableMediaKind.Video -> {
                         val proxyUrl = playback.proxyUrl.takeUnless { preferDirectLink }
                         usingProxy = proxyUrl != null
+                        val info = playback.info
+                        PikoLog.i(
+                            TAG,
+                            "打开：$title，${if (usingProxy) "经代理" else "直链"}，${if (info.isOrigin) "原画" else info.currentResolution + "p 转码"}，" +
+                                "${info.width}x${info.height}，${info.sizeBytes} B",
+                        )
                         backend.open(PlaybackTarget.Url(proxyUrl ?: playback.info.currentUrl), startPosition(), subtitles = openSubtitles())
                     }
                 }
@@ -398,6 +406,7 @@ class PlayerScreenState(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            PikoLog.w(TAG, "取流失败：$title", e)
             failure = e.message ?: "无法打开媒体"
             isPreparing = false
             // 这一轮连流都没拿到，退避到此为止，否则失败卡片会被加载态一直挡着
@@ -409,6 +418,7 @@ class PlayerScreenState(
         if (released) return
         when (event) {
             PlaybackBackendEvent.Ready -> {
+                if (!startedThisAttempt) PikoLog.d(TAG, "首帧就绪")
                 startedThisAttempt = true
                 isRecovering = false
                 // 出第一帧不代表故障过去了：流每次放几秒就断，立刻清零会无限重连。
@@ -434,6 +444,11 @@ class PlayerScreenState(
     private fun onPlaybackError(detail: String?) {
         stableJob?.cancel()
         val message = detail?.takeIf { it.isNotBlank() }?.let { "播放失败：$it" } ?: "播放中断"
+        PikoLog.w(
+            TAG,
+            "$message（${if (isLocalPlayback) "本地" else if (usingProxy) "代理" else "直链"}，" +
+                "${if (startedThisAttempt) "播放中，第 ${retryAttempt + 1} 次重连" else "首帧前"}，位置 ${currentPosition()} ms）",
+        )
         // 本地文件重来一遍还是同一个错误，直接交给用户
         if (isLocalPlayback) {
             failure = message
@@ -576,6 +591,7 @@ class PlayerScreenState(
     }
 
     private companion object {
+        const val TAG = "Player"
         const val RESUME_THRESHOLD_MILLIS = 3_000L
 
         // 打开第一个文件前等播放列表的上限，超过就不带外挂字幕先放

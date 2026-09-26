@@ -7,8 +7,8 @@ import android.content.pm.PackageInstaller
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
-import android.util.Log
 import dev.piko.BuildConfig
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.update.ChecksumMismatchException
 import dev.piko.shared.update.GithubReleaseClient
 import dev.piko.shared.update.LatestRelease
@@ -46,7 +46,7 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
     releases = GithubReleaseClient(HttpClient(OkHttp), userAgent = "Piko/${BuildConfig.VERSION_NAME}"),
     currentVersion = BuildConfig.VERSION_NAME,
     checksOnStartup = !BuildConfig.DEBUG,
-    log = { message, cause -> Log.w(TAG, message, cause) },
+    log = { message, cause -> PikoLog.w("Update", message, cause) },
 ) {
     override suspend fun resolve(release: LatestRelease): AndroidUpdate? {
         val apk = pickApk(release) ?: return null
@@ -138,7 +138,6 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
             ?: release.asset("piko-${release.version}-universal.apk")
 
     private companion object {
-        const val TAG = "AppUpdater"
         const val UPDATE_DIR = "updates"
     }
 }

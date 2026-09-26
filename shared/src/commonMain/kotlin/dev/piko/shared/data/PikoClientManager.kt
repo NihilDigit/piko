@@ -1,5 +1,6 @@
 package dev.piko.shared.data
 
+import dev.piko.shared.log.PikoLog
 import io.github.nihildigit.pikpak.PikPakClient
 import io.github.nihildigit.pikpak.PikPakException
 import io.github.nihildigit.pikpak.Session
@@ -86,7 +87,7 @@ class PikoClientManager(
                 client.close()
                 throw e
             }
-        }
+        }.onFailure { PikoLog.w(TAG, "密码登录失败", it) }
 
     suspend fun loginWithToken(account: String, token: String, refreshToken: String = ""): Result<PikPakClient> =
         runSuspendCatching {
@@ -110,9 +111,10 @@ class PikoClientManager(
                 client.close()
                 throw e
             }
-        }
+        }.onFailure { PikoLog.w(TAG, "令牌登录失败", it) }
 
     suspend fun logout() {
+        PikoLog.i(TAG, "退出登录")
         reconnectJob?.cancel()
         val current = _currentClient.value
         _currentClient.value = null
@@ -158,16 +160,25 @@ class PikoClientManager(
 
     private suspend fun tryLogin(client: PikPakClient): LoginFailure? = try {
         client.login()
+        PikoLog.i(TAG, "会话可用")
         null
     } catch (e: CancellationException) {
         throw e
     } catch (e: PasswordRequiredException) {
+        PikoLog.w(TAG, "会话失效且没有保存的密码，回登录页", e)
         LoginFailure.Rejected(e)
     } catch (e: PikPakException) {
         // SDK 已经把 429 与 5xx 重试过一轮，到这里仍失败说明服务端暂时不可用，不是会话失效
         val status = e.httpStatus
-        if (status != null && (status == 429 || status >= 500)) LoginFailure.Transient(e) else LoginFailure.Rejected(e)
+        if (status != null && (status == 429 || status >= 500)) {
+            PikoLog.w(TAG, "服务端暂时不可用（HTTP $status），稍后重试", e)
+            LoginFailure.Transient(e)
+        } else {
+            PikoLog.w(TAG, "服务端拒绝登录（HTTP $status）", e)
+            LoginFailure.Rejected(e)
+        }
     } catch (e: Throwable) {
+        PikoLog.w(TAG, "登录时网络出错，稍后重试", e)
         LoginFailure.Transient(e)
     }
 
@@ -199,6 +210,7 @@ class PikoClientManager(
     private fun currentTimeSeconds(): Long = kotlin.time.Clock.System.now().toEpochMilliseconds() / 1000L
 
     private companion object {
+        const val TAG = "Auth"
         const val CONNECTION_BUDGET = 8
         const val ACCOUNT_CONNECTION_BUDGET = 16
         const val RECONNECT_INITIAL_DELAY_MS = 2_000L

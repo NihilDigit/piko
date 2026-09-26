@@ -10,6 +10,8 @@ import dev.piko.data.repository.FileCategory
 import dev.piko.data.repository.FileNameSanitizer
 import dev.piko.data.repository.fileCategory
 import dev.piko.shared.data.InstantFileItem
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFailure
 import dev.piko.shared.data.InstantMagnetRepository
 import dev.piko.shared.data.MagnetResolutionResult
 import dev.piko.shared.data.OfflinePackTracker
@@ -440,6 +442,7 @@ class InstantSheetState private constructor(
                         previewedIds[gcid] = fileId
                         _previewRequests.emit(InstantPreviewRequest(fileId, item.file.name))
                     }
+                    .logFailure(TAG, "预览失败")
                     .onFailure { _messages.emit("预览失败：${it.message}") }
             } finally {
                 previewingIndex = null
@@ -487,6 +490,7 @@ class InstantSheetState private constructor(
                 val targetBread = target ?: resolveTarget()
                 val name = FileNameSanitizer.sanitize(folderName)
                 val folderId = driveRepo.createFolder(targetBread.id, name).getOrElse { err ->
+                    PikoLog.w(TAG, "新建保存目录失败", err)
                     errorMessage = "新建文件夹失败：${err.message}"
                     return@launch
                 }
@@ -541,6 +545,7 @@ class InstantSheetState private constructor(
     private suspend fun submitWhole(target: PikoPathBreadcrumb): Result<Unit> =
         instantRepo.enqueueOfflineTask(submittedUrl(), target.id)
             .map { }
+            .logFailure(TAG, "保存失败")
             .onFailure { errorMessage = "保存失败：${it.message}" }
 
     private fun scheduleResolve(debounce: Boolean = true) {
@@ -562,6 +567,7 @@ class InstantSheetState private constructor(
                 shared.resolvePermits.withPermit { instantRepo.resolve(magnet) }
                     .onSuccess { data -> applyResolution(data) }
                     .onFailure { err ->
+                        PikoLog.w(TAG, "解析链接失败", err)
                         errorMessage = "解析失败：${err.message}"
                         isInputVisible = true
                     }
@@ -638,6 +644,7 @@ class InstantSheetState private constructor(
                 // 移出 Piko-Temp 的不能再当作预览副本：下次预览会指向保存目录里的这份
                 toSave.forEach { item -> item.file.gcid?.let(previewedIds::remove) }
             }
+            .logFailure(TAG, "保存失败")
             .onFailure { errorMessage = "保存失败：${it.message}" }
 
     private suspend fun packSave(target: PikoPathBreadcrumb, toSave: List<InstantFileItem>): Result<Unit> {
@@ -653,10 +660,12 @@ class InstantSheetState private constructor(
             keptBytes = toSave.sumOf { it.file.size },
         )
             .map { }
+            .logFailure(TAG, "保存失败")
             .onFailure { errorMessage = "保存失败：${it.message}" }
     }
 
     companion object {
+        private const val TAG = "Instant"
         private const val AUTO_RESOLVE_DEBOUNCE_MS = 350L
 
         /**

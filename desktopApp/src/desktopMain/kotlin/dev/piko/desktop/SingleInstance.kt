@@ -1,5 +1,6 @@
 package dev.piko.desktop
 
+import dev.piko.shared.log.PikoLog
 import java.io.File
 import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
@@ -43,6 +44,7 @@ class SingleInstance private constructor(
     }
 
     companion object {
+        private const val TAG = "SingleInstance"
         private val directory = File(System.getProperty("user.home"), ".piko")
         private val socketFile = directory.resolve("instance.sock")
 
@@ -55,7 +57,7 @@ class SingleInstance private constructor(
             val channel = runCatching {
                 FileChannel.open(directory.resolve("instance.lock").toPath(), StandardOpenOption.CREATE, StandardOpenOption.WRITE)
             }.getOrElse {
-                System.err.println("Piko: 无法创建实例锁，按独立实例启动：$it")
+                PikoLog.w(TAG, "无法创建实例锁，按独立实例启动", it)
                 return SingleInstance(lock = null, server = null)
             }
             // 同一 JVM 里重复加锁抛 OverlappingFileLockException，别的进程持有时返回 null
@@ -69,7 +71,7 @@ class SingleInstance private constructor(
                 socketFile.delete()
                 ServerSocketChannel.open(StandardProtocolFamily.UNIX)
                     .apply { bind(UnixDomainSocketAddress.of(socketFile.toPath())) }
-            }.onFailure { System.err.println("Piko: 无法监听实例 socket，后来的启动参数收不到：$it") }.getOrNull()
+            }.onFailure { PikoLog.w(TAG, "无法监听实例 socket，后来的启动参数收不到", it) }.getOrNull()
             return SingleInstance(lock, server)
         }
 
@@ -87,7 +89,7 @@ class SingleInstance private constructor(
                 if (sent) return
                 Thread.sleep(100)
             }
-            System.err.println("Piko: 已有实例在运行，但转交启动参数失败")
+            PikoLog.w(TAG, "已有实例在运行，但转交启动参数失败")
         }
 
         private fun writeArgs(channel: SocketChannel, args: List<String>) {

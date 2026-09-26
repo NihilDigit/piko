@@ -27,9 +27,11 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.AutoFixHigh
+import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.DarkMode
+import androidx.compose.material.icons.outlined.FileDownload
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.History
@@ -87,12 +89,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.shared.data.ArchivePasswordVault
+import dev.piko.shared.log.PikoLog
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.readableWidth
 import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.PikoBrandIcons
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.platform.LocalPikoPlatform
+import dev.piko.ui.platform.PikoPlatform
 import dev.piko.ui.screens.archive.SavedArchivePasswordsDialog
 import dev.piko.ui.theme.Appearance
 import dev.piko.ui.theme.LocalAppearance
@@ -103,7 +107,11 @@ import dev.piko.ui.theme.isDark
 import dev.piko.update.AvailableUpdate
 import dev.piko.update.UpdateDialog
 import dev.piko.update.UpdateStatus
+import kotlin.time.Clock
 import kotlinx.coroutines.launch
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.number
+import kotlinx.datetime.toLocalDateTime
 
 /**
  * 设置页：外观、文件名解析、浏览、下载与关于，从「我的」进入。[onBackClick] 为 null 时不显示返回按钮
@@ -315,6 +323,15 @@ fun SettingsScreen(
                             },
                             onOpenRepository = { platform.openUrl(REPOSITORY_URL) },
                         )
+                        SettingsNavigationRow(
+                            index = 0,
+                            count = 1,
+                            icon = Icons.Outlined.BugReport,
+                            title = "导出日志",
+                            supporting = "反馈问题时请附上。记录文件名与操作经过，不含密码与登录凭据",
+                            onClick = { scope.launch { exportLogs(platform) } },
+                            trailingIcon = Icons.Outlined.FileDownload,
+                        )
                     }
                 }
             }
@@ -454,6 +471,15 @@ private enum class SettingsSection(val title: String) {
 }
 
 private const val REPOSITORY_URL = "https://github.com/NihilDigit/piko"
+
+/** 开头写明版本与运行环境，收到的人不必再问；文件名带时间，多次导出不会互相覆盖。 */
+private suspend fun exportLogs(platform: PikoPlatform) {
+    val now = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault())
+    fun Int.pad() = toString().padStart(2, '0')
+    val stamp = "${now.year}${now.month.number.pad()}${now.day.pad()}-${now.hour.pad()}${now.minute.pad()}${now.second.pad()}"
+    val header = "Piko ${platform.appVersion}\n${platform.deviceSummary}\n导出于 $now\n\n"
+    platform.exportLog("piko-log-$stamp.txt", header + PikoLog.export())
+}
 
 // 设置页自身宽到这个程度才放左侧目录。expanded 窗口里设置页只是「我的」旁边的详情栏，多数时候放不下
 private val SettingsIndexMinWidth = 900.dp

@@ -43,6 +43,15 @@ interface PikoPlatform {
 
     val shortcutModifier: ShortcutModifier get() = ShortcutModifier.Ctrl
 
+    /** 导出日志时写在开头的运行环境：系统版本、机型或架构。 */
+    val deviceSummary: String
+
+    /**
+     * 把导出的日志交给用户：Android 调起系统分享，直接发进聊天或邮件；桌面端弹保存对话框。
+     * 返回 false 表示没有交出去（取消或失败）。
+     */
+    suspend fun exportLog(fileName: String, content: String): Boolean
+
     fun openUrl(url: String)
 
     /** 软键盘是否弹出。桌面端没有软键盘，恒为 false。 */

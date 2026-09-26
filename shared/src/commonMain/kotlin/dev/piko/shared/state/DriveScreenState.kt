@@ -9,6 +9,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.data.ChildFile
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFailure
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoFileSortOrder
 import dev.piko.shared.data.PikoPathBreadcrumb
@@ -28,6 +30,8 @@ import kotlinx.coroutines.withContext
 
 /** 文件夹行在可见区域里停留这么久才预取其内容，见 [DriveScreenState.onFolderVisible]。 */
 private const val PREFETCH_DWELL_MILLIS = 400L
+
+private const val TAG = "Drive"
 
 /**
  * 网盘浏览的全部状态与动作，两端共用。
@@ -284,6 +288,7 @@ class DriveScreenState(
                     loadedFolderId = folderId
                     loadError = null
                 }
+                .logFailure(TAG, "读取目录失败")
                 .onFailure {
                     // 消息是一次性的，弹完就没了；而列表此刻显示的是上一次的内容，
                     // 界面需要一个持续的标记才能说明「这是陈旧数据」
@@ -352,6 +357,7 @@ class DriveScreenState(
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Throwable) {
+                PikoLog.w(TAG, "全盘搜索失败，已找到 ${globalSearchHits.size} 项", e)
                 _messages.tryEmit("全盘搜索失败")
             } finally {
                 isGlobalSearching = false
@@ -451,6 +457,7 @@ class DriveScreenState(
                     load()
                     _messages.tryEmit("已新建文件夹")
                 }
+                .logFailure(TAG, "新建文件夹失败")
                 .onFailure { _messages.tryEmit("新建文件夹失败") }
         }
     }
@@ -464,6 +471,7 @@ class DriveScreenState(
                     load()
                     _messages.tryEmit("已重命名")
                 }
+                .logFailure(TAG, "重命名失败")
                 .onFailure { _messages.tryEmit("重命名失败") }
         }
     }
@@ -476,6 +484,7 @@ class DriveScreenState(
                     load()
                     _messages.tryEmit(if (starred) "已添加星标" else "已取消星标")
                 }
+                .logFailure(TAG, "修改星标失败")
                 .onFailure { _messages.tryEmit(if (starred) "添加星标失败" else "取消星标失败") }
         }
     }
@@ -489,6 +498,7 @@ class DriveScreenState(
                     load()
                     _messages.tryEmit(if (ids.size == 1) "已移入回收站" else "已将 ${ids.size} 项移入回收站")
                 }
+                .logFailure(TAG, "移入回收站失败")
                 .onFailure { _messages.tryEmit("移入回收站失败") }
         }
     }
@@ -502,6 +512,7 @@ class DriveScreenState(
                     load()
                     _messages.tryEmit("已移至 $targetName")
                 }
+                .logFailure(TAG, "移动失败")
                 .onFailure { _messages.tryEmit("移动失败") }
         }
     }
@@ -516,6 +527,7 @@ class DriveScreenState(
                     if (targetId == activeFolderId) load()
                     _messages.tryEmit("已复制到 $targetName")
                 }
+                .logFailure(TAG, "复制失败")
                 .onFailure { _messages.tryEmit("复制失败") }
         }
     }
