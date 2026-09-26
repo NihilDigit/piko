@@ -62,6 +62,10 @@ private const val AOT_TRAINING_PROPERTY = "compose.aot.training-run"
 private const val AOT_TRAINING_MILLIS = 12_000L
 
 fun main(args: Array<String>) {
+    // 走系统代理：JVM 默认只认 http.proxyHost 一类属性，不看 Windows 与 macOS 设置里的代理，
+    // 在系统里开了代理（例如代理软件的「系统代理」模式）也照样直连。这个属性在 ProxySelector
+    // 首次初始化时读取，所以放在一切网络请求之前。Android 不用设，系统会把网络的代理同步给进程
+    System.setProperty("java.net.useSystemProxies", "true")
     val isAotTraining = System.getProperty(AOT_TRAINING_PROPERTY) == "true"
     if (isAotTraining) {
         Thread({ Thread.sleep(AOT_TRAINING_MILLIS); exitProcess(0) }, "Piko-Aot-Training")
