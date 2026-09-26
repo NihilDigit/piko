@@ -147,6 +147,11 @@ compose.desktop {
         // 应用内更新据此在 Windows Installer 的登记里认出自己是不是 MSI 装的，见 DesktopAppUpdater
         jvmArgs += "-Dpiko.upgrade-code=$msiUpgradeUuid"
         if (releaseVersion.isPresent) jvmArgs += "-Dpiko.release-build=true"
+        // AOT 缓存里不存机器码。JDK 25 会把训练时生成的调用适配代码与桩代码一并存进 app.aot，换一台机器
+        // 也不核对 CPU 特性：CI runner 支持 AVX-512，缓存里的适配代码用了 EVEX 指令，装到不支持的 CPU
+        // （例如 12 代酷睿）上随机报 EXCEPTION_ILLEGAL_INSTRUCTION，崩在 AdapterBlob。训练与运行都读这里的参数，
+        // 两处一起关掉；类的加载与链接照常缓存，启动加速的大头仍在
+        jvmArgs += listOf("-XX:+UnlockDiagnosticVMOptions", "-XX:-AOTAdapterCaching", "-XX:-AOTStubCaching")
         buildTypes.release.proguard {
             isEnabled = true
             configurationFiles.from(project.file("proguard-rules.pro"))
