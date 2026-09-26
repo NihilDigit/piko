@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -38,7 +37,7 @@ import kotlinx.coroutines.launch
  * 「忽略此版本」，在设置页是「在浏览器中查看」。关掉对话框靠点外面或返回。
  * 下载中不许关：关掉后下载就成了没有任何反馈的后台任务。
  *
- * 更新说明已由 updateNotesOf 从 Release 的 Markdown 转成纯文本，可选中复制，限高滚动，免得把按钮顶出去。
+ * 更新说明是 updateNotesOf 截出的 Markdown，由 ReleaseNotes 排版，可选中复制，限高滚动，免得把按钮顶出去。
  */
 @Composable
 fun UpdateDialog(
@@ -90,16 +89,13 @@ fun UpdateDialog(
                     shape = MaterialTheme.shapes.medium,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    SelectionContainer {
-                        Text(
-                            text = update.notes.ifBlank { "此版本没有更新说明" },
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier
-                                .heightIn(max = 320.dp)
-                                .verticalScroll(rememberScrollState())
-                                .padding(16.dp),
-                        )
-                    }
+                    ReleaseNotes(
+                        markdown = update.notes.ifBlank { "此版本没有更新说明" },
+                        modifier = Modifier
+                            .heightIn(max = 320.dp)
+                            .verticalScroll(rememberScrollState())
+                            .padding(16.dp),
+                    )
                 }
                 when (status) {
                     is UpdateStatus.Downloading -> {

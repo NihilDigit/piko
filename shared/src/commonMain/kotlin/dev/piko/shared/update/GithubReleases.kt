@@ -139,38 +139,68 @@ class GithubReleaseClient(
 }
 
 /**
- * Release 正文里给更新弹窗看的部分：第一个「## 下载」标题之前的更新内容，转成纯文本。
+ * Release 正文里给更新弹窗看的部分：第一个「## 下载」标题之前的更新内容，仍是 Markdown。
  *
  * 正文由 .github/release-notes.md 生成，其后是给下载页读者的附件说明与校验方法，已装好的用户
- * 用不上；弹窗按纯文本显示，其中的表格只会是一堆竖线。标题改动时两边要一起改。
- *
- * 手写的更新日志本身也是 Markdown，分「## 修复」「## 变化」两节，原样交给弹窗就会显示出井号与
- * 行首的短横线。这里只去掉更新日志里会出现的标记：标题、列表、粗体、行内代码与链接，
- * 不是完整的 Markdown 解析。
+ * 用不上，其中的表格在弹窗里也排不开。标题改动时两边要一起改。
  */
 fun updateNotesOf(body: String): String =
     body.lineSequence()
+        .map { it.trimEnd() }
         .takeWhile { it.trim() != DOWNLOAD_SECTION_HEADING }
-        .map(::markdownLineToPlainText)
         .joinToString("\n")
         .trim()
 
 const val DOWNLOAD_SECTION_HEADING = "## 下载"
 
-private fun markdownLineToPlainText(line: String): String {
-    val heading = MARKDOWN_HEADING.matchEntire(line)
-    val text = heading?.groupValues?.get(1) ?: MARKDOWN_BULLET.replace(line) { "${it.groupValues[1]}• " }
-    return text
-        .replace(MARKDOWN_LINK, "$1")
-        .replace(MARKDOWN_BOLD, "$1")
-        .replace("`", "")
-        .trimEnd()
+/** 更新说明的一段。文字里仍保留行内标记（粗体、行内代码、链接），由界面排版。 */
+sealed interface ReleaseNoteBlock {
+    val text: String
+
+    data class Heading(override val text: String) : ReleaseNoteBlock
+
+    data class Bullet(override val text: String) : ReleaseNoteBlock
+
+    data class Paragraph(override val text: String) : ReleaseNoteBlock
+}
+
+/**
+ * 按更新日志的写法切成标题、列表项与段落：一行概述，「## 修复」「## 变化」两节，每条一个短横线。
+ * 只认这几种块，不是完整的 Markdown 解析；列表项折行接到上一项，段落内的换行并成一段。
+ */
+fun releaseNoteBlocks(markdown: String): List<ReleaseNoteBlock> {
+    val blocks = mutableListOf<ReleaseNoteBlock>()
+    var open: ReleaseNoteBlock? = null
+    fun close() {
+        open?.let(blocks::add)
+        open = null
+    }
+    for (line in markdown.lineSequence()) {
+        val heading = MARKDOWN_HEADING.matchEntire(line)
+        val bullet = MARKDOWN_BULLET.find(line)
+        when {
+            line.isBlank() -> close()
+            heading != null -> {
+                close()
+                blocks += ReleaseNoteBlock.Heading(heading.groupValues[1])
+            }
+            bullet != null -> {
+                close()
+                open = ReleaseNoteBlock.Bullet(line.substring(bullet.range.last + 1).trim())
+            }
+            else -> open = when (val current = open) {
+                is ReleaseNoteBlock.Bullet -> current.copy(text = joinWrapped(current.text, line.trim()))
+                is ReleaseNoteBlock.Paragraph -> current.copy(text = joinWrapped(current.text, line.trim()))
+                else -> ReleaseNoteBlock.Paragraph(line.trim())
+            }
+        }
+    }
+    close()
+    return blocks
 }
 
 private val MARKDOWN_HEADING = Regex("""\s{0,3}#{1,6}\s+(.*?)(?:\s+#+)?\s*""")
-private val MARKDOWN_BULLET = Regex("""^(\s*)[-*+]\s+""")
-private val MARKDOWN_LINK = Regex("""\[([^\]]*)]\([^)]*\)""")
-private val MARKDOWN_BOLD = Regex("""\*\*(.+?)\*\*""")
+private val MARKDOWN_BULLET = Regex("""^\s*[-*+]\s+""")
 
 /**
  * 按数字逐段比较，忽略 -debug 这类后缀；段数不同时缺的一段按 0 计。
@@ -205,3 +235,9 @@ private data class AssetDto(
     @SerialName("browser_download_url") val downloadUrl: String,
     val digest: String? = null,
 )
+
+/** 折行接回一行：中文之间直接相连，西文单词之间补回被换行吃掉的空格。 */
+private fun joinWrapped(before: String, after: String): String {
+    val needsSpace = before.lastOrNull()?.let { it.code < 0x80 } == true && after.firstOrNull()?.let { it.code < 0x80 } == true
+    return if (needsSpace) "$before $after" else before + after
+}
