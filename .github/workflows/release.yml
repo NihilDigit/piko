@@ -97,11 +97,15 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+      # 正文由 .github/release-notes.md 填入版本号生成，自动生成的更新记录接在其后。更新内容发版后
+      # 补写在最前面、「## 下载」之前：应用内更新弹窗读到这个标题就截断，见 GithubReleases.kt。
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          sed "s/{{version}}/${PIKO_VERSION_NAME}/g" .github/release-notes.md > release-notes.md
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
+            --notes-file release-notes.md \
             --generate-notes \
             dist/*

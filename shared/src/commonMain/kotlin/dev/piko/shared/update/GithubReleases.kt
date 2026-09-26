@@ -82,7 +82,7 @@ class GithubReleaseClient(
         check(version.isNotEmpty()) { "Release 没有 tag" }
         return LatestRelease(
             version = version,
-            notes = release.body.orEmpty().trim(),
+            notes = updateNotesOf(release.body.orEmpty()),
             pageUrl = release.htmlUrl,
             assets = release.assets.map { asset ->
                 ReleaseAsset(
@@ -137,6 +137,20 @@ class GithubReleaseClient(
         private const val SHA256_PREFIX = "sha256:"
     }
 }
+
+/**
+ * Release 正文里给更新弹窗看的部分：第一个「## 下载」标题之前的更新内容。
+ *
+ * 正文由 .github/release-notes.md 生成，其后是给下载页读者的附件说明与校验方法，已装好的用户
+ * 用不上；弹窗按纯文本显示，其中的表格只会是一堆竖线。标题改动时两边要一起改。
+ */
+fun updateNotesOf(body: String): String =
+    body.lineSequence()
+        .takeWhile { it.trim() != DOWNLOAD_SECTION_HEADING }
+        .joinToString("\n")
+        .trim()
+
+const val DOWNLOAD_SECTION_HEADING = "## 下载"
 
 /**
  * 按数字逐段比较，忽略 -debug 这类后缀；段数不同时缺的一段按 0 计。

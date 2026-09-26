@@ -78,7 +78,8 @@ and finds duplicates.
 ## Install
 
 Download from [Releases](https://github.com/NihilDigit/piko/releases/latest). Every package is built
-from this repository by GitHub Actions, and `SHA256SUMS.txt` lists the checksums.
+from this repository by GitHub Actions. The release page lists which file to download for each
+device, and shows the SHA-256 of every asset.
 
 - **Android** needs Android 8.0 or later. Pick the APK for your device's architecture, or
   `universal` if unsure.

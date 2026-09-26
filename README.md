@@ -68,7 +68,7 @@
 
 ## 安装
 
-前往 [Releases](https://github.com/NihilDigit/piko/releases/latest) 下载。所有安装包均由 GitHub Actions 从仓库源码构建，校验值见 `SHA256SUMS.txt`。
+前往 [Releases](https://github.com/NihilDigit/piko/releases/latest) 下载。所有安装包均由 GitHub Actions 从仓库源码构建，Release 页面按设备列出应下载的文件，每个附件的 SHA-256 显示在附件列表中。
 
 - **Android**：需要 Android 8.0 或更高版本。按设备架构选择 APK，无法确定时选 `universal`。
 - **Windows**：需要 Windows 10 或更高版本，提供 x64 与 arm64 两种架构。
