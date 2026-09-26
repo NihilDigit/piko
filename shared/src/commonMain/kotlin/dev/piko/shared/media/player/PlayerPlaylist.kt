@@ -3,6 +3,7 @@ package dev.piko.shared.media.player
 import dev.piko.data.repository.NaturalOrder
 import dev.piko.shared.naming.AttachmentKind
 import dev.piko.shared.naming.EntryFile
+import dev.piko.shared.naming.FileKind
 import dev.piko.shared.naming.MediaFileInput
 import dev.piko.shared.naming.Section
 import dev.piko.shared.naming.analyzeMediaBatch
@@ -53,7 +54,9 @@ data class SubtitleRef(val fileId: String, val name: String, val language: Strin
  */
 fun buildPlaylist(files: List<PlaylistEntry>, subtitles: List<SubtitleRef> = emptyList()): List<PlaylistEntry> {
     if (files.isEmpty()) return emptyList()
-    val inputs = files.map { MediaFileInput(path = it.name, size = it.size) } + subtitles.map { MediaFileInput(path = it.name, size = 0) }
+    // 进播放列表的都是视频，名字没有扩展名的也照视频解析
+    val inputs = files.map { MediaFileInput(path = it.name, size = it.size, kind = FileKind.VIDEO) } +
+        subtitles.map { MediaFileInput(path = it.name, size = 0) }
     val batch = analyzeMediaBatch(inputs)
     fun subtitlesOf(file: EntryFile): List<SubtitleRef> = file.attachments
         .filter { it.kind == AttachmentKind.SUBTITLE && it.index >= files.size }

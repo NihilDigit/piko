@@ -22,11 +22,11 @@ data class FolderDescription(
 
 /**
  * 描述一个文件夹。文件夹名多半就是种子标题，作品名常写成中文（「[DBD-Raws][命运石之门][01-24TV全集+SP+剧场版]…」），
- * 而里面的文件名是罗马音（「[DBD-Raws][Steins;Gate][01]…」），所以作品名优先取自 [contentNames]。
+ * 而里面的文件名是罗马音（「[DBD-Raws][Steins;Gate][01]…」），所以这类文件夹的作品名优先取自 [content]。
  * 内容可能只列出一部分（网盘生成封面时只给前几项），集数范围与包含的分区因此优先采信文件夹名。
  * 文件夹名只有中文、又没有可用内容时，如实报告未识别。
  */
-fun describeFolder(folderName: String, contentNames: List<String> = emptyList()): FolderDescription {
+fun describeFolder(folderName: String, content: List<MediaFileInput> = emptyList()): FolderDescription {
     matchAv(folderName.trim(), allowLanguageSuffix = false)?.let { match ->
         return FolderDescription(match.info.displayTitle(), WorkKind.AV, match.tags, episodeRange = null, extras = emptyList(), code = match.info.code)
     }
@@ -34,16 +34,32 @@ fun describeFolder(folderName: String, contentNames: List<String> = emptyList())
     val fromName = parseSeriesStem(washed)
     val nameTags = fromName.tags + scanFolderTags(washed)
 
-    val content = contentNames.takeIf { it.isNotEmpty() }?.let { names -> analyzeMediaBatch(names.map { MediaFileInput(it, 0) }) }
+    val analyzed = content.takeIf { it.isNotEmpty() }?.let(::analyzeMediaBatch)
     // 内容真成一部作品时才用它的名字：一堆互不相干的独立视频里随便挑一个的名字当文件夹名，
     // 「Pack From Shared」就被改成了其中一个视频的名字。须有集号或多个条目，且占内容的大多数。
     // 内容只有一个文件时不算：记住的内容不含子文件夹，「My Pack」里三个子文件夹加一个番号视频，
     // 看上去就只有那个视频
-    val contentCount = content?.works?.sumOf { work -> work.sections.sumOf { it.entries.size } } ?: 0
-    val mainWork = content?.works?.filter { it.kind != WorkKind.UNKNOWN && representsFolder(it, contentCount) }?.maxWithOrNull(
-        compareBy<MediaWork> { work -> work.sections.firstOrNull { it.section == Section.MAIN }?.entries?.size ?: 0 }
-            .thenBy { work -> work.sections.sumOf { it.entries.size } },
-    )
+    val contentCount = analyzed?.works?.sumOf { work -> work.sections.sumOf { it.entries.size } } ?: 0
+    val works = analyzed?.works.orEmpty().filter { it.kind != WorkKind.UNKNOWN }
+    val bySize = compareBy<MediaWork> { work -> work.sections.firstOrNull { it.section == Section.MAIN }?.entries?.size ?: 0 }
+        .thenBy { work -> work.sections.sumOf { it.entries.size } }
+    // 与文件夹同名的那部优先，不必占多数：「红眼罩女仆」目录里还混着另一套「红眼罩紫幕」，集数更多，
+    // 按多少挑会把紫幕的集数挂在女仆名下
+    val candidate = works.filter { work -> isWork(work) && work.title?.let { sameWork(it, washed) } == true }.maxWithOrNull(bySize)
+        ?: works.filter { representsFolder(it, contentCount) }.maxWithOrNull(bySize)
+    // 内容里的作品名顶替文件夹名要有理由：文件夹名看得出是一个发布（发布组、集数范围或技术标签），只是作品名
+    // 写成了别的语言；或者两者本就是同一部；或者这部作品占了文件夹的绝大部分（同一套合集里另起标题的剧场版之类
+    // 不妨碍）。不然文件夹名是用户起的归类名（「Dramas」里一集 Saijo、一集别的，各占一半），哪部都代表不了它，
+    // 那部作品的标签也不该挂上来。分区目录（SPs、Scans）是结构，不是归类，名字一律不顶替
+    val nameRange = folderRange(folderName)
+    val nameIsRelease = fromName.group != null || nameTags.isNotEmpty() || nameRange != null
+    val isSectionDir = directoryMeaning(folderName.trim()).let { it.section != null || it.secondary != null }
+    val mainWork = candidate?.takeIf { work ->
+        val title = work.title ?: return@takeIf true
+        val entries = work.sections.sumOf { it.entries.size }
+        val dominates = entries >= MIN_DOMINANT_ENTRIES && entries * 3 >= contentCount * 2
+        !isSectionDir && (nameIsRelease || sameWork(title, washed) || dominates)
+    }
 
     if (mainWork?.kind == WorkKind.AV) {
         val av = mainWork.sections.firstOrNull()?.entries?.firstOrNull()?.primary?.name?.av
@@ -53,14 +69,14 @@ fun describeFolder(folderName: String, contentNames: List<String> = emptyList())
 
     // 解析器把季号从作品名里拆进了集号，文件夹只剩「Yuru Camp」就和第一季、剧场版同名了，这里拼回去
     val season = mainWork?.let(::uniformSeason) ?: folderSeason(folderName)
-    val nameRange = folderRange(folderName)
     val range = nameRange ?: mainWork?.let(::mainRange)
     val extras = (sectionsMentioned(folderName) + mainWork?.sections.orEmpty().map { it.section })
         .filter { it != Section.MAIN }
         .distinct()
         .sortedBy { it.ordinal }
     val tags = mergeTags(mainWork?.commonTags.orEmpty(), nameTags)
-    val bareTitle = mainWork?.title?.takeIf(::hasLatin)
+    // 文件夹名本就含着作品名时用文件夹自己的写法，内容只补集数与标签：「MomoYIH」不该变成内容里小写的「momoyih」
+    val bareTitle = mainWork?.title?.takeIf { hasLatin(it) && !sameWork(it, washed) }
         ?: fromName.title?.takeIf { worthRewriting(folderName, fromName, nameTags, nameRange, season, extras) }?.let(::latinAlternative)?.let(::stripSeasonWord)
     val title = bareTitle?.let { if (season != null && season > 0) "$it Season $season" else it }
         ?: washed.takeIf { it != folderName.trim() }
@@ -95,23 +111,42 @@ private fun worthRewriting(
 
 private val FOLDER_PART = Regex("""(?i)(?<![a-z])(?:pt|part)[\s.-]?\d""")
 
-private fun representsFolder(work: MediaWork, contentCount: Int): Boolean {
+private fun representsFolder(work: MediaWork, contentCount: Int): Boolean =
+    isWork(work) && contentCount >= 2 && work.sections.sumOf { it.entries.size } * 2 >= contentCount
+
+private fun isWork(work: MediaWork): Boolean {
     val entries = work.sections.flatMap { it.entries }
-    val isWork = work.kind == WorkKind.AV || entries.size >= 2 || entries.any { it.episode != null }
-    return isWork && contentCount >= 2 && entries.size * 2 >= contentCount
+    // 只有一个条目时集号须可信：「dmf123」粘在字母后的数字是弱集号，凭它把目录改名成「dmf」不可靠
+    return work.kind == WorkKind.AV || entries.size >= 2 ||
+        entries.any { it.episode != null && it.primary.name.confidence == Confidence.HIGH }
+}
+
+// 一两个文件说明不了什么：归类文件夹里恰好只放了一部作品的两集，它仍是归类
+private const val MIN_DOMINANT_ENTRIES = 3
+
+/**
+ * 文件夹名里含着这个作品名：「Show」之于「Show 2019 BD」。只认这个方向：作品名反过来含着文件夹名时
+ * （文件夹「MomoYIH」，作品名是带着它的一长串描述），作品名只是更啰嗦，不该顶替
+ */
+private fun sameWork(title: String, folderName: String): Boolean {
+    val work = workKeyOf(title)
+    return work.isNotEmpty() && work in workKeyOf(folderName)
 }
 
 private fun hasLatin(text: String): Boolean = text.count { it in 'A'..'Z' || it in 'a'..'z' } >= 2
 
 /**
  * 标题里用斜线或竖线并列的多个写法，取含拉丁字母最多的一个：
- * 「幻想万华镜/Gensou Mangekyou」「Heike Monogatari / 平家物語」。全是中日文时返回 null。
+ * 「幻想万华镜/Gensou Mangekyou」「Heike Monogatari / 平家物語」。以中日文为主时返回 null：
+ * 「【标签】某某的JK制服合集」里的 JK 不是罗马音写法，改写只是把开头的标签挪走，不如原名。
  */
 private fun latinAlternative(title: String): String? {
     val best = title.split('/', '|', '／').map { it.trim().trim('~', '～', ' ') }.filter { it.isNotEmpty() }
-        .maxByOrNull { part -> part.count { it in 'A'..'Z' || it in 'a'..'z' } } ?: return null
-    return best.takeIf(::hasLatin)
+        .maxByOrNull(::latinCount) ?: return null
+    return best.takeIf { hasLatin(it) && latinCount(it) >= it.count(::isCjk) }
 }
+
+private fun latinCount(text: String): Int = text.count { it in 'A'..'Z' || it in 'a'..'z' }
 
 /** 标签方括号里的「+」连接写法，parseSeriesStem 只收整体是标签的方括号，这里补上零散的。 */
 private fun scanFolderTags(name: String): List<MediaTag> =

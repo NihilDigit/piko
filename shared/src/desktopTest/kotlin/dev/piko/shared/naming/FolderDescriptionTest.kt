@@ -11,6 +11,10 @@ class FolderDescriptionTest {
     private val steinsGateFolder = "[DBD-Raws][命运石之门][01-24TV全集+SP+剧场版+特典映像][1080P][BDRip][HEVC-10bit][简繁日双语外挂][FLAC][MKV]"
     private val steinsGateContent = NamingFixtures.load("steins-gate-dbd").map { it.path.substringAfterLast('/') }
 
+    // 这里的用例只关心文件名，不带服务端给的类型
+    private fun describeFolder(folderName: String, contentNames: List<String>) =
+        describeFolder(folderName, contentNames.map { MediaFileInput(it, 0) })
+
     @Test
     fun `chinese folder name takes the romaji title from its content`() {
         val folder = describeFolder(steinsGateFolder, steinsGateContent)
@@ -22,6 +26,13 @@ class FolderDescriptionTest {
         assertTrue((TagKind.RESOLUTION to "1080p") in tags)
         assertTrue((TagKind.SOURCE to "BDRip") in tags)
         assertTrue((TagKind.SUBTITLES to "简繁") in tags)
+    }
+
+    @Test
+    fun `camera counter names do not name the folder`() {
+        val folder = describeFolder("家庭旅行", listOf("IMG_0216.mp4", "IMG_0219.mp4", "IMG_0222.mp4", "DSC_0012.MOV", "DSC_0013.MOV"))
+        assertNull(folder.title)
+        assertEquals("0216–0222", folder.episodeRange)
     }
 
     @Test
@@ -40,6 +51,19 @@ class FolderDescriptionTest {
         val folder = describeFolder(steinsGateFolder, steinsGateContent.filter { "[01]" in it || "[02]" in it })
         assertEquals("Steins;Gate", folder.title)
         assertEquals("01–24", folder.episodeRange)
+    }
+
+    @Test
+    fun `a category folder is not renamed after one of its works`() {
+        // 两部不相干的作品各一集，其中一集没有扩展名、类型来自服务端
+        val mixed = listOf(
+            MediaFileInput("[Grp] Show A - S01E08 - [WebRip 1080P].mkv", 0),
+            MediaFileInput("[Grp2] Show B - 12 [WebRip 1080p HEVC-10bit AAC][END]", 0, FileKind.VIDEO),
+        )
+        assertNull(describeFolder("Dramas", mixed).title)
+        // 分区目录是结构，里面全是同一部作品的特典也不改名
+        val specials = (1..4).map { "[Grp] Show A [Special 0$it][1080p][x265_flac].mkv" }
+        assertNull(describeFolder("SPs", specials).title)
     }
 
     @Test

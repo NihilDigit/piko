@@ -1,5 +1,7 @@
 package dev.piko.shared.state
 
+import dev.piko.data.repository.fileCategory
+import dev.piko.shared.data.ChildFile
 import dev.piko.shared.naming.AttachmentKind
 import dev.piko.shared.naming.EntryFile
 import dev.piko.shared.naming.FileKind as NamingFileKind
@@ -14,7 +16,9 @@ import dev.piko.shared.naming.TagKind
 import dev.piko.shared.naming.WorkKind
 import dev.piko.shared.naming.analyzeMediaBatch
 import dev.piko.shared.naming.distinctFiles
+import dev.piko.shared.naming.toFileKind
 import dev.piko.shared.naming.versionsOfPrimary
+import dev.piko.shared.naming.workKeyOf
 import io.github.nihildigit.pikpak.FileStat
 
 /** 解析结果面板里的一行，如「分区」「SP」。 */
@@ -96,6 +100,15 @@ class DriveStructure(
     val attachedTo: Map<String, String>,
 )
 
+/**
+ * 网盘文件交给解析器时带上服务端按 mime 判断的类型：名字没有扩展名的视频（「… - 12 […][END]」），
+ * 光看名字会被当成说明文件归进次要文件。
+ */
+internal fun FileStat.toMediaFileInput(path: String = name): MediaFileInput = MediaFileInput(path, sizeBytes, fileCategory().toFileKind())
+
+/** 记下的文件夹内容交给解析器，同样带上服务端给的类型。 */
+internal fun ChildFile.toMediaFileInput(): MediaFileInput = MediaFileInput(name, 0, category?.toFileKind())
+
 internal const val SECONDARY_BLOCK_ID = "secondary"
 private const val OTHERS_BLOCK_ID = "unknown"
 private const val FLAT_BLOCK_MAX = 2
@@ -110,7 +123,7 @@ fun analyzeDriveFolder(files: List<FileStat>): DriveStructure {
     if (regular.isEmpty()) {
         return DriveStructure(emptyList(), emptyList(), secondaryFolders.toSet(), emptyMap(), emptyMap())
     }
-    val batch = analyzeMediaBatch(regular.map { MediaFileInput(it.name, it.sizeBytes) })
+    val batch = analyzeMediaBatch(regular.map { it.toMediaFileInput() })
     val secondaryIds = regular.indices.filter { batch.roles[it] == FileRole.SECONDARY }.map { regular[it].id }
     val attachedTo = buildMap {
         batch.works.forEach { work ->
@@ -192,12 +205,15 @@ private fun buildBlocks(batch: MediaBatch, files: List<FileStat>): List<DriveBlo
 }
 
 /**
- * 独立文件的行标题只是把原名清理一遍：去掉日期、清晰度、架构名。同目录里清理后撞名的
+ * 没有集号的行，标题只是把原名清理一遍：去掉日期、清晰度、架构名、UUID。同目录里清理后撞名的
  * （archlinux-2026.04.01.iso 与它的 (1)、(2) 都成了「archlinux」），清理就是在丢信息，改回显示原名。
+ * 不只看独立作品：「旅行 IMG_4100」一簇定为作品「旅行」后，「旅行 <UUID>」这样同名前缀加 UUID 的几个文件
+ * 也并了进去，行标题都是作品名
  */
 private fun withoutCollidingStandalone(views: Map<String, DriveFileView>, batch: MediaBatch, files: List<FileStat>): Map<String, DriveFileView> {
-    val standaloneIds = batch.works.filter { it.kind == WorkKind.SERIES && isStandalone(it) }
+    val standaloneIds = batch.works.filter { it.kind == WorkKind.SERIES }
         .flatMap { work -> work.sections.flatMap { it.entries } }
+        .filter { entry -> entry.episode == null && entry.av == null }
         .flatMap { entry -> entry.files.map { files[it.index].id } }
     val colliding = standaloneIds.groupBy { views[it]?.title }.filterKeys { it != null }.values.filter { it.size > 1 }.flatten().toSet()
     return if (colliding.isEmpty()) views else views - colliding
@@ -224,18 +240,40 @@ private fun isStandalone(work: MediaWork): Boolean {
 
 private fun buildViews(batch: MediaBatch, files: List<FileStat>): Map<String, DriveFileView> = buildMap {
     batch.works.filter { it.kind != WorkKind.UNKNOWN }.forEach { work ->
+        val repeated = repeatedEpisodeTitles(work)
         work.sections.forEach { section ->
             section.entries.forEach { entry ->
-                entry.files.forEach { file -> put(files[file.index].id, fileView(work, section.section, entry, file)) }
+                entry.files.forEach { file -> put(files[file.index].id, fileView(work, section.section, entry, file, repeated)) }
             }
         }
     }
 }
 
-private fun fileView(work: MediaWork, section: Section, entry: MediaEntry, file: EntryFile): DriveFileView {
+private val HASHTAG = Regex("""\s*#\S+""")
+
+/** 同一作品里两集以上共有的集标题：「01.某作品.mp4」「02.某作品.mp4」编号后面的是作品名，不是描述。 */
+private fun repeatedEpisodeTitles(work: MediaWork): Set<String> =
+    work.sections.flatMap { it.entries }.mapNotNull { entry -> entry.primary.name.episodeTitle?.let(::workKeyOf) }
+        .groupingBy { it }.eachCount().filterValues { it > 1 }.keys
+
+/**
+ * 集号后面的描述接在行标题里：「16.【…】描述」只显示「16」就认不出是哪段。动画的文件名多半只有作品名与集号，
+ * 没有这一段；有的话只收真正的描述，作品名或各集共有的文字不算
+ */
+private fun episodeDescription(work: MediaWork, entry: MediaEntry, file: EntryFile, repeated: Set<String>): String? {
+    if (entry.episode == null) return null
+    // 话题标签是给平台检索用的，不是描述。去掉后只剩数字的也不算：「IMG_1234_5678」集号后的 5678 是相机的编号
+    val text = file.name.episodeTitle?.replace(HASHTAG, "")?.trim()?.takeIf { title -> title.any(Char::isLetter) } ?: return null
+    val key = workKeyOf(text)
+    if (key.isEmpty() || key in repeated || work.title?.let(::workKeyOf) == key) return null
+    return text
+}
+
+private fun fileView(work: MediaWork, section: Section, entry: MediaEntry, file: EntryFile, repeated: Set<String>): DriveFileView {
     val av = file.name.av?.takeIf { work.kind == WorkKind.AV }
     val avTitle = av?.displayTitle()
-    val title = avTitle ?: entry.label?.let(::stripBrackets) ?: file.name.fileName.substringBeforeLast('.')
+    val numbered = entry.label?.let(::stripBrackets)?.let { label -> listOfNotNull(label, episodeDescription(work, entry, file, repeated)).joinToString(" ") }
+    val title = avTitle ?: numbered ?: file.name.fileName.substringBeforeLast('.')
     val ownTags = rowTags(work, file)
     val languages = attachmentTags(file)
     val versionCount = if (file == entry.primary) entry.versionsOfPrimary().size + 1 else 1

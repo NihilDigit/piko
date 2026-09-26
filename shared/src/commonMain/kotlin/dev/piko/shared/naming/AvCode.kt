@@ -43,8 +43,9 @@ private val HEYZO = Regex("""^HEYZO[\s_-]*(?:HD[\s_-]*)?(\d{3,5})(?![0-9])""", R
 private val SEPARATED = Regex("""^([A-Za-z]{2,6})[-_](\d{2,5})(?![0-9])""")
 
 // 连写：abcd00123pl、ABCD123C。没有分隔符时与普通单词更难区分，只接受 DMM 式的五位补零，
-// 或数字后紧跟已知后缀（C 中字、pl/ps 封面）的写法
-private val GLUED_DMM = Regex("""^([A-Za-z]{2,6})(0\d{4})(?![0-9])""")
+// 或数字后紧跟已知后缀（C 中字、pl/ps 封面）的写法。补零须是两个：三位编号补成五位才是 DMM 的写法，
+// 「clhlh06822」这种账号名只是恰好以 0 开头
+private val GLUED_DMM = Regex("""^([A-Za-z]{2,6})(00\d{3})(?![0-9])""")
 private val GLUED_SUFFIXED = Regex("""^([A-Za-z]{2,6})(\d{3})(C|pl|ps)$""")
 
 // 「image-2026.04.01」：数字后面接着月和日，是日期，不是番号
@@ -259,6 +260,8 @@ internal fun matchAv(stem: String, allowLanguageSuffix: Boolean): AvMatch? {
     }
     // 后缀里「无码破解」这类整词经标签词表认出，旗标要与标签一致
     uncensored = uncensored || tags.any { it.kind == TagKind.CENSORSHIP && it.text == MediaTag.UNCENSORED }
+    // 通用词表不收「流出」，番号片的流出才是无码，出现在名字任何位置都算。「未流出」是没流出过
+    uncensored = uncensored || ("流出" in stem && "未流出" !in stem)
     chinese = chinese || tags.any { it.kind == TagKind.SUBTITLES && it.text == MediaTag.CHINESE_SUBTITLES }
     if (uncensored) tags += MediaTag(TagKind.CENSORSHIP, MediaTag.UNCENSORED)
     if (chinese) tags += MediaTag(TagKind.SUBTITLES, MediaTag.CHINESE_SUBTITLES)

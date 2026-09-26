@@ -101,13 +101,13 @@ private val ALIGN_SEPARATORS = Regex("""[\s_.\-]+""")
 private val EDGE_PUNCTUATION = charArrayOf(' ', '(', ')', '（', '）', '[', ']', '【', '】', '#', '@', '-', '_', '.', ',', '，')
 
 /**
- * 簇里不变的文字整理成作品名：去掉站点前缀（www.98T.la@）、技术标签（HEVC）与两端的标点。
+ * 簇里不变的文字整理成作品名：去掉站点前缀（www.98T.la@）、技术标签（HEVC）、相机前缀（IMG_）与两端的标点。
  * 剩下不到两个字母时返回 null，这簇就不起作品名。
  */
 internal fun alignedTitle(text: String): String? {
     // 开头的发布组方括号不是作品名：「[Airota&…&VCB-Studio] Yuru Camp [IV01]」
     val words = stripSiteNoise(text).replace(LEADING_GROUP, "").split(ALIGN_SEPARATORS)
-        .filter { word -> word.isNotBlank() && !scanTags(word).isTagText }
+        .filter { word -> word.isNotBlank() && !scanTags(word).isTagText && !isCameraPrefix(word) }
     val title = words.joinToString(" ").trim(*EDGE_PUNCTUATION)
     return title.takeIf { candidate -> candidate.count { it.isLetter() } >= 2 }
 }

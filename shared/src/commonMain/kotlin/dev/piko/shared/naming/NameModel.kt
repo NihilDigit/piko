@@ -156,14 +156,18 @@ data class ParsedName(
     val languageCode: String?,
     /** 自动生成、没有任何可读信息的名字（Telegram 导出、哈希），由批量分析按顺序编号。 */
     val opaque: Boolean = false,
-    /** 标题是从自动生成名里解出的时间，如「LINE 视频 2020-07-29 00:15」。 */
+    /** 行标题是从自动生成名里解出的时间，如「LINE 视频 2020-07-29 00:15」；账号加时间的名字作品名是账号。 */
     val timed: Boolean = false,
 ) {
     val recognized: Boolean get() = kind != NameKind.UNKNOWN
 }
 
 /** 批量分析的输入：带目录的相对路径（只有文件名也可以）与字节数，未知时传 0。 */
-data class MediaFileInput(val path: String, val size: Long)
+/**
+ * [kind] 是文件名之外得知的类型，如网盘按 mime 给出的。只在名字本身认不出类型时采用：网盘里有不带扩展名的视频
+ * （「… - 12 [WebRip 1080p HEVC-10bit AAC][END]」），光看名字会被当成说明文件。
+ */
+data class MediaFileInput(val path: String, val size: Long, val kind: FileKind? = null)
 
 enum class FileRole {
     /** 条目的主文件。 */

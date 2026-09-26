@@ -175,8 +175,9 @@ class MediaNameParserTest {
 
     @Test
     fun `dates and prose are not episodes or title ends`() = assertParses(
-        // scene release 的两位年份日期
-        "site.25.08.26.some.performer.scene.xxx.mp4" to "site | site | -",
+        // scene release 的两位年份日期：站点是作品，日期进行标题，XXX 起是标签
+        "site.25.08.26.some.performer.scene.xxx.mp4" to "site | 2025-08-26 some performer scene | -",
+        "site.25.08.26.performer.in.her.ass.xxx.mp4" to "site | 2025-08-26 performer in her ass | -",
         "Site 21 02 23 performer and friend.mp4" to "Site | Site | -",
         // 整个主干只是「名字.编号」
         "sitestreets.121.mp4" to "sitestreets | 121 | -",
@@ -207,6 +208,24 @@ class MediaNameParserTest {
         // 纯数字不当哈希，也不在合理年份内时不当时间戳
         assertNull(generatedName("20240101", utc))
         assertNull(generatedName("99999999999999", utc))
+
+        assertEquals("相机 2025-09-18 23:53", (generatedName("VID_20250918235340", utc) as GeneratedName.Timed).label)
+        assertEquals("Telegram 2025-08-14 20:10", (generatedName("video_2025-08-14_20-10-40 (3)", utc) as GeneratedName.Timed).label)
+        // 转存机器人写的是 UTC，换成当地时间
+        with(generatedName("From-某频道-20241013T191849590Z", TimeZone.of("Asia/Shanghai")) as GeneratedName.Posted) {
+            assertEquals("某频道", account)
+            assertEquals("2024-10-14 03:18", label)
+        }
+        // 开头的一串数字是平台的用户 ID，不是账号名的一部分
+        assertEquals("某人", (generatedName("881627187_某人_20230306_230427", utc) as GeneratedName.Posted).account)
+        assertEquals(GeneratedName.Opaque, generatedName("VID_3dfa82963c3737383bfed62b8b4cff43", utc))
+        assertEquals(GeneratedName.Opaque, generatedName("12336dc2c38916b3949b9e60d892de9e_raw", utc))
+    }
+
+    @Test
+    fun `channel promotions are washed`() {
+        assertEquals("某人_9", stripSiteNoise("更多视频请在Telegram收藏夹发送@abc33丨某人_9"))
+        assertEquals("129507", stripSiteNoise("129507 TG频道@ABCD"))
     }
 
     @Test

@@ -2,10 +2,14 @@ package dev.piko.shared.naming
 
 /**
  * 解析单个文件名（不含目录）。目录能提供的信息（分区、作品名的兜底）由 [analyzeMediaBatch] 补上。
+ *
+ * [knownKind] 是名字以外得知的类型，名字认不出类型时采用；这时名字没有扩展名，整个都是主干。
  */
-fun parseMediaName(fileName: String): ParsedName {
-    val kind = fileKindOf(fileName)
-    val hasExtension = kind != FileKind.DOCUMENT || fileName.contains('.') && extensionOf(fileName).length in 1..5
+fun parseMediaName(fileName: String, knownKind: FileKind? = null): ParsedName {
+    val kindByName = fileKindOf(fileName)
+    val kind = knownKind?.takeIf { kindByName == FileKind.DOCUMENT } ?: kindByName
+    val typedElsewhere = kind != kindByName
+    val hasExtension = !typedElsewhere && (kind != FileKind.DOCUMENT || fileName.contains('.') && extensionOf(fileName).length in 1..5)
     val stemWithLanguage = if (hasExtension) fileName.substringBeforeLast('.') else fileName
     val (stem, languageCode) = splitLanguageSuffix(stemWithLanguage, kind)
     val language = languageCode?.let { LANGUAGE_SUFFIXES[it.lowercase()] }
@@ -33,16 +37,46 @@ fun parseMediaName(fileName: String): ParsedName {
             fileName = fileName, fileKind = kind, kind = NameKind.STANDALONE, confidence = Confidence.LOW,
             title = title, group = null, episode = null, episodeTitle = null, section = null, marker = null, label = label,
             av = null, tags = emptyList(), language = language, languageCode = languageCode, opaque = generated == GeneratedName.Opaque,
-            timed = generated is GeneratedName.Timed,
+            timed = generated is GeneratedName.Timed || generated is GeneratedName.Posted,
+        )
+    }
+    sceneRelease(washed)?.let { scene ->
+        return ParsedName(
+            fileName = fileName, fileKind = kind, kind = NameKind.STANDALONE, confidence = Confidence.HIGH,
+            title = scene.site, group = null, episode = null, episodeTitle = null, section = null, marker = null, label = scene.label,
+            av = null, tags = scene.tags, language = language, languageCode = languageCode,
         )
     }
     val series = parseSeriesStem(washed)
     return ParsedName(
         fileName = fileName, fileKind = kind, kind = series.kind, confidence = series.confidence,
-        title = series.title, group = series.group, episode = series.episode, episodeTitle = series.episodeTitle,
+        title = series.title?.takeUnless(::isCameraPrefix), group = series.group, episode = series.episode, episodeTitle = series.episodeTitle,
         section = series.section, marker = series.marker, label = series.label, av = null,
         tags = series.tags, language = language, languageCode = languageCode,
     )
+}
+
+private class SceneRelease(val site: String, val label: String, val tags: List<MediaTag>)
+
+// scene 发布名：站点.YY.MM.DD.演员.标题[.XXX.1080p.MP4-组]。站点后面紧跟的是日期，不是集号
+private val SCENE_STOP_KINDS = setOf(TagKind.RESOLUTION, TagKind.VIDEO_CODEC, TagKind.AUDIO_CODEC, TagKind.SOURCE, TagKind.BIT_DEPTH, TagKind.FRAME_RATE)
+private val SCENE_RELEASE = Regex("""^([A-Za-z][A-Za-z0-9-]*[A-Za-z0-9])\.(\d{2})\.(0[1-9]|1[0-2])\.(0[1-9]|[12]\d|3[01])[.\-](.+)$""")
+
+/**
+ * 站点是作品，行标题是日期加标题。日期要留在行里：同一演员的几部，标题常常只有演员名。
+ * 标题从第一个标签词（XXX、1080p、MP4-KTR）截断
+ */
+private fun sceneRelease(stem: String): SceneRelease? {
+    val match = SCENE_RELEASE.matchEntire(stem) ?: return null
+    val (site, year, month, day, rest) = match.destructured
+    val words = rest.split('.', ' ').filter { it.isNotBlank() }
+    // 只在技术标签处截断：标题里的普通英文词（Ass）恰好也是字幕格式，不能当标签
+    val cut = words.indexOfFirst { word ->
+        word.equals("XXX", ignoreCase = true) || lookupTagWord(word).orEmpty().any { it.kind in SCENE_STOP_KINDS }
+    }.takeIf { it >= 0 } ?: words.size
+    val tags = words.drop(cut).flatMap { lookupTagWord(it).orEmpty() }.distinct()
+    val title = words.take(cut).joinToString(" ")
+    return SceneRelease(site, listOf("20$year-$month-$day", title).filter { it.isNotEmpty() }.joinToString(" "), tags)
 }
 
 /**
@@ -609,6 +643,13 @@ private fun readAfterEpisode(tokens: List<NameToken>, after: Int, chosen: Hit?, 
                     followsSeason && draft.episode?.season == 0 && sectionMentioned(content) != null -> {
                         draft.section = sectionMentioned(content)
                         draft.marker = content
+                    }
+                    // 「16.【原创视频66】描述」：标签段之前、一个标签都认不出的方括号是单集标题的开头，
+                    // 当成标签的话进了标签段，后面的描述就全丢了。认得一半的「[GB_CN]」仍是标签，
+                    // 纯数字的「(1)」是重复序号，都不算
+                    !inTags && token.tagScan.known == 0 && content.any(Char::isLetter) -> {
+                        trailingWords += "${token.open}$content${BRACKET_PAIRS[token.open]}"
+                        continue
                     }
                     else -> {
                         draft.tags += token.tagScan.tags

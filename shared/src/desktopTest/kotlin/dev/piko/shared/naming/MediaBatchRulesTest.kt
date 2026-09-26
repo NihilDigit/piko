@@ -203,6 +203,14 @@ class MediaBatchRulesTest {
     }
 
     @Test
+    fun `an unknown bracket after an explicit episode is not the entry name`() {
+        val single = batch("[Grp&Y-Raws] Show - S01E08 - [CHI_JPN][WebRip H265 10bit 1080P].mkv" to 1_000)
+        val entry = single.works.single().sections.single().entries.single()
+        assertEquals("08", entry.label)
+        assertEquals(Section.MAIN, entry.section)
+    }
+
+    @Test
     fun `small videos in a collection of many codes are not ads`() {
         val collection = batch(
             "ABC-123 片名.mp4" to 5_000_000_000,

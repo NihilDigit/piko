@@ -80,6 +80,8 @@ class AvNamingTest {
         assertTrue(av("[中文字幕]SSIS-123.mp4").chineseSubtitles)
         assertTrue(av("SSIS-123 无码破解.mp4").uncensored)
         assertTrue(av("[Ucensored] SSIS-123.mp4").uncensored, "Ucensored 是语料里真实出现的拼写错误")
+        assertTrue(av("SSIS-123 流出.mp4").uncensored)
+        assertTrue(parseMediaName("某地活动录像流出.mp4").tags.none { it.text == MediaTag.UNCENSORED }, "没有番号时流出不是无码")
 
         assertEquals("CD1", av("SSIS-123-cd1.mp4").part)
         assertEquals("CD2", av("SSIS-123 CD2.mp4").part)

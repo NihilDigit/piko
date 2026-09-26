@@ -1,7 +1,7 @@
 package dev.piko.shared.naming
 
 /**
- * 论坛与分享站在文件名里留下的网址：「www.98T.la@」「kcf9.com-」「[thz.la]」「… auu32.com」。
+ * 论坛与分享站在文件名里留下的网址：「www.98T.la@」「kcf9.com-」「[thz.la]」「… auu32.com」，以及频道推广。
  * 与内容无关，洗掉。欧美片方括号里的出品方（[LegalPorno.com]）不洗，那是发布组一类的信息。
  *
  * scene 名「BlackedRaw.19.05.17.Lena…」「CzechAV.SiteRip…」用点连接，形似网址而不是，所以只认
@@ -22,11 +22,15 @@ private val LEADING = Regex("""^${host(STRONG_TLD)}(?=[-_\s])[-_\s]*""", RegexOp
 private val TRAILING = Regex("""[\s\-_]*${host(STRONG_TLD)}$""", RegexOption.IGNORE_CASE)
 private val BRACKETED = Regex("""[\[【(]\s*(${host(ANY_TLD)})\s*[\]】)]""", RegexOption.IGNORE_CASE)
 
+// 频道推广：「更多视频请在Telegram收藏夹发送@xxx丨」「TG频道@xxx」。前面的招揽语只收汉字与字母，
+// 不收数字与空格，「129507 TG频道@xxx」前面的编号留下
+private val CHANNEL_AD = Regex("""[\p{IsHan}A-Za-z]{0,12}(?:Telegram|TG|电报)[^@\s丨|]{0,12}@[A-Za-z0-9_]+[丨|\s_-]*""", RegexOption.IGNORE_CASE)
+
 // 论坛与分享站：短域名后缀，或名字里带数字（98t.la、2048.cc、hhd800.com）。出品方多是完整单词加 .com
 private val FORUM_LIKE = Regex("""(?i)\.(?:la|cc|vip|xyz|top|club|cn)$|\d""")
 
 internal fun stripSiteNoise(stem: String): String {
-    var s = stem.replace(AT_PREFIX, "").replace(ANYWHERE_AT, "")
+    var s = stem.replace(CHANNEL_AD, "").replace(AT_PREFIX, "").replace(ANYWHERE_AT, "")
     s = s.replace(LEADING, "")
     s = s.replace(TRAILING, "")
     s = BRACKETED.replace(s) { match ->

@@ -18,6 +18,19 @@ class DriveListingTest {
     }
 
     @Test
+    fun `a video without an extension is typed by its mime`() {
+        val bare = FileStat(
+            kind = FileKind.FILE, id = "bare", name = "[Grp] Show - 12 [WebRip 1080p HEVC-10bit AAC][END]",
+            size = "600000000", mimeType = "video/x-matroska",
+        )
+        val readme = file("readme.txt")
+        val structure = analyzeDriveFolder(listOf(bare, readme))
+        assertTrue("bare" !in structure.secondaryIds, "服务端说是视频，不该因为没有扩展名就当成说明文件")
+        assertEquals("Show 12", buildDriveItems(listOf(bare, readme), structure, hideFolded = true) { true }
+            .filterIsInstance<DriveListItem.File>().single { it.file.id == "bare" }.view?.title)
+    }
+
+    @Test
     fun `unrelated videos are listed flat without a header each`() {
         val listed = items(listOf("Some Title Here.avi", "Another Clip Name.avi", "Third Thing.mp4"))
         assertTrue(listed.none { it is DriveListItem.WorkHeader || it is DriveListItem.SectionHeader }, listed.toString())

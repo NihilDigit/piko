@@ -24,15 +24,17 @@ internal fun fileKindOf(name: String): FileKind {
         ext in DISC_METADATA_EXTENSIONS -> FileKind.DISC_METADATA
         ext in EXTRA_IMAGE_EXTENSIONS -> FileKind.IMAGE
         ext in EXTRA_AUDIO_EXTENSIONS -> FileKind.AUDIO
-        else -> when (name.fileCategory()) {
-            FileCategory.VIDEO -> FileKind.VIDEO
-            FileCategory.AUDIO -> FileKind.AUDIO
-            FileCategory.IMAGE -> FileKind.IMAGE
-            FileCategory.ARCHIVE -> FileKind.ARCHIVE
-            FileCategory.SUBTITLE -> FileKind.SUBTITLE
-            FileCategory.DOCUMENT -> FileKind.DOCUMENT
-        }
+        else -> name.fileCategory().toFileKind()
     }
+}
+
+fun FileCategory.toFileKind(): FileKind = when (this) {
+    FileCategory.VIDEO -> FileKind.VIDEO
+    FileCategory.AUDIO -> FileKind.AUDIO
+    FileCategory.IMAGE -> FileKind.IMAGE
+    FileCategory.ARCHIVE -> FileKind.ARCHIVE
+    FileCategory.SUBTITLE -> FileKind.SUBTITLE
+    FileCategory.DOCUMENT -> FileKind.DOCUMENT
 }
 
 internal fun isCjk(c: Char): Boolean {
@@ -238,8 +240,8 @@ private fun cjkTag(token: String): List<MediaTag>? {
             "繁体" in token || "繁體" in token || "繁中" in token || token == "繁" -> add(MediaTag(TagKind.SUBTITLES, "繁"))
         }
         if ("中文字幕" in token || "中字" in token) add(MediaTag(TagKind.SUBTITLES, MediaTag.CHINESE_SUBTITLES))
-        // 「未流出」是没流出过，不是无码
-        if (listOf("无码", "無碼", "无修正", "無修正", "破解", "流出").any { it in token } && "未流出" !in token) {
+        // 「流出」只在番号上才是无码（见 matchAv）：没有番号的视频说流出只是外传，与有无马赛克无关
+        if (listOf("无码", "無碼", "无修正", "無修正", "破解").any { it in token }) {
             add(MediaTag(TagKind.CENSORSHIP, MediaTag.UNCENSORED))
         }
     }

@@ -10,11 +10,11 @@ import dev.piko.data.repository.NaturalOrder
  */
 fun analyzeMediaBatch(files: List<MediaFileInput>): MediaBatch = BatchAnalyzer(files).run()
 
-private class Item(val index: Int, val path: String, val size: Long) {
+private class Item(val index: Int, val path: String, val size: Long, knownKind: FileKind?) {
     val dirs: List<String> = path.substringBeforeLast('/', "").split('/').filter { it.isNotEmpty() }
     val name: String = path.substringAfterLast('/')
     val folder: String = dirs.joinToString("/")
-    var parsed: ParsedName = parseMediaName(name)
+    var parsed: ParsedName = parseMediaName(name, knownKind)
     val kind: FileKind get() = parsed.fileKind
 
     var secondary: SecondaryReason? = null
@@ -51,7 +51,7 @@ private val BRACKET_SEGMENT = Regex("""\[([^\]]*)\]""")
 private val LEADING_SEQUENCE = Regex("""^(\d{1,3})\s+(\S.*?)(?:\.[^.]+)?$""")
 
 private class BatchAnalyzer(inputs: List<MediaFileInput>) {
-    private val items = inputs.mapIndexed { index, input -> Item(index, input.path.replace('\\', '/').trim('/'), input.size) }
+    private val items = inputs.mapIndexed { index, input -> Item(index, input.path.replace('\\', '/').trim('/'), input.size, input.kind) }
     private val meanings = HashMap<String, DirectoryMeaning>()
 
     private fun meaning(dir: String) = meanings.getOrPut(dir) { directoryMeaning(dir) }
@@ -316,7 +316,8 @@ private class BatchAnalyzer(inputs: List<MediaFileInput>) {
                     if (marker.groupValues[1].toInt() != item.parsed.episode!!.number) return@forEach
                     val base = stem.removeRange(marker.range).trim()
                     if (group.size > 1 && base !in stems) return@forEach
-                    val title = item.parsed.title ?: base
+                    // 标题取洗过的名字：「NIUC.NET@1 (1)」的标题是「1」，不是「NIUC.NET@1」
+                    val title = item.parsed.title ?: stripSiteNoise(base)
                     item.parsed = item.parsed.copy(kind = NameKind.STANDALONE, episode = null, title = title, label = title)
                     item.workTitle = title
                     item.workKey = "s:" + workKeyOf(title)
@@ -419,6 +420,11 @@ private class BatchAnalyzer(inputs: List<MediaFileInput>) {
             val techTail = BRACKET_SEGMENT.findAll(rest).map { it.groupValues[1] }.toList()
             val entryIsName = entry.isNotBlank() && !scanTags(entry).isTagText && entry.any(Char::isLetter)
             if (!entryIsName || techTail.none { scanTags(it).isTagText }) return@mapNotNull null
+            // 作品名那一段里有明确的集号时，方括号是认不得的标记而不是条目名：
+            // 「[smzase&Y-Raws] Saijo no Osewa - S01E08 - [CHI_JPN][WebRip …]」的条目是第 8 集，不是 CHI_JPN。
+            // 只认高置信度的：「Show Season 2」的 2 也会被解析成弱集号
+            val titleEpisode = parseSeriesStem(rawTitle)
+            if (titleEpisode.episode != null && titleEpisode.confidence == Confidence.HIGH) return@mapNotNull null
             BracketEntry(item, group.trim(), rawTitle.trim(), entry.trim())
         }
         // 只认正片的剧集：「[Menu01]」也带编号，它的作品名是拆掉季号的「Yuru Camp」，第二季的 SPs 就会被并过去
@@ -467,9 +473,9 @@ private class BatchAnalyzer(inputs: List<MediaFileInput>) {
         return parsed.title?.takeIf { it.isNotBlank() } ?: withoutSeason
     }
 
-    /** 改回独立文件，标题取整个名字。 */
+    /** 改回独立文件，标题取整个名字（洗掉网址与频道推广）。 */
     private fun makeStandalone(item: Item) {
-        val title = item.name.substringBeforeLast('.').replace(WHITESPACE_RUN, " ").trim()
+        val title = stripSiteNoise(item.name.substringBeforeLast('.')).replace(WHITESPACE_RUN, " ").trim()
         item.parsed = item.parsed.copy(kind = NameKind.STANDALONE, episode = null, section = null, title = title, label = title)
         item.section = Section.MAIN
         item.workTitle = title
@@ -494,13 +500,20 @@ private class BatchAnalyzer(inputs: List<MediaFileInput>) {
             }
     }
 
-    /** 同一分钟里拍的几段（VID_20260913_090829_383 与 _470）解出同一个时间，按文件名顺序加序号区分。 */
+    /**
+     * 同一分钟里拍的几段（VID_20260913_090829_383 与 _470）解出同一个时间，按文件名顺序加序号区分。
+     * 账号加时间的名字（「From-某频道-…Z」）作品是账号，只给行标题加序号：转存机器人一分钟能转几十条
+     */
     private fun numberSameTimes() {
         contentItems().filter { it.parsed.timed && it.workKind == WorkKind.SERIES }
-            .groupBy { it.folder to it.parsed.title }
+            .groupBy { Triple(it.folder, it.parsed.title, it.parsed.label) }
             .values.filter { it.size > 1 }
             .forEach { group ->
                 group.sortedWith { a, b -> NaturalOrder.compare(a.name, b.name) }.forEachIndexed { index, item ->
+                    if (item.parsed.title != item.parsed.label) {
+                        item.parsed = item.parsed.copy(label = "${item.parsed.label} (${index + 1})")
+                        return@forEachIndexed
+                    }
                     val title = "${item.parsed.title} (${index + 1})"
                     item.parsed = item.parsed.copy(title = title, label = title)
                     item.workTitle = title
