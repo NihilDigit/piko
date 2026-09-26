@@ -29,6 +29,7 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
     private val quota = MutableStateFlow<QuotaSnapshot?>(null)
     private val instantTarget = MutableStateFlow<InstantTarget?>(null)
     private val archivePasswords = MutableStateFlow(settings.get(KEY_ARCHIVE_PASSWORDS))
+    private val recentMoveTargets = MutableStateFlow(settings.get(KEY_RECENT_MOVE_TARGETS))
     private val downloadPath = MutableStateFlow(
         settings.get(KEY_DOWNLOAD_DIR, settings.downloadDirectory.absolutePath),
     )
@@ -197,6 +198,12 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         archivePasswords.value = serialized
     }
 
+    override val recentMoveTargetsFlow: Flow<String> = recentMoveTargets.asStateFlow()
+    override suspend fun saveRecentMoveTargets(serialized: String) {
+        settings.set(KEY_RECENT_MOVE_TARGETS, serialized)
+        recentMoveTargets.value = serialized
+    }
+
     override suspend fun getIgnoredUpdateVersion(): String? = settings.get(KEY_IGNORED_UPDATE).ifEmpty { null }
 
     override suspend fun setIgnoredUpdateVersion(version: String) {
@@ -209,6 +216,7 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         const val KEY_OFFLINE_PACKS = "download.offlinePacks"
         const val KEY_UPLOAD_TASKS = "upload.tasks"
         const val KEY_ARCHIVE_PASSWORDS = "drive.archivePasswords"
+        const val KEY_RECENT_MOVE_TARGETS = "drive.recentMoveTargets"
         const val KEY_IGNORED_UPDATE = "update.ignoredVersion"
         const val KEY_SPOILER = "ui.spoilerBlur"
         const val KEY_HEURISTIC = "ui.heuristicFilter"

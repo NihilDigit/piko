@@ -82,6 +82,8 @@ class MemoryPreferences(instantTarget: InstantTarget? = null) : PikoUserPreferen
     }
     override val archivePasswordsFlow: Flow<String> = MutableStateFlow("")
     override suspend fun saveArchivePasswords(serialized: String) = Unit
+    override val recentMoveTargetsFlow: Flow<String> = MutableStateFlow("")
+    override suspend fun saveRecentMoveTargets(serialized: String) = Unit
     override suspend fun getIgnoredUpdateVersion(): String? = null
     override suspend fun setIgnoredUpdateVersion(version: String) = Unit
 }

@@ -13,11 +13,17 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
@@ -26,8 +32,10 @@ import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -44,6 +52,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -76,6 +85,9 @@ import kotlinx.coroutines.launch
  * blockedFolderIds 里的目录既不能进入也不能选中，列表里置灰并显示 blockedFolderHint；
  * confirmBlockedReason 只管当前目录能不能确认，返回非空即禁用确认并把原因显示在底栏。
  * 两者分开是因为「移动」需要允许进入源目录（要穿过它去子目录）却不允许选中它。
+ *
+ * recentTargets 是最近用过的目标路径，排成一行 chip，点一下直接进到那一层；确认仍要再点一次，
+ * 底栏先把完整路径摆出来，误点了还来得及。onConfirmPath 回传确认时的完整路径，供调用方记下来。
  */
 @Composable
 fun FolderPickerDialog(
@@ -86,6 +98,8 @@ fun FolderPickerDialog(
     blockedFolderIds: Set<String> = emptySet(),
     blockedFolderHint: String? = null,
     confirmBlockedReason: (PathBreadcrumb) -> String? = { null },
+    recentTargets: List<List<PathBreadcrumb>> = emptyList(),
+    onConfirmPath: (List<PathBreadcrumb>) -> Unit = {},
 ) {
     val content: @Composable () -> Unit = {
         FolderPickerContent(
@@ -94,8 +108,12 @@ fun FolderPickerDialog(
             blockedFolderIds = blockedFolderIds,
             blockedFolderHint = blockedFolderHint,
             confirmBlockedReason = confirmBlockedReason,
+            recentTargets = recentTargets,
             onDismiss = onDismiss,
-            onConfirm = onConfirm,
+            onConfirm = { path ->
+                onConfirmPath(path)
+                onConfirm(path.last().id, path.last().name)
+            },
         )
     }
     // M3 的全屏对话框只用于 compact 窗口；更宽时铺满整个窗口反而难以聚焦，改为居中的基本对话框
@@ -109,7 +127,10 @@ fun FolderPickerDialog(
                 modifier = Modifier.fillMaxSize(),
                 color = MaterialTheme.colorScheme.surface,
             ) {
-                Box(modifier = Modifier.safeDrawingPadding()) { content() }
+                // 底部不在这里让：底栏的底色要铺到手势横条下面，由底栏自己把内容让上去
+                Box(modifier = Modifier.windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))) {
+                    content()
+                }
             }
         }
     } else {
@@ -131,7 +152,10 @@ fun FolderPickerDialog(
     }
 }
 
-/** 移动专用的薄包装：禁止选中源目录与待移动项自身。 */
+/**
+ * 移动专用的薄包装：禁止选中源目录与待移动项自身，并记下移动历史。
+ * 历史里去不了的目标（就是源目录，或路径穿过待移动的文件夹）不显示，点了也只能看到禁用的确认键。
+ */
 @Composable
 fun MoveTargetDialog(
     itemCount: Int,
@@ -140,7 +164,12 @@ fun MoveTargetDialog(
     onDismiss: () -> Unit,
     onConfirm: (targetId: String, targetName: String) -> Unit,
 ) {
+    val history = LocalPikoServices.current.moveHistory
+    val recent by history.targets.collectAsState(initial = emptyList())
+    val reachable = recent.filter { path -> path.last().id != sourceParentId && path.none { it.id in movingIds } }
     FolderPickerDialog(
+        recentTargets = reachable,
+        onConfirmPath = history::remember,
         title = "移动 $itemCount 项",
         confirmLabel = "移动到这里",
         onDismiss = onDismiss,
@@ -164,8 +193,9 @@ private fun FolderPickerContent(
     blockedFolderIds: Set<String>,
     blockedFolderHint: String?,
     confirmBlockedReason: (PathBreadcrumb) -> String?,
+    recentTargets: List<List<PathBreadcrumb>>,
     onDismiss: () -> Unit,
-    onConfirm: (targetId: String, targetName: String) -> Unit,
+    onConfirm: (path: List<PathBreadcrumb>) -> Unit,
 ) {
     val driveRepo = LocalPikoServices.current.driveRepository
     val scope = rememberCoroutineScope()
@@ -291,6 +321,9 @@ private fun FolderPickerContent(
         },
         bottomBar = {
             FolderPickerActionBar(
+                recentTargets = recentTargets,
+                currentId = current.id,
+                onRecentSelect = { target -> path = target },
                 pathLabel = path.joinToString(" / ") { it.name },
                 confirmLabel = confirmLabel,
                 confirmEnabled = confirmEnabled,
@@ -299,7 +332,7 @@ private fun FolderPickerContent(
                     newFolderName = ""
                     showNewFolderDialog = true
                 },
-                onConfirm = { onConfirm(current.id, current.name) },
+                onConfirm = { onConfirm(path) },
             )
         },
     ) { innerPadding ->
@@ -429,8 +462,12 @@ private fun FolderPickerContent(
     }
 }
 
+/** 底栏：最近目标、目标位置、新建与确认。最近目标放在这里，拇指够得着，点完就在确认键上方。 */
 @Composable
 private fun FolderPickerActionBar(
+    recentTargets: List<List<PathBreadcrumb>>,
+    currentId: String,
+    onRecentSelect: (List<PathBreadcrumb>) -> Unit,
     pathLabel: String,
     confirmLabel: String,
     confirmEnabled: Boolean,
@@ -442,64 +479,112 @@ private fun FolderPickerActionBar(
         color = MaterialTheme.colorScheme.surfaceContainer,
         tonalElevation = 3.dp,
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-        ) {
-            Text(
-                text = "目标位置",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                text = pathLabel,
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (disabledReason != null) {
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = disabledReason,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
+        Column(modifier = Modifier.fillMaxWidth().navigationBarsPadding()) {
+            if (recentTargets.isNotEmpty()) {
+                // 横滑的一行要贴到两边，不能放进下面带内边距的那一栏，否则滑到头会在边距处被裁掉
+                RecentTargetsRow(
+                    targets = recentTargets,
+                    currentId = currentId,
+                    onSelect = onRecentSelect,
+                    modifier = Modifier.padding(top = 8.dp),
                 )
             }
-            Spacer(modifier = Modifier.height(10.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
+            FolderPickerActionContent(pathLabel, confirmLabel, confirmEnabled, disabledReason, onNewFolder, onConfirm)
+        }
+    }
+}
+
+@Composable
+private fun FolderPickerActionContent(
+    pathLabel: String,
+    confirmLabel: String,
+    confirmEnabled: Boolean,
+    disabledReason: String?,
+    onNewFolder: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+    ) {
+        Text(
+            text = "目标位置",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = pathLabel,
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (disabledReason != null) {
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = disabledReason,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedButton(
+                onClick = onNewFolder,
+                shape = MaterialTheme.shapes.medium,
             ) {
-                OutlinedButton(
-                    onClick = onNewFolder,
-                    shape = MaterialTheme.shapes.medium,
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.CreateNewFolder,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("新建文件夹")
-                }
-                Button(
-                    onClick = onConfirm,
-                    enabled = confirmEnabled,
-                    shape = MaterialTheme.shapes.medium,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Check,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(confirmLabel)
-                }
+                Icon(
+                    imageVector = Icons.Outlined.CreateNewFolder,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("新建文件夹")
             }
+            Button(
+                onClick = onConfirm,
+                enabled = confirmEnabled,
+                shape = MaterialTheme.shapes.medium,
+                modifier = Modifier.weight(1f),
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Check,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(confirmLabel)
+            }
+        }
+    }
+}
+
+/** 最近用过的目标，一行横滑。正在看的那个标为选中，与底栏的目标位置对应。 */
+@Composable
+private fun RecentTargetsRow(
+    targets: List<List<PathBreadcrumb>>,
+    currentId: String,
+    onSelect: (List<PathBreadcrumb>) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    LazyRow(
+        modifier = modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items(items = targets, key = { it.last().id }) { target ->
+            FilterChip(
+                selected = target.last().id == currentId,
+                onClick = { onSelect(target) },
+                label = { Text(target.last().name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                leadingIcon = { Icon(Icons.Outlined.History, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                modifier = Modifier.widthIn(max = 200.dp),
+            )
         }
     }
 }

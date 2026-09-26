@@ -104,6 +104,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val LAST_FOLDER_NAME = stringPreferencesKey("last_folder_name")
         val LAST_FOLDER_STACK_SERIALIZED = stringPreferencesKey("last_folder_stack")
         val ARCHIVE_PASSWORDS = stringPreferencesKey("archive_passwords")
+        val RECENT_MOVE_TARGETS = stringPreferencesKey("recent_move_targets")
         val IGNORED_UPDATE_VERSION = stringPreferencesKey("ignored_update_version")
     }
 
@@ -352,6 +353,14 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun saveArchivePasswords(serialized: String) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.ARCHIVE_PASSWORDS] = serialized
+        }
+    }
+
+    override val recentMoveTargetsFlow: Flow<String> = preference { it[PreferencesKeys.RECENT_MOVE_TARGETS].orEmpty() }
+
+    override suspend fun saveRecentMoveTargets(serialized: String) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.RECENT_MOVE_TARGETS] = serialized
         }
     }
 

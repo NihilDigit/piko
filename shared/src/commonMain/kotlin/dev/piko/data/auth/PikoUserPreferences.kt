@@ -100,6 +100,10 @@ interface PikoUserPreferences {
     val archivePasswordsFlow: Flow<String>
     suspend fun saveArchivePasswords(serialized: String)
 
+    /** 最近移动到过的目录路径，JSON，见 MoveHistory。空串表示从未保存。 */
+    val recentMoveTargetsFlow: Flow<String>
+    suspend fun saveRecentMoveTargets(serialized: String)
+
     /** 开屏提示里点了「忽略此版本」的版本号。只比相等，更新的版本出来照常提示。 */
     suspend fun getIgnoredUpdateVersion(): String?
     suspend fun setIgnoredUpdateVersion(version: String)
