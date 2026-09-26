@@ -139,18 +139,38 @@ class GithubReleaseClient(
 }
 
 /**
- * Release 正文里给更新弹窗看的部分：第一个「## 下载」标题之前的更新内容。
+ * Release 正文里给更新弹窗看的部分：第一个「## 下载」标题之前的更新内容，转成纯文本。
  *
  * 正文由 .github/release-notes.md 生成，其后是给下载页读者的附件说明与校验方法，已装好的用户
  * 用不上；弹窗按纯文本显示，其中的表格只会是一堆竖线。标题改动时两边要一起改。
+ *
+ * 手写的更新日志本身也是 Markdown，分「## 修复」「## 变化」两节，原样交给弹窗就会显示出井号与
+ * 行首的短横线。这里只去掉更新日志里会出现的标记：标题、列表、粗体、行内代码与链接，
+ * 不是完整的 Markdown 解析。
  */
 fun updateNotesOf(body: String): String =
     body.lineSequence()
         .takeWhile { it.trim() != DOWNLOAD_SECTION_HEADING }
+        .map(::markdownLineToPlainText)
         .joinToString("\n")
         .trim()
 
 const val DOWNLOAD_SECTION_HEADING = "## 下载"
+
+private fun markdownLineToPlainText(line: String): String {
+    val heading = MARKDOWN_HEADING.matchEntire(line)
+    val text = heading?.groupValues?.get(1) ?: MARKDOWN_BULLET.replace(line) { "${it.groupValues[1]}• " }
+    return text
+        .replace(MARKDOWN_LINK, "$1")
+        .replace(MARKDOWN_BOLD, "$1")
+        .replace("`", "")
+        .trimEnd()
+}
+
+private val MARKDOWN_HEADING = Regex("""\s{0,3}#{1,6}\s+(.*?)(?:\s+#+)?\s*""")
+private val MARKDOWN_BULLET = Regex("""^(\s*)[-*+]\s+""")
+private val MARKDOWN_LINK = Regex("""\[([^\]]*)]\([^)]*\)""")
+private val MARKDOWN_BOLD = Regex("""\*\*(.+?)\*\*""")
 
 /**
  * 按数字逐段比较，忽略 -debug 这类后缀；段数不同时缺的一段按 0 计。

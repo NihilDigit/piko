@@ -38,7 +38,7 @@ import kotlinx.coroutines.launch
  * 「忽略此版本」，在设置页是「在浏览器中查看」。关掉对话框靠点外面或返回。
  * 下载中不许关：关掉后下载就成了没有任何反馈的后台任务。
  *
- * 更新说明是 Release 的 Markdown 原文，按纯文本显示、可选中复制，限高滚动，免得把按钮顶出去。
+ * 更新说明已由 updateNotesOf 从 Release 的 Markdown 转成纯文本，可选中复制，限高滚动，免得把按钮顶出去。
  */
 @Composable
 fun UpdateDialog(
