@@ -24,7 +24,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # 与 Windows 相同用 Zulu：打包的 jlink 与 ProGuard 要 jmods，见 desktop.yml
       - name: Set up JDK 25
@@ -34,7 +34,7 @@ jobs:
           distribution: zulu
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v5
 
       - name: Derive desktop version from tag
         run: |
@@ -63,7 +63,7 @@ jobs:
           ls -l dist
 
       - name: Upload DMG
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: piko-macos-arm64-dmg
           path: dist/*.dmg

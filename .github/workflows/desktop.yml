@@ -41,7 +41,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up JDK 25
         uses: actions/setup-java@v5
@@ -50,7 +50,7 @@ jobs:
           distribution: ${{ matrix.java-distribution }}
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v5
 
       - name: Derive desktop version from tag
         shell: bash
@@ -104,21 +104,21 @@ jobs:
           Get-ChildItem dist | Format-Table Name, Length
 
       - name: Upload Windows portable jar
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: piko-windows-${{ matrix.arch }}-portable-jar
           path: desktopApp/build/compose/jars/*windows-*.jar
           if-no-files-found: error
 
       - name: Upload Windows portable zip
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: piko-windows-${{ matrix.arch }}-zip
           path: dist/piko-windows-${{ matrix.arch }}-${{ env.PIKO_DESKTOP_VERSION }}.zip
           if-no-files-found: error
 
       - name: Upload Windows installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: piko-windows-${{ matrix.arch }}-installer
           path: dist/*.msi
