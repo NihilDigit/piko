@@ -250,12 +250,18 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # 要在算校验和与做证明之前，差分包才一并算上
+      - name: Delta updates
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/delta-updates.sh "${{ needs.version.outputs.name }}" dist
+
       - name: Checksums and SLSA subjects
         run: |
           (cd dist && sha256sum * > SHA256SUMS.txt)
           ls -l dist
           # generator 要 base64 过的 sha256sum 输出。只列会被安装或执行的文件：APK、MSI、DMG、
-          # 便携 zip 与应用内更新解开的 app.zip；files.json 与 mapping 由 SHA256SUMS.txt 覆盖。
+          # 便携 zip 与应用内更新解开的 app.zip 和差分包；files.json 与 mapping 由 SHA256SUMS.txt 覆盖。
           # 写进文件而不走 job 输出：这一长串 base64 偶然含有某个较短 secret 的值时，Actions 会
           # 以「可能含 secret」为由丢掉整条输出（Bilby 发版时撞上过）。文件放在 dist 外，免得被当成附件
           (cd dist && sha256sum *.apk *.msi *.dmg *.zip | base64 -w0) > slsa-subjects.b64
