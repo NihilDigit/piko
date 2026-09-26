@@ -109,6 +109,10 @@ import dev.piko.ui.components.showsRefreshButton
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.SegmentDownloadSheet
 import dev.piko.ui.components.TooltipIconButton
+import dev.piko.ui.components.UnsupportedNameDialog
+import dev.piko.ui.components.autoCleanHint
+import dev.piko.ui.components.isUnfixableDriveName
+import dev.piko.ui.components.submitDriveName
 import dev.piko.ui.components.wheelStaysInSheet
 import dev.piko.ui.screens.instant.InstantSheetContent
 import dev.piko.ui.screens.instant.InstantSheetHandle
@@ -778,9 +782,9 @@ fun DriveScreen(
             confirmLabel = "创建",
             confirmEnabled = newFolderName.isNotBlank(),
             onDismiss = { showNewFolderDialog = false },
-            onConfirm = {
+            onConfirm = { name ->
                 showNewFolderDialog = false
-                state.createFolder(newFolderName)
+                state.createFolder(name)
             },
         )
     }
@@ -794,11 +798,10 @@ fun DriveScreen(
             confirmLabel = "确定",
             confirmEnabled = renameNewName.isNotBlank() && renameNewName != target.name,
             onDismiss = { renameTargetFile = null },
-            onConfirm = {
+            onConfirm = { name ->
                 val id = target.id
-                val newName = renameNewName
                 renameTargetFile = null
-                state.rename(id, newName)
+                state.rename(id, name)
             },
         )
     }
@@ -993,6 +996,7 @@ private fun DriveEmptyState(state: DriveScreenState, modifier: Modifier = Modifi
     }
 }
 
+/** 新建文件夹与重命名共用。[onConfirm] 收到的是最终名称：已去掉首尾空格，或用户同意改用的名称。 */
 @Composable
 private fun NameInputDialog(
     title: String,
@@ -1002,8 +1006,15 @@ private fun NameInputDialog(
     confirmLabel: String,
     confirmEnabled: Boolean,
     onDismiss: () -> Unit,
-    onConfirm: () -> Unit,
+    onConfirm: (String) -> Unit,
 ) {
+    val autoClean by LocalPikoServices.current.preferences.autoCleanNamesFlow.collectAsStateWithLifecycle(initialValue = false)
+    var pendingName by remember { mutableStateOf<String?>(null) }
+    val unfixable = isUnfixableDriveName(value)
+    val canConfirm = confirmEnabled && !unfixable
+    fun confirm() {
+        pendingName = submitDriveName(value, autoClean, onConfirm)
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
@@ -1013,14 +1024,26 @@ private fun NameInputDialog(
                 onValueChange = onValueChange,
                 label = label,
                 modifier = Modifier.fillMaxWidth(),
-                onDone = { if (confirmEnabled) onConfirm() },
+                isError = unfixable,
+                supportingText = if (unfixable) "名称只含 PikPak 不支持的字符" else autoCleanHint(value, autoClean),
+                onDone = { if (canConfirm) confirm() },
             )
         },
         confirmButton = {
-            TextButton(onClick = onConfirm, enabled = confirmEnabled) { Text(confirmLabel) }
+            TextButton(onClick = ::confirm, enabled = canConfirm) { Text(confirmLabel) }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("取消") }
         },
     )
+    pendingName?.let { name ->
+        UnsupportedNameDialog(
+            name = name,
+            onUseCleaned = { cleaned ->
+                pendingName = null
+                onConfirm(cleaned)
+            },
+            onDismiss = { pendingName = null },
+        )
+    }
 }

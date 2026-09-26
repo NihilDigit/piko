@@ -29,6 +29,7 @@ import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.AutoFixHigh
 import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.CleaningServices
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.FileDownload
@@ -139,6 +140,7 @@ fun SettingsScreen(
     val isHeuristicFilterEnabled by sessionManager.heuristicFilterFlow.collectAsStateWithLifecycle(initialValue = true)
     val isNameParsingEnabled by sessionManager.nameParsingFlow.collectAsStateWithLifecycle(initialValue = true)
     val isBundleSubtitlesEnabled by sessionManager.bundleSubtitlesFlow.collectAsStateWithLifecycle(initialValue = true)
+    val isAutoCleanNamesEnabled by sessionManager.autoCleanNamesFlow.collectAsStateWithLifecycle(initialValue = false)
     val isSyncPlayHistoryEnabled by sessionManager.syncPlayHistoryFlow.collectAsStateWithLifecycle(initialValue = true)
     val isConcurrentAccelerationEnabled by sessionManager.concurrentAccelerationFlow.collectAsStateWithLifecycle(initialValue = true)
     val downloadDirPath by sessionManager.downloadDirPathFlow.collectAsStateWithLifecycle(initialValue = "")
@@ -231,7 +233,7 @@ fun SettingsScreen(
                     SettingsGroup(SettingsSection.Drive.title, Modifier.trackSection(SettingsSection.Drive)) {
                         // 启发式折叠只在解析开着时有意义，关掉解析就收起这一项，不留一行灰掉的开关。
                         // 不缩进表示从属：行背景是整条分段，只缩内容读起来像错位
-                        val driveCount = if (isNameParsingEnabled) 4 else 3
+                        val driveCount = if (isNameParsingEnabled) 5 else 4
                         SettingsSwitchRow(
                             index = 0, count = driveCount,
                             icon = Icons.Outlined.TextFields,
@@ -251,12 +253,20 @@ fun SettingsScreen(
                             )
                         }
                         SettingsSwitchRow(
-                            index = driveCount - 2, count = driveCount,
+                            index = driveCount - 3, count = driveCount,
                             icon = Icons.Outlined.VisibilityOff,
                             title = "缩略图防窥",
                             supporting = "模糊显示缩略图与封面",
                             checked = isSpoilerBlurEnabled,
                             onCheckedChange = { scope.launch { sessionManager.setSpoilerBlurEnabled(it) } },
+                        )
+                        SettingsSwitchRow(
+                            index = driveCount - 2, count = driveCount,
+                            icon = Icons.Outlined.CleaningServices,
+                            title = "自动修正名称",
+                            supporting = "新建与重命名时直接去掉 PikPak 不支持的字符",
+                            checked = isAutoCleanNamesEnabled,
+                            onCheckedChange = { scope.launch { sessionManager.setAutoCleanNamesEnabled(it) } },
                         )
                         SettingsNavigationRow(
                             index = driveCount - 1, count = driveCount,

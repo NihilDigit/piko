@@ -92,6 +92,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val SPOILER_BLUR_ENABLED = booleanPreferencesKey("spoiler_blur_enabled")
         val HEURISTIC_FILTER_ENABLED = booleanPreferencesKey("heuristic_filter_enabled")
         val BUNDLE_SUBTITLES_ENABLED = booleanPreferencesKey("bundle_subtitles_enabled")
+        val AUTO_CLEAN_NAMES_ENABLED = booleanPreferencesKey("auto_clean_names_enabled")
         val SYNC_PLAY_HISTORY_ENABLED = booleanPreferencesKey("sync_play_history_enabled")
         val NAME_PARSING_ENABLED = booleanPreferencesKey("name_parsing_enabled")
         val WATERFALL_VIEW_ENABLED = booleanPreferencesKey("waterfall_view_enabled")
@@ -183,6 +184,16 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun setBundleSubtitlesEnabled(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.BUNDLE_SUBTITLES_ENABLED] = enabled
+        }
+    }
+
+    override val autoCleanNamesFlow: Flow<Boolean> = preference { preferences ->
+        preferences[PreferencesKeys.AUTO_CLEAN_NAMES_ENABLED] ?: false
+    }
+
+    override suspend fun setAutoCleanNamesEnabled(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.AUTO_CLEAN_NAMES_ENABLED] = enabled
         }
     }
 

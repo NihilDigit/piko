@@ -55,6 +55,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -216,6 +217,8 @@ private fun FolderPickerContent(
     var showNewFolderDialog by remember { mutableStateOf(false) }
     var newFolderName by remember { mutableStateOf("") }
     var isCreatingFolder by remember { mutableStateOf(false) }
+    var pendingFolderName by remember { mutableStateOf<String?>(null) }
+    val autoCleanNames by LocalPikoServices.current.preferences.autoCleanNamesFlow.collectAsStateWithLifecycle(initialValue = false)
 
     suspend fun loadPage(reset: Boolean) {
         if (!reset && (isLoadingMore || !hasMore)) return
@@ -402,7 +405,26 @@ private fun FolderPickerContent(
         }
     }
 
+    fun createFolder(name: String) {
+        val parentId = current.id
+        isCreatingFolder = true
+        scope.launch {
+            driveRepo.createNewFolder(parentId, name)
+                .onSuccess { id ->
+                    isCreatingFolder = false
+                    showNewFolderDialog = false
+                    path = path + PathBreadcrumb(id, name)
+                }
+                .onFailure { error ->
+                    isCreatingFolder = false
+                    showNewFolderDialog = false
+                    snackbarHostState.showSnackbar("新建文件夹失败", withDismissAction = true)
+                }
+        }
+    }
+
     if (showNewFolderDialog) {
+        val unfixable = isUnfixableDriveName(newFolderName)
         AlertDialog(
             onDismissRequest = { if (!isCreatingFolder) showNewFolderDialog = false },
             title = { Text("新建文件夹") },
@@ -420,6 +442,9 @@ private fun FolderPickerContent(
                         label = { Text("文件夹名称") },
                         singleLine = true,
                         enabled = !isCreatingFolder,
+                        isError = unfixable,
+                        supportingText = (if (unfixable) "名称只含 PikPak 不支持的字符" else autoCleanHint(newFolderName, autoCleanNames))
+                            ?.let { hint -> { Text(hint) } },
                         modifier = Modifier.fillMaxWidth(),
                         shape = MaterialTheme.shapes.largeIncreased,
                     )
@@ -427,25 +452,8 @@ private fun FolderPickerContent(
             },
             confirmButton = {
                 TextButton(
-                    enabled = newFolderName.isNotBlank() && !isCreatingFolder,
-                    onClick = {
-                        val name = newFolderName.trim()
-                        val parentId = current.id
-                        isCreatingFolder = true
-                        scope.launch {
-                            driveRepo.createNewFolder(parentId, name)
-                                .onSuccess { id ->
-                                    isCreatingFolder = false
-                                    showNewFolderDialog = false
-                                    path = path + PathBreadcrumb(id, name)
-                                }
-                                .onFailure { error ->
-                                    isCreatingFolder = false
-                                    showNewFolderDialog = false
-                                    snackbarHostState.showSnackbar("新建文件夹失败", withDismissAction = true)
-                                }
-                        }
-                    },
+                    enabled = newFolderName.isNotBlank() && !isCreatingFolder && !unfixable,
+                    onClick = { pendingFolderName = submitDriveName(newFolderName, autoCleanNames, ::createFolder) },
                 ) {
                     Text("创建")
                 }
@@ -458,6 +466,17 @@ private fun FolderPickerContent(
                     Text("取消")
                 }
             },
+        )
+    }
+
+    pendingFolderName?.let { name ->
+        UnsupportedNameDialog(
+            name = name,
+            onUseCleaned = { cleaned ->
+                pendingFolderName = null
+                createFolder(cleaned)
+            },
+            onDismiss = { pendingFolderName = null },
         )
     }
 }

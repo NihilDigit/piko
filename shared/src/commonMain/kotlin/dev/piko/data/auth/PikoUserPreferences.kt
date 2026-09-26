@@ -44,6 +44,13 @@ interface PikoUserPreferences {
     val bundleSubtitlesFlow: Flow<Boolean>
     suspend fun setBundleSubtitlesEnabled(enabled: Boolean)
 
+    /**
+     * 新建文件夹与重命名时，名称含 PikPak 不支持的内容就直接去掉，不再询问，默认关。
+     * 规则见 [dev.piko.shared.data.DriveNames]。
+     */
+    val autoCleanNamesFlow: Flow<Boolean>
+    suspend fun setAutoCleanNamesEnabled(enabled: Boolean)
+
     /** 把播放进度上报到 PikPak 的播放历史，与官方客户端共用；没有本机记录时也从那里续播。 */
     val syncPlayHistoryFlow: Flow<Boolean>
     suspend fun setSyncPlayHistoryEnabled(enabled: Boolean)
