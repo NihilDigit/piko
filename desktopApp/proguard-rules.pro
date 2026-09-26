@@ -14,6 +14,13 @@
 -keep class org.openani.mediamp.** { *; }
 -dontwarn org.openani.mediamp.**
 
+# 自绘标题栏的窗口过程按名字经 MethodHandles.findVirtual 取出、交给 FFM 做 upcall，
+# 代码里没有直接调用，不保留就被当作无用方法裁掉，release 包退回系统标题栏
+-keepclassmembers class dev.piko.desktop.winrt.WindowsCaption {
+    long frameProc(java.lang.foreign.MemorySegment, int, long, long);
+    long childProc(java.lang.foreign.MemorySegment, int, long, long);
+}
+
 # ServiceLoader 装载的实现类。ProGuard 不像 R8 那样自动保留 META-INF/services 里列出的类
 -keep class coil3.network.okhttp.internal.OkHttpNetworkFetcherServiceLoaderTarget { *; }
 -keep class io.ktor.client.engine.okhttp.OkHttpEngineContainer { *; }
