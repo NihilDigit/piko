@@ -27,8 +27,6 @@ import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
-import androidx.compose.material.icons.outlined.FileCopy
-import dev.piko.ui.components.TooltipIconButton
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -94,8 +92,8 @@ internal class DriveItemCallbacks(
     /** 右键菜单的内容，与操作面板相同。 */
     val contextActions: (FileStat) -> List<SheetAction>,
     val onToggleSection: (blockId: String) -> Unit,
-    /** 文件夹进入可见区域，见 DriveScreenState.onFolderVisible。 */
-    val onFolderVisible: (FileStat) -> Unit,
+    /** 文件夹在可见区域里，挂起到预取完成，离开时随行的协程取消，见 DriveScreenState.onFolderVisible。 */
+    val onFolderVisible: suspend (FileStat) -> Unit,
 )
 
 /** 列表前面固定的几项：页眉，以及有时出现的折叠横幅。分区跳转与副标题反查要扣掉它们。 */
@@ -391,7 +389,6 @@ internal fun DriveListHeader(
     onSortChange: (FileSortOrder) -> Unit,
     isPosterMode: Boolean,
     onTogglePosterMode: () -> Unit,
-    onFindDuplicates: (() -> Unit)?,
 ) {
     var showSortMenu by remember { mutableStateOf(false) }
     Column(modifier = Modifier.fillMaxWidth()) {
@@ -442,9 +439,6 @@ internal fun DriveListHeader(
                 }
             }
             Spacer(modifier = Modifier.weight(1f))
-            if (onFindDuplicates != null) {
-                TooltipIconButton(Icons.Outlined.FileCopy, "在此文件夹查找重复", onFindDuplicates)
-            }
             ViewModeToggle(isPosterMode = isPosterMode, onTogglePosterMode = onTogglePosterMode)
         }
     }

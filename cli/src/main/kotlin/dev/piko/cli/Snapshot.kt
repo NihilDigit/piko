@@ -62,7 +62,7 @@ suspend fun takeSnapshot(client: PikPakClient, rootPath: String, depth: Int, dee
 suspend fun listWithParams(client: PikPakClient, path: String): List<String> =
     client.listFiles(parentId = resolvePath(client, path)).map { file ->
         val kind = if (file.isFolder) "目录" else "文件"
-        val content = if (file.isFolder) "" else "  ${file.sizeBytes} B  ${file.phase}  gcid=${file.hash}"
+        val content = if (file.isFolder) "" else "  ${file.sizeBytes} B  ${file.phase}  gcid=${file.hash}  mime=${file.mimeType}"
         val params = file.params.entries.joinToString("  ") { (key, value) -> "$key=${value.take(120)}" }.ifEmpty { "（无 params）" }
         "$kind  ${file.name}$content\n      $params"
     }

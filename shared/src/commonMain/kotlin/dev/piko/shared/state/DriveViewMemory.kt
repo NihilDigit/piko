@@ -1,6 +1,7 @@
 package dev.piko.shared.state
 
 import androidx.compose.runtime.mutableStateMapOf
+import dev.piko.shared.data.ChildFile
 import io.github.nihildigit.pikpak.FileStat
 
 /**
@@ -38,7 +39,7 @@ internal object DriveViewMemory {
     fun putStructure(key: String, value: DriveStructure) = putBounded(structures, key, value, MAX_STRUCTURES)
 
     /** 内容的有无与多少进键：补取到文件名后要重新描述。 */
-    fun folderKey(folder: FileStat, content: List<String>?): String = "${folder.id}|${folder.name}|${content?.size ?: -1}"
+    fun folderKey(folder: FileStat, content: List<ChildFile>?): String = "${folder.id}|${folder.name}|${content?.size ?: -1}"
 
     fun folderView(key: String): DriveFolderView? = folderViews[key]
 

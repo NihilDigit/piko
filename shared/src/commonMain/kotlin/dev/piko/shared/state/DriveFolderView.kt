@@ -1,5 +1,6 @@
 package dev.piko.shared.state
 
+import dev.piko.shared.data.ChildFile
 import dev.piko.shared.naming.FolderDescription
 import dev.piko.shared.naming.MediaFileInput
 import dev.piko.shared.naming.Section
@@ -22,11 +23,6 @@ class DriveFolderView(
     val code: String? = null,
     val resolution: String?,
     val fields: List<DriveParsedField>,
-    /**
-     * 文件夹名看得出是一个发布（有发布组或集数范围），但作品名写成了中文、解析不出。
-     * 只有这种文件夹值得补取一页文件名来找作品名。
-     */
-    val wantsContent: Boolean,
 )
 
 /** 正片之外值得在标签里点明的分区。PV、NCOP、菜单几乎每个 BD 合集都有，写出来只是噪声。 */
@@ -37,18 +33,18 @@ private val NOTABLE_EXTRAS = mapOf(
     Section.BONUS to "特典",
 )
 
-fun describeDriveFolder(name: String, contentNames: List<String>?): DriveFolderView {
-    val description = describeFolder(name, contentNames.orEmpty())
+/** [content] 为 null 表示还不知道文件夹里有什么，只按文件夹名描述。 */
+fun describeDriveFolder(name: String, content: List<ChildFile>?): DriveFolderView {
+    val inputs = content.orEmpty().map { it.toMediaFileInput() }
+    val description = describeFolder(name, inputs)
     val resolution = description.tags.firstOrNull { it.kind == TagKind.RESOLUTION }?.text
-    val tags = if (description.kind == WorkKind.AV) avTags(description, contentNames.orEmpty()) else seriesTags(description)
-    val hasReleaseHints = description.episodeRange != null || description.tags.any { it.kind == TagKind.GROUP }
+    val tags = if (description.kind == WorkKind.AV) avTags(description, inputs) else seriesTags(description)
     return DriveFolderView(
         title = description.title,
         tags = tags,
         code = description.code?.takeIf { description.kind == WorkKind.AV && it != description.title },
         resolution = resolution,
         fields = folderFields(description),
-        wantsContent = description.title == null && hasReleaseHints && contentNames == null,
     )
 }
 
@@ -63,12 +59,12 @@ private fun seriesTags(description: FolderDescription): List<String> = buildList
 /**
  * 番号文件夹：中字、无码在前。分段与版本数只能从内容里数出来，拿不到内容时就不写。
  */
-private fun avTags(description: FolderDescription, contentNames: List<String>): List<String> {
+private fun avTags(description: FolderDescription, content: List<MediaFileInput>): List<String> {
     val pinned = description.tags.filter { it.pinned }.map { it.text }
     val rest = description.tags.filterNot { it.pinned }.map { it.text }
     val counts = buildList {
-        if (contentNames.isEmpty()) return@buildList
-        val batch = analyzeMediaBatch(contentNames.map { MediaFileInput(it, 0) })
+        if (content.isEmpty()) return@buildList
+        val batch = analyzeMediaBatch(content)
         val entries = batch.works.firstOrNull { it.kind == WorkKind.AV && it.title == description.code }
             ?.sections?.flatMap { it.entries }.orEmpty()
         if (entries.size > 1) add("${entries.size} 段")

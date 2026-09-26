@@ -3,6 +3,7 @@ package dev.piko.cli
 import dev.piko.shared.state.DriveListItem
 import dev.piko.shared.state.analyzeDriveFolder
 import dev.piko.shared.state.buildDriveItems
+import dev.piko.shared.data.ChildFile
 import dev.piko.shared.state.describeDriveFolder
 
 /**
@@ -64,20 +65,17 @@ private fun renderFolder(folder: SnapshotFolder, byId: Map<String, SnapshotFolde
 }
 
 /**
- * 文件夹行。app 在文件夹名看得出是发布、作品名却认不出时，补取一页文件名再解析；快照里有这个子目录就照做，
- * 没有（超出抓取范围）时如实标出。[visited] 模拟每个目录都点进去过：app 记住了里面至多 200 个文件名，
- * 之后描述文件夹行时一律用上。
+ * 文件夹行。app 在文件夹行出现在屏幕上时预取一页文件名再解析；快照里有这个子目录就照做，
+ * 没有（超出抓取范围）时只按文件夹名并如实标出。[visited] 模拟每个目录都点进去过：app 记住了里面至多
+ * 200 个文件名，之后描述文件夹行时一律用上。
  */
 private fun renderFolderRow(name: String, listed: SnapshotFolder?, visited: Boolean, out: Appendable) {
-    val byName = describeDriveFolder(name, null)
-    val view = if (visited && listed != null) {
-        describeDriveFolder(name, listed.files.filterNot { it.kind == FOLDER_KIND }.take(REMEMBERED_CHILD_NAMES).map { it.name })
-    } else if (byName.wantsContent && listed != null) {
-        describeDriveFolder(name, listed.files.take(CHILD_NAME_PAGE).filterNot { it.kind == FOLDER_KIND }.map { it.name })
-    } else {
-        byName
+    val view = when {
+        listed == null -> describeDriveFolder(name, null)
+        visited -> describeDriveFolder(name, listed.files.filterNot { it.kind == FOLDER_KIND }.take(REMEMBERED_CHILD_NAMES).map { ChildFile(it.name) })
+        else -> describeDriveFolder(name, listed.files.take(CHILD_NAME_PAGE).filterNot { it.kind == FOLDER_KIND }.map { ChildFile(it.name) })
     }
-    val note = if (byName.wantsContent && listed == null) "，要补取内容但不在快照里" else ""
+    val note = if (listed == null) "，内容不在快照里，只按文件夹名" else ""
     out.appendLine("    [文件夹] $name")
     out.appendLine("      → ${chipText(view.code)}${view.title ?: "（原样）"}${tagText(view.tags)}$note")
 }

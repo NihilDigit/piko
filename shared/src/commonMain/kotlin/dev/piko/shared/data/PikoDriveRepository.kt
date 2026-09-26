@@ -37,7 +37,9 @@ import io.github.nihildigit.pikpak.searchFiles
 import io.github.nihildigit.pikpak.searchFilesRecursive
 import io.github.nihildigit.pikpak.starFiles
 import io.github.nihildigit.pikpak.unstarFiles
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -53,6 +55,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -77,8 +80,12 @@ private const val FOLDER_USAGE_CONCURRENCY = 4
 open class PikoDriveRepository(
     private val clientManager: PikoClientProvider,
     private val preferences: PikoUserPreferences? = null,
+    private val cacheStore: PikoCacheStore? = null,
 ) {
     private val client get() = clientManager.currentClient.value ?: error("Not logged in")
+
+    // 与进程同寿：仓库本身就是进程级的
+    private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     // 读写发生在 Dispatchers.Default 的多个线程上，普通 HashMap 并发写会丢项甚至破坏结构。
     // commonMain 没有 ConcurrentHashMap，借 MutableStateFlow.update 的 CAS 做原子替换。
@@ -158,33 +165,40 @@ open class PikoDriveRepository(
         listingCache.value[folderId]?.let { sortFiles(it, sortOrder, folderId) }
 
     /**
-     * 文件夹里的文件名，只供文件夹行解析作品名（describeFolder）。列表接口只给文件夹的缩略图，
-     * 不给其中的文件名，所以来源只有两处：本会话列过的目录，以及 [fetchChildNames] 补取的一页。
-     * 与 [listingCache] 不同，不随路径栈出栈丢弃：返回上级时正要用它描述刚离开的目录。
+     * 文件夹里的文件，只供文件夹行解析作品名（describeFolder）。列表接口只给文件夹的缩略图，
+     * 不给其中的文件名，所以来源只有两处：列过的目录，以及 [fetchChildContents] 补取的一页。
+     * 与 [listingCache] 不同，不随路径栈出栈丢弃：返回上级时正要用它描述刚离开的目录。跨进程保留，见 [FolderContentMemory]。
      */
-    private val childNames = MutableStateFlow<Map<String, List<String>>>(emptyMap())
+    private val childContents = FolderContentMemory(cacheStore, backgroundScope)
     private val childNameFetches = Semaphore(CHILD_NAME_CONCURRENCY)
 
-    fun knownChildNames(folderId: String): List<String>? = childNames.value[folderId]
+    init {
+        // 记下的目录内容按账号存：换号时换一份，退出登录只清内存
+        backgroundScope.launch { clientManager.currentClient.collect { childContents.switchAccount(it?.account) } }
+    }
 
-    private fun rememberChildNames(folderId: String, files: List<FileStat>) {
-        val names = files.filterNot(FileStat::isFolder).take(MAX_REMEMBERED_CHILD_NAMES).map(FileStat::name)
-        childNames.update { it + (folderId to names) }
+    /** 从磁盘载入完成一次就加一，文件夹行据此重新描述。 */
+    val childContentLoads: StateFlow<Int> get() = childContents.loads
+
+    fun knownChildContents(folderId: String): List<ChildFile>? = childContents.get(folderId)
+
+    private fun rememberChildContents(folderId: String, files: List<FileStat>) {
+        childContents.put(folderId, files.filterNot(FileStat::isFolder).take(MAX_REMEMBERED_CHILD_NAMES).map(ChildFile::of))
     }
 
     /**
-     * 补取一页文件名。只取一页、至多 [CHILD_NAME_PAGE] 项，并发至多 [CHILD_NAME_CONCURRENCY]；
-     * 失败记为空列表，不重试，调用方退回只用文件夹名。
+     * 补取一页文件。只取一页、至多 [CHILD_NAME_PAGE] 项，并发至多 [CHILD_NAME_CONCURRENCY]。
+     * 失败返回 null 且不记下：记下的内容跨进程保留，一次网络失败不该让这个文件夹从此被当成空的。
      */
-    suspend fun fetchChildNames(folderId: String): List<String> = withContext(Dispatchers.Default) {
-        childNames.value[folderId]?.let { return@withContext it }
+    suspend fun fetchChildContents(folderId: String): List<ChildFile>? = withContext(Dispatchers.Default) {
+        childContents.get(folderId)?.let { return@withContext it }
         childNameFetches.withPermit {
             // 排队期间可能已有同一目录的请求完成
-            childNames.value[folderId]?.let { return@withPermit it }
+            childContents.get(folderId)?.let { return@withPermit it }
             val files = runSuspendCatching { client.listFilesPaged(parentId = folderId, pageSize = CHILD_NAME_PAGE).files }
-                .getOrDefault(emptyList())
-            rememberChildNames(folderId, files)
-            childNames.value[folderId].orEmpty()
+                .getOrNull() ?: return@withPermit null
+            rememberChildContents(folderId, files)
+            childContents.get(folderId)
         }
     }
 
@@ -270,7 +284,7 @@ open class PikoDriveRepository(
             val files = client.listFiles(parentId)
             // 只缓存路径栈上的目录。目录选择器等其他调用方也走这里，它们的目录不该留在缓存里
             if (folderStackFlow.value.any { it.id == parentId }) listingCache.update { it + (parentId to files) }
-            rememberChildNames(parentId, files)
+            rememberChildContents(parentId, files)
             sortFiles(files, sortOrder, parentId)
         }
     }

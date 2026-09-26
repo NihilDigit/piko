@@ -11,7 +11,8 @@ typealias PathBreadcrumb = PikoPathBreadcrumb
 class DriveRepository(
     clientManager: PikoClientProvider,
     preferences: dev.piko.data.auth.PikoUserPreferences? = null,
-) : PikoDriveRepository(clientManager, preferences) {
+    cacheStore: dev.piko.shared.data.PikoCacheStore? = null,
+) : PikoDriveRepository(clientManager, preferences, cacheStore) {
     fun getFolderMeaningless(folderId: String): Boolean? = folderMeaningless(folderId)
     fun getAllCachedFolderMeaningless(): Map<String, Boolean> = folderMeaninglessCache.toMap()
 

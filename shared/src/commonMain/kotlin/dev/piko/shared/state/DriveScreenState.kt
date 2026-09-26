@@ -8,6 +8,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import dev.piko.data.auth.PikoUserPreferences
+import dev.piko.shared.data.ChildFile
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoFileSortOrder
 import dev.piko.shared.data.PikoPathBreadcrumb
@@ -16,12 +17,17 @@ import io.github.nihildigit.pikpak.SearchHit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+/** 文件夹行在可见区域里停留这么久才预取其内容，见 [DriveScreenState.onFolderVisible]。 */
+private const val PREFETCH_DWELL_MILLIS = 400L
 
 /**
  * 网盘浏览的全部状态与动作，两端共用。
@@ -211,7 +217,9 @@ class DriveScreenState(
             }
         }
         scope.launch {
-            snapshotFlow { files }.collectLatest { list -> describeFolders(list.filter(FileStat::isFolder)) }
+            // 记下的文件夹内容启动后才从磁盘载入完，载入后再描述一遍
+            combine(snapshotFlow { files }, driveRepo.childContentLoads) { list, _ -> list }
+                .collectLatest { list -> describeFolders(list.filter(FileStat::isFolder)) }
         }
         // 回收站恢复这类界面外的改动由仓库层广播过来，订阅放在这里，
         // 免得每个平台的视图各订阅一遍
@@ -369,28 +377,29 @@ class DriveScreenState(
     }
 
     private suspend fun describeFolders(folders: List<FileStat>) {
-        folders.forEach { folder -> folderViews[folder.id] = folderView(folder, driveRepo.knownChildNames(folder.id)) }
+        folders.forEach { folder -> folderViews[folder.id] = folderView(folder, driveRepo.knownChildContents(folder.id)) }
     }
 
-    private suspend fun folderView(folder: FileStat, content: List<String>?): DriveFolderView {
+    private suspend fun folderView(folder: FileStat, content: List<ChildFile>?): DriveFolderView {
         val key = DriveViewMemory.folderKey(folder, content)
         return DriveViewMemory.folderView(key)
             ?: withContext(Dispatchers.Default) { describeDriveFolder(folder.name, content) }.also { DriveViewMemory.putFolderView(key, it) }
     }
 
-    private val contentRequests = HashSet<String>()
-
     /**
-     * 文件夹进入可见区域时调用。文件夹名看得出是一个发布、作品名却解析不出（多半写成了中文）时，
-     * 补取一页文件名再解析；每个文件夹至多请求一次，其余文件夹不发请求。
+     * 文件夹行在可见区域里时调用，挂起到预取完成；行离开可见区域，调用方的协程取消，请求随之作罢。
+     *
+     * 不知道里面有什么的文件夹补取一页文件，记下来描述文件夹行用：列表接口不给文件夹里的文件名，
+     * 不预取的话文件夹要点进去一次才认得出作品名。记下的内容跨进程保留（FolderContentMemory），
+     * 所以同一个文件夹只取一次。停留不到 [PREFETCH_DWELL_MILLIS] 的不取：快速滑过的一屏文件夹不该各发一个请求。
+     * 搜索结果散在各处，不预取。
      */
-    fun onFolderVisible(folder: FileStat) {
-        if (!isNameParsing || folderViews[folder.id]?.wantsContent != true) return
-        if (!contentRequests.add(folder.id)) return
-        scope.launch {
-            val content = driveRepo.fetchChildNames(folder.id)
-            if (content.isNotEmpty()) folderViews[folder.id] = folderView(folder, content)
-        }
+    suspend fun onFolderVisible(folder: FileStat) {
+        if (!isNameParsing || isSearching) return
+        if (driveRepo.knownChildContents(folder.id) != null) return
+        delay(PREFETCH_DWELL_MILLIS)
+        val content = driveRepo.fetchChildContents(folder.id) ?: return
+        folderViews[folder.id] = folderView(folder, content)
     }
 
     fun toggleSpoiler(fileId: String) {

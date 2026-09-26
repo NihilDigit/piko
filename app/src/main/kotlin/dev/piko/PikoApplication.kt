@@ -11,9 +11,12 @@ import dev.piko.data.repository.DriveRepository
 import dev.piko.download.AndroidPikoDownloadStorage
 import dev.piko.download.AndroidPikoSegmentDownloader
 import dev.piko.download.PikoDownloadService
+import dev.piko.download.WorkResultNotifier
 import dev.piko.platform.AndroidPikoPlatform
+import dev.piko.shared.data.FilePikoCacheStore
 import dev.piko.shared.data.InstantMagnetRepository
 import dev.piko.shared.data.PikoClientManager
+import java.io.File
 import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.state.InstantSession
@@ -75,8 +78,10 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
             ),
             uploadSources = AndroidPikoUploadSources(this),
             onUploadStarted = { PikoDownloadService.start(this) },
+            cacheStore = FilePikoCacheStore(File(cacheDir, "piko").path),
         )
         platform = AndroidPikoPlatform(this) { appUpdater }
+        WorkResultNotifier(this, services, appScope).start()
     }
 
     override fun newImageLoader(context: PlatformContext): ImageLoader {

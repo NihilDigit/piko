@@ -4,7 +4,9 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.repository.DriveRepository
 import dev.piko.shared.data.InstantMagnetRepository
+import dev.piko.shared.data.MoveHistory
 import dev.piko.shared.data.OfflinePackTracker
+import dev.piko.shared.data.PikoCacheStore
 import dev.piko.shared.data.PikoAccountRepository
 import dev.piko.shared.data.PikoClientManager
 import dev.piko.shared.data.PreviewTempFolder
@@ -12,6 +14,8 @@ import dev.piko.shared.data.TaskRepository
 import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.state.ArchiveExtractSession
+import dev.piko.shared.state.DuplicateFinderState
+import dev.piko.shared.state.DuplicateSession
 import dev.piko.shared.state.InstantSession
 import dev.piko.shared.state.InstantSheetState
 import dev.piko.shared.upload.PikoUploadCoordinator
@@ -34,7 +38,9 @@ class PikoServices(
     uploadSources: PikoUploadSources,
     /** Android 在这里拉起前台服务。 */
     onUploadStarted: (() -> Unit)? = null,
-    val driveRepository: DriveRepository = DriveRepository(clientManager, preferences),
+    /** 记下的文件夹内容跨进程保留在这里，见 FolderContentMemory。 */
+    cacheStore: PikoCacheStore? = null,
+    val driveRepository: DriveRepository = DriveRepository(clientManager, preferences, cacheStore),
     val accountRepository: PikoAccountRepository = PikoAccountRepository(clientManager, preferences),
     val instantMagnetRepository: InstantMagnetRepository = InstantMagnetRepository(clientManager),
     val taskRepository: TaskRepository = TaskRepository(clientManager, driveRepository),
@@ -45,6 +51,8 @@ class PikoServices(
     val previewTempFolder = PreviewTempFolder(driveRepository, instantMagnetRepository, backgroundScope)
 
     val offlinePacks = OfflinePackTracker(instantMagnetRepository, driveRepository, preferences)
+
+    val moveHistory = MoveHistory(preferences, backgroundScope)
 
     val uploadManager = PikoUploadCoordinator(clientManager, preferences, uploadSources, driveRepository, backgroundScope, onUploadStarted)
 
@@ -62,6 +70,13 @@ class PikoServices(
                     magnet,
                 )
             },
+        )
+    }
+
+    val duplicateSession: DuplicateSession by lazy {
+        DuplicateSession(
+            newScope = { CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate) },
+            newState = { scope, root -> DuplicateFinderState(clientManager, driveRepository, scope, root) },
         )
     }
 
