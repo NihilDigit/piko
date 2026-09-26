@@ -92,6 +92,12 @@ internal class MpvPlaybackBackend(
     private var pendingLoad: Array<String>? = null
     private var released = false
     private var observing = false
+    private var surfaceWidth = 0
+    private var surfaceHeight = 0
+    private var resizedSinceRedraw = false
+
+    // 暂停时 mpv 不会因为换尺寸而重画，原地精确 seek 一次逼它按新尺寸再出一帧
+    private val redrawGate = SurfaceRedrawGate { if (!released) mpv.command(arrayOf("seek", "0", "relative+exact")) }
 
     // mpv 每个 loadfile 恰好对应一个 END_FILE，且按提交顺序到达。换片或停止前记下
     // 已提交的数量，此前的 END_FILE 都是我们自己替换掉的；超出部分才是当前文件异常结束。
@@ -315,10 +321,29 @@ internal class MpvPlaybackBackend(
 
     fun setSurfaceSize(width: Int, height: Int) {
         if (released || !surfaceAttached) return
+        if (width != surfaceWidth || height != surfaceHeight) {
+            surfaceWidth = width
+            surfaceHeight = height
+            resizedSinceRedraw = true
+        }
         mpv.setPropertyString("android-surface-size", "${width}x$height")
     }
 
+    /**
+     * SurfaceView 要求重画时调用，[onDrawn] 在主线程上报「画完了」。只有尺寸真的变了才等 mpv 出新帧，
+     * 见 [SurfaceRedrawGate]；其余的重画请求（刚创建、系统要求刷新）画面没有变形，立即放行。
+     */
+    fun afterRedraw(onDrawn: () -> Unit) {
+        if (released || !surfaceAttached || !resizedSinceRedraw) {
+            onDrawn()
+            return
+        }
+        resizedSinceRedraw = false
+        redrawGate.await(paused = !isPlaying, onDrawn = onDrawn)
+    }
+
     fun detachSurface() {
+        redrawGate.releaseAll()
         if (released || !surfaceAttached) return
         // Surface 销毁后 vo 还握着它就会崩；换成 null 让 mpv 先放手，声音不受影响
         mpv.setPropertyString("vo", "null")
@@ -333,6 +358,7 @@ internal class MpvPlaybackBackend(
      * 所以放到后台线程，不堵主线程。
      */
     fun release() {
+        redrawGate.releaseAll()
         if (released) return
         released = true
         mpv.removeObserver(this)
@@ -379,6 +405,7 @@ internal class MpvPlaybackBackend(
     override fun eventProperty(property: String, value: Double) {
         when (property) {
             "time-pos" -> {
+                redrawGate.frameShown()
                 val millis = (value * 1000).toLong().coerceAtLeast(0L)
                 // time-pos 每帧都报，控件只需要四分之一秒的精度，省掉多余的重组
                 if (abs(millis - positionMillis) >= POSITION_GRANULARITY_MILLIS) positionMillis = millis
@@ -413,6 +440,7 @@ internal class MpvPlaybackBackend(
             MpvEvent.MPV_EVENT_FILE_LOADED -> attachPendingSubtitles()
             MpvEvent.MPV_EVENT_SEEK -> isSeeking = true
             MpvEvent.MPV_EVENT_PLAYBACK_RESTART -> {
+                redrawGate.frameShown()
                 isLoadingFile = false
                 isSeeking = false
                 if (!readySent) {

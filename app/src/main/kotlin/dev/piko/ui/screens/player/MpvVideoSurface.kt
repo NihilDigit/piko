@@ -34,13 +34,22 @@ internal fun MpvVideoSurface(
     }
 }
 
-private class SurfaceBridge(private val backend: MpvPlaybackBackend) : SurfaceHolder.Callback {
+/**
+ * 实现 Callback2 而不是 Callback：只实现 Callback 时 SurfaceView 把重画当作立即完成，转屏时新方向
+ * 配着旧方向的画面先上屏，画面被拉伸一下（暂停时一直拉伸着）。见 SurfaceRedrawGate。
+ */
+private class SurfaceBridge(private val backend: MpvPlaybackBackend) : SurfaceHolder.Callback2 {
     override fun surfaceCreated(holder: SurfaceHolder) = backend.attachSurface(holder.surface)
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) =
         backend.setSurfaceSize(width, height)
 
     override fun surfaceDestroyed(holder: SurfaceHolder) = backend.detachSurface()
+
+    override fun surfaceRedrawNeeded(holder: SurfaceHolder) = Unit
+
+    override fun surfaceRedrawNeededAsync(holder: SurfaceHolder, drawingFinished: Runnable) =
+        backend.afterRedraw(drawingFinished::run)
 }
 
 private class TextureBridge(private val backend: MpvPlaybackBackend) : TextureView.SurfaceTextureListener {
