@@ -23,9 +23,11 @@ import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
+import androidx.compose.ui.window.WindowPlacement
 import coil3.compose.AsyncImage
 import dev.piko.desktop.DesktopSettingsStore
 import dev.piko.desktop.TitleBarThemeEffect
+import dev.piko.desktop.isMacOs
 import dev.piko.desktop.rememberRememberedWindowState
 import dev.piko.desktop.winrt.WinRTSupport
 import dev.piko.desktop.winrt.WindowsFullscreen
@@ -99,10 +101,20 @@ fun VideoPlayerWindow(
                 VideoPlayerContent(
                     request = request,
                     services = services,
-                    isFullscreen = isFullscreen,
+                    isFullscreen = if (isMacOs) windowState.placement == WindowPlacement.Fullscreen else isFullscreen,
                     onToggleFullscreen = {
-                        if (fullscreen.isFullscreen) fullscreen.exit() else fullscreen.enter()
-                        isFullscreen = fullscreen.isFullscreen
+                        if (isMacOs) {
+                            // macOS 走系统的全屏空间。WindowsFullscreen 绕开的崩溃出在 Skiko 的 D3D 路径上，
+                            // macOS 渲染走 Metal，不经过它；按标题栏绿灯进出全屏时 placement 同样跟着变
+                            windowState.placement = if (windowState.placement == WindowPlacement.Fullscreen) {
+                                WindowPlacement.Floating
+                            } else {
+                                WindowPlacement.Fullscreen
+                            }
+                        } else {
+                            if (fullscreen.isFullscreen) fullscreen.exit() else fullscreen.enter()
+                            isFullscreen = fullscreen.isFullscreen
+                        }
                     },
                     onTitleChange = { title = it },
                     onClose = onClose,

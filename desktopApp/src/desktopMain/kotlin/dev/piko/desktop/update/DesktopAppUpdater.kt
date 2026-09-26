@@ -1,5 +1,6 @@
 package dev.piko.desktop.update
 
+import dev.piko.desktop.isMacOs
 import dev.piko.shared.update.ChecksumMismatchException
 import dev.piko.shared.update.GithubReleaseClient
 import dev.piko.shared.update.LatestRelease
@@ -30,7 +31,7 @@ data class DesktopUpdate(
         get() = when (plan) {
             is DesktopUpdatePlan.Patch -> plan.zip.size
             is DesktopUpdatePlan.Installer -> plan.msi.size
-            is DesktopUpdatePlan.Manual -> plan.msi.size
+            is DesktopUpdatePlan.Manual -> plan.download.size
         }
     override val canInstallInApp: Boolean get() = plan !is DesktopUpdatePlan.Manual
 }
@@ -42,8 +43,8 @@ sealed interface DesktopUpdatePlan {
     /** 整包重装。MSI 的升级是先卸后装，要等 Piko 退出后再跑，否则弹文件占用的对话框。 */
     data class Installer(val msi: ReleaseAsset) : DesktopUpdatePlan
 
-    /** 便携版且无法增量，或开发时从 gradle 直接跑：只给下载页。 */
-    data class Manual(val msi: ReleaseAsset) : DesktopUpdatePlan
+    /** 便携版且无法增量、macOS，或开发时从 gradle 直接跑：只给下载页。[download] 是该平台的安装包，只用来显示大小。 */
+    data class Manual(val download: ReleaseAsset) : DesktopUpdatePlan
 }
 
 /**
@@ -80,6 +81,11 @@ class DesktopAppUpdater private constructor(
     val exitRequests: SharedFlow<Unit> = mutableExitRequests.asSharedFlow()
 
     override suspend fun resolve(release: LatestRelease): DesktopUpdate? {
+        // macOS 还没有应用内安装：换掉 .app 里的文件会破坏签名封印，整包替换留待之后
+        if (isMacOs) {
+            val dmg = release.asset("piko-macos-$ARCH-${release.version}.dmg") ?: return null
+            return DesktopUpdate(release.version, release.notes, release.pageUrl, DesktopUpdatePlan.Manual(dmg))
+        }
         val prefix = "piko-windows-$ARCH-${release.version}"
         // 三个附件由另一条流水线陆续挂上，缺一个都按还没有新版本处理
         val manifestAsset = release.asset("$prefix-files.json") ?: return null
@@ -226,8 +232,11 @@ class DesktopAppUpdater private constructor(
         /** 换掉 Release 接口地址，用于在本机对着假的 Release 走一遍更新。 */
         private const val API_OVERRIDE_PROPERTY = "piko.update.api"
 
-        /** build.gradle.kts 在没有传版本时给的默认值，本地打的包都是它。 */
-        private const val DEV_PACKAGE_VERSION = "0.1.0"
+        /**
+         * 带版本号打的包由 build.gradle.kts 写进这个属性。本地与非 tag 构建用的默认版本号可能与某个
+         * 正式版相同，不能拿版本号本身判断是不是开发构建。
+         */
+        private const val RELEASE_BUILD_PROPERTY = "piko.release-build"
 
         private val ARCH = if (System.getProperty("os.arch") == "aarch64") "arm64" else "x64"
 
@@ -243,7 +252,7 @@ class DesktopAppUpdater private constructor(
             return DesktopAppUpdater(
                 installation = exe?.let { Installation(it.parentFile, it) },
                 currentVersion = version ?: "0",
-                checksOnStartup = version != null && version != DEV_PACKAGE_VERSION,
+                checksOnStartup = version != null && System.getProperty(RELEASE_BUILD_PROPERTY) == "true",
                 releases = releases,
             )
         }

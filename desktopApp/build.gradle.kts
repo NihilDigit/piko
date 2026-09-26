@@ -19,10 +19,13 @@ plugins {
     alias(libs.plugins.compose)
 }
 
-val windowsArch = if (System.getProperty("os.arch") == "aarch64") "arm64" else "x64"
-val windowsMpvRuntime = "org.openani.mediamp:mediamp-mpv-runtime-windows-$windowsArch:${libs.versions.mediamp.get()}"
+// 打包不能交叉构建：jpackage 只出宿主系统的安装包，mpv 与 skiko 的原生库也按宿主取
+val isMacHost = System.getProperty("os.name").startsWith("Mac")
+val hostArch = if (System.getProperty("os.arch") == "aarch64") "arm64" else "x64"
+val hostPlatform = "${if (isMacHost) "macos" else "windows"}-$hostArch"
+val hostMpvRuntime = "org.openani.mediamp:mediamp-mpv-runtime-$hostPlatform:${libs.versions.mediamp.get()}"
 // 等同 compose.desktop.currentOs，但版本跟界面库走，而不是跟打包插件走（两者版本不同，见 libs.versions.toml）
-val composeDesktopRuntime = "org.jetbrains.compose.desktop:desktop-jvm-windows-$windowsArch:${libs.versions.composeMultiplatform.get()}"
+val composeDesktopRuntime = "org.jetbrains.compose.desktop:desktop-jvm-$hostPlatform:${libs.versions.composeMultiplatform.get()}"
 
 kotlin {
     jvm("desktop")
@@ -60,8 +63,8 @@ kotlin {
                 implementation(libs.junit)
                 // 控件的鼠标悬停只能用真实的指针事件序列验证；版本跟界面库走，理由同 composeDesktopRuntime
                 implementation("org.jetbrains.compose.ui:ui-test:${libs.versions.composeMultiplatform.get()}")
-                // 测试进程没有打包好的资源目录，mpv 的 DLL 仍从类路径解压
-                runtimeOnly(windowsMpvRuntime)
+                // 测试进程没有打包好的资源目录，mpv 的原生库仍从类路径解压
+                runtimeOnly(hostMpvRuntime)
             }
         }
     }
@@ -111,15 +114,15 @@ configurations.named("desktopRuntimeClasspath") {
     exclude(group = "com.google.truth")
 }
 
-// mpv 与 FFmpeg 的 DLL 解开放进应用资源目录。mediamp 默认在每次启动后首次播放时把近 40MB 的 DLL
-// 从 jar 解压到新建的临时目录，DLL 被进程占用，deleteOnExit 删不掉，每次运行都在 %TEMP% 留一份。
+// mpv 与 FFmpeg 的原生库（DLL 或 dylib）解开放进应用资源目录。mediamp 默认在每次启动后首次播放时把
+// 近 40MB 的库从 jar 解压到新建的临时目录，Windows 上 DLL 被进程占用，deleteOnExit 删不掉，每次运行都在 %TEMP% 留一份。
 // 改为安装时就位，启动时经 MpvMediampPlayer.prepareLibraries 指过去，不再解压
-val windowsMpvRuntimeJar = configurations.detachedConfiguration(dependencies.create(windowsMpvRuntime)).apply {
+val hostMpvRuntimeJar = configurations.detachedConfiguration(dependencies.create(hostMpvRuntime)).apply {
     isTransitive = false
 }
 val bundledAppResources by tasks.registering(Sync::class) {
-    from({ windowsMpvRuntimeJar.map { zipTree(it) } }) {
-        include("*.dll", "*.txt")
+    from({ hostMpvRuntimeJar.map { zipTree(it) } }) {
+        include("*.dll", "*.dylib", "*.txt")
         into("mpv")
     }
     // Toast 的 AUMID 登记要一个磁盘上的图标文件，exe 里内嵌的那份用不上
@@ -131,7 +134,10 @@ val bundledAppResources by tasks.registering(Sync::class) {
 // 可覆写只为在本机测试 MSI 更新：另起一个产品，不碰已安装的 Piko
 val msiUpgradeUuid = providers.gradleProperty("pikoDesktopUpgradeUuid").getOrElse("6d8d332e-f0f4-4ee0-bc2d-fb3ebf3d4267")
 val desktopPackageName = providers.gradleProperty("pikoDesktopPackageName").getOrElse("Piko")
-val desktopPackageVersion = providers.gradleProperty("pikoDesktopVersion").getOrElse("0.1.0")
+// 不传版本的是本地或非 tag 构建。默认值取 1.0.0 而不是 0.x：macOS 的 CFBundleVersion 首位必须大于 0，
+// jpackage 直接拒绝。它与正式版可能同号，所以是不是发布构建另由 piko.release-build 标明，见 DesktopAppUpdater
+val releaseVersion = providers.gradleProperty("pikoDesktopVersion").map { it.trim() }.filter { it.isNotEmpty() }
+val desktopPackageVersion = releaseVersion.getOrElse("1.0.0")
 
 compose.desktop {
     application {
@@ -140,6 +146,7 @@ compose.desktop {
         jvmArgs += "--enable-native-access=ALL-UNNAMED"
         // 应用内更新据此在 Windows Installer 的登记里认出自己是不是 MSI 装的，见 DesktopAppUpdater
         jvmArgs += "-Dpiko.upgrade-code=$msiUpgradeUuid"
+        if (releaseVersion.isPresent) jvmArgs += "-Dpiko.release-build=true"
         buildTypes.release.proguard {
             isEnabled = true
             configurationFiles.from(project.file("proguard-rules.pro"))
@@ -149,9 +156,12 @@ compose.desktop {
             joinOutputJars = true
         }
         // JDK 25 的 AOT 缓存（JEP 483/514）：打包时跑一遍训练，把启动路径上的类预先加载、链接好
-        // 存进 app.aot，启动时直接映射。训练运行由 Main 在开窗后自行退出，见 AOT_TRAINING_PROPERTY
-        buildTypes.release.aot {
-            mode = AotMode.AotPrebuild
+        // 存进 app.aot，启动时直接映射。训练运行由 Main 在开窗后自行退出，见 AOT_TRAINING_PROPERTY。
+        // macOS 不做：jpackage 建 .app 时已经签了名，训练之后才写进去的 app.aot 会破坏签名封印
+        if (!isMacHost) {
+            buildTypes.release.aot {
+                mode = AotMode.AotPrebuild
+            }
         }
         nativeDistributions {
             appResourcesRootDir = layout.buildDirectory.dir("appResources")
@@ -162,7 +172,8 @@ compose.desktop {
             // 并自带 JDK 25 运行时（FFM 原生调用与 AOT 缓存都要求）。
             // packageVersion 与 release tag（vMAJOR.MINOR.PATCH）对齐，CI 打包时可覆写：
             //   ./gradlew :desktopApp:packageReleaseMsi -PpikoDesktopVersion=1.2.3
-            targetFormats(TargetFormat.Msi)
+            // 插件只为宿主系统能打的格式注册任务：Windows 上是 MSI，macOS 上是 DMG
+            targetFormats(TargetFormat.Msi, TargetFormat.Dmg)
             packageName = desktopPackageName
             packageVersion = desktopPackageVersion
             vendor = "NihilDigit"
@@ -177,6 +188,30 @@ compose.desktop {
                 upgradeUuid = msiUpgradeUuid
                 // 按用户安装：免 UAC，装到 LocalAppData，HKCU 协议注册无需管理员权限。
                 perUserInstall = true
+            }
+            macOS {
+                bundleID = "dev.piko.desktop"
+                // docs/icon.svg 按 macOS 图标网格留边后渲染，生成方式见 desktopApp/package/macos/README.md
+                iconFile.set(project.file("package/macos/icon.icns"))
+                // MediaMP 的 mpv 运行库以 macOS 12 为最低版本编译
+                minimumSystemVersion = "12.0"
+                appCategory = "public.app-category.utilities"
+                // magnet: 链接交给 Piko。macOS 不像 Windows 那样把 URL 作为启动参数传入，见 Main 的 installMacHandlers
+                infoPlist {
+                    extraKeysRawXml = """
+                        <key>CFBundleURLTypes</key>
+                        <array>
+                            <dict>
+                                <key>CFBundleURLName</key>
+                                <string>Magnet URI</string>
+                                <key>CFBundleURLSchemes</key>
+                                <array>
+                                    <string>magnet</string>
+                                </array>
+                            </dict>
+                        </array>
+                    """.trimIndent()
+                }
             }
         }
     }
@@ -297,7 +332,7 @@ tasks.register<UpdateArtifactsTask>("packageReleaseUpdate") {
     dependsOn("createReleaseDistributable")
     appImage = layout.buildDirectory.dir("compose/binaries/main-release/app/$desktopPackageName")
     version = desktopPackageVersion
-    artifactPrefix = "piko-windows-$windowsArch-$desktopPackageVersion"
+    artifactPrefix = "piko-$hostPlatform-$desktopPackageVersion"
     outputDir = layout.buildDirectory.dir("compose/binaries/main-release/update")
 }
 // compose 的 run 任务在 afterEvaluate 里重写 jvmArgs，会盖掉上面的配置，

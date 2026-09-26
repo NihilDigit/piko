@@ -95,6 +95,15 @@ fun main(args: Array<String>) {
         magnetIn(forwarded)?.let(services.instantMagnetRepository::onIncomingMagnet)
         activations.tryEmit(Unit)
     }
+    val quitRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    installMacHandlers(
+        onOpenUri = { uri ->
+            magnetIn(listOf(uri))?.let(services.instantMagnetRepository::onIncomingMagnet)
+            activations.tryEmit(Unit)
+        },
+        onQuit = { quitRequests.tryEmit(Unit) },
+        onReopen = { activations.tryEmit(Unit) },
+    )
 
     val appearanceFlow = preferences.appearanceFlow(platform.supportsDynamicColor)
     // 偏好在内存里，同步读很快；先读好再开窗，首帧就是用户选的主题
@@ -140,18 +149,25 @@ fun main(args: Array<String>) {
             )
         }
 
+        val closeMainWindow = {
+            if (hasActiveTransfers) {
+                isInBackground = true
+                // Toast 同步等系统结果，不能压在界面线程上
+                Thread {
+                    WinRTSupport.showNotification("Piko 在后台继续传输", "传输完成后自动退出，可从通知区域图标重新打开。")
+                }.start()
+            } else {
+                exitApplication()
+            }
+        }
+        val currentCloseMainWindow by rememberUpdatedState(closeMainWindow)
+        // macOS 的 Cmd+Q：窗口还开着时同关窗；已经藏进后台再退出，是明确要结束传输
+        LaunchedEffect(Unit) {
+            quitRequests.collect { if (isInBackground) exitApplication() else currentCloseMainWindow() }
+        }
+
         Window(
-            onCloseRequest = {
-                if (hasActiveTransfers) {
-                    isInBackground = true
-                    // Toast 同步等系统结果，不能压在界面线程上
-                    Thread {
-                        WinRTSupport.showNotification("Piko 在后台继续传输", "传输完成后自动退出，可从通知区域图标重新打开。")
-                    }.start()
-                } else {
-                    exitApplication()
-                }
-            },
+            onCloseRequest = closeMainWindow,
             visible = !isInBackground,
             title = "Piko",
             icon = appIcon,
@@ -241,13 +257,14 @@ private fun bringToFront(window: java.awt.Frame) {
 }
 
 /**
- * 安装包把 mpv 与 FFmpeg 的 DLL 放在资源目录的 mpv 子目录里，这里指给 mediamp，免得它每次
- * 首次播放都把 DLL 从 jar 解压到新的临时目录。资源目录里没有时（测试进程）沿用它的默认行为。
+ * 安装包把 mpv 与 FFmpeg 的原生库放在资源目录的 mpv 子目录里，这里指给 mediamp，免得它每次
+ * 首次播放都把库从 jar 解压到新的临时目录。资源目录里没有时（测试进程）沿用它的默认行为。
  */
 private fun useBundledMpvRuntime() {
     val dir = System.getProperty("compose.application.resources.dir")?.let { File(it, "mpv") } ?: return
-    if (!dir.resolve("mediampv.dll").isFile) return
-    // 设置目录时 mediamp 会校验并加载封装层 DLL，连带 mpv 与 FFmpeg 一串依赖，放后台线程，不挡开窗
+    // Windows 上是 mediampv.dll，macOS 上是 libmediampv.dylib
+    if (!dir.resolve(System.mapLibraryName("mediampv")).isFile) return
+    // 设置目录时 mediamp 会校验并加载封装层，连带 mpv 与 FFmpeg 一串依赖，放后台线程，不挡开窗
     Thread(
         { runCatching { MpvMediampPlayer.prepareLibraries(dir.absolutePath, false) } },
         "Piko-Mpv-Setup",

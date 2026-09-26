@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Piko 是 PikPak 的第三方跨平台客户端。Android 与 Windows 共用一套 Material 3 Expressive 界面，
+Piko 是 PikPak 的第三方跨平台客户端。Android、Windows 与 macOS（实验性）共用一套 Material 3 Expressive 界面，
 按窗口宽度自适应；业务逻辑与屏幕状态在 `shared`，界面在 `ui`，两端只剩入口与平台实现。
 
 ## 常用命令
@@ -11,7 +11,7 @@ Piko 是 PikPak 的第三方跨平台客户端。Android 与 Windows 共用一�
 ./gradlew :app:compileDebugKotlin          # Android 编译（最快的语法与类型检查）
 ./gradlew :desktopApp:compileKotlinDesktop # Desktop 编译，注意不是 compileKotlinJvm
 ./gradlew :app:installDebug                # 装到已连接设备，包名 dev.piko.debug
-./gradlew :desktopApp:run                  # 跑 Windows 桌面端
+./gradlew :desktopApp:run                  # 跑桌面端
 ./gradlew :app:testDebugUnitTest           # 单元测试，目前只有 app/src/test
 ./gradlew :app:testDebugUnitTest --tests '*FileNameSanitizerTest*'   # 跑单个测试
 ```
@@ -52,7 +52,7 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 ## 架构
 
 四个模块：`shared`（状态与业务，commonMain + android/desktop 两个 target）、`ui`（共享界面，
-同样两个 target）、`app`（Android 入口、平台实现与播放器）、`desktopApp`（Windows 入口、
+同样两个 target）、`app`（Android 入口、平台实现与播放器）、`desktopApp`（Windows 与 macOS 入口、
 平台实现与播放器窗口）。
 
 ### 界面写一次
@@ -187,6 +187,14 @@ piko 源码仍是 MIT，但发版时要附 GPLv3 与第三方声明，并指明�
   settings.properties 的 `window.<名称>.*` 下。
 - Compose 与 MediaMP 的桌面依赖带进了 ui-test、junit、truth 与 kotlinx-coroutines-test，
   在 `desktopRuntimeClasspath` 里排除，测试类路径不受影响。
+- **版本号**：`-PpikoDesktopVersion` 只在 tag 构建时传（CI 经 `ORG_GRADLE_PROJECT_pikoDesktopVersion`），
+  同时写入 `-Dpiko.release-build=true`，更新器只在带这个标记时启动即检查。不传时默认 1.0.0：macOS 的
+  CFBundleVersion 首位必须大于 0，jpackage 拒绝 0.x；它可能与正式版同号，所以不能靠版本号认开发构建。
+- **macOS（实验性，仅 Apple 芯片）**：同一个 `desktopApp`，原生库与 Compose 运行库按宿主系统取，jpackage
+  不能交叉构建，DMG 只在 `macos.yml` 的 macos-15 runner 上打。mpv 运行库照 Animeko 用 MediaMP 的
+  `mediamp-mpv-runtime-macos-arm64`，画面走 Metal。与 Windows 的差别：不做 AOT 缓存（训练晚于 jpackage 签名，
+  写进去会破坏签名封印）；播放器全屏用 `WindowPlacement.Fullscreen`；magnet 链接、Cmd+Q 与点 Dock 图标
+  经 Apple 事件进来，见 `MacOs.kt`；更新器只给下载页。没有开发者证书，包未经签名与公证。
 
 ## 开发用 CLI
 
