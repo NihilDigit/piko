@@ -7,6 +7,9 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
@@ -49,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import dev.piko.shared.media.player.MediaTrack
 import dev.piko.shared.media.player.PlayerAspectRatio
 import dev.piko.shared.media.player.PlaylistEntry
+import dev.piko.ui.components.LocalPointerSource
 import kotlinx.coroutines.delay
 
 /**
@@ -210,8 +214,17 @@ fun MobilePlayerControls(
             containsControls = true,
         ) ?: CONTROLS_HIDE_DELAY_MILLIS
     }
+    // 光标停在控件栏上时不自动收起：只看鼠标移动的话，光标停在进度条上不动，几秒后控件栏就在
+    // 光标底下收走了。两栏共用一个 source，hoverable 在控件栏退场被移除时会补发 Exit，不会卡在悬停
+    val controlsHover = remember { MutableInteractionSource() }
+    val isHoveringControls by controlsHover.collectIsHoveredAsState()
     // 倍速浮层挂在底栏上，底栏一收起它就跟着消失，开着时同样不收
-    val holdControls = !isPlaying || isScrubbing || openSheet != null || isSpeedPopupOpen || errorMessage != null
+    val holdControls = !isPlaying || isScrubbing || openSheet != null || isSpeedPopupOpen || errorMessage != null ||
+        isHoveringControls
+    val currentHoldControls by rememberUpdatedState(holdControls)
+    // 鼠标与手指对点按的解释不同，见 [PointerSource]。鼠标沿用桌面播放器的通行约定：单击播放或暂停，
+    // 双击全屏，控件由移动光标唤出；手指单击切换控件，双击按落点进退或暂停
+    val pointerSource = LocalPointerSource.current
     LaunchedEffect(controlsVisible, holdControls, interactionCount, hideDelayMillis) {
         if (controlsVisible && !holdControls && hideDelayMillis != Long.MAX_VALUE) {
             delay(hideDelayMillis)
@@ -283,6 +296,8 @@ fun MobilePlayerControls(
                 // Initial 阶段只观察不消费，停在按钮与面板上的移动也算。只认没按键、位置真变了的
                 // 鼠标移动：触屏的移动都是拖动，不该顺带唤出控件；指针不动而底下的布局变了时，
                 // 桌面端可能补发原地的移动，不滤掉的话控件收起后会被它重新唤出
+                //
+                // 光标离开播放器时立即收起控件，不等计时。控件因故常驻时（暂停、面板开着）不收
                 .pointerInput(Unit) {
                     awaitPointerEventScope {
                         while (true) {
@@ -296,6 +311,9 @@ fun MobilePlayerControls(
                                 interacted()
                                 mouseMoveCount += 1
                             }
+                            val left = event.type == PointerEventType.Exit &&
+                                event.changes.any { it.type == PointerType.Mouse }
+                            if (left && !currentHoldControls) controlsVisible = false
                         }
                     }
                 }
@@ -308,10 +326,21 @@ fun MobilePlayerControls(
                 brightness = brightness,
                 volume = volume,
                 onGestureChange = { activeGesture = it },
-                onToggleControls = { controlsVisible = !controlsVisible },
+                onToggleControls = {
+                    if (pointerSource.isTouchLike) {
+                        controlsVisible = !controlsVisible
+                    } else {
+                        interacted()
+                        onPlayPause()
+                    }
+                },
                 onSeekTo = onSeek,
                 onDoubleTap = { zone ->
-                    if (zone == DoubleTapZone.PlayPause) onPlayPause() else stepSeek(forward = zone == DoubleTapZone.Forward)
+                    when {
+                        !pointerSource.isTouchLike -> onToggleFullscreen()
+                        zone == DoubleTapZone.PlayPause -> onPlayPause()
+                        else -> stepSeek(forward = zone == DoubleTapZone.Forward)
+                    }
                 },
                 onSpeedBoost = { active ->
                     val speed = currentSpeed ?: return@PlayerGestureLayer
@@ -322,6 +351,22 @@ fun MobilePlayerControls(
                     } else if (isBoosting) {
                         isBoosting = false
                         onSpeedChange(speedBeforeBoost)
+                    }
+                },
+                // 滚轮调音量，与上下方向键同一步长。挂在手势层而不是根节点：面板里的列表滚到头后
+                // 剩下的滚轮位移会冒泡到根节点，那时不该变成调音量
+                modifier = Modifier.pointerInput(isLocked) {
+                    if (isLocked) return@pointerInput
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            if (event.type != PointerEventType.Scroll) continue
+                            val change = event.changes.firstOrNull() ?: continue
+                            val dy = change.scrollDelta.y
+                            if (dy == 0f) continue
+                            stepVolume(if (dy < 0f) VOLUME_KEY_STEP else -VOLUME_KEY_STEP)
+                            change.consume()
+                        }
                     }
                 },
             )
@@ -381,6 +426,7 @@ fun MobilePlayerControls(
                         }.takeIf { subtitleTracks.isNotEmpty() || audioTracks.size > 1 },
                         modifier = Modifier
                             .align(Alignment.TopCenter)
+                            .hoverable(controlsHover)
                             // 淡入之外各自朝外滑半个栏高：整栏从屏幕外滑进来动作太大，只淡入又显得平
                             .animateEnterExit(
                                 enter = slideInVertically(motion.defaultSpatialSpec()) { -it / 2 },
@@ -418,6 +464,7 @@ fun MobilePlayerControls(
                         onScrubbingChange = { isScrubbing = it },
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
+                            .hoverable(controlsHover)
                             .animateEnterExit(
                                 enter = slideInVertically(motion.defaultSpatialSpec()) { it / 2 },
                                 exit = slideOutVertically(motion.fastSpatialSpec()) { it / 2 },

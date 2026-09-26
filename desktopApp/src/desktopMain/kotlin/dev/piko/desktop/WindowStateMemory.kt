@@ -28,6 +28,8 @@ fun rememberRememberedWindowState(
     settings: DesktopSettingsStore,
     name: String,
     defaultSize: DpSize,
+    /** 无边框全屏（见 WindowsFullscreen）不经过 placement，由调用方告知。 */
+    isBorderlessFullscreen: () -> Boolean = { false },
 ): WindowState {
     val prefix = "window.$name."
     val state = rememberWindowState(
@@ -40,7 +42,7 @@ fun rememberRememberedWindowState(
         snapshotFlow { Triple(state.placement, state.position, state.size) }
             .debounce(500)
             .collect { (placement, position, size) ->
-                if (placement == WindowPlacement.Fullscreen) return@collect
+                if (placement == WindowPlacement.Fullscreen || isBorderlessFullscreen()) return@collect
                 settings.set(prefix + "maximized", (placement == WindowPlacement.Maximized).toString())
                 if (placement != WindowPlacement.Floating) return@collect
                 if (position is WindowPosition.Absolute) {

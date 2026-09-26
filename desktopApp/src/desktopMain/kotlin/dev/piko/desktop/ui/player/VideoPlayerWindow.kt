@@ -23,17 +23,20 @@ import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
-import androidx.compose.ui.window.WindowPlacement
 import coil3.compose.AsyncImage
 import dev.piko.desktop.DesktopSettingsStore
 import dev.piko.desktop.TitleBarThemeEffect
 import dev.piko.desktop.rememberRememberedWindowState
 import dev.piko.desktop.winrt.WinRTSupport
+import dev.piko.desktop.winrt.WindowsFullscreen
 import dev.piko.shared.media.player.PlaybackBackend
 import dev.piko.shared.media.player.PlayerScreenState
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.PikoServices
 import dev.piko.ui.VideoPlayerRequest
+import dev.piko.ui.components.LocalPointerSource
+import dev.piko.ui.components.PointerSource
+import dev.piko.ui.components.trackPointerSource
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.PikoPlatform
 import dev.piko.ui.screens.player.MobilePlayerControls
@@ -69,8 +72,10 @@ fun VideoPlayerWindow(
     icon: Painter?,
     onClose: () -> Unit,
 ) {
+    // 无边框全屏不改 WindowState 的 placement，窗口尺寸却铺满了屏幕，要告诉位置记忆此时别存
+    var isFullscreen by remember { mutableStateOf(false) }
     // 所有播放窗口共用一份记忆，下一个窗口开在上一个关掉时的位置与大小
-    val windowState = rememberRememberedWindowState(settings, "player", DpSize(1000.dp, 620.dp))
+    val windowState = rememberRememberedWindowState(settings, "player", DpSize(1000.dp, 620.dp)) { isFullscreen }
     // 换集后标题跟着当前这集走
     var title by remember { mutableStateOf(request.fileName) }
 
@@ -82,24 +87,26 @@ fun VideoPlayerWindow(
     ) {
         // 画面四周是黑的，标题栏不随应用主题，始终用深色
         TitleBarThemeEffect(window, dark = true)
+        val fullscreen = remember(window) { WindowsFullscreen(window) }
+        // 播放窗口是独立的组合树，主窗口根部的输入来源追踪管不到这里
+        val pointerSource = remember { PointerSource() }
         CompositionLocalProvider(
             LocalPikoServices provides services,
             LocalPikoPlatform provides platform,
+            LocalPointerSource provides pointerSource,
         ) {
             PikoTheme(appearance = appearance) {
                 VideoPlayerContent(
                     request = request,
                     services = services,
-                    isFullscreen = windowState.placement == WindowPlacement.Fullscreen,
+                    isFullscreen = isFullscreen,
                     onToggleFullscreen = {
-                        windowState.placement = if (windowState.placement == WindowPlacement.Fullscreen) {
-                            WindowPlacement.Floating
-                        } else {
-                            WindowPlacement.Fullscreen
-                        }
+                        if (fullscreen.isFullscreen) fullscreen.exit() else fullscreen.enter()
+                        isFullscreen = fullscreen.isFullscreen
                     },
                     onTitleChange = { title = it },
                     onClose = onClose,
+                    modifier = Modifier.trackPointerSource(pointerSource),
                 )
             }
         }
@@ -115,6 +122,7 @@ private fun VideoPlayerContent(
     onToggleFullscreen: () -> Unit,
     onTitleChange: (String) -> Unit,
     onClose: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
     val player = rememberMediampPlayer()
@@ -176,7 +184,7 @@ private fun VideoPlayerContent(
         onDispose { player.close() }
     }
 
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+    Box(modifier.fillMaxSize().background(Color.Black)) {
         if (state.isImage) {
             AsyncImage(
                 model = state.mediaInfo?.currentUrl,
