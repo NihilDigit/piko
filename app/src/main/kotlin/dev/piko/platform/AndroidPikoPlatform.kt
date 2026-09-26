@@ -13,6 +13,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.staggeredgrid.LazyStaggeredGridState
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
@@ -116,6 +118,12 @@ class AndroidPikoPlatform(
             content()
         }
     }
+
+    @Composable
+    override fun ListScrollbar(state: LazyListState, modifier: Modifier) = Unit
+
+    @Composable
+    override fun ListScrollbar(state: LazyStaggeredGridState, modifier: Modifier) = Unit
 
     private fun startActivity(intent: Intent) {
         runCatching { context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }

@@ -2,6 +2,8 @@ package dev.piko.desktop
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.staggeredgrid.LazyStaggeredGridState
 import androidx.compose.material3.ColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -169,6 +171,13 @@ class DesktopPikoPlatform(
             Box(Modifier.fillMaxSize()) { content() }
         }
     }
+
+    @Composable
+    override fun ListScrollbar(state: LazyListState, modifier: Modifier) = dev.piko.desktop.ListScrollbar(state, modifier)
+
+    @Composable
+    override fun ListScrollbar(state: LazyStaggeredGridState, modifier: Modifier) =
+        dev.piko.desktop.ListScrollbar(state, modifier)
 
     private class MediampPreviewBackend(val inner: MediampPlaybackBackend) : PreviewBackend, PlaybackBackend by inner {
         // 播放器本身由 rememberPreviewBackend 在离开组合时关闭，这里只停播

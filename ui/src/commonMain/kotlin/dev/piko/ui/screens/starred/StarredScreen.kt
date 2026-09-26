@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.FolderOpen
@@ -55,6 +56,7 @@ import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.displayTitle
 import dev.piko.ui.components.metaParts
 import dev.piko.ui.components.TooltipIconButton
+import dev.piko.ui.platform.LocalPikoPlatform
 import io.github.nihildigit.pikpak.FileStat
 
 /**
@@ -82,6 +84,7 @@ fun StarredScreen(
     val isSpoilerBlurEnabled by services.preferences.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = true)
     val revealedIds = remember { mutableStateListOf<String>() }
     var detailsFor by remember { mutableStateOf<FileStat?>(null) }
+    val listState = rememberLazyListState()
 
     LaunchedEffect(state) {
         state.load()
@@ -139,6 +142,7 @@ fun StarredScreen(
                     modifier = Modifier.fillMaxSize(),
                 ) {
                     LazyColumn(
+                        state = listState,
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(
                             start = sidePadding,
@@ -170,6 +174,7 @@ fun StarredScreen(
                             }
                         }
                     }
+                    LocalPikoPlatform.current.ListScrollbar(listState, Modifier.align(Alignment.CenterEnd))
                 }
             }
         }

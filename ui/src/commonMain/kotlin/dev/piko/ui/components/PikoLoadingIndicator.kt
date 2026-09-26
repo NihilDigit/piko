@@ -23,6 +23,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import dev.piko.ui.adaptive.WidthClass
+import dev.piko.ui.adaptive.currentWidthClass
 import kotlinx.coroutines.delay
 
 /*
@@ -113,6 +115,10 @@ fun FullScreenLoading(modifier: Modifier = Modifier) {
  *
  * 指示器与刷新框共用同一个 state，分成两个的话指示器收不到拖拽距离，下拉时不跟手。
  * 用带容器的那一档：指示器压在列表内容上，没有容器托底时会撞上正文。
+ *
+ * 只有手指能拉，见 [PointerSource]。鼠标没有「拉住再松手」的动作，滚轮滚到顶再多滚一格就会被
+ * 当成一次下拉。最近一次输入是鼠标时整个关掉刷新手势，而不是吃掉下拉量：关掉之后到顶多出来的
+ * 那一截照常往外传。刷新入口此时在顶栏，见 [showsRefreshButton]。
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -128,6 +134,7 @@ fun RefreshBox(
         onRefresh = onRefresh,
         modifier = modifier,
         state = state,
+        enabled = LocalPointerSource.current.isTouchLike,
         indicator = {
             PullToRefreshDefaults.LoadingIndicator(
                 state = state,
@@ -138,3 +145,11 @@ fun RefreshBox(
         content = content,
     )
 }
+
+/**
+ * 带 [RefreshBox] 的页面是否在顶栏另给刷新按钮。最近一次输入是鼠标时下拉已关掉，必须给；
+ * 宽窗口上手指也能下拉，仍然给，因为宽窗口多半接着鼠标，只是还没动过。
+ */
+@Composable
+fun showsRefreshButton(): Boolean =
+    !LocalPointerSource.current.isTouchLike || currentWidthClass() != WidthClass.Compact

@@ -90,6 +90,7 @@ import dev.piko.shared.media.player.preferredVersion
 import dev.piko.shared.media.player.trackDisplayName
 import dev.piko.ui.components.ListSpoilerBlur
 import dev.piko.ui.components.SpoilerThumbnail
+import dev.piko.ui.components.wheelStaysInSheet
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -126,7 +127,7 @@ internal fun PlayerSheetHost(
             // 选集固定占七成高：按内容定高时几十集会顶满全屏，几集时又只露一条。
             // 其余面板内容少，按内容定高
             val height = if (sheet == PlayerSheet.Episodes) Modifier.fillMaxHeight(EPISODE_SHEET_HEIGHT_FRACTION) else Modifier
-            Column(height) {
+            Column(height.wheelStaysInSheet()) {
                 Text(
                     text = sheet.title,
                     style = MaterialTheme.typography.titleLarge,

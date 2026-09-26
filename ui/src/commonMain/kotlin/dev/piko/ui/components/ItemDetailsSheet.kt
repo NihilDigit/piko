@@ -81,7 +81,7 @@ fun ItemDetailsSheet(
         sheetState = sheetState,
     ) {
         // 矮屏上放不下全部操作，整块可滚动
-        Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+        Column(modifier = Modifier.wheelStaysInSheet().verticalScroll(rememberScrollState())) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()

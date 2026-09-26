@@ -119,6 +119,7 @@ fun SegmentDownloadSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .wheelStaysInSheet()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 24.dp)
                 .padding(bottom = 24.dp),

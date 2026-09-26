@@ -6,9 +6,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.ui.components.FullScreenLoading
+import dev.piko.ui.components.LocalPointerSource
+import dev.piko.ui.components.PointerSource
+import dev.piko.ui.components.trackPointerSource
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.PikoPlatform
 import dev.piko.ui.screens.archive.ArchiveExtractHost
@@ -33,9 +37,11 @@ fun PikoApp(
     videoPlayer: VideoPlayerHost,
     modifier: Modifier = Modifier,
 ) {
+    val pointerSource = remember { PointerSource() }
     CompositionLocalProvider(
         LocalPikoServices provides services,
         LocalPikoPlatform provides platform,
+        LocalPointerSource provides pointerSource,
     ) {
         PikoTheme(appearance = appearance) {
             val clientManager = services.clientManager
@@ -50,7 +56,7 @@ fun PikoApp(
                 },
                 animationSpec = PikoMotion.StateCrossfadeSpec,
                 label = "app_root_state",
-                modifier = modifier.fillMaxSize(),
+                modifier = modifier.fillMaxSize().trackPointerSource(pointerSource),
             ) { state ->
                 when (state) {
                     AppState.INITIALIZING -> FullScreenLoading()

@@ -65,6 +65,7 @@ import dev.piko.ui.components.RefreshBox
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.screens.player.formatTime
+import dev.piko.ui.platform.LocalPikoPlatform
 import io.github.nihildigit.pikpak.DriveEvent
 import io.github.nihildigit.pikpak.FileStat
 import java.time.LocalDate
@@ -217,6 +218,7 @@ fun PlayHistoryScreen(
                             }
                         }
                     }
+                    LocalPikoPlatform.current.ListScrollbar(listState, Modifier.align(Alignment.CenterEnd))
                 }
             }
         }

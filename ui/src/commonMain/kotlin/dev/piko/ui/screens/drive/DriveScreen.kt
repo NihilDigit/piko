@@ -92,8 +92,6 @@ import dev.piko.ui.LocalPikoServices
 import dev.piko.shared.data.isArchiveVolume
 import dev.piko.shared.data.isExtractableArchive
 import dev.piko.ui.screens.archive.ArchiveExtractStatus
-import dev.piko.ui.adaptive.WidthClass
-import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.components.BreadcrumbBar
 import dev.piko.ui.components.FileNameField
 import dev.piko.ui.components.FolderPickerDialog
@@ -102,9 +100,11 @@ import dev.piko.ui.screens.duplicates.DuplicatesDialog
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoErrorState
 import dev.piko.ui.components.RefreshBox
+import dev.piko.ui.components.showsRefreshButton
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.SegmentDownloadSheet
 import dev.piko.ui.components.TooltipIconButton
+import dev.piko.ui.components.wheelStaysInSheet
 import dev.piko.ui.screens.instant.InstantSheetContent
 import dev.piko.ui.screens.instant.InstantSheetHandle
 import io.github.nihildigit.pikpak.FileStat
@@ -489,8 +489,7 @@ fun DriveScreen(
                         // 顶栏只留搜索：M3 顶栏放一到两个动作，新建与秒传同属「往网盘里添东西」，
                         // 一起收进 FAB 菜单；排序与视图切换作用于列表，放在列表页眉
                         TooltipIconButton(Icons.Outlined.Search, "搜索", { isSearchOpen = true }, shortcut = "Ctrl+F")
-                        // 下拉刷新只在触屏上用得了；宽窗口多半用鼠标，给一个按钮
-                        if (currentWidthClass() != WidthClass.Compact) {
+                        if (showsRefreshButton()) {
                             TooltipIconButton(Icons.Outlined.Refresh, "刷新", { state.load(refresh = true) }, shortcut = "F5")
                         }
                     },
@@ -701,14 +700,16 @@ fun DriveScreen(
             onDismissRequest = instantSession::collapse,
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         ) {
-            InstantSheetContent(
-                state = instantState,
-                // 先收起面板：Android 上它是独立窗口，会盖在应用内的播放器上面
-                onPreview = { fileId, fileName ->
-                    instantSession.collapse()
-                    navigateToPlayer(FileStat(id = fileId, name = fileName), emptyList())
-                },
-            )
+            Column(Modifier.wheelStaysInSheet()) {
+                InstantSheetContent(
+                    state = instantState,
+                    // 先收起面板：Android 上它是独立窗口，会盖在应用内的播放器上面
+                    onPreview = { fileId, fileName ->
+                        instantSession.collapse()
+                        navigateToPlayer(FileStat(id = fileId, name = fileName), emptyList())
+                    },
+                )
+            }
         }
     }
 

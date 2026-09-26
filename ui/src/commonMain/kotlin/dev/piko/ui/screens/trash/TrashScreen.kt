@@ -14,6 +14,7 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.DeleteForever
 import androidx.compose.material.icons.outlined.DeleteSweep
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.RestoreFromTrash
 import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.material.icons.outlined.Visibility
@@ -63,8 +64,11 @@ import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.RefreshBox
 import dev.piko.ui.components.SheetAction
+import dev.piko.ui.components.TooltipIconButton
+import dev.piko.ui.components.showsRefreshButton
 import dev.piko.ui.components.displayTitle
 import dev.piko.ui.components.metaParts
+import dev.piko.ui.platform.LocalPikoPlatform
 import io.github.nihildigit.pikpak.FileStat
 
 /**
@@ -145,6 +149,9 @@ fun TrashScreen(
                     }
                 },
                 actions = {
+                    if (!isSelectionMode && showsRefreshButton()) {
+                        TooltipIconButton(Icons.Outlined.Refresh, "刷新", { state.load(refresh = true) }, enabled = !state.isRefreshing)
+                    }
                     if (isSelectionMode) {
                         IconButton(onClick = { state.toggleSelectAll() }) {
                             Icon(Icons.Outlined.SelectAll, contentDescription = "全选")
@@ -263,6 +270,7 @@ fun TrashScreen(
                             }
                         }
                     }
+                    LocalPikoPlatform.current.ListScrollbar(listState, Modifier.align(Alignment.CenterEnd))
                 }
             }
         }

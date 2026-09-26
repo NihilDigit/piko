@@ -55,6 +55,7 @@ import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.readableSidePadding
 import dev.piko.ui.components.FileListSkeleton
 import dev.piko.ui.components.PikoEmptyState
+import dev.piko.ui.platform.LocalPikoPlatform
 import io.github.nihildigit.pikpak.OfflineTask
 import kotlinx.coroutines.launch
 
@@ -216,6 +217,7 @@ fun TransfersScreen(
                             renderItem = renderItem,
                         )
                     }
+                    LocalPikoPlatform.current.ListScrollbar(listState, Modifier.align(Alignment.CenterEnd))
                 }
                 // 骨架与真实列表对齐：同样的两侧留白，头一格让出分段标题那一行
                 TransfersPhase.LOADING -> BoxWithConstraints(modifier = Modifier.fillMaxSize()) {

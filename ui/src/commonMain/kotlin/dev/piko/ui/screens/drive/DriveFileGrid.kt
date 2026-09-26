@@ -65,6 +65,7 @@ import dev.piko.ui.components.MediaTagRow
 import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.menuItemShape
+import dev.piko.ui.platform.LocalPikoPlatform
 import io.github.nihildigit.pikpak.FileStat
 
 /**
@@ -201,6 +202,7 @@ internal fun DriveFileGrid(
                 }
             }
         }
+        LocalPikoPlatform.current.ListScrollbar(gridState, Modifier.align(Alignment.CenterEnd))
     }
 }
 

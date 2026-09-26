@@ -1,5 +1,7 @@
 package dev.piko.ui.platform
 
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.staggeredgrid.LazyStaggeredGridState
 import androidx.compose.material3.ColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.text.font.FontFamily
@@ -70,6 +72,16 @@ interface PikoPlatform {
         systemBarsVisible: Boolean,
         content: @Composable () -> Unit,
     )
+
+    /**
+     * 列表右侧可拖动的滚动条，放在列表所在的 Box 里靠右对齐。鼠标没有甩动，几百项的目录只靠滚轮
+     * 走不到底，也看不出当前位置。Android 不画：触屏靠甩动，系统也没有这个惯例。
+     */
+    @Composable
+    fun ListScrollbar(state: LazyListState, modifier: Modifier)
+
+    @Composable
+    fun ListScrollbar(state: LazyStaggeredGridState, modifier: Modifier)
 }
 
 /** 已下载到本机的文件的外部动作。路径可能是普通路径，也可能是 Android SAF 的 content: URI。 */
