@@ -53,6 +53,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.piko.ui.adaptive.WidthClass
+import dev.piko.ui.adaptive.boundedStaggeredCells
 import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.data.repository.FileCategory
 import dev.piko.data.repository.FileSortOrder
@@ -106,8 +107,12 @@ internal enum class DriveViewMode {
  * 图库的格宽下限：手机上 104dp，432dp 宽排三列，与系统相册相近；宽窗口里 140dp。
  */
 private val ListColumnMinWidth = 360.dp
+// 宽窗口里列表行的宽度范围：再窄名字只剩一行，再宽名字与行尾按钮隔得太远
+private val ListColumnMinWidthWide = 320.dp
+private val ListColumnMaxWidth = 480.dp
 private val PosterColumnMinWidthCompact = 160.dp
 private val PosterColumnMinWidth = 240.dp
+private val PosterColumnMaxWidth = 320.dp
 private val GalleryColumnMinWidthCompact = 104.dp
 private val GalleryColumnMinWidth = 140.dp
 
@@ -237,16 +242,26 @@ internal fun DriveFileGrid(
     }
 }
 
+/**
+ * compact 保持原样：按下限自适应。更宽时列表与海报墙每列另有上限，列数向上取整，见 [boundedStaggeredCells]。
+ */
 @Composable
 private fun gridCells(viewMode: DriveViewMode): StaggeredGridCells {
-    val compact = currentWidthClass() == WidthClass.Compact
-    return StaggeredGridCells.Adaptive(
-        when (viewMode) {
-            DriveViewMode.LIST -> ListColumnMinWidth
-            DriveViewMode.POSTER -> if (compact) PosterColumnMinWidthCompact else PosterColumnMinWidth
-            DriveViewMode.GALLERY -> if (compact) GalleryColumnMinWidthCompact else GalleryColumnMinWidth
-        },
-    )
+    if (currentWidthClass() == WidthClass.Compact) {
+        return StaggeredGridCells.Adaptive(
+            when (viewMode) {
+                DriveViewMode.LIST -> ListColumnMinWidth
+                DriveViewMode.POSTER -> PosterColumnMinWidthCompact
+                DriveViewMode.GALLERY -> GalleryColumnMinWidthCompact
+            },
+        )
+    }
+    return when (viewMode) {
+        DriveViewMode.LIST -> boundedStaggeredCells(ListColumnMinWidthWide, ListColumnMaxWidth)
+        DriveViewMode.POSTER -> boundedStaggeredCells(PosterColumnMinWidth, PosterColumnMaxWidth)
+        // 图库是照片墙，格子密一些正是要的，不设上限
+        DriveViewMode.GALLERY -> StaggeredGridCells.Adaptive(GalleryColumnMinWidth)
+    }
 }
 
 private fun gridHorizontalPadding(viewMode: DriveViewMode): Dp = if (viewMode.isGrid) 16.dp else 0.dp
