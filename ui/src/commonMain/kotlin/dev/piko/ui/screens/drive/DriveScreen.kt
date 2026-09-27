@@ -1,5 +1,9 @@
 package dev.piko.ui.screens.drive
 
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.material.icons.outlined.Tab
 import androidx.compose.material.icons.outlined.Close
@@ -760,7 +764,19 @@ fun DriveScreen(
                     }
                 }
             },
-        panel = { InspectorPane(inspectorTarget, inspectorActions) },
+        panel = {
+            val single = (inspectorTarget as? InspectorTarget.Single)?.file
+            val primary = single?.takeIf { !it.isUploading }?.let { file ->
+                val (icon, label) = when {
+                    file.isFolder -> Icons.AutoMirrored.Outlined.OpenInNew to "打开"
+                    file.isPlayableVideo() -> Icons.Filled.PlayArrow to "播放"
+                    file.isPreviewableImage() && file.thumbnailLink.isNotBlank() -> Icons.Outlined.Image to "查看"
+                    else -> Icons.Outlined.Download to "下载到本地"
+                }
+                SheetAction(icon, label, { callbacks.onOpen(file) })
+            }
+            InspectorPane(inspectorTarget, inspectorActions, primaryAction = primary)
+        },
         main = {
             Scaffold(
                 modifier = Modifier

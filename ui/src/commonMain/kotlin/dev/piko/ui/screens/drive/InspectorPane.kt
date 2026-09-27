@@ -1,5 +1,8 @@
 package dev.piko.ui.screens.drive
 
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Button
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -56,7 +59,13 @@ internal sealed interface InspectorTarget {
  * 以后刮削到的作品信息（海报、简介、季与集的对应、改匹配）放在预览与属性之间，属性表与操作不动。
  */
 @Composable
-internal fun InspectorPane(target: InspectorTarget, actions: List<SheetAction>, modifier: Modifier = Modifier) {
+internal fun InspectorPane(
+    target: InspectorTarget,
+    actions: List<SheetAction>,
+    modifier: Modifier = Modifier,
+    /** 一项时最常做的那件事（播放、打开、下载），放在名字下面，与在列表里点它相同。 */
+    primaryAction: SheetAction? = null,
+) {
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -65,7 +74,7 @@ internal fun InspectorPane(target: InspectorTarget, actions: List<SheetAction>, 
             .padding(bottom = 16.dp),
     ) {
         when (target) {
-            is InspectorTarget.Single -> SingleDetails(target)
+            is InspectorTarget.Single -> SingleDetails(target, primaryAction)
             is InspectorTarget.Selection -> SummaryDetails(title = "已选择 ${target.files.size} 项", files = target.files, hint = null)
             is InspectorTarget.Folder -> SummaryDetails(
                 title = target.name,
@@ -86,7 +95,7 @@ internal fun InspectorPane(target: InspectorTarget, actions: List<SheetAction>, 
 }
 
 @Composable
-private fun SingleDetails(target: InspectorTarget.Single) {
+private fun SingleDetails(target: InspectorTarget.Single, primaryAction: SheetAction?) {
     val file = target.file
     Box(
         modifier = Modifier
@@ -107,6 +116,13 @@ private fun SingleDetails(target: InspectorTarget.Single) {
     }
     if (target.tags.isNotEmpty()) {
         MediaTagRow(tags = target.tags, modifier = Modifier.padding(top = 8.dp))
+    }
+    if (primaryAction != null) {
+        Button(onClick = primaryAction.onClick, modifier = Modifier.fillMaxWidth().padding(top = 16.dp)) {
+            Icon(primaryAction.icon, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+            Spacer(Modifier.width(ButtonDefaults.IconSpacing))
+            Text(primaryAction.label)
+        }
     }
     Spacer(Modifier.height(16.dp))
     val usage = folderUsage(file)
