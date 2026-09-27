@@ -21,6 +21,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.ExpandLess
@@ -32,6 +33,7 @@ import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
@@ -86,6 +88,8 @@ fun ProfileScreen(
     onOpenPane: (Screen) -> Unit,
     selectedPane: Screen?,
     modifier: Modifier = Modifier,
+    /** 宽窗口里「我的」与详情页并排、盖住导航栏时才有：这时它是列表栏，退出两栏由它负责。 */
+    onBackClick: (() -> Unit)? = null,
 ) {
     val services = LocalPikoServices.current
     val platform = LocalPikoPlatform.current
@@ -142,6 +146,13 @@ fun ProfileScreen(
                 },
                 subtitle = accountLabel?.let { label ->
                     { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                },
+                navigationIcon = {
+                    if (onBackClick != null) {
+                        IconButton(onClick = onBackClick) {
+                            Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回")
+                        }
+                    }
                 },
                 scrollBehavior = topBarScrollBehavior,
             )

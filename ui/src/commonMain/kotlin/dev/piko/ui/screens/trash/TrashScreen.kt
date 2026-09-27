@@ -90,7 +90,7 @@ private data class PermanentDeleteRequest(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TrashScreen(
-    onBackClick: () -> Unit,
+    onBackClick: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
@@ -142,7 +142,7 @@ fun TrashScreen(
                         IconButton(onClick = exitSelection) {
                             Icon(Icons.Outlined.Close, contentDescription = "退出多选")
                         }
-                    } else {
+                    } else if (onBackClick != null) {
                         IconButton(onClick = onBackClick) {
                             Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回")
                         }

@@ -15,14 +15,19 @@ import kotlinx.serialization.Serializable
  *   "Every key in the back stack must implement the NavKey interface and be marked @Serializable."
  */
 sealed interface Screen : NavKey {
+    /** 返回栈的栈底：导航栏与三个根页面。其余页面压在它上面，连同导航栏一起盖住。 */
+    @Serializable
+    data object Home : Screen
+
+    /** 宽窗口里与详情页并排的「我的」，即两栏的列表栏。窄窗口不压它，「我的」就是 Home 里的那一页。 */
+    @Serializable
+    data object Profile : Screen
+
     @Serializable
     data object Login : Screen
 
     @Serializable
     data object Files : Screen
-
-    @Serializable
-    data class SubDrive(val folderId: String, val folderName: String) : Screen
 
     @Serializable
     data object Transfers : Screen

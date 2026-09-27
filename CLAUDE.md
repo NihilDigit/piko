@@ -92,7 +92,12 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 布局只看窗口宽度，不看设备：`ui/.../adaptive/WindowWidth.kt` 按 M3 断点给出 compact、medium、
 expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以 Android 平板为准。
 - 导航：`NavigationSuiteScaffold` 在 compact 下是底部导航栏，更宽时换成侧边导航栏。
-- 回收站：compact 下是盖住整窗的压栈页；medium 在导航栏右侧的内容区里；expanded 与「我的」并排成两栏。
+- 返回栈：`PikoMainScaffold` 用 Navigation 3 的 `NavDisplay`，栈底 `Screen.Home` 是导航栏与三个根页面，
+  其余页面压在上面、连同导航栏一起盖住。被盖住的 Home 离开组合，回来时重建，所以根页面的状态要经得起
+  重建（网盘页的目录内容与滚动位置记在仓库里）。新页面加一个 `Screen` 子类、登记进 `NavKeyConfiguration`、
+  在 `entryProvider` 里写一条 entry；切页与收起压栈页用 `resetToHome`，不要 `clear`，栈底必须留着 Home。
+- 「我的」的详情页（星标、历史、分享、回收站、设置）：窄窗口是单页；expanded 由 `ListDetailSceneStrategy`
+  与垫在下面的 `Screen.Profile` 拼成两栏，列表栏 360dp，两栏时详情页不给返回，退出在列表栏的顶栏上。
 - 行长：设置、传输、回收站的行内容收在 840dp 以内居中。列表本身仍铺满窗口（用 `readableSidePadding`
   算 contentPadding），两侧空白处滚轮也能滚。
 - 对话框：目录选择器在 compact 下全屏，更宽时是居中的基本对话框。

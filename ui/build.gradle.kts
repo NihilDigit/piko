@@ -37,6 +37,9 @@ kotlin {
             implementation(libs.cmp.ui.backhandler)
             implementation(libs.cmp.material3.adaptive.navigation.suite)
             implementation(libs.cmp.adaptive)
+            // 返回栈的呈现（NavDisplay）与宽窗口的列表加详情两栏
+            implementation(libs.cmp.navigation3.ui)
+            implementation(libs.cmp.adaptive.navigation3)
             implementation(libs.cmp.material.icons.extended)
             // 导出日志的文件名与抬头要本地时间
             implementation(libs.kotlinx.datetime)
@@ -51,6 +54,8 @@ kotlin {
         // 这里对齐到同一份 BOM，ui 模块编译时看到的就是 app 运行时的那套 API
         androidMain.dependencies {
             implementation(project.dependencies.platform(libs.androidx.compose.bom))
+            implementation(libs.androidx.navigation3.ui)
+            implementation(libs.androidx.adaptive.navigation3)
         }
     }
 }
