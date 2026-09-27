@@ -1,5 +1,6 @@
 package dev.piko.shared.smoke
 
+import androidx.compose.runtime.snapshots.Snapshot
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.TaskRepository
 import dev.piko.shared.state.DriveScreenState
@@ -80,5 +81,27 @@ class TasksAndTrashSmokeTest {
         awaitUntil("回收站移除该文件") { trash.files.isEmpty() }
         assertEquals(false, trash.isSelectionMode)
         assertNull(trash.loadError)
+    }
+
+    /**
+     * 防的是秒传进眼前这个目录后文件不出现、高亮落空：目录栈没变就不会重列，而列目录接口比写入晚
+     * 一会儿才看得到新文件，只列一次多半扑空。
+     */
+    @Test
+    fun `a highlighted file written a moment ago shows up in the folder on screen`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val prefs = MemoryPreferences()
+        val repository = PikoDriveRepository(server.provider(), prefs)
+        val drive = DriveScreenState(repository, prefs, scope)
+        drive.load()
+        awaitUntil("网盘列表加载完成") { !drive.isLoading }
+
+        server.listingLagMs = 500
+        val saved = server.addFile("E01.mkv", hash = "GCID01")
+        drive.highlight(setOf(saved.id))
+        // 测试里没有界面线程替状态类发快照通知，snapshotFlow 要靠这一下才看得到高亮的变化
+        Snapshot.sendApplyNotifications()
+
+        awaitUntil("新文件出现在列表里", timeoutMs = 5_000) { drive.files.any { it.id == saved.id } }
     }
 }

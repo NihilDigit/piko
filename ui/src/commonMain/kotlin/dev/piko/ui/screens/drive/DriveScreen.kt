@@ -126,6 +126,10 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
+
+/** 高亮的条目最多等这么久露面，之后照常开始渐隐。略长于 DriveScreenState 重列的总退避。 */
+private const val HighlightAppearTimeoutMs = 4000L
 
 /**
  * 网盘主界面：目录导航、列表与海报墙两种视图、防窥遮蔽、秒传入口与批量操作。
@@ -316,9 +320,13 @@ fun DriveScreen(
     // 每一项都要问一次「是否选中」，SnapshotStateList 的 contains 是线性查找
     val selectedIdSet by remember { derivedStateOf { state.selectedFileIds.toSet() } }
 
-    // 渐隐单独一个 effect：并进滚动定位那个的话，视图模式到位会把 8 秒重新计一遍
+    // 渐隐单独一个 effect：并进滚动定位那个的话，视图模式到位会把 8 秒重新计一遍。
+    // 从条目出现在列表里起算：刚存进去的文件要等状态类重列几次才露面，从请求起算的话看到的高亮只剩一半
     LaunchedEffect(highlightedFileIds) {
         if (highlightedFileIds.isEmpty()) return@LaunchedEffect
+        withTimeoutOrNull(HighlightAppearTimeoutMs) {
+            snapshotFlow { state.files.any { it.id in highlightedFileIds } }.first { it }
+        }
         delay(8000)
         state.clearHighlight()
     }

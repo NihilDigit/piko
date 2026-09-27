@@ -52,6 +52,7 @@ class FakePikPakServer {
         val hash: String = "",
         val content: ByteArray = ByteArray(0),
         val size: Long = content.size.toLong(),
+        val createdAtMs: Long = System.currentTimeMillis(),
     )
 
     class Task(val id: String, val name: String, phase: String, val parentId: String, val url: String) {
@@ -87,6 +88,9 @@ class FakePikPakServer {
 
     /** 为真时密码登录被服务端拒绝。 */
     @Volatile var rejectSignIn = false
+
+    /** 新建的条目要过这么久才出现在列目录的结果里。线上约 0.1 到 0.8 秒，详情接口则立即可见。 */
+    @Volatile var listingLagMs = 0L
 
     /** 每个 CDN 分段响应前的等待，用来让下载停在半途。 */
     @Volatile var cdnDelayMs = 0L
@@ -273,11 +277,12 @@ class FakePikPakServer {
         val filters = request.url.parameters["filters"].orEmpty()
         val wantsTrash = filters.replace(" ", "").contains("\"trashed\":{\"eq\":true}")
         val parentId = request.url.parameters["parent_id"].orEmpty()
+        val visibleBefore = System.currentTimeMillis() - listingLagMs
         val listed = synchronized(lock) {
             if (wantsTrash) {
                 nodes.values.filter { it.trashed }
             } else {
-                nodes.values.filter { it.parentId == parentId && !it.trashed }
+                nodes.values.filter { it.parentId == parentId && !it.trashed && it.createdAtMs <= visibleBefore }
             }
         }
         val body = buildJsonObject {

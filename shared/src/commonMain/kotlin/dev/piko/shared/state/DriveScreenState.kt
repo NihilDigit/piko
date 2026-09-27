@@ -33,6 +33,9 @@ import kotlinx.coroutines.withContext
 /** 文件夹行在可见区域里停留这么久才预取其内容，见 [DriveScreenState.onFolderVisible]。 */
 private const val PREFETCH_DWELL_MILLIS = 400L
 
+/** 高亮的条目不在列表里时，每次静默重列之前等多久。合计约 2.7 秒，盖过实测的列表滞后。 */
+private val HIGHLIGHT_RETRY_DELAYS = listOf(300L, 600L, 800L, 1000L)
+
 private const val TAG = "Drive"
 
 /**
@@ -266,6 +269,11 @@ class DriveScreenState(
         scope.launch {
             driveRepo.pendingHighlights.collect { ids -> if (ids.isNotEmpty()) highlightedFileIds = driveRepo.takePendingHighlight() }
         }
+        scope.launch {
+            snapshotFlow { highlightedFileIds to activeFolderId }.collectLatest { (ids, folderId) ->
+                if (ids.isNotEmpty()) catchUpWithHighlight(ids, folderId)
+            }
+        }
         // 要定位的条目若在收起的分区里、或被启发式折叠藏着，列表里就没有它可滚动：展开它所在的分区并显示全部
         scope.launch {
             snapshotFlow { highlightedFileIds to currentAnalysis }.collect { (ids, structure) ->
@@ -323,17 +331,20 @@ class DriveScreenState(
      *
      * 新的加载取消旧的：进入 A 后未等返回就进了 B，A 晚到的结果不能盖掉 B。
      */
-    fun load(refresh: Boolean = false) {
+    fun load(refresh: Boolean = false) = load(useCache = !refresh, showRefreshing = refresh)
+
+    /** [useCache] 与 [showRefreshing] 都为 false 是静默重列：不用缓存，也不出任何加载指示，见 [catchUpWithHighlight]。 */
+    private fun load(useCache: Boolean, showRefreshing: Boolean) {
         val folderId = activeFolder.id
-        val cached = if (refresh) null else driveRepo.cachedFiles(folderId, sortOrder)
+        val cached = if (useCache) driveRepo.cachedFiles(folderId, sortOrder) else null
         when {
             cached != null -> {
                 files = cached
                 loadedFolderId = folderId
                 isLoading = false
             }
-            refresh -> isRefreshing = true
-            else -> isLoading = true
+            showRefreshing -> isRefreshing = true
+            useCache -> isLoading = true
         }
         loadJob?.cancel()
         loadJob = scope.launch {
@@ -514,6 +525,25 @@ class DriveScreenState(
 
     fun clearHighlight() {
         highlightedFileIds = emptySet()
+    }
+
+    /**
+     * 要高亮的条目常是刚写进网盘的（秒传、恢复），列表却还没有它们：存进眼前这个目录时栈没变，
+     * 不会重新加载；存进别的目录时那一次加载先给缓存、再列一次，而列表接口比写入晚 0.1 到 0.8 秒
+     * 才看得到新文件（2026-09-27 实测），那一次多半扑空。这里等手头的加载结束，仍缺就静默重列，
+     * 按 [HIGHLIGHT_RETRY_DELAYS] 退避，齐了或换了目录（collectLatest 取消这里）即停。
+     * 不改成保存后固定等一会儿再列：延迟因次而异，等短了照样扑空，等长了每次都白等。
+     * 条目在子目录里（保留目录结构的秒传）时永远等不齐，重试有上限，只多花几次请求。
+     */
+    private suspend fun catchUpWithHighlight(ids: Set<String>, folderId: String) {
+        for (wait in HIGHLIGHT_RETRY_DELAYS) {
+            loadJob?.join()
+            if (activeFolderId != folderId) return
+            val present = files.mapTo(HashSet()) { it.id }
+            if (ids.all { it in present }) return
+            delay(wait)
+            load(useCache = false, showRefreshing = false)
+        }
     }
 
     fun createFolder(name: String) {
