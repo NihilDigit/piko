@@ -94,7 +94,8 @@ expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以
 - 导航：`NavigationSuiteScaffold` 在 compact 下是底部导航栏，更宽时换成侧边导航栏。窗口到 1200dp（M3 large）
   换成一整条侧边栏（`MainSidebar`）：上面是三个去处，下面是网盘的快捷访问（`QuickAccessSections` /
   `QuickAccessState`：星标文件夹与最近去过的文件夹，最近不列眼前这个）。只亮一处：人在星标文件夹里时亮它，否则亮当前页。
-  不要在导航栏旁边再并排一栏导航。
+  不要在导航栏旁边再并排一栏导航。同样只在这一档，内容下面有状态栏（`ui/.../workbench/StatusBar`）：左边是进行中的传输
+  （点开活动面板，看进度不必切到传输页）与最近一次能撤销的改动，右边是设置同步与空间用量。
 - 返回栈：`PikoMainScaffold` 用 Navigation 3 的 `NavDisplay`，栈底 `Screen.Home` 是导航栏与三个根页面，
   其余页面压在上面、连同导航栏一起盖住。被盖住的 Home 离开组合，回来时重建，所以根页面的状态要经得起
   重建（网盘页的目录内容与滚动位置记在仓库里）。新页面加一个 `Screen` 子类、登记进 `NavKeyConfiguration`、

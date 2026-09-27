@@ -1,5 +1,8 @@
 package dev.piko.shared.data
 
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import dev.piko.shared.log.logFailure
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -46,11 +49,17 @@ class DriveChangeJournal internal constructor(
     private val done = ArrayDeque<Change>()
     private val lock = Mutex()
 
+    private val _latest = MutableStateFlow<Change?>(null)
+
+    /** 眼下 Ctrl+Z 会撤掉的那一次；没有可撤销的为 null。状态栏据此给出「撤销」。 */
+    val latest: StateFlow<Change?> = _latest.asStateFlow()
+
     fun record(change: Change) {
         scope.launch {
             lock.withLock {
                 done.addLast(change)
                 while (done.size > LIMIT) done.removeFirst()
+                _latest.value = change
             }
             _events.emit(Event(change.summary, change))
         }
@@ -60,7 +69,7 @@ class DriveChangeJournal internal constructor(
     fun undoLast(): Boolean {
         if (done.isEmpty()) return false
         scope.launch {
-            val change = lock.withLock { done.removeLastOrNull() } ?: return@launch
+            val change = lock.withLock { done.removeLastOrNull().also { _latest.value = done.lastOrNull() } } ?: return@launch
             revert(change)
         }
         return true
@@ -69,7 +78,7 @@ class DriveChangeJournal internal constructor(
     /** 撤销 [change]。它已经撤过、或被挤出记录时什么也不做。 */
     fun undo(change: Change) {
         scope.launch {
-            val removed = lock.withLock { done.remove(change) }
+            val removed = lock.withLock { done.remove(change).also { _latest.value = done.lastOrNull() } }
             if (removed) revert(change)
         }
     }

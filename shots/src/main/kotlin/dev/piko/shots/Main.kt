@@ -84,6 +84,8 @@ private val standardSet = listOf(
     // 命令面板：没输入时最近的文件夹与去处在前；输入后模糊匹配文件夹与命令
     Shot("palette-1440x900", steps = listOf(Step.Click("Frieren"), Step.Wait("SPs"), Step.Key("Alt+Left"), Step.Pump(800), Step.Key("Ctrl+K"), Step.Pump(800))),
     Shot("palette-query-1440x900", steps = listOf(Step.Key("Ctrl+K"), Step.Pump(600), Step.Type("视图"), Step.Pump(600))),
+    // 大窗口底部的状态栏，以及从命令面板打开的活动面板
+    Shot("activity-panel-1440x900", steps = listOf(Step.Pump(800), Step.Key("Ctrl+K"), Step.Pump(500), Step.Type("活动"), Step.Key("Enter"), Step.Pump(1_000))),
     // 键盘：方向键走到一项，描边标出焦点
     Shot("keyboard-focus-1440x900", steps = listOf(Step.Key("Down"), Step.Key("Down"), Step.Key("Right"), Step.Key("Down"))),
     // 信息流：宽窗口的侧栏、窄窗口的全屏、弹出到独立窗口后主窗口的样子

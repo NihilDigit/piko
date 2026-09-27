@@ -1,5 +1,8 @@
 package dev.piko.ui
 
+import androidx.compose.foundation.layout.fillMaxWidth
+import dev.piko.ui.workbench.ActivityPanel
+import dev.piko.ui.workbench.StatusBar
 import dev.piko.shared.sync.PikoSettingsSync
 import dev.piko.shared.data.PikoFileSortOrder
 import dev.piko.ui.theme.ThemeMode
@@ -359,6 +362,8 @@ fun PikoMainScaffold(
     // 头一回打开还没订阅过，取眼前的文件夹；此后是上次刷的那个，重启后也接着
     val folderStack by services.driveRepository.folderStackFlow.collectAsStateWithLifecycle()
     val quickAccess = remember { QuickAccessState(services.driveRepository, coroutineScope) }
+    // 大窗口底部的活动面板，见 StatusBar
+    var activityOpen by rememberSaveable { mutableStateOf(false) }
     // 头一次 open 完成前会话里是空的，此时组合 ClipFeedScreen 会闪一下「没有可播放的视频」
     var feedOpened by remember { mutableStateOf(false) }
     LaunchedEffect(feedShown && !feedPoppedOut) {
@@ -557,7 +562,20 @@ fun PikoMainScaffold(
                                     currentTab = MainTab.FILES
                                 },
                             )
-                            Box(Modifier.weight(1f).fillMaxHeight()) { mainContent() }
+                            // 内容下面是状态栏，点它左边的传输摘要在两者之间展开活动面板
+                            Column(Modifier.weight(1f).fillMaxHeight()) {
+                                Box(Modifier.weight(1f).fillMaxWidth()) { mainContent() }
+                                AnimatedVisibility(visible = activityOpen) {
+                                    ActivityPanel(
+                                        onOpenTransfers = {
+                                            activityOpen = false
+                                            openTransfers()
+                                        },
+                                        onClose = { activityOpen = false },
+                                    )
+                                }
+                                StatusBar(activityOpen = activityOpen, onActivityToggle = { activityOpen = !activityOpen })
+                            }
                         }
                     }
                 } else {
@@ -661,6 +679,9 @@ fun PikoMainScaffold(
             currentTab = MainTab.FILES
             resetToHome()
             setFeedShown(!feedShown)
+        })
+        add(PaletteItem(if (activityOpen) "收起活动面板" else "打开活动面板", Icons.Outlined.SyncAlt, "操作", keywords = "activity transfers progress 进度") {
+            activityOpen = !activityOpen
         })
         add(PaletteItem("立即同步设置", Icons.Outlined.CloudSync, "操作", keywords = "sync settings") { coroutineScope.launch { services.settingsSync.syncNow() } })
         ThemeMode.entries.forEach { mode ->
