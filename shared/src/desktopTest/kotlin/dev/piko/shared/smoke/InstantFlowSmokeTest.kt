@@ -8,6 +8,7 @@ import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.PreviewTempFolder
 import dev.piko.shared.state.InstantBatchRowStatus
 import dev.piko.shared.state.InstantSaveOutcome
+import dev.piko.shared.state.InstantSaveRecords
 import dev.piko.shared.state.InstantSheetState
 import dev.piko.shared.state.SaveRoute
 import kotlinx.coroutines.CoroutineScope
@@ -45,9 +46,10 @@ class InstantFlowSmokeTest {
         val driveRepo = PikoDriveRepository(provider, prefs)
         val tracker = OfflinePackTracker(instantRepo, driveRepo, prefs)
         val previewFolder = PreviewTempFolder(driveRepo, instantRepo, backgroundScope)
+        val saveRecords = InstantSaveRecords(provider, null, backgroundScope)
 
         fun sheet(scope: CoroutineScope, magnet: String) =
-            InstantSheetState(instantRepo, driveRepo, prefs, previewFolder, tracker, scope, magnet)
+            InstantSheetState(instantRepo, driveRepo, prefs, previewFolder, tracker, saveRecords, scope, magnet)
 
         /** 网盘页停在 [folder] 里，与用户点进去之后的栈相同。 */
         fun openInDrive(folder: FakePikPakServer.Node) {
@@ -86,6 +88,7 @@ class InstantFlowSmokeTest {
         assertEquals(target.id, task.parentId)
         assertEquals(0, server.instantCreates.get(), "整包离线不能先秒传任何文件")
         assertTrue(task.id in rig.prefs.offlinePacks, "跟踪记录要落盘，重启后才能接着清理")
+        assertEquals(emptyList(), rig.saveRecords.records.value, "离线在传输页里以任务出现，不另记秒传")
 
         server.completeTask(task.id, "Show S01", season.map { it.first })
         awaitUntil("清理与改名完成", timeoutMs = 15_000) {
@@ -127,6 +130,10 @@ class InstantFlowSmokeTest {
         assertEquals("Show S01", saved.target.name)
         assertEquals(setOf("E01.mkv", "E02.mkv", "sample/sample.mkv"), server.tree(saved.target.id).toSet())
         assertEquals(emptyList(), server.tasksSnapshot())
+        // 文件散在新文件夹的子目录里，传输页的记录要定位到文件夹本身
+        val record = rig.saveRecords.records.value.single()
+        assertEquals(saved.target.id, record.locateId)
+        assertEquals(3, record.fileCount)
     }
 
     /**
@@ -166,6 +173,7 @@ class InstantFlowSmokeTest {
         assertEquals(listOf(previewId), saved.createdIds)
         assertEquals(state.target?.id, server.node(previewId)?.parentId)
         assertEquals(2, server.instantCreates.get(), "预览过的文件保存时移动过去，不再秒传")
+        assertEquals(previewId, rig.saveRecords.records.value.single().locateId, "传输页的记录指向保存下来的那一份")
 
         sessionScope.cancel()
         awaitUntil("Piko-Temp 被删除") { server.node(tempFolder.id) == null }

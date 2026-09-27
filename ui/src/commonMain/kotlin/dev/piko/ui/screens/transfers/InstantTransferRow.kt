@@ -1,0 +1,87 @@
+package dev.piko.ui.screens.transfers
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
+import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import dev.piko.shared.state.InstantSaveRecord
+import dev.piko.ui.components.FileListItem
+import dev.piko.ui.components.ItemDetailsSheet
+import dev.piko.ui.components.ListLeadingIcon
+import dev.piko.ui.components.ListLeadingMedia
+import dev.piko.ui.components.ListMoreButton
+import dev.piko.ui.components.MetaRow
+import dev.piko.ui.components.SheetAction
+import dev.piko.ui.components.toReadableSize
+import dev.piko.ui.theme.LocalStatusColors
+
+private fun InstantSaveRecord.details(): List<String> = buildList {
+    // 一个视频连同字幕时文件数大于 1，只存一个文件时不必再说「1 个文件」
+    if (fileCount > 1) add("$fileCount 个文件")
+    add(totalBytes.toReadableSize())
+}
+
+/** 秒传的列表项，版式与上传项一致。秒传当场完成，只有「已完成」这一种状态；点按跳到网盘里的文件。 */
+@Composable
+internal fun InstantTransferRow(
+    record: InstantSaveRecord,
+    onOpen: () -> Unit,
+    onMoreClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    FileListItem(
+        headline = record.name,
+        leading = { ListLeadingMedia(thumbnail = null, fallback = { ListLeadingIcon(Icons.Outlined.Bolt) }, isSpoilerBlurred = false) },
+        onClick = onOpen,
+        onMoreClick = onMoreClick,
+        modifier = modifier,
+        headlineMaxLines = 2,
+        supporting = {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "秒传",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                )
+                Text(text = "已保存", color = LocalStatusColors.current.success, maxLines = 1)
+                MetaRow(parts = record.details(), modifier = Modifier.weight(1f, fill = false))
+            }
+        },
+        trailing = { ListMoreButton(onClick = onMoreClick) },
+    )
+}
+
+/** 秒传项的详情面板：完整名称、保存位置与操作。 */
+@Composable
+internal fun InstantTransferSheet(
+    record: InstantSaveRecord,
+    onOpen: () -> Unit,
+    onRemove: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    ItemDetailsSheet(
+        title = record.name,
+        headerIcon = { ListLeadingIcon(Icons.Outlined.Bolt) },
+        actions = listOf(
+            SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中查看", onOpen),
+            SheetAction(Icons.Outlined.Delete, "移除记录", onRemove, destructive = true),
+        ),
+        onDismiss = onDismiss,
+        metaParts = listOf("秒传", "已保存") + record.details(),
+        extraLines = {
+            Text(text = "保存到 ${record.targetName}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        },
+    )
+}

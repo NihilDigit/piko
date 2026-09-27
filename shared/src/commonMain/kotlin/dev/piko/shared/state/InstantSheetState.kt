@@ -98,12 +98,13 @@ internal class InstantSharedContext {
  *
  * 流程：粘上磁力链自动解析（防抖），按文件名解析器组织成「作品 → 分区 → 条目」并预选正片，
  * 确定保存目标（网盘页的当前目录，见 [followDriveFolder]），然后按 [planSave] 定的路线秒传或整包离线。
+ * 秒传成功的另记一笔 [InstantSaveRecords]，传输页据此列出。
  *
  * 视频行可以预览：秒传进 Piko-Temp 再播放，同一会话内不重复秒传，保存时直接移过去。
  * 会话结束（作用域取消）时，用过 Piko-Temp 就把它整个删掉。
  *
- * 这里只保存、不导航：结果经 [outcomes] 交给调用方，由它通过 DriveScreenState 切到
- * 目标目录，顺带清掉搜索与选中。在这里直接改仓库的目录栈会绕过那一步。
+ * 这里只保存、不导航：结果经 [outcomes] 交给调用方。秒传由它通过 DriveScreenState 切到
+ * 目标目录，顺带清掉搜索与选中，在这里直接改仓库的目录栈会绕过那一步；离线由它切到传输页。
  *
  * 解析失败与目标失效是长驻的说明文字，用状态表达；保存结果是一次性事件，用事件流。
  *
@@ -117,6 +118,7 @@ class InstantSheetState private constructor(
     private val preferences: PikoUserPreferences,
     private val previewFolder: PreviewTempFolder,
     private val packTracker: OfflinePackTracker,
+    private val saveRecords: InstantSaveRecords,
     private val scope: CoroutineScope,
     initialMagnet: String,
     private val shared: InstantSharedContext,
@@ -129,9 +131,13 @@ class InstantSheetState private constructor(
         preferences: PikoUserPreferences,
         previewFolder: PreviewTempFolder,
         packTracker: OfflinePackTracker,
+        saveRecords: InstantSaveRecords,
         scope: CoroutineScope,
         initialMagnet: String = "",
-    ) : this(instantRepo, driveRepo, preferences, previewFolder, packTracker, scope, initialMagnet, InstantSharedContext(), isRoot = true)
+    ) : this(
+        instantRepo, driveRepo, preferences, previewFolder, packTracker, saveRecords, scope, initialMagnet,
+        InstantSharedContext(), isRoot = true,
+    )
 
     var input by mutableStateOf(initialMagnet)
         private set
@@ -371,7 +377,7 @@ class InstantSheetState private constructor(
     }
 
     private fun newBatchRow(link: PastedLink, rowScope: CoroutineScope) = InstantSheetState(
-        instantRepo, driveRepo, preferences, previewFolder, packTracker, rowScope, link.uri, shared, isRoot = false,
+        instantRepo, driveRepo, preferences, previewFolder, packTracker, saveRecords, rowScope, link.uri, shared, isRoot = false,
     )
 
     /** 列表里的行删光了，回到空的输入框。 */
@@ -506,7 +512,10 @@ class InstantSheetState private constructor(
                 }
                 val folder = PikoPathBreadcrumb(folderId, name)
                 instantSave(folder, toSave, keepStructure = true)
-                    .onSuccess { _outcomes.emit(InstantSaveOutcome.InstantSaved(it, folder)) }
+                    .onSuccess { ids ->
+                        saveRecords.add(name, ids.size, toSave.sumOf { it.file.size }, targetBread.name, locateId = folderId)
+                        _outcomes.emit(InstantSaveOutcome.InstantSaved(ids, folder))
+                    }
             } finally {
                 isSaving = false
             }
@@ -690,7 +699,17 @@ class InstantSheetState private constructor(
             PikoLog.i(TAG, "云端没有这个文件的内容，改交离线任务")
             return submitWhole(target).map { null }
         }
-        return instant.reportSaveFailure()
+        return instant.onSuccess { ids -> recordSingleEntry(target, toSave, ids) }.reportSaveFailure()
+    }
+
+    /**
+     * 秒传路线只存一项：一个视频连同它的字幕。记录以其中最大的那个命名，定位也指向它；
+     * [ids] 与 [toSave] 里带 gcid 的文件按顺序一一对应，见 InstantMagnetRepository.instantSave。
+     */
+    private fun recordSingleEntry(target: PikoPathBreadcrumb, toSave: List<InstantFileItem>, ids: List<String>) {
+        val saved = toSave.filter { it.file.gcid != null }.zip(ids)
+        val (main, mainId) = saved.maxByOrNull { (item, _) -> item.file.size } ?: return
+        saveRecords.add(main.file.name, saved.size, saved.sumOf { (item, _) -> item.file.size }, target.name, locateId = mainId)
     }
 
     private fun <T> Result<T>.reportSaveFailure(): Result<T> =

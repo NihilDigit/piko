@@ -27,7 +27,7 @@ import kotlin.time.Clock
 import kotlin.time.Duration.Companion.days
 import kotlin.time.Instant
 
-/** 传输列表中的一项：本地下载、上传或云端离线任务。 */
+/** 传输列表中的一项：本地下载、上传、云端离线任务或秒传。 */
 sealed interface TransferItem {
     /** 列表 key。两类任务的 id 来自不同命名空间，加前缀防撞。 */
     val key: String
@@ -59,6 +59,12 @@ sealed interface TransferItem {
 
         val progress: Int get() = if (task?.phase == TaskPhase.RUNNING) task.progress else job.progress
     }
+
+    /** 秒传：当场完成，只出现在「已完成」里。 */
+    data class Instant(val record: InstantSaveRecord) : TransferItem {
+        override val key: String get() = "instant:${record.id}"
+        override val createdAtMs: Long get() = record.createdAtMs
+    }
 }
 
 /**
@@ -76,7 +82,8 @@ class TransfersState(
     private val scope: CoroutineScope,
     private val driveRepo: PikoDriveRepository,
     private val uploads: PikoUploadCoordinator,
-    /** 上传任务按账号记，只列当前账号的。 */
+    private val instantSaves: InstantSaveRecords,
+    /** 上传任务与秒传记录按账号记，只列当前账号的。 */
     private val account: String,
 ) {
     private val cloud = OfflineTasksState(taskRepo, scope)
@@ -86,6 +93,8 @@ class TransfersState(
     private var uploadTasks by mutableStateOf(uploads.tasks.value.values.filter { it.account == account })
 
     private var packJobs by mutableStateOf(packTracker.jobs.value)
+
+    private var instantRecords by mutableStateOf(instantSaves.records.value.filter { it.account == account })
 
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
 
@@ -133,6 +142,7 @@ class TransfersState(
                 task.phase == TaskPhase.COMPLETE && finishedAt != null && finishedAt >= windowStartMs
             },
             packFilter = { it.stage == OfflinePackStage.DONE && it.finishedAtMs >= windowStartMs },
+            instantFilter = { it.createdAtMs >= windowStartMs },
         )
     }
 
@@ -152,7 +162,7 @@ class TransfersState(
             when (item) {
                 is TransferItem.Cloud -> item.task.fileId
                 is TransferItem.Pack -> item.job.outputId
-                is TransferItem.Local, is TransferItem.Upload -> null
+                is TransferItem.Local, is TransferItem.Upload, is TransferItem.Instant -> null
             }?.takeIf { it.isNotEmpty() }
         }
     }
@@ -170,6 +180,9 @@ class TransfersState(
         }
         scope.launch {
             uploads.tasks.collect { tasks -> uploadTasks = tasks.values.filter { it.account == account } }
+        }
+        scope.launch {
+            instantSaves.records.collect { records -> instantRecords = records.filter { it.account == account } }
         }
         scope.launch {
             cloud.messages.collect { _messages.emit(it) }
@@ -213,6 +226,9 @@ class TransfersState(
     /** 未完成的一并放弃网盘里上传中的文件，已完成的只删记录。 */
     fun removeUpload(taskId: String) = uploads.remove(taskId)
 
+    /** 只删秒传记录，文件留在网盘里。 */
+    fun removeInstant(recordId: String) = instantSaves.remove(recordId)
+
     /** 以原链接重新提交，旧记录随之删除。任务缺少 sourceUrl 时视图应隐藏此操作。 */
     fun resubmitCloud(task: DriveTask) = cloud.resubmit(task)
 
@@ -244,6 +260,7 @@ class TransfersState(
         uploadFilter: (UploadTask) -> Boolean,
         cloudFilter: (DriveTask) -> Boolean,
         packFilter: (OfflinePackJob) -> Boolean,
+        instantFilter: (InstantSaveRecord) -> Boolean = { false },
     ): List<TransferItem> {
         val localItems = localTasks.filter(localFilter).map { TransferItem.Local(it) } +
             uploadTasks.filter(uploadFilter).map { TransferItem.Upload(it) }
@@ -252,7 +269,8 @@ class TransfersState(
         val cloudItems = cloud.tasks.filter { it.id !in packIds && cloudFilter(it) }.map { TransferItem.Cloud(it) }
         val tasksById = cloud.tasks.associateBy { it.id }
         val packItems = packJobs.filter(packFilter).map { TransferItem.Pack(it, tasksById[it.taskId]) }
-        return (localItems + cloudItems + packItems).sortedByDescending { it.createdAtMs }
+        val instantItems = instantRecords.filter(instantFilter).map { TransferItem.Instant(it) }
+        return (localItems + cloudItems + packItems + instantItems).sortedByDescending { it.createdAtMs }
     }
 
     private fun nowMs(): Long = Clock.System.now().toEpochMilliseconds()

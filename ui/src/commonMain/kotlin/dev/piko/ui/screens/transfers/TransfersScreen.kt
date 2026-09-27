@@ -86,6 +86,7 @@ fun TransfersScreen(
             scope,
             services.driveRepository,
             services.uploadManager,
+            services.instantSaveRecords,
             account,
         )
     }
@@ -170,6 +171,12 @@ fun TransfersScreen(
                 onMoreClick = { detailsKey = item.key },
                 modifier = itemModifier,
             )
+            is TransferItem.Instant -> InstantTransferRow(
+                record = item.record,
+                onOpen = { openCloudFileById(item.record.locateId, item.record.name) },
+                onMoreClick = { detailsKey = item.key },
+                modifier = itemModifier,
+            )
         }
     }
 
@@ -235,7 +242,7 @@ fun TransfersScreen(
                 ) {
                     PikoEmptyState(
                         title = "暂无传输任务",
-                        description = "下载、上传与云端离线任务将显示于此",
+                        description = "下载、上传、离线与秒传将显示于此",
                         icon = Icons.Outlined.SyncAlt,
                         actionText = "新建离线任务",
                         onActionClick = onNavigateToInstant,
@@ -289,6 +296,12 @@ fun TransfersScreen(
             onOpen = { openCloudFileById(detailsItem.job.outputId, detailsItem.job.folderName) },
             onRetry = { state.retryPack(detailsItem.job.taskId) },
             onDiscard = { state.discardPack(detailsItem.job.taskId) },
+            onDismiss = closeDetails,
+        )
+        is TransferItem.Instant -> InstantTransferSheet(
+            record = detailsItem.record,
+            onOpen = { openCloudFileById(detailsItem.record.locateId, detailsItem.record.name) },
+            onRemove = { state.removeInstant(detailsItem.record.id) },
             onDismiss = closeDetails,
         )
     }

@@ -170,6 +170,19 @@ fun PikoMainScaffold(
         }
     }
 
+    // 上传、下载与离线任务提交后切到传输页看进度，同快捷键切页一样收起压栈页。
+    // 秒传不来这里：文件当场就在网盘里，网盘页自己定位过去
+    fun openTransfers() {
+        currentTab = MainTab.TRANSFERS
+        backStack.clear()
+    }
+
+    // 订阅调度器而不是在各上传入口各跳一次：应用外进来的上传在主界面之外确认，
+    // 而且要等任务真的排进队列，所选文件读不出来时只该有一条失败提示
+    LaunchedEffect(services.uploadManager) {
+        services.uploadManager.enqueued.collect { openTransfers() }
+    }
+
     BackHandler(enabled = profilePaneInline) { closeTop() }
 
     // 若当前不在文件主页且未打开覆盖页面，按下返回键优先回到文件页
@@ -287,7 +300,11 @@ fun PikoMainScaffold(
             ) { tab ->
                 when (tab) {
                     MainTab.FILES -> {
-                        FilesScreen(onNavigateToVideoPlayer = ::playVideo, scrollToTopRequests = filesScrollToTop)
+                        FilesScreen(
+                            onNavigateToVideoPlayer = ::playVideo,
+                            scrollToTopRequests = filesScrollToTop,
+                            onOpenTransfers = ::openTransfers,
+                        )
                     }
                     MainTab.TRANSFERS -> {
                         TransfersScreen(
@@ -374,6 +391,7 @@ fun PikoMainScaffold(
                                 backStack.add(Screen.SubDrive(id, name))
                             },
                             onNavigateToVideoPlayer = ::playVideo,
+                            onOpenTransfers = ::openTransfers,
                         )
                     }
                     is Screen.Trash -> TrashScreen(onBackClick = ::closeTop)

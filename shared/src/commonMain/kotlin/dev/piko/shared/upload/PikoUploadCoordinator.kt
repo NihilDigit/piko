@@ -76,6 +76,14 @@ class PikoUploadCoordinator(
     /** 入队时的失败，如所选文件夹读不出来。单个任务的失败体现在任务状态上。 */
     val messages: SharedFlow<String> = _messages.asSharedFlow()
 
+    private val _enqueued = MutableSharedFlow<Int>(extraBufferCapacity = 1)
+
+    /**
+     * 一次 [enqueue] 真的排进了任务，值是新增的任务数。界面据此切到传输页。发在任务入表之后而不是
+     * 调用 enqueue 时：所选文件一个也读不出来的话只有一条失败提示，不该把人带到一个没有新任务的页面。
+     */
+    val enqueued: SharedFlow<Int> = _enqueued.asSharedFlow()
+
     private val _pendingRequest = MutableStateFlow<UploadSelection?>(null)
 
     /**
@@ -132,6 +140,7 @@ class PikoUploadCoordinator(
             }
             if (added.isEmpty()) return@launch
             _tasks.update { current -> current + added.associateBy { it.taskId } }
+            _enqueued.tryEmit(added.size)
             onUploadStarted?.invoke()
         }
     }

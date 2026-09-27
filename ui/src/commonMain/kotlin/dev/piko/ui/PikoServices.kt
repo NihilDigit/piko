@@ -16,6 +16,7 @@ import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.state.ArchiveExtractSession
 import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.DuplicateSession
+import dev.piko.shared.state.InstantSaveRecords
 import dev.piko.shared.state.InstantSession
 import dev.piko.shared.state.InstantSheetState
 import dev.piko.shared.upload.PikoUploadCoordinator
@@ -56,6 +57,8 @@ class PikoServices(
 
     val uploadManager = PikoUploadCoordinator(clientManager, preferences, uploadSources, driveRepository, backgroundScope, onUploadStarted)
 
+    val instantSaveRecords = InstantSaveRecords(clientManager, cacheStore, backgroundScope)
+
     val instantSession: InstantSession by lazy {
         InstantSession(
             newScope = { CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate) },
@@ -66,6 +69,7 @@ class PikoServices(
                     preferences,
                     previewTempFolder,
                     offlinePacks,
+                    instantSaveRecords,
                     scope,
                     magnet,
                 )

@@ -11,12 +11,14 @@ fun FilesScreen(
     onNavigateToFolder: (folderId: String, folderName: String) -> Unit = { _, _ -> },
     /** 见 DriveScreen 的同名参数。 */
     scrollToTopRequests: Int = 0,
+    onOpenTransfers: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     DriveScreen(
         onNavigateToFolder = onNavigateToFolder,
         onNavigateToVideoPlayer = onNavigateToVideoPlayer,
         scrollToTopRequests = scrollToTopRequests,
+        onOpenTransfers = onOpenTransfers,
         modifier = modifier,
     )
 }

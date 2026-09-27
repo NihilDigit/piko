@@ -154,6 +154,8 @@ fun DriveScreen(
      * 而布尔第二下没有变化。
      */
     scrollToTopRequests: Int = 0,
+    /** 下载或离线任务已提交，切到传输页看进度。上传由主界面直接订阅调度器，不经这里。 */
+    onOpenTransfers: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val driveRepo = LocalPikoServices.current.driveRepository
@@ -268,21 +270,21 @@ fun DriveScreen(
         }
     }
 
-    // 保存结果在这里收而不在面板里：面板可能正收起着
+    // 保存结果在这里收而不在面板里：面板可能正收起着。
+    // 秒传的文件当场就在网盘里，留在网盘页定位过去；离线要等下完，网盘里暂时没有东西可看，去传输页。
+    // 批量里有秒传也有离线时按离线处理：秒传的那几项在传输页里另有记录，点开即可定位
+    val openTransfers by rememberUpdatedState(onOpenTransfers)
     val instantState = instantSession.state
     LaunchedEffect(instantState) {
         instantState?.outcomes?.collect { outcome ->
             instantSession.end()
-            state.navigateToFolder(outcome.target)
             when (outcome) {
                 is InstantSaveOutcome.InstantSaved -> {
+                    state.navigateToFolder(outcome.target)
                     state.highlight(outcome.createdIds.toSet())
                     snackbarHostState.showSnackbar("已保存 ${outcome.createdIds.size} 个文件", withDismissAction = true)
                 }
-                is InstantSaveOutcome.OfflineTaskCreated -> snackbarHostState.showSnackbar(
-                    if (outcome.submittedCount > 1) "已提交 ${outcome.submittedCount} 项" else "已加入离线任务",
-                    withDismissAction = true,
-                )
+                is InstantSaveOutcome.OfflineTaskCreated -> openTransfers()
             }
         }
     }
@@ -340,21 +342,22 @@ fun DriveScreen(
         }
     }
 
-    // 从网盘页发起的上传就传到眼前这个目录，不再问目标；应用外进来的由 UploadRequestHost 问
+    // 从网盘页发起的上传就传到眼前这个目录，不再问目标；应用外进来的由 UploadRequestHost 问。
+    // 排进队列后切到传输页由主界面订阅调度器完成，这里只提交
     val uploadManager = LocalPikoServices.current.uploadManager
     LaunchedEffect(uploadManager) {
         uploadManager.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
     }
     fun upload(selection: UploadSelection) {
         uploadManager.enqueue(selection, activeFolderId, activeFolder.name)
-        scope.launch { snackbarHostState.showSnackbar("已加入上传", withDismissAction = true) }
     }
     val pickFiles = platform.uploadPicker.rememberFilesLauncher { upload(UploadSelection(files = it)) }
     val pickFolder = platform.uploadPicker.rememberFolderLauncher { upload(UploadSelection(folders = listOf(it))) }
 
+    // 下载的成品只在传输页里看得到，与上传、离线一样提交后切过去
     fun enqueueDownload(file: FileStat) {
         downloadManager.enqueue(file)
-        scope.launch { snackbarHostState.showSnackbar("已加入下载", withDismissAction = true) }
+        openTransfers()
     }
 
     // 回调对象只建一次，列表项拿到的引用不变；外部传入的导航回调经 rememberUpdatedState 取最新值
@@ -888,9 +891,7 @@ fun DriveScreen(
                     lengthBytes = lengthBytes,
                 )
                 segmentTargetFile = null
-                scope.launch {
-                    snackbarHostState.showSnackbar("已加入段落下载", withDismissAction = true)
-                }
+                openTransfers()
             },
         )
     }
