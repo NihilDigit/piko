@@ -73,6 +73,7 @@ import dev.piko.ui.components.MediaTagRow
 import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.menuItemShape
+import dev.piko.ui.components.selectionClicks
 import dev.piko.ui.platform.LocalPikoPlatform
 import io.github.nihildigit.pikpak.FileStat
 
@@ -125,6 +126,10 @@ internal class DriveItemCallbacks(
     val onMore: (FileStat) -> Unit,
     val onLongPress: (FileStat) -> Unit,
     val onSelect: (FileStat, Boolean) -> Unit,
+    /** Ctrl（⌘）点选，见 [selectionClicks]。 */
+    val onToggleSelect: (FileStat) -> Unit,
+    /** Shift 点选。 */
+    val onExtendSelect: (FileStat) -> Unit,
     /** 右键菜单的内容，与操作面板相同。 */
     val contextActions: (FileStat) -> List<SheetAction>,
     val onToggleSection: (blockId: String) -> Unit,
@@ -386,7 +391,13 @@ private fun DriveCell(
     callbacks: DriveItemCallbacks,
     modifier: Modifier,
 ) {
-    ContextMenuArea(actions = { callbacks.contextActions(file) }, modifier = modifier) {
+    ContextMenuArea(
+        actions = { callbacks.contextActions(file) },
+        modifier = modifier.selectionClicks(
+            onToggle = { callbacks.onToggleSelect(file) },
+            onExtend = { callbacks.onExtendSelect(file) },
+        ),
+    ) {
         when (viewMode) {
             DriveViewMode.GALLERY -> GalleryTile(
                 file = file,

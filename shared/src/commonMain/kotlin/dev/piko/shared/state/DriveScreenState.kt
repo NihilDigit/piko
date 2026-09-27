@@ -499,6 +499,7 @@ class DriveScreenState(
     fun exitSelection() {
         isSelectionMode = false
         selectedFileIds.clear()
+        selectionAnchor = null
     }
 
     fun setSelected(fileId: String, selected: Boolean) {
@@ -507,6 +508,35 @@ class DriveScreenState(
         } else {
             selectedFileIds.remove(fileId)
         }
+    }
+
+    /** Shift 点选的起点：最近一次单独点选的那一项。换目录、退出多选后作废。 */
+    private var selectionAnchor: String? = null
+
+    /** 桌面的 Ctrl（⌘）点选：切换这一项，不在多选时先进入多选。它成为 Shift 点选的起点。 */
+    fun toggleSelected(fileId: String) {
+        isSelectionMode = true
+        setSelected(fileId, fileId !in selectedFileIds)
+        selectionAnchor = fileId
+        if (selectedFileIds.isEmpty()) exitSelection()
+    }
+
+    /**
+     * 桌面的 Shift 点选：把起点到 [fileId] 之间（按眼前的顺序，含两端）全部选上，起点不动，
+     * 连续 Shift 点选以同一个起点伸缩。没有起点时只选这一项，与文件管理器相同。
+     */
+    fun selectRange(fileId: String) {
+        val order = displayedFiles.map { it.id }
+        val anchor = selectionAnchor?.takeIf { it in order }
+        isSelectionMode = true
+        if (anchor == null) {
+            setSelected(fileId, true)
+            selectionAnchor = fileId
+            return
+        }
+        val from = order.indexOf(anchor)
+        val to = order.indexOf(fileId).takeIf { it >= 0 } ?: return
+        order.subList(minOf(from, to), maxOf(from, to) + 1).forEach { setSelected(it, true) }
     }
 
     fun toggleSelectAll() {

@@ -389,6 +389,8 @@ fun DriveScreen(
             onMore = { actionTargetFile = it },
             onLongPress = { state.enterSelection(it.id) },
             onSelect = { file, selected -> state.setSelected(file.id, selected) },
+            onToggleSelect = { state.toggleSelected(it.id) },
+            onExtendSelect = { state.selectRange(it.id) },
             contextActions = { file ->
                 fileActions(
                     file = file,

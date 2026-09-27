@@ -101,8 +101,14 @@ expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以
 - 行长：设置、传输、回收站的行内容收在 840dp 以内居中。列表本身仍铺满窗口（用 `readableSidePadding`
   算 contentPadding），两侧空白处滚轮也能滚。
 - 对话框：目录选择器在 compact 下全屏，更宽时是居中的基本对话框。
+- 面板：一律经 `PikoSheet`，expanded 是从末端滑入的模态侧边面板，其余是只有展开一档的底部 sheet；
+  不要直接用 `ModalBottomSheet`（播放器的面板另有横屏侧栏，除外）。
+- 网格：宽窗口的列宽要有上限时用 `adaptive/BoundedCells.kt` 的 `boundedStaggeredCells`，compact 保持原样。
 
-鼠标与键盘：条目右键弹出与操作面板相同的菜单（`ContextMenuArea`，动作列表 `fileActions` 两处共用）；
+鼠标与键盘：条目右键弹出与操作面板相同的菜单（`ContextMenuArea`）。每页把一项的操作写成一个
+`actionsFor`，面板与菜单都读它（网盘页是 `fileActions`）；新列表照做。网盘页按住主修饰键点选是加选，
+Shift 点选是连选（`selectionClicks`，状态在 `DriveScreenState.toggleSelected` / `selectRange`）。
+横排的内容挂 `verticalWheelScrollsRow`，鼠标的竖滚轮才滚得动它；
 图标按钮用 `TooltipIconButton`，快捷键写在提示里；Esc 经 `BackHandler` 触发返回；网盘页快捷键见
 `DriveScreen` 的 `handleShortcut`。新加的界面同时照顾触屏与鼠标：下拉刷新之类只有触屏能用的操作，
 宽窗口要另给按钮。快捷键的主修饰键取 `PikoPlatform.shortcutModifier`（mac 上是 ⌘），不要写死 Ctrl。
