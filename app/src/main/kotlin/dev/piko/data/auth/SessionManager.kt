@@ -94,6 +94,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val HEURISTIC_FILTER_ENABLED = booleanPreferencesKey("heuristic_filter_enabled")
         val BUNDLE_SUBTITLES_ENABLED = booleanPreferencesKey("bundle_subtitles_enabled")
         val AUTO_CLEAN_NAMES_ENABLED = booleanPreferencesKey("auto_clean_names_enabled")
+        val SETTINGS_SYNC_ENABLED = booleanPreferencesKey("settings_sync_enabled")
         val SYNC_PLAY_HISTORY_ENABLED = booleanPreferencesKey("sync_play_history_enabled")
         val NAME_PARSING_ENABLED = booleanPreferencesKey("name_parsing_enabled")
         val WATERFALL_VIEW_ENABLED = booleanPreferencesKey("waterfall_view_enabled")
@@ -198,6 +199,16 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun setAutoCleanNamesEnabled(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.AUTO_CLEAN_NAMES_ENABLED] = enabled
+        }
+    }
+
+    override val settingsSyncFlow: Flow<Boolean> = preference { preferences ->
+        preferences[PreferencesKeys.SETTINGS_SYNC_ENABLED] ?: true
+    }
+
+    override suspend fun setSettingsSyncEnabled(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.SETTINGS_SYNC_ENABLED] = enabled
         }
     }
 

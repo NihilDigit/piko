@@ -51,6 +51,10 @@ interface PikoUserPreferences {
     val autoCleanNamesFlow: Flow<Boolean>
     suspend fun setAutoCleanNamesEnabled(enabled: Boolean)
 
+    /** 把部分设置同步到网盘根目录的 .piko 文件夹，换设备登录时带过去，默认开。见 PikoSettingsSync。 */
+    val settingsSyncFlow: Flow<Boolean>
+    suspend fun setSettingsSyncEnabled(enabled: Boolean)
+
     /** 把播放进度上报到 PikPak 的播放历史，与官方客户端共用；没有本机记录时也从那里续播。 */
     val syncPlayHistoryFlow: Flow<Boolean>
     suspend fun setSyncPlayHistoryEnabled(enabled: Boolean)

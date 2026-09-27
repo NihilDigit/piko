@@ -1,5 +1,6 @@
 package dev.piko.shared.state
 
+import dev.piko.shared.sync.PikoSettingsSync
 import dev.piko.shared.data.DriveChangeJournal
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -334,13 +335,17 @@ class DriveScreenState(
      */
     fun load(refresh: Boolean = false) = load(useCache = !refresh, showRefreshing = refresh)
 
+    // 根目录里放同步设置的 .piko 文件夹不列出来：它是 Piko 自己的，点进去也没有要看的
+    private fun withoutSyncFolder(folderId: String, listing: List<FileStat>): List<FileStat> =
+        if (folderId.isNotEmpty()) listing else listing.filterNot { it.isFolder && it.name == PikoSettingsSync.FOLDER_NAME }
+
     /** [useCache] 与 [showRefreshing] 都为 false 是静默重列：不用缓存，也不出任何加载指示，见 [catchUpWithHighlight]。 */
     private fun load(useCache: Boolean, showRefreshing: Boolean) {
         val folderId = activeFolder.id
         val cached = if (useCache) driveRepo.cachedFiles(folderId, sortOrder) else null
         when {
             cached != null -> {
-                files = cached
+                files = withoutSyncFolder(folderId, cached)
                 loadedFolderId = folderId
                 isLoading = false
             }
@@ -362,7 +367,7 @@ class DriveScreenState(
             }
             listing
                 .onSuccess {
-                    files = it
+                    files = withoutSyncFolder(folderId, it)
                     loadedFolderId = folderId
                     loadError = null
                 }

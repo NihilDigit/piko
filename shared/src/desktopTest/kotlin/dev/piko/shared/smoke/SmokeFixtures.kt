@@ -40,6 +40,8 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun setBundleSubtitlesEnabled(enabled: Boolean) = Unit
     override val autoCleanNamesFlow: Flow<Boolean> = MutableStateFlow(false)
     override suspend fun setAutoCleanNamesEnabled(enabled: Boolean) = Unit
+    override val settingsSyncFlow: Flow<Boolean> = MutableStateFlow(false)
+    override suspend fun setSettingsSyncEnabled(enabled: Boolean) = Unit
     override val syncPlayHistoryFlow: Flow<Boolean> = MutableStateFlow(false)
     override suspend fun setSyncPlayHistoryEnabled(enabled: Boolean) = Unit
     override val themeModeFlow: Flow<String?> = MutableStateFlow(null)

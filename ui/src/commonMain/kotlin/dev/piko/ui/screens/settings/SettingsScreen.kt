@@ -1,5 +1,9 @@
 package dev.piko.ui.screens.settings
 
+import kotlin.time.Instant
+import dev.piko.shared.sync.PikoSettingsSync
+import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material.icons.outlined.CloudSync
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -147,6 +151,10 @@ fun SettingsScreen(
     val isBundleSubtitlesEnabled by sessionManager.bundleSubtitlesFlow.collectAsStateWithLifecycle(initialValue = true)
     val isAutoCleanNamesEnabled by sessionManager.autoCleanNamesFlow.collectAsStateWithLifecycle(initialValue = false)
     val isSyncPlayHistoryEnabled by sessionManager.syncPlayHistoryFlow.collectAsStateWithLifecycle(initialValue = true)
+    val isSettingsSyncEnabled by sessionManager.settingsSyncFlow.collectAsStateWithLifecycle(initialValue = true)
+    val settingsSync = LocalPikoServices.current.settingsSync
+    val syncStatus by settingsSync.status.collectAsStateWithLifecycle()
+    val lastSynced by settingsSync.lastSynced.collectAsStateWithLifecycle()
     val isConcurrentAccelerationEnabled by sessionManager.concurrentAccelerationFlow.collectAsStateWithLifecycle(initialValue = true)
     val downloadDirPath by sessionManager.downloadDirPathFlow.collectAsStateWithLifecycle(initialValue = "")
     val scope = rememberCoroutineScope()
@@ -366,6 +374,28 @@ fun SettingsScreen(
                         )
                     }
 
+                    SettingsGroup(SettingsSection.Sync.title, Modifier.trackSection(SettingsSection.Sync)) {
+                        val rows = if (isSettingsSyncEnabled) 2 else 1
+                        SettingsSwitchRow(
+                            index = 0, count = rows,
+                            icon = Icons.Outlined.CloudSync,
+                            title = "同步设置",
+                            supporting = "外观、网盘与播放的设置和解压成功过的密码存在网盘的 .piko 文件夹，换设备登录时带过去",
+                            checked = isSettingsSyncEnabled,
+                            onCheckedChange = { scope.launch { sessionManager.setSettingsSyncEnabled(it) } },
+                        )
+                        if (isSettingsSyncEnabled) {
+                            SettingsNavigationRow(
+                                index = 1, count = rows,
+                                icon = Icons.Outlined.Sync,
+                                title = "立即同步",
+                                supporting = syncStatusText(syncStatus, lastSynced),
+                                onClick = { scope.launch { settingsSync.syncNow() } },
+                                trailingIcon = Icons.Outlined.Sync,
+                            )
+                        }
+                    }
+
                     SettingsGroup(SettingsSection.About.title, Modifier.trackSection(SettingsSection.About)) {
                         AboutCard(
                             version = platform.appVersion,
@@ -555,7 +585,17 @@ private enum class SettingsSection(val title: String) {
     Playback("播放"),
     Download("下载"),
     Network("网络"),
+    Sync("同步"),
     About("关于"),
+}
+
+private fun syncStatusText(status: PikoSettingsSync.Status, lastSynced: Long?): String = when (status) {
+    PikoSettingsSync.Status.SYNCING -> "同步中…"
+    PikoSettingsSync.Status.FAILED -> "上次同步失败，改动设置或重新打开时会再试"
+    else -> lastSynced?.let {
+        val time = Instant.fromEpochMilliseconds(it).toLocalDateTime(TimeZone.currentSystemDefault())
+        "上次同步于 ${time.hour.toString().padStart(2, '0')}:${time.minute.toString().padStart(2, '0')}"
+    } ?: "登录后自动同步"
 }
 
 private const val REPOSITORY_URL = "https://github.com/NihilDigit/piko"

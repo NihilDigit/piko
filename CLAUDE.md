@@ -152,6 +152,9 @@ Compose 桌面端悬停移动事件的 `previousPosition` 恒等于 `position`�
 
 **加一个偏好项要同时改三处**：接口、
 `SessionManager`（Android，DataStore）、`DesktopPikoPreferences`（Desktop，`DesktopSettingsStore`）。
+要跨设备同步的，再在 `shared/.../shared/sync/PikoSettingsSync.kt` 的 `SyncedSettings` 里加一行；窗口大小、下载目录、
+代理这类每台设备各自的不要加。同步文件在网盘根目录的 `.piko/settings-<时间戳>.json`（`DriveSettingsStore`），
+按项带修改时刻合并，这台设备从没同步过的项算最旧；`.piko` 不在网盘页里列出。
 
 ### 日志
 

@@ -1,5 +1,6 @@
 package dev.piko.ui
 
+import dev.piko.shared.sync.PikoSettingsSync
 import androidx.compose.runtime.staticCompositionLocalOf
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.repository.DriveRepository
@@ -55,6 +56,10 @@ class PikoServices(
     val offlinePacks = OfflinePackTracker(instantMagnetRepository, driveRepository, preferences)
 
     val moveHistory = MoveHistory(preferences, backgroundScope)
+
+    /** 部分设置同步到网盘的 .piko 文件夹，登录后自己开始，见 PikoSettingsSync。 */
+    val settingsSync = PikoSettingsSync(clientManager, driveRepository, preferences, cacheStore, backgroundScope, preferences.settingsSyncFlow)
+        .also { it.start() }
 
     val uploadManager = PikoUploadCoordinator(clientManager, preferences, uploadSources, driveRepository, backgroundScope, onUploadStarted)
 

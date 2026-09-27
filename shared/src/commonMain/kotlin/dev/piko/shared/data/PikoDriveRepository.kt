@@ -1,5 +1,10 @@
 package dev.piko.shared.data
 
+import kotlinx.io.Buffer
+import io.ktor.utils.io.toByteArray
+import io.github.nihildigit.pikpak.streamRangeFromUrl
+import io.github.nihildigit.pikpak.upload
+import io.github.nihildigit.pikpak.PikPakHash
 import dev.piko.data.repository.NaturalOrder
 import dev.piko.data.auth.PikoUserPreferences
 import io.github.nihildigit.pikpak.EventPage
@@ -433,6 +438,29 @@ open class PikoDriveRepository(
      */
     suspend fun originalImageUrl(fileId: String): String? =
         getFileDetail(fileId).getOrNull()?.downloadUrl
+
+    /**
+     * 把一小段内容传成网盘里的文件，返回新文件的 ID。只给配置同步这类几 KB 的东西用：整段在内存里，
+     * 算 gcid 与上传各读一遍。同名文件不会被覆盖，调用方自己删旧的。
+     */
+    suspend fun uploadBytes(parentId: String, name: String, bytes: ByteArray): Result<String> = withContext(Dispatchers.Default) {
+        runSuspendCatching {
+            val size = bytes.size.toLong()
+            val gcid = PikPakHash.fromSource(Buffer().apply { write(bytes) }, size)
+            client.upload(parentId, name, size, gcid, { Buffer().apply { write(bytes) } }, {}).fileId
+        }
+    }
+
+    /** 读出一个小文件的全部内容，与 [uploadBytes] 配对。 */
+    suspend fun readBytes(fileId: String): Result<ByteArray> = withContext(Dispatchers.Default) {
+        runSuspendCatching {
+            val detail = client.getFile(fileId)
+            val url = detail.downloadUrl ?: error("没有下载链接")
+            val size = detail.size.toLongOrNull() ?: error("大小未知")
+            if (size == 0L) return@runSuspendCatching ByteArray(0)
+            client.streamRangeFromUrl(url, 0L, size - 1, {}) { stream -> stream.channel.toByteArray() }
+        }
+    }
 
     suspend fun createFolder(parentId: String, name: String): Result<String> = withContext(Dispatchers.Default) {
         runSuspendCatching { client.createFolder(parentId, name) }

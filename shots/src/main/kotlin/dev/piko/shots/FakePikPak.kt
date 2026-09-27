@@ -63,6 +63,18 @@ class FakePikPak {
 
     private fun add(node: Node) = synchronized(nodes) { nodes[node.id] = node; node }
 
+    private fun createFile(body: String): String {
+        val json = Json.parseToJsonElement(body).jsonObject
+        val name = json["name"]?.jsonPrimitive?.content.orEmpty()
+        val parentId = json["parent_id"]?.jsonPrimitive?.content.orEmpty()
+        val isFolder = json["kind"]?.jsonPrimitive?.content == "drive#folder"
+        val node = if (isFolder) addFolder(name, parentId) else addFile(name, 0, parentId)
+        return buildJsonObject {
+            if (!isFolder) put("upload_type", "UPLOAD_TYPE_RESUMABLE")
+            put("file", buildJsonObject { putNode(node) })
+        }.toString()
+    }
+
     private fun batch(op: String, body: String): String {
         val json = Json.parseToJsonElement(body).jsonObject
         val ids = json["ids"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()
@@ -122,6 +134,8 @@ class FakePikPak {
             path.contains("/drive/v1/files/") && method == "GET" -> synchronized(nodes) { nodes[path.substringAfterLast('/')] }
                 ?.let { 200 to buildJsonObject { putNode(it) }.toString() }
                 ?: (404 to """{"error_code":3,"error":"file_not_found"}""")
+            // 新建文件夹与小文件上传（设置同步要用）：上传一律当作秒传完成
+            path.endsWith("/drive/v1/files") && method == "POST" -> 200 to createFile(request.bodyText())
             // 移动、移入回收站与恢复：拖放与撤销要用
             path.contains("/drive/v1/files:") && method == "POST" -> 200 to batch(path.substringAfterLast(':'), request.bodyText())
             else -> 404 to """{"error":"not_found"}"""

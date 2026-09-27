@@ -21,6 +21,7 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
     private val nameParsing = MutableStateFlow(settings.get(KEY_NAME_PARSING, "true").toBoolean())
     private val bundleSubtitles = MutableStateFlow(settings.get(KEY_BUNDLE_SUBTITLES, "true").toBoolean())
     private val autoCleanNames = MutableStateFlow(settings.get(KEY_AUTO_CLEAN_NAMES, "false").toBoolean())
+    private val settingsSync = MutableStateFlow(settings.get(KEY_SETTINGS_SYNC, "true").toBoolean())
     private val syncPlayHistory = MutableStateFlow(settings.get(KEY_SYNC_PLAY_HISTORY, "true").toBoolean())
     private val themeMode = MutableStateFlow(settings.get(KEY_THEME_MODE).ifEmpty { null })
     private val themeSeed = MutableStateFlow(settings.get(KEY_THEME_SEED).ifEmpty { null })
@@ -115,6 +116,12 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
     override suspend fun setAutoCleanNamesEnabled(enabled: Boolean) {
         settings.set(KEY_AUTO_CLEAN_NAMES, enabled.toString())
         autoCleanNames.value = enabled
+    }
+
+    override val settingsSyncFlow: Flow<Boolean> = settingsSync.asStateFlow()
+    override suspend fun setSettingsSyncEnabled(enabled: Boolean) {
+        settings.set(KEY_SETTINGS_SYNC, enabled.toString())
+        settingsSync.value = enabled
     }
 
     override val syncPlayHistoryFlow: Flow<Boolean> = syncPlayHistory.asStateFlow()
@@ -268,6 +275,7 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         const val KEY_HEURISTIC = "ui.heuristicFilter"
         const val KEY_BUNDLE_SUBTITLES = "ui.bundleSubtitles"
         const val KEY_AUTO_CLEAN_NAMES = "drive.autoCleanNames"
+        const val KEY_SETTINGS_SYNC = "sync.settings"
         const val KEY_SYNC_PLAY_HISTORY = "player.syncPlayHistory"
         const val KEY_NAME_PARSING = "ui.nameParsing"
         const val KEY_GRID_VIEW = "ui.gridView"
