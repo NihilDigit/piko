@@ -222,6 +222,7 @@ internal class WindowsCaption(private val window: Window) {
      * 要计算的那个矩形。
      */
     private fun onNcCalcSize(hwnd: MemorySegment, wParam: Long, lParam: Long): Long {
+        if (!hasCaption()) return callFrame(hwnd, WM_NCCALCSIZE, wParam, lParam)
         val proposed = MemorySegment.ofAddress(lParam).reinterpret(16)
         val originalLeft = proposed.get(JAVA_INT, 0)
         val originalTop = proposed.get(JAVA_INT, 4)
@@ -235,6 +236,7 @@ internal class WindowsCaption(private val window: Window) {
     /** 屏幕坐标下的命中测试，框架窗口与画布共用。 */
     private fun hitTest(lParam: Long): Int {
         val current = layout ?: return HTCLIENT
+        if (!hasCaption()) return HTCLIENT
         val screenX = lParam.toInt().toShort().toInt()
         val screenY = (lParam.toInt() shr 16).toShort().toInt()
 
@@ -304,8 +306,16 @@ internal class WindowsCaption(private val window: Window) {
         User32.trackMouseEvent.invokeWithArguments(trackMouseEvent)
     }
 
-    private fun hasThickFrame(): Boolean =
-        (User32.getWindowLong.invokeWithArguments(frame, GWL_STYLE) as Int) and WS_THICKFRAME != 0
+    private fun style(): Int = User32.getWindowLong.invokeWithArguments(frame, GWL_STYLE) as Int
+
+    /**
+     * 无边框全屏（[WindowsFullscreen]）去掉了标题栏样式，这时两处改动都让开：客户区照系统算，
+     * 命中一律答客户区。布局随后也会被 clearLayout 清掉，但改样式与重组之间有一段空档，
+     * 那时按旧布局答 HTCAPTION，全屏画面顶端一条就成了拖动区。WS_CAPTION 是两个位的组合，要两位都在。
+     */
+    private fun hasCaption(): Boolean = style() and WS_CAPTION == WS_CAPTION
+
+    private fun hasThickFrame(): Boolean = style() and WS_THICKFRAME != 0
 
     /** 标题栏被收进客户区之前，系统在顶端留给缩放的厚度，按窗口当前所在显示器的 DPI 取。 */
     private fun resizeBorder(): Int {
@@ -370,6 +380,7 @@ internal class WindowsCaption(private val window: Window) {
         const val GWLP_WNDPROC = -4
         const val GWL_STYLE = -16
         const val WS_THICKFRAME = 0x00040000
+        const val WS_CAPTION = 0x00C00000
         const val GW_HWNDNEXT = 2
         const val GW_CHILD = 5
 
