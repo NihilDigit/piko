@@ -1,5 +1,6 @@
 package dev.piko.shared.state
 
+import dev.piko.shared.data.DriveChangeJournal
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -617,11 +618,16 @@ class DriveScreenState(
     fun rename(fileId: String, newName: String) {
         if (newName.isBlank()) return
         val trimmed = newName.trim()
+        val oldName = knownFile(fileId)?.name
         scope.launch {
             driveRepo.rename(fileId, trimmed)
                 .onSuccess {
                     load()
-                    _messages.tryEmit("已重命名")
+                    if (oldName != null && oldName != trimmed) {
+                        driveRepo.changes.record(DriveChangeJournal.Change.Rename(listOf(DriveChangeJournal.Renamed(fileId, oldName, trimmed)), "已重命名"))
+                    } else {
+                        _messages.tryEmit("已重命名")
+                    }
                 }
                 .logFailure(TAG, "重命名失败")
                 .onFailure { _messages.tryEmit("重命名失败") }
@@ -648,7 +654,9 @@ class DriveScreenState(
                 .onSuccess {
                     exitSelection()
                     load()
-                    _messages.tryEmit(if (ids.size == 1) "已移入回收站" else "已将 ${ids.size} 项移入回收站")
+                    driveRepo.changes.record(
+                        DriveChangeJournal.Change.Trash(ids, if (ids.size == 1) "已移入回收站" else "已将 ${ids.size} 项移入回收站"),
+                    )
                 }
                 .logFailure(TAG, "移入回收站失败")
                 .onFailure { _messages.tryEmit("移入回收站失败") }
@@ -656,18 +664,33 @@ class DriveScreenState(
     }
 
     fun move(ids: List<String>, targetId: String, targetName: String) {
-        if (ids.isEmpty()) return
+        // 已经在目标里的不动：拖回原处、把文件夹拖到它自己上面，服务端要么白做一次、要么拒绝
+        val moving = ids.filter { it != targetId && knownFile(it)?.parentId != targetId }
+        if (moving.isEmpty()) return
+        val from = moving.associateWith { knownFile(it)?.parentId ?: activeFolderId }
         scope.launch {
-            driveRepo.move(ids, targetId)
+            driveRepo.move(moving, targetId)
                 .onSuccess {
                     exitSelection()
                     load()
-                    _messages.tryEmit("已移至 $targetName")
+                    val summary = if (moving.size == 1) "已移至 $targetName" else "已将 ${moving.size} 项移至 $targetName"
+                    driveRepo.changes.record(DriveChangeJournal.Change.Move(from, targetId, summary))
                 }
                 .logFailure(TAG, "移动失败")
                 .onFailure { _messages.tryEmit("移动失败") }
         }
     }
+
+    /** 撤销最近一次移动、移入回收站或重命名，见 [DriveChangeJournal]。 */
+    fun undoLast(): Boolean = driveRepo.changes.undoLast()
+
+    fun undo(change: DriveChangeJournal.Change) = driveRepo.changes.undo(change)
+
+    /** 做完一次可撤销的改动或撤销之后的提示，界面把可撤销的配上「撤销」按钮。 */
+    val changeEvents get() = driveRepo.changes.events
+
+    // 眼前列表里的那一项：全盘搜索的结果不在当前目录的列表里，两处都找
+    private fun knownFile(id: String): FileStat? = displayedFiles.firstOrNull { it.id == id } ?: files.firstOrNull { it.id == id }
 
     fun copy(ids: List<String>, targetId: String, targetName: String) {
         if (ids.isEmpty()) return

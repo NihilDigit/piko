@@ -1,5 +1,6 @@
 package dev.piko.ui.screens.drive
 
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
@@ -195,6 +196,19 @@ fun DriveScreen(
 
     LaunchedEffect(state) {
         state.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
+    }
+    // 做完一次可撤销的改动，提示上带「撤销」，停留长一些好来得及点
+    LaunchedEffect(state) {
+        state.changeEvents.collect { event ->
+            val change = event.change
+            val result = snackbarHostState.showSnackbar(
+                message = event.message,
+                actionLabel = if (change != null) "撤销" else null,
+                withDismissAction = true,
+                duration = if (change != null) SnackbarDuration.Long else SnackbarDuration.Short,
+            )
+            if (change != null && result == SnackbarResult.ActionPerformed) state.undo(change)
+        }
     }
 
     val archiveSession = LocalPikoServices.current.archiveExtractSession
@@ -519,6 +533,8 @@ fun DriveScreen(
             primary && event.key == Key.F -> isSearchOpen = true
             event.key == Key.F5 || (primary && event.key == Key.R) -> state.load(refresh = true)
             primary && event.key == Key.A -> state.toggleSelectAll()
+            // 撤销最近一次移动、移入回收站或重命名；没有可撤销的就不吃掉这个键
+            primary && event.key == Key.Z && !event.isShiftPressed -> if (!state.undoLast()) return false
             trashKey && state.isSelectionMode && state.selectedFileIds.isNotEmpty() ->
                 state.moveToTrash(state.selectedFileIds.toList())
             // 文件管理器的惯例：选中一项是改名，几项是批量重命名

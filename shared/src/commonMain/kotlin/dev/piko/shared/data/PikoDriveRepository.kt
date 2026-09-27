@@ -117,6 +117,9 @@ open class PikoDriveRepository(
     /** 最近去过的文件夹（整条路径），新的在前，见 [RecentFolders]。 */
     val recentFoldersFlow: StateFlow<List<List<PikoPathBreadcrumb>>> get() = recentFolders.flow
 
+    /** 做过的改动，能撤销的记在这里，见 [DriveChangeJournal]。 */
+    val changes = DriveChangeJournal(this, backgroundScope)
+
     private val _starredChanges = MutableStateFlow(0)
 
     /** 经 [setStarred] 改过星标、登录或换号时加一，列星标的地方据此重新取。 */
