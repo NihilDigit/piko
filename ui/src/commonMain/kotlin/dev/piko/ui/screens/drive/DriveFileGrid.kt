@@ -1,5 +1,11 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.ui.components.LocalFileDrag
+import androidx.compose.ui.draw.alpha
+import dev.piko.shared.data.PikoPathBreadcrumb
+import dev.piko.ui.components.fileDropTarget
+import dev.piko.ui.components.fileDragSource
+import dev.piko.ui.components.FileDragPayload
 import dev.piko.ui.components.marqueeSelection
 import dev.piko.ui.components.ListLeadingSize
 import androidx.compose.ui.semantics.Role
@@ -129,6 +135,8 @@ private val PosterColumnMinWidth = 240.dp
 private val GalleryColumnMinWidthCompact = 104.dp
 private val GalleryColumnMinWidth = 140.dp
 
+private const val DraggedAlpha = 0.4f
+
 private const val KEY_HEADER = "drive_header"
 private const val KEY_FOLD = "drive_fold"
 
@@ -142,6 +150,8 @@ internal class DriveItemCallbacks(
     val onToggleSelect: (FileStat) -> Unit,
     /** Shift 点选。 */
     val onExtendSelect: (FileStat) -> Unit,
+    /** 按住这一项拖动时拖出去的那一批，见 [fileDragSource]。 */
+    val dragPayload: (FileStat) -> FileDragPayload?,
     /** 框选，见 [marqueeSelection]。 */
     val onBoxSelect: (base: Set<String>, boxed: Set<String>) -> Unit,
     /** 鼠标单击了网格的空白处。 */
@@ -424,9 +434,13 @@ private fun DriveCell(
     }
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
+    // 正被拖着的条目淡下去，看得出拖走的是哪几项
+    val drag = LocalFileDrag.current
+    val beingDragged = drag?.payload?.ids?.contains(file.id) == true
     ContextMenuArea(
         actions = { callbacks.contextActions(file) },
         modifier = modifier
+            .alpha(if (beingDragged) DraggedAlpha else 1f)
             .hoverable(interaction)
             .focusRequester(focusRequester)
             .onFocusChanged { callbacks.onFocusChanged(file, it.hasFocus) }
@@ -443,9 +457,12 @@ private fun DriveCell(
                 }
             }
             .selectionClicks(
-            onToggle = { callbacks.onToggleSelect(file) },
-            onExtend = { callbacks.onExtendSelect(file) },
-        ),
+                onToggle = { callbacks.onToggleSelect(file) },
+                onExtend = { callbacks.onExtendSelect(file) },
+            )
+            .fileDragSource { callbacks.dragPayload(file) }
+            // 文件夹接得住拖来的条目
+            .then(if (file.isFolder) Modifier.fileDropTarget("cell:${file.id}", PikoPathBreadcrumb(file.id, file.name)) else Modifier),
     ) {
         Box {
             when (viewMode) {

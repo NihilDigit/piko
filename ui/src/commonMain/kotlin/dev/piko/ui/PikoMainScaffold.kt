@@ -1,5 +1,9 @@
 package dev.piko.ui
 
+import dev.piko.ui.components.LocalFileDrag
+import dev.piko.ui.components.FileDragState
+import dev.piko.ui.components.FileDragOverlay
+import androidx.compose.runtime.CompositionLocalProvider
 import dev.piko.ui.screens.drive.highlightsStarred
 import dev.piko.ui.screens.drive.SidebarWidth
 import dev.piko.ui.screens.drive.SidebarItem
@@ -587,87 +591,93 @@ fun PikoMainScaffold(
     val paneBack: (() -> Unit)? = if (twoPane) null else ::popBack
     val selectedPane = topScreen?.takeIf { it in ProfilePanes }
 
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .trackInputModality()
-            .focusRequester(shortcutFocus)
-            .focusable()
-            .onKeyEvent { event ->
-                if (event.type != KeyEventType.KeyDown || !shortcutModifier.isPressed(event)) return@onKeyEvent false
-                val tab = when (event.key) {
-                    Key.One -> MainTab.FILES
-                    Key.Two -> MainTab.TRANSFERS
-                    Key.Three -> MainTab.SETTINGS
-                    else -> return@onKeyEvent false
-                }
-                currentTab = tab
-                resetToHome()
-                true
-            },
-    ) {
-        NavDisplay(
-            backStack = backStack,
-            onBack = ::popBack,
-            sceneStrategies = listOf(listDetailStrategy),
-            // 压栈与返回：新页从右侧滑入五分之一屏并淡入，旧页反向让开。走满整屏是 lateral 的做法，
-            // 规范明说别拿它做层级导航
-            transitionSpec = {
-                (
-                    slideInHorizontally(PikoMotion.ForwardEnterSlide) { it / PikoMotion.ForwardSlideFraction } +
-                        fadeIn(PikoMotion.ForwardEnterFade)
-                    ) togetherWith (
-                    slideOutHorizontally(PikoMotion.ForwardExitSlide) { -it / PikoMotion.ForwardSlideFraction } +
-                        fadeOut(PikoMotion.ForwardExitFade)
-                    )
-            },
-            popTransitionSpec = {
-                (
-                    slideInHorizontally(PikoMotion.ForwardEnterSlide) { -it / PikoMotion.ForwardSlideFraction } +
-                        fadeIn(PikoMotion.ForwardEnterFade)
-                    ) togetherWith (
-                    slideOutHorizontally(PikoMotion.ForwardExitSlide) { it / PikoMotion.ForwardSlideFraction } +
-                        fadeOut(PikoMotion.ForwardExitFade)
-                    )
-            },
-            predictivePopTransitionSpec = { _ ->
-                (
-                    slideInHorizontally(PikoMotion.ForwardEnterSlide) { -it / PikoMotion.ForwardSlideFraction } +
-                        fadeIn(PikoMotion.ForwardEnterFade)
-                    ) togetherWith (
-                    slideOutHorizontally(PikoMotion.ForwardExitSlide) { it / PikoMotion.ForwardSlideFraction } +
-                        fadeOut(PikoMotion.ForwardExitFade)
-                    )
-            },
-            entryProvider = entryProvider {
-                entry<Screen.Home> { HomeContent() }
-                entry<Screen.Profile>(metadata = ListDetailSceneStrategy.listPane(sceneKey = ProfileScene)) {
-                    ProfileScreen(
-                        onLogout = onLogout,
-                        onOpenPane = ::openProfilePane,
-                        selectedPane = selectedPane,
-                        onBackClick = ::closeProfile,
-                    )
-                }
-                val detail = ListDetailSceneStrategy.detailPane(ProfileScene)
-                entry<Screen.Starred>(metadata = detail) {
-                    StarredScreen(onBackClick = paneBack, onOpen = ::openFromProfile, onLocate = { locateInDrive(it) })
-                }
-                entry<Screen.PlayHistory>(metadata = detail) {
-                    PlayHistoryScreen(
-                        onBackClick = paneBack,
-                        onPlay = { playVideo(it, listOf(it)) },
-                        onLocate = { locateInDrive(it) },
-                    )
-                }
-                entry<Screen.MyShares>(metadata = detail) { MySharesScreen(onBackClick = paneBack) }
-                entry<Screen.Trash>(metadata = detail) { TrashScreen(onBackClick = paneBack) }
-                entry<Screen.Settings>(metadata = detail) { SettingsScreen(onBackClick = paneBack) }
-                entry<Screen.VideoPlayer> { screen ->
-                    (videoPlayer as? VideoPlayerHost.InApp)?.content?.invoke(screen, ::popBack)
-                }
-            },
-        )
+    // 应用内拖放网盘条目：网盘页拖出，侧边栏、路径栏与文件夹接住，见 FileDragState
+    val fileDrag = remember { FileDragState() }
+    CompositionLocalProvider(LocalFileDrag provides fileDrag) {
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .trackInputModality()
+                .focusRequester(shortcutFocus)
+                .focusable()
+                .onKeyEvent { event ->
+                    if (event.type != KeyEventType.KeyDown || !shortcutModifier.isPressed(event)) return@onKeyEvent false
+                    val tab = when (event.key) {
+                        Key.One -> MainTab.FILES
+                        Key.Two -> MainTab.TRANSFERS
+                        Key.Three -> MainTab.SETTINGS
+                        else -> return@onKeyEvent false
+                    }
+                    currentTab = tab
+                    resetToHome()
+                    true
+                },
+        ) {
+            NavDisplay(
+                backStack = backStack,
+                onBack = ::popBack,
+                sceneStrategies = listOf(listDetailStrategy),
+                // 压栈与返回：新页从右侧滑入五分之一屏并淡入，旧页反向让开。走满整屏是 lateral 的做法，
+                // 规范明说别拿它做层级导航
+                transitionSpec = {
+                    (
+                        slideInHorizontally(PikoMotion.ForwardEnterSlide) { it / PikoMotion.ForwardSlideFraction } +
+                            fadeIn(PikoMotion.ForwardEnterFade)
+                        ) togetherWith (
+                        slideOutHorizontally(PikoMotion.ForwardExitSlide) { -it / PikoMotion.ForwardSlideFraction } +
+                            fadeOut(PikoMotion.ForwardExitFade)
+                        )
+                },
+                popTransitionSpec = {
+                    (
+                        slideInHorizontally(PikoMotion.ForwardEnterSlide) { -it / PikoMotion.ForwardSlideFraction } +
+                            fadeIn(PikoMotion.ForwardEnterFade)
+                        ) togetherWith (
+                        slideOutHorizontally(PikoMotion.ForwardExitSlide) { it / PikoMotion.ForwardSlideFraction } +
+                            fadeOut(PikoMotion.ForwardExitFade)
+                        )
+                },
+                predictivePopTransitionSpec = { _ ->
+                    (
+                        slideInHorizontally(PikoMotion.ForwardEnterSlide) { -it / PikoMotion.ForwardSlideFraction } +
+                            fadeIn(PikoMotion.ForwardEnterFade)
+                        ) togetherWith (
+                        slideOutHorizontally(PikoMotion.ForwardExitSlide) { it / PikoMotion.ForwardSlideFraction } +
+                            fadeOut(PikoMotion.ForwardExitFade)
+                        )
+                },
+                entryProvider = entryProvider {
+                    entry<Screen.Home> { HomeContent() }
+                    entry<Screen.Profile>(metadata = ListDetailSceneStrategy.listPane(sceneKey = ProfileScene)) {
+                        ProfileScreen(
+                            onLogout = onLogout,
+                            onOpenPane = ::openProfilePane,
+                            selectedPane = selectedPane,
+                            onBackClick = ::closeProfile,
+                        )
+                    }
+                    val detail = ListDetailSceneStrategy.detailPane(ProfileScene)
+                    entry<Screen.Starred>(metadata = detail) {
+                        StarredScreen(onBackClick = paneBack, onOpen = ::openFromProfile, onLocate = { locateInDrive(it) })
+                    }
+                    entry<Screen.PlayHistory>(metadata = detail) {
+                        PlayHistoryScreen(
+                            onBackClick = paneBack,
+                            onPlay = { playVideo(it, listOf(it)) },
+                            onLocate = { locateInDrive(it) },
+                        )
+                    }
+                    entry<Screen.MyShares>(metadata = detail) { MySharesScreen(onBackClick = paneBack) }
+                    entry<Screen.Trash>(metadata = detail) { TrashScreen(onBackClick = paneBack) }
+                    entry<Screen.Settings>(metadata = detail) { SettingsScreen(onBackClick = paneBack) }
+                    entry<Screen.VideoPlayer> { screen ->
+                        (videoPlayer as? VideoPlayerHost.InApp)?.content?.invoke(screen, ::popBack)
+                    }
+                },
+            )
+            // 拖动网盘条目时指针旁的说明，盖在一切之上
+            FileDragOverlay(fileDrag)
+        }
     }
 }
 

@@ -1,5 +1,6 @@
 package dev.piko.shots
 
+import kotlinx.serialization.json.jsonArray
 import dev.piko.shared.data.PikoCredentials
 import dev.piko.shared.data.PikoSessionStore
 import io.github.nihildigit.pikpak.Session
@@ -61,6 +62,30 @@ class FakePikPak {
     }
 
     private fun add(node: Node) = synchronized(nodes) { nodes[node.id] = node; node }
+
+    private fun batch(op: String, body: String): String {
+        val json = Json.parseToJsonElement(body).jsonObject
+        val ids = json["ids"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()
+        val moveTo = json["to"]?.jsonObject?.get("parent_id")?.jsonPrimitive?.content.orEmpty()
+        synchronized(nodes) {
+            ids.forEach { id ->
+                val node = nodes[id] ?: return@forEach
+                nodes[id] = when (op) {
+                    "batchMove" -> Node(node.id, moveTo, node.name, node.isFolder, node.size, node.modified, node.trashed, node.starred)
+                    "batchTrash" -> Node(node.id, node.parentId, node.name, node.isFolder, node.size, node.modified, true, node.starred)
+                    "batchUntrash" -> Node(node.id, node.parentId, node.name, node.isFolder, node.size, node.modified, false, node.starred)
+                    else -> node
+                }
+            }
+        }
+        return "{}"
+    }
+
+    private fun okhttp3.Request.bodyText(): String {
+        val buffer = okio.Buffer()
+        body?.writeTo(buffer)
+        return buffer.readUtf8()
+    }
     private fun newId() = "F${nextId.getAndIncrement()}"
 
     fun httpClient(): HttpClient = HttpClient(OkHttp) {
@@ -97,6 +122,8 @@ class FakePikPak {
             path.contains("/drive/v1/files/") && method == "GET" -> synchronized(nodes) { nodes[path.substringAfterLast('/')] }
                 ?.let { 200 to buildJsonObject { putNode(it) }.toString() }
                 ?: (404 to """{"error_code":3,"error":"file_not_found"}""")
+            // 移动、移入回收站与恢复：拖放与撤销要用
+            path.contains("/drive/v1/files:") && method == "POST" -> 200 to batch(path.substringAfterLast(':'), request.bodyText())
             else -> 404 to """{"error":"not_found"}"""
         }
         return Response.Builder()

@@ -1,5 +1,6 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.ui.components.FileDragPayload
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.focusable
@@ -426,6 +427,27 @@ fun DriveScreen(
             onToggleSelect = { state.toggleSelected(it.id) },
             onExtendSelect = { state.selectRange(it.id) },
             onBoxSelect = state::selectBoxed,
+            // 拖选中的一项时拖走全部选中的，否则只拖这一项，与文件管理器相同
+            dragPayload = { file ->
+                val batch = if (state.isSelectionMode && file.id in state.selectedFileIds) {
+                    state.displayedFiles.filter { it.id in state.selectedFileIds }
+                } else {
+                    listOf(file)
+                }.filterNot { it.isUploading }
+                if (batch.isEmpty()) {
+                    null
+                } else {
+                    FileDragPayload(
+                        ids = batch.map { it.id },
+                        parentIds = batch.mapTo(HashSet()) { it.parentId },
+                        label = batch.singleOrNull()?.name ?: "${batch.size} 项",
+                        perform = { target, copy ->
+                            val ids = batch.map { it.id }
+                            if (copy) state.copy(ids, target.id, target.name) else state.move(ids, target.id, target.name)
+                        },
+                    )
+                }
+            },
             onBackgroundClick = { if (state.isSelectionMode) state.exitSelection() },
             onFocusChanged = { file, focused ->
                 if (focused) {

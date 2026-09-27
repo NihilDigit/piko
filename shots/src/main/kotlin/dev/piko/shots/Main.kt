@@ -65,6 +65,10 @@ private val standardSet = listOf(
         "marquee-1440x900",
         steps = listOf(Step.Click("动画"), Step.Wait("SPs"), Step.Pump(800), Step.Drag(Offset(1350f, 720f), Offset(800f, 400f))),
     ),
+    // 拖放移动：拖到侧边栏的星标文件夹上、拖到网格里的文件夹上（松手前），以及松手后带「撤销」的提示
+    Shot("drag-sidebar-1440x900", steps = listOf(Step.Pump(800), Step.Drag(Offset(820f, 292f), Offset(90f, 198f)))),
+    Shot("drag-folder-1440x900", steps = listOf(Step.Pump(800), Step.Drag(Offset(820f, 292f), Offset(1200f, 150f)))),
+    Shot("drag-dropped-1440x900", steps = listOf(Step.Pump(800), Step.Drag(Offset(820f, 292f), Offset(90f, 198f)), Step.Release, Step.Pump(1_500))),
     // 键盘：方向键走到一项，描边标出焦点
     Shot("keyboard-focus-1440x900", steps = listOf(Step.Key("Down"), Step.Key("Down"), Step.Key("Right"), Step.Key("Down"))),
     // 信息流：宽窗口的侧栏、窄窗口的全屏、弹出到独立窗口后主窗口的样子

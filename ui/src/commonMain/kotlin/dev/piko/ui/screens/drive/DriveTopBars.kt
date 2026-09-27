@@ -1,5 +1,6 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.ui.components.fileDropTarget
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
@@ -344,6 +345,8 @@ internal fun DrivePathTitle(stack: List<PikoPathBreadcrumb>, onNavigate: (index:
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier
+                        // 上级能接住拖来的条目：拖到「网盘」就是移回根目录
+                        .fileDropTarget("crumb:${crumb.id}", crumb)
                         .clip(MaterialTheme.shapes.small)
                         .clickable(onClickLabel = "打开") { onNavigate(index) }
                         .padding(horizontal = 6.dp, vertical = 4.dp),

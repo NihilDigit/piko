@@ -1,5 +1,6 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.ui.components.fileDropTarget
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -59,6 +60,7 @@ internal fun ColumnScope.QuickAccessSections(
             SidebarItem(
                 icon = Icons.Outlined.Star,
                 label = folder.name,
+                modifier = Modifier.fileDropTarget("starred:${folder.id}", PikoPathBreadcrumb(folder.id, folder.name)),
                 selected = folder.id == currentId,
                 onClick = {
                     state.openStarred(folder)
@@ -76,6 +78,7 @@ internal fun ColumnScope.QuickAccessSections(
             SidebarItem(
                 icon = Icons.Outlined.History,
                 label = folder.name,
+                modifier = Modifier.fileDropTarget("recent:${folder.id}", folder),
                 // 同名的文件夹多得是（「SPs」「字幕」），悬停时给出整条路径
                 tooltip = stack.joinToString(" › ") { it.name },
                 selected = false,
@@ -113,11 +116,12 @@ internal fun SidebarItem(
     onClick: () -> Unit,
     tooltip: String? = null,
     bold: Boolean = false,
+    modifier: Modifier = Modifier,
 ) {
     val colors = MaterialTheme.colorScheme
     val row: @Composable () -> Unit = {
         Row(
-            modifier = Modifier
+            modifier = modifier
                 .fillMaxWidth()
                 .height(40.dp)
                 .clip(CircleShape)

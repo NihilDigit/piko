@@ -114,7 +114,12 @@ expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以
 `actionsFor`，面板与菜单都读它（网盘页是 `fileActions`）；新列表照做。网盘页按住主修饰键点选是加选，
 Shift 点选是连选（`selectionClicks`，状态在 `DriveScreenState.toggleSelected` / `selectRange`）。
 鼠标悬停时条目上出勾选框（列表盖在缩略图上，海报墙与图库在封面左上角），点它进入多选；在网格空白处拖动是框选
-（`marqueeSelection`，`selectBoxed`），空白处单击退出多选。框选只从空白处开始，按在条目上拖动留给拖放移动。
+（`marqueeSelection`，`selectBoxed`），空白处单击退出多选。框选只从空白处开始，按在条目上拖动是拖放移动：
+拖到侧边栏的文件夹、路径栏的上级或网格里的文件夹上，按着 Ctrl（mac 上 ⌥）是复制。拖放是应用内自己做的
+（`FileDragState`，根上一份，落点经 `fileDropTarget` 登记范围），不走平台拖放；拖出去的一批自带落下后做什么，
+落点只提供文件夹。
+移动、移入回收站与重命名做完都记进 `DriveChangeJournal`（`driveRepository.changes`），提示带「撤销」，
+Ctrl+Z 撤销最近一次；以后的批量改动（自动重命名、按刮削结果整理）也记一条，撤销即反向再做一次。
 网盘页的键盘：方向键在条目间走（焦点所在的一项由 `keyboardFocusRing` 描边，只在键盘导航时画，
 输入方式由根上的 `trackInputModality` 记），Enter 打开，菜单键或 Shift+F10 打开操作面板，
 Delete 与 F2 作用于焦点所在项或选中的几项；鼠标点到哪一项，键盘就从哪一项接着走。Alt+←/→（mac 上 ⌘[ ⌘]）
