@@ -168,17 +168,15 @@ internal fun PackTransferRow(
     )
 }
 
-/** 整包离线的详情面板。 */
-@Composable
-internal fun PackTransferSheet(
+/** 打包离线任务的全部操作，详情面板与右键菜单共用。 */
+internal fun packTransferActions(
     item: TransferItem.Pack,
     onOpen: () -> Unit,
     onRetry: () -> Unit,
     onDiscard: () -> Unit,
-    onDismiss: () -> Unit,
-) {
+): List<SheetAction> {
     val job = item.job
-    val actions = buildList {
+    return buildList {
         if (job.canOpen) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "打开", onOpen))
         if (job.stage == OfflinePackStage.FAILED) {
             add(SheetAction(Icons.Outlined.Refresh, "重试", onRetry))
@@ -187,6 +185,12 @@ internal fun PackTransferSheet(
         val discardLabel = if (job.isActive) "取消任务" else "移除"
         add(SheetAction(Icons.Outlined.Delete, discardLabel, onDiscard, destructive = true))
     }
+}
+
+/** 整包离线的详情面板。 */
+@Composable
+internal fun PackTransferSheet(item: TransferItem.Pack, actions: List<SheetAction>, onDismiss: () -> Unit) {
+    val job = item.job
     val statusColor = job.statusColor()
     ItemDetailsSheet(
         title = job.folderName,

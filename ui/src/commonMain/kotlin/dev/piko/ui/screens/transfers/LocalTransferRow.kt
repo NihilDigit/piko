@@ -198,25 +198,21 @@ internal fun LocalTransferRow(
     )
 }
 
-/** 本地下载项的详情面板：完整文件名、状态与全部操作。 */
-@Composable
-internal fun LocalTransferSheet(
+/** 本地下载项的全部操作，详情面板与右键菜单共用。 */
+internal fun localTransferActions(
     task: DownloadTask,
+    files: LocalFileActions,
     onPlay: () -> Unit,
     onStart: () -> Unit,
     onPause: () -> Unit,
     onRemove: () -> Unit,
-    onDismiss: () -> Unit,
     /** 为 null 表示没有可切换的预览（防窥关闭或没有缩略图），不显示该项。 */
     previewHidden: Boolean?,
     onTogglePreview: () -> Unit,
-) {
-    val files = LocalPikoPlatform.current.localFiles
+): List<SheetAction> {
     val isMedia = task.isMedia()
-    val intents = remember(files, task, isMedia) { LocalFileIntents(files, task, isMedia) }
-    val statusColor = task.statusColor()
-
-    val actions = buildList {
+    val intents = LocalFileIntents(files, task, isMedia)
+    return buildList {
         if (previewHidden != null) {
             add(
                 SheetAction(
@@ -244,7 +240,12 @@ internal fun LocalTransferSheet(
         }
         add(SheetAction(Icons.Outlined.Delete, removeLabel, onRemove, destructive = true))
     }
+}
 
+/** 本地下载项的详情面板：完整文件名、状态与全部操作。 */
+@Composable
+internal fun LocalTransferSheet(task: DownloadTask, actions: List<SheetAction>, onDismiss: () -> Unit) {
+    val statusColor = task.statusColor()
     ItemDetailsSheet(
         title = task.fileName,
         headerIcon = { ListLeadingIcon(task.typeIcon()) },

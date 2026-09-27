@@ -38,6 +38,8 @@ import androidx.compose.ui.unit.DpOffset
 fun ContextMenuArea(
     actions: () -> List<SheetAction>,
     modifier: Modifier = Modifier,
+    /** 为 false 时右键不弹菜单，例如多选时：那时的操作针对选中的全部条目，不是这一行。 */
+    enabled: Boolean = true,
     content: @Composable () -> Unit,
 ) {
     var menuAt by remember { mutableStateOf<Offset?>(null) }
@@ -45,7 +47,8 @@ fun ContextMenuArea(
     Box(
         modifier = modifier
             .onSizeChanged { height = it.height }
-            .pointerInput(Unit) {
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
                 awaitPointerEventScope {
                     while (true) {
                         val event = awaitPointerEvent()

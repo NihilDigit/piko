@@ -152,26 +152,8 @@ internal fun UploadTransferRow(
 
 /** 上传项的详情面板：完整文件名、目标目录、状态与全部操作。 */
 @Composable
-internal fun UploadTransferSheet(
-    task: UploadTask,
-    onOpen: () -> Unit,
-    onResume: () -> Unit,
-    onPause: () -> Unit,
-    onRemove: () -> Unit,
-    onDismiss: () -> Unit,
-) {
+internal fun UploadTransferSheet(task: UploadTask, actions: List<SheetAction>, onDismiss: () -> Unit) {
     val statusColor = task.statusColor()
-    val actions = buildList {
-        when (task.status) {
-            UploadStatus.COMPLETED -> if (task.canOpen) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中查看", onOpen))
-            UploadStatus.HASHING, UploadStatus.UPLOADING, UploadStatus.QUEUED -> add(SheetAction(Icons.Outlined.Pause, "暂停", onPause))
-            UploadStatus.PAUSED -> add(SheetAction(Icons.Outlined.PlayArrow, "继续上传", onResume))
-            UploadStatus.FAILED -> add(SheetAction(Icons.Outlined.Refresh, "重试", onResume))
-        }
-        // 未完成的一并删掉网盘里那个上传中的文件；已完成的只删记录
-        val removeLabel = if (task.status == UploadStatus.COMPLETED) "移除记录" else "取消上传"
-        add(SheetAction(Icons.Outlined.Delete, removeLabel, onRemove, destructive = true))
-    }
     ItemDetailsSheet(
         title = task.fileName,
         headerIcon = { ListLeadingIcon(task.icon()) },
@@ -183,4 +165,23 @@ internal fun UploadTransferSheet(
             if (task.status == UploadStatus.FAILED) Text(text = task.failureReason(), color = statusColor)
         },
     )
+}
+
+/** 上传任务的全部操作，详情面板与右键菜单共用。 */
+internal fun uploadTransferActions(
+    task: UploadTask,
+    onOpen: () -> Unit,
+    onResume: () -> Unit,
+    onPause: () -> Unit,
+    onRemove: () -> Unit,
+): List<SheetAction> = buildList {
+        when (task.status) {
+            UploadStatus.COMPLETED -> if (task.canOpen) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中查看", onOpen))
+            UploadStatus.HASHING, UploadStatus.UPLOADING, UploadStatus.QUEUED -> add(SheetAction(Icons.Outlined.Pause, "暂停", onPause))
+            UploadStatus.PAUSED -> add(SheetAction(Icons.Outlined.PlayArrow, "继续上传", onResume))
+            UploadStatus.FAILED -> add(SheetAction(Icons.Outlined.Refresh, "重试", onResume))
+        }
+        // 未完成的一并删掉网盘里那个上传中的文件；已完成的只删记录
+        val removeLabel = if (task.status == UploadStatus.COMPLETED) "移除记录" else "取消上传"
+        add(SheetAction(Icons.Outlined.Delete, removeLabel, onRemove, destructive = true))
 }

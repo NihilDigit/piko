@@ -47,6 +47,7 @@ import dev.piko.shared.state.MySharesState
 import dev.piko.shared.state.ShareCreateState
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.readableSidePadding
+import dev.piko.ui.components.ContextMenuArea
 import dev.piko.ui.components.FileLeadingVisual
 import dev.piko.ui.components.FileListItem
 import dev.piko.ui.components.FileListSkeleton
@@ -109,6 +110,13 @@ fun MySharesScreen(
         platform.copyToClipboard("分享链接", ShareCreateState.shareText(share.title, share.shareUrl, share.passCode))
         scope.launch { snackbarHostState.showSnackbar("已复制分享链接", withDismissAction = true) }
     }
+
+    // 一项的全部操作，详情面板与右键菜单共用
+    fun actionsFor(share: ShareSummary): List<SheetAction> = listOf(
+        SheetAction(Icons.Outlined.Link, if (share.passCode.isEmpty()) "复制链接" else "复制链接与提取码", onClick = { copy(share) }),
+        SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在浏览器中打开", onClick = { platform.openUrl(share.shareUrl) }),
+        SheetAction(Icons.Outlined.LinkOff, "取消分享", onClick = { confirmCancel = share }, destructive = true),
+    )
 
     val topBarScrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     Scaffold(
@@ -180,23 +188,24 @@ fun MySharesScreen(
                             }
                         } else {
                             items(items = state.shares, key = { it.shareId }) { share ->
-                                FileListItem(
-                                    headline = share.title,
-                                    leading = { FileLeadingVisual(file = share.leadingFile(), isSpoilerBlurred = false) },
-                                    supporting = {
-                                        MetaRow(
-                                            parts = share.metaParts(),
-                                            color = if (share.isOk) {
-                                                MaterialTheme.colorScheme.onSurfaceVariant
-                                            } else {
-                                                MaterialTheme.colorScheme.error
-                                            },
-                                        )
-                                    },
-                                    onClick = { copy(share) },
-                                    onMoreClick = { detailsFor = share },
-                                    modifier = Modifier.animateItem(),
-                                )
+                                ContextMenuArea(actions = { actionsFor(share) }, modifier = Modifier.animateItem()) {
+                                    FileListItem(
+                                        headline = share.title,
+                                        leading = { FileLeadingVisual(file = share.leadingFile(), isSpoilerBlurred = false) },
+                                        supporting = {
+                                            MetaRow(
+                                                parts = share.metaParts(),
+                                                color = if (share.isOk) {
+                                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                                } else {
+                                                    MaterialTheme.colorScheme.error
+                                                },
+                                            )
+                                        },
+                                        onClick = { copy(share) },
+                                        onMoreClick = { detailsFor = share },
+                                    )
+                                }
                             }
                             if (state.isLoadingMore) {
                                 item(key = "loading_more") {
@@ -224,11 +233,7 @@ fun MySharesScreen(
                     Text("提取码 ${share.passCode}", color = MaterialTheme.colorScheme.primary)
                 }
             },
-            actions = listOf(
-                SheetAction(Icons.Outlined.Link, if (share.passCode.isEmpty()) "复制链接" else "复制链接与提取码", onClick = { copy(share) }),
-                SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在浏览器中打开", onClick = { platform.openUrl(share.shareUrl) }),
-                SheetAction(Icons.Outlined.LinkOff, "取消分享", onClick = { confirmCancel = share }, destructive = true),
-            ),
+            actions = actionsFor(share),
         )
     }
 

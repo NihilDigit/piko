@@ -42,6 +42,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.shared.state.StarredScreenState
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.readableSidePadding
+import dev.piko.ui.components.ContextMenuArea
 import dev.piko.ui.components.FileLeadingVisual
 import dev.piko.ui.components.FileListItem
 import dev.piko.ui.components.FileListSkeleton
@@ -84,6 +85,14 @@ fun StarredScreen(
     val isSpoilerBlurEnabled by services.preferences.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = true)
     val revealedIds = remember { mutableStateListOf<String>() }
     var detailsFor by remember { mutableStateOf<FileStat?>(null) }
+    // 一项的全部操作，详情面板与右键菜单共用
+    fun actionsFor(file: FileStat) = starredActions(
+        canReveal = isSpoilerBlurEnabled && file.thumbnailLink.isNotEmpty(),
+        hidden = file.id !in revealedIds,
+        onTogglePreview = { if (!revealedIds.remove(file.id)) revealedIds.add(file.id) },
+        onLocate = { onLocate(file) },
+        onUnstar = { state.unstar(file) },
+    )
     val listState = rememberLazyListState()
 
     LaunchedEffect(state) {
@@ -162,15 +171,16 @@ fun StarredScreen(
                         } else {
                             items(items = state.files, key = { it.id }, contentType = { if (it.isFolder) "folder" else "file" }) { file ->
                                 val blurred = isSpoilerBlurEnabled && file.thumbnailLink.isNotEmpty() && file.id !in revealedIds
-                                FileListItem(
-                                    headline = file.displayTitle(),
-                                    headlineFontWeight = if (file.isFolder) FontWeight.Medium else null,
-                                    leading = { FileLeadingVisual(file = file, isSpoilerBlurred = blurred) },
-                                    supporting = { MetaRow(parts = file.metaParts()) },
-                                    onClick = { onOpen(file) },
-                                    onMoreClick = { detailsFor = file },
-                                    modifier = Modifier.animateItem(),
-                                )
+                                ContextMenuArea(actions = { actionsFor(file) }, modifier = Modifier.animateItem()) {
+                                    FileListItem(
+                                        headline = file.displayTitle(),
+                                        headlineFontWeight = if (file.isFolder) FontWeight.Medium else null,
+                                        leading = { FileLeadingVisual(file = file, isSpoilerBlurred = blurred) },
+                                        supporting = { MetaRow(parts = file.metaParts()) },
+                                        onClick = { onOpen(file) },
+                                        onMoreClick = { detailsFor = file },
+                                    )
+                                }
                             }
                         }
                     }
@@ -181,26 +191,32 @@ fun StarredScreen(
     }
 
     detailsFor?.let { file ->
-        val canReveal = isSpoilerBlurEnabled && file.thumbnailLink.isNotEmpty()
-        val hidden = file.id !in revealedIds
         ItemDetailsSheet(
             title = file.name,
             headerIcon = { FileTypeIcon(file = file, iconSize = 24.dp, modifier = Modifier.fillMaxSize()) },
             metaParts = file.metaParts(),
             onDismiss = { detailsFor = null },
-            actions = buildList {
-                if (canReveal) {
-                    add(
-                        SheetAction(
-                            icon = if (hidden) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
-                            label = if (hidden) "显示预览" else "隐藏预览",
-                            onClick = { if (!revealedIds.remove(file.id)) revealedIds.add(file.id) },
-                        ),
-                    )
-                }
-                add(SheetAction(Icons.Outlined.FolderOpen, "在网盘中显示", onClick = { onLocate(file) }))
-                add(SheetAction(Icons.Outlined.StarOutline, "取消星标", onClick = { state.unstar(file) }))
-            },
+            actions = actionsFor(file),
         )
     }
+}
+
+private fun starredActions(
+    canReveal: Boolean,
+    hidden: Boolean,
+    onTogglePreview: () -> Unit,
+    onLocate: () -> Unit,
+    onUnstar: () -> Unit,
+): List<SheetAction> = buildList {
+    if (canReveal) {
+        add(
+            SheetAction(
+                icon = if (hidden) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
+                label = if (hidden) "显示预览" else "隐藏预览",
+                onClick = onTogglePreview,
+            ),
+        )
+    }
+    add(SheetAction(Icons.Outlined.FolderOpen, "在网盘中显示", onClick = onLocate))
+    add(SheetAction(Icons.Outlined.StarOutline, "取消星标", onClick = onUnstar))
 }

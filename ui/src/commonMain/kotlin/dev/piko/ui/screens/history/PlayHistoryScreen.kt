@@ -51,6 +51,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.shared.state.PlayHistoryScreenState
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.readableSidePadding
+import dev.piko.ui.components.ContextMenuArea
 import dev.piko.ui.components.FileLeadingVisual
 import dev.piko.ui.components.FileListItem
 import dev.piko.ui.components.FileListSkeleton
@@ -97,6 +98,15 @@ fun PlayHistoryScreen(
 
     val isSpoilerBlurEnabled by services.preferences.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = true)
     var detailsFor by remember { mutableStateOf<DriveEvent?>(null) }
+    // 一项的全部操作，详情面板与右键菜单共用
+    fun actionsFor(event: DriveEvent): List<SheetAction> = buildList {
+        val file = event.file
+        if (file != null) {
+            add(SheetAction(Icons.Outlined.PlayArrow, "播放", onClick = { onPlay(file) }))
+            add(SheetAction(Icons.Outlined.FolderOpen, "在网盘中显示", onClick = { onLocate(file) }))
+        }
+        add(SheetAction(Icons.Outlined.DeleteOutline, "删除记录", { state.delete(event) }, destructive = true))
+    }
     var confirmClear by remember { mutableStateOf(false) }
 
     LaunchedEffect(state) {
@@ -201,13 +211,14 @@ fun PlayHistoryScreen(
                             }
                         } else {
                             items(items = state.events, key = { it.id }) { event ->
-                                HistoryRow(
-                                    event = event,
-                                    isSpoilerBlurred = isSpoilerBlurEnabled,
-                                    onClick = { play(event) },
-                                    onMoreClick = { detailsFor = event },
-                                    modifier = Modifier.animateItem(),
-                                )
+                                ContextMenuArea(actions = { actionsFor(event) }, modifier = Modifier.animateItem()) {
+                                    HistoryRow(
+                                        event = event,
+                                        isSpoilerBlurred = isSpoilerBlurEnabled,
+                                        onClick = { play(event) },
+                                        onMoreClick = { detailsFor = event },
+                                    )
+                                }
                             }
                             if (state.isLoadingMore) {
                                 item(key = "loading_more") {
@@ -233,13 +244,7 @@ fun PlayHistoryScreen(
             },
             metaParts = historyMetaParts(event),
             onDismiss = { detailsFor = null },
-            actions = buildList {
-                if (file != null) {
-                    add(SheetAction(Icons.Outlined.PlayArrow, "播放", onClick = { onPlay(file) }))
-                    add(SheetAction(Icons.Outlined.FolderOpen, "在网盘中显示", onClick = { onLocate(file) }))
-                }
-                add(SheetAction(Icons.Outlined.DeleteOutline, "删除记录", { state.delete(event) }, destructive = true))
-            },
+            actions = actionsFor(event),
         )
     }
 
