@@ -42,7 +42,6 @@ import androidx.compose.material3.FloatingActionButtonMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -54,7 +53,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.ToggleFloatingActionButton
 import androidx.compose.material3.ToggleFloatingActionButtonDefaults.animateIcon
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -93,6 +91,7 @@ import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.InstantSaveOutcome
 import dev.piko.shared.upload.UploadSelection
 import dev.piko.shared.upload.isUploading
+import dev.piko.ui.components.PikoSheet
 import dev.piko.ui.screens.share.ShareDialog
 import dev.piko.ui.screens.rename.BatchRenameDialog
 import dev.piko.ui.LocalPikoServices
@@ -116,7 +115,6 @@ import dev.piko.ui.components.UnsupportedNameDialog
 import dev.piko.ui.components.autoCleanHint
 import dev.piko.ui.components.isUnfixableDriveName
 import dev.piko.ui.components.submitDriveName
-import dev.piko.ui.components.wheelStaysInSheet
 import dev.piko.ui.screens.instant.InstantSheetContent
 import dev.piko.ui.screens.instant.InstantSheetHandle
 import io.github.nihildigit.pikpak.FileStat
@@ -799,24 +797,18 @@ fun DriveScreen(
 
     // 查找重复的面板。划走只是收起，扫描照常进行，底部留把手，见 DuplicateSession
     if (duplicateState != null && duplicateSession.isSheetOpen) {
-        ModalBottomSheet(
+        PikoSheet(
             onDismissRequest = duplicateSession::collapse,
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            contentWindowInsets = { WindowInsets(0) },
+            bottomSheetInsets = { WindowInsets(0) },
         ) {
-            Column(Modifier.wheelStaysInSheet()) {
-                DuplicatesSheetContent(duplicateState)
-            }
+            DuplicatesSheetContent(duplicateState)
         }
     }
 
     // 秒传面板。划走只是收起，会话还在，底部留把手，见 InstantSession
     if (instantState != null && instantSession.isSheetOpen) {
-        ModalBottomSheet(
-            onDismissRequest = instantSession::collapse,
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        ) {
-            Column(Modifier.wheelStaysInSheet()) {
+        PikoSheet(onDismissRequest = instantSession::collapse) {
+            Column {
                 InstantSheetContent(
                     state = instantState,
                     // 先收起面板：Android 上它是独立窗口，会盖在应用内的播放器上面

@@ -90,6 +90,7 @@ import dev.piko.shared.media.player.preferredVersion
 import dev.piko.shared.media.player.trackDisplayName
 import dev.piko.ui.components.ListSpoilerBlur
 import dev.piko.ui.components.SpoilerThumbnail
+import dev.piko.ui.components.verticalWheelScrollsRow
 import dev.piko.ui.components.wheelStaysInSheet
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -229,10 +230,12 @@ internal fun EpisodePanel(
 
     Column(modifier) {
         if (sections.size > 1) {
+            val sectionScroll = rememberScrollState()
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
+                    .verticalWheelScrollsRow(sectionScroll)
+                    .horizontalScroll(sectionScroll)
                     .padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {

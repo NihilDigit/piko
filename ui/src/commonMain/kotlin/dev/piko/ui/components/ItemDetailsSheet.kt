@@ -18,19 +18,15 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.SegmentedListItem
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.launch
 
 /** 详情面板里的一项操作。[destructive] 的操作单独成组排在最后，并用错误色。 */
 class SheetAction(
@@ -43,7 +39,7 @@ class SheetAction(
 /**
  * 单个条目的详情与操作面板，网盘列表、海报墙与传输列表共用。
  *
- * 用模态 BottomSheet 而不是锚在更多按钮上的 DropdownMenu：面板顶部能放下完整、
+ * 用模态面板（[PikoSheet]，宽窗口是侧边面板）而不是锚在更多按钮上的 DropdownMenu：面板顶部能放下完整、
  * 可选中复制的标题与元信息，列表里被截成两行的长名字在这里总能看全；操作项的
  * 触控区也按列表项给足。
  *
@@ -64,24 +60,10 @@ fun ItemDetailsSheet(
     metaParts: List<String> = emptyList(),
     extraLines: @Composable ColumnScope.() -> Unit = {},
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val scope = rememberCoroutineScope()
-
-    // 先播完收起动画再执行动作：直接移出组合会让面板瞬间消失，
-    // 接着弹出的对话框也少了一个视觉上的因果。
-    fun dismissThen(action: () -> Unit) {
-        scope.launch { sheetState.hide() }.invokeOnCompletion {
-            onDismiss()
-            action()
-        }
-    }
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-    ) {
+    PikoSheet(onDismissRequest = onDismiss) {
+        val sheet = this
         // 矮屏上放不下全部操作，整块可滚动
-        Column(modifier = Modifier.wheelStaysInSheet().verticalScroll(rememberScrollState())) {
+        Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -124,9 +106,9 @@ fun ItemDetailsSheet(
                     .padding(horizontal = 16.dp)
                     .padding(bottom = 16.dp),
             ) {
-                if (regular.isNotEmpty()) SheetActionGroup(regular, onAction = ::dismissThen)
+                if (regular.isNotEmpty()) SheetActionGroup(regular, onAction = { sheet.hideThen(it) })
                 if (regular.isNotEmpty() && destructive.isNotEmpty()) Spacer(modifier = Modifier.height(12.dp))
-                if (destructive.isNotEmpty()) SheetActionGroup(destructive, onAction = ::dismissThen)
+                if (destructive.isNotEmpty()) SheetActionGroup(destructive, onAction = { sheet.hideThen(it) })
             }
         }
     }

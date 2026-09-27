@@ -101,6 +101,7 @@ import dev.piko.ui.adaptive.readableWidth
 import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.PikoBrandIcons
 import dev.piko.ui.components.PikoTopBar
+import dev.piko.ui.components.verticalWheelScrollsRow
 import dev.piko.ui.platform.LinkAssociationState
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.PikoPlatform
@@ -801,10 +802,12 @@ private fun ThemeColorRow(appearance: Appearance, onSeedChange: (SeedTheme?) -> 
         supportingContent = {
             Column {
                 Text(selectedLabel)
+                val swatchScroll = rememberScrollState()
                 Row(
                     modifier = Modifier
                         .padding(top = 4.dp)
-                        .horizontalScroll(rememberScrollState()),
+                        .verticalWheelScrollsRow(swatchScroll)
+                        .horizontalScroll(swatchScroll),
                 ) {
                     if (platform.supportsDynamicColor) {
                         val scheme = platform.dynamicColorScheme(dark)
