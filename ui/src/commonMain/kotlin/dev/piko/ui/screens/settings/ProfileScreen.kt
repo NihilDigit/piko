@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.settings
 
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.add
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.animation.AnimatedVisibility
@@ -62,6 +64,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import dev.piko.data.auth.QuotaSnapshot
 import dev.piko.ui.LocalPikoServices
+import dev.piko.ui.adaptive.readableSidePadding
 import dev.piko.ui.adaptive.readableWidth
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.navigation.Screen
@@ -136,26 +139,31 @@ fun ProfileScreen(
             .fillMaxSize()
             .nestedScroll(topBarScrollBehavior.nestedScrollConnection),
         topBar = {
-            MediumFlexibleTopAppBar(
-                title = {
-                    Text(
-                        text = session?.username?.ifEmpty { null } ?: "PikPak 用户",
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                },
-                subtitle = accountLabel?.let { label ->
-                    { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                },
-                navigationIcon = {
-                    if (onBackClick != null) {
-                        IconButton(onClick = onBackClick) {
-                            Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回")
+            // 宽窗口里下面的内容收在居中的一栏，标题与返回一起缩进同样的量，底色仍铺满
+            BoxWithConstraints {
+                val sideInset = readableSidePadding(maxWidth)
+                MediumFlexibleTopAppBar(
+                    title = {
+                        Text(
+                            text = session?.username?.ifEmpty { null } ?: "PikPak 用户",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                    subtitle = accountLabel?.let { label ->
+                        { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                    },
+                    navigationIcon = {
+                        if (onBackClick != null) {
+                            IconButton(onClick = onBackClick) {
+                                Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回")
+                            }
                         }
-                    }
-                },
-                scrollBehavior = topBarScrollBehavior,
-            )
+                    },
+                    windowInsets = TopAppBarDefaults.windowInsets.add(WindowInsets(left = sideInset, right = sideInset)),
+                    scrollBehavior = topBarScrollBehavior,
+                )
+            }
         },
     ) { innerPadding ->
         Column(

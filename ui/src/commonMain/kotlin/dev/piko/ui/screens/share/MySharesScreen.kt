@@ -127,6 +127,7 @@ fun MySharesScreen(
         topBar = {
             PikoTopBar(
                 scrollBehavior = topBarScrollBehavior,
+                alignToReadableWidth = true,
                 title = "我的分享",
                 navigationIcon = {
                     if (onBackClick != null) {

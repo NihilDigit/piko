@@ -142,6 +142,7 @@ fun PlayHistoryScreen(
         topBar = {
             PikoTopBar(
                 scrollBehavior = topBarScrollBehavior,
+                alignToReadableWidth = true,
                 title = "播放历史",
                 navigationIcon = {
                     if (onBackClick != null) {

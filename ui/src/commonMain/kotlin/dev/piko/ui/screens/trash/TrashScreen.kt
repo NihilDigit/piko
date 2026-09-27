@@ -137,6 +137,7 @@ fun TrashScreen(
         topBar = {
             PikoTopBar(
                 scrollBehavior = topBarScrollBehavior,
+                alignToReadableWidth = true,
                 title = if (isSelectionMode) "已选择 ${selectedFileIds.size} 项" else "回收站",
                 navigationIcon = {
                     if (isSelectionMode) {

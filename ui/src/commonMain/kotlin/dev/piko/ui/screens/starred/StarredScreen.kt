@@ -109,6 +109,7 @@ fun StarredScreen(
         topBar = {
             PikoTopBar(
                 scrollBehavior = topBarScrollBehavior,
+                alignToReadableWidth = true,
                 title = "星标",
                 navigationIcon = {
                     if (onBackClick != null) {
