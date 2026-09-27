@@ -465,18 +465,20 @@ internal class MpvPlaybackBackend(
     override fun logMessage(prefix: String, level: Int, text: String) {
         // 回调里是 v 级别的全量日志，只留错误作为失败原因
         if (level <= MPV_LOG_LEVEL_ERROR) lastErrorLog = "$prefix: ${text.trim()}"
-        // 警告以上进应用日志。坏流会逐包刷同一句，连着重复的只记一次，免得挤掉日志里别的内容
+        // 警告以上进应用日志。坏流会逐包刷同几句，最近记过的不再记，免得挤掉日志里别的内容。
+        // 只比上一句不够：从切片开头解到第一个关键帧前，HEVC 解码器每个包交替报「PPS id out of range」
+        // 与「Skipping invalid undecodable NALU」，一段就是几百行
         if (level <= MPV_LOG_LEVEL_WARN) {
             val line = "$prefix: ${text.trim()}"
-            if (line != lastLoggedMpvLine) {
-                lastLoggedMpvLine = line
+            if (recentMpvLines.add(line)) {
+                if (recentMpvLines.size > RECENT_MPV_LINES) recentMpvLines.remove(recentMpvLines.first())
                 PikoLog.log(if (level <= MPV_LOG_LEVEL_ERROR) LogLevel.ERROR else LogLevel.WARN, "mpv", line, null)
             }
         }
     }
 
-    // 只在 mpv 的日志线程上读写
-    private var lastLoggedMpvLine: String? = null
+    // 只在 mpv 的日志线程上读写。按加入先后排，满了挤掉最早的
+    private val recentMpvLines = LinkedHashSet<String>()
 
     private fun updateVideoAspect() {
         val aspect = rawAspect?.takeIf { it > 0.0 } ?: return
@@ -491,6 +493,9 @@ internal class MpvPlaybackBackend(
         // mpv_log_level 的 MPV_LOG_LEVEL_ERROR。1.0.0 的构件没带 MpvLogLevel 常量类
         const val MPV_LOG_LEVEL_ERROR = 20
         const val MPV_LOG_LEVEL_WARN = 30
+
+        // 够盖住一组交替刷的句子，又不至于把隔了很久再出现的同一个问题也吞掉
+        const val RECENT_MPV_LINES = 16
     }
 }
 
