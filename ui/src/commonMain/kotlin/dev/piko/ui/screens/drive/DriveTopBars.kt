@@ -1,6 +1,7 @@
 package dev.piko.ui.screens.drive
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -12,6 +13,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.SwipeVertical
 import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.SwipeVertical
@@ -55,11 +58,13 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.menuItemShape
 import dev.piko.ui.components.TooltipIconButton
+import dev.piko.ui.components.verticalWheelScrollsRow
 import dev.piko.ui.platform.LocalPikoPlatform
 
 /**
@@ -205,6 +210,8 @@ internal fun DriveSearchTopBar(
 @Composable
 internal fun DriveBrowseTopBar(
     title: String,
+    /** 宽窗口里取代 [title] 的整条路径，见 [DrivePathTitle]。 */
+    path: (@Composable () -> Unit)? = null,
     scrollBehavior: TopAppBarScrollBehavior,
     currentSection: String?,
     sections: List<String>,
@@ -216,12 +223,16 @@ internal fun DriveBrowseTopBar(
     TopAppBar(
         title = {
             Column {
-                Text(
-                    text = title,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.titleLargeEmphasized,
-                )
+                if (path != null) {
+                    path()
+                } else {
+                    Text(
+                        text = title,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.titleLargeEmphasized,
+                    )
+                }
                 if (currentSection != null && sections.isNotEmpty()) {
                     Box {
                         Row(
@@ -293,5 +304,51 @@ internal fun FeedToggle(shown: Boolean, onShownChange: (Boolean) -> Unit) {
         )
         Spacer(Modifier.width(6.dp))
         Text("信息流")
+    }
+}
+
+
+/**
+ * 宽窗口顶栏上的整条路径，照资源管理器的地址栏：「网盘 › 动画 › Frieren」，上级每一段都能点，
+ * 当前这一段用标题字号。路径常驻在顶栏上，不随列表滚走；窄屏仍是目录名作标题、上级在列表顶上。
+ * 放不下时横向滚动并停在末尾，鼠标竖滚轮也滚得动。
+ */
+@Composable
+internal fun DrivePathTitle(stack: List<PikoPathBreadcrumb>, onNavigate: (index: Int) -> Unit) {
+    val scroll = rememberScrollState()
+    LaunchedEffect(stack) { scroll.scrollTo(scroll.maxValue) }
+    Row(
+        modifier = Modifier.verticalWheelScrollsRow(scroll).horizontalScroll(scroll),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        stack.forEachIndexed { index, crumb ->
+            if (index > 0) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            if (index == stack.lastIndex) {
+                Text(
+                    text = crumb.name,
+                    maxLines = 1,
+                    style = MaterialTheme.typography.titleLargeEmphasized,
+                    modifier = Modifier.padding(horizontal = 4.dp),
+                )
+            } else {
+                Text(
+                    text = crumb.name,
+                    maxLines = 1,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .clip(MaterialTheme.shapes.small)
+                        .clickable(onClickLabel = "打开") { onNavigate(index) }
+                        .padding(horizontal = 6.dp, vertical = 4.dp),
+                )
+            }
+        }
     }
 }

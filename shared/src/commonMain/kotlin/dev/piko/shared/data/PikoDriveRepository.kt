@@ -104,6 +104,41 @@ open class PikoDriveRepository(
     private val _folderStackFlow = MutableStateFlow(listOf(ROOT_BREADCRUMB))
     val folderStackFlow: StateFlow<List<PikoPathBreadcrumb>> = _folderStackFlow.asStateFlow()
 
+    /**
+     * 浏览历史，与资源管理器、Finder 的后退与前进同义：记的是去过的位置（整条路径），不是层级。
+     * 「上一级」与它是两回事：从信息流或星标跳到很深的目录后，上一级只会一层层往上走，后退才回到跳之前在看的地方。
+     * 每次改动路径栈都记一笔，只有启动时恢复上次的位置不记。不落盘，进程内有效。
+     */
+    private val _historyFlow = MutableStateFlow(FolderHistory())
+    val historyFlow: StateFlow<FolderHistory> = _historyFlow.asStateFlow()
+
+    /** 把栈换成 [next]，换了才把原来的位置记进后退、清掉前进。 */
+    private fun moveTo(next: List<PikoPathBreadcrumb>) {
+        val previous = _folderStackFlow.value
+        if (next == previous) return
+        _folderStackFlow.value = next
+        _historyFlow.update { it.visited(previous) }
+        forgetFoldersOutsideStack()
+    }
+
+    fun goBack(): Boolean {
+        val history = _historyFlow.value
+        val target = history.back.lastOrNull() ?: return false
+        _historyFlow.value = FolderHistory(back = history.back.dropLast(1), forward = history.forward + listOf(_folderStackFlow.value))
+        _folderStackFlow.value = target
+        forgetFoldersOutsideStack()
+        return true
+    }
+
+    fun goForward(): Boolean {
+        val history = _historyFlow.value
+        val target = history.forward.lastOrNull() ?: return false
+        _historyFlow.value = FolderHistory(back = history.back + listOf(_folderStackFlow.value), forward = history.forward.dropLast(1))
+        _folderStackFlow.value = target
+        forgetFoldersOutsideStack()
+        return true
+    }
+
     // 回收站恢复这类改动发生在网盘界面之外，界面不会重建，也就不会重新拉取。
     // 用事件流而非 StateFlow：订阅方只需被动收到「该刷新了」，不需要初值，也不该在重组时重放。
     private val _refreshEvents = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
@@ -217,29 +252,37 @@ open class PikoDriveRepository(
         scrollAnchors.update { it + (folderId to anchor) }
     }
 
+    // 历史里的位置也留着：后退回去时首帧就是原来的列表与滚动位置
     private fun forgetFoldersOutsideStack() {
-        val inStack = folderStackFlow.value.mapTo(HashSet()) { it.id }
+        val history = _historyFlow.value
+        val inStack = (sequenceOf(folderStackFlow.value) + history.back.asSequence() + history.forward.asSequence())
+            .flatten()
+            .mapTo(HashSet()) { it.id }
         listingCache.update { cache -> cache.filterKeys { it in inStack } }
         scrollAnchors.update { anchors -> anchors.filterKeys { it in inStack } }
     }
 
     fun pushFolder(id: String, name: String) {
-        _folderStackFlow.update { it + PikoPathBreadcrumb(id, name) }
+        moveTo(_folderStackFlow.value + PikoPathBreadcrumb(id, name))
     }
 
+    /** 换到一条完整的路径，记进历史：在网盘中显示、从星标或传输跳过去，后退能回到跳之前的地方。 */
     fun updateFolderStack(stack: List<PikoPathBreadcrumb>) {
-        if (stack.isNotEmpty()) _folderStackFlow.value = stack
+        if (stack.isNotEmpty()) moveTo(stack)
+    }
+
+    /** 启动时恢复上次退出时的位置。不记历史：后退不该退到恢复之前那一瞬的根目录。 */
+    fun restoreFolderStack(stack: List<PikoPathBreadcrumb>) {
+        if (stack.isEmpty()) return
+        _folderStackFlow.value = stack
         forgetFoldersOutsideStack()
     }
 
     fun popToBreadcrumb(index: Int): PikoPathBreadcrumb? {
-        var child: PikoPathBreadcrumb? = null
-        _folderStackFlow.update { stack ->
-            if (index !in 0 until stack.lastIndex) return null
-            child = stack[index + 1]
-            stack.take(index + 1)
-        }
-        forgetFoldersOutsideStack()
+        val stack = _folderStackFlow.value
+        if (index !in 0 until stack.lastIndex) return null
+        val child = stack[index + 1]
+        moveTo(stack.take(index + 1))
         return child
     }
 
@@ -248,23 +291,14 @@ open class PikoDriveRepository(
      * 秒传的保存目标可以是根目录，拼成两级会出现两个「网盘」，返回一次还停在原地。
      */
     fun navigateToFolder(breadcrumb: PikoPathBreadcrumb) {
-        _folderStackFlow.value = if (breadcrumb.id.isEmpty()) {
-            listOf(ROOT_BREADCRUMB)
-        } else {
-            listOf(ROOT_BREADCRUMB, breadcrumb)
-        }
-        forgetFoldersOutsideStack()
+        moveTo(if (breadcrumb.id.isEmpty()) listOf(ROOT_BREADCRUMB) else listOf(ROOT_BREADCRUMB, breadcrumb))
     }
 
     fun popFolder(): PikoPathBreadcrumb? {
-        var popped: PikoPathBreadcrumb? = null
-        _folderStackFlow.update { stack ->
-            if (stack.size <= 1) return null
-            popped = stack.last()
-            stack.dropLast(1)
-        }
-        forgetFoldersOutsideStack()
-        return popped
+        val stack = _folderStackFlow.value
+        if (stack.size <= 1) return null
+        moveTo(stack.dropLast(1))
+        return stack.last()
     }
 
     suspend fun listFiles(
@@ -582,5 +616,24 @@ open class PikoDriveRepository(
 
         // PikPak 各端自动建的保存目录名不一，官方客户端建过的也算
         private val MY_PACKS_FOLDER_NAMES = setOf("my pack", "my packs", "我的资源", "我的离线")
+    }
+}
+
+/**
+ * 网盘页的浏览历史。[back] 与 [forward] 的末尾是离眼下最近的一步，各存一条完整路径。
+ * 最多记 [LIMIT] 步，再早的丢掉。
+ */
+data class FolderHistory(
+    val back: List<List<PikoPathBreadcrumb>> = emptyList(),
+    val forward: List<List<PikoPathBreadcrumb>> = emptyList(),
+) {
+    val canGoBack: Boolean get() = back.isNotEmpty()
+    val canGoForward: Boolean get() = forward.isNotEmpty()
+
+    /** 从 [previous] 走开了：它进后退，前进作废。 */
+    fun visited(previous: List<PikoPathBreadcrumb>) = FolderHistory(back = (back + listOf(previous)).takeLast(LIMIT), forward = emptyList())
+
+    companion object {
+        const val LIMIT = 50
     }
 }

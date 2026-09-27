@@ -312,7 +312,7 @@ class DriveScreenState(
         if (stack.isEmpty()) return
         // 栈顶没变时栈的监听不会触发，这一次加载由这里补上
         val unchanged = stack.last().id == activeFolderId
-        driveRepo.updateFolderStack(stack)
+        driveRepo.restoreFolderStack(stack)
         if (unchanged) onFolderChanged()
     }
 
@@ -390,6 +390,13 @@ class DriveScreenState(
     }
 
     fun navigateUp(): Boolean = driveRepo.popFolder() != null
+
+    /** 浏览历史里的后退与前进，见 PikoDriveRepository.historyFlow。 */
+    val history get() = driveRepo.historyFlow
+
+    fun goBack(): Boolean = driveRepo.goBack()
+
+    fun goForward(): Boolean = driveRepo.goForward()
 
     fun navigateToBreadcrumb(index: Int) {
         driveRepo.popToBreadcrumb(index)

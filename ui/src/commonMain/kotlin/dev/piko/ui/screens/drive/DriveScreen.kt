@@ -23,6 +23,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.outlined.Bolt
@@ -79,6 +80,10 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.isBackPressed
+import androidx.compose.ui.input.pointer.isForwardPressed
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -94,7 +99,10 @@ import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.InstantSaveOutcome
 import dev.piko.shared.upload.UploadSelection
 import dev.piko.shared.upload.isUploading
+import dev.piko.ui.adaptive.WidthClass
+import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.components.PikoSheet
+import dev.piko.ui.platform.ShortcutModifier
 import dev.piko.ui.screens.share.ShareDialog
 import dev.piko.ui.screens.rename.BatchRenameDialog
 import dev.piko.ui.LocalPikoServices
@@ -456,7 +464,9 @@ fun DriveScreen(
     // 桌面快捷键。挂在页面根上的 onKeyEvent 收的是冒泡上来的事件：搜索框有焦点时，
     // 退格与 Ctrl+A 先由输入框处理，不会误删文件或全选列表
     val shortcutFocus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { runCatching { shortcutFocus.requestFocus() } }
+    // 换目录后再要一次：点进文件夹时焦点在被点的那一项上，它随旧列表一起没了，焦点落空，
+    // 此后 Ctrl+F、Alt+← 这些快捷键都没有地方收
+    LaunchedEffect(activeFolderId) { runCatching { shortcutFocus.requestFocus() } }
     fun handleShortcut(event: KeyEvent): Boolean {
         if (event.type != KeyEventType.KeyDown) return false
         val arrow = when (event.key) {
@@ -511,7 +521,10 @@ fun DriveScreen(
                     targets.size > 1 -> batchRenameTargets = targets
                 }
             }
-            ((event.key == Key.Backspace && !primary) || (event.isAltPressed && event.key == Key.DirectionLeft)) &&
+            // 后退与前进走浏览历史（Alt+←/→，mac 上 ⌘[ 与 ⌘]），上一级是 Alt+↑ 与退格，与资源管理器、Finder 相同
+            (event.isAltPressed && event.key == Key.DirectionLeft) || (primary && event.key == Key.LeftBracket) -> state.goBack()
+            (event.isAltPressed && event.key == Key.DirectionRight) || (primary && event.key == Key.RightBracket) -> state.goForward()
+            ((event.key == Key.Backspace && !primary) || (event.isAltPressed && event.key == Key.DirectionUp)) &&
                 folderStack.size > 1 -> state.navigateUp()
             else -> return false
         }
@@ -521,10 +534,14 @@ fun DriveScreen(
     // 列表滚动后顶栏换上填充色与内容分开，M3 app bar 规范的滚动态
     val topBarScrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
 
+    // 宽窗口的顶栏是整条路径加后退与前进，照资源管理器；窄屏仍是目录名作标题、上级另成一行面包屑
+    val pathInTopBar = currentWidthClass() != WidthClass.Compact
+    val history by state.history.collectAsStateWithLifecycle()
+
     // 当前目录名已在顶栏标题上，面包屑只列上级。一级目录的唯一上级是根，返回键已足够
     val ancestorCrumbs = folderStack.drop(1).dropLast(1)
     val breadcrumbs: @Composable () -> Unit = {
-        if (ancestorCrumbs.isNotEmpty()) {
+        if (ancestorCrumbs.isNotEmpty() && !pathInTopBar) {
             BreadcrumbBar(
                 breadcrumbs = ancestorCrumbs,
                 endsWithCurrent = false,
@@ -540,6 +557,19 @@ fun DriveScreen(
             .focusRequester(shortcutFocus)
             .focusable()
             .onKeyEvent(::handleShortcut)
+            // 鼠标侧键是后退与前进，与资源管理器、浏览器相同
+            .pointerInput(state) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        if (event.type != PointerEventType.Press) continue
+                        when {
+                            event.buttons.isBackPressed -> state.goBack()
+                            event.buttons.isForwardPressed -> state.goForward()
+                        }
+                    }
+                }
+            }
             .nestedScroll(topBarScrollBehavior.nestedScrollConnection),
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         bottomBar = {
@@ -600,10 +630,32 @@ fun DriveScreen(
                 else -> DriveBrowseTopBar(
                     scrollBehavior = topBarScrollBehavior,
                     title = activeFolder.name,
+                    path = if (pathInTopBar) {
+                        { DrivePathTitle(folderStack, onNavigate = { index -> state.navigateToBreadcrumb(index) }) }
+                    } else null,
                     currentSection = currentSection,
                     sections = state.sectionHeaders.map { it.value.menuLabel },
                     onSectionSelected = ::jumpToSection,
-                    navigationIcon = if (folderStack.size > 1) {
+                    navigationIcon = if (pathInTopBar) {
+                        {
+                            Row {
+                                TooltipIconButton(
+                                    icon = Icons.AutoMirrored.Outlined.ArrowBack,
+                                    label = "后退",
+                                    onClick = { state.goBack() },
+                                    shortcut = if (platform.shortcutModifier == ShortcutModifier.Command) "⌘[" else "Alt+←",
+                                    enabled = history.canGoBack,
+                                )
+                                TooltipIconButton(
+                                    icon = Icons.AutoMirrored.Outlined.ArrowForward,
+                                    label = "前进",
+                                    onClick = { state.goForward() },
+                                    shortcut = if (platform.shortcutModifier == ShortcutModifier.Command) "⌘]" else "Alt+→",
+                                    enabled = history.canGoForward,
+                                )
+                            }
+                        }
+                    } else if (folderStack.size > 1) {
                         {
                             TooltipIconButton(
                                 icon = Icons.AutoMirrored.Outlined.ArrowBack,
