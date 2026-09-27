@@ -60,12 +60,14 @@ private val standardSet = listOf(
     // 信息流：宽窗口的侧栏、窄窗口的全屏、弹出到独立窗口后主窗口的样子
     Shot("feed-panel-1440x900", steps = listOf(Step.Click("信息流"), Step.Pump(1_000))),
     Shot("feed-full-760x800", 760, 800, steps = listOf(Step.Click("信息流"), Step.Pump(1_000))),
+    // 侧边栏里点星标文件夹：只亮它，「文件」不再亮
+    Shot("sidebar-starred-1440x900", steps = listOf(Step.Pump(1_000), Step.Click("动画"), Step.Wait("SPs"))),
     // 在文件夹上订阅信息流；此后网盘里进出不换掉它
     Shot("feed-subscribe-1440x900", steps = listOf(Step.Click("电影", PointerButton.Secondary), Step.Pump(500), Step.Click("在信息流中刷"), Step.Pump(1_000))),
     Shot("feed-popped-1440x900", steps = listOf(Step.Click("信息流"), Step.Pump(1_000), Step.Click("在独立窗口播放"), Step.Pump(800))),
     Shot("transfers-1440x900", steps = listOf(Step.Click("传输"), Step.Wait("Dandadan"))),
     Shot("profile-1440x900", steps = listOf(Step.Click("我的"), Step.Pump(1_000))),
-    Shot("profile-starred-1440x900", steps = listOf(Step.Click("我的"), Step.Pump(1_000), Step.Click("星标"), Step.Wait("Dune"))),
+    Shot("profile-starred-1440x900", steps = listOf(Step.Click("我的"), Step.Pump(1_000), Step.Click("已加星标的文件与文件夹"), Step.Wait("Dune"))),
     Shot("profile-trash-1440x900", steps = listOf(Step.Click("我的"), Step.Pump(1_000), Step.Click("回收站"), Step.Wait("old-backup"))),
     Shot("profile-settings-1440x900", steps = listOf(Step.Click("我的"), Step.Pump(1_000), Step.Click("设置"), Step.Pump(1_000))),
     Shot("profile-settings-760x800", 760, 800, steps = listOf(Step.Click("我的"), Step.Pump(1_000), Step.Click("设置"), Step.Pump(1_000))),

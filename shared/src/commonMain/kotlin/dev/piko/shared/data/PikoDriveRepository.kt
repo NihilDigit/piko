@@ -119,7 +119,7 @@ open class PikoDriveRepository(
 
     private val _starredChanges = MutableStateFlow(0)
 
-    /** 经 [setStarred] 改过星标就加一，列星标的地方据此重新取。 */
+    /** 经 [setStarred] 改过星标、登录或换号时加一，列星标的地方据此重新取。 */
     val starredChanges: StateFlow<Int> = _starredChanges.asStateFlow()
 
     /** 把栈换成 [next]，换了才把原来的位置记进后退、清掉前进。 */
@@ -231,6 +231,8 @@ open class PikoDriveRepository(
             clientManager.currentClient.collect {
                 childContents.switchAccount(it?.account)
                 recentFolders.switchAccount(it?.account)
+                // 列星标的地方可能早于登录就取过一次，失败了；登录或换号后再取
+                _starredChanges.update { n -> n + 1 }
             }
         }
     }

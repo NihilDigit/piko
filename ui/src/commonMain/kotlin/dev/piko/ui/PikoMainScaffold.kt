@@ -1,5 +1,19 @@
 package dev.piko.ui
 
+import dev.piko.ui.screens.drive.highlightsStarred
+import dev.piko.ui.screens.drive.SidebarWidth
+import dev.piko.ui.screens.drive.SidebarItem
+import dev.piko.ui.screens.drive.QuickAccessSections
+import dev.piko.shared.state.QuickAccessState
+import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteType
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -322,6 +336,7 @@ fun PikoMainScaffold(
     // 网盘里进进出出、从信息流里定位到某个文件，都不换掉正在刷的这一批。
     // 头一回打开还没订阅过，取眼前的文件夹；此后是上次刷的那个，重启后也接着
     val folderStack by services.driveRepository.folderStackFlow.collectAsStateWithLifecycle()
+    val quickAccess = remember { QuickAccessState(services.driveRepository, coroutineScope) }
     // 头一次 open 完成前会话里是空的，此时组合 ClipFeedScreen 会闪一下「没有可播放的视频」
     var feedOpened by remember { mutableStateOf(false) }
     LaunchedEffect(feedShown && !feedPoppedOut) {
@@ -472,7 +487,10 @@ fun PikoMainScaffold(
             }
         }
 
-        Box(Modifier.fillMaxSize()) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            // 大窗口换成一整条侧边栏：上面是三个去处，下面是网盘的快捷访问，照 Finder 的边栏与资源管理器的导航窗格。
+            // 不在导航栏旁边另起一栏：两栏并排都是竖着的导航，选中态各亮一处，看不出谁管谁
+            val sidebar = maxWidth >= SidebarMinWindowWidth
             // 若当前不在文件主页，按下返回键优先回到文件页
             BackHandler(enabled = currentTab != MainTab.FILES && !feedFullScreen) {
                 currentTab = MainTab.FILES
@@ -481,7 +499,11 @@ fun PikoMainScaffold(
             // 导航栏的款式交给库按窗口挑：compact 是 64dp 的 ShortNavigationBar，更宽是收起态的
             // WideNavigationRail。不用旧重载的 calculateFromAdaptiveInfo，它给的是 80dp 的 NavigationBar
             // 与 NavigationRail，M3 Expressive 已把这两款标为不再推荐
-            val navigationSuiteType = NavigationSuiteScaffoldDefaults.navigationSuiteType(currentWindowAdaptiveInfo())
+            val navigationSuiteType = if (sidebar) {
+                NavigationSuiteType.None
+            } else {
+                NavigationSuiteScaffoldDefaults.navigationSuiteType(currentWindowAdaptiveInfo())
+            }
             NavigationSuiteScaffold(
                 navigationItems = {
                     MainTab.entries.forEach { tab ->
@@ -500,7 +522,25 @@ fun PikoMainScaffold(
                 navigationSuiteType = navigationSuiteType,
                 // 侧栏的三格居中：平板横握时手在两侧中部，贴顶的话要伸到最远处
                 navigationItemVerticalArrangement = Arrangement.Center,
-                content = mainContent,
+                content = if (sidebar) {
+                    {
+                        Row(Modifier.fillMaxSize()) {
+                            MainSidebar(
+                                currentTab = currentTab,
+                                onTabClick = ::onTabClick,
+                                quickAccess = quickAccess,
+                                folderStack = folderStack,
+                                onQuickAccessOpened = {
+                                    resetToHome()
+                                    currentTab = MainTab.FILES
+                                },
+                            )
+                            Box(Modifier.weight(1f).fillMaxHeight()) { mainContent() }
+                        }
+                    }
+                } else {
+                    mainContent
+                },
             )
 
             // 全屏形态的信息流：盖住网盘页连同导航栏。不进返回栈，形态由窗口宽度随时推出来，窗口拉宽即换成侧栏。
@@ -645,4 +685,42 @@ private fun MainTab.icon(selected: Boolean) = when (this) {
     MainTab.FILES -> if (selected) Icons.Filled.Folder else Icons.Outlined.Folder
     MainTab.TRANSFERS -> if (selected) Icons.Filled.SyncAlt else Icons.Outlined.SyncAlt
     MainTab.SETTINGS -> if (selected) Icons.Filled.Person else Icons.Outlined.Person
+}
+
+/** 窗口至少这么宽才换成侧边栏，M3 的 large 档：扣掉它之后网盘页开着信息流侧栏仍排得下两列。 */
+private val SidebarMinWindowWidth = 1200.dp
+
+@Composable
+private fun MainSidebar(
+    currentTab: MainTab,
+    onTabClick: (MainTab) -> Unit,
+    quickAccess: QuickAccessState,
+    folderStack: List<PikoPathBreadcrumb>,
+    onQuickAccessOpened: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .width(SidebarWidth)
+            .fillMaxHeight()
+            .verticalScroll(rememberScrollState())
+            .padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 16.dp),
+    ) {
+        MainTab.entries.forEach { tab ->
+            val selected = currentTab == tab
+            SidebarItem(
+                icon = tab.icon(selected),
+                label = tab.title,
+                // 人在某个星标文件夹里时亮的是星标那一项，「文件」只加粗，不同时亮两处
+                selected = selected && !(tab == MainTab.FILES && quickAccess.highlightsStarred(folderStack)),
+                bold = selected,
+                onClick = { onTabClick(tab) },
+            )
+        }
+        QuickAccessSections(
+            state = quickAccess,
+            currentStack = folderStack,
+            onFilesTab = currentTab == MainTab.FILES,
+            onOpened = onQuickAccessOpened,
+        )
+    }
 }

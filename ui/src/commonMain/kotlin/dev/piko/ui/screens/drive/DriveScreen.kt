@@ -1,7 +1,5 @@
 package dev.piko.ui.screens.drive
 
-import dev.piko.shared.state.QuickAccessState
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
@@ -543,8 +541,7 @@ fun DriveScreen(
     val topBarScrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
 
     // 宽窗口的顶栏是整条路径加后退与前进，照资源管理器；窄屏仍是目录名作标题、上级另成一行面包屑
-    val widthClass = currentWidthClass()
-    val pathInTopBar = widthClass != WidthClass.Compact
+    val pathInTopBar = currentWidthClass() != WidthClass.Compact
     val history by state.history.collectAsStateWithLifecycle()
 
     // 当前目录名已在顶栏标题上，面包屑只列上级。一级目录的唯一上级是根，返回键已足够
@@ -560,10 +557,8 @@ fun DriveScreen(
         }
     }
 
-    // 宽窗口左侧放快捷栏，资源管理器的导航窗格。信息流侧栏开着、剩下的不够宽时收起，列表不被挤成一列。
-    // 焦点与按键挂在外层：里面是 BoxWithConstraints 的子组合，比外面的 LaunchedEffect 晚挂上，首帧要焦点时找不到它
-    BoxWithConstraints(
-        modifier
+    Scaffold(
+        modifier = modifier
             .fillMaxSize()
             .focusRequester(shortcutFocus)
             .focusable()
@@ -580,301 +575,285 @@ fun DriveScreen(
                         }
                     }
                 }
-            },
-    ) {
-        val showQuickAccess = widthClass == WidthClass.Expanded && maxWidth >= QuickAccessMinDriveWidth
-        Row(Modifier.fillMaxSize()) {
-            if (showQuickAccess) {
-                val quickAccess = remember(driveRepo) { QuickAccessState(driveRepo, scope) }
-                LaunchedEffect(quickAccess) {
-                    quickAccess.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
-                }
-                QuickAccessPane(quickAccess, folderStack)
             }
-            Scaffold(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxHeight()
-                    .nestedScroll(topBarScrollBehavior.nestedScrollConnection),
-                snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
-                bottomBar = {
-                    Column {
-                        // 队列为空时不占位
-                        ArchiveExtractStatus(archiveSession, Modifier.fillMaxWidth())
-                        if (instantState != null && !instantSession.isSheetOpen) {
-                            InstantSheetHandle(
-                                state = instantState,
-                                onExpand = instantSession::reopen,
-                                onClose = instantSession::end,
-                            )
+            .nestedScroll(topBarScrollBehavior.nestedScrollConnection),
+        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
+        bottomBar = {
+            Column {
+                // 队列为空时不占位
+                ArchiveExtractStatus(archiveSession, Modifier.fillMaxWidth())
+                if (instantState != null && !instantSession.isSheetOpen) {
+                    InstantSheetHandle(
+                        state = instantState,
+                        onExpand = instantSession::reopen,
+                        onClose = instantSession::end,
+                    )
+                }
+                if (duplicateState != null && !duplicateSession.isSheetOpen) {
+                    DuplicatesSheetHandle(
+                        state = duplicateState,
+                        onExpand = duplicateSession::reopen,
+                        onClose = duplicateSession::end,
+                    )
+                }
+            }
+        },
+        topBar = {
+            when {
+                state.isSelectionMode -> DriveSelectionTopBar(
+                    scrollBehavior = topBarScrollBehavior,
+                    selectedCount = state.selectedFileIds.size,
+                    onExit = { state.exitSelection() },
+                    onSelectAll = { state.toggleSelectAll() },
+                    onMove = { moveTargetIds = state.selectedFileIds.toSet() },
+                    onCopy = { copyTargetIds = state.selectedFileIds.toSet() },
+                    onTrash = { state.moveToTrash(state.selectedFileIds.toList()) },
+                    onExtract = selectedArchives.takeIf { it.isNotEmpty() }?.let { archives ->
+                        {
+                            archiveSession.extract(archives)
+                            state.exitSelection()
                         }
-                        if (duplicateState != null && !duplicateSession.isSheetOpen) {
-                            DuplicatesSheetHandle(
-                                state = duplicateState,
-                                onExpand = duplicateSession::reopen,
-                                onClose = duplicateSession::end,
-                            )
-                        }
-                    }
-                },
-                topBar = {
-                    when {
-                        state.isSelectionMode -> DriveSelectionTopBar(
-                            scrollBehavior = topBarScrollBehavior,
-                            selectedCount = state.selectedFileIds.size,
-                            onExit = { state.exitSelection() },
-                            onSelectAll = { state.toggleSelectAll() },
-                            onMove = { moveTargetIds = state.selectedFileIds.toSet() },
-                            onCopy = { copyTargetIds = state.selectedFileIds.toSet() },
-                            onTrash = { state.moveToTrash(state.selectedFileIds.toList()) },
-                            onExtract = selectedArchives.takeIf { it.isNotEmpty() }?.let { archives ->
-                                {
-                                    archiveSession.extract(archives)
-                                    state.exitSelection()
-                                }
-                            },
-                            onShare = {
-                                // 按列表顺序：服务端取第一项的名字作分享标题
-                                shareTargets = state.displayedFiles.filter { it.id in state.selectedFileIds && !it.isUploading }
-                            },
-                            onBatchRename = {
-                                batchRenameTargets = state.displayedFiles.filter { it.id in state.selectedFileIds && !it.isUploading }
-                            },
-                        )
+                    },
+                    onShare = {
+                        // 按列表顺序：服务端取第一项的名字作分享标题
+                        shareTargets = state.displayedFiles.filter { it.id in state.selectedFileIds && !it.isUploading }
+                    },
+                    onBatchRename = {
+                        batchRenameTargets = state.displayedFiles.filter { it.id in state.selectedFileIds && !it.isUploading }
+                    },
+                )
 
-                        isSearchOpen -> DriveSearchTopBar(
-                            query = state.searchQuery,
-                            onQueryChange = { state.updateSearchQuery(it) },
-                            onClose = { closeSearch() },
-                            isGlobalSearching = state.isGlobalSearching,
-                            isGlobalSearchActive = state.isGlobalSearchActive,
-                            onStartGlobalSearch = { state.startGlobalSearch() },
-                            onCancelGlobalSearch = { state.cancelGlobalSearch() },
-                        )
+                isSearchOpen -> DriveSearchTopBar(
+                    query = state.searchQuery,
+                    onQueryChange = { state.updateSearchQuery(it) },
+                    onClose = { closeSearch() },
+                    isGlobalSearching = state.isGlobalSearching,
+                    isGlobalSearchActive = state.isGlobalSearchActive,
+                    onStartGlobalSearch = { state.startGlobalSearch() },
+                    onCancelGlobalSearch = { state.cancelGlobalSearch() },
+                )
 
-                        else -> DriveBrowseTopBar(
-                            scrollBehavior = topBarScrollBehavior,
-                            title = activeFolder.name,
-                            path = if (pathInTopBar) {
-                                { DrivePathTitle(folderStack, onNavigate = { index -> state.navigateToBreadcrumb(index) }) }
-                            } else null,
-                            currentSection = currentSection,
-                            sections = state.sectionHeaders.map { it.value.menuLabel },
-                            onSectionSelected = ::jumpToSection,
-                            navigationIcon = if (pathInTopBar) {
-                                {
-                                    Row {
-                                        TooltipIconButton(
-                                            icon = Icons.AutoMirrored.Outlined.ArrowBack,
-                                            label = "后退",
-                                            onClick = { state.goBack() },
-                                            shortcut = if (platform.shortcutModifier == ShortcutModifier.Command) "⌘[" else "Alt+←",
-                                            enabled = history.canGoBack,
-                                        )
-                                        TooltipIconButton(
-                                            icon = Icons.AutoMirrored.Outlined.ArrowForward,
-                                            label = "前进",
-                                            onClick = { state.goForward() },
-                                            shortcut = if (platform.shortcutModifier == ShortcutModifier.Command) "⌘]" else "Alt+→",
-                                            enabled = history.canGoForward,
-                                        )
-                                    }
-                                }
-                            } else if (folderStack.size > 1) {
-                                {
-                                    TooltipIconButton(
-                                        icon = Icons.AutoMirrored.Outlined.ArrowBack,
-                                        label = "返回上一级",
-                                        onClick = { state.navigateUp() },
-                                        shortcut = "Backspace",
-                                    )
-                                }
-                            } else null,
-                            actions = {
-                                // 顶栏只留信息流与搜索：M3 顶栏放一到两个动作，新建与秒传同属「往网盘里添东西」，
-                                // 一起收进 FAB 菜单；排序与视图切换作用于列表，放在列表页眉。
-                                // 片段靠平台的预览播放后端放，没有它的平台不给信息流
-                                if (onFeedShownChange != null && platform.videoPreview != null) {
-                                    FeedToggle(shown = feedShown, onShownChange = onFeedShownChange)
-                                }
-                                TooltipIconButton(Icons.Outlined.Search, "搜索", { isSearchOpen = true }, shortcut = platform.shortcutModifier.label("F"))
-                                if (showsRefreshButton()) {
-                                    TooltipIconButton(Icons.Outlined.Refresh, "刷新", { state.load(refresh = true) }, shortcut = "F5")
-                                }
-                            },
-                        )
-                    }
-                },
-                floatingActionButton = {
-                    if (!state.isSelectionMode) {
-                        // FAB 菜单自带 16dp 的右边距与下边距，Scaffold 的 FAB 槽位又留了 16dp，
-                        // 不抵消的话按钮离屏幕角是 32dp。偏移而不是挪出槽位，系统栏避让仍由 Scaffold 处理
-                        FloatingActionButtonMenu(
-                            expanded = isFabMenuExpanded,
-                            modifier = Modifier.offset(x = 16.dp, y = 16.dp),
-                            button = {
-                                ToggleFloatingActionButton(
-                                    checked = isFabMenuExpanded,
-                                    onCheckedChange = { isFabMenuExpanded = it },
-                                ) {
-                                    val icon by remember { derivedStateOf { if (checkedProgress > 0.5f) Icons.Filled.Close else Icons.Filled.Add } }
-                                    Icon(
-                                        imageVector = icon,
-                                        contentDescription = if (isFabMenuExpanded) "收起" else "添加",
-                                        modifier = Modifier.animateIcon({ checkedProgress }),
-                                    )
-                                }
-                            },
-                        ) {
-                            FloatingActionButtonMenuItem(
-                                onClick = {
-                                    isFabMenuExpanded = false
-                                    instantSession.start()
-                                },
-                                icon = { Icon(Icons.Outlined.Bolt, contentDescription = null) },
-                                text = { Text("添加链接") },
-                            )
-                            FloatingActionButtonMenuItem(
-                                onClick = {
-                                    isFabMenuExpanded = false
-                                    newFolderName = ""
-                                    showNewFolderDialog = true
-                                },
-                                icon = { Icon(Icons.Outlined.CreateNewFolder, contentDescription = null) },
-                                text = { Text("新建文件夹") },
-                            )
-                            FloatingActionButtonMenuItem(
-                                onClick = {
-                                    isFabMenuExpanded = false
-                                    pickFiles()
-                                },
-                                icon = { Icon(Icons.Outlined.UploadFile, contentDescription = null) },
-                                text = { Text("上传文件") },
-                            )
-                            FloatingActionButtonMenuItem(
-                                onClick = {
-                                    isFabMenuExpanded = false
-                                    pickFolder()
-                                },
-                                icon = { Icon(Icons.Outlined.DriveFolderUpload, contentDescription = null) },
-                                text = { Text("上传文件夹") },
-                            )
-                            // 搜索结果不是一个目录，查重的范围说不清，这时不给入口
-                            if (searchSummary(state, state.displayedFiles) == null) {
-                                FloatingActionButtonMenuItem(
-                                    onClick = {
-                                        isFabMenuExpanded = false
-                                        duplicateSession.open(activeFolder)
-                                    },
-                                    icon = { Icon(Icons.Outlined.FileCopy, contentDescription = null) },
-                                    text = { Text("查找重复") },
+                else -> DriveBrowseTopBar(
+                    scrollBehavior = topBarScrollBehavior,
+                    title = activeFolder.name,
+                    path = if (pathInTopBar) {
+                        { DrivePathTitle(folderStack, onNavigate = { index -> state.navigateToBreadcrumb(index) }) }
+                    } else null,
+                    currentSection = currentSection,
+                    sections = state.sectionHeaders.map { it.value.menuLabel },
+                    onSectionSelected = ::jumpToSection,
+                    navigationIcon = if (pathInTopBar) {
+                        {
+                            Row {
+                                TooltipIconButton(
+                                    icon = Icons.AutoMirrored.Outlined.ArrowBack,
+                                    label = "后退",
+                                    onClick = { state.goBack() },
+                                    shortcut = if (platform.shortcutModifier == ShortcutModifier.Command) "⌘[" else "Alt+←",
+                                    enabled = history.canGoBack,
+                                )
+                                TooltipIconButton(
+                                    icon = Icons.AutoMirrored.Outlined.ArrowForward,
+                                    label = "前进",
+                                    onClick = { state.goForward() },
+                                    shortcut = if (platform.shortcutModifier == ShortcutModifier.Command) "⌘]" else "Alt+→",
+                                    enabled = history.canGoForward,
                                 )
                             }
                         }
-                    }
-                },
-            ) { innerPadding ->
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(top = innerPadding.calculateTopPadding())
-                        .consumeWindowInsets(innerPadding),
+                    } else if (folderStack.size > 1) {
+                        {
+                            TooltipIconButton(
+                                icon = Icons.AutoMirrored.Outlined.ArrowBack,
+                                label = "返回上一级",
+                                onClick = { state.navigateUp() },
+                                shortcut = "Backspace",
+                            )
+                        }
+                    } else null,
+                    actions = {
+                        // 顶栏只留信息流与搜索：M3 顶栏放一到两个动作，新建与秒传同属「往网盘里添东西」，
+                        // 一起收进 FAB 菜单；排序与视图切换作用于列表，放在列表页眉。
+                        // 片段靠平台的预览播放后端放，没有它的平台不给信息流
+                        if (onFeedShownChange != null && platform.videoPreview != null) {
+                            FeedToggle(shown = feedShown, onShownChange = onFeedShownChange)
+                        }
+                        TooltipIconButton(Icons.Outlined.Search, "搜索", { isSearchOpen = true }, shortcut = platform.shortcutModifier.label("F"))
+                        if (showsRefreshButton()) {
+                            TooltipIconButton(Icons.Outlined.Refresh, "刷新", { state.load(refresh = true) }, shortcut = "F5")
+                        }
+                    },
+                )
+            }
+        },
+        floatingActionButton = {
+            if (!state.isSelectionMode) {
+                // FAB 菜单自带 16dp 的右边距与下边距，Scaffold 的 FAB 槽位又留了 16dp，
+                // 不抵消的话按钮离屏幕角是 32dp。偏移而不是挪出槽位，系统栏避让仍由 Scaffold 处理
+                FloatingActionButtonMenu(
+                    expanded = isFabMenuExpanded,
+                    modifier = Modifier.offset(x = 16.dp, y = 16.dp),
+                    button = {
+                        ToggleFloatingActionButton(
+                            checked = isFabMenuExpanded,
+                            onCheckedChange = { isFabMenuExpanded = it },
+                        ) {
+                            val icon by remember { derivedStateOf { if (checkedProgress > 0.5f) Icons.Filled.Close else Icons.Filled.Add } }
+                            Icon(
+                                imageVector = icon,
+                                contentDescription = if (isFabMenuExpanded) "收起" else "添加",
+                                modifier = Modifier.animateIcon({ checkedProgress }),
+                            )
+                        }
+                    },
                 ) {
-                    // 首屏三态。换的是同一块区域的三种填充，没有方向，AnimatedContent 还会多一次尺寸过渡；
-                    // 淡入淡出属于效果而非位移，取 effects 档。已有内容时的刷新走下拉，不回到骨架
-                    val phase = when {
-                        state.isLoading -> DrivePhase.Loading
-                        // 只认目录里确实什么都没读到：files 未经搜索与折叠筛选，筛空了仍是内容态
-                        state.files.isEmpty() && state.loadError != null -> DrivePhase.Failed(state.loadError.orEmpty())
-                        else -> DrivePhase.Content
+                    FloatingActionButtonMenuItem(
+                        onClick = {
+                            isFabMenuExpanded = false
+                            instantSession.start()
+                        },
+                        icon = { Icon(Icons.Outlined.Bolt, contentDescription = null) },
+                        text = { Text("添加链接") },
+                    )
+                    FloatingActionButtonMenuItem(
+                        onClick = {
+                            isFabMenuExpanded = false
+                            newFolderName = ""
+                            showNewFolderDialog = true
+                        },
+                        icon = { Icon(Icons.Outlined.CreateNewFolder, contentDescription = null) },
+                        text = { Text("新建文件夹") },
+                    )
+                    FloatingActionButtonMenuItem(
+                        onClick = {
+                            isFabMenuExpanded = false
+                            pickFiles()
+                        },
+                        icon = { Icon(Icons.Outlined.UploadFile, contentDescription = null) },
+                        text = { Text("上传文件") },
+                    )
+                    FloatingActionButtonMenuItem(
+                        onClick = {
+                            isFabMenuExpanded = false
+                            pickFolder()
+                        },
+                        icon = { Icon(Icons.Outlined.DriveFolderUpload, contentDescription = null) },
+                        text = { Text("上传文件夹") },
+                    )
+                    // 搜索结果不是一个目录，查重的范围说不清，这时不给入口
+                    if (searchSummary(state, state.displayedFiles) == null) {
+                        FloatingActionButtonMenuItem(
+                            onClick = {
+                                isFabMenuExpanded = false
+                                duplicateSession.open(activeFolder)
+                            },
+                            icon = { Icon(Icons.Outlined.FileCopy, contentDescription = null) },
+                            text = { Text("查找重复") },
+                        )
                     }
-                    Crossfade(
-                        targetState = phase,
-                        animationSpec = MaterialTheme.motionScheme.defaultEffectsSpec(),
-                        label = "drive_phase",
-                    ) { current ->
-                        if (current is DrivePhase.Loading) {
-                            Column(modifier = Modifier.fillMaxSize()) {
-                                // 面包屑与页眉的位置先空出来，内容换上时各行不挪
-                                breadcrumbs()
-                                Spacer(modifier = Modifier.height(DriveListHeaderHeight))
-                                DriveGridSkeleton(viewMode = viewMode, modifier = Modifier.weight(1f))
-                            }
-                            return@Crossfade
+                }
+            }
+        },
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(top = innerPadding.calculateTopPadding())
+                .consumeWindowInsets(innerPadding),
+        ) {
+            // 首屏三态。换的是同一块区域的三种填充，没有方向，AnimatedContent 还会多一次尺寸过渡；
+            // 淡入淡出属于效果而非位移，取 effects 档。已有内容时的刷新走下拉，不回到骨架
+            val phase = when {
+                state.isLoading -> DrivePhase.Loading
+                // 只认目录里确实什么都没读到：files 未经搜索与折叠筛选，筛空了仍是内容态
+                state.files.isEmpty() && state.loadError != null -> DrivePhase.Failed(state.loadError.orEmpty())
+                else -> DrivePhase.Content
+            }
+            Crossfade(
+                targetState = phase,
+                animationSpec = MaterialTheme.motionScheme.defaultEffectsSpec(),
+                label = "drive_phase",
+            ) { current ->
+                if (current is DrivePhase.Loading) {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        // 面包屑与页眉的位置先空出来，内容换上时各行不挪
+                        breadcrumbs()
+                        Spacer(modifier = Modifier.height(DriveListHeaderHeight))
+                        DriveGridSkeleton(viewMode = viewMode, modifier = Modifier.weight(1f))
+                    }
+                    return@Crossfade
+                }
+                if (current is DrivePhase.Failed) {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        breadcrumbs()
+                        // 不带 refresh：重新走一次首载，重试期间回到骨架，而不是停在错误页上没有反馈
+                        PikoErrorState(
+                            message = current.message,
+                            onRetry = { state.load() },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    return@Crossfade
+                }
+                RefreshBox(
+                    isRefreshing = state.isRefreshing,
+                    onRefresh = { state.load(refresh = true) },
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        // 加载失败时列表留在上一次的内容上。Snackbar 弹完就没了，
+                        // 这条横幅常驻到重新加载成功，否则用户无从知道眼前是旧数据。
+                        state.loadError?.let { reason ->
+                            StaleDataBanner(reason = reason, onRetry = { state.load(refresh = true) })
                         }
-                        if (current is DrivePhase.Failed) {
-                            Column(modifier = Modifier.fillMaxSize()) {
-                                breadcrumbs()
-                                // 不带 refresh：重新走一次首载，重试期间回到骨架，而不是停在错误页上没有反馈
-                                PikoErrorState(
-                                    message = current.message,
-                                    onRetry = { state.load() },
-                                    modifier = Modifier.weight(1f),
-                                )
-                            }
-                            return@Crossfade
-                        }
-                        RefreshBox(
-                            isRefreshing = state.isRefreshing,
-                            onRefresh = { state.load(refresh = true) },
-                            modifier = Modifier.fillMaxSize(),
-                        ) {
-                            Column(modifier = Modifier.fillMaxSize()) {
-                                // 加载失败时列表留在上一次的内容上。Snackbar 弹完就没了，
-                                // 这条横幅常驻到重新加载成功，否则用户无从知道眼前是旧数据。
-                                state.loadError?.let { reason ->
-                                    StaleDataBanner(reason = reason, onRetry = { state.load(refresh = true) })
-                                }
 
-                                val bottomPadding = innerPadding.calculateBottomPadding() + FabClearance
-                                // 筛选或图库视图下为空时仍给列表：空目录页没有页眉，筛选撤不掉，视图也切不回去
-                                if (state.displayItems.isEmpty() && state.typeFilter == null && !state.thumbnailsOnly) {
-                                    // 空目录没有列表页眉，面包屑单独放在空状态上方
-                                    breadcrumbs()
-                                    DriveEmptyState(state = state, modifier = Modifier.weight(1f))
-                                } else {
-                                    DriveFileGrid(
-                                        items = state.displayItems,
-                                        folderView = { if (!state.isNameParsing) null else state.folderViews[it.id] },
-                                        viewMode = viewMode,
-                                        gridState = gridState,
-                                        isSelectionMode = state.isSelectionMode,
-                                        selectedIds = selectedIdSet,
-                                        highlightedIds = highlightedFileIds,
-                                        isBlurred = { isSpoilerBlurEnabled && it.id !in state.revealedFileIds },
-                                        hitLocations = state.hitLocations,
-                                        callbacks = callbacks,
-                                        bottomPadding = bottomPadding,
-                                        keyboardFocusTarget = keyboardFocusTarget,
-                                        onKeyboardFocusMoved = { keyboardFocusTarget = null },
-                                        header = {
-                                            // 面包屑随列表滚走，而不是钉在顶栏下方：顶栏滚动后换了填充色，
-                                            // 钉住的面包屑会在它下面留一条底色不同的带子
-                                            Column {
-                                                breadcrumbs()
-                                                // 起始只留 4dp：排序是 TextButton，自带 12dp 内边距，合起来图标落在 16dp
-                                                // 页边距上。末端的视图切换是 ToggleButton，没有内边距，要给足 16dp
-                                                Box(modifier = Modifier.padding(start = 4.dp, end = 16.dp)) {
-                                                    DriveListHeader(
-                                                        summary = searchSummary(state, displayedFiles),
-                                                        sortOrder = state.sortOrder,
-                                                        onSortChange = { state.changeSortOrder(it) },
-                                                        typeFilter = state.typeFilter,
-                                                        availableTypes = state.availableTypes,
-                                                        onTypeFilterChange = state::updateTypeFilter,
-                                                        viewMode = viewMode,
-                                                        onViewModeChange = { mode ->
-                                                            scope.launch { sessionManager.setDriveViewMode(mode.name) }
-                                                        },
-                                                    )
-                                                }
-                                            }
-                                        },
-                                        foldBanner = foldBanner,
-                                        modifier = Modifier.weight(1f),
-                                    )
-                                }
-                            }
+                        val bottomPadding = innerPadding.calculateBottomPadding() + FabClearance
+                        // 筛选或图库视图下为空时仍给列表：空目录页没有页眉，筛选撤不掉，视图也切不回去
+                        if (state.displayItems.isEmpty() && state.typeFilter == null && !state.thumbnailsOnly) {
+                            // 空目录没有列表页眉，面包屑单独放在空状态上方
+                            breadcrumbs()
+                            DriveEmptyState(state = state, modifier = Modifier.weight(1f))
+                        } else {
+                            DriveFileGrid(
+                                items = state.displayItems,
+                                folderView = { if (!state.isNameParsing) null else state.folderViews[it.id] },
+                                viewMode = viewMode,
+                                gridState = gridState,
+                                isSelectionMode = state.isSelectionMode,
+                                selectedIds = selectedIdSet,
+                                highlightedIds = highlightedFileIds,
+                                isBlurred = { isSpoilerBlurEnabled && it.id !in state.revealedFileIds },
+                                hitLocations = state.hitLocations,
+                                callbacks = callbacks,
+                                bottomPadding = bottomPadding,
+                                keyboardFocusTarget = keyboardFocusTarget,
+                                onKeyboardFocusMoved = { keyboardFocusTarget = null },
+                                header = {
+                                    // 面包屑随列表滚走，而不是钉在顶栏下方：顶栏滚动后换了填充色，
+                                    // 钉住的面包屑会在它下面留一条底色不同的带子
+                                    Column {
+                                        breadcrumbs()
+                                        // 起始只留 4dp：排序是 TextButton，自带 12dp 内边距，合起来图标落在 16dp
+                                        // 页边距上。末端的视图切换是 ToggleButton，没有内边距，要给足 16dp
+                                        Box(modifier = Modifier.padding(start = 4.dp, end = 16.dp)) {
+                                            DriveListHeader(
+                                                summary = searchSummary(state, displayedFiles),
+                                                sortOrder = state.sortOrder,
+                                                onSortChange = { state.changeSortOrder(it) },
+                                                typeFilter = state.typeFilter,
+                                                availableTypes = state.availableTypes,
+                                                onTypeFilterChange = state::updateTypeFilter,
+                                                viewMode = viewMode,
+                                                onViewModeChange = { mode ->
+                                                    scope.launch { sessionManager.setDriveViewMode(mode.name) }
+                                                },
+                                            )
+                                        }
+                                    }
+                                },
+                                foldBanner = foldBanner,
+                                modifier = Modifier.weight(1f),
+                            )
                         }
                     }
                 }

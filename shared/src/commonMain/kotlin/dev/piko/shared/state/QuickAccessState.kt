@@ -33,8 +33,12 @@ class QuickAccessState(
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val messages: SharedFlow<String> = _messages.asSharedFlow()
 
-    init {
-        scope.launch { driveRepo.starredChanges.collect { loadStarred() } }
+    /**
+     * 取星标，改过星标、登录或换号时重取，直到调用方取消。由显示快捷访问的界面在 LaunchedEffect 里调：
+     * 不显示的时候（手机、窄窗口）不必请求；也不放在 init 里，holder 在组合期间建出，那时启动的写入界面收不到。
+     */
+    suspend fun watchStarred() {
+        driveRepo.starredChanges.collect { loadStarred() }
     }
 
     private suspend fun loadStarred() {

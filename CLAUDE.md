@@ -91,7 +91,10 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 
 布局只看窗口宽度，不看设备：`ui/.../adaptive/WindowWidth.kt` 按 M3 断点给出 compact、medium、
 expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以 Android 平板为准。
-- 导航：`NavigationSuiteScaffold` 在 compact 下是底部导航栏，更宽时换成侧边导航栏。
+- 导航：`NavigationSuiteScaffold` 在 compact 下是底部导航栏，更宽时换成侧边导航栏。窗口到 1200dp（M3 large）
+  换成一整条侧边栏（`MainSidebar`）：上面是三个去处，下面是网盘的快捷访问（`QuickAccessSections` /
+  `QuickAccessState`：星标文件夹与最近去过的文件夹，最近不列眼前这个）。只亮一处：人在星标文件夹里时亮它，否则亮当前页。
+  不要在导航栏旁边再并排一栏导航。
 - 返回栈：`PikoMainScaffold` 用 Navigation 3 的 `NavDisplay`，栈底 `Screen.Home` 是导航栏与三个根页面，
   其余页面压在上面、连同导航栏一起盖住。被盖住的 Home 离开组合，回来时重建，所以根页面的状态要经得起
   重建（网盘页的目录内容与滚动位置记在仓库里）。新页面加一个 `Screen` 子类、登记进 `NavKeyConfiguration`、
@@ -104,8 +107,6 @@ expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以
 - 面板：一律经 `PikoSheet`，expanded 是从末端滑入的模态侧边面板，其余是只有展开一档的底部 sheet；
   不要直接用 `ModalBottomSheet`（播放器的面板另有横屏侧栏，除外）。
 - 网盘页：compact 以上顶栏是整条路径加后退、前进（照资源管理器），compact 仍是目录名作标题、上级另成一行面包屑。
-  expanded 且网盘页够宽（`QuickAccessMinDriveWidth`）时左侧有快捷栏（`QuickAccessPane` / `QuickAccessState`）：
-  根目录、星标文件夹与最近去过的文件夹，信息流侧栏占掉宽度时自动收起。
 - 信息流：宽窗口是网盘页右侧的侧栏，放不下时全屏，桌面端还能弹出到独立窗口。它是**订阅**，不跟着网盘目录走：
   刷哪个文件夹只由范围菜单与文件夹操作里的「在信息流中刷」决定，上次订阅的即 `ClipFeedSession.lastFolder()`。
 
@@ -159,7 +160,7 @@ Compose 桌面端悬停移动事件的 `previousPosition` 恒等于 `position`�
 一类的浮层**必须维护自己的路径栈**，碰它会把主界面的位置一起改掉。
 浏览历史（`historyFlow`，后退与前进）也在这里，每次换栈记一步；「上一级」与它无关。从别处跳进网盘（在网盘中显示、
 快捷栏）用 `updateFolderStack`，会记进历史；只有启动时恢复位置用 `restoreFolderStack`，不记。
-同处还记着快捷栏的「最近」（`recentFoldersFlow`，按账号存进缓存目录）。
+同处还记着侧边栏快捷访问的「最近」（`recentFoldersFlow`，按账号存进缓存目录）。
 仓库层还有 `refreshEvents`，供界面外的改动（如回收站恢复）通知列表刷新，`DriveScreenState`
 已在 `init` 里订阅，视图不要再订阅一遍。
 
