@@ -1,5 +1,6 @@
 package dev.piko.ui
 
+import dev.piko.ui.workbench.rememberActivities
 import androidx.compose.material.icons.outlined.Keyboard
 import dev.piko.ui.workbench.ShortcutsDialog
 import androidx.compose.ui.platform.LocalWindowInfo
@@ -773,7 +774,8 @@ fun PikoMainScaffold(
                                         onLogout = onLogout,
                                         onOpenPane = ::openProfilePane,
                                         selectedPane = selectedPane,
-                                        onBackClick = ::closeProfile,
+                                        // 侧边栏在时它的「我的」就是出口，列表栏不再给返回
+                                        onBackClick = if (sidebarMode) null else ::closeProfile,
                                     )
                                 }
                                 val detail = ListDetailSceneStrategy.detailPane(ProfileScene)
@@ -797,8 +799,10 @@ fun PikoMainScaffold(
                         )
                     }
                     if (sidebarMode) {
+                        val activities = rememberActivities()
                         AnimatedVisibility(visible = activityOpen) {
                             ActivityPanel(
+                                items = activities,
                                 onOpenTransfers = {
                                     activityOpen = false
                                     openTransfers()
@@ -806,7 +810,7 @@ fun PikoMainScaffold(
                                 onClose = { activityOpen = false },
                             )
                         }
-                        StatusBar(activityOpen = activityOpen, onActivityToggle = { activityOpen = !activityOpen })
+                        StatusBar(items = activities, activityOpen = activityOpen, onActivityToggle = { activityOpen = !activityOpen })
                     }
                 }
             }

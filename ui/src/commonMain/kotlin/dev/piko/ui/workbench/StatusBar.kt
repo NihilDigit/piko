@@ -1,5 +1,9 @@
 package dev.piko.ui.workbench
 
+import io.github.nihildigit.pikpak.TaskPhase
+import kotlinx.coroutines.delay
+import androidx.compose.runtime.produceState
+import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -47,20 +51,42 @@ import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.toReadableSize
 
-/** 进行中的一项传输，状态栏与活动面板共用。 */
-private class Activity(val name: String, val icon: ImageVector, val done: Long, val total: Long, val speed: Long)
+/** 进行中的一项传输，状态栏与活动面板共用。云端的离线任务只有百分比（[percent]），没有字节数。 */
+internal class Activity(
+    val name: String,
+    val kind: Kind,
+    val done: Long = 0,
+    val total: Long = 0,
+    val speed: Long = 0,
+    val percent: Int? = null,
+) {
+    enum class Kind(val icon: ImageVector) { DOWNLOAD(Icons.Outlined.Download), UPLOAD(Icons.Outlined.Upload), CLOUD(Icons.Outlined.CloudDownload) }
+}
 
+/**
+ * 眼下进行中的传输：本机的下载与上传，加上云端的离线任务。离线任务不像下载那样有进程级的状态，
+ * 这里每 [CLOUD_POLL_MS] 取一次第一页；状态栏在时才取，调用方只调一次，状态栏与活动面板共用结果。
+ */
 @Composable
-private fun activities(): List<Activity> {
+internal fun rememberActivities(): List<Activity> {
     val services = LocalPikoServices.current
     val downloads by services.downloadManager.tasks.collectAsStateWithLifecycle()
     val uploads by services.uploadManager.tasks.collectAsStateWithLifecycle()
+    val cloud by produceState(services.taskRepository.cachedTasks().orEmpty(), services) {
+        while (true) {
+            services.taskRepository.getTasks().onSuccess { value = it.tasks }
+            delay(CLOUD_POLL_MS)
+        }
+    }
     return downloads.values
         .filter { it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.PENDING }
-        .map { Activity(it.fileName, Icons.Outlined.Download, it.downloadedBytes, it.totalBytes, it.speedBytesPerSec) } +
+        .map { Activity(it.fileName, Activity.Kind.DOWNLOAD, it.downloadedBytes, it.totalBytes, it.speedBytesPerSec) } +
         uploads.values
             .filter { it.status == UploadStatus.UPLOADING || it.status == UploadStatus.HASHING || it.status == UploadStatus.QUEUED }
-            .map { Activity(it.fileName, Icons.Outlined.Upload, it.processedBytes, it.size, it.speedBytesPerSec) }
+            .map { Activity(it.fileName, Activity.Kind.UPLOAD, it.processedBytes, it.size, it.speedBytesPerSec) } +
+        cloud
+            .filter { it.phase == TaskPhase.RUNNING || it.phase == TaskPhase.PENDING }
+            .map { Activity(it.name, Activity.Kind.CLOUD, total = it.fileSize.toLongOrNull() ?: 0, percent = it.progress) }
 }
 
 /**
@@ -68,9 +94,8 @@ private fun activities(): List<Activity> {
  * 右边是设置同步与空间用量。只在有侧边栏的大窗口出现，一行字，不抢内容的位置。
  */
 @Composable
-internal fun StatusBar(activityOpen: Boolean, onActivityToggle: () -> Unit, modifier: Modifier = Modifier) {
+internal fun StatusBar(items: List<Activity>, activityOpen: Boolean, onActivityToggle: () -> Unit, modifier: Modifier = Modifier) {
     val services = LocalPikoServices.current
-    val items = activities()
     val latestChange by services.driveRepository.changes.latest.collectAsStateWithLifecycle()
     val syncStatus by services.settingsSync.status.collectAsStateWithLifecycle()
     val syncEnabled by services.preferences.settingsSyncFlow.collectAsStateWithLifecycle(initialValue = false)
@@ -82,14 +107,14 @@ internal fun StatusBar(activityOpen: Boolean, onActivityToggle: () -> Unit, modi
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        val downloads = items.count { it.icon == Icons.Outlined.Download }
-        val uploads = items.size - downloads
+        fun count(kind: Activity.Kind) = items.count { it.kind == kind }
         val speed = items.sumOf { it.speed }
         val summary = when {
             items.isEmpty() -> "没有进行中的传输"
             else -> listOfNotNull(
-                downloads.takeIf { it > 0 }?.let { "下载 $it 项" },
-                uploads.takeIf { it > 0 }?.let { "上传 $it 项" },
+                count(Activity.Kind.DOWNLOAD).takeIf { it > 0 }?.let { "下载 $it 项" },
+                count(Activity.Kind.UPLOAD).takeIf { it > 0 }?.let { "上传 $it 项" },
+                count(Activity.Kind.CLOUD).takeIf { it > 0 }?.let { "云端 $it 项" },
                 speed.takeIf { it > 0 }?.let { "${it.toReadableSize()}/s" },
             ).joinToString(" · ")
         }
@@ -146,8 +171,7 @@ private fun StatusItem(icon: ImageVector, text: String, onClick: (() -> Unit)?) 
  * 暂停、重试这些操作仍在传输页，这里只给一个过去的入口。
  */
 @Composable
-internal fun ActivityPanel(onOpenTransfers: () -> Unit, onClose: () -> Unit, modifier: Modifier = Modifier) {
-    val items = activities()
+internal fun ActivityPanel(items: List<Activity>, onOpenTransfers: () -> Unit, onClose: () -> Unit, modifier: Modifier = Modifier) {
     Surface(
         shape = MaterialTheme.shapes.large,
         color = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -165,7 +189,7 @@ internal fun ActivityPanel(onOpenTransfers: () -> Unit, onClose: () -> Unit, mod
             if (items.isEmpty()) {
                 Box(Modifier.fillMaxWidth().padding(16.dp)) {
                     Text(
-                        "没有进行中的下载或上传",
+                        "没有进行中的下载、上传或离线任务",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -185,18 +209,26 @@ internal fun ActivityPanel(onOpenTransfers: () -> Unit, onClose: () -> Unit, mod
 @Composable
 private fun ActivityRow(item: Activity) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Icon(item.icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+        Icon(item.kind.icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
         Column(Modifier.weight(1f).padding(start = 12.dp)) {
             Text(item.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
             Spacer(Modifier.height(4.dp))
-            val fraction = if (item.total > 0) (item.done.toFloat() / item.total).coerceIn(0f, 1f) else 0f
+            val fraction = when {
+                item.percent != null -> item.percent / 100f
+                item.total > 0 -> (item.done.toFloat() / item.total).coerceIn(0f, 1f)
+                else -> 0f
+            }
             LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
         }
         Text(
-            text = listOfNotNull(
-                "${item.done.toReadableSize()} / ${item.total.toReadableSize()}",
-                item.speed.takeIf { it > 0 }?.let { "${it.toReadableSize()}/s" },
-            ).joinToString("  "),
+            text = if (item.percent != null) {
+                listOfNotNull("云端 ${item.percent}%", item.total.takeIf { it > 0 }?.toReadableSize()).joinToString("  ")
+            } else {
+                listOfNotNull(
+                    "${item.done.toReadableSize()} / ${item.total.toReadableSize()}",
+                    item.speed.takeIf { it > 0 }?.let { "${it.toReadableSize()}/s" },
+                ).joinToString("  ")
+            },
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(start = 16.dp).width(160.dp),
@@ -204,5 +236,6 @@ private fun ActivityRow(item: Activity) {
     }
 }
 
+private const val CLOUD_POLL_MS = 15_000L
 private val StatusBarHeight = 32.dp
 private val ActivityPanelHeight = 220.dp
