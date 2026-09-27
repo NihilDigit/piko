@@ -35,12 +35,12 @@ object FolderPicker {
     private val IID_IShellItem = ComInterop.guid("43826d1e-e718-42ee-bc55-a1e261c37bfe")
 
     private const val FOS_PICKFOLDERS = 0x20
-    private const val FOS_FORCEFILESYSTEM = 0x40
+    internal const val FOS_FORCEFILESYSTEM = 0x40
     private const val SIGDN_FILESYSPATH = 0x80058000.toInt()
-    private const val HRESULT_ERROR_CANCELLED = 0x800704C7.toInt()
+    internal const val HRESULT_ERROR_CANCELLED = 0x800704C7.toInt()
 
-    private val intArg = FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT)
-    private val intAndPointerArgs = FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS)
+    internal val intArg = FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT)
+    internal val intAndPointerArgs =FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS)
 
     private val shCreateItemFromParsingName by lazy {
         Linker.nativeLinker().downcallHandle(
@@ -52,9 +52,9 @@ object FolderPicker {
     /**
      * 对话框在 Show 里跑自己的消息循环，直到关闭才返回，而对话框要求所在线程是 STA。
      * 放在 AWT 事件线程上会让整个界面停在 Show 里，所以另开一条常驻的 STA 线程。
-     * 只有一条线程，并发的第二次调用会排在第一个对话框关闭之后，不会同时弹出两个。
+     * 只有一条线程，并发的第二次调用会排在第一个对话框关闭之后，不会同时弹出两个。保存框（SaveFilePicker）共用它。
      */
-    private val dispatcher = Executors.newSingleThreadExecutor { runnable ->
+    internal val dispatcher = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "Piko-FolderPicker").also { it.isDaemon = true }
     }.asCoroutineDispatcher()
 
@@ -106,7 +106,7 @@ object FolderPicker {
             }
         }
 
-    private fun setFolder(arena: Arena, dialog: MemorySegment, folder: File) {
+    internal fun setFolder(arena: Arena, dialog: MemorySegment, folder: File) {
         val itemOut = arena.allocate(ADDRESS)
         val hr = ComInterop.hresult(
             shCreateItemFromParsingName,
@@ -122,7 +122,7 @@ object FolderPicker {
     }
 
     /** IShellItem.GetDisplayName 返回的字符串由 COM 分配，读完要 CoTaskMemFree。 */
-    private fun fileSystemPath(arena: Arena, item: MemorySegment): String {
+    internal fun fileSystemPath(arena: Arena, item: MemorySegment): String {
         val nameOut = arena.allocate(ADDRESS)
         ComInterop.check(ComInterop.hresult(ComInterop.vtable(item, 5, intAndPointerArgs), item, SIGDN_FILESYSPATH, nameOut), "GetDisplayName")
         val name = nameOut.get(ADDRESS, 0)
@@ -133,5 +133,5 @@ object FolderPicker {
         }
     }
 
-    private fun wideString(arena: Arena, text: String): MemorySegment = arena.allocateFrom(text, Charsets.UTF_16LE)
+    internal fun wideString(arena: Arena, text: String): MemorySegment = arena.allocateFrom(text, Charsets.UTF_16LE)
 }

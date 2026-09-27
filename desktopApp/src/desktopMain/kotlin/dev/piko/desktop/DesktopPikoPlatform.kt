@@ -18,6 +18,7 @@ import dev.piko.desktop.ui.player.MediampPlaybackBackend
 import dev.piko.desktop.update.DesktopAppUpdater
 import dev.piko.desktop.winrt.FolderPickResult
 import dev.piko.desktop.winrt.FolderPicker
+import dev.piko.desktop.winrt.SaveFilePicker
 import dev.piko.desktop.winrt.WinRTSupport
 import dev.piko.shared.media.player.PlaybackBackend
 import dev.piko.ui.platform.DownloadLocationPicker
@@ -77,22 +78,36 @@ class DesktopPikoPlatform(
     override val deviceSummary: String =
         "${System.getProperty("os.name")} ${System.getProperty("os.version")}，${System.getProperty("os.arch")}，Java ${System.getProperty("java.version")}"
 
-    /** 系统的保存框，默认放在下载目录。FileDialog 在事件线程上模态阻塞，调用方在界面协程里调即可。 */
+    /**
+     * 系统的保存框，默认放在下载目录。Windows 上用原生保存框，放在单独的线程上：AWT 的 FileDialog
+     * 会让界面在对话框开着时停止重绘，见 SaveFilePicker。原生框弹不出来与 macOS 上才用 FileDialog。
+     */
     override suspend fun exportLog(fileName: String, content: String): Boolean {
         val owner = activeWindow()
+        val target = when (
+            val picked = SaveFilePicker.pickSaveFile(owner, settings.downloadDirectory, fileName, "导出日志", "文本文件", "*.txt")
+        ) {
+            is FolderPickResult.Picked -> picked.folder
+            FolderPickResult.Cancelled -> return false
+            FolderPickResult.Unavailable -> awtSaveTarget(owner, fileName) ?: return false
+        }
+        return withContext(Dispatchers.IO) { runCatching { target.writeText(content) }.isSuccess }
+    }
+
+    /** FileDialog 在事件线程上模态阻塞，调用方在界面协程里调即可。 */
+    private fun awtSaveTarget(owner: Window?, fileName: String): File? {
         val dialog = when (owner) {
             is Dialog -> FileDialog(owner, "导出日志", FileDialog.SAVE)
             else -> FileDialog(owner as? Frame, "导出日志", FileDialog.SAVE)
         }
         dialog.directory = settings.downloadDirectory.absolutePath
         dialog.file = fileName
-        val target = try {
+        return try {
             dialog.isVisible = true
             dialog.file?.let { File(dialog.directory, it) }
         } finally {
             dialog.dispose()
-        } ?: return false
-        return withContext(Dispatchers.IO) { runCatching { target.writeText(content) }.isSuccess }
+        }
     }
 
     override fun openUrl(url: String) {
