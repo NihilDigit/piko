@@ -160,8 +160,27 @@ class DriveScreenState(
         FileCategory.entries.mapNotNull { category -> counts[category]?.let { category to it } }
     }
 
+    /**
+     * 只列有缩略图的文件，文件夹照留，图库视图用，由界面按视图设置。放在这一层而不是只在界面上不画：
+     * 全选、移动所选与图片翻页都读 [displayedFiles]，看不见的文件混在里面就会被一并移走或删掉。
+     */
+    var thumbnailsOnly by mutableStateOf(false)
+        private set
+
+    fun updateThumbnailsOnly(value: Boolean) {
+        if (value == thumbnailsOnly) return
+        thumbnailsOnly = value
+        if (isSelectionMode) exitSelection()
+    }
+
+    private fun isHiddenByThumbnails(file: FileStat) = thumbnailsOnly && !file.isFolder && file.thumbnailLink.isEmpty()
+
     /** 列表项：作品头、分区标题与文件。搜索、筛选与解析关闭时照原样平铺，认不出任何作品时也平铺。 */
     val displayItems: List<DriveListItem> by derivedStateOf {
+        if (thumbnailsOnly) hideFiles(unfilteredItems, ::isHiddenByThumbnails) else unfilteredItems
+    }
+
+    private val unfilteredItems: List<DriveListItem> by derivedStateOf {
         val structure = currentAnalysis
         val hideFolded = isFoldingActive && !showAllFilesTemporarily
         val filter = typeFilter
@@ -188,7 +207,7 @@ class DriveScreenState(
         val shown = buildDriveItems(files, structure, hideFolded) { true }.mapNotNull { (it as? DriveListItem.File)?.file }
         val shownIds = shown.mapTo(HashSet()) { it.id }
         val attachments = files.filter { file -> structure.attachedTo[file.id]?.let { it in shownIds } == true }
-        shown + attachments
+        (shown + attachments).filterNot(::isHiddenByThumbnails)
     }
 
     /** 列表项里的分区标题及其下标。顶栏副标题按首个可见项反查，分区菜单据此跳转。 */

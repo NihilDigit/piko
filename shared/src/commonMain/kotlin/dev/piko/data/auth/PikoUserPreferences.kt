@@ -63,9 +63,12 @@ interface PikoUserPreferences {
     val themeSeedFlow: Flow<String?>
     suspend fun setThemeSeed(seed: String?)
 
-    /** 网盘列表用网格还是列表。全局记住，不随进出目录或重启复位。 */
-    val gridViewFlow: Flow<Boolean>
-    suspend fun setGridViewEnabled(enabled: Boolean)
+    /**
+     * 网盘列表的视图，存 ui 里 DriveViewMode 的名字：列表、海报墙或图库。全局记住，不随进出目录或重启复位。
+     * 旧版只存是否海报墙，没有新键时由它换算，已有的选择不丢。
+     */
+    val driveViewModeFlow: Flow<String>
+    suspend fun setDriveViewMode(mode: String)
     val sessionFlow: Flow<UserSession>
     suspend fun saveSession(token: String, refreshToken: String = "", userId: String = "", username: String = "", avatarUrl: String = "")
 

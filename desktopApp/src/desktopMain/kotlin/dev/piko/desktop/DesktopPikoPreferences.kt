@@ -24,7 +24,10 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
     private val syncPlayHistory = MutableStateFlow(settings.get(KEY_SYNC_PLAY_HISTORY, "true").toBoolean())
     private val themeMode = MutableStateFlow(settings.get(KEY_THEME_MODE).ifEmpty { null })
     private val themeSeed = MutableStateFlow(settings.get(KEY_THEME_SEED).ifEmpty { null })
-    private val gridView = MutableStateFlow(settings.get(KEY_GRID_VIEW, "false").toBoolean())
+    // 旧版只存了是否海报墙，没有新键时由它换算
+    private val driveViewMode = MutableStateFlow(
+        settings.get(KEY_DRIVE_VIEW_MODE).ifEmpty { if (settings.get(KEY_GRID_VIEW, "false").toBoolean()) "POSTER" else "LIST" },
+    )
     private val acceleration = MutableStateFlow(settings.get(KEY_ACCELERATION, "true").toBoolean())
     private val connections = MutableStateFlow(settings.get(KEY_CONNECTIONS, "8").toIntOrNull() ?: 8)
     private val session = MutableStateFlow(loadSession())
@@ -121,10 +124,10 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         themeSeed.value = seed
     }
 
-    override val gridViewFlow: Flow<Boolean> = gridView.asStateFlow()
-    override suspend fun setGridViewEnabled(enabled: Boolean) {
-        settings.set(KEY_GRID_VIEW, enabled.toString())
-        gridView.value = enabled
+    override val driveViewModeFlow: Flow<String> = driveViewMode.asStateFlow()
+    override suspend fun setDriveViewMode(mode: String) {
+        settings.set(KEY_DRIVE_VIEW_MODE, mode)
+        driveViewMode.value = mode
     }
 
     override val sessionFlow: Flow<UserSession> = session.asStateFlow()
@@ -242,6 +245,7 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         const val KEY_SYNC_PLAY_HISTORY = "player.syncPlayHistory"
         const val KEY_NAME_PARSING = "ui.nameParsing"
         const val KEY_GRID_VIEW = "ui.gridView"
+        const val KEY_DRIVE_VIEW_MODE = "ui.driveViewMode"
         // 沿用 Fluent 版设置页的键，旧值是小写的 system、light、dark，解析时不分大小写
         const val KEY_THEME_MODE = "themeMode"
         const val KEY_THEME_SEED = "ui.themeSeed"

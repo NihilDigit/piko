@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -22,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.automirrored.outlined.Sort
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.outlined.FilterList
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ArrowUpward
@@ -62,6 +64,7 @@ import dev.piko.shared.state.DriveFolderView
 import dev.piko.shared.state.DriveListItem
 import dev.piko.ui.components.FileListItem
 import dev.piko.ui.components.FileRowSkeleton
+import dev.piko.ui.components.SkeletonBlock
 import dev.piko.ui.components.SkeletonGroup
 import dev.piko.ui.components.icon
 import dev.piko.ui.components.MediaTagRow
@@ -72,18 +75,39 @@ import dev.piko.ui.platform.LocalPikoPlatform
 import io.github.nihildigit.pikpak.FileStat
 
 /**
- * 两种视图都用 LazyVerticalStaggeredGrid，共用同一个状态与作品头、分区标题这些整行项。
- * 海报墙的卡片等高（16:9 封面加两行标题），在这个网格里排出来就是齐整的行。
+ * 网盘列表的三种排列。名字存进偏好（PikoUserPreferences.driveViewModeFlow），不要改名。
+ */
+internal enum class DriveViewMode {
+    LIST,
+    POSTER,
+    GALLERY,
+    ;
+
+    /** 海报墙与图库都是带页边距的网格，整行项与页眉的排布相同。 */
+    val isGrid: Boolean get() = this != LIST
+
+    companion object {
+        fun of(name: String): DriveViewMode = entries.firstOrNull { it.name == name } ?: LIST
+    }
+}
+
+/**
+ * 三种视图都用 LazyVerticalStaggeredGrid，共用同一个状态与作品头、分区标题这些整行项。
+ * 海报墙的卡片等高（16:9 封面加两行标题），图库是正方形，在这个网格里排出来都是齐整的行。
  *
  * 列表视图单列宽度下限 360dp，手机上始终一列，横屏平板上自动排成两列以上。M3 列表规范
  * 要求宽窗口下控制行长或改为多栏，否则一行名字会被拉得很长。
  *
  * 海报墙的卡宽下限：手机上 160dp，排两列（原先 128dp 在 432dp 宽的手机上排成三列，名字只剩
  * 一行四个汉字）；宽窗口里 240dp，封面够大，模糊时也辨得出轮廓。
+ *
+ * 图库的格宽下限：手机上 104dp，432dp 宽排三列，与系统相册相近；宽窗口里 140dp。
  */
 private val ListColumnMinWidth = 360.dp
 private val PosterColumnMinWidthCompact = 160.dp
 private val PosterColumnMinWidth = 240.dp
+private val GalleryColumnMinWidthCompact = 104.dp
+private val GalleryColumnMinWidth = 140.dp
 
 private const val KEY_HEADER = "drive_header"
 private const val KEY_FOLD = "drive_fold"
@@ -107,7 +131,7 @@ internal fun driveLeadingItemCount(hasFoldBanner: Boolean): Int = 1 + (if (hasFo
 @Composable
 internal fun DriveFileGrid(
     items: List<DriveListItem>,
-    isPosterMode: Boolean,
+    viewMode: DriveViewMode,
     gridState: LazyStaggeredGridState,
     isSelectionMode: Boolean,
     selectedIds: Set<String>,
@@ -123,13 +147,15 @@ internal fun DriveFileGrid(
     modifier: Modifier = Modifier,
 ) {
     val leadingItemCount = driveLeadingItemCount(foldBanner != null)
-    val horizontalPadding = gridHorizontalPadding(isPosterMode)
-    val itemSpacing = gridItemSpacing(isPosterMode)
+    val horizontalPadding = gridHorizontalPadding(viewMode)
+    val itemSpacing = gridItemSpacing(viewMode)
+    // 整行项在网格视图里已有页边距，列表视图里自己缩进
+    val rowInset = if (viewMode.isGrid) 0.dp else 16.dp
 
     Box(modifier = modifier.fillMaxSize()) {
         // 有条目要定位时滚到它（刚秒传的、从别处「在网盘中显示」的）。视图模式是异步读出来的偏好，首帧拿到的还是默认值，
         // 所以它也要进 key，否则真值到达前的滚动会停在错误的位置。
-        LaunchedEffect(items, highlightedIds, isPosterMode) {
+        LaunchedEffect(items, highlightedIds, viewMode) {
             if (highlightedIds.isEmpty()) return@LaunchedEffect
             val entryIndex = items.indexOfFirst { it is DriveListItem.File && it.file.id in highlightedIds }
             if (entryIndex >= 0) gridState.animateScrollToItem(leadingItemCount + entryIndex)
@@ -137,7 +163,7 @@ internal fun DriveFileGrid(
 
         LazyVerticalStaggeredGrid(
             state = gridState,
-            columns = gridCells(isPosterMode),
+            columns = gridCells(viewMode),
             modifier = modifier.fillMaxSize(),
             contentPadding = PaddingValues(
                 start = horizontalPadding,
@@ -148,15 +174,15 @@ internal fun DriveFileGrid(
             verticalItemSpacing = itemSpacing,
         ) {
             item(key = KEY_HEADER, span = StaggeredGridItemSpan.FullLine, contentType = KEY_HEADER) {
-                // 页眉总是整行宽，内边距由它自己决定，两种视图下排布一致。海报墙模式的
+                // 页眉总是整行宽，内边距由它自己决定，各视图下排布一致。网格视图的
                 // contentPadding 会把它缩进 16dp，这里向两侧撑回去
-                Box(modifier = if (isPosterMode) Modifier.bleedHorizontal(horizontalPadding) else Modifier) {
+                Box(modifier = if (viewMode.isGrid) Modifier.bleedHorizontal(horizontalPadding) else Modifier) {
                     header()
                 }
             }
             if (foldBanner != null) {
                 item(key = KEY_FOLD, span = StaggeredGridItemSpan.FullLine, contentType = KEY_FOLD) {
-                    Box(modifier = Modifier.padding(horizontal = if (isPosterMode) 0.dp else 16.dp)) {
+                    Box(modifier = Modifier.padding(horizontal = rowInset)) {
                         foldBanner()
                     }
                 }
@@ -177,12 +203,12 @@ internal fun DriveFileGrid(
                 when (item) {
                     is DriveListItem.WorkHeader -> WorkHeaderRow(
                         header = item,
-                        modifier = Modifier.animateItem().padding(horizontal = if (isPosterMode) 0.dp else 16.dp),
+                        modifier = Modifier.animateItem().padding(horizontal = rowInset),
                     )
                     is DriveListItem.SectionHeader -> SectionHeaderRow(
                         header = item,
-                        // 海报墙的网格已有 16dp 边距，文字与卡片左缘对齐即可
-                        inset = if (isPosterMode) 4.dp else 16.dp,
+                        // 网格视图已有 16dp 边距，文字与卡片左缘对齐即可
+                        inset = if (viewMode.isGrid) 4.dp else 16.dp,
                         onClick = { callbacks.onToggleSection(item.blockId) },
                         modifier = Modifier.animateItem(),
                     )
@@ -192,7 +218,7 @@ internal fun DriveFileGrid(
                         DriveCell(
                             file = file,
                             text = cellText(item, if (file.isFolder) folderView(file) else null),
-                            isPosterMode = isPosterMode,
+                            viewMode = viewMode,
                             isSelectionMode = isSelectionMode,
                             isSelected = file.id in selectedIds,
                             isHighlighted = file.id in highlightedIds,
@@ -210,14 +236,25 @@ internal fun DriveFileGrid(
 }
 
 @Composable
-private fun gridCells(isPosterMode: Boolean): StaggeredGridCells {
-    val posterMinWidth = if (currentWidthClass() == WidthClass.Compact) PosterColumnMinWidthCompact else PosterColumnMinWidth
-    return StaggeredGridCells.Adaptive(if (isPosterMode) posterMinWidth else ListColumnMinWidth)
+private fun gridCells(viewMode: DriveViewMode): StaggeredGridCells {
+    val compact = currentWidthClass() == WidthClass.Compact
+    return StaggeredGridCells.Adaptive(
+        when (viewMode) {
+            DriveViewMode.LIST -> ListColumnMinWidth
+            DriveViewMode.POSTER -> if (compact) PosterColumnMinWidthCompact else PosterColumnMinWidth
+            DriveViewMode.GALLERY -> if (compact) GalleryColumnMinWidthCompact else GalleryColumnMinWidth
+        },
+    )
 }
 
-private fun gridHorizontalPadding(isPosterMode: Boolean): Dp = if (isPosterMode) 16.dp else 0.dp
+private fun gridHorizontalPadding(viewMode: DriveViewMode): Dp = if (viewMode.isGrid) 16.dp else 0.dp
 
-private fun gridItemSpacing(isPosterMode: Boolean): Dp = if (isPosterMode) 8.dp else 0.dp
+// 图库格子之间只留一道细缝，照片连成一片；海报墙的卡片带标题，要分得开些
+private fun gridItemSpacing(viewMode: DriveViewMode): Dp = when (viewMode) {
+    DriveViewMode.LIST -> 0.dp
+    DriveViewMode.POSTER -> 8.dp
+    DriveViewMode.GALLERY -> 4.dp
+}
 
 /**
  * 首载时的骨架，不含页眉。网格本身也是同一种 LazyVerticalStaggeredGrid，列数、边距与间距取真实网格
@@ -225,20 +262,24 @@ private fun gridItemSpacing(isPosterMode: Boolean): Dp = if (isPosterMode) 8.dp 
  * 不可滚动，条目数给够一屏，多出来的懒加载不会组合。
  */
 @Composable
-internal fun DriveGridSkeleton(isPosterMode: Boolean, modifier: Modifier = Modifier) {
-    val itemSpacing = gridItemSpacing(isPosterMode)
+internal fun DriveGridSkeleton(viewMode: DriveViewMode, modifier: Modifier = Modifier) {
+    val itemSpacing = gridItemSpacing(viewMode)
     SkeletonGroup(modifier = modifier.fillMaxSize()) {
         LazyVerticalStaggeredGrid(
-            columns = gridCells(isPosterMode),
+            columns = gridCells(viewMode),
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(horizontal = gridHorizontalPadding(isPosterMode)),
+            contentPadding = PaddingValues(horizontal = gridHorizontalPadding(viewMode)),
             horizontalArrangement = Arrangement.spacedBy(itemSpacing),
             verticalItemSpacing = itemSpacing,
             userScrollEnabled = false,
         ) {
             items(SKELETON_ITEM_COUNT) { index ->
                 val titleFraction = SkeletonTitleWidths[index % SkeletonTitleWidths.size]
-                if (isPosterMode) PosterCardSkeleton(titleFraction) else FileRowSkeleton(titleFraction = titleFraction)
+                when (viewMode) {
+                    DriveViewMode.LIST -> FileRowSkeleton(titleFraction = titleFraction)
+                    DriveViewMode.POSTER -> PosterCardSkeleton(titleFraction)
+                    DriveViewMode.GALLERY -> SkeletonBlock(Modifier.fillMaxWidth().aspectRatio(1f), MaterialTheme.shapes.small)
+                }
             }
         }
     }
@@ -319,7 +360,7 @@ private fun SectionHeaderRow(header: DriveListItem.SectionHeader, inset: Dp, onC
 private fun DriveCell(
     file: FileStat,
     text: CellText,
-    isPosterMode: Boolean,
+    viewMode: DriveViewMode,
     isSelectionMode: Boolean,
     isSelected: Boolean,
     isHighlighted: Boolean,
@@ -329,8 +370,18 @@ private fun DriveCell(
     modifier: Modifier,
 ) {
     ContextMenuArea(actions = { callbacks.contextActions(file) }, modifier = modifier) {
-        if (isPosterMode) {
-            PosterCard(
+        when (viewMode) {
+            DriveViewMode.GALLERY -> GalleryTile(
+                file = file,
+                isSelectionMode = isSelectionMode,
+                isSelected = isSelected,
+                isSpoilerBlurred = isBlurred,
+                isHighlighted = isHighlighted,
+                onClick = { callbacks.onOpen(file) },
+                onLongClick = { callbacks.onLongPress(file) },
+                onSelectToggle = { callbacks.onSelect(file, it) },
+            )
+            DriveViewMode.POSTER -> PosterCard(
                 file = file,
                 isSelectionMode = isSelectionMode,
                 isSelected = isSelected,
@@ -345,8 +396,7 @@ private fun DriveCell(
                 code = text.code,
                 resolution = text.resolution,
             )
-        } else {
-            FileListItem(
+            DriveViewMode.LIST -> FileListItem(
                 file = file,
                 isSelectionMode = isSelectionMode,
                 isSelected = isSelected,
@@ -398,8 +448,8 @@ internal fun DriveListHeader(
     typeFilter: FileCategory?,
     availableTypes: List<Pair<FileCategory, Int>>,
     onTypeFilterChange: (FileCategory?) -> Unit,
-    isPosterMode: Boolean,
-    onTogglePosterMode: () -> Unit,
+    viewMode: DriveViewMode,
+    onViewModeChange: (DriveViewMode) -> Unit,
 ) {
     var showSortMenu by remember { mutableStateOf(false) }
     var showTypeMenu by remember { mutableStateOf(false) }
@@ -484,30 +534,40 @@ internal fun DriveListHeader(
                 }
             }
             Spacer(modifier = Modifier.weight(1f))
-            ViewModeToggle(isPosterMode = isPosterMode, onTogglePosterMode = onTogglePosterMode)
+            ViewModeToggle(viewMode = viewMode, onViewModeChange = onViewModeChange)
         }
     }
 }
 
-/** 列表与海报墙二选一，M3 Expressive 连体按钮组，当前视图为选中态。 */
+/** 视图切换，M3 Expressive 连体按钮组：列表、海报墙、图库三选一，当前视图为选中态。 */
 @Composable
-private fun ViewModeToggle(isPosterMode: Boolean, onTogglePosterMode: () -> Unit) {
+private fun ViewModeToggle(
+    viewMode: DriveViewMode,
+    onViewModeChange: (DriveViewMode) -> Unit,
+) {
+    val modes = DriveViewMode.entries
+    val lastIndex = modes.lastIndex
+    @Composable
+    fun shapesAt(index: Int) = when (index) {
+        0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+        lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
+        else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
+    }
     Row(horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)) {
-        ToggleButton(
-            checked = !isPosterMode,
-            onCheckedChange = { if (isPosterMode) onTogglePosterMode() },
-            shapes = ButtonGroupDefaults.connectedLeadingButtonShapes(),
-            contentPadding = ViewToggleContentPadding,
-        ) {
-            Icon(Icons.AutoMirrored.Filled.ViewList, contentDescription = "列表视图", modifier = Modifier.size(20.dp))
-        }
-        ToggleButton(
-            checked = isPosterMode,
-            onCheckedChange = { if (!isPosterMode) onTogglePosterMode() },
-            shapes = ButtonGroupDefaults.connectedTrailingButtonShapes(),
-            contentPadding = ViewToggleContentPadding,
-        ) {
-            Icon(Icons.Filled.GridView, contentDescription = "海报视图", modifier = Modifier.size(20.dp))
+        modes.forEachIndexed { index, mode ->
+            ToggleButton(
+                checked = mode == viewMode,
+                onCheckedChange = { if (mode != viewMode) onViewModeChange(mode) },
+                shapes = shapesAt(index),
+                contentPadding = ViewToggleContentPadding,
+            ) {
+                val (icon, label) = when (mode) {
+                    DriveViewMode.LIST -> Icons.AutoMirrored.Filled.ViewList to "列表视图"
+                    DriveViewMode.POSTER -> Icons.Filled.GridView to "海报视图"
+                    DriveViewMode.GALLERY -> Icons.Filled.PhotoLibrary to "图库视图"
+                }
+                Icon(icon, contentDescription = label, modifier = Modifier.size(20.dp))
+            }
         }
     }
 }

@@ -96,6 +96,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val SYNC_PLAY_HISTORY_ENABLED = booleanPreferencesKey("sync_play_history_enabled")
         val NAME_PARSING_ENABLED = booleanPreferencesKey("name_parsing_enabled")
         val WATERFALL_VIEW_ENABLED = booleanPreferencesKey("waterfall_view_enabled")
+        val DRIVE_VIEW_MODE = stringPreferencesKey("drive_view_mode")
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val THEME_SEED = stringPreferencesKey("theme_seed")
         val INSTANT_TARGET_ID = stringPreferencesKey("instant_target_id")
@@ -223,14 +224,15 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
-    override val gridViewFlow: Flow<Boolean> = preference { preferences ->
-        // 默认海报墙。键名沿用瀑布流时期的写法，改名会丢掉已存的选择
-        preferences[PreferencesKeys.WATERFALL_VIEW_ENABLED] ?: true
+    override val driveViewModeFlow: Flow<String> = preference { preferences ->
+        // 默认海报墙。旧键名沿用瀑布流时期的写法，只存了是否海报墙
+        preferences[PreferencesKeys.DRIVE_VIEW_MODE]
+            ?: if (preferences[PreferencesKeys.WATERFALL_VIEW_ENABLED] ?: true) "POSTER" else "LIST"
     }
 
-    override suspend fun setGridViewEnabled(enabled: Boolean) {
+    override suspend fun setDriveViewMode(mode: String) {
         context.dataStore.edit { preferences ->
-            preferences[PreferencesKeys.WATERFALL_VIEW_ENABLED] = enabled
+            preferences[PreferencesKeys.DRIVE_VIEW_MODE] = mode
         }
     }
 

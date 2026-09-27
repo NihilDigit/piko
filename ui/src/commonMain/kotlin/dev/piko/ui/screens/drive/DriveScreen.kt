@@ -179,8 +179,10 @@ fun DriveScreen(
     // 视图模式存进偏好，切 Tab 与重启后保持上次的选择
     // 初值同步读：异步给默认值的话，选了列表的用户每次进来都先闪一帧海报墙。DataStore 在
     // MainActivity 读外观时已载入，这里只是取内存里的值
-    val initialPosterMode = remember { runBlocking { sessionManager.gridViewFlow.first() } }
-    val isPosterMode by sessionManager.gridViewFlow.collectAsStateWithLifecycle(initialPosterMode)
+    val initialViewMode = remember { runBlocking { sessionManager.driveViewModeFlow.first() } }
+    val viewModeName by sessionManager.driveViewModeFlow.collectAsStateWithLifecycle(initialViewMode)
+    val viewMode = DriveViewMode.of(viewModeName)
+    LaunchedEffect(state, viewMode) { state.updateThumbnailsOnly(viewMode == DriveViewMode.GALLERY) }
 
     // 目录导航栈：持久化并与全局单例共享，切 Tab / 重启不丢失
     val folderStack by state.folderStack.collectAsStateWithLifecycle()
@@ -623,7 +625,7 @@ fun DriveScreen(
                         // 面包屑与页眉的位置先空出来，内容换上时各行不挪
                         breadcrumbs()
                         Spacer(modifier = Modifier.height(DriveListHeaderHeight))
-                        DriveGridSkeleton(isPosterMode = isPosterMode, modifier = Modifier.weight(1f))
+                        DriveGridSkeleton(viewMode = viewMode, modifier = Modifier.weight(1f))
                     }
                     return@Crossfade
                 }
@@ -652,8 +654,8 @@ fun DriveScreen(
                         }
 
                         val bottomPadding = innerPadding.calculateBottomPadding() + FabClearance
-                        // 筛选下为空时仍给列表：空目录页没有页眉，筛选撤不掉
-                        if (state.displayItems.isEmpty() && state.typeFilter == null) {
+                        // 筛选或图库视图下为空时仍给列表：空目录页没有页眉，筛选撤不掉，视图也切不回去
+                        if (state.displayItems.isEmpty() && state.typeFilter == null && !state.thumbnailsOnly) {
                             // 空目录没有列表页眉，面包屑单独放在空状态上方
                             breadcrumbs()
                             DriveEmptyState(state = state, modifier = Modifier.weight(1f))
@@ -661,7 +663,7 @@ fun DriveScreen(
                             DriveFileGrid(
                                 items = state.displayItems,
                                 folderView = { if (!state.isNameParsing) null else state.folderViews[it.id] },
-                                isPosterMode = isPosterMode,
+                                viewMode = viewMode,
                                 gridState = gridState,
                                 isSelectionMode = state.isSelectionMode,
                                 selectedIds = selectedIdSet,
@@ -685,9 +687,9 @@ fun DriveScreen(
                                                 typeFilter = state.typeFilter,
                                                 availableTypes = state.availableTypes,
                                                 onTypeFilterChange = state::updateTypeFilter,
-                                                isPosterMode = isPosterMode,
-                                                onTogglePosterMode = {
-                                                    scope.launch { sessionManager.setGridViewEnabled(!isPosterMode) }
+                                                viewMode = viewMode,
+                                                onViewModeChange = { mode ->
+                                                    scope.launch { sessionManager.setDriveViewMode(mode.name) }
                                                 },
                                             )
                                         }

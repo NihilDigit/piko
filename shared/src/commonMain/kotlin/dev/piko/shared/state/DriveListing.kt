@@ -70,6 +70,38 @@ sealed interface DriveListItem {
 }
 
 /**
+ * 从列表里拿掉 [hide] 为真的文件，文件全被拿掉的分区与作品连标题一起去掉，免得留下空标题。
+ *
+ * 收起的分区在列表里本来就只有标题、没有文件，它要留着：只看「标题后面有没有文件」会把它误删。
+ * 所以按原列表判断，只有原本有文件、而且全被拿掉的分区才去掉标题。作品头之后的去留在分区处理完后再看：
+ * 到下一个作品头之前什么都不剩的，去掉。
+ */
+internal fun hideFiles(items: List<DriveListItem>, hide: (FileStat) -> Boolean): List<DriveListItem> {
+    val kept = ArrayList<DriveListItem>(items.size)
+    var index = 0
+    while (index < items.size) {
+        val item = items[index]
+        if (item is DriveListItem.SectionHeader) {
+            var end = index + 1
+            while (end < items.size && items[end] is DriveListItem.File) end++
+            val files = items.subList(index + 1, end)
+            val visible = files.filterNot { hide((it as DriveListItem.File).file) }
+            if (files.isEmpty() || visible.isNotEmpty()) {
+                kept += item
+                kept += visible
+            }
+            index = end
+        } else {
+            if (item !is DriveListItem.File || !hide(item.file)) kept += item
+            index++
+        }
+    }
+    return kept.filterIndexed { i, item ->
+        item !is DriveListItem.WorkHeader || kept.getOrNull(i + 1).let { it != null && it !is DriveListItem.WorkHeader }
+    }
+}
+
+/**
  * 一个分区块：某部作品的某个分区，或把番号、未识别、次要文件各归成的一块。
  * [workKey] 相同的相邻块共用一个作品头。
  */

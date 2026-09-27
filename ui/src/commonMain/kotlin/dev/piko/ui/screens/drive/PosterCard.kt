@@ -53,11 +53,11 @@ import io.github.nihildigit.pikpak.FileStat
 
 /**
  * 卡片整体的点击语义。多选时整张卡是一个复选项；平时单击打开、长按进入多选。
- * 与列表行的 ListItem 重载分工一致。
+ * 与列表行的 ListItem 重载分工一致。图库方格共用。
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun Modifier.cardInteraction(
+internal fun Modifier.cardInteraction(
     isSelectionMode: Boolean,
     isSelected: Boolean,
     onClick: () -> Unit,
@@ -233,9 +233,9 @@ private fun CardTrailing(
     }
 }
 
-/** 有封面的文件夹靠这个标记与视频区分。 */
+/** 有封面的文件夹靠这个标记与视频区分。图库方格共用。 */
 @Composable
-private fun FolderCoverMark(modifier: Modifier = Modifier) {
+internal fun FolderCoverMark(modifier: Modifier = Modifier) {
     Surface(
         shape = MaterialTheme.shapes.extraSmall,
         color = MaterialTheme.colorScheme.secondaryContainer,
