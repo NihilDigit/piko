@@ -39,7 +39,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import dev.piko.ui.components.HighlightBadge
+import dev.piko.ui.components.locateHighlight
 import dev.piko.ui.components.MediaTag
 import dev.piko.ui.components.MediaTagRow
 import dev.piko.ui.components.SpoilerThumbnail
@@ -85,7 +85,7 @@ private fun Modifier.cardInteraction(
  * 多数视频就是 16:9，封面统一这个比例，整面墙排成齐整的网格；原先按位置轮换的高矮两档并不反映画面，
  * 只是看上去像瀑布流。标题固定占两行高，同一排卡片底边对齐；日期、大小不上卡片，在详情面板里看。
  *
- * 叠在封面上的：左上角「刚存入」，右上角至多两个标签（调用方已按优先级排好，无码、中字在前），
+ * 被定位时封面外圈加一道描边（[locateHighlight]）。叠在封面上的：右上角至多两个标签（调用方已按优先级排好，无码、中字在前），
  * 左下角番号芯片，有封面的文件夹在它前面加文件夹标记，右下角清晰度。清晰度单独放一角，
  * 不和其余标签抢右上角的两个位置。没有封面的文件夹画成叠起的纸张，
  * 其余没有缩略图的画类型图标，封面区照样占 16:9，不另起一种图块。
@@ -102,7 +102,6 @@ internal fun PosterCard(
     onSelectToggle: (Boolean) -> Unit,
     onMoreClick: () -> Unit,
     modifier: Modifier = Modifier,
-    highlightBadgeText: String = "刚存入",
     title: String? = null,
     tags: List<String> = emptyList(),
     /** 番号芯片，放在封面左下角。 */
@@ -122,7 +121,8 @@ internal fun PosterCard(
                 .fillMaxWidth()
                 .aspectRatio(COVER_ASPECT)
                 .clip(coverShape)
-                .then(if (isSelected) Modifier.border(3.dp, MaterialTheme.colorScheme.primary, coverShape) else Modifier),
+                .then(if (isSelected) Modifier.border(3.dp, MaterialTheme.colorScheme.primary, coverShape) else Modifier)
+                .locateHighlight(isHighlighted, coverShape),
         ) {
             val hasCover = file.thumbnailLink.isNotEmpty()
             when {
@@ -135,19 +135,16 @@ internal fun PosterCard(
                 file.isFolder -> StackedSheets(Modifier.fillMaxSize())
                 else -> TypePlaceholder(file, Modifier.fillMaxSize())
             }
-            if (isHighlighted) {
-                HighlightBadge(text = highlightBadgeText, modifier = Modifier.align(Alignment.TopStart).padding(6.dp))
-            }
             val cornerTags = tags.filter { it != resolution }.take(COVER_CORNER_TAGS)
             if (cornerTags.isNotEmpty()) {
-                // 与左上角的「刚存入」各占一半宽，放不下的整个丢掉
+                // 放不下的整个丢掉，不截半个标签
                 MediaTagRow(
                     tags = cornerTags,
                     onMedia = true,
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .padding(6.dp)
-                        .fillMaxWidth(if (isHighlighted) 0.5f else 1f)
+                        .fillMaxWidth()
                         .wrapContentSize(Alignment.TopEnd),
                 )
             }
@@ -172,7 +169,7 @@ internal fun PosterCard(
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
             verticalAlignment = Alignment.Top,
         ) {
-            // 封面左上角已给「刚存入」，星标放在标题前，对齐首行（bodyMedium 行高 20，图标 16）
+            // 星标放在标题前而不上封面，封面的角已经给了标签与番号；对齐首行（bodyMedium 行高 20，图标 16）
             if (file.isStarred) StarMark(modifier = Modifier.padding(top = 2.dp, end = 4.dp))
             Text(
                 text = title ?: file.displayTitle(),

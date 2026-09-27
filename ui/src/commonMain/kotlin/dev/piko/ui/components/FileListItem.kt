@@ -109,6 +109,7 @@ fun FileListItem(
         .fillMaxWidth()
         .padding(horizontal = RowOuterPadding)
         .heightIn(min = RowMinHeight)
+        .locateHighlight(isHighlighted, MaterialTheme.shapes.medium)
     // 弱化加在各槽位上而不是整行：整行降透明度会连按压的状态层一起变淡
     val slotModifier = if (dimmed) Modifier.alpha(DIMMED_ALPHA) else Modifier
 
@@ -201,7 +202,6 @@ fun FileListItem(
     onMoreClick: () -> Unit,
     modifier: Modifier = Modifier,
     isHighlighted: Boolean = false,
-    highlightBadgeText: String = "刚存入",
     isSpoilerBlurred: Boolean = false,
     /** 全盘搜索结果所在的目录路径。仅搜索结果需要，平时为 null。 */
     locationLabel: String? = null,
@@ -218,13 +218,8 @@ fun FileListItem(
         onClick = onClick,
         onMoreClick = onMoreClick,
         modifier = modifier,
-        badge = if (isHighlighted || file.isStarred) {
-            {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (file.isStarred) StarMark()
-                    if (isHighlighted) HighlightBadge(text = highlightBadgeText)
-                }
-            }
+        badge = if (file.isStarred) {
+            { StarMark() }
         } else {
             null
         },
@@ -325,7 +320,7 @@ fun ListLeadingIcon(icon: ImageVector, modifier: Modifier = Modifier) {
 }
 
 /**
- * 加了星标的条目标记：标题旁一颗实心星。用 tertiary：primary 已给了「刚存入」与选中态，
+ * 加了星标的条目标记：标题旁一颗实心星。用 tertiary：primary 已给了定位描边与选中态，
  * 同色放在一起分不出是哪一种。
  */
 @Composable
@@ -340,7 +335,7 @@ fun StarMark(modifier: Modifier = Modifier) {
 
 private val StarMarkSize = 16.dp
 
-/** 刚秒传进来的条目角标。 */
+/** 条目旁的一枚文字角标，查重里标「保留」。被定位的条目不用它，见 [locateHighlight]。 */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun HighlightBadge(text: String, modifier: Modifier = Modifier) {
