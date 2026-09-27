@@ -1,5 +1,9 @@
 package dev.piko.ui.screens.drive
 
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.material.icons.outlined.Tab
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Add
 import dev.piko.ui.components.PaletteItem
 import dev.piko.ui.components.ContributePaletteItems
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -430,6 +434,18 @@ fun DriveScreen(
 
     // 回调对象只建一次，列表项拿到的引用不变；外部传入的导航回调经 rememberUpdatedState 取最新值
     val navigateToPlayer by rememberUpdatedState(onNavigateToVideoPlayer)
+    // 标签：宽窗口里一个标签一个位置，见 PikoDriveRepository.tabsFlow
+    val tabs by driveRepo.tabsFlow.collectAsStateWithLifecycle()
+    val activeTabId by driveRepo.activeTabId.collectAsStateWithLifecycle()
+    val tabsAvailable = currentWidthClass() == WidthClass.Expanded
+    val openInNewTab: ((FileStat) -> Unit)? = if (tabsAvailable) {
+        { folder -> driveRepo.openTab(folderStack + PathBreadcrumb(folder.id, folder.name), activate = false) }
+    } else {
+        null
+    }
+    // 记住的回调里读它的最新值：窗口从宽变窄时不该还能开标签
+    val latestOpenInNewTab by rememberUpdatedState(openInNewTab)
+
     val callbacks = remember(state) {
         DriveItemCallbacks(
             onOpen = { file ->
@@ -448,6 +464,7 @@ fun DriveScreen(
             onToggleSelect = { state.toggleSelected(it.id) },
             onExtendSelect = { state.selectRange(it.id) },
             onBoxSelect = state::selectBoxed,
+            onMiddleClick = { file -> if (file.isFolder) latestOpenInNewTab?.invoke(file) },
             // 拖选中的一项时拖走全部选中的，否则只拖这一项，与文件管理器相同
             dragPayload = { file ->
                 val batch = if (state.isSelectionMode && file.id in state.selectedFileIds) {
@@ -503,6 +520,7 @@ fun DriveScreen(
                     onShare = { shareTargets = listOf(file) },
                     onOpenInExternalPlayer = platform.externalPlayer?.let { { openInExternalPlayer(file) } },
                     onBrowseInFeed = browseInFeed?.let { { it(file) } },
+                    onOpenInNewTab = latestOpenInNewTab?.let { { it(file) } },
                 )
             },
             onToggleSection = state::toggleSection,
@@ -621,6 +639,12 @@ fun DriveScreen(
         val trashKey = event.key == Key.Delete || (primary && event.key == Key.Backspace)
         when {
             primary && event.key == Key.F -> isSearchOpen = true
+            // 标签：新建停在眼前的位置，关掉活动的那个，Ctrl+Tab 与 Ctrl+PageDown/PageUp 前后切换，与浏览器相同
+            tabsAvailable && primary && event.key == Key.T -> driveRepo.openTab(folderStack)
+            tabsAvailable && primary && event.key == Key.W && tabs.size > 1 -> driveRepo.closeTab(activeTabId)
+            tabsAvailable && event.isCtrlPressed && event.key == Key.Tab -> driveRepo.cycleTab(if (event.isShiftPressed) -1 else 1)
+            tabsAvailable && primary && event.key == Key.PageDown -> driveRepo.cycleTab(1)
+            tabsAvailable && primary && event.key == Key.PageUp -> driveRepo.cycleTab(-1)
             // 详情栏，照 Finder 的 ⌘I（显示简介）
             primary && event.key == Key.I && inspectorAvailable -> toggleInspector()
             event.key == Key.F5 || (primary && event.key == Key.R) -> state.load(refresh = true)
@@ -686,6 +710,17 @@ fun DriveScreen(
             add(PaletteItem("全选", Icons.Outlined.SelectAll, "网盘", detail = label("A"), keywords = "select all") { state.toggleSelectAll() })
             add(PaletteItem("刷新", Icons.Outlined.Refresh, "网盘", detail = "F5", keywords = "refresh reload") { state.load(refresh = true) })
             if (folderStack.size > 1) add(PaletteItem("上一级", Icons.Outlined.ArrowUpward, "网盘", detail = "Backspace", keywords = "up parent") { state.navigateUp() })
+            if (tabsAvailable) {
+                add(PaletteItem("新建标签页", Icons.Outlined.Add, "标签", detail = label("T"), keywords = "new tab") { driveRepo.openTab(folderStack) })
+                if (tabs.size > 1) {
+                    add(PaletteItem("关闭标签页", Icons.Outlined.Close, "标签", detail = label("W"), keywords = "close tab") { driveRepo.closeTab(activeTabId) })
+                    tabs.filter { it.id != activeTabId }.forEach { tab ->
+                        add(PaletteItem(tab.title, Icons.Outlined.Tab, "标签", detail = tab.stack.joinToString(" › ") { it.name }, keywords = "tab") {
+                            driveRepo.switchTab(tab.id)
+                        })
+                    }
+                }
+            }
             add(PaletteItem("在当前文件夹查找重复", Icons.Outlined.FileCopy, "网盘", keywords = "duplicate dedupe") { duplicateSession.open(activeFolder) })
         }
     }
@@ -748,100 +783,113 @@ fun DriveScreen(
                     }
                 },
                 topBar = {
-                    when {
-                        state.isSelectionMode -> DriveSelectionTopBar(
-                            scrollBehavior = topBarScrollBehavior,
-                            selectedCount = state.selectedFileIds.size,
-                            onExit = { state.exitSelection() },
-                            onSelectAll = { state.toggleSelectAll() },
-                            onMove = { moveTargetIds = state.selectedFileIds.toSet() },
-                            onCopy = { copyTargetIds = state.selectedFileIds.toSet() },
-                            onTrash = { state.moveToTrash(state.selectedFileIds.toList()) },
-                            onExtract = selectedArchives.takeIf { it.isNotEmpty() }?.let { archives ->
-                                {
-                                    archiveSession.extract(archives)
-                                    state.exitSelection()
-                                }
-                            },
-                            onShare = {
-                                // 按列表顺序：服务端取第一项的名字作分享标题
-                                shareTargets = state.displayedFiles.filter { it.id in state.selectedFileIds && !it.isUploading }
-                            },
-                            onBatchRename = {
-                                batchRenameTargets = state.displayedFiles.filter { it.id in state.selectedFileIds && !it.isUploading }
-                            },
-                        )
-
-                        isSearchOpen -> DriveSearchTopBar(
-                            query = state.searchQuery,
-                            onQueryChange = { state.updateSearchQuery(it) },
-                            onClose = { closeSearch() },
-                            isGlobalSearching = state.isGlobalSearching,
-                            isGlobalSearchActive = state.isGlobalSearchActive,
-                            onStartGlobalSearch = { state.startGlobalSearch() },
-                            onCancelGlobalSearch = { state.cancelGlobalSearch() },
-                        )
-
-                        else -> DriveBrowseTopBar(
-                            scrollBehavior = topBarScrollBehavior,
-                            title = activeFolder.name,
-                            path = if (pathInTopBar) {
-                                { DrivePathTitle(folderStack, onNavigate = { index -> state.navigateToBreadcrumb(index) }) }
-                            } else null,
-                            currentSection = currentSection,
-                            sections = state.sectionHeaders.map { it.value.menuLabel },
-                            onSectionSelected = ::jumpToSection,
-                            navigationIcon = if (pathInTopBar) {
-                                {
-                                    Row {
-                                        TooltipIconButton(
-                                            icon = Icons.AutoMirrored.Outlined.ArrowBack,
-                                            label = "后退",
-                                            onClick = { state.goBack() },
-                                            shortcut = if (platform.shortcutModifier == ShortcutModifier.Command) "⌘[" else "Alt+←",
-                                            enabled = history.canGoBack,
-                                        )
-                                        TooltipIconButton(
-                                            icon = Icons.AutoMirrored.Outlined.ArrowForward,
-                                            label = "前进",
-                                            onClick = { state.goForward() },
-                                            shortcut = if (platform.shortcutModifier == ShortcutModifier.Command) "⌘]" else "Alt+→",
-                                            enabled = history.canGoForward,
-                                        )
-                                    }
-                                }
-                            } else if (folderStack.size > 1) {
-                                {
-                                    TooltipIconButton(
-                                        icon = Icons.AutoMirrored.Outlined.ArrowBack,
-                                        label = "返回上一级",
-                                        onClick = { state.navigateUp() },
-                                        shortcut = "Backspace",
-                                    )
-                                }
-                            } else null,
-                            actions = {
-                                // 顶栏只留信息流与搜索：M3 顶栏放一到两个动作，新建与秒传同属「往网盘里添东西」，
-                                // 一起收进 FAB 菜单；排序与视图切换作用于列表，放在列表页眉。
-                                // 片段靠平台的预览播放后端放，没有它的平台不给信息流
-                                if (onFeedShownChange != null && platform.videoPreview != null) {
-                                    FeedToggle(shown = feedShown, onShownChange = onFeedShownChange)
-                                }
-                                if (inspectorAvailable) {
-                            TooltipIconButton(
-                                icon = if (inspectorOpen) Icons.Filled.Info else Icons.Outlined.Info,
-                                label = if (inspectorOpen) "收起详情" else "详情",
-                                onClick = ::toggleInspector,
-                                shortcut = platform.shortcutModifier.label("I"),
-                                tint = if (inspectorOpen) MaterialTheme.colorScheme.primary else Color.Unspecified,
+                    Column {
+                        // 开了不止一个标签才有标签栏，只开一个时与原来一样
+                        if (tabsAvailable && tabs.size > 1) {
+                            DriveTabBar(
+                                tabs = tabs,
+                                activeId = activeTabId,
+                                onSelect = driveRepo::switchTab,
+                                onClose = driveRepo::closeTab,
+                                onNewTab = { driveRepo.openTab(folderStack) },
+                                newTabShortcut = platform.shortcutModifier.label("T"),
                             )
                         }
-                        TooltipIconButton(Icons.Outlined.Search, "搜索", { isSearchOpen = true }, shortcut = platform.shortcutModifier.label("F"))
-                                if (showsRefreshButton()) {
-                                    TooltipIconButton(Icons.Outlined.Refresh, "刷新", { state.load(refresh = true) }, shortcut = "F5")
-                                }
-                            },
-                        )
+                        when {
+                            state.isSelectionMode -> DriveSelectionTopBar(
+                                scrollBehavior = topBarScrollBehavior,
+                                selectedCount = state.selectedFileIds.size,
+                                onExit = { state.exitSelection() },
+                                onSelectAll = { state.toggleSelectAll() },
+                                onMove = { moveTargetIds = state.selectedFileIds.toSet() },
+                                onCopy = { copyTargetIds = state.selectedFileIds.toSet() },
+                                onTrash = { state.moveToTrash(state.selectedFileIds.toList()) },
+                                onExtract = selectedArchives.takeIf { it.isNotEmpty() }?.let { archives ->
+                                    {
+                                        archiveSession.extract(archives)
+                                        state.exitSelection()
+                                    }
+                                },
+                                onShare = {
+                                    // 按列表顺序：服务端取第一项的名字作分享标题
+                                    shareTargets = state.displayedFiles.filter { it.id in state.selectedFileIds && !it.isUploading }
+                                },
+                                onBatchRename = {
+                                    batchRenameTargets = state.displayedFiles.filter { it.id in state.selectedFileIds && !it.isUploading }
+                                },
+                            )
+
+                            isSearchOpen -> DriveSearchTopBar(
+                                query = state.searchQuery,
+                                onQueryChange = { state.updateSearchQuery(it) },
+                                onClose = { closeSearch() },
+                                isGlobalSearching = state.isGlobalSearching,
+                                isGlobalSearchActive = state.isGlobalSearchActive,
+                                onStartGlobalSearch = { state.startGlobalSearch() },
+                                onCancelGlobalSearch = { state.cancelGlobalSearch() },
+                            )
+
+                            else -> DriveBrowseTopBar(
+                                scrollBehavior = topBarScrollBehavior,
+                                title = activeFolder.name,
+                                path = if (pathInTopBar) {
+                                    { DrivePathTitle(folderStack, onNavigate = { index -> state.navigateToBreadcrumb(index) }) }
+                                } else null,
+                                currentSection = currentSection,
+                                sections = state.sectionHeaders.map { it.value.menuLabel },
+                                onSectionSelected = ::jumpToSection,
+                                navigationIcon = if (pathInTopBar) {
+                                    {
+                                        Row {
+                                            TooltipIconButton(
+                                                icon = Icons.AutoMirrored.Outlined.ArrowBack,
+                                                label = "后退",
+                                                onClick = { state.goBack() },
+                                                shortcut = if (platform.shortcutModifier == ShortcutModifier.Command) "⌘[" else "Alt+←",
+                                                enabled = history.canGoBack,
+                                            )
+                                            TooltipIconButton(
+                                                icon = Icons.AutoMirrored.Outlined.ArrowForward,
+                                                label = "前进",
+                                                onClick = { state.goForward() },
+                                                shortcut = if (platform.shortcutModifier == ShortcutModifier.Command) "⌘]" else "Alt+→",
+                                                enabled = history.canGoForward,
+                                            )
+                                        }
+                                    }
+                                } else if (folderStack.size > 1) {
+                                    {
+                                        TooltipIconButton(
+                                            icon = Icons.AutoMirrored.Outlined.ArrowBack,
+                                            label = "返回上一级",
+                                            onClick = { state.navigateUp() },
+                                            shortcut = "Backspace",
+                                        )
+                                    }
+                                } else null,
+                                actions = {
+                                    // 顶栏只留信息流与搜索：M3 顶栏放一到两个动作，新建与秒传同属「往网盘里添东西」，
+                                    // 一起收进 FAB 菜单；排序与视图切换作用于列表，放在列表页眉。
+                                    // 片段靠平台的预览播放后端放，没有它的平台不给信息流
+                                    if (onFeedShownChange != null && platform.videoPreview != null) {
+                                        FeedToggle(shown = feedShown, onShownChange = onFeedShownChange)
+                                    }
+                                    if (inspectorAvailable) {
+                                TooltipIconButton(
+                                    icon = if (inspectorOpen) Icons.Filled.Info else Icons.Outlined.Info,
+                                    label = if (inspectorOpen) "收起详情" else "详情",
+                                    onClick = ::toggleInspector,
+                                    shortcut = platform.shortcutModifier.label("I"),
+                                    tint = if (inspectorOpen) MaterialTheme.colorScheme.primary else Color.Unspecified,
+                                )
+                            }
+                            TooltipIconButton(Icons.Outlined.Search, "搜索", { isSearchOpen = true }, shortcut = platform.shortcutModifier.label("F"))
+                                    if (showsRefreshButton()) {
+                                        TooltipIconButton(Icons.Outlined.Refresh, "刷新", { state.load(refresh = true) }, shortcut = "F5")
+                                    }
+                                },
+                            )
+                        }
                     }
                 },
                 floatingActionButton = {
@@ -1051,6 +1099,7 @@ fun DriveScreen(
             onShare = { shareTargets = listOf(target) },
             onOpenInExternalPlayer = platform.externalPlayer?.let { { openInExternalPlayer(target) } },
             onBrowseInFeed = browseInFeed?.let { { it(target) } },
+            onOpenInNewTab = openInNewTab?.let { { it(target) } },
         )
     }
 

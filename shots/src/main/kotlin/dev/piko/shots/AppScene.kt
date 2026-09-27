@@ -81,6 +81,8 @@ class AppScene private constructor(private val scene: ImageComposeScene) : AutoC
     fun hasText(text: String) = find(text) != null
 
     fun click(text: String, button: PointerButton = PointerButton.Primary) {
+        // 目标可能还在路上（文件夹的解析名要等描述取回来），等一会儿再算找不到
+        if (find(text) == null) pumpUntil(5_000) { find(text) != null }
         val node = find(text) ?: error("找不到「$text」。界面上现有的文本：${texts().take(60)}")
         click(node.boundsInRoot.center, button)
     }

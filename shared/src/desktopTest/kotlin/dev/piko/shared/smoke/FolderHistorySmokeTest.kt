@@ -54,4 +54,33 @@ class FolderHistorySmokeTest {
         repo.goBack()
         assertEquals(listOf(listOf(root, docs), listOf(root, anime, show)), repo.recentFoldersFlow.value)
     }
+
+    @Test
+    fun `each tab keeps its own place and history`() = smoke {
+        val repo = PikoDriveRepository(FakePikPakServer().provider(), MemoryPreferences())
+        repo.updateFolderStack(listOf(root, anime))
+        val first = repo.activeTabId.value
+
+        // 新标签停在文档里，历史是它自己的
+        val second = repo.openTab(listOf(root, docs))
+        assertEquals(listOf(root, docs), repo.folderStackFlow.value)
+        assertFalse(repo.historyFlow.value.canGoBack)
+        repo.pushFolder("E", "SPs")
+
+        // 切回第一个：位置与后退都是原来的
+        repo.switchTab(first)
+        assertEquals(listOf(root, anime), repo.folderStackFlow.value)
+        assertTrue(repo.goBack())
+        assertEquals(listOf(root), repo.folderStackFlow.value)
+
+        // 标签列表里第二个带着它离开时的位置
+        assertEquals(listOf(root, docs, PikoPathBreadcrumb("E", "SPs")), repo.tabsFlow.value.first { it.id == second }.stack)
+
+        // 关掉活动标签，落到旁边那个
+        repo.closeTab(first)
+        assertEquals(second, repo.activeTabId.value)
+        assertEquals(listOf(root, docs, PikoPathBreadcrumb("E", "SPs")), repo.folderStackFlow.value)
+        repo.closeTab(second)
+        assertEquals(second, repo.activeTabId.value, "最后一个标签不关")
+    }
 }

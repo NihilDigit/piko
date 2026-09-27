@@ -1,5 +1,6 @@
 package dev.piko.ui.screens.drive
 
+import androidx.compose.ui.input.pointer.isTertiaryPressed
 import dev.piko.ui.components.LocalFileDrag
 import androidx.compose.ui.draw.alpha
 import dev.piko.shared.data.PikoPathBreadcrumb
@@ -152,6 +153,8 @@ internal class DriveItemCallbacks(
     val onExtendSelect: (FileStat) -> Unit,
     /** 按住这一项拖动时拖出去的那一批，见 [fileDragSource]。 */
     val dragPayload: (FileStat) -> FileDragPayload?,
+    /** 鼠标中键点了这一项：文件夹在新标签页里打开。 */
+    val onMiddleClick: (FileStat) -> Unit,
     /** 框选，见 [marqueeSelection]。 */
     val onBoxSelect: (base: Set<String>, boxed: Set<String>) -> Unit,
     /** 鼠标单击了网格的空白处。 */
@@ -461,6 +464,14 @@ private fun DriveCell(
                 onExtend = { callbacks.onExtendSelect(file) },
             )
             .fileDragSource { callbacks.dragPayload(file) }
+            .pointerInput(file.id) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        if (event.type == PointerEventType.Press && event.buttons.isTertiaryPressed) callbacks.onMiddleClick(file)
+                    }
+                }
+            }
             // 文件夹接得住拖来的条目
             .then(if (file.isFolder) Modifier.fileDropTarget("cell:${file.id}", PikoPathBreadcrumb(file.id, file.name)) else Modifier),
     ) {

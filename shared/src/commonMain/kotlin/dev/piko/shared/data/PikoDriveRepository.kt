@@ -117,6 +117,69 @@ open class PikoDriveRepository(
     private val _historyFlow = MutableStateFlow(FolderHistory())
     val historyFlow: StateFlow<FolderHistory> = _historyFlow.asStateFlow()
 
+    /**
+     * 网盘页的标签，各有自己的路径栈与浏览历史。活动的那个就是 [folderStackFlow] 与 [historyFlow]：
+     * 网盘页、定位、快捷访问、信息流都只认这两个，切标签时把它们换成目标标签存着的那一份，别处不用知道有标签。
+     * 这里存的活动标签那一项是切走之前的旧值，读标签用 [tabsFlow]。不落盘，进程内有效。
+     */
+    private val _tabs = MutableStateFlow(listOf(DriveTab(FIRST_TAB_ID, listOf(ROOT_BREADCRUMB))))
+    private val _activeTabId = MutableStateFlow(FIRST_TAB_ID)
+    val activeTabId: StateFlow<Long> = _activeTabId.asStateFlow()
+    private var nextTabId = FIRST_TAB_ID + 1
+
+    private val _tabsFlow = MutableStateFlow(_tabs.value)
+
+    /** 全部标签，按显示的顺序；活动的那个带着眼下的栈与历史。每次换栈、开关标签后当场更新，读到的不会落后一步。 */
+    val tabsFlow: StateFlow<List<DriveTab>> = _tabsFlow.asStateFlow()
+
+    private fun publishTabs() {
+        val active = _activeTabId.value
+        _tabsFlow.value = _tabs.value.map { if (it.id == active) it.copy(stack = _folderStackFlow.value, history = _historyFlow.value) else it }
+    }
+
+    /** 在活动标签后面开一个新标签，停在 [stack]。[activate] 为 false 是在后台开（中键点文件夹）。 */
+    fun openTab(stack: List<PikoPathBreadcrumb>, activate: Boolean = true): Long {
+        val tab = DriveTab(nextTabId++, stack.ifEmpty { listOf(ROOT_BREADCRUMB) })
+        _tabs.update { tabs ->
+            val at = tabs.indexOfFirst { it.id == _activeTabId.value }
+            tabs.toMutableList().apply { add(at + 1, tab) }
+        }
+        if (activate) switchTab(tab.id) else publishTabs()
+        return tab.id
+    }
+
+    fun switchTab(id: Long) {
+        val active = _activeTabId.value
+        if (id == active) return
+        val target = _tabs.value.firstOrNull { it.id == id } ?: return
+        // 先把眼下的位置存回活动标签，再换成目标标签的
+        _tabs.update { tabs -> tabs.map { if (it.id == active) it.copy(stack = _folderStackFlow.value, history = _historyFlow.value) else it } }
+        _activeTabId.value = id
+        _historyFlow.value = target.history
+        _folderStackFlow.value = target.stack
+        forgetFoldersOutsideStack()
+        publishTabs()
+    }
+
+    /** 关掉一个标签。关的是活动标签时先切到右边那个，没有就左边。只剩一个时不关。 */
+    fun closeTab(id: Long) {
+        val tabs = _tabs.value
+        if (tabs.size <= 1) return
+        val index = tabs.indexOfFirst { it.id == id }.takeIf { it >= 0 } ?: return
+        if (id == _activeTabId.value) switchTab((tabs.getOrNull(index + 1) ?: tabs[index - 1]).id)
+        _tabs.update { current -> current.filterNot { it.id == id } }
+        forgetFoldersOutsideStack()
+        publishTabs()
+    }
+
+    /** 按显示顺序切到后一个（[step] 为 1）或前一个（-1），两头相接。 */
+    fun cycleTab(step: Int) {
+        val tabs = _tabs.value
+        if (tabs.size <= 1) return
+        val index = tabs.indexOfFirst { it.id == _activeTabId.value }
+        switchTab(tabs[(index + step).mod(tabs.size)].id)
+    }
+
     private val recentFolders = RecentFolders(cacheStore, backgroundScope)
 
     /** 最近去过的文件夹（整条路径），新的在前，见 [RecentFolders]。 */
@@ -280,12 +343,15 @@ open class PikoDriveRepository(
     private fun stackChanged() {
         recentFolders.visited(_folderStackFlow.value)
         forgetFoldersOutsideStack()
+        publishTabs()
     }
 
-    // 历史里的位置也留着：后退回去时首帧就是原来的列表与滚动位置
+    // 历史里的位置也留着：后退回去时首帧就是原来的列表与滚动位置。别的标签停着的位置与它们的历史同样留着，切回去是即时的
     private fun forgetFoldersOutsideStack() {
-        val history = _historyFlow.value
-        val inStack = (sequenceOf(folderStackFlow.value) + history.back.asSequence() + history.forward.asSequence())
+        val active = _activeTabId.value
+        val kept = _tabs.value.filter { it.id != active }.map { it.stack to it.history } + (folderStackFlow.value to _historyFlow.value)
+        val inStack = kept.asSequence()
+            .flatMap { (stack, history) -> sequenceOf(stack) + history.back.asSequence() + history.forward.asSequence() }
             .flatten()
             .mapTo(HashSet()) { it.id }
         listingCache.update { cache -> cache.filterKeys { it in inStack } }
@@ -657,6 +723,7 @@ open class PikoDriveRepository(
 
     companion object {
         val ROOT_BREADCRUMB = PikoPathBreadcrumb("", "网盘")
+        private const val FIRST_TAB_ID = 1L
         private const val MAX_LOCATE_DEPTH = 64
         private const val CHILD_NAME_PAGE = 20
         private const val CHILD_NAME_CONCURRENCY = 2
@@ -671,6 +738,11 @@ open class PikoDriveRepository(
         // PikPak 各端自动建的保存目录名不一，官方客户端建过的也算
         private val MY_PACKS_FOLDER_NAMES = setOf("my pack", "my packs", "我的资源", "我的离线")
     }
+}
+
+/** 网盘页的一个标签：停在哪（[stack]）与它自己的后退、前进。 */
+data class DriveTab(val id: Long, val stack: List<PikoPathBreadcrumb>, val history: FolderHistory = FolderHistory()) {
+    val title: String get() = stack.lastOrNull()?.name.orEmpty()
 }
 
 /**

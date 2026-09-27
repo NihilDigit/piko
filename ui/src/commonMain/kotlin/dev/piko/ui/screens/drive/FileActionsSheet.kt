@@ -14,6 +14,7 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.SwipeVertical
+import androidx.compose.material.icons.outlined.Tab
 import dev.piko.shared.upload.isUploading
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.StarOutline
@@ -70,6 +71,7 @@ internal fun FileActionsSheet(
     onShare: () -> Unit,
     onOpenInExternalPlayer: (() -> Unit)?,
     onBrowseInFeed: (() -> Unit)?,
+    onOpenInNewTab: (() -> Unit)? = null,
 ) {
     val usage by produceState<FolderUsageResult?>(null, folderUsage) {
         folderUsage ?: return@produceState
@@ -100,6 +102,7 @@ internal fun FileActionsSheet(
         onShare = onShare,
         onOpenInExternalPlayer = onOpenInExternalPlayer,
         onBrowseInFeed = onBrowseInFeed,
+        onOpenInNewTab = onOpenInNewTab,
     )
 
     ItemDetailsSheet(
@@ -141,7 +144,10 @@ internal fun fileActions(
     onShare: () -> Unit,
     onOpenInExternalPlayer: (() -> Unit)?,
     onBrowseInFeed: (() -> Unit)?,
+    onOpenInNewTab: (() -> Unit)? = null,
 ): List<SheetAction> = buildList {
+    // 文件夹在宽窗口里可以在新标签页打开，放在最前：它是「打开」的另一种
+    if (file.isFolder && onOpenInNewTab != null) add(SheetAction(Icons.Outlined.Tab, "在新标签页打开", onOpenInNewTab))
     // 文件夹的头一项：订阅它的随机片段，是网盘之外的另一种看法
     if (file.isFolder && onBrowseInFeed != null) add(SheetAction(Icons.Outlined.SwipeVertical, "在信息流中刷", onBrowseInFeed))
     if (previewHidden != null) {

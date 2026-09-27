@@ -86,6 +86,14 @@ private val standardSet = listOf(
     Shot("palette-query-1440x900", steps = listOf(Step.Key("Ctrl+K"), Step.Pump(600), Step.Type("视图"), Step.Pump(600))),
     // 大窗口底部的状态栏，以及从命令面板打开的活动面板
     Shot("activity-panel-1440x900", steps = listOf(Step.Pump(800), Step.Key("Ctrl+K"), Step.Pump(500), Step.Type("活动"), Step.Key("Enter"), Step.Pump(1_000))),
+    // 标签：Ctrl+T 新建后进一个目录，右键另一个文件夹在新标签页打开
+    Shot(
+        "tabs-1440x900",
+        steps = listOf(
+            Step.Pump(800), Step.Key("Ctrl+T"), Step.Pump(600), Step.Click("Frieren"), Step.Wait("SPs"), Step.Key("Alt+Left"), Step.Pump(800),
+            Step.Click("电影", PointerButton.Secondary), Step.Pump(400), Step.Click("在新标签页打开"), Step.Pump(800),
+        ),
+    ),
     // 键盘：方向键走到一项，描边标出焦点
     Shot("keyboard-focus-1440x900", steps = listOf(Step.Key("Down"), Step.Key("Down"), Step.Key("Right"), Step.Key("Down"))),
     // 信息流：宽窗口的侧栏、窄窗口的全屏、弹出到独立窗口后主窗口的样子
