@@ -454,6 +454,14 @@ fun DriveScreen(
             primary && event.key == Key.A -> state.toggleSelectAll()
             trashKey && state.isSelectionMode && state.selectedFileIds.isNotEmpty() ->
                 state.moveToTrash(state.selectedFileIds.toList())
+            // 文件管理器的惯例：选中一项是改名，几项是批量重命名
+            event.key == Key.F2 && state.isSelectionMode && state.selectedFileIds.isNotEmpty() -> {
+                val targets = state.displayedFiles.filter { it.id in state.selectedFileIds && !it.isUploading }
+                when {
+                    targets.size == 1 -> renameTargetFile = targets.single()
+                    targets.size > 1 -> batchRenameTargets = targets
+                }
+            }
             ((event.key == Key.Backspace && !primary) || (event.isAltPressed && event.key == Key.DirectionLeft)) &&
                 folderStack.size > 1 -> state.navigateUp()
             else -> return false

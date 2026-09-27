@@ -84,7 +84,7 @@ internal fun DriveSelectionTopBar(
             if (onExtract != null) TooltipIconButton(Icons.Outlined.Unarchive, "解压所选压缩包", onExtract)
             TooltipIconButton(Icons.Outlined.Share, "分享所选", onShare, enabled = selectedCount > 0)
             // 只选一项时没有共同前后缀可言，单项改名走条目菜单
-            TooltipIconButton(Icons.Outlined.DriveFileRenameOutline, "批量重命名", onBatchRename, enabled = selectedCount >= 2)
+            TooltipIconButton(Icons.Outlined.DriveFileRenameOutline, "批量重命名", onBatchRename, enabled = selectedCount >= 2, shortcut = "F2")
             TooltipIconButton(Icons.Outlined.DriveFileMove, "移动所选", onMove, enabled = selectedCount > 0)
             TooltipIconButton(Icons.Outlined.ContentCopy, "复制所选", onCopy, enabled = selectedCount > 0)
             TooltipIconButton(
