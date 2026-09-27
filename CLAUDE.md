@@ -12,9 +12,15 @@ Piko 是 PikPak 的第三方跨平台客户端。Android、Windows 与 macOS（�
 ./gradlew :desktopApp:compileKotlinDesktop # Desktop 编译，注意不是 compileKotlinJvm
 ./gradlew :app:installDebug                # 装到已连接设备，包名 dev.piko.debug
 ./gradlew :desktopApp:run                  # 跑桌面端
-./gradlew :app:testDebugUnitTest           # 单元测试，目前只有 app/src/test
-./gradlew :app:testDebugUnitTest --tests '*FileNameSanitizerTest*'   # 跑单个测试
+./gradlew :shared:desktopTest              # shared 的单测与冒烟（文件名解析、日志、代理、更新说明等）
+./gradlew :shared:desktopTest --tests '*ReleaseNotesTest*'           # 跑单个测试
+./gradlew :desktopApp:desktopTest          # 桌面端测试，含 WinRT 与窗口过程，只能在 Windows 上跑
+./gradlew :app:testDebugUnitTest           # Android 单测
+./gradlew :desktopApp:createReleaseDistributable  # release 包（ProGuard + AOT），keep 规则一类问题只在这里暴露
 ```
+
+`gradlew :desktopApp:run` 直接读 `build/classes`，开发版运行期间重新编译它加载的模块，正在运行的进程会在
+下一次加载类时报 `NoClassDefFoundError`。要编译先关掉开发版。
 
 改完务必两端都编译：`shared` 与 `ui` 的改动会同时波及 `app` 与 `desktopApp`，只编译一端看不出来。
 `ui` 的桌面端与 Android 端用的 material3 版本不同（见「桌面端」一节），同一行代码可能只在一端报错。
@@ -94,7 +100,8 @@ expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以
 鼠标与键盘：条目右键弹出与操作面板相同的菜单（`ContextMenuArea`，动作列表 `fileActions` 两处共用）；
 图标按钮用 `TooltipIconButton`，快捷键写在提示里；Esc 经 `BackHandler` 触发返回；网盘页快捷键见
 `DriveScreen` 的 `handleShortcut`。新加的界面同时照顾触屏与鼠标：下拉刷新之类只有触屏能用的操作，
-宽窗口要另给按钮。
+宽窗口要另给按钮。快捷键的主修饰键取 `PikoPlatform.shortcutModifier`（mac 上是 ⌘），不要写死 Ctrl。
+Compose 桌面端悬停移动事件的 `previousPosition` 恒等于 `position`，判断「鼠标动了」要自己记上一次的位置。
 
 ### 平台差异用接口，不用 expect/actual
 
@@ -115,6 +122,17 @@ expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以
 
 **加一个偏好项要同时改三处**：接口、
 `SessionManager`（Android，DataStore）、`DesktopPikoPreferences`（Desktop，`DesktopSettingsStore`）。
+
+### 日志
+
+`shared/.../shared/log/PikoLog` 是全局日志，从 debug 起全部写进滚动文件（四份各 1 MiB），用户在设置里导出后随
+反馈交回。调用方只取时钟、投递一条，格式化与 IO 在单独的协程里做；即便如此也不要打在逐帧、逐块读写的热路径上，
+几 MB 的上限会被刷掉。
+
+导出的日志要发给别人，**不写文件名、账号、邮箱、令牌与直链**：文件用 `logFile(id, name)`，只留 ID 与扩展名；
+给用户的提示只有一句话、异常被吞掉的地方，接一个 `.logFailure(tag, message)` 再 `onFailure`。写文件前还有
+一层兜底脱敏（邮箱、手机号、本机路径、远程 URL），见 `PikoLog.redact`，但它认不出不带路径的文件名，
+不能指望它。崩溃由两端入口装的默认异常处理写入并等落盘；桌面端界面线程上的异常经 `PikoWindow` 弹中文提示后同样抛出记下。
 
 ### 全局导航栈在仓库层
 
@@ -163,8 +181,9 @@ expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以
 
 **所有网盘读取都经 `shared/.../media/proxy/` 的本机回环 HTTP 代理**，播放器只拿到一个 `http://127.0.0.1`
 URL。直链过期重取、连接预算、预读与缓存都在 SDK 的 `PikPakFileHandle` / `PikPakStreamReader` 里；
-代理负责把它们暴露成 HTTP Range。reader 只允许单个读者，而 mpv 拖动时新旧连接会短暂重叠，所以同一会话
-只有一个 reader，新请求先取消并等待旧请求，再 seek。
+代理负责把它们暴露成 HTTP Range。同一 handle 开出的 reader 共用一份块缓存、各有读位置，代理给每个 HTTP
+请求开一个：mpv 拖动时新旧连接重叠、交错差的 MP4 在两处来回读，请求之间都互不取消。预取走
+`handle.prefetch`，不占读位置；同一优先级按提出的先后取完，调用方不必自己限并发。
 
 **Android 分发包是 GPLv3**：jdtech 包里的 FFmpeg 以 `--enable-gpl --enable-version3` 构建，mpv 也是 GPL 构建。
 piko 源码仍是 MIT，但发版时要附 GPLv3 与第三方声明，并指明对应源码的获取方式。
@@ -178,9 +197,12 @@ piko 源码仍是 MIT，但发版时要附 GPLv3 与第三方声明，并指明�
   部分 API 仍是实验性，`ui` 模块已统一 opt-in；它也缺少无点击的 `SegmentedListItem`，设置页用
   `StaticSegmentedRow` 顶替。
 - **release**：`./gradlew :desktopApp:packageReleaseMsi`（或 `createReleaseDistributable`）。ProGuard 只裁剪不混淆，
-  规则在 `desktopApp/proguard-rules.pro`，JNA、MediaMP、ServiceLoader 实现、isoparser 必须保留。
+  规则在 `desktopApp/proguard-rules.pro`，JNA、MediaMP、ServiceLoader 实现、isoparser 必须保留；
+  经 `MethodHandles` 按名字取出、交给 FFM 做 upcall 的方法（`WindowsCaption` 的窗口过程）代码里没有直接调用，
+  同样要写 keep，否则 release 包里悄悄失效，debug 看不出来。
   打包时会跑一遍 AOT 训练（进程带 `compose.aot.training-run`，由 `Main.kt` 在 12 秒后自行退出），
-  得到 `app.aot`。AOT 缓存按 jar 的修改时间校验，MSI 与 zip 只存到偶数秒，训练前先把 jar 的时间取整，
+  得到 `app.aot`。训练与运行都带 `-XX:-AOTAdapterCaching -XX:-AOTStubCaching`：JDK 25 会把训练机上生成的
+  调用适配代码存进缓存且不核对 CPU 特性，CI runner 有 AVX-512，缓存装到没有它的 CPU 上随机崩在 AdapterBlob。AOT 缓存按 jar 的修改时间校验，MSI 与 zip 只存到偶数秒，训练前先把 jar 的时间取整，
   否则安装后缓存作废（`msiexec /a` 解出安装包即可验证）。
   jlink、jpackage 与 ProGuard 用 Azul 的 JDK 25 工具链，与运行 Gradle 的 JDK 无关；Temurin 25 不带 jmods，ProGuard 会失败。
   打出 MSI 后由 `package/windows/transactional-upgrade.ps1` 把卸载旧版挪进安装事务：新版装失败时旧版文件保留，
@@ -232,7 +254,7 @@ Git Bash 会把以 `/` 开头的参数改写成 Windows 路径，传网盘路径
 
 ## 冒烟测试
 
-`.github/workflows/smoke.yml` 在每次推送时运行：Linux 上的 `:shared:desktopTest`，以及 x86_64 模拟器
+`.github/workflows/smoke.yml` 在推送到分支与 PR 时运行（tag 不跑）：Linux 上的 `:shared:desktopTest`，以及 x86_64 模拟器
 （API 34）上的 `:app:connectedDebugAndroidTest`。这些是端到端行为冒烟，不是单元测试：走真实 libmpv、
 真实代理，PikPak 服务端用 MockEngine 顶替，SDK 的请求、鉴权与解析仍走真实代码。本地不必跑，以 CI 结果为准。
 老格式样片在 `testdata/media/`，直接提交，生成方式见 `generate.sh`；没有 WMV3/VC-1 样片，因为 ffmpeg 没有它的编码器。
