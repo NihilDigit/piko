@@ -7,7 +7,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /**
- * Windows 原生能力：Toast、AUMID、magnet 协议、防锁屏、在资源管理器里打开。
+ * Windows 原生能力：Toast、AUMID、防锁屏、在资源管理器里打开。magnet 与种子的关联见 [WindowsLinkAssociation]。
  *
  * 设计约束（对照 docmirror4a/winrt-capability-map.md）：
  * - 本应用是非打包（unpackaged）桌面应用：Toast 走 Windows.UI.Notifications，
@@ -49,26 +49,10 @@ object WinRTSupport {
     }
 
     /**
-     * 把 magnet: 协议登记到当前用户（HKCU，无需管理员权限），指向 [exe]。已登记且指向它时直接返回 true。
-     *
-     * 只该由 MSI 装的那份调用（见 WindowsInstaller.installedExecutable）。原先按进程命令行是否以 .exe
-     * 结尾判断，gradle run 的 java.exe 也算，一次开发运行就把协议改成打不开链接的 java.exe。
-     */
-    fun ensureMagnetProtocolHandler(exe: File): Boolean {
-        if (!isWindows) return false
-        return runCatching {
-            val expected = "\"${exe.absolutePath}\" \"%1\""
-            if (currentMagnetCommand()?.equals(expected, ignoreCase = true) == true) return true
-            regAdd("HKCU\\Software\\Classes\\magnet", "/ve", "/t", "REG_SZ", "/d", "URL:Magnet Protocol", "/f") &&
-                regAdd("HKCU\\Software\\Classes\\magnet", "/v", "URL Protocol", "/t", "REG_SZ", "/d", "Piko", "/f") &&
-                regAdd("HKCU\\Software\\Classes\\magnet\\shell\\open\\command", "/ve", "/t", "REG_SZ", "/d", expected, "/f")
-        }.getOrDefault(false)
-    }
-
-    /**
      * 在当前用户下登记 AUMID 的显示名与图标，Toast 才会真正显示。jpackage 生成的开始菜单
      * 快捷方式不带 System.AppUserModel.ID 属性，靠快捷方式登记这条路走不通。
-     * 与 magnet 协议一样只由 MSI 装的那份调用：便携版或测试镜像写的话，图标会指向它们的目录。
+     * 只由 MSI 装的那份调用（见 WindowsInstaller.installedExecutable）：便携版或测试镜像写的话，
+     * 图标会指向它们的目录。
      */
     fun ensureNotificationRegistration(icon: File?): Boolean {
         if (!isWindows) return false
@@ -86,17 +70,6 @@ object WinRTSupport {
                 .start()
                 .waitFor(15, TimeUnit.SECONDS)
         }.getOrDefault(false)
-
-    private fun currentMagnetCommand(): String? =
-        runCatching {
-            val process = ProcessBuilder(
-                "reg", "query",
-                "HKCU\\Software\\Classes\\magnet\\shell\\open\\command", "/ve",
-            ).start()
-            val output = process.inputStream.bufferedReader().readText()
-            process.waitFor(15, TimeUnit.SECONDS)
-            Regex("REG_SZ\\s+(.*)").find(output)?.groupValues?.get(1)?.trim()
-        }.getOrNull()
 
     /** shell32.SetCurrentProcessExplicitAppUserModelID 的最小 FFM 绑定。 */
     private object Shell32AppId {

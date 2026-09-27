@@ -71,6 +71,9 @@ interface PikoPlatform {
     /** 为 null 表示该平台不提供片段下载的画面预览，入口随之隐藏。 */
     val videoPreview: VideoPreviewSupport?
 
+    /** 为 null 表示该平台不能由应用自己登记为磁力链接与种子文件的打开方式，设置页不给入口。 */
+    val linkAssociation: LinkAssociation?
+
     /**
      * 铺满窗口的对话框。Android 要关掉 decorFitsSystemWindows，内容自己按 safeDrawing 避让；
      * [immersive] 为真时（看图）系统栏图标固定浅色，并按 [systemBarsVisible] 收起系统栏，
@@ -149,6 +152,26 @@ interface VideoPreviewSupport {
 
     @Composable
     fun Surface(backend: PreviewBackend, modifier: Modifier)
+}
+
+/**
+ * 把 magnet: 链接与 .torrent 文件交给 Piko 打开。系统不许应用自己改默认打开方式，
+ * 所以分两步：应用登记成可选项，再由用户在系统设置里选定。
+ */
+interface LinkAssociation {
+    /** 读系统眼下的选择。读的是注册表，调用方放在后台协程里。 */
+    suspend fun state(): LinkAssociationState
+
+    /** 登记为可选的打开方式，再打开系统的默认应用设置。返回 false 表示登记失败，设置页也没有打开。 */
+    suspend fun register(): Boolean
+}
+
+enum class LinkAssociationState {
+    /** 这份构建不能登记，例如开发版与便携版：登记的路径是临时的，或会与安装版互相覆盖。 */
+    Unavailable,
+    NotDefault,
+    /** 磁力链接与种子文件都已由 Piko 打开。 */
+    Default,
 }
 
 interface PreviewBackend : PlaybackBackend {

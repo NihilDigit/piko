@@ -1,4 +1,4 @@
-package dev.piko.desktop
+package dev.piko.shared.state
 
 import java.io.File
 import java.net.URLEncoder
@@ -36,7 +36,8 @@ object TorrentMagnet {
         val range = infoRange ?: return null
         val hash = MessageDigest.getInstance("SHA-1").digest(bytes.copyOfRange(range.first, range.last + 1))
         val hex = hash.joinToString("") { "%02x".format(it) }
-        val displayName = name?.let { "&dn=" + URLEncoder.encode(it, Charsets.UTF_8).replace("+", "%20") }.orEmpty()
+        // 按字符集名的重载：取 Charset 的那个 Android 到 API 33 才有，minSdk 是 26
+        val displayName = name?.let { "&dn=" + URLEncoder.encode(it, "UTF-8").replace("+", "%20") }.orEmpty()
         return "magnet:?xt=urn:btih:$hex$displayName"
     }
 

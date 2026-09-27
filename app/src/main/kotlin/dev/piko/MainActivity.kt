@@ -8,6 +8,7 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -26,6 +27,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.download.DownloadStatus
 import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.InstantSheetState
+import dev.piko.shared.state.TorrentMagnet
 import dev.piko.shared.state.extractLinks
 import dev.piko.shared.upload.UploadSelection
 import dev.piko.ui.PikoApp
@@ -35,9 +37,12 @@ import dev.piko.ui.screens.player.MediampVideoPlayerScreen
 import dev.piko.ui.theme.appearanceFlow
 import dev.piko.ui.theme.isDark
 import dev.piko.util.PikPakAppLink
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 
 /**
  * Main application entry activity using Single Activity architecture.
@@ -107,6 +112,10 @@ class MainActivity : ComponentActivity() {
             }
             return
         }
+        torrentUri(intent)?.let { uri ->
+            openTorrent(uri)
+            return
+        }
         val sharedFiles = extractSharedFiles(intent)
         if (sharedFiles.isNotEmpty()) {
             // 分享来的只有随 Intent 的临时授权，多数来源不许持久化；拿不到时这批任务进程被杀后无法续传
@@ -120,6 +129,28 @@ class MainActivity : ComponentActivity() {
         if (!link.isNullOrBlank()) {
             // 名为磁力，实际收的是添加链接面板的输入：面板自己分辨磁力、下载地址与分享链接
             PikoApplication.instance.instantMagnetRepository.onIncomingMagnet(link)
+        }
+    }
+
+    /** 打开的 .torrent 文件。按类型认而不按扩展名：content: URI 的路径多半不带文件名。 */
+    private fun torrentUri(intent: Intent): Uri? {
+        if (intent.action != Intent.ACTION_VIEW) return null
+        val uri = intent.data?.takeIf { it.scheme == ContentResolver.SCHEME_CONTENT } ?: return null
+        return uri.takeIf { (intent.type ?: contentResolver.getType(uri)) == TORRENT_MIME_TYPE }
+    }
+
+    /** 与桌面端拖进种子相同，在本地换算成磁力链接。读取放在后台：文档提供者可能现从网络取内容。 */
+    private fun openTorrent(uri: Uri) {
+        val app = PikoApplication.instance
+        app.appScope.launch(Dispatchers.IO) {
+            val magnet = runCatching { app.contentResolver.openInputStream(uri)?.use { it.readBytes() } }
+                .getOrNull()
+                ?.let(TorrentMagnet::fromBytes)
+            if (magnet != null) {
+                app.instantMagnetRepository.onIncomingMagnet(magnet)
+            } else {
+                withContext(Dispatchers.Main) { Toast.makeText(app, "无法读取种子文件", Toast.LENGTH_SHORT).show() }
+            }
         }
     }
 
@@ -189,6 +220,8 @@ private fun AskForNotificationsOnFirstWork(services: PikoServices) {
         if (!granted) launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 }
+
+private const val TORRENT_MIME_TYPE = "application/x-bittorrent"
 
 // 与 androidx.activity 的 DefaultLightScrim、DefaultDarkScrim 相同，那两个是 internal
 private val NavBarLightScrim = Color.argb(0xe6, 0xFF, 0xFF, 0xFF)

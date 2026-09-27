@@ -1,4 +1,4 @@
-package dev.piko.desktop
+package dev.piko.shared.state
 
 import java.util.Base64
 import kotlin.test.Test

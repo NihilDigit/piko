@@ -38,6 +38,14 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="magnet" />
             </intent-filter>
+            <!-- 打开 .torrent 文件：在本地换算成磁力链接交给添加链接面板。文件管理器与浏览器下载
+                 多按扩展名给出这个类型；报成 application/octet-stream 的认不出来，只能经分享上传 -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:mimeType="application/x-bittorrent" />
+            </intent-filter>
             <!-- 官方「在 App 中打开」链接，Telegram 机器人存完文件后发的就是它。域名归官方 App
                  验证所有，这里不设 autoVerify；要由 Piko 打开，需在系统设置的「默认打开」里添加 -->
             <intent-filter>

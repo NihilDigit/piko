@@ -25,6 +25,7 @@ import androidx.compose.ui.draganddrop.DragAndDropTarget
 import androidx.compose.ui.draganddrop.awtTransferable
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.state.InstantSheetState
+import dev.piko.shared.state.TorrentMagnet
 import dev.piko.shared.state.extractLinks
 import dev.piko.shared.upload.UploadSelection
 import dev.piko.ui.platform.LocalPikoPlatform

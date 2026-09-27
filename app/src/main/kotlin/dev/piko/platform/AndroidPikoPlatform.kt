@@ -35,6 +35,7 @@ import androidx.documentfile.provider.DocumentFile
 import dev.piko.BuildConfig
 import dev.piko.shared.media.player.PlaybackBackend
 import dev.piko.ui.platform.DownloadLocationPicker
+import dev.piko.ui.platform.LinkAssociation
 import dev.piko.ui.platform.LocalFileActions
 import dev.piko.ui.platform.PikoPlatform
 import dev.piko.ui.platform.PreviewBackend
@@ -101,6 +102,10 @@ class AndroidPikoPlatform(
     override val uploadPicker: UploadPicker = AndroidUploadPicker()
 
     override val videoPreview: VideoPreviewSupport = MpvPreviewSupport()
+
+    // 清单里的 intent-filter 已让 Piko 出现在磁力链接与种子文件的选择器里，默认由用户在选择器里点「始终」。
+    // 应用没有接口替用户设定：RoleManager 只管浏览器、电话、短信这类角色，「默认打开」页只管验证过的 http 链接
+    override val linkAssociation: LinkAssociation? = null
 
     @Composable
     override fun FullscreenDialog(

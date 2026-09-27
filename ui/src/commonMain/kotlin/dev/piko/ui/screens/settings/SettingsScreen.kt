@@ -38,6 +38,7 @@ import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Speed
@@ -84,6 +85,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -99,6 +101,7 @@ import dev.piko.ui.adaptive.readableWidth
 import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.PikoBrandIcons
 import dev.piko.ui.components.PikoTopBar
+import dev.piko.ui.platform.LinkAssociationState
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.PikoPlatform
 import dev.piko.ui.screens.archive.SavedArchivePasswordsDialog
@@ -159,6 +162,16 @@ fun SettingsScreen(
     // 选完不关对话框，让用户在卡片上看到新位置再点「完成」
     val pickDownloadDir = downloadLocation.rememberLauncher { picked ->
         scope.launch { sessionManager.setDownloadDirPath(picked) }
+    }
+
+    val linkAssociation = platform.linkAssociation
+    var linkAssociationState by remember { mutableStateOf(LinkAssociationState.Unavailable) }
+    if (linkAssociation != null) {
+        // 默认应用在系统设置里改，改完切回来窗口重新获得焦点，借此刷新
+        val isWindowFocused = LocalWindowInfo.current.isWindowFocused
+        LaunchedEffect(linkAssociation, isWindowFocused) {
+            if (isWindowFocused) linkAssociationState = linkAssociation.state()
+        }
     }
 
     val updater = platform.updater
@@ -279,9 +292,11 @@ fun SettingsScreen(
                     }
 
                     SettingsGroup(SettingsSection.Links.title, Modifier.trackSection(SettingsSection.Links)) {
+                        val shownLinkAssociation = linkAssociation?.takeIf { linkAssociationState != LinkAssociationState.Unavailable }
+                        val linksCount = if (shownLinkAssociation != null) 2 else 1
                         // 字幕靠解析配到视频上。它在另一组，关掉解析时写明原因，而不是只把开关灰掉
                         SettingsSwitchRow(
-                            index = 0, count = 1,
+                            index = 0, count = linksCount,
                             icon = Icons.Outlined.Subtitles,
                             title = "保存配套字幕",
                             supporting = if (isNameParsingEnabled) "保存视频时一并保存外挂字幕" else "需先开启文件名解析",
@@ -289,6 +304,26 @@ fun SettingsScreen(
                             onCheckedChange = { scope.launch { sessionManager.setBundleSubtitlesEnabled(it) } },
                             enabled = isNameParsingEnabled,
                         )
+                        if (shownLinkAssociation != null) {
+                            SettingsNavigationRow(
+                                index = 1, count = linksCount,
+                                icon = Icons.Outlined.Link,
+                                title = "磁力链接与种子文件",
+                                supporting = if (linkAssociationState == LinkAssociationState.Default) {
+                                    "默认由 Piko 打开"
+                                } else {
+                                    "设为默认打开方式，需在系统设置中确认"
+                                },
+                                onClick = {
+                                    scope.launch {
+                                        if (!shownLinkAssociation.register()) {
+                                            snackbarHostState.showSnackbar("无法设为默认打开方式", withDismissAction = true)
+                                        }
+                                    }
+                                },
+                                trailingIcon = Icons.AutoMirrored.Outlined.OpenInNew,
+                            )
+                        }
                     }
 
                     SettingsGroup(SettingsSection.Playback.title, Modifier.trackSection(SettingsSection.Playback)) {

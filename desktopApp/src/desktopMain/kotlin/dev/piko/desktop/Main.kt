@@ -30,6 +30,7 @@ import dev.piko.download.DownloadTask
 import dev.piko.shared.data.FilePikoCacheStore
 import dev.piko.shared.data.PikoClientManager
 import dev.piko.shared.state.InstantSheetState
+import dev.piko.shared.state.TorrentMagnet
 import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.log.LogLevel
 import dev.piko.shared.log.PikoLog
@@ -78,17 +79,18 @@ fun main(args: Array<String>) {
             .apply { isDaemon = true; start() }
     }
     // 打包机上可能正开着一个 Piko，训练进程不能把自己当成后来者转交后退出
-    val singleInstance = if (isAotTraining) null else SingleInstance.acquireOrForward(args.toList()) ?: return
+    val singleInstance = if (isAotTraining) null else SingleInstance.acquireOrForward(absoluteTorrentPaths(args.toList())) ?: return
     // 拿到单实例锁之后才装：转交完参数就退出的后来者不该和主实例写同一个文件
     installLog()
     if (WinRTSupport.isWindows) {
-        // 进程级 AUMID 必须在建窗口/发 Toast 之前设置；协议注册放后台线程，不挡启动。
+        // 进程级 AUMID 必须在建窗口/发 Toast 之前设置；通知登记放后台线程，不挡启动。
+        // magnet 与种子的关联不在这里静默写入：那会每次启动都抢走别的下载工具的协议，改为首次启动时询问，
+        // 见 LinkAssociationPrompt
         runCatching { WinRTSupport.ensureAppUserModelId() }
         Thread(
             {
-                // 只有 MSI 装的那份写登记：便携版、测试镜像与 gradle run 写的话，会盖掉安装版的协议与通知图标
-                val installed = runCatching { WindowsInstaller.installedExecutable() }.getOrNull() ?: return@Thread
-                runCatching { WinRTSupport.ensureMagnetProtocolHandler(installed) }
+                // 只有 MSI 装的那份写登记：便携版、测试镜像与 gradle run 写的话，会盖掉安装版的通知图标
+                runCatching { WindowsInstaller.installedExecutable() }.getOrNull() ?: return@Thread
                 // 图标随安装包放在资源目录里，与窗口图标同源
                 val icon = System.getProperty("compose.application.resources.dir")?.let { File(it, "app-icon.png") }
                 runCatching { WinRTSupport.ensureNotificationRegistration(icon) }
@@ -106,8 +108,11 @@ fun main(args: Array<String>) {
     CoroutineScope(Dispatchers.Default).launch { preferences.proxySettingFlow.collect(PikoProxySelector::apply) }
     val platform = DesktopPikoPlatform(settings)
     val services = createServices(settings, preferences)
-    // magnet: 链接经 MSI 注册的协议唤起时，URL 以启动参数进来；已在运行时由后来的进程转交过来
-    magnetIn(args.toList())?.let(services.instantMagnetRepository::onIncomingMagnet)
+    // magnet: 链接与种子经登记的关联唤起时，以启动参数进来；已在运行时由后来的进程转交过来
+    val launchLink = magnetIn(args.toList())
+    launchLink?.let(services.instantMagnetRepository::onIncomingMagnet)
+    // 带着链接启动时添加链接面板正要弹出，不再叠一个询问框，留到下次普通启动再问；训练进程没人回答
+    val askLinkAssociation = launchLink == null && !isAotTraining
     val activations = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     singleInstance?.listen { forwarded ->
         magnetIn(forwarded)?.let(services.instantMagnetRepository::onIncomingMagnet)
@@ -232,6 +237,7 @@ fun main(args: Array<String>) {
                             )
                         }
                     }
+                    if (askLinkAssociation) LinkAssociationPrompt(platform.linkAssociation, settings)
                 }
             }
         }
@@ -259,10 +265,20 @@ private val DownloadStatus.isActive: Boolean
 /**
  * 启动参数里的链接：magnet: 经注册的协议唤起时进来；分享链接没法注册成协议（https 归浏览器），
  * 但用命令行或快捷方式带着它启动时也认。交给添加链接面板，由它分辨两者。
+ * 双击关联到 Piko 的 .torrent 文件时进来的是文件路径，与拖进窗口一样在本地换算成磁力链接。
  */
-private fun magnetIn(args: List<String>): String? = args.firstOrNull {
-    it.startsWith("magnet:", ignoreCase = true) || InstantSheetState.findShareLink(it) != null
+private fun magnetIn(args: List<String>): String? {
+    args.firstOrNull { it.startsWith("magnet:", ignoreCase = true) || InstantSheetState.findShareLink(it) != null }
+        ?.let { return it }
+    val magnets = args.filter(::isTorrentPath).mapNotNull { TorrentMagnet.fromFile(File(it)) }
+    return magnets.takeIf { it.isNotEmpty() }?.joinToString("\n")
 }
+
+private fun isTorrentPath(arg: String): Boolean = arg.endsWith(".torrent", ignoreCase = true) && File(arg).isFile
+
+/** 相对路径按本进程的工作目录解析，转交给主实例之前先换成绝对路径，主实例的工作目录未必相同。 */
+private fun absoluteTorrentPaths(args: List<String>): List<String> =
+    args.map { if (isTorrentPath(it)) File(it).absolutePath else it }
 
 private fun backgroundTooltip(downloads: Collection<DownloadTask>, uploads: Collection<UploadTask>): String {
     val activeDownloads = downloads.filter { it.status.isActive }
