@@ -8,6 +8,7 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Link
+import androidx.compose.material.icons.outlined.OndemandVideo
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FileCopy
@@ -66,6 +67,7 @@ internal fun FileActionsSheet(
     onFindDuplicates: () -> Unit,
     onExtract: () -> Unit,
     onShare: () -> Unit,
+    onOpenInExternalPlayer: (() -> Unit)?,
 ) {
     val usage by produceState<FolderUsageResult?>(null, folderUsage) {
         folderUsage ?: return@produceState
@@ -94,6 +96,7 @@ internal fun FileActionsSheet(
         onFindDuplicates = onFindDuplicates,
         onExtract = onExtract,
         onShare = onShare,
+        onOpenInExternalPlayer = onOpenInExternalPlayer,
     )
 
     ItemDetailsSheet(
@@ -112,7 +115,10 @@ internal fun FileActionsSheet(
     )
 }
 
-/** 网盘条目的操作。底部面板与桌面的右键菜单用同一份，两处不会漏项。 */
+/**
+ * 网盘条目的操作。底部面板与桌面的右键菜单用同一份，两处不会漏项。
+ * onOpenInExternalPlayer 为 null 表示平台交不出去，不显示该项。
+ */
 internal fun fileActions(
     file: FileStat,
     previewHidden: Boolean?,
@@ -129,6 +135,7 @@ internal fun fileActions(
     onFindDuplicates: () -> Unit,
     onExtract: () -> Unit,
     onShare: () -> Unit,
+    onOpenInExternalPlayer: (() -> Unit)?,
 ): List<SheetAction> = buildList {
     if (previewHidden != null) {
         add(
@@ -149,7 +156,12 @@ internal fun fileActions(
     if (file.isExtractableArchive || file.isArchiveVolume) add(SheetAction(Icons.Outlined.Unarchive, "解压到当前位置", onExtract))
     if (!file.isFolder) {
         add(SheetAction(Icons.Outlined.Download, "下载到本地", onDownload))
-        if (file.isPlayableVideo()) add(SheetAction(Icons.Outlined.ContentCut, "下载指定段落", onDownloadSegment))
+        if (file.isPlayableVideo()) {
+            if (onOpenInExternalPlayer != null) {
+                add(SheetAction(Icons.Outlined.OndemandVideo, "用外部播放器打开", onOpenInExternalPlayer))
+            }
+            add(SheetAction(Icons.Outlined.ContentCut, "下载指定段落", onDownloadSegment))
+        }
     }
     when (file.source) {
         FileSource.Magnet -> add(SheetAction(Icons.Outlined.Link, "复制磁力链接", onCopySource))

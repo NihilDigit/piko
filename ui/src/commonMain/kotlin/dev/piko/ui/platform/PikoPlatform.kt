@@ -68,6 +68,9 @@ interface PikoPlatform {
 
     val uploadPicker: UploadPicker
 
+    /** 为 null 表示该平台没法把视频交给其他播放器，「用外部播放器打开」随之隐藏。 */
+    val externalPlayer: ExternalVideoPlayer?
+
     /** 为 null 表示该平台不提供片段下载的画面预览，入口随之隐藏。 */
     val videoPreview: VideoPreviewSupport?
 
@@ -142,6 +145,14 @@ interface UploadPicker {
 
     @Composable
     fun rememberFolderLauncher(onPicked: (String) -> Unit): () -> Unit
+}
+
+/**
+ * 把网盘视频交给系统里的其他播放器。[url] 是本机回环代理的地址，不是会过期的直链；
+ * [fileName] 是网盘上的原名，用作标题与判断类型。返回 false 表示没能交出去。
+ */
+fun interface ExternalVideoPlayer {
+    suspend fun open(url: String, fileName: String): Boolean
 }
 
 /** 片段下载面板里的画面预览：一个不出声、不自动播放的播放后端，加上它的画面表面。 */

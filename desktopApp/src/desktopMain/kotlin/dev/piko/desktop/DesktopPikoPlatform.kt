@@ -20,9 +20,11 @@ import dev.piko.desktop.winrt.FolderPickResult
 import dev.piko.desktop.winrt.FolderPicker
 import dev.piko.desktop.winrt.SaveFilePicker
 import dev.piko.desktop.winrt.WinRTSupport
+import dev.piko.desktop.winrt.WindowsExternalPlayer
 import dev.piko.desktop.winrt.WindowsLinkAssociation
 import dev.piko.shared.media.player.PlaybackBackend
 import dev.piko.ui.platform.DownloadLocationPicker
+import dev.piko.ui.platform.ExternalVideoPlayer
 import dev.piko.ui.platform.LinkAssociation
 import dev.piko.ui.platform.LocalFileActions
 import dev.piko.ui.platform.PikoPlatform
@@ -189,6 +191,10 @@ class DesktopPikoPlatform(
             }
         }
     }
+
+    // macOS 上 open 一个 http 地址同样进浏览器；按类型查到默认播放器后用 open -a 交给它，
+    // 播放器是否接受网址各不相同，没有 Mac 实测，先不给入口
+    override val externalPlayer: ExternalVideoPlayer? = if (WinRTSupport.isWindows) WindowsExternalPlayer else null
 
     // macOS 按 Info.plist 的 CFBundleURLTypes 自动列为候选，改默认要调已弃用的 LaunchServices 接口，
     // 包又没有签名，不给入口。开发版与便携版由 state 报 Unavailable，设置页同样不显示

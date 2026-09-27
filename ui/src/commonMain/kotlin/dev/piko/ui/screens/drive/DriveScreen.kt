@@ -86,6 +86,8 @@ import dev.piko.data.repository.PathBreadcrumb
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.data.repository.isPreviewableImage
 import dev.piko.shared.data.ScrollAnchor
+import dev.piko.shared.log.logFailure
+import dev.piko.shared.media.proxy.openForExternalPlayer
 import dev.piko.shared.state.DriveScreenState
 import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.InstantSaveOutcome
@@ -328,6 +330,16 @@ fun DriveScreen(
         scope.launch { snackbarHostState.showSnackbar(if (url.startsWith("magnet:", true)) "已复制磁力链接" else "已复制分享链接", withDismissAction = true) }
     }
 
+    val mediaRepository = LocalPikoServices.current.mediaRepository
+    fun openInExternalPlayer(file: FileStat) {
+        val player = platform.externalPlayer ?: return
+        scope.launch {
+            val url = mediaRepository.openForExternalPlayer(file.id).logFailure("Drive", "外部播放器取不到代理地址").getOrNull()
+            val opened = url != null && player.open(url, file.name)
+            if (!opened) snackbarHostState.showSnackbar("无法用外部播放器打开", withDismissAction = true)
+        }
+    }
+
     // 从网盘页发起的上传就传到眼前这个目录，不再问目标；应用外进来的由 UploadRequestHost 问
     val uploadManager = LocalPikoServices.current.uploadManager
     LaunchedEffect(uploadManager) {
@@ -386,6 +398,7 @@ fun DriveScreen(
                     onFindDuplicates = { duplicateSession.open(PathBreadcrumb(file.id, file.name)) },
                     onExtract = { archiveSession.extract(listOf(file)) },
                     onShare = { shareTargets = listOf(file) },
+                    onOpenInExternalPlayer = platform.externalPlayer?.let { { openInExternalPlayer(file) } },
                 )
             },
             onToggleSection = state::toggleSection,
@@ -738,6 +751,7 @@ fun DriveScreen(
             onFindDuplicates = { duplicateSession.open(PathBreadcrumb(target.id, target.name)) },
             onExtract = { archiveSession.extract(listOf(target)) },
             onShare = { shareTargets = listOf(target) },
+            onOpenInExternalPlayer = platform.externalPlayer?.let { { openInExternalPlayer(target) } },
         )
     }
 

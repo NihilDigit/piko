@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.DocumentsContract
+import android.webkit.MimeTypeMap
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -35,6 +36,7 @@ import androidx.documentfile.provider.DocumentFile
 import dev.piko.BuildConfig
 import dev.piko.shared.media.player.PlaybackBackend
 import dev.piko.ui.platform.DownloadLocationPicker
+import dev.piko.ui.platform.ExternalVideoPlayer
 import dev.piko.ui.platform.LinkAssociation
 import dev.piko.ui.platform.LocalFileActions
 import dev.piko.ui.platform.PikoPlatform
@@ -106,6 +108,25 @@ class AndroidPikoPlatform(
     // 清单里的 intent-filter 已让 Piko 出现在磁力链接与种子文件的选择器里，默认由用户在选择器里点「始终」。
     // 应用没有接口替用户设定：RoleManager 只管浏览器、电话、短信这类角色，「默认打开」页只管验证过的 http 链接
     override val linkAssociation: LinkAssociation? = null
+
+    /**
+     * 回环地址在 Android 上各应用共用，别的播放器连得上 Piko 的代理。每次都弹选择器：
+     * 用户多半就是想换一个播放器，替他记住默认反而多一步去改。
+     * 标题同时放在 EXTRA_TITLE 与 "title"：前者是系统常量，VLC 与 MX Player 读的是后者。
+     */
+    override val externalPlayer: ExternalVideoPlayer = ExternalVideoPlayer { url, fileName ->
+        val extension = fileName.substringAfterLast('.', "").lowercase()
+        val mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
+            ?.takeIf { it.startsWith("video/") }
+            ?: "video/*"
+        val view = Intent(Intent.ACTION_VIEW)
+            .setDataAndType(Uri.parse(url), mimeType)
+            .putExtra(Intent.EXTRA_TITLE, fileName)
+            .putExtra("title", fileName)
+        runCatching {
+            context.startActivity(Intent.createChooser(view, "选择播放器").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }.isSuccess
+    }
 
     @Composable
     override fun FullscreenDialog(
