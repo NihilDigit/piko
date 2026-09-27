@@ -40,7 +40,7 @@ object FolderPicker {
     internal const val HRESULT_ERROR_CANCELLED = 0x800704C7.toInt()
 
     internal val intArg = FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT)
-    internal val intAndPointerArgs =FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS)
+    internal val intAndPointerArgs = FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS)
 
     private val shCreateItemFromParsingName by lazy {
         Linker.nativeLinker().downcallHandle(

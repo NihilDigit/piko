@@ -30,10 +30,9 @@ suspend fun PikoMediaRepository.openForExternalPlayer(fileId: String): Result<St
 /**
  * 交给外部播放器的会话。
  *
- * 外部播放器何时停播、何时再拖动，Piko 无从得知，会话只能留到进程结束。每个会话的 reader
- * 带 64 MiB 缓存，所以只留最近几个，更早的关掉，那边再请求就是 404。
- * 每次交出都新开会话，不与应用内播放器或另一个外部播放器共用：会话同一时刻只服务一个请求，
- * 后到的请求会断开先到的，共用时两个播放器会轮流掐断对方。
+ * 外部播放器何时停播、何时再拖动，Piko 无从得知，会话只能留到进程结束。每个会话背后是一个 SDK
+ * handle，带至多 64 MiB 的块缓存，所以只留最近几个，更早的关掉，那边再请求就是 404。
+ * 每次交出都新开会话，不借用应用内播放器的：那个会话随应用内播放器退出而关闭，外部播放器会跟着断。
  */
 private object ExternalPlayerStreams {
     private const val CAPACITY = 2

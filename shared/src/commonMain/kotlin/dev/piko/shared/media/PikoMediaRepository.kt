@@ -79,34 +79,6 @@ class PreparedPlayback internal constructor(
     /** 本机代理的地址。handle 建不起来（例如没有 gcid）时为 null，只能读直链。 */
     val proxyUrl: String? get() = stream?.url
 
-    /** 代理实际读的那条流的字节数；取的是转码流时与原文件大小不同。没有代理会话时为 null。 */
-    val streamBytes: Long? get() = stream?.size
-
-    /**
-     * 前台是眼前在放的，后台是为之后预热的，后台的请求整体让着前台。切换不丢缓存：
-     * 预热好的一段翻到眼前时升为前台，翻走的降为后台。没有代理会话时读写都是空操作。
-     */
-    var role: StreamRole
-        get() = stream?.role ?: StreamRole.FOREGROUND
-        set(value) {
-            stream?.role = value
-        }
-
-    /** 预读深度，见 [ProxyStream.readAheadLimit]。没有代理会话时读写都是空操作。 */
-    var readAheadLimit: Long?
-        get() = stream?.readAheadLimit
-        set(value) {
-            stream?.readAheadLimit = value
-        }
-
-    /**
-     * 把这些字节段先读进代理会话的缓存，见 [ProxyStream.prefetch]。区间由 reader 按文件大小截断；
-     * 没有代理会话（只能读直链）时什么都不做。
-     */
-    suspend fun prefetch(ranges: List<LongRange>) {
-        stream?.prefetch(ranges)
-    }
-
     override fun close() {
         stream?.close()
     }
@@ -149,8 +121,6 @@ class PikoMediaRepository(
     suspend fun preparePlayback(
         fileId: String,
         preferredResolution: String? = null,
-        /** 为之后预热的传 BACKGROUND，见 [PreparedPlayback.role]。 */
-        role: StreamRole = StreamRole.FOREGROUND,
     ): Result<PreparedPlayback> =
         withContext(Dispatchers.Default) {
             runSuspendCatching {
@@ -158,7 +128,7 @@ class PikoMediaRepository(
                 val detail = client.getFile(fileId)
                 val resolved = detail.resolveVariant(preferenceFor(preferredResolution))
                 val info = playableMediaInfo(detail, resolved, fileId)
-                val stream = if (info.kind == PlayableMediaKind.Video) openProxyStream(client, detail, resolved, role) else null
+                val stream = if (info.kind == PlayableMediaKind.Video) openProxyStream(client, detail, resolved) else null
                 PreparedPlayback(info, stream)
             }
         }
