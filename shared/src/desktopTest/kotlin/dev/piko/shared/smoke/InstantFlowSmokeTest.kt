@@ -1,10 +1,10 @@
 package dev.piko.shared.smoke
 
-import dev.piko.data.auth.InstantTarget
 import dev.piko.shared.data.InstantMagnetRepository
 import dev.piko.shared.data.OfflinePackStage
 import dev.piko.shared.data.OfflinePackTracker
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.PreviewTempFolder
 import dev.piko.shared.state.InstantBatchRowStatus
 import dev.piko.shared.state.InstantSaveOutcome
@@ -16,6 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlin.test.Test
@@ -47,18 +48,24 @@ class InstantFlowSmokeTest {
 
         fun sheet(scope: CoroutineScope, magnet: String) =
             InstantSheetState(instantRepo, driveRepo, prefs, previewFolder, tracker, scope, magnet)
+
+        /** 网盘页停在 [folder] 里，与用户点进去之后的栈相同。 */
+        fun openInDrive(folder: FakePikPakServer.Node) {
+            driveRepo.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB, PikoPathBreadcrumb(folder.id, folder.name)))
+        }
     }
 
     /**
-     * 防的是整包离线的后半程断掉：记住的目标进了回收站仍被当成可用、提交后没人跟踪、
+     * 防的是整包离线的后半程断掉：网盘页停着的目录已进回收站仍被当成可用、提交后没人跟踪、
      * 完成后没删未选的文件、产出文件夹没改成面板里填的名字、跟踪记录没落盘。
      */
     @Test
     fun `a multi-file selection goes offline whole, then is pruned and renamed`() = smoke { scope ->
         val server = FakePikPakServer()
-        val trashed = server.addFolder("旧目标", trashed = true)
+        val trashed = server.addFolder("旧目录", trashed = true)
         server.indexMagnet(magnet, resourceListBody("Show S01", season))
-        val rig = Rig(server, MemoryPreferences(InstantTarget(trashed.id, trashed.name)), scope)
+        val rig = Rig(server, MemoryPreferences(), scope)
+        rig.openInDrive(trashed)
         scope.launch { rig.tracker.run("smoke@piko.dev") }
         val state = rig.sheet(scope, magnet)
         val outcome = scope.async(start = CoroutineStart.UNDISPATCHED) { state.outcomes.first() }
@@ -243,5 +250,31 @@ class InstantFlowSmokeTest {
         state.submitOfflineTask()
         assertIs<InstantSaveOutcome.OfflineTaskCreated>(outcome.await())
         assertEquals(magnet, server.tasksSnapshot().single().url)
+    }
+
+    /**
+     * 防的是存进用户没在看的目录：默认目标是网盘页的当前目录；面板收起着留在后台时
+     * 用户换了目录，目标跟着换；在面板里另选之后就不再跟。
+     */
+    @Test
+    fun `the save target follows the drive folder until the user picks one`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val shows = server.addFolder("Shows")
+        val movies = server.addFolder("Movies")
+        val rig = Rig(server, MemoryPreferences(), scope)
+        rig.openInDrive(shows)
+        val state = rig.sheet(scope, "")
+
+        awaitUntil("保存目标确定") { state.target != null }
+        assertEquals(shows.id, state.target?.id)
+        assertNull(state.targetNotice)
+
+        rig.openInDrive(movies)
+        awaitUntil("目标跟随网盘页换目录") { state.target?.id == movies.id }
+
+        state.changeTarget(PikoDriveRepository.ROOT_BREADCRUMB)
+        rig.openInDrive(shows)
+        delay(300)
+        assertEquals("", state.target?.id, "另选过之后不再跟随网盘页")
     }
 }

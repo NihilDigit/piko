@@ -1,6 +1,5 @@
 package dev.piko.shared.smoke
 
-import dev.piko.data.auth.InstantTarget
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.auth.QuotaSnapshot
 import dev.piko.shared.net.ProxySetting
@@ -21,8 +20,7 @@ import kotlinx.coroutines.withTimeout
 import java.util.concurrent.ConcurrentHashMap
 
 /** 内存偏好。只有被测路径读写的几项有真实行为，其余给固定值。 */
-class MemoryPreferences(instantTarget: InstantTarget? = null) : PikoUserPreferences {
-    private val instantTargetState = MutableStateFlow(instantTarget)
+class MemoryPreferences : PikoUserPreferences {
     private val positions = ConcurrentHashMap<String, Long>()
 
     override suspend fun savePlaybackPosition(fileId: String, positionMs: Long) {
@@ -54,10 +52,6 @@ class MemoryPreferences(instantTarget: InstantTarget? = null) : PikoUserPreferen
     override suspend fun saveProfile(username: String, avatarUrl: String, email: String) = Unit
     override val quotaSnapshotFlow: Flow<QuotaSnapshot?> = MutableStateFlow(null)
     override suspend fun saveQuotaSnapshot(usageBytes: Long, limitBytes: Long) = Unit
-    override val instantTargetFlow: Flow<InstantTarget?> = instantTargetState
-    override suspend fun saveInstantTarget(folderId: String, folderName: String) {
-        instantTargetState.value = InstantTarget(folderId, folderName)
-    }
     override suspend fun clearSession() = Unit
     private val acceleration = MutableStateFlow(true)
     override val concurrentAccelerationFlow: Flow<Boolean> = acceleration

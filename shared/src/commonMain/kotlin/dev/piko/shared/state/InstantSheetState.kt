@@ -27,7 +27,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -74,6 +77,9 @@ internal class InstantSharedContext {
     val target = mutableStateOf<PikoPathBreadcrumb?>(null)
     val targetNotice = mutableStateOf<String?>(null)
 
+    /** 用户在面板里另选过目标，此后不再跟随网盘页的当前目录。 */
+    var targetChosen = false
+
     // gcid 到 Piko-Temp 里的文件 id。同一会话内再预览、或保存这一项时直接复用；
     // 两条链接里的同一个文件也共用这一份
     val previewedIds = mutableMapOf<String, String>()
@@ -91,7 +97,7 @@ internal class InstantSharedContext {
  * 秒传与磁力解析的工作台状态，两端共用。
  *
  * 流程：粘上磁力链自动解析（防抖），按文件名解析器组织成「作品 → 分区 → 条目」并预选正片，
- * 确定保存目标（记住的目标、失效则回退 My Packs），然后按 [planSave] 定的路线秒传或整包离线。
+ * 确定保存目标（网盘页的当前目录，见 [followDriveFolder]），然后按 [planSave] 定的路线秒传或整包离线。
  *
  * 视频行可以预览：秒传进 Piko-Temp 再播放，同一会话内不重复秒传，保存时直接移过去。
  * 会话结束（作用域取消）时，用过 Piko-Temp 就把它整个删掉。
@@ -165,7 +171,7 @@ class InstantSheetState private constructor(
     var target: PikoPathBreadcrumb? by shared.target
         private set
 
-    /** 记住的目标已失效、已回退到默认目录时的说明。 */
+    /** 当前目录已失效、已回退到 My Packs 时的说明。 */
     var targetNotice: String? by shared.targetNotice
         private set
 
@@ -319,7 +325,7 @@ class InstantSheetState private constructor(
             scope.coroutineContext[Job]?.invokeOnCompletion {
                 if (shared.usedPreviewFolder) previewFolder.clearInBackground()
             }
-            scope.launch { target = resolveTarget() }
+            scope.launch { followDriveFolder() }
         }
         scope.launch { preferences.bundleSubtitlesFlow.collect { saveAttachedSubtitles = it } }
         if (initialMagnet.isNotBlank() && !startBatchIfMany()) {
@@ -408,11 +414,11 @@ class InstantSheetState private constructor(
         folderName = value
     }
 
-    /** 更换保存目标并记住，下次存资源不必重选。 */
+    /** 更换本次的保存目标。只管这一次会话，下次仍默认存进网盘页的当前目录。 */
     fun changeTarget(breadcrumb: PikoPathBreadcrumb) {
+        shared.targetChosen = true
         target = breadcrumb
         targetNotice = null
-        scope.launch { preferences.saveInstantTarget(breadcrumb.id, breadcrumb.name) }
     }
 
     /** 可以预览的行：已收录的视频。未收录的秒传不了，也就没法先放进网盘里播。 */
@@ -621,20 +627,36 @@ class InstantSheetState private constructor(
     private fun submittedUrl(): String = normalizedMagnet ?: extractLinks(input).singleOrNull()?.uri ?: input.trim()
 
     /**
-     * 记住过的目标优先，没配置过才退回 My Packs。只取一次而不是持续收集，否则用户在
-     * 本次会话里改完目标，写回偏好的那次发射会再盖一遍。
+     * 保存目标跟随网盘页的当前目录，直到用户在面板里另选。面板可以收起着留在后台，用户收起后
+     * 进到想存的目录再展开，看到的就是眼前这个目录；从应用外打开的磁力链同样存进网盘页停着的位置。
+     *
+     * 原先默认沿用上一次选过的目标（记在偏好里），失效再退回 My Packs。改成当前目录后不再读写那项偏好：
+     * 两者同时生效时，用户看着一个目录，东西却进了另一个，而当前目录恰是他此刻最可能想要的。
      */
-    private suspend fun resolveTarget(): PikoPathBreadcrumb {
-        val saved = preferences.instantTargetFlow.first()
-        if (saved != null) {
-            // 记下的目录可能已经被删或进了回收站。不验的话要等保存时才暴露，报的还是一句
-            // 原始 API 错误。回收站里的条目查详情返回 file_in_recycle_bin，与 trashed 同样
-            // 视为失效。根目录是空 id，没有对应的 FileDetail，不验。
-            val alive = saved.folderId.isEmpty() ||
-                driveRepo.getFileDetail(saved.folderId).map { !it.trashed }.getOrDefault(false)
-            if (alive) return PikoPathBreadcrumb(saved.folderId, saved.folderName)
-            targetNotice = "原位置已不存在，改存 My Packs"
+    private suspend fun followDriveFolder() {
+        driveRepo.folderStackFlow
+            .map { it.lastOrNull() ?: PikoDriveRepository.ROOT_BREADCRUMB }
+            .distinctUntilChanged()
+            .collectLatest { folder ->
+                if (shared.targetChosen) return@collectLatest
+                val resolved = targetFor(folder)
+                if (!shared.targetChosen) target = resolved
+            }
+    }
+
+    private suspend fun resolveTarget(): PikoPathBreadcrumb =
+        targetFor(driveRepo.folderStackFlow.value.lastOrNull() ?: PikoDriveRepository.ROOT_BREADCRUMB)
+
+    /**
+     * 目录栈是持久化的，停着的目录可能已在别的客户端被删或进了回收站。不验的话要等保存时才暴露，
+     * 报的还是一句原始 API 错误。根目录是空 id，没有对应的 FileDetail，不验。
+     */
+    private suspend fun targetFor(folder: PikoPathBreadcrumb): PikoPathBreadcrumb {
+        if (folder.id.isEmpty() || !driveRepo.isFolderGone(folder.id)) {
+            targetNotice = null
+            return folder
         }
+        targetNotice = "当前目录已不存在，改存 My Packs"
         return driveRepo.getOrCreateMyPacksFolder().getOrDefault(PikoPathBreadcrumb("", "My Packs"))
     }
 

@@ -1,6 +1,5 @@
 package dev.piko.desktop
 
-import dev.piko.data.auth.InstantTarget
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.auth.QuotaSnapshot
 import dev.piko.data.auth.UserSession
@@ -32,7 +31,6 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
     private val connections = MutableStateFlow(settings.get(KEY_CONNECTIONS, "8").toIntOrNull() ?: 8)
     private val session = MutableStateFlow(loadSession())
     private val quota = MutableStateFlow<QuotaSnapshot?>(null)
-    private val instantTarget = MutableStateFlow<InstantTarget?>(null)
     private val archivePasswords = MutableStateFlow(settings.get(KEY_ARCHIVE_PASSWORDS))
     private val recentMoveTargets = MutableStateFlow(settings.get(KEY_RECENT_MOVE_TARGETS))
     private val proxySetting = MutableStateFlow(ProxySetting.decode(settings.get(KEY_PROXY_SETTING)))
@@ -162,11 +160,6 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
     override val quotaSnapshotFlow: Flow<QuotaSnapshot?> = quota.asStateFlow()
     override suspend fun saveQuotaSnapshot(usageBytes: Long, limitBytes: Long) {
         quota.value = QuotaSnapshot(usageBytes, limitBytes)
-    }
-
-    override val instantTargetFlow: Flow<InstantTarget?> = instantTarget.asStateFlow()
-    override suspend fun saveInstantTarget(folderId: String, folderName: String) {
-        instantTarget.value = InstantTarget(folderId, folderName)
     }
 
     override val concurrentAccelerationFlow: Flow<Boolean> = acceleration.asStateFlow()

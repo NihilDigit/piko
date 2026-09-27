@@ -99,8 +99,6 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val DRIVE_VIEW_MODE = stringPreferencesKey("drive_view_mode")
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val THEME_SEED = stringPreferencesKey("theme_seed")
-        val INSTANT_TARGET_ID = stringPreferencesKey("instant_target_id")
-        val INSTANT_TARGET_NAME = stringPreferencesKey("instant_target_name")
         val QUOTA_USAGE_BYTES = longPreferencesKey("quota_usage_bytes")
         val QUOTA_LIMIT_BYTES = longPreferencesKey("quota_limit_bytes")
         val LAST_FOLDER_ID = stringPreferencesKey("last_folder_id")
@@ -279,23 +277,6 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.QUOTA_USAGE_BYTES] = usageBytes
             preferences[PreferencesKeys.QUOTA_LIMIT_BYTES] = limitBytes
-        }
-    }
-
-    override val instantTargetFlow: Flow<InstantTarget?> = preference { preferences ->
-        val name = preferences[PreferencesKeys.INSTANT_TARGET_NAME]
-        // id 为根目录时是空串，所以用名字判断有没有配置过
-        if (name.isNullOrEmpty()) {
-            null
-        } else {
-            InstantTarget(preferences[PreferencesKeys.INSTANT_TARGET_ID].orEmpty(), name)
-        }
-    }
-
-    override suspend fun saveInstantTarget(folderId: String, folderName: String) {
-        context.dataStore.edit { preferences ->
-            preferences[PreferencesKeys.INSTANT_TARGET_ID] = folderId
-            preferences[PreferencesKeys.INSTANT_TARGET_NAME] = folderName
         }
     }
 
