@@ -10,7 +10,6 @@ import io.github.nihildigit.pikpak.getTask
 import io.github.nihildigit.pikpak.listFiles
 import io.github.nihildigit.pikpak.listShareFiles
 import io.github.nihildigit.pikpak.restoreShare
-import io.github.nihildigit.pikpak.restoredFileIds
 import io.github.nihildigit.pikpak.shareIdFromUrl
 import kotlinx.coroutines.delay
 
@@ -60,7 +59,7 @@ suspend fun probeShareRestore(client: PikPakClient, url: String, passCode: Strin
                 val task = client.getTask(restore.restoreTaskId)
                 println("  任务 ${task.phase} ${task.progress}%")
                 if (task.phase in TaskPhase.TERMINAL) {
-                    println("  映射 ${task.restoredFileIds}  params=${task.params}")
+                    println("  params=${task.params}")
                     break
                 }
                 delay(1_000)

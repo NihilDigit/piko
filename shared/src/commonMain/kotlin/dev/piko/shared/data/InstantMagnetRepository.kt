@@ -2,7 +2,7 @@ package dev.piko.shared.data
 
 import io.github.nihildigit.pikpak.CreateUrlResult
 import io.github.nihildigit.pikpak.MagnetResource
-import io.github.nihildigit.pikpak.OfflineTask
+import io.github.nihildigit.pikpak.DriveTask
 import io.github.nihildigit.pikpak.PruneResult
 import io.github.nihildigit.pikpak.ResolvedFile
 import io.github.nihildigit.pikpak.batchMove
@@ -116,12 +116,12 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
     suspend fun enqueueOfflineTask(magnet: String, targetParentId: String = ""): Result<CreateUrlResult> =
         withContext(Dispatchers.Default) { runSuspendCatching { client.createUrlFile(parentId = targetParentId, url = magnet) } }
 
-    suspend fun getTask(taskId: String): Result<OfflineTask> = withContext(Dispatchers.Default) {
+    suspend fun getTask(taskId: String): Result<DriveTask> = withContext(Dispatchers.Default) {
         runSuspendCatching { client.getTask(taskId) }
     }
 
     /** 永久删除已完成任务产出里 [keep] 以外的文件，见 SDK 的 pruneOfflineOutput。 */
-    suspend fun pruneOfflineOutput(task: OfflineTask, keep: Set<String>): Result<PruneResult> =
+    suspend fun pruneOfflineOutput(task: DriveTask, keep: Set<String>): Result<PruneResult> =
         withContext(Dispatchers.Default) { runSuspendCatching { client.pruneOfflineOutput(task, keep) } }
 
     /** 删除任务记录。未完成任务的占位文件由服务端一并清掉，已完成任务的文件保留。 */

@@ -393,9 +393,7 @@ open class PikoDriveRepository(
     }
 
     suspend fun move(ids: List<String>, parentId: String): Result<Unit> = withContext(Dispatchers.Default) {
-        // SDK 0.6.7 的 batchTrash、batchDelete、batchUntrash 都按上限分批，唯独 batchMove 没有；
-        // 一次移动整个目录的内容会超过服务端的 id 数上限（error_code 11）
-        runSuspendCatching { ids.chunked(BATCH_MOVE_LIMIT).forEach { client.batchMove(it, parentId) } }
+        runSuspendCatching { client.batchMove(ids, parentId) }
     }
 
     /**
@@ -574,9 +572,6 @@ open class PikoDriveRepository(
         private const val MAX_REMEMBERED_CHILD_NAMES = 200
 
         private const val MY_PACKS_FOLDER_NAME = "My Packs"
-
-        // 与 SDK 其余批量接口的分批大小一致。实测 200 可以、1000 被拒
-        private const val BATCH_MOVE_LIMIT = 100
 
         // 转存任务实测一秒内完成；给大目录留到一分钟
         private const val RESTORE_POLL_LIMIT = 60

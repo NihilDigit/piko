@@ -16,7 +16,7 @@ import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.upload.PikoUploadCoordinator
 import dev.piko.shared.upload.UploadStatus
 import dev.piko.shared.upload.UploadTask
-import io.github.nihildigit.pikpak.OfflineTask
+import io.github.nihildigit.pikpak.DriveTask
 import io.github.nihildigit.pikpak.TaskPhase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -43,7 +43,7 @@ sealed interface TransferItem {
         override val createdAtMs: Long get() = task.createdAtMs
     }
 
-    data class Cloud(val task: OfflineTask) : TransferItem {
+    data class Cloud(val task: DriveTask) : TransferItem {
         override val key: String get() = "cloud:${task.id}"
         override val createdAtMs: Long get() = parseEpochMillis(task.createdTime) ?: 0L
     }
@@ -52,7 +52,7 @@ sealed interface TransferItem {
      * 整包离线：一个云端任务加上完成后的清理与改名。[task] 是传输页列表里同一任务的快照，
      * 可见期间它每 4 秒刷新一次，下载进度取它的；跟踪器按退避轮询，不够及时。
      */
-    data class Pack(val job: OfflinePackJob, val task: OfflineTask?) : TransferItem {
+    data class Pack(val job: OfflinePackJob, val task: DriveTask?) : TransferItem {
         // 与 Cloud 同一命名空间：同一任务只该出现一次
         override val key: String get() = "cloud:${job.taskId}"
         override val createdAtMs: Long get() = job.createdAtMs
@@ -214,7 +214,7 @@ class TransfersState(
     fun removeUpload(taskId: String) = uploads.remove(taskId)
 
     /** 以原链接重新提交，旧记录随之删除。任务缺少 sourceUrl 时视图应隐藏此操作。 */
-    fun resubmitCloud(task: OfflineTask) = cloud.resubmit(task)
+    fun resubmitCloud(task: DriveTask) = cloud.resubmit(task)
 
     /** 删除任务记录，也用作已完成任务的「移除」。已完成任务的文件保留在网盘里。 */
     fun deleteCloud(taskId: String) = cloud.delete(taskId)
@@ -242,7 +242,7 @@ class TransfersState(
     private fun section(
         localFilter: (DownloadTask) -> Boolean,
         uploadFilter: (UploadTask) -> Boolean,
-        cloudFilter: (OfflineTask) -> Boolean,
+        cloudFilter: (DriveTask) -> Boolean,
         packFilter: (OfflinePackJob) -> Boolean,
     ): List<TransferItem> {
         val localItems = localTasks.filter(localFilter).map { TransferItem.Local(it) } +
@@ -276,7 +276,7 @@ class TransfersState(
  * 覆盖成 ERROR、message 写作「File deleted」，getTask 查同一任务却是 COMPLETE/Saved。
  * 2026-09-23 在真实账号上实测，按 message 精确匹配。
  */
-val OfflineTask.isOutputDeleted: Boolean
+val DriveTask.isOutputDeleted: Boolean
     get() = phase == TaskPhase.ERROR && message == "File deleted"
 
 /** 解析服务端的 RFC 3339 时间。缺失或格式不认识时返回 null。 */

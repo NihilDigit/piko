@@ -56,7 +56,7 @@ import dev.piko.ui.adaptive.readableSidePadding
 import dev.piko.ui.components.FileListSkeleton
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.platform.LocalPikoPlatform
-import io.github.nihildigit.pikpak.OfflineTask
+import io.github.nihildigit.pikpak.DriveTask
 import kotlinx.coroutines.launch
 
 /**
@@ -99,7 +99,7 @@ fun TransfersScreen(
         }
         Unit
     }
-    val openCloudFile = { task: OfflineTask -> openCloudFileById(task.fileId, task.fileName) }
+    val openCloudFile = { task: DriveTask -> openCloudFileById(task.fileId, task.fileName) }
     // 下载与网盘同受防窥开关约束。逐项揭示只在本次查看内有效，与网盘页的做法一致
     val isSpoilerBlurEnabled by services.preferences.spoilerBlurFlow
         .collectAsStateWithLifecycle(initialValue = true)
@@ -128,7 +128,7 @@ fun TransfersScreen(
     val playLocal = { task: DownloadTask ->
         onNavigateToVideoPlayer(if (task.isSegment) "" else task.fileId, task.fileName, task.destinationPath)
     }
-    val resubmitAction = { task: OfflineTask -> task.sourceUrl?.let { { state.resubmitCloud(task) } } }
+    val resubmitAction = { task: DriveTask -> task.sourceUrl?.let { { state.resubmitCloud(task) } } }
 
     // 记 key 而不是条目本身：进度每半秒刷新，面板要跟着显示最新状态；条目被移除时面板随之关闭
     var detailsKey by rememberSaveable { mutableStateOf<String?>(null) }

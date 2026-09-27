@@ -1,6 +1,6 @@
 package dev.piko.shared.data
 
-import io.github.nihildigit.pikpak.OfflineTask
+import io.github.nihildigit.pikpak.DriveTask
 import io.github.nihildigit.pikpak.TaskListResponse
 import io.github.nihildigit.pikpak.TaskPhase
 import io.github.nihildigit.pikpak.clearOfflineTasks
@@ -20,10 +20,10 @@ class TaskRepository(
      * 最近一次拉到的首页任务，连同所属账号。传输页的状态随页面重建，每次进入都从空列表开始
      * 会先闪一下加载态；用它先铺底，再照常刷新。只放内存，换账号即失效。
      */
-    private var lastTasks: Pair<String, List<OfflineTask>>? = null
+    private var lastTasks: Pair<String, List<DriveTask>>? = null
 
     /** 当前账号上次拉到的任务，没有时为 null。 */
-    fun cachedTasks(): List<OfflineTask>? {
+    fun cachedTasks(): List<DriveTask>? {
         val account = clientManager.currentClient.value?.account ?: return null
         return lastTasks?.takeIf { it.first == account }?.second
     }
@@ -49,7 +49,7 @@ class TaskRepository(
      * 不用服务端的 RETRY：实测（2026-09-23）服务端接受后任务转入 RUNNING，约两秒内又落回
      * ERROR「Save failed, retry please」，真实的保存失败也是如此；按原链接重新提交则能正常完成。
      */
-    suspend fun resubmitTask(task: OfflineTask): Result<Unit> = withContext(Dispatchers.Default) {
+    suspend fun resubmitTask(task: DriveTask): Result<Unit> = withContext(Dispatchers.Default) {
         runSuspendCatching {
             val url = task.sourceUrl ?: error("任务缺少来源链接")
             client.createUrlFile(parentId = resubmitTarget(task), url = url)
@@ -65,7 +65,7 @@ class TaskRepository(
      * 与秒传与离线的默认目标一致，免得根目录里越积越多。取不到 My Packs 时退回根目录，
      * 重新提交本身不该因此失败。
      */
-    private suspend fun resubmitTarget(task: OfflineTask): String =
+    private suspend fun resubmitTarget(task: DriveTask): String =
         task.params["parent_folder_id"]?.takeIf { it.isNotEmpty() }
             ?: driveRepository.getOrCreateMyPacksFolder().getOrNull()?.id.orEmpty()
 
@@ -86,5 +86,5 @@ class TaskRepository(
 }
 
 /** 任务的来源链接（磁力或 URL）。缺失时无法重新提交。 */
-val OfflineTask.sourceUrl: String?
+val DriveTask.sourceUrl: String?
     get() = params["url"]?.takeIf { it.isNotEmpty() }

@@ -7,7 +7,7 @@ import androidx.compose.runtime.setValue
 import dev.piko.shared.data.TaskRepository
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
-import io.github.nihildigit.pikpak.OfflineTask
+import io.github.nihildigit.pikpak.DriveTask
 import io.github.nihildigit.pikpak.TaskPhase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -29,7 +29,7 @@ class OfflineTasksState(
     private val scope: CoroutineScope,
 ) {
     // 上次的列表先铺底；有缓存就不算首次加载，不显示整页加载态
-    var tasks by mutableStateOf<List<OfflineTask>>(taskRepo.cachedTasks().orEmpty())
+    var tasks by mutableStateOf<List<DriveTask>>(taskRepo.cachedTasks().orEmpty())
         private set
 
     /** 首次加载。之后的刷新与轮询都不再切回整页加载态，列表保持可见。 */
@@ -46,7 +46,7 @@ class OfflineTasksState(
     val messages: SharedFlow<String> = _messages.asSharedFlow()
 
     /** 还在云端排队或下载中的任务，用于徽标与抽屉。 */
-    val activeTasks: List<OfflineTask> by derivedStateOf {
+    val activeTasks: List<DriveTask> by derivedStateOf {
         tasks.filter { it.phase == TaskPhase.RUNNING || it.phase == TaskPhase.PENDING }
     }
 
@@ -71,7 +71,7 @@ class OfflineTasksState(
     }
 
     /** 以原链接重新提交，旧记录随之删除。成功后先从列表里摘掉旧记录，新任务由重新拉取带回。 */
-    fun resubmit(task: OfflineTask) {
+    fun resubmit(task: DriveTask) {
         scope.launch {
             taskRepo.resubmitTask(task)
                 .onSuccess {

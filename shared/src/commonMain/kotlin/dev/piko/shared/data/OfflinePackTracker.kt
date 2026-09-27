@@ -2,7 +2,7 @@ package dev.piko.shared.data
 
 import dev.piko.data.auth.PikoUserPreferences
 import io.github.nihildigit.pikpak.CreateUrlResult
-import io.github.nihildigit.pikpak.OfflineTask
+import io.github.nihildigit.pikpak.DriveTask
 import io.github.nihildigit.pikpak.PikPakException
 import io.github.nihildigit.pikpak.TaskPhase
 import kotlinx.coroutines.channels.Channel
@@ -247,7 +247,7 @@ class OfflinePackTracker(
         }
     }
 
-    private suspend fun finish(job: OfflinePackJob, task: OfflineTask) {
+    private suspend fun finish(job: OfflinePackJob, task: DriveTask) {
         if (job.stage != OfflinePackStage.PRUNING) {
             update(job.taskId, persist = true) { it.copy(stage = OfflinePackStage.PRUNING, progress = 100) }
         }

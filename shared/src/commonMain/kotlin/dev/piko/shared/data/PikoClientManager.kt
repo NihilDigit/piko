@@ -67,13 +67,8 @@ class PikoClientManager(
                     _currentClient.value = client
                     scheduleReconnect(client)
                 }
-                is LoginFailure.Rejected -> {
-                    client.close()
-                    if (failure.error is PikPakException && failure.error.isRefreshTokenInvalid) {
-                        PikoLog.i(TAG, "刷新令牌已失效，清除本地会话")
-                        sessionStore.clear(account)
-                    }
-                }
+                // 刷新令牌失效时 SDK 已在改用密码登录之前把会话从存储里清掉，这里不必再清
+                is LoginFailure.Rejected -> client.close()
             }
         } finally {
             _isInitializing.value = false
@@ -162,9 +157,6 @@ class PikoClientManager(
                         // 网络恢复后才发现会话已不可用。这时回登录页是唯一出路
                         PikoLog.w(TAG, "重连时会话被拒，回登录页")
                         if (_currentClient.compareAndSet(client, null)) client.close()
-                        if (failure.error is PikPakException && failure.error.isRefreshTokenInvalid) {
-                            sessionStore.clear(client.account)
-                        }
                         return@launch
                     }
                 }
