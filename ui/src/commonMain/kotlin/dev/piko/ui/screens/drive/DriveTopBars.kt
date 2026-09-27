@@ -6,10 +6,17 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.filled.SwipeVertical
 import androidx.compose.material.icons.outlined.ArrowDropDown
+import androidx.compose.material.icons.outlined.SwipeVertical
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.TonalToggleButton
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -263,4 +270,28 @@ internal fun DriveBrowseTopBar(
         ),
         scrollBehavior = scrollBehavior,
     )
+}
+
+/**
+ * 信息流的开关，放在网盘页顶栏上、搜索之前，图标带字。原先是视图切换里第四个只有图标的按钮，
+ * 与列表、海报墙、图库挤在一排，看上去只是又一种排列方式，窄屏上还被挤出这一行。
+ * 它打开的是另一种浏览方式：随机刷这个文件夹里的视频片段，所以单独一个带名字的按钮，开着时是选中态。
+ * 已弹出到独立窗口时仍是开着的，再点一下连同窗口一起关掉。
+ */
+@Composable
+internal fun FeedToggle(shown: Boolean, onShownChange: (Boolean) -> Unit) {
+    TonalToggleButton(
+        checked = shown,
+        onCheckedChange = onShownChange,
+        contentPadding = PaddingValues(start = 12.dp, end = 16.dp),
+        modifier = Modifier.padding(end = 4.dp).heightIn(min = 40.dp),
+    ) {
+        Icon(
+            imageVector = if (shown) Icons.Filled.SwipeVertical else Icons.Outlined.SwipeVertical,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+        )
+        Spacer(Modifier.width(6.dp))
+        Text("信息流")
+    }
 }

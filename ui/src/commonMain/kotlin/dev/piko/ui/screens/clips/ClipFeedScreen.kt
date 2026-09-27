@@ -119,7 +119,8 @@ import kotlin.time.TimeSource
  * 只在拖进度条时让开。单击暂停或继续，双击收藏，长按两倍速，上下滑、滚轮或上下键翻页，
  * 左右键前进后退，空格暂停，M 静音。
  *
- * [compact] 是放在网盘页右侧的窄面板里：按钮与文字缩小，关闭交给面板自己的标题栏，这里不再显示。
+ * [compact] 是放在网盘页右侧的窄面板里：按钮与文字缩小，范围靠左。面板不画栏名，关闭也在这条顶栏上。
+ * [onPopOut] 与 [onDock] 是桌面端在主窗口与独立窗口之间挪动它，平台没有独立窗口时为 null。
  */
 @Composable
 fun ClipFeedScreen(
@@ -128,6 +129,8 @@ fun ClipFeedScreen(
     onLocate: (FileStat) -> Unit,
     modifier: Modifier = Modifier,
     compact: Boolean = false,
+    onPopOut: (() -> Unit)? = null,
+    onDock: (() -> Unit)? = null,
 ) {
     val services = LocalPikoServices.current
     val session = services.clipFeedSession
@@ -177,8 +180,10 @@ fun ClipFeedScreen(
             scope = scopeMenu,
             muted = session.muted,
             onToggleMute = { session.muted = !session.muted },
-            onClose = if (compact) null else onBackClick,
+            onClose = onBackClick,
             compact = compact,
+            onPopOut = onPopOut,
+            onDock = onDock,
             modifier = Modifier.align(Alignment.TopCenter),
         )
     }

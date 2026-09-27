@@ -76,6 +76,8 @@ import androidx.compose.ui.unit.dp
  * @param ready 开关已经判得出来。头一次组合时 AnimatedVisibility 不播进场动画，值到了再组合：
  *   开着的人看到它直接在那儿，关掉过的人不会看到它弹一下。
  * @param headerActions 栏名与关闭按钮之间的其他按钮。
+ * @param showHeader 为 false 时不画栏名那一行，整张卡交给 [panel]，关闭与其他按钮由内容自己放：
+ *   信息流是一整块黑底的竖屏画面，上面再压一条浅色栏名就成了两层顶栏。
  */
 @Composable
 fun SidePanelLayout(
@@ -90,6 +92,7 @@ fun SidePanelLayout(
     modifier: Modifier = Modifier,
     ready: Boolean = true,
     headerActions: @Composable RowScope.() -> Unit = {},
+    showHeader: Boolean = true,
     main: @Composable () -> Unit,
     panel: @Composable () -> Unit,
 ) {
@@ -142,7 +145,7 @@ fun SidePanelLayout(
                                 .panelCard()
                                 .semantics { paneTitle = title },
                         ) {
-                            Row(
+                            if (showHeader) Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 // 关闭按钮的触摸区比图标宽 12dp，右边留 4dp，图标的右沿落在 16dp 线上
                                 modifier = Modifier.padding(end = 4.dp),

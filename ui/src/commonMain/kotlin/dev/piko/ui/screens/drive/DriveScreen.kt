@@ -614,8 +614,12 @@ fun DriveScreen(
                         }
                     } else null,
                     actions = {
-                        // 顶栏只留搜索：M3 顶栏放一到两个动作，新建与秒传同属「往网盘里添东西」，
-                        // 一起收进 FAB 菜单；排序与视图切换作用于列表，放在列表页眉
+                        // 顶栏只留信息流与搜索：M3 顶栏放一到两个动作，新建与秒传同属「往网盘里添东西」，
+                        // 一起收进 FAB 菜单；排序与视图切换作用于列表，放在列表页眉。
+                        // 片段靠平台的预览播放后端放，没有它的平台不给信息流
+                        if (onFeedShownChange != null && platform.videoPreview != null) {
+                            FeedToggle(shown = feedShown, onShownChange = onFeedShownChange)
+                        }
                         TooltipIconButton(Icons.Outlined.Search, "搜索", { isSearchOpen = true }, shortcut = platform.shortcutModifier.label("F"))
                         if (showsRefreshButton()) {
                             TooltipIconButton(Icons.Outlined.Refresh, "刷新", { state.load(refresh = true) }, shortcut = "F5")
@@ -785,9 +789,6 @@ fun DriveScreen(
                                                 onViewModeChange = { mode ->
                                                     scope.launch { sessionManager.setDriveViewMode(mode.name) }
                                                 },
-                                                feedShown = feedShown,
-                                                // 片段靠平台的预览播放后端放，没有它的平台不给入口
-                                                onFeedShownChange = onFeedShownChange.takeIf { platform.videoPreview != null },
                                             )
                                         }
                                     }

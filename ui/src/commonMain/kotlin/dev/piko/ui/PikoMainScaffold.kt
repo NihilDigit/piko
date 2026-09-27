@@ -11,12 +11,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.SyncAlt
@@ -24,10 +20,7 @@ import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.SyncAlt
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.adaptive.ExperimentalMaterial3AdaptiveApi
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
 import androidx.compose.material3.adaptive.layout.PaneScaffoldDirective
@@ -46,7 +39,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.focus.FocusRequester
@@ -74,7 +66,6 @@ import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.components.SidePanelLayout
-import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.sidePanelFits
 import dev.piko.ui.components.trackInputModality
 import dev.piko.ui.navigation.MainTab
@@ -112,7 +103,7 @@ class VideoPlayerRequest(
  * 播放器怎么呈现由平台决定。Android 在应用内压一层全屏页，播放器代码暂时留在 app 模块；
  * 桌面端开独立窗口，可以一边播一边继续浏览网盘。
  *
- * 信息流两端都在网盘页里（宽窗口是右侧侧栏，窄窗口盖住网盘页），桌面端另可从侧栏弹出到独立窗口。
+ * 信息流两端都在网盘页里（宽窗口是右侧侧栏，窄窗口盖住网盘页），桌面端另可弹出到独立窗口。
  */
 sealed interface VideoPlayerHost {
     class InApp(
@@ -124,18 +115,23 @@ sealed interface VideoPlayerHost {
         /** 把信息流弹出到独立窗口，已开着时调到前台。 */
         val openClipFeed: (ClipFeedLinks) -> Unit,
         /**
-         * 信息流窗口开着没有。读的是 Compose 状态，在组合里调用即可随之重组：窗口开着时应用内的信息流
-         * 只留占位，关窗即回到侧栏接着播。
+         * 信息流窗口开着没有。读的是 Compose 状态，在组合里调用即可随之重组：窗口开着时应用内的侧栏收起，
+         * 收回（[ClipFeedLinks.dock]）时再出现。
          */
         val isClipFeedOpen: () -> Boolean,
         val closeClipFeed: () -> Unit,
     ) : VideoPlayerHost
 }
 
-/** 独立窗口里的信息流要借主界面做的两件事：看完整与在网盘中显示。 */
+/**
+ * 独立窗口里的信息流要借主界面做的事：看完整、在网盘中显示，收回主窗口（关掉窗口、回到侧栏或全屏形态），
+ * 以及关掉信息流（关窗即是关掉它，不是收回）。
+ */
 class ClipFeedLinks(
     val playFull: (file: FileStat, startMillis: Long) -> Unit,
     val locate: (FileStat) -> Unit,
+    val dock: () -> Unit,
+    val close: () -> Unit,
 )
 
 // 非 Android 端没有反射可用，返回栈里的每种 NavKey 都要登记序列化器才能存取
@@ -294,8 +290,9 @@ fun PikoMainScaffold(
     var contentSize by remember { mutableStateOf(IntSize.Zero) }
     val density = LocalDensity.current
 
-    // 信息流：网盘页视图切换的第四项。开关单独一个状态，不动存下的视图，关掉即回到原来的列表。
-    // 宽窗口放得下主区与侧栏时开在右侧侧栏，放不下时盖住整个网盘页；窗口缩放时两种形态随之互换
+    // 信息流：网盘页顶栏上的开关，单独一个状态，不动存下的视图，关掉即回到原来的列表。
+    // 宽窗口放得下主区与侧栏时开在右侧侧栏，放不下时盖住整个网盘页；窗口缩放时两种形态随之互换。
+    // 桌面端还能弹出到独立窗口，那时应用内两种形态都收起，开关仍是开着的
     val clipFeedSession = services.clipFeedSession
     val preferences = services.preferences
     val initialPanelPrefs = remember { runBlocking { preferences.clipPanelFlow.first() } }
@@ -309,14 +306,16 @@ fun PikoMainScaffold(
         if (feedShownState == null && contentWidth != null) feedShownState = initialPanelPrefs.open && panelFits
     }
     val feedShown = feedShownState == true
+    val detachedHost = videoPlayer as? VideoPlayerHost.Detached
+    // 同一时刻只能有一个 ClipFeedScreen：每个都自带播放器与预取的流。窗口开着时应用内的形态都收起
+    val feedPoppedOut = detachedHost?.isClipFeedOpen?.invoke() == true
+    // 关掉信息流连同它的窗口一起关：开关是它唯一的总开关，不管它此刻在哪一处
     fun setFeedShown(shown: Boolean) {
         feedShownState = shown
+        if (!shown && feedPoppedOut) detachedHost?.closeClipFeed?.invoke()
         coroutineScope.launch { preferences.setClipPanelOpen(shown) }
     }
-    val detachedHost = videoPlayer as? VideoPlayerHost.Detached
-    // 同一时刻只能有一个 ClipFeedScreen：每个都自带播放器与预取的流。窗口开着时应用内只留占位
-    val feedPoppedOut = detachedHost?.isClipFeedOpen?.invoke() == true
-    val feedOnFilesTab = feedShown && currentTab == MainTab.FILES
+    val feedOnFilesTab = feedShown && !feedPoppedOut && currentTab == MainTab.FILES
     val feedInPanel = feedOnFilesTab && panelFits
     val feedFullScreen = feedOnFilesTab && !panelFits
 
@@ -351,24 +350,29 @@ fun PikoMainScaffold(
     }
 
     fun popOutFeed() {
-        detachedHost?.openClipFeed(ClipFeedLinks(playFull = ::playFromFeed, locate = ::locateInDrive))
+        detachedHost?.openClipFeed(
+            ClipFeedLinks(
+                playFull = ::playFromFeed,
+                locate = ::locateInDrive,
+                dock = { detachedHost.closeClipFeed() },
+                close = { setFeedShown(false) },
+            ),
+        )
     }
 
     @Composable
     fun FeedContent(compact: Boolean, visible: Boolean) {
         when {
-            feedPoppedOut -> ClipFeedPoppedOut(
-                onReclaim = { detachedHost?.closeClipFeed?.invoke() },
-                onClose = if (compact) null else ({ setFeedShown(false) }),
-            )
-            // 形态互换的动画期间旧的一处还在组合，只让眼下该播的那一处播；压栈页进来的转场期间
-            // Home 仍在组合里，也停，否则 Android 上看完整的播放器底下还放着一段
+            // 形态互换与收起的动画期间旧的一处还在组合，只让眼下该播的那一处播；弹出到窗口的那一刻也是，
+            // 两个播放器不同时在放。压栈页进来的转场期间 Home 仍在组合里，也停，否则 Android 上看完整的播放器
+            // 底下还放着一段
             !visible || !feedOpened || !onHome -> Box(Modifier.fillMaxSize().background(Color.Black))
             else -> ClipFeedScreen(
                 onBackClick = { setFeedShown(false) },
                 onPlayFull = ::playFromFeed,
                 onLocate = ::locateFromFeed,
                 compact = compact,
+                onPopOut = detachedHost?.let { ::popOutFeed },
             )
         }
     }
@@ -376,7 +380,7 @@ fun PikoMainScaffold(
     val feedFrame: @Composable (@Composable () -> Unit) -> Unit = { drive ->
         SidePanelLayout(
             // 不看当前页：切走时网盘页随淡出一起消失，侧栏不必先收起
-            open = feedShown && panelFits,
+            open = feedShown && panelFits && !feedPoppedOut,
             savedWidthDp = panelPrefs.widthDp,
             title = "信息流",
             closeDescription = "关闭信息流",
@@ -385,11 +389,8 @@ fun PikoMainScaffold(
             defaultWidth = ClipPanelDefaultWidth,
             minWidth = ClipPanelMinWidth,
             ready = feedShownState != null,
-            headerActions = {
-                if (detachedHost != null && !feedPoppedOut) {
-                    TooltipIconButton(Icons.AutoMirrored.Outlined.OpenInNew, "在独立窗口播放", ::popOutFeed)
-                }
-            },
+            // 整张卡是黑底的竖屏画面，范围、静音、弹出与关闭都在它自己的顶栏上
+            showHeader = false,
             main = drive,
             panel = { FeedContent(compact = true, visible = feedInPanel) },
         )
@@ -634,31 +635,6 @@ fun PikoMainScaffold(
 /** 侧栏的宽度下限：竖排的片段控件与横屏画面在这个宽度里还放得开。 */
 private val ClipPanelMinWidth = 360.dp
 private val ClipPanelDefaultWidth = 420.dp
-
-/**
- * 信息流已弹出到独立窗口时应用内留下的占位。[onReclaim] 关掉窗口，回到这里接着播；
- * [onClose] 为 null 时由外面的侧栏标题行负责关闭。
- */
-@Composable
-private fun ClipFeedPoppedOut(onReclaim: () -> Unit, onClose: (() -> Unit)?) {
-    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surfaceContainerLow) {
-        Column(
-            modifier = Modifier.fillMaxSize().padding(16.dp),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text(
-                text = "已在独立窗口播放",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
-                TextButton(onClick = onReclaim) { Text("收回") }
-                if (onClose != null) TextButton(onClick = onClose) { Text("关闭") }
-            }
-        }
-    }
-}
 
 /** 「我的」的详情页。它们互相替换，不叠在一起。 */
 private val ProfilePanes = setOf<NavKey?>(Screen.Starred, Screen.PlayHistory, Screen.MyShares, Screen.Trash, Screen.Settings)

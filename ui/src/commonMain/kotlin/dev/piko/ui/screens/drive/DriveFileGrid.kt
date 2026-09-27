@@ -24,7 +24,6 @@ import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.automirrored.outlined.Sort
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.PhotoLibrary
-import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.outlined.FilterList
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ArrowUpward
@@ -85,7 +84,7 @@ import io.github.nihildigit.pikpak.FileStat
 
 /**
  * 网盘列表的三种排列。名字存进偏好（PikoUserPreferences.driveViewModeFlow），不要改名。
- * 视图切换里的第四项信息流不在这里，见 ViewModeToggle。
+ * 信息流不在这里，它的开关在网盘页顶栏上，见 FeedToggle。
  */
 internal enum class DriveViewMode {
     LIST,
@@ -501,9 +500,6 @@ internal fun DriveListHeader(
     onTypeFilterChange: (FileCategory?) -> Unit,
     viewMode: DriveViewMode,
     onViewModeChange: (DriveViewMode) -> Unit,
-    feedShown: Boolean = false,
-    /** 见 ViewModeToggle。 */
-    onFeedShownChange: ((Boolean) -> Unit)? = null,
 ) {
     var showSortMenu by remember { mutableStateOf(false) }
     var showTypeMenu by remember { mutableStateOf(false) }
@@ -591,34 +587,22 @@ internal fun DriveListHeader(
             ViewModeToggle(
                 viewMode = viewMode,
                 onViewModeChange = onViewModeChange,
-                feedShown = feedShown,
-                onFeedShownChange = onFeedShownChange,
             )
         }
     }
 }
 
-/**
- * 视图切换，M3 Expressive 连体按钮组：列表、海报墙、图库三选一，末尾是信息流。
- *
- * 信息流不是 [DriveViewMode] 的第四个值，而是单独的开关 [feedShown]：它在宽窗口里开在右侧侧栏，
- * 主区照旧按原来的视图排列，此时两个按钮同为选中态，各自说明眼前看得到的一块；窄窗口里它盖住整个网盘页，
- * 这一行本身就看不到了。关掉信息流即回到原来的视图，不必另记「进信息流之前是哪一种」，
- * 存进偏好的视图名也不会出现一个旧版读不懂的值。[onFeedShownChange] 为 null 时不给这一项。
- */
+/** 视图切换，M3 Expressive 连体按钮组：列表、海报墙、图库三选一。信息流不在这里，见 FeedToggle。 */
 @Composable
 private fun ViewModeToggle(
     viewMode: DriveViewMode,
     onViewModeChange: (DriveViewMode) -> Unit,
-    feedShown: Boolean,
-    onFeedShownChange: ((Boolean) -> Unit)?,
 ) {
     val modes = DriveViewMode.entries
-    val lastIndex = if (onFeedShownChange != null) modes.size else modes.lastIndex
     @Composable
     fun shapesAt(index: Int) = when (index) {
         0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
-        lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
+        modes.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
         else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
     }
     Row(horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)) {
@@ -635,16 +619,6 @@ private fun ViewModeToggle(
                     DriveViewMode.GALLERY -> Icons.Filled.PhotoLibrary to "图库视图"
                 }
                 Icon(icon, contentDescription = label, modifier = Modifier.size(20.dp))
-            }
-        }
-        if (onFeedShownChange != null) {
-            ToggleButton(
-                checked = feedShown,
-                onCheckedChange = onFeedShownChange,
-                shapes = shapesAt(modes.size),
-                contentPadding = ViewToggleContentPadding,
-            ) {
-                Icon(Icons.Filled.Shuffle, contentDescription = "信息流", modifier = Modifier.size(20.dp))
             }
         }
     }

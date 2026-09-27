@@ -146,8 +146,8 @@ fun main(args: Array<String>) {
         }
         val appearance by appearanceFlow.collectAsState(initialAppearance)
         val players = remember { mutableStateListOf<VideoPlayerRequest>() }
-        // 信息流从网盘页的侧栏弹出，只开一个窗口；已开着时再弹一次是把它调到前台。
-        // 开着的这段时间侧栏只留占位，关窗即回到侧栏，见 VideoPlayerHost.Detached.isClipFeedOpen
+        // 信息流从网盘页弹出，只开一个窗口；已开着时再弹一次是把它调到前台。开着的这段时间应用内的侧栏收起，
+        // 收回时再出现；关窗是关掉信息流，见 ClipFeedLinks
         var clipFeed by remember { mutableStateOf<ClipFeedLinks?>(null) }
         var clipFeedRaises by remember { mutableIntStateOf(0) }
         var mainWindow by remember { mutableStateOf<java.awt.Frame?>(null) }
@@ -279,6 +279,12 @@ fun main(args: Array<String>) {
                         links.locate(file)
                         mainWindow?.let(::bringToFront)
                     },
+                    dock = {
+                        links.dock()
+                        isInBackground = false
+                        mainWindow?.let(::bringToFront)
+                    },
+                    close = links.close,
                 ),
                 raise = clipFeedRaises,
                 services = services,
@@ -286,7 +292,7 @@ fun main(args: Array<String>) {
                 settings = settings,
                 appearance = appearance,
                 icon = appIcon,
-                onClose = { clipFeed = null },
+                onClose = links.close,
             )
         }
 
