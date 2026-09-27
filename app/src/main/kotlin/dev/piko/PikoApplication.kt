@@ -22,6 +22,7 @@ import java.io.File
 import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.log.LogLevel
 import dev.piko.shared.log.PikoLog
+import dev.piko.shared.media.FileClipCache
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.net.PikoProxySelector
 import dev.piko.shared.state.InstantSession
@@ -73,7 +74,11 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
         sessionManager = SessionManager(this)
         installProxy()
         val clientManager = PikoClientManager(AndroidPikoSessionStore(this, sessionManager), appScope)
-        val mediaRepository = PikoMediaRepository(clientManager, sessionManager)
+        val mediaRepository = PikoMediaRepository(
+            clientManager,
+            sessionManager,
+            clipCache = FileClipCache(File(cacheDir, "piko/clip-cache")),
+        )
         services = PikoServices(
             preferences = sessionManager,
             clientManager = clientManager,

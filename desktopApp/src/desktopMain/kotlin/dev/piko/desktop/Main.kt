@@ -34,6 +34,7 @@ import dev.piko.shared.state.TorrentMagnet
 import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.log.LogLevel
 import dev.piko.shared.log.PikoLog
+import dev.piko.shared.media.FileClipCache
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.net.PikoProxySelector
 import dev.piko.shared.upload.UploadTask
@@ -327,7 +328,11 @@ private fun createServices(settings: DesktopSettingsStore, preferences: DesktopP
     // 进程级作用域，与 Android 的 appScope 对应：下载与会话刷新不随某个窗口的组合结束
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val clientManager = PikoClientManager(FilePikoSessionStore(), appScope)
-    val mediaRepository = PikoMediaRepository(clientManager, preferences)
+    val mediaRepository = PikoMediaRepository(
+        clientManager,
+        preferences,
+        clipCache = FileClipCache(File(System.getProperty("user.home"), ".piko/cache/clip-cache")),
+    )
     return PikoServices(
         preferences = preferences,
         clientManager = clientManager,
