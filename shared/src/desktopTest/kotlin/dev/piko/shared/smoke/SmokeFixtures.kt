@@ -51,6 +51,9 @@ class MemoryPreferences : PikoUserPreferences {
     override val clipPanelFlow: Flow<SidePanelPrefs> = MutableStateFlow(SidePanelPrefs(open = false, widthDp = null))
     override suspend fun setClipPanelOpen(open: Boolean) = Unit
     override suspend fun setClipPanelWidth(widthDp: Float) = Unit
+    override val inspectorPanelFlow: Flow<SidePanelPrefs> = MutableStateFlow(SidePanelPrefs(open = false, widthDp = null))
+    override suspend fun setInspectorPanelOpen(open: Boolean) = Unit
+    override suspend fun setInspectorPanelWidth(widthDp: Float) = Unit
     override val sessionFlow: Flow<UserSession> = MutableStateFlow(UserSession())
     override suspend fun saveSession(token: String, refreshToken: String, userId: String, username: String, avatarUrl: String) = Unit
     override suspend fun saveProfile(username: String, avatarUrl: String, email: String) = Unit

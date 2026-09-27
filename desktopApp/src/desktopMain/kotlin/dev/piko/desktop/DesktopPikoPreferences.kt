@@ -34,6 +34,12 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
             widthDp = settings.get(KEY_CLIP_PANEL_WIDTH).toFloatOrNull(),
         ),
     )
+    private val inspectorPanel = MutableStateFlow(
+        SidePanelPrefs(
+            open = settings.get(KEY_INSPECTOR_PANEL_OPEN, "false").toBoolean(),
+            widthDp = settings.get(KEY_INSPECTOR_PANEL_WIDTH).toFloatOrNull(),
+        ),
+    )
     private val acceleration = MutableStateFlow(settings.get(KEY_ACCELERATION, "true").toBoolean())
     private val connections = MutableStateFlow(settings.get(KEY_CONNECTIONS, "8").toIntOrNull() ?: 8)
     private val session = MutableStateFlow(loadSession())
@@ -143,6 +149,16 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
     override suspend fun setClipPanelWidth(widthDp: Float) {
         settings.set(KEY_CLIP_PANEL_WIDTH, widthDp.toString())
         clipPanel.value = clipPanel.value.copy(widthDp = widthDp)
+    }
+
+    override val inspectorPanelFlow: Flow<SidePanelPrefs> = inspectorPanel.asStateFlow()
+    override suspend fun setInspectorPanelOpen(open: Boolean) {
+        settings.set(KEY_INSPECTOR_PANEL_OPEN, open.toString())
+        inspectorPanel.value = inspectorPanel.value.copy(open = open)
+    }
+    override suspend fun setInspectorPanelWidth(widthDp: Float) {
+        settings.set(KEY_INSPECTOR_PANEL_WIDTH, widthDp.toString())
+        inspectorPanel.value = inspectorPanel.value.copy(widthDp = widthDp)
     }
 
     override val sessionFlow: Flow<UserSession> = session.asStateFlow()
@@ -258,6 +274,8 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         const val KEY_DRIVE_VIEW_MODE = "ui.driveViewMode"
         const val KEY_CLIP_PANEL_OPEN = "ui.clipPanel.open"
         const val KEY_CLIP_PANEL_WIDTH = "ui.clipPanel.width"
+        const val KEY_INSPECTOR_PANEL_OPEN = "ui.inspectorPanel.open"
+        const val KEY_INSPECTOR_PANEL_WIDTH = "ui.inspectorPanel.width"
         // 沿用 Fluent 版设置页的键，旧值是小写的 system、light、dark，解析时不分大小写
         const val KEY_THEME_MODE = "themeMode"
         const val KEY_THEME_SEED = "ui.themeSeed"

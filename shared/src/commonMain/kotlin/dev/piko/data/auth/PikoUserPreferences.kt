@@ -77,6 +77,11 @@ interface PikoUserPreferences {
     val clipPanelFlow: Flow<SidePanelPrefs>
     suspend fun setClipPanelOpen(open: Boolean)
     suspend fun setClipPanelWidth(widthDp: Float)
+
+    /** 宽窗口网盘页右侧的详情栏：上次是否开着、拖到的宽度。与信息流侧栏占同一个位置，二者只开一个。 */
+    val inspectorPanelFlow: Flow<SidePanelPrefs>
+    suspend fun setInspectorPanelOpen(open: Boolean)
+    suspend fun setInspectorPanelWidth(widthDp: Float)
     val sessionFlow: Flow<UserSession>
     suspend fun saveSession(token: String, refreshToken: String = "", userId: String = "", username: String = "", avatarUrl: String = "")
 

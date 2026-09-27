@@ -100,6 +100,8 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val DRIVE_VIEW_MODE = stringPreferencesKey("drive_view_mode")
         val CLIP_PANEL_OPEN = booleanPreferencesKey("clip_panel_open")
         val CLIP_PANEL_WIDTH = floatPreferencesKey("clip_panel_width")
+        val INSPECTOR_PANEL_OPEN = booleanPreferencesKey("inspector_panel_open")
+        val INSPECTOR_PANEL_WIDTH = floatPreferencesKey("inspector_panel_width")
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val THEME_SEED = stringPreferencesKey("theme_seed")
         val QUOTA_USAGE_BYTES = longPreferencesKey("quota_usage_bytes")
@@ -253,6 +255,25 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun setClipPanelWidth(widthDp: Float) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.CLIP_PANEL_WIDTH] = widthDp
+        }
+    }
+
+    override val inspectorPanelFlow: Flow<SidePanelPrefs> = preference { preferences ->
+        SidePanelPrefs(
+            open = preferences[PreferencesKeys.INSPECTOR_PANEL_OPEN] ?: false,
+            widthDp = preferences[PreferencesKeys.INSPECTOR_PANEL_WIDTH],
+        )
+    }
+
+    override suspend fun setInspectorPanelOpen(open: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.INSPECTOR_PANEL_OPEN] = open
+        }
+    }
+
+    override suspend fun setInspectorPanelWidth(widthDp: Float) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.INSPECTOR_PANEL_WIDTH] = widthDp
         }
     }
 

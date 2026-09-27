@@ -345,11 +345,11 @@ private const val SKELETON_ITEM_COUNT = 40
 private val SkeletonTitleWidths = listOf(0.62f, 0.45f, 0.74f, 0.52f, 0.68f, 0.4f)
 
 /** 单元格上的文字：解析出的标题与标签。[title] 为 null 时照原样显示名字。 */
-private class CellText(val title: String?, val tags: List<String>, val code: String? = null, val resolution: String? = null)
+internal class CellText(val title: String?, val tags: List<String>, val code: String? = null, val resolution: String? = null)
 
-private val RawCellText = CellText(null, emptyList())
+internal val RawCellText = CellText(null, emptyList())
 
-private fun cellText(item: DriveListItem.File, folder: DriveFolderView?): CellText {
+internal fun cellText(item: DriveListItem.File, folder: DriveFolderView?): CellText {
     val view = item.view
     return when {
         view != null -> CellText(view.title, view.tags, view.code, view.resolution)

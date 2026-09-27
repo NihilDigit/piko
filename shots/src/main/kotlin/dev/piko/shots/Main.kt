@@ -69,6 +69,16 @@ private val standardSet = listOf(
     Shot("drag-sidebar-1440x900", steps = listOf(Step.Pump(800), Step.Drag(Offset(820f, 292f), Offset(90f, 198f)))),
     Shot("drag-folder-1440x900", steps = listOf(Step.Pump(800), Step.Drag(Offset(820f, 292f), Offset(1200f, 150f)))),
     Shot("drag-dropped-1440x900", steps = listOf(Step.Pump(800), Step.Drag(Offset(820f, 292f), Offset(90f, 198f)), Step.Release, Step.Pump(1_500))),
+    // 详情栏：什么也没指着时是当前目录，方向键指着一项时是它，框选一批时是这一批
+    Shot("inspector-folder-1440x900", steps = listOf(Step.Click("详情"), Step.Pump(1_000))),
+    Shot("inspector-item-1440x900", steps = listOf(Step.Click("详情"), Step.Pump(800), Step.Key("Down"), Step.Key("Down"), Step.Key("Right"), Step.Key("Down"))),
+    Shot(
+        "inspector-selection-1440x900",
+        steps = listOf(
+            Step.Click("动画"), Step.Wait("SPs"), Step.Pump(600), Step.Click("详情"), Step.Pump(800),
+            Step.Drag(Offset(1050f, 780f), Offset(600f, 400f)), Step.Release, Step.Pump(600),
+        ),
+    ),
     // 键盘：方向键走到一项，描边标出焦点
     Shot("keyboard-focus-1440x900", steps = listOf(Step.Key("Down"), Step.Key("Down"), Step.Key("Right"), Step.Key("Down"))),
     // 信息流：宽窗口的侧栏、窄窗口的全屏、弹出到独立窗口后主窗口的样子
