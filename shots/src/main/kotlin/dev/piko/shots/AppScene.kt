@@ -1,7 +1,11 @@
 package dev.piko.shots
 
 import androidx.compose.ui.ImageComposeScene
+import androidx.compose.ui.InternalComposeUiApi
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.pointer.PointerButton
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.semantics.SemanticsNode
@@ -89,6 +93,31 @@ class AppScene private constructor(private val scene: ImageComposeScene) : AutoC
         pump(50)
     }
 
+    /**
+     * 按一次键，[chord] 写成 `Down`、`Tab`、`Enter`、`F2`、`Ctrl+A`、`Shift+Tab` 这样。按下与抬起各发一次，
+     * 与真实键盘一样先经焦点所在的节点。构造按键事件的函数标着 Compose 内部 API：这是开发工具，
+     * 跟着 compose-ui 同版本升级即可。
+     */
+    @OptIn(InternalComposeUiApi::class)
+    fun key(chord: String) {
+        val parts = chord.split('+')
+        val key = keyNamed(parts.last())
+        val mods = parts.dropLast(1).map { it.lowercase() }.toSet()
+        for (type in listOf(KeyEventType.KeyDown, KeyEventType.KeyUp)) {
+            val event = KeyEvent(
+                key = key,
+                type = type,
+                isCtrlPressed = "ctrl" in mods,
+                isMetaPressed = "meta" in mods || "cmd" in mods,
+                isAltPressed = "alt" in mods,
+                isShiftPressed = "shift" in mods,
+            )
+            edt { scene.sendKeyEvent(event) }
+            pump(30)
+        }
+        pump(150)
+    }
+
     /** 鼠标移到 [text] 上停着，看悬停态与提示。 */
     fun hover(text: String) {
         val node = find(text) ?: error("找不到「$text」")
@@ -125,6 +154,41 @@ class AppScene private constructor(private val scene: ImageComposeScene) : AutoC
             app.pump(600)
             return app
         }
+    }
+}
+
+private fun keyNamed(name: String): Key = when (name.lowercase()) {
+    "up" -> Key.DirectionUp
+    "down" -> Key.DirectionDown
+    "left" -> Key.DirectionLeft
+    "right" -> Key.DirectionRight
+    "tab" -> Key.Tab
+    "enter" -> Key.Enter
+    "esc", "escape" -> Key.Escape
+    "space" -> Key.Spacebar
+    "delete", "del" -> Key.Delete
+    "backspace" -> Key.Backspace
+    "home" -> Key.MoveHome
+    "end" -> Key.MoveEnd
+    "pageup" -> Key.PageUp
+    "pagedown" -> Key.PageDown
+    "f1" -> Key.F1
+    "f2" -> Key.F2
+    "f3" -> Key.F3
+    "f4" -> Key.F4
+    "f5" -> Key.F5
+    "f6" -> Key.F6
+    "f7" -> Key.F7
+    "f8" -> Key.F8
+    "f9" -> Key.F9
+    "f10" -> Key.F10
+    "f11" -> Key.F11
+    "f12" -> Key.F12
+    "menu" -> Key.Menu
+    else -> if (name.length == 1 && name[0].isLetterOrDigit()) {
+        Key(java.awt.event.KeyEvent.getExtendedKeyCodeForChar(name[0].uppercaseChar().code).toLong())
+    } else {
+        throw IllegalArgumentException("不认识的键：$name")
     }
 }
 

@@ -14,6 +14,7 @@ private const val USAGE = """用法：piko-shots <命令> [选项]
         --click <文本>        点击文本或内容描述为它的节点（先精确匹配，没有则包含匹配）
         --right-click <文本>  右键点击，看右键菜单
         --hover <文本>        鼠标停在上面，看悬停态与提示
+        --key <键>            按一次键：Down、Tab、Enter、Esc、F2、Menu、Ctrl+A、Shift+F10 等
         --wait <文本>         等到界面上出现它
         --pump <毫秒>         多等一会儿，让动画走完
   texts [--size <宽>x<高>] [步骤…]
@@ -25,6 +26,7 @@ private const val USAGE = """用法：piko-shots <命令> [选项]
 private sealed interface Step {
     data class Click(val text: String, val button: PointerButton = PointerButton.Primary) : Step
     data class Hover(val text: String) : Step
+    data class Key(val chord: String) : Step
     data class Wait(val text: String) : Step
     data class Pump(val ms: Long) : Step
 }
@@ -48,6 +50,8 @@ private val standardSet = listOf(
     Shot("details-1440x900", steps = listOf(Step.Click("更多操作"), Step.Pump(800))),
     Shot("details-400x860", 400, 860, steps = listOf(Step.Click("更多操作"), Step.Pump(800))),
     Shot("context-menu-1440x900", steps = listOf(Step.Click("Oppenheimer", PointerButton.Secondary), Step.Pump(500))),
+    // 键盘：方向键走到一项，描边标出焦点
+    Shot("keyboard-focus-1440x900", steps = listOf(Step.Key("Down"), Step.Key("Down"), Step.Key("Right"), Step.Key("Down"))),
     Shot("transfers-1440x900", steps = listOf(Step.Click("传输"), Step.Wait("Dandadan"))),
     Shot("profile-1440x900", steps = listOf(Step.Click("我的"), Step.Pump(1_000))),
     Shot("profile-starred-1440x900", steps = listOf(Step.Click("我的"), Step.Pump(1_000), Step.Click("星标"), Step.Wait("Dune"))),
@@ -96,6 +100,7 @@ private fun run(shot: Shot, finish: (AppScene) -> Unit) {
                 when (step) {
                     is Step.Click -> app.click(step.text, step.button)
                     is Step.Hover -> app.hover(step.text)
+                    is Step.Key -> app.key(step.chord)
                     is Step.Wait -> if (!app.pumpUntil { app.hasText(step.text) }) {
                         System.err.println("[${shot.name}] 等不到「${step.text}」，照当前画面出图")
                     }
@@ -126,6 +131,7 @@ private fun parseShot(name: String, args: List<String>): Shot {
             "--click" -> steps += Step.Click(value())
             "--right-click" -> steps += Step.Click(value(), PointerButton.Secondary)
             "--hover" -> steps += Step.Hover(value())
+            "--key" -> steps += Step.Key(value())
             "--wait" -> steps += Step.Wait(value())
             "--pump" -> steps += Step.Pump(value().toLongOrNull() ?: fail("--pump 要毫秒数"))
             "-o" -> value()
