@@ -94,6 +94,9 @@ private val standardSet = listOf(
             Step.Click("电影", PointerButton.Secondary), Step.Pump(400), Step.Click("在新标签页打开"), Step.Pump(800),
         ),
     ),
+    // 快捷键一览（F1），侧边栏快捷访问的右键菜单
+    Shot("shortcuts-1440x900", steps = listOf(Step.Pump(800), Step.Key("F1"), Step.Pump(800))),
+    Shot("sidebar-menu-1440x900", steps = listOf(Step.Pump(1_200), Step.Click("动画", PointerButton.Secondary), Step.Pump(600))),
     // 键盘：方向键走到一项，描边标出焦点
     Shot("keyboard-focus-1440x900", steps = listOf(Step.Key("Down"), Step.Key("Down"), Step.Key("Right"), Step.Key("Down"))),
     // 信息流：宽窗口的侧栏、窄窗口的全屏、弹出到独立窗口后主窗口的样子

@@ -185,6 +185,9 @@ open class PikoDriveRepository(
     /** 最近去过的文件夹（整条路径），新的在前，见 [RecentFolders]。 */
     val recentFoldersFlow: StateFlow<List<List<PikoPathBreadcrumb>>> get() = recentFolders.flow
 
+    /** 从「最近」里拿掉一个文件夹，快捷访问的右键菜单用。 */
+    fun forgetRecentFolder(folderId: String) = recentFolders.forget(folderId)
+
     /** 做过的改动，能撤销的记在这里，见 [DriveChangeJournal]。 */
     val changes = DriveChangeJournal(this, backgroundScope)
 

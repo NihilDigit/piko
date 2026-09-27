@@ -1,5 +1,14 @@
 package dev.piko.ui.screens.drive
 
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.isTertiaryPressed
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.StarOutline
+import androidx.compose.material.icons.outlined.SwipeVertical
+import androidx.compose.material.icons.outlined.Tab
+import dev.piko.ui.components.SheetAction
+import dev.piko.ui.components.ContextMenuArea
 import dev.piko.ui.components.fileDropTarget
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -50,6 +59,8 @@ internal fun ColumnScope.QuickAccessSections(
     currentStack: List<PikoPathBreadcrumb>,
     onFilesTab: Boolean,
     onOpened: () -> Unit,
+    /** 在信息流里刷这个文件夹；为 null 时右键菜单里不给这一项。 */
+    onBrowseInFeed: ((PikoPathBreadcrumb) -> Unit)? = null,
 ) {
     val recent by state.recentFolders.collectAsStateWithLifecycle()
     LaunchedEffect(state) { state.watchStarred() }
@@ -57,16 +68,27 @@ internal fun ColumnScope.QuickAccessSections(
     if (state.starredFolders.isNotEmpty()) {
         SectionLabel("星标")
         for (folder in state.starredFolders) {
-            SidebarItem(
-                icon = Icons.Outlined.Star,
-                label = folder.name,
-                modifier = Modifier.fileDropTarget("starred:${folder.id}", PikoPathBreadcrumb(folder.id, folder.name)),
-                selected = folder.id == currentId,
-                onClick = {
-                    state.openStarred(folder)
-                    onOpened()
-                },
-            )
+            val crumb = PikoPathBreadcrumb(folder.id, folder.name)
+            // 右键与网盘里的文件夹同一种说法：新标签、信息流，再加这一栏自己的「取消星标」
+            ContextMenuArea(actions = {
+                listOfNotNull(
+                    SheetAction(Icons.Outlined.Tab, "在新标签页打开", { state.openStarredInNewTab(folder) }),
+                    onBrowseInFeed?.let { SheetAction(Icons.Outlined.SwipeVertical, "在信息流中刷", { it(crumb) }) },
+                    SheetAction(Icons.Outlined.StarOutline, "取消星标", { state.unstar(folder) }),
+                )
+            }) {
+                SidebarItem(
+                    icon = Icons.Outlined.Star,
+                    label = folder.name,
+                    modifier = Modifier.fileDropTarget("starred:${folder.id}", PikoPathBreadcrumb(folder.id, folder.name)),
+                    selected = folder.id == currentId,
+                    onClick = {
+                        state.openStarred(folder)
+                        onOpened()
+                    },
+                    onMiddleClick = { state.openStarredInNewTab(folder) },
+                )
+            }
         }
     }
     // 眼前这个不列：「最近」是还能回哪儿去，所在之处已经在顶栏的路径上
@@ -75,18 +97,27 @@ internal fun ColumnScope.QuickAccessSections(
         SectionLabel("最近")
         for (stack in others) {
             val folder = stack.last()
-            SidebarItem(
-                icon = Icons.Outlined.History,
-                label = folder.name,
-                modifier = Modifier.fileDropTarget("recent:${folder.id}", folder),
-                // 同名的文件夹多得是（「SPs」「字幕」），悬停时给出整条路径
-                tooltip = stack.joinToString(" › ") { it.name },
-                selected = false,
-                onClick = {
-                    state.openRecent(stack)
-                    onOpened()
-                },
-            )
+            ContextMenuArea(actions = {
+                listOfNotNull(
+                    SheetAction(Icons.Outlined.Tab, "在新标签页打开", { state.openRecentInNewTab(stack) }),
+                    onBrowseInFeed?.let { SheetAction(Icons.Outlined.SwipeVertical, "在信息流中刷", { it(folder) }) },
+                    SheetAction(Icons.Outlined.Close, "从最近中移除", { state.forgetRecent(stack) }),
+                )
+            }) {
+                SidebarItem(
+                    icon = Icons.Outlined.History,
+                    label = folder.name,
+                    modifier = Modifier.fileDropTarget("recent:${folder.id}", folder),
+                    // 同名的文件夹多得是（「SPs」「字幕」），悬停时给出整条路径
+                    tooltip = stack.joinToString(" › ") { it.name },
+                    selected = false,
+                    onClick = {
+                        state.openRecent(stack)
+                        onOpened()
+                    },
+                    onMiddleClick = { state.openRecentInNewTab(stack) },
+                )
+            }
         }
     }
 }
@@ -117,6 +148,8 @@ internal fun SidebarItem(
     tooltip: String? = null,
     bold: Boolean = false,
     modifier: Modifier = Modifier,
+    /** 中键点它：文件夹在后台的新标签里打开。 */
+    onMiddleClick: (() -> Unit)? = null,
 ) {
     val colors = MaterialTheme.colorScheme
     val row: @Composable () -> Unit = {
@@ -126,6 +159,20 @@ internal fun SidebarItem(
                 .height(40.dp)
                 .clip(CircleShape)
                 .background(if (selected) colors.secondaryContainer else Color.Transparent)
+                .then(
+                    if (onMiddleClick == null) {
+                        Modifier
+                    } else {
+                        Modifier.pointerInput(onMiddleClick) {
+                            awaitPointerEventScope {
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    if (event.type == PointerEventType.Press && event.buttons.isTertiaryPressed) onMiddleClick()
+                                }
+                            }
+                        }
+                    },
+                )
                 .clickable(role = Role.Button, onClick = onClick)
                 .padding(horizontal = 16.dp),
             verticalAlignment = Alignment.CenterVertically,

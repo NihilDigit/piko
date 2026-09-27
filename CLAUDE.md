@@ -94,7 +94,8 @@ expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以
 - 导航：`NavigationSuiteScaffold` 在 compact 下是底部导航栏，更宽时换成侧边导航栏。窗口到 1200dp（M3 large）
   换成一整条侧边栏（`MainSidebar`）：上面是三个去处，下面是网盘的快捷访问（`QuickAccessSections` /
   `QuickAccessState`：星标文件夹与最近去过的文件夹，最近不列眼前这个）。只亮一处：人在星标文件夹里时亮它，否则亮当前页。
-  不要在导航栏旁边再并排一栏导航。同样只在这一档，内容下面有状态栏（`ui/.../workbench/StatusBar`）：左边是进行中的传输
+  不要在导航栏旁边再并排一栏导航。侧边栏与状态栏在 `NavDisplay` 外面，打开「我的」里的各页时不被盖住（应用内播放器这类
+  整窗的页照旧盖住，见 `sidebarMode`）。快捷访问的条目右键可以在新标签页打开、在信息流中刷、取消星标或从最近中移除。同样只在这一档，内容下面有状态栏（`ui/.../workbench/StatusBar`）：左边是进行中的传输
   （点开活动面板，看进度不必切到传输页）与最近一次能撤销的改动，右边是设置同步与空间用量。
 - 返回栈：`PikoMainScaffold` 用 Navigation 3 的 `NavDisplay`，栈底 `Screen.Home` 是导航栏与三个根页面，
   其余页面压在上面、连同导航栏一起盖住。被盖住的 Home 离开组合，回来时重建，所以根页面的状态要经得起
@@ -124,6 +125,7 @@ Shift 点选是连选（`selectionClicks`，状态在 `DriveScreenState.toggleSe
 落点只提供文件夹。
 移动、移入回收站与重命名做完都记进 `DriveChangeJournal`（`driveRepository.changes`），提示带「撤销」，
 Ctrl+Z 撤销最近一次；以后的批量改动（自动重命名、按刮削结果整理）也记一条，撤销即反向再做一次。
+快捷键一览（F1 或主修饰键+/，`ShortcutsDialog`）是手写的一张表，加了快捷键要同时写进去。
 命令面板（主修饰键+K，`CommandPalette`）：模糊搜索最近与星标文件夹、当前目录的子文件夹、去处与命令，方向键挑、回车执行。
 全局的命令在 `PikoMainScaffold` 的 `paletteItems`；某一页自己的命令在页里经 `ContributePaletteItems` 登记，页面离开组合时撤掉
 （网盘页登记了新建文件夹、上传、视图、详情栏等）。新页面有值得键盘直达的操作就照这样登记。

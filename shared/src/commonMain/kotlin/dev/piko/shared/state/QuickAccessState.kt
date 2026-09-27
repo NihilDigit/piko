@@ -52,11 +52,32 @@ class QuickAccessState(
     fun openRecent(stack: List<PikoPathBreadcrumb>) = driveRepo.updateFolderStack(stack)
 
     /** 星标只带着自己，上级要逐层查出来才能摆出完整的路径。 */
-    fun openStarred(folder: FileStat) {
+    fun openStarred(folder: FileStat) = withStarredStack(folder) { driveRepo.updateFolderStack(it) }
+
+    /** 在后台的新标签里打开，与中键点文件夹相同。 */
+    fun openStarredInNewTab(folder: FileStat) = withStarredStack(folder) { driveRepo.openTab(it, activate = false) }
+
+    fun openRecentInNewTab(stack: List<PikoPathBreadcrumb>) {
+        driveRepo.openTab(stack, activate = false)
+    }
+
+    fun unstar(folder: FileStat) {
+        // 先从列表里拿掉，不等重取；失败了重取会把它放回来
+        starredFolders = starredFolders.filterNot { it.id == folder.id }
+        scope.launch {
+            driveRepo.setStarred(listOf(folder.id), starred = false)
+                .logFailure(TAG, "快捷栏取消星标失败")
+                .onFailure { _messages.emit("取消星标失败") }
+        }
+    }
+
+    fun forgetRecent(stack: List<PikoPathBreadcrumb>) = driveRepo.forgetRecentFolder(stack.last().id)
+
+    private fun withStarredStack(folder: FileStat, open: (List<PikoPathBreadcrumb>) -> Unit) {
         scope.launch {
             driveRepo.locateFolder(folder.id)
                 .logFailure(TAG, "快捷栏定位星标文件夹失败")
-                .onSuccess { parents -> driveRepo.updateFolderStack(parents + PikoPathBreadcrumb(folder.id, folder.name)) }
+                .onSuccess { parents -> open(parents + PikoPathBreadcrumb(folder.id, folder.name)) }
                 .onFailure { _messages.emit("找不到这个文件夹，它可能已被移走或删除") }
         }
     }

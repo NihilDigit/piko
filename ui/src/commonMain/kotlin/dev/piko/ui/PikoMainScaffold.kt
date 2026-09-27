@@ -1,5 +1,8 @@
 package dev.piko.ui
 
+import androidx.compose.material.icons.outlined.Keyboard
+import dev.piko.ui.workbench.ShortcutsDialog
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.foundation.layout.fillMaxWidth
 import dev.piko.ui.workbench.ActivityPanel
 import dev.piko.ui.workbench.StatusBar
@@ -219,6 +222,12 @@ fun PikoMainScaffold(
     val topScreen = backStack.lastOrNull() as? Screen
     val onHome = backStack.size <= 1
 
+    // 大窗口换成一整条侧边栏：上面是三个去处，下面是网盘的快捷访问，照 Finder 的边栏与资源管理器的导航窗格。
+    // 不在导航栏旁边另起一栏：两栏并排都是竖着的导航，选中态各亮一处，看不出谁管谁。
+    // 侧边栏与状态栏在返回栈外面，打开「我的」里的星标、回收站这些页时不被盖住；应用内的播放器这类整窗的页照旧盖住
+    val largeWindow = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.width.toDp() } >= SidebarMinWindowWidth
+    val sidebarMode = largeWindow && (onHome || topScreen == Screen.Profile || topScreen in ProfilePanes)
+
     fun resetToHome() {
         while (backStack.size > 1) backStack.removeLastOrNull()
     }
@@ -362,6 +371,8 @@ fun PikoMainScaffold(
     // 头一回打开还没订阅过，取眼前的文件夹；此后是上次刷的那个，重启后也接着
     val folderStack by services.driveRepository.folderStackFlow.collectAsStateWithLifecycle()
     val quickAccess = remember { QuickAccessState(services.driveRepository, coroutineScope) }
+    // 快捷键一览，F1 或主修饰键+/
+    var shortcutsOpen by remember { mutableStateOf(false) }
     // 大窗口底部的活动面板，见 StatusBar
     var activityOpen by rememberSaveable { mutableStateOf(false) }
     // 头一次 open 完成前会话里是空的，此时组合 ClipFeedScreen 会闪一下「没有可播放的视频」
@@ -515,9 +526,8 @@ fun PikoMainScaffold(
         }
 
         BoxWithConstraints(Modifier.fillMaxSize()) {
-            // 大窗口换成一整条侧边栏：上面是三个去处，下面是网盘的快捷访问，照 Finder 的边栏与资源管理器的导航窗格。
-            // 不在导航栏旁边另起一栏：两栏并排都是竖着的导航，选中态各亮一处，看不出谁管谁
-            val sidebar = maxWidth >= SidebarMinWindowWidth
+            // 侧边栏模式下导航栏不画，侧边栏在返回栈外面，见 sidebarMode
+            val sidebar = sidebarMode
             // 若当前不在文件主页，按下返回键优先回到文件页
             BackHandler(enabled = currentTab != MainTab.FILES && !feedFullScreen) {
                 currentTab = MainTab.FILES
@@ -549,38 +559,7 @@ fun PikoMainScaffold(
                 navigationSuiteType = navigationSuiteType,
                 // 侧栏的三格居中：平板横握时手在两侧中部，贴顶的话要伸到最远处
                 navigationItemVerticalArrangement = Arrangement.Center,
-                content = if (sidebar) {
-                    {
-                        Row(Modifier.fillMaxSize()) {
-                            MainSidebar(
-                                currentTab = currentTab,
-                                onTabClick = ::onTabClick,
-                                quickAccess = quickAccess,
-                                folderStack = folderStack,
-                                onQuickAccessOpened = {
-                                    resetToHome()
-                                    currentTab = MainTab.FILES
-                                },
-                            )
-                            // 内容下面是状态栏，点它左边的传输摘要在两者之间展开活动面板
-                            Column(Modifier.weight(1f).fillMaxHeight()) {
-                                Box(Modifier.weight(1f).fillMaxWidth()) { mainContent() }
-                                AnimatedVisibility(visible = activityOpen) {
-                                    ActivityPanel(
-                                        onOpenTransfers = {
-                                            activityOpen = false
-                                            openTransfers()
-                                        },
-                                        onClose = { activityOpen = false },
-                                    )
-                                }
-                                StatusBar(activityOpen = activityOpen, onActivityToggle = { activityOpen = !activityOpen })
-                            }
-                        }
-                    }
-                } else {
-                    mainContent
-                },
+                content = mainContent,
             )
 
             // 全屏形态的信息流：盖住网盘页连同导航栏。不进返回栈，形态由窗口宽度随时推出来，窗口拉宽即换成侧栏。
@@ -683,6 +662,7 @@ fun PikoMainScaffold(
         add(PaletteItem(if (activityOpen) "收起活动面板" else "打开活动面板", Icons.Outlined.SyncAlt, "操作", keywords = "activity transfers progress 进度") {
             activityOpen = !activityOpen
         })
+        add(PaletteItem("快捷键一览", Icons.Outlined.Keyboard, "操作", detail = "F1", keywords = "shortcuts keyboard help 帮助") { shortcutsOpen = true })
         add(PaletteItem("立即同步设置", Icons.Outlined.CloudSync, "操作", keywords = "sync settings") { coroutineScope.launch { services.settingsSync.syncNow() } })
         ThemeMode.entries.forEach { mode ->
             add(PaletteItem("主题：${mode.label}", Icons.Outlined.Palette, "操作", keywords = "theme ${mode.name.lowercase()}") {
@@ -709,6 +689,10 @@ fun PikoMainScaffold(
                 .focusRequester(shortcutFocus)
                 .focusable()
                 .onKeyEvent { event ->
+                    if (event.type == KeyEventType.KeyDown && (event.key == Key.F1 || (shortcutModifier.isPressed(event) && event.key == Key.Slash))) {
+                        shortcutsOpen = true
+                        return@onKeyEvent true
+                    }
                     if (event.type != KeyEventType.KeyDown || !shortcutModifier.isPressed(event)) return@onKeyEvent false
                     if (event.key == Key.K) {
                         paletteOpen = true
@@ -725,70 +709,110 @@ fun PikoMainScaffold(
                     true
                 },
         ) {
-            NavDisplay(
-                backStack = backStack,
-                onBack = ::popBack,
-                sceneStrategies = listOf(listDetailStrategy),
-                // 压栈与返回：新页从右侧滑入五分之一屏并淡入，旧页反向让开。走满整屏是 lateral 的做法，
-                // 规范明说别拿它做层级导航
-                transitionSpec = {
-                    (
-                        slideInHorizontally(PikoMotion.ForwardEnterSlide) { it / PikoMotion.ForwardSlideFraction } +
-                            fadeIn(PikoMotion.ForwardEnterFade)
-                        ) togetherWith (
-                        slideOutHorizontally(PikoMotion.ForwardExitSlide) { -it / PikoMotion.ForwardSlideFraction } +
-                            fadeOut(PikoMotion.ForwardExitFade)
-                        )
-                },
-                popTransitionSpec = {
-                    (
-                        slideInHorizontally(PikoMotion.ForwardEnterSlide) { -it / PikoMotion.ForwardSlideFraction } +
-                            fadeIn(PikoMotion.ForwardEnterFade)
-                        ) togetherWith (
-                        slideOutHorizontally(PikoMotion.ForwardExitSlide) { it / PikoMotion.ForwardSlideFraction } +
-                            fadeOut(PikoMotion.ForwardExitFade)
-                        )
-                },
-                predictivePopTransitionSpec = { _ ->
-                    (
-                        slideInHorizontally(PikoMotion.ForwardEnterSlide) { -it / PikoMotion.ForwardSlideFraction } +
-                            fadeIn(PikoMotion.ForwardEnterFade)
-                        ) togetherWith (
-                        slideOutHorizontally(PikoMotion.ForwardExitSlide) { it / PikoMotion.ForwardSlideFraction } +
-                            fadeOut(PikoMotion.ForwardExitFade)
-                        )
-                },
-                entryProvider = entryProvider {
-                    entry<Screen.Home> { HomeContent() }
-                    entry<Screen.Profile>(metadata = ListDetailSceneStrategy.listPane(sceneKey = ProfileScene)) {
-                        ProfileScreen(
-                            onLogout = onLogout,
-                            onOpenPane = ::openProfilePane,
-                            selectedPane = selectedPane,
-                            onBackClick = ::closeProfile,
+            Row(Modifier.fillMaxSize()) {
+                if (sidebarMode) {
+                    MainSidebar(
+                        currentTab = currentTab,
+                        onTabClick = { tab ->
+                            resetToHome()
+                            onTabClick(tab)
+                        },
+                        quickAccess = quickAccess,
+                        folderStack = folderStack,
+                        onQuickAccessOpened = {
+                            resetToHome()
+                            currentTab = MainTab.FILES
+                        },
+                        onBrowseInFeed = { folder ->
+                            resetToHome()
+                            currentTab = MainTab.FILES
+                            browseInFeed(folder)
+                        },
+                    )
+                }
+                // 内容下面是状态栏，点它左边的传输摘要在两者之间展开活动面板
+                Column(Modifier.weight(1f).fillMaxHeight()) {
+                    Box(Modifier.weight(1f).fillMaxWidth()) {
+                        NavDisplay(
+                            backStack = backStack,
+                            onBack = ::popBack,
+                            sceneStrategies = listOf(listDetailStrategy),
+                            // 压栈与返回：新页从右侧滑入五分之一屏并淡入，旧页反向让开。走满整屏是 lateral 的做法，
+                            // 规范明说别拿它做层级导航
+                            transitionSpec = {
+                                (
+                                    slideInHorizontally(PikoMotion.ForwardEnterSlide) { it / PikoMotion.ForwardSlideFraction } +
+                                        fadeIn(PikoMotion.ForwardEnterFade)
+                                    ) togetherWith (
+                                    slideOutHorizontally(PikoMotion.ForwardExitSlide) { -it / PikoMotion.ForwardSlideFraction } +
+                                        fadeOut(PikoMotion.ForwardExitFade)
+                                    )
+                            },
+                            popTransitionSpec = {
+                                (
+                                    slideInHorizontally(PikoMotion.ForwardEnterSlide) { -it / PikoMotion.ForwardSlideFraction } +
+                                        fadeIn(PikoMotion.ForwardEnterFade)
+                                    ) togetherWith (
+                                    slideOutHorizontally(PikoMotion.ForwardExitSlide) { it / PikoMotion.ForwardSlideFraction } +
+                                        fadeOut(PikoMotion.ForwardExitFade)
+                                    )
+                            },
+                            predictivePopTransitionSpec = { _ ->
+                                (
+                                    slideInHorizontally(PikoMotion.ForwardEnterSlide) { -it / PikoMotion.ForwardSlideFraction } +
+                                        fadeIn(PikoMotion.ForwardEnterFade)
+                                    ) togetherWith (
+                                    slideOutHorizontally(PikoMotion.ForwardExitSlide) { it / PikoMotion.ForwardSlideFraction } +
+                                        fadeOut(PikoMotion.ForwardExitFade)
+                                    )
+                            },
+                            entryProvider = entryProvider {
+                                entry<Screen.Home> { HomeContent() }
+                                entry<Screen.Profile>(metadata = ListDetailSceneStrategy.listPane(sceneKey = ProfileScene)) {
+                                    ProfileScreen(
+                                        onLogout = onLogout,
+                                        onOpenPane = ::openProfilePane,
+                                        selectedPane = selectedPane,
+                                        onBackClick = ::closeProfile,
+                                    )
+                                }
+                                val detail = ListDetailSceneStrategy.detailPane(ProfileScene)
+                                entry<Screen.Starred>(metadata = detail) {
+                                    StarredScreen(onBackClick = paneBack, onOpen = ::openFromProfile, onLocate = { locateInDrive(it) })
+                                }
+                                entry<Screen.PlayHistory>(metadata = detail) {
+                                    PlayHistoryScreen(
+                                        onBackClick = paneBack,
+                                        onPlay = { playVideo(it, listOf(it)) },
+                                        onLocate = { locateInDrive(it) },
+                                    )
+                                }
+                                entry<Screen.MyShares>(metadata = detail) { MySharesScreen(onBackClick = paneBack) }
+                                entry<Screen.Trash>(metadata = detail) { TrashScreen(onBackClick = paneBack) }
+                                entry<Screen.Settings>(metadata = detail) { SettingsScreen(onBackClick = paneBack) }
+                                entry<Screen.VideoPlayer> { screen ->
+                                    (videoPlayer as? VideoPlayerHost.InApp)?.content?.invoke(screen, ::popBack)
+                                }
+                            },
                         )
                     }
-                    val detail = ListDetailSceneStrategy.detailPane(ProfileScene)
-                    entry<Screen.Starred>(metadata = detail) {
-                        StarredScreen(onBackClick = paneBack, onOpen = ::openFromProfile, onLocate = { locateInDrive(it) })
+                    if (sidebarMode) {
+                        AnimatedVisibility(visible = activityOpen) {
+                            ActivityPanel(
+                                onOpenTransfers = {
+                                    activityOpen = false
+                                    openTransfers()
+                                },
+                                onClose = { activityOpen = false },
+                            )
+                        }
+                        StatusBar(activityOpen = activityOpen, onActivityToggle = { activityOpen = !activityOpen })
                     }
-                    entry<Screen.PlayHistory>(metadata = detail) {
-                        PlayHistoryScreen(
-                            onBackClick = paneBack,
-                            onPlay = { playVideo(it, listOf(it)) },
-                            onLocate = { locateInDrive(it) },
-                        )
-                    }
-                    entry<Screen.MyShares>(metadata = detail) { MySharesScreen(onBackClick = paneBack) }
-                    entry<Screen.Trash>(metadata = detail) { TrashScreen(onBackClick = paneBack) }
-                    entry<Screen.Settings>(metadata = detail) { SettingsScreen(onBackClick = paneBack) }
-                    entry<Screen.VideoPlayer> { screen ->
-                        (videoPlayer as? VideoPlayerHost.InApp)?.content?.invoke(screen, ::popBack)
-                    }
-                },
-            )
+                }
+            }
             // 拖动网盘条目时指针旁的说明，盖在一切之上
             FileDragOverlay(fileDrag)
+            if (shortcutsOpen) ShortcutsDialog(shortcutModifier, onDismiss = { shortcutsOpen = false })
             if (paletteOpen) {
                 // 星标只在侧边栏出现时才取，面板开着时也要
                 LaunchedEffect(quickAccess) { quickAccess.watchStarred() }
@@ -835,6 +859,7 @@ private fun MainSidebar(
     quickAccess: QuickAccessState,
     folderStack: List<PikoPathBreadcrumb>,
     onQuickAccessOpened: () -> Unit,
+    onBrowseInFeed: ((PikoPathBreadcrumb) -> Unit)?,
 ) {
     Column(
         modifier = Modifier
@@ -859,6 +884,7 @@ private fun MainSidebar(
             currentStack = folderStack,
             onFilesTab = currentTab == MainTab.FILES,
             onOpened = onQuickAccessOpened,
+            onBrowseInFeed = onBrowseInFeed,
         )
     }
 }
