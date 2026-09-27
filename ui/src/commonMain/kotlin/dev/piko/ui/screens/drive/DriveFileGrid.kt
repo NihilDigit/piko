@@ -122,7 +122,7 @@ internal fun DriveFileGrid(
     val itemSpacing = gridItemSpacing(isPosterMode)
 
     Box(modifier = modifier.fillMaxSize()) {
-        // 刚秒传成功时滚到新条目。视图模式是异步读出来的偏好，首帧拿到的还是默认值，
+        // 有条目要定位时滚到它（刚秒传的、从别处「在网盘中显示」的）。视图模式是异步读出来的偏好，首帧拿到的还是默认值，
         // 所以它也要进 key，否则真值到达前的滚动会停在错误的位置。
         LaunchedEffect(items, highlightedIds, isPosterMode) {
             if (highlightedIds.isEmpty()) return@LaunchedEffect

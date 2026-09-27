@@ -207,8 +207,27 @@ class DriveScreenState(
         scope.launch {
             preferences.nameParsingFlow.collect { isNameParsing = it }
         }
+        // 目录一变就重新加载，不管是谁改的栈。只由这里负责：界面外的跳转（「在网盘中显示」）改栈时
+        // 网盘页可能一直开着、不会重建，让各导航入口自己调加载的话，这条路就漏掉了
         scope.launch {
-            driveRepo.folderStackFlow.collect { stack -> activeFolderId = stack.lastOrNull()?.id.orEmpty() }
+            driveRepo.folderStackFlow.collect { stack ->
+                val id = stack.lastOrNull()?.id.orEmpty()
+                if (id == activeFolderId) return@collect
+                activeFolderId = id
+                onFolderChanged()
+            }
+        }
+        // 同理，高亮请求随时可能来，不只在网盘页建出来的那一刻
+        scope.launch {
+            driveRepo.pendingHighlights.collect { ids -> if (ids.isNotEmpty()) highlightedFileIds = driveRepo.takePendingHighlight() }
+        }
+        // 要定位的条目若在收起的分区里、或被启发式折叠藏着，列表里就没有它可滚动：展开它所在的分区并显示全部
+        scope.launch {
+            snapshotFlow { highlightedFileIds to currentAnalysis }.collect { (ids, structure) ->
+                if (ids.isEmpty() || structure == null) return@collect
+                if (isFoldingActive && ids.any { it in structure.foldedIds }) setShowAllFiles(true)
+                structure.blocks.filter { block -> block.fileIds.any { it in ids } }.forEach { expandSection(it.id) }
+            }
         }
         // 解析放到后台：上千个文件的目录要算几秒。按内容缓存，重组、刷新与返回上级都不重算
         scope.launch {
@@ -238,8 +257,10 @@ class DriveScreenState(
      */
     fun restoreFolderStack(stack: List<PikoPathBreadcrumb>) {
         if (stack.isEmpty()) return
+        // 栈顶没变时栈的监听不会触发，这一次加载由这里补上
+        val unchanged = stack.last().id == activeFolderId
         driveRepo.updateFolderStack(stack)
-        onFolderChanged()
+        if (unchanged) onFolderChanged()
     }
 
     /**
@@ -306,28 +327,23 @@ class DriveScreenState(
         load()
     }
 
-    /** 进入目录。搜索态、选中态、防窥揭示都不该跨目录留存。 */
+    // 以下几个导航只改栈，重新加载与清掉搜索、选中这些由栈的监听统一做，见 init
+
     fun openFolder(id: String, name: String) {
         driveRepo.pushFolder(id, name)
-        onFolderChanged()
     }
 
-    fun navigateUp(): Boolean {
-        val popped = driveRepo.popFolder() != null
-        if (popped) onFolderChanged()
-        return popped
-    }
+    fun navigateUp(): Boolean = driveRepo.popFolder() != null
 
     fun navigateToBreadcrumb(index: Int) {
         driveRepo.popToBreadcrumb(index)
-        onFolderChanged()
     }
 
     fun navigateToFolder(breadcrumb: PikoPathBreadcrumb) {
         driveRepo.navigateToFolder(breadcrumb)
-        onFolderChanged()
     }
 
+    /** 换了目录：搜索态、选中态、防窥揭示都不该跨目录留存。 */
     private fun onFolderChanged() {
         searchQuery = ""
         stopGlobalSearch()

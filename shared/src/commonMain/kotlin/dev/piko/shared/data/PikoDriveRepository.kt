@@ -132,6 +132,9 @@ open class PikoDriveRepository(
     // 一次性的待办，由下一个 DriveScreenState 在初始化时取走
     private val pendingHighlight = MutableStateFlow<Set<String>>(emptySet())
 
+    /** 待高亮的条目。网盘页开着时也会有新请求进来，所以给一个可订阅的流，取用仍走 [takePendingHighlight]。 */
+    val pendingHighlights: StateFlow<Set<String>> = pendingHighlight.asStateFlow()
+
     fun requestHighlight(ids: Set<String>) {
         pendingHighlight.value = ids
     }
