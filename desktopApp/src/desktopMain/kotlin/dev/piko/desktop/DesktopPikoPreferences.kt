@@ -171,7 +171,8 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
     override val downloadDirPathFlow: Flow<String> = downloadPath.asStateFlow()
 
     override suspend fun setDownloadDirPath(path: String) {
-        settings.downloadDirectory = java.io.File(path)
+        // 空路径是「恢复默认」，与 Android 端同一约定
+        settings.setDownloadDirectory(path)
         settings.set(KEY_DOWNLOAD_DIR, path)
         downloadPath.value = path
     }
