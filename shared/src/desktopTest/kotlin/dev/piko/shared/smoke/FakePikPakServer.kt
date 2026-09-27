@@ -79,6 +79,12 @@ class FakePikPakServer {
     /** 秒传建出的文件数。只数带 hash 的建文件请求，建目录与离线任务不算。 */
     val instantCreates = AtomicInteger(0)
 
+    /**
+     * 云端其实没有内容的 gcid：秒传照样建出节点，但状态是 PENDING，等着上传。与线上一致，
+     * 节点确实留在目录里，调用方不删就一直在。
+     */
+    val unheldHashes: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
     /** 为真时密码登录被服务端拒绝。 */
     @Volatile var rejectSignIn = false
 
@@ -190,6 +196,10 @@ class FakePikPakServer {
             path.endsWith("/drive/v1/files") -> listFiles(request)
             path.contains("/drive/v1/files/") && request.method == HttpMethod.Patch ->
                 rename(request, path.substringAfterLast('/'))
+            path.contains("/drive/v1/files/") && request.method == HttpMethod.Delete -> {
+                removeSubtree(path.substringAfterLast('/'))
+                json("{}")
+            }
             path.contains("/drive/v1/files/") -> fileDetail(path.substringAfterLast('/'))
             else -> json("""{"error":"not_found"}""", HttpStatusCode.NotFound)
         }
@@ -303,7 +313,7 @@ class FakePikPakServer {
                     put("upload_type", "UPLOAD_TYPE_RESUMABLE")
                     put("file", buildJsonObject {
                         putNode(file)
-                        put("phase", "PHASE_TYPE_COMPLETE")
+                        put("phase", if (hash in unheldHashes) "PHASE_TYPE_PENDING" else "PHASE_TYPE_COMPLETE")
                     })
                 }.toString())
             }

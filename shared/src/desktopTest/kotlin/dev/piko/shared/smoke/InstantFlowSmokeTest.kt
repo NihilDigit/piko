@@ -204,6 +204,29 @@ class InstantFlowSmokeTest {
         assertEquals(setOf(magnet, unindexed), server.tasksSnapshot().map { it.url }.toSet())
     }
 
+    /**
+     * 防的是解析带着 gcid、云端却没有内容（别人还在上传）时直接报「保存失败」：秒传只建出等上传的占位，
+     * 单文件资源应改交离线任务，占位不能留在目录里，重试时也不该冒出「(1)」的副本。
+     */
+    @Test
+    fun `a single file whose content is not held falls back to offline without leaving a placeholder`() = smoke { scope ->
+        val server = FakePikPakServer()
+        server.indexMagnet(magnet, resourceListBody("The.Citadel.rar", listOf(Triple("The.Citadel.rar", 700L shl 20, "GCIDPENDING"))))
+        server.unheldHashes += "GCIDPENDING"
+        val rig = Rig(server, MemoryPreferences(), scope)
+        val state = rig.sheet(scope, magnet)
+        val outcome = scope.async(start = CoroutineStart.UNDISPATCHED) { state.outcomes.first() }
+
+        awaitUntil("解析完成且保存目标确定") { state.resolution != null && state.target != null }
+        assertEquals(SaveRoute.INSTANT, state.savePlan?.route)
+
+        state.saveSelection()
+        assertIs<InstantSaveOutcome.OfflineTaskCreated>(outcome.await())
+        assertEquals(magnet, server.tasksSnapshot().single().url)
+        assertEquals(emptyList(), server.children(state.target!!.id).map { it.name }, "秒传留下的占位要删掉")
+        assertNull(state.errorMessage, "改走离线成功了，不该再报保存失败")
+    }
+
     /** 防的是外部分享进来的链接云端没收录时面板卡死：输入框收起、没有可点的出口。 */
     @Test
     fun `an unindexed magnet reopens the input and can still be submitted offline`() = smoke { scope ->

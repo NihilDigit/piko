@@ -19,6 +19,7 @@ import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.PreviewTempFolder
 import dev.piko.shared.naming.MediaFileInput
+import io.github.nihildigit.pikpak.InstantContentUnavailableException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -460,8 +461,11 @@ class InstantSheetState private constructor(
             try {
                 val targetBread = target ?: resolveTarget()
                 when (plan.route) {
-                    SaveRoute.INSTANT -> instantSave(targetBread, toSave, keepStructure = false)
-                        .onSuccess { _outcomes.emit(InstantSaveOutcome.InstantSaved(it, targetBread)) }
+                    SaveRoute.INSTANT -> saveInstantOrOffline(targetBread, toSave).onSuccess { ids ->
+                        _outcomes.emit(
+                            if (ids != null) InstantSaveOutcome.InstantSaved(ids, targetBread) else InstantSaveOutcome.OfflineTaskCreated(targetBread),
+                        )
+                    }
                     SaveRoute.OFFLINE_PACK -> {
                         // 提交前再查一次：解析时查到的余量可能已经过时，而离线一旦提交就是整包落盘。
                         // 放不下时 savePlan 随 remainingBytes 变为 lacksSpace，保存栏换成空间不足的说明
@@ -534,7 +538,7 @@ class InstantSheetState private constructor(
             return when {
                 resolution == null -> submitWhole(target).map { null }
                 plan == null -> Result.failure(IllegalStateException("未勾选文件"))
-                plan.route == SaveRoute.INSTANT -> instantSave(target, toSave, keepStructure = false)
+                plan.route == SaveRoute.INSTANT -> saveInstantOrOffline(target, toSave)
                 else -> packSave(target, toSave).map { null }
             }
         } finally {
@@ -638,14 +642,37 @@ class InstantSheetState private constructor(
         target: PikoPathBreadcrumb,
         toSave: List<InstantFileItem>,
         keepStructure: Boolean,
+    ): Result<List<String>> = rawInstantSave(target, toSave, keepStructure).reportSaveFailure()
+
+    private suspend fun rawInstantSave(
+        target: PikoPathBreadcrumb,
+        toSave: List<InstantFileItem>,
+        keepStructure: Boolean,
     ): Result<List<String>> =
         instantRepo.instantSave(toSave, target.id, reuse = previewedIds.toMap(), keepStructure = keepStructure)
             .onSuccess {
                 // 移出 Piko-Temp 的不能再当作预览副本：下次预览会指向保存目录里的这份
                 toSave.forEach { item -> item.file.gcid?.let(previewedIds::remove) }
             }
-            .logFailure(TAG, "保存失败")
-            .onFailure { errorMessage = "保存失败：${it.message}" }
+
+    /**
+     * 秒传；单文件资源的内容云端其实还没有时改交离线任务。秒传成功返回新文件的 id，改走离线返回 null。
+     *
+     * 解析结果带着 gcid 不代表云端存着内容：它可能还在别人上传的途中（PENDING），秒传只建得出一个
+     * 等上传的占位，SDK 已把它删掉并抛出 InstantContentUnavailableException。只对单文件资源回退：
+     * 离线任务只收整条磁力，多文件资源里一部分秒传、一部分离线必然存出重复的文件。
+     */
+    private suspend fun saveInstantOrOffline(target: PikoPathBreadcrumb, toSave: List<InstantFileItem>): Result<List<String>?> {
+        val instant = rawInstantSave(target, toSave, keepStructure = false)
+        if (items.size == 1 && instant.exceptionOrNull() is InstantContentUnavailableException) {
+            PikoLog.i(TAG, "云端没有这个文件的内容，改交离线任务")
+            return submitWhole(target).map { null }
+        }
+        return instant.reportSaveFailure()
+    }
+
+    private fun <T> Result<T>.reportSaveFailure(): Result<T> =
+        logFailure(TAG, "保存失败").onFailure { errorMessage = "保存失败：${it.message}" }
 
     private suspend fun packSave(target: PikoPathBreadcrumb, toSave: List<InstantFileItem>): Result<Unit> {
         val allItems = items
