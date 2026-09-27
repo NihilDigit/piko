@@ -3,7 +3,11 @@
 #   patch: copy staged files over the install dir. Every file is copied next to its target
 #          first, then swapped in by rename; the replaced files are kept until all swaps
 #          succeed, so a failure rolls back to the old image instead of a half-updated one.
+#          Jars under app\ that the new version no longer has are then removed.
 #   msi:   msiexec /i. The MSI's own upgrade (remove then install) needs the app closed.
+# Either way the staged files are checked against the Checksums list first. The app verified
+# them on download, but nothing stops the staging dir from being rewritten between that check
+# and the app's exit; Bilby 0.15.1 once handed msiexec an installer re-downloaded halfway (1620).
 # Kept ASCII-only: Windows PowerShell 5.1 reads a script without BOM in the ANSI code page.
 param(
     [Parameter(Mandatory = $true)] [int] $ProcessId,
@@ -11,7 +15,9 @@ param(
     [Parameter(Mandatory = $true)] [ValidateSet('patch', 'msi')] [string] $Mode,
     [Parameter(Mandatory = $true)] [string] $Source,
     [Parameter(Mandatory = $true)] [string] $Executable,
-    [Parameter(Mandatory = $true)] [string] $LogFile
+    [Parameter(Mandatory = $true)] [string] $LogFile,
+    # "<sha256>  <path relative to the staging dir>" per line, written by DesktopAppUpdater.
+    [Parameter(Mandatory = $true)] [string] $Checksums
 )
 
 $ErrorActionPreference = 'Stop'
@@ -19,6 +25,31 @@ $ErrorActionPreference = 'Stop'
 function Write-Log([string] $message) {
     $line = '{0:yyyy-MM-dd HH:mm:ss.fff} {1}' -f (Get-Date), $message
     Add-Content -LiteralPath $LogFile -Value $line -Encoding UTF8
+}
+
+# Not Get-FileHash: it lives in a module that Windows PowerShell 5.1 autoloads through
+# PSModulePath, and a PSModulePath inherited from PowerShell 7 (Piko started from a pwsh
+# terminal) makes the cmdlet unknown.
+function Get-Sha256([string] $path) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $stream = [System.IO.File]::OpenRead($path)
+    try { return [System.BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '') }
+    finally { $stream.Dispose(); $sha.Dispose() }
+}
+
+function Assert-StagedFiles {
+    $stagingDir = Split-Path -Parent $Checksums
+    $lines = @(Get-Content -LiteralPath $Checksums | Where-Object { $_.Trim() })
+    if ($lines.Count -eq 0) { throw "empty checksum list $Checksums" }
+    foreach ($line in $lines) {
+        $expected, $relative = $line -split '\s+', 2
+        $path = Join-Path $stagingDir $relative
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "staged file missing: $relative" }
+        $actual = Get-Sha256 $path
+        # -ne compares strings case-insensitively; the list is lower-case hex, BitConverter upper.
+        if ($actual -ne $expected) { throw "staged file changed: $relative ($actual != $expected)" }
+    }
+    Write-Log "verified $($lines.Count) staged files"
 }
 
 function Wait-AppExit {
@@ -71,6 +102,33 @@ function Install-Patch {
         throw
     }
     foreach ($target in $replaced) { Remove-Item -LiteralPath "$target.old" -Force -ErrorAction SilentlyContinue }
+    Remove-StaleJars $entries
+}
+
+# Every jar under app\ is part of a patch (UpdateArtifactsTask.isPatch), so the staged jars are
+# the new version's complete set. A jar it no longer has (a module jar renamed by its content
+# hash, a dependency upgraded or dropped) is off its class path and not in the MSI's file table
+# either, so nothing else ever removes it: each patch would leave more jars behind, and
+# uninstalling would leave them too. Runs only after every swap succeeded.
+function Remove-StaleJars($entries) {
+    $appDir = Join-Path $InstallDir 'app'
+    $keep = @{}
+    foreach ($entry in $entries) {
+        if ([System.IO.Path]::GetExtension($entry.Target) -eq '.jar') { $keep[$entry.Target.ToLowerInvariant()] = $true }
+    }
+    # A patch without any jar would mark every installed jar stale; that is not a patch this
+    # script expects, so leave the directory alone.
+    if ($keep.Count -eq 0) { return }
+    # Compare the extension exactly: -Filter '*.jar' goes through the Win32 wildcard, which also
+    # matches names whose 8.3 short name ends in .JAR.
+    $installed = @(Get-ChildItem -LiteralPath $appDir -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension -eq '.jar' })
+    foreach ($jar in $installed) {
+        if (-not $keep.ContainsKey($jar.FullName.ToLowerInvariant())) {
+            Remove-Item -LiteralPath $jar.FullName -Force -ErrorAction SilentlyContinue
+            Write-Log "removed stale $($jar.FullName)"
+        }
+    }
 }
 
 function Install-Msi {
@@ -92,6 +150,8 @@ Write-Log 'app exited'
 
 $exitCode = 0
 try {
+    # After the exit, not before: until then the app can still write to the staging dir.
+    Assert-StagedFiles
     if ($Mode -eq 'patch') { Install-Patch } else { Install-Msi }
     Write-Log 'update applied'
 } catch {

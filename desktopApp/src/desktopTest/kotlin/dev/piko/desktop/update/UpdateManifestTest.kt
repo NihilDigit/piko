@@ -103,15 +103,20 @@ class UpdateManifestTest {
         ),
     )
 
-    private fun deltaZip(): File = root.resolve("delta.zip").apply {
+    private fun deltaZip(base: String? = null): File = root.resolve("delta.zip").apply {
         ZipOutputStream(outputStream()).use { out ->
             out.putNextEntry(ZipEntry("app/desktopApp-desktop.jar.zst"))
             out.write(fixture("delta-target.bin.zst"))
             out.closeEntry()
+            if (base != null) {
+                out.putNextEntry(ZipEntry("app/desktopApp-desktop.jar.base"))
+                out.write(base.toByteArray())
+                out.closeEntry()
+            }
         }
     }
 
-    // 夹具由 zstd CLI 的 --patch-from 生成，与 release.yml 相同；验证的是 CLI 压出的差分 zstd-jni 能否还原
+    // 夹具由 zstd CLI 的 --patch-from 生成，参数与 delta-updates.sh 相同；验证的是 CLI 压出的差分 zstd-jni 能否还原
     @Test
     fun deltaFromCliRestoresAgainstInstalledBase() {
         install.resolve("app").mkdirs()
@@ -123,13 +128,26 @@ class UpdateManifestTest {
         assertEquals(1_700_000_000_000L, jar.lastModified())
     }
 
+    // 模块 jar 每次构建换名，字典是 .base 指向的旧文件，不是新路径上的（本机没有）
+    @Test
+    fun renamedJarRestoresAgainstNamedBase() {
+        install.resolve("app").mkdirs()
+        install.resolve("app/desktopApp-desktop-aa.jar").writeBytes(fixture("delta-base.bin"))
+        val staged = root.resolve("staged")
+        applyDelta(deltaZip(base = "app/desktopApp-desktop-aa.jar"), deltaManifest, install, staged)
+        assertTrue(staged.resolve("app/desktopApp-desktop.jar").readBytes().contentEquals(deltaTarget))
+    }
+
     // 调用方据这个异常退回完整补丁包，换成别的异常就成了更新失败
     @Test
     fun deltaAgainstWrongBaseFailsAsChecksumMismatch() {
         install.resolve("app").mkdirs()
         install.resolve("app/desktopApp-desktop.jar").writeBytes(fixture("delta-target.bin"))
         assertFailsWith<ChecksumMismatchException> {
-            applyDelta(deltaZip(), deltaManifest, install, root.resolve("staged"))
+            applyDelta(deltaZip(), deltaManifest, install, root.resolve("a"))
+        }
+        assertFailsWith<ChecksumMismatchException> {
+            applyDelta(deltaZip(base = "app/desktopApp-desktop-gone.jar"), deltaManifest, install, root.resolve("b"))
         }
     }
 

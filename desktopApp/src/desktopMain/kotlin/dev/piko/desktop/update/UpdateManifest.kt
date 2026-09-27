@@ -74,27 +74,39 @@ internal fun extractPatch(zip: File, manifest: UpdateManifest, target: File) {
 
 /**
  * 差分包（Release 附件 piko-windows-<架构>-<版本>-from-<旧版本>.zip）里每个补丁文件是一个
- * `<路径>.zst`，由 CI 以旧版的同名文件为前缀字典（zstd --patch-from）压成。拿本机文件作字典还原，
- * 结果与 [extractPatch] 解出的逐字节相同，同样逐个对照清单、还原修改时间。
+ * `<路径>.zst`，由 CI 以旧版的对应文件为前缀字典（zstd --patch-from）压成，见
+ * .github/scripts/delta-updates.sh。拿本机文件作字典还原，结果与 [extractPatch] 解出的逐字节相同，
+ * 同样逐个对照清单、还原修改时间。
+ *
+ * 对应文件默认是同一路径。jar 名里带内容哈希，改过的模块 jar 每次构建都换名，另带一个
+ * `<路径>.base`，内容是旧版那个文件的路径。两边都没有的文件，CI 按普通 zstd 压缩，不需要字典。
  *
  * 本机文件不是差分所基于的那一版时，还原要么被 zstd 的帧校验拦下，要么摘要对不上，
  * 两者都抛 [ChecksumMismatchException]，由调用方改下完整的补丁包。
  */
 internal fun applyDelta(zip: File, manifest: UpdateManifest, installDir: File, target: File) {
     val root = target.canonicalFile
+    val installRoot = installDir.canonicalFile
     ZipFile(zip).use { archive ->
-        val names = archive.entries().asSequence().filterNot { it.isDirectory }.map { it.name }.toSet()
         val expected = manifest.files.filter { it.patch }
-        val foreign = names - expected.map { "${it.path}.zst" }.toSet()
+        val allowed = expected.flatMap { listOf("${it.path}.zst", "${it.path}.base") }.toSet()
+        val names = archive.entries().asSequence().filterNot { it.isDirectory }.map { it.name }.toSet()
+        val foreign = names - allowed
         if (foreign.isNotEmpty()) throw ChecksumMismatchException("差分包里有清单外的文件：${foreign.joinToString()}")
         for (spec in expected) {
             val entry = archive.getEntry("${spec.path}.zst") ?: throw ChecksumMismatchException("差分包缺少：${spec.path}")
             val out = root.resolve(spec.path).canonicalFile
             check(out.path.startsWith(root.path + File.separator)) { "路径越界：${spec.path}" }
-            val base = installDir.resolve(spec.path).takeIf { it.isFile }?.readBytes()
+            val renamedFrom = archive.getEntry("${spec.path}.base")
+                ?.let { base -> archive.getInputStream(base).use { it.readBytes().decodeToString().trim() } }
+            val basePath = renamedFrom ?: spec.path
+            val baseFile = installRoot.resolve(basePath).canonicalFile
+            check(baseFile.path.startsWith(installRoot.path + File.separator)) { "路径越界：$basePath" }
+            if (renamedFrom != null && !baseFile.isFile) throw ChecksumMismatchException("本机缺少差分的基准：$basePath")
+            val base = baseFile.takeIf { it.isFile }?.readBytes()
             val restored = try {
                 ZstdDecompressCtx().use { ctx ->
-                    // 旧版没有的文件，CI 按普通 zstd 压缩，不需要字典
+                    // 旧版没有对应文件时，CI 按普通 zstd 压缩，不需要字典
                     if (base != null) ctx.loadDict(base)
                     ctx.decompress(archive.getInputStream(entry).use { it.readBytes() }, Math.toIntExact(spec.size))
                 }
