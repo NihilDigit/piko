@@ -47,7 +47,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -125,6 +132,8 @@ internal class DriveItemCallbacks(
     val onToggleSelect: (FileStat) -> Unit,
     /** Shift 点选。 */
     val onExtendSelect: (FileStat) -> Unit,
+    /** 焦点进出这一项（含它里面的更多按钮），键盘操作据此知道作用于哪一项。 */
+    val onFocusChanged: (FileStat, Boolean) -> Unit,
     /** 右键菜单的内容，与操作面板相同。 */
     val contextActions: (FileStat) -> List<SheetAction>,
     val onToggleSection: (blockId: String) -> Unit,
@@ -149,6 +158,9 @@ internal fun DriveFileGrid(
     folderView: (FileStat) -> DriveFolderView?,
     callbacks: DriveItemCallbacks,
     bottomPadding: Dp,
+    /** 要把键盘焦点移到的那一项，移过去后回调 [onKeyboardFocusMoved]。 */
+    keyboardFocusTarget: String?,
+    onKeyboardFocusMoved: () -> Unit,
     header: @Composable () -> Unit,
     foldBanner: (@Composable () -> Unit)?,
     modifier: Modifier = Modifier,
@@ -232,6 +244,8 @@ internal fun DriveFileGrid(
                             isBlurred = isBlurred(file),
                             locationLabel = hitLocations[file.id],
                             callbacks = callbacks,
+                            requestFocus = file.id == keyboardFocusTarget,
+                            onFocusRequested = onKeyboardFocusMoved,
                             modifier = Modifier.animateItem(),
                         )
                     }
@@ -374,11 +388,35 @@ private fun DriveCell(
     isBlurred: Boolean,
     locationLabel: String?,
     callbacks: DriveItemCallbacks,
+    requestFocus: Boolean,
+    onFocusRequested: () -> Unit,
     modifier: Modifier,
 ) {
+    val focusRequester = remember { FocusRequester() }
+    if (requestFocus) {
+        LaunchedEffect(Unit) {
+            runCatching { focusRequester.requestFocus() }
+            onFocusRequested()
+        }
+    }
     ContextMenuArea(
         actions = { callbacks.contextActions(file) },
-        modifier = modifier.selectionClicks(
+        modifier = modifier
+            .focusRequester(focusRequester)
+            .onFocusChanged { callbacks.onFocusChanged(file, it.hasFocus) }
+            // 鼠标点到哪一项，键盘就从哪一项接着走，与文件管理器相同。条目自己的单击不取焦点；
+            // 触屏不取，否则点过的项留着一层焦点底色
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        if (event.type == PointerEventType.Press && event.changes.any { it.type == PointerType.Mouse }) {
+                            runCatching { focusRequester.requestFocus() }
+                        }
+                    }
+                }
+            }
+            .selectionClicks(
             onToggle = { callbacks.onToggleSelect(file) },
             onExtend = { callbacks.onExtendSelect(file) },
         ),

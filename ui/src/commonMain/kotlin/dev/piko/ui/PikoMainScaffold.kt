@@ -76,6 +76,7 @@ import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.components.SidePanelLayout
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.sidePanelFits
+import dev.piko.ui.components.trackInputModality
 import dev.piko.ui.navigation.MainTab
 import dev.piko.ui.navigation.Screen
 import dev.piko.ui.platform.LocalPikoPlatform
@@ -549,6 +550,7 @@ fun PikoMainScaffold(
     Box(
         modifier = modifier
             .fillMaxSize()
+            .trackInputModality()
             .focusRequester(shortcutFocus)
             .focusable()
             .onKeyEvent { event ->

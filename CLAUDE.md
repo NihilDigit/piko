@@ -107,6 +107,9 @@ expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以
 鼠标与键盘：条目右键弹出与操作面板相同的菜单（`ContextMenuArea`）。每页把一项的操作写成一个
 `actionsFor`，面板与菜单都读它（网盘页是 `fileActions`）；新列表照做。网盘页按住主修饰键点选是加选，
 Shift 点选是连选（`selectionClicks`，状态在 `DriveScreenState.toggleSelected` / `selectRange`）。
+网盘页的键盘：方向键在条目间走（焦点所在的一项由 `keyboardFocusRing` 描边，只在键盘导航时画，
+输入方式由根上的 `trackInputModality` 记），Enter 打开，菜单键或 Shift+F10 打开操作面板，
+Delete 与 F2 作用于焦点所在项或选中的几项；鼠标点到哪一项，键盘就从哪一项接着走。
 横排的内容挂 `verticalWheelScrollsRow`，鼠标的竖滚轮才滚得动它；
 图标按钮用 `TooltipIconButton`，快捷键写在提示里；Esc 经 `BackHandler` 触发返回；网盘页快捷键见
 `DriveScreen` 的 `handleShortcut`。新加的界面同时照顾触屏与鼠标：下拉刷新之类只有触屏能用的操作，

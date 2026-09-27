@@ -67,16 +67,19 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.backhandler.BackHandler
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -245,6 +248,10 @@ fun DriveScreen(
     var showNewFolderDialog by remember { mutableStateOf(false) }
     var newFolderName by remember { mutableStateOf("") }
     var renameTargetFile by remember { mutableStateOf<FileStat?>(null) }
+    // 键盘焦点所在的那一项，方向键、菜单键、Delete 与 F2 作用于它；以及要把焦点移过去的那一项
+    var focusedFile by remember { mutableStateOf<FileStat?>(null) }
+    var keyboardFocusTarget by remember { mutableStateOf<String?>(null) }
+    val focusManager = LocalFocusManager.current
     var renameNewName by remember { mutableStateOf("") }
     var segmentTargetFile by remember { mutableStateOf<FileStat?>(null) }
     var actionTargetFile by remember { mutableStateOf<FileStat?>(null) }
@@ -391,6 +398,13 @@ fun DriveScreen(
             onSelect = { file, selected -> state.setSelected(file.id, selected) },
             onToggleSelect = { state.toggleSelected(it.id) },
             onExtendSelect = { state.selectRange(it.id) },
+            onFocusChanged = { file, focused ->
+                if (focused) {
+                    focusedFile = file
+                } else if (focusedFile?.id == file.id) {
+                    focusedFile = null
+                }
+            },
             contextActions = { file ->
                 fileActions(
                     file = file,
@@ -445,6 +459,41 @@ fun DriveScreen(
     LaunchedEffect(Unit) { runCatching { shortcutFocus.requestFocus() } }
     fun handleShortcut(event: KeyEvent): Boolean {
         if (event.type != KeyEventType.KeyDown) return false
+        val arrow = when (event.key) {
+            Key.DirectionUp -> FocusDirection.Up
+            Key.DirectionDown -> FocusDirection.Down
+            Key.DirectionLeft -> FocusDirection.Left
+            Key.DirectionRight -> FocusDirection.Right
+            else -> null
+        }
+        // 方向键在条目间走：焦点已在某一项上就按版面找相邻的那一项；还没有时落到眼前第一项
+        if (arrow != null && !event.isAltPressed && !event.isShiftPressed && !platform.shortcutModifier.isPressed(event)) {
+            if (focusedFile != null) {
+                focusManager.moveFocus(arrow)
+            } else {
+                val visible = gridState.layoutInfo.visibleItemsInfo.map { it.key }.toSet()
+                keyboardFocusTarget = displayedFiles.firstOrNull { it.id in visible }?.id ?: return false
+            }
+            return true
+        }
+        val focused = focusedFile
+        // 焦点所在的那一项：菜单键或 Shift+F10 打开它的操作面板，与右键菜单同一组操作
+        if (focused != null && (event.key == Key.Menu || (event.isShiftPressed && event.key == Key.F10))) {
+            callbacks.onMore(focused)
+            return true
+        }
+        if (focused != null && !state.isSelectionMode) {
+            when {
+                event.key == Key.Delete || (platform.shortcutModifier.isPressed(event) && event.key == Key.Backspace) -> {
+                    state.moveToTrash(listOf(focused.id))
+                    return true
+                }
+                event.key == Key.F2 && !focused.isUploading -> {
+                    renameTargetFile = focused
+                    return true
+                }
+            }
+        }
         val primary = platform.shortcutModifier.isPressed(event)
         // Mac 键盘没有独立的 Delete 键，照 Finder 用 ⌘⌫
         val trashKey = event.key == Key.Delete || (primary && event.key == Key.Backspace)
@@ -715,6 +764,8 @@ fun DriveScreen(
                                 hitLocations = state.hitLocations,
                                 callbacks = callbacks,
                                 bottomPadding = bottomPadding,
+                                keyboardFocusTarget = keyboardFocusTarget,
+                                onKeyboardFocusMoved = { keyboardFocusTarget = null },
                                 header = {
                                     // 面包屑随列表滚走，而不是钉在顶栏下方：顶栏滚动后换了填充色，
                                     // 钉住的面包屑会在它下面留一条底色不同的带子
