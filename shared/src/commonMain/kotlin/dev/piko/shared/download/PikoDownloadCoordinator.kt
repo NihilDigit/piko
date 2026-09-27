@@ -7,6 +7,7 @@ import dev.piko.download.DownloadTask
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFile
+import dev.piko.shared.log.logRangeAttempt
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.data.runSuspendCatching
 import io.github.nihildigit.pikpak.FileStat
@@ -194,6 +195,7 @@ class PikoDownloadCoordinator(
             initialFileId = task.fileId,
             parentId = task.parentId,
             connectionBudget = concurrency,
+            onRangeAttempt = ::logRangeAttempt,
         )
         val progress = MutableStateFlow(task.downloadedBytes)
         try {

@@ -3,6 +3,7 @@ package dev.piko.shared.media
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logRangeAttempt
 import dev.piko.shared.media.proxy.PikPakByteSource
 import dev.piko.shared.media.proxy.PikoMediaProxy
 import dev.piko.shared.media.proxy.ProxyStream
@@ -12,6 +13,7 @@ import io.github.nihildigit.pikpak.PikPakClient
 import io.github.nihildigit.pikpak.PikPakFileHandle
 import io.github.nihildigit.pikpak.ResolvedVariant
 import io.github.nihildigit.pikpak.VariantPreference
+import io.github.nihildigit.pikpak.fileHandle
 import io.github.nihildigit.pikpak.getFile
 import io.github.nihildigit.pikpak.listPlayHistory
 import io.github.nihildigit.pikpak.reportPlay
@@ -194,7 +196,10 @@ class PikoMediaRepository(
             }
         }
 
-    /** 建 handle 与字节来源。没有 gcid 或拿不到大小时返回 null；取消照常抛出。 */
+    /**
+     * 建 handle 与字节来源。handle 的内容哈希、文件对象与第一条直链都取自 [detail]，第一次读不必再查。
+     * 没有 gcid 或拿不到大小时返回 null；取消照常抛出。
+     */
     private suspend fun openByteSource(
         client: PikPakClient,
         detail: FileDetail,
@@ -202,20 +207,16 @@ class PikoMediaRepository(
     ): PikPakByteSource? {
         // handle 在直链被拒时按 gcid 重建文件对象，没有 gcid 就失去了它存在的意义
         if (detail.hash.isBlank()) return null
-        val handle = PikPakFileHandle(
-            client = client,
-            gcid = detail.hash,
-            size = detail.sizeBytes,
-            name = detail.name,
-            initialFileId = detail.id,
+        // 原文件被删后 handle 会按 gcid 秒传重建一份，落在原来的目录（fileHandle 默认取详情里的 parentId）
+        val handle = client.fileHandle(
+            detail,
             mediaId = resolved.mediaId,
-            // 原文件被删后 handle 会按 gcid 秒传重建一份，不给目录就落到网盘根目录
-            parentId = detail.parentId,
+            coroutineContext = proxy.readerContext,
+            onRangeAttempt = ::logRangeAttempt,
         )
         return try {
-            // 原画的大小已知；转码流没有，streamSize 会发一次 1 字节探测
-            val size = resolved.sizeBytes ?: handle.streamSize()
-            PikPakByteSource(handle, size, proxy.readerContext)
+            // 原画的大小已知；转码流没有，本进程头一回会发一次 1 字节探测
+            PikPakByteSource(handle, handle.streamSize())
         } catch (e: CancellationException) {
             handle.close()
             throw e

@@ -1,5 +1,6 @@
 package dev.piko.shared.media.proxy
 
+import io.github.nihildigit.pikpak.StreamRole
 import io.ktor.network.selector.SelectorManager
 import io.ktor.network.sockets.ServerSocket
 import io.ktor.network.sockets.Socket
@@ -61,14 +62,15 @@ class PikoMediaProxy(
     /**
      * 登记一个媒体会话，返回播放器可读的 URL。关闭返回值即释放 reader 与 handle。
      *
-     * [fileName] 只用来给 URL 带上扩展名，FFmpeg 探测格式时会参考它。
+     * [fileName] 只用来给 URL 带上扩展名，FFmpeg 探测格式时会参考它。[role] 是会话的初始角色，
+     * 为之后预热的会话以后台建起，第一个 reader 就不会与正在放的抢连接。
      */
-    suspend fun register(source: ProxyByteSource, fileName: String?): ProxyStream {
+    suspend fun register(source: ProxyByteSource, fileName: String?, role: StreamRole = StreamRole.FOREGROUND): ProxyStream {
         val port = ensureStarted()
         val token = newToken()
-        val session = ProxySession(source)
+        val session = ProxySession(source).also { it.role = role }
         sessionsLock.withLock { sessions[token] = session }
-        return ProxyStream("http://$LOOPBACK:$port/$token/${pathNameOf(fileName)}") {
+        return ProxyStream(url = "http://$LOOPBACK:$port/$token/${pathNameOf(fileName)}", session = session) {
             session.close()
             scope.launch {
                 sessionsLock.withLock { if (sessions[token] === session) sessions.remove(token) }
@@ -194,10 +196,35 @@ class PikoMediaProxy(
 /** 代理里的一个可播放 URL。关闭后同一 URL 回 404。 */
 class ProxyStream internal constructor(
     val url: String,
+    private val session: ProxySession,
     private val onClose: () -> Unit,
 ) : AutoCloseable {
     @Volatile
     private var closed = false
+
+    /** 文件的字节数。 */
+    val size: Long get() = session.size
+
+    /** 前台或后台，见 [ProxySession.role]。 */
+    var role: StreamRole
+        get() = session.role
+        set(value) {
+            session.role = value
+        }
+
+    /** 预读深度，见 [ProxySession.readAheadLimit]。 */
+    var readAheadLimit: Long?
+        get() = session.readAheadLimit
+        set(value) {
+            session.readAheadLimit = value
+        }
+
+    /**
+     * 先把 [ranges] 取进这个会话的缓存，播放器之后读到时直接命中，不再等 CDN。
+     * 不占读位置：播放器正在读别处也照样进行，互不取消。全部到手才返回。
+     * [role] 缺省为会话的角色；为之后要放的段取开头时可以单独以前台身份取，会话本身仍是后台。
+     */
+    suspend fun prefetch(ranges: List<LongRange>, role: StreamRole = this.role) = session.prefetch(ranges, role)
 
     override fun close() {
         if (closed) return
