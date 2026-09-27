@@ -2,6 +2,7 @@ package dev.piko.desktop
 
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.auth.QuotaSnapshot
+import dev.piko.data.auth.SidePanelPrefs
 import dev.piko.data.auth.UserSession
 import dev.piko.shared.net.ProxySetting
 import kotlinx.coroutines.flow.Flow
@@ -26,6 +27,12 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
     // 旧版只存了是否海报墙，没有新键时由它换算
     private val driveViewMode = MutableStateFlow(
         settings.get(KEY_DRIVE_VIEW_MODE).ifEmpty { if (settings.get(KEY_GRID_VIEW, "false").toBoolean()) "POSTER" else "LIST" },
+    )
+    private val clipPanel = MutableStateFlow(
+        SidePanelPrefs(
+            open = settings.get(KEY_CLIP_PANEL_OPEN, "false").toBoolean(),
+            widthDp = settings.get(KEY_CLIP_PANEL_WIDTH).toFloatOrNull(),
+        ),
     )
     private val acceleration = MutableStateFlow(settings.get(KEY_ACCELERATION, "true").toBoolean())
     private val connections = MutableStateFlow(settings.get(KEY_CONNECTIONS, "8").toIntOrNull() ?: 8)
@@ -126,6 +133,16 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
     override suspend fun setDriveViewMode(mode: String) {
         settings.set(KEY_DRIVE_VIEW_MODE, mode)
         driveViewMode.value = mode
+    }
+
+    override val clipPanelFlow: Flow<SidePanelPrefs> = clipPanel.asStateFlow()
+    override suspend fun setClipPanelOpen(open: Boolean) {
+        settings.set(KEY_CLIP_PANEL_OPEN, open.toString())
+        clipPanel.value = clipPanel.value.copy(open = open)
+    }
+    override suspend fun setClipPanelWidth(widthDp: Float) {
+        settings.set(KEY_CLIP_PANEL_WIDTH, widthDp.toString())
+        clipPanel.value = clipPanel.value.copy(widthDp = widthDp)
     }
 
     override val sessionFlow: Flow<UserSession> = session.asStateFlow()
@@ -239,6 +256,8 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         const val KEY_NAME_PARSING = "ui.nameParsing"
         const val KEY_GRID_VIEW = "ui.gridView"
         const val KEY_DRIVE_VIEW_MODE = "ui.driveViewMode"
+        const val KEY_CLIP_PANEL_OPEN = "ui.clipPanel.open"
+        const val KEY_CLIP_PANEL_WIDTH = "ui.clipPanel.width"
         // 沿用 Fluent 版设置页的键，旧值是小写的 system、light、dark，解析时不分大小写
         const val KEY_THEME_MODE = "themeMode"
         const val KEY_THEME_SEED = "ui.themeSeed"

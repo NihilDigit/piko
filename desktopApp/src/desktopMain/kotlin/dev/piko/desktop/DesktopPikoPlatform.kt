@@ -202,10 +202,12 @@ class DesktopPikoPlatform(
 
     override val videoPreview: VideoPreviewSupport = object : VideoPreviewSupport {
         @Composable
-        override fun rememberPreviewBackend(): PreviewBackend {
+        override fun rememberPreviewBackend(keyframeStart: Boolean): PreviewBackend {
             val scope = rememberCoroutineScope()
             val player = rememberMediampPlayer()
-            val backend = remember(player) { MediampPreviewBackend(MediampPlaybackBackend(player, scope)) }
+            val backend = remember(player) {
+                MediampPreviewBackend(MediampPlaybackBackend(player, scope, preview = true, keyframeStart = keyframeStart))
+            }
             DisposableEffect(player) { onDispose { player.close() } }
             return backend
         }

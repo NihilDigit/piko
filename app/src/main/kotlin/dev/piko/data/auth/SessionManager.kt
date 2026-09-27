@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -97,6 +98,8 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val NAME_PARSING_ENABLED = booleanPreferencesKey("name_parsing_enabled")
         val WATERFALL_VIEW_ENABLED = booleanPreferencesKey("waterfall_view_enabled")
         val DRIVE_VIEW_MODE = stringPreferencesKey("drive_view_mode")
+        val CLIP_PANEL_OPEN = booleanPreferencesKey("clip_panel_open")
+        val CLIP_PANEL_WIDTH = floatPreferencesKey("clip_panel_width")
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val THEME_SEED = stringPreferencesKey("theme_seed")
         val QUOTA_USAGE_BYTES = longPreferencesKey("quota_usage_bytes")
@@ -231,6 +234,25 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun setDriveViewMode(mode: String) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.DRIVE_VIEW_MODE] = mode
+        }
+    }
+
+    override val clipPanelFlow: Flow<SidePanelPrefs> = preference { preferences ->
+        SidePanelPrefs(
+            open = preferences[PreferencesKeys.CLIP_PANEL_OPEN] ?: false,
+            widthDp = preferences[PreferencesKeys.CLIP_PANEL_WIDTH],
+        )
+    }
+
+    override suspend fun setClipPanelOpen(open: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.CLIP_PANEL_OPEN] = open
+        }
+    }
+
+    override suspend fun setClipPanelWidth(widthDp: Float) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.CLIP_PANEL_WIDTH] = widthDp
         }
     }
 

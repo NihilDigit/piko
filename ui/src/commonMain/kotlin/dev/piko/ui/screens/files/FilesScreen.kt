@@ -12,13 +12,22 @@ fun FilesScreen(
     /** 见 DriveScreen 的同名参数。 */
     scrollToTopRequests: Int = 0,
     onOpenTransfers: () -> Unit = {},
+    /** 见 DriveScreen 的同名参数。 */
+    feedShown: Boolean = false,
+    onFeedShownChange: ((Boolean) -> Unit)? = null,
+    /** 把网盘页包进去的外框，宽窗口里由它在右侧放信息流侧栏。 */
+    feedFrame: @Composable (content: @Composable () -> Unit) -> Unit = { it() },
     modifier: Modifier = Modifier,
 ) {
-    DriveScreen(
-        onNavigateToFolder = onNavigateToFolder,
-        onNavigateToVideoPlayer = onNavigateToVideoPlayer,
-        scrollToTopRequests = scrollToTopRequests,
-        onOpenTransfers = onOpenTransfers,
-        modifier = modifier,
-    )
+    feedFrame {
+        DriveScreen(
+            onNavigateToFolder = onNavigateToFolder,
+            onNavigateToVideoPlayer = onNavigateToVideoPlayer,
+            scrollToTopRequests = scrollToTopRequests,
+            onOpenTransfers = onOpenTransfers,
+            feedShown = feedShown,
+            onFeedShownChange = onFeedShownChange,
+            modifier = modifier,
+        )
+    }
 }

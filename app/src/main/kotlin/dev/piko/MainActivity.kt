@@ -72,6 +72,7 @@ class MainActivity : ComponentActivity() {
                 initialFileId = screen.fileId,
                 initialFileName = screen.fileName,
                 initialLocalPath = screen.localPath,
+                initialStartMillis = screen.startMillis,
                 onBackClick = onClose,
             )
         }

@@ -17,6 +17,8 @@ import dev.piko.shared.media.player.PlayerAspectRatio
 import dev.piko.shared.media.player.mpvSubtitleAddCommands
 import dev.piko.shared.media.player.readMpvTracks
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -48,6 +50,9 @@ import java.io.File
 internal class MediampPlaybackBackend(
     val player: MediampPlayer,
     scope: CoroutineScope,
+    preview: Boolean = false,
+    // 见 VideoPreviewSupport.rememberPreviewBackend
+    keyframeStart: Boolean = false,
 ) : PlaybackBackend {
     private val bufferingFeature = player.features[Buffering.Key]
     private val speedFeature = player.features[PlaybackSpeed.Key]
@@ -110,6 +115,16 @@ internal class MediampPlaybackBackend(
         // 繁体字在里面有，「这」「们」这类简体字没有，回退失败后落到 sub-font。默认的 sans-serif 也不含中文，
         // 简体字幕就缺字。换成雅黑，简繁都全，Windows 各语言版都自带
         mpv?.setPropertyString("sub-font", SUBTITLE_FALLBACK_FONT)
+        if (preview) {
+            // MediaMP 让 mpv 往后囤 64 MiB，暂停时也照读不误。随机片段同时开着三个预览播放器，
+            // 各自以前台身份往后读几百 MB，把账号的连接占满，其余请求首字节要等十几秒
+            mpv?.setPropertyString("demuxer-max-bytes", "${8 * MIB}")
+            mpv?.setPropertyString("demuxer-max-back-bytes", "${4 * MIB}")
+            // 字节上限对低码率的流不够：720P 转码约 120 KB/s，8 MiB 是一分多钟，比随机片段的一整段还长。
+            // 预渲染的两个播放器暂停着也会读满它，把下一段的预取挤慢，所以再按时长卡一道
+            mpv?.setPropertyString("cache-secs", "$PREVIEW_CACHE_SECONDS")
+        }
+        if (keyframeStart) mpv?.setPropertyString("hr-seek", "no")
         scope.launch { player.currentPositionMillis.collect { positionMillis = it } }
         metadataFeature?.let { feature ->
             // MediaMP 自己读的轨道丢了音轨语言与外挂标志，只拿它的变化当通知，列表从 mpv 重读
@@ -174,7 +189,15 @@ internal class MediampPlaybackBackend(
         }
         awaitingReady = true
         pendingSubtitles = subtitles
-        player.setMediaData(UriMediaData(uri), playWhenReady = playWhenReady, startPositionMillis = startMillis)
+        try {
+            player.setMediaData(UriMediaData(uri), playWhenReady = playWhenReady, startPositionMillis = startMillis)
+        } catch (e: Exception) {
+            // 打开途中被取消时，MediaMP 让 mpv 卸载半开的文件，mpv 以加载失败收场，MediaMP 再把它当
+            // PlaybackException 抛出来，而不是取消。取消中的协程以非取消异常结束会报给 UI 线程的异常处理，
+            // 整个应用就崩了；随机片段换装播放器时常有这种取消
+            currentCoroutineContext().ensureActive()
+            throw e
+        }
     }
 
     override fun selectAudioTrack(id: String) {
@@ -271,6 +294,11 @@ private fun mpvHandleOf(player: MediampPlayer): MPVHandle? = runCatching {
 
 // macOS 的 libass 经 CoreText 找字体，苹方同样简繁都全，系统自带
 private val SUBTITLE_FALLBACK_FONT = if (isMacOs) "PingFang SC" else "Microsoft YaHei"
+
+private const val MIB = 1024 * 1024
+
+/** 预览往后缓冲的秒数，见 init。 */
+private const val PREVIEW_CACHE_SECONDS = 8
 
 /** 句柄取不到时退回 MediaMP 读的轨道：音轨没有语言，也分不出外挂。 */
 private fun snapshotOf(feature: MediaMetadata, audio: List<AudioTrack>, subtitles: List<SubtitleTrack>) = MpvTrackSnapshot(

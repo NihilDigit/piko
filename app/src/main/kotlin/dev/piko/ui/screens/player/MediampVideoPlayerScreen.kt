@@ -46,6 +46,7 @@ fun MediampVideoPlayerScreen(
     initialFileId: String,
     initialFileName: String,
     initialLocalPath: String? = null,
+    initialStartMillis: Long? = null,
     onBackClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -65,6 +66,7 @@ fun MediampVideoPlayerScreen(
             initialFileId = initialFileId,
             initialFileName = initialFileName,
             initialLocalPath = initialLocalPath,
+            initialStartMillis = initialStartMillis,
             resolveLocalPath = { fileId, hint ->
                 // SAF 目录里的下载是 content: URI，File 判断不了存在与否，交给后端去打开
                 hint?.takeIf { it.startsWith("content:") || File(it).exists() }

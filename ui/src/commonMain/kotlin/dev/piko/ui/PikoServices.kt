@@ -14,6 +14,7 @@ import dev.piko.shared.data.TaskRepository
 import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.state.ArchiveExtractSession
+import dev.piko.shared.state.ClipFeedSession
 import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.DuplicateSession
 import dev.piko.shared.state.InstantSaveRecords
@@ -92,6 +93,11 @@ class PikoServices(
             preferences = preferences,
             scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
         )
+    }
+
+    // 主线程且与进程同寿：打开完整播放器时随机片段页可能被销毁，队列要留着回来接着看
+    val clipFeedSession: ClipFeedSession by lazy {
+        ClipFeedSession(driveRepository, mediaRepository, cacheStore, CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate))
     }
 
     init {

@@ -38,12 +38,13 @@ import kotlin.math.abs
  * 画面挂接由 [MpvVideoSurface] 驱动：Surface 在，vo 才开；App 进后台 Surface 被销毁时
  * 先把 vo 换成 null 再解绑，回来后重新挂上并恢复 vo，与 mpv-android 的做法一致。
  *
- * [preview] 为 true 时是段落预览：不出声、缓存小。[headless] 为 true 时 vo=null，
- * 不需要 Surface 就开播，只解码不出画面，供没有可靠 GPU 的环境（模拟器冒烟）使用。
+ * [preview] 为 true 时是段落预览与随机片段：不带字幕、缓存小。[keyframeStart] 见 VideoPreviewSupport。
+ * [headless] 为 true 时 vo=null，不需要 Surface 就开播，只解码不出画面，供没有可靠 GPU 的环境（模拟器冒烟）使用。
  */
 internal class MpvPlaybackBackend(
     private val context: Context,
     private val preview: Boolean = false,
+    private val keyframeStart: Boolean = false,
     private val headless: Boolean = false,
 ) : PlaybackBackend, MPVLib.EventObserver, MPVLib.LogObserver {
 
@@ -141,8 +142,11 @@ internal class MpvPlaybackBackend(
         // 代理背后的 SDK reader 已经预读 32 MiB，mpv 这层不必再囤太多
         mpv.setOptionString("cache", "yes")
         if (preview) {
-            mpv.setOptionString("aid", "no")
             mpv.setOptionString("sid", "no")
+            if (keyframeStart) mpv.setOptionString("hr-seek", "no")
+            // 字节上限对低码率的流不够：720P 转码约 120 KB/s，8 MiB 是一分多钟。预渲染的播放器暂停着
+            // 也会读满它，把下一段的预取挤慢，所以再按时长卡一道
+            mpv.setOptionString("cache-secs", "8")
             mpv.setOptionString("demuxer-max-bytes", "${8 * MIB}")
             mpv.setOptionString("demuxer-max-back-bytes", "${4 * MIB}")
         } else {

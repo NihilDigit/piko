@@ -24,7 +24,7 @@ interface FramelessWindow {
     fun setAlwaysOnTop(onTop: Boolean)
 }
 
-/** 桌面端的播放窗口提供；Android 与带标题栏的窗口为 null。 */
+/** 桌面端的播放窗口与随机片段窗口提供；Android 与带标题栏的窗口为 null。 */
 val LocalFramelessWindow = staticCompositionLocalOf<FramelessWindow?> { null }
 
 /**

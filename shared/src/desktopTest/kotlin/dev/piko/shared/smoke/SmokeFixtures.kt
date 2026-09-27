@@ -2,6 +2,7 @@ package dev.piko.shared.smoke
 
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.auth.QuotaSnapshot
+import dev.piko.data.auth.SidePanelPrefs
 import dev.piko.shared.net.ProxySetting
 import dev.piko.data.auth.UserSession
 import dev.piko.shared.data.PikoCredentials
@@ -47,6 +48,9 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun setThemeSeed(seed: String?) = Unit
     override val driveViewModeFlow: Flow<String> = MutableStateFlow("LIST")
     override suspend fun setDriveViewMode(mode: String) = Unit
+    override val clipPanelFlow: Flow<SidePanelPrefs> = MutableStateFlow(SidePanelPrefs(open = false, widthDp = null))
+    override suspend fun setClipPanelOpen(open: Boolean) = Unit
+    override suspend fun setClipPanelWidth(widthDp: Float) = Unit
     override val sessionFlow: Flow<UserSession> = MutableStateFlow(UserSession())
     override suspend fun saveSession(token: String, refreshToken: String, userId: String, username: String, avatarUrl: String) = Unit
     override suspend fun saveProfile(username: String, avatarUrl: String, email: String) = Unit

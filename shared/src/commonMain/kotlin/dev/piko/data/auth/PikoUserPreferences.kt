@@ -19,6 +19,9 @@ data class UserSession(
 /** 上次取回的配额。用于进页面时先出数字，避免等网络期间卡片整块缺席。 */
 data class QuotaSnapshot(val usageBytes: Long, val limitBytes: Long)
 
+/** 侧栏的开关与宽度。[widthDp] 为 null 表示从未拖过，取调用方的默认宽度。 */
+data class SidePanelPrefs(val open: Boolean, val widthDp: Float?)
+
 interface PikoUserPreferences {
     suspend fun savePlaybackPosition(fileId: String, positionMs: Long)
     suspend fun getPlaybackPosition(fileId: String): Long
@@ -66,6 +69,14 @@ interface PikoUserPreferences {
      */
     val driveViewModeFlow: Flow<String>
     suspend fun setDriveViewMode(mode: String)
+
+    /**
+     * 网盘页的信息流：上次是否开着、宽窗口里侧栏拖到的宽度。开关不改 [driveViewModeFlow]，
+     * 关掉信息流即回到原来的列表视图。
+     */
+    val clipPanelFlow: Flow<SidePanelPrefs>
+    suspend fun setClipPanelOpen(open: Boolean)
+    suspend fun setClipPanelWidth(widthDp: Float)
     val sessionFlow: Flow<UserSession>
     suspend fun saveSession(token: String, refreshToken: String = "", userId: String = "", username: String = "", avatarUrl: String = "")
 

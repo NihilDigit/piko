@@ -155,11 +155,16 @@ fun interface ExternalVideoPlayer {
     suspend fun open(url: String, fileName: String): Boolean
 }
 
-/** 片段下载面板里的画面预览：一个不出声、不自动播放的播放后端，加上它的画面表面。 */
+/** 片段下载面板与随机片段里的画面预览：一个缓存小、不自动播放的播放后端，加上它的画面表面。 */
 interface VideoPreviewSupport {
-    /** 返回的后端由调用方在离开组合时 release。 */
+    /**
+     * 返回的后端由调用方在离开组合时 release。
+     *
+     * [keyframeStart] 为 true 时从起点之前最近的关键帧起播，不精确定位：精确定位要从关键帧一路解码到起点，
+     * 多读多解几秒。随机片段不在乎从哪一帧起；片段下载要按所选时刻预览，保持精确。
+     */
     @Composable
-    fun rememberPreviewBackend(): PreviewBackend
+    fun rememberPreviewBackend(keyframeStart: Boolean = false): PreviewBackend
 
     @Composable
     fun Surface(backend: PreviewBackend, modifier: Modifier)

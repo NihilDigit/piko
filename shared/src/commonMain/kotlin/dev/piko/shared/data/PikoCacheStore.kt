@@ -17,6 +17,9 @@ interface PikoCacheStore {
     suspend fun read(key: String): String?
 
     suspend fun write(key: String, value: String)
+
+    /** 删掉 [key]。默认写成空串，读回来解析失败也就当没有了。 */
+    suspend fun delete(key: String) = write(key, "")
 }
 
 /**
@@ -39,6 +42,12 @@ class FilePikoCacheStore(directory: String) : PikoCacheStore {
                 SystemFileSystem.sink(temp).buffered().use { it.writeString(value) }
                 SystemFileSystem.atomicMove(temp, Path(directory, key))
             }
+        }
+    }
+
+    override suspend fun delete(key: String) {
+        withContext(Dispatchers.IO) {
+            runCatching { SystemFileSystem.delete(Path(directory, key), mustExist = false) }
         }
     }
 }

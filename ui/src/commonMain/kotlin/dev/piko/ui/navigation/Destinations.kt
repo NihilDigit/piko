@@ -47,6 +47,8 @@ sealed interface Screen : NavKey {
         val fileId: String,
         val fileName: String,
         val localPath: String? = null,
+        /** 从这里开播，不查续播记录。 */
+        val startMillis: Long? = null,
     ) : Screen
 }
 

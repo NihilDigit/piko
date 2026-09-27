@@ -160,6 +160,12 @@ fun DriveScreen(
     scrollToTopRequests: Int = 0,
     /** 下载或离线任务已提交，切到传输页看进度。上传由主界面直接订阅调度器，不经这里。 */
     onOpenTransfers: () -> Unit = {},
+    /**
+     * 信息流开着没有，以及视图切换里信息流一项的回调，为 null 时不给这一项。信息流在哪里呈现、
+     * 播哪个文件夹由主界面决定，网盘页只管开关。
+     */
+    feedShown: Boolean = false,
+    onFeedShownChange: ((Boolean) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val driveRepo = LocalPikoServices.current.driveRepository
@@ -720,6 +726,9 @@ fun DriveScreen(
                                                 onViewModeChange = { mode ->
                                                     scope.launch { sessionManager.setDriveViewMode(mode.name) }
                                                 },
+                                                feedShown = feedShown,
+                                                // 片段靠平台的预览播放后端放，没有它的平台不给入口
+                                                onFeedShownChange = onFeedShownChange.takeIf { platform.videoPreview != null },
                                             )
                                         }
                                     }

@@ -82,6 +82,8 @@ fun SegmentDownloadSheet(
     file: FileStat,
     onDismiss: () -> Unit,
     onConfirmDownload: (startByte: Long, lengthBytes: Long, timeLabel: String, startMs: Long, endMs: Long, streamUrl: String?) -> Unit,
+    /** 初始区间，随机片段里「下载这一段」带过来；为 null 时从头起一分钟。 */
+    initialRange: LongRange? = null,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val mediaRepo = LocalPikoServices.current.mediaRepository
@@ -100,8 +102,8 @@ fun SegmentDownloadSheet(
             val duration = info.durationSeconds * 1000L
             if (duration > 0) {
                 totalDurationMs = duration
-                startPosMs = 0L
-                endPosMs = minOf(duration, 60_000L)
+                startPosMs = initialRange?.first?.coerceIn(0L, duration - MIN_CLIP_MS) ?: 0L
+                endPosMs = initialRange?.last?.coerceIn(startPosMs + MIN_CLIP_MS, duration) ?: minOf(duration, 60_000L)
             }
         }
         isLoading = false

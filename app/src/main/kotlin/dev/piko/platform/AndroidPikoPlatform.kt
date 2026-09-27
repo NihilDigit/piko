@@ -304,11 +304,11 @@ class AndroidPikoPlatform(
         }
     }
 
-    /** 片段预览用段落模式的 libmpv：不出声、缓存小；画面走 TextureView，能随面板圆角裁切。 */
+    /** 片段预览用段落模式的 libmpv：缓存小；画面走 TextureView，能随面板圆角裁切。 */
     private inner class MpvPreviewSupport : VideoPreviewSupport {
         @Composable
-        override fun rememberPreviewBackend(): PreviewBackend =
-            remember { MpvPreviewBackend(MpvPlaybackBackend(context, preview = true)) }
+        override fun rememberPreviewBackend(keyframeStart: Boolean): PreviewBackend =
+            remember { MpvPreviewBackend(MpvPlaybackBackend(context, preview = true, keyframeStart = keyframeStart)) }
 
         @Composable
         override fun Surface(backend: PreviewBackend, modifier: Modifier) {

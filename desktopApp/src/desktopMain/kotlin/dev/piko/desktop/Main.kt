@@ -7,12 +7,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.painter.BitmapPainter
@@ -22,6 +24,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.Tray
+import dev.piko.desktop.ui.clips.ClipFeedWindow
 import dev.piko.desktop.ui.player.VideoPlayerWindow
 import dev.piko.desktop.update.WindowsInstaller
 import dev.piko.desktop.winrt.WinRTSupport
@@ -40,10 +43,12 @@ import dev.piko.shared.net.PikoProxySelector
 import dev.piko.shared.upload.UploadTask
 import dev.piko.ui.PikoApp
 import dev.piko.ui.PikoServices
+import dev.piko.ui.ClipFeedLinks
 import dev.piko.ui.VideoPlayerHost
 import dev.piko.ui.VideoPlayerRequest
 import dev.piko.ui.anyActiveFor
 import dev.piko.ui.workNotices
+import dev.piko.ui.components.LocalHorizontalResizeCursor
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.theme.PikoTheme
 import dev.piko.ui.theme.appearanceFlow
@@ -141,7 +146,22 @@ fun main(args: Array<String>) {
         }
         val appearance by appearanceFlow.collectAsState(initialAppearance)
         val players = remember { mutableStateListOf<VideoPlayerRequest>() }
-        val videoPlayer = remember { VideoPlayerHost.Detached { players += it } }
+        // 信息流从网盘页的侧栏弹出，只开一个窗口；已开着时再弹一次是把它调到前台。
+        // 开着的这段时间侧栏只留占位，关窗即回到侧栏，见 VideoPlayerHost.Detached.isClipFeedOpen
+        var clipFeed by remember { mutableStateOf<ClipFeedLinks?>(null) }
+        var clipFeedRaises by remember { mutableIntStateOf(0) }
+        var mainWindow by remember { mutableStateOf<java.awt.Frame?>(null) }
+        val videoPlayer = remember {
+            VideoPlayerHost.Detached(
+                open = { players += it },
+                openClipFeed = {
+                    clipFeed = it
+                    clipFeedRaises++
+                },
+                isClipFeedOpen = { clipFeed != null },
+                closeClipFeed = { clipFeed = null },
+            )
+        }
         val downloads by services.downloadManager.tasks.collectAsState()
         val uploads by services.uploadManager.tasks.collectAsState()
         val account = services.clientManager.currentClient.collectAsState().value?.account
@@ -201,7 +221,10 @@ fun main(args: Array<String>) {
             state = mainWindowState,
         ) {
             // 再窄就放不下 compact 布局的底部导航与列表了；宽度下限等于一台窄手机
-            LaunchedEffect(Unit) { window.minimumSize = Dimension(360, 560) }
+            LaunchedEffect(Unit) {
+                window.minimumSize = Dimension(360, 560)
+                mainWindow = window
+            }
             val focused = LocalWindowInfo.current.isWindowFocused
             SideEffect { isMainWindowFocused = focused }
             TitleBarThemeEffect(window, appearance.isDark())
@@ -214,7 +237,10 @@ fun main(args: Array<String>) {
                 }
             }
             // 标题栏在 PikoApp 之外，主题要自己再套一层；PikoTheme 读平台字体，平台也要先提供
-            CompositionLocalProvider(LocalPikoPlatform provides platform) {
+            CompositionLocalProvider(
+                LocalPikoPlatform provides platform,
+                LocalHorizontalResizeCursor provides HorizontalResizeCursor,
+            ) {
                 PikoTheme(appearance = appearance) {
                     WindowFrame(
                         title = "Piko",
@@ -243,6 +269,27 @@ fun main(args: Array<String>) {
             }
         }
 
+        clipFeed?.let { links ->
+            ClipFeedWindow(
+                links = ClipFeedLinks(
+                    playFull = links.playFull,
+                    // 位置在主窗口里，主窗口可能被片段窗口盖着或藏在托盘
+                    locate = { file ->
+                        isInBackground = false
+                        links.locate(file)
+                        mainWindow?.let(::bringToFront)
+                    },
+                ),
+                raise = clipFeedRaises,
+                services = services,
+                platform = platform,
+                settings = settings,
+                appearance = appearance,
+                icon = appIcon,
+                onClose = { clipFeed = null },
+            )
+        }
+
         // 每个播放请求一个独立窗口，可以边播边浏览网盘
         players.forEach { request ->
             key(request) {
@@ -259,6 +306,9 @@ fun main(args: Array<String>) {
         }
     }
 }
+
+// 侧栏拖宽处的悬停光标。公共代码里的 PointerIcon 没有调整大小这一种，见 LocalHorizontalResizeCursor
+private val HorizontalResizeCursor = PointerIcon(java.awt.Cursor(java.awt.Cursor.E_RESIZE_CURSOR))
 
 private val DownloadStatus.isActive: Boolean
     get() = this == DownloadStatus.DOWNLOADING || this == DownloadStatus.PENDING
@@ -301,7 +351,7 @@ private fun transferSummary(verb: String, count: Int, doneBytes: Long, totalByte
  * Windows 不让后台进程抢前台，toFront 通常只让任务栏图标闪烁。后来的进程转交参数前已放开
  * 前台权限（见 [SingleInstance]），这里还要先取消最小化，否则窗口在任务栏里不会弹出来。
  */
-private fun bringToFront(window: java.awt.Frame) {
+internal fun bringToFront(window: java.awt.Frame) {
     if (window.extendedState and java.awt.Frame.ICONIFIED != 0) {
         window.extendedState = window.extendedState and java.awt.Frame.ICONIFIED.inv()
     }

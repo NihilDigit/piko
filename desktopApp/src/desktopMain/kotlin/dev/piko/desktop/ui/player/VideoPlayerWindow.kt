@@ -168,6 +168,7 @@ private fun VideoPlayerContent(
             initialFileId = request.fileId,
             initialFileName = request.fileName,
             initialLocalPath = request.localPath,
+            initialStartMillis = request.startMillis,
             // 本地副本按文件长度验完整性，需要对应的 FileStat，从同目录列表里取
             resolveLocalPath = { fileId, hint ->
                 hint?.takeIf { File(it).exists() }

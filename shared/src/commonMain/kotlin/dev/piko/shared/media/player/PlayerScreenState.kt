@@ -46,6 +46,8 @@ class PlayerScreenState(
     initialFileId: String,
     initialFileName: String,
     initialLocalPath: String? = null,
+    /** 从这里开播，不查续播记录。随机片段里「看完整」从正在看的那一处接着放。 */
+    initialStartMillis: Long? = null,
     /**
      * 这个文件在本机的完整副本，没有返回 null。[hint] 是调用方已知的路径，可能已被删除。
      * 分段下载的片段不算完整副本，由平台自己排除。
@@ -170,7 +172,7 @@ class PlayerScreenState(
     private var resumeTipJob: Job? = null
 
     private var requestedQuality: String? = null
-    private var pendingStartMillis: Long? = null
+    private var pendingStartMillis: Long? = initialStartMillis
 
     /** 本轮 open 用的起点，还没出第一帧就换源时从这里重来。 */
     private var attemptStartMillis = 0L
