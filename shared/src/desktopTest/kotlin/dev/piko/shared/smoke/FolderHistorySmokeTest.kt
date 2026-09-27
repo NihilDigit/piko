@@ -83,4 +83,21 @@ class FolderHistorySmokeTest {
         repo.closeTab(second)
         assertEquals(second, repo.activeTabId.value, "最后一个标签不关")
     }
+
+    @Test
+    fun `open tabs come back after a restart`() = smoke {
+        val server = FakePikPakServer()
+        val cache = MemoryCacheStore()
+        val before = PikoDriveRepository(server.provider(), MemoryPreferences(), cache)
+        before.updateFolderStack(listOf(root, anime))
+        before.openTab(listOf(root, docs))
+        // 存盘有一秒的延迟，等它落下
+        kotlinx.coroutines.delay(1_500)
+
+        val after = PikoDriveRepository(server.provider(), MemoryPreferences(), cache)
+        assertTrue(after.restoreTabs())
+        assertEquals(listOf(listOf(root, anime), listOf(root, docs)), after.tabsFlow.value.map { it.stack })
+        assertEquals(listOf(root, docs), after.folderStackFlow.value, "活动的是后开的那个")
+        assertFalse(after.restoreTabs(), "已经不在初始状态，不再恢复")
+    }
 }

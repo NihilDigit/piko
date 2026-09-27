@@ -268,8 +268,13 @@ fun DriveScreen(
             }
         } else emptyList()
 
-        // restoreFolderStack 自带加载，两条路各触发一次，不能都调。
-        if (restoredStack.isNotEmpty()) state.restoreFolderStack(restoredStack) else state.load()
+        // 上次开着几个标签就全部恢复；只有一个时照旧恢复那一个位置。
+        // restoreFolderStack 与 restoreTabs 自带加载，几条路各触发一次，不能都调。
+        when {
+            currentFolderId.isEmpty() && state.restoreTabs() -> Unit
+            restoredStack.isNotEmpty() -> state.restoreFolderStack(restoredStack)
+            else -> state.load()
+        }
     }
 
     LaunchedEffect(folderStack) {

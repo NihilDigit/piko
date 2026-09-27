@@ -146,3 +146,12 @@ suspend fun awaitUntil(description: String, timeoutMs: Long = 10_000, condition:
         delay(20)
     }
 }
+
+/** 缓存目录的内存版：同一个实例交给两个仓库，就是「重启后读到上次写的」。 */
+class MemoryCacheStore : dev.piko.shared.data.PikoCacheStore {
+    private val map = java.util.concurrent.ConcurrentHashMap<String, String>()
+    override suspend fun read(key: String): String? = map[key]
+    override suspend fun write(key: String, value: String) {
+        map[key] = value
+    }
+}

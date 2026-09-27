@@ -1,6 +1,5 @@
 package dev.piko.shared.smoke
 
-import dev.piko.shared.data.PikoCacheStore
 import dev.piko.shared.sync.PikoSettingsSync
 import dev.piko.shared.sync.RemoteSettingsStore
 import dev.piko.shared.sync.SyncedSetting
@@ -19,14 +18,6 @@ class SettingsSyncSmokeTest {
         override suspend fun read(account: String) = text
         override suspend fun write(account: String, text: String, stamp: Long) {
             this.text = text
-        }
-    }
-
-    private class MemoryCacheStore : PikoCacheStore {
-        private val map = HashMap<String, String>()
-        override suspend fun read(key: String) = map[key]
-        override suspend fun write(key: String, value: String) {
-            map[key] = value
         }
     }
 

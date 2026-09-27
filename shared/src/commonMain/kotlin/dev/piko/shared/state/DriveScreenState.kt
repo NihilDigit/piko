@@ -306,6 +306,15 @@ class DriveScreenState(
         }
     }
 
+    /** 恢复上次退出时开着的几个标签，见 [PikoDriveRepository.restoreTabs]。恢复了返回 true。 */
+    suspend fun restoreTabs(): Boolean {
+        val unchangedBefore = activeFolderId
+        if (!driveRepo.restoreTabs()) return false
+        // 活动标签就停在根目录时栈顶没变，栈的监听不会触发，加载由这里补上
+        if (driveRepo.folderStackFlow.value.lastOrNull()?.id.orEmpty() == unchangedBefore) onFolderChanged()
+        return true
+    }
+
     /**
      * 恢复上次退出时的目录栈。走这里而不是让视图直接调仓库，是因为恢复同样要
      * 触发一次加载；视图直接改栈会绕过加载，表现为进来是空列表。

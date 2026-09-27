@@ -1,5 +1,8 @@
 package dev.piko.shared.data
 
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.Serializable
+import kotlinx.coroutines.Job
 import kotlinx.io.Buffer
 import io.ktor.utils.io.toByteArray
 import io.github.nihildigit.pikpak.streamRangeFromUrl
@@ -135,7 +138,51 @@ open class PikoDriveRepository(
     private fun publishTabs() {
         val active = _activeTabId.value
         _tabsFlow.value = _tabs.value.map { if (it.id == active) it.copy(stack = _folderStackFlow.value, history = _historyFlow.value) else it }
+        saveTabs()
     }
+
+    // 标签按账号存进缓存目录，重启后接着用。只存各自停在哪、哪个是活动的，历史不存
+    private var tabsSave: Job? = null
+
+    private fun saveTabs() {
+        val store = cacheStore ?: return
+        val account = clientManager.currentClient.value?.account ?: return
+        val tabs = _tabsFlow.value
+        val saved = SavedTabs(
+            tabs = tabs.map { tab -> tab.stack.map { SavedCrumb(it.id, it.name) } },
+            active = tabs.indexOfFirst { it.id == _activeTabId.value }.coerceAtLeast(0),
+        )
+        tabsSave?.cancel()
+        tabsSave = backgroundScope.launch {
+            delay(TABS_SAVE_DELAY_MS)
+            runCatching { store.write(tabsKey(account), tabsJson.encodeToString(SavedTabs.serializer(), saved)) }
+        }
+    }
+
+    /**
+     * 启动时恢复上次的标签，只在还停在初始状态（一个标签、在根目录）时做。上次只有一个标签的返回 false，
+     * 由调用方照旧恢复那一个位置。恢复不记历史，与 [restoreFolderStack] 相同。
+     */
+    suspend fun restoreTabs(): Boolean {
+        val store = cacheStore ?: return false
+        val account = clientManager.currentClient.value?.account ?: return false
+        if (_tabs.value.size > 1 || _folderStackFlow.value.size > 1) return false
+        val saved = runCatching { store.read(tabsKey(account))?.let { tabsJson.decodeFromString(SavedTabs.serializer(), it) } }.getOrNull()
+            ?: return false
+        val stacks = saved.tabs.map { stack -> stack.map { PikoPathBreadcrumb(it.id, it.name) } }.filter { it.isNotEmpty() }
+        if (stacks.size <= 1) return false
+        val tabs = stacks.map { DriveTab(nextTabId++, it) }
+        val active = tabs[saved.active.coerceIn(0, tabs.lastIndex)]
+        _tabs.value = tabs
+        _activeTabId.value = active.id
+        _historyFlow.value = FolderHistory()
+        _folderStackFlow.value = active.stack
+        forgetFoldersOutsideStack()
+        publishTabs()
+        return true
+    }
+
+    private fun tabsKey(account: String) = "drive-tabs-" + account.replace(Regex("[^A-Za-z0-9._@-]"), "_") + ".json"
 
     /** 在活动标签后面开一个新标签，停在 [stack]。[activate] 为 false 是在后台开（中键点文件夹）。 */
     fun openTab(stack: List<PikoPathBreadcrumb>, activate: Boolean = true): Long {
@@ -727,6 +774,7 @@ open class PikoDriveRepository(
     companion object {
         val ROOT_BREADCRUMB = PikoPathBreadcrumb("", "网盘")
         private const val FIRST_TAB_ID = 1L
+        private const val TABS_SAVE_DELAY_MS = 1_000L
         private const val MAX_LOCATE_DEPTH = 64
         private const val CHILD_NAME_PAGE = 20
         private const val CHILD_NAME_CONCURRENCY = 2
@@ -742,6 +790,14 @@ open class PikoDriveRepository(
         private val MY_PACKS_FOLDER_NAMES = setOf("my pack", "my packs", "我的资源", "我的离线")
     }
 }
+
+@Serializable
+private class SavedCrumb(val id: String, val name: String)
+
+@Serializable
+private class SavedTabs(val tabs: List<List<SavedCrumb>>, val active: Int)
+
+private val tabsJson = Json { ignoreUnknownKeys = true }
 
 /** 网盘页的一个标签：停在哪（[stack]）与它自己的后退、前进。 */
 data class DriveTab(val id: Long, val stack: List<PikoPathBreadcrumb>, val history: FolderHistory = FolderHistory()) {
