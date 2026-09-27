@@ -14,6 +14,8 @@ import dev.piko.shared.log.logFailure
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoFileSortOrder
 import dev.piko.shared.data.PikoPathBreadcrumb
+import dev.piko.data.repository.FileCategory
+import dev.piko.data.repository.fileCategory
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.SearchHit
 import kotlinx.coroutines.CoroutineScope
@@ -133,15 +135,39 @@ class DriveScreenState(
         if (isFoldingActive) currentAnalysis?.foldedIds?.size ?: 0 else 0
     }
 
-    private val isSearching: Boolean by derivedStateOf { isGlobalSearchActive || searchQuery.isNotBlank() }
+    /**
+     * 按类型筛选，null 为不筛。作用于眼前这份列表：目录内容、目录内搜索或全盘搜索的结果。
+     * 筛选时只留该类文件、去掉文件夹并平铺，与搜索一样不分作品与分区：分区是按整个目录算的，
+     * 只剩一类文件时大半分区是空的。换目录时清掉，与搜索词一样只属于当前这一眼。
+     */
+    var typeFilter by mutableStateOf<FileCategory?>(null)
+        private set
 
-    /** 列表项：作品头、分区标题与文件。搜索与解析关闭时照原样平铺，认不出任何作品时也平铺。 */
+    private val isSearching: Boolean by derivedStateOf { isGlobalSearchActive || searchQuery.isNotBlank() || typeFilter != null }
+
+    /** 筛选之前、搜索之后的文件，类型筛选与可选类型都从这一份算。 */
+    private val searchedFiles: List<FileStat> by derivedStateOf {
+        when {
+            isGlobalSearchActive -> globalSearchHits.map { it.file }
+            searchQuery.isNotBlank() -> files.filter { it.name.contains(searchQuery.trim(), ignoreCase = true) }
+            else -> files
+        }
+    }
+
+    /** 眼前这份列表里出现过的类型及其数量，按 [FileCategory] 的声明顺序。筛选菜单只列这些，免得选出空列表。 */
+    val availableTypes: List<Pair<FileCategory, Int>> by derivedStateOf {
+        val counts = searchedFiles.filterNot { it.isFolder }.groupingBy { it.fileCategory() }.eachCount()
+        FileCategory.entries.mapNotNull { category -> counts[category]?.let { category to it } }
+    }
+
+    /** 列表项：作品头、分区标题与文件。搜索、筛选与解析关闭时照原样平铺，认不出任何作品时也平铺。 */
     val displayItems: List<DriveListItem> by derivedStateOf {
         val structure = currentAnalysis
         val hideFolded = isFoldingActive && !showAllFilesTemporarily
+        val filter = typeFilter
         when {
-            isGlobalSearchActive -> globalSearchHits.map { DriveListItem.File(it.file, null) }
-            searchQuery.isNotBlank() -> files.filter { it.name.contains(searchQuery.trim(), ignoreCase = true) }.map { DriveListItem.File(it, null) }
+            filter != null -> searchedFiles.filter { !it.isFolder && it.fileCategory() == filter }.map { DriveListItem.File(it, null) }
+            isGlobalSearchActive || searchQuery.isNotBlank() -> searchedFiles.map { DriveListItem.File(it, null) }
             structure == null -> files.map { DriveListItem.File(it, null) }
             !isNameParsing || structure.blocks.isEmpty() ->
                 filterDriveFiles(files, structure.foldedIds, enabled = hideFolded, revealAll = false).map { DriveListItem.File(it, null) }
@@ -343,8 +369,15 @@ class DriveScreenState(
         driveRepo.navigateToFolder(breadcrumb)
     }
 
+    fun updateTypeFilter(value: FileCategory?) {
+        typeFilter = value
+        // 选中项可能已被筛掉，留着会让「移动所选」动到看不见的文件
+        if (isSelectionMode) exitSelection()
+    }
+
     /** 换了目录：搜索态、选中态、防窥揭示都不该跨目录留存。 */
     private fun onFolderChanged() {
+        typeFilter = null
         searchQuery = ""
         stopGlobalSearch()
         exitSelection()

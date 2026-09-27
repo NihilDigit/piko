@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.automirrored.outlined.Sort
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.outlined.FilterList
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.AutoAwesome
@@ -43,13 +44,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
+import dev.piko.data.repository.FileCategory
 import dev.piko.data.repository.FileSortOrder
+import dev.piko.data.repository.label
 import dev.piko.shared.data.PikoSortField
 import dev.piko.shared.data.field
 import dev.piko.shared.data.isAscending
@@ -59,6 +63,7 @@ import dev.piko.shared.state.DriveListItem
 import dev.piko.ui.components.FileListItem
 import dev.piko.ui.components.FileRowSkeleton
 import dev.piko.ui.components.SkeletonGroup
+import dev.piko.ui.components.icon
 import dev.piko.ui.components.MediaTagRow
 import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.SheetAction
@@ -375,22 +380,29 @@ private fun SortDirectionIcon(order: FileSortOrder, modifier: Modifier = Modifie
 }
 
 /**
- * 列表页眉：搜索时的结果说明、排序、视图切换。
+ * 列表页眉：搜索时的结果说明、排序、类型筛选、视图切换。
  *
  * 排序与视图切换原先挤在顶栏，与新建、搜索一起共四个图标。M3 顶栏规范建议只放一到
  * 两个动作；这两个是作用于列表本身的控件，放进随列表滚走的页眉，不再常驻占位。
  * 排序按钮写出当前字段与方向。菜单里再点当前字段即切换升降序，点其他字段则按该字段的
  * 起始方向排，不必为六种组合各列一项。
+ *
+ * 类型筛选与排序同一种文字按钮，只在列表里有两类以上文件、或已在筛选时出现：只有一类时
+ * 筛了等于没筛。菜单里每类带上数量，选之前就知道会剩多少。
  */
 @Composable
 internal fun DriveListHeader(
     summary: String?,
     sortOrder: FileSortOrder,
     onSortChange: (FileSortOrder) -> Unit,
+    typeFilter: FileCategory?,
+    availableTypes: List<Pair<FileCategory, Int>>,
+    onTypeFilterChange: (FileCategory?) -> Unit,
     isPosterMode: Boolean,
     onTogglePosterMode: () -> Unit,
 ) {
     var showSortMenu by remember { mutableStateOf(false) }
+    var showTypeMenu by remember { mutableStateOf(false) }
     Column(modifier = Modifier.fillMaxWidth()) {
         if (summary != null) {
             // 与排序按钮的图标同落在 16dp 页边距上：外层只给了 4dp，这里补 TextButton 的 12dp
@@ -435,6 +447,39 @@ internal fun DriveListHeader(
                             shape = menuItemShape(index, fields.size),
                             trailingIcon = { if (isCurrent) SortDirectionIcon(sortOrder) },
                         )
+                    }
+                }
+            }
+            if (typeFilter != null || availableTypes.size > 1) {
+                Box {
+                    TextButton(onClick = { showTypeMenu = true }) {
+                        Icon(
+                            Icons.Outlined.FilterList,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(typeFilter?.label ?: "全部类型")
+                    }
+                    PikoDropdownMenu(expanded = showTypeMenu, onDismissRequest = { showTypeMenu = false }) {
+                        val options = listOf<Pair<FileCategory?, Int?>>(null to null) + availableTypes
+                        options.forEachIndexed { index, (category, count) ->
+                            DropdownMenuItem(
+                                onClick = {
+                                    showTypeMenu = false
+                                    onTypeFilterChange(category)
+                                },
+                                text = {
+                                    Text(
+                                        text = category?.label ?: "全部类型",
+                                        color = if (category == typeFilter) MaterialTheme.colorScheme.primary else Color.Unspecified,
+                                    )
+                                },
+                                leadingIcon = category?.let { { Icon(it.icon(), contentDescription = null, modifier = Modifier.size(20.dp)) } },
+                                trailingIcon = count?.let { { Text("$it", style = MaterialTheme.typography.labelMedium) } },
+                                shape = menuItemShape(index, options.size),
+                            )
+                        }
                     }
                 }
             }

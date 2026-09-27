@@ -652,7 +652,8 @@ fun DriveScreen(
                         }
 
                         val bottomPadding = innerPadding.calculateBottomPadding() + FabClearance
-                        if (state.displayItems.isEmpty()) {
+                        // 筛选下为空时仍给列表：空目录页没有页眉，筛选撤不掉
+                        if (state.displayItems.isEmpty() && state.typeFilter == null) {
                             // 空目录没有列表页眉，面包屑单独放在空状态上方
                             breadcrumbs()
                             DriveEmptyState(state = state, modifier = Modifier.weight(1f))
@@ -681,6 +682,9 @@ fun DriveScreen(
                                                 summary = searchSummary(state, displayedFiles),
                                                 sortOrder = state.sortOrder,
                                                 onSortChange = { state.changeSortOrder(it) },
+                                                typeFilter = state.typeFilter,
+                                                availableTypes = state.availableTypes,
+                                                onTypeFilterChange = state::updateTypeFilter,
                                                 isPosterMode = isPosterMode,
                                                 onTogglePosterMode = {
                                                     scope.launch { sessionManager.setGridViewEnabled(!isPosterMode) }
@@ -908,8 +912,9 @@ private fun searchSummary(state: DriveScreenState, files: List<FileStat>): Strin
 
 private fun foldBannerOrNull(state: DriveScreenState): (@Composable () -> Unit)? {
     val hiddenCount = state.potentialHiddenCount
+    // 搜索与类型筛选时列表是平铺的，不做折叠，横幅无从谈起
     val applicable = state.isHeuristicFilterEnabled && hiddenCount > 0 &&
-        state.searchQuery.isBlank() && !state.isGlobalSearchActive
+        state.searchQuery.isBlank() && !state.isGlobalSearchActive && state.typeFilter == null
     if (!applicable) return null
     val isFolded = !state.showAllFilesTemporarily
     return {
