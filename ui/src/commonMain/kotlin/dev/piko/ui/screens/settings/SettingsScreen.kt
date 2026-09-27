@@ -32,6 +32,7 @@ import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.CleaningServices
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.DarkMode
+import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.FileDownload
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
@@ -349,12 +350,27 @@ fun SettingsScreen(
                         )
                         SettingsNavigationRow(
                             index = 0,
-                            count = 1,
+                            count = 2,
                             icon = Icons.Outlined.BugReport,
                             title = "导出日志",
                             supporting = "反馈问题时请附上。只记录操作经过，不含文件名、账号与密码",
                             onClick = { scope.launch { exportLogs(platform) } },
                             trailingIcon = Icons.Outlined.FileDownload,
+                        )
+                        // 日志只留两天，这里给的是复现之前手动清一次：导出的就只有这一次的经过
+                        SettingsNavigationRow(
+                            index = 1,
+                            count = 2,
+                            icon = Icons.Outlined.History,
+                            title = "清除日志",
+                            supporting = "自动保留最近两天。复现问题之前清除一次，导出的内容更清楚",
+                            onClick = {
+                                scope.launch {
+                                    PikoLog.clear()
+                                    snackbarHostState.showSnackbar("已清除日志", withDismissAction = true)
+                                }
+                            },
+                            trailingIcon = Icons.Outlined.DeleteSweep,
                         )
                     }
                 }

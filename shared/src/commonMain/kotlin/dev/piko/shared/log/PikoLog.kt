@@ -34,6 +34,7 @@ object PikoLog {
         class Line(val epochMillis: Long, val level: LogLevel, val tag: String, val message: String, val error: Throwable?) : Request
         class Flush(val done: CompletableDeferred<Unit>) : Request
         class Export(val result: CompletableDeferred<String>) : Request
+        class Clear(val done: CompletableDeferred<Unit>) : Request
     }
 
     private val requests = Channel<Request>(Channel.UNLIMITED)
@@ -55,10 +56,13 @@ object PikoLog {
         val files = RollingLogFiles(Path(directory))
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             val zone = TimeZone.currentSystemDefault()
+            // 过期的记录在写入第一行之前删：此时还没打开文件，改写不会与追加相撞
+            files.dropBefore(timestamp(Clock.System.now().toEpochMilliseconds() - RETENTION_MILLIS, zone))
             fun handle(request: Request) = when (request) {
                 is Request.Line -> files.append(format(request, zone))
                 is Request.Flush -> request.done.complete(files.flush()).let {}
                 is Request.Export -> request.result.complete(files.readAll()).let {}
+                is Request.Clear -> request.done.complete(files.clear()).let {}
             }
             while (true) {
                 handle(requests.receive())
@@ -86,16 +90,23 @@ object PikoLog {
         requests.trySend(Request.Line(Clock.System.now().toEpochMilliseconds(), level, tag, message, error))
     }
 
-    private fun format(line: Request.Line, zone: TimeZone): String {
-        val time = kotlin.time.Instant.fromEpochMilliseconds(line.epochMillis).toLocalDateTime(zone)
-        return buildString {
-            append(time.date).append(' ')
-            append(time.hour.pad(2)).append(':').append(time.minute.pad(2)).append(':').append(time.second.pad(2))
-            append('.').append((time.nanosecond / 1_000_000).pad(3))
-            append(' ').append(line.level.letter).append(' ').append(line.tag).append(": ").append(redact(line.message)).append('\n')
-            if (line.error != null) append(redact(line.error.stackTraceToString().trimEnd())).append('\n')
-        }
+    private fun format(line: Request.Line, zone: TimeZone): String = buildString {
+        append(timestamp(line.epochMillis, zone))
+        append(' ').append(line.level.letter).append(' ').append(line.tag).append(": ").append(redact(line.message)).append('\n')
+        if (line.error != null) append(redact(line.error.stackTraceToString().trimEnd())).append('\n')
     }
+
+    /** 每行开头的时间，定宽且按年月日时分秒排列，按字符串比较即按时间先后，过期清理靠这一点。 */
+    private fun timestamp(epochMillis: Long, zone: TimeZone): String {
+        val time = kotlin.time.Instant.fromEpochMilliseconds(epochMillis).toLocalDateTime(zone)
+        return "${time.date} ${time.hour.pad(2)}:${time.minute.pad(2)}:${time.second.pad(2)}.${(time.nanosecond / 1_000_000).pad(3)}"
+    }
+
+    /**
+     * 只留最近两天。按大小滚动的文件在用得少的机器上能存好几个月，导出时旧版本的崩溃与早已删掉的
+     * 调试输出混在里面，读的人分不清哪些与这次的问题有关。
+     */
+    private const val RETENTION_MILLIS = 2L * 24 * 60 * 60 * 1000
 
     /**
      * 写进文件之前的兜底脱敏。打日志的地方已经不写账号与文件名，可异常信息与堆栈不归我们措辞：
@@ -139,6 +150,14 @@ object PikoLog {
         val result = CompletableDeferred<String>()
         requests.send(Request.Export(result))
         return result.await()
+    }
+
+    /** 删掉全部日志，之后的记录从空文件开始。用户在复现问题之前清一次，导出的就只有这一次的经过。 */
+    suspend fun clear() {
+        if (!installed) return
+        val done = CompletableDeferred<Unit>()
+        requests.send(Request.Clear(done))
+        done.await()
     }
 
     private fun Int.pad(width: Int) = toString().padStart(width, '0')
@@ -188,6 +207,33 @@ private class RollingLogFiles(private val directory: Path) {
         }
     }
 
+    fun clear() {
+        runCatching { sink?.close() }
+        sink = null
+        size = 0
+        for (index in 0..KEPT_FILES) runCatching { SystemFileSystem.delete(fileAt(index), mustExist = false) }
+    }
+
+    /**
+     * 删掉时间早于 [cutoff] 的记录，[cutoff] 与行首时间同一格式。只在打开文件写入之前调用。
+     * 没有时间戳的续行（异常堆栈）属于上一条，随它去留。文件之间与文件之内都按时间先后排列，
+     * 所以每个文件只需找到第一条不早于 [cutoff] 的记录，之前的整段丢掉，一条都不剩的整个删掉。
+     */
+    fun dropBefore(cutoff: String) {
+        for (index in 0..KEPT_FILES) {
+            val file = fileAt(index)
+            runCatching {
+                if (!SystemFileSystem.exists(file)) return@runCatching
+                val text = SystemFileSystem.source(file).buffered().use { it.readString() }
+                when (val keepFrom = firstEntryNotBefore(text, cutoff)) {
+                    null -> SystemFileSystem.delete(file)
+                    0 -> Unit
+                    else -> SystemFileSystem.sink(file).buffered().use { it.writeString(text.substring(keepFrom)) }
+                }
+            }
+        }
+    }
+
     private fun open(): Sink {
         SystemFileSystem.createDirectories(directory)
         val file = fileAt(0)
@@ -214,3 +260,10 @@ private class RollingLogFiles(private val directory: Path) {
         const val KEPT_FILES = 3
     }
 }
+
+/** 一条记录的开头：行首的时间戳，取到时间戳本身为止。 */
+private val ENTRY_START = Regex("""^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}""", RegexOption.MULTILINE)
+
+/** [text] 里第一条时间不早于 [cutoff] 的记录从哪个字符开始；一条都没有时为 null。 */
+internal fun firstEntryNotBefore(text: String, cutoff: String): Int? =
+    ENTRY_START.findAll(text).firstOrNull { it.value >= cutoff }?.range?.first
