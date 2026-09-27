@@ -175,6 +175,8 @@ fun DriveScreen(
      */
     feedShown: Boolean = false,
     onFeedShownChange: ((Boolean) -> Unit)? = null,
+    /** 把信息流订阅到这个文件夹并打开它，为 null 时文件夹上不给这一项。 */
+    onBrowseInFeed: ((PathBreadcrumb) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val driveRepo = LocalPikoServices.current.driveRepository
@@ -351,6 +353,9 @@ fun DriveScreen(
     }
 
     val platform = LocalPikoPlatform.current
+    // 信息流靠片段预览播放，平台没有就不给入口，与顶栏的开关一致
+    val browseInFeed: ((FileStat) -> Unit)? = onBrowseInFeed?.takeIf { platform.videoPreview != null }
+        ?.let { subscribe -> { file: FileStat -> subscribe(PathBreadcrumb(file.id, file.name)) } }
 
     // 磁力链接与分享链接都只复制；复制完给个回执，剪贴板本身看不见
     fun copySource(file: FileStat) {
@@ -438,6 +443,7 @@ fun DriveScreen(
                     onExtract = { archiveSession.extract(listOf(file)) },
                     onShare = { shareTargets = listOf(file) },
                     onOpenInExternalPlayer = platform.externalPlayer?.let { { openInExternalPlayer(file) } },
+                    onBrowseInFeed = browseInFeed?.let { { it(file) } },
                 )
             },
             onToggleSection = state::toggleSection,
@@ -884,6 +890,7 @@ fun DriveScreen(
             onExtract = { archiveSession.extract(listOf(target)) },
             onShare = { shareTargets = listOf(target) },
             onOpenInExternalPlayer = platform.externalPlayer?.let { { openInExternalPlayer(target) } },
+            onBrowseInFeed = browseInFeed?.let { { it(target) } },
         )
     }
 

@@ -258,12 +258,11 @@ fun PikoMainScaffold(
     }
 
     // 星标与播放历史里的条目：跳到网盘里它所在的位置并高亮它。文件夹则直接进入
-    fun locateInDrive(file: FileStat, beforeNavigate: (target: PikoPathBreadcrumb?) -> Unit = {}) {
+    fun locateInDrive(file: FileStat) {
         val driveRepo = services.driveRepository
         coroutineScope.launch {
             driveRepo.locateFolder(file.id).onSuccess { parents ->
                 val stack = if (file.isFolder) parents + PikoPathBreadcrumb(file.id, file.name) else parents
-                beforeNavigate(stack.lastOrNull())
                 // 先设好栈再切页：网盘页重新组合时直接加载栈顶目录
                 driveRepo.updateFolderStack(stack)
                 if (!file.isFolder) driveRepo.requestHighlight(setOf(file.id))
@@ -319,34 +318,33 @@ fun PikoMainScaffold(
     val feedInPanel = feedOnFilesTab && panelFits
     val feedFullScreen = feedOnFilesTab && !panelFits
 
-    // 跟着网盘页当前的文件夹走。弹出到窗口后不跟：窗口本就是为了一边刷一边浏览网盘，
-    // 每进一个文件夹就换一批片段反而打断它；收回时再对上眼前的文件夹
+    // 信息流是订阅，不跟着网盘走：刷的是哪个文件夹由范围菜单与文件夹上的「在信息流中刷」决定，
+    // 网盘里进进出出、从信息流里定位到某个文件，都不换掉正在刷的这一批。
+    // 头一回打开还没订阅过，取眼前的文件夹；此后是上次刷的那个，重启后也接着
     val folderStack by services.driveRepository.folderStackFlow.collectAsStateWithLifecycle()
-    val feedFolder = folderStack.lastOrNull()
     // 头一次 open 完成前会话里是空的，此时组合 ClipFeedScreen 会闪一下「没有可播放的视频」
     var feedOpened by remember { mutableStateOf(false) }
-    // 从信息流里「在网盘中显示」会把网盘带进那个文件的目录。照常跟随的话，信息流随即换成这个子目录、
-    // 整个重建，正看着的那一段就没了，用户只是想看看文件在哪。所以定位去的那个目录不跟，
-    // 用户自己再进别的目录时才照常跟随
-    var feedHeldAt by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(feedShown && !feedPoppedOut, feedFolder?.id) {
-        if (!feedShown || feedPoppedOut || feedFolder == null) return@LaunchedEffect
-        if (feedOpened && feedFolder.id == feedHeldAt) return@LaunchedEffect
-        feedHeldAt = null
-        clipFeedSession.open(feedFolder)
+    LaunchedEffect(feedShown && !feedPoppedOut) {
+        if (!feedShown || feedPoppedOut) return@LaunchedEffect
+        val folder = clipFeedSession.lastFolder() ?: folderStack.lastOrNull() ?: return@LaunchedEffect
+        clipFeedSession.open(folder)
         feedOpened = true
+    }
+
+    fun browseInFeed(folder: PikoPathBreadcrumb) {
+        coroutineScope.launch {
+            clipFeedSession.open(folder)
+            feedOpened = true
+        }
+        setFeedShown(true)
     }
 
     fun playFromFeed(file: FileStat, startMillis: Long) = playVideo(file, listOf(file), startMillis)
 
     // 全屏形态盖着网盘页，要看到定位的结果得先收起；侧栏形态下列表就在旁边
     fun locateFromFeed(file: FileStat) {
-        if (feedFullScreen) {
-            setFeedShown(false)
-            locateInDrive(file)
-        } else {
-            locateInDrive(file) { target -> feedHeldAt = target?.id.orEmpty() }
-        }
+        if (feedFullScreen) setFeedShown(false)
+        locateInDrive(file)
     }
 
     fun popOutFeed() {
@@ -439,6 +437,7 @@ fun PikoMainScaffold(
                             onOpenTransfers = ::openTransfers,
                             feedShown = feedShown,
                             onFeedShownChange = ::setFeedShown,
+                            onBrowseInFeed = ::browseInFeed,
                             feedFrame = feedFrame,
                         )
                     }

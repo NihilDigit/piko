@@ -181,6 +181,15 @@ class ClipFeedSession(
         // 存下的候选够挑就先挑，不等遍历
         fillAhead()
         collectJob = scope.launch { collect(folder.id) }
+        // 打开即记下：最近的这一个就是订阅，下次启动从它接着刷，见 [lastFolder]
+        cacheStore?.let { store -> scope.launch { runCatching { rememberFolder(store, folder) } } }
+    }
+
+    /** 上次刷的文件夹：眼前开着的，否则是存盘里最近的一个。都没有时为 null。 */
+    suspend fun lastFolder(): PikoPathBreadcrumb? {
+        root?.let { return it }
+        loadRecentFolders()
+        return recentFolders.firstOrNull()
     }
 
     private fun addToPool(file: FileStat) {

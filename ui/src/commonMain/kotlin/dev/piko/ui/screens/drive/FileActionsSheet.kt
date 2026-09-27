@@ -13,6 +13,7 @@ import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.SwipeVertical
 import dev.piko.shared.upload.isUploading
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.StarOutline
@@ -68,6 +69,7 @@ internal fun FileActionsSheet(
     onExtract: () -> Unit,
     onShare: () -> Unit,
     onOpenInExternalPlayer: (() -> Unit)?,
+    onBrowseInFeed: (() -> Unit)?,
 ) {
     val usage by produceState<FolderUsageResult?>(null, folderUsage) {
         folderUsage ?: return@produceState
@@ -97,6 +99,7 @@ internal fun FileActionsSheet(
         onExtract = onExtract,
         onShare = onShare,
         onOpenInExternalPlayer = onOpenInExternalPlayer,
+        onBrowseInFeed = onBrowseInFeed,
     )
 
     ItemDetailsSheet(
@@ -117,7 +120,8 @@ internal fun FileActionsSheet(
 
 /**
  * 网盘条目的操作。底部面板与桌面的右键菜单用同一份，两处不会漏项。
- * onOpenInExternalPlayer 为 null 表示平台交不出去，不显示该项。
+ * onOpenInExternalPlayer 为 null 表示平台交不出去，不显示该项；onBrowseInFeed 为 null 表示没有信息流，
+ * 文件夹上不给「在信息流中刷」。
  */
 internal fun fileActions(
     file: FileStat,
@@ -136,7 +140,10 @@ internal fun fileActions(
     onExtract: () -> Unit,
     onShare: () -> Unit,
     onOpenInExternalPlayer: (() -> Unit)?,
+    onBrowseInFeed: (() -> Unit)?,
 ): List<SheetAction> = buildList {
+    // 文件夹的头一项：订阅它的随机片段，是网盘之外的另一种看法
+    if (file.isFolder && onBrowseInFeed != null) add(SheetAction(Icons.Outlined.SwipeVertical, "在信息流中刷", onBrowseInFeed))
     if (previewHidden != null) {
         add(
             SheetAction(
