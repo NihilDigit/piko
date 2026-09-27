@@ -52,6 +52,10 @@ private val standardSet = listOf(
     Shot("context-menu-1440x900", steps = listOf(Step.Click("Oppenheimer", PointerButton.Secondary), Step.Pump(500))),
     // 键盘：方向键走到一项，描边标出焦点
     Shot("keyboard-focus-1440x900", steps = listOf(Step.Key("Down"), Step.Key("Down"), Step.Key("Right"), Step.Key("Down"))),
+    // 信息流：宽窗口的侧栏、窄窗口的全屏、弹出到独立窗口后主窗口的样子
+    Shot("feed-panel-1440x900", steps = listOf(Step.Click("信息流"), Step.Pump(1_000))),
+    Shot("feed-full-760x800", 760, 800, steps = listOf(Step.Click("信息流"), Step.Pump(1_000))),
+    Shot("feed-popped-1440x900", steps = listOf(Step.Click("信息流"), Step.Pump(1_000), Step.Click("在独立窗口播放"), Step.Pump(800))),
     Shot("transfers-1440x900", steps = listOf(Step.Click("传输"), Step.Wait("Dandadan"))),
     Shot("profile-1440x900", steps = listOf(Step.Click("我的"), Step.Pump(1_000))),
     Shot("profile-starred-1440x900", steps = listOf(Step.Click("我的"), Step.Pump(1_000), Step.Click("星标"), Step.Wait("Dune"))),
