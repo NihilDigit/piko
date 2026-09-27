@@ -1,0 +1,141 @@
+package dev.piko.shots
+
+import androidx.compose.ui.input.pointer.PointerButton
+import dev.piko.ui.theme.ThemeMode
+import java.io.File
+import kotlin.system.exitProcess
+
+private const val USAGE = """用法：piko-shots <命令> [选项]
+
+  all [-o <目录>]
+      渲染一整套：网盘在四档窗口宽度与深色下、子目录、传输、我的及其三个详情页、条目详情面板。
+  shot <名字> [--size <宽>x<高>] [--dark] [步骤…] [-o <目录>]
+      渲染一张。步骤按写的顺序执行：
+        --click <文本>        点击文本或内容描述为它的节点（先精确匹配，没有则包含匹配）
+        --right-click <文本>  右键点击，看右键菜单
+        --hover <文本>        鼠标停在上面，看悬停态与提示
+        --wait <文本>         等到界面上出现它
+        --pump <毫秒>         多等一会儿，让动画走完
+  texts [--size <宽>x<高>] [步骤…]
+      不存图，打印界面上所有文本与内容描述，写 --click 时找名字用。
+
+窗口尺寸按 dp 计（密度 1），默认 1440x900。输出默认在 build/shots/<名字>.png，
+经 gradle run 时相对仓库根目录。数据来自 FakePikPak.seed()，每张图都从登录后的网盘根目录开始。"""
+
+private sealed interface Step {
+    data class Click(val text: String, val button: PointerButton = PointerButton.Primary) : Step
+    data class Hover(val text: String) : Step
+    data class Wait(val text: String) : Step
+    data class Pump(val ms: Long) : Step
+}
+
+private class Shot(
+    val name: String,
+    val width: Int = 1440,
+    val height: Int = 900,
+    val mode: ThemeMode = ThemeMode.LIGHT,
+    val steps: List<Step> = emptyList(),
+)
+
+/** `all` 的清单。改了布局先跑它，再挑有关的几张细看。 */
+private val standardSet = listOf(
+    Shot("files-1440x900"),
+    Shot("files-1100x800", 1100, 800),
+    Shot("files-760x800", 760, 800),
+    Shot("files-400x860", 400, 860),
+    Shot("files-1440x900-dark", mode = ThemeMode.DARK),
+    Shot("files-subfolder-1440x900", steps = listOf(Step.Click("Frieren"), Step.Wait("SPs"))),
+    Shot("details-1440x900", steps = listOf(Step.Click("更多操作"), Step.Pump(800))),
+    Shot("details-400x860", 400, 860, steps = listOf(Step.Click("更多操作"), Step.Pump(800))),
+    Shot("context-menu-1440x900", steps = listOf(Step.Click("Oppenheimer", PointerButton.Secondary), Step.Pump(500))),
+    Shot("transfers-1440x900", steps = listOf(Step.Click("传输"), Step.Wait("Dandadan"))),
+    Shot("profile-1440x900", steps = listOf(Step.Click("我的"), Step.Pump(1_000))),
+    Shot("profile-starred-1440x900", steps = listOf(Step.Click("我的"), Step.Pump(1_000), Step.Click("星标"), Step.Wait("Dune"))),
+    Shot("profile-trash-1440x900", steps = listOf(Step.Click("我的"), Step.Pump(1_000), Step.Click("回收站"), Step.Wait("old-backup"))),
+    Shot("profile-settings-1440x900", steps = listOf(Step.Click("我的"), Step.Pump(1_000), Step.Click("设置"), Step.Pump(1_000))),
+    Shot("profile-settings-760x800", 760, 800, steps = listOf(Step.Click("我的"), Step.Pump(1_000), Step.Click("设置"), Step.Pump(1_000))),
+)
+
+fun main(args: Array<String>) {
+    if (args.isEmpty() || args[0] in setOf("-h", "--help", "help")) {
+        println(USAGE)
+        return
+    }
+    val rest = args.drop(1)
+    val outDir = File(option(rest, "-o") ?: "build/shots")
+    try {
+        when (args[0]) {
+            "all" -> standardSet.forEach { render(it, outDir) }
+            "shot" -> {
+                val name = rest.firstOrNull()?.takeUnless { it.startsWith("-") } ?: fail("shot 要一个名字")
+                render(parseShot(name, rest.drop(1)), outDir)
+            }
+            "texts" -> printTexts(parseShot("texts", rest))
+            else -> fail("未知命令：${args[0]}")
+        }
+    } catch (e: IllegalArgumentException) {
+        System.err.println(e.message)
+        exitProcess(2)
+    }
+    // Compose 与 OkHttp 留下的非守护线程会让进程挂着不退
+    exitProcess(0)
+}
+
+private fun render(shot: Shot, outDir: File) {
+    val file = File(outDir, "${shot.name}.png")
+    run(shot) { app -> app.save(file) }
+    println(file.absolutePath)
+}
+
+private fun printTexts(shot: Shot) = run(shot) { app -> app.texts().forEach(::println) }
+
+private fun run(shot: Shot, finish: (AppScene) -> Unit) {
+    ShotEnv().use { env ->
+        AppScene.open(env, shot.width, shot.height, shot.mode).use { app ->
+            for (step in shot.steps) {
+                when (step) {
+                    is Step.Click -> app.click(step.text, step.button)
+                    is Step.Hover -> app.hover(step.text)
+                    is Step.Wait -> if (!app.pumpUntil { app.hasText(step.text) }) {
+                        System.err.println("[${shot.name}] 等不到「${step.text}」，照当前画面出图")
+                    }
+                    is Step.Pump -> app.pump(step.ms)
+                }
+            }
+            app.pump(800)
+            finish(app)
+        }
+    }
+}
+
+private fun parseShot(name: String, args: List<String>): Shot {
+    var width = 1440
+    var height = 900
+    var mode = ThemeMode.LIGHT
+    val steps = mutableListOf<Step>()
+    var i = 0
+    fun value(): String = args.getOrNull(++i) ?: fail("${args[i - 1]} 缺少参数")
+    while (i < args.size) {
+        when (val arg = args[i]) {
+            "--size" -> {
+                val (w, h) = value().split('x').map { it.toIntOrNull() ?: fail("尺寸写成 1440x900") }
+                width = w
+                height = h
+            }
+            "--dark" -> mode = ThemeMode.DARK
+            "--click" -> steps += Step.Click(value())
+            "--right-click" -> steps += Step.Click(value(), PointerButton.Secondary)
+            "--hover" -> steps += Step.Hover(value())
+            "--wait" -> steps += Step.Wait(value())
+            "--pump" -> steps += Step.Pump(value().toLongOrNull() ?: fail("--pump 要毫秒数"))
+            "-o" -> value()
+            else -> fail("未知选项：$arg")
+        }
+        i++
+    }
+    return Shot(name, width, height, mode, steps)
+}
+
+private fun option(args: List<String>, name: String): String? = args.indexOf(name).takeIf { it >= 0 }?.let { args.getOrNull(it + 1) }
+
+private fun fail(message: String): Nothing = throw IllegalArgumentException(message)

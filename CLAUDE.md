@@ -103,7 +103,6 @@ expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以
 - 对话框：目录选择器在 compact 下全屏，更宽时是居中的基本对话框。
 - 面板：一律经 `PikoSheet`，expanded 是从末端滑入的模态侧边面板，其余是只有展开一档的底部 sheet；
   不要直接用 `ModalBottomSheet`（播放器的面板另有横屏侧栏，除外）。
-- 网格：宽窗口的列宽要有上限时用 `adaptive/BoundedCells.kt` 的 `boundedStaggeredCells`，compact 保持原样。
 
 鼠标与键盘：条目右键弹出与操作面板相同的菜单（`ContextMenuArea`）。每页把一项的操作写成一个
 `actionsFor`，面板与菜单都读它（网盘页是 `fileActions`）；新列表照做。网盘页按住主修饰键点选是加选，
@@ -262,6 +261,27 @@ piko 源码仍是 MIT，但发版时要附 GPLv3 与第三方声明，并指明�
 Git Bash 会把以 `/` 开头的参数改写成 Windows 路径，传网盘路径时前面加 `MSYS_NO_PATHCONV=1`。
 
 快照含真实文件名，放在仓库外，不要提交。改解析规则后重跑 `dryrun` 对比即可，不必重新请求网盘。
+
+## 截图
+
+`:shots` 也是开发工具，不随应用发布：无头运行整个应用（`PikoApp`，与桌面入口同一套界面、状态与平台实现），
+数据来自假的 PikPak 服务端，按任意窗口尺寸与深浅主题出 PNG。改了布局就跑它看图，不必开真实账号，
+也不用在 Windows 上：Linux 与没有显示器的机器同样能跑。
+
+```bash
+./gradlew :shots:run --args="all"                        # 一整套，写到 build/shots/，约一分钟
+./gradlew :shots:run --args="shot starred --size 1100x800 --click 我的 --click 星标 --wait Dune"
+./gradlew :shots:run --args="texts --click 传输"          # 打印界面上的文本，找 --click 的目标用
+```
+
+- 步骤有 `--click`、`--right-click`、`--hover`、`--wait`、`--pump`，按写的顺序执行；点击按文本或内容描述找节点，
+  弹层里的也算。`all` 的清单在 `shots/.../Main.kt` 的 `standardSet`，改了哪类界面就往里加一张。
+- 数据在 `ShotEnv.kt` 的 `FakePikPak.seed()`：一部 12 集的番剧、一个子目录、电影与文档、回收站、星标、
+  离线任务与四个本地下载。假服务端（`FakePikPak`）经 OkHttp 拦截器作答，SDK 的请求与解析仍走真实代码；
+  只答界面读得到的接口，其余回 404，新页面要什么就补什么。与冒烟测试的 `FakePikPakServer` 是两份，那份要 MockEngine。
+- 没有窗口外框：自绘标题栏与拖放层不在画面里。Linux 上没有微软雅黑，中文落到别的字体，字宽与 Windows 略有出入。
+- 网络缩略图与海报不画，播放历史与我的分享是空的。
+- 参数里有中文时，Linux 上要 UTF-8 的 locale（`LC_ALL=C.UTF-8`），否则 Gradle 传给进程时变成问号，按文本找不到节点。
 
 ## 冒烟测试
 
