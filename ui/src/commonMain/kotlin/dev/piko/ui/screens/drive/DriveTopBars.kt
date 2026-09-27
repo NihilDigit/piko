@@ -25,6 +25,7 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DriveFileMove
+import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Unarchive
@@ -69,6 +70,7 @@ internal fun DriveSelectionTopBar(
     onTrash: () -> Unit,
     onExtract: (() -> Unit)?,
     onShare: () -> Unit,
+    onBatchRename: () -> Unit,
 ) {
     PikoTopBar(
         scrollBehavior = scrollBehavior,
@@ -81,6 +83,8 @@ internal fun DriveSelectionTopBar(
             TooltipIconButton(Icons.Outlined.SelectAll, "全选", onSelectAll, shortcut = shortcutModifier.label("A"))
             if (onExtract != null) TooltipIconButton(Icons.Outlined.Unarchive, "解压所选压缩包", onExtract)
             TooltipIconButton(Icons.Outlined.Share, "分享所选", onShare, enabled = selectedCount > 0)
+            // 只选一项时没有共同前后缀可言，单项改名走条目菜单
+            TooltipIconButton(Icons.Outlined.DriveFileRenameOutline, "批量重命名", onBatchRename, enabled = selectedCount >= 2)
             TooltipIconButton(Icons.Outlined.DriveFileMove, "移动所选", onMove, enabled = selectedCount > 0)
             TooltipIconButton(Icons.Outlined.ContentCopy, "复制所选", onCopy, enabled = selectedCount > 0)
             TooltipIconButton(
