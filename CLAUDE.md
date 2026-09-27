@@ -113,6 +113,8 @@ expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以
 鼠标与键盘：条目右键弹出与操作面板相同的菜单（`ContextMenuArea`）。每页把一项的操作写成一个
 `actionsFor`，面板与菜单都读它（网盘页是 `fileActions`）；新列表照做。网盘页按住主修饰键点选是加选，
 Shift 点选是连选（`selectionClicks`，状态在 `DriveScreenState.toggleSelected` / `selectRange`）。
+鼠标悬停时条目上出勾选框（列表盖在缩略图上，海报墙与图库在封面左上角），点它进入多选；在网格空白处拖动是框选
+（`marqueeSelection`，`selectBoxed`），空白处单击退出多选。框选只从空白处开始，按在条目上拖动留给拖放移动。
 网盘页的键盘：方向键在条目间走（焦点所在的一项由 `keyboardFocusRing` 描边，只在键盘导航时画，
 输入方式由根上的 `trackInputModality` 记），Enter 打开，菜单键或 Shift+F10 打开操作面板，
 Delete 与 F2 作用于焦点所在项或选中的几项；鼠标点到哪一项，键盘就从哪一项接着走。Alt+←/→（mac 上 ⌘[ ⌘]）
@@ -287,7 +289,8 @@ Git Bash 会把以 `/` 开头的参数改写成 Windows 路径，传网盘路径
 ./gradlew :shots:run --args="texts --click 传输"          # 打印界面上的文本，找 --click 的目标用
 ```
 
-- 步骤有 `--click`、`--right-click`、`--hover`、`--wait`、`--pump`，按写的顺序执行；点击按文本或内容描述找节点，
+- 步骤有 `--click`、`--right-click`、`--hover`、`--key`、`--drag`（按住左键拖，坐标按 dp）、`--release`、`--wait`、`--pump`，
+  按写的顺序执行；点击按文本或内容描述找节点，
   弹层里的也算。`all` 的清单在 `shots/.../Main.kt` 的 `standardSet`，改了哪类界面就往里加一张。
 - 数据在 `ShotEnv.kt` 的 `FakePikPak.seed()`：一部 12 集的番剧、一个子目录、电影与文档、回收站、星标、
   离线任务与四个本地下载。假服务端（`FakePikPak`）经 OkHttp 拦截器作答，SDK 的请求与解析仍走真实代码；

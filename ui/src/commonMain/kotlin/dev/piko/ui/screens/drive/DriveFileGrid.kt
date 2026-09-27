@@ -1,5 +1,16 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.ui.components.marqueeSelection
+import dev.piko.ui.components.ListLeadingSize
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.draw.clip
+import androidx.compose.material3.Checkbox
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -131,6 +142,10 @@ internal class DriveItemCallbacks(
     val onToggleSelect: (FileStat) -> Unit,
     /** Shift 点选。 */
     val onExtendSelect: (FileStat) -> Unit,
+    /** 框选，见 [marqueeSelection]。 */
+    val onBoxSelect: (base: Set<String>, boxed: Set<String>) -> Unit,
+    /** 鼠标单击了网格的空白处。 */
+    val onBackgroundClick: () -> Unit,
     /** 焦点进出这一项（含它里面的更多按钮），键盘操作据此知道作用于哪一项。 */
     val onFocusChanged: (FileStat, Boolean) -> Unit,
     /** 右键菜单的内容，与操作面板相同。 */
@@ -179,10 +194,19 @@ internal fun DriveFileGrid(
             if (entryIndex >= 0) gridState.animateScrollToItem(leadingItemCount + entryIndex)
         }
 
+        val fileKeys = remember(items) { items.mapNotNullTo(HashSet()) { (it as? DriveListItem.File)?.key } }
         LazyVerticalStaggeredGrid(
             state = gridState,
             columns = gridCells(viewMode),
-            modifier = modifier.fillMaxSize(),
+            modifier = modifier
+                .fillMaxSize()
+                .marqueeSelection(
+                    gridState = gridState,
+                    selectedIds = selectedIds,
+                    boxedKey = { key -> (key as? String)?.takeIf { it in fileKeys } },
+                    onSelect = callbacks.onBoxSelect,
+                    onBackgroundClick = callbacks.onBackgroundClick,
+                ),
             contentPadding = PaddingValues(
                 start = horizontalPadding,
                 end = horizontalPadding,
@@ -398,9 +422,12 @@ private fun DriveCell(
             onFocusRequested()
         }
     }
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
     ContextMenuArea(
         actions = { callbacks.contextActions(file) },
         modifier = modifier
+            .hoverable(interaction)
             .focusRequester(focusRequester)
             .onFocusChanged { callbacks.onFocusChanged(file, it.hasFocus) }
             // 鼠标点到哪一项，键盘就从哪一项接着走，与文件管理器相同。条目自己的单击不取焦点；
@@ -420,49 +447,83 @@ private fun DriveCell(
             onExtend = { callbacks.onExtendSelect(file) },
         ),
     ) {
-        when (viewMode) {
-            DriveViewMode.GALLERY -> GalleryTile(
-                file = file,
-                isSelectionMode = isSelectionMode,
-                isSelected = isSelected,
-                isSpoilerBlurred = isBlurred,
-                isHighlighted = isHighlighted,
-                onClick = { callbacks.onOpen(file) },
-                onLongClick = { callbacks.onLongPress(file) },
-                onSelectToggle = { callbacks.onSelect(file, it) },
-            )
-            DriveViewMode.POSTER -> PosterCard(
-                file = file,
-                isSelectionMode = isSelectionMode,
-                isSelected = isSelected,
-                isSpoilerBlurred = isBlurred,
-                isHighlighted = isHighlighted,
-                onClick = { callbacks.onOpen(file) },
-                onLongClick = { callbacks.onLongPress(file) },
-                onSelectToggle = { callbacks.onSelect(file, it) },
-                onMoreClick = { callbacks.onMore(file) },
-                title = text.title,
-                tags = text.tags,
-                code = text.code,
-                resolution = text.resolution,
-            )
-            DriveViewMode.LIST -> FileListItem(
-                file = file,
-                isSelectionMode = isSelectionMode,
-                isSelected = isSelected,
-                isHighlighted = isHighlighted,
-                // 文件夹没有缩略图，不走防窥
-                isSpoilerBlurred = isBlurred && !file.isFolder,
-                locationLabel = locationLabel,
-                onClick = { callbacks.onOpen(file) },
-                onLongClick = { callbacks.onLongPress(file) },
-                onSelectToggle = { callbacks.onSelect(file, it) },
-                onMoreClick = { callbacks.onMore(file) },
-                title = text.title,
-                tags = text.tags,
-                code = text.code,
-            )
+        Box {
+            when (viewMode) {
+                DriveViewMode.GALLERY -> GalleryTile(
+                    file = file,
+                    isSelectionMode = isSelectionMode,
+                    isSelected = isSelected,
+                    isSpoilerBlurred = isBlurred,
+                    isHighlighted = isHighlighted,
+                    onClick = { callbacks.onOpen(file) },
+                    onLongClick = { callbacks.onLongPress(file) },
+                    onSelectToggle = { callbacks.onSelect(file, it) },
+                )
+                DriveViewMode.POSTER -> PosterCard(
+                    file = file,
+                    isSelectionMode = isSelectionMode,
+                    isSelected = isSelected,
+                    isSpoilerBlurred = isBlurred,
+                    isHighlighted = isHighlighted,
+                    onClick = { callbacks.onOpen(file) },
+                    onLongClick = { callbacks.onLongPress(file) },
+                    onSelectToggle = { callbacks.onSelect(file, it) },
+                    onMoreClick = { callbacks.onMore(file) },
+                    title = text.title,
+                    tags = text.tags,
+                    code = text.code,
+                    resolution = text.resolution,
+                )
+                DriveViewMode.LIST -> FileListItem(
+                    file = file,
+                    isSelectionMode = isSelectionMode,
+                    isSelected = isSelected,
+                    isHighlighted = isHighlighted,
+                    // 文件夹没有缩略图，不走防窥
+                    isSpoilerBlurred = isBlurred && !file.isFolder,
+                    locationLabel = locationLabel,
+                    onClick = { callbacks.onOpen(file) },
+                    onLongClick = { callbacks.onLongPress(file) },
+                    onSelectToggle = { callbacks.onSelect(file, it) },
+                    onMoreClick = { callbacks.onMore(file) },
+                    title = text.title,
+                    tags = text.tags,
+                    code = text.code,
+                )
+            }
+            if (hovered && !isSelectionMode) {
+                HoverSelectBox(
+                    viewMode = viewMode,
+                    onClick = { callbacks.onToggleSelect(file) },
+                    modifier = when (viewMode) {
+                        // 盖在前导缩略图上：行外侧 4dp 加内容起始 12dp，缩略图 56dp
+                        DriveViewMode.LIST -> Modifier.align(Alignment.CenterStart).padding(start = 16.dp)
+                        DriveViewMode.POSTER -> Modifier.align(Alignment.TopStart).padding(6.dp)
+                        DriveViewMode.GALLERY -> Modifier.align(Alignment.TopStart).padding(4.dp)
+                    },
+                )
+            }
         }
+    }
+}
+
+/**
+ * 鼠标停在条目上时出现的勾选框，照 Gmail 与网页版网盘：列表行盖在前导缩略图上，海报墙与图库在封面左上角。
+ * 点它选中这一项并进入多选，不打开条目。多选时条目自己画勾选状态，这里不再出现；触屏没有悬停，长按照旧。
+ */
+@Composable
+private fun HoverSelectBox(viewMode: DriveViewMode, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val colors = MaterialTheme.colorScheme
+    val shape = if (viewMode == DriveViewMode.LIST) MaterialTheme.shapes.small else CircleShape
+    Box(
+        modifier = modifier
+            .size(if (viewMode == DriveViewMode.LIST) ListLeadingSize else 32.dp)
+            .clip(shape)
+            .background(if (viewMode == DriveViewMode.LIST) colors.surfaceContainerHighest else colors.surface.copy(alpha = 0.9f))
+            .clickable(role = Role.Checkbox, onClickLabel = "选择", onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Checkbox(checked = false, onCheckedChange = null)
     }
 }
 

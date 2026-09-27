@@ -546,6 +546,23 @@ class DriveScreenState(
         order.subList(minOf(from, to), maxOf(from, to) + 1).forEach { setSelected(it, true) }
     }
 
+    /**
+     * 桌面的框选：选中的换成 [base] 加上框住的 [boxed]。拖动时每动一下调一次，[base] 是按下时已选的
+     * （按着主修饰键开始框选时保留原来的选择，否则为空）。结果为空就退出多选。
+     */
+    fun selectBoxed(base: Set<String>, boxed: Collection<String>) {
+        val next = LinkedHashSet(base).apply { addAll(boxed) }
+        if (next.isEmpty()) {
+            exitSelection()
+            return
+        }
+        isSelectionMode = true
+        if (selectedFileIds.toSet() != next) {
+            selectedFileIds.clear()
+            selectedFileIds.addAll(next)
+        }
+    }
+
     fun toggleSelectAll() {
         val visible = displayedFiles.map { it.id }
         if (selectedFileIds.size == visible.size) {

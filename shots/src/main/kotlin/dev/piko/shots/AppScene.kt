@@ -119,6 +119,26 @@ class AppScene private constructor(private val scene: ImageComposeScene) : AutoC
         pump(150)
     }
 
+    /** 按住鼠标左键从 [from] 拖到 [to]，中间走 [steps] 步，看框选与拖放。 */
+    fun drag(from: Offset, to: Offset, steps: Int = 12) {
+        edt { scene.sendPointerEvent(PointerEventType.Move, from) }
+        pump(30)
+        edt { scene.sendPointerEvent(PointerEventType.Press, from, button = PointerButton.Primary) }
+        pump(30)
+        for (i in 1..steps) {
+            val at = from + (to - from) * (i / steps.toFloat())
+            edt { scene.sendPointerEvent(PointerEventType.Move, at) }
+            pump(30)
+        }
+        // 松手前留一张：框还画着
+        pump(200)
+    }
+
+    fun release(at: Offset) {
+        edt { scene.sendPointerEvent(PointerEventType.Release, at, button = PointerButton.Primary) }
+        pump(100)
+    }
+
     /** 鼠标移到 [text] 上停着，看悬停态与提示。 */
     fun hover(text: String) {
         val node = find(text) ?: error("找不到「$text」")

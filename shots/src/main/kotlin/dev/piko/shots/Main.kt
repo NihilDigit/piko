@@ -1,5 +1,6 @@
 package dev.piko.shots
 
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.PointerButton
 import dev.piko.ui.theme.ThemeMode
 import java.io.File
@@ -14,6 +15,7 @@ private const val USAGE = """用法：piko-shots <命令> [选项]
         --click <文本>        点击文本或内容描述为它的节点（先精确匹配，没有则包含匹配）
         --right-click <文本>  右键点击，看右键菜单
         --hover <文本>        鼠标停在上面，看悬停态与提示
+        --drag <x,y:x,y>      按住左键从一点拖到另一点（dp），看框选；--release 在终点松手
         --key <键>            按一次键：Down、Tab、Enter、Esc、F2、Menu、Ctrl+A、Shift+F10 等
         --wait <文本>         等到界面上出现它
         --pump <毫秒>         多等一会儿，让动画走完
@@ -26,6 +28,8 @@ private const val USAGE = """用法：piko-shots <命令> [选项]
 private sealed interface Step {
     data class Click(val text: String, val button: PointerButton = PointerButton.Primary) : Step
     data class Hover(val text: String) : Step
+    data class Drag(val from: Offset, val to: Offset) : Step
+    data object Release : Step
     data class Key(val chord: String) : Step
     data class Wait(val text: String) : Step
     data class Pump(val ms: Long) : Step
@@ -55,6 +59,12 @@ private val standardSet = listOf(
     Shot("details-1440x900", steps = listOf(Step.Click("更多操作"), Step.Pump(800))),
     Shot("details-400x860", 400, 860, steps = listOf(Step.Click("更多操作"), Step.Pump(800))),
     Shot("context-menu-1440x900", steps = listOf(Step.Click("Oppenheimer", PointerButton.Secondary), Step.Pump(500))),
+    // 鼠标：悬停出勾选框；在空白处拖出框选，松手前那一刻框还画着
+    Shot("hover-check-1440x900", steps = listOf(Step.Hover("Oppenheimer"))),
+    Shot(
+        "marquee-1440x900",
+        steps = listOf(Step.Click("动画"), Step.Wait("SPs"), Step.Pump(800), Step.Drag(Offset(1350f, 720f), Offset(800f, 400f))),
+    ),
     // 键盘：方向键走到一项，描边标出焦点
     Shot("keyboard-focus-1440x900", steps = listOf(Step.Key("Down"), Step.Key("Down"), Step.Key("Right"), Step.Key("Down"))),
     // 信息流：宽窗口的侧栏、窄窗口的全屏、弹出到独立窗口后主窗口的样子
@@ -109,10 +119,16 @@ private fun printTexts(shot: Shot) = run(shot) { app -> app.texts().forEach(::pr
 private fun run(shot: Shot, finish: (AppScene) -> Unit) {
     ShotEnv().use { env ->
         AppScene.open(env, shot.width, shot.height, shot.mode).use { app ->
+            var lastDragEnd: Offset? = null
             for (step in shot.steps) {
                 when (step) {
                     is Step.Click -> app.click(step.text, step.button)
                     is Step.Hover -> app.hover(step.text)
+                    is Step.Drag -> {
+                        app.drag(step.from, step.to)
+                        lastDragEnd = step.to
+                    }
+                    is Step.Release -> app.release(lastDragEnd ?: fail("--release 前面要有 --drag"))
                     is Step.Key -> app.key(step.chord)
                     is Step.Wait -> if (!app.pumpUntil { app.hasText(step.text) }) {
                         System.err.println("[${shot.name}] 等不到「${step.text}」，照当前画面出图")
@@ -144,6 +160,14 @@ private fun parseShot(name: String, args: List<String>): Shot {
             "--click" -> steps += Step.Click(value())
             "--right-click" -> steps += Step.Click(value(), PointerButton.Secondary)
             "--hover" -> steps += Step.Hover(value())
+            "--drag" -> {
+                val (from, to) = value().split(':').map { point ->
+                    val (x, y) = point.split(',').map { it.toFloatOrNull() ?: fail("--drag 写成 1300,700:900,300") }
+                    Offset(x, y)
+                }
+                steps += Step.Drag(from, to)
+            }
+            "--release" -> steps += Step.Release
             "--key" -> steps += Step.Key(value())
             "--wait" -> steps += Step.Wait(value())
             "--pump" -> steps += Step.Pump(value().toLongOrNull() ?: fail("--pump 要毫秒数"))

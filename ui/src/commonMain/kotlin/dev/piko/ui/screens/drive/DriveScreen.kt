@@ -411,6 +411,8 @@ fun DriveScreen(
             onSelect = { file, selected -> state.setSelected(file.id, selected) },
             onToggleSelect = { state.toggleSelected(it.id) },
             onExtendSelect = { state.selectRange(it.id) },
+            onBoxSelect = state::selectBoxed,
+            onBackgroundClick = { if (state.isSelectionMode) state.exitSelection() },
             onFocusChanged = { file, focused ->
                 if (focused) {
                     focusedFile = file
