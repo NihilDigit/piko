@@ -1,5 +1,23 @@
 package dev.piko.ui
 
+import dev.piko.shared.sync.PikoSettingsSync
+import dev.piko.shared.data.PikoFileSortOrder
+import dev.piko.ui.theme.ThemeMode
+import dev.piko.ui.components.LocalPaletteRegistry
+import dev.piko.ui.components.PaletteRegistry
+import dev.piko.ui.components.PaletteItem
+import dev.piko.ui.components.CommandPalette
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.Palette
+import androidx.compose.material.icons.outlined.CloudSync
+import androidx.compose.material.icons.outlined.SwipeVertical
+import androidx.compose.material.icons.automirrored.outlined.Undo
+import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.StarOutline
+import androidx.compose.material.icons.outlined.Star
+import androidx.compose.material.icons.outlined.History
 import dev.piko.ui.components.LocalFileDrag
 import dev.piko.ui.components.FileDragState
 import dev.piko.ui.components.FileDragOverlay
@@ -591,9 +609,78 @@ fun PikoMainScaffold(
     val paneBack: (() -> Unit)? = if (twoPane) null else ::popBack
     val selectedPane = topScreen?.takeIf { it in ProfilePanes }
 
+    fun openFolderStack(stack: List<PikoPathBreadcrumb>) {
+        resetToHome()
+        currentTab = MainTab.FILES
+        services.driveRepository.updateFolderStack(stack)
+    }
+
+    fun openPage(screen: Screen) {
+        currentTab = MainTab.SETTINGS
+        resetToHome()
+        openProfilePane(screen)
+    }
+
+    // 命令面板的内容。没输入时按这里的顺序列出前面几项：最近去过的文件夹在最前
+    fun paletteItems(
+        recent: List<List<PikoPathBreadcrumb>>,
+        starred: List<FileStat>,
+        subfolders: List<FileStat>,
+        contributed: List<PaletteItem>,
+    ): List<PaletteItem> = buildList {
+        val here = folderStack.lastOrNull()?.id
+        fun path(stack: List<PikoPathBreadcrumb>) = stack.joinToString(" › ") { it.name }
+        recent.filter { it.last().id != here }.forEach { stack ->
+            add(PaletteItem(stack.last().name, Icons.Outlined.History, "最近", detail = path(stack)) { openFolderStack(stack) })
+        }
+        val label = shortcutModifier::label
+        add(PaletteItem("文件", Icons.Outlined.Folder, "前往", detail = label("1"), keywords = "files drive") { currentTab = MainTab.FILES; resetToHome() })
+        add(PaletteItem("传输", Icons.Outlined.SyncAlt, "前往", detail = label("2"), keywords = "transfers downloads uploads") { openTransfers() })
+        add(PaletteItem("我的", Icons.Outlined.Person, "前往", detail = label("3"), keywords = "profile me") { currentTab = MainTab.SETTINGS; resetToHome() })
+        starred.forEach { folder ->
+            add(PaletteItem(folder.name, Icons.Outlined.Star, "星标") {
+                quickAccess.openStarred(folder)
+                resetToHome()
+                currentTab = MainTab.FILES
+            })
+        }
+        folderStack.takeIf { it.isNotEmpty() }?.let { stack ->
+            subfolders.forEach { folder ->
+                val target = stack + PikoPathBreadcrumb(folder.id, folder.name)
+                add(PaletteItem(folder.name, Icons.Outlined.Folder, "当前文件夹", detail = path(target)) { openFolderStack(target) })
+            }
+        }
+        addAll(contributed)
+        add(PaletteItem("添加链接", Icons.Outlined.Bolt, "操作", keywords = "magnet link offline 磁力 离线") {
+            currentTab = MainTab.FILES
+            resetToHome()
+            services.instantSession.start()
+        })
+        add(PaletteItem("撤销", Icons.AutoMirrored.Outlined.Undo, "操作", detail = label("Z"), keywords = "undo") { services.driveRepository.changes.undoLast() })
+        add(PaletteItem(if (feedShown) "关闭信息流" else "打开信息流", Icons.Outlined.SwipeVertical, "操作", keywords = "feed clips") {
+            currentTab = MainTab.FILES
+            resetToHome()
+            setFeedShown(!feedShown)
+        })
+        add(PaletteItem("立即同步设置", Icons.Outlined.CloudSync, "操作", keywords = "sync settings") { coroutineScope.launch { services.settingsSync.syncNow() } })
+        ThemeMode.entries.forEach { mode ->
+            add(PaletteItem("主题：${mode.label}", Icons.Outlined.Palette, "操作", keywords = "theme ${mode.name.lowercase()}") {
+                coroutineScope.launch { preferences.setThemeMode(mode.name) }
+            })
+        }
+        add(PaletteItem("星标", Icons.Outlined.StarOutline, "页面", keywords = "starred") { openPage(Screen.Starred) })
+        add(PaletteItem("播放历史", Icons.Outlined.History, "页面", keywords = "history") { openPage(Screen.PlayHistory) })
+        add(PaletteItem("我的分享", Icons.Outlined.Share, "页面", keywords = "shares") { openPage(Screen.MyShares) })
+        add(PaletteItem("回收站", Icons.Outlined.Delete, "页面", keywords = "trash bin") { openPage(Screen.Trash) })
+        add(PaletteItem("设置", Icons.Outlined.Settings, "页面", keywords = "settings preferences") { openPage(Screen.Settings) })
+    }
+
     // 应用内拖放网盘条目：网盘页拖出，侧边栏、路径栏与文件夹接住，见 FileDragState
     val fileDrag = remember { FileDragState() }
-    CompositionLocalProvider(LocalFileDrag provides fileDrag) {
+    // 命令面板（主修饰键+K）：跳到文件夹或执行命令，各页经 ContributePaletteItems 往里放自己的命令
+    val palette = remember { PaletteRegistry() }
+    var paletteOpen by remember { mutableStateOf(false) }
+    CompositionLocalProvider(LocalFileDrag provides fileDrag, LocalPaletteRegistry provides palette) {
         Box(
             modifier = modifier
                 .fillMaxSize()
@@ -602,6 +689,10 @@ fun PikoMainScaffold(
                 .focusable()
                 .onKeyEvent { event ->
                     if (event.type != KeyEventType.KeyDown || !shortcutModifier.isPressed(event)) return@onKeyEvent false
+                    if (event.key == Key.K) {
+                        paletteOpen = true
+                        return@onKeyEvent true
+                    }
                     val tab = when (event.key) {
                         Key.One -> MainTab.FILES
                         Key.Two -> MainTab.TRANSFERS
@@ -677,6 +768,22 @@ fun PikoMainScaffold(
             )
             // 拖动网盘条目时指针旁的说明，盖在一切之上
             FileDragOverlay(fileDrag)
+            if (paletteOpen) {
+                // 星标只在侧边栏出现时才取，面板开着时也要
+                LaunchedEffect(quickAccess) { quickAccess.watchStarred() }
+                val recent by services.driveRepository.recentFoldersFlow.collectAsStateWithLifecycle()
+                CommandPalette(
+                    items = paletteItems(
+                        recent = recent,
+                        starred = quickAccess.starredFolders,
+                        subfolders = folderStack.lastOrNull()
+                            ?.let { services.driveRepository.cachedFiles(it.id, PikoFileSortOrder.NAME_ASC) }
+                            .orEmpty().filter { it.isFolder && it.name != PikoSettingsSync.FOLDER_NAME },
+                        contributed = palette.items(),
+                    ),
+                    onDismiss = { paletteOpen = false },
+                )
+            }
         }
     }
 }

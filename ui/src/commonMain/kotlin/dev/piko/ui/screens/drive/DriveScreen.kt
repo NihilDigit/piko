@@ -1,5 +1,13 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.ui.components.PaletteItem
+import dev.piko.ui.components.ContributePaletteItems
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.automirrored.filled.ViewList
+import androidx.compose.material.icons.outlined.ArrowUpward
+import androidx.compose.material.icons.outlined.SelectAll
 import dev.piko.ui.components.SidePanelLayout
 import dev.piko.ui.components.SheetAction
 import dev.piko.shared.state.DriveListItem
@@ -656,6 +664,29 @@ fun DriveScreen(
                 // 回调给的是完整路径栈的下标（首页按钮传 0），与 ancestorCrumbs 的偏移已在组件里处理
                 onBreadcrumbClick = { index -> state.navigateToBreadcrumb(index) },
             )
+        }
+    }
+
+    // 网盘页在眼前时，命令面板里多出这一页的命令
+    ContributePaletteItems("drive") {
+        val label = platform.shortcutModifier::label
+        buildList {
+            add(PaletteItem("新建文件夹", Icons.Outlined.CreateNewFolder, "网盘", keywords = "new folder mkdir") { showNewFolderDialog = true })
+            add(PaletteItem("上传文件", Icons.Outlined.UploadFile, "网盘", keywords = "upload") { pickFiles() })
+            add(PaletteItem("上传文件夹", Icons.Outlined.DriveFolderUpload, "网盘", keywords = "upload folder") { pickFolder() })
+            add(PaletteItem("搜索文件", Icons.Outlined.Search, "网盘", detail = label("F"), keywords = "search find") { isSearchOpen = true })
+            if (inspectorAvailable) {
+                add(PaletteItem(if (inspectorOpen) "收起详情栏" else "打开详情栏", Icons.Outlined.Info, "网盘", detail = label("I"), keywords = "details inspector info") { toggleInspector() })
+            }
+            DriveViewMode.entries.filter { it != viewMode }.forEach { mode ->
+                add(PaletteItem("切换到${mode.paletteLabel}", mode.paletteIcon, "网盘", keywords = "视图 view ${mode.name.lowercase()}") {
+                    scope.launch { sessionManager.setDriveViewMode(mode.name) }
+                })
+            }
+            add(PaletteItem("全选", Icons.Outlined.SelectAll, "网盘", detail = label("A"), keywords = "select all") { state.toggleSelectAll() })
+            add(PaletteItem("刷新", Icons.Outlined.Refresh, "网盘", detail = "F5", keywords = "refresh reload") { state.load(refresh = true) })
+            if (folderStack.size > 1) add(PaletteItem("上一级", Icons.Outlined.ArrowUpward, "网盘", detail = "Backspace", keywords = "up parent") { state.navigateUp() })
+            add(PaletteItem("在当前文件夹查找重复", Icons.Outlined.FileCopy, "网盘", keywords = "duplicate dedupe") { duplicateSession.open(activeFolder) })
         }
     }
 
@@ -1347,3 +1378,17 @@ private fun NameInputDialog(
 
 private val InspectorDefaultWidth = 320.dp
 private val InspectorMinWidth = 280.dp
+
+private val DriveViewMode.paletteLabel: String
+    get() = when (this) {
+        DriveViewMode.LIST -> "列表视图"
+        DriveViewMode.POSTER -> "海报墙"
+        DriveViewMode.GALLERY -> "图库"
+    }
+
+private val DriveViewMode.paletteIcon: ImageVector
+    get() = when (this) {
+        DriveViewMode.LIST -> Icons.AutoMirrored.Filled.ViewList
+        DriveViewMode.POSTER -> Icons.Filled.GridView
+        DriveViewMode.GALLERY -> Icons.Filled.PhotoLibrary
+    }

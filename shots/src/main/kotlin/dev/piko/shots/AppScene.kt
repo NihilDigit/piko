@@ -139,6 +139,23 @@ class AppScene private constructor(private val scene: ImageComposeScene) : AutoC
         pump(100)
     }
 
+    /**
+     * 往有焦点的输入框里打字。桌面端的文字输入走 AWT 的 KEY_TYPED 事件，这里逐字造一个交给场景；
+     * 中文一样可以，不经输入法。
+     */
+    @OptIn(InternalComposeUiApi::class)
+    fun type(text: String) {
+        val source = javax.swing.JPanel()
+        for (c in text) {
+            val awt = java.awt.event.KeyEvent(source, java.awt.event.KeyEvent.KEY_TYPED, System.currentTimeMillis(), 0, java.awt.event.KeyEvent.VK_UNDEFINED, c)
+            // 与桌面端把 KEY_TYPED 换成的事件一样：类型未知、带着字符，原生事件留着，文本框据它认出这是打字
+            val event = KeyEvent(key = Key.Unknown, type = KeyEventType.Unknown, codePoint = c.code, nativeEvent = awt)
+            edt { scene.sendKeyEvent(event) }
+            pump(20)
+        }
+        pump(200)
+    }
+
     /** 鼠标移到 [text] 上停着，看悬停态与提示。 */
     fun hover(text: String) {
         val node = find(text) ?: error("找不到「$text」")
@@ -214,7 +231,7 @@ private fun keyNamed(name: String): Key = when (name.lowercase()) {
     "f12" -> Key.F12
     "menu" -> Key.Menu
     else -> if (name.length == 1 && name[0].isLetterOrDigit()) {
-        Key(java.awt.event.KeyEvent.getExtendedKeyCodeForChar(name[0].uppercaseChar().code).toLong())
+        Key(nativeKeyCode = java.awt.event.KeyEvent.getExtendedKeyCodeForChar(name[0].uppercaseChar().code))
     } else {
         throw IllegalArgumentException("不认识的键：$name")
     }

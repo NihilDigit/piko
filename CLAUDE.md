@@ -123,6 +123,9 @@ Shift 点选是连选（`selectionClicks`，状态在 `DriveScreenState.toggleSe
 落点只提供文件夹。
 移动、移入回收站与重命名做完都记进 `DriveChangeJournal`（`driveRepository.changes`），提示带「撤销」，
 Ctrl+Z 撤销最近一次；以后的批量改动（自动重命名、按刮削结果整理）也记一条，撤销即反向再做一次。
+命令面板（主修饰键+K，`CommandPalette`）：模糊搜索最近与星标文件夹、当前目录的子文件夹、去处与命令，方向键挑、回车执行。
+全局的命令在 `PikoMainScaffold` 的 `paletteItems`；某一页自己的命令在页里经 `ContributePaletteItems` 登记，页面离开组合时撤掉
+（网盘页登记了新建文件夹、上传、视图、详情栏等）。新页面有值得键盘直达的操作就照这样登记。
 网盘页的键盘：方向键在条目间走（焦点所在的一项由 `keyboardFocusRing` 描边，只在键盘导航时画，
 输入方式由根上的 `trackInputModality` 记），Enter 打开，菜单键或 Shift+F10 打开操作面板，
 Delete 与 F2 作用于焦点所在项或选中的几项；鼠标点到哪一项，键盘就从哪一项接着走。Alt+←/→（mac 上 ⌘[ ⌘]）
@@ -300,7 +303,8 @@ Git Bash 会把以 `/` 开头的参数改写成 Windows 路径，传网盘路径
 ./gradlew :shots:run --args="texts --click 传输"          # 打印界面上的文本，找 --click 的目标用
 ```
 
-- 步骤有 `--click`、`--right-click`、`--hover`、`--key`、`--drag`（按住左键拖，坐标按 dp）、`--release`、`--wait`、`--pump`，
+- 步骤有 `--click`、`--right-click`、`--hover`、`--key`、`--type`（往有焦点的输入框打字，中文也行）、`--drag`（按住左键拖，
+  坐标按 dp）、`--release`、`--wait`、`--pump`，
   按写的顺序执行；点击按文本或内容描述找节点，
   弹层里的也算。`all` 的清单在 `shots/.../Main.kt` 的 `standardSet`，改了哪类界面就往里加一张。
 - 数据在 `ShotEnv.kt` 的 `FakePikPak.seed()`：一部 12 集的番剧、一个子目录、电影与文档、回收站、星标、

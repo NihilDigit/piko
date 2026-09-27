@@ -17,6 +17,7 @@ private const val USAGE = """用法：piko-shots <命令> [选项]
         --hover <文本>        鼠标停在上面，看悬停态与提示
         --drag <x,y:x,y>      按住左键从一点拖到另一点（dp），看框选；--release 在终点松手
         --key <键>            按一次键：Down、Tab、Enter、Esc、F2、Menu、Ctrl+A、Shift+F10 等
+        --type <文字>         往有焦点的输入框里打字
         --wait <文本>         等到界面上出现它
         --pump <毫秒>         多等一会儿，让动画走完
   texts [--size <宽>x<高>] [步骤…]
@@ -31,6 +32,7 @@ private sealed interface Step {
     data class Drag(val from: Offset, val to: Offset) : Step
     data object Release : Step
     data class Key(val chord: String) : Step
+    data class Type(val text: String) : Step
     data class Wait(val text: String) : Step
     data class Pump(val ms: Long) : Step
 }
@@ -79,6 +81,9 @@ private val standardSet = listOf(
             Step.Drag(Offset(1050f, 780f), Offset(600f, 400f)), Step.Release, Step.Pump(600),
         ),
     ),
+    // 命令面板：没输入时最近的文件夹与去处在前；输入后模糊匹配文件夹与命令
+    Shot("palette-1440x900", steps = listOf(Step.Click("Frieren"), Step.Wait("SPs"), Step.Key("Alt+Left"), Step.Pump(800), Step.Key("Ctrl+K"), Step.Pump(800))),
+    Shot("palette-query-1440x900", steps = listOf(Step.Key("Ctrl+K"), Step.Pump(600), Step.Type("视图"), Step.Pump(600))),
     // 键盘：方向键走到一项，描边标出焦点
     Shot("keyboard-focus-1440x900", steps = listOf(Step.Key("Down"), Step.Key("Down"), Step.Key("Right"), Step.Key("Down"))),
     // 信息流：宽窗口的侧栏、窄窗口的全屏、弹出到独立窗口后主窗口的样子
@@ -144,6 +149,7 @@ private fun run(shot: Shot, finish: (AppScene) -> Unit) {
                     }
                     is Step.Release -> app.release(lastDragEnd ?: fail("--release 前面要有 --drag"))
                     is Step.Key -> app.key(step.chord)
+                    is Step.Type -> app.type(step.text)
                     is Step.Wait -> if (!app.pumpUntil { app.hasText(step.text) }) {
                         System.err.println("[${shot.name}] 等不到「${step.text}」，照当前画面出图")
                     }
@@ -183,6 +189,7 @@ private fun parseShot(name: String, args: List<String>): Shot {
             }
             "--release" -> steps += Step.Release
             "--key" -> steps += Step.Key(value())
+            "--type" -> steps += Step.Type(value())
             "--wait" -> steps += Step.Wait(value())
             "--pump" -> steps += Step.Pump(value().toLongOrNull() ?: fail("--pump 要毫秒数"))
             "-o" -> value()
