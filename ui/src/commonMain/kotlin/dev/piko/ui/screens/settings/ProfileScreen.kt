@@ -2,7 +2,9 @@ package dev.piko.ui.screens.settings
 
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -21,6 +23,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Share
@@ -43,12 +47,13 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -282,7 +287,7 @@ private fun AccountCard(
         shape = MaterialTheme.shapes.large,
         color = MaterialTheme.colorScheme.surfaceContainer,
     ) {
-        Column(modifier = Modifier.padding(20.dp)) {
+        Column(modifier = Modifier.padding(16.dp)) {
             // 头像、会员期与空间并成一行：名字挪到顶栏之后，头像旁边只剩一枚会员期，单独占一行太空。
             // 会员期缩成小胶囊挂在「网盘空间」那一行的尾部，它和空间同属「这个账号有多少」
             val memberUntil = allowances?.expireTime?.let(::formatExpireDate)
@@ -297,7 +302,8 @@ private fun AccountCard(
             }
 
             if (allowances != null || allowancesError != null) {
-                Spacer(modifier = Modifier.height(24.dp))
+                // 折叠行自带上下内边距作点击区，这里的间距比视觉上的段距小
+                Spacer(modifier = Modifier.height(8.dp))
                 TransferSection(allowances, allowancesError)
             }
         }
@@ -397,36 +403,82 @@ private fun StorageSection(quota: QuotaSnapshot, memberUntil: String?, modifier:
     }
 }
 
+/**
+ * 默认折叠成一行，只报用得最满的一项：流量额度要掂量的是「哪一项快见底了」，其余几格平时用不着看。
+ * 展开后才写重置天数，折叠行放不下两段摘要，而天数只在某项接近用完时才有意义。
+ */
 @Composable
 private fun TransferSection(allowances: TransferAllowances?, error: String?) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val usages = allowances?.let(::transferUsages).orEmpty()
+    val tightest = usages.maxByOrNull { usedFraction(it.usedBytes, it.limitBytes) }
     Column {
-        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(MaterialTheme.shapes.small)
+                .clickable(
+                    enabled = usages.isNotEmpty(),
+                    onClickLabel = if (expanded) "收起" else "展开",
+                    role = Role.Button,
+                ) { expanded = !expanded }
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             SectionLabel("本月流量", Modifier.weight(1f))
-            if (allowances != null) {
+            val summary = when {
+                expanded -> transferQuotaResetLabel()
+                tightest != null -> tightestUsageLabel(tightest)
+                else -> null
+            }
+            if (summary != null) {
+                val nearlyFull = !expanded && tightest != null &&
+                    usedFraction(tightest.usedBytes, tightest.limitBytes) >= NEARLY_FULL_FRACTION
                 Text(
-                    text = transferQuotaResetLabel(),
+                    text = summary,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (nearlyFull) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
+            if (usages.isNotEmpty()) {
+                Spacer(modifier = Modifier.width(4.dp))
+                Icon(
+                    imageVector = if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
                 )
             }
         }
         if (error != null) {
             Text(text = error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
-        if (allowances != null) {
-            val usages = buildList {
-                add(Usage("离线", allowances.offline.usedBytes, allowances.offline.limitBytes))
-                add(Usage("下载", allowances.download.usedBytes, allowances.download.limitBytes))
-                add(Usage("上传", allowances.upload.usedBytes, allowances.upload.limitBytes))
-                if (allowances.downloadDaily.limitBytes > 0) {
-                    add(Usage("每日下载", allowances.downloadDaily.usedBytes, allowances.downloadDaily.limitBytes))
-                }
+        AnimatedVisibility(visible = expanded && usages.isNotEmpty()) {
+            Column {
+                Spacer(modifier = Modifier.height(4.dp))
+                UsageGrid(usages)
             }
-            Spacer(modifier = Modifier.height(8.dp))
-            UsageGrid(usages)
         }
     }
 }
+
+private fun transferUsages(allowances: TransferAllowances): List<Usage> = buildList {
+    add(Usage("离线", allowances.offline.usedBytes, allowances.offline.limitBytes))
+    add(Usage("下载", allowances.download.usedBytes, allowances.download.limitBytes))
+    add(Usage("上传", allowances.upload.usedBytes, allowances.upload.limitBytes))
+    if (allowances.downloadDaily.limitBytes > 0) {
+        add(Usage("每日下载", allowances.downloadDaily.usedBytes, allowances.downloadDaily.limitBytes))
+    }
+}
+
+/** 额度为 0 的项没有比例可言，写用量本身。 */
+private fun tightestUsageLabel(usage: Usage): String =
+    if (usage.limitBytes > 0) {
+        "${usage.title}已用 ${(usedFraction(usage.usedBytes, usage.limitBytes) * 100).toInt()}%"
+    } else {
+        "${usage.title}已用 ${usage.usedBytes.toReadableSize()}"
+    }
 
 @Composable
 private fun SectionLabel(text: String, modifier: Modifier = Modifier) {
@@ -481,7 +533,7 @@ private fun UsageTile(usage: Usage, modifier: Modifier = Modifier) {
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
+        Column(modifier = Modifier.padding(10.dp)) {
             Text(
                 text = usage.title,
                 style = MaterialTheme.typography.labelMedium,
@@ -501,7 +553,7 @@ private fun UsageTile(usage: Usage, modifier: Modifier = Modifier) {
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(6.dp))
             LinearProgressIndicator(
                 progress = { usedFraction(usage.usedBytes, usage.limitBytes) },
                 modifier = Modifier.fillMaxWidth(),
