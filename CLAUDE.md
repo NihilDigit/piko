@@ -103,13 +103,19 @@ expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以
 - 对话框：目录选择器在 compact 下全屏，更宽时是居中的基本对话框。
 - 面板：一律经 `PikoSheet`，expanded 是从末端滑入的模态侧边面板，其余是只有展开一档的底部 sheet；
   不要直接用 `ModalBottomSheet`（播放器的面板另有横屏侧栏，除外）。
+- 网盘页：compact 以上顶栏是整条路径加后退、前进（照资源管理器），compact 仍是目录名作标题、上级另成一行面包屑。
+  expanded 且网盘页够宽（`QuickAccessMinDriveWidth`）时左侧有快捷栏（`QuickAccessPane` / `QuickAccessState`）：
+  根目录、星标文件夹与最近去过的文件夹，信息流侧栏占掉宽度时自动收起。
+- 信息流：宽窗口是网盘页右侧的侧栏，放不下时全屏，桌面端还能弹出到独立窗口。它是**订阅**，不跟着网盘目录走：
+  刷哪个文件夹只由范围菜单与文件夹操作里的「在信息流中刷」决定，上次订阅的即 `ClipFeedSession.lastFolder()`。
 
 鼠标与键盘：条目右键弹出与操作面板相同的菜单（`ContextMenuArea`）。每页把一项的操作写成一个
 `actionsFor`，面板与菜单都读它（网盘页是 `fileActions`）；新列表照做。网盘页按住主修饰键点选是加选，
 Shift 点选是连选（`selectionClicks`，状态在 `DriveScreenState.toggleSelected` / `selectRange`）。
 网盘页的键盘：方向键在条目间走（焦点所在的一项由 `keyboardFocusRing` 描边，只在键盘导航时画，
 输入方式由根上的 `trackInputModality` 记），Enter 打开，菜单键或 Shift+F10 打开操作面板，
-Delete 与 F2 作用于焦点所在项或选中的几项；鼠标点到哪一项，键盘就从哪一项接着走。
+Delete 与 F2 作用于焦点所在项或选中的几项；鼠标点到哪一项，键盘就从哪一项接着走。Alt+←/→（mac 上 ⌘[ ⌘]）
+与鼠标侧键是后退、前进，Backspace 与 Alt+↑ 是上一级。
 横排的内容挂 `verticalWheelScrollsRow`，鼠标的竖滚轮才滚得动它；
 图标按钮用 `TooltipIconButton`，快捷键写在提示里；Esc 经 `BackHandler` 触发返回；网盘页快捷键见
 `DriveScreen` 的 `handleShortcut`。新加的界面同时照顾触屏与鼠标：下拉刷新之类只有触屏能用的操作，
@@ -151,6 +157,9 @@ Compose 桌面端悬停移动事件的 `previousPosition` 恒等于 `position`�
 
 `PikoDriveRepository` 持有 `folderStackFlow`，是网盘主界面的全局位置，并持久化。目录选择器
 一类的浮层**必须维护自己的路径栈**，碰它会把主界面的位置一起改掉。
+浏览历史（`historyFlow`，后退与前进）也在这里，每次换栈记一步；「上一级」与它无关。从别处跳进网盘（在网盘中显示、
+快捷栏）用 `updateFolderStack`，会记进历史；只有启动时恢复位置用 `restoreFolderStack`，不记。
+同处还记着快捷栏的「最近」（`recentFoldersFlow`，按账号存进缓存目录）。
 仓库层还有 `refreshEvents`，供界面外的改动（如回收站恢复）通知列表刷新，`DriveScreenState`
 已在 `init` 里订阅，视图不要再订阅一遍。
 

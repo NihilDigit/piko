@@ -112,13 +112,23 @@ open class PikoDriveRepository(
     private val _historyFlow = MutableStateFlow(FolderHistory())
     val historyFlow: StateFlow<FolderHistory> = _historyFlow.asStateFlow()
 
+    private val recentFolders = RecentFolders(cacheStore, backgroundScope)
+
+    /** 最近去过的文件夹（整条路径），新的在前，见 [RecentFolders]。 */
+    val recentFoldersFlow: StateFlow<List<List<PikoPathBreadcrumb>>> get() = recentFolders.flow
+
+    private val _starredChanges = MutableStateFlow(0)
+
+    /** 经 [setStarred] 改过星标就加一，列星标的地方据此重新取。 */
+    val starredChanges: StateFlow<Int> = _starredChanges.asStateFlow()
+
     /** 把栈换成 [next]，换了才把原来的位置记进后退、清掉前进。 */
     private fun moveTo(next: List<PikoPathBreadcrumb>) {
         val previous = _folderStackFlow.value
         if (next == previous) return
         _folderStackFlow.value = next
         _historyFlow.update { it.visited(previous) }
-        forgetFoldersOutsideStack()
+        stackChanged()
     }
 
     fun goBack(): Boolean {
@@ -126,7 +136,7 @@ open class PikoDriveRepository(
         val target = history.back.lastOrNull() ?: return false
         _historyFlow.value = FolderHistory(back = history.back.dropLast(1), forward = history.forward + listOf(_folderStackFlow.value))
         _folderStackFlow.value = target
-        forgetFoldersOutsideStack()
+        stackChanged()
         return true
     }
 
@@ -135,7 +145,7 @@ open class PikoDriveRepository(
         val target = history.forward.lastOrNull() ?: return false
         _historyFlow.value = FolderHistory(back = history.back + listOf(_folderStackFlow.value), forward = history.forward.dropLast(1))
         _folderStackFlow.value = target
-        forgetFoldersOutsideStack()
+        stackChanged()
         return true
     }
 
@@ -217,7 +227,12 @@ open class PikoDriveRepository(
 
     init {
         // 记下的目录内容按账号存：换号时换一份，退出登录只清内存
-        backgroundScope.launch { clientManager.currentClient.collect { childContents.switchAccount(it?.account) } }
+        backgroundScope.launch {
+            clientManager.currentClient.collect {
+                childContents.switchAccount(it?.account)
+                recentFolders.switchAccount(it?.account)
+            }
+        }
     }
 
     /** 从磁盘载入完成一次就加一，文件夹行据此重新描述。 */
@@ -252,6 +267,11 @@ open class PikoDriveRepository(
         scrollAnchors.update { it + (folderId to anchor) }
     }
 
+    private fun stackChanged() {
+        recentFolders.visited(_folderStackFlow.value)
+        forgetFoldersOutsideStack()
+    }
+
     // 历史里的位置也留着：后退回去时首帧就是原来的列表与滚动位置
     private fun forgetFoldersOutsideStack() {
         val history = _historyFlow.value
@@ -275,7 +295,7 @@ open class PikoDriveRepository(
     fun restoreFolderStack(stack: List<PikoPathBreadcrumb>) {
         if (stack.isEmpty()) return
         _folderStackFlow.value = stack
-        forgetFoldersOutsideStack()
+        stackChanged()
     }
 
     fun popToBreadcrumb(index: Int): PikoPathBreadcrumb? {
@@ -414,11 +434,11 @@ open class PikoDriveRepository(
     }
 
     suspend fun rename(fileId: String, name: String): Result<Unit> = withContext(Dispatchers.Default) {
-        runSuspendCatching { client.rename(fileId, name) }
+        runSuspendCatching { client.rename(fileId, name) }.onSuccess { recentFolders.forget(fileId) }
     }
 
     suspend fun trash(ids: List<String>): Result<Unit> = withContext(Dispatchers.Default) {
-        runSuspendCatching { client.batchTrash(ids) }
+        runSuspendCatching { client.batchTrash(ids) }.onSuccess { ids.forEach(recentFolders::forget) }
     }
 
     suspend fun restore(ids: List<String>): Result<Unit> = withContext(Dispatchers.Default) {
@@ -430,7 +450,7 @@ open class PikoDriveRepository(
     }
 
     suspend fun move(ids: List<String>, parentId: String): Result<Unit> = withContext(Dispatchers.Default) {
-        runSuspendCatching { client.batchMove(ids, parentId) }
+        runSuspendCatching { client.batchMove(ids, parentId) }.onSuccess { ids.forEach(recentFolders::forget) }
     }
 
     /**
@@ -529,6 +549,7 @@ open class PikoDriveRepository(
 
     suspend fun setStarred(ids: List<String>, starred: Boolean): Result<Unit> = withContext(Dispatchers.Default) {
         runSuspendCatching { if (starred) client.starFiles(ids) else client.unstarFiles(ids) }
+            .onSuccess { _starredChanges.update { it + 1 } }
     }
 
     /** 播放历史的一页，按最近播放倒序，与官方客户端共用同一份。 */

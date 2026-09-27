@@ -47,6 +47,11 @@ private val standardSet = listOf(
     Shot("files-400x860", 400, 860),
     Shot("files-1440x900-dark", mode = ThemeMode.DARK),
     Shot("files-subfolder-1440x900", steps = listOf(Step.Click("Frieren"), Step.Wait("SPs"))),
+    // 浏览历史与快捷栏：进一个目录、后退、再进另一个，左侧「最近」记下两处，前进键亮着又被新的一步作废
+    Shot(
+        "files-history-1440x900",
+        steps = listOf(Step.Click("Frieren"), Step.Wait("SPs"), Step.Key("Alt+Left"), Step.Pump(800), Step.Click("电影"), Step.Pump(1_000)),
+    ),
     Shot("details-1440x900", steps = listOf(Step.Click("更多操作"), Step.Pump(800))),
     Shot("details-400x860", 400, 860, steps = listOf(Step.Click("更多操作"), Step.Pump(800))),
     Shot("context-menu-1440x900", steps = listOf(Step.Click("Oppenheimer", PointerButton.Secondary), Step.Pump(500))),
@@ -55,6 +60,8 @@ private val standardSet = listOf(
     // 信息流：宽窗口的侧栏、窄窗口的全屏、弹出到独立窗口后主窗口的样子
     Shot("feed-panel-1440x900", steps = listOf(Step.Click("信息流"), Step.Pump(1_000))),
     Shot("feed-full-760x800", 760, 800, steps = listOf(Step.Click("信息流"), Step.Pump(1_000))),
+    // 在文件夹上订阅信息流；此后网盘里进出不换掉它
+    Shot("feed-subscribe-1440x900", steps = listOf(Step.Click("电影", PointerButton.Secondary), Step.Pump(500), Step.Click("在信息流中刷"), Step.Pump(1_000))),
     Shot("feed-popped-1440x900", steps = listOf(Step.Click("信息流"), Step.Pump(1_000), Step.Click("在独立窗口播放"), Step.Pump(800))),
     Shot("transfers-1440x900", steps = listOf(Step.Click("传输"), Step.Wait("Dandadan"))),
     Shot("profile-1440x900", steps = listOf(Step.Click("我的"), Step.Pump(1_000))),
