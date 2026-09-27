@@ -1,6 +1,7 @@
 package dev.piko.cli
 
 import dev.piko.shared.naming.parseMediaName
+import io.github.nihildigit.pikpak.getFile
 import java.io.File
 import java.io.PrintStream
 import kotlin.system.exitProcess
@@ -23,6 +24,9 @@ private const val USAGE = """piko-cli：Piko 开发工具
 
   ls <路径>
       只读地列出网盘一个目录，逐项打印名字与服务端给的 params（来源链接、时长、宽高等）。
+
+  media <文件ID>
+      打印一个文件的各路流（原画与各档转码）的尺寸与直链。直链是凭据，不要贴进日志与议题。
 
   parse <文件名>…
       单独解析几个文件名，打印 parseMediaName 的结果。
@@ -67,6 +71,12 @@ fun main(args: Array<String>) {
         "ls" -> runBlocking {
             val path = options.positional.firstOrNull() ?: usage()
             listWithParams(appClient(), path).forEach(::println)
+        }
+        "media" -> runBlocking {
+            val fileId = options.positional.firstOrNull() ?: usage()
+            appClient().getFile(fileId).medias.forEach { media ->
+                println("${media.mediaName}  origin=${media.isOrigin}  ${media.video?.width}x${media.video?.height}\n  ${media.link.url}")
+            }
         }
         "parse" -> options.positional.ifEmpty { usage() }.forEach { name -> println("$name\n  ${parseMediaName(name)}") }
         "share" -> runBlocking {
