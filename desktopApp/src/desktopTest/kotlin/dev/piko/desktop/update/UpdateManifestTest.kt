@@ -23,11 +23,11 @@ class UpdateManifestTest {
     }
 
     /**
-     * 差分要 zstd 的原生库。Windows ARM64 的打包机上它加载失败，应用在那里会退回完整补丁包（见 zstdAvailable），
+     * 差分要 zstd 的解码。Windows ARM64 上 zstd-jni 的 DLL 缺 JNI 方法，应用在那里会退回完整补丁包（见 zstdAvailable），
      * 这几条就测不了，跳过而不是失败，并把原因打进日志，查的时候看得到。
      */
     private fun requireZstd() {
-        val error = runCatching { com.github.luben.zstd.util.Native.load() }.exceptionOrNull()
+        val error = runCatching { com.github.luben.zstd.ZstdDecompressCtx().close() }.exceptionOrNull()
         if (error != null) System.err.println("zstd 原生库加载失败，跳过差分用例：$error")
         org.junit.Assume.assumeTrue("zstd 原生库加载失败：$error", error == null)
     }

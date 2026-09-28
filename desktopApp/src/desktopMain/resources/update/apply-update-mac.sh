@@ -69,7 +69,12 @@ copied=$?
 hdiutil detach "$mount" -force >> "$log" 2>&1
 rmdir "$mount" 2>/dev/null
 [ $copied -eq 0 ] || { rm -rf "$new"; fail 'copying the new bundle failed'; }
-codesign --verify --deep --strict "$new" >> "$log" 2>&1 || { rm -rf "$new"; fail 'the new bundle does not pass codesign --verify'; }
+if ! codesign --verify --deep --strict "$new" >> "$log" 2>&1; then
+    # Which resource broke the seal: without it a failure here says nothing about the cause.
+    codesign --verify --deep --strict -vvvv "$new" >> "$log" 2>&1
+    rm -rf "$new"
+    fail 'the new bundle does not pass codesign --verify'
+fi
 # The DMG came from the app's own download, which is not quarantined, but a copy from a
 # quarantined image inherits the flag and Gatekeeper would then refuse the unnotarized app.
 xattr -dr com.apple.quarantine "$new" 2>/dev/null

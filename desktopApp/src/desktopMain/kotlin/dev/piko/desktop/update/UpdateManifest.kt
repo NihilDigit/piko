@@ -172,12 +172,14 @@ internal fun applyDelta(zip: File, manifest: UpdateManifest, installDir: File, t
 }
 
 /**
- * zstd 的原生库能否加载。加载不了时差分更新不可用，改下完整补丁包，原因记进日志。
- * Windows ARM64 的打包机上实测加载失败（UnsatisfiedLinkError），而 UnsatisfiedLinkError 是 Error 不是 Exception，
- * 不先探一下的话，更新会在还原差分时直接崩掉，接不住。
+ * zstd 的解码能不能用。用不了时差分更新不可用，改下完整补丁包，原因记进日志。
+ *
+ * 探的是差分实际要用的解码上下文，不只是加载原生库：Windows ARM64 上 zstd-jni 1.5.7-20 的 DLL 能加载，
+ * 却缺了 ZstdDecompressCtx.init 这个 JNI 方法（CI 上实测 UnsatisfiedLinkError）。UnsatisfiedLinkError 是 Error
+ * 不是 Exception，不先探一下的话，更新会在还原差分时直接崩掉，接不住。
  */
 internal val zstdAvailable: Boolean by lazy {
-    runCatching { com.github.luben.zstd.util.Native.load() }
+    runCatching { ZstdDecompressCtx().close() }
         .onFailure { PikoLog.w("Update", "zstd 原生库加载失败，差分更新不可用，改下完整补丁包", it) }
         .isSuccess
 }
