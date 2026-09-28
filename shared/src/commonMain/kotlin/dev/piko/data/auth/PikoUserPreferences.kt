@@ -89,6 +89,17 @@ interface PikoUserPreferences {
     val driveViewModeFlow: Flow<String>
     suspend fun setDriveViewMode(mode: String)
 
+    /** 大窗口左侧边栏收起成了窄轨。每台设备各自的，不同步：屏幕宽窄因机而异。 */
+    val sidebarCollapsedFlow: Flow<Boolean>
+    suspend fun setSidebarCollapsed(collapsed: Boolean)
+
+    /**
+     * 文件名带不带扩展名显示。默认值两端不同：桌面照资源管理器与 Finder 的习惯显示，手机上宽度金贵，
+     * 类型已在副标题里单列，不显示。因此每台设备各自的，不同步。
+     */
+    val showExtensionsFlow: Flow<Boolean>
+    suspend fun setShowExtensions(show: Boolean)
+
     /**
      * 网盘页的信息流：上次是否开着、宽窗口里侧栏拖到的宽度。开关不改 [driveViewModeFlow]，
      * 关掉信息流即回到原来的列表视图。
@@ -157,6 +168,10 @@ interface PikoUserPreferences {
     /** 应用内网络请求用的代理，见 PikoProxySelector。 */
     val proxySettingFlow: Flow<ProxySetting>
     suspend fun saveProxySetting(setting: ProxySetting)
+
+    /** 开屏自动检查更新，默认开。关掉后只在设置页手动检查。 */
+    val autoCheckUpdatesFlow: Flow<Boolean>
+    suspend fun setAutoCheckUpdates(enabled: Boolean)
 
     /** 开屏提示里点了「忽略此版本」的版本号。只比相等，更新的版本出来照常提示。 */
     suspend fun getIgnoredUpdateVersion(): String?

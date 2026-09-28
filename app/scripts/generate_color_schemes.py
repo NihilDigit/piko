@@ -1,4 +1,4 @@
-"""Generates app/src/main/kotlin/dev/piko/ui/theme/SeedColorSchemes.kt.
+"""Generates ui/src/commonMain/kotlin/dev/piko/ui/theme/SeedColorSchemes.kt.
 
 Compose Material 3 has no public API for building a scheme from a seed colour:
 TonalPalette and the HCT utilities are internal, and dynamic*ColorScheme only
@@ -86,7 +86,7 @@ enum class SeedTheme(val label: String, val seed: Color, val light: ColorScheme,
 {body}
 }}
 """
-    target = Path("app/src/main/kotlin/dev/piko/ui/theme/SeedColorSchemes.kt")
+    target = Path("ui/src/commonMain/kotlin/dev/piko/ui/theme/SeedColorSchemes.kt")
     target.write_text(out, encoding="utf-8", newline="\n")
     print(f"wrote {target}")
 

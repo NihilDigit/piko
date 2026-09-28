@@ -47,6 +47,13 @@ import dev.piko.desktop.winrt.WinRTSupport
 import dev.piko.desktop.winrt.WindowsCaption
 import dev.piko.ui.platform.FramelessWindow
 import dev.piko.ui.platform.LocalFramelessWindow
+import dev.piko.ui.platform.LocalWindowCaption
+import dev.piko.ui.platform.WindowCaption
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.draw.clip
 import java.awt.Container
 import kotlinx.coroutines.delay
 import org.jetbrains.skia.FontMgr
@@ -69,6 +76,10 @@ class TitleBarColors(val container: Color, val content: Color)
  * [onCloseInContent] 不为 null 时（Windows 上的播放窗口）不画标题栏：内容自己已有带标题的顶栏，
  * 再叠一条标题栏只是重复。窗口经 [LocalFramelessWindow] 交给内容，由它指定拖动区、放关窗按钮。
  * macOS 上仍画标题栏，红绿灯本就在那里。
+ *
+ * [compactCaption] 为 true 时（仅 Windows，照 Chrome）内容可以经 [LocalWindowCaption] 接管标题栏：声明之后
+ * 不画标题栏这一条，内容从窗口顶上开始，贴着右上角的那一行自己画三个按钮，空白处登记为拖动区。
+ * macOS 不做：拖动由 Skiko 的 disableTitleBar 接管，只认顶上那一条的高度，挪不到内容里的空白处。
  */
 @Composable
 fun FrameWindowScope.WindowFrame(
@@ -77,6 +88,7 @@ fun FrameWindowScope.WindowFrame(
     colors: TitleBarColors,
     showTitleBar: Boolean = true,
     onCloseInContent: (() -> Unit)? = null,
+    compactCaption: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     when {
@@ -91,8 +103,12 @@ fun FrameWindowScope.WindowFrame(
                 // 全屏时整个窗口都是画面：拖动区不报给窗口过程，否则按住顶栏会把全屏的窗口拖走
                 val frameless = remember(caption, showTitleBar, onCloseInContent) {
                     object : FramelessWindow {
-                        override fun updateDragArea(bounds: Rect?) {
-                            if (showTitleBar && bounds != null) caption.updateLayout(bounds, emptyMap()) else caption.clearLayout()
+                        // 顶栏上按钮两边的空白各是一块
+                        private val areas = HashMap<Any, Rect>()
+
+                        override fun updateDragArea(key: Any, bounds: Rect?) {
+                            if (bounds == null) areas.remove(key) else areas[key] = bounds
+                            if (showTitleBar && areas.isNotEmpty()) caption.updateLayout(areas.values.toList(), emptyMap()) else caption.clearLayout()
                         }
 
                         override fun close() = onCloseInContent()
@@ -109,9 +125,20 @@ fun FrameWindowScope.WindowFrame(
                 CompositionLocalProvider(LocalFramelessWindow provides frameless) { content() }
                 return
             }
+            val compact = remember(caption, compactCaption) { caption?.takeIf { compactCaption }?.let(::CompactCaption) }
+            // 界面声明了由它放按钮与拖动区（WindowCaption.Host）才收起标题栏。内容始终在同一个位置组合，
+            // 标题栏收起与出现时内容的状态不丢
+            val hosted = showTitleBar && compact?.hosted == true
+            LaunchedEffect(hosted) { if (hosted) compact?.publish() }
             Column(Modifier.fillMaxSize()) {
-                if (showTitleBar && caption != null) WindowsTitleBar(caption, title, icon, colors)
-                Box(Modifier.fillMaxWidth().weight(1f)) { content() }
+                if (showTitleBar && caption != null && !hosted) WindowsTitleBar(caption, title, icon, colors)
+                Box(Modifier.fillMaxWidth().weight(1f)) {
+                    CompositionLocalProvider(LocalWindowCaption provides compact) { content() }
+                    // 兜底：声明了却一时没有哪一行贴着右上角来画按钮，就浮在角上画一组，窗口总关得掉
+                    if (hosted && compact.rowsWithButtons == 0) {
+                        Box(Modifier.align(Alignment.TopEnd).padding(8.dp)) { compact.ButtonRow(countAsRow = false) }
+                    }
+                }
             }
         }
         isMacOs -> {
@@ -127,6 +154,7 @@ fun FrameWindowScope.WindowFrame(
 
 /** 与 Windows 11 标题栏按钮（46×32 epx）同高。 */
 private val TitleBarHeight = 32.dp
+private val CaptionButtonWidth = 46.dp
 
 @Composable
 private fun FrameWindowScope.WindowsTitleBar(
@@ -138,7 +166,7 @@ private fun FrameWindowScope.WindowsTitleBar(
     // 各部分在根坐标系里的位置，每次变化都汇总成一份交给窗口过程做命中测试。只在布局回调里读写，
     // 不参与重组，所以不用 State
     val bounds = remember { CaptionBounds() }
-    fun publish() = caption.updateLayout(bounds.bar, bounds.buttons.toMap())
+    fun publish() = caption.updateLayout(listOf(bounds.bar), bounds.buttons.toMap())
     DisposableEffect(caption) {
         onDispose { caption.clearLayout() }
     }
@@ -185,6 +213,103 @@ private fun FrameWindowScope.WindowsTitleBar(
     }
 }
 
+/**
+ * 并进内容的标题栏：收集内容登记的拖动区与各处按钮的位置，合成一份交给窗口过程。只在界面线程上读写。
+ * 没有谁声明 [Host] 时什么也不交：那时画着单独的标题栏，布局归它。
+ */
+private class CompactCaption(private val caption: WindowsCaption) : WindowCaption {
+    private var hosts by mutableIntStateOf(0)
+    val hosted: Boolean get() = hosts > 0
+
+    /** 画着按钮的行数，不算兜底那一组。 */
+    var rowsWithButtons by mutableIntStateOf(0)
+        private set
+
+    private val dragAreas = HashMap<Any, Rect>()
+    // 按画按钮的那一处分开记：一处离开组合时只撤它自己的，另一处的位置不会跟着丢
+    private val buttons = HashMap<Any, Map<WindowsCaption.Button, Rect>>()
+
+    @Composable
+    override fun Host() {
+        DisposableEffect(this) {
+            hosts++
+            onDispose { hosts-- }
+        }
+    }
+
+    @Composable
+    override fun Buttons() = ButtonRow(countAsRow = true)
+
+    @Composable
+    fun ButtonRow(countAsRow: Boolean) {
+        val key = remember { Any() }
+        DisposableEffect(this) {
+            if (countAsRow) rowsWithButtons++
+            onDispose {
+                if (countAsRow) rowsWithButtons--
+                buttons.remove(key)
+                publish()
+            }
+        }
+        // 非活动窗口的按钮变灰，与系统标题栏一致
+        val color = MaterialTheme.colorScheme.onSurfaceVariant.let { if (caption.isActive) it else it.copy(alpha = 0.45f) }
+        Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+            for (button in WindowsCaption.Button.entries) {
+                RoundCaptionButton(
+                    button = button,
+                    isMaximized = caption.isMaximized,
+                    hovered = caption.hovered == button,
+                    pressed = caption.pressed == button && caption.hovered == button,
+                    contentColor = color,
+                    modifier = Modifier.onGloballyPositioned {
+                        buttons[key] = (buttons[key] ?: emptyMap()) + (button to it.boundsInWindow())
+                        publish()
+                    },
+                )
+            }
+        }
+    }
+
+    override fun setDragArea(key: Any, bounds: Rect?) {
+        if (bounds == null) dragAreas.remove(key) else dragAreas[key] = bounds
+        publish()
+    }
+
+    fun publish() {
+        if (!hosted) return
+        caption.updateLayout(dragAreas.values.toList(), buttons.values.fold(emptyMap()) { all, one -> all + one })
+    }
+}
+
+/**
+ * 并进内容时的窗口按钮，照 M3 的图标按钮画成 40dp 的圆，与所在那一行的其他图标按钮同一个样子、同一条中线。
+ * 字形仍取系统的图标字体；关闭悬停是红底白字，与系统一致。悬停与按下来自窗口过程，见 [CaptionButton]。
+ */
+@Composable
+private fun RoundCaptionButton(
+    button: WindowsCaption.Button,
+    isMaximized: Boolean,
+    hovered: Boolean,
+    pressed: Boolean,
+    contentColor: Color,
+    modifier: Modifier = Modifier,
+) {
+    val isClose = button == WindowsCaption.Button.CLOSE
+    val background = when {
+        isClose && (hovered || pressed) -> CloseRed.copy(alpha = if (pressed) 0.9f else 1f)
+        pressed -> contentColor.copy(alpha = 0.12f)
+        hovered -> contentColor.copy(alpha = 0.08f)
+        else -> Color.Transparent
+    }
+    val glyphColor = if (isClose && (hovered || pressed)) Color.White else contentColor
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier.size(40.dp).clip(CircleShape).background(background),
+    ) {
+        CaptionGlyphText(button, isMaximized, glyphColor)
+    }
+}
+
 private class CaptionBounds {
     var bar: Rect = Rect.Zero
     val buttons = mutableMapOf<WindowsCaption.Button, Rect>()
@@ -220,19 +345,24 @@ private fun CaptionButton(
     }
     Box(
         contentAlignment = Alignment.Center,
-        modifier = modifier.size(46.dp, TitleBarHeight).background(background),
+        modifier = modifier.size(CaptionButtonWidth, TitleBarHeight).background(background),
     ) {
-        val glyph = when (button) {
-            WindowsCaption.Button.MINIMIZE -> CaptionGlyph.Minimize
-            WindowsCaption.Button.MAXIMIZE -> if (isMaximized) CaptionGlyph.Restore else CaptionGlyph.Maximize
-            WindowsCaption.Button.CLOSE -> CaptionGlyph.Close
-        }
-        val iconFont = CaptionIconFont
-        if (iconFont != null) {
-            Text(glyph.char.toString(), color = glyphColor, fontFamily = iconFont, fontSize = 10.sp)
-        } else {
-            Icon(glyph.fallback, contentDescription = null, tint = glyphColor, modifier = Modifier.size(14.dp))
-        }
+        CaptionGlyphText(button, isMaximized, glyphColor)
+    }
+}
+
+@Composable
+private fun CaptionGlyphText(button: WindowsCaption.Button, isMaximized: Boolean, color: Color) {
+    val glyph = when (button) {
+        WindowsCaption.Button.MINIMIZE -> CaptionGlyph.Minimize
+        WindowsCaption.Button.MAXIMIZE -> if (isMaximized) CaptionGlyph.Restore else CaptionGlyph.Maximize
+        WindowsCaption.Button.CLOSE -> CaptionGlyph.Close
+    }
+    val iconFont = CaptionIconFont
+    if (iconFont != null) {
+        Text(glyph.char.toString(), color = color, fontFamily = iconFont, fontSize = 10.sp)
+    } else {
+        Icon(glyph.fallback, contentDescription = null, tint = color, modifier = Modifier.size(14.dp))
     }
 }
 

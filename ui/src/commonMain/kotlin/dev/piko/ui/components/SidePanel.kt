@@ -25,7 +25,7 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.automirrored.outlined.ViewSidebar
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -52,6 +52,9 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.coerceAtLeast
 import androidx.compose.ui.unit.coerceIn
 import androidx.compose.ui.unit.dp
+import dev.piko.ui.theme.FrameCardBottomMargin
+import dev.piko.ui.theme.LocalFramed
+import dev.piko.ui.theme.frame
 
 /**
  * 宽窗口的主区加右侧侧栏，开关、拖宽与记住宽度只有这一份。
@@ -76,6 +79,8 @@ import androidx.compose.ui.unit.dp
  * @param ready 开关已经判得出来。头一次组合时 AnimatedVisibility 不播进场动画，值到了再组合：
  *   开着的人看到它直接在那儿，关掉过的人不会看到它弹一下。
  * @param headerActions 栏名与关闭按钮之间的其他按钮。
+ * @param bottomMargin 侧栏下沿离这块区域底边的距离。并进外框时默认与主区卡片离窗口底边的外框色同宽，下沿对齐；
+ *   外面已经让出那一截的（网盘页的详情栏）传 0，否则两份叠在一起，侧栏比卡片短一截。
  * @param showHeader 为 false 时不画栏名那一行，整张卡交给 [panel]，关闭与其他按钮由内容自己放：
  *   信息流是一整块黑底的竖屏画面，上面再压一条浅色栏名就成了两层顶栏。
  */
@@ -93,9 +98,18 @@ fun SidePanelLayout(
     ready: Boolean = true,
     headerActions: @Composable RowScope.() -> Unit = {},
     showHeader: Boolean = true,
+    bottomMargin: Dp = defaultPanelBottomMargin(),
     main: @Composable () -> Unit,
     panel: @Composable () -> Unit,
 ) {
+    val framed = LocalFramed.current
+    // 并进外框时整行铺外框色，主区自己的卡片浮在上面；侧栏不再是卡，只有信息流的黑底画面仍裁圆角
+    val rowBackground = if (framed) Modifier.background(MaterialTheme.colorScheme.frame) else Modifier
+    val panelSurface = when {
+        !framed -> Modifier.panelCard()
+        showHeader -> Modifier
+        else -> Modifier.clip(MaterialTheme.shapes.largeIncreased)
+    }
     BoxWithConstraints(modifier = modifier) {
         // 拖过的宽度留在这里，松手才交给设置保存，每帧写盘没有必要。松手后也不清掉：
         // 清掉的话在设置写回来之前会先退回旧宽度，侧栏弹一下
@@ -104,7 +118,7 @@ fun SidePanelLayout(
         val maxPanelWidth = (maxWidth - PanelSpacer - PanelMargin - MainPaneMinWidth).coerceAtLeast(minWidth)
         val savedWidth = savedWidthDp?.dp ?: defaultWidth
         val panelWidth = (draggingWidth ?: savedWidth).coerceIn(minWidth, maxPanelWidth)
-        Row(modifier = Modifier.fillMaxSize()) {
+        Row(modifier = Modifier.fillMaxSize().then(rowBackground)) {
             Box(modifier = Modifier.weight(1f).fillMaxHeight()) { main() }
             if (ready) {
                 AnimatedVisibility(
@@ -138,11 +152,11 @@ fun SidePanelLayout(
                         )
                         Column(
                             modifier = Modifier
-                                // 上边也留 16dp：Piko 没有横贯两栏的顶栏，侧栏从窗口顶上开始
-                                .padding(top = PanelMargin, end = PanelMargin, bottom = PanelMargin)
+                                // 上边也留 16dp，与主区的内容隔开。并进外框时侧栏落在页眉下面，与主区的卡片上沿齐平
+                                .padding(top = if (framed) 0.dp else PanelMargin, end = PanelMargin, bottom = bottomMargin)
                                 .width(panelWidth)
                                 .fillMaxHeight()
-                                .panelCard()
+                                .then(panelSurface)
                                 .semantics { paneTitle = title },
                         ) {
                             if (showHeader) Row(
@@ -152,13 +166,14 @@ fun SidePanelLayout(
                             ) {
                                 PaneTitle(title, Modifier.weight(1f))
                                 headerActions()
-                                IconButton(onClick = onClose) {
-                                    Icon(
-                                        Icons.Filled.Close,
-                                        contentDescription = closeDescription,
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
+                                // 收起而不是关掉：里面的东西都找得回来（详情一按就开，面板的会话还在），用 × 读起来像没了。
+                                // 与命令栏上「收着的东西」那个按钮、信息流窗口的「收回到主窗口」同一个图标，看得出是一对
+                                TooltipIconButton(
+                                    Icons.AutoMirrored.Outlined.ViewSidebar,
+                                    closeDescription,
+                                    onClose,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             }
                             Box(modifier = Modifier.weight(1f)) { panel() }
                         }
@@ -239,11 +254,36 @@ private fun PanelDragHandle(onDrag: (Dp) -> Unit, onDragStopped: () -> Unit) {
     }
 }
 
+/**
+ * 一条能拖的边，不画手柄，只在悬停时换成左右调整的光标，照资源管理器与 VS Code 的侧边栏。左侧边栏用它：
+ * 那里没有两栏之间的间隔可放手柄，侧边栏本身也不是临时的，不必像侧栏那样把「能拖」画出来。
+ * [onDrag] 的位移按阅读方向计，正值朝行尾。
+ */
+@Composable
+fun ResizeEdge(onDrag: (Dp) -> Unit, onDragStopped: () -> Unit, modifier: Modifier = Modifier) {
+    val density = LocalDensity.current
+    val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    val resizeCursor = LocalHorizontalResizeCursor.current
+    val dragState = rememberDraggableState { deltaPx ->
+        onDrag(with(density) { (if (rtl) -deltaPx else deltaPx).toDp() })
+    }
+    Box(
+        modifier = modifier
+            .fillMaxHeight()
+            .then(if (resizeCursor != null) Modifier.pointerHoverIcon(resizeCursor) else Modifier)
+            .draggable(state = dragState, orientation = Orientation.Horizontal, onDragStopped = { onDragStopped() }),
+    )
+}
+
 /** 两栏之间的间隔宽度（layout-overview.md 的 Spacers 一节）。 */
 private val PanelSpacer = 24.dp
 
 /** 侧栏离窗口边缘的距离（side-sheets.md 的 Margins (when detached)）。 */
 private val PanelMargin = 16.dp
+
+// 并进外框时下沿随主区卡片，离窗口底边一截外框色；不按规格留 16dp，否则侧栏比左边的卡片短一截
+@Composable
+fun defaultPanelBottomMargin(): Dp = if (LocalFramed.current) FrameCardBottomMargin else PanelMargin
 
 /** 给主区留的最小宽度：列表视图的一列（下限 360dp）连同页眉的排序、筛选与视图切换还排得下。 */
 private val MainPaneMinWidth = 440.dp

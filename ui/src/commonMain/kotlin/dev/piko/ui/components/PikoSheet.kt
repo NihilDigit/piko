@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.platform.LocalPikoPlatform
+import dev.piko.ui.theme.LocalFramed
 import kotlinx.coroutines.launch
 
 /** [PikoSheet] 内容所在的作用域。 */
@@ -82,6 +83,12 @@ fun PikoSheet(
     sideSheetTitle: String? = null,
     content: @Composable PikoSheetScope.() -> Unit,
 ) {
+    // 有外框时停进右侧那一栏，见 SidePanelHost
+    val host = LocalSidePanelHost.current
+    if (host != null && LocalFramed.current) {
+        HostedSheet(host, sideSheetTitle, onDismissRequest, content)
+        return
+    }
     if (currentWidthClass() == WidthClass.Expanded) {
         ModalSideSheet(onDismissRequest, sideSheetTitle, content)
         return
@@ -171,7 +178,7 @@ private fun ModalSideSheet(onDismissRequest: () -> Unit, title: String?, content
     }
 }
 
-private class SheetScopeImpl(
+internal class SheetScopeImpl(
     column: ColumnScope,
     override val isSideSheet: Boolean,
     private val hide: (() -> Unit) -> Unit,

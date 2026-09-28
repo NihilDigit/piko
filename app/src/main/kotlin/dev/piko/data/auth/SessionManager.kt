@@ -91,6 +91,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val CONCURRENT_ACCELERATION = booleanPreferencesKey("concurrent_acceleration")
         val DOWNLOAD_DIR_PATH = stringPreferencesKey("download_dir_path")
         val SPOILER_BLUR_ENABLED = booleanPreferencesKey("spoiler_blur_enabled")
+        val AUTO_CHECK_UPDATES = booleanPreferencesKey("auto_check_updates")
         val HEURISTIC_FILTER_ENABLED = booleanPreferencesKey("heuristic_filter_enabled")
         val BUNDLE_SUBTITLES_ENABLED = booleanPreferencesKey("bundle_subtitles_enabled")
         val AUTO_CLEAN_NAMES_ENABLED = booleanPreferencesKey("auto_clean_names_enabled")
@@ -101,6 +102,8 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val DRIVE_VIEW_MODE = stringPreferencesKey("drive_view_mode")
         val CLIP_PANEL_OPEN = booleanPreferencesKey("clip_panel_open")
         val CLIP_PANEL_WIDTH = floatPreferencesKey("clip_panel_width")
+        val SIDEBAR_COLLAPSED = booleanPreferencesKey("sidebar_collapsed")
+        val SHOW_EXTENSIONS = booleanPreferencesKey("show_extensions")
         val INSPECTOR_PANEL_OPEN = booleanPreferencesKey("inspector_panel_open")
         val INSPECTOR_PANEL_WIDTH = floatPreferencesKey("inspector_panel_width")
         val PIKPAK_DOMAIN = stringPreferencesKey("pikpak_domain")
@@ -164,6 +167,14 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun setSpoilerBlurEnabled(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.SPOILER_BLUR_ENABLED] = enabled
+        }
+    }
+
+    override val autoCheckUpdatesFlow: Flow<Boolean> = preference { it[PreferencesKeys.AUTO_CHECK_UPDATES] ?: true }
+
+    override suspend fun setAutoCheckUpdates(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.AUTO_CHECK_UPDATES] = enabled
         }
     }
 
@@ -252,6 +263,22 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun setDriveViewMode(mode: String) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.DRIVE_VIEW_MODE] = mode
+        }
+    }
+
+    override val sidebarCollapsedFlow: Flow<Boolean> = preference { it[PreferencesKeys.SIDEBAR_COLLAPSED] ?: false }
+
+    override suspend fun setSidebarCollapsed(collapsed: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.SIDEBAR_COLLAPSED] = collapsed
+        }
+    }
+
+    override val showExtensionsFlow: Flow<Boolean> = preference { it[PreferencesKeys.SHOW_EXTENSIONS] ?: false }
+
+    override suspend fun setShowExtensions(show: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.SHOW_EXTENSIONS] = show
         }
     }
 

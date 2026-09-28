@@ -52,6 +52,9 @@ import dev.piko.ui.workNotices
 import dev.piko.ui.components.LocalHorizontalResizeCursor
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.theme.PikoTheme
+import dev.piko.ui.theme.SidebarMinWindowWidth
+import dev.piko.ui.theme.frame
+import androidx.compose.ui.platform.LocalDensity
 import dev.piko.ui.theme.appearanceFlow
 import dev.piko.ui.theme.isDark
 import java.awt.Dimension
@@ -243,11 +246,17 @@ fun main(args: Array<String>) {
                 LocalHorizontalResizeCursor provides HorizontalResizeCursor,
             ) {
                 PikoTheme(appearance = appearance) {
+                    // 有侧边栏时与侧边栏、网盘页页眉同为外框色；没有时与网盘页的顶栏同为页面本色。
+                    // 判断与 PikoMainScaffold 的侧边栏同一个断点
+                    val framed = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.width.toDp() } >= SidebarMinWindowWidth
+                    val colors = MaterialTheme.colorScheme
+                    // 开着也只在有侧边栏的界面上收起标题栏，由界面声明（WindowCaption.Host），窄窗口与登录页仍有标题栏
+                    val compactTitleBar = platform.compactTitleBar?.enabled?.collectAsState()?.value == true
                     WindowFrame(
                         title = "Piko",
                         icon = appIcon,
-                        // 与网盘页未滚动时的顶栏、侧边导航栏同色，连成一片
-                        colors = TitleBarColors(MaterialTheme.colorScheme.surface, MaterialTheme.colorScheme.onSurface),
+                        colors = TitleBarColors(if (framed) colors.frame else colors.surface, colors.onSurface),
+                        compactCaption = compactTitleBar,
                         // macOS 的全屏空间里系统收起了红绿灯，标题栏也跟着让出来
                         showTitleBar = mainWindowState.placement != WindowPlacement.Fullscreen,
                     ) {
@@ -293,7 +302,6 @@ fun main(args: Array<String>) {
                 settings = settings,
                 appearance = appearance,
                 icon = appIcon,
-                onClose = links.close,
             )
         }
 

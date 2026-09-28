@@ -15,7 +15,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.staggeredgrid.LazyStaggeredGridState
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
@@ -47,6 +47,8 @@ import dev.piko.ui.screens.player.MpvPlaybackBackend
 import dev.piko.ui.screens.player.MpvVideoSurface
 import dev.piko.update.AppUpdateService
 import java.io.File
+import android.os.StatFs
+import dev.piko.ui.platform.DiskSpace
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -151,7 +153,7 @@ class AndroidPikoPlatform(
     override fun ListScrollbar(state: LazyListState, modifier: Modifier) = Unit
 
     @Composable
-    override fun ListScrollbar(state: LazyStaggeredGridState, modifier: Modifier) = Unit
+    override fun ListScrollbar(state: LazyGridState, modifier: Modifier) = Unit
 
     override val deviceSummary: String =
         "Android ${Build.VERSION.RELEASE}（API ${Build.VERSION.SDK_INT}），${Build.MANUFACTURER} ${Build.MODEL}，${Build.SUPPORTED_ABIS.firstOrNull()}"
@@ -249,6 +251,20 @@ class AndroidPikoPlatform(
                     ?: context.filesDir.resolve("Piko").absolutePath
             }
         }
+
+        // 授权的文件夹只有在内置存储（文档 ID 以 primary: 开头）上才找得到对应的路径；SD 卡上的查不出，不画
+        override fun diskSpace(storedPath: String): DiskSpace? = runCatching {
+            val dir = if (storedPath.startsWith("content:")) {
+                val documentId = DocumentsContract.getTreeDocumentId(Uri.parse(storedPath))
+                if (!documentId.startsWith("primary:")) return null
+                Environment.getExternalStorageDirectory()
+            } else {
+                File(displayName(storedPath))
+            }
+            val existing = generateSequence(dir) { it.parentFile }.firstOrNull { it.exists() } ?: return null
+            val stat = StatFs(existing.path)
+            DiskSpace(freeBytes = stat.availableBytes, totalBytes = stat.totalBytes)
+        }.getOrNull()
 
         @Composable
         override fun rememberLauncher(onPicked: (String) -> Unit): () -> Unit {

@@ -7,6 +7,7 @@ import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import io.github.nihildigit.pikpak.FileStat
+import io.github.nihildigit.pikpak.TaskPhase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.Flow
@@ -44,6 +45,8 @@ private fun bool(key: String, read: (PikoUserPreferences) -> Flow<Boolean>, writ
 
 val SyncedSettings: List<SyncedSetting> = listOf(
     bool("spoilerBlur", { it.spoilerBlurFlow }) { setSpoilerBlurEnabled(it) },
+    // 关掉自动检查是不想被打扰，换一台设备也一样
+    bool("autoCheckUpdates", { it.autoCheckUpdatesFlow }) { setAutoCheckUpdates(it) },
     bool("heuristicFilter", { it.heuristicFilterFlow }) { setHeuristicFilterEnabled(it) },
     bool("nameParsing", { it.nameParsingFlow }) { setNameParsingEnabled(it) },
     bool("bundleSubtitles", { it.bundleSubtitlesFlow }) { setBundleSubtitlesEnabled(it) },
@@ -225,7 +228,8 @@ class DriveSettingsStore(private val driveRepo: PikoDriveRepository) : RemoteSet
         val folder = folderOf(account)
         val name = "$FILE_PREFIX$stamp$FILE_SUFFIX"
         driveRepo.uploadBytes(folder, name, text.encodeToByteArray()).getOrThrow()
-        val stale = driveRepo.listAllFiles(folder).getOrNull().orEmpty().filter { it.isSettingsFile() && it.name != name }
+        // 只删比这一份旧的：另一台设备同时在同步时，它更新的那份（可能还在上传）留给它自己收拾
+        val stale = driveRepo.listAllFiles(folder).getOrNull().orEmpty().filter { it.isSettingsFile() && it.stamp() < stamp }
         if (stale.isNotEmpty()) driveRepo.delete(stale.map { it.id }).logFailure(TAG, "删除旧的设置文件失败")
     }
 
@@ -242,12 +246,16 @@ class DriveSettingsStore(private val driveRepo: PikoDriveRepository) : RemoteSet
         return id
     }
 
+    // 上传是先建文件、再传内容，进程死在两步之间就留下一份 PENDING 的空壳，没有下载链接。
+    // 它的时间戳最新，不排除掉就次次读它失败，同步走不到写新文件、删旧文件那一步，永远清不掉它
     private suspend fun latestFile(folderId: String): FileStat? =
         driveRepo.listAllFiles(folderId).getOrThrow()
-            .filter { it.isSettingsFile() }
-            .maxByOrNull { it.name.removePrefix(FILE_PREFIX).removeSuffix(FILE_SUFFIX).toLongOrNull() ?: 0L }
+            .filter { it.isSettingsFile() && it.phase == TaskPhase.COMPLETE }
+            .maxByOrNull { it.stamp() }
 
     private fun FileStat.isSettingsFile() = !isFolder && name.startsWith(FILE_PREFIX) && name.endsWith(FILE_SUFFIX)
+
+    private fun FileStat.stamp() = name.removePrefix(FILE_PREFIX).removeSuffix(FILE_SUFFIX).toLongOrNull() ?: 0L
 
     private companion object {
         const val FILE_PREFIX = "settings-"

@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.ButtonDefaults
@@ -32,43 +33,75 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import dev.piko.ui.components.PikoSheet
-import dev.piko.ui.components.TooltipIconButton
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.background
+import dev.piko.ui.theme.FrameBottomRowHeight
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.PlainTooltip
+import androidx.compose.material3.TooltipAnchorPosition
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.rememberTooltipState
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.screens.settings.AccountCard
 import dev.piko.ui.screens.settings.Avatar
 import dev.piko.ui.screens.settings.LogoutDialog
-import dev.piko.ui.screens.settings.SettingsScreen
 import dev.piko.ui.screens.settings.rememberAccountSummary
 import dev.piko.update.UpdateStatus
 
 /**
  * 侧边栏左下角：账号与设置，照桌面应用的通行做法。手机上它们都在「我的」里；桌面侧边栏竖向够用，
- * 不必再收进一个二级页。点账号或齿轮都打开 [SettingsPanel]，账号卡片在它最前面。
+ * 不必再收进一个二级页。整行是一个入口，打开设置页，账号是它的第一类（[AccountSettings]）：账号与齿轮
+ * 去的是同一个地方，分成两个点击区只会让人以为它们不同。设置页开着时整行亮起，与侧边栏的其他项一样。
  * 齿轮在查到新版本时带一个红点，与「我的」页设置入口上的提示对应。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun SidebarAccountRow(panelOpen: Boolean, onOpenSettings: () -> Unit) {
+internal fun SidebarAccountRow(selected: Boolean, onOpenSettings: () -> Unit, collapsed: Boolean = false) {
     val account = rememberAccountSummary()
     val session = account.session
     val availableUpdate = (LocalPikoPlatform.current.updater?.status as? UpdateStatus.Available)?.update
     val colors = MaterialTheme.colorScheme
-    Row(
-        modifier = Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
+    val shortcut = LocalPikoPlatform.current.shortcutModifier.label(",")
+    TooltipBox(
+        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
+        tooltip = { PlainTooltip { Text(availableUpdate?.let { "账号与设置（发现新版本 ${it.version}）" } ?: "账号与设置 ($shortcut)") } },
+        state = rememberTooltipState(),
     ) {
+        // 收起成窄轨时只剩头像，名字、用量与齿轮都在悬停提示与设置里；有新版本时头像上挂一个点
+        if (collapsed) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(FrameBottomRowHeight)
+                    .padding(horizontal = 12.dp, vertical = 4.dp)
+                    .clip(MaterialTheme.shapes.large)
+                    .background(if (selected) colors.secondaryContainer else Color.Transparent)
+                    .clickable(onClickLabel = "账号与设置", onClick = onOpenSettings),
+                contentAlignment = Alignment.Center,
+            ) {
+                BadgedBox(badge = { if (availableUpdate != null) Badge() }) {
+                    Avatar(session?.username, session?.avatarUrl, size = 32.dp)
+                }
+            }
+            return@TooltipBox
+        }
         Row(
             modifier = Modifier
-                .weight(1f)
-                .clip(MaterialTheme.shapes.medium)
+                .fillMaxWidth()
+                // 与传输页的底栏同高，两边的中线对齐
+                .height(FrameBottomRowHeight)
+                .padding(horizontal = 12.dp, vertical = 4.dp)
+                .clip(MaterialTheme.shapes.large)
+                .background(if (selected) colors.secondaryContainer else Color.Transparent)
                 .clickable(onClickLabel = "账号与设置", onClick = onOpenSettings)
-                .padding(horizontal = 4.dp, vertical = 6.dp),
+                .padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Avatar(session?.username, session?.avatarUrl, size = 32.dp)
-            Column {
+            Column(Modifier.weight(1f)) {
                 Text(
                     session?.username?.ifEmpty { null } ?: "PikPak 用户",
                     style = MaterialTheme.typography.labelLarge,
@@ -84,57 +117,40 @@ internal fun SidebarAccountRow(panelOpen: Boolean, onOpenSettings: () -> Unit) {
                     )
                 }
             }
-        }
-        BadgedBox(badge = { if (availableUpdate != null) Badge() }) {
-            TooltipIconButton(
-                icon = Icons.Outlined.Settings,
-                label = availableUpdate?.let { "设置（发现新版本 ${it.version}）" } ?: "设置",
-                onClick = onOpenSettings,
-                shortcut = LocalPikoPlatform.current.shortcutModifier.label(","),
-                tint = if (panelOpen) colors.primary else Color.Unspecified,
-            )
+            BadgedBox(badge = { if (availableUpdate != null) Badge() }) {
+                Icon(
+                    if (selected) Icons.Filled.Settings else Icons.Outlined.Settings,
+                    contentDescription = null,
+                    tint = if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
         }
     }
 }
 
 /**
- * 桌面宽窗口的设置：从右侧浮起的面板，标题与关闭在面板顶上，点外面、Esc 也关。不占内容区，关掉就回到原来看的地方，
- * 不像整页那样还得找返回。最前面是账号卡片与退出登录：它们在手机上属于「我的」页。
+ * 设置页里「账号」一类的内容：账号卡片与退出登录。有整条侧边栏的宽窗口没有「我的」页，它们放在设置的最前；
+ * 手机上它们在「我的」页。
  *
  * 账号卡片不放进侧边栏的下拉菜单：菜单按内容的固有尺寸定大小，卡片展开流量额度后的用量表格是
  * SubcomposeLayout，被问固有尺寸会直接抛异常。
  */
 @Composable
-internal fun SettingsPanel(onDismiss: () -> Unit, onLogout: () -> Unit) {
+internal fun ColumnScope.AccountSettings(onLogout: () -> Unit) {
     var confirmLogout by remember { mutableStateOf(false) }
-    PikoSheet(onDismissRequest = onDismiss, sideSheetTitle = "设置") {
-        SettingsScreen(
-            onBackClick = null,
-            inSidePanel = true,
-            modifier = Modifier.weight(1f),
-            header = {
-                AccountCard(rememberAccountSummary())
-                Spacer(Modifier.height(12.dp))
-                OutlinedButton(
-                    onClick = { confirmLogout = true },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                ) {
-                    Icon(Icons.AutoMirrored.Outlined.Logout, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("退出登录")
-                }
-                Spacer(Modifier.height(8.dp))
-            },
-        )
+    AccountCard(rememberAccountSummary())
+    Spacer(Modifier.height(12.dp))
+    OutlinedButton(
+        onClick = { confirmLogout = true },
+        modifier = Modifier.fillMaxWidth(),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+    ) {
+        Icon(Icons.AutoMirrored.Outlined.Logout, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text("退出登录")
     }
     if (confirmLogout) {
-        LogoutDialog(
-            onDismiss = { confirmLogout = false },
-            onLoggedOut = {
-                onDismiss()
-                onLogout()
-            },
-        )
+        LogoutDialog(onDismiss = { confirmLogout = false }, onLoggedOut = onLogout)
     }
 }

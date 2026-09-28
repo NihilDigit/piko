@@ -21,6 +21,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.piko.ui.adaptive.readableSidePadding
+import dev.piko.ui.platform.rememberCaptionSlot
+import dev.piko.ui.theme.LocalFramed
+import dev.piko.ui.theme.FrameTopRowHeight
+import androidx.compose.ui.graphics.Color
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -63,6 +67,19 @@ private fun PikoTopBarContent(
     colors: TopAppBarColors,
     sideInset: Dp,
 ) {
+    // 贴着窗口右上角时（标题栏并进内容），窗口按钮接在动作按钮后面
+    val caption = rememberCaptionSlot()
+    // 有外框时顶栏落在外框色上（见 PikoScaffold），滚动后也不换色：页头与内容已由下面的卡片分开，
+    // 再给顶栏换一层底色就又多出一个长方形
+    val barColors = if (LocalFramed.current) {
+        TopAppBarDefaults.topAppBarColors(
+            containerColor = Color.Transparent,
+            scrolledContainerColor = Color.Transparent,
+            titleContentColor = MaterialTheme.colorScheme.onSurface,
+        )
+    } else {
+        colors
+    }
     TopAppBar(
         title = {
             Text(
@@ -72,7 +89,7 @@ private fun PikoTopBarContent(
                 style = MaterialTheme.typography.titleLargeEmphasized,
             )
         },
-        modifier = modifier,
+        modifier = modifier.then(caption.modifier),
         navigationIcon = {
             if (navigationIcon != null) {
                 navigationIcon()
@@ -85,9 +102,14 @@ private fun PikoTopBarContent(
                 }
             }
         },
-        actions = actions,
+        actions = {
+            actions()
+            caption.buttons?.invoke()
+        },
         windowInsets = TopAppBarDefaults.windowInsets.add(WindowInsets(left = sideInset, right = sideInset)),
-        colors = colors,
+        colors = barColors,
+        // 外框里与网盘页地址栏那一行、侧边栏的图标行同高（56dp），换页时卡片的上沿不跳；M3 默认的 64dp 会低出一截
+        expandedHeight = if (LocalFramed.current) FrameTopRowHeight else TopAppBarDefaults.TopAppBarExpandedHeight,
         scrollBehavior = scrollBehavior,
     )
 }

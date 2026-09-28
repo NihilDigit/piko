@@ -33,6 +33,8 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun getLastFolder(): Triple<String, String, String> = Triple("", "网盘", "")
     override val spoilerBlurFlow: Flow<Boolean> = MutableStateFlow(true)
     override suspend fun setSpoilerBlurEnabled(enabled: Boolean) = Unit
+    override val autoCheckUpdatesFlow: Flow<Boolean> = MutableStateFlow(true)
+    override suspend fun setAutoCheckUpdates(enabled: Boolean) = Unit
     override val heuristicFilterFlow: Flow<Boolean> = MutableStateFlow(false)
     override suspend fun setHeuristicFilterEnabled(enabled: Boolean) = Unit
     override val nameParsingFlow: Flow<Boolean> = MutableStateFlow(true)
@@ -51,6 +53,10 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun setThemeSeed(seed: String?) = Unit
     override val driveViewModeFlow: Flow<String> = MutableStateFlow("LIST")
     override suspend fun setDriveViewMode(mode: String) = Unit
+    override val sidebarCollapsedFlow: Flow<Boolean> = MutableStateFlow(false)
+    override suspend fun setSidebarCollapsed(collapsed: Boolean) = Unit
+    override val showExtensionsFlow: Flow<Boolean> = MutableStateFlow(false)
+    override suspend fun setShowExtensions(show: Boolean) = Unit
     override val clipPanelFlow: Flow<SidePanelPrefs> = MutableStateFlow(SidePanelPrefs(open = false, widthDp = null))
     override suspend fun setClipPanelOpen(open: Boolean) = Unit
     override suspend fun setClipPanelWidth(widthDp: Float) = Unit

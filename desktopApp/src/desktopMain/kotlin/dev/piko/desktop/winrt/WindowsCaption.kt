@@ -53,8 +53,12 @@ import java.util.concurrent.ConcurrentHashMap
 internal class WindowsCaption(private val window: Window) {
     enum class Button { MINIMIZE, MAXIMIZE, CLOSE }
 
-    /** 标题栏与按钮在 Compose 根坐标系里的位置，单位为像素，即 Skiko 画布的客户区坐标。 */
-    private class Layout(val bar: Rect, val buttons: Map<Button, Rect>)
+    /**
+     * 拖动区与按钮在 Compose 根坐标系里的位置，单位为像素，即 Skiko 画布的客户区坐标。拖动区是一组矩形：
+     * 有单独的标题栏时只有它一块；标题栏并进内容时是内容里的几块空白（见 WindowCaption），整行都答
+     * HTCAPTION 的话行里的控件就点不到了。
+     */
+    private class Layout(val dragAreas: List<Rect>, val buttons: Map<Button, Rect>)
 
     @Volatile
     private var layout: Layout? = null
@@ -118,9 +122,9 @@ internal class WindowsCaption(private val window: Window) {
         }
     }
 
-    /** 标题栏的位置变化时由界面调用。 */
-    fun updateLayout(bar: Rect, buttons: Map<Button, Rect>) {
-        layout = Layout(bar, buttons)
+    /** 拖动区或按钮的位置变化时由界面调用。 */
+    fun updateLayout(dragAreas: List<Rect>, buttons: Map<Button, Rect>) {
+        layout = Layout(dragAreas, buttons)
     }
 
     /** 不显示标题栏时（如播放器全屏）整个窗口都是客户区。 */
@@ -268,7 +272,7 @@ internal class WindowsCaption(private val window: Window) {
                 }
             }
         }
-        return if (current.bar.contains(position)) HTCAPTION else HTCLIENT
+        return if (current.dragAreas.any { it.contains(position) }) HTCAPTION else HTCLIENT
     }
 
     private fun perform(hwnd: MemorySegment, button: Button) {

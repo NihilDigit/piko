@@ -1,7 +1,7 @@
 package dev.piko.ui.platform
 
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.staggeredgrid.LazyStaggeredGridState
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.material3.ColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.text.font.FontFamily
@@ -9,6 +9,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import dev.piko.shared.media.player.PlaybackBackend
 import dev.piko.update.AppUpdateService
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * 共享界面向所在平台要的能力。Android 与 Desktop 各实现一份，按 CLAUDE.md 的约定用接口而不用
@@ -34,6 +35,8 @@ interface PikoPlatform {
      */
     val supportsBlur: Boolean
 
+    /** 标题栏并进内容、窗口按钮画在界面右上角（见 WindowCaption）。为 null 表示平台没有这一项，设置页不给开关。 */
+    val compactTitleBar: PlatformToggle? get() = null
 
     /**
      * 界面字体。汉字不在其中时由系统按系统语言挑后备字体，英文系统上会逐字混用日文与中文字体，
@@ -98,7 +101,7 @@ interface PikoPlatform {
     fun ListScrollbar(state: LazyListState, modifier: Modifier)
 
     @Composable
-    fun ListScrollbar(state: LazyStaggeredGridState, modifier: Modifier)
+    fun ListScrollbar(state: LazyGridState, modifier: Modifier)
 }
 
 /** 已下载到本机的文件的外部动作。路径可能是普通路径，也可能是 Android SAF 的 content: URI。 */
@@ -127,6 +130,12 @@ interface DownloadLocationPicker {
     fun displayName(storedPath: String): String
 
     /**
+     * 下载位置所在磁盘的空间，传输页据此看排队的下载放不放得下。查不出时为 null
+     * （Android 上授权的 SD 卡文件夹没有可查的路径），界面不画这一项。
+     */
+    fun diskSpace(storedPath: String): DiskSpace?
+
+    /**
      * 返回一个启动选择器的函数。选中后以要写入偏好的值回调 [onPicked]。
      * 做成 Composable 是因为 Android 要在组合里注册 ActivityResult 启动器。
      */
@@ -151,6 +160,18 @@ interface UploadPicker {
  * 把网盘视频交给系统里的其他播放器。[url] 是本机回环代理的地址，不是会过期的直链；
  * [fileName] 是网盘上的原名，用作标题与判断类型。返回 false 表示没能交出去。
  */
+/** 一块磁盘还能写多少、一共多少，字节。 */
+data class DiskSpace(val freeBytes: Long, val totalBytes: Long)
+
+/**
+ * 平台自有的一个开关，值存在该平台自己的设置里，不跨设备同步。只有一个平台有的项走这里，
+ * 不进 PikoUserPreferences：那边每加一项，没有这项的平台也得跟着实现一份存储。
+ */
+interface PlatformToggle {
+    val enabled: StateFlow<Boolean>
+    fun set(enabled: Boolean)
+}
+
 fun interface ExternalVideoPlayer {
     suspend fun open(url: String, fileName: String): Boolean
 }

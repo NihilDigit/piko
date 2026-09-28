@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoUserPreferences {
     private val spoiler = MutableStateFlow(settings.get(KEY_SPOILER, "true").toBoolean())
+    private val autoCheckUpdates = MutableStateFlow(settings.get(KEY_AUTO_CHECK_UPDATES, "true").toBoolean())
     private val heuristic = MutableStateFlow(settings.get(KEY_HEURISTIC, "true").toBoolean())
     private val nameParsing = MutableStateFlow(settings.get(KEY_NAME_PARSING, "true").toBoolean())
     private val bundleSubtitles = MutableStateFlow(settings.get(KEY_BUNDLE_SUBTITLES, "true").toBoolean())
@@ -28,8 +29,11 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
     private val themeSeed = MutableStateFlow(settings.get(KEY_THEME_SEED).ifEmpty { null })
     // 旧版只存了是否海报墙，没有新键时由它换算
     private val driveViewMode = MutableStateFlow(
-        settings.get(KEY_DRIVE_VIEW_MODE).ifEmpty { if (settings.get(KEY_GRID_VIEW, "false").toBoolean()) "POSTER" else "LIST" },
+        // 没选过时是海报墙，与 Android 相同；旧版只存了是否网格，明确关掉过的仍是列表
+        settings.get(KEY_DRIVE_VIEW_MODE).ifEmpty { if (settings.get(KEY_GRID_VIEW, "true").toBoolean()) "POSTER" else "LIST" },
     )
+    private val sidebarCollapsed = MutableStateFlow(settings.get(KEY_SIDEBAR_COLLAPSED) == "true")
+    private val showExtensions = MutableStateFlow(settings.get(KEY_SHOW_EXTENSIONS, "true").toBoolean())
     private val clipPanel = MutableStateFlow(
         SidePanelPrefs(
             open = settings.get(KEY_CLIP_PANEL_OPEN, "false").toBoolean(),
@@ -104,6 +108,12 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         spoiler.value = enabled
     }
 
+    override val autoCheckUpdatesFlow: Flow<Boolean> = autoCheckUpdates.asStateFlow()
+    override suspend fun setAutoCheckUpdates(enabled: Boolean) {
+        settings.set(KEY_AUTO_CHECK_UPDATES, enabled.toString())
+        autoCheckUpdates.value = enabled
+    }
+
     override val heuristicFilterFlow: Flow<Boolean> = heuristic.asStateFlow()
     override suspend fun setHeuristicFilterEnabled(enabled: Boolean) {
         settings.set(KEY_HEURISTIC, enabled.toString())
@@ -156,6 +166,18 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
     override suspend fun setDriveViewMode(mode: String) {
         settings.set(KEY_DRIVE_VIEW_MODE, mode)
         driveViewMode.value = mode
+    }
+
+    override val sidebarCollapsedFlow: Flow<Boolean> = sidebarCollapsed.asStateFlow()
+    override suspend fun setSidebarCollapsed(collapsed: Boolean) {
+        settings.set(KEY_SIDEBAR_COLLAPSED, collapsed.toString())
+        sidebarCollapsed.value = collapsed
+    }
+
+    override val showExtensionsFlow: Flow<Boolean> = showExtensions.asStateFlow()
+    override suspend fun setShowExtensions(show: Boolean) {
+        settings.set(KEY_SHOW_EXTENSIONS, show.toString())
+        showExtensions.value = show
     }
 
     override val clipPanelFlow: Flow<SidePanelPrefs> = clipPanel.asStateFlow()
@@ -303,6 +325,7 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         const val KEY_PROXY_SETTING = "network.proxy"
         const val KEY_IGNORED_UPDATE = "update.ignoredVersion"
         const val KEY_SPOILER = "ui.spoilerBlur"
+        const val KEY_AUTO_CHECK_UPDATES = "update.autoCheck"
         const val KEY_HEURISTIC = "ui.heuristicFilter"
         const val KEY_BUNDLE_SUBTITLES = "ui.bundleSubtitles"
         const val KEY_AUTO_CLEAN_NAMES = "drive.autoCleanNames"
@@ -313,6 +336,8 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         const val KEY_DRIVE_VIEW_MODE = "ui.driveViewMode"
         const val KEY_CLIP_PANEL_OPEN = "ui.clipPanel.open"
         const val KEY_CLIP_PANEL_WIDTH = "ui.clipPanel.width"
+        const val KEY_SIDEBAR_COLLAPSED = "ui.sidebar.collapsed"
+        const val KEY_SHOW_EXTENSIONS = "ui.drive.showExtensions"
         const val KEY_INSPECTOR_PANEL_OPEN = "ui.inspectorPanel.open"
         const val KEY_INSPECTOR_PANEL_WIDTH = "ui.inspectorPanel.width"
         const val KEY_PIKPAK_DOMAIN = "network.pikpakDomain"
