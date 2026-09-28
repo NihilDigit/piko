@@ -56,12 +56,6 @@ private fun OfflinePackJob.detail(): String? = when (stage) {
     OfflinePackStage.FAILED -> message.ifEmpty { "服务端未给出原因" }
 }
 
-private fun OfflinePackJob.icon(): ImageVector = when (stage) {
-    OfflinePackStage.QUEUED, OfflinePackStage.DOWNLOADING -> Icons.Outlined.CloudDownload
-    OfflinePackStage.PRUNING -> Icons.Outlined.CloudDownload
-    OfflinePackStage.DONE -> Icons.Outlined.CloudDone
-    OfflinePackStage.FAILED -> Icons.Outlined.ErrorOutline
-}
 
 @Composable
 private fun OfflinePackJob.statusColor(): Color = when (stage) {
@@ -92,24 +86,23 @@ internal fun PackTransferRow(
     onRetry: () -> Unit,
     onMoreClick: () -> Unit,
     modifier: Modifier = Modifier,
+    selection: RowSelection = RowSelection.None,
 ) {
     val job = item.job
     FileListItem(
         headline = job.folderName,
+        onLongClick = selection.onLongClick,
+        isSelectionMode = selection.active,
+        isSelected = selection.selected,
+        onSelectToggle = { selection.onToggle() },
         leading = {
             ListLeadingMedia(
                 thumbnail = thumbnail,
-                fallback = { ListLeadingIcon(job.icon()) },
+                fallback = { ListLeadingIcon(Icons.Outlined.CloudDownload) },
                 isSpoilerBlurred = isSpoilerBlurred,
             )
         },
-        onClick = {
-            when {
-                job.canOpen -> onOpen()
-                job.stage == OfflinePackStage.FAILED -> onRetry()
-                else -> Unit
-            }
-        },
+        onClick = { packPrimaryAction(item, onOpen, onRetry)?.invoke() },
         onMoreClick = onMoreClick,
         modifier = modifier,
         headlineMaxLines = if (job.isActive) 1 else 2,
@@ -126,7 +119,8 @@ internal fun PackTransferRow(
                         color = MaterialTheme.colorScheme.primary,
                         maxLines = 1,
                     )
-                    Text(text = item.statusLabel(), color = job.statusColor(), maxLines = 1)
+                    // 完成的不写「已完成」，所在的分组已经说了
+                    if (job.stage != OfflinePackStage.DONE) Text(text = item.statusLabel(), color = job.statusColor(), maxLines = 1)
                     // 与普通云端任务一样在状态后写大小；失败原因另起一行，见下
                     MetaRow(parts = listOf(job.sizeLabel()), modifier = Modifier.weight(1f, fill = false))
                 }
@@ -168,6 +162,13 @@ internal fun PackTransferRow(
     )
 }
 
+/** 点按一项做的事：完成的打开，失败的重试。 */
+internal fun packPrimaryAction(item: TransferItem.Pack, onOpen: () -> Unit, onRetry: () -> Unit): (() -> Unit)? = when {
+    item.job.canOpen -> onOpen
+    item.job.stage == OfflinePackStage.FAILED -> onRetry
+    else -> null
+}
+
 /** 打包离线任务的全部操作，详情面板与右键菜单共用。 */
 internal fun packTransferActions(
     item: TransferItem.Pack,
@@ -194,7 +195,7 @@ internal fun PackTransferSheet(item: TransferItem.Pack, actions: List<SheetActio
     val statusColor = job.statusColor()
     ItemDetailsSheet(
         title = job.folderName,
-        headerIcon = { ListLeadingIcon(job.icon()) },
+        headerIcon = { ListLeadingIcon(Icons.Outlined.CloudDownload) },
         actions = actions,
         onDismiss = onDismiss,
         metaParts = listOf("云端", item.statusLabel(), job.sizeLabel()),

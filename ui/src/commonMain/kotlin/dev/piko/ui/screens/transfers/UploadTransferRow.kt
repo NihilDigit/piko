@@ -55,6 +55,7 @@ private fun UploadTask.statusDetails(): List<String> {
         UploadStatus.HASHING, UploadStatus.UPLOADING -> buildList {
             add(progress)
             if (speedBytesPerSec > 0) add("${speedBytesPerSec.toReadableSize()}/s")
+            remainingTime(size - processedBytes, speedBytesPerSec)?.let { add("剩余 $it") }
         }
         // 重启后读回的任务不带进度（见调度器的 restore），只显示大小
         UploadStatus.PAUSED -> if (processedBytes > 0) listOf(progress) else listOf(size.toReadableSize())
@@ -70,11 +71,6 @@ private val UploadTask.canOpen: Boolean
 
 private fun UploadTask.failureReason(): String = errorMessage?.takeIf { it.isNotBlank() } ?: "网络中断"
 
-private fun UploadTask.icon(): ImageVector = when (status) {
-    UploadStatus.COMPLETED -> Icons.Outlined.CloudDone
-    UploadStatus.FAILED -> Icons.Outlined.ErrorOutline
-    else -> Icons.Outlined.CloudUpload
-}
 
 @Composable
 private fun UploadTask.statusColor(): Color = when (status) {
@@ -92,19 +88,18 @@ internal fun UploadTransferRow(
     onPause: () -> Unit,
     onMoreClick: () -> Unit,
     modifier: Modifier = Modifier,
+    selection: RowSelection = RowSelection.None,
 ) {
     val statusColor = task.statusColor()
     FileListItem(
         headline = task.fileName,
-        leading = { ListLeadingMedia(thumbnail = null, fallback = { ListLeadingIcon(task.icon()) }, isSpoilerBlurred = false) },
-        onClick = {
-            when (task.status) {
-                UploadStatus.COMPLETED -> if (task.canOpen) onOpen()
-                UploadStatus.PAUSED, UploadStatus.FAILED -> onResume()
-                UploadStatus.HASHING, UploadStatus.UPLOADING -> onPause()
-                UploadStatus.QUEUED -> Unit
-            }
-        },
+        onLongClick = selection.onLongClick,
+        isSelectionMode = selection.active,
+        isSelected = selection.selected,
+        onSelectToggle = { selection.onToggle() },
+        // 图标只说类型，状态由文字与颜色说：原来完成的上传与完成的离线都是同一个打勾的云，分不出哪个是哪个
+        leading = { ListLeadingMedia(thumbnail = null, fallback = { ListLeadingIcon(Icons.Outlined.CloudUpload) }, isSpoilerBlurred = false) },
+        onClick = { uploadPrimaryAction(task, onOpen, onResume, onPause)?.invoke() },
         onMoreClick = onMoreClick,
         modifier = modifier,
         headlineMaxLines = if (task.showsProgress) 1 else 2,
@@ -120,7 +115,9 @@ internal fun UploadTransferRow(
                         color = MaterialTheme.colorScheme.primary,
                         maxLines = 1,
                     )
-                    task.statusLabel()?.let { Text(text = it, color = statusColor, maxLines = 1) }
+                    // 完成的不写「已上传」，所在的分组已经说了；秒传补一个来源
+                    val label = if (task.status == UploadStatus.COMPLETED) "秒传".takeIf { task.isInstant } else task.statusLabel()
+                    label?.let { Text(text = it, color = statusColor, maxLines = 1) }
                     val failure = if (task.status == UploadStatus.FAILED) listOf(task.failureReason().lineSequence().first()) else emptyList()
                     MetaRow(parts = task.statusDetails() + failure, modifier = Modifier.weight(1f, fill = false))
                 }
@@ -156,7 +153,7 @@ internal fun UploadTransferSheet(task: UploadTask, actions: List<SheetAction>, o
     val statusColor = task.statusColor()
     ItemDetailsSheet(
         title = task.fileName,
-        headerIcon = { ListLeadingIcon(task.icon()) },
+        headerIcon = { ListLeadingIcon(Icons.Outlined.CloudUpload) },
         actions = actions,
         onDismiss = onDismiss,
         metaParts = listOfNotNull("上传", task.statusLabel()) + task.statusDetails(),
@@ -166,6 +163,15 @@ internal fun UploadTransferSheet(task: UploadTask, actions: List<SheetAction>, o
         },
     )
 }
+
+/** 点按一项做的事：完成的跳到网盘里的文件，暂停与失败的继续，传输中的暂停。 */
+internal fun uploadPrimaryAction(task: UploadTask, onOpen: () -> Unit, onResume: () -> Unit, onPause: () -> Unit): (() -> Unit)? =
+    when (task.status) {
+        UploadStatus.COMPLETED -> onOpen.takeIf { task.canOpen }
+        UploadStatus.PAUSED, UploadStatus.FAILED -> onResume
+        UploadStatus.HASHING, UploadStatus.UPLOADING -> onPause
+        UploadStatus.QUEUED -> null
+    }
 
 /** 上传任务的全部操作，详情面板与右键菜单共用。 */
 internal fun uploadTransferActions(

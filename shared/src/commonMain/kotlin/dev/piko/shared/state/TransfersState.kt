@@ -68,7 +68,27 @@ sealed interface TransferItem {
 }
 
 /**
- * 传输页：本地下载、上传与云端离线任务合并为「进行中」「需要处理」「已完成」三段。
+ * 传输页的类型筛选。秒传记录归「云端」：它与离线任务出自同一个「添加链接」，东西落在网盘里；
+ * 从本机传上去却命中秒传的仍是一项上传，归「上传」。
+ */
+enum class TransferKind(val label: String) {
+    ALL("全部"),
+    DOWNLOAD("下载"),
+    UPLOAD("上传"),
+    CLOUD("云端"),
+    ;
+
+    fun matches(item: TransferItem): Boolean = when (this) {
+        ALL -> true
+        DOWNLOAD -> item is TransferItem.Local
+        UPLOAD -> item is TransferItem.Upload
+        CLOUD -> item is TransferItem.Cloud || item is TransferItem.Pack || item is TransferItem.Instant
+    }
+}
+
+/**
+ * 传输页：本地下载、上传与云端离线任务合并为「进行中」「需要处理」「已完成」三段，可按类型筛选（[filter]），
+ * 多选照网盘页（[selectedKeys]）。
  *
  * 云端已完成的任务只列出最近 [COMPLETED_CLOUD_WINDOW] 内完成的，本地已完成的始终保留：
  * 后者对应磁盘上的文件，是用户找回下载的入口。
@@ -107,7 +127,17 @@ class TransfersState(
     /** 云端列表最近一次拉取失败的原因。 */
     val cloudLoadError: String? get() = cloud.loadError
 
-    val inProgress: List<TransferItem> by derivedStateOf {
+    /** 类型筛选。四段都只列这一类；[counts] 仍按全部算，筛选按钮上的数目不随筛选变。 */
+    var filter by mutableStateOf(TransferKind.ALL)
+        private set
+
+    fun changeFilter(kind: TransferKind) {
+        filter = kind
+        // 选中项可能被筛掉，留着的话批量删除会动到看不见的任务
+        clearSelection()
+    }
+
+    private val allInProgress: List<TransferItem> by derivedStateOf {
         section(
             localFilter = { it.status in IN_PROGRESS_LOCAL },
             uploadFilter = { it.status.isActive || it.status == UploadStatus.PAUSED },
@@ -116,7 +146,7 @@ class TransfersState(
         )
     }
 
-    val needsAttention: List<TransferItem> by derivedStateOf {
+    private val allNeedsAttention: List<TransferItem> by derivedStateOf {
         section(
             localFilter = { it.status == DownloadStatus.FAILED },
             uploadFilter = { it.status == UploadStatus.FAILED },
@@ -126,13 +156,13 @@ class TransfersState(
     }
 
     /** 已完成但产出文件后来被删的云端任务。不是失败，排在最后弱化显示。 */
-    val outputDeleted: List<TransferItem> by derivedStateOf {
+    private val allOutputDeleted: List<TransferItem> by derivedStateOf {
         section(localFilter = { false }, uploadFilter = { false }, cloudFilter = { it.isOutputDeleted }, packFilter = { false })
     }
 
     // 窗口起点在重算时取当前时刻，不随时钟自行推进；任务表一变就会重算，
     // 刚跨出窗口的任务晚一会儿移出无妨
-    val completed: List<TransferItem> by derivedStateOf {
+    private val allCompleted: List<TransferItem> by derivedStateOf {
         val windowStartMs = nowMs() - COMPLETED_CLOUD_WINDOW.inWholeMilliseconds
         section(
             localFilter = { it.status == DownloadStatus.COMPLETED },
@@ -144,6 +174,183 @@ class TransfersState(
             packFilter = { it.stage == OfflinePackStage.DONE && it.finishedAtMs >= windowStartMs },
             instantFilter = { it.createdAtMs >= windowStartMs },
         )
+    }
+
+    val inProgress: List<TransferItem> by derivedStateOf { allInProgress.filter(filter::matches) }
+    val needsAttention: List<TransferItem> by derivedStateOf { allNeedsAttention.filter(filter::matches) }
+    val completed: List<TransferItem> by derivedStateOf { allCompleted.filter(filter::matches) }
+    val outputDeleted: List<TransferItem> by derivedStateOf { allOutputDeleted.filter(filter::matches) }
+
+    /** 各类的项数，按全部任务算，筛选按钮上显示。 */
+    val counts: Map<TransferKind, Int> by derivedStateOf {
+        val all = allInProgress + allNeedsAttention + allCompleted + allOutputDeleted
+        TransferKind.entries.associateWith { kind -> all.count(kind::matches) }
+    }
+
+    /** 下行与上行的总速度，只算本机的下载与上传：云端离线任务没有速度可报。 */
+    val downloadSpeed: Long by derivedStateOf {
+        localTasks.filter { it.status == DownloadStatus.DOWNLOADING }.sumOf { it.speedBytesPerSec }
+    }
+    val uploadSpeed: Long by derivedStateOf {
+        uploadTasks.filter { it.status.isActive }.sumOf { it.speedBytesPerSec }
+    }
+
+    /** 排队、进行中与暂停的下载还要写多少字节。暂停的也算：它们迟早要落到同一块盘上。 */
+    val pendingDownloadBytes: Long by derivedStateOf {
+        localTasks.filter { it.status in IN_PROGRESS_LOCAL }.sumOf { (it.totalBytes - it.downloadedBytes).coerceAtLeast(0) }
+    }
+
+    /** 照眼下的下行速度，排队与进行中的下载还要多少秒；没在下载时为 null。暂停的不算，它们不会自己动。 */
+    val downloadEtaSeconds: Long? by derivedStateOf {
+        val speed = downloadSpeed.takeIf { it > 0 } ?: return@derivedStateOf null
+        val remaining = localTasks
+            .filter { it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.PENDING }
+            .sumOf { (it.totalBytes - it.downloadedBytes).coerceAtLeast(0) }
+        (remaining / speed).takeIf { remaining > 0 }
+    }
+
+    /** 排队与进行中的离线任务落进网盘后要占的空间。只知道整个任务的大小，下到一半的也按全部算。 */
+    val pendingCloudBytes: Long by derivedStateOf {
+        cloud.tasks
+            .filter { it.phase == TaskPhase.RUNNING || it.phase == TaskPhase.PENDING }
+            .sumOf { it.fileSize.toLongOrNull() ?: 0L }
+    }
+
+    // 全局的「全部暂停」「全部继续」只管本机的下载与上传：云端离线任务不能暂停
+    val canPauseAll: Boolean by derivedStateOf { allInProgress.any(::isPausable) }
+    val canResumeAll: Boolean by derivedStateOf { allInProgress.any(::isResumable) }
+
+    /**
+     * 「清除已完成」能清掉的记录：云端任务、上传、秒传与整包离线。本地下载不在内：它的记录就是找回
+     * 下载文件的入口，删记录只能连文件一起删，那是逐项的「删除本地文件」，不该混进一键清除。
+     */
+    val canClearCompleted: Boolean by derivedStateOf { allCompleted.any { it !is TransferItem.Local } }
+
+    fun pauseAll() = allInProgress.filter(::isPausable).forEach(::pause)
+
+    fun resumeAll() = allInProgress.filter(::isResumable).forEach(::resume)
+
+    fun clearCompleted() {
+        val done = allCompleted
+        if (done.any { it is TransferItem.Cloud }) clearCompletedCloud()
+        done.forEach { item ->
+            when (item) {
+                is TransferItem.Upload -> removeUpload(item.task.taskId)
+                is TransferItem.Instant -> removeInstant(item.record.id)
+                is TransferItem.Pack -> discardPack(item.job.taskId)
+                is TransferItem.Local, is TransferItem.Cloud -> Unit
+            }
+        }
+    }
+
+    /**
+     * 选中的几项，按 key 记：进度每半秒刷新一次，条目对象跟着换，记对象的话选中会丢。
+     * 照网盘页：点选只选这一项，主修饰键加选，Shift 从 [anchorKey] 连选到这里。
+     */
+    var selectedKeys by mutableStateOf<Set<String>>(emptySet())
+        private set
+
+    private var anchorKey: String? = null
+
+    /**
+     * 多选态：各行画复选框，单击即勾选。照网盘页，由主修饰键或 Shift 点选、长按、全选进入；鼠标普通单击只选中
+     * 一项、不进多选，否则点了 A 再点 B 会两项都选上，与资源管理器不符。
+     */
+    var checkboxMode by mutableStateOf(false)
+        private set
+
+    /** 选中项里还在列表上的，条目被移除后自然不算。 */
+    val selectedItems: List<TransferItem> by derivedStateOf {
+        (inProgress + needsAttention + completed + outputDeleted).filter { it.key in selectedKeys }
+    }
+
+    fun selectOnly(key: String) {
+        selectedKeys = setOf(key)
+        anchorKey = key
+        checkboxMode = false
+    }
+
+    fun toggleSelected(key: String) {
+        selectedKeys = if (key in selectedKeys) selectedKeys - key else selectedKeys + key
+        anchorKey = key
+        checkboxMode = selectedKeys.isNotEmpty()
+    }
+
+    /** [order] 是眼前列表的先后，收起的「文件已删除」组不在其中，连选不会跨进去。 */
+    fun selectRange(key: String, order: List<String>) {
+        val anchor = anchorKey?.takeIf { it in order } ?: return selectOnly(key)
+        val from = order.indexOf(anchor)
+        val to = order.indexOf(key)
+        if (to < 0) return
+        selectedKeys = order.subList(minOf(from, to), maxOf(from, to) + 1).toSet()
+        checkboxMode = true
+    }
+
+    /**
+     * 框选，照网盘页的 selectBoxed：选中的换成 [base] 加上框住的 [boxed]，拖动时每动一下调一次。
+     * [base] 是按着主修饰键或 Shift 开始框选时原来选中的，否则为空。框住的不止一项才进多选态，一项时与点选一样。
+     */
+    fun selectBoxed(base: Set<String>, boxed: Collection<String>) {
+        val next = base + boxed
+        if (next.isEmpty()) return clearSelection()
+        selectedKeys = next
+        checkboxMode = next.size > 1
+    }
+
+    fun selectAll(order: List<String>) {
+        selectedKeys = order.toSet()
+        checkboxMode = selectedKeys.isNotEmpty()
+    }
+
+    fun clearSelection() {
+        selectedKeys = emptySet()
+        anchorKey = null
+        checkboxMode = false
+    }
+
+    fun isPausable(item: TransferItem): Boolean = when (item) {
+        is TransferItem.Local -> item.task.status == DownloadStatus.DOWNLOADING || item.task.status == DownloadStatus.PENDING
+        is TransferItem.Upload -> item.task.status.isActive
+        else -> false
+    }
+
+    /** 暂停的继续、失败的重试，都算「继续」。云端失败的重试要重新提交，走各自的操作。 */
+    fun isResumable(item: TransferItem): Boolean = when (item) {
+        is TransferItem.Local -> item.task.status == DownloadStatus.PAUSED || item.task.status == DownloadStatus.FAILED
+        is TransferItem.Upload -> item.task.status == UploadStatus.PAUSED || item.task.status == UploadStatus.FAILED
+        else -> false
+    }
+
+    fun pause(item: TransferItem) {
+        when (item) {
+            is TransferItem.Local -> pauseLocal(item.task.taskId)
+            is TransferItem.Upload -> pauseUpload(item.task.taskId)
+            else -> Unit
+        }
+    }
+
+    fun resume(item: TransferItem) {
+        when (item) {
+            is TransferItem.Local -> resumeLocal(item.task.taskId)
+            is TransferItem.Upload -> resumeUpload(item.task.taskId)
+            else -> Unit
+        }
+    }
+
+    /** 删除一项，与各自操作里的删除相同：本地下载连文件一起删，云端任务只删记录。 */
+    fun remove(item: TransferItem) {
+        when (item) {
+            is TransferItem.Local -> removeLocal(item.task.taskId)
+            is TransferItem.Upload -> removeUpload(item.task.taskId)
+            is TransferItem.Cloud -> deleteCloud(item.task.id)
+            is TransferItem.Pack -> discardPack(item.job.taskId)
+            is TransferItem.Instant -> removeInstant(item.record.id)
+        }
+    }
+
+    fun removeSelected() {
+        selectedItems.forEach(::remove)
+        clearSelection()
     }
 
     /**
@@ -158,7 +365,7 @@ class TransfersState(
     fun thumbnailOf(fileId: String): String? = thumbnails[fileId]?.ifEmpty { null }
 
     private val completedOutputIds: List<String> by derivedStateOf {
-        completed.mapNotNull { item ->
+        allCompleted.mapNotNull { item ->
             when (item) {
                 is TransferItem.Cloud -> item.task.fileId
                 is TransferItem.Pack -> item.job.outputId
@@ -167,8 +374,9 @@ class TransfersState(
         }
     }
 
+    /** 一项传输也没有，不论筛选。筛选后为空另看各段，界面给的是「这一类没有任务」。 */
     val isEmpty: Boolean by derivedStateOf {
-        inProgress.isEmpty() && needsAttention.isEmpty() && completed.isEmpty() && outputDeleted.isEmpty()
+        allInProgress.isEmpty() && allNeedsAttention.isEmpty() && allCompleted.isEmpty() && allOutputDeleted.isEmpty()
     }
 
     init {

@@ -74,12 +74,6 @@ private fun DriveTask.statusColor(): Color = when {
     else -> MaterialTheme.colorScheme.onSurfaceVariant
 }
 
-private fun DriveTask.phaseIcon(): ImageVector = when {
-    isOutputDeleted -> Icons.Outlined.CloudOff
-    phase == TaskPhase.COMPLETE -> Icons.Outlined.CloudDone
-    phase == TaskPhase.ERROR -> Icons.Outlined.ErrorOutline
-    else -> Icons.Outlined.CloudDownload
-}
 
 /**
  * 云端离线任务的列表项，版式与本地下载项一致，以「云端」标记区分。
@@ -97,25 +91,24 @@ internal fun CloudTransferRow(
     onOpen: () -> Unit,
     onMoreClick: () -> Unit,
     modifier: Modifier = Modifier,
+    selection: RowSelection = RowSelection.None,
 ) {
     val statusColor = task.statusColor()
     FileListItem(
         headline = task.displayName,
+        onLongClick = selection.onLongClick,
+        isSelectionMode = selection.active,
+        isSelected = selection.selected,
+        onSelectToggle = { selection.onToggle() },
         // ListLeadingIcon 填满父级，要由 ListLeadingMedia 定出 56dp；直接放进 leading 会撑满整行
         leading = {
             ListLeadingMedia(
                 thumbnail = thumbnail,
-                fallback = { ListLeadingIcon(task.phaseIcon()) },
+                fallback = { ListLeadingIcon(Icons.Outlined.CloudDownload) },
                 isSpoilerBlurred = isSpoilerBlurred,
             )
         },
-        onClick = {
-            when {
-                task.canOpen -> onOpen()
-                task.isFailed -> onResubmit?.invoke()
-                else -> Unit
-            }
-        },
+        onClick = { cloudPrimaryAction(task, onResubmit, onOpen)?.invoke() },
         onMoreClick = onMoreClick,
         modifier = modifier,
         headlineMaxLines = if (task.isActive) 1 else 2,
@@ -132,7 +125,10 @@ internal fun CloudTransferRow(
                         color = MaterialTheme.colorScheme.primary,
                         maxLines = 1,
                     )
-                    Text(text = task.statusLabel(), color = statusColor, maxLines = 1)
+                    // 完成的不写「已完成」，所在的分组已经说了
+                    if (task.phase != TaskPhase.COMPLETE || task.isOutputDeleted) {
+                        Text(text = task.statusLabel(), color = statusColor, maxLines = 1)
+                    }
                     // 失败原因只取首行，与状态同在一行，由 MetaRow 截断；完整信息在详情面板里
                     val parts = if (task.isFailed) listOf(task.failureReason().lineSequence().first()) else task.sizeParts()
                     MetaRow(parts = parts, modifier = Modifier.weight(1f, fill = false))
@@ -165,7 +161,7 @@ internal fun CloudTransferSheet(task: DriveTask, actions: List<SheetAction>, onD
     val statusColor = task.statusColor()
     ItemDetailsSheet(
         title = task.displayName,
-        headerIcon = { ListLeadingIcon(task.phaseIcon()) },
+        headerIcon = { ListLeadingIcon(Icons.Outlined.CloudDownload) },
         actions = actions,
         onDismiss = onDismiss,
         metaParts = listOf("云端", task.statusLabel()) + task.sizeParts(),
@@ -173,6 +169,13 @@ internal fun CloudTransferSheet(task: DriveTask, actions: List<SheetAction>, onD
             if (task.isFailed) Text(text = task.failureReason(), color = statusColor)
         },
     )
+}
+
+/** 点按一项做的事：完成的打开，失败的重新提交。 */
+internal fun cloudPrimaryAction(task: DriveTask, onResubmit: (() -> Unit)?, onOpen: () -> Unit): (() -> Unit)? = when {
+    task.canOpen -> onOpen
+    task.isFailed -> onResubmit
+    else -> null
 }
 
 /** 云端任务的全部操作，详情面板与右键菜单共用。 */

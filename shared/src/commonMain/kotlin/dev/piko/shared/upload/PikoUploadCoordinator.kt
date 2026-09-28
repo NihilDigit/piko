@@ -50,6 +50,7 @@ import kotlin.random.Random
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Instant
+import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 
 /**
@@ -429,19 +430,24 @@ class PikoUploadCoordinator(
         withContext(NonCancellable) { runSuspendCatching { client.cancelUpload(session) } }
     }
 
-    /** 按固定间隔把进度与速度写进任务表，理由同下载调度器的 reportProgress。 */
+    /**
+     * 按固定间隔把进度与速度写进任务表，理由同下载调度器的 reportProgress。速度也照它按最近
+     * [SPEED_WINDOW_MS] 算：只看相邻两次采样的话，分片一块块发出去，读数在 0 与峰值之间来回跳。
+     */
     private suspend fun reportProgress(taskId: String, progress: StateFlow<Long>) {
         val clock = TimeSource.Monotonic
-        var lastMark = clock.markNow()
-        var lastBytes = progress.value
+        val samples = ArrayDeque<Pair<TimeMark, Long>>()
+        samples.addLast(clock.markNow() to progress.value)
         while (true) {
             delay(PROGRESS_INTERVAL_MS)
             val bytes = progress.value
-            val elapsedMs = lastMark.elapsedNow().inWholeMilliseconds.coerceAtLeast(1L)
-            // 校验转上传时进度从头算，速度不能算成负数
-            val speed = ((bytes - lastBytes).coerceAtLeast(0L) * 1000L) / elapsedMs
-            lastMark = clock.markNow()
-            lastBytes = bytes
+            // 校验转上传时进度从头算，窗口里的旧读数不再可比，从这一刻重新攒
+            if (bytes < samples.last().second) samples.clear()
+            samples.addLast(clock.markNow() to bytes)
+            while (samples.size > 2 && samples.first().first.elapsedNow().inWholeMilliseconds > SPEED_WINDOW_MS) samples.removeFirst()
+            val (oldestMark, oldestBytes) = samples.first()
+            val elapsedMs = oldestMark.elapsedNow().inWholeMilliseconds.coerceAtLeast(1L)
+            val speed = ((bytes - oldestBytes).coerceAtLeast(0L) * 1000L) / elapsedMs
             update(taskId) { if (it.status.isActive) it.copy(processedBytes = bytes, speedBytesPerSec = speed) else it }
         }
     }
@@ -495,6 +501,7 @@ class PikoUploadCoordinator(
     private companion object {
         const val TAG = "Upload"
         const val PROGRESS_INTERVAL_MS = 500L
+        const val SPEED_WINDOW_MS = 3_000L
 
         /** 一个分片传到一半凭据到期也会被拒，留出余量。 */
         val EXPIRY_MARGIN = 10.minutes

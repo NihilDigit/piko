@@ -37,6 +37,8 @@ import dev.piko.ui.components.FileListItem
 import dev.piko.ui.components.ItemDetailsSheet
 import dev.piko.ui.components.ListLeadingIcon
 import dev.piko.ui.components.ListLeadingMedia
+import dev.piko.ui.components.ListLeadingSize
+import androidx.compose.ui.unit.Dp
 import dev.piko.ui.components.ListMoreButton
 import dev.piko.ui.components.MetaRow
 import dev.piko.ui.components.SheetAction
@@ -46,6 +48,10 @@ import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.theme.LocalStatusColors
 
 private val AUDIO_EXTENSIONS = setOf("mp3", "flac", "wav", "m4a", "aac")
+
+private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "avif")
+
+private fun String.isImageName(): Boolean = substringAfterLast('.', "").lowercase() in IMAGE_EXTENSIONS
 
 private fun DownloadTask.isMedia(): Boolean =
     fileName.isPlayableVideo() || fileName.substringAfterLast('.', "").lowercase() in AUDIO_EXTENSIONS
@@ -80,9 +86,9 @@ private fun DownloadTask.statusDetails(): List<String> {
         DownloadStatus.PENDING -> if (isSegment) emptyList() else listOf(totalBytes.toReadableSize())
         DownloadStatus.DOWNLOADING -> buildList {
             add(progress)
-            if (speedBytesPerSec > 0) {
-                add("${String.format("%.2f", speedBytesPerSec / (1024 * 1024f))} MB/s")
-            }
+            if (speedBytesPerSec > 0) add("${speedBytesPerSec.toReadableSize()}/s")
+            // 片段事先不知道产物大小，剩余时间无从算起
+            if (!isSegment) remainingTime(totalBytes - downloadedBytes, speedBytesPerSec)?.let { add("剩余 $it") }
         }
         DownloadStatus.PAUSED -> listOf(progress)
         DownloadStatus.FAILED -> emptyList()
@@ -130,33 +136,31 @@ internal fun LocalTransferRow(
     onMoreClick: () -> Unit,
     isSpoilerBlurred: Boolean,
     modifier: Modifier = Modifier,
+    selection: RowSelection = RowSelection.None,
 ) {
     val files = LocalPikoPlatform.current.localFiles
     val isMedia = task.isMedia()
-    val intents = remember(files, task, isMedia) { LocalFileIntents(files, task, isMedia) }
     val statusColor = task.statusColor()
 
     FileListItem(
         headline = task.fileName,
         leading = { LocalTransferVisual(task = task, isMedia = isMedia, isSpoilerBlurred = isSpoilerBlurred) },
-        onClick = {
-            when (task.status) {
-                DownloadStatus.COMPLETED -> if (isMedia) onPlay() else intents.openExternal()
-                DownloadStatus.PAUSED, DownloadStatus.FAILED -> onStart()
-                DownloadStatus.DOWNLOADING -> onPause()
-                DownloadStatus.PENDING -> Unit
-            }
-        },
+        onClick = { localPrimaryAction(task, files, onPlay, onStart, onPause)?.invoke() },
         onMoreClick = onMoreClick,
         modifier = modifier,
         headlineMaxLines = if (task.showsProgress) 1 else 2,
+        onLongClick = selection.onLongClick,
+        isSelectionMode = selection.active,
+        isSelected = selection.selected,
+        onSelectToggle = { selection.onToggle() },
         supporting = {
             Column {
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    task.statusLabel()?.let { label ->
+                    // 完成的不写「已完成」，所在的分组已经说了；只写需要留意或正在进行的状态
+                    task.statusLabel()?.takeIf { task.status != DownloadStatus.COMPLETED }?.let { label ->
                         Text(text = label, color = statusColor, maxLines = 1)
                     }
                     MetaRow(
@@ -196,6 +200,26 @@ internal fun LocalTransferRow(
             }
         },
     )
+}
+
+/**
+ * 点按一项做的事：完成的播放或用其他应用打开，暂停与失败的继续，下载中的暂停。窄行的轻点、宽行的轻点与双击共用。
+ * 等待中的没有可做的，为 null。
+ */
+internal fun localPrimaryAction(
+    task: DownloadTask,
+    files: LocalFileActions,
+    onPlay: () -> Unit,
+    onStart: () -> Unit,
+    onPause: () -> Unit,
+): (() -> Unit)? {
+    val isMedia = task.isMedia()
+    return when (task.status) {
+        DownloadStatus.COMPLETED -> if (isMedia) onPlay else LocalFileIntents(files, task, isMedia)::openExternal
+        DownloadStatus.PAUSED, DownloadStatus.FAILED -> onStart
+        DownloadStatus.DOWNLOADING -> onPause
+        DownloadStatus.PENDING -> null
+    }
 }
 
 /** 本地下载项的全部操作，详情面板与右键菜单共用。 */
@@ -259,15 +283,18 @@ internal fun LocalTransferSheet(task: DownloadTask, actions: List<SheetAction>, 
 }
 
 @Composable
-private fun LocalTransferVisual(task: DownloadTask, isMedia: Boolean, isSpoilerBlurred: Boolean) {
+private fun LocalTransferVisual(task: DownloadTask, isMedia: Boolean, isSpoilerBlurred: Boolean, size: Dp = ListLeadingSize) {
     val files = LocalPikoPlatform.current.localFiles
+    // 本机缩略图只对图片与视频要：压缩包、文档交给平台也会得到一个模型，加载失败时画面是空的，退不回类型图标
     val imageModel = remember(task.thumbnailLink, task.destinationPath) {
-        task.thumbnailLink.ifEmpty { null } ?: files.thumbnailModel(task.destinationPath)
+        task.thumbnailLink.ifEmpty { null }
+            ?: files.thumbnailModel(task.destinationPath).takeIf { isMedia || task.fileName.isImageName() }
     }
     ListLeadingMedia(
         thumbnail = imageModel,
         fallback = { ListLeadingIcon(task.typeIcon()) },
         isSpoilerBlurred = isSpoilerBlurred,
         showPlayOverlay = task.status == DownloadStatus.COMPLETED && isMedia,
+        size = size,
     )
 }

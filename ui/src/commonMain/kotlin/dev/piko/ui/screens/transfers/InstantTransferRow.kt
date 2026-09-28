@@ -36,9 +36,14 @@ internal fun InstantTransferRow(
     onOpen: () -> Unit,
     onMoreClick: () -> Unit,
     modifier: Modifier = Modifier,
+    selection: RowSelection = RowSelection.None,
 ) {
     FileListItem(
         headline = record.name,
+        onLongClick = selection.onLongClick,
+        isSelectionMode = selection.active,
+        isSelected = selection.selected,
+        onSelectToggle = { selection.onToggle() },
         leading = { ListLeadingMedia(thumbnail = null, fallback = { ListLeadingIcon(Icons.Outlined.Bolt) }, isSpoilerBlurred = false) },
         onClick = onOpen,
         onMoreClick = onMoreClick,
@@ -55,7 +60,7 @@ internal fun InstantTransferRow(
                     color = MaterialTheme.colorScheme.primary,
                     maxLines = 1,
                 )
-                Text(text = "已保存", color = LocalStatusColors.current.success, maxLines = 1)
+                // 不写「已保存」：秒传当场完成，所在的分组已经说了
                 MetaRow(parts = record.details(), modifier = Modifier.weight(1f, fill = false))
             }
         },

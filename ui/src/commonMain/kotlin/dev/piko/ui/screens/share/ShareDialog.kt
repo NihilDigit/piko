@@ -37,6 +37,7 @@ import dev.piko.shared.state.ShareCreateState
 import dev.piko.shared.state.SharePassCodeMode
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.components.FileTypeIcon
+import dev.piko.ui.components.connectedToggleShapes
 import dev.piko.ui.platform.LocalPikoPlatform
 import io.github.nihildigit.pikpak.FileStat
 
@@ -86,7 +87,8 @@ fun ShareDialog(
                         onCopied()
                     },
                 ) {
-                    Text(if (created.passCode.isEmpty()) "复制链接" else "复制链接与提取码")
+                    // 与我的分享同一个说法：复制的总是 shareText，有提取码时连同提取码
+                    Text("复制链接")
                 }
             }
         },
@@ -193,11 +195,7 @@ private fun <T> ConnectedToggle(
                 checked = option == selected,
                 onCheckedChange = { onSelect(option) },
                 enabled = enabled,
-                shapes = when (index) {
-                    0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
-                    options.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
-                    else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
-                },
+                shapes = connectedToggleShapes(index, options.size),
                 modifier = Modifier.weight(1f),
             ) {
                 Text(label(option), maxLines = 1)
