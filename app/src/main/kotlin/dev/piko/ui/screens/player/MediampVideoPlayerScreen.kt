@@ -1,8 +1,16 @@
 package dev.piko.ui.screens.player
 
+import android.content.Context
 import android.content.res.Configuration
+import android.net.Uri
+import android.provider.OpenableColumns
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import dev.piko.shared.media.player.isPlayerSubtitleName
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -16,7 +24,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -83,7 +93,22 @@ fun MediampVideoPlayerScreen(
     }
 
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    // 全屏原先就等于横屏。竖着的片子（竖拍的，或转过 90 度的横片）全屏时屏幕是竖的，横竖推不出是否全屏，
+    // 另记一个；不记的话返回键把竖着的全屏当成普通页面，直接退出播放器
+    var portraitFullscreen by rememberSaveable { mutableStateOf(false) }
+    val isFullscreen = isLandscape || portraitFullscreen
     val orientationController = rememberOrientationController()
+
+    // 全屏时屏幕方向跟着片子走：横片横屏，竖片竖屏。与桌面端转画面时窗口横竖对调是同一件事
+    fun enterFullscreen(landscapeVideo: Boolean) {
+        portraitFullscreen = !landscapeVideo
+        if (landscapeVideo) orientationController.setLandscape() else orientationController.setPortraitFullscreen()
+    }
+
+    fun exitFullscreen() {
+        portraitFullscreen = false
+        orientationController.setPortrait()
+    }
     val brightness = rememberWindowBrightness()
     val mediaVolume = rememberMediaVolume()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -107,8 +132,21 @@ fun MediampVideoPlayerScreen(
         state.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
     }
 
-    LaunchedEffect(isLandscape) {
-        if (isLandscape) orientationController.hideSystemBars() else orientationController.showSystemBars()
+    val subtitleLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            when (val copied = withContext(Dispatchers.IO) { copySubtitleToCache(context, uri) }) {
+                is LocalSubtitle.Copied -> state.addLocalSubtitle(copied.file.absolutePath, copied.file.name)
+                LocalSubtitle.Unsupported -> snackbarHostState.showSnackbar("不支持这种字幕格式", withDismissAction = true)
+                LocalSubtitle.Unreadable -> snackbarHostState.showSnackbar("无法读取字幕文件", withDismissAction = true)
+            }
+        }
+    }
+    // 字幕的 MIME 类型各家登记得不一，按类型过滤会把 .ass 这类藏起来，只能全列、选完按扩展名判断
+    val pickLocalSubtitle = { subtitleLauncher.launch(arrayOf("*/*")) }
+
+    LaunchedEffect(isFullscreen) {
+        if (isFullscreen) orientationController.hideSystemBars() else orientationController.showSystemBars()
     }
 
     DisposableEffect(Unit) {
@@ -128,7 +166,7 @@ fun MediampVideoPlayerScreen(
     }
 
     BackHandler {
-        if (isLandscape) orientationController.setPortrait() else onBackClick()
+        if (isFullscreen) exitFullscreen() else onBackClick()
     }
 
     val leave = {
@@ -177,8 +215,9 @@ fun MediampVideoPlayerScreen(
                 onRetry = state::retry,
                 onRestartFromBeginning = state::restartFromBeginning,
                 onBack = leave,
-                onToggleFullscreen = { orientationController.toggleOrientation(isLandscape) },
-                isFullscreen = isLandscape,
+                // 比例还没拿到时按横片进，与原先一律横屏全屏相同
+                onToggleFullscreen = { if (isFullscreen) exitFullscreen() else enterFullscreen(state.isLandscapeVideo != false) },
+                isFullscreen = isFullscreen,
                 isLandscapeVideo = state.isLandscapeVideo,
                 playlist = state.playlist,
                 currentFileId = state.fileId,
@@ -197,9 +236,52 @@ fun MediampVideoPlayerScreen(
                 brightness = brightness,
                 volume = mediaVolume,
                 snackbarHost = { SnackbarHost(snackbarHostState) },
+                fileActions = rememberPlayerFileActions(state.fileId, state.isLocalPlayback) { message ->
+                    scope.launch { snackbarHostState.showSnackbar(message, withDismissAction = true) }
+                },
+                rotationDegrees = state.rotationDegrees.takeIf { state.supportsRotation },
+                onRotationChange = { degrees ->
+                    // 转了 90 度，片子横竖对调。全屏时屏幕跟着换方向；不在全屏时只转画面，页面照旧，
+                    // 如同桌面窗口最大化时不动窗口。新比例由后端观察 video-params 异步报回，这里按对调直接推算
+                    val turned = (degrees - state.rotationDegrees) % 180 != 0
+                    val landscapeVideo = state.isLandscapeVideo
+                    state.setRotation(degrees)
+                    if (turned && isFullscreen && landscapeVideo != null) enterFullscreen(!landscapeVideo)
+                },
+                onPickLocalSubtitle = pickLocalSubtitle.takeIf { state.canAddSubtitle },
+                onPickDriveSubtitle = { file: FileStat -> state.addDriveSubtitle(file.id, file.name) }
+                    .takeIf { state.canAddSubtitle },
             )
         }
     }
+}
+
+private sealed interface LocalSubtitle {
+    class Copied(val file: File) : LocalSubtitle
+    data object Unsupported : LocalSubtitle
+    data object Unreadable : LocalSubtitle
+}
+
+/**
+ * 把选中的字幕复制进缓存目录，交给 mpv 的是普通路径。
+ *
+ * 不交 content: URI：mpv 读不了。也不像本地视频那样交 fdclose:// 描述符：描述符由 mpv 读完即关，
+ * 而换清晰度、断线重连都要重开文件、再挂一遍这条字幕，那时描述符早已关掉。字幕只有几十到几百 KB，复制一份最省事。
+ * 保留原文件名：mpv 按扩展名认格式，列表里也显示它。
+ */
+private fun copySubtitleToCache(context: Context, uri: Uri): LocalSubtitle {
+    val resolver = context.contentResolver
+    val name = runCatching {
+        resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
+        }
+    }.getOrNull() ?: uri.lastPathSegment?.substringAfterLast('/') ?: return LocalSubtitle.Unreadable
+    if (!isPlayerSubtitleName(name)) return LocalSubtitle.Unsupported
+    val target = File(File(context.cacheDir, "subtitles").apply { mkdirs() }, name.replace('/', '_'))
+    return runCatching {
+        resolver.openInputStream(uri)?.use { input -> target.outputStream().use { input.copyTo(it) } } ?: error("打不开")
+        LocalSubtitle.Copied(target)
+    }.getOrElse { LocalSubtitle.Unreadable }
 }
 
 /**

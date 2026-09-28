@@ -116,17 +116,15 @@ internal class ScreenOrientationController(private val activity: Activity?) {
         showSystemBars()
     }
 
+    /** 竖着的全屏：竖拍的片子（或转过 90 度的横片）铺满竖屏，系统栏同样藏起来。 */
+    fun setPortraitFullscreen() {
+        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+        hideSystemBars()
+    }
+
     fun resetOrientation() {
         activity?.requestedOrientation = initialRequestedOrientation
         showSystemBars()
-    }
-
-    fun toggleOrientation(isCurrentlyLandscape: Boolean) {
-        if (isCurrentlyLandscape) {
-            setPortrait()
-        } else {
-            setLandscape()
-        }
     }
 
     fun hideSystemBars() {

@@ -27,7 +27,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeMute
@@ -40,7 +39,6 @@ import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
-import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -67,189 +65,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-
-/**
- * 手势 HUD：竖滑显示亮度或音量，横滑显示目标时间与偏移量。
- *
- * 这是手势唯一的视觉反馈，所以标成 liveRegion，读屏用户拖动时也能听到数值。
- */
-@Composable
-internal fun PlayerGestureHud(
-    gesture: PlayerGesture,
-    durationMillis: Long,
-    modifier: Modifier = Modifier,
-) {
-    Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Surface(
-            shape = MaterialTheme.shapes.extraLarge,
-            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = HUD_CONTAINER_ALPHA),
-            contentColor = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier
-                .padding(16.dp)
-                .semantics { liveRegion = LiveRegionMode.Polite },
-        ) {
-            when (gesture) {
-                is PlayerGesture.Adjust -> AdjustHudContent(gesture)
-                is PlayerGesture.Seek -> SeekHudContent(gesture, durationMillis)
-            }
-        }
-    }
-}
-
-@Composable
-private fun AdjustHudContent(gesture: PlayerGesture.Adjust) {
-    Row(
-        modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            imageVector = when {
-                gesture.kind == VerticalAdjust.Brightness -> Icons.Filled.BrightnessMedium
-                gesture.fraction <= 0f -> Icons.AutoMirrored.Filled.VolumeMute
-                else -> Icons.AutoMirrored.Filled.VolumeUp
-            },
-            contentDescription = if (gesture.kind == VerticalAdjust.Brightness) "亮度" else "音量",
-            modifier = Modifier.size(24.dp),
-        )
-        Spacer(Modifier.width(16.dp))
-        LinearProgressIndicator(
-            progress = { gesture.fraction },
-            modifier = Modifier.width(140.dp),
-        )
-        Spacer(Modifier.width(16.dp))
-        Text(
-            text = "${(gesture.fraction * 100).toInt()}",
-            style = MaterialTheme.typography.titleMedium,
-            textAlign = TextAlign.End,
-            modifier = Modifier.width(36.dp),
-        )
-    }
-}
-
-@Composable
-private fun SeekHudContent(gesture: PlayerGesture.Seek, durationMillis: Long) {
-    val target = gesture.targetMillis(durationMillis)
-    val deltaSeconds = (target - gesture.startPositionMillis) / 1000
-    Column(
-        modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Row(verticalAlignment = Alignment.Bottom) {
-            Text(
-                text = formatTime(target),
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Medium,
-            )
-            Text(
-                text = " / ${formatTime(durationMillis)}",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Spacer(Modifier.height(4.dp))
-        Text(
-            text = if (deltaSeconds >= 0) "+$deltaSeconds 秒" else "$deltaSeconds 秒",
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.primary,
-        )
-        if (durationMillis > 0) {
-            Spacer(Modifier.height(12.dp))
-            LinearProgressIndicator(
-                progress = { target.toFloat() / durationMillis },
-                modifier = Modifier.width(200.dp),
-            )
-        }
-    }
-}
-
-/**
- * 双击快进快退的反馈：落点一侧的半圆弧形区域，显示本轮累计的秒数。
- *
- * 连续双击同一侧会累加，所以显示的是累计值而不是固定的 10 秒；弧形贴着屏幕边缘，
- * 说明操作属于这一侧，同时不遮住画面中央。
- */
-@Composable
-internal fun DoubleTapIndicator(
-    forward: Boolean,
-    seconds: Int,
-    modifier: Modifier = Modifier,
-) {
-    val arc = if (forward) {
-        RoundedCornerShape(topStartPercent = 50, bottomStartPercent = 50)
-    } else {
-        RoundedCornerShape(topEndPercent = 50, bottomEndPercent = 50)
-    }
-    Box(modifier = modifier.fillMaxSize()) {
-        Box(
-            modifier = Modifier
-                .align(if (forward) Alignment.CenterEnd else Alignment.CenterStart)
-                .fillMaxHeight()
-                .fillMaxWidth(SIDE_ZONE_FRACTION)
-                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = DOUBLE_TAP_ARC_ALPHA), arc)
-                .semantics { liveRegion = LiveRegionMode.Polite },
-            contentAlignment = Alignment.Center,
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(
-                    imageVector = if (forward) Icons.Filled.FastForward else Icons.Filled.FastRewind,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.size(32.dp),
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = if (forward) "+$seconds 秒" else "-$seconds 秒",
-                    color = MaterialTheme.colorScheme.onSurface,
-                    style = MaterialTheme.typography.titleMedium,
-                )
-            }
-        }
-    }
-}
-
-/**
- * 长按倍速播放提示，贴顶部居中。
- */
-@Composable
-internal fun BoxScope.SpeedBoostCapsule(
-    visible: Boolean,
-    isLandscape: Boolean,
-    speed: Float,
-) {
-    val motion = MaterialTheme.motionScheme
-    AnimatedVisibility(
-        visible = visible,
-        enter = fadeIn(motion.fastEffectsSpec()) + slideInVertically(motion.fastSpatialSpec()) { -it },
-        exit = fadeOut(motion.fastEffectsSpec()) + slideOutVertically(motion.fastSpatialSpec()) { -it },
-        modifier = Modifier
-            .align(Alignment.TopCenter)
-            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
-            .padding(top = if (isLandscape) 16.dp else 64.dp),
-    ) {
-        Surface(
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = HUD_CONTAINER_ALPHA),
-            contentColor = MaterialTheme.colorScheme.onSurface,
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.Speed,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(18.dp),
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = "${formatSpeed(speed)} 播放中",
-                    style = MaterialTheme.typography.labelLarge,
-                )
-            }
-        }
-    }
-}
 
 /**
  * 竖屏放横屏片子时的全屏入口，落在画面下方的黑边里。
@@ -433,7 +248,5 @@ internal fun PlaybackErrorCard(
     }
 }
 
-private const val HUD_CONTAINER_ALPHA = 0.9f
 private val BOTTOM_BAR_CLEARANCE_PORTRAIT = 120.dp
 private val BOTTOM_BAR_CLEARANCE_LANDSCAPE = 104.dp
-private const val DOUBLE_TAP_ARC_ALPHA = 0.16f

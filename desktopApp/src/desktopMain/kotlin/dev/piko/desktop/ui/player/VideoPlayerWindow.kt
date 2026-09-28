@@ -23,6 +23,8 @@ import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.WindowPlacement
+import androidx.compose.ui.window.WindowPosition
+import androidx.compose.ui.window.WindowState
 import coil3.compose.AsyncImage
 import dev.piko.desktop.DesktopSettingsStore
 import dev.piko.desktop.MacOs
@@ -46,6 +48,9 @@ import dev.piko.ui.components.trackPointerSource
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.PikoPlatform
 import dev.piko.ui.screens.player.MobilePlayerControls
+import dev.piko.desktop.AwtDialogs
+import dev.piko.ui.screens.player.rememberPlayerFileActions
+import kotlinx.coroutines.launch
 import dev.piko.ui.screens.player.PlayerLevelControl
 import dev.piko.ui.screens.player.PlayerTheme
 import dev.piko.ui.screens.player.PlayerTopBar
@@ -53,8 +58,13 @@ import dev.piko.ui.screens.player.playlistOf
 import dev.piko.ui.screens.player.siblingMedia
 import dev.piko.ui.theme.Appearance
 import dev.piko.ui.theme.PikoTheme
+import dev.piko.shared.media.player.PLAYER_SUBTITLE_EXTENSIONS
+import dev.piko.shared.media.player.isPlayerSubtitleName
+import io.github.nihildigit.pikpak.FileStat
+import java.awt.KeyboardFocusManager
 import java.awt.Point
 import java.awt.Toolkit
+import java.awt.Window
 import java.awt.image.BufferedImage
 import java.io.File
 import org.openani.mediamp.ExperimentalMediampApi
@@ -80,8 +90,18 @@ fun VideoPlayerWindow(
 ) {
     // 无边框全屏不改 WindowState 的 placement，窗口尺寸却铺满了屏幕，要告诉位置记忆此时别存
     var isFullscreen by remember { mutableStateOf(false) }
-    // 所有播放窗口共用一份记忆，下一个窗口开在上一个关掉时的位置与大小
-    val windowState = rememberRememberedWindowState(settings, "player", DpSize(1000.dp, 620.dp)) { isFullscreen }
+    // 窗口眼下是否随画面横竖对调着。只记真正对调过的次数：最大化与全屏时转画面不动窗口，
+    // 按画面的旋转角算就与窗口对不上
+    var windowTurned by remember { mutableStateOf(false) }
+    // 所有播放窗口共用一份记忆，下一个窗口开在上一个关掉时的位置与大小。新窗口的画面不带旋转，
+    // 所以存的是对调前的尺寸，否则转过一次之后每个新窗口都是竖的
+    val windowState = rememberRememberedWindowState(
+        settings = settings,
+        name = "player",
+        defaultSize = DpSize(1000.dp, 620.dp),
+        isBorderlessFullscreen = { isFullscreen },
+        sizeToSave = { size -> if (windowTurned) DpSize(size.height, size.width) else size },
+    )
     // 换集后标题跟着当前这集走
     var title by remember { mutableStateOf(request.fileName) }
 
@@ -131,6 +151,9 @@ fun VideoPlayerWindow(
                             }
                         },
                         onTitleChange = { title = it },
+                        onQuarterTurn = {
+                            if (!inFullscreen && turnWindow(window, windowState)) windowTurned = !windowTurned
+                        },
                         onClose = onClose,
                         modifier = Modifier.trackPointerSource(pointerSource),
                     )
@@ -138,6 +161,36 @@ fun VideoPlayerWindow(
             }
         }
     }
+}
+
+/**
+ * 画面转了 90 度之后把窗口也横竖对调，绕窗口中心转：只转画面的话，竖过来的片子缩在横窗口正中，两边全是黑的。
+ * 对调后超出屏幕可用区域的，按比例缩到放得下，再挪回屏幕里。最大化与全屏时不动，那时窗口大小由系统定。
+ *
+ * WindowState 的尺寸与 AWT 的屏幕坐标都是逻辑像素，同一个单位，直接比较。
+ * 返回窗口是否真的对调了。
+ */
+private fun turnWindow(window: Window, windowState: WindowState): Boolean {
+    if (windowState.placement != WindowPlacement.Floating) return false
+    val config = window.graphicsConfiguration ?: return false
+    val insets = Toolkit.getDefaultToolkit().getScreenInsets(config)
+    val screen = config.bounds
+    val usableLeft = screen.x + insets.left
+    val usableTop = screen.y + insets.top
+    val usableWidth = (screen.width - insets.left - insets.right).toFloat()
+    val usableHeight = (screen.height - insets.top - insets.bottom).toFloat()
+
+    val old = windowState.size
+    val fit = minOf(1f, usableWidth / old.height.value, usableHeight / old.width.value)
+    val width = old.height.value * fit
+    val height = old.width.value * fit
+    val centerX = window.x + window.width / 2f
+    val centerY = window.y + window.height / 2f
+    val x = (centerX - width / 2).coerceIn(usableLeft.toFloat(), maxOf(usableLeft.toFloat(), usableLeft + usableWidth - width))
+    val y = (centerY - height / 2).coerceIn(usableTop.toFloat(), maxOf(usableTop.toFloat(), usableTop + usableHeight - height))
+    windowState.size = DpSize(width.dp, height.dp)
+    windowState.position = WindowPosition(x.dp, y.dp)
+    return true
 }
 
 // 画面四周是黑的，标题栏与之连成一片，不随应用主题
@@ -151,6 +204,7 @@ private fun VideoPlayerContent(
     isFullscreen: Boolean,
     onToggleFullscreen: () -> Unit,
     onTitleChange: (String) -> Unit,
+    onQuarterTurn: () -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -281,10 +335,43 @@ private fun VideoPlayerContent(
                 seekThumbOnHoverOnly = true,
                 idleCursor = BlankPointerIcon,
                 snackbarHost = { SnackbarHost(snackbarHostState) },
+                fileActions = rememberPlayerFileActions(state.fileId, state.isLocalPlayback) { message ->
+                    scope.launch { snackbarHostState.showSnackbar(message, withDismissAction = true) }
+                },
+                rotationDegrees = state.rotationDegrees.takeIf { state.supportsRotation },
+                onRotationChange = { degrees ->
+                    // 只在用户转的时候动窗口；换集时 mpv 自己保留旋转，窗口本就是转过的样子
+                    val turned = (degrees - state.rotationDegrees) % 180 != 0
+                    state.setRotation(degrees)
+                    if (turned) onQuarterTurn()
+                },
+                onPickLocalSubtitle = fun() {
+                    // 属主要在点击的当下取，launch 之后焦点可能已经变了
+                    val owner = KeyboardFocusManager.getCurrentKeyboardFocusManager().activeWindow
+                    scope.launch {
+                        val file = chooseSubtitleFile(owner) ?: return@launch
+                        if (isPlayerSubtitleName(file.name)) {
+                            state.addLocalSubtitle(file.absolutePath, file.name)
+                        } else {
+                            snackbarHostState.showSnackbar("不支持这种字幕格式", withDismissAction = true)
+                        }
+                    }
+                }.takeIf { state.canAddSubtitle },
+                onPickDriveSubtitle = { file: FileStat -> state.addDriveSubtitle(file.id, file.name) }
+                    .takeIf { state.canAddSubtitle },
             )
         }
     }
 }
+
+/** 系统的文件框，只挑一个字幕文件，经 [AwtDialogs] 弹。取消时为 null。 */
+private suspend fun chooseSubtitleFile(owner: Window?): File? = AwtDialogs.chooseFiles(
+    owner = owner,
+    title = "选择字幕文件",
+    multiple = false,
+    pattern = PLAYER_SUBTITLE_EXTENSIONS.joinToString(";") { "*.$it" },
+    filter = ::isPlayerSubtitleName,
+).firstOrNull()
 
 /** 桌面没有系统媒体音量可借，音量手势与方向键调的是 mpv 自身的音量。 */
 private class BackendVolume(private val backend: PlaybackBackend) : PlayerLevelControl {

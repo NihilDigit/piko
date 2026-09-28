@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.safeGestures
 import androidx.compose.foundation.layout.size
@@ -112,12 +113,16 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.material.icons.filled.Rotate90DegreesCw
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import dev.piko.ui.platform.LocalFramelessWindow
+import dev.piko.ui.components.SheetAction
 import dev.piko.ui.platform.windowDragArea
 import kotlinx.coroutines.delay
 import java.math.BigDecimal
@@ -147,6 +152,8 @@ fun PlayerTopBar(
     onSettingsClick: (() -> Unit)? = null,
     /** 音轨与字幕。没有字幕、音轨也只有一条时为 null，不给入口。 */
     onTracksClick: (() -> Unit)? = null,
+    /** 作用于正在播的这个文件的操作（分享、下载），排在播放设置之前。 */
+    fileActions: List<SheetAction> = emptyList(),
 ) {
     // 桌面端独立的播放窗口没有标题栏：关窗按钮放在右上角，与其他按钮同款，左边的返回键与它重复，不再显示
     val framelessWindow = LocalFramelessWindow.current
@@ -206,6 +213,9 @@ fun PlayerTopBar(
                 }
             }
         }
+        fileActions.forEach { action ->
+            PlayerIconButton(icon = action.icon, label = action.label, onClick = action.onClick, tooltipBelow = true)
+        }
         if (onTracksClick != null) {
             PlayerIconButton(
                 icon = Icons.Outlined.Subtitles,
@@ -256,125 +266,78 @@ private fun LocalPlaybackBadge() {
 }
 
 /**
- * 画面中央的播放控制：上一集、后退、播放/暂停、前进、下一集。
- *
- * 尺寸拉开层级：播放键最大，快进快退次之，换集最小，与使用频率一致。
- * 换集按钮在没有上一集或下一集时禁用而不是隐藏，整排不会跳动。
- * [showSideButtons] 为 false 时只留播放键：控件收起而仍在加载时，它独自留在画面中央承载加载指示。
- * 两侧按钮对称进出，播放键始终居中。
+ * 画面中央只有播放键。原先两侧还有快进快退与换集：进退触屏靠双击两侧、鼠标与键盘靠方向键和进度条，
+ * 按钮与手势重复，又把画面中央占掉一大片；换集挪进了底栏。
+ * 播放键一直在这里，控件收起时它若还在（加载中、有读数）就独自承载加载指示或读数。
  */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 internal fun PlayerCenterControls(
     isPlaying: Boolean,
     isLoading: Boolean,
-    isLandscape: Boolean,
-    showSideButtons: Boolean,
-    showEpisodeSkip: Boolean,
-    hasPrevious: Boolean,
-    hasNext: Boolean,
+    indicator: CenterIndicator?,
     onPlayPause: () -> Unit,
-    onSeekBackward: () -> Unit,
-    onSeekForward: () -> Unit,
-    onPrevious: () -> Unit,
-    onNext: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val sizes = if (isLandscape) LandscapeCenterSizes else PortraitCenterSizes
-    val motion = MaterialTheme.motionScheme
-
-    @Composable
-    fun RowScope.Side(content: @Composable () -> Unit) {
-        AnimatedVisibility(
-            visible = showSideButtons,
-            enter = fadeIn(motion.defaultEffectsSpec()) + scaleIn(motion.defaultSpatialSpec(), initialScale = 0.6f),
-            exit = fadeOut(motion.fastEffectsSpec()) + scaleOut(motion.fastSpatialSpec(), targetScale = 0.6f),
-        ) {
-            content()
-        }
-    }
-
-    Row(
+    PlayPauseButton(
+        isPlaying = isPlaying,
+        isLoading = isLoading,
+        indicator = indicator,
+        size = PlayContainerSize,
+        iconSize = IconButtonDefaults.mediumIconSize,
+        squareCorner = 16.dp,
+        pressedCorner = 12.dp,
+        onClick = onPlayPause,
         modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(sizes.spacing),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (showEpisodeSkip) {
-            Side {
-                PlayerIconButton(
-                    icon = Icons.Filled.SkipPrevious,
-                    label = "上一集",
-                    onClick = onPrevious,
-                    enabled = hasPrevious,
-                    containerSize = sizes.skipContainer(),
-                    iconSize = sizes.skipIcon,
-                )
-            }
-        }
-        Side {
-            PlayerIconButton(
-                icon = Icons.Filled.Replay10,
-                label = "后退 ${SEEK_STEP_MILLIS / 1000} 秒",
-                onClick = onSeekBackward,
-                containerSize = sizes.seekContainer(),
-                iconSize = sizes.seekIcon,
-                shapes = sizes.seekShapes(),
-            )
-        }
-
-        // 播放键两侧比其他按钮之间多留一段：它是这一组的主角，贴得和两侧一样近就分不出主次
-        PlayPauseButton(
-            isPlaying = isPlaying,
-            isLoading = isLoading,
-            size = sizes.playContainer(),
-            iconSize = sizes.playIcon,
-            squareCorner = sizes.playSquareCorner,
-            pressedCorner = sizes.playPressedCorner,
-            onClick = onPlayPause,
-            modifier = Modifier.padding(horizontal = sizes.playSpacing - sizes.spacing),
-        )
-
-        Side {
-            PlayerIconButton(
-                icon = Icons.Filled.Forward10,
-                label = "前进 ${SEEK_STEP_MILLIS / 1000} 秒",
-                onClick = onSeekForward,
-                containerSize = sizes.seekContainer(),
-                iconSize = sizes.seekIcon,
-                shapes = sizes.seekShapes(),
-            )
-        }
-        if (showEpisodeSkip) {
-            Side {
-                PlayerIconButton(
-                    icon = Icons.Filled.SkipNext,
-                    label = "下一集",
-                    onClick = onNext,
-                    enabled = hasNext,
-                    containerSize = sizes.skipContainer(),
-                    iconSize = sizes.skipIcon,
-                )
-            }
-        }
-    }
+    )
 }
 
 /**
- * 播放键，加载时自己变成加载指示的容器，而不是在上面或旁边另叠一个指示器。
+ * 播放键上临时显示的读数：倍速、旋转、音量、亮度、进退这类「正在改什么、刚改了什么」的反馈。
+ * 播放键这时变形成横向的胶囊把它托住，过一会儿再变回去。[description] 给读屏用。
+ * [progress] 不为 null 时胶囊里多一条进度，音量、亮度与拖动进度用它。
+ */
+internal data class CenterIndicator(
+    val icon: ImageVector,
+    val text: String,
+    val description: String,
+    val progress: Float? = null,
+)
+
+// 播放键里放的是哪一种内容
+private sealed interface CenterFace {
+    data object Icon : CenterFace
+    data object Loading : CenterFace
+    data class Readout(val indicator: CenterIndicator) : CenterFace
+}
+
+// 换内容才交叉淡入。读数只看图标与有没有进度条：拖音量时数值每帧都在变，按文字算的话一路都在淡入淡出，
+// 数字糊成一片；同一种读数里数字就地换，胶囊的宽度随之伸缩
+private val CenterFace.contentKey: Any
+    get() = when (this) {
+        is CenterFace.Readout -> indicator.icon to (indicator.progress != null)
+        else -> this
+    }
+
+/**
+ * 播放键，加载时自己变成加载指示的容器，有临时读数时变成托住读数的胶囊，而不是在上面或旁边另叠一层。
  *
- * 三种形态由同一个容器的形状、宽度、颜色连续过渡：暂停为正圆，播放为展宽的方角（与 toggle 按钮
+ * 四种形态由同一个容器的形状、宽度、颜色连续过渡：暂停为正圆，播放为展宽的方角（与 toggle 按钮
  * 选中态的形变一致），加载时也是正圆、换成 primaryContainer，里面是 Expressive 的形变
- * LoadingIndicator。按下时圆角再收紧一级。形状与尺寸走 spatial 弹簧，颜色走 effects 弹簧，
- * 与规范对两类属性的分工一致。
+ * LoadingIndicator；显示读数时拉成两头圆的胶囊、换成 tertiary。按下时圆角再收紧一级。
+ * 形状与尺寸走 spatial 弹簧，颜色走 effects 弹簧，与规范对两类属性的分工一致。
  *
- * 不用 FilledIconToggleButton：它的形状只在 checked 与 pressed 间切换，接不进第三种形态，
- * 容器宽度也不能动画。加载中仍可点击，缓冲时暂停是合理操作。
+ * 读数优先于加载：长按倍速时恰好卡了一下，手指还按着，该看到的仍是倍速。
+ *
+ * 不用 FilledIconToggleButton：它的形状只在 checked 与 pressed 间切换，接不进另外两种形态，
+ * 容器宽度也不能动画。不用 androidx.graphics.shapes 的 Morph：几种形态都是圆角矩形，只差宽度与圆角，
+ * RoundedCornerShape 的尺寸插值就够了，也不必为此加依赖。加载中仍可点击，缓冲时暂停是合理操作。
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun PlayPauseButton(
     isPlaying: Boolean,
     isLoading: Boolean,
+    indicator: CenterIndicator?,
     size: DpSize,
     iconSize: Dp,
     squareCorner: Dp,
@@ -386,72 +349,123 @@ private fun PlayPauseButton(
     val colors = MaterialTheme.colorScheme
     val interactionSource = remember { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
+    val face = when {
+        indicator != null -> CenterFace.Readout(indicator)
+        isLoading -> CenterFace.Loading
+        else -> CenterFace.Icon
+    }
 
     val roundCorner = size.height / 2
     val corner by animateDpAsState(
         targetValue = when {
-            isLoading -> roundCorner
+            face != CenterFace.Icon -> roundCorner
             pressed -> pressedCorner
             isPlaying -> squareCorner
             else -> roundCorner
         },
         animationSpec = motion.fastSpatialSpec(),
     )
-    // 圆形态（暂停、加载）收成正圆，不是两头圆的胶囊；方角形态（播放中）才展开到 [size] 的宽度。
-    // 按下只收紧圆角不动宽度，否则按一下左右抖
-    val isRoundForm = isLoading || !isPlaying
+    // 读数形态的宽度照内容量出来，胶囊恰好托住它：固定宽度的话「90°」两边空一大截，「01:23:45」又放不下
+    val readoutStyle = MaterialTheme.typography.titleMediumEmphasized.copy(fontFeatureSettings = "tnum")
+    val textMeasurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    val readoutWidth = (face as? CenterFace.Readout)?.indicator?.let { shown ->
+        val textWidth = with(density) { textMeasurer.measure(shown.text, readoutStyle).size.width.toDp() }
+        val bar = if (shown.progress != null) READOUT_BAR_WIDTH + READOUT_GAP else 0.dp
+        READOUT_PADDING * 2 + READOUT_ICON_SIZE + READOUT_GAP + bar + textWidth
+    }
+    // 圆形态（暂停、加载）收成正圆，不是两头圆的胶囊；方角形态（播放中）才展开到 [size] 的宽度，
+    // 读数形态再照内容伸长。按下只收紧圆角不动宽度，否则按一下左右抖
     val width by animateDpAsState(
-        targetValue = if (isRoundForm) size.height else size.width,
+        targetValue = when {
+            readoutWidth != null -> maxOf(size.width, readoutWidth)
+            face == CenterFace.Loading || !isPlaying -> size.height
+            else -> size.width
+        },
         animationSpec = motion.defaultSpatialSpec(),
     )
     val containerColor by animateColorAsState(
-        targetValue = if (isLoading) colors.primaryContainer else colors.primary,
+        targetValue = when (face) {
+            is CenterFace.Readout -> colors.tertiary
+            CenterFace.Loading -> colors.primaryContainer
+            CenterFace.Icon -> colors.primary
+        },
         animationSpec = motion.defaultEffectsSpec(),
     )
-    val contentColor = if (isLoading) colors.onPrimaryContainer else colors.onPrimary
+    val contentColor = when (face) {
+        is CenterFace.Readout -> colors.onTertiary
+        CenterFace.Loading -> colors.onPrimaryContainer
+        CenterFace.Icon -> colors.onPrimary
+    }
     val description = when {
+        indicator != null -> indicator.description
         isLoading -> "加载中"
         isPlaying -> "暂停"
         else -> "播放"
     }
 
-    // 外框固定为静止尺寸，容器在里面伸缩，两侧按钮不会随之挪动
+    // 外框固定为静止尺寸，容器在里面伸缩，两侧按钮不会随之挪动；读数形态比外框宽，用 requiredSize 向两侧溢出
     Box(modifier.size(size), contentAlignment = Alignment.Center) {
         Surface(
             onClick = onClick,
-            shape = RoundedCornerShape(corner),
+            // 弹簧会冲过头。圆角从胶囊收回方角时只会冲到略小于 12dp，离 0 还远，仍兜一道：
+            // 负的圆角让 CornerBasedShape 当场抛异常，见 ConnectedShapes.kt
+            shape = RoundedCornerShape(corner.coerceAtLeast(0.dp)),
             color = containerColor,
             contentColor = contentColor,
             interactionSource = interactionSource,
             modifier = Modifier
-                .size(width, size.height)
+                .requiredSize(width.coerceAtLeast(0.dp), size.height)
                 .handCursor()
                 .semantics {
                     contentDescription = description
-                    if (isLoading) liveRegion = LiveRegionMode.Polite
+                    if (face != CenterFace.Icon) liveRegion = LiveRegionMode.Polite
                 },
         ) {
             AnimatedContent(
-                targetState = isLoading,
+                targetState = face,
                 transitionSpec = {
                     (fadeIn(motion.defaultEffectsSpec()) + scaleIn(motion.defaultSpatialSpec(), initialScale = 0.5f))
                         .togetherWith(fadeOut(motion.fastEffectsSpec()) + scaleOut(motion.fastSpatialSpec(), targetScale = 0.5f))
                 },
                 contentAlignment = Alignment.Center,
-                label = "playLoading",
-            ) { loading ->
+                contentKey = { it.contentKey },
+                label = "playFace",
+            ) { shown ->
                 Box(contentAlignment = Alignment.Center) {
-                    if (loading) {
-                        LoadingIndicator(
+                    when (shown) {
+                        CenterFace.Loading -> LoadingIndicator(
                             color = contentColor,
                             modifier = Modifier.size(size.height * LOADING_INDICATOR_FRACTION),
                         )
-                    } else {
-                        Icon(
+                        CenterFace.Icon -> Icon(
                             imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                             contentDescription = null,
                             modifier = Modifier.size(iconSize),
                         )
+                        is CenterFace.Readout -> {
+                            // contentKey 不看文字，同一种读数换了数值时 shown 仍是旧的一份，数值取眼前的
+                            val live = (face as? CenterFace.Readout)?.indicator
+                                ?.takeIf { CenterFace.Readout(it).contentKey == shown.contentKey }
+                                ?: shown.indicator
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(READOUT_GAP),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(live.icon, contentDescription = null, modifier = Modifier.size(READOUT_ICON_SIZE))
+                                live.progress?.let { progress ->
+                                    LinearProgressIndicator(
+                                        progress = { progress.coerceIn(0f, 1f) },
+                                        color = contentColor,
+                                        trackColor = contentColor.copy(alpha = 0.3f),
+                                        gapSize = 0.dp,
+                                        drawStopIndicator = {},
+                                        modifier = Modifier.width(READOUT_BAR_WIDTH),
+                                    )
+                                }
+                                Text(text = live.text, style = readoutStyle, maxLines = 1, softWrap = false)
+                            }
+                        }
                     }
                 }
             }
@@ -459,59 +473,15 @@ private fun PlayPauseButton(
     }
 }
 
-/**
- * 中央按钮组在两种方向下的规格。播放键两边都是 Medium 高度，只比快进快退大一号，方角与按压圆角取自
- * icon button 规格的 16 与 12；竖屏的换集按钮再小一级，360dp 宽的屏幕上五个按钮仍排得下。
- */
+// 读数胶囊的内部排布：两端留白、图标、间隙、进度条
+private val READOUT_PADDING = 20.dp
+private val READOUT_ICON_SIZE = 20.dp
+private val READOUT_GAP = 8.dp
+private val READOUT_BAR_WIDTH = 120.dp
 
-// Medium 的 56 高，宽度取标准 56 与宽版 72 之间：方形显得局促，宽版又抢过了两侧
+// Medium 的 56 高，宽度取标准 56 与宽版 72 之间：方形显得局促，宽版又抢过了两侧。方角与按压圆角取自
+// icon button 规格的 16 与 12
 private val PlayContainerSize = DpSize(64.dp, 56.dp)
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-private class CenterSizes(
-    val spacing: Dp,
-    /** 播放键与两侧按钮之间的距离，大于 [spacing]。 */
-    val playSpacing: Dp,
-    val playContainer: @Composable () -> DpSize,
-    val playIcon: Dp,
-    val playSquareCorner: Dp,
-    val playPressedCorner: Dp,
-    val seekContainer: @Composable () -> DpSize,
-    val seekIcon: Dp,
-    val seekShapes: @Composable () -> IconButtonShapes,
-    val skipContainer: @Composable () -> DpSize,
-    val skipIcon: Dp,
-)
-
-// 横屏原先整组大一级（播放键 Large、快进快退 Medium），在桌面窗口里压过画面，现在与竖屏只差换集按钮
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-private val LandscapeCenterSizes = CenterSizes(
-    spacing = 16.dp,
-    playSpacing = 28.dp,
-    playContainer = { PlayContainerSize },
-    playIcon = IconButtonDefaults.mediumIconSize,
-    playSquareCorner = 16.dp,
-    playPressedCorner = 12.dp,
-    seekContainer = { IconButtonDefaults.smallContainerSize() },
-    seekIcon = IconButtonDefaults.smallIconSize,
-    seekShapes = { IconButtonDefaults.shapes() },
-    skipContainer = { IconButtonDefaults.smallContainerSize() },
-    skipIcon = IconButtonDefaults.smallIconSize,
-)
-
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-private val PortraitCenterSizes = CenterSizes(
-    spacing = 16.dp,
-    playSpacing = 24.dp,
-    playContainer = { PlayContainerSize },
-    playIcon = IconButtonDefaults.mediumIconSize,
-    playSquareCorner = 16.dp,
-    playPressedCorner = 12.dp,
-    seekContainer = { IconButtonDefaults.smallContainerSize() },
-    seekIcon = IconButtonDefaults.smallIconSize,
-    seekShapes = { IconButtonDefaults.shapes() },
-    skipContainer = { IconButtonDefaults.extraSmallContainerSize() },
-    skipIcon = IconButtonDefaults.extraSmallIconSize,
-)
 
 /**
  * 播放器底栏：进度条在上，时间与选集、倍速、全屏在下。
@@ -530,11 +500,19 @@ internal fun PlayerBottomBar(
     bufferedPositionMillis: Long,
     playbackSpeed: Float?,
     showEpisodes: Boolean,
+    /** 上一集、下一集两个快捷键。窄窗口不给，换集走选集面板。 */
+    showEpisodeSkip: Boolean,
+    hasPrevious: Boolean,
+    hasNext: Boolean,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
     onSeek: (Long) -> Unit,
     isSpeedPopupOpen: Boolean,
     onSpeedPopupOpenChange: (Boolean) -> Unit,
     onSpeedChange: (Float) -> Unit,
     onEpisodesClick: () -> Unit,
+    /** 顺时针转 90 度；后端不能旋转时为 null，不给按钮。 */
+    onRotate: (() -> Unit)?,
     onToggleFullscreen: () -> Unit,
     modifier: Modifier = Modifier,
     onScrubbingChange: (Boolean) -> Unit = {},
@@ -573,6 +551,12 @@ internal fun PlayerBottomBar(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                // 换集在时间前面，照多数播放器底栏的排法。没有上一集或下一集时禁用而不是隐藏，时间不会左右跳
+                if (showEpisodeSkip) {
+                    PlayerIconButton(icon = Icons.Filled.SkipPrevious, label = "上一集", onClick = onPrevious, enabled = hasPrevious)
+                    PlayerIconButton(icon = Icons.Filled.SkipNext, label = "下一集", onClick = onNext, enabled = hasNext)
+                    Spacer(Modifier.width(8.dp))
+                }
                 Text(
                     text = formatTime(shownPosition),
                     style = TimeTextStyle(),
@@ -605,6 +589,11 @@ internal fun PlayerBottomBar(
             }
             if (showEpisodes) {
                 PlayerChipButton(text = "选集", icon = Icons.Outlined.VideoLibrary, onClick = onEpisodesClick)
+            }
+            // 一次转 90 度，与 R 键相同。原先在播放设置里列四个角度，要转画面得先开面板，
+            // 桌面上转了窗口还跟着对调，这一步该是顺手就点的
+            if (onRotate != null) {
+                PlayerIconButton(icon = Icons.Filled.Rotate90DegreesCw, label = "顺时针旋转 90 度", onClick = onRotate)
             }
             PlayerIconButton(
                 icon = if (isFullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
@@ -1009,6 +998,9 @@ internal const val MAX_SPEED = 3.5f
 const val LONG_PRESS_BOOST_SPEED = 2.0f
 
 internal fun formatSpeed(speed: Float): String = formatSpeedPreset(speed) + "x"
+
+// 播放键上的读数用乘号：字号大，字母 x 与数字挤在一起像是一个词
+internal fun formatSpeedMultiplier(speed: Float): String = formatSpeedPreset(speed) + "×"
 
 // 按两位小数取整后去掉末尾的 0：1.00 显示为 1，1.50 显示为 1.5
 internal fun formatSpeedPreset(speed: Float): String =

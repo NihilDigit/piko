@@ -18,6 +18,10 @@ import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.FastForward
+import androidx.compose.material.icons.outlined.Rotate90DegreesCw
+import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -38,7 +42,12 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusTarget
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
@@ -50,14 +59,24 @@ import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalAccessibilityManager
 import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.toSize
 import dev.piko.shared.media.player.MediaTrack
 import dev.piko.shared.media.player.PlayerAspectRatio
 import dev.piko.shared.media.player.PlaylistEntry
 import dev.piko.ui.components.LocalPointerSource
+import dev.piko.ui.components.SheetAction
+import io.github.nihildigit.pikpak.FileStat
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.BrightnessMedium
+import androidx.compose.material.icons.filled.FastRewind
+import kotlin.math.roundToInt
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.rememberCoroutineScope
 /**
  * 播放器的完整控件层，叠在视频画面之上。Android 与桌面共用，名字沿用只有 Android 时的叫法。
  *
@@ -73,7 +92,7 @@ import kotlinx.coroutines.delay
  * 只决定全屏键的图标；[isLandscapeVideo] 决定竖屏时是否给出全屏入口。
  * 触屏与鼠标的点击、双击、拖动都走同一个手势层。鼠标悬停不产生点击，所以另外监听鼠标移动来
  * 唤出控件；[idleCursor] 不为 null 时，播放中控件收起、鼠标又一段时间没动，指针换成它（桌面传一个透明指针）。
- * 键盘：空格播放暂停，左右方向键快退快进（与双击同样累加），上下方向键调音量，F 切换全屏。
+ * 键盘：空格播放暂停，左右方向键快退快进（与双击同样累加），上下方向键调音量，F 切换全屏，R 顺时针转 90 度。
  * 全屏时返回（Android 的返回手势、桌面的 Esc）先退出全屏；其余时候返回的含义由调用方决定。
  */
 @Composable
@@ -126,8 +145,19 @@ fun MobilePlayerControls(
     idleCursor: PointerIcon? = null,
     // 调用方的消息提示放进底部提示区，与续播提示、全屏入口一起排布，不各自定位
     snackbarHost: @Composable () -> Unit = {},
+    // 作用于这个文件的操作（分享、下载），见 rememberPlayerFileActions
+    fileActions: List<SheetAction> = emptyList(),
+    // 画面旋转的度数，后端不能旋转时为 null，设置面板与 R 键都不给
+    rotationDegrees: Int? = null,
+    onRotationChange: (Int) -> Unit = {},
+    // 手动挂字幕。本机的由平台弹文件选择框，选完自己交给播放器；网盘的在字幕面板里就地浏览，选中后回调
+    onPickLocalSubtitle: (() -> Unit)? = null,
+    onPickDriveSubtitle: ((FileStat) -> Unit)? = null,
 ) {
     val windowSize = LocalWindowInfo.current.containerSize
+    // 窄到 M3 的 compact（600dp 以下，竖着的手机）时底栏只留常用的：换集有选集面板，旋转有 R 键，
+    // 全摆出来时间读数就被挤没了
+    val compactWidth = with(LocalDensity.current) { windowSize.width.toDp() } < COMPACT_WIDTH
     val isLandscape = windowSize.width > windowSize.height
     val accessibilityManager = LocalAccessibilityManager.current
     val focusRequester = remember { FocusRequester() }
@@ -155,6 +185,13 @@ fun MobilePlayerControls(
 
     var isBoosting by remember { mutableStateOf(false) }
     var speedBeforeBoost by remember { mutableFloatStateOf(1f) }
+    // 松开长按时倍速改回原值，那一下不算「用户改了倍速」，不必再闪一次读数
+    var skipSpeedFlash by remember { mutableStateOf(false) }
+
+    // 播放键上临时显示的读数，见 PlayPauseButton。每闪一次加一，让收起的计时重新开始
+    var flashIndicator by remember { mutableStateOf<CenterIndicator?>(null) }
+    var flashCount by remember { mutableIntStateOf(0) }
+    val currentRotation by rememberUpdatedState(rotationDegrees)
 
     var showResumeTip by remember(resumedFromMillis) { mutableStateOf(resumedFromMillis != null) }
 
@@ -173,12 +210,12 @@ fun MobilePlayerControls(
     }
 
     // 双击两侧与左右方向键共用：连续同向操作累加，反馈显示本轮累计的秒数
-    fun stepSeek(forward: Boolean) {
+    fun stepSeek(forward: Boolean, stepMillis: Long = SEEK_STEP_MILLIS) {
         val continuing = doubleTapVisible && doubleTapForward == forward
         val base = if (continuing) doubleTapTargetMillis else currentPosition
-        val step = if (forward) SEEK_STEP_MILLIS else -SEEK_STEP_MILLIS
+        val step = if (forward) stepMillis else -stepMillis
         val target = (base + step).coerceIn(0L, durationMillis.coerceAtLeast(0L))
-        val stepSeconds = (SEEK_STEP_MILLIS / 1000).toInt()
+        val stepSeconds = (stepMillis / 1000).toInt()
         doubleTapTargetMillis = target
         doubleTapSeconds = if (continuing) doubleTapSeconds + stepSeconds else stepSeconds
         doubleTapForward = forward
@@ -193,16 +230,142 @@ fun MobilePlayerControls(
         keyVolumeCount += 1
     }
 
-    fun handleKey(key: Key): Boolean {
-        when (key) {
-            Key.Spacebar -> onPlayPause()
-            Key.DirectionLeft -> stepSeek(forward = false)
-            Key.DirectionRight -> stepSeek(forward = true)
+    // 按住期间临时换倍速，松开回到原值：触屏长按画面与桌面按住方向键共用
+    var boostSpeed by remember { mutableFloatStateOf(LONG_PRESS_BOOST_SPEED) }
+
+    fun startBoost(speed: Float) {
+        val current = currentSpeed ?: return
+        if (isBoosting) return
+        speedBeforeBoost = current
+        boostSpeed = speed
+        isBoosting = true
+        onSpeedChange(speed)
+    }
+
+    fun endBoost() {
+        if (!isBoosting) return
+        isBoosting = false
+        skipSpeedFlash = speedBeforeBoost != boostSpeed
+        onSpeedChange(speedBeforeBoost)
+    }
+
+    // 左右方向键：轻按是进退，按住超过 HOLD_ARROW_MILLIS 变成快进（→ 临时倍速，松开复原）或快退（←）。
+    // 播放器倒着放不了，快退是按住期间一小步一小步往回跳，读数照双击进退那样累加。
+    // 系统的按键连发分不出是按住还是连按，所以进退改在松开时做，按下只起计时
+    val scope = rememberCoroutineScope()
+    var heldArrow by remember { mutableStateOf<Key?>(null) }
+    var holdJob by remember { mutableStateOf<Job?>(null) }
+    var arrowHeld by remember { mutableStateOf(false) }
+
+    fun arrowDown(key: Key) {
+        if (heldArrow == key) return
+        heldArrow = key
+        holdJob?.cancel()
+        holdJob = scope.launch {
+            delay(HOLD_ARROW_MILLIS)
+            arrowHeld = true
+            if (key == Key.DirectionRight) {
+                startBoost(LONG_PRESS_BOOST_SPEED)
+            } else {
+                while (true) {
+                    stepSeek(forward = false, stepMillis = HOLD_REWIND_STEP_MILLIS)
+                    delay(HOLD_REWIND_INTERVAL_MILLIS)
+                }
+            }
+        }
+    }
+
+    fun arrowUp(key: Key): Boolean {
+        if (heldArrow != key) return false
+        heldArrow = null
+        holdJob?.cancel()
+        holdJob = null
+        when {
+            !arrowHeld -> stepSeek(forward = key == Key.DirectionRight)
+            key == Key.DirectionRight -> endBoost()
+        }
+        arrowHeld = false
+        interacted()
+        return true
+    }
+
+    // 静音前的音量，再按一次 M 回到这里。不在静音时为 null
+    var volumeBeforeMute by remember { mutableStateOf<Float?>(null) }
+
+    fun toggleMute() {
+        val control = volume ?: return
+        val restore = volumeBeforeMute
+        keyVolume = if (restore != null && control.current() == 0f) {
+            control.set(restore)
+        } else {
+            volumeBeforeMute = control.current().takeIf { it > 0f } ?: VOLUME_KEY_STEP
+            control.set(0f)
+        }
+        if (keyVolume != 0f) volumeBeforeMute = null
+        keyVolumeCount += 1
+    }
+
+    // 倍速按预设一档一档地换；当前值不在预设里时，往那个方向取最近的一档
+    fun stepSpeed(faster: Boolean) {
+        val speed = currentSpeed ?: return
+        val next = if (faster) PlayerSpeedPresets.firstOrNull { it > speed + 0.001f } else PlayerSpeedPresets.lastOrNull { it < speed - 0.001f }
+        next?.let(onSpeedChange)
+    }
+
+    // C 键开关字幕：关掉时记下是哪一条，再开回同一条；没记过就开第一条
+    var lastSubtitleId by remember { mutableStateOf<String?>(null) }
+    val currentSubtitleTracks by rememberUpdatedState(subtitleTracks)
+    val currentSubtitleId by rememberUpdatedState(selectedSubtitleTrackId)
+
+    fun toggleSubtitles(): Boolean {
+        val tracks = currentSubtitleTracks
+        if (tracks.isEmpty()) return false
+        val selected = currentSubtitleId
+        if (selected != null) {
+            lastSubtitleId = selected
+            onSelectSubtitleTrack(null)
+        } else {
+            onSelectSubtitleTrack(tracks.find { it.id == lastSubtitleId } ?: tracks.first())
+        }
+        return true
+    }
+
+    // 键位照主流桌面播放器（YouTube、mpv、PotPlayer 的公约数），加了要同时写进 ShortcutsDialog 的「播放器」一节。
+    // 带 Ctrl、Alt、⌘ 的一律放过，留给窗口与系统
+    fun handleKey(event: KeyEvent): Boolean {
+        if (event.type == KeyEventType.KeyUp) return arrowUp(event.key)
+        if (event.type != KeyEventType.KeyDown) return false
+        if (event.isCtrlPressed || event.isAltPressed || event.isMetaPressed) return false
+        val shift = event.isShiftPressed
+        when (event.key) {
+            Key.Spacebar, Key.K -> onPlayPause()
+            Key.DirectionLeft, Key.DirectionRight -> {
+                val forward = event.key == Key.DirectionRight
+                // Shift 的大步不接按住，按下即进退
+                if (shift) stepSeek(forward, LONG_SEEK_STEP_MILLIS) else arrowDown(event.key)
+            }
+            Key.J -> stepSeek(forward = false)
+            Key.L -> stepSeek(forward = true)
             Key.DirectionUp -> stepVolume(VOLUME_KEY_STEP)
             Key.DirectionDown -> stepVolume(-VOLUME_KEY_STEP)
+            Key.M -> toggleMute()
             Key.F -> onToggleFullscreen()
-            else -> return false
+            Key.R -> onRotationChange(((currentRotation ?: return false) + 90) % 360)
+            Key.LeftBracket -> stepSpeed(faster = false)
+            Key.RightBracket -> stepSpeed(faster = true)
+            Key.Backspace -> onSpeedChange(1f)
+            Key.C -> return toggleSubtitles()
+            Key.PageUp -> if (hasPrevious) onPrevious() else return false
+            Key.PageDown -> if (hasNext) onNext() else return false
+            Key.MoveHome -> onSeek(0L)
+            else -> {
+                // 数字键跳到全片的几成处，0 是开头
+                val digit = DigitKeys.indexOf(event.key).takeIf { it >= 0 } ?: return false
+                if (durationMillis <= 0L) return false
+                onSeek(durationMillis * digit / 10)
+            }
         }
+        interacted()
         return true
     }
 
@@ -262,6 +425,78 @@ fun MobilePlayerControls(
         }
     }
 
+    fun flash(indicator: CenterIndicator) {
+        flashIndicator = indicator
+        flashCount += 1
+    }
+    LaunchedEffect(flashCount) {
+        if (flashIndicator != null) {
+            delay(INDICATOR_FLASH_MILLIS)
+            flashIndicator = null
+        }
+    }
+    // 倍速与旋转无论从哪里改（面板、底栏的倍速浮层、快捷键），都在播放键上闪一下新值。
+    // 比对的是上一次看到的值：首次组合与换集都不算改动
+    var lastSpeed by remember { mutableStateOf(playbackSpeed) }
+    LaunchedEffect(playbackSpeed) {
+        val previous = lastSpeed
+        lastSpeed = playbackSpeed
+        val speed = playbackSpeed ?: return@LaunchedEffect
+        if (previous == null || previous == speed || isBoosting) return@LaunchedEffect
+        if (skipSpeedFlash) {
+            skipSpeedFlash = false
+            return@LaunchedEffect
+        }
+        flash(CenterIndicator(Icons.Outlined.Speed, formatSpeedMultiplier(speed), "倍速 ${formatSpeedPreset(speed)}"))
+    }
+    var lastRotation by remember { mutableStateOf(rotationDegrees) }
+    LaunchedEffect(rotationDegrees) {
+        val previous = lastRotation
+        lastRotation = rotationDegrees
+        val degrees = rotationDegrees ?: return@LaunchedEffect
+        if (previous == null || previous == degrees) return@LaunchedEffect
+        flash(CenterIndicator(Icons.Outlined.Rotate90DegreesCw, "$degrees°", "画面旋转 $degrees 度"))
+    }
+    // 所有读数都由播放键变形托住，不另叠浮层：原先音量亮度是屏幕正中的一块面板、双击进退是贴边的半圆，
+    // 各有各的样子，与播放键的读数叠在一起时互相遮挡。先后按「手上正在做的」排：拖动手势、按住倍速、
+    // 刚调的音量、累计的进退，最后是闪一下的倍速与旋转
+    val gesture = activeGesture ?: keyVolume?.let { PlayerGesture.Adjust(VerticalAdjust.Volume, it) }
+    val centerIndicator = when {
+        gesture is PlayerGesture.Adjust -> {
+            val percent = (gesture.fraction * 100).roundToInt()
+            val brightnessGesture = gesture.kind == VerticalAdjust.Brightness
+            CenterIndicator(
+                icon = when {
+                    brightnessGesture -> Icons.Filled.BrightnessMedium
+                    gesture.fraction <= 0f -> Icons.AutoMirrored.Filled.VolumeOff
+                    else -> Icons.AutoMirrored.Filled.VolumeUp
+                },
+                text = "$percent",
+                description = if (brightnessGesture) "亮度 $percent" else "音量 $percent",
+                progress = gesture.fraction,
+            )
+        }
+        gesture is PlayerGesture.Seek -> {
+            val target = gesture.targetMillis(durationMillis)
+            CenterIndicator(
+                icon = if (target >= gesture.startPositionMillis) Icons.Filled.FastForward else Icons.Filled.FastRewind,
+                text = formatTime(target),
+                description = "跳到 ${formatTime(target)}",
+                progress = if (durationMillis > 0) target.toFloat() / durationMillis else null,
+            )
+        }
+        isBoosting -> CenterIndicator(Icons.Filled.FastForward, formatSpeedMultiplier(boostSpeed), "倍速播放中")
+        doubleTapVisible -> {
+            val sign = if (doubleTapForward) "+" else "−"
+            CenterIndicator(
+                icon = if (doubleTapForward) Icons.Filled.FastForward else Icons.Filled.FastRewind,
+                text = "$sign$doubleTapSeconds 秒",
+                description = if (doubleTapForward) "快进 $doubleTapSeconds 秒" else "快退 $doubleTapSeconds 秒",
+            )
+        }
+        else -> flashIndicator
+    }
+
     val chromeVisible = controlsVisible && !isLocked
     // 面板的 BackHandler 在它之后组合，面板开着时先关面板
     BackHandler(enabled = isFullscreen, onBack = onToggleFullscreen)
@@ -279,7 +514,6 @@ fun MobilePlayerControls(
         // 纯数字集号写成「第 24 集」；「25(SP)」「23 Beta」这类照原样，套上「第…集」反而别扭
         ?.let { if (it.matches(PLAIN_EPISODE)) "第 $it 集" else it }
 
-    val hud = activeGesture ?: keyVolume?.let { PlayerGesture.Adjust(VerticalAdjust.Volume, it) }
     // 控件收起且鼠标一段时间没动才藏指针。只看控件时，单击画面收起控件指针也立刻消失，手还在鼠标上
     // 就找不到它；只看鼠标时，控件还显示着指针却没了
     val hideCursor = idleCursor != null && isMouseIdle && !controlsVisible && isPlaying
@@ -290,7 +524,7 @@ fun MobilePlayerControls(
             modifier = modifier
                 .fillMaxSize()
                 // 在根节点先行拦截：焦点落在某个按钮上时，空格不该变成「点一下那个按钮」
-                .onPreviewKeyEvent { event -> event.type == KeyEventType.KeyDown && handleKey(event.key) }
+                .onPreviewKeyEvent(::handleKey)
                 // 只接焦点不进无障碍树：focusable 会让读屏在整个画面上多停一站
                 .focusRequester(focusRequester)
                 .focusTarget()
@@ -350,17 +584,7 @@ fun MobilePlayerControls(
                         else -> stepSeek(forward = zone == DoubleTapZone.Forward)
                     }
                 },
-                onSpeedBoost = { active ->
-                    val speed = currentSpeed ?: return@PlayerGestureLayer
-                    if (active) {
-                        speedBeforeBoost = speed
-                        isBoosting = true
-                        onSpeedChange(LONG_PRESS_BOOST_SPEED)
-                    } else if (isBoosting) {
-                        isBoosting = false
-                        onSpeedChange(speedBeforeBoost)
-                    }
-                },
+                onSpeedBoost = { active -> if (active) startBoost(LONG_PRESS_BOOST_SPEED) else endBoost() },
                 // 滚轮调音量，与上下方向键同一步长。挂在手势层而不是根节点：面板里的列表滚到头后
                 // 剩下的滚轮位移会冒泡到根节点，那时不该变成调音量
                 modifier = Modifier.pointerInput(isLocked) {
@@ -378,19 +602,6 @@ fun MobilePlayerControls(
                     }
                 },
             )
-
-            hud?.let { PlayerGestureHud(it, durationMillis) }
-
-            AnimatedVisibility(
-                visible = doubleTapVisible,
-                enter = fadeIn(motion.fastEffectsSpec()),
-                exit = fadeOut(motion.defaultEffectsSpec()),
-                modifier = Modifier.fillMaxSize(),
-            ) {
-                DoubleTapIndicator(forward = doubleTapForward, seconds = doubleTapSeconds)
-            }
-
-            SpeedBoostCapsule(visible = isBoosting, isLandscape = isLandscape, speed = LONG_PRESS_BOOST_SPEED)
 
             PlayerBottomStack(controlsVisible = chromeVisible, isLandscape = isLandscape) {
                 snackbarHost()
@@ -431,7 +642,12 @@ fun MobilePlayerControls(
                         onTracksClick = {
                             interacted()
                             openSheet = PlayerSheet.Tracks
-                        }.takeIf { subtitleTracks.isNotEmpty() || audioTracks.size > 1 },
+                        }.takeIf {
+                            // 文件本身没有字幕时也要给入口：正是这种时候才要自己挑一个
+                            subtitleTracks.isNotEmpty() || audioTracks.size > 1 ||
+                                onPickLocalSubtitle != null || onPickDriveSubtitle != null
+                        },
+                        fileActions = fileActions,
                         modifier = Modifier
                             .align(Alignment.TopCenter)
                             .hoverable(controlsHover)
@@ -451,6 +667,17 @@ fun MobilePlayerControls(
                         bufferedPositionMillis = bufferedPositionMillis,
                         playbackSpeed = playbackSpeed,
                         showEpisodes = hasPlaylist,
+                        showEpisodeSkip = hasPlaylist && !compactWidth,
+                        hasPrevious = hasPrevious,
+                        hasNext = hasNext,
+                        onPrevious = {
+                            interacted()
+                            onPrevious()
+                        },
+                        onNext = {
+                            interacted()
+                            onNext()
+                        },
                         onSeek = {
                             interacted()
                             onSeek(it)
@@ -465,6 +692,12 @@ fun MobilePlayerControls(
                             onSpeedChange(it)
                         },
                         onEpisodesClick = { openSheet = PlayerSheet.Episodes },
+                        onRotate = rotationDegrees?.takeIf { !compactWidth }?.let { degrees ->
+                            {
+                                interacted()
+                                onRotationChange((degrees + 90) % 360)
+                            }
+                        },
                         onToggleFullscreen = {
                             interacted()
                             onToggleFullscreen()
@@ -481,10 +714,10 @@ fun MobilePlayerControls(
                 }
             }
 
-            // 中央按钮组不在控件栏的淡入淡出里：加载时播放键要单独留在画面中央，变形后承载加载指示，
-            // 不再另叠一个指示器。两侧按钮随控件栏显隐，由组件自己处理
+            // 播放键不在控件栏的淡入淡出里：加载时与有读数时，它要单独留在画面中央，
+            // 变形后承载加载指示或读数，不再另叠一层
             AnimatedVisibility(
-                visible = (chromeVisible || isLoading) && hud == null && errorMessage == null,
+                visible = (chromeVisible || isLoading || centerIndicator != null) && errorMessage == null,
                 enter = fadeIn(motion.defaultEffectsSpec()) + scaleIn(motion.defaultSpatialSpec(), initialScale = CENTER_ENTER_SCALE),
                 exit = fadeOut(motion.fastEffectsSpec()) + scaleOut(motion.fastSpatialSpec(), targetScale = CENTER_ENTER_SCALE),
                 modifier = Modifier.align(Alignment.Center),
@@ -492,11 +725,7 @@ fun MobilePlayerControls(
                 PlayerCenterControls(
                     isPlaying = isPlaying,
                     isLoading = isLoading,
-                    isLandscape = isLandscape,
-                    showSideButtons = chromeVisible,
-                    showEpisodeSkip = hasPlaylist,
-                    hasPrevious = hasPrevious,
-                    hasNext = hasNext,
+                    indicator = centerIndicator,
                     onPlayPause = {
                         // 控件收起时只剩这个按钮在转，点它先唤出控件，与点画面其他地方一致
                         if (chromeVisible) {
@@ -505,16 +734,6 @@ fun MobilePlayerControls(
                         } else {
                             controlsVisible = true
                         }
-                    },
-                    onSeekBackward = { seekBy(-SEEK_STEP_MILLIS) },
-                    onSeekForward = { seekBy(SEEK_STEP_MILLIS) },
-                    onPrevious = {
-                        interacted()
-                        onPrevious()
-                    },
-                    onNext = {
-                        interacted()
-                        onNext()
                     },
                 )
             }
@@ -582,6 +801,17 @@ fun MobilePlayerControls(
                         subtitleTracks = subtitleTracks,
                         selectedSubtitleTrackId = selectedSubtitleTrackId,
                         onSelectSubtitle = onSelectSubtitleTrack,
+                        onPickLocalSubtitle = onPickLocalSubtitle,
+                        onPickDriveSubtitle = onPickDriveSubtitle?.let { { openSheet = PlayerSheet.DriveSubtitles } },
+                    )
+                    // 选中后回到音轨与字幕：新挂的那条在列表里亮起，看得到已经换上
+                    PlayerSheet.DriveSubtitles -> DriveSubtitlePanel(
+                        videoFileId = currentFileId,
+                        onPick = { file ->
+                            onPickDriveSubtitle?.invoke(file)
+                            openSheet = PlayerSheet.Tracks
+                        },
+                        modifier = Modifier.weight(1f),
                     )
                 }
             }
@@ -598,6 +828,24 @@ private const val CURSOR_HIDE_DELAY_MILLIS = CONTROLS_HIDE_DELAY_MILLIS
 private const val RESUME_TIP_DURATION_MILLIS = 5_000L
 private const val DOUBLE_TAP_FEEDBACK_MILLIS = 700L
 private const val KEY_VOLUME_HUD_MILLIS = 800L
+// 比音量 HUD 久一点：读数在胶囊里还要等变形走完才看得清
+private const val INDICATOR_FLASH_MILLIS = 1_200L
 private const val VOLUME_KEY_STEP = 0.05f
+
+private val COMPACT_WIDTH = 600.dp
+
+// Shift+方向键的大步进退
+private const val LONG_SEEK_STEP_MILLIS = 60_000L
+
+// 方向键按住多久算按住而不是轻按；系统的连发延迟约 500ms，短于它才不必等第一下连发
+private const val HOLD_ARROW_MILLIS = 350L
+
+// 按住 ← 快退：每隔多久往回跳一步、一步多长。约合十倍速倒放；步子再密，网盘取流跟不上，画面只会停在缓冲上
+private const val HOLD_REWIND_STEP_MILLIS = 5_000L
+private const val HOLD_REWIND_INTERVAL_MILLIS = 500L
+
+private val DigitKeys = listOf(
+    Key.Zero, Key.One, Key.Two, Key.Three, Key.Four, Key.Five, Key.Six, Key.Seven, Key.Eight, Key.Nine,
+)
 private const val SUBTITLE_LABEL_MAX_LENGTH = 16
 private val PLAIN_EPISODE = Regex("""\d+(\.\d+)?""")

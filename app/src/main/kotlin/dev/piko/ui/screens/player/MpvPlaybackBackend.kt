@@ -21,6 +21,7 @@ import dev.piko.shared.media.player.PlaybackBackendEvent
 import dev.piko.shared.media.player.PlaybackTarget
 import dev.piko.shared.media.player.PlayerAspectRatio
 import dev.piko.shared.media.player.mpvSubtitleAddCommands
+import dev.piko.shared.media.player.mpvSubtitleSelectCommand
 import dev.piko.shared.media.player.readMpvTracks
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -84,6 +85,9 @@ internal class MpvPlaybackBackend(
 
     // 当前文件的外挂字幕，等 FILE_LOADED 再挂：loadfile 之前 sub-add 会挂到上一个文件上
     @Volatile private var pendingSubtitles: List<ExternalSubtitle> = emptyList()
+
+    // 最近一次 loadfile 已到 FILE_LOADED。手动挂的字幕据此决定立即 sub-add 还是排进上面那一批
+    @Volatile private var fileLoaded = false
 
     private var isLoadingFile by mutableStateOf(false)
     private var isSeeking by mutableStateOf(false)
@@ -205,6 +209,7 @@ internal class MpvPlaybackBackend(
         subtitles: List<ExternalSubtitle>,
     ) {
         if (released) return
+        fileLoaded = false
         // 段落预览关着音轨与字幕，挂了也不显示
         pendingSubtitles = if (preview) emptyList() else subtitles
         val uri = when (target) {
@@ -307,6 +312,25 @@ internal class MpvPlaybackBackend(
 
     override fun selectSubtitleTrack(id: String?) {
         onMpv { mpv.setPropertyString("sid", id ?: "no") }
+    }
+
+    override val canAddSubtitle: Boolean get() = !preview
+
+    override fun addSubtitle(subtitle: ExternalSubtitle) {
+        if (released || preview) return
+        // 文件还没加载好时 sub-add 会挂到上一个文件上或直接失败，排进 FILE_LOADED 时的那一批
+        if (!fileLoaded) {
+            pendingSubtitles = pendingSubtitles + subtitle
+            return
+        }
+        onMpv { mpv.command(mpvSubtitleSelectCommand(subtitle)) }
+    }
+
+    override val supportsRotation: Boolean = true
+
+    // video-rotate 会加进 video-params/rotate，画面比例经那里的观察自动换过来，这里不必另算
+    override fun setRotation(degrees: Int) {
+        onMpv { mpv.setPropertyString("video-rotate", "$degrees") }
     }
 
     private fun refreshTracks() {
@@ -496,7 +520,10 @@ internal class MpvPlaybackBackend(
     override fun event(eventId: Int) {
         when (eventId) {
             MpvEvent.MPV_EVENT_START_FILE -> isLoadingFile = true
-            MpvEvent.MPV_EVENT_FILE_LOADED -> attachPendingSubtitles()
+            MpvEvent.MPV_EVENT_FILE_LOADED -> {
+                fileLoaded = true
+                attachPendingSubtitles()
+            }
             MpvEvent.MPV_EVENT_SEEK -> isSeeking = true
             MpvEvent.MPV_EVENT_PLAYBACK_RESTART -> {
                 redrawGate.frameShown()

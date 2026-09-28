@@ -2,6 +2,7 @@ package dev.piko.shared.media.player
 
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -149,6 +150,24 @@ class PlayerScreenState(
 
     private var subtitleStreams: List<AutoCloseable> = emptyList()
 
+    // 用户手动挂上的字幕，只属于当前文件。换清晰度、重连、换到本地副本都要重开文件，每次 open 时一并带上
+    private var manualSubtitles: List<ManualSubtitle> = emptyList()
+
+    // 刚手动挂上、还没出现在轨道列表里的那条，出现后按用户亲手选择记下，见 init
+    private var pendingManualTitle: String? = null
+
+    /** 能手动挂外挂字幕。 */
+    val canAddSubtitle: Boolean get() = backend.canAddSubtitle
+
+    /**
+     * 用户叠加的画面旋转，顺时针度数。整个播放器会话沿用，换集不归零：要转的多是手机竖拍或录屏的片子，
+     * 同一目录里的几段通常出自同一台设备，一集一集重新转反而麻烦。mpv 的 video-rotate 本就跨 loadfile 保留，
+     * 这里只是记住给控件显示。
+     */
+    var rotationDegrees by mutableIntStateOf(0)
+        private set
+    val supportsRotation: Boolean get() = backend.supportsRotation
+
     val currentEntry by derivedStateOf { playlist.find { it.fileId == fileId } }
 
     // 上一集、下一集与自动连播都只在当前分区里走：正片放完不该跳进 PV 或菜单。
@@ -210,7 +229,10 @@ class PlayerScreenState(
         }
         scope.launch {
             // 外挂字幕在文件加载之后才挂上，列表会分几次变长，每次都重新套用
-            snapshotFlow { backend.audioTracks to backend.subtitleTracks }.collect { applyTrackPreferences() }
+            snapshotFlow { backend.audioTracks to backend.subtitleTracks }.collect {
+                selectPendingManualSubtitle()
+                applyTrackPreferences()
+            }
         }
         reload()
     }
@@ -227,6 +249,57 @@ class PlayerScreenState(
         prefersSubtitlesOff = track == null
         tracksChosenThisFile = true
         backend.selectSubtitleTrack(track?.id)
+    }
+
+    /** 本机的字幕文件。[path] 要是后端能直接读的路径，Android 的 content: URI 由平台先复制出来。 */
+    fun addLocalSubtitle(path: String, name: String) {
+        val subtitle = ManualSubtitle(title = name, localPath = path, fileId = null)
+        manualSubtitles = manualSubtitles + subtitle
+        attachManualSubtitle(ExternalSubtitle(url = path, title = name, language = null))
+    }
+
+    /** 网盘上的字幕文件，与自动挂的外挂字幕一样经本机代理读。 */
+    fun addDriveSubtitle(subtitleFileId: String, name: String) {
+        val videoFileId = fileId
+        scope.launch {
+            val stream = repository.prepareSubtitle(subtitleFileId)
+            if (stream == null) {
+                _messages.tryEmit("无法打开字幕文件")
+                return@launch
+            }
+            // 取流期间换了集，这条字幕不属于新文件
+            if (fileId != videoFileId || released) {
+                stream.close()
+                return@launch
+            }
+            subtitleStreams = subtitleStreams + stream
+            manualSubtitles = manualSubtitles + ManualSubtitle(title = name, localPath = null, fileId = subtitleFileId)
+            attachManualSubtitle(ExternalSubtitle(url = stream.url, title = name, language = null))
+        }
+    }
+
+    private fun attachManualSubtitle(subtitle: ExternalSubtitle) {
+        // 日志只留扩展名，文件名不进导出的日志
+        PikoLog.i(TAG, "手动挂字幕，格式 ${subtitle.title.substringAfterLast('.', "未知")}，${logFile(fileId, title)}")
+        pendingManualTitle = subtitle.title
+        backend.addSubtitle(subtitle)
+    }
+
+    /**
+     * 后端挂上时已经选中，这里只把它记成用户的选择：之后重开文件（换清晰度、重连）时按标题找回它，
+     * 而不是被上一集的偏好或自动选择换掉。
+     */
+    private fun selectPendingManualSubtitle() {
+        val title = pendingManualTitle ?: return
+        val track = backend.subtitleTracks.lastOrNull { it.isExternal && it.title == title } ?: return
+        pendingManualTitle = null
+        selectSubtitleTrack(track)
+    }
+
+    fun setRotation(degrees: Int) {
+        val normalized = degrees.mod(360) / 90 * 90
+        rotationDegrees = normalized
+        backend.setRotation(normalized)
     }
 
     private fun applyTrackPreferences() {
@@ -341,6 +414,8 @@ class PlayerScreenState(
         requestedQuality = null
         pendingStartMillis = null
         lastKnownPositionMillis = 0L
+        manualSubtitles = emptyList()
+        pendingManualTitle = null
         resetRecovery()
         reload()
     }
@@ -607,8 +682,9 @@ class PlayerScreenState(
     }
 
     /**
-     * 当前视频挂着的外挂字幕，各开一个代理会话。播放列表还没取到时最多等一会儿：
-     * 桌面端的后端只在打开文件时收外挂字幕，开播后再加不进去。开不起来的那条跳过。
+     * 当前视频挂着的外挂字幕，各开一个代理会话，用户手动挂过的排在后面。播放列表还没取到时最多等一会儿：
+     * 开播后虽然也能再挂（见 [PlaybackBackend.addSubtitle]），但「文件里没有选中的字幕就选第一条外挂」
+     * 只在打开时判断一次，晚到的字幕不会被自动选中。开不起来的那条跳过。
      */
     private suspend fun openSubtitles(): List<ExternalSubtitle> {
         if (!isPlaylistLoaded && !waitedForPlaylist) {
@@ -622,8 +698,14 @@ class PlayerScreenState(
             opened += stream
             ExternalSubtitle(url = stream.url, title = ref.language ?: "外挂字幕", language = ref.language?.let(::subtitleLanguageCode))
         }
+        val manual = manualSubtitles.mapNotNull { subtitle ->
+            val url = subtitle.localPath
+                ?: subtitle.fileId?.let { id -> repository.prepareSubtitle(id)?.also { opened += it }?.url }
+                ?: return@mapNotNull null
+            ExternalSubtitle(url = url, title = subtitle.title, language = null)
+        }
         subtitleStreams = opened
-        return subtitles
+        return subtitles + manual
     }
 
     private suspend fun runCatchingNonCancel(block: suspend () -> Unit) {
@@ -661,6 +743,9 @@ class PlayerScreenState(
         val RECOVERY_DELAYS_MILLIS = longArrayOf(500L, 1_500L, 4_000L)
     }
 }
+
+/** 手动挂上的一条字幕：本机的记路径，网盘的记 ID，每次打开文件时重新开代理会话。 */
+private class ManualSubtitle(val title: String, val localPath: String?, val fileId: String?)
 
 /** 解析器给的字幕语言（「简」「繁日」）换成 mpv 按 slang 匹配用的代码。 */
 private fun subtitleLanguageCode(label: String): String? = when {

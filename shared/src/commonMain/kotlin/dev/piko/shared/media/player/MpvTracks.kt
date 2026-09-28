@@ -54,5 +54,15 @@ fun mpvSubtitleAddCommands(subtitles: List<ExternalSubtitle>, hasSelectedSubtitl
         arrayOf("sub-add", subtitle.url, flag, subtitle.title, subtitle.language.orEmpty())
     }
 
+/** 手动挂上的一条外挂字幕：直接选中，不看文件里原来选没选。 */
+fun mpvSubtitleSelectCommand(subtitle: ExternalSubtitle): Array<String> =
+    arrayOf("sub-add", subtitle.url, "select", subtitle.title, subtitle.language.orEmpty())
+
+// mpv 能直接当外挂字幕加载的格式。idx/sub 要成对，smi 不认，都不列
+val PLAYER_SUBTITLE_EXTENSIONS = setOf("ass", "ssa", "srt", "vtt", "sup")
+
+fun isPlayerSubtitleName(name: String): Boolean =
+    name.substringAfterLast('.', "").lowercase() in PLAYER_SUBTITLE_EXTENSIONS
+
 /** 两端 mpv 共用的字幕语言偏好：简体优先，其次繁体。内封字幕按它自动选中。 */
 const val MPV_SUBTITLE_LANGUAGES = "zh-CN,zh-Hans,chs,sc,zh,chi,zho,zh-TW,zh-Hant,cht,tc"

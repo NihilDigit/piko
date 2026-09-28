@@ -30,6 +30,8 @@ fun rememberRememberedWindowState(
     defaultSize: DpSize,
     /** 无边框全屏（见 WindowsFullscreen）不经过 placement，由调用方告知。 */
     isBorderlessFullscreen: () -> Boolean = { false },
+    /** 存盘前换算尺寸。播放器跟着画面转了 90 度时存回横竖对调前的，下一个窗口不带旋转打开。 */
+    sizeToSave: (DpSize) -> DpSize = { it },
 ): WindowState {
     val prefix = "window.$name."
     val state = rememberWindowState(
@@ -49,8 +51,9 @@ fun rememberRememberedWindowState(
                     settings.set(prefix + "x", position.x.value.toString())
                     settings.set(prefix + "y", position.y.value.toString())
                 }
-                settings.set(prefix + "width", size.width.value.toString())
-                settings.set(prefix + "height", size.height.value.toString())
+                val saved = sizeToSave(size)
+                settings.set(prefix + "width", saved.width.value.toString())
+                settings.set(prefix + "height", saved.height.value.toString())
             }
     }
     return state

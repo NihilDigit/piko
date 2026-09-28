@@ -15,6 +15,7 @@ import dev.piko.shared.media.player.PlaybackBackendEvent
 import dev.piko.shared.media.player.PlaybackTarget
 import dev.piko.shared.media.player.PlayerAspectRatio
 import dev.piko.shared.media.player.mpvSubtitleAddCommands
+import dev.piko.shared.media.player.mpvSubtitleSelectCommand
 import dev.piko.shared.media.player.readMpvTracks
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.currentCoroutineContext
@@ -224,6 +225,32 @@ internal class MediampPlaybackBackend(
             @Suppress("UNCHECKED_CAST")
             (group as org.openani.mediamp.metadata.TrackGroup<SubtitleTrack?>).select(track)
         }
+    }
+
+    // 挂字幕、旋转都要直接对 mpv 下命令，MediaMP 0.5.0 的特性里没有这两样；句柄取不到就不给入口
+    override val canAddSubtitle: Boolean get() = mpv != null
+
+    /**
+     * 开播之后照样能挂：自动的那几条本来就是在 Ready 之后 sub-add 的，不必为一条新字幕重开文件。
+     * 还在打开时排进 Ready 那一批。
+     */
+    override fun addSubtitle(subtitle: ExternalSubtitle) {
+        val handle = mpv ?: return
+        if (awaitingReady) {
+            pendingSubtitles = pendingSubtitles + subtitle
+            return
+        }
+        handle.command(*mpvSubtitleSelectCommand(subtitle))
+    }
+
+    override val supportsRotation: Boolean get() = mpv != null
+
+    /**
+     * MediaMP 按 video-params 的变化重读 dwidth、dheight 作为 mediaProperties 的画面尺寸，mpv 给出的这两个值
+     * 已按叠加后的旋转交换过宽高，[videoAspect] 于是跟着变，不必自己换算。
+     */
+    override fun setRotation(degrees: Int) {
+        mpv?.setPropertyString("video-rotate", "$degrees")
     }
 
     private fun refreshTracks(feature: MediaMetadata) {

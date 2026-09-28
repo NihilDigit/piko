@@ -50,6 +50,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.outlined.Cloud
+import androidx.compose.material.icons.outlined.FileOpen
 import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -76,6 +78,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
@@ -89,20 +92,21 @@ import dev.piko.shared.media.player.PlaylistEntry
 import dev.piko.shared.media.player.preferredVersion
 import dev.piko.shared.media.player.trackDisplayName
 import dev.piko.ui.components.ListSpoilerBlur
+import dev.piko.ui.components.connectedToggleShapes
 import dev.piko.ui.components.SpoilerThumbnail
 import dev.piko.ui.components.verticalWheelScrollsRow
 import dev.piko.ui.components.wheelStaysInSheet
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-internal enum class PlayerSheet { Episodes, Settings, Tracks }
+internal enum class PlayerSheet { Episodes, Settings, Tracks, DriveSubtitles }
 
 /**
  * 播放器的面板容器：横屏是贴右侧的浮动 side sheet，竖屏是 bottom sheet。
  *
  * 横屏用 bottom sheet 会盖住大半个画面，而规范在宽窗口下本就建议换成 side sheet；
  * 右侧浮动面板让左侧画面继续可见，选集时还能看着当前这集。Material 3 的 Compose 库
- * 没有 side sheet 组件，这里按规格自己拼：离窗口边 16dp、最宽 400dp、圆角 16dp。
+ * 没有 side sheet 组件，这里按规格自己拼：贴右缘、最宽 400dp、靠画面一侧圆角 16dp。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -125,9 +129,10 @@ internal fun PlayerSheetHost(
             onDismissRequest = onDismiss,
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         ) {
-            // 选集固定占七成高：按内容定高时几十集会顶满全屏，几集时又只露一条。
-            // 其余面板内容少，按内容定高
-            val height = if (sheet == PlayerSheet.Episodes) Modifier.fillMaxHeight(EPISODE_SHEET_HEIGHT_FRACTION) else Modifier
+            // 选集与网盘字幕固定占七成高：按内容定高时几十项会顶满全屏，几项时又只露一条，
+            // 字幕目录里进出一层面板还会跟着跳。其余面板内容少，按内容定高
+            val fixedHeight = sheet == PlayerSheet.Episodes || sheet == PlayerSheet.DriveSubtitles
+            val height = if (fixedHeight) Modifier.fillMaxHeight(EPISODE_SHEET_HEIGHT_FRACTION) else Modifier
             Column(height.wheelStaysInSheet()) {
                 Text(
                     text = sheet.title,
@@ -145,6 +150,7 @@ private val PlayerSheet.title: String
         PlayerSheet.Episodes -> "选集"
         PlayerSheet.Settings -> "播放设置"
         PlayerSheet.Tracks -> "音轨与字幕"
+        PlayerSheet.DriveSubtitles -> "从网盘选择字幕"
     }
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
@@ -179,17 +185,17 @@ private fun PlayerSideSheet(
             visible = visible,
             enter = slideInHorizontally(motion.defaultSpatialSpec()) { it } + fadeIn(motion.defaultEffectsSpec()),
             exit = slideOutHorizontally(motion.fastSpatialSpec()) { it } + fadeOut(motion.fastEffectsSpec()),
-            modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.End + WindowInsetsSides.Vertical))
-                .padding(16.dp),
+            modifier = Modifier.align(Alignment.CenterEnd),
         ) {
+            // 贴着窗口右缘与上下缘，只圆靠画面的两个角：四周各留 16dp 浮着时，右边那道缝里透出的是画面，
+            // 像面板没放到位；它本来就是从右边滑进来的，贴边更像从那里拉出来的一层
             Surface(
-                shape = RoundedCornerShape(SIDE_SHEET_CORNER),
+                shape = RoundedCornerShape(topStart = SIDE_SHEET_CORNER, bottomStart = SIDE_SHEET_CORNER),
                 color = MaterialTheme.colorScheme.surfaceContainerLow,
                 modifier = Modifier.width(SIDE_SHEET_WIDTH).fillMaxHeight(),
             ) {
-                Column {
+                // 刘海与系统栏的避让放进面板里面，底色照样铺到边上
+                Column(Modifier.windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.End + WindowInsetsSides.Vertical))) {
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 12.dp, top = 12.dp, bottom = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -596,7 +602,7 @@ internal fun SpeedSlider(playbackSpeed: Float, onSpeedChange: (Float) -> Unit) {
 }
 
 /**
- * 完整的播放设置：倍速、清晰度、画面比例。都是单选，用连接式按钮组；倍速另有铺满的滑块，
+ * 完整的播放设置：倍速、清晰度、画面比例。旋转在底栏，一次转 90 度。都是单选，用连接式按钮组；倍速另有铺满的滑块，
  * 当前值写在小节标题的右端，不占滑块的宽度。
  */
 @Composable
@@ -620,7 +626,7 @@ internal fun PlayerSettingsPanel(
         if (playbackSpeed != null) {
             SettingsSection("倍速", trailing = formatSpeed(playbackSpeed)) {
                 ConnectedChoiceRow(
-                    options = PresetSpeeds,
+                    options = PlayerSpeedPresets,
                     isSelected = { abs(playbackSpeed - it) < SPEED_MATCH_TOLERANCE },
                     optionLabel = ::formatSpeedPreset,
                     onSelect = onSpeedChange,
@@ -655,7 +661,8 @@ internal fun PlayerSettingsPanel(
 
 /**
  * 音轨与字幕。轨道名常带语言、字幕组与「外挂」，长短不一，按钮组放不下，所以一行一条、单选。
- * 音轨只有一条时整节不出现；字幕第一项是关闭。
+ * 音轨只有一条时整节不出现；字幕第一项是关闭，末尾是从本机或网盘另挑一个字幕文件的入口，
+ * 平台或后端做不到时为 null，不显示。
  */
 @Composable
 internal fun TracksPanel(
@@ -665,6 +672,8 @@ internal fun TracksPanel(
     subtitleTracks: List<MediaTrack>,
     selectedSubtitleTrackId: String?,
     onSelectSubtitle: (MediaTrack?) -> Unit,
+    onPickLocalSubtitle: (() -> Unit)?,
+    onPickDriveSubtitle: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -694,7 +703,38 @@ internal fun TracksPanel(
                     onClick = { onSelectSubtitle(track) },
                 )
             }
+            if (onPickLocalSubtitle != null) {
+                PickerRow(icon = Icons.Outlined.FileOpen, label = "从本机选择字幕…", onClick = onPickLocalSubtitle)
+            }
+            if (onPickDriveSubtitle != null) {
+                PickerRow(icon = Icons.Outlined.Cloud, label = "从网盘选择字幕…", onClick = onPickDriveSubtitle)
+            }
         }
+    }
+}
+
+/** 字幕列表末尾的入口行：与轨道行同高，前面带图标，看得出它不是一条轨道。 */
+@Composable
+internal fun PickerRow(icon: ImageVector, label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.large)
+            .clickable(role = Role.Button, onClick = onClick)
+            .heightIn(min = 48.dp)
+            .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 2,
+            overflow = TextOverflow.MiddleEllipsis,
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 
@@ -816,11 +856,7 @@ private fun <T> ConnectedChoiceRow(
             ToggleButton(
                 checked = isSelected(option),
                 onCheckedChange = { onSelect(option) },
-                shapes = when (index) {
-                    0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
-                    options.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
-                    else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
-                },
+                shapes = connectedToggleShapes(index, options.size),
                 // 六个倍速预设要在 360dp 宽的竖屏里排成一行，默认的 24dp 水平内边距放不下
                 contentPadding = PaddingValues(horizontal = 0.dp),
                 modifier = Modifier.weight(1f),
@@ -838,7 +874,8 @@ internal val PlayerAspectRatio.label: String
         PlayerAspectRatio.Stretch -> "拉伸全屏"
     }
 
-private val PresetSpeeds = listOf(0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 3.0f)
+// 设置面板的倍速选项，[ ] 键也按这几档换
+internal val PlayerSpeedPresets = listOf(0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 3.0f)
 private const val SPEED_SLIDER_STEP = 0.01f
 private const val SPEED_MATCH_TOLERANCE = 0.005f
 private const val CONNECTED_MAX_OPTIONS = 4

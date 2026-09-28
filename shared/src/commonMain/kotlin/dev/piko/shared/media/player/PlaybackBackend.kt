@@ -72,6 +72,24 @@ interface PlaybackBackend {
     /** [id] 为 null 时关闭字幕。 */
     fun selectSubtitleTrack(id: String?) = Unit
 
+    /** 为 false 时控件不给手动挂字幕的入口。 */
+    val canAddSubtitle: Boolean get() = false
+
+    /**
+     * 给正在播的文件再挂一条外挂字幕并选中它。文件还没加载好时推迟到加载之后，
+     * 与 [open] 带的那几条一样；换文件后不再保留，要留由调用方下次 open 时再带上。
+     */
+    fun addSubtitle(subtitle: ExternalSubtitle) = Unit
+
+    /** 为 false 时控件不给旋转入口。 */
+    val supportsRotation: Boolean get() = false
+
+    /**
+     * 画面顺时针旋转 [degrees] 度（0、90、180、270），叠加在文件自带的旋转元数据之上，换文件后仍然生效。
+     * [videoAspect] 随之按旋转后的画面更新。
+     */
+    fun setRotation(degrees: Int) = Unit
+
     fun stop()
 
     fun play()

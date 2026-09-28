@@ -7,6 +7,7 @@ import dev.piko.shared.media.player.PlaylistEntry
 import dev.piko.shared.media.player.SubtitleRef
 import dev.piko.shared.media.player.buildPlaylist
 import dev.piko.shared.media.player.buildRawPlaylist
+import dev.piko.shared.media.player.isPlayerSubtitleName
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -25,12 +26,9 @@ suspend fun DriveRepository.siblingMedia(fileId: String): SiblingMedia {
     val files = listAllFiles(parentId).getOrNull().orEmpty()
     return SiblingMedia(
         videos = files.filter { it.isPlayableVideo() },
-        subtitles = files.filter { !it.isFolder && it.name.substringAfterLast('.', "").lowercase() in PLAYER_SUBTITLE_EXTENSIONS },
+        subtitles = files.filter { !it.isFolder && isPlayerSubtitleName(it.name) },
     )
 }
-
-// mpv 能直接当外挂字幕加载的格式。idx/sub 要成对，smi 不认，都不列
-private val PLAYER_SUBTITLE_EXTENSIONS = setOf("ass", "ssa", "srt", "vtt", "sup")
 
 /**
  * 按文件名解析出作品、分区与集数排好；解析总开关关闭时只按文件名排序。
