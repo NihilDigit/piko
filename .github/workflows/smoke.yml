@@ -25,6 +25,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # 用 SDK main 的源码构建，理由见 ci.yml 的同名步骤
+      - uses: actions/checkout@v5
+        with:
+          repository: NihilDigit/pikpak-kotlin
+          path: pikpak-kotlin
+
+      - name: Build against the SDK source
+        shell: bash
+        run: echo "pikpak.sdk.dir=pikpak-kotlin" >> local.properties
+
       - uses: actions/setup-java@v5
         with:
           java-version: '25'
@@ -53,6 +63,16 @@ jobs:
       API_LEVEL: 34
     steps:
       - uses: actions/checkout@v5
+
+      # 用 SDK main 的源码构建，理由见 ci.yml 的同名步骤
+      - uses: actions/checkout@v5
+        with:
+          repository: NihilDigit/pikpak-kotlin
+          path: pikpak-kotlin
+
+      - name: Build against the SDK source
+        shell: bash
+        run: echo "pikpak.sdk.dir=pikpak-kotlin" >> local.properties
 
       - uses: actions/setup-java@v5
         with:

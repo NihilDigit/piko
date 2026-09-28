@@ -30,6 +30,18 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # 用 SDK main 的源码构建，见 settings.gradle.kts 的复合构建：SDK 在 Piko 发版之前才发，两次发版之间
+      # Piko 会用到它还没发布的改动。release.yml 不这样做，照样取 libs.versions.toml 里的已发布版本，
+      # SDK 没发、版本号没改过去时 Piko 的发版构建就过不去
+      - uses: actions/checkout@v5
+        with:
+          repository: NihilDigit/pikpak-kotlin
+          path: pikpak-kotlin
+
+      - name: Build against the SDK source
+        shell: bash
+        run: echo "pikpak.sdk.dir=pikpak-kotlin" >> local.properties
+
       - uses: actions/setup-java@v5
         with:
           java-version: '25'
@@ -53,6 +65,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+
+      # 用 SDK main 的源码构建，见 settings.gradle.kts 的复合构建：SDK 在 Piko 发版之前才发，两次发版之间
+      # Piko 会用到它还没发布的改动。release.yml 不这样做，照样取 libs.versions.toml 里的已发布版本，
+      # SDK 没发、版本号没改过去时 Piko 的发版构建就过不去
+      - uses: actions/checkout@v5
+        with:
+          repository: NihilDigit/pikpak-kotlin
+          path: pikpak-kotlin
+
+      - name: Build against the SDK source
+        shell: bash
+        run: echo "pikpak.sdk.dir=pikpak-kotlin" >> local.properties
 
       - uses: actions/setup-java@v5
         with:

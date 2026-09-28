@@ -36,11 +36,13 @@ Piko 是 PikPak 的第三方跨平台客户端。Android、Windows 与 macOS（�
 就以复合构建把依赖里的 `pikpak-kotlin` 换成那个目录的源码，改了 SDK 下次编译即生效，不必发 SNAPSHOT、不必改版本号。
 SDK 那边的 `local.properties` 要有 `sdk.dir`（Android 插件在复合构建里读它）。两个仓库的 Kotlin、AGP 与 Gradle
 版本要一致：AGP 不同时 Gradle 判断不了两边的 Android 变体是否匹配，直接解析失败。
-`local.properties` 不进仓库，CI 照常取 `libs.versions.toml` 里的正式版本，所以用到 SDK 新接口的改动要等 SDK 发版、
-版本号改过去才能推。**不要再用 mavenLocal**：`publishToMavenLocal` 版本号没改对时会覆盖本机缓存里的正式版。
+SDK 在 Piko 发版之前才发，平时的改动攒在 SDK 的 main 上。所以 `ci.yml` 与 `smoke.yml` 也检出 SDK 的 main 做复合构建，
+Piko 的 main 可以先用上 SDK 还没发布的改动；`release.yml` 不这样做，照样取 `libs.versions.toml` 里的已发布版本。
+发 Piko 之前先发 SDK、再把版本号改过去，否则 Piko 的发版构建过不去。
+**不要再用 mavenLocal**：`publishToMavenLocal` 版本号没改对时会覆盖本机缓存里的正式版。
 
 Maven Central 按月给命名空间限额（`io.github.nihildigit` 是 11 次发版、5,460 个文件，见 Sonatype 的 Usage Center），
-2026 年 9 月发了 18 版、超了。联调走复合构建，SDK 的改动攒着一起发。
+2026 年 9 月发了 18 版、超了。联调走复合构建，SDK 的改动攒到 Piko 发版前一起发。
 
 ## 发版
 
