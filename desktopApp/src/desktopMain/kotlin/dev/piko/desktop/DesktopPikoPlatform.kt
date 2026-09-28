@@ -3,7 +3,7 @@ package dev.piko.desktop
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.staggeredgrid.LazyStaggeredGridState
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.material3.ColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -28,14 +28,16 @@ import dev.piko.ui.platform.ExternalVideoPlayer
 import dev.piko.ui.platform.LinkAssociation
 import dev.piko.ui.platform.LocalFileActions
 import dev.piko.ui.platform.PikoPlatform
+import dev.piko.ui.platform.PlatformToggle
+import dev.piko.ui.platform.DiskSpace
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import dev.piko.ui.platform.PreviewBackend
 import dev.piko.ui.platform.ShortcutModifier
 import dev.piko.ui.platform.UploadPicker
 import dev.piko.ui.platform.VideoPreviewSupport
 import java.awt.Desktop
-import java.awt.Dialog
-import java.awt.FileDialog
-import java.awt.Frame
 import java.awt.KeyboardFocusManager
 import java.awt.Toolkit
 import java.awt.Window
@@ -43,13 +45,22 @@ import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
 import java.io.File
 import java.net.URI
-import javax.swing.JFileChooser
-import javax.swing.UIManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.openani.mediamp.compose.MediampPlayerSurface
 import org.openani.mediamp.compose.rememberMediampPlayer
+
+/** 存在 settings.properties 里的一个开关，每台设备各自的。 */
+private class StoredToggle(private val settings: DesktopSettingsStore, private val key: String, default: Boolean) : PlatformToggle {
+    private val state = MutableStateFlow(settings.get(key, default.toString()).toBoolean())
+    override val enabled: StateFlow<Boolean> = state.asStateFlow()
+
+    override fun set(enabled: Boolean) {
+        settings.set(key, enabled.toString())
+        state.value = enabled
+    }
+}
 
 /** 共享界面在 Windows 上的平台能力。 */
 class DesktopPikoPlatform(
@@ -62,6 +73,10 @@ class DesktopPikoPlatform(
 
     // Windows 没有 Monet 那样的整套取色，强调色只有一个值，撑不起 M3 的色调方案
     override val supportsDynamicColor: Boolean = false
+
+    // 只在 Windows 上：macOS 的拖动区挪不进内容，见 WindowFrame
+    override val compactTitleBar: PlatformToggle? =
+        if (WinRTSupport.isWindows) StoredToggle(settings, "window.compactTitleBar", default = true) else null
 
     @Composable
     override fun dynamicColorScheme(dark: Boolean): ColorScheme =
@@ -93,25 +108,9 @@ class DesktopPikoPlatform(
         ) {
             is FolderPickResult.Picked -> picked.folder
             FolderPickResult.Cancelled -> return false
-            FolderPickResult.Unavailable -> awtSaveTarget(owner, fileName) ?: return false
+            FolderPickResult.Unavailable -> AwtDialogs.chooseSaveFile(owner, "导出日志", settings.downloadDirectory, fileName) ?: return false
         }
         return withContext(Dispatchers.IO) { runCatching { target.writeText(content) }.isSuccess }
-    }
-
-    /** FileDialog 在事件线程上模态阻塞，调用方在界面协程里调即可。 */
-    private fun awtSaveTarget(owner: Window?, fileName: String): File? {
-        val dialog = when (owner) {
-            is Dialog -> FileDialog(owner, "导出日志", FileDialog.SAVE)
-            else -> FileDialog(owner as? Frame, "导出日志", FileDialog.SAVE)
-        }
-        dialog.directory = settings.downloadDirectory.absolutePath
-        dialog.file = fileName
-        return try {
-            dialog.isVisible = true
-            dialog.file?.let { File(dialog.directory, it) }
-        } finally {
-            dialog.dispose()
-        }
     }
 
     override fun openUrl(url: String) {
@@ -153,6 +152,12 @@ class DesktopPikoPlatform(
         override fun displayName(storedPath: String): String =
             storedPath.ifBlank { settings.downloadDirectory.absolutePath }
 
+        // 下载目录可能还没建出来：往上找到第一个存在的目录，它与将来的下载目录在同一块盘上
+        override fun diskSpace(storedPath: String): DiskSpace? {
+            val dir = generateSequence(File(displayName(storedPath))) { it.parentFile }.firstOrNull { it.exists() } ?: return null
+            return DiskSpace(freeBytes = dir.usableSpace, totalBytes = dir.totalSpace).takeIf { it.totalBytes > 0 }
+        }
+
         @Composable
         override fun rememberLauncher(onPicked: (String) -> Unit): () -> Unit {
             val scope = rememberCoroutineScope()
@@ -171,10 +176,8 @@ class DesktopPikoPlatform(
             val scope = rememberCoroutineScope()
             return {
                 val owner = activeWindow()
-                // FileDialog 在事件线程上阻塞，但模态期间自己转发 AWT 事件，界面照常绘制，不必像
-                // 目录框那样另开线程。经 launch 推迟一拍，是为了不在 Compose 的点击回调里嵌套一轮事件循环
                 scope.launch {
-                    val files = chooseFiles(owner, "选择要上传的文件")
+                    val files = AwtDialogs.chooseFiles(owner, "选择要上传的文件")
                     if (files.isNotEmpty()) onPicked(files.map { it.absolutePath })
                 }
             }
@@ -235,7 +238,7 @@ class DesktopPikoPlatform(
     override fun ListScrollbar(state: LazyListState, modifier: Modifier) = dev.piko.desktop.ListScrollbar(state, modifier)
 
     @Composable
-    override fun ListScrollbar(state: LazyStaggeredGridState, modifier: Modifier) =
+    override fun ListScrollbar(state: LazyGridState, modifier: Modifier) =
         dev.piko.desktop.ListScrollbar(state, modifier)
 
     private class MediampPreviewBackend(val inner: MediampPlaybackBackend) : PreviewBackend, PlaybackBackend by inner {
@@ -251,40 +254,12 @@ class DesktopPikoPlatform(
 /** 点击发生在哪个窗口，对话框就模态于哪个窗口。要在点击的当下取，launch 之后焦点可能已经变了。 */
 private fun activeWindow(): Window? = KeyboardFocusManager.getCurrentKeyboardFocusManager().activeWindow
 
-/** 系统目录框，弹不出来时退回 Swing 的。取消时为 null。 */
+/** 系统目录框。Windows 用原生框，弹不出来与 macOS 上走 [AwtDialogs]。取消时为 null。 */
 private suspend fun pickFolder(owner: Window?, initial: File?, title: String): File? {
-    if (isMacOs) return MacOs.pickFolder(owner, initial, title)
+    if (isMacOs) return AwtDialogs.chooseDirectory(owner, initial, title)
     return when (val result = FolderPicker.pickFolder(owner, initial, title)) {
         is FolderPickResult.Picked -> result.folder
         FolderPickResult.Cancelled -> null
-        FolderPickResult.Unavailable -> chooseDirectory(owner, initial, title)
-    }
-}
-
-/**
- * 原生目录框弹不出来时的退路。AWT 的 FileDialog 在 Windows 上选不了目录，只能用 Swing 的；
- * 换成系统外观，免得弹出 Metal 风格的窗口。
- */
-private fun chooseDirectory(owner: Window?, initial: File?, title: String): File? {
-    runCatching { UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName()) }
-    val chooser = JFileChooser(initial).apply {
-        fileSelectionMode = JFileChooser.DIRECTORIES_ONLY
-        dialogTitle = title
-    }
-    return if (chooser.showOpenDialog(owner) == JFileChooser.APPROVE_OPTION) chooser.selectedFile else null
-}
-
-/** 系统的多选文件框。FileDialog 的构造要区分属主是 Frame 还是 Dialog。取消时为空。 */
-private fun chooseFiles(owner: Window?, title: String): List<File> {
-    val dialog = when (owner) {
-        is Dialog -> FileDialog(owner, title, FileDialog.LOAD)
-        else -> FileDialog(owner as? Frame, title, FileDialog.LOAD)
-    }
-    dialog.isMultipleMode = true
-    try {
-        dialog.isVisible = true
-        return dialog.files.toList()
-    } finally {
-        dialog.dispose()
+        FolderPickResult.Unavailable -> AwtDialogs.chooseDirectory(owner, initial, title)
     }
 }

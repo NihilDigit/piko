@@ -1,9 +1,6 @@
 package dev.piko.desktop
 
 import java.awt.Desktop
-import java.awt.Dialog
-import java.awt.FileDialog
-import java.awt.Frame
 import java.awt.Taskbar
 import java.awt.Window
 import java.awt.desktop.AppReopenedListener
@@ -64,27 +61,6 @@ internal object MacOs {
         runCatching { ProcessBuilder("open", "-R", file.absolutePath).start() }
     }
 
-    /**
-     * 系统的目录框。AWT 的 FileDialog 在 macOS 上就是原生面板，这个属性让它改选目录；
-     * 属性在弹出时读取，用完放回，免得之后的选文件框也只能选目录。取消时为 null。
-     */
-    fun pickFolder(owner: Window?, initial: File?, title: String): File? {
-        System.setProperty(DIRECTORY_DIALOG_PROPERTY, "true")
-        val dialog = when (owner) {
-            is Dialog -> FileDialog(owner, title, FileDialog.LOAD)
-            else -> FileDialog(owner as? Frame, title, FileDialog.LOAD)
-        }
-        initial?.let { dialog.directory = it.absolutePath }
-        try {
-            dialog.isVisible = true
-            val name = dialog.file ?: return null
-            return File(dialog.directory, name)
-        } finally {
-            dialog.dispose()
-            System.setProperty(DIRECTORY_DIALOG_PROPERTY, "false")
-        }
-    }
-
     /** 标题栏与窗口边框的深浅。JDK 在 macOS 上读根面板的这个属性，设成 NSAppearance 的名字。 */
     fun setWindowAppearance(window: Window, dark: Boolean) {
         val rootPane = (window as? RootPaneContainer)?.rootPane ?: return
@@ -101,5 +77,4 @@ internal object MacOs {
         }
     }
 
-    private const val DIRECTORY_DIALOG_PROPERTY = "apple.awt.fileDialogForDirectories"
 }
