@@ -1,5 +1,8 @@
 package dev.piko.shared.state
 
+import dev.piko.shared.sync.PikoSettingsSync
+import dev.piko.shared.data.DriveChangeJournal
+import dev.piko.shared.data.DriveClipboard
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -304,6 +307,15 @@ class DriveScreenState(
         }
     }
 
+    /** 恢复上次退出时开着的几个标签，见 [PikoDriveRepository.restoreTabs]。恢复了返回 true。 */
+    suspend fun restoreTabs(): Boolean {
+        val unchangedBefore = activeFolderId
+        if (!driveRepo.restoreTabs()) return false
+        // 活动标签就停在根目录时栈顶没变，栈的监听不会触发，加载由这里补上
+        if (driveRepo.folderStackFlow.value.lastOrNull()?.id.orEmpty() == unchangedBefore) onFolderChanged()
+        return true
+    }
+
     /**
      * 恢复上次退出时的目录栈。走这里而不是让视图直接调仓库，是因为恢复同样要
      * 触发一次加载；视图直接改栈会绕过加载，表现为进来是空列表。
@@ -312,7 +324,7 @@ class DriveScreenState(
         if (stack.isEmpty()) return
         // 栈顶没变时栈的监听不会触发，这一次加载由这里补上
         val unchanged = stack.last().id == activeFolderId
-        driveRepo.updateFolderStack(stack)
+        driveRepo.restoreFolderStack(stack)
         if (unchanged) onFolderChanged()
     }
 
@@ -333,13 +345,17 @@ class DriveScreenState(
      */
     fun load(refresh: Boolean = false) = load(useCache = !refresh, showRefreshing = refresh)
 
+    // 根目录里放同步设置的 .piko 文件夹不列出来：它是 Piko 自己的，点进去也没有要看的
+    private fun withoutSyncFolder(folderId: String, listing: List<FileStat>): List<FileStat> =
+        if (folderId.isNotEmpty()) listing else listing.filterNot { it.isFolder && it.name == PikoSettingsSync.FOLDER_NAME }
+
     /** [useCache] 与 [showRefreshing] 都为 false 是静默重列：不用缓存，也不出任何加载指示，见 [catchUpWithHighlight]。 */
     private fun load(useCache: Boolean, showRefreshing: Boolean) {
         val folderId = activeFolder.id
         val cached = if (useCache) driveRepo.cachedFiles(folderId, sortOrder) else null
         when {
             cached != null -> {
-                files = cached
+                files = withoutSyncFolder(folderId, cached)
                 loadedFolderId = folderId
                 isLoading = false
             }
@@ -361,7 +377,7 @@ class DriveScreenState(
             }
             listing
                 .onSuccess {
-                    files = it
+                    files = withoutSyncFolder(folderId, it)
                     loadedFolderId = folderId
                     loadError = null
                 }
@@ -391,8 +407,36 @@ class DriveScreenState(
 
     fun navigateUp(): Boolean = driveRepo.popFolder() != null
 
+    /** 浏览历史里的后退与前进，见 PikoDriveRepository.historyFlow。 */
+    val history get() = driveRepo.historyFlow
+
+    fun goBack(): Boolean = driveRepo.goBack()
+
+    fun goForward(): Boolean = driveRepo.goForward()
+
     fun navigateToBreadcrumb(index: Int) {
         driveRepo.popToBreadcrumb(index)
+    }
+
+    /**
+     * 地址栏里输入的路径：「网盘/动画/Frieren」，分隔符 / 与 \ 都认，开头的「网盘」可写可不写，一律从根算起。
+     * 找到了就跳过去（记进浏览历史），返回 true；找不到哪一层就提示哪一层，返回 false，地址栏留着让用户改。
+     */
+    suspend fun goToPath(text: String): Boolean {
+        val names = text.split('/', '\\').map { it.trim() }.filter { it.isNotEmpty() }
+            .let { if (it.firstOrNull() == PikoDriveRepository.ROOT_BREADCRUMB.name) it.drop(1) else it }
+        return driveRepo.resolveFolderPath(names).fold(
+            onSuccess = { stack ->
+                driveRepo.updateFolderStack(stack)
+                true
+            },
+            onFailure = { error ->
+                _messages.emit(
+                    if (error is PikoDriveRepository.FolderNotFoundException) error.message!! else "打不开这个路径，请检查网络后重试",
+                )
+                false
+            },
+        )
     }
 
     fun navigateToFolder(breadcrumb: PikoPathBreadcrumb) {
@@ -499,6 +543,7 @@ class DriveScreenState(
     fun exitSelection() {
         isSelectionMode = false
         selectedFileIds.clear()
+        selectionAnchor = null
     }
 
     fun setSelected(fileId: String, selected: Boolean) {
@@ -506,6 +551,52 @@ class DriveScreenState(
             if (fileId !in selectedFileIds) selectedFileIds.add(fileId)
         } else {
             selectedFileIds.remove(fileId)
+        }
+    }
+
+    /** Shift 点选的起点：最近一次单独点选的那一项。换目录、退出多选后作废。 */
+    private var selectionAnchor: String? = null
+
+    /** 桌面的 Ctrl（⌘）点选：切换这一项，不在多选时先进入多选。它成为 Shift 点选的起点。 */
+    fun toggleSelected(fileId: String) {
+        isSelectionMode = true
+        setSelected(fileId, fileId !in selectedFileIds)
+        selectionAnchor = fileId
+        if (selectedFileIds.isEmpty()) exitSelection()
+    }
+
+    /**
+     * 桌面的 Shift 点选：把起点到 [fileId] 之间（按眼前的顺序，含两端）全部选上，起点不动，
+     * 连续 Shift 点选以同一个起点伸缩。没有起点时只选这一项，与文件管理器相同。
+     */
+    fun selectRange(fileId: String) {
+        val order = displayedFiles.map { it.id }
+        val anchor = selectionAnchor?.takeIf { it in order }
+        isSelectionMode = true
+        if (anchor == null) {
+            setSelected(fileId, true)
+            selectionAnchor = fileId
+            return
+        }
+        val from = order.indexOf(anchor)
+        val to = order.indexOf(fileId).takeIf { it >= 0 } ?: return
+        order.subList(minOf(from, to), maxOf(from, to) + 1).forEach { setSelected(it, true) }
+    }
+
+    /**
+     * 桌面的框选：选中的换成 [base] 加上框住的 [boxed]。拖动时每动一下调一次，[base] 是按下时已选的
+     * （按着主修饰键开始框选时保留原来的选择，否则为空）。结果为空就退出多选。
+     */
+    fun selectBoxed(base: Set<String>, boxed: Collection<String>) {
+        val next = LinkedHashSet(base).apply { addAll(boxed) }
+        if (next.isEmpty()) {
+            exitSelection()
+            return
+        }
+        isSelectionMode = true
+        if (selectedFileIds.toSet() != next) {
+            selectedFileIds.clear()
+            selectedFileIds.addAll(next)
         }
     }
 
@@ -563,11 +654,16 @@ class DriveScreenState(
     fun rename(fileId: String, newName: String) {
         if (newName.isBlank()) return
         val trimmed = newName.trim()
+        val oldName = knownFile(fileId)?.name
         scope.launch {
             driveRepo.rename(fileId, trimmed)
                 .onSuccess {
                     load()
-                    _messages.tryEmit("已重命名")
+                    if (oldName != null && oldName != trimmed) {
+                        driveRepo.changes.record(DriveChangeJournal.Change.Rename(listOf(DriveChangeJournal.Renamed(fileId, oldName, trimmed)), "已重命名"))
+                    } else {
+                        _messages.tryEmit("已重命名")
+                    }
                 }
                 .logFailure(TAG, "重命名失败")
                 .onFailure { _messages.tryEmit("重命名失败") }
@@ -594,24 +690,67 @@ class DriveScreenState(
                 .onSuccess {
                     exitSelection()
                     load()
-                    _messages.tryEmit(if (ids.size == 1) "已移入回收站" else "已将 ${ids.size} 项移入回收站")
+                    driveRepo.changes.record(
+                        DriveChangeJournal.Change.Trash(ids, if (ids.size == 1) "已移入回收站" else "已将 ${ids.size} 项移入回收站"),
+                    )
                 }
                 .logFailure(TAG, "移入回收站失败")
                 .onFailure { _messages.tryEmit("移入回收站失败") }
         }
     }
 
-    fun move(ids: List<String>, targetId: String, targetName: String) {
-        if (ids.isEmpty()) return
+    /**
+     * [sources] 是各项原来所在的文件夹，撤销时移回去用。眼前列表里有的从列表取；剪切后换了目录再粘贴时
+     * 它们已不在列表里，由剪贴板带过来，否则会被当成原本就在目标里。
+     */
+    fun move(ids: List<String>, targetId: String, targetName: String, sources: Map<String, String> = emptyMap()) {
+        fun sourceOf(id: String) = knownFile(id)?.parentId ?: sources[id]
+        // 已经在目标里的不动：拖回原处、把文件夹拖到它自己上面，服务端要么白做一次、要么拒绝
+        val moving = ids.filter { it != targetId && sourceOf(it) != targetId }
+        if (moving.isEmpty()) return
+        val from = moving.associateWith { sourceOf(it) ?: activeFolderId }
         scope.launch {
-            driveRepo.move(ids, targetId)
+            driveRepo.move(moving, targetId)
                 .onSuccess {
                     exitSelection()
                     load()
-                    _messages.tryEmit("已移至 $targetName")
+                    val summary = if (moving.size == 1) "已移至 $targetName" else "已将 ${moving.size} 项移至 $targetName"
+                    driveRepo.changes.record(DriveChangeJournal.Change.Move(from, targetId, summary))
                 }
                 .logFailure(TAG, "移动失败")
                 .onFailure { _messages.tryEmit("移动失败") }
+        }
+    }
+
+    /** 撤销最近一次移动、移入回收站或重命名，见 [DriveChangeJournal]。 */
+    fun undoLast(): Boolean = driveRepo.changes.undoLast()
+
+    fun undo(change: DriveChangeJournal.Change) = driveRepo.changes.undo(change)
+
+    /** 做完一次可撤销的改动或撤销之后的提示，界面把可撤销的配上「撤销」按钮。 */
+    val changeEvents get() = driveRepo.changes.events
+
+    // 眼前列表里的那一项：全盘搜索的结果不在当前目录的列表里，两处都找
+    private fun knownFile(id: String): FileStat? = displayedFiles.firstOrNull { it.id == id } ?: files.firstOrNull { it.id == id }
+
+    /** 剪切或复制到剪贴板，照资源管理器：换个目录粘贴，见 [paste]。 */
+    fun putOnClipboard(ids: List<String>, cut: Boolean) {
+        if (ids.isEmpty()) return
+        driveRepo.setClipboard(DriveClipboard(ids.associateWith { knownFile(it)?.parentId ?: activeFolderId }, cut))
+        val verb = if (cut) "剪切" else "复制"
+        _messages.tryEmit(if (ids.size == 1) "已$verb，到目标文件夹粘贴" else "已$verb ${ids.size} 项，到目标文件夹粘贴")
+    }
+
+    /** 粘贴到眼前的文件夹：剪切的移过来（剪贴板随即清空，与资源管理器相同），复制的复制一份过来。 */
+    fun paste() {
+        val clip = driveRepo.clipboardFlow.value ?: return
+        val target = driveRepo.folderStackFlow.value.lastOrNull() ?: return
+        val ids = clip.sources.keys.toList()
+        if (clip.cut) {
+            driveRepo.setClipboard(null)
+            move(ids, target.id, target.name, clip.sources)
+        } else {
+            copy(ids, target.id, target.name)
         }
     }
 

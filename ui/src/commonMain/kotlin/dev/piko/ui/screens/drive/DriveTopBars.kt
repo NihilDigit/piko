@@ -1,15 +1,41 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.ui.components.fileDropTarget
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.outlined.Cloud
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.SwipeVertical
 import androidx.compose.material.icons.outlined.ArrowDropDown
+import androidx.compose.material.icons.outlined.SwipeVertical
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.TonalToggleButton
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -48,11 +74,13 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.menuItemShape
 import dev.piko.ui.components.TooltipIconButton
+import dev.piko.ui.components.verticalWheelScrollsRow
 import dev.piko.ui.platform.LocalPikoPlatform
 
 /**
@@ -84,7 +112,7 @@ internal fun DriveSelectionTopBar(
             if (onExtract != null) TooltipIconButton(Icons.Outlined.Unarchive, "解压所选压缩包", onExtract)
             TooltipIconButton(Icons.Outlined.Share, "分享所选", onShare, enabled = selectedCount > 0)
             // 只选一项时没有共同前后缀可言，单项改名走条目菜单
-            TooltipIconButton(Icons.Outlined.DriveFileRenameOutline, "批量重命名", onBatchRename, enabled = selectedCount >= 2)
+            TooltipIconButton(Icons.Outlined.DriveFileRenameOutline, "批量重命名", onBatchRename, enabled = selectedCount >= 2, shortcut = "F2")
             TooltipIconButton(Icons.Outlined.DriveFileMove, "移动所选", onMove, enabled = selectedCount > 0)
             TooltipIconButton(Icons.Outlined.ContentCopy, "复制所选", onCopy, enabled = selectedCount > 0)
             TooltipIconButton(
@@ -205,7 +233,6 @@ internal fun DriveBrowseTopBar(
     navigationIcon: (@Composable () -> Unit)?,
     actions: @Composable RowScope.() -> Unit,
 ) {
-    var showMenu by remember { mutableStateOf(false) }
     TopAppBar(
         title = {
             Column {
@@ -215,43 +242,7 @@ internal fun DriveBrowseTopBar(
                     overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.titleLargeEmphasized,
                 )
-                if (currentSection != null && sections.isNotEmpty()) {
-                    Box {
-                        Row(
-                            modifier = Modifier
-                                .clip(MaterialTheme.shapes.small)
-                                .clickable(onClickLabel = "跳转到分区") { showMenu = true },
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = currentSection,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.weight(1f, fill = false),
-                            )
-                            Icon(
-                                imageVector = Icons.Outlined.ArrowDropDown,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(20.dp),
-                            )
-                        }
-                        PikoDropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                            sections.forEachIndexed { index, label ->
-                                DropdownMenuItem(
-                                    text = { Text(label) },
-                                    shape = menuItemShape(index, sections.size),
-                                    onClick = {
-                                        showMenu = false
-                                        onSectionSelected(index)
-                                    },
-                                )
-                            }
-                        }
-                    }
-                }
+                SectionJumper(currentSection, sections, onSectionSelected)
             }
         },
         navigationIcon = { navigationIcon?.invoke() },
@@ -263,4 +254,207 @@ internal fun DriveBrowseTopBar(
         ),
         scrollBehavior = scrollBehavior,
     )
+}
+
+/**
+ * 信息流的开关，放在网盘页顶栏上、搜索之前，图标带字。原先是视图切换里第四个只有图标的按钮，
+ * 与列表、海报墙、图库挤在一排，看上去只是又一种排列方式，窄屏上还被挤出这一行。
+ * 它打开的是另一种浏览方式：随机刷这个文件夹里的视频片段，所以单独一个带名字的按钮，开着时是选中态。
+ * 已弹出到独立窗口时仍是开着的，再点一下连同窗口一起关掉。
+ */
+@Composable
+internal fun FeedToggle(shown: Boolean, onShownChange: (Boolean) -> Unit) {
+    TonalToggleButton(
+        checked = shown,
+        onCheckedChange = onShownChange,
+        contentPadding = PaddingValues(start = 12.dp, end = 16.dp),
+        modifier = Modifier.padding(end = 4.dp).heightIn(min = 40.dp),
+    ) {
+        Icon(
+            imageVector = if (shown) Icons.Filled.SwipeVertical else Icons.Outlined.SwipeVertical,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+        )
+        Spacer(Modifier.width(6.dp))
+        Text("信息流")
+    }
+}
+
+
+/**
+ * 分区跳转：眼前所在的分区（「Yuru Camp Season 2」），点开列出这个目录的全部分区，选一个滚过去。
+ * 目录没有分区时不出现。窄屏挂在顶栏标题下，宽窗口在命令栏里。
+ */
+@Composable
+internal fun SectionJumper(currentSection: String?, sections: List<String>, onSectionSelected: (Int) -> Unit) {
+    if (currentSection == null || sections.isEmpty()) return
+    var showMenu by remember { mutableStateOf(false) }
+    Box {
+        Row(
+            modifier = Modifier
+                .clip(MaterialTheme.shapes.small)
+                .clickable(onClickLabel = "跳转到分区") { showMenu = true },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = currentSection,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            Icon(
+                imageVector = Icons.Outlined.ArrowDropDown,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+        PikoDropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+            sections.forEachIndexed { index, label ->
+                DropdownMenuItem(
+                    text = { Text(label) },
+                    shape = menuItemShape(index, sections.size),
+                    onClick = {
+                        showMenu = false
+                        onSectionSelected(index)
+                    },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 宽窗口顶栏上的地址栏，照资源管理器：一条底框里是「☁ 网盘 › 动画 › Frieren」，每一段字号相同、都能点。
+ * 点路径后面的空白处（或 [editRequests] 加一，快捷键走这条）换成输入框，里面是「网盘/动画/Frieren」并全选，
+ * 回车交给 [onSubmitPath]：找到了收起，找不到留着让用户改。Esc 或点到别处收起，不跳转。
+ * 路径常驻在顶栏上，不随列表滚走；窄屏仍是目录名作标题、上级另成一行面包屑。
+ * 放不下时横向滚动并停在末尾，鼠标竖滚轮也滚得动。
+ */
+@Composable
+internal fun DrivePathTitle(
+    stack: List<PikoPathBreadcrumb>,
+    onNavigate: (index: Int) -> Unit,
+    onSubmitPath: suspend (String) -> Boolean,
+    editRequests: Int,
+) {
+    var editing by remember { mutableStateOf(false) }
+    LaunchedEffect(editRequests) { if (editRequests > 0) editing = true }
+    val colors = MaterialTheme.colorScheme
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(40.dp)
+            .clip(CircleShape)
+            .background(colors.surfaceContainerHigh)
+            // 各段自己接住单击；落在段外的（路径后面的空白、箭头）进入输入
+            .then(if (editing) Modifier else Modifier.clickable(onClickLabel = "输入路径") { editing = true })
+            .padding(horizontal = 8.dp),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        if (editing) {
+            PathField(
+                initial = stack.joinToString("/") { it.name },
+                onSubmit = onSubmitPath,
+                onClose = { editing = false },
+            )
+        } else {
+            PathCrumbs(stack, onNavigate)
+        }
+    }
+}
+
+@Composable
+private fun PathField(initial: String, onSubmit: suspend (String) -> Boolean, onClose: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    val scope = rememberCoroutineScope()
+    val focusRequester = remember { FocusRequester() }
+    var value by remember { mutableStateOf(TextFieldValue(initial, selection = TextRange(0, initial.length))) }
+    var hadFocus by remember { mutableStateOf(false) }
+    var resolving by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        BasicTextField(
+            value = value,
+            onValueChange = { value = it },
+            singleLine = true,
+            textStyle = MaterialTheme.typography.bodyLarge.copy(color = colors.onSurface),
+            cursorBrush = SolidColor(colors.primary),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+            keyboardActions = KeyboardActions(onGo = {
+                if (resolving) return@KeyboardActions
+                resolving = true
+                scope.launch {
+                    val found = onSubmit(value.text)
+                    resolving = false
+                    if (found) onClose()
+                }
+            }),
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = 6.dp)
+                .focusRequester(focusRequester)
+                .onFocusChanged { state ->
+                    if (state.isFocused) hadFocus = true else if (hadFocus) onClose()
+                }
+                .onPreviewKeyEvent { event ->
+                    if (event.key != Key.Escape) return@onPreviewKeyEvent false
+                    if (event.type == KeyEventType.KeyDown) onClose()
+                    true
+                },
+        )
+        // 逐层列目录要几次请求，慢的时候得看得出在找
+        if (resolving) InlineLoadingIndicator()
+    }
+}
+
+@Composable
+private fun PathCrumbs(stack: List<PikoPathBreadcrumb>, onNavigate: (index: Int) -> Unit) {
+    val scroll = rememberScrollState()
+    LaunchedEffect(stack) { scroll.scrollTo(scroll.maxValue) }
+    val colors = MaterialTheme.colorScheme
+    Row(
+        modifier = Modifier
+            .verticalWheelScrollsRow(scroll)
+            .horizontalScroll(scroll),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        stack.forEachIndexed { index, crumb ->
+            if (index > 0) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = colors.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+            Row(
+                modifier = Modifier
+                    // 每一段都接得住拖来的条目：拖到「网盘」就是移回根目录
+                    .fileDropTarget("crumb:${crumb.id}", crumb)
+                    .clip(MaterialTheme.shapes.small)
+                    .clickable(onClickLabel = "打开") { onNavigate(index) }
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                if (index == 0) {
+                    Icon(
+                        imageVector = Icons.Outlined.Cloud,
+                        contentDescription = null,
+                        tint = colors.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+                Text(
+                    text = crumb.name,
+                    maxLines = 1,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = colors.onSurface,
+                )
+            }
+        }
+    }
 }

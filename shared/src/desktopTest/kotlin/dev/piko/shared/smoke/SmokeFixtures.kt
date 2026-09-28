@@ -3,6 +3,7 @@ package dev.piko.shared.smoke
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.auth.QuotaSnapshot
 import dev.piko.data.auth.SidePanelPrefs
+import dev.piko.data.auth.SnailMode
 import dev.piko.shared.net.ProxySetting
 import dev.piko.data.auth.UserSession
 import dev.piko.shared.data.PikoCredentials
@@ -40,6 +41,8 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun setBundleSubtitlesEnabled(enabled: Boolean) = Unit
     override val autoCleanNamesFlow: Flow<Boolean> = MutableStateFlow(false)
     override suspend fun setAutoCleanNamesEnabled(enabled: Boolean) = Unit
+    override val settingsSyncFlow: Flow<Boolean> = MutableStateFlow(false)
+    override suspend fun setSettingsSyncEnabled(enabled: Boolean) = Unit
     override val syncPlayHistoryFlow: Flow<Boolean> = MutableStateFlow(false)
     override suspend fun setSyncPlayHistoryEnabled(enabled: Boolean) = Unit
     override val themeModeFlow: Flow<String?> = MutableStateFlow(null)
@@ -51,6 +54,13 @@ class MemoryPreferences : PikoUserPreferences {
     override val clipPanelFlow: Flow<SidePanelPrefs> = MutableStateFlow(SidePanelPrefs(open = false, widthDp = null))
     override suspend fun setClipPanelOpen(open: Boolean) = Unit
     override suspend fun setClipPanelWidth(widthDp: Float) = Unit
+    override val inspectorPanelFlow: Flow<SidePanelPrefs> = MutableStateFlow(SidePanelPrefs(open = false, widthDp = null))
+    override suspend fun setInspectorPanelOpen(open: Boolean) = Unit
+    override suspend fun setInspectorPanelWidth(widthDp: Float) = Unit
+    override val pikpakDomainFlow: Flow<String> = MutableStateFlow("")
+    override suspend fun setPikpakDomain(root: String) = Unit
+    override val snailModeFlow: Flow<SnailMode> = MutableStateFlow(SnailMode())
+    override suspend fun setSnailMode(mode: SnailMode) = Unit
     override val sessionFlow: Flow<UserSession> = MutableStateFlow(UserSession())
     override suspend fun saveSession(token: String, refreshToken: String, userId: String, username: String, avatarUrl: String) = Unit
     override suspend fun saveProfile(username: String, avatarUrl: String, email: String) = Unit
@@ -85,6 +95,8 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun saveArchivePasswords(serialized: String) = Unit
     override val recentMoveTargetsFlow: Flow<String> = MutableStateFlow("")
     override suspend fun saveRecentMoveTargets(serialized: String) = Unit
+    override val pinnedFoldersFlow: Flow<String> = MutableStateFlow("")
+    override suspend fun savePinnedFolders(serialized: String) = Unit
     override val proxySettingFlow: Flow<ProxySetting> = MutableStateFlow(ProxySetting())
     override suspend fun saveProxySetting(setting: ProxySetting) = Unit
     override suspend fun getIgnoredUpdateVersion(): String? = null
@@ -139,5 +151,14 @@ suspend fun awaitUntil(description: String, timeoutMs: Long = 10_000, condition:
     while (!condition()) {
         if (System.currentTimeMillis() > deadline) throw AssertionError("超时仍未满足：$description")
         delay(20)
+    }
+}
+
+/** 缓存目录的内存版：同一个实例交给两个仓库，就是「重启后读到上次写的」。 */
+class MemoryCacheStore : dev.piko.shared.data.PikoCacheStore {
+    private val map = java.util.concurrent.ConcurrentHashMap<String, String>()
+    override suspend fun read(key: String): String? = map[key]
+    override suspend fun write(key: String, value: String) {
+        map[key] = value
     }
 }

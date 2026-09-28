@@ -53,8 +53,10 @@ import dev.piko.shared.state.TransferItem
 import dev.piko.shared.state.TransfersState
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.readableSidePadding
+import dev.piko.ui.components.ContextMenuArea
 import dev.piko.ui.components.FileListSkeleton
 import dev.piko.ui.components.PikoEmptyState
+import dev.piko.ui.components.SheetAction
 import dev.piko.ui.platform.LocalPikoPlatform
 import io.github.nihildigit.pikpak.DriveTask
 import kotlinx.coroutines.launch
@@ -134,7 +136,47 @@ fun TransfersScreen(
     // 记 key 而不是条目本身：进度每半秒刷新，面板要跟着显示最新状态；条目被移除时面板随之关闭
     var detailsKey by rememberSaveable { mutableStateOf<String?>(null) }
 
-    val renderItem: @Composable (TransferItem, Modifier) -> Unit = { item, itemModifier ->
+    val localFiles = LocalPikoPlatform.current.localFiles
+
+    // 一项的全部操作，详情面板与右键菜单共用：两处给的总是同一组
+    fun actionsFor(item: TransferItem): List<SheetAction> = when (item) {
+        is TransferItem.Local -> localTransferActions(
+            task = item.task,
+            files = localFiles,
+            onPlay = { playLocal(item.task) },
+            onStart = { state.resumeLocal(item.task.taskId) },
+            onPause = { state.pauseLocal(item.task.taskId) },
+            onRemove = { state.removeLocal(item.task.taskId) },
+            previewHidden = if (isSpoilerBlurEnabled && hasPreview(item.task)) item.key !in revealedKeys else null,
+            onTogglePreview = { if (!revealedKeys.remove(item.key)) revealedKeys.add(item.key) },
+        )
+        is TransferItem.Upload -> uploadTransferActions(
+            task = item.task,
+            onOpen = { item.task.fileId?.let { openCloudFileById(it, item.task.fileName) } },
+            onResume = { state.resumeUpload(item.task.taskId) },
+            onPause = { state.pauseUpload(item.task.taskId) },
+            onRemove = { state.removeUpload(item.task.taskId) },
+        )
+        is TransferItem.Cloud -> cloudTransferActions(
+            task = item.task,
+            onResubmit = resubmitAction(item.task),
+            onDelete = { state.deleteCloud(item.task.id) },
+            onOpen = { openCloudFile(item.task) },
+        )
+        is TransferItem.Pack -> packTransferActions(
+            item = item,
+            onOpen = { openCloudFileById(item.job.outputId, item.job.folderName) },
+            onRetry = { state.retryPack(item.job.taskId) },
+            onDiscard = { state.discardPack(item.job.taskId) },
+        )
+        is TransferItem.Instant -> instantTransferActions(
+            onOpen = { openCloudFileById(item.record.locateId, item.record.name) },
+            onRemove = { state.removeInstant(item.record.id) },
+        )
+    }
+
+    @Composable
+    fun TransferRow(item: TransferItem) {
         when (item) {
             is TransferItem.Local -> LocalTransferRow(
                 task = item.task,
@@ -143,7 +185,6 @@ fun TransfersScreen(
                 onPause = { state.pauseLocal(item.task.taskId) },
                 onMoreClick = { detailsKey = item.key },
                 isSpoilerBlurred = isSpoilerBlurEnabled && item.key !in revealedKeys,
-                modifier = itemModifier,
             )
             is TransferItem.Upload -> UploadTransferRow(
                 task = item.task,
@@ -151,7 +192,6 @@ fun TransfersScreen(
                 onResume = { state.resumeUpload(item.task.taskId) },
                 onPause = { state.pauseUpload(item.task.taskId) },
                 onMoreClick = { detailsKey = item.key },
-                modifier = itemModifier,
             )
             is TransferItem.Cloud -> CloudTransferRow(
                 task = item.task,
@@ -160,7 +200,6 @@ fun TransfersScreen(
                 onResubmit = resubmitAction(item.task),
                 onOpen = { openCloudFile(item.task) },
                 onMoreClick = { detailsKey = item.key },
-                modifier = itemModifier,
             )
             is TransferItem.Pack -> PackTransferRow(
                 item = item,
@@ -169,14 +208,19 @@ fun TransfersScreen(
                 onOpen = { openCloudFileById(item.job.outputId, item.job.folderName) },
                 onRetry = { state.retryPack(item.job.taskId) },
                 onMoreClick = { detailsKey = item.key },
-                modifier = itemModifier,
             )
             is TransferItem.Instant -> InstantTransferRow(
                 record = item.record,
                 onOpen = { openCloudFileById(item.record.locateId, item.record.name) },
                 onMoreClick = { detailsKey = item.key },
-                modifier = itemModifier,
             )
+        }
+    }
+
+    // 右键弹出与详情面板相同的操作。animateItem 这类条目修饰挂在外层，菜单锚点才跟着条目走
+    val renderItem: @Composable (TransferItem, Modifier) -> Unit = { item, itemModifier ->
+        ContextMenuArea(actions = { actionsFor(item) }, modifier = itemModifier) {
+            TransferRow(item)
         }
     }
 
@@ -260,50 +304,11 @@ fun TransfersScreen(
     val closeDetails = { detailsKey = null }
     when (detailsItem) {
         null -> Unit
-        is TransferItem.Local -> LocalTransferSheet(
-            task = detailsItem.task,
-            onPlay = { playLocal(detailsItem.task) },
-            onStart = { state.resumeLocal(detailsItem.task.taskId) },
-            onPause = { state.pauseLocal(detailsItem.task.taskId) },
-            onRemove = { state.removeLocal(detailsItem.task.taskId) },
-            onDismiss = closeDetails,
-            previewHidden = if (isSpoilerBlurEnabled && hasPreview(detailsItem.task)) {
-                detailsItem.key !in revealedKeys
-            } else {
-                null
-            },
-            onTogglePreview = {
-                if (!revealedKeys.remove(detailsItem.key)) revealedKeys.add(detailsItem.key)
-            },
-        )
-        is TransferItem.Upload -> UploadTransferSheet(
-            task = detailsItem.task,
-            onOpen = { detailsItem.task.fileId?.let { openCloudFileById(it, detailsItem.task.fileName) } },
-            onResume = { state.resumeUpload(detailsItem.task.taskId) },
-            onPause = { state.pauseUpload(detailsItem.task.taskId) },
-            onRemove = { state.removeUpload(detailsItem.task.taskId) },
-            onDismiss = closeDetails,
-        )
-        is TransferItem.Cloud -> CloudTransferSheet(
-            task = detailsItem.task,
-            onResubmit = resubmitAction(detailsItem.task),
-            onDelete = { state.deleteCloud(detailsItem.task.id) },
-            onOpen = { openCloudFile(detailsItem.task) },
-            onDismiss = closeDetails,
-        )
-        is TransferItem.Pack -> PackTransferSheet(
-            item = detailsItem,
-            onOpen = { openCloudFileById(detailsItem.job.outputId, detailsItem.job.folderName) },
-            onRetry = { state.retryPack(detailsItem.job.taskId) },
-            onDiscard = { state.discardPack(detailsItem.job.taskId) },
-            onDismiss = closeDetails,
-        )
-        is TransferItem.Instant -> InstantTransferSheet(
-            record = detailsItem.record,
-            onOpen = { openCloudFileById(detailsItem.record.locateId, detailsItem.record.name) },
-            onRemove = { state.removeInstant(detailsItem.record.id) },
-            onDismiss = closeDetails,
-        )
+        is TransferItem.Local -> LocalTransferSheet(detailsItem.task, actionsFor(detailsItem), closeDetails)
+        is TransferItem.Upload -> UploadTransferSheet(detailsItem.task, actionsFor(detailsItem), closeDetails)
+        is TransferItem.Cloud -> CloudTransferSheet(detailsItem.task, actionsFor(detailsItem), closeDetails)
+        is TransferItem.Pack -> PackTransferSheet(detailsItem, actionsFor(detailsItem), closeDetails)
+        is TransferItem.Instant -> InstantTransferSheet(detailsItem.record, actionsFor(detailsItem), closeDetails)
     }
 }
 

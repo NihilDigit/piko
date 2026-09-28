@@ -39,6 +39,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.piko.ui.components.focusIndication
 import dev.piko.ui.components.locateHighlight
 import dev.piko.ui.components.MediaTag
 import dev.piko.ui.components.MediaTagRow
@@ -113,6 +114,7 @@ internal fun PosterCard(
     Column(
         modifier = modifier
             .fillMaxWidth()
+            .focusIndication(coverShape)
             .clip(coverShape)
             .cardInteraction(isSelectionMode, isSelected, onClick, onLongClick, onSelectToggle),
     ) {

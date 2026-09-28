@@ -1,5 +1,13 @@
 package dev.piko.ui.screens.drive
 
+import androidx.compose.ui.input.pointer.isTertiaryPressed
+import dev.piko.ui.components.LocalFileDrag
+import androidx.compose.ui.draw.alpha
+import dev.piko.shared.data.PikoPathBreadcrumb
+import dev.piko.ui.components.fileDropTarget
+import dev.piko.ui.components.fileDragSource
+import dev.piko.ui.components.FileDragPayload
+import dev.piko.ui.components.marqueeSelection
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,6 +18,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -24,7 +33,6 @@ import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.automirrored.outlined.Sort
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.PhotoLibrary
-import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.outlined.FilterList
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ArrowUpward
@@ -47,7 +55,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -72,12 +87,19 @@ import dev.piko.ui.components.MediaTagRow
 import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.menuItemShape
+import dev.piko.ui.components.selectionClicks
 import dev.piko.ui.platform.LocalPikoPlatform
+import dev.piko.ui.platform.ShortcutModifier
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import io.github.nihildigit.pikpak.FileStat
 
 /**
  * 网盘列表的三种排列。名字存进偏好（PikoUserPreferences.driveViewModeFlow），不要改名。
- * 视图切换里的第四项信息流不在这里，见 ViewModeToggle。
+ * 信息流不在这里，它的开关在网盘页顶栏上，见 FeedToggle。
  */
 internal enum class DriveViewMode {
     LIST,
@@ -111,15 +133,33 @@ private val PosterColumnMinWidth = 240.dp
 private val GalleryColumnMinWidthCompact = 104.dp
 private val GalleryColumnMinWidth = 140.dp
 
+private const val DraggedAlpha = 0.4f
+
 private const val KEY_HEADER = "drive_header"
 private const val KEY_FOLD = "drive_fold"
 
 /** 列表或海报墙里的每一项需要的回调，由 DriveScreen 按条目绑定。 */
 internal class DriveItemCallbacks(
     val onOpen: (FileStat) -> Unit,
+    /** mac 上焦点在这一项时按回车，照 Finder 是改名。 */
+    val onRename: (FileStat) -> Unit,
     val onMore: (FileStat) -> Unit,
     val onLongPress: (FileStat) -> Unit,
     val onSelect: (FileStat, Boolean) -> Unit,
+    /** Ctrl（⌘）点选，见 [selectionClicks]。 */
+    val onToggleSelect: (FileStat) -> Unit,
+    /** Shift 点选。 */
+    val onExtendSelect: (FileStat) -> Unit,
+    /** 按住这一项拖动时拖出去的那一批，见 [fileDragSource]。 */
+    val dragPayload: (FileStat) -> FileDragPayload?,
+    /** 鼠标中键点了这一项：文件夹在新标签页里打开。 */
+    val onMiddleClick: (FileStat) -> Unit,
+    /** 框选，见 [marqueeSelection]。 */
+    val onBoxSelect: (base: Set<String>, boxed: Set<String>) -> Unit,
+    /** 鼠标单击了网格的空白处。 */
+    val onBackgroundClick: () -> Unit,
+    /** 焦点进出这一项（含它里面的更多按钮），键盘操作据此知道作用于哪一项。 */
+    val onFocusChanged: (FileStat, Boolean) -> Unit,
     /** 右键菜单的内容，与操作面板相同。 */
     val contextActions: (FileStat) -> List<SheetAction>,
     val onToggleSection: (blockId: String) -> Unit,
@@ -144,6 +184,9 @@ internal fun DriveFileGrid(
     folderView: (FileStat) -> DriveFolderView?,
     callbacks: DriveItemCallbacks,
     bottomPadding: Dp,
+    /** 要把键盘焦点移到的那一项，移过去后回调 [onKeyboardFocusMoved]。 */
+    keyboardFocusTarget: String?,
+    onKeyboardFocusMoved: () -> Unit,
     header: @Composable () -> Unit,
     foldBanner: (@Composable () -> Unit)?,
     modifier: Modifier = Modifier,
@@ -163,10 +206,19 @@ internal fun DriveFileGrid(
             if (entryIndex >= 0) gridState.animateScrollToItem(leadingItemCount + entryIndex)
         }
 
+        val fileKeys = remember(items) { items.mapNotNullTo(HashSet()) { (it as? DriveListItem.File)?.key } }
         LazyVerticalStaggeredGrid(
             state = gridState,
             columns = gridCells(viewMode),
-            modifier = modifier.fillMaxSize(),
+            modifier = modifier
+                .fillMaxSize()
+                .marqueeSelection(
+                    gridState = gridState,
+                    selectedIds = selectedIds,
+                    boxedKey = { key -> (key as? String)?.takeIf { it in fileKeys } },
+                    onSelect = callbacks.onBoxSelect,
+                    onBackgroundClick = callbacks.onBackgroundClick,
+                ),
             contentPadding = PaddingValues(
                 start = horizontalPadding,
                 end = horizontalPadding,
@@ -227,6 +279,8 @@ internal fun DriveFileGrid(
                             isBlurred = isBlurred(file),
                             locationLabel = hitLocations[file.id],
                             callbacks = callbacks,
+                            requestFocus = file.id == keyboardFocusTarget,
+                            onFocusRequested = onKeyboardFocusMoved,
                             modifier = Modifier.animateItem(),
                         )
                     }
@@ -293,11 +347,11 @@ private const val SKELETON_ITEM_COUNT = 40
 private val SkeletonTitleWidths = listOf(0.62f, 0.45f, 0.74f, 0.52f, 0.68f, 0.4f)
 
 /** 单元格上的文字：解析出的标题与标签。[title] 为 null 时照原样显示名字。 */
-private class CellText(val title: String?, val tags: List<String>, val code: String? = null, val resolution: String? = null)
+internal class CellText(val title: String?, val tags: List<String>, val code: String? = null, val resolution: String? = null)
 
-private val RawCellText = CellText(null, emptyList())
+internal val RawCellText = CellText(null, emptyList())
 
-private fun cellText(item: DriveListItem.File, folder: DriveFolderView?): CellText {
+internal fun cellText(item: DriveListItem.File, folder: DriveFolderView?): CellText {
     val view = item.view
     return when {
         view != null -> CellText(view.title, view.tags, view.code, view.resolution)
@@ -369,9 +423,65 @@ private fun DriveCell(
     isBlurred: Boolean,
     locationLabel: String?,
     callbacks: DriveItemCallbacks,
+    requestFocus: Boolean,
+    onFocusRequested: () -> Unit,
     modifier: Modifier,
 ) {
-    ContextMenuArea(actions = { callbacks.contextActions(file) }, modifier = modifier) {
+    val isMac = LocalPikoPlatform.current.shortcutModifier == ShortcutModifier.Command
+    val focusRequester = remember { FocusRequester() }
+    if (requestFocus) {
+        LaunchedEffect(Unit) {
+            runCatching { focusRequester.requestFocus() }
+            onFocusRequested()
+        }
+    }
+    // 正被拖着的条目淡下去，看得出拖走的是哪几项
+    val drag = LocalFileDrag.current
+    val beingDragged = drag?.payload?.ids?.contains(file.id) == true
+    ContextMenuArea(
+        actions = { callbacks.contextActions(file) },
+        modifier = modifier
+            .alpha(if (beingDragged) DraggedAlpha else 1f)
+            .focusRequester(focusRequester)
+            .onFocusChanged { callbacks.onFocusChanged(file, it.hasFocus) }
+            // 鼠标点到哪一项，键盘就从哪一项接着走，与文件管理器相同。条目自己的单击不取焦点；
+            // 触屏不取，否则点过的项留着一层焦点底色
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        if (event.type == PointerEventType.Press && event.changes.any { it.type == PointerType.Mouse }) {
+                            runCatching { focusRequester.requestFocus() }
+                        }
+                    }
+                }
+            }
+            .selectionClicks(
+                onToggle = { callbacks.onToggleSelect(file) },
+                onExtend = { callbacks.onExtendSelect(file) },
+                // 多选时条目上画着勾选框，单击照旧是勾选或取消
+                onDoubleClick = if (isSelectionMode) null else ({ callbacks.onOpen(file) }),
+            )
+            // Finder 里回车是改名；资源管理器里回车是打开，交给条目自己的单击
+            .onPreviewKeyEvent { event ->
+                val isReturn = event.key == Key.Enter || event.key == Key.NumPadEnter
+                if (!isReturn || !isMac || isSelectionMode) return@onPreviewKeyEvent false
+                // 按下与松开都吃掉：只吃按下的话，条目的单击在松开时照样触发
+                if (event.type == KeyEventType.KeyDown) callbacks.onRename(file)
+                true
+            }
+            .fileDragSource { callbacks.dragPayload(file) }
+            .pointerInput(file.id) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        if (event.type == PointerEventType.Press && event.buttons.isTertiaryPressed) callbacks.onMiddleClick(file)
+                    }
+                }
+            }
+            // 文件夹接得住拖来的条目
+            .then(if (file.isFolder) Modifier.fileDropTarget("cell:${file.id}", PikoPathBreadcrumb(file.id, file.name)) else Modifier),
+    ) {
         when (viewMode) {
             DriveViewMode.GALLERY -> GalleryTile(
                 file = file,
@@ -452,12 +562,9 @@ internal fun DriveListHeader(
     onTypeFilterChange: (FileCategory?) -> Unit,
     viewMode: DriveViewMode,
     onViewModeChange: (DriveViewMode) -> Unit,
-    feedShown: Boolean = false,
-    /** 见 ViewModeToggle。 */
-    onFeedShownChange: ((Boolean) -> Unit)? = null,
+    /** 为 false 时只留搜索结果的说明：宽窗口里这些控件在命令栏上。 */
+    showControls: Boolean = true,
 ) {
-    var showSortMenu by remember { mutableStateOf(false) }
-    var showTypeMenu by remember { mutableStateOf(false) }
     Column(modifier = Modifier.fillMaxWidth()) {
         if (summary != null) {
             // 与排序按钮的图标同落在 16dp 页边距上：外层只给了 4dp，这里补 TextButton 的 12dp
@@ -470,6 +577,10 @@ internal fun DriveListHeader(
                 modifier = Modifier.padding(start = 12.dp, top = 8.dp),
             )
         }
+        if (!showControls) {
+            if (summary != null) Spacer(Modifier.height(8.dp))
+            return@Column
+        }
         // 排序靠左、视图切换靠右，读作列表自身的控件；原先两者都靠右，像是顶栏放不下挤下来的第二排
         Row(
             modifier = Modifier
@@ -477,99 +588,117 @@ internal fun DriveListHeader(
                 .heightIn(min = 48.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box {
-                TextButton(onClick = { showSortMenu = true }) {
-                    Icon(
-                        Icons.AutoMirrored.Outlined.Sort,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("按${sortOrder.field.label}")
-                    Spacer(modifier = Modifier.width(2.dp))
-                    SortDirectionIcon(sortOrder, modifier = Modifier.size(16.dp))
-                }
-                PikoDropdownMenu(expanded = showSortMenu, onDismissRequest = { showSortMenu = false }) {
-                    val fields = PikoSortField.entries
-                    fields.forEachIndexed { index, field ->
-                        val isCurrent = field.owns(sortOrder)
-                        DropdownMenuItem(
-                            onClick = {
-                                showSortMenu = false
-                                onSortChange(field.selectFrom(sortOrder))
-                            },
-                            text = { Text(field.label) },
-                            shape = menuItemShape(index, fields.size),
-                            trailingIcon = { if (isCurrent) SortDirectionIcon(sortOrder) },
-                        )
-                    }
-                }
-            }
-            if (typeFilter != null || availableTypes.size > 1) {
-                Box {
-                    TextButton(onClick = { showTypeMenu = true }) {
-                        Icon(
-                            Icons.Outlined.FilterList,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(typeFilter?.label ?: "全部类型")
-                    }
-                    PikoDropdownMenu(expanded = showTypeMenu, onDismissRequest = { showTypeMenu = false }) {
-                        val options = listOf<Pair<FileCategory?, Int?>>(null to null) + availableTypes
-                        options.forEachIndexed { index, (category, count) ->
-                            DropdownMenuItem(
-                                onClick = {
-                                    showTypeMenu = false
-                                    onTypeFilterChange(category)
-                                },
-                                text = {
-                                    Text(
-                                        text = category?.label ?: "全部类型",
-                                        color = if (category == typeFilter) MaterialTheme.colorScheme.primary else Color.Unspecified,
-                                    )
-                                },
-                                leadingIcon = category?.let { { Icon(it.icon(), contentDescription = null, modifier = Modifier.size(20.dp)) } },
-                                trailingIcon = count?.let { { Text("$it", style = MaterialTheme.typography.labelMedium) } },
-                                shape = menuItemShape(index, options.size),
-                            )
-                        }
-                    }
-                }
-            }
+            SortButton(sortOrder, onSortChange)
+            TypeFilterButton(typeFilter, availableTypes, onTypeFilterChange)
             Spacer(modifier = Modifier.weight(1f))
             ViewModeToggle(
                 viewMode = viewMode,
                 onViewModeChange = onViewModeChange,
-                feedShown = feedShown,
-                onFeedShownChange = onFeedShownChange,
             )
         }
     }
 }
 
 /**
- * 视图切换，M3 Expressive 连体按钮组：列表、海报墙、图库三选一，末尾是信息流。
- *
- * 信息流不是 [DriveViewMode] 的第四个值，而是单独的开关 [feedShown]：它在宽窗口里开在右侧侧栏，
- * 主区照旧按原来的视图排列，此时两个按钮同为选中态，各自说明眼前看得到的一块；窄窗口里它盖住整个网盘页，
- * 这一行本身就看不到了。关掉信息流即回到原来的视图，不必另记「进信息流之前是哪一种」，
- * 存进偏好的视图名也不会出现一个旧版读不懂的值。[onFeedShownChange] 为 null 时不给这一项。
+ * 排序按钮，写出当前字段与方向。菜单里再点当前字段即切换升降序，点其他字段则按该字段的起始方向排，
+ * 不必为六种组合各列一项。列表页眉与宽窗口的命令栏共用。
  */
+@Composable
+internal fun SortButton(sortOrder: FileSortOrder, onSortChange: (FileSortOrder) -> Unit) {
+    var showMenu by remember { mutableStateOf(false) }
+    Box {
+        TextButton(onClick = { showMenu = true }) {
+            Icon(Icons.AutoMirrored.Outlined.Sort, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(modifier = Modifier.width(6.dp))
+            Text("按${sortOrder.field.label}")
+            Spacer(modifier = Modifier.width(2.dp))
+            SortDirectionIcon(sortOrder, modifier = Modifier.size(16.dp))
+        }
+        PikoDropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+            val fields = PikoSortField.entries
+            fields.forEachIndexed { index, field ->
+                val isCurrent = field.owns(sortOrder)
+                DropdownMenuItem(
+                    onClick = {
+                        showMenu = false
+                        onSortChange(field.selectFrom(sortOrder))
+                    },
+                    text = { Text(field.label) },
+                    shape = menuItemShape(index, fields.size),
+                    trailingIcon = { if (isCurrent) SortDirectionIcon(sortOrder) },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 类型筛选，只在列表里有两类以上文件、或已在筛选时出现：只有一类时筛了等于没筛。
+ * 菜单里每类带上数量，选之前就知道会剩多少。列表页眉与宽窗口的命令栏共用。
+ */
+@Composable
+internal fun TypeFilterButton(
+    typeFilter: FileCategory?,
+    availableTypes: List<Pair<FileCategory, Int>>,
+    onTypeFilterChange: (FileCategory?) -> Unit,
+) {
+    if (typeFilter == null && availableTypes.size <= 1) return
+    var showMenu by remember { mutableStateOf(false) }
+    Box {
+        TextButton(onClick = { showMenu = true }) {
+            Icon(Icons.Outlined.FilterList, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(typeFilter?.label ?: "全部类型")
+        }
+        PikoDropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+            val options = listOf<Pair<FileCategory?, Int?>>(null to null) + availableTypes
+            options.forEachIndexed { index, (category, count) ->
+                DropdownMenuItem(
+                    onClick = {
+                        showMenu = false
+                        onTypeFilterChange(category)
+                    },
+                    text = {
+                        Text(
+                            text = category?.label ?: "全部类型",
+                            color = if (category == typeFilter) MaterialTheme.colorScheme.primary else Color.Unspecified,
+                        )
+                    },
+                    leadingIcon = category?.let { { Icon(it.icon(), contentDescription = null, modifier = Modifier.size(20.dp)) } },
+                    trailingIcon = count?.let { { Text("$it", style = MaterialTheme.typography.labelMedium) } },
+                    shape = menuItemShape(index, options.size),
+                )
+            }
+        }
+    }
+}
+
+/** 视图的图标与名字，视图切换按钮组与宽窗口命令栏的「查看」菜单共用。 */
+internal val DriveViewMode.icon
+    get() = when (this) {
+        DriveViewMode.LIST -> Icons.AutoMirrored.Filled.ViewList
+        DriveViewMode.POSTER -> Icons.Filled.GridView
+        DriveViewMode.GALLERY -> Icons.Filled.PhotoLibrary
+    }
+
+internal val DriveViewMode.label
+    get() = when (this) {
+        DriveViewMode.LIST -> "列表"
+        DriveViewMode.POSTER -> "海报墙"
+        DriveViewMode.GALLERY -> "图库"
+    }
+
+/** 视图切换，M3 Expressive 连体按钮组：列表、海报墙、图库三选一。信息流不在这里，见 FeedToggle。 */
 @Composable
 private fun ViewModeToggle(
     viewMode: DriveViewMode,
     onViewModeChange: (DriveViewMode) -> Unit,
-    feedShown: Boolean,
-    onFeedShownChange: ((Boolean) -> Unit)?,
 ) {
     val modes = DriveViewMode.entries
-    val lastIndex = if (onFeedShownChange != null) modes.size else modes.lastIndex
     @Composable
     fun shapesAt(index: Int) = when (index) {
         0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
-        lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
+        modes.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
         else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
     }
     Row(horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)) {
@@ -580,22 +709,7 @@ private fun ViewModeToggle(
                 shapes = shapesAt(index),
                 contentPadding = ViewToggleContentPadding,
             ) {
-                val (icon, label) = when (mode) {
-                    DriveViewMode.LIST -> Icons.AutoMirrored.Filled.ViewList to "列表视图"
-                    DriveViewMode.POSTER -> Icons.Filled.GridView to "海报视图"
-                    DriveViewMode.GALLERY -> Icons.Filled.PhotoLibrary to "图库视图"
-                }
-                Icon(icon, contentDescription = label, modifier = Modifier.size(20.dp))
-            }
-        }
-        if (onFeedShownChange != null) {
-            ToggleButton(
-                checked = feedShown,
-                onCheckedChange = onFeedShownChange,
-                shapes = shapesAt(modes.size),
-                contentPadding = ViewToggleContentPadding,
-            ) {
-                Icon(Icons.Filled.Shuffle, contentDescription = "信息流", modifier = Modifier.size(20.dp))
+                Icon(mode.icon, contentDescription = "${mode.label}视图", modifier = Modifier.size(20.dp))
             }
         }
     }

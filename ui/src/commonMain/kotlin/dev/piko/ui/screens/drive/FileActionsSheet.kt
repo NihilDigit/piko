@@ -13,10 +13,13 @@ import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.SwipeVertical
+import androidx.compose.material.icons.outlined.Tab
 import dev.piko.shared.upload.isUploading
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material.icons.outlined.Unarchive
+import androidx.compose.material.icons.outlined.PushPin
 import dev.piko.shared.data.isArchiveVolume
 import dev.piko.shared.data.isExtractableArchive
 import androidx.compose.material.icons.outlined.Visibility
@@ -68,6 +71,9 @@ internal fun FileActionsSheet(
     onExtract: () -> Unit,
     onShare: () -> Unit,
     onOpenInExternalPlayer: (() -> Unit)?,
+    onOpenInNewTab: (() -> Unit)? = null,
+    onTogglePin: (() -> Unit)? = null,
+    isPinned: Boolean = false,
 ) {
     val usage by produceState<FolderUsageResult?>(null, folderUsage) {
         folderUsage ?: return@produceState
@@ -97,6 +103,9 @@ internal fun FileActionsSheet(
         onExtract = onExtract,
         onShare = onShare,
         onOpenInExternalPlayer = onOpenInExternalPlayer,
+        onOpenInNewTab = onOpenInNewTab,
+        onTogglePin = onTogglePin,
+        isPinned = isPinned,
     )
 
     ItemDetailsSheet(
@@ -136,7 +145,16 @@ internal fun fileActions(
     onExtract: () -> Unit,
     onShare: () -> Unit,
     onOpenInExternalPlayer: (() -> Unit)?,
+    onOpenInNewTab: (() -> Unit)? = null,
+    /** 固定或取消固定到快速访问；为 null 时没有快速访问可去（窄窗口），不给这一项。 */
+    onTogglePin: (() -> Unit)? = null,
+    isPinned: Boolean = false,
 ): List<SheetAction> = buildList {
+    // 文件夹在宽窗口里可以在新标签页打开，放在最前：它是「打开」的另一种
+    if (file.isFolder && onOpenInNewTab != null) add(SheetAction(Icons.Outlined.Tab, "在新标签页打开", onOpenInNewTab))
+    if (file.isFolder && onTogglePin != null) {
+        add(SheetAction(Icons.Outlined.PushPin, if (isPinned) "从快速访问取消固定" else "固定到快速访问", onTogglePin))
+    }
     if (previewHidden != null) {
         add(
             SheetAction(

@@ -1,5 +1,52 @@
 package dev.piko.ui
 
+import dev.piko.ui.workbench.rememberActivities
+import androidx.compose.material.icons.outlined.Keyboard
+import dev.piko.ui.workbench.ShortcutsDialog
+import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.foundation.layout.fillMaxWidth
+import dev.piko.ui.workbench.ActivityPanel
+import dev.piko.ui.workbench.StatusBar
+import dev.piko.ui.workbench.SidebarAccountRow
+import dev.piko.ui.workbench.SettingsPanel
+import dev.piko.ui.screens.drive.SectionLabel
+import dev.piko.shared.sync.PikoSettingsSync
+import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.data.PikoFileSortOrder
+import dev.piko.ui.theme.ThemeMode
+import dev.piko.ui.components.LocalPaletteRegistry
+import dev.piko.ui.components.PaletteRegistry
+import dev.piko.ui.components.PaletteItem
+import dev.piko.ui.components.CommandPalette
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.Palette
+import androidx.compose.material.icons.outlined.CloudSync
+import androidx.compose.material.icons.outlined.SwipeVertical
+import androidx.compose.material.icons.automirrored.outlined.Undo
+import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.StarOutline
+import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material.icons.outlined.History
+import dev.piko.ui.components.LocalFileDrag
+import dev.piko.ui.components.FileDragState
+import dev.piko.ui.components.FileDragOverlay
+import androidx.compose.runtime.CompositionLocalProvider
+import dev.piko.ui.screens.drive.highlights
+import dev.piko.ui.screens.drive.SidebarWidth
+import dev.piko.ui.screens.drive.SidebarItem
+import dev.piko.ui.screens.drive.QuickAccessSection
+import dev.piko.shared.state.QuickAccessState
+import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteType
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -11,14 +58,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.SyncAlt
@@ -26,12 +67,13 @@ import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.SyncAlt
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.VerticalDivider
+import androidx.compose.material3.adaptive.ExperimentalMaterial3AdaptiveApi
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
+import androidx.compose.material3.adaptive.layout.PaneScaffoldDirective
+import androidx.compose.material3.adaptive.navigation.BackNavigationBehavior
+import androidx.compose.material3.adaptive.navigation3.ListDetailSceneStrategy
+import androidx.compose.material3.adaptive.navigation3.rememberListDetailSceneStrategy
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteItem
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffoldDefaults
@@ -44,7 +86,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.focus.FocusRequester
@@ -62,7 +103,9 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation3.runtime.NavKey
+import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberNavBackStack
+import androidx.navigation3.ui.NavDisplay
 import androidx.savedstate.serialization.SavedStateConfiguration
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.download.DownloadStatus
@@ -70,17 +113,18 @@ import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.components.SidePanelLayout
-import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.sidePanelFits
+import dev.piko.ui.components.trackInputModality
 import dev.piko.ui.navigation.MainTab
 import dev.piko.ui.navigation.Screen
 import dev.piko.ui.platform.LocalPikoPlatform
-import dev.piko.ui.screens.drive.DriveScreen
 import dev.piko.ui.screens.files.FilesScreen
 import dev.piko.ui.screens.history.PlayHistoryScreen
 import dev.piko.ui.screens.settings.ProfileScreen
 import dev.piko.ui.screens.settings.SettingsScreen
 import dev.piko.ui.screens.clips.ClipFeedScreen
+import dev.piko.ui.screens.clips.FeedResumeBar
+import androidx.compose.ui.Alignment
 import dev.piko.ui.screens.share.MySharesScreen
 import dev.piko.ui.screens.starred.StarredScreen
 import dev.piko.ui.screens.trash.TrashScreen
@@ -108,7 +152,7 @@ class VideoPlayerRequest(
  * 播放器怎么呈现由平台决定。Android 在应用内压一层全屏页，播放器代码暂时留在 app 模块；
  * 桌面端开独立窗口，可以一边播一边继续浏览网盘。
  *
- * 信息流两端都在网盘页里（宽窗口是右侧侧栏，窄窗口盖住网盘页），桌面端另可从侧栏弹出到独立窗口。
+ * 信息流两端都在网盘页里（宽窗口是右侧侧栏，窄窗口盖住网盘页），桌面端另可弹出到独立窗口。
  */
 sealed interface VideoPlayerHost {
     class InApp(
@@ -120,25 +164,31 @@ sealed interface VideoPlayerHost {
         /** 把信息流弹出到独立窗口，已开着时调到前台。 */
         val openClipFeed: (ClipFeedLinks) -> Unit,
         /**
-         * 信息流窗口开着没有。读的是 Compose 状态，在组合里调用即可随之重组：窗口开着时应用内的信息流
-         * 只留占位，关窗即回到侧栏接着播。
+         * 信息流窗口开着没有。读的是 Compose 状态，在组合里调用即可随之重组：窗口开着时应用内的侧栏收起，
+         * 收回（[ClipFeedLinks.dock]）时再出现。
          */
         val isClipFeedOpen: () -> Boolean,
         val closeClipFeed: () -> Unit,
     ) : VideoPlayerHost
 }
 
-/** 独立窗口里的信息流要借主界面做的两件事：看完整与在网盘中显示。 */
+/**
+ * 独立窗口里的信息流要借主界面做的事：看完整、在网盘中显示，收回主窗口（关掉窗口、回到侧栏或全屏形态），
+ * 以及关掉信息流（关窗即是关掉它，不是收回）。
+ */
 class ClipFeedLinks(
     val playFull: (file: FileStat, startMillis: Long) -> Unit,
     val locate: (FileStat) -> Unit,
+    val dock: () -> Unit,
+    val close: () -> Unit,
 )
 
 // 非 Android 端没有反射可用，返回栈里的每种 NavKey 都要登记序列化器才能存取
 private val NavKeyConfiguration = SavedStateConfiguration {
     serializersModule = SerializersModule {
         polymorphic(NavKey::class) {
-            subclass(Screen.SubDrive::class)
+            subclass(Screen.Home::class)
+            subclass(Screen.Profile::class)
             subclass(Screen.Trash::class)
             subclass(Screen.Starred::class)
             subclass(Screen.PlayHistory::class)
@@ -149,13 +199,18 @@ private val NavKeyConfiguration = SavedStateConfiguration {
     }
 }
 
+/** 「我的」与它的详情页拼成的两栏，两者的 scene key 相同才会并排。 */
+private const val ProfileScene = "profile"
+
 /**
- * 主界面：导航套件加压栈页面。
+ * 主界面：Navigation 3 的返回栈加导航套件。
  *
- * 导航随窗口宽度变化：compact 是底部导航栏，medium 与 expanded 换成侧边导航栏。
- * 回收站与设置是「我的」的两个详情页：compact 上是盖住整个窗口的压栈页；更宽时留在导航栏右侧的
- * 内容区里，expanded 窗口下与「我的」并排成列表加详情两栏。
+ * 栈底是 [Screen.Home]：导航栏与三个根页面，导航随窗口宽度变化，compact 是底部导航栏，
+ * medium 与 expanded 换成侧边导航栏。其余页面压在它上面、盖住整个窗口：「我的」的详情页
+ * （星标、播放历史、我的分享、回收站、设置）与 Android 的应用内播放器。expanded 窗口里详情页
+ * 与「我的」并排成列表加详情两栏（material3 adaptive 的 ListDetailSceneStrategy）。
  */
+@OptIn(ExperimentalMaterial3AdaptiveApi::class)
 @Composable
 fun PikoMainScaffold(
     onLogout: () -> Unit,
@@ -166,34 +221,65 @@ fun PikoMainScaffold(
     val localFiles = LocalPikoPlatform.current.localFiles
     val shortcutModifier = LocalPikoPlatform.current.shortcutModifier
     var currentTab by rememberSaveable { mutableStateOf(MainTab.FILES) }
-    val backStack = rememberNavBackStack(NavKeyConfiguration)
+    val backStack = rememberNavBackStack(NavKeyConfiguration, Screen.Home)
     val widthClass = currentWidthClass()
     val coroutineScope = rememberCoroutineScope()
 
     val topScreen = backStack.lastOrNull() as? Screen
-    // 「我的」的详情页（星标、播放历史、我的分享、回收站、设置）在宽窗口下不盖住导航栏，而是进内容区；
-    // 只有 compact 与播放器仍是整窗覆盖层
-    val profilePane = topScreen?.takeIf { it in ProfilePanes }
-    val profilePaneInline = profilePane != null && widthClass != WidthClass.Compact
-    val activeOverlayScreen = topScreen?.takeUnless { profilePaneInline }
+    val onHome = backStack.size <= 1
 
-    fun closeTop() {
-        backStack.removeLastOrNull()
+    // 大窗口换成一整条侧边栏：上面是三个去处，下面是网盘的快捷访问，照 Finder 的边栏与资源管理器的导航窗格。
+    // 不在导航栏旁边另起一栏：两栏并排都是竖着的导航，选中态各亮一处，看不出谁管谁。
+    // 侧边栏与状态栏在返回栈外面，打开「我的」里的星标、回收站这些页时不被盖住；应用内的播放器这类整窗的页照旧盖住
+    val largeWindow = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.width.toDp() } >= SidebarMinWindowWidth
+    val sidebarMode = largeWindow && (onHome || topScreen == Screen.Profile || topScreen in ProfilePanes)
+    // 「我的」与它的详情页并排两栏，只在 expanded 而又没有整条侧边栏时：侧边栏在时星标、回收站、设置这些
+    // 直接列在侧边栏上，点了就占满内容区，再垫一栏「我的」是把侧边栏抄一遍
+    val twoPane = widthClass == WidthClass.Expanded && !largeWindow
+
+    fun resetToHome() {
+        while (backStack.size > 1) backStack.removeLastOrNull()
     }
 
-    // 两个详情页互相替换，不叠在一起：从回收站点到设置，返回应当回到「我的」而不是回收站
+    // 详情页出栈时，垫在它下面的「我的」列表栏一起出：只剩列表栏的话，返回回到的是一页
+    // 与导航栏里「我的」一模一样的页面
+    fun popBack() {
+        val popped = backStack.removeLastOrNull()
+        if (popped in ProfilePanes && backStack.lastOrNull() == Screen.Profile) backStack.removeLastOrNull()
+        if (backStack.isEmpty()) backStack.add(Screen.Home)
+    }
+
+    fun closeProfile() {
+        while (backStack.size > 1 && (backStack.lastOrNull() in ProfilePanes || backStack.lastOrNull() == Screen.Profile)) {
+            backStack.removeLastOrNull()
+        }
+    }
+
+    // 两个详情页互相替换，不叠在一起：从回收站点到设置，返回应当回到「我的」而不是回收站。
+    // 两栏时先垫一个「我的」作列表栏
+    // 读栈的当下，不读组合时的 topScreen：openPage 先 resetToHome 再调这里，topScreen 还是清栈前的那一页，
+    // 照它弹栈弹掉的是栈底的 Home，此后「文件」再也回不去（2026-09-28）
     fun openProfilePane(screen: Screen) {
-        if (topScreen == screen) return
-        if (profilePane != null) closeTop()
+        val top = backStack.lastOrNull()
+        if (top == screen) return
+        if (top in ProfilePanes && backStack.size > 1) backStack.removeLastOrNull()
+        if (twoPane && backStack.lastOrNull() != Screen.Profile) backStack.add(Screen.Profile)
         backStack.add(screen)
     }
 
-    // 监听外部传入的磁力链接，自动切到文件页并关闭覆盖层
+    // 窄窗口里打开的详情页下面没有列表栏，窗口拉宽后补上，否则两栏的左边是空的
+    LaunchedEffect(twoPane, topScreen) {
+        if (twoPane && topScreen in ProfilePanes && backStack.getOrNull(backStack.lastIndex - 1) != Screen.Profile) {
+            backStack.add(backStack.lastIndex, Screen.Profile)
+        }
+    }
+
+    // 监听外部传入的磁力链接，自动切到文件页并关闭压栈页
     val pendingMagnet by services.instantMagnetRepository.pendingMagnetFlow.collectAsStateWithLifecycle()
     LaunchedEffect(pendingMagnet) {
         if (pendingMagnet != null) {
             currentTab = MainTab.FILES
-            backStack.clear()
+            resetToHome()
         }
     }
 
@@ -201,7 +287,7 @@ fun PikoMainScaffold(
     LaunchedEffect(openDriveRequested) {
         if (openDriveRequested) {
             currentTab = MainTab.FILES
-            backStack.clear()
+            resetToHome()
             services.driveRepository.consumeOpenDriveRequest()
         }
     }
@@ -210,20 +296,13 @@ fun PikoMainScaffold(
     // 秒传不来这里：文件当场就在网盘里，网盘页自己定位过去
     fun openTransfers() {
         currentTab = MainTab.TRANSFERS
-        backStack.clear()
+        resetToHome()
     }
 
     // 订阅调度器而不是在各上传入口各跳一次：应用外进来的上传在主界面之外确认，
     // 而且要等任务真的排进队列，所选文件读不出来时只该有一条失败提示
     LaunchedEffect(services.uploadManager) {
         services.uploadManager.enqueued.collect { openTransfers() }
-    }
-
-    BackHandler(enabled = profilePaneInline) { closeTop() }
-
-    // 若当前不在文件主页且未打开覆盖页面，按下返回键优先回到文件页
-    BackHandler(enabled = currentTab != MainTab.FILES && topScreen == null) {
-        currentTab = MainTab.FILES
     }
 
     // 已下完的本地副本优先：省流量，也不受网络波动影响
@@ -239,16 +318,15 @@ fun PikoMainScaffold(
     }
 
     // 星标与播放历史里的条目：跳到网盘里它所在的位置并高亮它。文件夹则直接进入
-    fun locateInDrive(file: FileStat, beforeNavigate: (target: PikoPathBreadcrumb?) -> Unit = {}) {
+    fun locateInDrive(file: FileStat) {
         val driveRepo = services.driveRepository
         coroutineScope.launch {
             driveRepo.locateFolder(file.id).onSuccess { parents ->
                 val stack = if (file.isFolder) parents + PikoPathBreadcrumb(file.id, file.name) else parents
-                beforeNavigate(stack.lastOrNull())
                 // 先设好栈再切页：网盘页重新组合时直接加载栈顶目录
                 driveRepo.updateFolderStack(stack)
                 if (!file.isFolder) driveRepo.requestHighlight(setOf(file.id))
-                backStack.clear()
+                resetToHome()
                 currentTab = MainTab.FILES
             }
         }
@@ -266,21 +344,14 @@ fun PikoMainScaffold(
         }
     }
 
-    // 覆盖层盖住主内容时，主内容这棵树仍留在组合里，也仍会被重新测量：播放器把
-    // Activity 转成横屏，底下的列表就按横屏尺寸重排，LazyList 的滚动锚点跟着挪，
-    // 退出播放器回来看到的已经不是刚才那一条。这里在覆盖层期间把尺寸钉在进去之前
-    // 那一次——反正此刻它一个像素也不显示。
+    // Home 被压栈页盖住时整个离开组合，回来时重建。网盘页经得起：目录内容与滚动位置都记在仓库里，
+    // 重建后首帧即是原样。内容区的尺寸记在这里而不是 Home 里，侧栏放不放得下在重建前后一致
     var contentSize by remember { mutableStateOf(IntSize.Zero) }
     val density = LocalDensity.current
-    val frozenSizeModifier = if (activeOverlayScreen != null && contentSize != IntSize.Zero) {
-        with(density) { Modifier.requiredSize(contentSize.width.toDp(), contentSize.height.toDp()) }
-    } else {
-        Modifier.onSizeChanged { contentSize = it }
-    }
 
-    // 信息流：网盘页视图切换的第四项。开关单独一个状态，不动存下的视图，关掉即回到原来的列表。
+    // 信息流：网盘页顶栏上的开关，单独一个状态，不动存下的视图，关掉即回到原来的列表。
     // 宽窗口放得下主区与侧栏时开在右侧侧栏，放不下时盖住整个网盘页；窗口缩放时两种形态随之互换。
-    // 放不放得下按内容区宽度判断，它在覆盖层期间钉住不动：Android 播放器转横屏时侧栏不会因此收起又弹出
+    // 桌面端还能弹出到独立窗口，那时应用内两种形态都收起，开关仍是开着的
     val clipFeedSession = services.clipFeedSession
     val preferences = services.preferences
     val initialPanelPrefs = remember { runBlocking { preferences.clipPanelFlow.first() } }
@@ -294,66 +365,101 @@ fun PikoMainScaffold(
         if (feedShownState == null && contentWidth != null) feedShownState = initialPanelPrefs.open && panelFits
     }
     val feedShown = feedShownState == true
+    val detachedHost = videoPlayer as? VideoPlayerHost.Detached
+    // 同一时刻只能有一个 ClipFeedScreen：每个都自带播放器与预取的流。窗口开着时应用内的形态都收起
+    val feedPoppedOut = detachedHost?.isClipFeedOpen?.invoke() == true
+    // 从信息流跳去网盘看一个文件时记下的出发点。不为 null 时信息流挂起：队列与看到哪一段都留着，应用内不画它，
+    // 网盘里留一个「继续刷」；这期间的浏览是临时的，继续刷就整段丢掉、回到这里，见 resumeFeed
+    var feedDetour by remember { mutableStateOf<PikoDriveRepository.DriveLocation?>(null) }
+    val feedSuspended = feedShown && feedDetour != null
+    // 头一次 open 完成前会话里是空的，此时组合 ClipFeedScreen 会闪一下「没有可播放的视频」
+    var feedOpened by remember { mutableStateOf(false) }
+    // 关掉信息流连同它的窗口一起关：开关是它唯一的总开关，不管它此刻在哪一处。
+    // 关掉才清空队列；挂起着关掉的，这期间的临时浏览就此留下，成为寻常的浏览
     fun setFeedShown(shown: Boolean) {
         feedShownState = shown
+        if (!shown) {
+            if (feedPoppedOut) detachedHost?.closeClipFeed?.invoke()
+            feedDetour = null
+            feedOpened = false
+            clipFeedSession.close()
+        }
         coroutineScope.launch { preferences.setClipPanelOpen(shown) }
     }
-    val detachedHost = videoPlayer as? VideoPlayerHost.Detached
-    // 同一时刻只能有一个 ClipFeedScreen：每个都自带播放器与预取的流。窗口开着时应用内只留占位
-    val feedPoppedOut = detachedHost?.isClipFeedOpen?.invoke() == true
-    val feedOnFilesTab = feedShown && currentTab == MainTab.FILES
+    val feedOnFilesTab = feedShown && !feedSuspended && !feedPoppedOut && currentTab == MainTab.FILES
     val feedInPanel = feedOnFilesTab && panelFits
     val feedFullScreen = feedOnFilesTab && !panelFits
 
-    // 跟着网盘页当前的文件夹走。弹出到窗口后不跟：窗口本就是为了一边刷一边浏览网盘，
-    // 每进一个文件夹就换一批片段反而打断它；收回时再对上眼前的文件夹
+    // 信息流刷的是打开时网盘页所在的文件夹，连同子文件夹
     val folderStack by services.driveRepository.folderStackFlow.collectAsStateWithLifecycle()
-    val feedFolder = folderStack.lastOrNull()
-    // 头一次 open 完成前会话里是空的，此时组合 ClipFeedScreen 会闪一下「没有可播放的视频」
-    var feedOpened by remember { mutableStateOf(false) }
-    // 从信息流里「在网盘中显示」会把网盘带进那个文件的目录。照常跟随的话，信息流随即换成这个子目录、
-    // 整个重建，正看着的那一段就没了，用户只是想看看文件在哪。所以定位去的那个目录不跟，
-    // 用户自己再进别的目录时才照常跟随
-    var feedHeldAt by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(feedShown && !feedPoppedOut, feedFolder?.id) {
-        if (!feedShown || feedPoppedOut || feedFolder == null) return@LaunchedEffect
-        if (feedOpened && feedFolder.id == feedHeldAt) return@LaunchedEffect
-        feedHeldAt = null
-        clipFeedSession.open(feedFolder)
+    val quickAccess = remember { QuickAccessState(services.driveRepository, services.clientManager, coroutineScope) }
+    val pinnedFolders by quickAccess.pinnedFolders.collectAsStateWithLifecycle(emptyList())
+    // 快捷键一览，F1 或主修饰键+/
+    var shortcutsOpen by remember { mutableStateOf(false) }
+    // 桌面宽窗口的设置面板，见 SettingsPanel
+    var settingsPanelOpen by remember { mutableStateOf(false) }
+    // 大窗口底部的活动面板，见 StatusBar
+    var activityOpen by rememberSaveable { mutableStateOf(false) }
+    // 只在打开的那一刻取文件夹：开着时进子文件夹不换掉正在刷的这一批
+    LaunchedEffect(feedShown) {
+        if (!feedShown) return@LaunchedEffect
+        clipFeedSession.open(folderStack.lastOrNull() ?: PikoDriveRepository.ROOT_BREADCRUMB)
         feedOpened = true
+    }
+    // 离开这个文件夹就收起，不论开在侧栏、全屏还是独立窗口：信息流是这个文件夹的一种看法，
+    // 人已经去了别处，它还在放原来那一处就对不上了。进它的子文件夹不算离开，路径栈里仍有它。
+    // 挂起期间不算：那是从信息流出发的临时浏览，回不回来由「继续刷」与关闭决定
+    LaunchedEffect(folderStack) {
+        val feedRoot = clipFeedSession.root ?: return@LaunchedEffect
+        if (feedShown && feedOpened && feedDetour == null && folderStack.none { it.id == feedRoot.id }) setFeedShown(false)
     }
 
     fun playFromFeed(file: FileStat, startMillis: Long) = playVideo(file, listOf(file), startMillis)
 
-    // 全屏形态盖着网盘页，要看到定位的结果得先收起；侧栏形态下列表就在旁边
+    /**
+     * 刷到一段想细看，跳去网盘里它所在的地方：信息流挂起，左边成了一段临时浏览，爱怎么走怎么走。
+     * 出发点只记头一回的：挂起期间从独立窗口再定位一次，继续刷回的仍是最初刷的地方。
+     * 独立窗口不挂起，它本来就在旁边，不挡网盘。
+     */
     fun locateFromFeed(file: FileStat) {
-        if (feedFullScreen) {
-            setFeedShown(false)
-            locateInDrive(file)
-        } else {
-            locateInDrive(file) { target -> feedHeldAt = target?.id.orEmpty() }
-        }
+        if (feedDetour == null) feedDetour = services.driveRepository.currentLocation()
+        locateInDrive(file)
     }
 
     fun popOutFeed() {
-        detachedHost?.openClipFeed(ClipFeedLinks(playFull = ::playFromFeed, locate = ::locateInDrive))
+        detachedHost?.openClipFeed(
+            ClipFeedLinks(
+                playFull = ::playFromFeed,
+                locate = ::locateFromFeed,
+                dock = { detachedHost.closeClipFeed() },
+                close = { setFeedShown(false) },
+            ),
+        )
+    }
+
+    /** 继续刷：丢掉临时浏览，连同后退与前进回到出发的地方，信息流从挂起前的那一段接着放。 */
+    fun resumeFeed() {
+        val detour = feedDetour ?: return
+        services.driveRepository.returnTo(detour)
+        feedDetour = null
+        resetToHome()
+        currentTab = MainTab.FILES
+        if (feedPoppedOut) popOutFeed()
     }
 
     @Composable
     fun FeedContent(compact: Boolean, visible: Boolean) {
         when {
-            feedPoppedOut -> ClipFeedPoppedOut(
-                onReclaim = { detachedHost?.closeClipFeed?.invoke() },
-                onClose = if (compact) null else ({ setFeedShown(false) }),
-            )
-            // 形态互换的动画期间旧的一处还在组合，只让眼下该播的那一处播；压栈页盖住时也停，
-            // 否则 Android 上看完整的播放器底下还放着一段
-            !visible || !feedOpened || activeOverlayScreen != null -> Box(Modifier.fillMaxSize().background(Color.Black))
+            // 形态互换与收起的动画期间旧的一处还在组合，只让眼下该播的那一处播；弹出到窗口的那一刻也是，
+            // 两个播放器不同时在放。压栈页进来的转场期间 Home 仍在组合里，也停，否则 Android 上看完整的播放器
+            // 底下还放着一段
+            !visible || !feedOpened || !onHome -> Box(Modifier.fillMaxSize().background(Color.Black))
             else -> ClipFeedScreen(
                 onBackClick = { setFeedShown(false) },
                 onPlayFull = ::playFromFeed,
                 onLocate = ::locateFromFeed,
                 compact = compact,
+                onPopOut = detachedHost?.let { ::popOutFeed },
             )
         }
     }
@@ -361,7 +467,7 @@ fun PikoMainScaffold(
     val feedFrame: @Composable (@Composable () -> Unit) -> Unit = { drive ->
         SidePanelLayout(
             // 不看当前页：切走时网盘页随淡出一起消失，侧栏不必先收起
-            open = feedShown && panelFits,
+            open = feedShown && !feedSuspended && panelFits && !feedPoppedOut,
             savedWidthDp = panelPrefs.widthDp,
             title = "信息流",
             closeDescription = "关闭信息流",
@@ -370,12 +476,20 @@ fun PikoMainScaffold(
             defaultWidth = ClipPanelDefaultWidth,
             minWidth = ClipPanelMinWidth,
             ready = feedShownState != null,
-            headerActions = {
-                if (detachedHost != null && !feedPoppedOut) {
-                    TooltipIconButton(Icons.AutoMirrored.Outlined.OpenInNew, "在独立窗口播放", ::popOutFeed)
+            // 整张卡是黑底的竖屏画面，范围、静音、弹出与关闭都在它自己的顶栏上
+            showHeader = false,
+            main = {
+                Box(Modifier.fillMaxSize()) {
+                    drive()
+                    FeedResumeBar(
+                        visible = feedSuspended,
+                        folderName = clipFeedSession.root?.name,
+                        onResume = ::resumeFeed,
+                        onClose = { setFeedShown(false) },
+                        modifier = Modifier.align(Alignment.BottomCenter),
+                    )
                 }
             },
-            main = drive,
             panel = { FeedContent(compact = true, visible = feedInPanel) },
         )
     }
@@ -393,39 +507,17 @@ fun PikoMainScaffold(
             }
         }
         currentTab = tab
-        // 宽窗口里详情页挂在「我的」下面，换页时一并收起
-        if (profilePaneInline) closeTop()
     }
 
     // 快捷键的兜底落点：网盘页有自己的焦点目标，其余页面没有可聚焦的内容时，
     // 按键要有个地方落，Ctrl+数字切换页面才能生效
     val shortcutFocus = remember { FocusRequester() }
-    LaunchedEffect(currentTab) {
-        if (currentTab != MainTab.FILES) runCatching { shortcutFocus.requestFocus() }
+    LaunchedEffect(currentTab, onHome) {
+        if (currentTab != MainTab.FILES || !onHome) runCatching { shortcutFocus.requestFocus() }
     }
 
-
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .focusRequester(shortcutFocus)
-            .focusable()
-            .onKeyEvent { event ->
-                if (event.type != KeyEventType.KeyDown || !shortcutModifier.isPressed(event)) return@onKeyEvent false
-                val tab = when (event.key) {
-                    Key.One -> MainTab.FILES
-                    Key.Two -> MainTab.TRANSFERS
-                    Key.Three -> MainTab.SETTINGS
-                    else -> return@onKeyEvent false
-                }
-                currentTab = tab
-                backStack.clear()
-                true
-            },
-    ) {
-        // 全屏覆盖层是这个 Box 的兄弟节点且画在后面，把导航栏一并盖住，所以主内容
-        // 始终留在 NavigationSuiteScaffold 里调用，不搬到外面去。搬动意味着换组合
-        // 位置，整棵子树会被销毁重建，列表滚动位置与已加载的文件全部丢失。
+    @Composable
+    fun HomeContent() {
         val mainContent: @Composable () -> Unit = {
             // M3 的 top level 模式：旧页淡出走完再淡入新页，见 PikoMotion.TopLevelEnterFade。
             // 原来是 when 直接换子树，跳切被规范单列为要避免的做法：读者得不到任何线索说明换了页
@@ -434,7 +526,7 @@ fun PikoMainScaffold(
                 transitionSpec = { fadeIn(PikoMotion.TopLevelEnterFade) togetherWith fadeOut(PikoMotion.TopLevelExitFade) },
                 modifier = Modifier
                     .fillMaxSize()
-                    .then(frozenSizeModifier),
+                    .onSizeChanged { contentSize = it },
                 label = "mainTab",
             ) { tab ->
                 when (tab) {
@@ -443,8 +535,9 @@ fun PikoMainScaffold(
                             onNavigateToVideoPlayer = { file, playlist -> playVideo(file, playlist) },
                             scrollToTopRequests = filesScrollToTop,
                             onOpenTransfers = ::openTransfers,
-                            feedShown = feedShown,
-                            onFeedShownChange = ::setFeedShown,
+                            // 挂起时开关显示为关着，按下即继续刷
+                            feedShown = feedShown && !feedSuspended,
+                            onFeedShownChange = { shown -> if (shown && feedSuspended) resumeFeed() else setFeedShown(shown) },
                             feedFrame = feedFrame,
                         )
                     }
@@ -469,50 +562,56 @@ fun PikoMainScaffold(
                         )
                     }
                     MainTab.SETTINGS -> {
-                        ProfileWithPanes(
+                        ProfileScreen(
                             onLogout = onLogout,
                             onOpenPane = ::openProfilePane,
-                            onClosePane = ::closeTop,
-                            onOpenFile = ::openFromProfile,
-                            onPlayFile = { playVideo(it, listOf(it)) },
-                            onLocateFile = ::locateInDrive,
-                            openPane = profilePane.takeIf { profilePaneInline },
-                            twoPane = widthClass == WidthClass.Expanded,
+                            selectedPane = null,
                         )
                     }
                 }
             }
         }
 
-        // 导航栏的款式交给库按窗口挑：compact 是 64dp 的 ShortNavigationBar，更宽是收起态的
-        // WideNavigationRail。不用旧重载的 calculateFromAdaptiveInfo，它给的是 80dp 的 NavigationBar
-        // 与 NavigationRail，M3 Expressive 已把这两款标为不再推荐
-        val navigationSuiteType = NavigationSuiteScaffoldDefaults.navigationSuiteType(currentWindowAdaptiveInfo())
-        NavigationSuiteScaffold(
-            navigationItems = {
-                MainTab.entries.forEach { tab ->
-                    val selected = currentTab == tab
-                    NavigationSuiteItem(
-                        selected = selected,
-                        onClick = { onTabClick(tab) },
-                        navigationSuiteType = navigationSuiteType,
-                        // 图标不写 contentDescription：每项都有文字标签，图标再给一次会被读屏念两遍
-                        icon = { Icon(imageVector = tab.icon(selected), contentDescription = null) },
-                        // M3 要求选中项的标签加粗，而导航项的样式只有一档字重，不分选中态
-                        label = { Text(tab.title, fontWeight = if (selected) FontWeight.Bold else null) },
-                    )
-                }
-            },
-            navigationSuiteType = navigationSuiteType,
-            // 侧栏的三格居中：平板横握时手在两侧中部，贴顶的话要伸到最远处
-            navigationItemVerticalArrangement = Arrangement.Center,
-            content = mainContent,
-        )
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            // 侧边栏模式下导航栏不画，侧边栏在返回栈外面，见 sidebarMode
+            val sidebar = sidebarMode
+            // 若当前不在文件主页，按下返回键优先回到文件页
+            BackHandler(enabled = currentTab != MainTab.FILES && !feedFullScreen) {
+                currentTab = MainTab.FILES
+            }
 
-        // 全屏形态的信息流：盖住网盘页连同导航栏。不进返回栈，形态由窗口宽度随时推出来，窗口拉宽即换成侧栏。
-        // 压栈页（看完整的播放器）出现时整块移出组合而不是播退场动画，两个播放器不同时在放；
-        // 退出播放器后重新进入组合，首帧即可见，也不播进场动画，接着看刚才那一段
-        if (activeOverlayScreen == null) {
+            // 导航栏的款式交给库按窗口挑：compact 是 64dp 的 ShortNavigationBar，更宽是收起态的
+            // WideNavigationRail。不用旧重载的 calculateFromAdaptiveInfo，它给的是 80dp 的 NavigationBar
+            // 与 NavigationRail，M3 Expressive 已把这两款标为不再推荐
+            val navigationSuiteType = if (sidebar) {
+                NavigationSuiteType.None
+            } else {
+                NavigationSuiteScaffoldDefaults.navigationSuiteType(currentWindowAdaptiveInfo())
+            }
+            NavigationSuiteScaffold(
+                navigationItems = {
+                    MainTab.entries.forEach { tab ->
+                        val selected = currentTab == tab
+                        NavigationSuiteItem(
+                            selected = selected,
+                            onClick = { onTabClick(tab) },
+                            navigationSuiteType = navigationSuiteType,
+                            // 图标不写 contentDescription：每项都有文字标签，图标再给一次会被读屏念两遍
+                            icon = { Icon(imageVector = tab.icon(selected), contentDescription = null) },
+                            // M3 要求选中项的标签加粗，而导航项的样式只有一档字重，不分选中态
+                            label = { Text(tab.title, fontWeight = if (selected) FontWeight.Bold else null) },
+                        )
+                    }
+                },
+                navigationSuiteType = navigationSuiteType,
+                // 侧栏的三格居中：平板横握时手在两侧中部，贴顶的话要伸到最远处
+                navigationItemVerticalArrangement = Arrangement.Center,
+                content = mainContent,
+            )
+
+            // 全屏形态的信息流：盖住网盘页连同导航栏。不进返回栈，形态由窗口宽度随时推出来，窗口拉宽即换成侧栏。
+            // 压栈页（看完整的播放器）盖住 Home 时它随 Home 一起离开组合，两个播放器不同时在放；
+            // 退出播放器后重新进入组合，首帧即可见，也不播进场动画，接着看刚才那一段
             BackHandler(enabled = feedFullScreen) { setFeedShown(false) }
             AnimatedVisibility(
                 visible = feedFullScreen,
@@ -528,48 +627,270 @@ fun PikoMainScaffold(
                 FeedContent(compact = false, visible = feedFullScreen)
             }
         }
+    }
 
-        // 压栈页面 (子目录、compact 下的回收站、应用内播放器)
-        activeOverlayScreen?.let { screen ->
-            BackHandler { closeTop() }
+    // 分几栏不用库默认的 calculatePaneScaffoldDirective：那一套按 WindowSizeClass 算，与全应用按
+    // currentWidthClass 取的断点各算各的。列表栏宽取 M3 布局规范 expanded 档固定栏的 360dp；
+    // 两栏各是一整页，自带顶栏与底色，中间不再留空隙也不画分隔线
+    val listDetailDirective = remember(twoPane) {
+        PaneScaffoldDirective(
+            maxHorizontalPartitions = if (twoPane) 2 else 1,
+            horizontalPartitionSpacerSize = 0.dp,
+            maxVerticalPartitions = 1,
+            verticalPartitionSpacerSize = 0.dp,
+            defaultPanePreferredWidth = ProfilePaneWidth,
+            excludedBounds = emptyList(),
+        )
+    }
+    // 返回一次出一条（详情连同垫着的列表栏，见 popBack）。默认的 PopUntilScaffoldValueChange 在两栏时
+    // 出栈不改变分栏形态，会把整组一次退光
+    val listDetailStrategy = rememberListDetailSceneStrategy<NavKey>(
+        backNavigationBehavior = BackNavigationBehavior.PopLatest,
+        directive = listDetailDirective,
+    )
+    // 两栏时详情页不给返回：返回按钮只属于单栏的详情页（M3 canonical layouts 的 list-detail），
+    // 退出两栏在列表栏的顶栏上
+    // 侧边栏在时也不给：出口就是侧边栏
+    val paneBack: (() -> Unit)? = if (twoPane || largeWindow) null else ::popBack
+    val selectedPane = topScreen?.takeIf { it in ProfilePanes }
 
-            AnimatedVisibility(
-                visible = true,
-                enter = slideInHorizontally(
-                    animationSpec = PikoMotion.ForwardEnterSlide,
-                    initialOffsetX = { it / PikoMotion.ForwardSlideFraction },
-                ) + fadeIn(animationSpec = PikoMotion.ForwardEnterFade),
-                exit = slideOutHorizontally(
-                    animationSpec = PikoMotion.ForwardExitSlide,
-                    targetOffsetX = { it / PikoMotion.ForwardSlideFraction },
-                ) + fadeOut(animationSpec = PikoMotion.ForwardExitFade),
-            ) {
-                when (screen) {
-                    is Screen.SubDrive -> {
-                        DriveScreen(
-                            currentFolderId = screen.folderId,
-                            currentFolderName = screen.folderName,
-                            onNavigateToFolder = { id, name ->
-                                backStack.add(Screen.SubDrive(id, name))
+    fun openFolderStack(stack: List<PikoPathBreadcrumb>) {
+        resetToHome()
+        currentTab = MainTab.FILES
+        services.driveRepository.updateFolderStack(stack)
+    }
+
+    fun openPage(screen: Screen) {
+        // 有整条侧边栏时设置是右侧浮起的面板，不换页，见 SettingsPanel
+        if (screen == Screen.Settings && largeWindow) {
+            settingsPanelOpen = true
+            return
+        }
+        currentTab = MainTab.SETTINGS
+        resetToHome()
+        openProfilePane(screen)
+    }
+
+    // 命令面板的内容。没输入时按这里的顺序列出前面几项：最近去过的文件夹在最前
+    fun paletteItems(
+        recent: List<List<PikoPathBreadcrumb>>,
+        pinned: List<PikoPathBreadcrumb>,
+        subfolders: List<FileStat>,
+        contributed: List<PaletteItem>,
+    ): List<PaletteItem> = buildList {
+        val here = folderStack.lastOrNull()?.id
+        fun path(stack: List<PikoPathBreadcrumb>) = stack.joinToString(" › ") { it.name }
+        recent.filter { it.last().id != here }.forEach { stack ->
+            add(PaletteItem(stack.last().name, Icons.Outlined.History, "最近", detail = path(stack)) { openFolderStack(stack) })
+        }
+        val label = shortcutModifier::label
+        add(PaletteItem("文件", Icons.Outlined.Folder, "前往", detail = label("1"), keywords = "files drive") { currentTab = MainTab.FILES; resetToHome() })
+        add(PaletteItem("传输", Icons.Outlined.SyncAlt, "前往", detail = label("2"), keywords = "transfers downloads uploads") { openTransfers() })
+        add(PaletteItem("我的", Icons.Outlined.Person, "前往", detail = label("3"), keywords = "profile me") { currentTab = MainTab.SETTINGS; resetToHome() })
+        pinned.forEach { folder ->
+            add(PaletteItem(folder.name, Icons.Outlined.PushPin, "快速访问") {
+                quickAccess.open(folder)
+                resetToHome()
+                currentTab = MainTab.FILES
+            })
+        }
+        folderStack.takeIf { it.isNotEmpty() }?.let { stack ->
+            subfolders.forEach { folder ->
+                val target = stack + PikoPathBreadcrumb(folder.id, folder.name)
+                add(PaletteItem(folder.name, Icons.Outlined.Folder, "当前文件夹", detail = path(target)) { openFolderStack(target) })
+            }
+        }
+        addAll(contributed)
+        add(PaletteItem("添加链接", Icons.Outlined.Bolt, "操作", keywords = "magnet link offline 磁力 离线") {
+            currentTab = MainTab.FILES
+            resetToHome()
+            services.instantSession.start()
+        })
+        add(PaletteItem("撤销", Icons.AutoMirrored.Outlined.Undo, "操作", detail = label("Z"), keywords = "undo") { services.driveRepository.changes.undoLast() })
+        if (feedSuspended) {
+            add(PaletteItem("继续刷信息流", Icons.Outlined.SwipeVertical, "操作", keywords = "feed clips resume") { resumeFeed() })
+        }
+        add(PaletteItem(if (feedShown) "关闭信息流" else "打开信息流", Icons.Outlined.SwipeVertical, "操作", keywords = "feed clips") {
+            currentTab = MainTab.FILES
+            resetToHome()
+            setFeedShown(!feedShown)
+        })
+        add(PaletteItem(if (activityOpen) "收起活动面板" else "打开活动面板", Icons.Outlined.SyncAlt, "操作", keywords = "activity transfers progress 进度") {
+            activityOpen = !activityOpen
+        })
+        add(PaletteItem("快捷键一览", Icons.Outlined.Keyboard, "操作", detail = "F1", keywords = "shortcuts keyboard help 帮助") { shortcutsOpen = true })
+        add(PaletteItem("立即同步设置", Icons.Outlined.CloudSync, "操作", keywords = "sync settings") { coroutineScope.launch { services.settingsSync.syncNow() } })
+        ThemeMode.entries.forEach { mode ->
+            add(PaletteItem("主题：${mode.label}", Icons.Outlined.Palette, "操作", keywords = "theme ${mode.name.lowercase()}") {
+                coroutineScope.launch { preferences.setThemeMode(mode.name) }
+            })
+        }
+        add(PaletteItem("星标", Icons.Outlined.StarOutline, "页面", keywords = "starred") { openPage(Screen.Starred) })
+        add(PaletteItem("播放历史", Icons.Outlined.History, "页面", keywords = "history") { openPage(Screen.PlayHistory) })
+        add(PaletteItem("我的分享", Icons.Outlined.Share, "页面", keywords = "shares") { openPage(Screen.MyShares) })
+        add(PaletteItem("回收站", Icons.Outlined.Delete, "页面", keywords = "trash bin") { openPage(Screen.Trash) })
+        add(PaletteItem("设置", Icons.Outlined.Settings, "页面", keywords = "settings preferences") { openPage(Screen.Settings) })
+    }
+
+    // 应用内拖放网盘条目：网盘页拖出，侧边栏、路径栏与文件夹接住，见 FileDragState
+    val fileDrag = remember { FileDragState() }
+    // 命令面板（主修饰键+K）：跳到文件夹或执行命令，各页经 ContributePaletteItems 往里放自己的命令
+    val palette = remember { PaletteRegistry() }
+    var paletteOpen by remember { mutableStateOf(false) }
+    CompositionLocalProvider(LocalFileDrag provides fileDrag, LocalPaletteRegistry provides palette) {
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .trackInputModality()
+                .focusRequester(shortcutFocus)
+                .focusable()
+                .onKeyEvent { event ->
+                    if (event.type == KeyEventType.KeyDown && (event.key == Key.F1 || (shortcutModifier.isPressed(event) && event.key == Key.Slash))) {
+                        shortcutsOpen = true
+                        return@onKeyEvent true
+                    }
+                    if (event.type != KeyEventType.KeyDown || !shortcutModifier.isPressed(event)) return@onKeyEvent false
+                    if (event.key == Key.K) {
+                        paletteOpen = true
+                        return@onKeyEvent true
+                    }
+                    // 桌面应用打开设置的惯例（VS Code、浏览器、mac 上的 ⌘,）
+                    if (event.key == Key.Comma) {
+                        openPage(Screen.Settings)
+                        return@onKeyEvent true
+                    }
+                    val tab = when (event.key) {
+                        Key.One -> MainTab.FILES
+                        Key.Two -> MainTab.TRANSFERS
+                        Key.Three -> MainTab.SETTINGS
+                        else -> return@onKeyEvent false
+                    }
+                    currentTab = tab
+                    resetToHome()
+                    true
+                },
+        ) {
+            Row(Modifier.fillMaxSize()) {
+                if (sidebarMode) {
+                    MainSidebar(
+                        currentTab = currentTab,
+                        onTabClick = { tab ->
+                            resetToHome()
+                            onTabClick(tab)
+                        },
+                        quickAccess = quickAccess,
+                        pinned = pinnedFolders,
+                        folderStack = folderStack,
+                        onQuickAccessOpened = {
+                            resetToHome()
+                            currentTab = MainTab.FILES
+                        },
+                        selectedPage = selectedPane,
+                        onOpenPage = ::openPage,
+                        settingsPanelOpen = settingsPanelOpen,
+                    )
+                }
+                // 内容下面是状态栏，点它左边的传输摘要在两者之间展开活动面板
+                Column(Modifier.weight(1f).fillMaxHeight()) {
+                    Box(Modifier.weight(1f).fillMaxWidth()) {
+                        NavDisplay(
+                            backStack = backStack,
+                            onBack = ::popBack,
+                            sceneStrategies = listOf(listDetailStrategy),
+                            // 压栈与返回：新页从右侧滑入五分之一屏并淡入，旧页反向让开。走满整屏是 lateral 的做法，
+                            // 规范明说别拿它做层级导航
+                            transitionSpec = {
+                                (
+                                    slideInHorizontally(PikoMotion.ForwardEnterSlide) { it / PikoMotion.ForwardSlideFraction } +
+                                        fadeIn(PikoMotion.ForwardEnterFade)
+                                    ) togetherWith (
+                                    slideOutHorizontally(PikoMotion.ForwardExitSlide) { -it / PikoMotion.ForwardSlideFraction } +
+                                        fadeOut(PikoMotion.ForwardExitFade)
+                                    )
                             },
-                            onNavigateToVideoPlayer = { file, playlist -> playVideo(file, playlist) },
-                            onOpenTransfers = ::openTransfers,
+                            popTransitionSpec = {
+                                (
+                                    slideInHorizontally(PikoMotion.ForwardEnterSlide) { -it / PikoMotion.ForwardSlideFraction } +
+                                        fadeIn(PikoMotion.ForwardEnterFade)
+                                    ) togetherWith (
+                                    slideOutHorizontally(PikoMotion.ForwardExitSlide) { it / PikoMotion.ForwardSlideFraction } +
+                                        fadeOut(PikoMotion.ForwardExitFade)
+                                    )
+                            },
+                            predictivePopTransitionSpec = { _ ->
+                                (
+                                    slideInHorizontally(PikoMotion.ForwardEnterSlide) { -it / PikoMotion.ForwardSlideFraction } +
+                                        fadeIn(PikoMotion.ForwardEnterFade)
+                                    ) togetherWith (
+                                    slideOutHorizontally(PikoMotion.ForwardExitSlide) { it / PikoMotion.ForwardSlideFraction } +
+                                        fadeOut(PikoMotion.ForwardExitFade)
+                                    )
+                            },
+                            entryProvider = entryProvider {
+                                entry<Screen.Home> { HomeContent() }
+                                entry<Screen.Profile>(metadata = ListDetailSceneStrategy.listPane(sceneKey = ProfileScene)) {
+                                    ProfileScreen(
+                                        onLogout = onLogout,
+                                        onOpenPane = ::openProfilePane,
+                                        selectedPane = selectedPane,
+                                        // 侧边栏在时它的「我的」就是出口，列表栏不再给返回
+                                        onBackClick = if (sidebarMode) null else ::closeProfile,
+                                    )
+                                }
+                                val detail = ListDetailSceneStrategy.detailPane(ProfileScene)
+                                entry<Screen.Starred>(metadata = detail) {
+                                    StarredScreen(onBackClick = paneBack, onOpen = ::openFromProfile, onLocate = { locateInDrive(it) })
+                                }
+                                entry<Screen.PlayHistory>(metadata = detail) {
+                                    PlayHistoryScreen(
+                                        onBackClick = paneBack,
+                                        onPlay = { playVideo(it, listOf(it)) },
+                                        onLocate = { locateInDrive(it) },
+                                    )
+                                }
+                                entry<Screen.MyShares>(metadata = detail) { MySharesScreen(onBackClick = paneBack) }
+                                entry<Screen.Trash>(metadata = detail) { TrashScreen(onBackClick = paneBack) }
+                                entry<Screen.Settings>(metadata = detail) { SettingsScreen(onBackClick = paneBack) }
+                                entry<Screen.VideoPlayer> { screen ->
+                                    (videoPlayer as? VideoPlayerHost.InApp)?.content?.invoke(screen, ::popBack)
+                                }
+                            },
                         )
                     }
-                    is Screen.Trash -> TrashScreen(onBackClick = ::closeTop)
-                    is Screen.Starred -> StarredScreen(onBackClick = ::closeTop, onOpen = ::openFromProfile, onLocate = ::locateInDrive)
-                    is Screen.PlayHistory -> PlayHistoryScreen(
-                        onBackClick = ::closeTop,
-                        onPlay = { playVideo(it, listOf(it)) },
-                        onLocate = ::locateInDrive,
-                    )
-                    is Screen.MyShares -> MySharesScreen(onBackClick = ::closeTop)
-                    is Screen.Settings -> SettingsScreen(onBackClick = ::closeTop)
-                    is Screen.VideoPlayer -> {
-                        (videoPlayer as? VideoPlayerHost.InApp)?.content?.invoke(screen, ::closeTop)
+                    if (sidebarMode) {
+                        val activities = rememberActivities()
+                        AnimatedVisibility(visible = activityOpen) {
+                            ActivityPanel(
+                                items = activities,
+                                onOpenTransfers = {
+                                    activityOpen = false
+                                    openTransfers()
+                                },
+                                onClose = { activityOpen = false },
+                            )
+                        }
+                        StatusBar(items = activities, activityOpen = activityOpen, onActivityToggle = { activityOpen = !activityOpen })
                     }
-                    else -> Unit
                 }
+            }
+            // 拖动网盘条目时指针旁的说明，盖在一切之上
+            FileDragOverlay(fileDrag)
+            if (shortcutsOpen) ShortcutsDialog(shortcutModifier, onDismiss = { shortcutsOpen = false })
+            // 窗口缩到没有侧边栏时不画：那时设置回到「我的」里，开着的面板随之收起
+            if (settingsPanelOpen && largeWindow) SettingsPanel(onDismiss = { settingsPanelOpen = false }, onLogout = onLogout)
+            if (paletteOpen) {
+                val recent by services.driveRepository.recentFoldersFlow.collectAsStateWithLifecycle()
+                CommandPalette(
+                    items = paletteItems(
+                        recent = recent,
+                        pinned = pinnedFolders,
+                        subfolders = folderStack.lastOrNull()
+                            ?.let { services.driveRepository.cachedFiles(it.id, PikoFileSortOrder.NAME_ASC) }
+                            .orEmpty().filter { it.isFolder && it.name != PikoSettingsSync.FOLDER_NAME },
+                        contributed = palette.items(),
+                    ),
+                    onDismiss = { paletteOpen = false },
+                )
             }
         }
     }
@@ -579,84 +900,79 @@ fun PikoMainScaffold(
 private val ClipPanelMinWidth = 360.dp
 private val ClipPanelDefaultWidth = 420.dp
 
-/**
- * 信息流已弹出到独立窗口时应用内留下的占位。[onReclaim] 关掉窗口，回到这里接着播；
- * [onClose] 为 null 时由外面的侧栏标题行负责关闭。
- */
-@Composable
-private fun ClipFeedPoppedOut(onReclaim: () -> Unit, onClose: (() -> Unit)?) {
-    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surfaceContainerLow) {
-        Column(
-            modifier = Modifier.fillMaxSize().padding(16.dp),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text(
-                text = "已在独立窗口播放",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
-                TextButton(onClick = onReclaim) { Text("收回") }
-                if (onClose != null) TextButton(onClick = onClose) { Text("关闭") }
-            }
-        }
-    }
-}
-
 /** 「我的」的详情页。它们互相替换，不叠在一起。 */
-private val ProfilePanes = setOf<Screen>(Screen.Starred, Screen.PlayHistory, Screen.MyShares, Screen.Trash, Screen.Settings)
+private val ProfilePanes = setOf<NavKey?>(Screen.Starred, Screen.PlayHistory, Screen.MyShares, Screen.Trash, Screen.Settings)
 
-/**
- * 「我的」与它的详情页（星标、播放历史、我的分享、回收站、设置）。medium 窗口里详情页替换掉「我的」；expanded 窗口里
- * 两者并排，右栏没有打开的详情页时显示设置，免得半边空着。并排时设置页不给返回按钮：它本就是右栏的默认内容。
- */
-@Composable
-private fun ProfileWithPanes(
-    onLogout: () -> Unit,
-    onOpenPane: (Screen) -> Unit,
-    onClosePane: () -> Unit,
-    onOpenFile: (FileStat) -> Unit,
-    onPlayFile: (FileStat) -> Unit,
-    onLocateFile: (FileStat) -> Unit,
-    openPane: Screen?,
-    twoPane: Boolean,
-) {
-    val profile: @Composable (Screen?, Modifier) -> Unit = { selected, modifier ->
-        ProfileScreen(
-            onLogout = onLogout,
-            onOpenPane = onOpenPane,
-            selectedPane = selected,
-            modifier = modifier,
-        )
-    }
-
-    @Composable
-    fun Pane(screen: Screen, onBackClick: (() -> Unit)?, modifier: Modifier) {
-        when (screen) {
-            Screen.Starred -> StarredScreen(onBackClick, onOpen = onOpenFile, onLocate = onLocateFile, modifier = modifier)
-            Screen.PlayHistory -> PlayHistoryScreen(onBackClick, onPlay = onPlayFile, onLocate = onLocateFile, modifier = modifier)
-            Screen.MyShares -> MySharesScreen(onBackClick, modifier = modifier)
-            Screen.Trash -> TrashScreen(onBackClick = onClosePane, modifier = modifier)
-            else -> SettingsScreen(onBackClick = onBackClick, modifier = modifier)
-        }
-    }
-
-    if (!twoPane) {
-        if (openPane != null) Pane(openPane, onClosePane, Modifier) else profile(null, Modifier)
-        return
-    }
-    val shown = openPane ?: Screen.Settings
-    Row(modifier = Modifier.fillMaxSize()) {
-        profile(shown, Modifier.weight(1f))
-        VerticalDivider()
-        // 右栏的默认内容（设置）没有可返回的地方，其余详情页返回即回到设置
-        Pane(shown, onBackClick = onClosePane.takeIf { openPane != null }, modifier = Modifier.weight(1f).fillMaxHeight())
-    }
-}
+/** 两栏时「我的」列表栏的宽度：M3 布局规范 expanded 档固定栏的默认宽度。 */
+private val ProfilePaneWidth = 360.dp
 
 private fun MainTab.icon(selected: Boolean) = when (this) {
     MainTab.FILES -> if (selected) Icons.Filled.Folder else Icons.Outlined.Folder
     MainTab.TRANSFERS -> if (selected) Icons.Filled.SyncAlt else Icons.Outlined.SyncAlt
     MainTab.SETTINGS -> if (selected) Icons.Filled.Person else Icons.Outlined.Person
 }
+
+/** 窗口至少这么宽才换成侧边栏，M3 的 large 档：扣掉它之后网盘页开着信息流侧栏仍排得下两列。 */
+private val SidebarMinWindowWidth = 1200.dp
+
+@Composable
+private fun MainSidebar(
+    currentTab: MainTab,
+    onTabClick: (MainTab) -> Unit,
+    quickAccess: QuickAccessState,
+    pinned: List<PikoPathBreadcrumb>,
+    folderStack: List<PikoPathBreadcrumb>,
+    onQuickAccessOpened: () -> Unit,
+    /** 眼前打开的星标、回收站这类页，对应的一项亮起；在网盘或传输页时为 null。 */
+    selectedPage: Screen?,
+    onOpenPage: (Screen) -> Unit,
+    settingsPanelOpen: Boolean,
+) {
+    // 上面随内容多少滚动，左下角的账号与设置钉在底部，照桌面应用的通行做法（VS Code、Discord）
+    Column(modifier = Modifier.width(SidebarWidth).fillMaxHeight()) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 16.dp),
+        ) {
+            // 「我的」不在这里：它在手机上装的账号、库与设置，桌面上分别散到下面的「库」与左下角
+            for (tab in listOf(MainTab.FILES, MainTab.TRANSFERS)) {
+                val selected = selectedPage == null && currentTab == tab
+                SidebarItem(
+                    icon = tab.icon(selected),
+                    label = tab.title,
+                    // 人在根目录、My Pack 或某个固定的文件夹里时亮的是快速访问那一项，「文件」只加粗，不同时亮两处
+                    selected = selected && !(tab == MainTab.FILES && quickAccess.highlights(pinned, folderStack)),
+                    bold = selected,
+                    onClick = { onTabClick(tab) },
+                )
+            }
+            QuickAccessSection(
+                state = quickAccess,
+                pinned = pinned,
+                currentStack = folderStack,
+                onFilesTab = selectedPage == null && currentTab == MainTab.FILES,
+                onOpened = onQuickAccessOpened,
+            )
+            SectionLabel("库")
+            for ((screen, icon, label) in LibraryPages) {
+                SidebarItem(
+                    icon = icon,
+                    label = label,
+                    selected = selectedPage == screen,
+                    onClick = { onOpenPage(screen) },
+                )
+            }
+        }
+        SidebarAccountRow(panelOpen = settingsPanelOpen, onOpenSettings = { onOpenPage(Screen.Settings) })
+    }
+}
+
+/** 侧边栏「库」一组：看内容的在前，管理的在后，与「我的」页的顺序一致。 */
+private val LibraryPages = listOf(
+    Triple(Screen.Starred, Icons.Outlined.StarOutline, "星标"),
+    Triple(Screen.PlayHistory, Icons.Outlined.History, "播放历史"),
+    Triple(Screen.MyShares, Icons.Outlined.Share, "我的分享"),
+    Triple(Screen.Trash, Icons.Outlined.Delete, "回收站"),
+)

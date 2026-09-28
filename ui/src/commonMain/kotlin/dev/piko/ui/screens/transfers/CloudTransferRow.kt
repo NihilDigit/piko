@@ -161,27 +161,8 @@ internal fun CloudTransferRow(
 
 /** 云端任务的详情面板：完整名称、状态、失败原因与全部操作。 */
 @Composable
-internal fun CloudTransferSheet(
-    task: DriveTask,
-    onResubmit: (() -> Unit)?,
-    onDelete: () -> Unit,
-    onOpen: () -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val actions = buildList {
-        if (task.canOpen) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "打开", onOpen))
-        if (onResubmit != null && (task.isFailed || task.isOutputDeleted)) {
-            add(SheetAction(Icons.Outlined.Refresh, if (task.isOutputDeleted) "重新下载" else "重试", onResubmit))
-        }
-        val deleteLabel = when {
-            task.isActive -> "删除任务"
-            task.phase == TaskPhase.COMPLETE -> "移除"
-            else -> "删除记录"
-        }
-        add(SheetAction(Icons.Outlined.Delete, deleteLabel, onDelete, destructive = true))
-    }
+internal fun CloudTransferSheet(task: DriveTask, actions: List<SheetAction>, onDismiss: () -> Unit) {
     val statusColor = task.statusColor()
-
     ItemDetailsSheet(
         title = task.displayName,
         headerIcon = { ListLeadingIcon(task.phaseIcon()) },
@@ -192,4 +173,23 @@ internal fun CloudTransferSheet(
             if (task.isFailed) Text(text = task.failureReason(), color = statusColor)
         },
     )
+}
+
+/** 云端任务的全部操作，详情面板与右键菜单共用。 */
+internal fun cloudTransferActions(
+    task: DriveTask,
+    onResubmit: (() -> Unit)?,
+    onDelete: () -> Unit,
+    onOpen: () -> Unit,
+): List<SheetAction> = buildList {
+        if (task.canOpen) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "打开", onOpen))
+        if (onResubmit != null && (task.isFailed || task.isOutputDeleted)) {
+            add(SheetAction(Icons.Outlined.Refresh, if (task.isOutputDeleted) "重新下载" else "重试", onResubmit))
+        }
+        val deleteLabel = when {
+            task.isActive -> "删除任务"
+            task.phase == TaskPhase.COMPLETE -> "移除"
+            else -> "删除记录"
+        }
+        add(SheetAction(Icons.Outlined.Delete, deleteLabel, onDelete, destructive = true))
 }

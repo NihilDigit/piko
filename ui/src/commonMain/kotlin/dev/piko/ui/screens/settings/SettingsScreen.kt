@@ -1,5 +1,9 @@
 package dev.piko.ui.screens.settings
 
+import kotlin.time.Instant
+import dev.piko.shared.sync.PikoSettingsSync
+import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material.icons.outlined.CloudSync
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -96,11 +100,16 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.shared.data.ArchivePasswordVault
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.net.ProxySetting
+import dev.piko.data.auth.SnailMode
+import androidx.compose.material.icons.outlined.SlowMotionVideo
+import androidx.compose.material.icons.outlined.Dns
+import androidx.compose.material.icons.outlined.Tune
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.readableWidth
 import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.PikoBrandIcons
 import dev.piko.ui.components.PikoTopBar
+import dev.piko.ui.components.verticalWheelScrollsRow
 import dev.piko.ui.platform.LinkAssociationState
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.PikoPlatform
@@ -136,6 +145,12 @@ import kotlinx.datetime.toLocalDateTime
 fun SettingsScreen(
     onBackClick: (() -> Unit)?,
     modifier: Modifier = Modifier,
+    /**
+     * 放在桌面的侧边面板里（有整条侧边栏的宽窗口）：标题与关闭在面板顶上，这里不画顶栏，底色透明，
+     * 滚动内容最前面是 [header]（账号卡片与退出登录，手机上它们在「我的」页）。
+     */
+    inSidePanel: Boolean = false,
+    header: (@Composable ColumnScope.() -> Unit)? = null,
 ) {
     val services = LocalPikoServices.current
     val platform = LocalPikoPlatform.current
@@ -146,6 +161,10 @@ fun SettingsScreen(
     val isBundleSubtitlesEnabled by sessionManager.bundleSubtitlesFlow.collectAsStateWithLifecycle(initialValue = true)
     val isAutoCleanNamesEnabled by sessionManager.autoCleanNamesFlow.collectAsStateWithLifecycle(initialValue = false)
     val isSyncPlayHistoryEnabled by sessionManager.syncPlayHistoryFlow.collectAsStateWithLifecycle(initialValue = true)
+    val isSettingsSyncEnabled by sessionManager.settingsSyncFlow.collectAsStateWithLifecycle(initialValue = true)
+    val settingsSync = LocalPikoServices.current.settingsSync
+    val syncStatus by settingsSync.status.collectAsStateWithLifecycle()
+    val lastSynced by settingsSync.lastSynced.collectAsStateWithLifecycle()
     val isConcurrentAccelerationEnabled by sessionManager.concurrentAccelerationFlow.collectAsStateWithLifecycle(initialValue = true)
     val downloadDirPath by sessionManager.downloadDirPathFlow.collectAsStateWithLifecycle(initialValue = "")
     val scope = rememberCoroutineScope()
@@ -157,6 +176,14 @@ fun SettingsScreen(
     var showDownloadDirDialog by remember { mutableStateOf(false) }
     val proxySetting by sessionManager.proxySettingFlow.collectAsStateWithLifecycle(initialValue = ProxySetting())
     var showProxyDialog by remember { mutableStateOf(false) }
+    val domainSelector = LocalPikoServices.current.domainSelector
+    val domainChoice by sessionManager.pikpakDomainFlow.collectAsStateWithLifecycle(initialValue = "")
+    val activeDomain by domainSelector.active.collectAsStateWithLifecycle()
+    val domainProbes by domainSelector.probes.collectAsStateWithLifecycle()
+    val domainProbing by domainSelector.probing.collectAsStateWithLifecycle()
+    var showDomainDialog by remember { mutableStateOf(false) }
+    val snailMode by sessionManager.snailModeFlow.collectAsStateWithLifecycle(initialValue = SnailMode())
+    var showSnailDialog by remember { mutableStateOf(false) }
     val downloadLocation = platform.downloadLocation
     val resolvedDownloadPath = remember(downloadDirPath) { downloadLocation.displayName(downloadDirPath) }
     // 选完不关对话框，让用户在卡片上看到新位置再点「完成」
@@ -199,18 +226,21 @@ fun SettingsScreen(
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
+        containerColor = if (inSidePanel) Color.Transparent else MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
-            PikoTopBar(
-                title = "设置",
-                navigationIcon = {
-                    if (onBackClick != null) {
-                        IconButton(onClick = onBackClick) {
-                            Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回")
+            if (!inSidePanel) {
+                PikoTopBar(
+                    title = "设置",
+                    navigationIcon = {
+                        if (onBackClick != null) {
+                            IconButton(onClick = onBackClick) {
+                                Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回")
+                            }
                         }
-                    }
-                },
-            )
+                    },
+                )
+            }
         },
     ) { innerPadding ->
         BoxWithConstraints(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
@@ -232,6 +262,7 @@ fun SettingsScreen(
                         .padding(bottom = 24.dp)
                         .readableWidth(),
                 ) {
+                    header?.invoke(this)
                     SettingsGroup(SettingsSection.Appearance.title, Modifier.trackSection(SettingsSection.Appearance)) {
                         val appearance = LocalAppearance.current
                         ThemeModeRow(
@@ -339,15 +370,30 @@ fun SettingsScreen(
 
                     SettingsGroup(SettingsSection.Download.title, Modifier.trackSection(SettingsSection.Download)) {
                         SettingsSwitchRow(
-                            index = 0, count = 2,
+                            index = 0, count = 4,
                             icon = Icons.Outlined.Speed,
                             title = "并发加速",
                             supporting = "多连接下载，提升速度",
                             checked = isConcurrentAccelerationEnabled,
                             onCheckedChange = { scope.launch { sessionManager.setConcurrentAccelerationEnabled(it) } },
                         )
+                        SettingsSwitchRow(
+                            index = 1, count = 4,
+                            icon = Icons.Outlined.SlowMotionVideo,
+                            title = "蜗牛模式",
+                            supporting = "限制下载与上传的速度，在线播放不受限",
+                            checked = snailMode.enabled,
+                            onCheckedChange = { scope.launch { sessionManager.setSnailMode(snailMode.copy(enabled = it)) } },
+                        )
                         SettingsNavigationRow(
-                            index = 1, count = 2,
+                            index = 2, count = 4,
+                            icon = Icons.Outlined.Tune,
+                            title = "蜗牛模式的上限",
+                            supporting = snailMode.limitSummary(),
+                            onClick = { showSnailDialog = true },
+                        )
+                        SettingsNavigationRow(
+                            index = 3, count = 4,
                             icon = Icons.Outlined.FolderOpen,
                             title = "下载位置",
                             supporting = resolvedDownloadPath,
@@ -357,12 +403,41 @@ fun SettingsScreen(
 
                     SettingsGroup(SettingsSection.Network.title, Modifier.trackSection(SettingsSection.Network)) {
                         SettingsNavigationRow(
-                            index = 0, count = 1,
+                            index = 0, count = 2,
                             icon = Icons.Outlined.Public,
                             title = "网络代理",
                             supporting = proxySetting.summary(),
                             onClick = { showProxyDialog = true },
                         )
+                        SettingsNavigationRow(
+                            index = 1, count = 2,
+                            icon = Icons.Outlined.Dns,
+                            title = "服务器域名",
+                            supporting = domainSummary(domainChoice, activeDomain, domainProbes),
+                            onClick = { showDomainDialog = true },
+                        )
+                    }
+
+                    SettingsGroup(SettingsSection.Sync.title, Modifier.trackSection(SettingsSection.Sync)) {
+                        val rows = if (isSettingsSyncEnabled) 2 else 1
+                        SettingsSwitchRow(
+                            index = 0, count = rows,
+                            icon = Icons.Outlined.CloudSync,
+                            title = "同步设置",
+                            supporting = "外观、网盘与播放的设置和解压成功过的密码存在网盘的 .piko 文件夹，换设备登录时带过去",
+                            checked = isSettingsSyncEnabled,
+                            onCheckedChange = { scope.launch { sessionManager.setSettingsSyncEnabled(it) } },
+                        )
+                        if (isSettingsSyncEnabled) {
+                            SettingsNavigationRow(
+                                index = 1, count = rows,
+                                icon = Icons.Outlined.Sync,
+                                title = "立即同步",
+                                supporting = syncStatusText(syncStatus, lastSynced),
+                                onClick = { scope.launch { settingsSync.syncNow() } },
+                                trailingIcon = Icons.Outlined.Sync,
+                            )
+                        }
                     }
 
                     SettingsGroup(SettingsSection.About.title, Modifier.trackSection(SettingsSection.About)) {
@@ -428,6 +503,29 @@ fun SettingsScreen(
                 scope.launch { sessionManager.saveProxySetting(setting) }
             },
             onDismiss = { showProxyDialog = false },
+        )
+    }
+
+    if (showDomainDialog) {
+        PikPakDomainDialog(
+            choice = domainChoice,
+            active = activeDomain,
+            probes = domainProbes,
+            probing = domainProbing,
+            onChoose = { root -> scope.launch { sessionManager.setPikpakDomain(root) } },
+            onProbeAgain = domainSelector::probeAgain,
+            onDismiss = { showDomainDialog = false },
+        )
+    }
+
+    if (showSnailDialog) {
+        SnailModeDialog(
+            current = snailMode,
+            onSave = { mode ->
+                showSnailDialog = false
+                scope.launch { sessionManager.setSnailMode(mode) }
+            },
+            onDismiss = { showSnailDialog = false },
         )
     }
 
@@ -554,7 +652,17 @@ private enum class SettingsSection(val title: String) {
     Playback("播放"),
     Download("下载"),
     Network("网络"),
+    Sync("同步"),
     About("关于"),
+}
+
+private fun syncStatusText(status: PikoSettingsSync.Status, lastSynced: Long?): String = when (status) {
+    PikoSettingsSync.Status.SYNCING -> "同步中…"
+    PikoSettingsSync.Status.FAILED -> "上次同步失败，改动设置或重新打开时会再试"
+    else -> lastSynced?.let {
+        val time = Instant.fromEpochMilliseconds(it).toLocalDateTime(TimeZone.currentSystemDefault())
+        "上次同步于 ${time.hour.toString().padStart(2, '0')}:${time.minute.toString().padStart(2, '0')}"
+    } ?: "登录后自动同步"
 }
 
 private const val REPOSITORY_URL = "https://github.com/NihilDigit/piko"
@@ -801,10 +909,12 @@ private fun ThemeColorRow(appearance: Appearance, onSeedChange: (SeedTheme?) -> 
         supportingContent = {
             Column {
                 Text(selectedLabel)
+                val swatchScroll = rememberScrollState()
                 Row(
                     modifier = Modifier
                         .padding(top = 4.dp)
-                        .horizontalScroll(rememberScrollState()),
+                        .verticalWheelScrollsRow(swatchScroll)
+                        .horizontalScroll(swatchScroll),
                 ) {
                     if (platform.supportsDynamicColor) {
                         val scheme = platform.dynamicColorScheme(dark)

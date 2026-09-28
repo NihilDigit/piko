@@ -5,6 +5,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.log.logFile
@@ -67,6 +68,9 @@ class BatchRenameState(
     var processed by mutableStateOf(0)
         private set
 
+    // 改成了的，按执行顺序，撤销时倒着改回去
+    private val renamed = mutableListOf<DriveChangeJournal.Renamed>()
+
     /** 改名失败的项，成功的不回滚。 */
     val failures = mutableStateListOf<RenameRow>()
 
@@ -114,6 +118,7 @@ class BatchRenameState(
         total = order.size
         processed = 0
         failures.clear()
+        renamed.clear()
         wasStopped = false
         phase = Phase.RUNNING
         job = scope.launch {
@@ -121,13 +126,19 @@ class BatchRenameState(
                 for (row in order) {
                     driveRepo.rename(row.source.id, row.newName)
                         .logFailure(TAG, "批量重命名失败：${logFile(row.source.id, row.source.name)}")
+                        .onSuccess { renamed += DriveChangeJournal.Renamed(row.source.id, row.source.name, row.newName) }
                         .onFailure { failures += row }
                     processed++
                 }
             } finally {
                 phase = Phase.DONE
                 driveRepo.requestRefresh()
-                _messages.tryEmit(summary())
+                // 改成了的记进改动记录，提示带「撤销」；一项也没改成的只报结果
+                if (renamed.isNotEmpty()) {
+                    driveRepo.changes.record(DriveChangeJournal.Change.Rename(renamed.toList(), summary()))
+                } else {
+                    _messages.tryEmit(summary())
+                }
             }
         }
     }

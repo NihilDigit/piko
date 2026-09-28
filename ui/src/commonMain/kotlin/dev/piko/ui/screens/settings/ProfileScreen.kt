@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.settings
 
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.add
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.animation.AnimatedVisibility
@@ -21,6 +23,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.ExpandLess
@@ -32,6 +35,7 @@ import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
@@ -60,6 +64,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import dev.piko.data.auth.QuotaSnapshot
 import dev.piko.ui.LocalPikoServices
+import dev.piko.ui.adaptive.readableSidePadding
 import dev.piko.ui.adaptive.readableWidth
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.navigation.Screen
@@ -72,6 +77,8 @@ import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import java.util.Locale
 import kotlinx.coroutines.launch
+import dev.piko.data.auth.UserSession
+import androidx.compose.ui.unit.Dp
 
 /**
  * 「我的」页：账号卡片（含网盘空间与流量额度）、回收站与设置两个入口、退出登录。
@@ -86,39 +93,16 @@ fun ProfileScreen(
     onOpenPane: (Screen) -> Unit,
     selectedPane: Screen?,
     modifier: Modifier = Modifier,
+    /** 宽窗口里「我的」与详情页并排、盖住导航栏时才有：这时它是列表栏，退出两栏由它负责。 */
+    onBackClick: (() -> Unit)? = null,
 ) {
-    val services = LocalPikoServices.current
     val platform = LocalPikoPlatform.current
-    val sessionManager = services.preferences
-    val clientManager = services.clientManager
-    val driveRepo = services.driveRepository
-    val accountRepo = services.accountRepository
-    val session by sessionManager.sessionFlow.collectAsStateWithLifecycle(initialValue = null)
-    val scope = rememberCoroutineScope()
-
-    // 网络回来之前先用上次存下的数字渲染，否则卡片整块缺席、刷新完再跳出来
-    val liveQuota by driveRepo.quotaFlow.collectAsStateWithLifecycle()
-    val cachedQuota by sessionManager.quotaSnapshotFlow.collectAsStateWithLifecycle(initialValue = null)
-    val quota = liveQuota?.let { QuotaSnapshot(it.quota.usageBytes, it.quota.limitBytes) } ?: cachedQuota
-    // 不落盘，只在本页存活期间保留；失败时留着上一次的值，只在旁边补一行错误文字
-    val transferQuota by driveRepo.transferQuotaFlow.collectAsStateWithLifecycle()
-    var transferQuotaError by remember { mutableStateOf<String?>(null) }
+    val account = rememberAccountSummary()
+    val session = account.session
     var showLogoutDialog by remember { mutableStateOf(false) }
 
     // 开屏检查（见 StartupUpdatePrompt）查到的新版本写在「设置」入口上，不必点进去才知道
     val availableUpdate = (platform.updater?.status as? UpdateStatus.Available)?.update
-
-    LaunchedEffect(Unit) {
-        driveRepo.getQuota()
-        // 昵称与头像不随登录态返回，每次进入本页取一次。
-        // 失败不提示：头像本就有首字母兜底，为它弹一条错误反而扰人。
-        accountRepo.refreshProfile()
-    }
-    LaunchedEffect(Unit) {
-        driveRepo.getTransferQuota()
-            .onSuccess { transferQuotaError = null }
-            .onFailure { transferQuotaError = "流量额度加载失败" }
-    }
 
     // 顶栏写的是账号名而不是「我的」：写「我的」只是把导航栏标签抄一遍，账号名才是这一页在讲的
     // 东西。展开时用 headline 字号立起全应用唯一的标题锚点，滚上去收成一行，让出的高度归下面的
@@ -132,19 +116,31 @@ fun ProfileScreen(
             .fillMaxSize()
             .nestedScroll(topBarScrollBehavior.nestedScrollConnection),
         topBar = {
-            MediumFlexibleTopAppBar(
-                title = {
-                    Text(
-                        text = session?.username?.ifEmpty { null } ?: "PikPak 用户",
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                },
-                subtitle = accountLabel?.let { label ->
-                    { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                },
-                scrollBehavior = topBarScrollBehavior,
-            )
+            // 宽窗口里下面的内容收在居中的一栏，标题与返回一起缩进同样的量，底色仍铺满
+            BoxWithConstraints {
+                val sideInset = readableSidePadding(maxWidth)
+                MediumFlexibleTopAppBar(
+                    title = {
+                        Text(
+                            text = session?.username?.ifEmpty { null } ?: "PikPak 用户",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                    subtitle = accountLabel?.let { label ->
+                        { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                    },
+                    navigationIcon = {
+                        if (onBackClick != null) {
+                            IconButton(onClick = onBackClick) {
+                                Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回")
+                            }
+                        }
+                    },
+                    windowInsets = TopAppBarDefaults.windowInsets.add(WindowInsets(left = sideInset, right = sideInset)),
+                    scrollBehavior = topBarScrollBehavior,
+                )
+            }
         },
     ) { innerPadding ->
         Column(
@@ -156,13 +152,7 @@ fun ProfileScreen(
                 .padding(top = 8.dp, bottom = 24.dp)
                 .readableWidth(),
         ) {
-            AccountCard(
-                username = session?.username,
-                avatarUrl = session?.avatarUrl,
-                quota = quota,
-                allowances = transferQuota?.account,
-                allowancesError = transferQuotaError,
-            )
+            AccountCard(account)
 
             Spacer(modifier = Modifier.height(16.dp))
 
@@ -231,41 +221,83 @@ fun ProfileScreen(
         }
     }
 
-    if (showLogoutDialog) {
-        AlertDialog(
-            onDismissRequest = { showLogoutDialog = false },
-            icon = {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Outlined.Logout,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.error,
-                )
-            },
-            title = { Text("退出登录") },
-            text = { Text("退出后将清除本机保存的 PikPak 登录凭据。") },
-            // 对话框的按钮一律是 text button，破坏性确认也一样：对话框本身已经拦了一道，
-            // 确认键不必再用一块红色抢视线，error 色的文字足以说明后果
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        showLogoutDialog = false
-                        scope.launch {
-                            clientManager.logout()
-                            onLogout()
-                        }
-                    },
-                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                ) {
-                    Text("退出")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showLogoutDialog = false }) {
-                    Text("取消")
-                }
-            },
-        )
+    if (showLogoutDialog) LogoutDialog(onDismiss = { showLogoutDialog = false }, onLoggedOut = onLogout)
+}
+
+/** 账号卡片要的数据：会话、网盘空间与流量额度。「我的」页与桌面侧边栏左下角的账号菜单共用。 */
+internal class AccountSummary(
+    val session: UserSession?,
+    val quota: QuotaSnapshot?,
+    val allowances: TransferAllowances?,
+    val allowancesError: String?,
+)
+
+/** 取 [AccountSummary]，并在进入组合时刷新一次空间、流量额度与昵称头像。 */
+@Composable
+internal fun rememberAccountSummary(): AccountSummary {
+    val services = LocalPikoServices.current
+    val sessionManager = services.preferences
+    val driveRepo = services.driveRepository
+    val session by sessionManager.sessionFlow.collectAsStateWithLifecycle(initialValue = null)
+    // 网络回来之前先用上次存下的数字渲染，否则卡片整块缺席、刷新完再跳出来
+    val liveQuota by driveRepo.quotaFlow.collectAsStateWithLifecycle()
+    val cachedQuota by sessionManager.quotaSnapshotFlow.collectAsStateWithLifecycle(initialValue = null)
+    val quota = liveQuota?.let { QuotaSnapshot(it.quota.usageBytes, it.quota.limitBytes) } ?: cachedQuota
+    // 不落盘，只在本页存活期间保留；失败时留着上一次的值，只在旁边补一行错误文字
+    val transferQuota by driveRepo.transferQuotaFlow.collectAsStateWithLifecycle()
+    var transferQuotaError by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        driveRepo.getQuota()
+        // 昵称与头像不随登录态返回，每次进入取一次。
+        // 失败不提示：头像本就有首字母兜底，为它弹一条错误反而扰人。
+        services.accountRepository.refreshProfile()
     }
+    LaunchedEffect(Unit) {
+        driveRepo.getTransferQuota()
+            .onSuccess { transferQuotaError = null }
+            .onFailure { transferQuotaError = "流量额度加载失败" }
+    }
+    return AccountSummary(session, quota, transferQuota?.account, transferQuotaError)
+}
+
+/** 退出登录前的确认。「我的」页与桌面侧边栏的账号菜单共用。 */
+@Composable
+internal fun LogoutDialog(onDismiss: () -> Unit, onLoggedOut: () -> Unit) {
+    val clientManager = LocalPikoServices.current.clientManager
+    val scope = rememberCoroutineScope()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Icon(
+                imageVector = Icons.AutoMirrored.Outlined.Logout,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.error,
+            )
+        },
+        title = { Text("退出登录") },
+        text = { Text("退出后将清除本机保存的 PikPak 登录凭据。") },
+        // 对话框的按钮一律是 text button，破坏性确认也一样：对话框本身已经拦了一道，
+        // 确认键不必再用一块红色抢视线，error 色的文字足以说明后果
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    onDismiss()
+                    scope.launch {
+                        clientManager.logout()
+                        onLoggedOut()
+                    }
+                },
+                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+            ) {
+                Text("退出")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        },
+    )
 }
 
 /**
@@ -274,14 +306,12 @@ fun ProfileScreen(
  * 是 Surface 不是 Card：M3 的 card 是可以点进去的单一主题入口，这一块不可点，只是个容器。
  */
 @Composable
-private fun AccountCard(
-    /** 只用来给没有头像时的首字母占位。 */
-    username: String?,
-    avatarUrl: String?,
-    quota: QuotaSnapshot?,
-    allowances: TransferAllowances?,
-    allowancesError: String?,
-) {
+internal fun AccountCard(account: AccountSummary) {
+    val username = account.session?.username
+    val avatarUrl = account.session?.avatarUrl
+    val quota = account.quota
+    val allowances = account.allowances
+    val allowancesError = account.allowancesError
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
@@ -310,21 +340,22 @@ private fun AccountCard(
     }
 }
 
+/** 头像，没有时是首字母。[username] 只用来给首字母占位。 */
 @Composable
-private fun Avatar(username: String?, avatarUrl: String?) {
+internal fun Avatar(username: String?, avatarUrl: String?, size: Dp = AvatarSize) {
     if (!avatarUrl.isNullOrBlank()) {
         AsyncImage(
             model = avatarUrl,
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = Modifier
-                .size(AvatarSize)
+                .size(size)
                 .clip(CircleShape),
         )
     } else {
         Box(
             modifier = Modifier
-                .size(AvatarSize)
+                .size(size)
                 .clip(CircleShape)
                 .background(MaterialTheme.colorScheme.primaryContainer),
             contentAlignment = Alignment.Center,

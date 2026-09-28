@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.data.repository.isPlayableVideo
+import dev.piko.ui.components.focusIndication
 import dev.piko.ui.components.locateHighlight
 import dev.piko.ui.components.PosterSpoilerBlur
 import dev.piko.ui.components.SpoilerThumbnail
@@ -57,6 +58,7 @@ internal fun GalleryTile(
         modifier = modifier
             .fillMaxWidth()
             .aspectRatio(1f)
+            .focusIndication(shape)
             .clip(shape)
             .cardInteraction(isSelectionMode, isSelected, onClick, onLongClick, onSelectToggle)
             .then(if (isSelected) Modifier.border(3.dp, MaterialTheme.colorScheme.primary, shape) else Modifier)

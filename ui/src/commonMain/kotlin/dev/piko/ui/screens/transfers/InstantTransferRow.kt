@@ -65,19 +65,11 @@ internal fun InstantTransferRow(
 
 /** 秒传项的详情面板：完整名称、保存位置与操作。 */
 @Composable
-internal fun InstantTransferSheet(
-    record: InstantSaveRecord,
-    onOpen: () -> Unit,
-    onRemove: () -> Unit,
-    onDismiss: () -> Unit,
-) {
+internal fun InstantTransferSheet(record: InstantSaveRecord, actions: List<SheetAction>, onDismiss: () -> Unit) {
     ItemDetailsSheet(
         title = record.name,
         headerIcon = { ListLeadingIcon(Icons.Outlined.Bolt) },
-        actions = listOf(
-            SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中查看", onOpen),
-            SheetAction(Icons.Outlined.Delete, "移除记录", onRemove, destructive = true),
-        ),
+        actions = actions,
         onDismiss = onDismiss,
         metaParts = listOf("秒传", "已保存") + record.details(),
         extraLines = {
@@ -85,3 +77,9 @@ internal fun InstantTransferSheet(
         },
     )
 }
+
+/** 秒传记录的全部操作，详情面板与右键菜单共用。 */
+internal fun instantTransferActions(onOpen: () -> Unit, onRemove: () -> Unit): List<SheetAction> = listOf(
+    SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中查看", onOpen),
+    SheetAction(Icons.Outlined.Delete, "移除记录", onRemove, destructive = true),
+)

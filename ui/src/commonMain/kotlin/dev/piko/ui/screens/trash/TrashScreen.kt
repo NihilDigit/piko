@@ -53,6 +53,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.shared.state.TrashScreenState
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.readableSidePadding
+import dev.piko.ui.components.ContextMenuArea
 import dev.piko.ui.components.FileLeadingVisual
 import dev.piko.ui.components.FileListItem
 import dev.piko.ui.components.FileListSkeleton
@@ -90,7 +91,7 @@ private data class PermanentDeleteRequest(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TrashScreen(
-    onBackClick: () -> Unit,
+    onBackClick: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
@@ -136,13 +137,14 @@ fun TrashScreen(
         topBar = {
             PikoTopBar(
                 scrollBehavior = topBarScrollBehavior,
+                alignToReadableWidth = true,
                 title = if (isSelectionMode) "已选择 ${selectedFileIds.size} 项" else "回收站",
                 navigationIcon = {
                     if (isSelectionMode) {
                         IconButton(onClick = exitSelection) {
                             Icon(Icons.Outlined.Close, contentDescription = "退出多选")
                         }
-                    } else {
+                    } else if (onBackClick != null) {
                         IconButton(onClick = onBackClick) {
                             Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回")
                         }
@@ -332,19 +334,35 @@ private fun TrashItemRow(
     var showDetails by remember { mutableStateOf(false) }
     val metaParts = trashMetaParts(file)
 
-    FileListItem(
-        headline = file.displayTitle(),
-        headlineFontWeight = if (file.isFolder) FontWeight.Medium else null,
-        leading = { FileLeadingVisual(file = file, isSpoilerBlurred = previewHidden == true) },
-        supporting = { MetaRow(parts = metaParts) },
-        onClick = { showDetails = true },
-        onMoreClick = { showDetails = true },
-        onLongClick = onLongClick,
-        isSelectionMode = isSelectionMode,
-        isSelected = isSelected,
-        onSelectToggle = onSelectToggle,
-        modifier = modifier,
-    )
+    val actions = buildList {
+        if (previewHidden != null) {
+            add(
+                SheetAction(
+                    icon = if (previewHidden) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
+                    label = if (previewHidden) "显示预览" else "隐藏预览",
+                    onClick = onTogglePreview,
+                ),
+            )
+        }
+        add(SheetAction(Icons.Outlined.RestoreFromTrash, "恢复", onRestore))
+        add(SheetAction(Icons.Outlined.DeleteForever, "彻底删除", onDeleteForever, destructive = true))
+    }
+
+    // 右键弹出与详情面板相同的操作；多选时不弹，那时的操作针对全部选中项
+    ContextMenuArea(actions = { actions }, modifier = modifier, enabled = !isSelectionMode) {
+        FileListItem(
+            headline = file.displayTitle(),
+            headlineFontWeight = if (file.isFolder) FontWeight.Medium else null,
+            leading = { FileLeadingVisual(file = file, isSpoilerBlurred = previewHidden == true) },
+            supporting = { MetaRow(parts = metaParts) },
+            onClick = { showDetails = true },
+            onMoreClick = { showDetails = true },
+            onLongClick = onLongClick,
+            isSelectionMode = isSelectionMode,
+            isSelected = isSelected,
+            onSelectToggle = onSelectToggle,
+        )
+    }
 
     if (showDetails) {
         ItemDetailsSheet(
@@ -352,19 +370,7 @@ private fun TrashItemRow(
             headerIcon = { FileTypeIcon(file = file, iconSize = 24.dp, modifier = Modifier.fillMaxSize()) },
             metaParts = metaParts,
             onDismiss = { showDetails = false },
-            actions = buildList {
-                if (previewHidden != null) {
-                    add(
-                        SheetAction(
-                            icon = if (previewHidden) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
-                            label = if (previewHidden) "显示预览" else "隐藏预览",
-                            onClick = onTogglePreview,
-                        ),
-                    )
-                }
-                add(SheetAction(Icons.Outlined.RestoreFromTrash, "恢复", onRestore))
-                add(SheetAction(Icons.Outlined.DeleteForever, "彻底删除", onDeleteForever, destructive = true))
-            },
+            actions = actions,
         )
     }
 }

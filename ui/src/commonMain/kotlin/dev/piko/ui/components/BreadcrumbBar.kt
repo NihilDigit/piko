@@ -54,6 +54,7 @@ fun BreadcrumbBar(
     Row(
         modifier = modifier
             .fillMaxWidth()
+            .verticalWheelScrollsRow(scrollState)
             .horizontalScroll(scrollState)
             .padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,

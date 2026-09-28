@@ -591,8 +591,10 @@ private fun RecentTargetsRow(
     onSelect: (List<PathBreadcrumb>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val rowState = rememberLazyListState()
     LazyRow(
-        modifier = modifier.fillMaxWidth(),
+        state = rowState,
+        modifier = modifier.fillMaxWidth().verticalWheelScrollsRow(rowState),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {

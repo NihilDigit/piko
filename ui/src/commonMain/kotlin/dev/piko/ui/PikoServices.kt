@@ -1,5 +1,6 @@
 package dev.piko.ui
 
+import dev.piko.shared.sync.PikoSettingsSync
 import androidx.compose.runtime.staticCompositionLocalOf
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.repository.DriveRepository
@@ -22,6 +23,7 @@ import dev.piko.shared.state.InstantSession
 import dev.piko.shared.state.InstantSheetState
 import dev.piko.shared.upload.PikoUploadCoordinator
 import dev.piko.shared.upload.PikoUploadSources
+import dev.piko.shared.net.PikPakDomainSelector
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -55,6 +57,13 @@ class PikoServices(
     val offlinePacks = OfflinePackTracker(instantMagnetRepository, driveRepository, preferences)
 
     val moveHistory = MoveHistory(preferences, backgroundScope)
+
+    /** 部分设置同步到网盘的 .piko 文件夹，登录后自己开始，见 PikoSettingsSync。 */
+    val settingsSync = PikoSettingsSync(clientManager, driveRepository, preferences, cacheStore, backgroundScope, preferences.settingsSyncFlow)
+        .also { it.start() }
+
+    /** API 走哪个根域名：用户固定的，或登录后测速自动挑的，见 PikPakDomainSelector。 */
+    val domainSelector = PikPakDomainSelector(clientManager, preferences, backgroundScope).also { it.start() }
 
     val uploadManager = PikoUploadCoordinator(clientManager, preferences, uploadSources, driveRepository, backgroundScope, onUploadStarted)
 
