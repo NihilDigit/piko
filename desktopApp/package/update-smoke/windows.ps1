@@ -9,7 +9,7 @@
 #
 # 场景，依次：
 #   1. 全新安装 MSI，启动后存活，没有新版时不动
-#   2. MSI 安装版增量更新（换补丁文件）：目录与新版清单逐文件一致，补丁文件的修改时间原样（AOT 缓存认它）
+#   2. MSI 安装版增量更新（换补丁文件）：目录与新版清单逐文件一致，jar 的修改时间原样（AOT 缓存认它）
 #   3. MSI 安装版整包更新：先弄坏一个运行时文件，增量更新不成立，走 msiexec；登记的版本随之更新
 #   4. 卸载：安装目录下 app 与 runtime 不留任何文件（增量更新换进去的新名字 jar 不在 MSI 的文件表里）
 #   5. 便携版增量更新
@@ -61,21 +61,26 @@ function Get-Sha256([string] $path) {
 }
 
 # 目录与清单逐文件一致：每个文件都在、内容相同，补丁文件的修改时间与清单相同；app 与 runtime 下没有清单外的文件
+#
+# 点开头的文件不比：那是安装器的元数据，不是应用文件。MSI 装的是 app\.package（记在它的文件表里），
+# 不装应用目录里的 app\.jpackage.xml；更新前后都得原样留着 .package
 function Assert-Tree([string] $dir, $manifest) {
     $expected = @{}
-    foreach ($entry in $manifest.files) {
+    foreach ($entry in @($manifest.files | Where-Object { -not ($_.path -split '/')[-1].StartsWith('.') })) {
         $path = Join-Path $dir ($entry.path.Replace('/', '\'))
         $expected[$path.ToLowerInvariant()] = $true
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { Fail "missing $($entry.path)" }
         $actual = Get-Sha256 $path
         if ($actual -ne $entry.sha256) { Fail "content differs: $($entry.path)" }
-        if ($entry.patch) {
+        # 只核对 jar 的修改时间：AOT 缓存按 jar 的时间校验，差一点就整份作废。jar 在训练前已取整到偶数秒，
+        # MSI 装上去也是原样；exe 等其余文件经 MSI 会被取整，但没有东西依赖它们的时间
+        if ($entry.path.EndsWith('.jar')) {
             $mtime = [DateTimeOffset]::new((Get-Item -LiteralPath $path).LastWriteTimeUtc).ToUnixTimeMilliseconds()
             if ($mtime -ne [long] $entry.mtime) { Fail "mtime differs: $($entry.path) $mtime != $($entry.mtime)" }
         }
     }
     foreach ($folder in @('app', 'runtime')) {
-        foreach ($file in @(Get-ChildItem -LiteralPath (Join-Path $dir $folder) -Recurse -File -Force)) {
+        foreach ($file in @(Get-ChildItem -LiteralPath (Join-Path $dir $folder) -Recurse -File -Force | Where-Object { -not $_.Name.StartsWith('.') })) {
             if (-not $expected.ContainsKey($file.FullName.ToLowerInvariant())) { Fail "stale file left: $($file.FullName)" }
         }
     }
@@ -227,6 +232,7 @@ try {
     Wait-Updated $installDir 'msi-patch'
     Stop-App $installDir
     Assert-Tree $installDir $nextManifest
+    if (-not (Test-Path -LiteralPath (Join-Path $installDir 'app\.package'))) { Fail 'patch removed app\.package, which the MSI installed' }
     EndStep
 
     Step '3. MSI install, full update through msiexec'

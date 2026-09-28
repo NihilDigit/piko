@@ -136,7 +136,10 @@ function Remove-StaleFiles {
     if ($keep.Count -eq 0) { return }
     foreach ($folder in @('app', 'runtime')) {
         $dir = Join-Path $InstallDir $folder
-        $files = @(Get-ChildItem -LiteralPath $dir -Recurse -File -Force -ErrorAction SilentlyContinue)
+        # Dot files are installer metadata, not app files: the MSI installs app\.package (in its
+        # file table) and leaves out the image's app\.jpackage.xml, so the list never matches them.
+        $files = @(Get-ChildItem -LiteralPath $dir -Recurse -File -Force -ErrorAction SilentlyContinue |
+            Where-Object { -not $_.Name.StartsWith('.') })
         foreach ($file in $files) {
             if (-not $keep.ContainsKey($file.FullName.ToLowerInvariant())) {
                 Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
