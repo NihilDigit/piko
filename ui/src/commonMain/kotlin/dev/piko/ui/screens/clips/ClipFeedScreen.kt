@@ -7,7 +7,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -51,7 +50,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -76,13 +74,13 @@ import dev.piko.shared.state.ClipFeedSession
 import dev.piko.shared.state.ClipStreams
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.components.MediaLoadingIndicator
+import dev.piko.ui.components.pageFocusTarget
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.PreviewBackend
 import dev.piko.ui.screens.player.LONG_PRESS_BOOST_SPEED
 import dev.piko.ui.screens.player.PlayerTheme
 import dev.piko.ui.screens.player.SEEK_STEP_MILLIS
-import dev.piko.ui.screens.share.ShareDialog
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.StreamRole
 import kotlinx.coroutines.CancellationException
@@ -227,13 +225,6 @@ fun ClipFeedScreen(
         }
     }
 
-    actions.sharing?.let { file ->
-        ShareDialog(
-            files = listOf(file),
-            onDismiss = actions::dismissShare,
-            onCopied = { scope.launch { snackbarHostState.showSnackbar("已复制分享链接") } },
-        )
-    }
 }
 
 @Composable
@@ -390,8 +381,6 @@ private fun ClipPager(
         onDispose { players.forEach(PreviewBackend::release) }
     }
     LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
-    // 分享框关掉后焦点不会自己回来，按键就无处可去
-    LaunchedEffect(actions.sharing == null) { if (actions.sharing == null) runCatching { focusRequester.requestFocus() } }
     val latestSettled by rememberUpdatedState(settled)
     LaunchedEffect(pagerState) { snapshotFlow { latestSettled }.collect(session::moveTo) }
     LaunchedEffect(muted) { players.forEach { it.setVolume(if (muted) 0f else 1f) } }
@@ -677,7 +666,9 @@ private fun ClipPager(
                     else -> return@onPreviewKeyEvent false
                 }
                 true
-            },
+            }
+            // 焦点目标也挂在最外层：侧栏里与网盘页并排时，点顶栏或画面任一处，方向键都归信息流
+            .pageFocusTarget(focusRequester),
     ) {
         // 画面层，在翻页器底下：每个播放器一个常驻的画面表面，按它装着的那一段所在的页跟着翻页平移。
         // 表面原先长在页里，播放器换一页负责，表面就在旧页销毁、在新页新建，mpv 跟着拆建一次视频输出：
@@ -732,10 +723,7 @@ private fun ClipPager(
             // 翻页器里的段只在末尾追加，下标本来就稳
             // 前后各多组合一页：翻页途中上下一段的说明与缩略图已经在那里
             beyondViewportPageCount = 1,
-            modifier = Modifier
-                .fillMaxSize()
-                .focusRequester(focusRequester)
-                .focusable(),
+            modifier = Modifier.fillMaxSize(),
         ) { page ->
             val clip = clips.getOrNull(page)
             if (clip == null) {
@@ -854,8 +842,6 @@ private fun ClipPager(
                             onPlayFull(clip.file, videoStart + watched)
                         },
                         onLocate = { onLocate(clip.file) },
-                        onShare = { actions.share(clip) },
-                        onDownload = { actions.download(clip) },
                         compact = compact,
                     )
                 }

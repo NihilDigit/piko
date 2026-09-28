@@ -17,10 +17,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 /**
- * 信息流右侧几个按钮背后的动作：收藏、分享、下载。提示经 [onMessage] 交给页面的 Snackbar。
- *
- * 段里只带 ID、名字与所在目录，下载要的大小与 gcid、分享框要的图标都得回到完整的条目上。
- * 条目取自会话列目录时记下的；存盘恢复、还没重新列到的，下载前查一次详情补上。
+ * 信息流右侧收藏按钮背后的动作，提示经 [onMessage] 交给页面的 Snackbar。
+ * 分享与下载在完整播放器上，见 rememberPlayerFileActions。
  */
 internal class ClipActions(
     private val session: ClipFeedSession,
@@ -32,10 +30,6 @@ internal class ClipActions(
     // 星标状态只在列表条目的 tags 里，详情里的 starred 字段不可信（见 SDK 的 FileDetail）。
     // 进页面时取一次全盘星标，之后以本地改动为准，不为每一段单独查
     private val starred = mutableStateMapOf<String, Boolean>()
-
-    /** 正在分享的条目，界面据此弹出分享框。 */
-    var sharing by mutableStateOf<FileStat?>(null)
-        private set
 
     fun loadStars() {
         scope.launch {
@@ -68,45 +62,6 @@ internal class ClipActions(
                 }
         }
     }
-
-    fun share(clip: Clip) {
-        sharing = session.listedFile(clip.fileId) ?: clip.file
-    }
-
-    fun dismissShare() {
-        sharing = null
-    }
-
-    fun download(clip: Clip) {
-        scope.launch {
-            val file = session.listedFile(clip.fileId) ?: detailOf(clip)
-            if (file == null) {
-                onMessage("无法下载")
-                return@launch
-            }
-            downloads.enqueue(file)
-            onMessage("已加入下载")
-        }
-    }
-
-    private suspend fun detailOf(clip: Clip): FileStat? =
-        driveRepo.getFileDetail(clip.fileId)
-            .logFailure(TAG, "信息流下载前查详情失败")
-            .getOrNull()
-            ?.let { detail ->
-                PikoLog.d(TAG, "下载前补查详情：${logFile(clip.fileId, clip.name)}")
-                FileStat(
-                    kind = FileKind.FILE,
-                    id = detail.id,
-                    parentId = detail.parentId,
-                    name = detail.name,
-                    size = detail.size,
-                    hash = detail.hash,
-                    mimeType = detail.mimeType,
-                    fileExtension = detail.fileExtension,
-                    params = detail.params,
-                )
-            }
 
     private companion object {
         const val TAG = "Clips"

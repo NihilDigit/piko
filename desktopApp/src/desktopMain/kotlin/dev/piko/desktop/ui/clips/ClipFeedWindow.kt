@@ -35,7 +35,8 @@ import dev.piko.ui.theme.PikoTheme
  * 窗口开着时应用内只留占位，同一时刻只有一个 ClipFeedScreen 在组合里，见 PikoMainScaffold。
  *
  * [raise] 每变一次把窗口调到前台：窗口已开着时再点弹出，应当回到它而不是没有反应。
- * 关窗是关掉信息流（[onClose]），顶栏另有收回主窗口的按钮（[ClipFeedLinks.dock]）。
+ * 关窗即是收回主窗口（[ClipFeedLinks.dock]），与普通播放窗口一样只有一个 ×：信息流回到侧栏接着刷，
+ * 侧栏被占着时挂起。Alt+F4、任务栏上的关闭也走这一条，刷了半天的队列不会一不小心丢掉；关掉信息流在主窗口里做。
  */
 @Composable
 fun ClipFeedWindow(
@@ -46,11 +47,10 @@ fun ClipFeedWindow(
     settings: DesktopSettingsStore,
     appearance: Appearance,
     icon: Painter?,
-    onClose: () -> Unit,
 ) {
     val windowState = rememberRememberedWindowState(settings, "clips", DpSize(1000.dp, 620.dp))
     PikoWindow(
-        onCloseRequest = onClose,
+        onCloseRequest = links.dock,
         title = "信息流 - Piko",
         icon = icon,
         state = windowState,
@@ -70,10 +70,11 @@ fun ClipFeedWindow(
                     title = "信息流 - Piko",
                     icon = icon,
                     colors = ClipTitleBarColors,
-                    onCloseInContent = onClose,
+                    onCloseInContent = links.dock,
                 ) {
                     ClipFeedScreen(
-                        onBackClick = onClose,
+                        // Esc 与返回也是收回主窗口
+                        onBackClick = links.dock,
                         onPlayFull = links.playFull,
                         onLocate = links.locate,
                         onDock = links.dock,

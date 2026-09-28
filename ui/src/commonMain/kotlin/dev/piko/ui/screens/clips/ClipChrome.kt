@@ -98,8 +98,8 @@ import kotlin.math.roundToInt
  *
  * [onPopOut] 弹出到独立窗口，[onDock] 从独立窗口收回主窗口，只在桌面端、各在它该出现的形态里给出。
  *
- * 桌面上片段窗口没有标题栏，文件夹名左侧的空白兼做拖动区。拖动区只能是一块矩形，
- * 盖住按钮的话它们就点不动了，所以只取左侧这一段。
+ * 桌面上片段窗口没有标题栏，文件夹名两侧的空白兼做拖动区。拖动区盖住按钮的话它们就点不动了，
+ * 所以按钮两边各登记一块，不把整条顶栏报成一块。
  */
 @Composable
 internal fun ClipFeedTopBar(
@@ -131,9 +131,11 @@ internal fun ClipFeedTopBar(
         }
         Row(
             modifier = if (compact) Modifier else Modifier.weight(1f),
-            horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // 文件夹名与按钮之间的空白也能拖窗口，与左边那段一起，整条顶栏除了按钮都是拖动区
+            if (!compact) Spacer(Modifier.weight(1f).height(buttonSize).windowDragArea())
             ChromeIconButton(
                 icon = if (muted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
                 label = if (muted) "取消静音" else "静音",
@@ -142,9 +144,14 @@ internal fun ClipFeedTopBar(
                 tooltip = true,
                 shortcut = "M",
             )
-            if (onPopOut != null) ChromeIconButton(Icons.AutoMirrored.Outlined.OpenInNew, "在独立窗口播放", onPopOut, buttonSize, tooltip = true)
-            if (onDock != null) ChromeIconButton(Icons.AutoMirrored.Outlined.ViewSidebar, "收回到主窗口", onDock, buttonSize, tooltip = true)
-            if (onClose != null) ChromeIconButton(Icons.Filled.Close, "关闭信息流", onClose, buttonSize, tooltip = true)
+            if (onDock != null) {
+                // 独立窗口与普通播放窗口一样，右上角只有一个 ×：关窗即是收回主窗口，信息流回到侧栏接着刷。
+                // 关掉信息流在主窗口里做，这里不再并排一个关闭与一个收回
+                ChromeIconButton(Icons.Filled.Close, "收回到主窗口", onDock, buttonSize, tooltip = true)
+            } else {
+                if (onPopOut != null) ChromeIconButton(Icons.AutoMirrored.Outlined.OpenInNew, "在独立窗口播放", onPopOut, buttonSize, tooltip = true)
+                if (onClose != null) ChromeIconButton(Icons.Filled.Close, "关闭信息流", onClose, buttonSize, tooltip = true)
+            }
         }
     }
 }
@@ -175,7 +182,8 @@ private fun ScopeTitle(title: String, compact: Boolean) {
 }
 
 /**
- * 右侧的操作栏，自上而下：收藏、看完整、在网盘中显示、分享、下载。图标在上、短标签在下，照短视频应用的样子常驻。
+ * 右侧的操作栏，自上而下：收藏、看完整、在网盘中显示。图标在上、短标签在下，照短视频应用的样子常驻。
+ * 分享与下载不在这里，在完整播放器的顶栏：刷的时候只管收藏与去看，真要留下或发给别人时多半已点进来看完整了。
  */
 @Composable
 internal fun ClipActionRail(
@@ -183,8 +191,6 @@ internal fun ClipActionRail(
     onToggleStar: () -> Unit,
     onPlayFull: () -> Unit,
     onLocate: () -> Unit,
-    onShare: () -> Unit,
-    onDownload: () -> Unit,
     compact: Boolean,
     modifier: Modifier = Modifier,
 ) {
@@ -202,8 +208,6 @@ internal fun ClipActionRail(
         )
         RailAction(Icons.Outlined.OpenInFull, "看完整", onPlayFull, compact)
         RailAction(Icons.Outlined.FolderOpen, "在网盘中显示", onLocate, compact)
-        RailAction(Icons.Outlined.Share, "分享", onShare, compact)
-        RailAction(Icons.Outlined.Download, "下载", onDownload, compact)
     }
 }
 
