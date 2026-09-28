@@ -269,11 +269,7 @@ private fun <T> ConnectedToggle(
             ToggleButton(
                 checked = option == selected,
                 onCheckedChange = { onSelect(option) },
-                shapes = when (index) {
-                    0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
-                    options.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
-                    else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
-                },
+                shapes = connectedToggleShapes(index, options.size),
             ) { Text(label(option)) }
         }
     }

@@ -217,6 +217,10 @@ class InstantSheetState private constructor(
 
     val items: List<InstantFileItem> by derivedStateOf { resolution?.items.orEmpty() }
 
+    /** 还什么都没做：没粘链接、没有解析结果、没在解析或保存。这时收起面板等于没打开过，见 InstantSession.collapse。 */
+    val isBlank: Boolean
+        get() = input.isBlank() && resolution == null && batch == null && !isResolving && !isSaving
+
     val selectedItems: List<InstantFileItem> by derivedStateOf {
         selectedIndices.sorted().mapNotNull(items::getOrNull)
     }

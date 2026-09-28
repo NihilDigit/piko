@@ -74,6 +74,10 @@ internal fun FileActionsSheet(
     onOpenInNewTab: (() -> Unit)? = null,
     onTogglePin: (() -> Unit)? = null,
     isPinned: Boolean = false,
+    /** 库里多出的操作（在网盘中显示、移除记录），排在最前。 */
+    leadingActions: List<SheetAction> = emptyList(),
+    /** 整个取代文件操作，回收站用：那里只能恢复与彻底删除。 */
+    actionsOverride: List<SheetAction>? = null,
 ) {
     val usage by produceState<FolderUsageResult?>(null, folderUsage) {
         folderUsage ?: return@produceState
@@ -86,7 +90,7 @@ internal fun FileActionsSheet(
         }
     }
 
-    val actions = fileActions(
+    val actions = actionsOverride ?: leadingActions + fileActions(
         file = file,
         previewHidden = previewHidden,
         onTogglePreview = onTogglePreview,

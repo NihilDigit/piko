@@ -1,6 +1,7 @@
 package dev.piko.ui.screens.drive
 
 import dev.piko.ui.components.fileDropTarget
+import dev.piko.ui.components.releasesFocusOnOutsidePress
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.Key
@@ -92,13 +93,14 @@ internal fun DriveSelectionTopBar(
     scrollBehavior: TopAppBarScrollBehavior,
     selectedCount: Int,
     onExit: () -> Unit,
-    onSelectAll: () -> Unit,
-    onMove: () -> Unit,
-    onCopy: () -> Unit,
-    onTrash: () -> Unit,
+    // 以下为 null 的不画：眼下做不了的不摆，规则见 DriveCommands.kt
+    onSelectAll: (() -> Unit)?,
+    onMove: (() -> Unit)?,
+    onCopy: (() -> Unit)?,
+    onTrash: (() -> Unit)?,
     onExtract: (() -> Unit)?,
-    onShare: () -> Unit,
-    onBatchRename: () -> Unit,
+    onShare: (() -> Unit)?,
+    onBatchRename: (() -> Unit)?,
 ) {
     PikoTopBar(
         scrollBehavior = scrollBehavior,
@@ -108,21 +110,24 @@ internal fun DriveSelectionTopBar(
         },
         actions = {
             val shortcutModifier = LocalPikoPlatform.current.shortcutModifier
-            TooltipIconButton(Icons.Outlined.SelectAll, "全选", onSelectAll, shortcut = shortcutModifier.label("A"))
+            if (onSelectAll != null) TooltipIconButton(Icons.Outlined.SelectAll, "全选", onSelectAll, shortcut = shortcutModifier.label("A"))
             if (onExtract != null) TooltipIconButton(Icons.Outlined.Unarchive, "解压所选压缩包", onExtract)
-            TooltipIconButton(Icons.Outlined.Share, "分享所选", onShare, enabled = selectedCount > 0)
+            if (onShare != null) TooltipIconButton(Icons.Outlined.Share, "分享所选", onShare)
             // 只选一项时没有共同前后缀可言，单项改名走条目菜单
-            TooltipIconButton(Icons.Outlined.DriveFileRenameOutline, "批量重命名", onBatchRename, enabled = selectedCount >= 2, shortcut = "F2")
-            TooltipIconButton(Icons.Outlined.DriveFileMove, "移动所选", onMove, enabled = selectedCount > 0)
-            TooltipIconButton(Icons.Outlined.ContentCopy, "复制所选", onCopy, enabled = selectedCount > 0)
-            TooltipIconButton(
-                icon = Icons.Outlined.Delete,
-                label = "将所选移入回收站",
-                onClick = onTrash,
-                shortcut = shortcutModifier.trashLabel,
-                enabled = selectedCount > 0,
-                tint = if (selectedCount > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            if (onBatchRename != null && selectedCount >= 2) {
+                TooltipIconButton(Icons.Outlined.DriveFileRenameOutline, "批量重命名", onBatchRename, shortcut = "F2")
+            }
+            if (onMove != null) TooltipIconButton(Icons.Outlined.DriveFileMove, "移动所选", onMove)
+            if (onCopy != null) TooltipIconButton(Icons.Outlined.ContentCopy, "复制所选", onCopy)
+            if (onTrash != null) {
+                TooltipIconButton(
+                    icon = Icons.Outlined.Delete,
+                    label = "将所选移入回收站",
+                    onClick = onTrash,
+                    shortcut = shortcutModifier.trashLabel,
+                    tint = MaterialTheme.colorScheme.error,
+                )
+            }
         },
     )
 }
@@ -150,6 +155,8 @@ internal fun DriveSearchTopBar(
     LaunchedEffect(Unit) { focusRequester.requestFocus() }
 
     TopAppBar(
+        // 窄窗口的桌面端：点到列表即让出焦点，方向键回到列表上；搜索栏与搜索词留着
+        modifier = Modifier.releasesFocusOnOutsidePress(),
         navigationIcon = {
             IconButton(onClick = onClose) {
                 Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "关闭搜索")
@@ -326,135 +333,3 @@ internal fun SectionJumper(currentSection: String?, sections: List<String>, onSe
     }
 }
 
-/**
- * 宽窗口顶栏上的地址栏，照资源管理器：一条底框里是「☁ 网盘 › 动画 › Frieren」，每一段字号相同、都能点。
- * 点路径后面的空白处（或 [editRequests] 加一，快捷键走这条）换成输入框，里面是「网盘/动画/Frieren」并全选，
- * 回车交给 [onSubmitPath]：找到了收起，找不到留着让用户改。Esc 或点到别处收起，不跳转。
- * 路径常驻在顶栏上，不随列表滚走；窄屏仍是目录名作标题、上级另成一行面包屑。
- * 放不下时横向滚动并停在末尾，鼠标竖滚轮也滚得动。
- */
-@Composable
-internal fun DrivePathTitle(
-    stack: List<PikoPathBreadcrumb>,
-    onNavigate: (index: Int) -> Unit,
-    onSubmitPath: suspend (String) -> Boolean,
-    editRequests: Int,
-) {
-    var editing by remember { mutableStateOf(false) }
-    LaunchedEffect(editRequests) { if (editRequests > 0) editing = true }
-    val colors = MaterialTheme.colorScheme
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(40.dp)
-            .clip(CircleShape)
-            .background(colors.surfaceContainerHigh)
-            // 各段自己接住单击；落在段外的（路径后面的空白、箭头）进入输入
-            .then(if (editing) Modifier else Modifier.clickable(onClickLabel = "输入路径") { editing = true })
-            .padding(horizontal = 8.dp),
-        contentAlignment = Alignment.CenterStart,
-    ) {
-        if (editing) {
-            PathField(
-                initial = stack.joinToString("/") { it.name },
-                onSubmit = onSubmitPath,
-                onClose = { editing = false },
-            )
-        } else {
-            PathCrumbs(stack, onNavigate)
-        }
-    }
-}
-
-@Composable
-private fun PathField(initial: String, onSubmit: suspend (String) -> Boolean, onClose: () -> Unit) {
-    val colors = MaterialTheme.colorScheme
-    val scope = rememberCoroutineScope()
-    val focusRequester = remember { FocusRequester() }
-    var value by remember { mutableStateOf(TextFieldValue(initial, selection = TextRange(0, initial.length))) }
-    var hadFocus by remember { mutableStateOf(false) }
-    var resolving by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { focusRequester.requestFocus() }
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        BasicTextField(
-            value = value,
-            onValueChange = { value = it },
-            singleLine = true,
-            textStyle = MaterialTheme.typography.bodyLarge.copy(color = colors.onSurface),
-            cursorBrush = SolidColor(colors.primary),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-            keyboardActions = KeyboardActions(onGo = {
-                if (resolving) return@KeyboardActions
-                resolving = true
-                scope.launch {
-                    val found = onSubmit(value.text)
-                    resolving = false
-                    if (found) onClose()
-                }
-            }),
-            modifier = Modifier
-                .weight(1f)
-                .padding(horizontal = 6.dp)
-                .focusRequester(focusRequester)
-                .onFocusChanged { state ->
-                    if (state.isFocused) hadFocus = true else if (hadFocus) onClose()
-                }
-                .onPreviewKeyEvent { event ->
-                    if (event.key != Key.Escape) return@onPreviewKeyEvent false
-                    if (event.type == KeyEventType.KeyDown) onClose()
-                    true
-                },
-        )
-        // 逐层列目录要几次请求，慢的时候得看得出在找
-        if (resolving) InlineLoadingIndicator()
-    }
-}
-
-@Composable
-private fun PathCrumbs(stack: List<PikoPathBreadcrumb>, onNavigate: (index: Int) -> Unit) {
-    val scroll = rememberScrollState()
-    LaunchedEffect(stack) { scroll.scrollTo(scroll.maxValue) }
-    val colors = MaterialTheme.colorScheme
-    Row(
-        modifier = Modifier
-            .verticalWheelScrollsRow(scroll)
-            .horizontalScroll(scroll),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        stack.forEachIndexed { index, crumb ->
-            if (index > 0) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                    contentDescription = null,
-                    tint = colors.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
-            Row(
-                modifier = Modifier
-                    // 每一段都接得住拖来的条目：拖到「网盘」就是移回根目录
-                    .fileDropTarget("crumb:${crumb.id}", crumb)
-                    .clip(MaterialTheme.shapes.small)
-                    .clickable(onClickLabel = "打开") { onNavigate(index) }
-                    .padding(horizontal = 6.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                if (index == 0) {
-                    Icon(
-                        imageVector = Icons.Outlined.Cloud,
-                        contentDescription = null,
-                        tint = colors.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
-                Text(
-                    text = crumb.name,
-                    maxLines = 1,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = colors.onSurface,
-                )
-            }
-        }
-    }
-}

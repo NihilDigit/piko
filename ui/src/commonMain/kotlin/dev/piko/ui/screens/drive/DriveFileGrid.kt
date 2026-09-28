@@ -2,12 +2,17 @@ package dev.piko.ui.screens.drive
 
 import androidx.compose.ui.input.pointer.isTertiaryPressed
 import dev.piko.ui.components.LocalFileDrag
+import dev.piko.ui.components.connectedToggleShapes
+import dev.piko.ui.components.ItemColumnMinWidth
 import androidx.compose.ui.draw.alpha
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.ui.components.fileDropTarget
 import dev.piko.ui.components.fileDragSource
 import dev.piko.ui.components.FileDragPayload
 import dev.piko.ui.components.marqueeSelection
+import dev.piko.ui.components.OwnClicks
+import dev.piko.ui.components.LocalOwnClicks
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,17 +27,20 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.staggeredgrid.LazyStaggeredGridState
-import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
-import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
-import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
-import androidx.compose.foundation.lazy.staggeredgrid.items
-import androidx.compose.foundation.lazy.staggeredgrid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyGridState
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.automirrored.outlined.Sort
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.automirrored.outlined.ViewList
+import androidx.compose.material.icons.outlined.GridView
+import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material.icons.outlined.FilterList
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ArrowUpward
@@ -47,6 +55,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ToggleButton
+import androidx.compose.material3.PlainTooltip
+import androidx.compose.material3.TooltipAnchorPosition
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -65,6 +78,7 @@ import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.piko.ui.adaptive.WidthClass
@@ -98,26 +112,28 @@ import androidx.compose.ui.input.key.type
 import io.github.nihildigit.pikpak.FileStat
 
 /**
- * 网盘列表的三种排列。名字存进偏好（PikoUserPreferences.driveViewModeFlow），不要改名。
+ * 网盘列表的三种排列。名字存进偏好（PikoUserPreferences.driveViewModeFlow），不要改名；
+ * 先后即菜单里的顺序，海报墙是默认，排在最后。
  * 信息流不在这里，它的开关在网盘页顶栏上，见 FeedToggle。
  */
 internal enum class DriveViewMode {
     LIST,
-    POSTER,
     GALLERY,
+    POSTER,
     ;
 
     /** 海报墙与图库都是带页边距的网格，整行项与页眉的排布相同。 */
     val isGrid: Boolean get() = this != LIST
 
     companion object {
-        fun of(name: String): DriveViewMode = entries.firstOrNull { it.name == name } ?: LIST
+        fun of(name: String): DriveViewMode = entries.firstOrNull { it.name == name } ?: POSTER
     }
 }
 
 /**
- * 三种视图都用 LazyVerticalStaggeredGrid，共用同一个状态与作品头、分区标题这些整行项。
- * 海报墙的卡片等高（16:9 封面加两行标题），图库是正方形，在这个网格里排出来都是齐整的行。
+ * 三种视图都用按行对齐的 LazyVerticalGrid，共用同一个状态与作品头、分区标题这些整行项。
+ * 不用瀑布流：它把每一项放进当前最矮的一栏，各栏宽度因除不尽差一两个像素时，按宽度算高度的海报与方块
+ * 就高低不齐，第二行的第一项落到最右边；列表行高不一时顺序更是在各栏间乱跳。文件要能按行读。
  *
  * 列表视图单列宽度下限 360dp，手机上始终一列，横屏平板上自动排成两列以上。M3 列表规范
  * 要求宽窗口下控制行长或改为多栏，否则一行名字会被拉得很长。
@@ -127,7 +143,8 @@ internal enum class DriveViewMode {
  *
  * 图库的格宽下限：手机上 104dp，432dp 宽排三列，与系统相册相近；宽窗口里 140dp。
  */
-private val ListColumnMinWidth = 360.dp
+// 与各内容列表页同一个栏宽，见 PikoItemGrid
+private val ListColumnMinWidth = ItemColumnMinWidth
 private val PosterColumnMinWidthCompact = 160.dp
 private val PosterColumnMinWidth = 240.dp
 private val GalleryColumnMinWidthCompact = 104.dp
@@ -143,6 +160,7 @@ internal class DriveItemCallbacks(
     val onOpen: (FileStat) -> Unit,
     /** mac 上焦点在这一项时按回车，照 Finder 是改名。 */
     val onRename: (FileStat) -> Unit,
+    /** 条目上的详情按钮与菜单键：宽窗口打开详情栏看这一项，其余打开操作面板。 */
     val onMore: (FileStat) -> Unit,
     val onLongPress: (FileStat) -> Unit,
     val onSelect: (FileStat, Boolean) -> Unit,
@@ -174,7 +192,7 @@ internal fun driveLeadingItemCount(hasFoldBanner: Boolean): Int = 1 + (if (hasFo
 internal fun DriveFileGrid(
     items: List<DriveListItem>,
     viewMode: DriveViewMode,
-    gridState: LazyStaggeredGridState,
+    gridState: LazyGridState,
     isSelectionMode: Boolean,
     selectedIds: Set<String>,
     highlightedIds: Set<String>,
@@ -184,6 +202,16 @@ internal fun DriveFileGrid(
     folderView: (FileStat) -> DriveFolderView?,
     callbacks: DriveItemCallbacks,
     bottomPadding: Dp,
+    /** 条目上的详情按钮只在鼠标悬停时出现，见 ItemDetailsButton。 */
+    detailsOnHover: Boolean,
+    /** 网格空白处的右键菜单。 */
+    backgroundActions: () -> List<SheetAction>,
+    /** 连同右侧侧栏在内的宽度，栏数按它定，见 [StableColumns]；null 时按网格自己的宽度。 */
+    columnReferenceWidth: Dp?,
+    /** 鼠标最近点过、取得焦点的一项。按住它拖动是移动，按住别的没选中的条目拖动是框选。 */
+    activeItemId: String?,
+    /** 列过的文件夹空不空，海报墙给空文件夹画空的封面，见 PikoDriveRepository.folderEmptiness。 */
+    emptyFolders: Map<String, Boolean> = emptyMap(),
     /** 要把键盘焦点移到的那一项，移过去后回调 [onKeyboardFocusMoved]。 */
     keyboardFocusTarget: String?,
     onKeyboardFocusMoved: () -> Unit,
@@ -207,9 +235,13 @@ internal fun DriveFileGrid(
         }
 
         val fileKeys = remember(items) { items.mapNotNullTo(HashSet()) { (it as? DriveListItem.File)?.key } }
-        LazyVerticalStaggeredGrid(
+        // 空白处的右键菜单：查看、排序、刷新、粘贴、新建这些作用于整个文件夹的操作，照资源管理器。
+        // 命令栏上照样都有，这里是鼠标用户就近的捷径；条目自己的菜单在里层，先接住
+        ContextMenuArea(actions = backgroundActions, modifier = Modifier.fillMaxSize()) {
+        LazyVerticalGrid(
             state = gridState,
-            columns = gridCells(viewMode),
+            // 网格的可用宽度扣掉了两侧边距，参照宽度也扣掉，侧栏关着时两者相等
+            columns = gridCells(viewMode, columnReferenceWidth?.minus(horizontalPadding * 2)),
             modifier = modifier
                 .fillMaxSize()
                 .marqueeSelection(
@@ -218,6 +250,8 @@ internal fun DriveFileGrid(
                     boxedKey = { key -> (key as? String)?.takeIf { it in fileKeys } },
                     onSelect = callbacks.onBoxSelect,
                     onBackgroundClick = callbacks.onBackgroundClick,
+                    // 点过的那一项（取得焦点）与选中的一样，按住它拖是移动
+                    movable = { id -> id in selectedIds || id == activeItemId },
                 ),
             contentPadding = PaddingValues(
                 start = horizontalPadding,
@@ -225,9 +259,9 @@ internal fun DriveFileGrid(
                 bottom = bottomPadding,
             ),
             horizontalArrangement = Arrangement.spacedBy(itemSpacing),
-            verticalItemSpacing = itemSpacing,
+            verticalArrangement = Arrangement.spacedBy(itemSpacing),
         ) {
-            item(key = KEY_HEADER, span = StaggeredGridItemSpan.FullLine, contentType = KEY_HEADER) {
+            item(key = KEY_HEADER, span = { GridItemSpan(maxLineSpan) }, contentType = KEY_HEADER) {
                 // 页眉总是整行宽，内边距由它自己决定，各视图下排布一致。网格视图的
                 // contentPadding 会把它缩进 16dp，这里向两侧撑回去
                 Box(modifier = if (viewMode.isGrid) Modifier.bleedHorizontal(horizontalPadding) else Modifier) {
@@ -235,7 +269,7 @@ internal fun DriveFileGrid(
                 }
             }
             if (foldBanner != null) {
-                item(key = KEY_FOLD, span = StaggeredGridItemSpan.FullLine, contentType = KEY_FOLD) {
+                item(key = KEY_FOLD, span = { GridItemSpan(maxLineSpan) }, contentType = KEY_FOLD) {
                     Box(modifier = Modifier.padding(horizontal = rowInset)) {
                         foldBanner()
                     }
@@ -245,7 +279,7 @@ internal fun DriveFileGrid(
             itemsIndexed(
                 items,
                 key = { _, item -> item.key },
-                span = { _, item -> if (item is DriveListItem.File) StaggeredGridItemSpan.SingleLane else StaggeredGridItemSpan.FullLine },
+                span = { _, item -> GridItemSpan(if (item is DriveListItem.File) 1 else maxLineSpan) },
                 contentType = { _, item ->
                     when (item) {
                         is DriveListItem.WorkHeader -> "work"
@@ -279,6 +313,8 @@ internal fun DriveFileGrid(
                             isBlurred = isBlurred(file),
                             locationLabel = hitLocations[file.id],
                             callbacks = callbacks,
+                            detailsOnHover = detailsOnHover,
+                            isEmptyFolder = file.isFolder && emptyFolders[file.id] == true,
                             requestFocus = file.id == keyboardFocusTarget,
                             onFocusRequested = onKeyboardFocusMoved,
                             modifier = Modifier.animateItem(),
@@ -287,20 +323,47 @@ internal fun DriveFileGrid(
                 }
             }
         }
+        }
         LocalPikoPlatform.current.ListScrollbar(gridState, Modifier.align(Alignment.CenterEnd))
     }
 }
 
 @Composable
-private fun gridCells(viewMode: DriveViewMode): StaggeredGridCells {
+private fun gridCells(viewMode: DriveViewMode, referenceWidth: Dp? = null): GridCells {
     val compact = currentWidthClass() == WidthClass.Compact
-    return StaggeredGridCells.Adaptive(
-        when (viewMode) {
-            DriveViewMode.LIST -> ListColumnMinWidth
-            DriveViewMode.POSTER -> if (compact) PosterColumnMinWidthCompact else PosterColumnMinWidth
-            DriveViewMode.GALLERY -> if (compact) GalleryColumnMinWidthCompact else GalleryColumnMinWidth
-        },
-    )
+    val minSize = when (viewMode) {
+        DriveViewMode.LIST -> ListColumnMinWidth
+        DriveViewMode.POSTER -> if (compact) PosterColumnMinWidthCompact else PosterColumnMinWidth
+        DriveViewMode.GALLERY -> if (compact) GalleryColumnMinWidthCompact else GalleryColumnMinWidth
+    }
+    return StableColumns(minSize, referenceWidth)
+}
+
+/**
+ * 按 [referenceWidth]（列表连同右侧详情栏、信息流栏的总宽度）定栏数，网格自己的宽度只决定每栏多宽。
+ * 按网格自己的宽度定的话，侧栏滑出的动画里网格每一帧都在变窄，五栏掉到四栏再到三栏，每掉一栏整屏条目换行重排，
+ * 还带着位移动画满屏乱飞。现在侧栏是从每一栏借宽度，卡片一起收窄，谁也不换行。
+ * 借得太多、一栏窄过下限的 [MIN_FRACTION] 时才少排一栏，免得卡片挤成一条。
+ */
+private class StableColumns(private val minSize: Dp, private val referenceWidth: Dp?) : GridCells {
+    override fun Density.calculateCrossAxisCellSizes(availableSize: Int, spacing: Int): List<Int> {
+        val min = minSize.roundToPx()
+        val reference = maxOf(referenceWidth?.roundToPx() ?: 0, availableSize)
+        var count = ((reference + spacing) / (min + spacing)).coerceAtLeast(1)
+        val floor = (min * MIN_FRACTION).toInt()
+        while (count > 1 && (availableSize - spacing * (count - 1)) / count < floor) count--
+        val total = availableSize - spacing * (count - 1)
+        // 除不尽的几个像素分给前几栏，与 GridCells.Adaptive 相同
+        return List(count) { index -> total / count + if (index < total % count) 1 else 0 }
+    }
+
+    override fun equals(other: Any?) = other is StableColumns && other.minSize == minSize && other.referenceWidth == referenceWidth
+
+    override fun hashCode() = 31 * minSize.hashCode() + referenceWidth.hashCode()
+
+    private companion object {
+        const val MIN_FRACTION = 0.7f
+    }
 }
 
 private fun gridHorizontalPadding(viewMode: DriveViewMode): Dp = if (viewMode.isGrid) 16.dp else 0.dp
@@ -313,7 +376,7 @@ private fun gridItemSpacing(viewMode: DriveViewMode): Dp = when (viewMode) {
 }
 
 /**
- * 首载时的骨架，不含页眉。网格本身也是同一种 LazyVerticalStaggeredGrid，列数、边距与间距取真实网格
+ * 首载时的骨架，不含页眉。网格本身也是同一种 LazyVerticalGrid，列数、边距与间距取真实网格
  * 的同一套参数：宽窗口里列表排成多列，海报墙按卡宽下限换列数，另算一遍迟早与真实网格对不上。
  * 不可滚动，条目数给够一屏，多出来的懒加载不会组合。
  */
@@ -321,12 +384,12 @@ private fun gridItemSpacing(viewMode: DriveViewMode): Dp = when (viewMode) {
 internal fun DriveGridSkeleton(viewMode: DriveViewMode, modifier: Modifier = Modifier) {
     val itemSpacing = gridItemSpacing(viewMode)
     SkeletonGroup(modifier = modifier.fillMaxSize()) {
-        LazyVerticalStaggeredGrid(
+        LazyVerticalGrid(
             columns = gridCells(viewMode),
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = gridHorizontalPadding(viewMode)),
             horizontalArrangement = Arrangement.spacedBy(itemSpacing),
-            verticalItemSpacing = itemSpacing,
+            verticalArrangement = Arrangement.spacedBy(itemSpacing),
             userScrollEnabled = false,
         ) {
             items(SKELETON_ITEM_COUNT) { index ->
@@ -423,6 +486,8 @@ private fun DriveCell(
     isBlurred: Boolean,
     locationLabel: String?,
     callbacks: DriveItemCallbacks,
+    detailsOnHover: Boolean,
+    isEmptyFolder: Boolean,
     requestFocus: Boolean,
     onFocusRequested: () -> Unit,
     modifier: Modifier,
@@ -438,6 +503,9 @@ private fun DriveCell(
     // 正被拖着的条目淡下去，看得出拖走的是哪几项
     val drag = LocalFileDrag.current
     val beingDragged = drag?.payload?.ids?.contains(file.id) == true
+    // 条目里的详情按钮登记在这里，单击选中的那一层不截它的点击
+    val ownClicks = remember { OwnClicks() }
+    CompositionLocalProvider(LocalOwnClicks provides ownClicks) {
     ContextMenuArea(
         actions = { callbacks.contextActions(file) },
         modifier = modifier
@@ -461,6 +529,7 @@ private fun DriveCell(
                 onExtend = { callbacks.onExtendSelect(file) },
                 // 多选时条目上画着勾选框，单击照旧是勾选或取消
                 onDoubleClick = if (isSelectionMode) null else ({ callbacks.onOpen(file) }),
+                ownClicks = ownClicks,
             )
             // Finder 里回车是改名；资源管理器里回车是打开，交给条目自己的单击
             .onPreviewKeyEvent { event ->
@@ -502,7 +571,9 @@ private fun DriveCell(
                 onClick = { callbacks.onOpen(file) },
                 onLongClick = { callbacks.onLongPress(file) },
                 onSelectToggle = { callbacks.onSelect(file, it) },
-                onMoreClick = { callbacks.onMore(file) },
+                onDetailsClick = { callbacks.onMore(file) },
+                detailsOnHover = detailsOnHover,
+                isEmptyFolder = isEmptyFolder,
                 title = text.title,
                 tags = text.tags,
                 code = text.code,
@@ -519,12 +590,14 @@ private fun DriveCell(
                 onClick = { callbacks.onOpen(file) },
                 onLongClick = { callbacks.onLongPress(file) },
                 onSelectToggle = { callbacks.onSelect(file, it) },
-                onMoreClick = { callbacks.onMore(file) },
+                onDetailsClick = { callbacks.onMore(file) },
+                detailsOnHover = detailsOnHover,
                 title = text.title,
                 tags = text.tags,
                 code = text.code,
             )
         }
+    }
     }
 }
 
@@ -673,13 +746,12 @@ internal fun TypeFilterButton(
     }
 }
 
-/** 视图的图标与名字，视图切换按钮组与宽窗口命令栏的「查看」菜单共用。 */
-internal val DriveViewMode.icon
-    get() = when (this) {
-        DriveViewMode.LIST -> Icons.AutoMirrored.Filled.ViewList
-        DriveViewMode.POSTER -> Icons.Filled.GridView
-        DriveViewMode.GALLERY -> Icons.Filled.PhotoLibrary
-    }
+/** 视图的图标：平时描边，当前的那个视图用实心，与全应用「选中即实心」一致。 */
+internal fun DriveViewMode.icon(selected: Boolean = false) = when (this) {
+    DriveViewMode.LIST -> if (selected) Icons.AutoMirrored.Filled.ViewList else Icons.AutoMirrored.Outlined.ViewList
+    DriveViewMode.POSTER -> if (selected) Icons.Filled.GridView else Icons.Outlined.GridView
+    DriveViewMode.GALLERY -> if (selected) Icons.Filled.PhotoLibrary else Icons.Outlined.PhotoLibrary
+}
 
 internal val DriveViewMode.label
     get() = when (this) {
@@ -688,28 +760,31 @@ internal val DriveViewMode.label
         DriveViewMode.GALLERY -> "图库"
     }
 
-/** 视图切换，M3 Expressive 连体按钮组：列表、海报墙、图库三选一。信息流不在这里，见 FeedToggle。 */
+/**
+ * 视图切换，M3 Expressive 连体按钮组：列表、海报墙、图库三选一。窄屏在列表上方，宽窗口在命令栏右端、信息流旁边：
+ * 两者都是换一种方式看这个文件夹。只有图标，名字靠悬停提示。
+ */
 @Composable
-private fun ViewModeToggle(
+internal fun ViewModeToggle(
     viewMode: DriveViewMode,
     onViewModeChange: (DriveViewMode) -> Unit,
 ) {
     val modes = DriveViewMode.entries
-    @Composable
-    fun shapesAt(index: Int) = when (index) {
-        0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
-        modes.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
-        else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
-    }
     Row(horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)) {
         modes.forEachIndexed { index, mode ->
-            ToggleButton(
-                checked = mode == viewMode,
-                onCheckedChange = { if (mode != viewMode) onViewModeChange(mode) },
-                shapes = shapesAt(index),
-                contentPadding = ViewToggleContentPadding,
+            TooltipBox(
+                positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
+                tooltip = { PlainTooltip { Text(mode.label) } },
+                state = rememberTooltipState(),
             ) {
-                Icon(mode.icon, contentDescription = "${mode.label}视图", modifier = Modifier.size(20.dp))
+                ToggleButton(
+                    checked = mode == viewMode,
+                    onCheckedChange = { if (mode != viewMode) onViewModeChange(mode) },
+                    shapes = connectedToggleShapes(index, modes.size),
+                    contentPadding = ViewToggleContentPadding,
+                ) {
+                    Icon(mode.icon(selected = mode == viewMode), contentDescription = "${mode.label}视图", modifier = Modifier.size(20.dp))
+                }
             }
         }
     }

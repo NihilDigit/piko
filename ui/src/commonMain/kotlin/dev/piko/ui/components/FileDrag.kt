@@ -47,6 +47,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.data.PikoPathBreadcrumb
+import dev.piko.shared.data.DriveLibrary
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.ShortcutModifier
 import kotlin.math.roundToInt
@@ -165,6 +166,8 @@ fun Modifier.fileDragSource(payload: () -> FileDragPayload?): Modifier {
                         }
                         break
                     }
+                    // 外面的框选已接手这次拖动（按在没选中的条目上，见 marqueeSelection），这里就不起拖
+                    if (!dragging && change.isConsumed) break
                     if (!dragging && (change.position - down.position).getDistance() > threshold) {
                         val batch = currentPayload() ?: break
                         drag.start(batch, rootOf(change.position))
@@ -189,6 +192,8 @@ fun Modifier.fileDragSource(payload: () -> FileDragPayload?): Modifier {
  */
 @Composable
 fun Modifier.fileDropTarget(key: Any, folder: PikoPathBreadcrumb): Modifier {
+    // 地址栏与标签上的库（星标、回收站）不是文件夹，放不进东西
+    if (DriveLibrary.of(folder.id) != null) return this
     val drag = LocalFileDrag.current ?: return this
     val currentFolder by rememberUpdatedState(folder)
     DisposableEffect(drag, key) { onDispose { drag.unregister(key) } }

@@ -41,8 +41,12 @@ class InstantSession(
         if (state != null) isSheetOpen = true
     }
 
+    /**
+     * 收起面板。会话里有东西（粘过的链接、解析结果）才留着，之后能从「收着的东西」或把手接着做；
+     * 什么都没做就收起的，当作没打开过，直接结束，不留一个空的在那儿。
+     */
     fun collapse() {
-        isSheetOpen = false
+        if (state?.isBlank == true) end() else isSheetOpen = false
     }
 
     fun end() {

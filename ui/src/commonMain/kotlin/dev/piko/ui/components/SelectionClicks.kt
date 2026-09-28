@@ -1,10 +1,19 @@
 package dev.piko.ui.components
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.PointerId
@@ -30,12 +39,15 @@ fun Modifier.selectionClicks(
     onToggle: () -> Unit,
     onExtend: () -> Unit,
     onDoubleClick: (() -> Unit)? = null,
+    /** 条目里自己接点击的控件登记的范围，按在这里的一下不截，见 [OwnClicks]。 */
+    ownClicks: OwnClicks? = null,
 ): Modifier {
     val shortcut = LocalPikoPlatform.current.shortcutModifier
     val toggle by rememberUpdatedState(onToggle)
     val extend by rememberUpdatedState(onExtend)
     val doubleClick by rememberUpdatedState(onDoubleClick)
-    return pointerInput(shortcut) {
+    var origin by remember { mutableStateOf(Offset.Zero) }
+    return onGloballyPositioned { origin = it.positionInRoot() }.pointerInput(shortcut, ownClicks) {
         var pressed: PointerId? = null
         var pressedAt = Offset.Zero
         var lastClickAt = 0L
@@ -48,6 +60,7 @@ fun Modifier.selectionClicks(
                     PointerEventType.Press -> {
                         pressed = null
                         if (!event.buttons.isPrimaryPressed) continue
+                        if (ownClicks?.contains(origin + change.position) == true) continue
                         val modifiers = event.keyboardModifiers
                         val action = when {
                             modifiers.isShiftPressed -> extend
@@ -85,4 +98,35 @@ fun Modifier.selectionClicks(
             }
         }
     }
+}
+
+/**
+ * 条目里自己接点击的控件（详情按钮）的范围，按窗口坐标记。[selectionClicks] 在 Initial 阶段截走条目上的单击，
+ * Initial 由外向内传，里面的按钮收到时松开已被消费，点击判为取消：条目上的三点按钮用鼠标从来点不动。
+ * 按钮经 [ownsClicks] 登记到所在条目，那一下就交给它。
+ */
+class OwnClicks {
+    private val areas = mutableMapOf<Any, Rect>()
+
+    internal fun put(key: Any, bounds: Rect) {
+        areas[key] = bounds
+    }
+
+    internal fun remove(key: Any) {
+        areas.remove(key)
+    }
+
+    fun contains(point: Offset): Boolean = areas.values.any { it.contains(point) }
+}
+
+/** 所在条目的 [OwnClicks]，由条目提供；不在条目里时为 null，[ownsClicks] 什么也不做。 */
+val LocalOwnClicks = staticCompositionLocalOf<OwnClicks?> { null }
+
+/** 把这个控件登记为自己接点击，见 [OwnClicks]。 */
+@Composable
+fun Modifier.ownsClicks(): Modifier {
+    val owner = LocalOwnClicks.current ?: return this
+    val key = remember { Any() }
+    DisposableEffect(owner) { onDispose { owner.remove(key) } }
+    return onGloballyPositioned { owner.put(key, it.boundsInRoot()) }
 }

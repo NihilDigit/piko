@@ -22,6 +22,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,9 +67,19 @@ fun FileStat.extensionLabel(): String? {
     return ext.uppercase()
 }
 
-/** 标题行显示的名字。扩展名已在副标题里单列，标题去掉它，把宽度留给能区分文件的部分。 */
+/**
+ * 文件名是否带扩展名显示，来自偏好 showExtensionsFlow，由 PikoMainScaffold 提供。
+ * 默认值两端不同，见那里的说明。
+ */
+val LocalShowExtensions = compositionLocalOf { false }
+
+/**
+ * 标题行显示的名字。不显示扩展名时去掉它，把宽度留给能区分文件的部分，类型已在副标题里单列。
+ */
+@Composable
+@ReadOnlyComposable
 fun FileStat.displayTitle(): String =
-    if (extensionLabel() != null) name.substringBeforeLast('.') else name
+    if (!LocalShowExtensions.current && extensionLabel() != null) name.substringBeforeLast('.') else name
 
 /** 副标题的各段：文件为类型、大小、日期，文件夹为「文件夹」、日期。由 [MetaRow] 排成一行。 */
 fun FileStat.metaParts(includeDate: Boolean = true): List<String> = buildList {
@@ -149,6 +161,23 @@ fun FileStat.typeIcon(): ImageVector = kind().icon()
 
 /** 只有文件名时的类型图标，如磁力解析结果。 */
 fun fileNameTypeIcon(name: String): ImageVector = fileNameKind(name).icon()
+
+/**
+ * 没有缩略图的文件在海报墙里的底色与前景色，按大类分开。一律灰底时一排压缩包、文档、字幕连成一片，
+ * 只能靠中间的小图标分辨；换成几种容器色，扫一眼就知道哪一格是哪一类。都取配色方案里的容器色，
+ * 跟着动态取色与深浅主题走。
+ */
+@Composable
+@ReadOnlyComposable
+fun FileStat.placeholderColors(): Pair<Color, Color> {
+    val colors = MaterialTheme.colorScheme
+    return when (kind()) {
+        FileKind.VIDEO, FileKind.AUDIO -> colors.tertiaryContainer to colors.onTertiaryContainer
+        FileKind.IMAGE -> colors.primaryContainer to colors.onPrimaryContainer
+        FileKind.ARCHIVE, FileKind.FOLDER -> colors.secondaryContainer to colors.onSecondaryContainer
+        FileKind.SUBTITLE, FileKind.DOCUMENT -> colors.surfaceContainerHighest to colors.onSurfaceVariant
+    }
+}
 
 /** 海报墙里没有缩略图的文件，封面区画的类型图标，见 WatermarkIcons。 */
 fun FileStat.watermarkIcon(): ImageVector = when (kind()) {
@@ -251,6 +280,11 @@ fun SpoilerThumbnail(
     isBlurred: Boolean,
     blur: SpoilerBlur,
     modifier: Modifier = Modifier,
+    /**
+     * 模糊时正中画一只闭着的眼睛。海报墙的视频传 false：那里正中是播放键，两个图标叠在一处；
+     * 模糊本身已经说明预览遮住了。
+     */
+    showBlurIcon: Boolean = true,
 ) {
     if (!isBlurred) {
         AsyncImage(
@@ -279,12 +313,14 @@ fun SpoilerThumbnail(
                     .background(Color.Black.copy(alpha = 0.28f)),
             )
         }
-        Icon(
-            imageVector = Icons.Outlined.VisibilityOff,
-            contentDescription = "预览已遮蔽",
-            tint = if (supportsRenderEffect) fixedColors.OnMedia else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(20.dp),
-        )
+        if (showBlurIcon) {
+            Icon(
+                imageVector = Icons.Outlined.VisibilityOff,
+                contentDescription = "预览已遮蔽",
+                tint = if (supportsRenderEffect) fixedColors.OnMedia else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
+            )
+        }
     }
 }
 

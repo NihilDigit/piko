@@ -46,6 +46,13 @@ import dev.piko.shared.data.DriveTab
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.fileDropTarget
 import dev.piko.ui.components.verticalWheelScrollsRow
+import dev.piko.ui.platform.LocalWindowCaption
+import dev.piko.ui.platform.WindowCaption
+import dev.piko.ui.platform.rememberCaptionSlot
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 
 /**
  * 网盘页的标签栏，只在宽窗口、开了不止一个标签时出现。一个标签是一个位置，各有各的后退与前进：
@@ -68,23 +75,65 @@ internal fun DriveTabBar(
         val index = tabs.indexOfFirst { it.id == activeId }
         if (index == tabs.lastIndex) scroll.animateScrollTo(scroll.maxValue)
     }
+    // 开着几个标签时标签栏在最上面，照 Chrome：窗口按钮在末尾，「+」后面的空白能拖动窗口
+    val caption = rememberCaptionSlot()
+    val windowCaption = LocalWindowCaption.current
+    val dragArea = remember(windowCaption) { TabBarDragArea(windowCaption) }
+    DisposableEffect(dragArea) { onDispose { dragArea.clear() } }
     Row(
         modifier = modifier
             .fillMaxWidth()
+            .then(caption.modifier)
+            .onGloballyPositioned { dragArea.onRow(it.boundsInWindow()) }
             .height(TabBarHeight)
             .padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            modifier = Modifier.weight(1f, fill = false).verticalWheelScrollsRow(scroll).horizontalScroll(scroll),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            for (tab in tabs) {
-                TabChip(tab, active = tab.id == activeId, onSelect = { onSelect(tab.id) }, onClose = { onClose(tab.id) })
+        // 标签与「+」挤在左边，占满除窗口按钮外的宽度，窗口按钮才落在最右
+        Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier.weight(1f, fill = false).verticalWheelScrollsRow(scroll).horizontalScroll(scroll),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                for (tab in tabs) {
+                    TabChip(tab, active = tab.id == activeId, onSelect = { onSelect(tab.id) }, onClose = { onClose(tab.id) })
+                }
             }
+            TooltipIconButton(
+                Icons.Outlined.Add,
+                "新建标签页",
+                onNewTab,
+                shortcut = newTabShortcut,
+                modifier = Modifier.onGloballyPositioned { dragArea.plusRight = it.boundsInWindow().right },
+            )
         }
-        TooltipIconButton(Icons.Outlined.Add, "新建标签页", onNewTab, shortcut = newTabShortcut)
+        caption.buttons?.invoke()
+    }
+}
+
+/**
+ * 「+」后面到这一行末尾的空白。按位置登记，不放一个带权重的 Spacer：标签那一行是 weight(1f, fill = false)，
+ * 再来一个带权重的就与它平分剩余宽度，标签多时只能占一半。
+ */
+private class TabBarDragArea(private val caption: WindowCaption?) {
+    private val key = Any()
+    private var row = Rect.Zero
+    var plusRight = 0f
+        set(value) {
+            field = value
+            publish()
+        }
+
+    fun onRow(bounds: Rect) {
+        row = bounds
+        publish()
+    }
+
+    fun clear() = caption?.setDragArea(key, null)
+
+    private fun publish() {
+        caption?.setDragArea(key, Rect(plusRight, row.top, row.right, row.bottom).takeIf { it.width > 0f })
     }
 }
 

@@ -12,7 +12,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.data.ChildFile
+import dev.piko.shared.data.DriveLibrary
+import dev.piko.shared.data.library
 import dev.piko.shared.log.PikoLog
+import io.github.nihildigit.pikpak.DriveEvent
+import io.github.nihildigit.pikpak.EventPage
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoFileSortOrder
@@ -118,6 +122,19 @@ class DriveScreenState(
     private var activeFolderId by mutableStateOf(driveRepo.folderStackFlow.value.lastOrNull()?.id.orEmpty())
 
     /**
+     * 眼前列的是哪个库（见 [DriveLibrary]），列的是文件夹时为 null。从库里进了子文件夹就是文件夹：
+     * 那里的内容与操作都与网盘里无异。
+     */
+    val libraryView: DriveLibrary? by derivedStateOf { DriveLibrary.of(activeFolderId) }
+
+    /**
+     * 最近添加与播放历史里每个文件对应的那条记录，按文件 ID。列表的副文本（何时添加、看到哪里）
+     * 与「从列表中移除」都要它。
+     */
+    var libraryEvents by mutableStateOf<Map<String, DriveEvent>>(emptyMap())
+        private set
+
+    /**
      * [files] 的分析结果。只在 [analyzedFiles] 与 [files] 是同一个列表时可用：换目录后、新结果
      * 算出来之前，不能拿上一个目录的结构去排这一个目录的文件。
      */
@@ -125,6 +142,9 @@ class DriveScreenState(
     private var analysis by mutableStateOf<DriveStructure?>(null)
 
     private val currentAnalysis: DriveStructure? by derivedStateOf { analysis?.takeIf { analyzedFiles === files } }
+
+    /** 列过的文件夹空不空，见 PikoDriveRepository.folderEmptiness。 */
+    val folderEmptiness get() = driveRepo.folderEmptiness
 
     /** 按文件夹 id 的显示信息，后台算好逐个填入。解析关闭时界面不读它。 */
     val folderViews = mutableStateMapOf<String, DriveFolderView>()
@@ -134,7 +154,7 @@ class DriveScreenState(
     // 整层都是次要项时不折叠（原盘的 CLIPINF/ 全是结构文件）：折光了列表为空，连折叠横幅也没处放
     private val isFoldingActive: Boolean by derivedStateOf {
         val folded = currentAnalysis?.foldedIds ?: return@derivedStateOf false
-        isHeuristicFilterEnabled && isNameParsing && folded.size < files.size && isFoldingScope(files)
+        isHeuristicFilterEnabled && isNameParsing && libraryView == null && folded.size < files.size && isFoldingScope(files)
     }
 
     val potentialHiddenCount: Int by derivedStateOf {
@@ -193,7 +213,8 @@ class DriveScreenState(
         when {
             filter != null -> searchedFiles.filter { !it.isFolder && it.fileCategory() == filter }.map { DriveListItem.File(it, null) }
             isGlobalSearchActive || searchQuery.isNotBlank() -> searchedFiles.map { DriveListItem.File(it, null) }
-            structure == null -> files.map { DriveListItem.File(it, null) }
+            // 库里的条目散在全盘各处，按作品与分区归拢的是一个目录里的东西，这里照原来的先后平铺
+            structure == null || libraryView != null -> files.map { DriveListItem.File(it, null) }
             !isNameParsing || structure.blocks.isEmpty() ->
                 filterDriveFiles(files, structure.foldedIds, enabled = hideFolded, revealAll = false).map { DriveListItem.File(it, null) }
             else -> buildDriveItems(files, structure, hideFolded) { block -> isBlockExpanded(block) }
@@ -206,7 +227,7 @@ class DriveScreenState(
      */
     val displayedFiles: List<FileStat> by derivedStateOf {
         val structure = currentAnalysis
-        if (isSearching || structure == null || !isNameParsing || structure.blocks.isEmpty()) {
+        if (isSearching || libraryView != null || structure == null || !isNameParsing || structure.blocks.isEmpty()) {
             return@derivedStateOf displayItems.mapNotNull { (it as? DriveListItem.File)?.file }
         }
         val hideFolded = isFoldingActive && !showAllFilesTemporarily
@@ -227,9 +248,13 @@ class DriveScreenState(
     private fun expandKey(blockId: String) = "$activeFolderId|$blockId"
 
     fun toggleSection(blockId: String) {
-        val block = currentAnalysis?.blocks?.firstOrNull { it.id == blockId }
-        val current = block?.let(::isBlockExpanded) ?: true
-        DriveViewMemory.expanded[expandKey(blockId)] = !current
+        // 先看记下的状态，再看块的默认值：「次要文件」块由 buildDriveItems 临时拼出，不在 blocks 里，
+        // 只按 blocks 查的话它永远当作展开，每点一次都写成收起，收起后就再也展不开
+        val key = expandKey(blockId)
+        val current = DriveViewMemory.expanded[key]
+            ?: currentAnalysis?.blocks?.firstOrNull { it.id == blockId }?.defaultExpanded
+            ?: true
+        DriveViewMemory.expanded[key] = !current
     }
 
     fun expandSection(blockId: String) {
@@ -352,6 +377,10 @@ class DriveScreenState(
     /** [useCache] 与 [showRefreshing] 都为 false 是静默重列：不用缓存，也不出任何加载指示，见 [catchUpWithHighlight]。 */
     private fun load(useCache: Boolean, showRefreshing: Boolean) {
         val folderId = activeFolder.id
+        DriveLibrary.of(folderId)?.let { library ->
+            loadLibrary(library, useCache, showRefreshing)
+            return
+        }
         val cached = if (useCache) driveRepo.cachedFiles(folderId, sortOrder) else null
         when {
             cached != null -> {
@@ -393,6 +422,154 @@ class DriveScreenState(
         }
     }
 
+    /** 库上一次列出的内容，返回库时先显示它再刷新，与路径栈上的目录一样。只在这个网盘页的寿命里有效。 */
+    private class LibraryListing(val files: List<FileStat>, val events: Map<String, DriveEvent>)
+
+    private val libraryListings = mutableMapOf<DriveLibrary, LibraryListing>()
+
+    private fun loadLibrary(library: DriveLibrary, useCache: Boolean, showRefreshing: Boolean) {
+        val cached = if (useCache) libraryListings[library] else null
+        when {
+            cached != null -> {
+                showLibrary(library, cached)
+                isLoading = false
+            }
+            showRefreshing -> isRefreshing = true
+            useCache -> isLoading = true
+        }
+        loadJob?.cancel()
+        loadJob = scope.launch {
+            fetchLibrary(library)
+                .onSuccess { listing ->
+                    libraryListings[library] = listing
+                    showLibrary(library, listing)
+                    loadError = null
+                }
+                .logFailure(TAG, "读取${library.title}失败")
+                .onFailure {
+                    loadError = it.message ?: "读取${library.title}失败"
+                    _messages.tryEmit("加载失败")
+                }
+            isLoading = false
+            isRefreshing = false
+        }
+    }
+
+    private fun showLibrary(library: DriveLibrary, listing: LibraryListing) {
+        files = listing.files
+        libraryEvents = listing.events
+        loadedFolderId = library.id
+    }
+
+    // 事件记录只取第一页，至多 100 条，按时间倒序：再往前的播放与添加，到这里来找的人不多
+    private suspend fun fetchLibrary(library: DriveLibrary): Result<LibraryListing> = when (library) {
+        DriveLibrary.STARRED -> driveRepo.starredFiles().map { LibraryListing(it, emptyMap()) }
+        DriveLibrary.TRASH -> driveRepo.trashFiles().map { LibraryListing(it, emptyMap()) }
+        DriveLibrary.RECENT -> driveRepo.recentlyAdded().map(::eventListing)
+        DriveLibrary.HISTORY -> driveRepo.playHistory().map(::eventListing)
+    }
+
+    /**
+     * 文件已删除的记录服务端照样返回，只是不再内嵌文件；移进回收站的仍内嵌着。两种都不列：
+     * 网盘页的条目要能打开、能操作，一行打不开的记录放在这里只会被当成坏了。同一文件的几条记录只留最新的。
+     */
+    private fun eventListing(page: EventPage): LibraryListing {
+        val live = page.events.mapNotNull { event -> event.file?.takeIf { !it.trashed }?.let { it to event } }.distinctBy { it.first.id }
+        return LibraryListing(live.map { it.first }, live.associate { (file, event) -> file.id to event })
+    }
+
+    /** 在网盘里打开条目所在的文件夹并标出它，库里的条目用。文件夹也是在上级里标出，而不是进去。 */
+    fun revealInDrive(file: FileStat) {
+        scope.launch {
+            driveRepo.locateFolder(file.id)
+                .logFailure(TAG, "定位条目失败")
+                .onSuccess { parents ->
+                    driveRepo.updateFolderStack(parents)
+                    highlightedFileIds = setOf(file.id)
+                }
+                .onFailure { _messages.tryEmit("找不到它所在的文件夹") }
+        }
+    }
+
+    /** 从最近添加或播放历史里移除这几项的记录，文件本身不动。先从列表里拿掉，失败再放回来。 */
+    fun removeFromLibrary(ids: Collection<String>) {
+        val library = libraryView?.takeIf { it.isEventLog } ?: return
+        val eventIds = ids.mapNotNull { libraryEvents[it]?.id }
+        if (eventIds.isEmpty()) return
+        val before = files
+        files = files.filterNot { it.id in ids }
+        exitSelection()
+        scope.launch {
+            driveRepo.deleteEvents(eventIds)
+                .onSuccess {
+                    libraryListings.remove(library)
+                    _messages.tryEmit(if (ids.size == 1) "已从${library.title}中移除" else "已从${library.title}中移除 ${ids.size} 项")
+                }
+                .logFailure(TAG, "移除记录失败")
+                .onFailure {
+                    if (activeFolderId == library.id) files = before
+                    _messages.tryEmit("移除失败")
+                }
+        }
+    }
+
+    /** 清空播放历史。服务端没有撤销，官方客户端里的历史一起没了，由界面先确认。 */
+    fun clearPlayHistory() {
+        val before = files
+        files = emptyList()
+        exitSelection()
+        scope.launch {
+            driveRepo.clearPlayHistory()
+                .onSuccess {
+                    libraryListings.remove(DriveLibrary.HISTORY)
+                    _messages.tryEmit("已清空播放历史")
+                }
+                .logFailure(TAG, "清空播放历史失败")
+                .onFailure {
+                    if (activeFolderId == DriveLibrary.HISTORY.id) files = before
+                    _messages.tryEmit("清空失败")
+                }
+        }
+    }
+
+    /** 回收站里有恢复或彻底删除在进行。两者改的是同一份列表，并发执行会让选中与结果对不上。 */
+    var isTrashActionRunning by mutableStateOf(false)
+        private set
+
+    fun restoreFromTrash(ids: List<String>) = trashAction(ids) {
+        driveRepo.restore(ids)
+            .onSuccess {
+                exitSelection()
+                _messages.tryEmit(if (ids.size == 1) "已恢复" else "已恢复 ${ids.size} 项")
+            }
+            .logFailure(TAG, "恢复失败")
+            .onFailure { _messages.tryEmit("恢复失败") }
+    }
+
+    /** 彻底删除，不能撤销，由界面先确认。 */
+    fun deletePermanently(ids: List<String>) = trashAction(ids) {
+        driveRepo.delete(ids)
+            .onSuccess {
+                exitSelection()
+                _messages.tryEmit(if (ids.size == 1) "已彻底删除" else "已彻底删除 ${ids.size} 项")
+            }
+            .logFailure(TAG, "彻底删除失败")
+            .onFailure { _messages.tryEmit("删除失败") }
+    }
+
+    private fun trashAction(ids: List<String>, action: suspend () -> Unit) {
+        if (ids.isEmpty() || isTrashActionRunning) return
+        isTrashActionRunning = true
+        scope.launch {
+            try {
+                action()
+            } finally {
+                isTrashActionRunning = false
+                load(useCache = false, showRefreshing = false)
+            }
+        }
+    }
+
     fun changeSortOrder(order: PikoFileSortOrder) {
         if (order == sortOrder) return
         sortOrder = order
@@ -419,12 +596,11 @@ class DriveScreenState(
     }
 
     /**
-     * 地址栏里输入的路径：「网盘/动画/Frieren」，分隔符 / 与 \ 都认，开头的「网盘」可写可不写，一律从根算起。
+     * 地址栏里输入的路径，写法见 [addressPathNames]。
      * 找到了就跳过去（记进浏览历史），返回 true；找不到哪一层就提示哪一层，返回 false，地址栏留着让用户改。
      */
     suspend fun goToPath(text: String): Boolean {
-        val names = text.split('/', '\\').map { it.trim() }.filter { it.isNotEmpty() }
-            .let { if (it.firstOrNull() == PikoDriveRepository.ROOT_BREADCRUMB.name) it.drop(1) else it }
+        val names = addressPathNames(text, addressBase())
         return driveRepo.resolveFolderPath(names).fold(
             onSuccess = { stack ->
                 driveRepo.updateFolderStack(stack)
@@ -437,6 +613,45 @@ class DriveScreenState(
                 false
             },
         )
+    }
+
+    /**
+     * 地址栏边输边给的补全：最后一个分隔符之前是上级（写法同 [goToPath]），之后是正在输的一段，
+     * 列出上级里名字含这一段的文件夹，开头相同的在前，不分大小写。
+     * 还没输分隔符时上级是根，眼前不在根上的话，当前文件夹里匹配的也列上：多半是想往下走。
+     * 上级找不到时 [AddressCompletion.parentFound] 为 false，界面据此改给搜索。
+     * 列目录经仓库的子文件夹表，同一层连着敲字不会反复请求；调用方负责防抖与取消旧的一次。
+     */
+    suspend fun addressCompletions(text: String): AddressCompletion {
+        val current = addressBase()
+        val cut = text.indexOfLast { it == '/' || it == '\\' }
+        val partial = text.substring(cut + 1).trim()
+        val parentText = if (cut < 0) "" else text.substring(0, cut + 1)
+        val parent = driveRepo.resolveFolderPath(addressPathNames(parentText, current)).getOrNull()
+            ?: return AddressCompletion(partial, parentFound = false, matches = emptyList())
+        val bases = if (cut < 0 && current.size > 1) listOf(current, parent) else listOf(parent)
+        val matches = bases.flatMap { base ->
+            val folders = driveRepo.subfolders(base.last().id).getOrNull().orEmpty()
+            rankByName(folders, partial).map { base + it }
+        }.distinctBy { it.last().id }.take(ADDRESS_COMPLETION_LIMIT)
+        return AddressCompletion(partial, parentFound = true, matches = matches)
+    }
+
+    // 相对路径与补全以眼前的位置为起点；人在库里时那不是网盘里的一条路径，改从根起
+    private fun addressBase(): List<PikoPathBreadcrumb> =
+        driveRepo.folderStackFlow.value.takeIf { it.library == null } ?: listOf(PikoDriveRepository.ROOT_BREADCRUMB)
+
+    /** 某一级下的全部文件夹，地址栏里路径段后面的 › 点开用。 */
+    suspend fun subfoldersOf(folderId: String): Result<List<PikoPathBreadcrumb>> = driveRepo.subfolders(folderId)
+
+    /** 地址栏历史里的快速访问项：只存 ID 与名字，上级逐层查出来再跳，与侧边栏的快速访问相同。 */
+    fun openPinned(folder: PikoPathBreadcrumb) {
+        scope.launch {
+            driveRepo.locateFolder(folder.id)
+                .logFailure(TAG, "地址栏定位固定的文件夹失败")
+                .onSuccess { parents -> driveRepo.updateFolderStack(parents + folder) }
+                .onFailure { _messages.emit("找不到这个文件夹，它可能已被删除") }
+        }
     }
 
     fun navigateToFolder(breadcrumb: PikoPathBreadcrumb) {
@@ -525,7 +740,14 @@ class DriveScreenState(
      */
     suspend fun onFolderVisible(folder: FileStat) {
         if (!isNameParsing || isSearching) return
-        if (driveRepo.knownChildContents(folder.id) != null) return
+        driveRepo.knownChildContents(folder.id)?.let { known ->
+            // 记下的是空表时分不清真空还是只有子文件夹，海报墙要据此画空文件夹，探一下
+            if (known.isEmpty()) {
+                delay(PREFETCH_DWELL_MILLIS)
+                driveRepo.probeFolderEmptiness(folder.id)
+            }
+            return
+        }
         delay(PREFETCH_DWELL_MILLIS)
         val content = driveRepo.fetchChildContents(folder.id) ?: return
         folderViews[folder.id] = folderView(folder, content)
@@ -638,7 +860,7 @@ class DriveScreenState(
     }
 
     fun createFolder(name: String) {
-        if (name.isBlank()) return
+        if (name.isBlank() || libraryView != null) return
         val trimmed = name.trim()
         scope.launch {
             driveRepo.createFolder(activeFolder.id, trimmed)
@@ -744,7 +966,7 @@ class DriveScreenState(
     /** 粘贴到眼前的文件夹：剪切的移过来（剪贴板随即清空，与资源管理器相同），复制的复制一份过来。 */
     fun paste() {
         val clip = driveRepo.clipboardFlow.value ?: return
-        val target = driveRepo.folderStackFlow.value.lastOrNull() ?: return
+        val target = driveRepo.folderStackFlow.value.lastOrNull()?.takeIf { DriveLibrary.of(it.id) == null } ?: return
         val ids = clip.sources.keys.toList()
         if (clip.cut) {
             driveRepo.setClipboard(null)
@@ -768,4 +990,43 @@ class DriveScreenState(
                 .onFailure { _messages.tryEmit("复制失败") }
         }
     }
+}
+
+/**
+ * 地址栏补全的结果。[matches] 是完整路径栈（含根），末项是匹配 [partial] 的文件夹。
+ * [parentFound] 为 false 时输入的上级不存在，这时的输入多半不是路径。
+ */
+class AddressCompletion(
+    val partial: String,
+    val parentFound: Boolean,
+    val matches: List<List<PikoPathBreadcrumb>>,
+)
+
+private const val ADDRESS_COMPLETION_LIMIT = 50
+
+/**
+ * 地址栏的输入换成从根起的文件夹名。分隔符 / 与 \ 都认；以 .. 或 . 开头的相对当前位置，
+ * 其余一律从根起，开头的 / 与「网盘」可写可不写。.. 可以叠用、也可以写在中间，退过根就停在根。
+ */
+fun addressPathNames(text: String, current: List<PikoPathBreadcrumb>): List<String> {
+    val segments = text.split('/', '\\').map { it.trim() }.filter { it.isNotEmpty() }
+    val relative = !text.trimStart().startsWith('/') && segments.firstOrNull().let { it == ".." || it == "." }
+    val names = if (relative) current.drop(1).mapTo(ArrayList()) { it.name } else ArrayList()
+    segments.forEachIndexed { index, segment ->
+        when {
+            segment == ".." -> names.removeLastOrNull()
+            segment == "." -> Unit
+            index == 0 && !relative && segment == PikoDriveRepository.ROOT_BREADCRUMB.name -> Unit
+            else -> names += segment
+        }
+    }
+    return names
+}
+
+/** 名字含 [partial] 的，开头相同的在前，各自保持原来的顺序；[partial] 为空时全部。 */
+private fun rankByName(folders: List<PikoPathBreadcrumb>, partial: String): List<PikoPathBreadcrumb> {
+    if (partial.isEmpty()) return folders
+    val (prefixed, rest) = folders.filter { it.name.contains(partial, ignoreCase = true) }
+        .partition { it.name.startsWith(partial, ignoreCase = true) }
+    return prefixed + rest
 }

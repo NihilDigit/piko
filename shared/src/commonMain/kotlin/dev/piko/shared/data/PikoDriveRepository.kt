@@ -9,6 +9,7 @@ import io.github.nihildigit.pikpak.streamRangeFromUrl
 import io.github.nihildigit.pikpak.upload
 import io.github.nihildigit.pikpak.PikPakHash
 import dev.piko.data.repository.NaturalOrder
+import dev.piko.shared.sync.PikoSettingsSync
 import dev.piko.data.auth.PikoUserPreferences
 import io.github.nihildigit.pikpak.EventPage
 import io.github.nihildigit.pikpak.EventType
@@ -43,6 +44,7 @@ import io.github.nihildigit.pikpak.getTransferQuota
 import io.github.nihildigit.pikpak.listFiles
 import io.github.nihildigit.pikpak.listFilesPaged
 import io.github.nihildigit.pikpak.listPlayHistory
+import io.github.nihildigit.pikpak.listEvents
 import io.github.nihildigit.pikpak.listStarred
 import io.github.nihildigit.pikpak.listTrash
 import io.github.nihildigit.pikpak.rename
@@ -366,22 +368,73 @@ open class PikoDriveRepository(
      */
     suspend fun resolveFolderPath(names: List<String>): Result<List<PikoPathBreadcrumb>> = withContext(Dispatchers.Default) {
         runSuspendCatching {
-            val current = folderStackFlow.value
+            // 人在库里时路径栈的第一级不是根，地址栏里写的路径仍从根起
+            val current = folderStackFlow.value.takeIf { it.library == null } ?: listOf(ROOT_BREADCRUMB)
             val shared = current.drop(1).zip(names).takeWhile { (crumb, name) -> crumb.name == name }.size
             val stack = current.take(1 + shared).toMutableList()
             for (name in names.drop(shared)) {
-                val folders = client.listFiles(stack.last().id).filter { it.isFolder && !it.trashed }
-                val match = folders.firstOrNull { it.name == name }
-                    ?: folders.firstOrNull { it.name.equals(name, ignoreCase = true) }
+                val parentId = stack.last().id
+                // 记下的表可能早于刚建、刚移进来的文件夹，找不到时重列一次再下结论
+                stack += findFolder(subfolders(parentId).getOrThrow(), name)
+                    ?: findFolder(subfolders(parentId, fresh = true).getOrThrow(), name)
                     ?: throw FolderNotFoundException(name)
-                stack += PikoPathBreadcrumb(match.id, match.name)
             }
             stack
         }
     }
 
+    private fun findFolder(folders: List<PikoPathBreadcrumb>, name: String) =
+        folders.firstOrNull { it.name == name } ?: folders.firstOrNull { it.name.equals(name, ignoreCase = true) }
+
     /** [resolveFolderPath] 在某一层找不到 [name]。 */
     class FolderNotFoundException(val name: String) : Exception("找不到文件夹「$name」")
+
+    /*
+     * 地址栏补全与路径解析用的子文件夹表，按文件夹 ID 记。补全每敲一个字都要问「这一层有哪些文件夹」，
+     * 列目录是一次请求，所以记下来，至多 SUBFOLDER_CACHE_SIZE 层，过 SUBFOLDER_TTL 重取。
+     * listingCache 只留路径栈上的目录，补全常常走到栈外，不能只靠它。
+     * 按插入先后淘汰：Map 的 + 保留插入顺序，命中时挪到末尾，最久没用的排在最前。
+     */
+    private class SubfolderEntry(val folders: List<PikoPathBreadcrumb>, val listedAt: TimeSource.Monotonic.ValueTimeMark)
+
+    private val subfolderCache = MutableStateFlow<Map<String, SubfolderEntry>>(emptyMap())
+
+    /**
+     * [folderId] 下的文件夹，按名字自然排序，根目录下不含 `.piko`。先看路径栈上已列出的目录，再看记下的，
+     * 都没有或 [fresh] 时才请求。
+     */
+    suspend fun subfolders(folderId: String, fresh: Boolean = false): Result<List<PikoPathBreadcrumb>> = withContext(Dispatchers.Default) {
+        runSuspendCatching {
+            if (!fresh) {
+                listingCache.value[folderId]?.let { return@runSuspendCatching foldersIn(folderId, it) }
+                subfolderCache.value[folderId]?.takeIf { it.listedAt.elapsedNow() < SUBFOLDER_TTL }?.let { entry ->
+                    subfolderCache.update { (it - folderId) + (folderId to entry) }
+                    return@runSuspendCatching entry.folders
+                }
+            }
+            val folders = foldersIn(folderId, client.listFiles(folderId))
+            val entry = SubfolderEntry(folders, TimeSource.Monotonic.markNow())
+            subfolderCache.update { cache ->
+                val next = (cache - folderId) + (folderId to entry)
+                if (next.size <= SUBFOLDER_CACHE_SIZE) next else next.entries.drop(next.size - SUBFOLDER_CACHE_SIZE).associate { it.toPair() }
+            }
+            folders
+        }
+    }
+
+    private fun foldersIn(parentId: String, files: List<FileStat>) = files.asSequence()
+        .filter { it.isFolder && !it.trashed && !(parentId.isEmpty() && it.name == PikoSettingsSync.FOLDER_NAME) }
+        .sortedWith(compareBy(NaturalOrder) { it.name })
+        .map { PikoPathBreadcrumb(it.id, it.name) }
+        .toList()
+
+    // 建、改名、移走或删掉文件夹之后，记下的哪一层变了说不清，整张表丢掉，下次补全重列
+    private fun forgetSubfolders() {
+        subfolderCache.value = emptyMap()
+    }
+
+    /** 从最近去过的文件夹里删掉一条，地址栏的历史用。 */
+    fun removeRecentFolder(folderId: String) = recentFolders.remove(folderId)
 
     /*
      * 路径栈上每一级的列表与滚动位置。放在仓库层而不是界面状态里，是因为网盘页切走
@@ -421,6 +474,33 @@ open class PikoDriveRepository(
 
     private fun rememberChildContents(folderId: String, files: List<FileStat>) {
         childContents.put(folderId, files.filterNot(FileStat::isFolder).take(MAX_REMEMBERED_CHILD_NAMES).map(ChildFile::of))
+        _folderEmptiness.update { it + (folderId to files.isEmpty()) }
+    }
+
+    /*
+     * 列过的文件夹是不是空的，连子文件夹在内，按 ID；没列过的不在表里。海报墙给空文件夹画空的封面用。
+     * 不从 childContents 推：那里只记文件，只有子文件夹的与真空的都是一张空表，分不开；它还跨进程保留，
+     * 这里只在这一次运行里有效，重启后按需再探（probeFolderEmptiness）。
+     */
+    private val _folderEmptiness = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+    val folderEmptiness: StateFlow<Map<String, Boolean>> = _folderEmptiness.asStateFlow()
+
+    /**
+     * 只取一项，看文件夹空不空。记下的内容是空表、而这一次运行里还没列过它时才需要：那张空表可能是真空，
+     * 也可能只有子文件夹。一项的页不记进 childContents，免得把只取了一项当成全部内容。
+     */
+    suspend fun probeFolderEmptiness(folderId: String) = withContext(Dispatchers.Default) {
+        if (folderId in _folderEmptiness.value) return@withContext
+        childNameFetches.withPermit {
+            if (folderId in _folderEmptiness.value) return@withPermit
+            val files = runSuspendCatching { client.listFilesPaged(parentId = folderId, pageSize = 1).files }.getOrNull() ?: return@withPermit
+            _folderEmptiness.update { it + (folderId to files.isEmpty()) }
+        }
+    }
+
+    /** 往文件夹里放了东西或挪走了东西，空不空说不准了，等下次列到它再记。 */
+    private fun forgetEmptiness(vararg folderIds: String) {
+        _folderEmptiness.update { it - folderIds.toSet() }
     }
 
     /**
@@ -447,7 +527,8 @@ open class PikoDriveRepository(
     }
 
     private fun stackChanged() {
-        recentFolders.visited(_folderStackFlow.value)
+        // 库不是文件夹，不进「最近去过」；库里的子文件夹的路径以库开头，从命令面板再打开时也回不到真实的上级
+        if (_folderStackFlow.value.library == null) recentFolders.visited(_folderStackFlow.value)
         forgetFoldersOutsideStack()
         publishTabs()
     }
@@ -635,18 +716,25 @@ open class PikoDriveRepository(
     }
 
     suspend fun createFolder(parentId: String, name: String): Result<String> = withContext(Dispatchers.Default) {
-        runSuspendCatching { client.createFolder(parentId, name) }
+        runSuspendCatching { client.createFolder(parentId, name) }.onSuccess {
+            forgetSubfolders()
+            forgetEmptiness(parentId)
+        }
     }
 
     suspend fun rename(fileId: String, name: String): Result<Unit> = withContext(Dispatchers.Default) {
         runSuspendCatching { client.rename(fileId, name) }.onSuccess {
             recentFolders.forget(fileId)
             pinnedFolders.renamed(fileId, name)
+            forgetSubfolders()
         }
     }
 
     suspend fun trash(ids: List<String>): Result<Unit> = withContext(Dispatchers.Default) {
-        runSuspendCatching { client.batchTrash(ids) }.onSuccess { ids.forEach(recentFolders::forget) }
+        runSuspendCatching { client.batchTrash(ids) }.onSuccess {
+            ids.forEach(recentFolders::forget)
+            forgetSubfolders()
+        }
     }
 
     suspend fun restore(ids: List<String>): Result<Unit> = withContext(Dispatchers.Default) {
@@ -658,7 +746,11 @@ open class PikoDriveRepository(
     }
 
     suspend fun move(ids: List<String>, parentId: String): Result<Unit> = withContext(Dispatchers.Default) {
-        runSuspendCatching { client.batchMove(ids, parentId) }.onSuccess { ids.forEach(recentFolders::forget) }
+        runSuspendCatching { client.batchMove(ids, parentId) }.onSuccess {
+            ids.forEach(recentFolders::forget)
+            forgetSubfolders()
+            forgetEmptiness(parentId)
+        }
     }
 
     /**
@@ -666,7 +758,7 @@ open class PikoDriveRepository(
      * 复制到自身或自己的子目录里会被拒绝（file_move_or_copy_to_cur）。SDK 已按 id 上限分批。
      */
     suspend fun copy(ids: List<String>, parentId: String): Result<Unit> = withContext(Dispatchers.Default) {
-        runSuspendCatching { client.batchCopy(ids, parentId); Unit }
+        runSuspendCatching { client.batchCopy(ids, parentId); Unit }.onSuccess { forgetEmptiness(parentId) }
     }
 
     suspend fun search(query: String): Result<List<FileStat>> = withContext(Dispatchers.Default) {
@@ -764,7 +856,17 @@ open class PikoDriveRepository(
         runSuspendCatching { client.listPlayHistory(pageToken = pageToken) }
     }
 
-    suspend fun deletePlayEvents(eventIds: List<String>): Result<Unit> = withContext(Dispatchers.Default) {
+    /**
+     * 最近添加的一页：上传与离线、秒传加进网盘的文件，按时间倒序，与官方客户端「最近添加」同一份。
+     * 明写这两种类型，不用不带过滤的查询：不带过滤时服务端恰好只给这两种（SDK 的 listEvents 实测），
+     * 但那是服务端眼下的默认，以后多一种事件就会混进来。
+     */
+    suspend fun recentlyAdded(pageToken: String = ""): Result<EventPage> = withContext(Dispatchers.Default) {
+        runSuspendCatching { client.listEvents(listOf(EventType.UPLOAD, EventType.RESTORE), pageToken = pageToken) }
+    }
+
+    /** 删掉几条事件记录（播放历史或最近添加里的一行），文件本身不动。 */
+    suspend fun deleteEvents(eventIds: List<String>): Result<Unit> = withContext(Dispatchers.Default) {
         runSuspendCatching { client.deleteEvents(eventIds) }
     }
 
@@ -841,6 +943,8 @@ open class PikoDriveRepository(
         private const val CHILD_NAME_PAGE = 20
         private const val CHILD_NAME_CONCURRENCY = 2
         private const val MAX_REMEMBERED_CHILD_NAMES = 200
+        private const val SUBFOLDER_CACHE_SIZE = 32
+        private val SUBFOLDER_TTL = 60.seconds
 
         private const val MY_PACKS_FOLDER_NAME = "My Packs"
 

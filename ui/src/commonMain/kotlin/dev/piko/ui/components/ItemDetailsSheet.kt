@@ -34,6 +34,10 @@ class SheetAction(
     val label: String,
     val onClick: () -> Unit,
     val destructive: Boolean = false,
+    /** 右键菜单里的分组，同号的排在一个容器里，按出现的先后排。危险操作不论几号都单独成组放在最后。 */
+    val group: Int = 0,
+    /** 几选一里的一项（视图）：true 是眼下这一项，菜单里打勾；null 不是这类项。 */
+    val checked: Boolean? = null,
 )
 
 /**

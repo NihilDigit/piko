@@ -1,6 +1,12 @@
 package dev.piko.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -56,6 +62,9 @@ private val RowMinHeight = 72.dp
 // 两者相加使内容仍落在紧凑窗口 16dp 的页边距上。末端为 0，让尾部 48dp 图标按钮
 // 自带的 12dp 内边距把图标对齐到同一条页边距。
 private val RowOuterPadding = 4.dp
+
+/** 上下两行之间的缝，M3 容器化列表的分段间隙（lists.md 的 Gaps & dividers）。 */
+private val RowGap = 4.dp
 private val RowContentPadding = PaddingValues(start = 12.dp, end = 0.dp, top = 8.dp, bottom = 8.dp)
 
 /** 禁用态内容的不透明度，用于弱化显示的行。 */
@@ -105,12 +114,23 @@ fun FileListItem(
     } else {
         ListItemDefaults.colors()
     }
+    // 各状态同一个圆角，行与行之间留一道缝。库的默认是平时直角、选中换大圆角：相邻两行都选中时底色连成一片，
+    // 看不出是几项；选中与取消时形状还要变形，与连体按钮一样有算出负圆角的风险（见 connectedToggleShapes）
+    val rowShape = MaterialTheme.shapes.medium
+    val shapes = ListItemDefaults.shapes(
+        shape = rowShape,
+        selectedShape = rowShape,
+        pressedShape = rowShape,
+        focusedShape = rowShape,
+        hoveredShape = rowShape,
+        draggedShape = rowShape,
+    )
     val itemModifier = modifier
         .fillMaxWidth()
-        .padding(horizontal = RowOuterPadding)
+        .padding(horizontal = RowOuterPadding, vertical = RowGap / 2)
         .heightIn(min = RowMinHeight)
-        .focusIndication(MaterialTheme.shapes.medium)
-        .locateHighlight(isHighlighted, MaterialTheme.shapes.medium)
+        .focusIndication(rowShape)
+        .locateHighlight(isHighlighted, rowShape)
     // 弱化加在各槽位上而不是整行：整行降透明度会连按压的状态层一起变淡
     val slotModifier = if (dimmed) Modifier.alpha(DIMMED_ALPHA) else Modifier
 
@@ -152,6 +172,7 @@ fun FileListItem(
             },
             supportingContent = supportingSlot,
             colors = colors,
+            shapes = shapes,
             contentPadding = RowContentPadding,
             content = headlineSlot,
         )
@@ -171,6 +192,7 @@ fun FileListItem(
             },
             onLongClickLabel = if (onLongClick != null) "多选" else null,
             colors = colors,
+            shapes = shapes,
             contentPadding = RowContentPadding,
             content = headlineSlot,
         )
@@ -184,6 +206,22 @@ fun ListMoreButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
         Icon(imageVector = Icons.Outlined.MoreVert, contentDescription = "更多操作")
     }
 }
+
+/**
+ * 网盘条目的详情按钮，取代原来的三点。[onHoverOnly] 时（有详情栏的宽窗口）平时不画，鼠标移到条目上才出现：
+ * 每一项都挂着一个按钮，一屏下来满是一样的图标，而鼠标用户要的只是指着的那一项；右键菜单照样有全部操作。
+ * 没有悬停可言的触屏上一直显示，否则那里就没有打开操作面板的地方。不显示时仍占着位置，出现时标题不跟着挤。
+ */
+@Composable
+fun ItemDetailsButton(visible: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    if (visible) {
+        TooltipIconButton(Icons.Outlined.Info, "详情", onClick, modifier = modifier.ownsClicks())
+    } else {
+        Spacer(modifier.size(ItemDetailsButtonSize))
+    }
+}
+
+private val ItemDetailsButtonSize = 48.dp
 
 /**
  * 网盘文件的一行。名字最多两行，扩展名移到副标题单列，所以截断发生时丢掉的是名字中段
@@ -200,7 +238,9 @@ fun FileListItem(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     onSelectToggle: (Boolean) -> Unit,
-    onMoreClick: () -> Unit,
+    onDetailsClick: () -> Unit,
+    /** 详情按钮只在鼠标悬停时出现，见 [ItemDetailsButton]。 */
+    detailsOnHover: Boolean,
     modifier: Modifier = Modifier,
     isHighlighted: Boolean = false,
     isSpoilerBlurred: Boolean = false,
@@ -211,14 +251,17 @@ fun FileListItem(
     /** 番号芯片，排在标签行最前。 */
     code: String? = null,
 ) {
+    val hover = remember { MutableInteractionSource() }
+    val hovered by hover.collectIsHoveredAsState()
     FileListItem(
         headline = title ?: file.displayTitle(),
         headlineMaxLines = if (title != null) 1 else 2,
         headlineFontWeight = if (file.isFolder) FontWeight.Medium else null,
         leading = { FileLeadingVisual(file = file, isSpoilerBlurred = isSpoilerBlurred) },
         onClick = onClick,
-        onMoreClick = onMoreClick,
-        modifier = modifier,
+        onMoreClick = onDetailsClick,
+        trailing = { ItemDetailsButton(visible = !detailsOnHover || hovered, onClick = onDetailsClick) },
+        modifier = modifier.hoverable(hover),
         badge = if (file.isStarred) {
             { StarMark() }
         } else {

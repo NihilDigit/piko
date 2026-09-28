@@ -56,6 +56,15 @@ internal class RecentFolders(private val store: PikoCacheStore?, private val sco
         save()
     }
 
+    /**
+     * 用户从地址栏的历史里删掉一条。只删以它结尾的那一条：[forget] 连经过它的子文件夹也一并拿掉，
+     * 那是文件夹没了的情形，这里文件夹还在，只是不想在历史里看到它。
+     */
+    fun remove(folderId: String) {
+        folders.update { list -> list.filterNot { it.last().id == folderId } }
+        save()
+    }
+
     private fun merge(first: List<List<PikoPathBreadcrumb>>, then: List<List<PikoPathBreadcrumb>>) =
         (first + then).distinctBy { it.last().id }.take(LIMIT)
 

@@ -5,7 +5,7 @@ import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.TaskRepository
 import dev.piko.shared.state.DriveScreenState
 import dev.piko.shared.state.OfflineTasksState
-import dev.piko.shared.state.TrashScreenState
+import dev.piko.shared.data.DriveLibrary
 import io.github.nihildigit.pikpak.TaskPhase
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
@@ -57,11 +57,10 @@ class TasksAndTrashSmokeTest {
     }
 
     /**
-     * 防的是恢复后网盘列表不更新：恢复发生在回收站界面，网盘列表不在前台、不会自己重拉，
-     * 只能靠仓库层的 refreshEvents。Desktop 旧实现就漏了这一步。
+     * 回收站是网盘页里的一个位置。防的是两件事：恢复后回收站列表不更新，以及回到网盘时停在恢复之前的缓存上。
      */
     @Test
-    fun `restoring from trash refreshes the drive listing that is off screen`() = smoke { scope ->
+    fun `restoring from trash shows the file when going back to the drive`() = smoke { scope ->
         val server = FakePikPakServer()
         val file = server.addFile("a.mkv", trashed = true)
         val prefs = MemoryPreferences()
@@ -71,16 +70,17 @@ class TasksAndTrashSmokeTest {
         awaitUntil("网盘列表加载完成") { !drive.isLoading }
         assertEquals(emptyList(), drive.files.map { it.name })
 
-        val trash = TrashScreenState(repository, scope)
-        trash.load()
-        awaitUntil("回收站加载完成") { trash.files.isNotEmpty() }
-        trash.enterSelection(file.id)
-        trash.restore(trash.selectedFileIds.toList())
+        repository.updateFolderStack(listOf(DriveLibrary.TRASH.crumb))
+        awaitUntil("回收站加载完成") { drive.files.any { it.id == file.id } }
+        drive.enterSelection(file.id)
+        drive.restoreFromTrash(drive.selectedFileIds.toList())
+        awaitUntil("回收站移除该文件") { drive.files.isEmpty() && !drive.isTrashActionRunning }
+        assertEquals(false, drive.isSelectionMode)
+        assertNull(drive.loadError)
 
+        // 根目录的缓存是恢复之前列的，回去时先显示它，后台重列后才有这个文件
+        drive.goBack()
         awaitUntil("网盘列表出现恢复的文件") { drive.files.any { it.id == file.id } }
-        awaitUntil("回收站移除该文件") { trash.files.isEmpty() }
-        assertEquals(false, trash.isSelectionMode)
-        assertNull(trash.loadError)
     }
 
     /**
