@@ -32,10 +32,15 @@ Piko 是 PikPak 的第三方跨平台客户端。Android、Windows 与 macOS（�
 网盘能力全部来自 `io.github.nihildigit:pikpak-kotlin`（版本在 `gradle/libs.versions.toml`），
 作者同一人，源码通常在本机 `../pikpak-kotlin`。
 
-**需要改 SDK 时**：在 SDK 仓库 `./gradlew publishToMavenLocal`（那边需要 `ANDROID_HOME`，
-仓库里没有 `local.properties`），把版本指向对应的 SNAPSHOT，并在 `settings.gradle.kts` 的
-`dependencyResolutionManagement` 里临时加 `mavenLocal`。**提交前必须移除 mavenLocal 并指向
-已发布版本**——发版在干净 runner 上构建，本机 `~/.m2` 在那里不存在，否则 release 必挂。
+**需要改 SDK 时**：在本仓库的 `local.properties` 里写 `pikpak.sdk.dir=../pikpak-kotlin`，`settings.gradle.kts`
+就以复合构建把依赖里的 `pikpak-kotlin` 换成那个目录的源码，改了 SDK 下次编译即生效，不必发 SNAPSHOT、不必改版本号。
+SDK 那边的 `local.properties` 要有 `sdk.dir`（Android 插件在复合构建里读它）。两个仓库的 Kotlin、AGP 与 Gradle
+版本要一致：AGP 不同时 Gradle 判断不了两边的 Android 变体是否匹配，直接解析失败。
+`local.properties` 不进仓库，CI 照常取 `libs.versions.toml` 里的正式版本，所以用到 SDK 新接口的改动要等 SDK 发版、
+版本号改过去才能推。**不要再用 mavenLocal**：`publishToMavenLocal` 版本号没改对时会覆盖本机缓存里的正式版。
+
+Maven Central 按月给命名空间限额（`io.github.nihildigit` 是 11 次发版、5,460 个文件，见 Sonatype 的 Usage Center），
+2026 年 9 月发了 18 版、超了。联调走复合构建，SDK 的改动攒着一起发。
 
 ## 发版
 
