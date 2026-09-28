@@ -65,11 +65,16 @@ private class TextureBridge(private val backend: MpvPlaybackBackend) : TextureVi
     override fun onSurfaceTextureSizeChanged(texture: SurfaceTexture, width: Int, height: Int) =
         backend.setSurfaceSize(width, height)
 
+    // 返回 false 是由我们来释放：mpv 在它自己的线程上放开画面之后才释放，界面线程不等它，
+    // 信息流每翻一页都有一个预览的画面拆掉重建，在主线程上等要一两百毫秒（2026-09-28）
     override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
-        backend.detachSurface()
-        surface?.release()
+        val released = surface
         surface = null
-        return true
+        backend.detachSurface {
+            released?.release()
+            texture.release()
+        }
+        return false
     }
 
     override fun onSurfaceTextureUpdated(texture: SurfaceTexture) = Unit

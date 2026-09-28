@@ -21,12 +21,10 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RangeSlider
 import androidx.compose.material3.Text
 import androidx.compose.material3.ToggleButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -74,7 +72,7 @@ private const val MIN_CLIP_MS = 500L
  *
  * 只放一个预览，用「起点 | 终点」切换它显示哪一端；拖动区间滑块时自动跟随被拖的那一端。
  * 原先两张半屏宽的预览并排，画面小到看不清，且各开一个代理会话，白占一份账号连接预算。
- * 取消靠下滑关闭面板，不另设按钮。
+ * 取消靠关闭面板（下滑、点遮罩或宽窗口的关闭按钮），不另设按钮。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -85,7 +83,6 @@ fun SegmentDownloadSheet(
     /** 初始区间，随机片段里「下载这一段」带过来；为 null 时从头起一分钟。 */
     initialRange: LongRange? = null,
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val mediaRepo = LocalPikoServices.current.mediaRepository
 
     var mediaInfo by remember { mutableStateOf<PlayableMediaInfo?>(null) }
@@ -117,11 +114,10 @@ fun SegmentDownloadSheet(
         }
     }
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+    PikoSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .wheelStaysInSheet()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 24.dp)
                 .padding(bottom = 24.dp),

@@ -95,12 +95,16 @@ class FileClipCache(
         }
     }
 
-    /** 删到 [capBytes] 以下，返回剩下的总量。 */
+    /**
+     * 删到 [capBytes] 的 [EVICT_TO] 以下，返回剩下的总量。只删到上限的话，下一块写进来又超，
+     * 每写一块都要把上千个块文件列一遍、排一遍序，还持着锁；缓存满了之后，实验里取开头的吞吐掉了约三成（2026-09-28，piko-cli bench --store）。
+     */
     private fun evictBlocks(): Long {
         val files = blockDirectory.walkTopDown().filter { it.isFile && !it.name.endsWith(".tmp") }.toList()
         var total = files.sumOf { it.length() }
+        val target = (capBytes * EVICT_TO).toLong()
         for (file in files.sortedBy { it.lastModified() }) {
-            if (total <= capBytes) break
+            if (total <= target) break
             val size = file.length()
             if (file.delete()) total -= size
         }
@@ -134,5 +138,6 @@ class FileClipCache(
         const val FORMAT = 2
         const val DEFAULT_CAP_BYTES = 300L * 1024 * 1024
         const val MAX_RECORDS = 4096
+        const val EVICT_TO = 0.8
     }
 }

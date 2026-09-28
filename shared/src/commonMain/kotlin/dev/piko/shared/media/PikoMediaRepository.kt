@@ -79,6 +79,13 @@ class PreparedPlayback internal constructor(
     /** 本机代理的地址。handle 建不起来（例如没有 gcid）时为 null，只能读直链。 */
     val proxyUrl: String? get() = stream?.url
 
+    /** 有人正等着：出第一帧前、拖动后、卡在缓冲上。见 ProxyStream.urgent。 */
+    var urgent: Boolean
+        get() = stream?.urgent ?: false
+        set(value) {
+            stream?.urgent = value
+        }
+
     override fun close() {
         stream?.close()
     }
@@ -213,7 +220,7 @@ class PikoMediaRepository(
 
     /**
      * 这个文件有没有随机片段要的那档转码。列目录不带转码信息，只能逐个查详情；
-     * 查不到按没有算，随机片段宁可少一段，不放一段起播要十几秒的原画。
+     * 查不到按没有算，信息流把它排到有转码的后面，轮到时放原画。
      */
     suspend fun hasClipTranscode(fileId: String): Boolean =
         withContext(Dispatchers.Default) {
@@ -289,7 +296,9 @@ class PikoMediaRepository(
             bytesPerMs = bytesPerMs,
             resolveStart = keyframe?.let { sliceStart ->
                 {
-                    TsTimestamps.firstVideoPtsMs(source.readAt(0, STREAM_HEAD_BYTES))
+                    // 前台读：这一步在开头预取之后、算作取好之前，与预取一样急。以后台身份读，预取一结束这个文件
+                    // 就没有前台需求，被限到两路、排在所有段的预取之后，取好一段要等别段取完一段（2026-09-28）
+                    TsTimestamps.firstVideoPtsMs(source.readAt(0, STREAM_HEAD_BYTES, StreamRole.FOREGROUND))
                         ?.let { streamStart -> TsTimestamps.elapsedMs(streamStart, sliceStart.ptsMs) }
                 }
             },
@@ -313,10 +322,17 @@ class PikoMediaRepository(
         return null
     }
 
-    /** 读 [offset] 起的 [length] 字节，流尾之前读不满就交出读到的。另开一个 reader，不动播放器的读位置。 */
-    private suspend fun ProxyByteSource.readAt(offset: Long, length: Int, role: StreamRole = StreamRole.BACKGROUND): ByteArray {
-        val buffer = ByteArray(length.coerceAtMost((size - offset).coerceAtLeast(0).toInt()))
+    /**
+     * 读 [offset] 起的 [length] 字节，流尾之前读不满就交出读到的。另开一个 reader，不动播放器的读位置。
+     *
+     * reader 的预读压到最小：默认窗口 32 MB，为读几十 KB 开一个，会顺手往后要一串块，
+     * 信息流冷开时十来段各开几个，白白占着连接（2026-09-28 的传输汇总里大半是这种请求）。
+     */
+    private suspend fun ProxyByteSource.readAt(offset: Long, length: Int, role: StreamRole): ByteArray {
+        // 先在 Long 上取小再转 Int：超过 2 GB 的流，剩余长度直接转 Int 会溢出成负数
+        val buffer = ByteArray(minOf(length.toLong(), (size - offset).coerceAtLeast(0)).toInt())
         openReader(role).use { reader ->
+            reader.readAheadLimit = 0
             reader.seekTo(offset)
             var filled = 0
             while (filled < buffer.size) {

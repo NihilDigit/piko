@@ -35,6 +35,7 @@ import dev.piko.ui.theme.PikoTheme
  * 窗口开着时应用内只留占位，同一时刻只有一个 ClipFeedScreen 在组合里，见 PikoMainScaffold。
  *
  * [raise] 每变一次把窗口调到前台：窗口已开着时再点弹出，应当回到它而不是没有反应。
+ * 关窗是关掉信息流（[onClose]），顶栏另有收回主窗口的按钮（[ClipFeedLinks.dock]）。
  */
 @Composable
 fun ClipFeedWindow(
@@ -75,6 +76,7 @@ fun ClipFeedWindow(
                         onBackClick = onClose,
                         onPlayFull = links.playFull,
                         onLocate = links.locate,
+                        onDock = links.dock,
                         modifier = Modifier.trackPointerSource(pointerSource),
                     )
                 }

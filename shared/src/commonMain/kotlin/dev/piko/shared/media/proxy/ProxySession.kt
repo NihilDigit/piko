@@ -48,12 +48,23 @@ internal class ProxySession(private val source: ProxyByteSource) : AutoCloseable
         }
 
     /**
+     * 有人正等着这个会话，见 [ProxyReader.urgent]。同步给在读的 reader，之后开的照它开：
+     * 拖动时播放器正是新开一个请求去读新位置。
+     */
+    @Volatile
+    var urgent: Boolean = false
+        set(value) {
+            field = value
+            readers.value.forEach { it.urgent = value }
+        }
+
+    /**
      * 把 [ranges] 取进缓存，等全部到手才返回；[role] 缺省为会话的角色。没有缓存可填的来源立即返回。
      * 等的一方被取消（超时、翻走）时一并撤回这次预取：SDK 的预取不随等待者取消，留着它会以更早的
      * 需求排在眼前要放的段前面。
      */
-    suspend fun prefetch(ranges: List<LongRange>, role: StreamRole = this.role) {
-        val warm = source.prefetch(ranges, role) ?: return
+    suspend fun prefetch(ranges: List<LongRange>, role: StreamRole = this.role, priority: Int? = null) {
+        val warm = source.prefetch(ranges, role, priority) ?: return
         try {
             warm.await()
         } finally {
@@ -69,6 +80,7 @@ internal class ProxySession(private val source: ProxyByteSource) : AutoCloseable
         try {
             if (isClosed) throw CancellationException("会话已关闭")
             readAheadLimit?.let { reader.readAheadLimit = it }
+            if (urgent) reader.urgent = true
             if (start != 0L) reader.seekTo(start)
             pump(reader, start, endExclusive, sink)
         } catch (e: CancellationException) {

@@ -40,6 +40,12 @@ internal class SlicedByteSource(
                 reader.readAheadLimit = value
             }
 
+        override var urgent: Boolean
+            get() = reader.urgent
+            set(value) {
+                reader.urgent = value
+            }
+
         override val position: Long get() = reader.position - offset
 
         override suspend fun seekTo(position: Long) = reader.seekTo(position + offset)

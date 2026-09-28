@@ -123,6 +123,9 @@ internal class MediampPlaybackBackend(
             // 字节上限对低码率的流不够：720P 转码约 120 KB/s，8 MiB 是一分多钟，比随机片段的一整段还长。
             // 预渲染的两个播放器暂停着也会读满它，把下一段的预取挤慢，所以再按时长卡一道
             mpv?.setPropertyString("cache-secs", "$PREVIEW_CACHE_SECONDS")
+            // 打开时少探测，尽量只读预取好的那几秒开头，理由见 Android 的 MpvPlaybackBackend
+            mpv?.setPropertyString("demuxer-lavf-probesize", "$PREVIEW_PROBE_BYTES")
+            mpv?.setPropertyString("demuxer-lavf-analyzeduration", "$PREVIEW_ANALYZE_SECONDS")
         }
         if (keyframeStart) mpv?.setPropertyString("hr-seek", "no")
         scope.launch { player.currentPositionMillis.collect { positionMillis = it } }
@@ -266,6 +269,15 @@ internal class MediampPlaybackBackend(
         if (volume > 0f && feature.isMute.value) feature.setMute(false)
     }
 
+    /** 见 PreviewBackend.setBufferAhead。mpv 的缓存选项改了下一轮读即生效，不必重开文件。 */
+    fun setBufferAhead(seconds: Int) {
+        mpv?.setPropertyString("cache-secs", "$seconds")
+    }
+
+    fun bufferReport(): String? = mpv?.let { handle ->
+        "cache-secs=${handle.getPropertyString("cache-secs")}，缓存 ${handle.getPropertyString("demuxer-cache-duration")} 秒"
+    }
+
     override fun setAspectRatio(mode: PlayerAspectRatio) {
         aspectRatioFeature?.setMode(
             when (mode) {
@@ -299,6 +311,8 @@ private const val MIB = 1024 * 1024
 
 /** 预览往后缓冲的秒数，见 init。 */
 private const val PREVIEW_CACHE_SECONDS = 8
+private const val PREVIEW_PROBE_BYTES = 1024 * 1024
+private const val PREVIEW_ANALYZE_SECONDS = 1
 
 /** 句柄取不到时退回 MediaMP 读的轨道：音轨没有语言，也分不出外挂。 */
 private fun snapshotOf(feature: MediaMetadata, audio: List<AudioTrack>, subtitles: List<SubtitleTrack>) = MpvTrackSnapshot(

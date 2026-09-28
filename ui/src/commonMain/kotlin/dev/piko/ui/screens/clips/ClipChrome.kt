@@ -27,27 +27,30 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
+import androidx.compose.material.icons.automirrored.outlined.ViewSidebar
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.outlined.ArrowDropDown
-import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
-import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.OpenInFull
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.StarOutline
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TooltipAnchorPosition
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -79,7 +82,6 @@ import coil3.compose.AsyncImage
 import coil3.compose.LocalPlatformContext
 import coil3.request.ImageRequest
 import coil3.size.Precision
-import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.naming.FileKind
 import dev.piko.shared.naming.parseMediaName
 import dev.piko.shared.state.Clip
@@ -91,20 +93,24 @@ import dev.piko.ui.screens.player.handCursor
 import kotlin.math.roundToInt
 
 /**
- * 顶栏：正中是范围，点开换文件夹；右侧是静音与关闭。[onClose] 为 null 时不显示关闭键，
- * 侧栏里的信息流由面板自己的标题栏关闭。
+ * 顶栏：正中是在刷的文件夹，右侧是静音、在窗口间挪动与关闭。侧栏里的信息流也用这一条，
+ * 不另压一条栏名：整张卡是一块黑底的竖屏画面。文件夹名只是标明范围，不能点：范围就是打开时网盘页所在的文件夹。
  *
- * 桌面上片段窗口没有标题栏，范围左侧的空白兼做拖动区。拖动区只能是一块矩形，
- * 盖住范围或按钮的话它们就点不动了，所以只取左侧这一段。
+ * [onPopOut] 弹出到独立窗口，[onDock] 从独立窗口收回主窗口，只在桌面端、各在它该出现的形态里给出。
+ *
+ * 桌面上片段窗口没有标题栏，文件夹名左侧的空白兼做拖动区。拖动区只能是一块矩形，
+ * 盖住按钮的话它们就点不动了，所以只取左侧这一段。
  */
 @Composable
 internal fun ClipFeedTopBar(
-    scope: ClipScopeMenu,
+    title: String,
     muted: Boolean,
     onToggleMute: () -> Unit,
     onClose: (() -> Unit)?,
     compact: Boolean,
     modifier: Modifier = Modifier,
+    onPopOut: (() -> Unit)? = null,
+    onDock: (() -> Unit)? = null,
 ) {
     val buttonSize = if (compact) 40.dp else 48.dp
     Row(
@@ -115,10 +121,16 @@ internal fun ClipFeedTopBar(
             .padding(horizontal = if (compact) 4.dp else 8.dp, vertical = if (compact) 4.dp else 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Spacer(Modifier.weight(1f).height(buttonSize).windowDragArea())
-        ScopeChip(scope, compact)
+        // 侧栏里窄，文件夹名靠左、按钮靠右，才有位置写得下；全屏与独立窗口里照短视频应用居中，
+        // 左侧空白兼做窗口的拖动区
+        if (compact) {
+            Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) { ScopeTitle(title, compact) }
+        } else {
+            Spacer(Modifier.weight(1f).height(buttonSize).windowDragArea())
+            ScopeTitle(title, compact)
+        }
         Row(
-            modifier = Modifier.weight(1f),
+            modifier = if (compact) Modifier else Modifier.weight(1f),
             horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -127,95 +139,39 @@ internal fun ClipFeedTopBar(
                 label = if (muted) "取消静音" else "静音",
                 onClick = onToggleMute,
                 size = buttonSize,
+                tooltip = true,
+                shortcut = "M",
             )
-            if (onClose != null) ChromeIconButton(Icons.Filled.Close, "关闭", onClose, buttonSize)
+            if (onPopOut != null) ChromeIconButton(Icons.AutoMirrored.Outlined.OpenInNew, "在独立窗口播放", onPopOut, buttonSize, tooltip = true)
+            if (onDock != null) ChromeIconButton(Icons.AutoMirrored.Outlined.ViewSidebar, "收回到主窗口", onDock, buttonSize, tooltip = true)
+            if (onClose != null) ChromeIconButton(Icons.Filled.Close, "关闭信息流", onClose, buttonSize, tooltip = true)
         }
     }
 }
 
-/**
- * 范围菜单的内容。[current] 是网盘页眼下所在的文件夹，[recent] 是最近刷过的，新的在前，
- * [selectedId] 是正在刷的那一个。
- */
-internal class ClipScopeMenu(
-    val title: String,
-    val current: PikoPathBreadcrumb?,
-    val recent: List<PikoPathBreadcrumb>,
-    val selectedId: String?,
-    val onOpen: () -> Unit,
-    val onPick: (PikoPathBreadcrumb) -> Unit,
-)
-
 @Composable
-private fun ScopeChip(menu: ClipScopeMenu, compact: Boolean) {
-    var expanded by remember { mutableStateOf(false) }
-    Box {
-        Surface(
-            onClick = {
-                menu.onOpen()
-                expanded = true
-            },
-            shape = CircleShape,
-            color = chromeContainer(),
-            contentColor = Color.White,
-            modifier = Modifier.widthIn(max = if (compact) 180.dp else 260.dp).handCursor(),
+private fun ScopeTitle(title: String, compact: Boolean) {
+    Surface(
+        shape = CircleShape,
+        color = chromeContainer(),
+        contentColor = Color.White,
+        modifier = Modifier.widthIn(max = if (compact) 180.dp else 260.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Row(
-                modifier = Modifier.padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = menu.title,
-                    style = (if (compact) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium)
-                        .copy(fontWeight = FontWeight.SemiBold),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false),
-                )
-                Icon(Icons.Outlined.ArrowDropDown, contentDescription = "切换范围")
-            }
-        }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            fun pick(folder: PikoPathBreadcrumb) {
-                expanded = false
-                menu.onPick(folder)
-            }
-            menu.current?.let { current ->
-                MenuHeading("当前目录")
-                ScopeItem(current, Icons.Outlined.Folder, current.id == menu.selectedId) { pick(current) }
-            }
-            val recent = menu.recent.filter { it.id != menu.current?.id }
-            if (recent.isNotEmpty()) {
-                MenuHeading("最近打开")
-                recent.forEach { folder ->
-                    ScopeItem(folder, Icons.Outlined.History, folder.id == menu.selectedId) { pick(folder) }
-                }
-            }
+            Icon(Icons.Outlined.Folder, contentDescription = null, modifier = Modifier.size(18.dp))
+            Text(
+                text = title,
+                style = (if (compact) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium)
+                    .copy(fontWeight = FontWeight.SemiBold),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
-}
-
-@Composable
-private fun MenuHeading(text: String) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-    )
-}
-
-@Composable
-private fun ScopeItem(folder: PikoPathBreadcrumb, icon: ImageVector, selected: Boolean, onClick: () -> Unit) {
-    DropdownMenuItem(
-        text = { Text(folder.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-        onClick = onClick,
-        leadingIcon = { Icon(icon, contentDescription = null) },
-        trailingIcon = if (selected) {
-            { Icon(Icons.Outlined.Check, contentDescription = "正在浏览") }
-        } else null,
-        modifier = Modifier.widthIn(max = 320.dp),
-    )
 }
 
 /**
@@ -273,6 +229,11 @@ private fun RailAction(icon: ImageVector, label: String, onClick: () -> Unit, co
     }
 }
 
+/**
+ * 画面上的圆形按钮。[tooltip] 为 true 时鼠标停上去显示 [label]（带上 [shortcut]）：顶栏的几个只有图标，
+ * 右侧操作栏的下面已写着字，不必再弹。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ChromeIconButton(
     icon: ImageVector,
@@ -281,7 +242,19 @@ private fun ChromeIconButton(
     size: Dp,
     iconSize: Dp = 24.dp,
     tint: Color = Color.Unspecified,
+    tooltip: Boolean = false,
+    shortcut: String? = null,
 ) {
+    if (tooltip) {
+        TooltipBox(
+            positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
+            tooltip = { PlainTooltip { Text(if (shortcut != null) "$label ($shortcut)" else label) } },
+            state = rememberTooltipState(),
+        ) {
+            ChromeIconButton(icon, label, onClick, size, iconSize, tint)
+        }
+        return
+    }
     FilledTonalIconButton(
         onClick = onClick,
         shapes = IconButtonDefaults.shapes(),

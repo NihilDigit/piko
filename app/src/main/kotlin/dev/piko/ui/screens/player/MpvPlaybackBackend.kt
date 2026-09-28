@@ -27,6 +27,9 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import java.io.File
 import java.util.Locale
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 
 /**
@@ -100,7 +103,7 @@ internal class MpvPlaybackBackend(
     private var resizedSinceRedraw = false
 
     // 暂停时 mpv 不会因为换尺寸而重画，原地精确 seek 一次逼它按新尺寸再出一帧
-    private val redrawGate = SurfaceRedrawGate { if (!released) mpv.command(arrayOf("seek", "0", "relative+exact")) }
+    private val redrawGate = SurfaceRedrawGate { onMpv { mpv.command(arrayOf("seek", "0", "relative+exact")) } }
 
     // mpv 每个 loadfile 恰好对应一个 END_FILE，且按提交顺序到达。换片或停止前记下
     // 已提交的数量，此前的 END_FILE 都是我们自己替换掉的；超出部分才是当前文件异常结束。
@@ -111,6 +114,9 @@ internal class MpvPlaybackBackend(
 
     @Volatile private var lastErrorLog: String? = null
     @Volatile private var readySent = false
+
+    // 每个播放器只记一次实际用上的音频输出与硬解，核对 ao 的设定生效没有
+    @Volatile private var loggedAudioOutput = false
     @Volatile private var rotateDegrees = 0L
     @Volatile private var rawAspect: Double? = null
 
@@ -142,6 +148,10 @@ internal class MpvPlaybackBackend(
         // 代理背后的 SDK reader 已经预读 32 MiB，mpv 这层不必再囤太多
         mpv.setOptionString("cache", "yes")
         if (preview) {
+            // 打开时少探测，尽量只读预取好的那几秒开头。FFmpeg 默认往后探到 5 MB，低码率的片段五秒不到两 MB，
+            // 一探就读到冷的那截：冷门视频的 CDN 边缘没缓存，一段取好了开头，装进播放器却等了 10.9 秒（2026-09-28）
+            mpv.setOptionString("demuxer-lavf-probesize", "$PREVIEW_PROBE_BYTES")
+            mpv.setOptionString("demuxer-lavf-analyzeduration", "$PREVIEW_ANALYZE_SECONDS")
             mpv.setOptionString("sid", "no")
             if (keyframeStart) mpv.setOptionString("hr-seek", "no")
             // 字节上限对低码率的流不够：720P 转码约 120 KB/s，8 MiB 是一分多钟。预渲染的播放器暂停着
@@ -170,20 +180,22 @@ internal class MpvPlaybackBackend(
     private fun observePropertiesOnce() {
         if (observing) return
         observing = true
-        mpv.observeProperty("time-pos", MpvFormat.MPV_FORMAT_DOUBLE)
-        mpv.observeProperty("duration", MpvFormat.MPV_FORMAT_DOUBLE)
-        mpv.observeProperty("demuxer-cache-time", MpvFormat.MPV_FORMAT_DOUBLE)
-        mpv.observeProperty("pause", MpvFormat.MPV_FORMAT_FLAG)
-        mpv.observeProperty("paused-for-cache", MpvFormat.MPV_FORMAT_FLAG)
-        mpv.observeProperty("eof-reached", MpvFormat.MPV_FORMAT_FLAG)
-        mpv.observeProperty("speed", MpvFormat.MPV_FORMAT_DOUBLE)
-        mpv.observeProperty("volume", MpvFormat.MPV_FORMAT_DOUBLE)
-        mpv.observeProperty("video-params/aspect", MpvFormat.MPV_FORMAT_DOUBLE)
-        mpv.observeProperty("video-params/rotate", MpvFormat.MPV_FORMAT_INT64)
-        // 轨道增减（含 sub-add）改 count，切换改 aid、sid；任何一个变了都整份重读
-        mpv.observeProperty("track-list/count", MpvFormat.MPV_FORMAT_INT64)
-        mpv.observeProperty("aid", MpvFormat.MPV_FORMAT_STRING)
-        mpv.observeProperty("sid", MpvFormat.MPV_FORMAT_STRING)
+        onMpv {
+            mpv.observeProperty("time-pos", MpvFormat.MPV_FORMAT_DOUBLE)
+            mpv.observeProperty("duration", MpvFormat.MPV_FORMAT_DOUBLE)
+            mpv.observeProperty("demuxer-cache-time", MpvFormat.MPV_FORMAT_DOUBLE)
+            mpv.observeProperty("pause", MpvFormat.MPV_FORMAT_FLAG)
+            mpv.observeProperty("paused-for-cache", MpvFormat.MPV_FORMAT_FLAG)
+            mpv.observeProperty("eof-reached", MpvFormat.MPV_FORMAT_FLAG)
+            mpv.observeProperty("speed", MpvFormat.MPV_FORMAT_DOUBLE)
+            mpv.observeProperty("volume", MpvFormat.MPV_FORMAT_DOUBLE)
+            mpv.observeProperty("video-params/aspect", MpvFormat.MPV_FORMAT_DOUBLE)
+            mpv.observeProperty("video-params/rotate", MpvFormat.MPV_FORMAT_INT64)
+            // 轨道增减（含 sub-add）改 count，切换改 aid、sid；任何一个变了都整份重读
+            mpv.observeProperty("track-list/count", MpvFormat.MPV_FORMAT_INT64)
+            mpv.observeProperty("aid", MpvFormat.MPV_FORMAT_STRING)
+            mpv.observeProperty("sid", MpvFormat.MPV_FORMAT_STRING)
+        }
     }
 
     override suspend fun open(
@@ -201,7 +213,7 @@ internal class MpvPlaybackBackend(
         }
         observePropertiesOnce()
         val start = String.format(Locale.US, "%.3f", startMillis.coerceAtLeast(0L) / 1000.0)
-        mpv.setPropertyBoolean("pause", !playWhenReady)
+        onMpv { mpv.setPropertyBoolean("pause", !playWhenReady) }
         positionMillis = startMillis.coerceAtLeast(0L)
         durationMillis = 0L
         bufferedPositionMillis = 0L
@@ -231,66 +243,70 @@ internal class MpvPlaybackBackend(
         if (released) return
         pendingLoad = null
         supersededLoads = issuedLoads
-        mpv.command(arrayOf("stop"))
+        onMpv { mpv.command(arrayOf("stop")) }
         isLoadingFile = false
     }
 
     override fun play() {
-        if (released) return
-        mpv.setPropertyBoolean("pause", false)
+        onMpv { mpv.setPropertyBoolean("pause", false) }
     }
 
     override fun pause() {
-        if (released) return
-        mpv.setPropertyBoolean("pause", true)
+        onMpv { mpv.setPropertyBoolean("pause", true) }
     }
 
     override fun seekTo(positionMillis: Long) {
         if (released) return
         val seconds = String.format(Locale.US, "%.3f", positionMillis.coerceAtLeast(0L) / 1000.0)
         this.positionMillis = positionMillis.coerceAtLeast(0L)
-        mpv.command(arrayOf("seek", seconds, "absolute"))
+        onMpv { mpv.command(arrayOf("seek", seconds, "absolute")) }
     }
 
     override fun setSpeed(speed: Float) {
-        if (released) return
-        mpv.setPropertyDouble("speed", speed.toDouble())
+        onMpv { mpv.setPropertyDouble("speed", speed.toDouble()) }
     }
 
     override fun setAspectRatio(mode: PlayerAspectRatio) {
         if (released) return
-        when (mode) {
-            PlayerAspectRatio.Fit -> {
-                mpv.setPropertyString("keepaspect", "yes")
-                mpv.setPropertyDouble("panscan", 0.0)
-            }
+        onMpv {
+            when (mode) {
+                PlayerAspectRatio.Fit -> {
+                    mpv.setPropertyString("keepaspect", "yes")
+                    mpv.setPropertyDouble("panscan", 0.0)
+                }
 
-            PlayerAspectRatio.Crop -> {
-                mpv.setPropertyString("keepaspect", "yes")
-                mpv.setPropertyDouble("panscan", 1.0)
-            }
+                PlayerAspectRatio.Crop -> {
+                    mpv.setPropertyString("keepaspect", "yes")
+                    mpv.setPropertyDouble("panscan", 1.0)
+                }
 
-            PlayerAspectRatio.Stretch -> {
-                mpv.setPropertyString("keepaspect", "no")
-                mpv.setPropertyDouble("panscan", 0.0)
+                PlayerAspectRatio.Stretch -> {
+                    mpv.setPropertyString("keepaspect", "no")
+                    mpv.setPropertyDouble("panscan", 0.0)
+                }
             }
         }
         currentAspectRatio = mode
     }
 
     override fun setVolume(volume: Float) {
-        if (released) return
-        mpv.setPropertyDouble("volume", volume.coerceIn(0f, 1f) * 100.0)
+        onMpv { mpv.setPropertyDouble("volume", volume.coerceIn(0f, 1f) * 100.0) }
     }
 
+    /** 见 PreviewBackend.setBufferAhead。mpv 的缓存选项改了下一轮读即生效，不必重开文件。 */
+    fun setBufferAhead(seconds: Int) {
+        onMpv { mpv.setPropertyString("cache-secs", "$seconds") }
+    }
+
+    fun bufferReport(): String? =
+        if (released) null else "cache-secs=${mpv.getPropertyString("cache-secs")}，缓存 ${mpv.getPropertyString("demuxer-cache-duration")} 秒"
+
     override fun selectAudioTrack(id: String) {
-        if (released) return
-        mpv.setPropertyString("aid", id)
+        onMpv { mpv.setPropertyString("aid", id) }
     }
 
     override fun selectSubtitleTrack(id: String?) {
-        if (released) return
-        mpv.setPropertyString("sid", id ?: "no")
+        onMpv { mpv.setPropertyString("sid", id ?: "no") }
     }
 
     private fun refreshTracks() {
@@ -312,12 +328,13 @@ internal class MpvPlaybackBackend(
 
     fun attachSurface(surface: Surface) {
         if (released) return
-        mpv.attachSurface(surface)
-        mpv.setOptionString("force-window", "yes")
+        val restoreVideoOutput = videoOutputDisabled
         surfaceAttached = true
-        if (videoOutputDisabled) {
-            mpv.setPropertyString("vo", VIDEO_OUTPUT)
-            videoOutputDisabled = false
+        videoOutputDisabled = false
+        onMpv {
+            mpv.attachSurface(surface)
+            mpv.setOptionString("force-window", "yes")
+            if (restoreVideoOutput) mpv.setPropertyString("vo", VIDEO_OUTPUT)
         }
         pendingLoad?.let {
             pendingLoad = null
@@ -332,7 +349,7 @@ internal class MpvPlaybackBackend(
             surfaceHeight = height
             resizedSinceRedraw = true
         }
-        mpv.setPropertyString("android-surface-size", "${width}x$height")
+        onMpv { mpv.setPropertyString("android-surface-size", "${width}x$height") }
     }
 
     /**
@@ -348,15 +365,47 @@ internal class MpvPlaybackBackend(
         redrawGate.await(paused = !isPlaying, onDrawn = onDrawn)
     }
 
-    fun detachSurface() {
+    /**
+     * 让 mpv 放开画面。[afterDetached] 为 null 时等它做完才返回：SurfaceView 的销毁回调一返回画面就没了，
+     * vo 还握着它就会崩。给了 [afterDetached] 就在 mpv 线程上放手之后调它，这里立即返回：
+     * TextureView 可以先不释放，由调用方在回调里释放。
+     */
+    fun detachSurface(afterDetached: (() -> Unit)? = null) {
         redrawGate.releaseAll()
-        if (released || !surfaceAttached) return
-        // Surface 销毁后 vo 还握着它就会崩；换成 null 让 mpv 先放手，声音不受影响
-        mpv.setPropertyString("vo", "null")
-        videoOutputDisabled = true
-        mpv.setOptionString("force-window", "no")
-        mpv.detachSurface()
+        if (!surfaceAttached) {
+            afterDetached?.invoke()
+            return
+        }
         surfaceAttached = false
+        videoOutputDisabled = true
+        val detach = Runnable {
+            if (!destroyed) {
+                // 换成 null 让 mpv 先放手，声音不受影响
+                mpv.setPropertyString("vo", "null")
+                mpv.setOptionString("force-window", "no")
+                mpv.detachSurface()
+            }
+            afterDetached?.invoke()
+        }
+        if (afterDetached == null) calls.submit(detach).get() else calls.execute(detach)
+    }
+
+    /**
+     * mpv 的写调用都在这条线程上按投递的先后执行，界面线程投递了就走。mpv 的属性读写要拿内核的锁，
+     * 那个播放器正忙（开文件、拆建视频输出）时要等：手机上信息流快翻时，一次挂上或摘下画面在主线程上等
+     * 80 到 300 毫秒，开文件、播放、改缓冲各几十毫秒，一翻页界面线程就被堵三四百毫秒（2026-09-28）。
+     * 空闲一会儿线程自己退出，不必随播放器关掉。
+     */
+    private val calls = ThreadPoolExecutor(0, 1, CALL_THREAD_IDLE_SECONDS, TimeUnit.SECONDS, LinkedBlockingQueue()) { task ->
+        Thread(task, "mpv-calls").apply { isDaemon = true }
+    }
+
+    // 只在 mpv 线程上读写：销毁之后排着的调用不再碰 mpv
+    private var destroyed = false
+
+    private fun onMpv(block: () -> Unit) {
+        if (released) return
+        calls.execute { if (!destroyed) block() }
     }
 
     /**
@@ -369,7 +418,11 @@ internal class MpvPlaybackBackend(
         released = true
         mpv.removeObserver(this)
         mpv.removeLogObserver(this)
-        Thread({ mpv.destroy() }, "mpv-destroy").start()
+        // 排在已投递的调用之后：它们还要用这个句柄
+        calls.execute {
+            destroyed = true
+            mpv.destroy()
+        }
     }
 
     /** 直接读 mpv 属性。播放冒烟用它确认解码出的画面尺寸、音轨与当前 vo。 */
@@ -383,7 +436,7 @@ internal class MpvPlaybackBackend(
         readySent = false
         lastErrorLog = null
         isLoadingFile = true
-        mpv.command(command)
+        onMpv { mpv.command(command) }
     }
 
     override fun eventProperty(property: String) {
@@ -452,6 +505,10 @@ internal class MpvPlaybackBackend(
                 if (!readySent) {
                     readySent = true
                     _events.tryEmit(PlaybackBackendEvent.Ready)
+                    if (!loggedAudioOutput) {
+                        loggedAudioOutput = true
+                        PikoLog.d("Player", "mpv 音频输出：${mpv.getPropertyString("current-ao")}，硬解：${mpv.getPropertyString("hwdec-current")}")
+                    }
                 }
             }
 
@@ -492,6 +549,9 @@ internal class MpvPlaybackBackend(
     private companion object {
         const val VIDEO_OUTPUT = "gpu"
         const val MIB = 1024 * 1024
+        const val CALL_THREAD_IDLE_SECONDS = 5L
+        const val PREVIEW_PROBE_BYTES = 1024 * 1024
+        const val PREVIEW_ANALYZE_SECONDS = 1
         const val POSITION_GRANULARITY_MILLIS = 250L
 
         // mpv_log_level 的 MPV_LOG_LEVEL_ERROR。1.0.0 的构件没带 MpvLogLevel 常量类

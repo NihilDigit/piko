@@ -43,6 +43,11 @@ interface ProxyReader : AutoCloseable {
         get() = null
         set(_) {}
 
+    /** 有人正等着这个读者：拖动后还没出画面、播放卡在缓冲上。见 SDK 的 PikPakStreamReader.urgent。 */
+    var urgent: Boolean
+        get() = false
+        set(_) {}
+
     val position: Long
 
     suspend fun seekTo(position: Long)
@@ -82,6 +87,12 @@ private class PikPakProxyReader(private val reader: PikPakStreamReader) : ProxyR
         get() = reader.readAheadLimit
         set(value) {
             reader.readAheadLimit = value ?: Long.MAX_VALUE
+        }
+
+    override var urgent: Boolean
+        get() = reader.urgent
+        set(value) {
+            reader.urgent = value
         }
 
     override val position: Long get() = reader.position

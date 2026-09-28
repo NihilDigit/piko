@@ -219,12 +219,19 @@ class ProxyStream internal constructor(
             session.readAheadLimit = value
         }
 
+    /** 有人正等着，见 [ProxySession.urgent]。 */
+    var urgent: Boolean
+        get() = session.urgent
+        set(value) {
+            session.urgent = value
+        }
+
     /**
      * 先把 [ranges] 取进这个会话的缓存，播放器之后读到时直接命中，不再等 CDN。
      * 不占读位置：播放器正在读别处也照样进行，互不取消。全部到手才返回。
      * [role] 缺省为会话的角色；为之后要放的段取开头时可以单独以前台身份取，会话本身仍是后台。
      */
-    suspend fun prefetch(ranges: List<LongRange>, role: StreamRole = this.role) = session.prefetch(ranges, role)
+    suspend fun prefetch(ranges: List<LongRange>, role: StreamRole = this.role, priority: Int? = null) = session.prefetch(ranges, role, priority)
 
     override fun close() {
         if (closed) return

@@ -167,6 +167,9 @@ class PlayerScreenState(
     val messages: SharedFlow<String> = _messages.asSharedFlow()
 
     private var prepared: PreparedPlayback? = null
+
+    // 拖动之后、画面重新走起来之前，至多 SEEK_WATCH_MS，见 watchSeek。init 里就要读，声明在它前面
+    private var seeking by mutableStateOf(false)
     private var prepareJob: Job? = null
     private var recoveryJob: Job? = null
     private var resumeTipJob: Job? = null
@@ -199,6 +202,12 @@ class PlayerScreenState(
             }
         }
         scope.launch { persistLoop() }
+        scope.launch {
+            // 有人在等时读得最急，见 PikPakStreamReader.urgent：开播前、拖动后、卡顿时。平时播放器往后缓冲的读
+            // 排在它们之后，拖动那一下不必与自己的缓冲读排队。拖动单独记：桌面端后端拖动时不报缓冲，
+            // 只看缓冲的话开关从没打开过，那几次拖动都在与缓冲读排队（2026-09-28，一次等了 6.7 秒）
+            snapshotFlow { isPreparing || backend.isBuffering || seeking }.collect { waiting -> prepared?.urgent = waiting }
+        }
         scope.launch {
             // 外挂字幕在文件加载之后才挂上，列表会分几次变长，每次都重新套用
             snapshotFlow { backend.audioTracks to backend.subtitleTracks }.collect { applyTrackPreferences() }
@@ -248,6 +257,38 @@ class PlayerScreenState(
     fun seekTo(positionMillis: Long) {
         val upper = durationMillis.takeIf { it > 0L } ?: Long.MAX_VALUE
         backend.seekTo(positionMillis.coerceIn(0L, upper))
+        watchSeek()
+    }
+
+    private var seekWatch: Job? = null
+
+    /**
+     * 记下拖动后多久画面重新走起来，与信息流的「定位后画面走起来」对照。连着拖（按住方向键）只记最后一次；
+     * 暂停着拖的等不到走起来，不记。
+     */
+    private fun watchSeek() {
+        seekWatch?.cancel()
+        val sought = TimeSource.Monotonic.markNow()
+        seeking = true
+        seekWatch = scope.launch {
+            // 等的期间后端报没报缓冲：报了是在等网络，没报是慢在解码（精确定位要从前一个关键帧解到目标）
+            var sawBuffering = backend.isBuffering
+            val bufferingWatch = launch { snapshotFlow { backend.isBuffering }.first { it }; sawBuffering = true }
+            // 刚定位时报的位置可能还是定位前的
+            delay(SEEK_SETTLE_MS)
+            val from = backend.positionMillis
+            val resumed = withTimeoutOrNull(SEEK_WATCH_MS) {
+                snapshotFlow { backend.isPlaying && backend.positionMillis >= from + SEEK_EVIDENCE_MS }.first { it }
+            } != null
+            bufferingWatch.cancel()
+            seeking = false
+            if (resumed) {
+                PikoLog.d(
+                    TAG,
+                    "拖动后画面走起来 ${sought.elapsedNow().inWholeMilliseconds - SEEK_EVIDENCE_MS} ms，${if (sawBuffering) "等过缓冲" else "没报缓冲"}",
+                )
+            }
+        }
     }
 
     fun seekBy(deltaMillis: Long) = seekTo(backend.positionMillis + deltaMillis)
@@ -384,6 +425,8 @@ class PlayerScreenState(
             } else {
                 isLocalPlayback = false
                 val playback = repository.preparePlayback(fileId, requestedQuality).getOrThrow()
+                // 出第一帧前就有人在等；之后由 init 里按缓冲状态接管
+                playback.urgent = true
                 prepared = playback
                 mediaInfo = playback.info
                 activeQuality = requestedQuality?.takeUnless { it == ORIGINAL_QUALITY }
@@ -595,6 +638,11 @@ class PlayerScreenState(
 
     private companion object {
         const val TAG = "Player"
+
+        /** 拖动后位置走过这么多才算画面走起来，计时里扣掉它；等这么久还不走就不记。 */
+        const val SEEK_EVIDENCE_MS = 300L
+        const val SEEK_SETTLE_MS = 200L
+        const val SEEK_WATCH_MS = 15_000L
         const val RESUME_THRESHOLD_MILLIS = 3_000L
 
         // 打开第一个文件前等播放列表的上限，超过就不带外挂字幕先放

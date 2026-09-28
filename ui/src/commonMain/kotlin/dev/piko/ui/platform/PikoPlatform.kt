@@ -192,6 +192,15 @@ enum class LinkAssociationState {
 
 interface PreviewBackend : PlaybackBackend {
     fun release()
+
+    /**
+     * 播放器自己往后缓冲多少秒。它的缓冲读到代理那里都是「播放器卡在这一块上」的最高档，
+     * 压过一切预取，所以还没真看起来的段要压低，见信息流的升档。播放中途改，下一次读即生效。
+     */
+    fun setBufferAhead(seconds: Int)
+
+    /** 缓冲的设定与眼下缓存着的时长，只供日志核对 [setBufferAhead] 生效没有；取不到为 null。 */
+    fun bufferReport(): String?
 }
 
 val LocalPikoPlatform = staticCompositionLocalOf<PikoPlatform> {

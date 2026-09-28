@@ -241,6 +241,10 @@ class DesktopPikoPlatform(
     private class MediampPreviewBackend(val inner: MediampPlaybackBackend) : PreviewBackend, PlaybackBackend by inner {
         // 播放器本身由 rememberPreviewBackend 在离开组合时关闭，这里只停播
         override fun release() = inner.stop()
+
+        override fun setBufferAhead(seconds: Int) = inner.setBufferAhead(seconds)
+
+        override fun bufferReport(): String? = inner.bufferReport()
     }
 }
 

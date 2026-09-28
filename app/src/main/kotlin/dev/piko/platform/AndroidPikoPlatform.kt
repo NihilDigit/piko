@@ -318,6 +318,10 @@ class AndroidPikoPlatform(
 
     private class MpvPreviewBackend(val mpv: MpvPlaybackBackend) : PreviewBackend, PlaybackBackend by mpv {
         override fun release() = mpv.release()
+
+        override fun setBufferAhead(seconds: Int) = mpv.setBufferAhead(seconds)
+
+        override fun bufferReport(): String? = mpv.bufferReport()
     }
 }
 

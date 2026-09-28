@@ -22,7 +22,7 @@ kotlinxDatetime = "0.7.1"
 # 与 pikpak-kotlin 0.9.0 所依赖的版本一致。SDK 的 downloadTo 以 kotlinx.io.files.Path 为参数，
 # 却只把 kotlinx-io 声明为 runtime 依赖，调用方编译时要自己引入
 kotlinxIo = "0.9.0"
-pikpakSdk = "1.0.0"
+pikpakSdk = "1.2.0"
 # 桌面端停在 CMP 1.12，与 Animeko 一致：1.13 的 alpha 带的 skiko 0.152 把各渲染后端包进
 # OnScreenRedrawer，mediamp（0.5.0 仍是）的 mpv D3D11 画面表面要直接拿 Direct3DRedrawer，
 # 一开播放器窗口就抛 IllegalStateException。Android 端的 Compose 版本由 BOM 决定，不受影响。
@@ -33,7 +33,10 @@ composeGradlePlugin = "1.13.0-alpha01"
 # JetBrains 的 material3 单独发版，Android 端重定向到 androidx material3，桌面端是同一份源码的
 # skiko 构建。compose 插件自带的 compose.material3 别名指向更旧的版本，缺 Expressive API
 cmpMaterial3 = "1.12.0-alpha03"
-cmpAdaptive = "1.3.0-beta02"
+# 列表与详情并排（ListDetailSceneStrategy，见 PikoMainScaffold）要 adaptive-navigation3，与 adaptive 同版本。
+# rc01 编译于 navigation3-ui 1.1.0、Compose 1.10.0，不依赖 material3，不会顶掉上面钉住的版本
+cmpAdaptive = "1.3.0-rc01"
+cmpNavigation3 = "1.1.2"
 # 图标库停在 1.7.3 不再更新，Android 端经重定向取 BOM 里的版本
 cmpMaterialIcons = "1.7.3"
 mediamp = "0.5.0"
@@ -57,6 +60,8 @@ cmp-ui = { module = "org.jetbrains.compose.ui:ui", version.ref = "composeMultipl
 cmp-material3 = { module = "org.jetbrains.compose.material3:material3", version.ref = "cmpMaterial3" }
 cmp-material3-adaptive-navigation-suite = { module = "org.jetbrains.compose.material3:material3-adaptive-navigation-suite", version.ref = "cmpMaterial3" }
 cmp-adaptive = { module = "org.jetbrains.compose.material3.adaptive:adaptive", version.ref = "cmpAdaptive" }
+cmp-adaptive-navigation3 = { module = "org.jetbrains.compose.material3.adaptive:adaptive-navigation3", version.ref = "cmpAdaptive" }
+cmp-navigation3-ui = { module = "org.jetbrains.androidx.navigation3:navigation3-ui", version.ref = "cmpNavigation3" }
 cmp-ui-backhandler = { module = "org.jetbrains.compose.ui:ui-backhandler", version.ref = "composeMultiplatform" }
 cmp-material-icons-extended = { module = "org.jetbrains.compose.material:material-icons-extended", version.ref = "cmpMaterialIcons" }
 pikpak-kotlin = { module = "io.github.nihildigit:pikpak-kotlin", version.ref = "pikpakSdk" }
@@ -83,6 +88,8 @@ androidx-compose-foundation = { module = "androidx.compose.foundation:foundation
 
 # Navigation 3（Google 直接发布桌面构件，两端共用）
 androidx-navigation3-runtime = { module = "androidx.navigation3:navigation3-runtime", version.ref = "navigation3" }
+androidx-navigation3-ui = { module = "androidx.navigation3:navigation3-ui", version.ref = "navigation3" }
+androidx-adaptive-navigation3 = { module = "androidx.compose.material3.adaptive:adaptive-navigation3" }
 
 # DataStore
 androidx-datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastore" }
