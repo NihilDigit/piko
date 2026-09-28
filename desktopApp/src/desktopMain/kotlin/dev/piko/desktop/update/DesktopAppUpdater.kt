@@ -146,6 +146,15 @@ class DesktopAppUpdater private constructor(
         super.checkOnStartup(isIgnored)
         if (System.getProperty(AUTO_INSTALL_PROPERTY) != "true") return
         val update = (status as? UpdateStatus.Available)?.update ?: return
+        // 每个版本只自动试一次：没装上时脚本照旧拉起旧版，旧版又查到同一个新版，不设限就一直循环，
+        // 每一轮还把上一轮的暂存连同失败记号一起清掉，看不出为什么失败
+        val attempted = stagingRoot.resolve("auto-${update.version}")
+        if (attempted.exists()) {
+            PikoLog.w("Update", "自动安装 ${update.version} 已试过一次，不再自动重试")
+            return
+        }
+        stagingRoot.mkdirs()
+        attempted.createNewFile()
         PikoLog.i("Update", "自动安装 ${update.version}：${update.own().plan::class.simpleName}")
         downloadAndInstall(update)
         (status as? UpdateStatus.ReadyToRestart)?.let { restartToInstall(it.update) }
@@ -177,6 +186,7 @@ class DesktopAppUpdater private constructor(
     /** 下载到暂存目录并校验。增量更新还要把 app.zip 解开，逐个对照清单。 */
     private suspend fun stage(update: DesktopUpdate) {
         val staging = stagingDir(update)
+        keepScriptLogs(staging)
         staging.deleteRecursively()
         staging.mkdirs()
         when (val plan = update.plan) {
@@ -391,6 +401,19 @@ class DesktopAppUpdater private constructor(
 
     private fun stagingDir(update: DesktopUpdate) = stagingRoot.resolve(update.version)
 
+    /**
+     * 重新暂存之前，把上一次脚本留下的日志追加进暂存根目录的 [HISTORY_LOG]。暂存目录每次下载都整个清掉，
+     * 上一次为什么没装上就跟着没了，用户反馈时也无从查起。
+     */
+    private fun keepScriptLogs(staging: File) {
+        runCatching {
+            listOf("update.log", "powershell.log", "bash.log", "msiexec.log")
+                .map(staging::resolve)
+                .filter { it.isFile && it.length() > 0 }
+                .forEach { log -> stagingRoot.resolve(HISTORY_LOG).appendText("== ${staging.name}/${log.name}\n${log.readText()}\n") }
+        }.onFailure { log("保留更新日志失败", it) }
+    }
+
     // apply-update.ps1 失败时在暂存目录留下这个文件；暂存目录要到下一次下载才清
     override fun takePreviousFailure(version: String): Boolean {
         val marker = stagingRoot.resolve(version).resolve("failed")
@@ -409,6 +432,7 @@ class DesktopAppUpdater private constructor(
         private const val PATCH_DIR = "files"
         private const val CHECKSUMS_FILE = "staged.sha256"
         private const val KEEP_FILE = "keep.txt"
+        private const val HISTORY_LOG = "update-history.log"
 
         /** 换掉 Release 接口地址，用于在本机对着假的 Release 走一遍更新。 */
         private const val API_OVERRIDE_PROPERTY = "piko.update.api"
@@ -437,15 +461,24 @@ class DesktopAppUpdater private constructor(
         /**
          * 清掉上一次增量更新没删成的 .old 与 .new。1.0.0 的更新脚本只等 JVM 退出，不等启动器，
          * 换 exe 时启动器还占着旧的那份，改了名删不掉，一直留在安装目录里。现在的脚本不会再留，
-         * 这里收拾的是老版本更新过来时留下的。只看根目录与 app，补丁只换这两处的文件。
+         * 这里收拾的是老版本更新过来时留下的。
+         *
+         * 只认补丁会换的那几类文件（根目录的 exe，app 下的 jar、cfg、aot 与 .jpackage.xml）加上 .old、.new：
+         * 按扩展名一概删的话，用户放在便携版目录里的 notes.old 也会被删，旧版本还把下载放进过安装目录。
          */
         private fun removeUpdateLeftovers(installDir: File) {
             if (isMacOs) return
-            listOf(installDir, installDir.resolve("app")).forEach { dir ->
-                dir.listFiles { file -> file.isFile && (file.name.endsWith(".old") || file.name.endsWith(".new")) }
-                    ?.forEach { leftover -> if (leftover.delete()) PikoLog.i("Update", "清掉更新残留 ${leftover.name}") }
-            }
+            fun leftovers(dir: File, patched: Regex) = dir.listFiles { file ->
+                file.isFile && (file.name.endsWith(".old") || file.name.endsWith(".new")) &&
+                    patched.matches(file.name.dropLast(4))
+            }.orEmpty().toList()
+            val found = leftovers(installDir, ROOT_PATCHED) + leftovers(installDir.resolve("app"), APP_PATCHED)
+            found.forEach { leftover -> if (leftover.delete()) PikoLog.i("Update", "清掉更新残留 ${leftover.name}") }
         }
+
+        // 补丁会换的文件，与 desktopApp/build.gradle.kts 的 UpdateArtifactsTask.isPatch 同一套
+        private val ROOT_PATCHED = Regex("""[^\\/]+\.exe""")
+        private val APP_PATCHED = Regex("""[^\\/]+\.(jar|cfg|aot)|\.jpackage\.xml""")
 
         fun create(): DesktopAppUpdater {
             useBundledZstd()
