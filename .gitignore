@@ -20,3 +20,6 @@ release-secrets.*
 *.bak
 *-mirror/
 .claude/worktrees/
+
+# JVM 崩溃时写在工作目录下的日志，含本机环境变量与路径
+hs_err_pid*.log
