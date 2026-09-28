@@ -67,7 +67,7 @@ suspend fun listWithParams(client: PikPakClient, path: String): List<String> =
         "$kind  ${file.name}$content\n      $params"
     }
 
-private suspend fun resolvePath(client: PikPakClient, path: String): String {
+internal suspend fun resolvePath(client: PikPakClient, path: String): String {
     var id = ""
     path.split('/').filter(String::isNotEmpty).forEach { name ->
         id = client.listFiles(parentId = id).firstOrNull { it.isFolder && it.name == name }?.id

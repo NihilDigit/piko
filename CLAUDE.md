@@ -91,13 +91,69 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 
 布局只看窗口宽度，不看设备：`ui/.../adaptive/WindowWidth.kt` 按 M3 断点给出 compact、medium、
 expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以 Android 平板为准。
-- 导航：`NavigationSuiteScaffold` 在 compact 下是底部导航栏，更宽时换成侧边导航栏。
-- 回收站：compact 下是盖住整窗的压栈页；medium 在导航栏右侧的内容区里；expanded 与「我的」并排成两栏。
+- 导航：`NavigationSuiteScaffold` 在 compact 下是底部导航栏，更宽时换成侧边导航栏。窗口到 1200dp（M3 large）
+  换成一整条侧边栏（`MainSidebar`）：上面是三个去处，下面是快速访问（`QuickAccessSection` / `QuickAccessState`），
+  照资源管理器只列用户固定的文件夹，文件夹右键「固定到快速访问」。PikPak 没有这项，存在偏好 `pinnedFolders` 里
+  经设置同步带走（`PinnedFolders`，只存 ID 与名字，打开时按 ID 查上级）。只亮一处：人在固定的文件夹里时亮它，否则亮当前页。
+  不要在导航栏旁边再并排一栏导航。侧边栏与状态栏在 `NavDisplay` 外面，打开「我的」里的各页时不被盖住（应用内播放器这类
+  整窗的页照旧盖住，见 `sidebarMode`）。快速访问的条目右键可以在新标签页打开或取消固定。同样只在这一档，内容下面有状态栏（`ui/.../workbench/StatusBar`）：
+  左边照 FDM 是蜗牛模式（限速，偏好 `snailModeFlow`，每台设备各自的，不同步）与上下行速度（点开活动面板，看进度不必切到传输页），
+  再是最近一次能撤销的改动，右边是设置同步与空间用量。
+- 返回栈：`PikoMainScaffold` 用 Navigation 3 的 `NavDisplay`，栈底 `Screen.Home` 是导航栏与三个根页面，
+  其余页面压在上面、连同导航栏一起盖住。被盖住的 Home 离开组合，回来时重建，所以根页面的状态要经得起
+  重建（网盘页的目录内容与滚动位置记在仓库里）。新页面加一个 `Screen` 子类、登记进 `NavKeyConfiguration`、
+  在 `entryProvider` 里写一条 entry；切页与收起压栈页用 `resetToHome`，不要 `clear`，栈底必须留着 Home。
+- 「我的」的详情页（星标、历史、分享、回收站、设置）：窄窗口是单页；expanded 由 `ListDetailSceneStrategy`
+  与垫在下面的 `Screen.Profile` 拼成两栏，列表栏 360dp，两栏时详情页不给返回，退出在列表栏的顶栏上。
 - 行长：设置、传输、回收站的行内容收在 840dp 以内居中。列表本身仍铺满窗口（用 `readableSidePadding`
   算 contentPadding），两侧空白处滚轮也能滚。
 - 对话框：目录选择器在 compact 下全屏，更宽时是居中的基本对话框。
+- 面板：一律经 `PikoSheet`，expanded 是从末端滑入的模态侧边面板，其余是只有展开一档的底部 sheet；
+  不要直接用 `ModalBottomSheet`（播放器的面板另有横屏侧栏，除外）。
+- 网盘页：compact 以上顶栏照资源管理器：后退、前进、上一级，加一条地址栏（`DrivePathTitle`，每段能点、能接住拖来的条目）；
+  compact 仍是目录名作标题、上级另成一行面包屑。
+- 详情栏：expanded 的网盘页右侧，顶栏的「详情」或主修饰键+I 开关（`InspectorPane`）。看选中的几项，没选时看焦点所在的
+  一项，都没有时是当前目录；操作与右键菜单同一份。与信息流侧栏占同一个位置，开一个就收起另一个。
+  以后刮削到的作品信息放在预览与属性之间。
+- 信息流：刷**网盘页当前文件夹**里的视频，子文件夹里的也算，其余一切都为刷得顺服务。宽窗口是网盘页右侧的侧栏，
+  放不下时全屏，桌面端还能弹出到独立窗口。范围在打开的那一刻取定；进子文件夹不换，离开这个文件夹（路径栈里不再有它）
+  即收起，不论开在哪一处。挑段的先后在 `ClipFeedSession.ranked`：有 720P 转码的先于只有原画的，当前层先于子文件夹；
+  没有转码的照样能放（原画 seek，起播慢），有转码的挑完了才轮到。不要再加范围菜单或「订阅」一类的入口。
+  在信息流里「在网盘中显示」是「刷到有趣的，去研究一下」：信息流**挂起**（队列与看到哪一段都留着，应用内不画），
+  出发点记成 `DriveLocation`，之后左边的浏览是临时的，离开文件夹也不收起；网盘页底部的 `FeedResumeBar` 给「继续刷」
+  （`returnTo` 连历史一起回到出发点，临时浏览整段丢掉）与关闭。只有关闭才清空队列（`ClipFeedSession.close`）。
+  取流的调度：每段只预取切片开头 5 秒（`PreparedClip.sliceRanges`）；放过 3 秒才升档，播放器的缓冲（`setBufferAhead`，
+  mpv 的 cache-secs）与代理的预读一起放开到 10 秒，此前两者都压着。播放器的缓冲读在 SDK 里是最高档，不压就越过所有预取。
+  冷开时头一段画面走起来之前只备前三段（`COLD_START_CLIPS`）。各段的会话与预取（`ClipStreams`）挂在 `ClipFeedSession` 上，
+  不随页面走：Android 上「看完整」压栈时信息流离开组合，回来不必重取。取不到的一段先挪到队尾重取一次，第二次才拉黑。
+  原画开头比转码开头低一档（7 对 8），不要改成独占通道：一段直链坏了会把其余原画全堵住。
+  「当前页」一松手就取 `targetPage`，不等 `settledPage`：手机上吸附动画收尾要几百毫秒，等它就是每段起步顿一下。
+  SDK 的阻塞读分两档：`PikPakStreamReader.urgent`（拖动后、卡顿、未出首帧）是 100，播放器平时往后缓冲是 50；
+  「有人在等」由界面判断后设上，桌面端后端拖动时不报缓冲，拖动要单独记。
 
-鼠标与键盘：条目右键弹出与操作面板相同的菜单（`ContextMenuArea`，动作列表 `fileActions` 两处共用）；
+鼠标与键盘：条目右键弹出与操作面板相同的菜单（`ContextMenuArea`）。每页把一项的操作写成一个
+`actionsFor`，面板与菜单都读它（网盘页是 `fileActions`）；新列表照做。
+网盘页的点击与键位照各自系统的文件管理器（Windows 照资源管理器，mac 照 Finder），不自创：
+鼠标单击是选中（条目取得焦点，`focusIndication` 盖一层底色，详情栏跟着它），双击才打开；触屏轻点照旧打开。
+多选时条目上画着勾选框，鼠标单击照旧是勾选。按住主修饰键点选是加选，
+Shift 点选是连选（`selectionClicks`，状态在 `DriveScreenState.toggleSelected` / `selectRange`）。
+在网格空白处拖动是框选
+（`marqueeSelection`，`selectBoxed`），空白处单击退出多选。框选只从空白处开始，按在条目上拖动是拖放移动：
+拖到侧边栏的文件夹、路径栏的上级或网格里的文件夹上，按着 Ctrl（mac 上 ⌥）是复制。拖放是应用内自己做的
+（`FileDragState`，根上一份，落点经 `fileDropTarget` 登记范围），不走平台拖放；拖出去的一批自带落下后做什么，
+落点只提供文件夹。
+移动、移入回收站与重命名做完都记进 `DriveChangeJournal`（`driveRepository.changes`），提示带「撤销」，
+Ctrl+Z 撤销最近一次；以后的批量改动（自动重命名、按刮削结果整理）也记一条，撤销即反向再做一次。
+快捷键一览（F1 或主修饰键+/，`ShortcutsDialog`）是手写的一张表，加了快捷键要同时写进去。
+命令面板（主修饰键+K，`CommandPalette`）：模糊搜索最近去过的与快速访问里的文件夹、当前目录的子文件夹、去处与命令，方向键挑、回车执行。
+全局的命令在 `PikoMainScaffold` 的 `paletteItems`；某一页自己的命令在页里经 `ContributePaletteItems` 登记，页面离开组合时撤掉
+（网盘页登记了新建文件夹、上传、视图、详情栏等）。新页面有值得键盘直达的操作就照这样登记。
+网盘页的键盘：方向键在条目间走（焦点所在的一项由 `focusIndication` 描边，键盘导航时描边、鼠标点的盖底色，
+输入方式由根上的 `trackInputModality` 记），菜单键或 Shift+F10 打开操作面板，
+Delete 与 F2 作用于焦点所在项或选中的几项；鼠标点到哪一项，键盘就从哪一项接着走。鼠标侧键是后退、前进。
+Windows：Enter 打开，Backspace 与 Alt+←/→ 后退、前进，Alt+↑ 上一级。
+mac：⌘↓ 打开，回车改名（条目自己在 onPreviewKeyEvent 里接住，否则条目的单击先把它当打开），⌘[ ⌘] 后退、前进，⌘↑ 上一级。
+横排的内容挂 `verticalWheelScrollsRow`，鼠标的竖滚轮才滚得动它；
 图标按钮用 `TooltipIconButton`，快捷键写在提示里；Esc 经 `BackHandler` 触发返回；网盘页快捷键见
 `DriveScreen` 的 `handleShortcut`。新加的界面同时照顾触屏与鼠标：下拉刷新之类只有触屏能用的操作，
 宽窗口要另给按钮。快捷键的主修饰键取 `PikoPlatform.shortcutModifier`（mac 上是 ⌘），不要写死 Ctrl。
@@ -122,6 +178,9 @@ Compose 桌面端悬停移动事件的 `previousPosition` 恒等于 `position`�
 
 **加一个偏好项要同时改三处**：接口、
 `SessionManager`（Android，DataStore）、`DesktopPikoPreferences`（Desktop，`DesktopSettingsStore`）。
+要跨设备同步的，再在 `shared/.../shared/sync/PikoSettingsSync.kt` 的 `SyncedSettings` 里加一行；窗口大小、下载目录、
+代理这类每台设备各自的不要加。同步文件在网盘根目录的 `.piko/settings-<时间戳>.json`（`DriveSettingsStore`），
+按项带修改时刻合并，这台设备从没同步过的项算最旧；`.piko` 不在网盘页里列出。
 
 ### 日志
 
@@ -136,8 +195,15 @@ Compose 桌面端悬停移动事件的 `previousPosition` 恒等于 `position`�
 
 ### 全局导航栈在仓库层
 
-`PikoDriveRepository` 持有 `folderStackFlow`，是网盘主界面的全局位置，并持久化。目录选择器
+`PikoDriveRepository` 持有 `folderStackFlow`，是网盘主界面的全局位置，并持久化。
+宽窗口可以开几个标签（`tabsFlow`、`openTab`、`switchTab`、`closeTab`），各有自己的路径栈与历史；`folderStackFlow` 与
+`historyFlow` 始终是活动标签的那一份，切标签时仓库把它们换掉，所以别处照旧只认这两个，不必知道有标签。
+标签栏（`DriveTabBar`）只在开了不止一个标签时出现；Ctrl+T、Ctrl+W、Ctrl+Tab，中键点文件夹在后台新标签打开，
+拖到别的标签上即移进它停着的文件夹。标签按账号存进缓存目录（只存位置，不存历史），重启后由 `restoreTabs` 恢复。目录选择器
 一类的浮层**必须维护自己的路径栈**，碰它会把主界面的位置一起改掉。
+浏览历史（`historyFlow`，后退与前进）也在这里，每次换栈记一步；「上一级」与它无关。从别处跳进网盘（在网盘中显示、
+快捷栏）用 `updateFolderStack`，会记进历史；只有启动时恢复位置用 `restoreFolderStack`，不记。
+同处还记着最近去过的文件夹（`recentFoldersFlow`，按账号存进缓存目录，命令面板用）与快速访问（`pinnedFoldersFlow`）。
 仓库层还有 `refreshEvents`，供界面外的改动（如回收站恢复）通知列表刷新，`DriveScreenState`
 已在 `init` 里订阅，视图不要再订阅一遍。
 
@@ -211,6 +277,11 @@ piko 源码仍是 MIT，但发版时要附 GPLv3 与第三方声明，并指明�
   `MpvMediampPlayer.prepareLibraries` 指过去；MediaMP 默认每次运行都解压一份到 `%TEMP%` 且删不掉。
   Toast 经 FFM 直调 combase 与 COM 虚表（`WindowsToast`），不用 kotlin-winrt。未打包应用的 AUMID
   要在 `HKCU\Software\Classes\AppUserModelId` 登记才会显示通知，安装版首次启动时写入。
+- **显卡设备失效**：驱动复位 GPU（NVIDIA 事件 153、TDR）时 D3D 设备一律失效，skiko 0.150 不检查 HRESULT，
+  下一次改窗口尺寸就在 `makeDirectXSurface` 里解引用空指针，整个 JVM 崩溃。`GpuDeviceWatch` 在改尺寸前与每秒一次
+  问 `GetDeviceRemovedReason`，失效了就让 `PikoWindow` 以 `generation` 为 key 重建所有窗口。它读的是 skiko 的内部布局
+  （`Direct3DRedrawer.device` 与 `DirectXDevice` 结构体的槽位），升级 skiko 要对照源码核对。复现：管理员执行
+  `dxcap -forcetdr` 后拉一下窗口。mediamp 的日志经 `MpvLogBridge` 进应用日志，tag 是 mpv。
 - **单实例**：`SingleInstance` 以 `~/.piko/instance.lock` 的文件锁决定主实例，后来者经同目录的
   Unix domain socket 转交启动参数（磁力链接）后退出。安装版与 `gradlew :desktopApp:run` 共用这把锁，
   装好的 Piko 开着时，开发构建一启动就把参数转交过去然后退出，调试前先关掉安装版。AOT 训练进程不参与。
@@ -251,6 +322,32 @@ piko 源码仍是 MIT，但发版时要附 GPLv3 与第三方声明，并指明�
 Git Bash 会把以 `/` 开头的参数改写成 Windows 路径，传网盘路径时前面加 `MSYS_NO_PATHCONV=1`。
 
 快照含真实文件名，放在仓库外，不要提交。改解析规则后重跑 `dryrun` 对比即可，不必重新请求网盘。
+
+## 截图
+
+**只在全自动工作流里，或我明确要求时才跑 `:shots`。** 平常改完界面直接编译、重启桌面开发版（或装到 Android 真机），
+交给我手测。截图环境的假数据放不了视频、没有窗口外框，看不出的问题比看得出的多，反复出图只是拖慢来回。
+
+`:shots` 也是开发工具，不随应用发布：无头运行整个应用（`PikoApp`，与桌面入口同一套界面、状态与平台实现），
+数据来自假的 PikPak 服务端，按任意窗口尺寸与深浅主题出 PNG。改了布局就跑它看图，不必开真实账号，
+也不用在 Windows 上：Linux 与没有显示器的机器同样能跑。
+
+```bash
+./gradlew :shots:run --args="all"                        # 一整套，写到 build/shots/，约一分钟
+./gradlew :shots:run --args="shot starred --size 1100x800 --click 我的 --click 星标 --wait Dune"
+./gradlew :shots:run --args="texts --click 传输"          # 打印界面上的文本，找 --click 的目标用
+```
+
+- 步骤有 `--click`、`--right-click`、`--hover`、`--key`、`--type`（往有焦点的输入框打字，中文也行）、`--drag`（按住左键拖，
+  坐标按 dp）、`--release`、`--wait`、`--pump`，
+  按写的顺序执行；点击按文本或内容描述找节点，
+  弹层里的也算。`all` 的清单在 `shots/.../Main.kt` 的 `standardSet`，改了哪类界面就往里加一张。
+- 数据在 `ShotEnv.kt` 的 `FakePikPak.seed()`：一部 12 集的番剧、一个子目录、电影与文档、回收站、星标、
+  离线任务与四个本地下载。假服务端（`FakePikPak`）经 OkHttp 拦截器作答，SDK 的请求与解析仍走真实代码；
+  只答界面读得到的接口，其余回 404，新页面要什么就补什么。与冒烟测试的 `FakePikPakServer` 是两份，那份要 MockEngine。
+- 没有窗口外框：自绘标题栏与拖放层不在画面里。Linux 上没有微软雅黑，中文落到别的字体，字宽与 Windows 略有出入。
+- 网络缩略图与海报不画，播放历史与我的分享是空的。
+- 参数里有中文时，Linux 上要 UTF-8 的 locale（`LC_ALL=C.UTF-8`），否则 Gradle 传给进程时变成问号，按文本找不到节点。
 
 ## 冒烟测试
 

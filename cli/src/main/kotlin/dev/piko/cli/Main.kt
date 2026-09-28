@@ -31,6 +31,10 @@ private const val USAGE = """piko-cli：Piko 开发工具
   parse <文件名>…
       单独解析几个文件名，打印 parseMediaName 的结果。
 
+  bench <路径或文件夹ID> [--count <段数>] [--seconds <秒>] [--sequential] [--playing]
+      只读实验：对目录（含子目录）下几个有 720P 转码的视频，照信息流的做法预取开头，量 SDK 的吞吐与同时在途数。
+      默认 8 段、每段 5 秒，一齐发出；--sequential 一段取完再取下一段；--playing 同时另开一路前台读者模拟正在放的段。
+
   share <分享链接> [--pass <提取码>] [--restore]
       只读地列出一个分享的顶层内容。--restore 实测转存：把其中最小的一个文件转存进
       根目录下新建的 piko-probe-restore-* 文件夹，等任务结束后列出结果，再永久删除该文件夹。
@@ -78,6 +82,18 @@ fun main(args: Array<String>) {
                 println("${media.mediaName}  origin=${media.isOrigin}  ${media.video?.width}x${media.video?.height}\n  ${media.link.url}")
             }
         }
+        "bench" -> runBlocking {
+            benchClipHeads(
+                appClient(),
+                path = options.positional.firstOrNull() ?: usage(),
+                count = options.value("--count")?.toInt() ?: 8,
+                headSeconds = options.value("--seconds")?.toInt() ?: 5,
+                sequential = "--sequential" in options.flags,
+                withPlayer = "--playing" in options.flags,
+                backgroundFirst = "--background-first" in options.flags,
+                storeDirectory = options.value("--store")?.let(::File),
+            )
+        }
         "parse" -> options.positional.ifEmpty { usage() }.forEach { name -> println("$name\n  ${parseMediaName(name)}") }
         "share" -> runBlocking {
             val url = options.positional.firstOrNull() ?: usage()
@@ -123,6 +139,6 @@ private class Options(args: List<String>) {
 
     companion object {
         // 不带值的开关
-        val FLAGS = setOf("--visited", "--restore")
+        val FLAGS = setOf("--visited", "--restore", "--sequential", "--playing", "--background-first")
     }
 }
