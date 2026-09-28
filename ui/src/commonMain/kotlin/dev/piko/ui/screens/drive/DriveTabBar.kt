@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
@@ -92,7 +94,7 @@ internal fun DriveTabBar(
         // 标签与「+」挤在左边，占满除窗口按钮外的宽度，窗口按钮才落在最右
         Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
             Row(
-                modifier = Modifier.weight(1f, fill = false).verticalWheelScrollsRow(scroll).horizontalScroll(scroll),
+                modifier = Modifier.weight(1f, fill = false).verticalWheelScrollsRow(scroll).horizontalScroll(scroll).selectableGroup(),
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -163,7 +165,8 @@ private fun TabChip(tab: DriveTab, active: Boolean, onSelect: () -> Unit, onClos
                         }
                     }
                 }
-                .clickable(role = Role.Tab, onClick = onSelect)
+                // 与 M3 的 Tab 相同用 selectable：只用 clickable 时活动标签只是底色不同，读屏说不出哪个是当前的
+                .selectable(selected = active, role = Role.Tab, onClick = onSelect)
                 .height(32.dp)
                 .padding(start = 12.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
