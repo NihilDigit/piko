@@ -4,7 +4,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.doubleClick
-import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onRoot
@@ -83,19 +83,20 @@ class MobilePlayerControlsTest {
         rule.waitForIdle()
         assertTrue("拖动中不应 seek", seeks.isEmpty())
 
-        val hudDelta = rule.onNode(hasText("秒", substring = true) and hasText("+", substring = true))
+        // 拖动中的读数由播放键托住，读屏描述是「跳到 mm:ss」，写的是目标位置
+        val readout = rule.onNode(hasContentDescription("跳到", substring = true))
             .fetchSemanticsNode()
-            .config[SemanticsProperties.Text]
-            .joinToString("") { it.text }
-        val previewSeconds = hudDelta.filter(Char::isDigit).toLong()
-        assertTrue("预览应为正向偏移", previewSeconds > 0)
+            .config[SemanticsProperties.ContentDescription]
+            .joinToString("")
+        val previewSeconds = readout.substringAfter("跳到").trim().split(':').fold(0L) { total, part -> total * 60 + part.toLong() }
+        assertTrue("预览应在起点之后", previewSeconds * 1000 > START_MILLIS)
 
         rule.onRoot().performTouchInput { up() }
         rule.waitForIdle()
 
         val committed = seeks.single()
-        // HUD 显示的是向下取整的整秒，提交值应落在同一秒内
-        assertTrue(committed - START_MILLIS in previewSeconds * 1000 until (previewSeconds + 1) * 1000)
+        // 读数显示的是向下取整的整秒，提交值应落在同一秒内
+        assertTrue(committed in previewSeconds * 1000 until (previewSeconds + 1) * 1000)
     }
 
     @Test
