@@ -41,8 +41,11 @@ class FileClipCache(
                 runCatching {
                     val target = blockFile(file, offset)
                     val before = if (target.isFile) target.length() else 0L
+                    // 头一次数要在写之前：写完再数，刚写的这块已在其中，再加一次就算了两遍，
+                    // 两块正好到上限时被当成超了，刚写的前一块跟着被淘汰
+                    val stored = storedBytes ?: sizeOf(blockDirectory)
                     writeAtomically(target) { it.write(bytes) }
-                    val total = (storedBytes ?: sizeOf(blockDirectory)) + bytes.size - before
+                    val total = stored + bytes.size - before
                     storedBytes = if (total > capBytes) evictBlocks() else total
                 }.onFailure { PikoLog.w(TAG, "切片写盘失败", it) }
                 Unit

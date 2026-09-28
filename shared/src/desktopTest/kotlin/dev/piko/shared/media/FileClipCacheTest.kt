@@ -14,8 +14,8 @@ class FileClipCacheTest {
     fun `over the cap the least recently used block goes`() = runBlocking {
         val directory = Files.createTempDirectory("clip-cache").toFile()
         try {
-            // 放得下两块，放不下三块
-            val cache = FileClipCache(directory, capBytes = 2 * 100L)
+            // 放不下三块。超了之后删到上限的八成（200），正好删掉一块：只删最久没用过的那一块
+            val cache = FileClipCache(directory, capBytes = 250L)
             val blocks = cache.blocks
             blocks.write("gcid/media", 0, ByteArray(100) { 1 })
             Thread.sleep(20)
