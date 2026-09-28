@@ -141,6 +141,7 @@ import dev.piko.data.repository.isPlayableVideo
 import dev.piko.data.repository.isPreviewableImage
 import dev.piko.shared.data.ScrollAnchor
 import dev.piko.shared.data.DriveLibrary
+import dev.piko.shared.data.LastFolderStack
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.media.proxy.openForExternalPlayer
@@ -311,10 +312,7 @@ fun DriveScreen(
             when {
                 lastId.isEmpty() -> emptyList()
                 serialized.isEmpty() -> listOf(PathBreadcrumb(lastId, lastName))
-                else -> serialized.split(";").mapNotNull { entry ->
-                    val parts = entry.split("::")
-                    if (parts.size == 2) PathBreadcrumb(parts[0], parts[1]) else null
-                }.ifEmpty { listOf(PathBreadcrumb(lastId, lastName)) }
+                else -> LastFolderStack.decode(serialized).ifEmpty { listOf(PathBreadcrumb(lastId, lastName)) }
             }
         } else emptyList()
 
@@ -330,8 +328,7 @@ fun DriveScreen(
     LaunchedEffect(folderStack) {
         val last = folderStack.lastOrNull()
         if (last != null) {
-            val serialized = folderStack.joinToString(";") { "${it.id}::${it.name}" }
-            sessionManager.saveLastFolder(last.id, last.name, serialized)
+            sessionManager.saveLastFolder(last.id, last.name, LastFolderStack.encode(folderStack))
         }
     }
 
