@@ -1,0 +1,351 @@
+name: Test
+
+# 全部测试，发版之前必须全绿：release.yml 的第一个 job 就是调这里，通过后才开始打正式包。
+#
+# 两类：
+# - 业务逻辑的单测放在 JVM 上：shared 的 desktop 测试（解析、代理、同步、更新来源等，Linux 上跑得最快）、
+#   desktopApp 的测试（WinRT、窗口过程、更新清单，只能在 Windows 上跑）、Android 的单测。
+# - 原生行为的冒烟在真机器上：Android 模拟器上的真实 libmpv 与回环代理；Windows 与 macOS 上真装、
+#   真启动、真的应用内更新，断言落到磁盘上的结果（windows-update、macos-update）。
+#
+# 推送与 PR 时不跑两个桌面冒烟：它们要打两遍安装包，一次二十来分钟。手动触发与发版时都跑。
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      desktop:
+        description: 同时跑桌面端的安装与更新冒烟
+        type: boolean
+        default: true
+  workflow_call:
+    inputs:
+      desktop:
+        type: boolean
+        default: true
+      # 发版时用 libs.versions.toml 里已发布的 SDK，与正式构建一致。平时用 SDK main 的源码，见
+      # settings.gradle.kts 的复合构建：SDK 在 Piko 发版之前才发，两次发版之间 Piko 会用到它还没发布的改动
+      sdk-main:
+        type: boolean
+        default: true
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  jvm:
+    # 代理与共用 state holder 的冒烟、以及大部分业务逻辑的单测都在 shared 的 desktop 测试里，
+    # 不依赖 Windows，放 Linux 上跑得最快
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/checkout@v5
+        if: inputs.sdk-main != false
+        with:
+          repository: NihilDigit/pikpak-kotlin
+          path: pikpak-kotlin
+
+      - name: Build against the SDK source
+        if: inputs.sdk-main != false
+        shell: bash
+        run: echo "pikpak.sdk.dir=pikpak-kotlin" >> local.properties
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: temurin
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Shared smoke tests
+        run: ./gradlew :shared:desktopTest --no-daemon --stacktrace
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: jvm-smoke-reports
+          path: shared/build/reports/tests/
+          if-no-files-found: ignore
+
+  # WinRT、窗口过程、更新清单与 Windows 原生库的用例只能在 Windows 上跑
+  desktop-unit:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/checkout@v5
+        if: inputs.sdk-main != false
+        with:
+          repository: NihilDigit/pikpak-kotlin
+          path: pikpak-kotlin
+
+      - name: Build against the SDK source
+        if: inputs.sdk-main != false
+        shell: bash
+        run: echo "pikpak.sdk.dir=pikpak-kotlin" >> local.properties
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: zulu
+
+      # 停在 v5 的理由见 release.yml
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Test
+        run: .\gradlew.bat :desktopApp:desktopTest --no-daemon --stacktrace
+
+      - name: Upload test report
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: desktop-test-report
+          path: desktopApp/build/reports/tests
+          retention-days: 7
+
+  android-unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/checkout@v5
+        if: inputs.sdk-main != false
+        with:
+          repository: NihilDigit/pikpak-kotlin
+          path: pikpak-kotlin
+
+      - name: Build against the SDK source
+        if: inputs.sdk-main != false
+        shell: bash
+        run: echo "pikpak.sdk.dir=pikpak-kotlin" >> local.properties
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Test
+        run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Upload test report
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: android-test-report
+          path: app/build/reports/tests
+          retention-days: 7
+
+  android:
+    # 模拟器是 x86_64，验证的是 libmpv 的 x86_64 .so；arm64 与 x86_64 出自同一套构建脚本，
+    # 打包或格式覆盖出问题时两者一起坏，差异只在机型硬解，这部分 CI 本来就测不到。
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # 34 覆盖前台服务类型、后台启动限制等新平台行为
+      API_LEVEL: 34
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/checkout@v5
+        if: inputs.sdk-main != false
+        with:
+          repository: NihilDigit/pikpak-kotlin
+          path: pikpak-kotlin
+
+      - name: Build against the SDK source
+        if: inputs.sdk-main != false
+        shell: bash
+        run: echo "pikpak.sdk.dir=pikpak-kotlin" >> local.properties
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Build test APKs
+        # 先在模拟器外编好，模拟器启动的那段时间不被 Gradle 占着
+        run: ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest -Ppiko.enableAbiSplits=false --no-daemon --stacktrace
+
+      - name: AVD cache
+        uses: actions/cache@v5
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-${{ env.API_LEVEL }}-x86_64-v1
+
+      - name: Create AVD snapshot
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ env.API_LEVEL }}
+          arch: x86_64
+          target: default
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          script: echo "AVD snapshot created"
+
+      - name: Instrumented smoke tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ env.API_LEVEL }}
+          arch: x86_64
+          target: default
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: ./gradlew :app:connectedDebugAndroidTest -Ppiko.enableAbiSplits=false --no-daemon --stacktrace
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: android-smoke-reports-api${{ env.API_LEVEL }}
+          path: |
+            app/build/reports/androidTests/
+            app/build/outputs/androidTest-results/
+          if-no-files-found: ignore
+
+  # 全新安装与应用内更新：同一份源码打两个版本（9.9.0 与 9.9.1），装旧的、让它自己更新成新的，
+  # 逐文件核对落盘结果。场景与断言见 desktopApp/package/update-smoke/windows.ps1。
+  # 用测试专用的 UpgradeCode 与包名打，与正式版互不认识
+  windows-update:
+    if: inputs.desktop == true
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      SMOKE_UPGRADE_CODE: 5f3c2b1e-7a4d-4c9e-9b8a-2d6e0f1a3c55
+      SMOKE_PACKAGE: PikoSmoke
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/checkout@v5
+        if: inputs.sdk-main != false
+        with:
+          repository: NihilDigit/pikpak-kotlin
+          path: pikpak-kotlin
+
+      - name: Build against the SDK source
+        if: inputs.sdk-main != false
+        shell: bash
+        run: echo "pikpak.sdk.dir=pikpak-kotlin" >> local.properties
+
+      # 与 release.yml 相同用 Zulu：打包的 jlink 与 ProGuard 要 jmods
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: zulu
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Install WiX Toolset
+        continue-on-error: true
+        run: choco install wixtoolset -y --no-progress
+
+      - name: Build two versions
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $binaries = 'desktopApp/build/compose/binaries/main-release'
+          foreach ($version in @('9.9.0', '9.9.1')) {
+            .\gradlew.bat :desktopApp:packageReleaseMsi :desktopApp:packageReleaseUpdate --no-daemon --stacktrace `
+              "-PpikoDesktopVersion=$version" "-PpikoDesktopUpgradeUuid=$env:SMOKE_UPGRADE_CODE" "-PpikoDesktopPackageName=$env:SMOKE_PACKAGE"
+            if ($LASTEXITCODE -ne 0) { throw "build $version failed" }
+            $out = "smoke-dist/$version"
+            New-Item -ItemType Directory -Force -Path $out | Out-Null
+            # 与 release.yml 的 Collect artifacts 同样的名字与打法，更新走的是同一条路
+            Compress-Archive -Path "$binaries/app/$env:SMOKE_PACKAGE" -DestinationPath "$out/piko-windows-x64-$version.zip"
+            # 按版本号取：上一轮的 MSI 可能还留在同一个目录里
+            Copy-Item "$binaries/msi/$env:SMOKE_PACKAGE-$version.msi" "$out/piko-windows-x64-$version.msi"
+            Copy-Item "$binaries/update/*" $out
+            Get-ChildItem $out | Format-Table Name, Length
+          }
+
+      - name: Install and update
+        shell: pwsh
+        run: >
+          ./desktopApp/package/update-smoke/windows.ps1
+          -Base smoke-dist/9.9.0 -Next smoke-dist/9.9.1 -BaseVersion 9.9.0 -NextVersion 9.9.1
+          -PackageName $env:SMOKE_PACKAGE -UpgradeCode $env:SMOKE_UPGRADE_CODE -Work "$env:RUNNER_TEMP/update-smoke"
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-update-smoke-logs
+          path: ${{ runner.temp }}/update-smoke/logs
+          if-no-files-found: ignore
+
+  # macOS 同样打两个 DMG，从 DMG 装进 ~/Applications，再让它整包换成新的。见 update-smoke/macos.sh
+  macos-update:
+    if: inputs.desktop == true
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      SMOKE_PACKAGE: PikoSmoke
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/checkout@v5
+        if: inputs.sdk-main != false
+        with:
+          repository: NihilDigit/pikpak-kotlin
+          path: pikpak-kotlin
+
+      - name: Build against the SDK source
+        if: inputs.sdk-main != false
+        shell: bash
+        run: echo "pikpak.sdk.dir=pikpak-kotlin" >> local.properties
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: zulu
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Build two versions
+        run: |
+          set -euo pipefail
+          for version in 9.9.0 9.9.1; do
+            ./gradlew :desktopApp:packageReleaseDmg --no-daemon --stacktrace \
+              "-PpikoDesktopVersion=$version" "-PpikoDesktopPackageName=$SMOKE_PACKAGE"
+            mkdir -p "smoke-dist/$version"
+            # 按版本号取：上一轮的 DMG 可能还留在同一个目录里
+            cp "desktopApp/build/compose/binaries/main-release/dmg/$SMOKE_PACKAGE-$version.dmg" "smoke-dist/$version/piko-macos-arm64-$version.dmg"
+          done
+          ls -lR smoke-dist
+
+      - name: Install and update
+        run: bash desktopApp/package/update-smoke/macos.sh smoke-dist/9.9.0 smoke-dist/9.9.1 9.9.0 9.9.1 "$SMOKE_PACKAGE" "$RUNNER_TEMP/update-smoke"
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: macos-update-smoke-logs
+          path: ${{ runner.temp }}/update-smoke/logs
+          if-no-files-found: ignore

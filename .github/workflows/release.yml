@@ -3,6 +3,7 @@ name: Release
 # 打 tag 发版。安装包只在这里构建：本机不产出、也拿不到签名密钥，所以「这个安装包是从这份
 # 源码编出来的」有据可查。
 #
+# 先由 test 跑完全部测试（test.yml：各平台的单测与冒烟，含 Windows 与 macOS 的安装和应用内更新），全绿后
 # android、windows（x64 与 arm64）、macos 三个 job 并行构建，只产出、不发布；产物交给 release
 # 统一算校验和、生成构建来源证明，再建一个草稿 release。附件先齐、后公开：此前各平台各自往一个
 # 已公开的 Release 上挂附件，中间有一段时间 Release 已可见而附件不全，应用内更新可能看到缺了
@@ -15,12 +16,20 @@ name: Release
 # 草稿公开前，按 CLAUDE.md 的「发版」一节把更新日志写进正文。
 #
 # 触发：推一个 vMAJOR.MINOR.PATCH 形式的 tag。版本号取自 tag，不写在源码里。
+# 演练：手动触发并填一个版本号，测试、构建与汇总照常跑完，产物留作 workflow 产物，不建 release、
+# 不做证明。发版流程本身改过之后先演练一遍，确认能走通再推 tag。
 # 需要仓库 Secret：ANDROID_KEYSTORE_BASE64、ANDROID_KEYSTORE_PASSWORD、ANDROID_KEY_ALIAS、ANDROID_KEY_PASSWORD
 
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 演练用的版本号（MAJOR.MINOR.PATCH），不发布
+        required: true
+        default: '9.9.9'
 
 concurrency:
   group: release-${{ github.ref }}
@@ -35,11 +44,15 @@ jobs:
     outputs:
       name: ${{ steps.derive.outputs.name }}
       code: ${{ steps.derive.outputs.code }}
+      # 手动触发的是演练：不建 release、不做证明
+      dry-run: ${{ github.event_name == 'workflow_dispatch' }}
     steps:
       - name: Derive version from tag
         id: derive
+        env:
+          TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
         run: |
-          if [[ ! "$GITHUB_REF_NAME" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+          if [[ ! "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
             echo "Release tags must use vMAJOR.MINOR.PATCH format."
             exit 1
           fi
@@ -50,12 +63,20 @@ jobs:
             echo "Release tag components exceed the supported Android versionCode range."
             exit 1
           fi
-          echo "name=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "name=${TAG#v}" >> "$GITHUB_OUTPUT"
           echo "code=$((major * 1000000 + minor * 1000 + patch))" >> "$GITHUB_OUTPUT"
+
+  # 发版前把全部测试在真机器上跑一遍：JVM 与各平台的单测，Android 模拟器、Windows 与 macOS 上的原生行为冒烟
+  # （含全新安装与应用内更新），并行跑，全绿才开始打正式包。用已发布的 SDK，与下面的正式构建一致
+  test:
+    uses: ./.github/workflows/test.yml
+    with:
+      desktop: true
+      sdk-main: false
 
   # 签名密钥只进这个 job，负责汇总发布的 release 不碰它。
   android:
-    needs: version
+    needs: [version, test]
     runs-on: ubuntu-latest
     env:
       ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/piko-release.jks
@@ -118,7 +139,7 @@ jobs:
           retention-days: 7
 
   windows:
-    needs: version
+    needs: [version, test]
     strategy:
       fail-fast: false
       matrix:
@@ -145,7 +166,7 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v5
 
-      # ci.yml 已跑过；这里再跑一遍，WinRT 与原生库的问题在打包机上也要先暴露
+      # test 在 x64 上已跑过；这里在每个架构的打包机上再跑一遍，arm64 的 WinRT 与原生库问题只有这里暴露
       - name: Test
         run: .\gradlew.bat :desktopApp:desktopTest --no-daemon --stacktrace
 
@@ -190,7 +211,7 @@ jobs:
 
   # Apple 芯片。jpackage 不能交叉构建，Intel Mac 要另起 macos-15-intel runner，暂不出
   macos:
-    needs: version
+    needs: [version, test]
     runs-on: macos-15
     env:
       ORG_GRADLE_PROJECT_pikoDesktopVersion: ${{ needs.version.outputs.name }}
@@ -266,7 +287,55 @@ jobs:
           # 以「可能含 secret」为由丢掉整条输出（Bilby 发版时撞上过）。文件放在 dist 外，免得被当成附件
           (cd dist && sha256sum *.apk *.msi *.dmg *.zip | base64 -w0) > slsa-subjects.b64
 
+      # 检查更新的备用来源：GitHub API 被限流（匿名按出口 IP 每小时 60 次）或连不上时，应用改取
+      # releases/latest/download/release.json，见 GithubReleaseClient.LATEST_RELEASE_SOURCES。与 API 的
+      # releases/latest 同一个形状，附件带 digest，应用照样逐个校验。正文留空：更新日志在草稿公开前才写
+      - name: Release manifest for the update check
+        env:
+          VERSION: ${{ needs.version.outputs.name }}
+        run: |
+          python3 - "$GITHUB_REPOSITORY" "v$VERSION" dist <<'PY'
+          import hashlib, json, os, sys
+          repo, tag, folder = sys.argv[1:4]
+          def sha256(path):
+              h = hashlib.sha256()
+              with open(path, 'rb') as f:
+                  for chunk in iter(lambda: f.read(1 << 20), b''):
+                      h.update(chunk)
+              return h.hexdigest()
+          assets = [
+              {
+                  'name': name,
+                  'size': os.path.getsize(os.path.join(folder, name)),
+                  'browser_download_url': f'https://github.com/{repo}/releases/download/{tag}/{name}',
+                  'digest': 'sha256:' + sha256(os.path.join(folder, name)),
+              }
+              for name in sorted(os.listdir(folder))
+          ]
+          release = {
+              'tag_name': tag,
+              'html_url': f'https://github.com/{repo}/releases/tag/{tag}',
+              'body': '',
+              'draft': False,
+              'prerelease': False,
+              'assets': assets,
+          }
+          with open(os.path.join(folder, 'release.json'), 'w', encoding='utf-8') as f:
+              json.dump(release, f, ensure_ascii=False, indent=1)
+          PY
+          test -s dist/release.json
+
+      # 演练到此为止：产物留作 workflow 产物，看得到最终会挂上 release 的是哪些文件
+      - name: Keep the dry run's assets
+        if: needs.version.outputs.dry-run == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: dry-run-dist
+          path: dist/*
+          retention-days: 3
+
       - name: Share SLSA subjects
+        if: needs.version.outputs.dry-run != 'true'
         id: subjects
         uses: slsa-framework/slsa-github-generator/actions/generator/generic/create-base64-subjects-from-file@v2.1.0
         with:
@@ -274,6 +343,7 @@ jobs:
 
       # 证明这些文件确实由这个 workflow、从这个 commit 构建
       - name: Attest build provenance
+        if: needs.version.outputs.dry-run != 'true'
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
@@ -288,6 +358,7 @@ jobs:
 
       # 草稿：releases/latest 看不到它，应用内更新在公开之前不会提示，公开时附件已经齐全
       - name: Publish draft release
+        if: needs.version.outputs.dry-run != 'true'
         uses: softprops/action-gh-release@v3
         with:
           draft: true
@@ -302,7 +373,8 @@ jobs:
   #   slsa-verifier verify-artifact <文件> --provenance-path multiple.intoto.jsonl --source-uri github.com/<owner>/<repo>
   # 这个 job 的日志里 Node.js 20 的弃用警告来自 generator 内部，v2.1.0 已是上游最新版，本仓库改不了
   provenance:
-    needs: [release]
+    needs: [version, release]
+    if: needs.version.outputs.dry-run != 'true'
     permissions:
       id-token: write
       contents: write
