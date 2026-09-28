@@ -26,7 +26,9 @@ on:
         type: boolean
         default: true
       # 发版时用 libs.versions.toml 里已发布的 SDK，与正式构建一致。平时用 SDK main 的源码，见
-      # settings.gradle.kts 的复合构建：SDK 在 Piko 发版之前才发，两次发版之间 Piko 会用到它还没发布的改动
+      # settings.gradle.kts 的复合构建：SDK 在 Piko 发版之前才发，两次发版之间 Piko 会用到它还没发布的改动。
+      # 各步骤按 format('{0}', inputs.sdk-main) != 'false' 判断：push 与 PR 没有这个输入，值为 null，
+      # 而表达式里 null 与 false 宽松比较相等，直接写 inputs.sdk-main != false 会把平时的构建也换成已发布的 SDK
       sdk-main:
         type: boolean
         default: true
@@ -48,13 +50,13 @@ jobs:
       - uses: actions/checkout@v5
 
       - uses: actions/checkout@v5
-        if: inputs.sdk-main != false
+        if: format('{0}', inputs.sdk-main) != 'false'
         with:
           repository: NihilDigit/pikpak-kotlin
           path: pikpak-kotlin
 
       - name: Build against the SDK source
-        if: inputs.sdk-main != false
+        if: format('{0}', inputs.sdk-main) != 'false'
         shell: bash
         run: echo "pikpak.sdk.dir=pikpak-kotlin" >> local.properties
 
@@ -84,13 +86,13 @@ jobs:
       - uses: actions/checkout@v5
 
       - uses: actions/checkout@v5
-        if: inputs.sdk-main != false
+        if: format('{0}', inputs.sdk-main) != 'false'
         with:
           repository: NihilDigit/pikpak-kotlin
           path: pikpak-kotlin
 
       - name: Build against the SDK source
-        if: inputs.sdk-main != false
+        if: format('{0}', inputs.sdk-main) != 'false'
         shell: bash
         run: echo "pikpak.sdk.dir=pikpak-kotlin" >> local.properties
 
@@ -120,13 +122,13 @@ jobs:
       - uses: actions/checkout@v5
 
       - uses: actions/checkout@v5
-        if: inputs.sdk-main != false
+        if: format('{0}', inputs.sdk-main) != 'false'
         with:
           repository: NihilDigit/pikpak-kotlin
           path: pikpak-kotlin
 
       - name: Build against the SDK source
-        if: inputs.sdk-main != false
+        if: format('{0}', inputs.sdk-main) != 'false'
         shell: bash
         run: echo "pikpak.sdk.dir=pikpak-kotlin" >> local.properties
 
@@ -160,13 +162,13 @@ jobs:
       - uses: actions/checkout@v5
 
       - uses: actions/checkout@v5
-        if: inputs.sdk-main != false
+        if: format('{0}', inputs.sdk-main) != 'false'
         with:
           repository: NihilDigit/pikpak-kotlin
           path: pikpak-kotlin
 
       - name: Build against the SDK source
-        if: inputs.sdk-main != false
+        if: format('{0}', inputs.sdk-main) != 'false'
         shell: bash
         run: echo "pikpak.sdk.dir=pikpak-kotlin" >> local.properties
 
@@ -243,13 +245,13 @@ jobs:
       - uses: actions/checkout@v5
 
       - uses: actions/checkout@v5
-        if: inputs.sdk-main != false
+        if: format('{0}', inputs.sdk-main) != 'false'
         with:
           repository: NihilDigit/pikpak-kotlin
           path: pikpak-kotlin
 
       - name: Build against the SDK source
-        if: inputs.sdk-main != false
+        if: format('{0}', inputs.sdk-main) != 'false'
         shell: bash
         run: echo "pikpak.sdk.dir=pikpak-kotlin" >> local.properties
 
@@ -310,13 +312,13 @@ jobs:
       - uses: actions/checkout@v5
 
       - uses: actions/checkout@v5
-        if: inputs.sdk-main != false
+        if: format('{0}', inputs.sdk-main) != 'false'
         with:
           repository: NihilDigit/pikpak-kotlin
           path: pikpak-kotlin
 
       - name: Build against the SDK source
-        if: inputs.sdk-main != false
+        if: format('{0}', inputs.sdk-main) != 'false'
         shell: bash
         run: echo "pikpak.sdk.dir=pikpak-kotlin" >> local.properties
 

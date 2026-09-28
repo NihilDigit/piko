@@ -20,6 +20,8 @@ class PikoProxySelectorTest {
         assertEquals(InetSocketAddress.createUnresolved("proxy.lan", 1080), remote.address())
         // 播放器读的本机回环代理不能被送去外面的代理
         assertEquals(listOf(Proxy.NO_PROXY), PikoProxySelector.select(URI("http://127.0.0.1:45123/stream")))
+        // 以 127. 开头的域名不是回环地址，照样走代理
+        assertEquals(Proxy.Type.SOCKS, PikoProxySelector.select(URI("https://127.example.com/")).single().type())
 
         // 手动但地址没填全：直连，而不是连向一个空地址
         PikoProxySelector.apply(ProxySetting(ProxyMode.MANUAL, ProxyProtocol.HTTP, "", 0))

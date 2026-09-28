@@ -68,7 +68,6 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.SearchOff
 import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButtonMenu
 import androidx.compose.material3.FloatingActionButtonMenuItem
@@ -924,7 +923,8 @@ fun DriveScreen(
         CommandInputs(
             place = when {
                 libraryView == DriveLibrary.TRASH -> CommandPlace.TRASH
-                libraryView?.isEventLog == true -> CommandPlace.EVENT_LOG
+                libraryView == DriveLibrary.HISTORY -> CommandPlace.HISTORY
+                libraryView == DriveLibrary.RECENT -> CommandPlace.RECENT
                 libraryView != null -> CommandPlace.LIBRARY
                 state.searchQuery.isNotBlank() || state.isGlobalSearchActive -> CommandPlace.SEARCH
                 folderStack.size == 1 -> CommandPlace.ROOT
@@ -1092,30 +1092,15 @@ fun DriveScreen(
             onRefresh = { state.load(refresh = true) },
             // 库里的子文件夹栈底是库而不是根，回主页要换掉整条栈
             onHome = { driveRepo.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB)) },
-            trailing = {
+            viewSwitcher = {
                 ViewSwitcher(
                     viewMode = viewMode,
                     onViewModeChange = { mode -> scope.launch { sessionManager.setDriveViewMode(mode.name) } },
                     feedShown = feedShown,
                     onFeedShownChange = onFeedShownChange.takeIf { commands.feed },
                 )
-                // 详情栏的开关不放在这里：它看的是某一项，入口在条目上悬停出现的详情按钮；关闭在详情栏自己的顶上，
-                // 主修饰键+I 照旧开关
-                Spacer(Modifier.width(8.dp))
-                if (commands.addLink) {
-                    // 往网盘里添东西最常用的一件，用主色常驻在右端，不收在「新建」菜单里。收起它在面板自己的顶上
-                    Button(
-                        onClick = ::openAddLink,
-                        contentPadding = PaddingValues(start = 12.dp, end = 16.dp),
-                        modifier = Modifier.heightIn(min = 40.dp),
-                    ) {
-                        Icon(Icons.Outlined.Bolt, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("添加链接")
-                    }
-                    Spacer(Modifier.width(8.dp))
-                }
             },
+            onAddLink = if (commands.addLink) ::openAddLink else null,
         )
     }
 

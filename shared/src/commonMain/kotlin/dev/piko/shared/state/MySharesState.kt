@@ -148,12 +148,15 @@ class MySharesState(
     }
 
     /**
-     * 正在取消的分享 ID。取消请求发出之前取的列表（刷新、下一页）回来时还带着它们，
-     * 不滤掉的话刚拿掉的一项又会冒出来。
+     * 正在取消与已取消的分享 ID。取消请求发出之前取的列表（刷新、下一页）回来时还带着它们，
+     * 不滤掉的话刚拿掉的一项又会冒出来。取消成功后也留着：那份旧列表可能在取消返回之后才到。
+     * 分享 ID 不会复用，取消了的不会再合法地出现，留到页面离开即可，不必判断哪次请求发在取消之前。
      */
     private val cancellingIds = HashSet<String>()
+    private val cancelledIds = HashSet<String>()
 
-    private fun withoutCancelling(page: List<ShareSummary>) = page.filterNot { it.shareId in cancellingIds }
+    private fun withoutCancelling(page: List<ShareSummary>) =
+        page.filterNot { it.shareId in cancellingIds || it.shareId in cancelledIds }
 
     /**
      * 失败时只放回这一次拿掉的几项，不整份换回快照：几次取消先后进行、或期间刷新过时，
@@ -167,7 +170,10 @@ class MySharesState(
             val result = driveRepo.cancelShares(ids.toList()).logFailure(TAG, logMessage)
             cancellingIds -= ids
             result
-                .onSuccess { _messages.tryEmit(done) }
+                .onSuccess {
+                    cancelledIds += ids
+                    _messages.tryEmit(done)
+                }
                 .onFailure {
                     shares = reinsertRemoved(shares, before, ids) { it.shareId }
                     _messages.tryEmit("取消分享失败")

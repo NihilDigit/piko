@@ -41,11 +41,17 @@ class FilePikoSessionStore(
     }
 
     override suspend fun clear(account: String) = withContext(Dispatchers.IO) {
-        if (loadLastAccount() == account) {
+        if (ownedBy(account)) {
             sessionFile.delete()
             accountFile.delete()
         }
     }
+
+    /**
+     * 只有一份会话与密码，归上次登录的账号。账号文件已不在时也算：此时没有别的账号需要保护，
+     * 只看相等的话，账号文件先被删掉（退出时清账号在前、或两次退出交错），密码与会话就再也清不掉，留在磁盘上。
+     */
+    private suspend fun ownedBy(account: String): Boolean = loadLastAccount().let { owner -> owner == null || owner == account }
 
     override suspend fun loadLastAccount(): String? = withContext(Dispatchers.IO) {
         accountFile.takeIf { it.isFile }?.readText()?.trim()?.ifEmpty { null }
@@ -72,6 +78,6 @@ class FilePikoSessionStore(
     }
 
     override suspend fun clearCredentials(account: String) = withContext(Dispatchers.IO) {
-        if (loadLastAccount() == account) passwordFile.delete()
+        if (ownedBy(account)) passwordFile.delete()
     }
 }

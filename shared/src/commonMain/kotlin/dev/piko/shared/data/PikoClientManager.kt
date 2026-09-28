@@ -127,8 +127,15 @@ class PikoClientManager(
      * 退出登录。清凭据在进程级的 [scope] 里做，调用方被取消也照样做完：退出按钮在对话框里，
      * 对话框一关，它的协程作用域就取消了。旧实现在调用方的协程里清，界面已显示退出、
      * 磁盘上的凭据却还在，下次启动又自动登录。返回的 Job 供需要等清完的调用方 join。
+     *
+     * 正在退出时再调，返回同一个 Job，不另起一份：两份交错时，后一份看到 client 已被摘下，
+     * 直接清掉 last account，前一份随后就判断不出凭据归谁。调用都在主线程，检查与赋值之间没有挂起点。
      */
-    fun logout(): Job = scope.launch {
+    fun logout(): Job = logoutJob?.takeIf { it.isActive } ?: startLogout().also { logoutJob = it }
+
+    private var logoutJob: Job? = null
+
+    private fun startLogout(): Job = scope.launch {
         PikoLog.i(TAG, "退出登录")
         reconnectJob?.cancel()
         val current = _currentClient.value

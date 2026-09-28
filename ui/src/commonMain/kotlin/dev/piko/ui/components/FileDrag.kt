@@ -92,17 +92,21 @@ class FileDragState {
 
     private class Target(val bounds: Rect, val folder: PikoPathBreadcrumb)
 
-    private val targets = HashMap<Any, Target>()
+    // 要按登记先后倒着找，所以用 LinkedHashMap；HashMap 的遍历顺序与登记先后无关
+    private val targets = LinkedHashMap<Any, Target>()
 
     val hoveredFolder: PikoPathBreadcrumb? get() = hovered?.let { targets[it]?.folder }
 
+    // 拖着的时候指针不动也会换落点：滚轮滚动列表、侧栏展开都会挪动落点的范围。所以登记、撤销与松手时
+    // 都按眼下的指针位置重新找一遍，不只在指针移动时找，否则松手落到已经滚走的那个文件夹上
     internal fun register(key: Any, bounds: Rect, folder: PikoPathBreadcrumb) {
         targets[key] = Target(bounds, folder)
+        retarget()
     }
 
     internal fun unregister(key: Any) {
         targets.remove(key)
-        if (hovered == key) hovered = null
+        retarget()
     }
 
     internal fun start(payload: FileDragPayload, at: Offset) {
@@ -113,15 +117,24 @@ class FileDragState {
     internal fun move(at: Offset, copy: Boolean) {
         position = at
         this.copy = copy
-        val payload = payload ?: return
+        retarget()
+    }
+
+    private fun retarget() {
+        val payload = payload
+        if (payload == null) {
+            hovered = null
+            return
+        }
         // 后登记的在上层（弹出的侧栏、滚到上面的条目），倒着找先碰到它
         hovered = targets.entries.reversed().firstOrNull { (_, target) ->
-            target.bounds.contains(at) && payload.accepts(target.folder)
+            target.bounds.contains(position) && payload.accepts(target.folder)
         }?.key
     }
 
     internal fun drop() {
         val payload = payload ?: return
+        retarget()
         val target = hoveredFolder
         cancel()
         if (target != null) payload.perform(target, copy)

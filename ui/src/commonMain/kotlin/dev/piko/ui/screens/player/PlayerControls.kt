@@ -15,6 +15,15 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.layout.requiredHeight
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -24,7 +33,6 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -397,8 +405,8 @@ private fun PlayPauseButton(
         CenterFace.Loading -> colors.onPrimaryContainer
         CenterFace.Icon -> colors.onPrimary
     }
-    val description = when {
-        indicator != null -> indicator.description
+    // 按钮的标签只说点下去做什么：读数形态下点击照样是播放或暂停，标签换成读数的话，读屏念完读数却不知道这一下做了什么
+    val actionLabel = when {
         isLoading -> "加载中"
         isPlaying -> "暂停"
         else -> "播放"
@@ -406,6 +414,16 @@ private fun PlayPauseButton(
 
     // 外框固定为静止尺寸，容器在里面伸缩，两侧按钮不会随之挪动；读数形态比外框宽，用 requiredSize 向两侧溢出
     Box(modifier.size(size), contentAlignment = Alignment.Center) {
+        // 读数另占一个节点，以礼貌的 live region 播报，不并进按钮。垫在按钮底下、不接指针，只供读屏；
+        // 节点常驻、只换描述，播报跟着描述的变化走
+        Box(
+            Modifier
+                .matchParentSize()
+                .semantics {
+                    liveRegion = LiveRegionMode.Polite
+                    indicator?.let { contentDescription = it.description }
+                },
+        )
         Surface(
             onClick = onClick,
             // 弹簧会冲过头。圆角从胶囊收回方角时只会冲到略小于 12dp，离 0 还远，仍兜一道：
@@ -417,10 +435,7 @@ private fun PlayPauseButton(
             modifier = Modifier
                 .requiredSize(width.coerceAtLeast(0.dp), size.height)
                 .handCursor()
-                .semantics {
-                    contentDescription = description
-                    if (face != CenterFace.Icon) liveRegion = LiveRegionMode.Polite
-                },
+                .semantics { contentDescription = actionLabel },
         ) {
             AnimatedContent(
                 targetState = face,
@@ -741,7 +756,9 @@ internal fun PlayerSeekBar(
 
     val fraction = dragFraction ?: fractionOf(pendingSeekMillis ?: positionMillis)
     val bufferedFraction = fractionOf(bufferedPositionMillis)
-    val isEngaged = dragFraction != null || hoverFraction != null
+    val focusInteraction = remember { MutableInteractionSource() }
+    val isFocused by focusInteraction.collectIsFocusedAsState()
+    val isEngaged = dragFraction != null || hoverFraction != null || isFocused
     val scheme = MaterialTheme.colorScheme
     val trackColors = SeekTrackColors(
         active = scheme.primary,
@@ -753,7 +770,8 @@ internal fun PlayerSeekBar(
     val thumbRadius by animateDpAsState(
         when {
             dragFraction != null -> SeekThumbDraggingRadius
-            thumbOnHoverOnly && hoverFraction == null -> 0.dp
+            // 键盘停在进度条上时手柄要露出来，否则看不出焦点在这里、方向键会动它
+            thumbOnHoverOnly && hoverFraction == null && !isFocused -> 0.dp
             else -> SeekThumbRadius
         },
         motion.fastSpatialSpec(),
@@ -769,10 +787,24 @@ internal fun PlayerSeekBar(
         currentOnSeek(millis)
     }
 
+    // 方向键一步 SEEK_STEP_MILLIS，与播放器其余地方的进退同一步长，每按一下即提交，相当于拖动后松手。
+    // 连按时从上一步的目标接着算，位置回报还没跟上也不会原地打转
+    fun stepBy(deltaMillis: Long): Boolean {
+        if (!enabled) return false
+        val base = pendingSeekMillis ?: positionMillis
+        commitSeek(fractionOf(base + deltaMillis))
+        return true
+    }
+
+    val focusRingColor = scheme.secondary
+
     BoxWithConstraints(modifier = modifier.height(SeekBarHeight)) {
         Box(
             Modifier
-                .fillMaxSize()
+                .fillMaxWidth()
+                // 布局仍占 SeekBarHeight，接触摸的这一层撑到 48dp、上下各溢出一截，轨道画在正中不挪位置。
+                // 不能指望 Compose 的最小触控区自动外扩：它只在别处都没接住时才生效，而进度条底下铺着整屏的手势层
+                .requiredHeight(SeekTouchHeight)
                 .handCursor(enabled)
                 // 按下即跳到该处并开始拖动，松手才真正 seek
                 .pointerInput(enabled, durationMillis) {
@@ -820,8 +852,22 @@ internal fun PlayerSeekBar(
                         thickness = thickness.toPx(),
                         thumbRadius = thumbRadius.toPx(),
                         inset = SeekThumbDraggingRadius.toPx(),
+                        focusRing = if (isFocused) focusRingColor else null,
                     )
                 }
+                // M3 滑块的键盘约定：Tab 停到手柄上，方向键调值。在播放器与信息流里，上级根节点的
+                // onPreviewKeyEvent 先接住左右方向键（同为 SEEK_STEP_MILLIS 一步，另有按住快进），这里收不到；
+                // 让上级赢，是因为那边的进退有读数反馈与按住加速，焦点停在进度条上时行为也不变。
+                // 这里的处理留给没有上级快捷键的场合
+                .onKeyEvent { event ->
+                    if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+                    when (event.key) {
+                        Key.DirectionRight -> stepBy(SEEK_STEP_MILLIS)
+                        Key.DirectionLeft -> stepBy(-SEEK_STEP_MILLIS)
+                        else -> false
+                    }
+                }
+                .focusable(enabled, focusInteraction)
                 .semantics {
                     contentDescription = "播放进度"
                     stateDescription = "$positionText / $durationText"
@@ -883,6 +929,7 @@ private fun DrawScope.drawSeekTrack(
     thickness: Float,
     thumbRadius: Float,
     inset: Float,
+    focusRing: Color?,
 ) {
     val centerY = size.height / 2
     val start = inset
@@ -899,6 +946,12 @@ private fun DrawScope.drawSeekTrack(
         drawLine(colors.active, Offset(start, centerY), Offset(thumbX, centerY), thickness, StrokeCap.Round)
     }
     if (thumbRadius > 0f) drawCircle(colors.active, thumbRadius, Offset(thumbX, centerY))
+    // 键盘焦点照 M3 画在手柄外面一圈，隔开一道缝，不与手柄连成一块
+    if (focusRing != null) {
+        val ringWidth = SeekFocusRingWidth.toPx()
+        val ringRadius = thumbRadius + SeekFocusRingGap.toPx() + ringWidth / 2
+        drawCircle(focusRing, ringRadius, Offset(thumbX, centerY), style = Stroke(ringWidth))
+    }
 }
 
 /** 浮在视频上的控件容器色。半透明：既保证图标对比度，又不整块挡住画面。 */
@@ -976,8 +1029,12 @@ private val BottomScrim = listOf(
     Color.Black.copy(alpha = 0.8f),
 )
 
-// 进度条的触控高度与轨道几何。触控区比轨道高得多：细轨道要能点中
+// 进度条的布局高度与轨道几何。布局高度决定它在底栏里占多少地方，ClipChrome 按它把细线挪到底边，
+// 不随触控区改；触控区另取 48dp 的最小触控尺寸，细轨道要能点中
 private val SeekBarHeight = 32.dp
+private val SeekTouchHeight = 48.dp
+private val SeekFocusRingWidth = 3.dp
+private val SeekFocusRingGap = 2.dp
 private val SeekTrackThickness = 4.dp
 private val SeekTrackEngagedThickness = 8.dp
 private val SeekThumbRadius = 6.dp

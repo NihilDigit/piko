@@ -60,8 +60,12 @@ object PikoProxySelector : ProxySelector() {
         if (setting.mode == ProxyMode.SYSTEM) system?.connectFailed(uri, address, error)
     }
 
+    // 只认字面的回环地址：127.x.x.x 要四段都是数字。只看前缀的话，127.example.com 这种域名也会绕过用户设的代理直连
     private fun isLoopback(host: String?): Boolean =
-        host == null || host == "localhost" || host.startsWith("127.") || host == "::1" || host == "[::1]"
+        host == null || host.equals("localhost", ignoreCase = true) || host == "::1" || host == "[::1]" ||
+            LOOPBACK_V4.matches(host)
+
+    private val LOOPBACK_V4 = Regex("""127\.\d{1,3}\.\d{1,3}\.\d{1,3}""")
 
     private val NO_PROXY = listOf(Proxy.NO_PROXY)
 }

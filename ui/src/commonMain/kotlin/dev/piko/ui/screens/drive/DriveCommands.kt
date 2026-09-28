@@ -28,8 +28,11 @@ internal enum class CommandPlace {
     /** 星标：条目是散在全盘的真文件，能改能移，只是这里不是一个能往里放东西的目录。 */
     LIBRARY,
 
-    /** 最近添加、播放历史：同 [LIBRARY]，多一个移除记录。 */
-    EVENT_LOG,
+    /** 最近添加：同 [LIBRARY]，多一个移除记录。 */
+    RECENT,
+
+    /** 播放历史：同 [RECENT]，另能整个清空。最近添加没有清空，两者因此分开。 */
+    HISTORY,
 
     /** 回收站：只能恢复与彻底删除。 */
     TRASH,
@@ -92,6 +95,7 @@ internal class DriveCommands(
 internal fun driveCommands(input: CommandInputs): DriveCommands = with(input) {
     val folder = place == CommandPlace.ROOT || place == CommandPlace.FOLDER
     val inTrash = place == CommandPlace.TRASH
+    val eventLog = place == CommandPlace.RECENT || place == CommandPlace.HISTORY
     val hasTargets = targets.isNotEmpty()
     // 上传中的文件改名、移动、分享都会失败，作用对象里有它就不给这几样
     val settled = hasTargets && targets.none { it.isUploading }
@@ -111,9 +115,9 @@ internal fun driveCommands(input: CommandInputs): DriveCommands = with(input) {
         moveCopyTo = itemActionsHere && settled && !inTrash,
         download = itemActionsHere && !inTrash && targets.any { !it.isFolder && !it.isUploading },
         extract = itemActionsHere && !inTrash && targets.any { it.isExtractableArchive || it.isArchiveVolume },
-        removeRecord = itemActionsHere && place == CommandPlace.EVENT_LOG,
-        // 清空只在有东西可清时
-        emptyPlace = (inTrash || place == CommandPlace.EVENT_LOG) && itemCount > 0,
+        removeRecord = itemActionsHere && eventLog,
+        // 清空只在有东西可清时。与 libraryPageActions 对应：只有回收站与播放历史有清空
+        emptyPlace = (inTrash || place == CommandPlace.HISTORY) && itemCount > 0,
         selectAll = itemCount > 0 && !allSelected,
         // 查重的范围是眼前这个目录，搜索结果与库都不是目录
         findDuplicates = folder && itemCount > 0,

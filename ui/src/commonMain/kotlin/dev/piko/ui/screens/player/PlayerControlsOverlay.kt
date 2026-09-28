@@ -257,10 +257,20 @@ fun MobilePlayerControls(
     var holdJob by remember { mutableStateOf<Job?>(null) }
     var arrowHeld by remember { mutableStateOf(false) }
 
+    // 撤掉按住的状态，不做轻按的那一步：停掉快退的循环，按住 → 时把倍速还回去
+    fun abandonArrowHold() {
+        holdJob?.cancel()
+        holdJob = null
+        if (arrowHeld && heldArrow == Key.DirectionRight) endBoost()
+        heldArrow = null
+        arrowHeld = false
+    }
+
     fun arrowDown(key: Key) {
         if (heldArrow == key) return
+        // 按着一个方向键又按下另一个：先前那个的松开再也对不上号，不在这里收尾的话临时倍速就一直留着
+        abandonArrowHold()
         heldArrow = key
-        holdJob?.cancel()
         holdJob = scope.launch {
             delay(HOLD_ARROW_MILLIS)
             arrowHeld = true
@@ -287,6 +297,16 @@ fun MobilePlayerControls(
         arrowHeld = false
         interacted()
         return true
+    }
+
+    // 按住期间窗口失去焦点（Alt+Tab、弹出系统对话框），松开事件送到别的窗口去了，这里永远等不到：
+    // 失焦即当作松开，方向键的按住与触屏长按的临时倍速一并收回
+    val windowFocused = LocalWindowInfo.current.isWindowFocused
+    LaunchedEffect(windowFocused) {
+        if (!windowFocused) {
+            abandonArrowHold()
+            endBoost()
+        }
     }
 
     // 静音前的音量，再按一次 M 回到这里。不在静音时为 null

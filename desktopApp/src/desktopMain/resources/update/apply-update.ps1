@@ -85,9 +85,28 @@ function Get-StagedFiles([string] $dir, [string] $prefix) {
     }
 }
 
+# The files to install are exactly the verified ones: the checksum list names each staged file
+# relative to the staging dir (files/app/x.jar), and Source is its files subfolder. Anything
+# staged but not listed, or listed but not staged, stops the update: a file that appeared after
+# verification would otherwise be copied over the install unchecked.
+function Assert-StagedSetMatches($staged) {
+    $prefix = (Split-Path -Leaf $Source) + '\'
+    $expected = @{}
+    foreach ($line in @(Get-Content -LiteralPath $Checksums | Where-Object { $_.Trim() })) {
+        $relative = ($line -split '\s+', 2)[1].Replace('/', '\')
+        if (-not $relative.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) { throw "checksum entry outside $prefix : $relative" }
+        $expected[$relative.Substring($prefix.Length).ToLowerInvariant()] = $true
+    }
+    $actual = @{}
+    foreach ($item in $staged) { $actual[$item.Relative.ToLowerInvariant()] = $true }
+    foreach ($key in $actual.Keys) { if (-not $expected.ContainsKey($key)) { throw "staged file not in the checksum list: $key" } }
+    foreach ($key in $expected.Keys) { if (-not $actual.ContainsKey($key)) { throw "listed file not staged: $key" } }
+}
+
 function Install-Patch {
     $staged = @(Get-StagedFiles $Source '')
     if ($staged.Count -eq 0) { throw "no staged files in $Source" }
+    Assert-StagedSetMatches $staged
     $entries = foreach ($item in $staged) {
         [pscustomobject]@{
             Source = $item.File

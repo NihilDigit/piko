@@ -124,10 +124,15 @@ internal fun PlayerGestureLayer(
                         speedBoost(true)
                     },
                     onPress = {
-                        tryAwaitRelease()
-                        if (boosting) {
-                            boosting = false
-                            speedBoost(false)
+                        // finally：按着时锁定画面，pointerInput 以 isLocked 为 key 重启，这个协程被取消，
+                        // 等不到松开，不收尾的话临时倍速留着，拖动手势也一直被当成长按里的挪动而忽略
+                        try {
+                            tryAwaitRelease()
+                        } finally {
+                            if (boosting) {
+                                boosting = false
+                                speedBoost(false)
+                            }
                         }
                     },
                 )
