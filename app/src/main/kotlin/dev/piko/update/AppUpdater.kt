@@ -62,7 +62,10 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
     /** 下载并校验，成功后提交安装。未授予「安装未知应用」时先带用户去授权，授权后需再点一次。 */
     override suspend fun downloadAndInstall(update: AvailableUpdate) {
         val own = update.own()
-        if (!own.canInstallInApp) return
+        // 每次下载都先清空同一个缓存目录，两次下载同时进行会删掉、覆盖对方的文件。连点两下时，
+        // 两次调用在主线程上排队，检查与下面改成 Downloading 之间没有挂起点，后一次必然看到前一次的状态。
+        // Installing 不拦：系统安装器被划掉时可能不回调，状态会一直停在那里
+        if (!own.canInstallInApp || status is UpdateStatus.Downloading) return
         if (!context.packageManager.canRequestPackageInstalls()) {
             val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}"))
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
