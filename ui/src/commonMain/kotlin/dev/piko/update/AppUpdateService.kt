@@ -106,17 +106,23 @@ abstract class GithubUpdateService<U : AvailableUpdate>(
     override suspend fun check(silent: Boolean) {
         if (status is UpdateStatus.Checking || status is UpdateStatus.Downloading || status is UpdateStatus.ReadyToRestart) return
         status = UpdateStatus.Checking
-        val result = when (val check = releases.check(currentVersion)) {
-            is ReleaseCheck.Newer -> try {
-                resolve(check.release)?.let { UpdateStatus.Available(it) } ?: UpdateStatus.UpToDate
-            } catch (e: CancellationException) {
-                status = UpdateStatus.Idle
-                throw e
-            } catch (e: Exception) {
-                failure(e)
+        // 被取消时（Android 开屏检查期间界面重建）回到 Idle：停在 Checking 的话，之后的手动检查一进来
+        // 就当作「正在查」直接返回，再也查不了
+        val result = try {
+            when (val check = releases.check(currentVersion)) {
+                is ReleaseCheck.Newer -> try {
+                    resolve(check.release)?.let { UpdateStatus.Available(it) } ?: UpdateStatus.UpToDate
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    failure(e)
+                }
+                ReleaseCheck.UpToDate -> UpdateStatus.UpToDate
+                is ReleaseCheck.Failed -> failure(check.cause)
             }
-            ReleaseCheck.UpToDate -> UpdateStatus.UpToDate
-            is ReleaseCheck.Failed -> failure(check.cause)
+        } catch (e: CancellationException) {
+            status = UpdateStatus.Idle
+            throw e
         }
         status = if (silent && result is UpdateStatus.Failed) UpdateStatus.Idle else result
     }
@@ -127,7 +133,13 @@ abstract class GithubUpdateService<U : AvailableUpdate>(
     override suspend fun checkOnStartup(isIgnored: suspend (version: String) -> Boolean) {
         if (!checksOnStartup || startupChecked) return
         startupChecked = true
-        check(silent = true)
+        // 查到一半被取消（界面重建）不算查过，下次进入组合时再查
+        try {
+            check(silent = true)
+        } catch (e: CancellationException) {
+            startupChecked = false
+            throw e
+        }
         val update = (status as? UpdateStatus.Available)?.update ?: return
         // 上次装这一版没成功：照样弹出，忽略过也不算数，用户点过更新，说明并没有打算跳过它
         if (takePreviousFailure(update.version)) {
