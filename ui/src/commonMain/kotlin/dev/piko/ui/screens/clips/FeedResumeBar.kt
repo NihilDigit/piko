@@ -65,7 +65,13 @@ internal fun FeedResumeBar(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                Button(onClick = onResume, contentPadding = ButtonDefaults.ButtonWithIconContentPadding) {
+                // 带权重的最后量：关闭按钮先占住位置，长目录名在剩下的宽度里截断。按先后量的话，
+                // 窄屏上继续按钮先把宽度吃满，关闭按钮被挤出条外
+                Button(
+                    onClick = onResume,
+                    contentPadding = ButtonDefaults.ButtonWithIconContentPadding,
+                    modifier = Modifier.weight(1f, fill = false),
+                ) {
                     Icon(Icons.Outlined.SwipeVertical, contentDescription = null, modifier = Modifier.size(18.dp))
                     Text(
                         text = folderName?.let { "继续刷「$it」" } ?: "继续刷",
