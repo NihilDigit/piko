@@ -175,15 +175,15 @@ class GithubReleaseClient(
          * 2. 最新 Release 的附件 release.json（release.yml 生成，与 API 同一个形状）。经 github.com 的下载地址取，
          *    不走 API，不限流；releases/latest 只指向已公开的版本，草稿看不到。它在构建时生成，那时更新日志
          *    还没写，所以这条路拿到的正文是空的，弹窗只给更新页链接。
-         * 3. 经 ghfast.top 取同一个 release.json：github.com 本身连不上时。ghfast 不代理 API（实测 403），
-         *    所以只有这一条能走它。
+         * 版本信息只取自 GitHub 本身，不经镜像：附件的摘要就写在这份信息里，镜像若给一份伪造的版本连同
+         * 伪造附件的摘要，下载后的校验照样通过。镜像只用来下附件（[ReleaseAsset.urls]），附件仍按这里
+         * 取到的摘要校验，镜像改不了它。
          * jsDelivr 不在其中：它按 tag 取仓库文件，tag 推上去时 Release 还是草稿，会把没公开的版本提前告诉用户；
          * 它也取不到 Release 附件。
          */
         val LATEST_RELEASE_SOURCES = listOf(
             "https://api.github.com/repos/NihilDigit/piko/releases/latest",
             "${GITHUB_PREFIX}NihilDigit/piko/releases/latest/download/$RELEASE_MANIFEST",
-            "$GHFAST_PREFIX${GITHUB_PREFIX}NihilDigit/piko/releases/latest/download/$RELEASE_MANIFEST",
         )
 
         /** release.yml 为每个版本附上的 Release 信息，与 GitHub API 的 releases/latest 同形。 */

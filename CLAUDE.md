@@ -207,8 +207,9 @@ Compose 桌面端悬停移动事件的 `previousPosition` 恒等于 `position`�
 决定只换补丁文件（exe、全部 jar、AOT 缓存、启动配置）、MSI 安装版整包重装，还是便携版从便携 zip 只换不同的文件，
 由 `apply-update.ps1` 在应用退出后执行，它要等 JVM 与启动器两个进程都退出（jpackage 的启动器另起同名子进程跑 JVM）；
 macOS 整个 .app 换成新 DMG 里的（`apply-update-mac.sh`），不逐个换文件，那会破坏签名封印。
-检查更新依次取 GitHub API、`releases/latest/download/release.json`、经 ghfast.top 的同一个文件（API 匿名限流，
-走代理的用户常被 403）；下载在一个字节都没收到时退到 ghfast.top，每个文件按 SHA-256 校验。jsDelivr 不能用：
+检查更新依次取 GitHub API、`releases/latest/download/release.json`（API 匿名限流，走代理的用户常被 403）。
+版本信息不经镜像取：附件摘要就在其中，镜像能连摘要一起伪造。下载附件在一个字节都没收到时退到 ghfast.top，
+按取自 GitHub 的摘要校验。jsDelivr 不能用：
 它按 tag 取，tag 推上去时 release 还是草稿。开屏自动检查可在设置里关掉（`autoCheckUpdatesFlow`）。
 带 `-Dpiko.update.auto=true` 启动时查到新版即自动装上，`desktopApp/package/update-smoke/` 用它对着假 Release
 （`fake_release.py`）端到端地测安装与更新，本机也能跑：测试包用 `pikoDesktopUpgradeUuid` 与 `pikoDesktopPackageName`
