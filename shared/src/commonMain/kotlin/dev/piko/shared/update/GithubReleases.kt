@@ -20,7 +20,17 @@ data class ReleaseAsset(
     val url: String,
     val size: Long,
     val sha256: String?,
-)
+) {
+    /**
+     * 依次尝试的下载地址：GitHub 本身，再是代理它的 ghfast.top。github.com 在国内时通时不通，下安装包
+     * 动辄一百多 MB，直连不上就换一条。镜像给的内容不可信也无妨：下完按 [sha256] 校验，不符即丢弃。
+     */
+    val urls: List<String>
+        get() = listOf(url) + listOfNotNull(url.takeIf { it.startsWith(GITHUB_PREFIX) }?.let { GHFAST_PREFIX + it })
+}
+
+private const val GITHUB_PREFIX = "https://github.com/"
+private const val GHFAST_PREFIX = "https://ghfast.top/"
 
 data class LatestRelease(
     val version: String,
@@ -46,12 +56,13 @@ fun Throwable.isNetworkFailure(): Boolean = this is IOException
 /**
  * 从 GitHub Releases 取最新版本并下载附件。两端共用；选哪个附件、怎么安装归各平台。
  *
- * [latestReleaseUrl] 可换，是为了在本机用假的 Release 端到端地走一遍更新流程。
+ * 最新版本按 [latestReleaseUrls] 的先后取，前一个失败才试下一个，见 [LATEST_RELEASE_SOURCES]。
+ * 可换，是为了在本机用假的 Release 端到端地走一遍更新流程。
  */
 class GithubReleaseClient(
     private val http: HttpClient,
     private val userAgent: String,
-    private val latestReleaseUrl: String = LATEST_RELEASE_URL,
+    private val latestReleaseUrls: List<String> = LATEST_RELEASE_SOURCES,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -68,14 +79,29 @@ class GithubReleaseClient(
         ReleaseCheck.Failed(e)
     }
 
-    /** 草稿与预发布不算新版本，返回 null。releases/latest 本身已排除这两类，这里再防一道。 */
+    /** 逐个来源地取，都失败时抛最后一个的异常，前面的挂在 suppressed 上，日志里看得到每一处为什么失败。 */
     private suspend fun fetchLatest(): LatestRelease? {
-        val response = http.get(latestReleaseUrl) {
+        var failure: Throwable? = null
+        for (url in latestReleaseUrls) {
+            try {
+                return fetchLatest(url)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                failure = e.also { current -> failure?.let(current::addSuppressed) }
+            }
+        }
+        throw checkNotNull(failure) { "没有可用的 Release 来源" }
+    }
+
+    /** 草稿与预发布不算新版本，返回 null。releases/latest 本身已排除这两类，这里再防一道。 */
+    private suspend fun fetchLatest(url: String): LatestRelease? {
+        val response = http.get(url) {
             // GitHub 不带 UA 返回 403
             header("Accept", "application/vnd.github+json")
             header("User-Agent", userAgent)
         }
-        check(response.status.isSuccess()) { "HTTP ${response.status.value}" }
+        check(response.status.isSuccess()) { "HTTP ${response.status.value} ($url)" }
         val release = json.decodeFromString(ReleaseDto.serializer(), response.bodyAsText())
         if (release.draft || release.prerelease) return null
         val version = release.tagName.removePrefix("v")
@@ -95,45 +121,73 @@ class GithubReleaseClient(
         )
     }
 
-    suspend fun readText(asset: ReleaseAsset): String {
-        val response = http.get(asset.url) { header("User-Agent", userAgent) }
-        check(response.status.isSuccess()) { "HTTP ${response.status.value}" }
-        return response.bodyAsText()
-    }
-
     /**
      * 边下边交给 [onChunk]：写文件与算摘要由调用方做，这里只管流与进度。
      * [onProgress] 每涨 1% 才回调一次，按块回调的话几十 MB 的包要触发几百次重组。
+     *
+     * 按 [ReleaseAsset.urls] 依次试，只在一个字节都还没交出去时换下一个：已经交给 [onChunk] 的字节收不回来，
+     * 中途断了就照常失败，由用户重试。
      */
     suspend fun download(
         asset: ReleaseAsset,
         onChunk: (buffer: ByteArray, length: Int) -> Unit,
         onProgress: (Float) -> Unit,
     ) {
-        http.prepareGet(asset.url) { header("User-Agent", userAgent) }.execute { response ->
-            check(response.status.isSuccess()) { "HTTP ${response.status.value}" }
-            val channel = response.bodyAsChannel()
-            val buffer = ByteArray(64 * 1024)
+        var failure: Throwable? = null
+        for (url in asset.urls) {
             var written = 0L
-            var reported = 0f
-            while (true) {
-                val read = channel.readAvailable(buffer)
-                if (read < 0) break
-                if (read == 0) continue
-                onChunk(buffer, read)
-                written += read
-                val progress = if (asset.size > 0) (written.toFloat() / asset.size).coerceIn(0f, 1f) else 0f
-                if (progress - reported >= 0.01f) {
-                    reported = progress
-                    onProgress(progress)
+            try {
+                http.prepareGet(url) { header("User-Agent", userAgent) }.execute { response ->
+                    check(response.status.isSuccess()) { "HTTP ${response.status.value} ($url)" }
+                    val channel = response.bodyAsChannel()
+                    val buffer = ByteArray(64 * 1024)
+                    var reported = 0f
+                    while (true) {
+                        val read = channel.readAvailable(buffer)
+                        if (read < 0) break
+                        if (read == 0) continue
+                        onChunk(buffer, read)
+                        written += read
+                        val progress = if (asset.size > 0) (written.toFloat() / asset.size).coerceIn(0f, 1f) else 0f
+                        if (progress - reported >= 0.01f) {
+                            reported = progress
+                            onProgress(progress)
+                        }
+                    }
+                    check(asset.size <= 0 || written == asset.size) { "下载不完整：$written / ${asset.size}" }
                 }
+                return
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                if (written > 0) throw e
+                failure = e.also { current -> failure?.let(current::addSuppressed) }
             }
-            check(asset.size <= 0 || written == asset.size) { "下载不完整：$written / ${asset.size}" }
         }
+        throw checkNotNull(failure) { "${asset.name} 没有下载地址" }
     }
 
     companion object {
-        const val LATEST_RELEASE_URL = "https://api.github.com/repos/NihilDigit/piko/releases/latest"
+        /**
+         * 取最新版本的来源，依次尝试：
+         * 1. GitHub API。附件带 digest，正文里有更新日志。匿名调用按出口 IP 每小时 60 次，走代理的用户
+         *    共用出口，常被限流回 403。
+         * 2. 最新 Release 的附件 release.json（release.yml 生成，与 API 同一个形状）。经 github.com 的下载地址取，
+         *    不走 API，不限流；releases/latest 只指向已公开的版本，草稿看不到。它在构建时生成，那时更新日志
+         *    还没写，所以这条路拿到的正文是空的，弹窗只给更新页链接。
+         * 3. 经 ghfast.top 取同一个 release.json：github.com 本身连不上时。ghfast 不代理 API（实测 403），
+         *    所以只有这一条能走它。
+         * jsDelivr 不在其中：它按 tag 取仓库文件，tag 推上去时 Release 还是草稿，会把没公开的版本提前告诉用户；
+         * 它也取不到 Release 附件。
+         */
+        val LATEST_RELEASE_SOURCES = listOf(
+            "https://api.github.com/repos/NihilDigit/piko/releases/latest",
+            "${GITHUB_PREFIX}NihilDigit/piko/releases/latest/download/$RELEASE_MANIFEST",
+            "$GHFAST_PREFIX${GITHUB_PREFIX}NihilDigit/piko/releases/latest/download/$RELEASE_MANIFEST",
+        )
+
+        /** release.yml 为每个版本附上的 Release 信息，与 GitHub API 的 releases/latest 同形。 */
+        const val RELEASE_MANIFEST = "release.json"
         private const val SHA256_PREFIX = "sha256:"
     }
 }

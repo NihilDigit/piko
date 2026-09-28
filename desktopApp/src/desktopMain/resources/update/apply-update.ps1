@@ -3,21 +3,27 @@
 #   patch: copy staged files over the install dir. Every file is copied next to its target
 #          first, then swapped in by rename; the replaced files are kept until all swaps
 #          succeed, so a failure rolls back to the old image instead of a half-updated one.
-#          Jars under app\ that the new version no longer has are then removed.
+#          Files under app\ and runtime\ that the new version no longer has are then removed.
+#          The portable build's full update uses this mode too, with every changed file staged.
 #   msi:   msiexec /i. The MSI's own upgrade (remove then install) needs the app closed.
 # Either way the staged files are checked against the Checksums list first. The app verified
 # them on download, but nothing stops the staging dir from being rewritten between that check
 # and the app's exit; Bilby 0.15.1 once handed msiexec an installer re-downloaded halfway (1620).
 # Kept ASCII-only: Windows PowerShell 5.1 reads a script without BOM in the ANSI code page.
 param(
-    [Parameter(Mandatory = $true)] [int] $ProcessId,
+    # Comma-separated: the JVM and the jpackage launcher that started it as a child process.
+    # The launcher outlives the JVM briefly; its exe is locked until it is gone.
+    [Parameter(Mandatory = $true)] [string] $ProcessId,
     [Parameter(Mandatory = $true)] [string] $InstallDir,
     [Parameter(Mandatory = $true)] [ValidateSet('patch', 'msi')] [string] $Mode,
     [Parameter(Mandatory = $true)] [string] $Source,
     [Parameter(Mandatory = $true)] [string] $Executable,
     [Parameter(Mandatory = $true)] [string] $LogFile,
     # "<sha256>  <path relative to the staging dir>" per line, written by DesktopAppUpdater.
-    [Parameter(Mandatory = $true)] [string] $Checksums
+    [Parameter(Mandatory = $true)] [string] $Checksums,
+    # Patch mode: every file of the new app image, one path per line relative to InstallDir.
+    # Empty for msi mode.
+    [string] $KeepList = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -53,9 +59,14 @@ function Assert-StagedFiles {
 }
 
 function Wait-AppExit {
-    $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
-    if ($null -eq $process) { return $true }
-    return $process.WaitForExit(120000)
+    $deadline = (Get-Date).AddSeconds(120)
+    foreach ($id in ($ProcessId -split ',')) {
+        $process = Get-Process -Id ([int] $id) -ErrorAction SilentlyContinue
+        if ($null -eq $process) { continue }
+        $left = [int] ($deadline - (Get-Date)).TotalMilliseconds
+        if ($left -le 0 -or -not $process.WaitForExit($left)) { return $false }
+    }
+    return $true
 }
 
 function Install-Patch {
@@ -101,32 +112,36 @@ function Install-Patch {
         foreach ($entry in $entries) { Remove-Item -LiteralPath "$($entry.Target).new" -Force -ErrorAction SilentlyContinue }
         throw
     }
-    foreach ($target in $replaced) { Remove-Item -LiteralPath "$target.old" -Force -ErrorAction SilentlyContinue }
-    Remove-StaleJars $entries
+    foreach ($target in $replaced) {
+        Remove-Item -LiteralPath "$target.old" -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath "$target.old") { Write-Log "could not remove $target.old" }
+    }
+    Remove-StaleFiles
 }
 
-# Every jar under app\ is part of a patch (UpdateArtifactsTask.isPatch), so the staged jars are
-# the new version's complete set. A jar it no longer has (a module jar renamed by its content
-# hash, a dependency upgraded or dropped) is off its class path and not in the MSI's file table
-# either, so nothing else ever removes it: each patch would leave more jars behind, and
-# uninstalling would leave them too. Runs only after every swap succeeded.
-function Remove-StaleJars($entries) {
-    $appDir = Join-Path $InstallDir 'app'
+# Files under app\ and runtime\ that the new app image does not have: a module jar renamed by
+# its content hash, a dependency upgraded or dropped, a runtime file gone after a JDK update.
+# They are off the class path and not in the MSI's file table either, so nothing else ever
+# removes them: each update would leave more behind, and uninstalling would leave them too.
+# Only those two folders: the install dir itself may hold files the user put there (old
+# versions defaulted downloads to the working directory, which is the install dir).
+# Runs only after every swap succeeded.
+function Remove-StaleFiles {
+    if (-not $KeepList) { return }
     $keep = @{}
-    foreach ($entry in $entries) {
-        if ([System.IO.Path]::GetExtension($entry.Target) -eq '.jar') { $keep[$entry.Target.ToLowerInvariant()] = $true }
+    foreach ($line in (Get-Content -LiteralPath $KeepList)) {
+        if ($line.Trim()) { $keep[(Join-Path $InstallDir $line.Trim().Replace('/', '\')).ToLowerInvariant()] = $true }
     }
-    # A patch without any jar would mark every installed jar stale; that is not a patch this
-    # script expects, so leave the directory alone.
+    # A list without the app folder is not one this script expects; leave everything alone.
     if ($keep.Count -eq 0) { return }
-    # Compare the extension exactly: -Filter '*.jar' goes through the Win32 wildcard, which also
-    # matches names whose 8.3 short name ends in .JAR.
-    $installed = @(Get-ChildItem -LiteralPath $appDir -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Extension -eq '.jar' })
-    foreach ($jar in $installed) {
-        if (-not $keep.ContainsKey($jar.FullName.ToLowerInvariant())) {
-            Remove-Item -LiteralPath $jar.FullName -Force -ErrorAction SilentlyContinue
-            Write-Log "removed stale $($jar.FullName)"
+    foreach ($folder in @('app', 'runtime')) {
+        $dir = Join-Path $InstallDir $folder
+        $files = @(Get-ChildItem -LiteralPath $dir -Recurse -File -Force -ErrorAction SilentlyContinue)
+        foreach ($file in $files) {
+            if (-not $keep.ContainsKey($file.FullName.ToLowerInvariant())) {
+                Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
+                Write-Log "removed stale $($file.FullName)"
+            }
         }
     }
 }

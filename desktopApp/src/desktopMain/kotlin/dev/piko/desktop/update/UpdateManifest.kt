@@ -73,6 +73,52 @@ internal fun extractPatch(zip: File, manifest: UpdateManifest, target: File) {
 }
 
 /**
+ * 便携版的整包更新：从便携 zip（Release 附件 piko-windows-<架构>-<版本>.zip）里只解出要换的文件到 [target]，
+ * 即补丁文件全部，加上与本机内容不同的其余文件（运行时、mpv 这些换了版本时）。与本机相同的不解，
+ * 替换时少动一个是一个。补丁文件即使内容没变也照解：替换后按暂存的那组 jar 清理旧 jar，漏掉一个就被当成旧的删了。
+ *
+ * zip 由 CI 的 Compress-Archive 打出，条目带一层应用目录名（Piko/app/...），分隔符可能是反斜杠，这里都去掉再比对清单。
+ * 清单里的文件本机没有、包里也没有时算失败，同 [extractPatch]。
+ */
+internal fun extractChanged(zip: File, manifest: UpdateManifest, installDir: File, target: File) {
+    val expected = manifest.files.associateBy { it.path }
+    val root = target.canonicalFile
+    val unchanged = manifest.files.filter { entry ->
+        !entry.patch && installDir.resolve(entry.path).let { file ->
+            file.isFile && file.length() == entry.size && file.inputStream().use(::sha256Hex) == entry.sha256
+        }
+    }.mapTo(HashSet()) { it.path }
+    val seen = mutableSetOf<String>()
+    ZipFile(zip).use { archive ->
+        for (entry in archive.entries()) {
+            if (entry.isDirectory) continue
+            val path = entry.name.replace('\\', '/').substringAfter('/')
+            val spec = expected[path] ?: throw ChecksumMismatchException("便携包里有清单外的文件：${entry.name}")
+            if (path in unchanged) continue
+            val out = root.resolve(spec.path).canonicalFile
+            check(out.path.startsWith(root.path + File.separator)) { "路径越界：${spec.path}" }
+            out.parentFile.mkdirs()
+            val actual = archive.getInputStream(entry).use { input ->
+                out.outputStream().use { output -> sha256Hex(input) { buffer, length -> output.write(buffer, 0, length) } }
+            }
+            if (actual != spec.sha256 || out.length() != spec.size) {
+                throw ChecksumMismatchException("${spec.path}: $actual != ${spec.sha256}")
+            }
+            out.setLastModified(spec.mtime)
+            seen += spec.path
+        }
+    }
+    val missing = expected.keys - unchanged - seen
+    if (missing.isNotEmpty()) throw ChecksumMismatchException("便携包缺少：${missing.joinToString()}")
+}
+
+/** [target] 下已解出的文件，路径相对 [target]、以 / 分隔。 */
+internal fun stagedFiles(target: File): List<String> {
+    val root = target.canonicalFile
+    return root.walkTopDown().filter { it.isFile }.map { it.relativeTo(root).invariantSeparatorsPath }.sorted().toList()
+}
+
+/**
  * 差分包（Release 附件 piko-windows-<架构>-<版本>-from-<旧版本>.zip）里每个补丁文件是一个
  * `<路径>.zst`，由 CI 以旧版的对应文件为前缀字典（zstd --patch-from）压成，见
  * .github/scripts/delta-updates.sh。拿本机文件作字典还原，结果与 [extractPatch] 解出的逐字节相同，

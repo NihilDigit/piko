@@ -5,6 +5,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import dev.piko.data.auth.PikoUserPreferences
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -20,6 +21,8 @@ fun StartupUpdatePrompt(
 ) {
     val scope = rememberCoroutineScope()
     LaunchedEffect(updater) {
+        // 关掉的只是开屏这一次，设置页的手动检查照常可用
+        if (!preferences.autoCheckUpdatesFlow.first()) return@LaunchedEffect
         updater.checkOnStartup(isIgnored = { it == preferences.getIgnoredUpdateVersion() })
     }
     val update = updater.startupUpdate ?: return

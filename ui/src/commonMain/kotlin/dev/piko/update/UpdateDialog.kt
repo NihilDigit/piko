@@ -1,6 +1,7 @@
 package dev.piko.update
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -22,6 +23,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import dev.piko.download.DownloadStatus
@@ -97,32 +100,16 @@ fun UpdateDialog(
                             .padding(16.dp),
                     )
                 }
-                when (status) {
-                    is UpdateStatus.Downloading -> {
-                        LinearProgressIndicator(progress = { status.progress }, modifier = Modifier.fillMaxWidth())
-                        Text(
-                            text = "${(update.downloadSize * status.progress).toLong().toReadableSize()} / " +
-                                update.downloadSize.toReadableSize(),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    is UpdateStatus.ReadyToRestart -> Text(
-                        text = "已下载，Piko 将退出并在更新后重新打开",
-                        style = MaterialTheme.typography.bodyMedium,
+                // 状态区的高度按最高的「进度条加一行字」预留：Android 的对话框是按内容定高、居中的独立窗口，
+                // 开始下载时多出进度条、下完换成一行字，整个对话框都会上下跳。占位与真实内容叠放，而不是写死
+                // 一个 dp 值，进度条与字号换了也不必跟着改
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    DownloadProgress(
+                        progress = 0f,
+                        label = " ",
+                        modifier = Modifier.alpha(0f).clearAndSetSemantics {},
                     )
-                    is UpdateStatus.Failed -> Text(
-                        text = status.message,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                    else -> if (!update.canInstallInApp) {
-                        Text(
-                            text = "此版本无法在应用内安装，请从下载页获取",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                    UpdateStatusContent(status, update)
                 }
             }
         },
@@ -166,6 +153,45 @@ fun UpdateDialog(
             dismissButton = {
                 TextButton(onClick = { confirmInterrupt = false }) { Text("取消") }
             },
+        )
+    }
+}
+
+@Composable
+private fun UpdateStatusContent(status: UpdateStatus?, update: AvailableUpdate) {
+    when (status) {
+        is UpdateStatus.Downloading -> DownloadProgress(
+            progress = status.progress,
+            label = "${(update.downloadSize * status.progress).toLong().toReadableSize()} / " +
+                update.downloadSize.toReadableSize(),
+        )
+        is UpdateStatus.ReadyToRestart -> Text(
+            text = "已下载，Piko 将退出并在更新后重新打开",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        is UpdateStatus.Failed -> Text(
+            text = status.message,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.error,
+        )
+        else -> if (!update.canInstallInApp) {
+            Text(
+                text = "此版本无法在应用内安装，请从下载页获取",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun DownloadProgress(progress: Float, label: String, modifier: Modifier = Modifier) {
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
