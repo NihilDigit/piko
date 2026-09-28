@@ -206,6 +206,19 @@ foreach ($pair in @(@($Base, $BaseVersion), @($Next, $NextVersion))) {
     Copy-Item -Path (Join-Path $pair[0] '*') -Destination $dir -Force
 }
 $nextManifest = Read-Manifest $NextVersion $Next
+# 包本身要先对：更新包里的启动配置若仍写着旧版本号，补丁照常换上，重启后还是旧版，
+# 又查到同一个新版，只会表现为更新一直不生效
+foreach ($pair in @(@($Base, $BaseVersion), @($Next, $NextVersion))) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [System.IO.Compression.ZipFile]::OpenRead((Asset $pair[0] $pair[1] '-app.zip'))
+    try {
+        $cfg = $archive.Entries | Where-Object { $_.FullName -eq "app/$PackageName.cfg" } | Select-Object -First 1
+        if (-not $cfg) { Fail "app.zip of $($pair[1]) has no app/$PackageName.cfg" }
+        $reader = New-Object System.IO.StreamReader($cfg.Open())
+        try { $text = $reader.ReadToEnd() } finally { $reader.Dispose() }
+        if ($text -notmatch "jpackage\.app-version=$([regex]::Escape($pair[1]))") { Fail "app.zip of $($pair[1]) carries another version: $text" }
+    } finally { $archive.Dispose() }
+}
 $baseMsi = Asset $Base $BaseVersion '.msi'
 $baseZip = Asset $Base $BaseVersion '.zip'
 if ((Msi-Products).Count -gt 0) { Fail "a product with UpgradeCode $UpgradeCode is already installed; uninstall it first" }

@@ -123,17 +123,24 @@ class PikoClientManager(
             }
         }.onFailure { PikoLog.w(TAG, "令牌登录失败，${describeAuthError(it)}", it) }
 
-    suspend fun logout() {
+    /**
+     * 退出登录。清凭据在进程级的 [scope] 里做，调用方被取消也照样做完：退出按钮在对话框里，
+     * 对话框一关，它的协程作用域就取消了。旧实现在调用方的协程里清，界面已显示退出、
+     * 磁盘上的凭据却还在，下次启动又自动登录。返回的 Job 供需要等清完的调用方 join。
+     */
+    fun logout(): Job = scope.launch {
         PikoLog.i(TAG, "退出登录")
         reconnectJob?.cancel()
         val current = _currentClient.value
+        // 先摘下 client 再关、再清：界面不再拿它发请求；关掉之后它也不会在刷新令牌时把会话写回，
+        // 先清后关则可能被这样写回
         _currentClient.value = null
         if (current != null) {
+            current.close()
             // 先清密码再清会话：Desktop 的存储以 last account 判断归属，清会话会连它一起删掉，
-            // 之后再清密码就找不到主人了。旧实现从不清密码，退出登录后明文密码仍留在磁盘上。
+            // 之后再清密码就找不到主人了。
             sessionStore.clearCredentials(current.account)
             sessionStore.clear(current.account)
-            current.close()
         }
         sessionStore.clearLastAccount()
     }

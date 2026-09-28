@@ -70,7 +70,7 @@ class SessionSmokeTest {
         awaitUntil("登录成功") { manager.currentClient.value != null }
         assertEquals("pw", store.passwords[account])
 
-        manager.logout()
+        manager.logout().join()
         assertNull(manager.currentClient.value)
         assertTrue(store.passwords.isEmpty())
         assertNull(store.sessions[account])

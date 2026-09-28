@@ -6,7 +6,8 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -130,11 +131,13 @@ private fun ModalSideSheet(onDismissRequest: () -> Unit, title: String?, content
     }
     LocalPikoPlatform.current.FullscreenDialog(onDismiss = dismiss, immersive = false, systemBarsVisible = true) {
         Box(modifier = Modifier.fillMaxSize()) {
-            // 点在面板外面就是关掉。不画按下的波纹：这一整片是遮罩，不是一个按钮
+            // 点在面板外面就是关掉。不画按下的波纹：这一整片是遮罩，不是一个按钮。
+            // 也不进无障碍树：否则读屏先停在一个没有名字的可点控件上，才轮到面板里的内容（M3 side sheets 的
+            // Initial focus 要求焦点进到面板里）。读屏用户关面板走返回或面板顶上的关闭按钮
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .clickable(interactionSource = null, indication = null, onClick = dismiss),
+                    .pointerInput(dismiss) { detectTapGestures { dismiss() } },
             )
             AnimatedVisibility(
                 visibleState = visibility,

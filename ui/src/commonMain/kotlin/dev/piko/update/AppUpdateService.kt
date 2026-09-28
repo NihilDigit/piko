@@ -133,20 +133,21 @@ abstract class GithubUpdateService<U : AvailableUpdate>(
     override suspend fun checkOnStartup(isIgnored: suspend (version: String) -> Boolean) {
         if (!checksOnStartup || startupChecked) return
         startupChecked = true
-        // 查到一半被取消（界面重建）不算查过，下次进入组合时再查
+        // 查到一半被取消（界面重建）不算查过，下次进入组合时再查。从检查到读「忽略此版本」都在里面：
+        // 读偏好也会挂起，在那里被取消的话，查到的新版就再也不提示了
         try {
             check(silent = true)
+            val update = (status as? UpdateStatus.Available)?.update ?: return
+            // 上次装这一版没成功：照样弹出，忽略过也不算数，用户点过更新，说明并没有打算跳过它
+            if (takePreviousFailure(update.version)) {
+                status = UpdateStatus.Failed("上次更新未完成，当前版本未受影响", update)
+                startupUpdate = update
+            } else if (!isIgnored(update.version)) {
+                startupUpdate = update
+            }
         } catch (e: CancellationException) {
             startupChecked = false
             throw e
-        }
-        val update = (status as? UpdateStatus.Available)?.update ?: return
-        // 上次装这一版没成功：照样弹出，忽略过也不算数，用户点过更新，说明并没有打算跳过它
-        if (takePreviousFailure(update.version)) {
-            status = UpdateStatus.Failed("上次更新未完成，当前版本未受影响", update)
-            startupUpdate = update
-        } else if (!isIgnored(update.version)) {
-            startupUpdate = update
         }
     }
 

@@ -12,7 +12,7 @@
 # 场景：
 #   1. 从 DMG 全新安装，启动后存活，没有新版时不动
 #   2. 应用内更新：Info.plist 的版本变成 Next，签名仍完好（codesign --verify），新版本被重新打开，
-#      旁边不留 .old 与 .new
+#      旁边不留临时的包，用户自己放在旁边的同名备份原样留着
 #
 # 用法：macos.sh <Base 目录> <Next 目录> <Base 版本> <Next 版本> <包名> <工作目录> [架构]
 set -euo pipefail
@@ -58,7 +58,7 @@ for _ in $(seq 50); do curl -fs "http://127.0.0.1:$port/latest" > /dev/null 2>&1
 
 echo '::group::1. fresh install from DMG'
 publish "$base_version"
-rm -rf "$bundle" "$bundle.old" "$bundle.new" "$staging"
+rm -rf "$bundle" "$bundle.old" "$staging"
 mount="$(mktemp -d)"
 hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$mount" "$(dmg_of "$base_dir" "$base_version")" > /dev/null
 ditto "$mount/$package.app" "$bundle"
@@ -74,6 +74,8 @@ echo '::endgroup::'
 
 echo '::group::2. in-app update'
 publish "$next_version"
+# 用户自己留的同名备份：更新不能动它（旧脚本拿 .app.old 当临时名，会把它删掉）
+mkdir -p "$apps/$package.app.old/Contents"
 start_app auto
 deadline=$((SECONDS + 300))
 until [ "$(bundle_version)" = "$next_version" ] && app_running; do
@@ -84,8 +86,9 @@ done
 echo "updated to $next_version and reopened"
 sleep 5
 codesign --verify --deep --strict "$bundle" || fail 'updated bundle fails codesign --verify'
-[ -e "$bundle.old" ] && fail "old bundle left at $bundle.old"
-[ -e "$bundle.new" ] && fail "new bundle left at $bundle.new"
+leftover="$(find "$apps" -maxdepth 1 -name "$package.app.piko-update-*" | head -n 1)"
+[ -n "$leftover" ] && fail "temporary bundle left at $leftover"
+[ -d "$apps/$package.app.old" ] || fail 'the user backup next to the app was removed'
 save_logs
 stop_app
 echo '::endgroup::'

@@ -127,7 +127,7 @@ class ShotEnv : AutoCloseable {
 
     override fun close() {
         // 退出登录让 PikoServices 里随账号运行的后台协程停下，下一个用例不背着它们跑
-        runBlocking { withTimeoutOrNull(2_000) { services.clientManager.logout() } }
+        runBlocking { withTimeoutOrNull(2_000) { services.clientManager.logout().join() } }
         scope.cancel()
         dir.deleteRecursively()
     }

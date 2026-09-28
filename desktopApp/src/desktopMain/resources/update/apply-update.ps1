@@ -69,15 +69,29 @@ function Wait-AppExit {
     return $true
 }
 
+# Relative paths are built from the names while walking down, never by cutting a prefix off
+# FullName: the staging dir may come as an 8.3 short path (C:\Users\RUNNER~1\...) while
+# Get-ChildItem reports long names, so the prefix length is wrong and every file lands in a
+# made-up subfolder (on CI it was ...\PikoSmoke\es\PikoSmoke.exe). Short temp paths are common
+# for user names with spaces or non-ASCII characters.
+function Get-StagedFiles([string] $dir, [string] $prefix) {
+    foreach ($item in @(Get-ChildItem -LiteralPath $dir -Force)) {
+        $relative = if ($prefix) { "$prefix\$($item.Name)" } else { $item.Name }
+        if ($item.PSIsContainer) {
+            Get-StagedFiles $item.FullName $relative
+        } else {
+            [pscustomobject]@{ File = $item; Relative = $relative }
+        }
+    }
+}
+
 function Install-Patch {
-    $sourceRoot = (Resolve-Path -LiteralPath $Source).Path.TrimEnd('\')
-    $files = @(Get-ChildItem -LiteralPath $sourceRoot -Recurse -File)
-    if ($files.Count -eq 0) { throw "no staged files in $sourceRoot" }
-    $entries = foreach ($file in $files) {
-        $relative = $file.FullName.Substring($sourceRoot.Length + 1)
+    $staged = @(Get-StagedFiles $Source '')
+    if ($staged.Count -eq 0) { throw "no staged files in $Source" }
+    $entries = foreach ($item in $staged) {
         [pscustomobject]@{
-            Source = $file
-            Target = Join-Path $InstallDir $relative
+            Source = $item.File
+            Target = Join-Path $InstallDir $item.Relative
         }
     }
 

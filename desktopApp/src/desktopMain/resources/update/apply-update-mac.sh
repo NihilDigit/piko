@@ -36,19 +36,30 @@ done
 say 'app exited'
 
 # After the exit, not before: until then the app can still write to the staging dir.
+# A missing or empty list fails too: a failed redirect would skip the loop and install unchecked.
+[ -s "$checksums" ] || fail "checksum list missing or empty: $checksums"
+verified=0
 while read -r expected relative; do
     [ -z "$expected" ] && continue
-    actual="$(shasum -a 256 "$staging/$relative" | cut -d' ' -f1)"
+    [ -f "$staging/$relative" ] || fail "staged file missing: $relative"
+    actual="$(shasum -a 256 "$staging/$relative" | cut -d' ' -f1)" || fail "could not hash $relative"
     [ "$actual" = "$expected" ] || fail "staged file changed: $relative ($actual != $expected)"
+    verified=$((verified + 1))
 done < "$checksums"
-say 'verified staged files'
+[ "$verified" -gt 0 ] || fail 'checksum list has no entries'
+say "verified $verified staged files"
 
 mount="$(mktemp -d "$staging/mount.XXXXXX")"
 hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$mount" "$dmg" >> "$log" 2>&1 || fail 'hdiutil attach failed'
 source_app="$(find "$mount" -maxdepth 1 -name '*.app' -type d | head -n 1)"
-new="$bundle.new"
-old="$bundle.old"
-rm -rf "$new" "$old"
+# Names of this run only: a Piko.app.old the user keeps as a backup must never be touched.
+# Only paths this script created are ever removed.
+new="$bundle.piko-update-new.$$"
+old="$bundle.piko-update-old.$$"
+if [ -e "$new" ] || [ -e "$old" ]; then
+    hdiutil detach "$mount" -force >> "$log" 2>&1
+    fail "temporary path already exists: $new or $old"
+fi
 if [ -z "$source_app" ]; then
     hdiutil detach "$mount" -force >> "$log" 2>&1
     fail 'no .app in the DMG'

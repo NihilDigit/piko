@@ -34,6 +34,16 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.DpOffset
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalFocusManager
 
 /**
  * 在指针处弹出的右键菜单，包住一个条目。菜单项与该条目的操作面板相同，只是换成桌面上
@@ -81,21 +91,34 @@ fun ContextMenuArea(
 
 /**
  * 危险操作单独成组放在最后，与操作面板的分组一致；其余按 [SheetAction.group] 分组，组间一道细线。
- * 用 DropdownMenuPopup 自己摆，不走 [PikoDropdownMenu]，为的是菜单项形状与行高自己定。
+ * 用 DropdownMenuPopup 自己摆，不走 [PikoDropdownMenu]，为的是菜单项形状与分组自己定。
  *
- * 代价是桌面端 DropdownMenu 额外做的两件事 DropdownMenuPopup 没有：超出窗口时滚动，这里补上；
- * 方向键在菜单项间移动焦点，补不了，Popup 的按键回调没有暴露出来。右键菜单本由鼠标唤出，Tab 仍可切换焦点。
+ * 桌面端 DropdownMenu 额外做的两件事 DropdownMenuPopup 没有，这里补上：超出窗口时滚动；方向键在菜单项间
+ * 移动焦点。后者照 M3 menus 的 Keyboard navigation 一节：菜单一打开焦点就在第一项上，上下键逐项移动，
+ * 回车执行。焦点落进菜单之后，按键先经过这里的 onPreviewKeyEvent，Popup 本身不必暴露按键回调。
  */
 @Composable
 private fun ActionMenu(actions: List<SheetAction>, offset: DpOffset, onDismiss: () -> Unit) {
     val (regular, destructive) = actions.partition { !it.destructive }
     val groups = (regular.groupBy { it.group }.values + listOf(destructive)).filter { it.isNotEmpty() }
+    val focusManager = LocalFocusManager.current
+    val firstItem = remember { FocusRequester() }
     DropdownMenuPopup(
         expanded = true,
         onDismissRequest = onDismiss,
-        modifier = Modifier.verticalScroll(rememberScrollState()),
+        modifier = Modifier
+            .verticalScroll(rememberScrollState())
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                when (event.key) {
+                    Key.DirectionDown -> focusManager.moveFocus(FocusDirection.Down)
+                    Key.DirectionUp -> focusManager.moveFocus(FocusDirection.Up)
+                    else -> false
+                }
+            },
         popupPositionProvider = MenuDefaults.rememberDropdownMenuPopupPositionProvider(MenuAnchorPosition.Below, offset),
     ) {
+        LaunchedEffect(Unit) { runCatching { firstItem.requestFocus() } }
         // 一个容器，组与组之间一道细线。各组各带容器、之间留缝（M3E 竖向菜单的分组）在四五组时像一摞碎块
         val items = groups.flatten()
         DropdownMenuGroup(shapes = MenuDefaults.groupShape(0, 1)) {
@@ -107,21 +130,25 @@ private fun ActionMenu(actions: List<SheetAction>, offset: DpOffset, onDismiss: 
                     )
                 }
                 group.forEach { action ->
-                    ActionMenuItem(action = action, shape = menuItemShape(items.indexOf(action), items.size), onDismiss = onDismiss)
+                    val index = items.indexOf(action)
+                    ActionMenuItem(
+                        action = action,
+                        shape = menuItemShape(index, items.size),
+                        onDismiss = onDismiss,
+                        modifier = if (index == 0) Modifier.focusRequester(firstItem) else Modifier,
+                    )
                 }
             }
         }
     }
 }
 
-private val MenuItemHeight = 36.dp
-
 /**
- * 右键菜单只由鼠标唤出，行高照桌面菜单压到 [MenuItemHeight]、图标 20dp。库的默认是 48dp 行高、24dp 图标，
- * 按手指的触控区给的，鼠标点起来一项占一大截，五六项就拉得很长。
+ * 行高、图标与字号用组件库的默认值，即 M3 menus 的 Measurements：条目 48dp 高，目标区不小于 48dp。
+ * 原先照桌面菜单压到 36dp、图标 20dp，但 M3 的密度调节只给 Web，低视力用户与平板上接鼠标的也要点得中。
  */
 @Composable
-private fun ActionMenuItem(action: SheetAction, shape: Shape, onDismiss: () -> Unit) {
+private fun ActionMenuItem(action: SheetAction, shape: Shape, onDismiss: () -> Unit, modifier: Modifier = Modifier) {
     val colors = MaterialTheme.colorScheme
     val tint = when {
         action.destructive -> colors.error
@@ -129,13 +156,12 @@ private fun ActionMenuItem(action: SheetAction, shape: Shape, onDismiss: () -> U
         else -> colors.onSurfaceVariant
     }
     DropdownMenuItem(
-        text = { Text(action.label, style = MaterialTheme.typography.bodyMedium) },
+        text = { Text(action.label) },
         shape = shape,
-        modifier = Modifier.height(MenuItemHeight),
-        contentPadding = PaddingValues(horizontal = 12.dp),
-        leadingIcon = { Icon(action.icon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp)) },
+        modifier = modifier,
+        leadingIcon = { Icon(action.icon, contentDescription = null, tint = tint) },
         trailingIcon = if (action.checked == true) {
-            { Icon(Icons.Outlined.Check, contentDescription = "当前", tint = colors.primary, modifier = Modifier.size(18.dp)) }
+            { Icon(Icons.Outlined.Check, contentDescription = "当前", tint = colors.primary) }
         } else {
             null
         },

@@ -100,7 +100,9 @@ class DesktopAppUpdater private constructor(
     private class Installation(val dir: File, val exe: File)
 
     private val json = Json { ignoreUnknownKeys = true }
-    private val stagingRoot = File(System.getProperty("java.io.tmpdir"), "piko-update")
+    // 规范成长路径：java.io.tmpdir 在 Windows 上常是 8.3 短路径（用户名带空格或汉字时），交给更新脚本后
+    // 与它列出的长路径对不上。脚本自己也不再按前缀截路径，这里再防一道
+    private val stagingRoot = File(System.getProperty("java.io.tmpdir"), "piko-update").let { runCatching { it.canonicalFile }.getOrDefault(it) }
 
     private val mutableExitRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
 

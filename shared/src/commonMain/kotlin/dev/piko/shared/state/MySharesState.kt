@@ -37,8 +37,20 @@ class MySharesState(
     var loadError by mutableStateOf<String?>(null)
         private set
 
-    private var nextPageToken = ""
+    // 是 State：界面据它判断还能不能接着取，接完一页若仍停在底部就要再取一页
+    private var nextPageToken by mutableStateOf("")
     val hasMore: Boolean get() = nextPageToken.isNotEmpty()
+
+    /**
+     * 下一页没取到。这时不再随滚动自动取，改由列表底部的「重试」接着取：人停在底部时滚动位置不变，
+     * 自动取的话要么再也不触发，要么失败一次紧跟着再发一次。刷新后清掉。
+     */
+    var loadMoreFailed by mutableStateOf(false)
+        private set
+
+    /** 列表滚到底时是否该自动取下一页。 */
+    val canAutoLoadMore: Boolean
+        get() = hasMore && !loadMoreFailed && !isLoadingMore && !isLoading && !isRefreshing
 
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val messages: SharedFlow<String> = _messages.asSharedFlow()
@@ -50,11 +62,12 @@ class MySharesState(
         if (refresh) isRefreshing = true else isLoading = true
         pageJob?.cancel()
         isLoadingMore = false
+        loadMoreFailed = false
         pageJob = scope.launch {
             driveRepo.myShares()
                 .logFailure(TAG, "读取我的分享失败")
                 .onSuccess { page ->
-                    shares = page.shares
+                    shares = withoutCancelling(page.shares)
                     nextPageToken = page.nextPageToken
                     loadError = null
                 }
@@ -67,20 +80,21 @@ class MySharesState(
         }
     }
 
-    /** 列表滚到底时调用。 */
+    /** 列表滚到底时调用，也是底部「重试」的动作。 */
     fun loadMore() {
         if (!hasMore || isLoadingMore || isLoading || isRefreshing) return
         isLoadingMore = true
+        loadMoreFailed = false
         val token = nextPageToken
         pageJob = scope.launch {
             driveRepo.myShares(token)
                 .logFailure(TAG, "读取我的分享的下一页失败")
                 .onSuccess { page ->
                     val known = shares.mapTo(HashSet()) { it.shareId }
-                    shares = shares + page.shares.filterNot { it.shareId in known }
+                    shares = shares + withoutCancelling(page.shares).filterNot { it.shareId in known }
                     nextPageToken = page.nextPageToken
                 }
-                .onFailure { _messages.tryEmit("加载失败") }
+                .onFailure { loadMoreFailed = true }
             isLoadingMore = false
         }
     }
@@ -125,29 +139,37 @@ class MySharesState(
     fun cancelSelected() {
         val ids = selectedIds
         if (ids.isEmpty()) return
-        val before = shares
-        shares = shares.filterNot { it.shareId in ids }
         selectedIds = emptySet()
-        scope.launch {
-            driveRepo.cancelShares(ids.toList())
-                .logFailure(TAG, "批量取消分享失败")
-                .onSuccess { _messages.tryEmit("已取消 ${ids.size} 个分享") }
-                .onFailure {
-                    shares = before
-                    _messages.tryEmit("取消分享失败")
-                }
-        }
+        cancelShares(ids, done = "已取消 ${ids.size} 个分享", logMessage = "批量取消分享失败")
     }
 
     fun cancel(share: ShareSummary) {
+        cancelShares(setOf(share.shareId), done = "已取消分享", logMessage = "取消分享失败")
+    }
+
+    /**
+     * 正在取消的分享 ID。取消请求发出之前取的列表（刷新、下一页）回来时还带着它们，
+     * 不滤掉的话刚拿掉的一项又会冒出来。
+     */
+    private val cancellingIds = HashSet<String>()
+
+    private fun withoutCancelling(page: List<ShareSummary>) = page.filterNot { it.shareId in cancellingIds }
+
+    /**
+     * 失败时只放回这一次拿掉的几项，不整份换回快照：几次取消先后进行、或期间刷新过时，
+     * 快照里还有别的取消已成功的条目，也可能是刷新前的旧数据。
+     */
+    private fun cancelShares(ids: Set<String>, done: String, logMessage: String) {
         val before = shares
-        shares = shares.filterNot { it.shareId == share.shareId }
+        cancellingIds += ids
+        shares = shares.filterNot { it.shareId in ids }
         scope.launch {
-            driveRepo.cancelShares(listOf(share.shareId))
-                .logFailure(TAG, "取消分享失败")
-                .onSuccess { _messages.tryEmit("已取消分享") }
+            val result = driveRepo.cancelShares(ids.toList()).logFailure(TAG, logMessage)
+            cancellingIds -= ids
+            result
+                .onSuccess { _messages.tryEmit(done) }
                 .onFailure {
-                    shares = before
+                    shares = reinsertRemoved(shares, before, ids) { it.shareId }
                     _messages.tryEmit("取消分享失败")
                 }
         }

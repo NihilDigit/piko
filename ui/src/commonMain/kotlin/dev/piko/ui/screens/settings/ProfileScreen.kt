@@ -306,9 +306,12 @@ internal fun LogoutDialog(onDismiss: () -> Unit, onLoggedOut: () -> Unit) {
         confirmButton = {
             TextButton(
                 onClick = {
-                    onDismiss()
+                    // 退出在进程级作用域里跑，对话框的作用域被取消也照样清完凭据。
+                    // 对话框等它做完再关：先关的话这个作用域随即取消，回调就到不了
+                    val loggingOut = clientManager.logout()
                     scope.launch {
-                        clientManager.logout()
+                        loggingOut.join()
+                        onDismiss()
                         onLoggedOut()
                     }
                 },

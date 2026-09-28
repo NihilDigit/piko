@@ -125,8 +125,10 @@ fun MySharesScreen(
             last >= gridState.layoutInfo.totalItemsCount - LOAD_MORE_THRESHOLD
         }
     }
+    // 连同「能不能取」一起看：只看 nearEnd 的话，一页接完仍停在底部时它一直是 true、不再发出，
+    // 后面的页就取不到了。取失败后 canAutoLoadMore 为 false，改由底部的「重试」接着取
     LaunchedEffect(state, gridState) {
-        snapshotFlow { nearEnd }.collect { if (it) state.loadMore() }
+        snapshotFlow { nearEnd && state.canAutoLoadMore }.collect { if (it) state.loadMore() }
     }
 
     // 有提取码时一并复制，按钮统一叫「复制链接」：链接不带提取码发出去对方打不开，没有只要链接的时候。
@@ -255,6 +257,22 @@ fun MySharesScreen(
                                 fullLineItem(key = "loading_more") {
                                     Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
                                         InlineLoadingIndicator()
+                                    }
+                                }
+                            } else if (state.loadMoreFailed) {
+                                fullLineItem(key = "load_more_failed") {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                                        horizontalArrangement = Arrangement.Center,
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text(
+                                            "后续分享加载失败",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                        Spacer(Modifier.width(8.dp))
+                                        TextButton(onClick = state::loadMore) { Text("重试") }
                                     }
                                 }
                             }

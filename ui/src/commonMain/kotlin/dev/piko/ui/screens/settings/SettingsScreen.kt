@@ -217,7 +217,8 @@ fun SettingsScreen(
     // 左栏点过的一类。末尾几类矮，滚到底也到不了顶端，这时按起点算会亮成更靠前的一类，点了却亮别的
     var requestedSection by remember { mutableStateOf<SettingsSection?>(null) }
     val headingSlack = with(LocalDensity.current) { SectionHeadingSlack.roundToPx() }
-    val currentSection by remember {
+    // 以 sections 为键：窗口拉宽出现「关于」时换一份，否则一直按首次组合时的目录算，新出现的一类永远亮不了
+    val currentSection by remember(sections, headingSlack) {
         derivedStateOf {
             val y = scrollState.value
             val atEnd = y >= scrollState.maxValue

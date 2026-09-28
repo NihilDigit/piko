@@ -42,22 +42,26 @@ import kotlinx.coroutines.withContext
  *
  * 不能直接换回 [snapshot]：几次移除先后进行时，快照里还留着别的操作已经移除成功的条目，
  * 整份换回会让它们重新出现。所以每一项接在快照里它前面、眼下仍在列表中的那一项之后；
- * 眼下已在列表里的（例如期间重列过）不重复放。
+ * 眼下已在列表里的（例如期间重列过）不重复放。网盘页的库与我的分享都用它。
  */
-internal fun reinsertRemoved(current: List<FileStat>, snapshot: List<FileStat>, removedIds: Set<String>): List<FileStat> {
+internal fun <T> reinsertRemoved(current: List<T>, snapshot: List<T>, removedIds: Set<String>, idOf: (T) -> String): List<T> {
     val result = current.toMutableList()
-    val present = current.mapTo(HashSet()) { it.id }
+    val present = current.mapTo(HashSet(), idOf)
     var anchorId: String? = null
-    for (file in snapshot) {
-        if (file.id in removedIds && file.id !in present) {
-            val at = anchorId?.let { id -> result.indexOfFirst { it.id == id } + 1 } ?: 0
-            result.add(at, file)
-            present += file.id
+    for (item in snapshot) {
+        val id = idOf(item)
+        if (id in removedIds && id !in present) {
+            val at = anchorId?.let { anchor -> result.indexOfFirst { idOf(it) == anchor } + 1 } ?: 0
+            result.add(at, item)
+            present += id
         }
-        if (file.id in present) anchorId = file.id
+        if (id in present) anchorId = id
     }
     return result
 }
+
+internal fun reinsertRemoved(current: List<FileStat>, snapshot: List<FileStat>, removedIds: Set<String>): List<FileStat> =
+    reinsertRemoved(current, snapshot, removedIds) { it.id }
 
 /** 文件夹行在可见区域里停留这么久才预取其内容，见 [DriveScreenState.onFolderVisible]。 */
 private const val PREFETCH_DWELL_MILLIS = 400L
@@ -520,6 +524,7 @@ class DriveScreenState(
         if (eventIds.isEmpty()) return
         val before = files
         val removedIds = ids.toSet()
+        val generation = libraryGeneration
         files = files.filterNot { it.id in removedIds }
         exitSelection()
         scope.launch {
@@ -530,15 +535,25 @@ class DriveScreenState(
                 }
                 .logFailure(TAG, "移除记录失败")
                 .onFailure {
-                    if (activeFolderId == library.id) files = reinsertRemoved(files, before, removedIds)
+                    if (activeFolderId == library.id && generation == libraryGeneration) {
+                        files = reinsertRemoved(files, before, removedIds)
+                    }
                     _messages.tryEmit("移除失败")
                 }
         }
     }
 
+    /**
+     * 库列表的代次，清空时加一。清空之前发出的单项移除晚于清空失败时不再放回：
+     * 那条记录已随清空没了，放回就是往清空的列表里塞一条不存在的记录。
+     * 只看位置不够，清空前后都停在播放历史里。
+     */
+    private var libraryGeneration = 0
+
     /** 清空播放历史。服务端没有撤销，官方客户端里的历史一起没了，由界面先确认。 */
     fun clearPlayHistory() {
         val before = files
+        libraryGeneration++
         files = emptyList()
         exitSelection()
         scope.launch {
