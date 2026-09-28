@@ -37,6 +37,7 @@ import androidx.compose.material.icons.outlined.History
 import dev.piko.ui.components.LocalFileDrag
 import dev.piko.ui.components.FileDragState
 import dev.piko.ui.components.FileDragOverlay
+import dev.piko.ui.components.fileDragHost
 import androidx.compose.runtime.CompositionLocalProvider
 import dev.piko.ui.screens.drive.highlights
 import dev.piko.ui.screens.drive.SidebarWidth
@@ -883,6 +884,7 @@ fun PikoMainScaffold(
             modifier = modifier
                 .fillMaxSize()
                 .trackInputModality()
+                .fileDragHost(fileDrag)
                 .focusFallbackRoot(focusFallback)
                 .focusRequester(shortcutFocus)
                 .focusable()

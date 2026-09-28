@@ -24,6 +24,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -32,7 +33,16 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.PointerKeyboardModifiers
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.isAltPressed
@@ -44,12 +54,15 @@ import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.DriveLibrary
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.ShortcutModifier
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 /**
@@ -109,9 +122,14 @@ class FileDragState {
         retarget()
     }
 
-    internal fun start(payload: FileDragPayload, at: Offset) {
+    /** 拖着这批条目的那个指针。起拖之后由根上的 [fileDragHost] 按它跟到松手，拖出来的条目滚走了也不断。 */
+    internal var pointer: PointerId? = null
+        private set
+
+    internal fun start(payload: FileDragPayload, pointer: PointerId, at: Offset, copy: Boolean) {
         this.payload = payload
-        move(at, copy = false)
+        this.pointer = pointer
+        move(at, copy)
     }
 
     internal fun move(at: Offset, copy: Boolean) {
@@ -142,6 +160,7 @@ class FileDragState {
 
     internal fun cancel() {
         payload = null
+        pointer = null
         hovered = null
     }
 }
@@ -153,6 +172,9 @@ val LocalFileDrag = staticCompositionLocalOf<FileDragState?> { null }
  * 开始之后吃掉移动，条目自己的单击随之作废。按着修饰键按下的（Ctrl 点选、Shift 连选）已被
  * [selectionClicks] 吃掉，这里不接。拖动中按着 Ctrl（mac 上 ⌥）是复制，与资源管理器、Finder 相同。
  * 触屏不接：长按是多选。
+ *
+ * 这里只管起拖。起拖之后交给根上的 [fileDragHost] 跟到松手：条目在懒加载的网格里，拖着的时候滚轮一滚、
+ * 列表自动滚动，它就离开组合，挂在它上面的手势随之撤销，由它跟下去整个拖动就没了，滚进来的文件夹也接不住。
  */
 @Composable
 fun Modifier.fileDragSource(payload: () -> FileDragPayload?): Modifier {
@@ -160,44 +182,101 @@ fun Modifier.fileDragSource(payload: () -> FileDragPayload?): Modifier {
     val copyWithAlt = LocalPikoPlatform.current.shortcutModifier == ShortcutModifier.Command
     val currentPayload by rememberUpdatedState(payload)
     val coordinates = remember { arrayOfNulls<LayoutCoordinates>(1) }
-    fun rootOf(local: Offset): Offset = coordinates[0]?.takeIf { it.isAttached }?.localToRoot(local) ?: local
-    fun isCopy(modifiers: PointerKeyboardModifiers) = if (copyWithAlt) modifiers.isAltPressed else modifiers.isCtrlPressed
-    return onGloballyPositioned { coordinates[0] = it }.pointerInput(drag) {
+    return onGloballyPositioned { coordinates[0] = it }.pointerInput(drag, copyWithAlt) {
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
             if (down.type != PointerType.Mouse || down.isConsumed || !currentEvent.buttons.isPrimaryPressed) return@awaitEachGesture
             val threshold = DragThreshold.toPx()
-            var dragging = false
-            try {
-                while (true) {
-                    val event = awaitPointerEvent(PointerEventPass.Initial)
-                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                    if (!change.pressed) {
-                        if (dragging) {
-                            change.consume()
-                            drag.drop()
-                        }
-                        break
-                    }
-                    // 外面的框选已接手这次拖动（按在没选中的条目上，见 marqueeSelection），这里就不起拖
-                    if (!dragging && change.isConsumed) break
-                    if (!dragging && (change.position - down.position).getDistance() > threshold) {
-                        val batch = currentPayload() ?: break
-                        drag.start(batch, rootOf(change.position))
-                        dragging = true
-                    }
-                    if (dragging) {
-                        change.consume()
-                        drag.move(rootOf(change.position), isCopy(event.keyboardModifiers))
-                    }
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                // 外面的框选已接手这次拖动（按在没选中的条目上，见 marqueeSelection），这里就不起拖
+                if (!change.pressed || change.isConsumed) break
+                if ((change.position - down.position).getDistance() > threshold) {
+                    val batch = currentPayload() ?: break
+                    change.consume()
+                    val at = coordinates[0].rootOf(change.position)
+                    drag.start(batch, down.id, at, isCopy(copyWithAlt, event.keyboardModifiers))
+                    break
                 }
-            } finally {
-                // 手势被打断（条目滚出去离开了组合）时收起，不留一个悬着的拖动
-                if (dragging && drag.payload != null) drag.cancel()
             }
         }
     }
 }
+
+/**
+ * 装在铺满窗口的根上，与 [LocalFileDrag] 同处：起拖之后由它跟着 [FileDragState.pointer] 到松手，
+ * 拖出来的条目离开组合也不断。根在按下时就在命中路径上，此后同一指针的事件照样送到这里；
+ * Initial 阶段由外向内传，它在条目之前先看到并消费掉，里面的单击、框选因此不再当真。
+ *
+ * 收起有三种，都不落下：Esc；指针被系统取消；窗口失去焦点，这时松手多半送不回来。
+ */
+@Composable
+fun Modifier.fileDragHost(drag: FileDragState): Modifier {
+    val copyWithAlt = LocalPikoPlatform.current.shortcutModifier == ShortcutModifier.Command
+    val windowInfo = LocalWindowInfo.current
+    val coordinates = remember { arrayOfNulls<LayoutCoordinates>(1) }
+    // Esc 按下时已收起，它的松开也吃掉，免得再被当成返回
+    val escPending = remember { BooleanArray(1) }
+    return onGloballyPositioned { coordinates[0] = it }
+        .onPreviewKeyEvent { event ->
+            if (drag.payload == null) {
+                val swallow = escPending[0] && event.key == Key.Escape && event.type == KeyEventType.KeyUp
+                if (swallow) escPending[0] = false
+                return@onPreviewKeyEvent swallow
+            }
+            when (event.key) {
+                Key.Escape -> {
+                    if (event.type == KeyEventType.KeyDown) {
+                        drag.cancel()
+                        escPending[0] = true
+                    }
+                    true
+                }
+                // 停着不动时按下、松开修饰键没有指针事件，说明要跟着换成复制或移动
+                Key.CtrlLeft, Key.CtrlRight, Key.AltLeft, Key.AltRight -> {
+                    drag.move(drag.position, if (copyWithAlt) event.isAltPressed else event.isCtrlPressed)
+                    false
+                }
+                else -> false
+            }
+        }
+        .pointerInput(drag, copyWithAlt, windowInfo) {
+            coroutineScope {
+                launch {
+                    snapshotFlow { windowInfo.isWindowFocused }.collect { focused -> if (!focused) drag.cancel() }
+                }
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val pointer = drag.pointer ?: continue
+                        val change = event.changes.firstOrNull { it.id == pointer } ?: continue
+                        // 松手这一下的位置与修饰键先记上再落：只在移动时记的话，快速拖到另一个文件夹随即松手
+                        // 落在上一个落点，停下后按住 Ctrl 再松手仍是移动
+                        drag.move(coordinates[0].rootOf(change.position), isCopy(copyWithAlt, event.keyboardModifiers))
+                        when {
+                            change.pressed -> {
+                                // 滚轮不消费，拖着的时候照样能滚动列表去找落点
+                                if (event.type != PointerEventType.Scroll) change.consume()
+                            }
+                            // 系统取消指针时补发的「松开」一开始就是已消费的，真的松开在根上还没人碰过
+                            change.isConsumed -> drag.cancel()
+                            else -> {
+                                change.consume()
+                                drag.drop()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+}
+
+private fun isCopy(copyWithAlt: Boolean, modifiers: PointerKeyboardModifiers) =
+    if (copyWithAlt) modifiers.isAltPressed else modifiers.isCtrlPressed
+
+private fun LayoutCoordinates?.rootOf(local: Offset): Offset =
+    this?.takeIf { it.isAttached }?.localToRoot(local) ?: local
 
 /**
  * 能接住拖来的条目的文件夹：侧边栏的快捷访问、路径栏的上级、网格里的文件夹。拖到上面时描一圈并垫一层底色。

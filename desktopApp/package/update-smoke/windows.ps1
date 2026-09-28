@@ -11,7 +11,8 @@
 #   1. 全新安装 MSI，启动后存活，没有新版时不动
 #   2. MSI 安装版增量更新（换补丁文件）：目录与新版清单逐文件一致，jar 的修改时间原样（AOT 缓存认它）
 #   3. MSI 安装版整包更新：先弄坏一个运行时文件，增量更新不成立，走 msiexec；登记的版本随之更新
-#   4. 卸载：安装目录下 app 与 runtime 不留任何文件（增量更新换进去的新名字 jar 不在 MSI 的文件表里）
+#   4. 卸载：安装目录下 app 与 runtime 不留任何文件。打过补丁与整包更新之后各卸一次，都当场查
+#      （增量更新换进去的新名字 jar 不在 MSI 的文件表里，靠打包时加的 RemoveFile 规则删）
 #   5. 便携版增量更新
 #   6. 便携版整包更新：弄坏一个运行时文件，走便携 zip，只换不同的文件
 #
@@ -195,6 +196,13 @@ function Uninstall-Msi([string] $log) {
     }
 }
 
+function Assert-NoAppFiles([string] $when) {
+    foreach ($folder in @('app', 'runtime')) {
+        $left = @(Get-ChildItem -LiteralPath (Join-Path $installDir $folder) -Recurse -File -Force -ErrorAction SilentlyContinue)
+        if ($left.Count -gt 0) { Fail "$when left $($left.Count) files under $folder, e.g. $($left[0].FullName)" }
+    }
+}
+
 function Reset-Staging { if (Test-Path -LiteralPath $staging) { Remove-Item -Recurse -Force -LiteralPath $staging } }
 
 # ---------------------------------------------------------------------------
@@ -249,7 +257,10 @@ try {
     EndStep
 
     Step '3. MSI install, full update through msiexec'
-    Uninstall-Msi (Join-Path $logs 'uninstall-before-full.log')
+    # 刚打过补丁的安装卸掉，当场查残留：补丁换进来的新名字 jar 与 .jpackage.xml 不在 MSI 的文件表里，
+    # 要靠打包时加的 RemoveFile 规则才删得掉（desktopApp/package/windows/transactional-upgrade.ps1）
+    Uninstall-Msi (Join-Path $logs 'uninstall-after-patch.log')
+    Assert-NoAppFiles 'uninstall after a patch'
     Reset-Staging
     Install-Msi $baseMsi (Join-Path $logs 'install-base-2.log')
     Damage-Runtime $installDir
@@ -264,10 +275,7 @@ try {
 
     Step '4. uninstall leaves no app files'
     Uninstall-Msi (Join-Path $logs 'uninstall.log')
-    foreach ($folder in @('app', 'runtime')) {
-        $left = @(Get-ChildItem -LiteralPath (Join-Path $installDir $folder) -Recurse -File -Force -ErrorAction SilentlyContinue)
-        if ($left.Count -gt 0) { Fail "uninstall left $($left.Count) files under $folder, e.g. $($left[0].FullName)" }
-    }
+    Assert-NoAppFiles 'uninstall after a full update'
     EndStep
 
     $portableRoot = Join-Path $Work 'portable'
