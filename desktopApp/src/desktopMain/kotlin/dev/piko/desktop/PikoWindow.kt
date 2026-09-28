@@ -2,6 +2,9 @@ package dev.piko.desktop
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
+import kotlinx.coroutines.delay
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.window.FrameWindowScope
@@ -27,9 +30,24 @@ fun PikoWindow(
 ) {
     // Window 每次重组都从这个 CompositionLocal 重新取处理器，只能在它外面提供
     CompositionLocalProvider(LocalWindowExceptionHandlerFactory provides PikoWindowExceptionHandlerFactory) {
-        Window(onCloseRequest = onCloseRequest, state = state, visible = visible, title = title, icon = icon, content = content)
+        // 显卡设备失效后整个窗口丢掉重建，新窗口建新设备，见 GpuDeviceWatch。窗口里 remember 的状态随之重置，
+        // 位置与大小在 state 里，不受影响
+        key(GpuDeviceWatch.generation) {
+            Window(onCloseRequest = onCloseRequest, state = state, visible = visible, title = title, icon = icon) {
+                LaunchedEffect(window) {
+                    while (true) {
+                        delay(DEVICE_CHECK_INTERVAL_MS)
+                        if (GpuDeviceWatch.checkLost(window)) break
+                    }
+                }
+                content()
+            }
+        }
     }
 }
+
+// 画面冻住到用户去拉窗口之间，这么久足够先一步发现；一次检查是一次反射加一次虚表调用
+private const val DEVICE_CHECK_INTERVAL_MS = 1_000L
 
 /**
  * 与 Compose 默认的处理相同：关掉出错的窗口，异常照旧抛出，由进程的崩溃处理写进日志。只把提示换掉：

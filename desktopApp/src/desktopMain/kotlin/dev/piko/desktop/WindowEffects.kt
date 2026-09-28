@@ -13,6 +13,7 @@ import java.awt.Dimension
 import java.awt.LayoutManager
 import java.awt.Window
 import javax.swing.JFrame
+import javax.swing.SwingUtilities
 import kotlin.math.abs
 import kotlin.math.round
 
@@ -26,7 +27,8 @@ import kotlin.math.round
  *
  * 这里把 Compose 面板的逻辑尺寸向上取到「乘以缩放恰为整数」的倍数，逻辑尺寸、子窗口与 backbuffer 三者
  * 便相等。多出的不足一步（150% 下 1 个、125% 下至多 3 个逻辑像素）落在客户区外，被父窗口裁掉；向下取
- * 会在右下露出一条窗口底色，深色主题下看得见。改用 OpenGL 同样不拉伸，但播放窗口的 MediaMP 画面表面要 Direct3D。
+ * 会在右下露出一条窗口底色，深色主题下看得见。改用 OpenGL 同样不拉伸，但 MediaMP 在 OpenGL 下每帧要把画面
+从显存读回再上传，只有 Direct3D 是零拷贝。
  */
 @Composable
 fun PixelAlignedContentEffect(window: JFrame) {
@@ -47,6 +49,8 @@ private object PixelAlignedLayout : LayoutManager {
 
     // 显示器缩放变化时 skiko 会 revalidate SkiaLayer，失效一路传到 JRootPane，这里随之按新缩放重排
     override fun layoutContainer(parent: Container) {
+        // 显卡设备已失效时改尺寸会让 skiko 取新 back buffer 取到空指针而崩溃，这时不碰画布，等窗口重建
+        if (GpuDeviceWatch.checkLost(SwingUtilities.getWindowAncestor(parent))) return
         val step = pixelAlignedStep(parent.graphicsConfiguration?.defaultTransform?.scaleX ?: 1.0)
         val width = roundUp(parent.width, step)
         val height = roundUp(parent.height, step)
