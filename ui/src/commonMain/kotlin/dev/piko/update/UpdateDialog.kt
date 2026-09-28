@@ -31,6 +31,7 @@ import dev.piko.download.DownloadStatus
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.platform.LocalPikoPlatform
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /**
@@ -38,7 +39,7 @@ import kotlinx.coroutines.launch
  *
  * 按 M3 的基本对话框排，两个动作位：主动作随状态变（下载、重试、重启更新），另一个在开屏时是
  * 「忽略此版本」，在设置页是「在浏览器中查看」。关掉对话框靠点外面或返回。
- * 下载中不许关：关掉后下载就成了没有任何反馈的后台任务。
+ * 下载中不许点外面关：关掉后下载就成了没有任何反馈的后台任务；要走就点「取消下载」。
  *
  * 更新说明是 updateNotesOf 截出的 Markdown，由 ReleaseNotes 排版，可选中复制，限高滚动，免得把按钮顶出去。
  */
@@ -57,6 +58,9 @@ fun UpdateDialog(
     val status = updater.status.takeIf { it.update?.version == update.version }
     val downloading = status is UpdateStatus.Downloading
     var confirmInterrupt by remember { mutableStateOf(false) }
+    // 下载在这个对话框的作用域里跑，取消即取消它；更新器收到取消会把状态退回可更新
+    var download by remember { mutableStateOf<Job?>(null) }
+    val startDownload: () -> Unit = { download = scope.launch { updater.downloadAndInstall(update) } }
 
     val restart: () -> Unit = {
         val hasActiveDownloads = downloadManager.tasks.value.values.any {
@@ -122,14 +126,16 @@ fun UpdateDialog(
                 status is UpdateStatus.ReadyToRestart -> Button(onClick = restart) { Text("重启并更新") }
                 status is UpdateStatus.Installing -> Button(onClick = {}, enabled = false) { Text("等待安装") }
                 // 失败后主动作就是再来一次，与第一次下载没有区别
-                status is UpdateStatus.Failed -> Button(onClick = { scope.launch { updater.downloadAndInstall(update) } }) {
-                    Text("重试")
-                }
-                else -> Button(onClick = { scope.launch { updater.downloadAndInstall(update) } }) { Text("下载并安装") }
+                status is UpdateStatus.Failed -> Button(onClick = startDownload) { Text("重试") }
+                else -> Button(onClick = startDownload) { Text("下载并安装") }
             }
         },
         dismissButton = {
-            if (!downloading) {
+            // 下载中不能点外面关掉，但要给一条出路：网络卡住时对话框一直挡在那里（M3 dialogs：不可轻触关闭的对话框
+            // 必须有可执行的动作）
+            if (downloading) {
+                download?.let { job -> TextButton(onClick = { job.cancel() }) { Text("取消下载") } }
+            } else {
                 if (onIgnore != null) {
                     TextButton(onClick = onIgnore) { Text("忽略此版本") }
                 } else if (update.canInstallInApp) {
