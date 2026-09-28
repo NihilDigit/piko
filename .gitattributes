@@ -1,0 +1,7 @@
+# 测试夹具按字节存取。delta-base.bin 这类夹具没有 NUL 字节、换行又多，git 当它是文本，Windows runner
+# 开着 core.autocrlf，检出时换成 CRLF，差分还原的摘要随之对不上（本机检出不转换，测不出来）
+*.bin binary
+*.zst binary
+
+# 在 macOS 与 Linux 上执行的脚本一律 LF：Windows 上打的包也带着 apply-update-mac.sh，带着 CR 的 bash 脚本跑不起来
+*.sh text eol=lf
