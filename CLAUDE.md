@@ -36,7 +36,7 @@ Piko 是 PikPak 的第三方跨平台客户端。Android、Windows 与 macOS（�
 就以复合构建把依赖里的 `pikpak-kotlin` 换成那个目录的源码，改了 SDK 下次编译即生效，不必发 SNAPSHOT、不必改版本号。
 SDK 那边的 `local.properties` 要有 `sdk.dir`（Android 插件在复合构建里读它）。两个仓库的 Kotlin、AGP 与 Gradle
 版本要一致：AGP 不同时 Gradle 判断不了两边的 Android 变体是否匹配，直接解析失败。
-SDK 在 Piko 发版之前才发，平时的改动攒在 SDK 的 main 上。所以 `ci.yml` 与 `smoke.yml` 也检出 SDK 的 main 做复合构建，
+SDK 在 Piko 发版之前才发，平时的改动攒在 SDK 的 main 上。所以 `test.yml` 平时也检出 SDK 的 main 做复合构建，
 Piko 的 main 可以先用上 SDK 还没发布的改动；`release.yml` 不这样做，照样取 `libs.versions.toml` 里的已发布版本。
 发 Piko 之前先发 SDK、再把版本号改过去，否则 Piko 的发版构建过不去。
 **不要再用 mavenLocal**：`publishToMavenLocal` 版本号没改对时会覆盖本机缓存里的正式版。
@@ -52,9 +52,13 @@ Maven Central 按月给命名空间限额（`io.github.nihildigit` 是 11 次发
 
 自有仓库不走 PR，直接在 `main` 上提交。
 
-tag 只触发 `release.yml`：Android、Windows（x64、arm64）、macOS 并行构建，产物汇到 `release` job 统一算
-`SHA256SUMS.txt`、做两份构建来源证明（`attest-build-provenance` 与 SLSA Build L3），建一个**草稿** release。
-草稿对 `releases/latest` 不可见，应用内更新在公开前不会提示。push 与 PR 只跑 `ci.yml` 的单测与 `smoke.yml` 的冒烟，不打包。
+测试与发版是两个 workflow，先测后发。tag 只触发 `release.yml`，它的第一个 job 调 `test.yml`（全部单测与冒烟，
+含 Windows、macOS 的全新安装与应用内更新，用已发布的 SDK），全绿后 Android、Windows（x64、arm64）、macOS
+才并行构建，产物汇到 `release` job 统一算 `SHA256SUMS.txt`、生成 `release.json`（检查更新的备用来源）、
+做两份构建来源证明（`attest-build-provenance` 与 SLSA Build L3），建一个**草稿** release。
+草稿对 `releases/latest` 不可见，应用内更新在公开前不会提示。push 与 PR 只跑 `test.yml` 里不打包的部分；
+桌面端的安装与更新冒烟要打两遍安装包，手动触发 `test.yml` 或发版时才跑。改了发版流程先手动触发 `release.yml`
+演练一遍：填一个版本号，测试、构建、汇总照常，不建 release、不做证明，产物留作 workflow 产物。
 
 Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下载` 起是按设备列出的附件表与校验说明。
 **更新日志在草稿公开前手写，放在正文最前面、`## 下载` 之前**：应用内
@@ -75,7 +79,7 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 
 ### 界面写一次
 
-`ui/src/commonMain` 是全部界面：主题、导航、网盘、传输、设置、回收站、登录与各组件，两端共用。
+`ui/src/commonMain` 是全部界面：主题、导航、网盘、传输、设置、登录与各组件，两端共用。
 入口是 `PikoApp`：`MainActivity` 与桌面的 `Main.kt` 各自拼好 `PikoServices`（进程级的仓库与调度器）
 与 `PikoPlatform`（平台能力），传进去即可。屏幕里经 `LocalPikoServices`、`LocalPikoPlatform` 取用，
 不要再引用 `PikoApplication.instance`。
@@ -89,7 +93,7 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 
 新增屏幕状态时照这个形状做。已下沉的 state holder 都在 `shared/.../shared/state/`：
 `DriveScreenState`、`InstantSheetState`（秒传与磁力解析，多条链接时由 `InstantBatchState` 为每条各建一个）、
-`OfflineTasksState`（云端离线任务，轮询由调用方的协程控制启停）、`TrashScreenState`、`LoginState`、
+`OfflineTasksState`（云端离线任务，轮询由调用方的协程控制启停）、`LoginState`、
 `FolderPickerState`（自带路径栈）、`DuplicateFinderState`（查重）、`ArchiveExtractSession`（服务端解压，
 进程级，挂在 `PikoServices` 上，离开网盘页照常进行）。
 播放器的准备策略是 `shared/.../shared/media/player/PlayerScreenState`，见「播放器」一节。
@@ -102,29 +106,48 @@ expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以
   换成一整条侧边栏（`MainSidebar`）：上面是三个去处，下面是快速访问（`QuickAccessSection` / `QuickAccessState`），
   照资源管理器只列用户固定的文件夹，文件夹右键「固定到快速访问」。PikPak 没有这项，存在偏好 `pinnedFolders` 里
   经设置同步带走（`PinnedFolders`，只存 ID 与名字，打开时按 ID 查上级）。只亮一处：人在固定的文件夹里时亮它，否则亮当前页。
-  不要在导航栏旁边再并排一栏导航。侧边栏与状态栏在 `NavDisplay` 外面，打开「我的」里的各页时不被盖住（应用内播放器这类
-  整窗的页照旧盖住，见 `sidebarMode`）。快速访问的条目右键可以在新标签页打开或取消固定。同样只在这一档，内容下面有状态栏（`ui/.../workbench/StatusBar`）：
-  左边照 FDM 是蜗牛模式（限速，偏好 `snailModeFlow`，每台设备各自的，不同步）与上下行速度（点开活动面板，看进度不必切到传输页），
-  再是最近一次能撤销的改动，右边是设置同步与空间用量。
+  不要在导航栏旁边再并排一栏导航。侧边栏在 `NavDisplay` 外面，打开「我的」里的各页时不被盖住（应用内播放器这类
+  整窗的页照旧盖住，见 `sidebarMode`）。快速访问的条目右键可以在新标签页打开或取消固定。侧边栏不能拖宽，只能收起成只剩图标的窄轨
+  （顶上的开关或主修饰键+B，`sidebarCollapsedFlow`，每台设备各自的；各行读 `LocalSidebarCollapsed` 自己换成窄轨的样子）。
+  蜗牛模式开着时「传输」按钮整个用强调色，有没有传输都是。「文件」与「传输」是一组连体按钮；有传输在跑时「传输」按钮上写速度（上下行取快的一边）或项数
+  （`workbench/TransferActivity`），蜗牛模式（限速，偏好 `snailModeFlow`，每台设备各自的，不同步）开着时用强调色。
+  原来窗口底部的状态栏已去掉，不要再加回。
+  这一档画外框（`theme/Frame.kt`）：侧边栏、网盘页页眉与右侧面板同为外框色，各页内容是一张卡片；标题栏在 Windows 上
+  可并进内容（设置里的「紧凑标题栏」，`WindowCaption`）：贴着窗口右上角的那一行自己画窗口按钮，空白处经 `windowDragArea` 登记为拖动区。
+  各页一律用 `PikoScaffold`，不直接用 `Scaffold`：有外框时它把顶栏、底栏放在外框色上，内容裁成卡片；顶栏与底栏的高度
+  取 `Frame.kt` 的 `FrameTopRowHeight`、`FrameBottomRowHeight`，与侧边栏的图标行、账号行对齐。
+- 图标：平时一律描边（Outlined），选中、打开、正在生效时换实心（Filled），侧边栏、导航项、视图切换、开关按钮都照此。
+  挑图标时选实心与描边长得不一样的：History、Share、SyncAlt 两种写法同形，切换了看不出。播放器叠在画面上的操作按钮例外，用实心。
 - 返回栈：`PikoMainScaffold` 用 Navigation 3 的 `NavDisplay`，栈底 `Screen.Home` 是导航栏与三个根页面，
   其余页面压在上面、连同导航栏一起盖住。被盖住的 Home 离开组合，回来时重建，所以根页面的状态要经得起
   重建（网盘页的目录内容与滚动位置记在仓库里）。新页面加一个 `Screen` 子类、登记进 `NavKeyConfiguration`、
   在 `entryProvider` 里写一条 entry；切页与收起压栈页用 `resetToHome`，不要 `clear`，栈底必须留着 Home。
-- 「我的」的详情页（星标、历史、分享、回收站、设置）：窄窗口是单页；expanded 由 `ListDetailSceneStrategy`
+- 库：最近添加、星标、播放历史与回收站不是单独的页，是网盘页里的位置（`DriveLibrary`），列表、视图、详情栏、
+  多选与右键菜单全用网盘页的。它占路径栈的第一级、取代根目录（`[星标]`、`[星标, 某文件夹]`），ID 带 `piko:` 前缀，
+  后退、标签、恢复上次位置因此照常工作。`DriveScreenState.libraryView` 为眼前列的是哪个库，`load` 据此改从星标、
+  回收站或事件接口取；库里平铺不解析、不折叠、不给排序，不能新建、上传、粘贴，也不接拖放。回收站只有恢复与彻底删除，
+  最近添加与播放历史多一个「移除记录」，各库都多「在网盘中显示」。侧边栏里它们是开关：停在这个库时再点一下回到打开之前的位置。
+  我的分享列的是链接不是文件，仍是单独的页。
+- 「我的」的详情页（我的分享、设置）：窄窗口是单页；expanded 由 `ListDetailSceneStrategy`
   与垫在下面的 `Screen.Profile` 拼成两栏，列表栏 360dp，两栏时详情页不给返回，退出在列表栏的顶栏上。
-- 行长：设置、传输、回收站的行内容收在 840dp 以内居中。列表本身仍铺满窗口（用 `readableSidePadding`
-  算 contentPadding），两侧空白处滚轮也能滚。
 - 对话框：目录选择器在 compact 下全屏，更宽时是居中的基本对话框。
-- 面板：一律经 `PikoSheet`，expanded 是从末端滑入的模态侧边面板，其余是只有展开一档的底部 sheet；
+- 面板：一律经 `PikoSheet`。有外框时（大窗口）停进外框右侧那一栏（`SidePanelHost`），不带遮罩、不挡列表，与详情栏共用宽度；
+  expanded 而没有外框时是从末端滑入的模态侧边面板，其余是只有展开一档的底部 sheet；
   不要直接用 `ModalBottomSheet`（播放器的面板另有横屏侧栏，除外）。
+- 右侧那一栏同一时刻只放一样东西：详情、信息流或停进来的面板，谁进来原来的让出去。详情与面板让出去是关掉，
+  信息流让出去是挂起（见下）。
+- 宽窗口网盘页的命令栏：每一样显不显示由 `DriveCommands.kt` 的 `driveCommands` 按规则算出，输入是在哪、作用于哪几项、
+  右侧那一栏里是什么、剪贴板与眼前列表的情形。做不了的不摆，别处已经摆着的不重复（详情栏开着时条目操作只在详情栏里）。
+  加按钮先在那里加规则，不在命令栏里零散判断。
 - 网盘页：compact 以上顶栏照资源管理器：后退、前进、上一级，加一条地址栏（`DrivePathTitle`，每段能点、能接住拖来的条目）；
   compact 仍是目录名作标题、上级另成一行面包屑。
-- 详情栏：expanded 的网盘页右侧，顶栏的「详情」或主修饰键+I 开关（`InspectorPane`）。看选中的几项，没选时看焦点所在的
-  一项，都没有时是当前目录；操作与右键菜单同一份。与信息流侧栏占同一个位置，开一个就收起另一个。
+- 详情栏：expanded 的网盘页右侧（`InspectorPane`），条目上悬停出现的详情按钮（`ItemDetailsButton`，取代原来的三点；
+  触屏与窄窗口一直显示，打开操作面板）、空白处右键或主修饰键+I 打开，关闭在它自己的顶上。看选中的几项，没选时看焦点所在的
+  一项，都没有时是当前目录；操作与右键菜单同一份。与信息流侧栏占同一个位置，开详情时信息流挂起。
   以后刮削到的作品信息放在预览与属性之间。
 - 信息流：刷**网盘页当前文件夹**里的视频，子文件夹里的也算，其余一切都为刷得顺服务。宽窗口是网盘页右侧的侧栏，
-  放不下时全屏，桌面端还能弹出到独立窗口。范围在打开的那一刻取定；进子文件夹不换，离开这个文件夹（路径栈里不再有它）
-  即收起，不论开在哪一处。挑段的先后在 `ClipFeedSession.ranked`：有 720P 转码的先于只有原画的，当前层先于子文件夹；
+  放不下时全屏，桌面端还能弹出到独立窗口。范围在打开的那一刻取定；进子文件夹不换。离开这个文件夹（路径栈里不再有它）、
+  右侧那一栏被详情或面板占去，都是挂起，与「在网盘中显示」同一种状态（`suspendFeed`），不收起；独立窗口不挂起。挑段的先后在 `ClipFeedSession.ranked`：有 720P 转码的先于只有原画的，当前层先于子文件夹；
   没有转码的照样能放（原画 seek，起播慢），有转码的挑完了才轮到。不要再加范围菜单或「订阅」一类的入口。
   在信息流里「在网盘中显示」是「刷到有趣的，去研究一下」：信息流**挂起**（队列与看到哪一段都留着，应用内不画），
   出发点记成 `DriveLocation`，之后左边的浏览是临时的，离开文件夹也不收起；网盘页底部的 `FeedResumeBar` 给「继续刷」
@@ -138,14 +161,17 @@ expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以
   SDK 的阻塞读分两档：`PikPakStreamReader.urgent`（拖动后、卡顿、未出首帧）是 100，播放器平时往后缓冲是 50；
   「有人在等」由界面判断后设上，桌面端后端拖动时不报缓冲，拖动要单独记。
 
-鼠标与键盘：条目右键弹出与操作面板相同的菜单（`ContextMenuArea`）。每页把一项的操作写成一个
+鼠标与键盘：条目右键弹出与操作面板相同的菜单（`ContextMenuArea`）；右键点在几项选中里的一项上时菜单作用于全部选中的，
+照资源管理器。网盘网格的空白处另有一层右键菜单（查看、刷新、粘贴、新建、全选、详情），条目的菜单在里层先接住。
+列表一律用按行对齐的 `LazyVerticalGrid`（`PikoItemGrid`），不用瀑布流：瀑布流按最矮的一栏放，顺序会在各栏间跳。每页把一项的操作写成一个
 `actionsFor`，面板与菜单都读它（网盘页是 `fileActions`）；新列表照做。
 网盘页的点击与键位照各自系统的文件管理器（Windows 照资源管理器，mac 照 Finder），不自创：
 鼠标单击是选中（条目取得焦点，`focusIndication` 盖一层底色，详情栏跟着它），双击才打开；触屏轻点照旧打开。
 多选时条目上画着勾选框，鼠标单击照旧是勾选。按住主修饰键点选是加选，
 Shift 点选是连选（`selectionClicks`，状态在 `DriveScreenState.toggleSelected` / `selectRange`）。
 在网格空白处拖动是框选
-（`marqueeSelection`，`selectBoxed`），空白处单击退出多选。框选只从空白处开始，按在条目上拖动是拖放移动：
+（`marqueeSelection`，`selectBoxed`），空白处单击退出多选。按在已选中或刚点过（焦点所在）的条目上拖动是拖放移动，按在空白或别的条目上拖动是框选，照相册的做法：
+海报墙与图库几乎没有空白可按。拖放移动：
 拖到侧边栏的文件夹、路径栏的上级或网格里的文件夹上，按着 Ctrl（mac 上 ⌥）是复制。拖放是应用内自己做的
 （`FileDragState`，根上一份，落点经 `fileDropTarget` 登记范围），不走平台拖放；拖出去的一批自带落下后做什么，
 落点只提供文件夹。
@@ -177,8 +203,17 @@ Compose 桌面端悬停移动事件的 `previousPosition` 恒等于 `position`�
 下载位置选择、本地文件的打开与分享、片段预览的播放后端、全屏对话框、应用内更新）集中在
 `ui/.../platform/PikoPlatform.kt`，实现是 `AndroidPikoPlatform` 与 `DesktopPikoPlatform`。
 平台没有的能力返回 null 或 false，界面据此隐藏入口，例如桌面端没有系统分享。应用内更新两端都有，
-检查与版本比较在 `shared/.../shared/update`，安装各走各的：Android 交给 PackageInstaller，桌面端按文件清单
-决定只换 jar、AOT 缓存等五个文件还是整包 MSI，由 `apply-update.ps1` 在应用退出后执行。
+检查与版本比较在 `shared/.../shared/update`，安装各走各的：Android 交给 PackageInstaller；Windows 按文件清单
+决定只换补丁文件（exe、全部 jar、AOT 缓存、启动配置）、MSI 安装版整包重装，还是便携版从便携 zip 只换不同的文件，
+由 `apply-update.ps1` 在应用退出后执行，它要等 JVM 与启动器两个进程都退出（jpackage 的启动器另起同名子进程跑 JVM）；
+macOS 整个 .app 换成新 DMG 里的（`apply-update-mac.sh`），不逐个换文件，那会破坏签名封印。
+检查更新依次取 GitHub API、`releases/latest/download/release.json`、经 ghfast.top 的同一个文件（API 匿名限流，
+走代理的用户常被 403）；下载在一个字节都没收到时退到 ghfast.top，每个文件按 SHA-256 校验。jsDelivr 不能用：
+它按 tag 取，tag 推上去时 release 还是草稿。开屏自动检查可在设置里关掉（`autoCheckUpdatesFlow`）。
+带 `-Dpiko.update.auto=true` 启动时查到新版即自动装上，`desktopApp/package/update-smoke/` 用它对着假 Release
+（`fake_release.py`）端到端地测安装与更新，本机也能跑：测试包用 `pikoDesktopUpgradeUuid` 与 `pikoDesktopPackageName`
+另起一个产品，不碰已装的 Piko。
+公告不做进应用：发在 Telegram 频道（`t.me/piko_dev`），「关于」里有入口。
 
 本机文件上传的调度在 `shared/.../shared/upload/PikoUploadCoordinator`，一次传一个，会话随任务存盘以便跨进程续传；
 平台只提供读文件（`PikoUploadSources`，桌面端是路径，Android 是 content: URI）与选择器（`PikoPlatform.uploadPicker`）。
@@ -211,7 +246,7 @@ Compose 桌面端悬停移动事件的 `previousPosition` 恒等于 `position`�
 浏览历史（`historyFlow`，后退与前进）也在这里，每次换栈记一步；「上一级」与它无关。从别处跳进网盘（在网盘中显示、
 快捷栏）用 `updateFolderStack`，会记进历史；只有启动时恢复位置用 `restoreFolderStack`，不记。
 同处还记着最近去过的文件夹（`recentFoldersFlow`，按账号存进缓存目录，命令面板用）与快速访问（`pinnedFoldersFlow`）。
-仓库层还有 `refreshEvents`，供界面外的改动（如回收站恢复）通知列表刷新，`DriveScreenState`
+仓库层还有 `refreshEvents`，供界面外的改动（如解压完成）通知列表刷新，`DriveScreenState`
 已在 `init` 里订阅，视图不要再订阅一遍。
 
 ## PikPak API 的既有约束
@@ -298,6 +333,11 @@ piko 源码仍是 MIT，但发版时要附 GPLv3 与第三方声明，并指明�
   （`WindowsCaption`）：WM_NCCALCSIZE 只收回顶边，WM_NCHITTEST 答 HTCAPTION 与三个按钮的命中码，
   贴靠布局、边缘缩放、阴影与 Win+方向键因此仍由系统负责；按钮的悬停与按下来自非客户区消息，不是 Compose
   指针事件。macOS 用根面板属性把内容铺进标题栏，再由 Skiko 的 `disableTitleBar` 接管拖动，红绿灯保留。
+- **模态文件框一律经 `AwtDialogs`**（FileDialog、JFileChooser）：它只有挂起函数，里面换到专用线程上弹。
+  在界面线程上同步弹，模态框就地嵌套一层 AWT 事件循环，里面又渲染一帧、又 flush 一次 Compose 不可重入的
+  FlushCoroutineDispatcher，同一个续体被恢复两次，窗口整个崩掉（issue #7，macOS 上边放视频边改下载位置复现）。
+  `AwtDialogsGuardTest` 扫 import，别处出现就不过。Windows 的原生框（`FolderPicker`、`SaveFilePicker`）本来就在自己的
+  STA 线程上。属主窗口要在点击的当下取，再传进去。
 - Compose 与 MediaMP 的桌面依赖带进了 ui-test、junit、truth 与 kotlinx-coroutines-test，
   在 `desktopRuntimeClasspath` 里排除，测试类路径不受影响。
 - **版本号**：`-PpikoDesktopVersion` 只在 tag 构建时传（CI 经 `ORG_GRADLE_PROJECT_pikoDesktopVersion`），
@@ -358,7 +398,14 @@ Git Bash 会把以 `/` 开头的参数改写成 Windows 路径，传网盘路径
 
 ## 冒烟测试
 
-`.github/workflows/smoke.yml` 在推送到分支与 PR 时运行（tag 不跑）：Linux 上的 `:shared:desktopTest`，以及 x86_64 模拟器
-（API 34）上的 `:app:connectedDebugAndroidTest`。这些是端到端行为冒烟，不是单元测试：走真实 libmpv、
-真实代理，PikPak 服务端用 MockEngine 顶替，SDK 的请求、鉴权与解析仍走真实代码。本地不必跑，以 CI 结果为准。
+都在 `.github/workflows/test.yml`，业务逻辑放 JVM 上测，原生行为在真机器上冒烟：Linux 上的 `:shared:desktopTest`，
+Windows 上的 `:desktopApp:desktopTest`，Android 单测，x86_64 模拟器（API 34）上的 `:app:connectedDebugAndroidTest`，
+以及 Windows、macOS 上的安装与应用内更新（`windows-update`、`macos-update`，推送时不跑）。冒烟走真实 libmpv、
+真实代理，PikPak 服务端用 MockEngine 顶替，SDK 的请求、鉴权与解析仍走真实代码。本地不必跑，以 CI 结果为准；
+安装与更新冒烟的脚本本机也能跑，见上面「平台差异」一节末尾。
+
+JVM 测试看不出 Android 与 HotSpot 的差异：Android 的正则是 ICU，不认 `\p{IsHan}` 这类 Java 专有写法，
+Android 8 上一编译就崩（1.0.0 出过）。`AndroidRegexGuardTest` 扫源码拦着，写脚本类用 `\p{script=Han}`。
+对话框在 Android 上是按内容定高、居中的独立窗口，内容高度一变整个对话框就跳：对话框里不做尺寸动画，
+提示行常驻、出错只变色（issue #9）。
 老格式样片在 `testdata/media/`，直接提交，生成方式见 `generate.sh`；没有 WMV3/VC-1 样片，因为 ffmpeg 没有它的编码器。
