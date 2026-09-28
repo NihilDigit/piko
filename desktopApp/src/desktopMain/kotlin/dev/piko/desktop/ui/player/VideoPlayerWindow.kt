@@ -348,10 +348,12 @@ private fun VideoPlayerContent(
                 onPickLocalSubtitle = fun() {
                     // 属主要在点击的当下取，launch 之后焦点可能已经变了
                     val owner = KeyboardFocusManager.getCurrentKeyboardFocusManager().activeWindow
+                    // 文件框开着时照常播放，可能已连播到下一集
+                    val videoFileId = state.fileId
                     scope.launch {
                         val file = chooseSubtitleFile(owner) ?: return@launch
                         if (isPlayerSubtitleName(file.name)) {
-                            state.addLocalSubtitle(file.absolutePath, file.name)
+                            state.addLocalSubtitle(videoFileId, file.absolutePath, file.name)
                         } else {
                             snackbarHostState.showSnackbar("不支持这种字幕格式", withDismissAction = true)
                         }

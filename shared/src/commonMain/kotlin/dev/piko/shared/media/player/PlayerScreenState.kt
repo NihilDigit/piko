@@ -14,6 +14,7 @@ import dev.piko.shared.media.PlayableMediaInfo
 import dev.piko.shared.media.PlayableMediaKind
 import dev.piko.shared.media.PreparedPlayback
 import dev.piko.shared.media.bestTranscodeName
+import dev.piko.shared.media.proxy.ProxyStream
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -251,8 +252,16 @@ class PlayerScreenState(
         backend.selectSubtitleTrack(track?.id)
     }
 
-    /** 本机的字幕文件。[path] 要是后端能直接读的路径，Android 的 content: URI 由平台先复制出来。 */
-    fun addLocalSubtitle(path: String, name: String) {
+    /**
+     * 本机的字幕文件。[path] 要是后端能直接读的路径，Android 的 content: URI 由平台先复制出来。
+     * [forFileId] 是弹出选择框时正在放的视频：选文件与复制期间可能已自动连播到下一集，
+     * 字幕只属于选它时的那一集，换过就不挂。
+     */
+    fun addLocalSubtitle(forFileId: String, path: String, name: String) {
+        if (fileId != forFileId || released) {
+            _messages.tryEmit("视频已切换，字幕未挂上")
+            return
+        }
         val subtitle = ManualSubtitle(title = name, localPath = path, fileId = null)
         manualSubtitles = manualSubtitles + subtitle
         attachManualSubtitle(ExternalSubtitle(url = path, title = name, language = null))
@@ -692,19 +701,22 @@ class PlayerScreenState(
             withTimeoutOrNull(PLAYLIST_WAIT_MILLIS) { snapshotFlow { isPlaylistLoaded }.first { it } }
         }
         val refs = currentEntry?.subtitles.orEmpty()
-        val opened = mutableListOf<AutoCloseable>()
+        // 每开一条就登记，由 closePrepared 统一关。攒齐了再交出去的话，换集取消准备时已开的几条无人关闭；
+        // 整体赋值还会盖掉这期间 addDriveSubtitle 登记的那条
+        fun register(stream: ProxyStream): String {
+            subtitleStreams = subtitleStreams + stream
+            return stream.url
+        }
         val subtitles = refs.mapNotNull { ref ->
             val stream = repository.prepareSubtitle(ref.fileId) ?: return@mapNotNull null
-            opened += stream
-            ExternalSubtitle(url = stream.url, title = ref.language ?: "外挂字幕", language = ref.language?.let(::subtitleLanguageCode))
+            ExternalSubtitle(url = register(stream), title = ref.language ?: "外挂字幕", language = ref.language?.let(::subtitleLanguageCode))
         }
         val manual = manualSubtitles.mapNotNull { subtitle ->
             val url = subtitle.localPath
-                ?: subtitle.fileId?.let { id -> repository.prepareSubtitle(id)?.also { opened += it }?.url }
+                ?: subtitle.fileId?.let { id -> repository.prepareSubtitle(id)?.let(::register) }
                 ?: return@mapNotNull null
             ExternalSubtitle(url = url, title = subtitle.title, language = null)
         }
-        subtitleStreams = opened
         return subtitles + manual
     }
 

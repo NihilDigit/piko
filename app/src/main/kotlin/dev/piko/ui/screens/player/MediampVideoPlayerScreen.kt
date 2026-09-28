@@ -132,18 +132,25 @@ fun MediampVideoPlayerScreen(
         state.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
     }
 
+    // 弹出选择框时正在放的视频。回调只带 URI，选文件与复制期间可能已连播到下一集；
+    // 选择框开着时 Activity 可能被重建，所以存进 rememberSaveable
+    var subtitlePickedFor by rememberSaveable { mutableStateOf("") }
     val subtitleLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
+        val videoFileId = subtitlePickedFor
         scope.launch {
             when (val copied = withContext(Dispatchers.IO) { copySubtitleToCache(context, uri) }) {
-                is LocalSubtitle.Copied -> state.addLocalSubtitle(copied.file.absolutePath, copied.file.name)
+                is LocalSubtitle.Copied -> state.addLocalSubtitle(videoFileId, copied.file.absolutePath, copied.file.name)
                 LocalSubtitle.Unsupported -> snackbarHostState.showSnackbar("不支持这种字幕格式", withDismissAction = true)
                 LocalSubtitle.Unreadable -> snackbarHostState.showSnackbar("无法读取字幕文件", withDismissAction = true)
             }
         }
     }
     // 字幕的 MIME 类型各家登记得不一，按类型过滤会把 .ass 这类藏起来，只能全列、选完按扩展名判断
-    val pickLocalSubtitle = { subtitleLauncher.launch(arrayOf("*/*")) }
+    val pickLocalSubtitle = {
+        subtitlePickedFor = state.fileId
+        subtitleLauncher.launch(arrayOf("*/*"))
+    }
 
     LaunchedEffect(isFullscreen) {
         if (isFullscreen) orientationController.hideSystemBars() else orientationController.showSystemBars()
