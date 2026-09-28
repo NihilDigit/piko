@@ -11,6 +11,7 @@ import io.ktor.utils.io.writer
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -77,6 +78,9 @@ class ReleaseSourceFallbackTest {
                 val body = GlobalScope.writer {
                     channel.writeFully(byteArrayOf(1, 2))
                     channel.flush()
+                    // 等读的一方先拿走这两个字节：通道带着异常关闭时，还没读走的数据随之丢弃，
+                    // 那样就成了一个字节都没收到，测不到中途断开
+                    delay(300)
                     error("connection reset")
                 }.channel
                 respond(body)
