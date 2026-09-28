@@ -129,7 +129,7 @@ class DesktopAppUpdater private constructor(
             when {
                 canPatch(installation.dir, manifest) -> {
                     val patch = DesktopUpdatePlan.Patch(zip, manifest)
-                    val delta = release.asset("$prefix-from-$currentVersion.zip")
+                    val delta = release.asset("$prefix-from-$currentVersion.zip")?.takeIf { zstdAvailable }
                     update(delta?.let { DesktopUpdatePlan.Delta(it, patch) } ?: patch)
                 }
                 isMsiInstall(installation.dir) -> update(DesktopUpdatePlan.Installer(msi))
@@ -198,8 +198,11 @@ class DesktopAppUpdater private constructor(
                 val installDir = checkNotNull(installation).dir
                 try {
                     applyDelta(zip, plan.fallback.manifest, installDir, staging.resolve(PATCH_DIR))
-                } catch (e: ChecksumMismatchException) {
-                    // 本机的 jar 或 AOT 缓存被改动过，或者不是差分所基于的那一版
+                } catch (e: Throwable) {
+                    // 本机的 jar 或 AOT 缓存被改动过、不是差分所基于的那一版，或者 zstd 的原生库半路出了错
+                    // （LinkageError 是 Error，按 Exception 接不住）。都退回完整补丁包；取消照旧往上抛
+                    if (e is CancellationException) throw e
+                    if (e !is ChecksumMismatchException && e !is LinkageError) throw e
                     log("差分还原失败，改下完整补丁包", e)
                     staging.resolve(PATCH_DIR).deleteRecursively()
                     stagePatch(plan.fallback, staging, update)

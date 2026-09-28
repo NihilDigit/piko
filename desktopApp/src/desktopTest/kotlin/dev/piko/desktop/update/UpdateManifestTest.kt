@@ -22,6 +22,16 @@ class UpdateManifestTest {
         root.deleteRecursively()
     }
 
+    /**
+     * 差分要 zstd 的原生库。Windows ARM64 的打包机上它加载失败，应用在那里会退回完整补丁包（见 zstdAvailable），
+     * 这几条就测不了，跳过而不是失败，并把原因打进日志，查的时候看得到。
+     */
+    private fun requireZstd() {
+        val error = runCatching { com.github.luben.zstd.util.Native.load() }.exceptionOrNull()
+        if (error != null) System.err.println("zstd 原生库加载失败，跳过差分用例：$error")
+        org.junit.Assume.assumeTrue("zstd 原生库加载失败：$error", error == null)
+    }
+
     private fun entry(path: String, content: String, patch: Boolean = false) = ManifestFile(
         path = path,
         size = content.toByteArray().size.toLong(),
@@ -119,6 +129,7 @@ class UpdateManifestTest {
     // 夹具由 zstd CLI 的 --patch-from 生成，参数与 delta-updates.sh 相同；验证的是 CLI 压出的差分 zstd-jni 能否还原
     @Test
     fun deltaFromCliRestoresAgainstInstalledBase() {
+        requireZstd()
         install.resolve("app").mkdirs()
         install.resolve("app/desktopApp-desktop.jar").writeBytes(fixture("delta-base.bin"))
         val staged = root.resolve("staged")
@@ -131,6 +142,7 @@ class UpdateManifestTest {
     // 模块 jar 每次构建换名，字典是 .base 指向的旧文件，不是新路径上的（本机没有）
     @Test
     fun renamedJarRestoresAgainstNamedBase() {
+        requireZstd()
         install.resolve("app").mkdirs()
         install.resolve("app/desktopApp-desktop-aa.jar").writeBytes(fixture("delta-base.bin"))
         val staged = root.resolve("staged")
@@ -141,6 +153,7 @@ class UpdateManifestTest {
     // 调用方据这个异常退回完整补丁包，换成别的异常就成了更新失败
     @Test
     fun deltaAgainstWrongBaseFailsAsChecksumMismatch() {
+        requireZstd()
         install.resolve("app").mkdirs()
         install.resolve("app/desktopApp-desktop.jar").writeBytes(fixture("delta-target.bin"))
         assertFailsWith<ChecksumMismatchException> {

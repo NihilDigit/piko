@@ -170,6 +170,15 @@ jobs:
       - name: Test
         run: .\gradlew.bat :desktopApp:desktopTest --no-daemon --stacktrace
 
+      # arm64 的问题只在这里暴露，失败时要能看到具体异常
+      - name: Upload test report
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: desktop-test-report-${{ matrix.arch }}
+          path: desktopApp/build/reports/tests
+          retention-days: 7
+
       - name: Install WiX Toolset
         continue-on-error: true
         run: choco install wixtoolset -y --no-progress
