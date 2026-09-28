@@ -94,12 +94,19 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val HEURISTIC_FILTER_ENABLED = booleanPreferencesKey("heuristic_filter_enabled")
         val BUNDLE_SUBTITLES_ENABLED = booleanPreferencesKey("bundle_subtitles_enabled")
         val AUTO_CLEAN_NAMES_ENABLED = booleanPreferencesKey("auto_clean_names_enabled")
+        val SETTINGS_SYNC_ENABLED = booleanPreferencesKey("settings_sync_enabled")
         val SYNC_PLAY_HISTORY_ENABLED = booleanPreferencesKey("sync_play_history_enabled")
         val NAME_PARSING_ENABLED = booleanPreferencesKey("name_parsing_enabled")
         val WATERFALL_VIEW_ENABLED = booleanPreferencesKey("waterfall_view_enabled")
         val DRIVE_VIEW_MODE = stringPreferencesKey("drive_view_mode")
         val CLIP_PANEL_OPEN = booleanPreferencesKey("clip_panel_open")
         val CLIP_PANEL_WIDTH = floatPreferencesKey("clip_panel_width")
+        val INSPECTOR_PANEL_OPEN = booleanPreferencesKey("inspector_panel_open")
+        val INSPECTOR_PANEL_WIDTH = floatPreferencesKey("inspector_panel_width")
+        val PIKPAK_DOMAIN = stringPreferencesKey("pikpak_domain")
+        val SNAIL_ENABLED = booleanPreferencesKey("snail_enabled")
+        val SNAIL_DOWNLOAD_KIBPS = intPreferencesKey("snail_download_kibps")
+        val SNAIL_UPLOAD_KIBPS = intPreferencesKey("snail_upload_kibps")
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val THEME_SEED = stringPreferencesKey("theme_seed")
         val QUOTA_USAGE_BYTES = longPreferencesKey("quota_usage_bytes")
@@ -109,6 +116,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val LAST_FOLDER_STACK_SERIALIZED = stringPreferencesKey("last_folder_stack")
         val ARCHIVE_PASSWORDS = stringPreferencesKey("archive_passwords")
         val RECENT_MOVE_TARGETS = stringPreferencesKey("recent_move_targets")
+        val PINNED_FOLDERS = stringPreferencesKey("pinned_folders")
         val PROXY_SETTING = stringPreferencesKey("proxy_setting")
         val IGNORED_UPDATE_VERSION = stringPreferencesKey("ignored_update_version")
     }
@@ -199,6 +207,16 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
+    override val settingsSyncFlow: Flow<Boolean> = preference { preferences ->
+        preferences[PreferencesKeys.SETTINGS_SYNC_ENABLED] ?: true
+    }
+
+    override suspend fun setSettingsSyncEnabled(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.SETTINGS_SYNC_ENABLED] = enabled
+        }
+    }
+
     override val syncPlayHistoryFlow: Flow<Boolean> = preference { preferences ->
         preferences[PreferencesKeys.SYNC_PLAY_HISTORY_ENABLED] ?: true
     }
@@ -253,6 +271,49 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun setClipPanelWidth(widthDp: Float) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.CLIP_PANEL_WIDTH] = widthDp
+        }
+    }
+
+    override val inspectorPanelFlow: Flow<SidePanelPrefs> = preference { preferences ->
+        SidePanelPrefs(
+            open = preferences[PreferencesKeys.INSPECTOR_PANEL_OPEN] ?: false,
+            widthDp = preferences[PreferencesKeys.INSPECTOR_PANEL_WIDTH],
+        )
+    }
+
+    override suspend fun setInspectorPanelOpen(open: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.INSPECTOR_PANEL_OPEN] = open
+        }
+    }
+
+    override suspend fun setInspectorPanelWidth(widthDp: Float) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.INSPECTOR_PANEL_WIDTH] = widthDp
+        }
+    }
+
+    override val pikpakDomainFlow: Flow<String> = preference { it[PreferencesKeys.PIKPAK_DOMAIN].orEmpty() }
+
+    override suspend fun setPikpakDomain(root: String) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.PIKPAK_DOMAIN] = root
+        }
+    }
+
+    override val snailModeFlow: Flow<SnailMode> = preference { preferences ->
+        SnailMode(
+            enabled = preferences[PreferencesKeys.SNAIL_ENABLED] ?: false,
+            downloadKiBps = preferences[PreferencesKeys.SNAIL_DOWNLOAD_KIBPS] ?: SnailMode.DEFAULT_DOWNLOAD_KIBPS,
+            uploadKiBps = preferences[PreferencesKeys.SNAIL_UPLOAD_KIBPS] ?: SnailMode.DEFAULT_UPLOAD_KIBPS,
+        )
+    }
+
+    override suspend fun setSnailMode(mode: SnailMode) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.SNAIL_ENABLED] = mode.enabled
+            preferences[PreferencesKeys.SNAIL_DOWNLOAD_KIBPS] = mode.downloadKiBps
+            preferences[PreferencesKeys.SNAIL_UPLOAD_KIBPS] = mode.uploadKiBps
         }
     }
 
@@ -379,6 +440,14 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun saveRecentMoveTargets(serialized: String) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.RECENT_MOVE_TARGETS] = serialized
+        }
+    }
+
+    override val pinnedFoldersFlow: Flow<String> = preference { it[PreferencesKeys.PINNED_FOLDERS].orEmpty() }
+
+    override suspend fun savePinnedFolders(serialized: String) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.PINNED_FOLDERS] = serialized
         }
     }
 

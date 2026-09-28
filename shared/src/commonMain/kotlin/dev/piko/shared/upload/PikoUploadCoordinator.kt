@@ -7,7 +7,11 @@ import dev.piko.shared.data.runSuspendCatching
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFile
 import dev.piko.shared.update.isNetworkFailure
+import io.github.nihildigit.pikpak.BandwidthLimiter
 import io.github.nihildigit.pikpak.PikPakClient
+import kotlinx.coroutines.runBlocking
+import kotlinx.io.Buffer
+import kotlinx.io.RawSource
 import io.github.nihildigit.pikpak.PikPakException
 import io.github.nihildigit.pikpak.PikPakHash
 import io.github.nihildigit.pikpak.UploadSession
@@ -67,6 +71,17 @@ class PikoUploadCoordinator(
     private val onUploadStarted: (() -> Unit)? = null,
 ) {
     private val _tasks = MutableStateFlow<Map<String, UploadTask>>(emptyMap())
+
+    // 蜗牛模式的上传额度，与下载的分开，照 FDM 上下行各一个上限
+    private val limiter = BandwidthLimiter()
+
+    init {
+        scope.launch {
+            preferences.snailModeFlow.collect { mode ->
+                limiter.bytesPerSecond = if (mode.enabled) mode.uploadKiBps * 1024L else null
+            }
+        }
+    }
 
     /** 全部账号的任务。界面按当前账号过滤。 */
     val tasks: StateFlow<Map<String, UploadTask>> = _tasks.asStateFlow()
@@ -337,7 +352,7 @@ class PikoUploadCoordinator(
             try {
                 client.continueUpload(
                     session,
-                    open = { offset -> sources.open(task.sourceUri, offset) },
+                    open = { offset -> ThrottledSource(sources.open(task.sourceUri, offset), limiter) },
                     onProgress = { progress.value = it },
                 )
                 break
@@ -457,6 +472,25 @@ class PikoUploadCoordinator(
     private fun nowMs(): Long = Clock.System.now().toEpochMilliseconds()
 
     private class SourceUnavailableException : Exception()
+
+    /**
+     * 按蜗牛模式的额度读源文件。SDK 边读边往 OSS 写，读慢了请求体就跟着慢。
+     * 每次至多读 [CHUNK] 再取额度：按整个分片扣的话，一个分片的请求体会停顿好几秒，容易撞上 OSS 的超时。
+     * readAtMostTo 是阻塞调用，没法挂起，只能 runBlocking 等额度；读文件本来就阻塞在这个线程上。
+     */
+    private class ThrottledSource(private val inner: RawSource, private val limiter: BandwidthLimiter) : RawSource {
+        override fun readAtMostTo(sink: Buffer, byteCount: Long): Long {
+            val read = inner.readAtMostTo(sink, minOf(byteCount, CHUNK))
+            if (read > 0 && limiter.bytesPerSecond != null) runBlocking { limiter.acquire(read) }
+            return read
+        }
+
+        override fun close() = inner.close()
+
+        private companion object {
+            const val CHUNK = 64L * 1024
+        }
+    }
 
     private companion object {
         const val TAG = "Upload"

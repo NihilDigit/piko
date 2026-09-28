@@ -10,6 +10,7 @@ import dev.piko.shared.log.logFile
 import dev.piko.shared.log.logRangeAttempt
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.data.runSuspendCatching
+import io.github.nihildigit.pikpak.BandwidthLimiter
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.PikPakFileHandle
 import io.github.nihildigit.pikpak.downloadTo
@@ -34,6 +35,7 @@ import kotlinx.io.files.Path
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlin.time.Clock
+import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 
 class PikoDownloadCoordinator(
@@ -53,7 +55,15 @@ class PikoDownloadCoordinator(
     // 用 StateFlow.update 的 CAS 代替普通 Map，commonMain 里没有 ConcurrentHashMap。
     private val jobs = MutableStateFlow<Map<String, Job>>(emptyMap())
 
+    // 蜗牛模式：所有下载任务、所有连接共用这一个额度，总和不超过上限；改设置即时生效，不必重启任务
+    private val limiter = BandwidthLimiter()
+
     init {
+        scope.launch {
+            preferences.snailModeFlow.collect { mode ->
+                limiter.bytesPerSecond = if (mode.enabled) mode.downloadKiBps * 1024L else null
+            }
+        }
         // 先恢复再开始写回：反过来的话，第一次写入的是构造时的空表，上次的记录就被抹掉了
         scope.launch {
             restore()
@@ -198,14 +208,17 @@ class PikoDownloadCoordinator(
             onRangeAttempt = ::logRangeAttempt,
         )
         val progress = MutableStateFlow(task.downloadedBytes)
+        val started = TimeSource.Monotonic.markNow()
+        // 这一次跑了多少、平均多快，暂停、完成、失败时各记一笔，与信息流取流的速度对照
+        fun session() = "本次 ${formatRate(progress.value - task.downloadedBytes, started.elapsedNow().inWholeMilliseconds)}，并发 $concurrency"
         try {
             coroutineScope {
                 val reporter = launch { reportProgress(taskId, progress) }
                 val target = storage.downloadTarget(task.fileName)
-                handle.downloadTo(Path(target), task.totalBytes, concurrency = concurrency, progress = progress)
+                handle.downloadTo(Path(target), task.totalBytes, concurrency = concurrency, progress = progress, limiter = limiter)
                 reporter.cancel()
                 val destinationPath = storage.commit(task.fileName, target)
-                PikoLog.d(TAG, "完成：${logFile(task.fileId, task.fileName)}")
+                PikoLog.d(TAG, "完成：${logFile(task.fileId, task.fileName)}，${session()}")
                 update(taskId) {
                     it.copy(
                         status = DownloadStatus.COMPLETED,
@@ -216,12 +229,13 @@ class PikoDownloadCoordinator(
                 }
             }
         } catch (e: CancellationException) {
+            PikoLog.d(TAG, "暂停：${logFile(task.fileId, task.fileName)}，${progress.value}/${task.totalBytes}，${session()}")
             update(taskId) {
                 it.copy(status = DownloadStatus.PAUSED, downloadedBytes = progress.value, speedBytesPerSec = 0L)
             }
             throw e
         } catch (e: Throwable) {
-            PikoLog.w(TAG, "下载失败：${logFile(task.fileId, task.fileName)}，已下载 ${progress.value}/${task.totalBytes}", e)
+            PikoLog.w(TAG, "下载失败：${logFile(task.fileId, task.fileName)}，已下载 ${progress.value}/${task.totalBytes}，${session()}", e)
             update(taskId) {
                 it.copy(
                     status = DownloadStatus.FAILED,
@@ -244,17 +258,34 @@ class PikoDownloadCoordinator(
      */
     private suspend fun reportProgress(taskId: String, progress: StateFlow<Long>) {
         val clock = TimeSource.Monotonic
-        var lastMark = clock.markNow()
-        var lastBytes = progress.value
+        // 速度按最近 SPEED_WINDOW_MS 算，不按上一次采样：downloadTo 按顺序追加写盘，队头一块没到时
+        // 先到的块都写不进去，0.5 秒的读数就在 0 与十几 MB/s 之间来回跳，而实际吞吐是稳的（2026-09-28）
+        val samples = ArrayDeque<Pair<TimeMark, Long>>()
+        samples.addLast(clock.markNow() to progress.value)
+        // 日志另按 LOG_INTERVAL_MS 记一笔：界面的读数一秒一变，写进日志只要看得出走势
+        var logMark = clock.markNow()
+        var logBytes = progress.value
         while (true) {
             delay(PROGRESS_INTERVAL_MS)
             val bytes = progress.value
-            val elapsedMs = lastMark.elapsedNow().inWholeMilliseconds.coerceAtLeast(1L)
-            val speed = ((bytes - lastBytes).coerceAtLeast(0L) * 1000L) / elapsedMs
-            lastMark = clock.markNow()
-            lastBytes = bytes
+            samples.addLast(clock.markNow() to bytes)
+            while (samples.size > 2 && samples.first().first.elapsedNow().inWholeMilliseconds > SPEED_WINDOW_MS) samples.removeFirst()
+            val (oldestMark, oldestBytes) = samples.first()
+            val elapsedMs = oldestMark.elapsedNow().inWholeMilliseconds.coerceAtLeast(1L)
+            val speed = ((bytes - oldestBytes).coerceAtLeast(0L) * 1000L) / elapsedMs
             update(taskId) { it.copy(downloadedBytes = bytes, speedBytesPerSec = speed) }
+            val logElapsed = logMark.elapsedNow().inWholeMilliseconds
+            if (logElapsed >= LOG_INTERVAL_MS) {
+                PikoLog.d(TAG, "进度 $taskId：$bytes 字节，近 ${logElapsed / 1000} 秒 ${formatRate(bytes - logBytes, logElapsed)}")
+                logMark = clock.markNow()
+                logBytes = bytes
+            }
         }
+    }
+
+    private fun formatRate(bytes: Long, elapsedMs: Long): String {
+        val kibPerSec = bytes.coerceAtLeast(0L) * 1000L / elapsedMs.coerceAtLeast(1L) / 1024
+        return "${bytes.coerceAtLeast(0L) / 1024 / 1024} MiB / ${elapsedMs / 1000} 秒，$kibPerSec KiB/s"
     }
 
     fun enqueueSegment(
@@ -426,6 +457,8 @@ class PikoDownloadCoordinator(
     private companion object {
         const val TAG = "Download"
         const val PROGRESS_INTERVAL_MS = 500L
+        const val LOG_INTERVAL_MS = 10_000L
+        const val SPEED_WINDOW_MS = 3_000L
         val json = Json { ignoreUnknownKeys = true }
         val taskListSerializer = ListSerializer(DownloadTask.serializer())
     }

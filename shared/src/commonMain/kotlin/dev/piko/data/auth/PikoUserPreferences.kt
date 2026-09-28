@@ -22,6 +22,21 @@ data class QuotaSnapshot(val usageBytes: Long, val limitBytes: Long)
 /** 侧栏的开关与宽度。[widthDp] 为 null 表示从未拖过，取调用方的默认宽度。 */
 data class SidePanelPrefs(val open: Boolean, val widthDp: Float?)
 
+/**
+ * 蜗牛模式，照 FDM：开着时下载与上传各自不超过设定的带宽，让出网络给别的用途。播放不受限。
+ * 上限以 KiB/s 计；开关与上限分开存，关掉再开回到原来的上限。
+ */
+data class SnailMode(
+    val enabled: Boolean = false,
+    val downloadKiBps: Int = DEFAULT_DOWNLOAD_KIBPS,
+    val uploadKiBps: Int = DEFAULT_UPLOAD_KIBPS,
+) {
+    companion object {
+        const val DEFAULT_DOWNLOAD_KIBPS = 1024
+        const val DEFAULT_UPLOAD_KIBPS = 512
+    }
+}
+
 interface PikoUserPreferences {
     suspend fun savePlaybackPosition(fileId: String, positionMs: Long)
     suspend fun getPlaybackPosition(fileId: String): Long
@@ -51,6 +66,10 @@ interface PikoUserPreferences {
     val autoCleanNamesFlow: Flow<Boolean>
     suspend fun setAutoCleanNamesEnabled(enabled: Boolean)
 
+    /** 把部分设置同步到网盘根目录的 .piko 文件夹，换设备登录时带过去，默认开。见 PikoSettingsSync。 */
+    val settingsSyncFlow: Flow<Boolean>
+    suspend fun setSettingsSyncEnabled(enabled: Boolean)
+
     /** 把播放进度上报到 PikPak 的播放历史，与官方客户端共用；没有本机记录时也从那里续播。 */
     val syncPlayHistoryFlow: Flow<Boolean>
     suspend fun setSyncPlayHistoryEnabled(enabled: Boolean)
@@ -77,6 +96,20 @@ interface PikoUserPreferences {
     val clipPanelFlow: Flow<SidePanelPrefs>
     suspend fun setClipPanelOpen(open: Boolean)
     suspend fun setClipPanelWidth(widthDp: Float)
+
+    /** 宽窗口网盘页右侧的详情栏：上次是否开着、拖到的宽度。与信息流侧栏占同一个位置，二者只开一个。 */
+    val inspectorPanelFlow: Flow<SidePanelPrefs>
+    suspend fun setInspectorPanelOpen(open: Boolean)
+    suspend fun setInspectorPanelWidth(widthDp: Float)
+
+    /** PikPak API 用哪个根域名（如 mypikpak.net），空串是自动测速挑选，见 PikPakDomainSelector。每台设备各自的网络，不同步。 */
+    val pikpakDomainFlow: Flow<String>
+    suspend fun setPikpakDomain(root: String)
+
+    /** 蜗牛模式的开关与上下行上限。每台设备各自的网络，不同步。 */
+    val snailModeFlow: Flow<SnailMode>
+    suspend fun setSnailMode(mode: SnailMode)
+
     val sessionFlow: Flow<UserSession>
     suspend fun saveSession(token: String, refreshToken: String = "", userId: String = "", username: String = "", avatarUrl: String = "")
 
@@ -116,6 +149,10 @@ interface PikoUserPreferences {
     /** 最近移动到过的目录路径，JSON，见 MoveHistory。空串表示从未保存。 */
     val recentMoveTargetsFlow: Flow<String>
     suspend fun saveRecentMoveTargets(serialized: String)
+
+    /** 固定到快速访问的文件夹，JSON，见 PinnedFolders。空串表示从未保存。 */
+    val pinnedFoldersFlow: Flow<String>
+    suspend fun savePinnedFolders(serialized: String)
 
     /** 应用内网络请求用的代理，见 PikoProxySelector。 */
     val proxySettingFlow: Flow<ProxySetting>

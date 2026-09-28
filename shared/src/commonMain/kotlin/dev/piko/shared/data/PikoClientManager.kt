@@ -43,6 +43,9 @@ class PikoClientManager(
         scope.launch(Dispatchers.Default) { restore() }
     }
 
+    /** 用的是 SDK 自建的网络客户端。注入的是测试的 MockEngine 时为 false，这时测根域名的速度没有意义。 */
+    val reachesRealNetwork: Boolean get() = httpClient == null
+
     /**
      * 用上次的会话恢复登录。
      *

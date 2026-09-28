@@ -3,6 +3,7 @@ package dev.piko.desktop
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.auth.QuotaSnapshot
 import dev.piko.data.auth.SidePanelPrefs
+import dev.piko.data.auth.SnailMode
 import dev.piko.data.auth.UserSession
 import dev.piko.shared.net.ProxySetting
 import kotlinx.coroutines.flow.Flow
@@ -21,6 +22,7 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
     private val nameParsing = MutableStateFlow(settings.get(KEY_NAME_PARSING, "true").toBoolean())
     private val bundleSubtitles = MutableStateFlow(settings.get(KEY_BUNDLE_SUBTITLES, "true").toBoolean())
     private val autoCleanNames = MutableStateFlow(settings.get(KEY_AUTO_CLEAN_NAMES, "false").toBoolean())
+    private val settingsSync = MutableStateFlow(settings.get(KEY_SETTINGS_SYNC, "true").toBoolean())
     private val syncPlayHistory = MutableStateFlow(settings.get(KEY_SYNC_PLAY_HISTORY, "true").toBoolean())
     private val themeMode = MutableStateFlow(settings.get(KEY_THEME_MODE).ifEmpty { null })
     private val themeSeed = MutableStateFlow(settings.get(KEY_THEME_SEED).ifEmpty { null })
@@ -34,12 +36,27 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
             widthDp = settings.get(KEY_CLIP_PANEL_WIDTH).toFloatOrNull(),
         ),
     )
+    private val inspectorPanel = MutableStateFlow(
+        SidePanelPrefs(
+            open = settings.get(KEY_INSPECTOR_PANEL_OPEN, "false").toBoolean(),
+            widthDp = settings.get(KEY_INSPECTOR_PANEL_WIDTH).toFloatOrNull(),
+        ),
+    )
+    private val pikpakDomain = MutableStateFlow(settings.get(KEY_PIKPAK_DOMAIN))
+    private val snailMode = MutableStateFlow(
+        SnailMode(
+            enabled = settings.get(KEY_SNAIL_ENABLED, "false").toBoolean(),
+            downloadKiBps = settings.get(KEY_SNAIL_DOWNLOAD).toIntOrNull() ?: SnailMode.DEFAULT_DOWNLOAD_KIBPS,
+            uploadKiBps = settings.get(KEY_SNAIL_UPLOAD).toIntOrNull() ?: SnailMode.DEFAULT_UPLOAD_KIBPS,
+        ),
+    )
     private val acceleration = MutableStateFlow(settings.get(KEY_ACCELERATION, "true").toBoolean())
     private val connections = MutableStateFlow(settings.get(KEY_CONNECTIONS, "8").toIntOrNull() ?: 8)
     private val session = MutableStateFlow(loadSession())
     private val quota = MutableStateFlow<QuotaSnapshot?>(null)
     private val archivePasswords = MutableStateFlow(settings.get(KEY_ARCHIVE_PASSWORDS))
     private val recentMoveTargets = MutableStateFlow(settings.get(KEY_RECENT_MOVE_TARGETS))
+    private val pinnedFolders = MutableStateFlow(settings.get(KEY_PINNED_FOLDERS))
     private val proxySetting = MutableStateFlow(ProxySetting.decode(settings.get(KEY_PROXY_SETTING)))
     private val downloadPath = MutableStateFlow(
         settings.get(KEY_DOWNLOAD_DIR, settings.downloadDirectory.absolutePath),
@@ -111,6 +128,12 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         autoCleanNames.value = enabled
     }
 
+    override val settingsSyncFlow: Flow<Boolean> = settingsSync.asStateFlow()
+    override suspend fun setSettingsSyncEnabled(enabled: Boolean) {
+        settings.set(KEY_SETTINGS_SYNC, enabled.toString())
+        settingsSync.value = enabled
+    }
+
     override val syncPlayHistoryFlow: Flow<Boolean> = syncPlayHistory.asStateFlow()
     override suspend fun setSyncPlayHistoryEnabled(enabled: Boolean) {
         settings.set(KEY_SYNC_PLAY_HISTORY, enabled.toString())
@@ -143,6 +166,30 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
     override suspend fun setClipPanelWidth(widthDp: Float) {
         settings.set(KEY_CLIP_PANEL_WIDTH, widthDp.toString())
         clipPanel.value = clipPanel.value.copy(widthDp = widthDp)
+    }
+
+    override val inspectorPanelFlow: Flow<SidePanelPrefs> = inspectorPanel.asStateFlow()
+    override suspend fun setInspectorPanelOpen(open: Boolean) {
+        settings.set(KEY_INSPECTOR_PANEL_OPEN, open.toString())
+        inspectorPanel.value = inspectorPanel.value.copy(open = open)
+    }
+    override suspend fun setInspectorPanelWidth(widthDp: Float) {
+        settings.set(KEY_INSPECTOR_PANEL_WIDTH, widthDp.toString())
+        inspectorPanel.value = inspectorPanel.value.copy(widthDp = widthDp)
+    }
+
+    override val pikpakDomainFlow: Flow<String> = pikpakDomain.asStateFlow()
+    override suspend fun setPikpakDomain(root: String) {
+        settings.set(KEY_PIKPAK_DOMAIN, root)
+        pikpakDomain.value = root
+    }
+
+    override val snailModeFlow: Flow<SnailMode> = snailMode.asStateFlow()
+    override suspend fun setSnailMode(mode: SnailMode) {
+        settings.set(KEY_SNAIL_ENABLED, mode.enabled.toString())
+        settings.set(KEY_SNAIL_DOWNLOAD, mode.downloadKiBps.toString())
+        settings.set(KEY_SNAIL_UPLOAD, mode.uploadKiBps.toString())
+        snailMode.value = mode
     }
 
     override val sessionFlow: Flow<UserSession> = session.asStateFlow()
@@ -227,6 +274,12 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         recentMoveTargets.value = serialized
     }
 
+    override val pinnedFoldersFlow: Flow<String> = pinnedFolders.asStateFlow()
+    override suspend fun savePinnedFolders(serialized: String) {
+        settings.set(KEY_PINNED_FOLDERS, serialized)
+        pinnedFolders.value = serialized
+    }
+
     override val proxySettingFlow: Flow<ProxySetting> = proxySetting.asStateFlow()
     override suspend fun saveProxySetting(setting: ProxySetting) {
         settings.set(KEY_PROXY_SETTING, setting.encode())
@@ -246,18 +299,26 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         const val KEY_UPLOAD_TASKS = "upload.tasks"
         const val KEY_ARCHIVE_PASSWORDS = "drive.archivePasswords"
         const val KEY_RECENT_MOVE_TARGETS = "drive.recentMoveTargets"
+        const val KEY_PINNED_FOLDERS = "drive.pinnedFolders"
         const val KEY_PROXY_SETTING = "network.proxy"
         const val KEY_IGNORED_UPDATE = "update.ignoredVersion"
         const val KEY_SPOILER = "ui.spoilerBlur"
         const val KEY_HEURISTIC = "ui.heuristicFilter"
         const val KEY_BUNDLE_SUBTITLES = "ui.bundleSubtitles"
         const val KEY_AUTO_CLEAN_NAMES = "drive.autoCleanNames"
+        const val KEY_SETTINGS_SYNC = "sync.settings"
         const val KEY_SYNC_PLAY_HISTORY = "player.syncPlayHistory"
         const val KEY_NAME_PARSING = "ui.nameParsing"
         const val KEY_GRID_VIEW = "ui.gridView"
         const val KEY_DRIVE_VIEW_MODE = "ui.driveViewMode"
         const val KEY_CLIP_PANEL_OPEN = "ui.clipPanel.open"
         const val KEY_CLIP_PANEL_WIDTH = "ui.clipPanel.width"
+        const val KEY_INSPECTOR_PANEL_OPEN = "ui.inspectorPanel.open"
+        const val KEY_INSPECTOR_PANEL_WIDTH = "ui.inspectorPanel.width"
+        const val KEY_PIKPAK_DOMAIN = "network.pikpakDomain"
+        const val KEY_SNAIL_ENABLED = "transfer.snail.enabled"
+        const val KEY_SNAIL_DOWNLOAD = "transfer.snail.downloadKiBps"
+        const val KEY_SNAIL_UPLOAD = "transfer.snail.uploadKiBps"
         // 沿用 Fluent 版设置页的键，旧值是小写的 system、light、dark，解析时不分大小写
         const val KEY_THEME_MODE = "themeMode"
         const val KEY_THEME_SEED = "ui.themeSeed"
