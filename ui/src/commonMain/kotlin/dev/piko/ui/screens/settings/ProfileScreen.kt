@@ -32,6 +32,15 @@ import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.StarOutline
+import androidx.compose.material.icons.outlined.NewReleases
+import androidx.compose.material.icons.outlined.PlayCircle
+import androidx.compose.material.icons.outlined.FolderShared
+import androidx.compose.material.icons.filled.NewReleases
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.FolderShared
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -41,7 +50,9 @@ import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MediumFlexibleTopAppBar
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Scaffold
+import dev.piko.ui.components.PikoScaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -63,13 +74,12 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import dev.piko.data.auth.QuotaSnapshot
+import dev.piko.shared.data.DriveLibrary
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.readableSidePadding
 import dev.piko.ui.adaptive.readableWidth
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.navigation.Screen
-import dev.piko.ui.platform.LocalPikoPlatform
-import dev.piko.update.UpdateStatus
 import io.github.nihildigit.pikpak.TransferAllowances
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
@@ -81,28 +91,27 @@ import dev.piko.data.auth.UserSession
 import androidx.compose.ui.unit.Dp
 
 /**
- * 「我的」页：账号卡片（含网盘空间与流量额度）、回收站与设置两个入口、退出登录。
- * 设置项另起一页，本页一屏放得下，不必滚动。
+ * 「我的」页：账号卡片（含网盘空间与流量额度）、库与管理的入口、关于、退出登录。
+ * 设置项另起一页。开屏检查查到的新版本写在关于卡片上，设置入口的副标题不再代为提示。
  *
  * [selectedPane] 是 expanded 窗口里右侧详情栏正在显示的页，对应的入口行高亮；其余宽度下为 null。
  */
 @Composable
 fun ProfileScreen(
     onLogout: () -> Unit,
-    /** 打开「我的」的详情页：星标、播放历史、我的分享、回收站、设置。 */
+    /** 打开「我的」的详情页：我的分享、设置。 */
     onOpenPane: (Screen) -> Unit,
     selectedPane: Screen?,
+    /** 最近添加、星标、播放历史与回收站在网盘页里看，点了切到网盘页，见 DriveLibrary。 */
+    onOpenLibrary: (DriveLibrary) -> Unit,
     modifier: Modifier = Modifier,
     /** 宽窗口里「我的」与详情页并排、盖住导航栏时才有：这时它是列表栏，退出两栏由它负责。 */
     onBackClick: (() -> Unit)? = null,
 ) {
-    val platform = LocalPikoPlatform.current
     val account = rememberAccountSummary()
     val session = account.session
     var showLogoutDialog by remember { mutableStateOf(false) }
-
-    // 开屏检查（见 StartupUpdatePrompt）查到的新版本写在「设置」入口上，不必点进去才知道
-    val availableUpdate = (platform.updater?.status as? UpdateStatus.Available)?.update
+    val snackbarHostState = remember { SnackbarHostState() }
 
     // 顶栏写的是账号名而不是「我的」：写「我的」只是把导航栏标签抄一遍，账号名才是这一页在讲的
     // 东西。展开时用 headline 字号立起全应用唯一的标题锚点，滚上去收成一行，让出的高度归下面的
@@ -111,10 +120,11 @@ fun ProfileScreen(
     val topBarScrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     val accountLabel = session?.email?.ifBlank { null }
         ?: session?.userId?.ifBlank { null }?.let { "UID $it" }
-    Scaffold(
+    PikoScaffold(
         modifier = modifier
             .fillMaxSize()
             .nestedScroll(topBarScrollBehavior.nestedScrollConnection),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             // 宽窗口里下面的内容收在居中的一栏，标题与返回一起缩进同样的量，底色仍铺满
             BoxWithConstraints {
@@ -156,23 +166,32 @@ fun ProfileScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // 星标与播放历史是看内容的入口，排在前面；分享、回收站与设置是管理，排在后面，两组之间多空一点
+            // 最近添加、星标与播放历史是看内容的入口，排在前面；分享、回收站与设置是管理，排在后面，两组之间多空一点
             Column(verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
                 SettingsNavigationRow(
-                    index = 0, count = 2,
-                    icon = Icons.Outlined.StarOutline,
-                    title = "星标",
-                    supporting = "已加星标的文件与文件夹",
-                    onClick = { onOpenPane(Screen.Starred) },
-                    selected = selectedPane == Screen.Starred,
+                    index = 0, count = 3,
+                    icon = Icons.Outlined.NewReleases,
+                    selectedIcon = Icons.Filled.NewReleases,
+                    title = "最近添加",
+                    supporting = "最近上传与离线、秒传的文件",
+                    onClick = { onOpenLibrary(DriveLibrary.RECENT) },
                 )
                 SettingsNavigationRow(
-                    index = 1, count = 2,
-                    icon = Icons.Outlined.History,
+                    index = 1, count = 3,
+                    icon = Icons.Outlined.StarOutline,
+                    selectedIcon = Icons.Filled.Star,
+                    title = "星标",
+                    supporting = "已加星标的文件与文件夹",
+                    onClick = { onOpenLibrary(DriveLibrary.STARRED) },
+                )
+                SettingsNavigationRow(
+                    index = 2, count = 3,
+                    // History 的实心与描边同形，与侧边栏一样换成 PlayCircle
+                    icon = Icons.Outlined.PlayCircle,
+                    selectedIcon = Icons.Filled.PlayCircle,
                     title = "播放历史",
                     supporting = "与 PikPak 官方客户端同步",
-                    onClick = { onOpenPane(Screen.PlayHistory) },
-                    selected = selectedPane == Screen.PlayHistory,
+                    onClick = { onOpenLibrary(DriveLibrary.HISTORY) },
                 )
             }
 
@@ -181,7 +200,8 @@ fun ProfileScreen(
             Column(verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
                 SettingsNavigationRow(
                     index = 0, count = 3,
-                    icon = Icons.Outlined.Share,
+                    icon = Icons.Outlined.FolderShared,
+                    selectedIcon = Icons.Filled.FolderShared,
                     title = "我的分享",
                     supporting = "复制或取消已创建的分享链接",
                     onClick = { onOpenPane(Screen.MyShares) },
@@ -190,20 +210,25 @@ fun ProfileScreen(
                 SettingsNavigationRow(
                     index = 1, count = 3,
                     icon = Icons.Outlined.Delete,
+                    selectedIcon = Icons.Filled.Delete,
                     title = "回收站",
                     supporting = "恢复或彻底删除已移入回收站的文件",
-                    onClick = { onOpenPane(Screen.Trash) },
-                    selected = selectedPane == Screen.Trash,
+                    onClick = { onOpenLibrary(DriveLibrary.TRASH) },
                 )
                 SettingsNavigationRow(
                     index = 2, count = 3,
                     icon = Icons.Outlined.Settings,
+                    selectedIcon = Icons.Filled.Settings,
                     title = "设置",
-                    supporting = availableUpdate?.let { "发现新版本 ${it.version}" } ?: "外观、文件名解析与下载",
+                    supporting = "外观、网盘、传输与同步",
                     onClick = { onOpenPane(Screen.Settings) },
                     selected = selectedPane == Screen.Settings,
                 )
             }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            AboutSection(snackbarHostState)
 
             Spacer(modifier = Modifier.height(24.dp))
 

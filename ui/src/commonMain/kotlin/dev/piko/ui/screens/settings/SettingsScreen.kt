@@ -31,28 +31,36 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.AutoFixHigh
-import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.CleaningServices
-import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.DarkMode
-import androidx.compose.material.icons.outlined.DeleteSweep
-import androidx.compose.material.icons.outlined.FileDownload
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Palette
+import androidx.compose.material.icons.outlined.AccountCircle
+import androidx.compose.material.icons.outlined.Cloud
+import androidx.compose.material.icons.outlined.SwapVerticalCircle
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.SwapVerticalCircle
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Subtitles
-import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.material.icons.outlined.TextFields
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.outlined.Wallpaper
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Badge
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
@@ -62,9 +70,8 @@ import androidx.compose.material3.ListItemShapes
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationDrawerItem
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.ProvideTextStyle
-import androidx.compose.material3.Scaffold
+import dev.piko.ui.components.PikoScaffold
 import androidx.compose.material3.SegmentedListItem
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -78,6 +85,11 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.runtime.collectAsState
+import androidx.compose.material.icons.outlined.WebAsset
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -90,6 +102,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.platform.LocalDensity
+import kotlin.math.roundToInt
 import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -98,7 +112,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.shared.data.ArchivePasswordVault
-import dev.piko.shared.log.PikoLog
 import dev.piko.shared.net.ProxySetting
 import dev.piko.data.auth.SnailMode
 import androidx.compose.material.icons.outlined.SlowMotionVideo
@@ -106,13 +119,12 @@ import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.Tune
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.readableWidth
-import dev.piko.ui.components.InlineLoadingIndicator
-import dev.piko.ui.components.PikoBrandIcons
+import dev.piko.ui.components.TooltipIconButton
+import dev.piko.ui.components.connectedToggleShapes
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.verticalWheelScrollsRow
 import dev.piko.ui.platform.LinkAssociationState
 import dev.piko.ui.platform.LocalPikoPlatform
-import dev.piko.ui.platform.PikoPlatform
 import dev.piko.ui.screens.archive.SavedArchivePasswordsDialog
 import dev.piko.ui.theme.Appearance
 import dev.piko.ui.theme.LocalAppearance
@@ -120,17 +132,12 @@ import dev.piko.ui.theme.SeedTheme
 import dev.piko.ui.theme.ThemeMode
 import dev.piko.ui.theme.effectiveSeed
 import dev.piko.ui.theme.isDark
-import dev.piko.update.AvailableUpdate
-import dev.piko.update.UpdateDialog
-import dev.piko.update.UpdateStatus
-import kotlin.time.Clock
 import kotlinx.coroutines.launch
 import kotlinx.datetime.TimeZone
-import kotlinx.datetime.number
 import kotlinx.datetime.toLocalDateTime
 
 /**
- * 设置页：外观、文件名解析、浏览、下载与关于，从「我的」进入。[onBackClick] 为 null 时不显示返回按钮
+ * 设置页：外观、文件名解析、浏览与下载，从「我的」进入。[onBackClick] 为 null 时不显示返回按钮
  * （expanded 窗口里它是「我的」旁边的默认详情栏，没有可返回的地方）。
  *
  * 设置项用 M3 Expressive 的分段列表（SegmentedListItem，组内 2dp 间隙、首尾圆角），
@@ -146,11 +153,12 @@ fun SettingsScreen(
     onBackClick: (() -> Unit)?,
     modifier: Modifier = Modifier,
     /**
-     * 放在桌面的侧边面板里（有整条侧边栏的宽窗口）：标题与关闭在面板顶上，这里不画顶栏，底色透明，
-     * 滚动内容最前面是 [header]（账号卡片与退出登录，手机上它们在「我的」页）。
+     * 账号一类的内容（账号卡片与退出登录）。有整条侧边栏的宽窗口里没有「我的」页，账号放在设置里，排在最前；
+     * 手机上它们在「我的」页，这里为 null。
      */
-    inSidePanel: Boolean = false,
-    header: (@Composable ColumnScope.() -> Unit)? = null,
+    account: (@Composable ColumnScope.() -> Unit)? = null,
+    /** 关于一节（[AboutSection]）。与账号同理：有「我的」页时它在那里，这里不放。 */
+    showAbout: Boolean = false,
 ) {
     val services = LocalPikoServices.current
     val platform = LocalPikoPlatform.current
@@ -201,56 +209,54 @@ fun SettingsScreen(
         }
     }
 
-    val updater = platform.updater
-    var updateInSheet by remember { mutableStateOf<AvailableUpdate?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
-    LaunchedEffect(updater) {
-        updater?.messages?.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
-    }
     val scrollState = rememberScrollState()
-    // 各分组在滚动内容里的纵向位置，供左侧目录跳转与高亮
+    val sections = if (showAbout) SettingsSection.entries else SettingsSection.entries - SettingsSection.About
+    // 各类在滚动内容里的起点，左栏据此跳转与高亮
     val sectionOffsets = remember { mutableStateMapOf<SettingsSection, Int>() }
+    // 左栏点过的一类。末尾几类矮，滚到底也到不了顶端，这时按起点算会亮成更靠前的一类，点了却亮别的
+    var requestedSection by remember { mutableStateOf<SettingsSection?>(null) }
+    val headingSlack = with(LocalDensity.current) { SectionHeadingSlack.roundToPx() }
     val currentSection by remember {
         derivedStateOf {
-            // 滚到底时最后几组可能永远到不了顶端，此时高亮最后一组
-            if (scrollState.value >= scrollState.maxValue && scrollState.maxValue > 0) {
-                SettingsSection.entries.last()
-            } else {
-                sectionOffsets.entries.filter { it.value <= scrollState.value + SECTION_ACTIVATION_SLOP }
-                    .maxByOrNull { it.value }?.key ?: SettingsSection.entries.first()
-            }
+            val y = scrollState.value
+            val atEnd = y >= scrollState.maxValue
+            requestedSection?.takeIf { atEnd && (sectionOffsets[it] ?: 0) > y }
+                ?: sections.lastOrNull { (sectionOffsets[it] ?: Int.MAX_VALUE) <= y + headingSlack }
+                ?: sections.first()
         }
     }
-    fun Modifier.trackSection(section: SettingsSection) =
-        onGloballyPositioned { sectionOffsets[section] = it.positionInParent().y.toInt() }
 
-    Scaffold(
+    PikoScaffold(
         modifier = modifier.fillMaxSize(),
-        containerColor = if (inSidePanel) Color.Transparent else MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
-            if (!inSidePanel) {
-                PikoTopBar(
-                    title = "设置",
-                    navigationIcon = {
-                        if (onBackClick != null) {
-                            IconButton(onClick = onBackClick) {
-                                Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回")
-                            }
+            PikoTopBar(
+                title = "设置",
+                navigationIcon = {
+                    if (onBackClick != null) {
+                        IconButton(onClick = onBackClick) {
+                            Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回")
                         }
-                    },
-                )
-            }
+                    }
+                },
+            )
         },
     ) { innerPadding ->
         BoxWithConstraints(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
-            val showIndex = maxWidth >= SettingsIndexMinWidth
+            // 放得下左栏时左栏是目录，右边各类照旧从上到下连着排，每类带标题、组内分栏。不做成选一类显示一类：
+            // 几类都只有几组，分页后每页大半是空的，找一项还得先猜它归哪一类。放不下时是一整列往下滚
+            val paged = maxWidth >= SettingsIndexMinWidth
             Row(modifier = Modifier.fillMaxSize()) {
-                if (showIndex) {
+                if (paged) {
                     SettingsIndex(
+                        sections = sections,
                         current = currentSection,
-                        onSelect = { section -> scope.launch { scrollState.animateScrollTo(sectionOffsets[section] ?: 0) } },
-                        modifier = Modifier.width(SettingsIndexWidth).padding(start = 12.dp, top = 8.dp),
+                        onSelect = { section ->
+                            requestedSection = section
+                            scope.launch { scrollState.animateScrollTo(sectionOffsets[section] ?: 0) }
+                        },
+                        modifier = Modifier.width(SettingsIndexWidth).padding(start = 12.dp, top = 16.dp),
                     )
                 }
                 Column(
@@ -258,25 +264,69 @@ fun SettingsScreen(
                         .weight(1f)
                         .fillMaxHeight()
                         .verticalScroll(scrollState)
-                        .padding(horizontal = 16.dp)
+                        // 有目录时照 M3 的窗格边距留 24dp。内容收在阅读宽度里居中：各类的组数不一，
+                        // 按组分栏时一组的类只占最左一栏、两组的并排，一路下来参差不齐
+                        .padding(horizontal = if (paged) 24.dp else 16.dp)
                         .padding(bottom = 24.dp)
                         .readableWidth(),
                 ) {
-                    header?.invoke(this)
-                    SettingsGroup(SettingsSection.Appearance.title, Modifier.trackSection(SettingsSection.Appearance)) {
+                    // 有目录时每类自带标题，只有一组的一类不再给组标题；一整列往下滚时没有类标题，要靠组标题分开各类
+                    fun soleTitle(section: SettingsSection) = if (paged) null else section.title
+                    fun onPositioned(section: SettingsSection): (Int) -> Unit = { sectionOffsets[section] = it }
+
+                    SettingsSectionBlock(SettingsSection.Account, paged, onPositioned(SettingsSection.Account)) {
+                        if (account != null) SettingsGroup(if (paged) null else "账号") { account() }
+                        SettingsGroup(if (account != null || !paged) "同步" else null) {
+                            SettingsSyncRow(
+                                index = 0, count = 2,
+                                enabled = isSettingsSyncEnabled,
+                                status = syncStatusText(syncStatus, lastSynced),
+                                onEnabledChange = { scope.launch { sessionManager.setSettingsSyncEnabled(it) } },
+                                onSyncNow = { scope.launch { settingsSync.syncNow() } },
+                            )
+                            SettingsSwitchRow(
+                                index = 1, count = 2,
+                                icon = Icons.Outlined.History,
+                                title = "同步播放记录",
+                                supporting = "与 PikPak 官方客户端共用播放历史与续播进度",
+                                checked = isSyncPlayHistoryEnabled,
+                                onCheckedChange = { scope.launch { sessionManager.setSyncPlayHistoryEnabled(it) } },
+                            )
+                        }
+                    }
+
+                    SettingsSectionBlock(SettingsSection.Appearance, paged, onPositioned(SettingsSection.Appearance)) {
+                    SettingsGroup(soleTitle(SettingsSection.Appearance)) {
                         val appearance = LocalAppearance.current
+                        val compactTitleBar = platform.compactTitleBar
+                        val appearanceCount = if (compactTitleBar != null) 3 else 2
                         ThemeModeRow(
                             mode = appearance.mode,
                             onModeChange = { scope.launch { sessionManager.setThemeMode(it.name) } },
+                            count = appearanceCount,
                         )
                         ThemeColorRow(
                             appearance = appearance,
                             onSeedChange = { scope.launch { sessionManager.setThemeSeed(it?.name) } },
+                            count = appearanceCount,
                         )
+                        if (compactTitleBar != null) {
+                            val compact by compactTitleBar.enabled.collectAsState()
+                            SettingsSwitchRow(
+                                index = 2, count = appearanceCount,
+                                icon = Icons.Outlined.WebAsset,
+                                title = "紧凑标题栏",
+                                supporting = "窗口按钮并入界面右上角，窗口足够宽时生效",
+                                checked = compact,
+                                onCheckedChange = compactTitleBar::set,
+                            )
+                        }
+                    }
                     }
 
-                    SettingsGroup(SettingsSection.Drive.title, Modifier.trackSection(SettingsSection.Drive)) {
-                        // 启发式折叠只在解析开着时有意义，关掉解析就收起这一项，不留一行灰掉的开关。
+                    SettingsSectionBlock(SettingsSection.Drive, paged, onPositioned(SettingsSection.Drive)) {
+                    SettingsGroup(soleTitle(SettingsSection.Drive)) {
+                        // 启发式折叠只在解析开着时有意义，关掉解析就收起这一项，不留一行灰掉的开关；收起与出现要看得见。
                         // 不缩进表示从属：行背景是整条分段，只缩内容读起来像错位
                         val driveCount = if (isNameParsingEnabled) 5 else 4
                         SettingsSwitchRow(
@@ -287,7 +337,7 @@ fun SettingsScreen(
                             checked = isNameParsingEnabled,
                             onCheckedChange = { scope.launch { sessionManager.setNameParsingEnabled(it) } },
                         )
-                        if (isNameParsingEnabled) {
+                        DependentRow(visible = isNameParsingEnabled) {
                             SettingsSwitchRow(
                                 index = 1, count = driveCount,
                                 icon = Icons.Outlined.AutoFixHigh,
@@ -319,25 +369,66 @@ fun SettingsScreen(
                             title = "解压密码",
                             supporting = if (archivePasswords.isEmpty()) "尚无保存的密码" else "已保存 ${archivePasswords.size} 个",
                             onClick = { showArchivePasswords = true },
+                            trailingIcon = null,
                         )
                     }
+                    }
 
-                    SettingsGroup(SettingsSection.Links.title, Modifier.trackSection(SettingsSection.Links)) {
-                        val shownLinkAssociation = linkAssociation?.takeIf { linkAssociationState != LinkAssociationState.Unavailable }
-                        val linksCount = if (shownLinkAssociation != null) 2 else 1
-                        // 字幕靠解析配到视频上。它在另一组，关掉解析时写明原因，而不是只把开关灰掉
-                        SettingsSwitchRow(
-                            index = 0, count = linksCount,
-                            icon = Icons.Outlined.Subtitles,
-                            title = "保存配套字幕",
-                            supporting = if (isNameParsingEnabled) "保存视频时一并保存外挂字幕" else "需先开启文件名解析",
-                            checked = isBundleSubtitlesEnabled,
-                            onCheckedChange = { scope.launch { sessionManager.setBundleSubtitlesEnabled(it) } },
-                            enabled = isNameParsingEnabled,
-                        )
-                        if (shownLinkAssociation != null) {
+                    SettingsSectionBlock(SettingsSection.Transfer, paged, onPositioned(SettingsSection.Transfer)) {
+                        SettingsGroup("下载") {
                             SettingsNavigationRow(
-                                index = 1, count = linksCount,
+                                index = 0, count = 3,
+                                icon = Icons.Outlined.FolderOpen,
+                                title = "下载位置",
+                                supporting = resolvedDownloadPath,
+                                onClick = { showDownloadDirDialog = true },
+                                trailingIcon = null,
+                            )
+                            // 字幕靠解析配到视频上。解析在另一页，关掉解析时写明原因，而不是只把开关灰掉
+                            SettingsSwitchRow(
+                                index = 1, count = 3,
+                                icon = Icons.Outlined.Subtitles,
+                                title = "保存配套字幕",
+                                supporting = if (isNameParsingEnabled) "保存视频时一并保存外挂字幕" else "需先在「网盘」里开启文件名解析",
+                                checked = isBundleSubtitlesEnabled,
+                                onCheckedChange = { scope.launch { sessionManager.setBundleSubtitlesEnabled(it) } },
+                                enabled = isNameParsingEnabled,
+                            )
+                            SettingsSwitchRow(
+                                index = 2, count = 3,
+                                icon = Icons.Outlined.Speed,
+                                title = "并发加速",
+                                supporting = "多连接下载，提升速度",
+                                checked = isConcurrentAccelerationEnabled,
+                                onCheckedChange = { scope.launch { sessionManager.setConcurrentAccelerationEnabled(it) } },
+                            )
+                        }
+                        SettingsGroup("限速") {
+                            val snailCount = if (snailMode.enabled) 2 else 1
+                            SettingsSwitchRow(
+                                index = 0, count = snailCount,
+                                icon = Icons.Outlined.SlowMotionVideo,
+                                title = "蜗牛模式",
+                                supporting = "限制下载与上传的速度，在线播放不受限",
+                                checked = snailMode.enabled,
+                                onCheckedChange = { scope.launch { sessionManager.setSnailMode(snailMode.copy(enabled = it)) } },
+                            )
+                            // 上限只在开着时起作用，关着时收起
+                            DependentRow(visible = snailMode.enabled) {
+                                SettingsNavigationRow(
+                                    index = 1, count = snailCount,
+                                    icon = Icons.Outlined.Tune,
+                                    title = "速度上限",
+                                    supporting = snailMode.limitSummary(),
+                                    onClick = { showSnailDialog = true },
+                                    trailingIcon = null,
+                                )
+                            }
+                        }
+                        val shownLinkAssociation = linkAssociation?.takeIf { linkAssociationState != LinkAssociationState.Unavailable }
+                        if (shownLinkAssociation != null) SettingsGroup("链接") {
+                            SettingsNavigationRow(
+                                index = 0, count = 1,
                                 icon = Icons.Outlined.Link,
                                 title = "磁力链接与种子文件",
                                 supporting = if (linkAssociationState == LinkAssociationState.Default) {
@@ -355,143 +446,35 @@ fun SettingsScreen(
                                 trailingIcon = Icons.AutoMirrored.Outlined.OpenInNew,
                             )
                         }
-                    }
-
-                    SettingsGroup(SettingsSection.Playback.title, Modifier.trackSection(SettingsSection.Playback)) {
-                        SettingsSwitchRow(
-                            index = 0, count = 1,
-                            icon = Icons.Outlined.History,
-                            title = "同步播放记录",
-                            supporting = "与 PikPak 官方客户端共用播放历史与续播进度",
-                            checked = isSyncPlayHistoryEnabled,
-                            onCheckedChange = { scope.launch { sessionManager.setSyncPlayHistoryEnabled(it) } },
-                        )
-                    }
-
-                    SettingsGroup(SettingsSection.Download.title, Modifier.trackSection(SettingsSection.Download)) {
-                        SettingsSwitchRow(
-                            index = 0, count = 4,
-                            icon = Icons.Outlined.Speed,
-                            title = "并发加速",
-                            supporting = "多连接下载，提升速度",
-                            checked = isConcurrentAccelerationEnabled,
-                            onCheckedChange = { scope.launch { sessionManager.setConcurrentAccelerationEnabled(it) } },
-                        )
-                        SettingsSwitchRow(
-                            index = 1, count = 4,
-                            icon = Icons.Outlined.SlowMotionVideo,
-                            title = "蜗牛模式",
-                            supporting = "限制下载与上传的速度，在线播放不受限",
-                            checked = snailMode.enabled,
-                            onCheckedChange = { scope.launch { sessionManager.setSnailMode(snailMode.copy(enabled = it)) } },
-                        )
-                        SettingsNavigationRow(
-                            index = 2, count = 4,
-                            icon = Icons.Outlined.Tune,
-                            title = "蜗牛模式的上限",
-                            supporting = snailMode.limitSummary(),
-                            onClick = { showSnailDialog = true },
-                        )
-                        SettingsNavigationRow(
-                            index = 3, count = 4,
-                            icon = Icons.Outlined.FolderOpen,
-                            title = "下载位置",
-                            supporting = resolvedDownloadPath,
-                            onClick = { showDownloadDirDialog = true },
-                        )
-                    }
-
-                    SettingsGroup(SettingsSection.Network.title, Modifier.trackSection(SettingsSection.Network)) {
-                        SettingsNavigationRow(
-                            index = 0, count = 2,
-                            icon = Icons.Outlined.Public,
-                            title = "网络代理",
-                            supporting = proxySetting.summary(),
-                            onClick = { showProxyDialog = true },
-                        )
-                        SettingsNavigationRow(
-                            index = 1, count = 2,
-                            icon = Icons.Outlined.Dns,
-                            title = "服务器域名",
-                            supporting = domainSummary(domainChoice, activeDomain, domainProbes),
-                            onClick = { showDomainDialog = true },
-                        )
-                    }
-
-                    SettingsGroup(SettingsSection.Sync.title, Modifier.trackSection(SettingsSection.Sync)) {
-                        val rows = if (isSettingsSyncEnabled) 2 else 1
-                        SettingsSwitchRow(
-                            index = 0, count = rows,
-                            icon = Icons.Outlined.CloudSync,
-                            title = "同步设置",
-                            supporting = "外观、网盘与播放的设置和解压成功过的密码存在网盘的 .piko 文件夹，换设备登录时带过去",
-                            checked = isSettingsSyncEnabled,
-                            onCheckedChange = { scope.launch { sessionManager.setSettingsSyncEnabled(it) } },
-                        )
-                        if (isSettingsSyncEnabled) {
+                        SettingsGroup("连接") {
                             SettingsNavigationRow(
-                                index = 1, count = rows,
-                                icon = Icons.Outlined.Sync,
-                                title = "立即同步",
-                                supporting = syncStatusText(syncStatus, lastSynced),
-                                onClick = { scope.launch { settingsSync.syncNow() } },
-                                trailingIcon = Icons.Outlined.Sync,
+                                index = 0, count = 2,
+                                icon = Icons.Outlined.Public,
+                                title = "网络代理",
+                                supporting = proxySetting.summary(),
+                                onClick = { showProxyDialog = true },
+                                trailingIcon = null,
+                            )
+                            SettingsNavigationRow(
+                                index = 1, count = 2,
+                                icon = Icons.Outlined.Dns,
+                                title = "服务器域名",
+                                supporting = domainSummary(domainChoice, activeDomain, domainProbes),
+                                onClick = { showDomainDialog = true },
+                                trailingIcon = null,
                             )
                         }
                     }
 
-                    SettingsGroup(SettingsSection.About.title, Modifier.trackSection(SettingsSection.About)) {
-                        AboutCard(
-                            version = platform.appVersion,
-                            updateStatus = updater?.status,
-                            onUpdateClick = {
-                                if (updater == null) return@AboutCard
-                                when (val current = updater.status) {
-                                    is UpdateStatus.Available -> updateInSheet = current.update
-                                    is UpdateStatus.Downloading -> updateInSheet = current.update
-                                    is UpdateStatus.Installing -> updateInSheet = current.update
-                                    is UpdateStatus.ReadyToRestart -> updateInSheet = current.update
-                                    is UpdateStatus.Failed -> current.update?.let { updateInSheet = it }
-                                        ?: scope.launch { updater.check() }
-                                    else -> scope.launch { updater.check() }
-                                }
-                            },
-                            onOpenRepository = { platform.openUrl(REPOSITORY_URL) },
-                        )
-                        SettingsNavigationRow(
-                            index = 0,
-                            count = 2,
-                            icon = Icons.Outlined.BugReport,
-                            title = "导出日志",
-                            supporting = "反馈问题时请附上。只记录操作经过，不含文件名、账号与密码",
-                            onClick = { scope.launch { exportLogs(platform) } },
-                            trailingIcon = Icons.Outlined.FileDownload,
-                        )
-                        // 日志只留两天，这里给的是复现之前手动清一次：导出的就只有这一次的经过
-                        SettingsNavigationRow(
-                            index = 1,
-                            count = 2,
-                            icon = Icons.Outlined.History,
-                            title = "清除日志",
-                            supporting = "自动保留最近两天。复现问题之前清除一次，导出的内容更清楚",
-                            onClick = {
-                                scope.launch {
-                                    PikoLog.clear()
-                                    snackbarHostState.showSnackbar("已清除日志", withDismissAction = true)
-                                }
-                            },
-                            trailingIcon = Icons.Outlined.DeleteSweep,
-                        )
+                    if (showAbout) {
+                        SettingsSectionBlock(SettingsSection.About, paged, onPositioned(SettingsSection.About)) {
+                            SettingsGroup(soleTitle(SettingsSection.About)) {
+                                AboutSection(snackbarHostState)
+                            }
+                        }
                     }
                 }
             }
-        }
-    }
-
-    if (updater != null) {
-        updateInSheet?.let { update ->
-            // 与开屏提示同一个对话框，这里不给「忽略此版本」：是用户自己点进来看的
-            UpdateDialog(updater = updater, update = update, onDismiss = { updateInSheet = null })
         }
     }
 
@@ -645,15 +628,17 @@ private fun DownloadLocationCard(path: String, isDefault: Boolean) {
 }
 
 /** 设置的分组，也是宽窗口左侧目录的条目。 */
-private enum class SettingsSection(val title: String) {
-    Appearance("外观"),
-    Drive("网盘"),
-    Links("添加链接"),
-    Playback("播放"),
-    Download("下载"),
-    Network("网络"),
-    Sync("同步"),
-    About("关于"),
+/**
+ * 设置的分类，按「想做什么」分，不按功能模块分：原来九类里有四类只有一两行，点进去几乎是空页。
+ * 只有一两项的并进相近的一类，一类里再用组标题分开。
+ */
+private enum class SettingsSection(val title: String, val icon: ImageVector, val selectedIcon: ImageVector) {
+    Account("账号与同步", Icons.Outlined.AccountCircle, Icons.Filled.AccountCircle),
+    Appearance("外观", Icons.Outlined.Palette, Icons.Filled.Palette),
+    // 与侧边栏快速访问的「网盘」、导航的「传输」同一款图标
+    Drive("网盘", Icons.Outlined.Cloud, Icons.Filled.Cloud),
+    Transfer("传输与网络", Icons.Outlined.SwapVerticalCircle, Icons.Filled.SwapVerticalCircle),
+    About("关于", Icons.Outlined.Info, Icons.Filled.Info),
 }
 
 private fun syncStatusText(status: PikoSettingsSync.Status, lastSynced: Long?): String = when (status) {
@@ -665,33 +650,56 @@ private fun syncStatusText(status: PikoSettingsSync.Status, lastSynced: Long?): 
     } ?: "登录后自动同步"
 }
 
-private const val REPOSITORY_URL = "https://github.com/NihilDigit/piko"
-
-/** 开头写明版本与运行环境，收到的人不必再问；文件名带时间，多次导出不会互相覆盖。 */
-private suspend fun exportLogs(platform: PikoPlatform) {
-    val now = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault())
-    fun Int.pad() = toString().padStart(2, '0')
-    val stamp = "${now.year}${now.month.number.pad()}${now.day.pad()}-${now.hour.pad()}${now.minute.pad()}${now.second.pad()}"
-    val header = "Piko ${platform.appVersion}\n${platform.deviceSummary}\n导出于 $now\n\n"
-    platform.exportLog("piko-log-$stamp.txt", header + PikoLog.export())
-}
-
 // 设置页自身宽到这个程度才放左侧目录。expanded 窗口里设置页只是「我的」旁边的详情栏，多数时候放不下
 private val SettingsIndexMinWidth = 900.dp
-private val SettingsIndexWidth = 200.dp
 
-// 分组顶端滚到离页顶这么近就算进入该组，否则点目录跳过去后高亮会停在上一组
-private const val SECTION_ACTIVATION_SLOP = 8
+/**
+ * 左侧分类栏的宽度。M3 list-detail 固定窗格的默认值是 360dp（large 起 412dp），这里取与应用侧边栏一样的 240dp：
+ * 五个短分类名用不着那么宽，省下的宽度让右边多排一栏。
+ */
+private val SettingsIndexWidth = 240.dp
+
+
+// 滚动位置离一类的标题还差这么多时就算进了这一类：标题行本身不必完全滚出顶端
+private val SectionHeadingSlack = 48.dp
+
+/**
+ * 一类设置。有目录时带类标题，并报出自己在滚动内容里的起点；没有目录时只是把几组原样排进外层 Column。
+ */
+@Composable
+private fun SettingsSectionBlock(
+    section: SettingsSection,
+    withIndex: Boolean,
+    onPositioned: (Int) -> Unit,
+    content: @Composable () -> Unit,
+) {
+    if (!withIndex) {
+        content()
+        return
+    }
+    Column(modifier = Modifier.onGloballyPositioned { onPositioned(it.positionInParent().y.roundToInt()) }) {
+        Text(
+            text = section.title,
+            style = MaterialTheme.typography.titleLarge,
+            modifier = Modifier.padding(start = 16.dp, top = if (section.ordinal == 0) 16.dp else 40.dp),
+        )
+        content()
+    }
+}
 
 @Composable
-private fun SettingsGroup(title: String, modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+private fun SettingsGroup(title: String?, modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
     Column(modifier = modifier) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(start = 16.dp, top = 24.dp, bottom = 8.dp),
-        )
+        if (title != null) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(start = 16.dp, top = 24.dp, bottom = 8.dp),
+            )
+        } else {
+            Spacer(Modifier.height(16.dp))
+        }
         Column(
             verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap),
             content = content,
@@ -701,112 +709,17 @@ private fun SettingsGroup(title: String, modifier: Modifier = Modifier, content:
 
 /** 宽窗口左侧的分组目录，点击滚到对应分组，滚动时高亮当前所在的组。 */
 @Composable
-private fun SettingsIndex(current: SettingsSection, onSelect: (SettingsSection) -> Unit, modifier: Modifier = Modifier) {
+private fun SettingsIndex(sections: List<SettingsSection>, current: SettingsSection, onSelect: (SettingsSection) -> Unit, modifier: Modifier = Modifier) {
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        SettingsSection.entries.forEach { section ->
+        sections.forEach { section ->
             NavigationDrawerItem(
+                icon = { Icon(if (section == current) section.selectedIcon else section.icon, contentDescription = null) },
                 label = { Text(section.title) },
                 selected = section == current,
                 onClick = { onSelect(section) },
             )
         }
     }
-}
-
-/**
- * 关于：一张小卡片收在页尾，版本、更新状态与两个动作放在一起。
- * 原先是三行列表，版本号占一整行，「检查更新」的状态又要另读一行副标题。
- */
-@Composable
-private fun AboutCard(
-    version: String,
-    /** 没有应用内更新的平台为 null，不显示更新按钮。 */
-    updateStatus: UpdateStatus?,
-    onUpdateClick: () -> Unit,
-    onOpenRepository: () -> Unit,
-) {
-    val colors = MaterialTheme.colorScheme
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        color = colors.surfaceContainer,
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier.size(48.dp).clip(CircleShape).background(colors.primaryContainer),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(PikoBrandIcons.Glyph, contentDescription = null, tint = colors.onPrimaryContainer)
-                }
-                Spacer(modifier = Modifier.width(16.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Piko", style = MaterialTheme.typography.titleMedium)
-                    Text("版本 $version", style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
-                    updateStatus?.let(::updateStatusText)?.let { (text, emphasis) ->
-                        Text(
-                            text = text,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = when (emphasis) {
-                                UpdateEmphasis.Normal -> colors.onSurfaceVariant
-                                UpdateEmphasis.Positive -> colors.primary
-                                UpdateEmphasis.Error -> colors.error
-                            },
-                        )
-                    }
-                }
-            }
-            Spacer(modifier = Modifier.height(12.dp))
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                if (updateStatus != null) {
-                    FilledTonalButton(onClick = onUpdateClick, enabled = updateStatus != UpdateStatus.Checking) {
-                        if (updateStatus == UpdateStatus.Checking) {
-                            // 按钮在检查期间是禁用态，指示器跟着用禁用的内容色，不然一块亮色压在灰按钮上
-                            InlineLoadingIndicator(color = LocalContentColor.current)
-                        } else {
-                            Icon(Icons.Outlined.SystemUpdate, contentDescription = null, modifier = Modifier.size(18.dp))
-                        }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            when (updateStatus) {
-                                is UpdateStatus.Available, is UpdateStatus.ReadyToRestart -> "查看更新"
-                                is UpdateStatus.Downloading, is UpdateStatus.Installing -> "查看进度"
-                                else -> "检查更新"
-                            },
-                        )
-                        if (updateStatus is UpdateStatus.Available) {
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Badge()
-                        }
-                    }
-                }
-                OutlinedButton(onClick = onOpenRepository) {
-                    Icon(Icons.Outlined.Code, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("开源仓库")
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
-                }
-            }
-        }
-    }
-}
-
-private enum class UpdateEmphasis { Normal, Positive, Error }
-
-/** 更新状态写在版本号下面一行；还没检查过时不写。 */
-private fun updateStatusText(status: UpdateStatus): Pair<String, UpdateEmphasis>? = when (status) {
-    UpdateStatus.Idle -> null
-    UpdateStatus.Checking -> "正在检查更新" to UpdateEmphasis.Normal
-    UpdateStatus.UpToDate -> "已是最新版本" to UpdateEmphasis.Normal
-    is UpdateStatus.Available -> "发现新版本 ${status.update.version}" to UpdateEmphasis.Positive
-    is UpdateStatus.Downloading -> "正在下载 ${(status.progress * 100).toInt()}%" to UpdateEmphasis.Normal
-    is UpdateStatus.Installing -> "等待安装确认" to UpdateEmphasis.Normal
-    is UpdateStatus.ReadyToRestart -> "已下载，重启后完成更新" to UpdateEmphasis.Positive
-    is UpdateStatus.Failed -> status.message to UpdateEmphasis.Error
 }
 
 // 选中色与底色取同一值：开关行用 checked 重载拿开关语义，而它把 checked 当作选中，
@@ -860,9 +773,9 @@ private val StaticRowLeadingGap = 12.dp
 
 /** 深色模式三选一，用 M3 Expressive 的连体按钮组，与播放器倍速选择的写法一致。 */
 @Composable
-private fun ThemeModeRow(mode: ThemeMode, onModeChange: (ThemeMode) -> Unit) {
+private fun ThemeModeRow(mode: ThemeMode, onModeChange: (ThemeMode) -> Unit, count: Int) {
     StaticSegmentedRow(
-        shapes = ListItemDefaults.segmentedShapes(index = 0, count = 2),
+        shapes = ListItemDefaults.segmentedShapes(index = 0, count = count),
         leadingContent = { Icon(Icons.Outlined.DarkMode, contentDescription = null) },
         supportingContent = {
             Row(
@@ -875,11 +788,7 @@ private fun ThemeModeRow(mode: ThemeMode, onModeChange: (ThemeMode) -> Unit) {
                     ToggleButton(
                         checked = option == mode,
                         onCheckedChange = { onModeChange(option) },
-                        shapes = when (index) {
-                            0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
-                            ThemeMode.entries.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
-                            else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
-                        },
+                        shapes = connectedToggleShapes(index, ThemeMode.entries.size),
                         modifier = Modifier.weight(1f),
                     ) {
                         Text(option.label, maxLines = 1)
@@ -899,12 +808,12 @@ private fun ThemeModeRow(mode: ThemeMode, onModeChange: (ThemeMode) -> Unit) {
  * 触控区按 48dp 下限给，七个在窄屏上放不下一行，改为横向滚动。
  */
 @Composable
-private fun ThemeColorRow(appearance: Appearance, onSeedChange: (SeedTheme?) -> Unit) {
+private fun ThemeColorRow(appearance: Appearance, onSeedChange: (SeedTheme?) -> Unit, count: Int) {
     val dark = appearance.isDark()
     val platform = LocalPikoPlatform.current
     val selectedLabel = appearance.effectiveSeed?.label ?: "系统取色"
     StaticSegmentedRow(
-        shapes = ListItemDefaults.segmentedShapes(index = 1, count = 2),
+        shapes = ListItemDefaults.segmentedShapes(index = 1, count = count),
         leadingContent = { Icon(Icons.Outlined.Palette, contentDescription = null) },
         supportingContent = {
             Column {
@@ -974,7 +883,7 @@ private fun ColorSwatch(
 }
 
 @Composable
-private fun SettingsSwitchRow(
+internal fun SettingsSwitchRow(
     index: Int,
     count: Int,
     icon: ImageVector,
@@ -988,7 +897,7 @@ private fun SettingsSwitchRow(
         checked = checked,
         onCheckedChange = onCheckedChange,
         enabled = enabled,
-        shapes = ListItemDefaults.segmentedShapes(index = index, count = count).let { it.copy(selectedShape = it.shape) },
+        shapes = stableSegmentedShapes(index, count),
         colors = settingsRowColors(),
         leadingContent = { Icon(icon, contentDescription = null) },
         // 开关只作指示，整行的 checked 语义已由列表项提供
@@ -998,6 +907,61 @@ private fun SettingsSwitchRow(
     )
 }
 
+/**
+ * 设置同步：开关与「立即同步」在同一行。立即同步只在开着时有意义，单独占一行是把一件事画成两件。
+ * 开着时副文本是同步的状态，关着时说明它同步什么、存在哪。
+ */
+@Composable
+private fun SettingsSyncRow(
+    index: Int,
+    count: Int,
+    enabled: Boolean,
+    status: String,
+    onEnabledChange: (Boolean) -> Unit,
+    onSyncNow: () -> Unit,
+) {
+    SegmentedListItem(
+        checked = enabled,
+        onCheckedChange = onEnabledChange,
+        shapes = stableSegmentedShapes(index, count),
+        colors = settingsRowColors(),
+        leadingContent = { Icon(Icons.Outlined.CloudSync, contentDescription = null) },
+        trailingContent = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (enabled) TooltipIconButton(Icons.Outlined.Sync, "立即同步", onSyncNow)
+                Switch(checked = enabled, onCheckedChange = null)
+            }
+        },
+        supportingContent = {
+            Text(if (enabled) status else "外观、网盘与播放的设置和解压成功过的密码存在网盘的 .piko 文件夹，换设备登录时带过去")
+        },
+        content = { Text("同步设置") },
+    )
+}
+
+/**
+ * 依赖上面某个开关的行：开关关着时收起，而不是灰着留在那里。一行灰掉的设置读起来像「坏了」或「没权限」，
+ * 收起则明说「这时它不起作用」；收起与展开有动画，看得出是上面那个开关带出来的。
+ */
+@Composable
+private fun ColumnScope.DependentRow(visible: Boolean, content: @Composable () -> Unit) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = expandVertically(MaterialTheme.motionScheme.fastSpatialSpec()) + fadeIn(MaterialTheme.motionScheme.fastEffectsSpec()),
+        exit = shrinkVertically(MaterialTheme.motionScheme.fastSpatialSpec()) + fadeOut(MaterialTheme.motionScheme.fastEffectsSpec()),
+    ) { content() }
+}
+
+/**
+ * 分段行在各状态下都用同一个形状。库的默认按下、悬停时换形状并做形变动画，内侧的小圆角冲过头会算出负值，
+ * 与连体按钮是同一个崩溃（见 connectedToggleShapes）；选中态换形状也会让开着的开关行与关着的长得不一样。
+ */
+@Composable
+private fun stableSegmentedShapes(index: Int, count: Int) =
+    ListItemDefaults.segmentedShapes(index = index, count = count).let {
+        it.copy(selectedShape = it.shape, pressedShape = it.shape, focusedShape = it.shape, hoveredShape = it.shape, draggedShape = it.shape)
+    }
+
 @Composable
 internal fun SettingsNavigationRow(
     index: Int,
@@ -1006,20 +970,26 @@ internal fun SettingsNavigationRow(
     title: String,
     supporting: String,
     onClick: () -> Unit,
-    trailingIcon: ImageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+    /**
+     * 行尾图标说明点了去哪：去下一页是箭头（默认），离开应用是外链图标，弹对话框或当场执行的为 null，什么也不画。
+     * 箭头在 M3 的列表里只说「去下一页」这一件事，给每个可点的行都画上，它就什么也不说明了。
+     */
+    trailingIcon: ImageVector? = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
     /** 两栏布局里这一行对应的页正显示在右侧。 */
     selected: Boolean = false,
+    /** 亮起时换成的实心图标，与侧边栏一样。 */
+    selectedIcon: ImageVector = icon,
 ) {
     SegmentedListItem(
         onClick = onClick,
-        shapes = ListItemDefaults.segmentedShapes(index = index, count = count),
+        shapes = stableSegmentedShapes(index, count),
         colors = if (selected) {
             ListItemDefaults.segmentedColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
         } else {
             settingsRowColors()
         },
-        leadingContent = { Icon(icon, contentDescription = null) },
-        trailingContent = { Icon(trailingIcon, contentDescription = null) },
+        leadingContent = { Icon(if (selected) selectedIcon else icon, contentDescription = null) },
+        trailingContent = trailingIcon?.let { trailing -> { Icon(trailing, contentDescription = null) } },
         supportingContent = {
             Text(supporting, maxLines = 2, overflow = TextOverflow.Ellipsis)
         },
