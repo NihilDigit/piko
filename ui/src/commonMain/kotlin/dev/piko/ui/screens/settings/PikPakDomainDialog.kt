@@ -19,6 +19,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.nihildigit.pikpak.DomainProbe
 import io.github.nihildigit.pikpak.PikPakDomain
@@ -46,8 +47,10 @@ fun PikPakDomainDialog(
             Column {
                 Column(Modifier.selectableGroup()) {
                     DomainRow(
-                        title = "自动",
-                        supporting = active?.let { "登录后测速，挑最快的。现在用 ${it.root}" } ?: "登录后测速，挑最快的",
+                        title = "自动选择",
+                        // 测速是异步的，结果回来才有域名；原先「按测速结果选用最快的域名，当前为 …」在窄屏上
+                        // 折成两行，整个对话框随之跳一下。有域名时只写域名，短到一行放得下
+                        supporting = active?.let { "测速选定 ${it.root}" } ?: "选用测速最快的域名",
                         selected = choice.isEmpty(),
                         onSelect = { onChoose("") },
                     )
@@ -61,7 +64,7 @@ fun PikPakDomainDialog(
                     }
                 }
                 Text(
-                    text = "四个域名通往同一组服务器，账号通用。网络对某个域名限速时，换一个可能更快。",
+                    text = "各域名指向同一组服务器，账号通用。某一域名受网络限速时，可改用其他域名。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 8.dp),
@@ -70,13 +73,13 @@ fun PikPakDomainDialog(
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("完成") } },
         dismissButton = {
-            TextButton(onClick = onProbeAgain, enabled = !probing) { Text(if (probing) "正在测速" else "重新测速") }
+            TextButton(onClick = onProbeAgain, enabled = !probing) { Text(if (probing) "测速中" else "重新测速") }
         },
     )
 }
 
 private fun DomainProbe?.latencyLabel(probing: Boolean): String = when {
-    this == null -> if (probing) "正在测速" else "未测速"
+    this == null -> if (probing) "测速中" else "未测速"
     !usable || warmRequest == null -> "不可用"
     else -> "延迟 ${warmRequest!!.inWholeMilliseconds} ms"
 }
@@ -93,18 +96,24 @@ private fun DomainRow(title: String, supporting: String, selected: Boolean, onSe
         RadioButton(selected = selected, onClick = null, modifier = Modifier.padding(end = 16.dp))
         Column {
             Text(title, style = MaterialTheme.typography.bodyLarge)
-            Text(supporting, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                supporting,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }
 
-/** 设置页那一行的说明：「自动，现在用 mypikpak.net，延迟 92 ms」。 */
+/** 设置页那一行的说明：「自动选择 mypikpak.net，延迟 92 ms」，固定时是「固定为 mypikpak.net，延迟 92 ms」。 */
 fun domainSummary(choice: String, active: PikPakDomain?, probes: Map<PikPakDomain, DomainProbe>): String {
     val latency = active?.let { probes[it] }?.takeIf { it.usable }?.warmRequest?.let { "，延迟 ${it.inWholeMilliseconds} ms" }.orEmpty()
     val using = active?.root ?: choice.ifEmpty { null }
     return when {
-        choice.isEmpty() && using == null -> "自动"
-        choice.isEmpty() -> "自动，现在用 $using$latency"
-        else -> "$choice$latency"
+        choice.isEmpty() && using == null -> "自动选择"
+        choice.isEmpty() -> "自动选择 $using$latency"
+        else -> "固定为 $choice$latency"
     }
 }

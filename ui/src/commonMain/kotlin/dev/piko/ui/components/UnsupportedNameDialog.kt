@@ -151,9 +151,19 @@ fun submitDriveName(name: String, autoClean: Boolean, onValid: (String) -> Unit)
     return null
 }
 
-/** 自动修正打开时，输入框下方预先写出会存成什么，免得名称悄悄变了。 */
-fun autoCleanHint(name: String, autoClean: Boolean): String? =
-    if (autoClean && DriveNames.unsupportedParts(name).isNotEmpty()) "将保存为「${DriveNames.clean(name)}」" else null
+/**
+ * 名称输入框下方那一行，始终有字。Android 的对话框是按内容定高、居中的独立窗口，这一行时有时无，
+ * 键入一个字符整个对话框就上下跳半行。自动修正打开且名称要改时，只写去掉什么而不写修正后的全名：
+ * 全名随输入变长、折成多行，照样撑高对话框。去掉后什么都不剩时写成错误，调用方据此标红。
+ */
+fun driveNameHint(name: String, autoClean: Boolean): String {
+    val parts = DriveNames.unsupportedParts(name)
+    return when {
+        isUnfixableDriveName(name) -> "名称只含 PikPak 不支持的字符"
+        autoClean && parts.isNotEmpty() -> "将去掉${parts.joinToString("、")}"
+        else -> "不能含 \\ / : * ? \" < > |"
+    }
+}
 
 /** 去掉不支持的部分后什么都不剩，没法自动修。 */
 fun isUnfixableDriveName(name: String): Boolean =

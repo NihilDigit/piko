@@ -16,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import dev.piko.ui.platform.LocalPikoPlatform
 
 /**
@@ -69,13 +70,17 @@ fun FileNameField(
         maxLines = if (collapseWhenIdle && !isFocused) 1 else EXPANDED_MAX_LINES,
         enabled = enabled,
         isError = isError,
-        supportingText = supportingText?.let { { Text(it) } },
+        // 提示只占一行：折成两行会把对话框（按内容定高的独立窗口）撑高
+        supportingText = supportingText?.let { { Text(it, maxLines = 1, overflow = TextOverflow.Ellipsis) } },
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
         keyboardActions = KeyboardActions(onDone = { finish() }),
         shape = MaterialTheme.shapes.largeIncreased,
         modifier = modifier
             .onFocusChanged { isFocused = it.isFocused }
-            .animateContentSize(),
+            // 动画只为收起与展开之间的那一跳。对话框里的框不收起，却随输入折行长高：Android 的
+            // 对话框是按内容定尺寸的独立窗口，高度逐帧变化就逐帧改窗口尺寸，窗口表面跟不上，
+            // 整个对话框闪烁、上下跳动，末行还被裁掉半截（issue #9）。面板的窗口铺满屏幕，不受影响
+            .then(if (collapseWhenIdle) Modifier.animateContentSize() else Modifier),
     )
 }
 

@@ -443,8 +443,9 @@ private fun FolderPickerContent(
                         singleLine = true,
                         enabled = !isCreatingFolder,
                         isError = unfixable,
-                        supportingText = (if (unfixable) "名称只含 PikPak 不支持的字符" else autoCleanHint(newFolderName, autoCleanNames))
-                            ?.let { hint -> { Text(hint) } },
+                        supportingText = {
+                            Text(driveNameHint(newFolderName, autoCleanNames), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        },
                         modifier = Modifier.fillMaxWidth(),
                         shape = MaterialTheme.shapes.largeIncreased,
                     )

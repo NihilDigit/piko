@@ -96,11 +96,8 @@ fun ProxySettingsDialog(
                         placeholder = { Text("7890") },
                         singleLine = true,
                         isError = portInvalid,
-                        supportingText = if (portInvalid) {
-                            { Text("端口在 1 到 65535 之间") }
-                        } else {
-                            null
-                        },
+                        // 提示常驻、出错时只变色：这一行时有时无，按内容定高的对话框每键入一位就跳半行
+                        supportingText = { Text("1 至 65535") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.fillMaxWidth(),
                     )

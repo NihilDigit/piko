@@ -71,11 +71,8 @@ private fun LimitField(label: String, value: String, invalid: Boolean, onValueCh
         suffix = { Text("KB/s") },
         singleLine = true,
         isError = invalid,
-        supportingText = if (invalid) {
-            { Text("填一个大于 0 的数") }
-        } else {
-            null
-        },
+        // 提示常驻、出错时只变色：这一行时有时无，按内容定高的对话框每删一个字就跳半行
+        supportingText = { Text("大于 0 的整数") },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         modifier = Modifier.fillMaxWidth(),
     )
