@@ -113,9 +113,7 @@ class DesktopPikoPlatform(
         return withContext(Dispatchers.IO) { runCatching { target.writeText(content) }.isSuccess }
     }
 
-    override fun openUrl(url: String) {
-        runCatching { Desktop.getDesktop().browse(URI(url)) }
-    }
+    override fun openUrl(url: String) = WinRTSupport.openUrl(url)
 
     @Composable
     override fun isImeVisible(): Boolean = false

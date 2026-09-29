@@ -203,8 +203,9 @@ compose.desktop {
             packageName = desktopPackageName
             packageVersion = desktopPackageVersion
             vendor = "NihilDigit"
-            // MSI 按 en-us 生成，数据库代码页 1252 容不下汉字，WiX 报 LGHT0311；描述只能用 ASCII
-            description = "Lightweight, modern PikPak client"
+            // jpackage 把它写进 exe 的 FileDescription，任务管理器与「默认应用」拿它当应用名显示，所以只写名字。
+            // MSI 按 en-us 生成，数据库代码页 1252 容不下汉字，WiX 报 LGHT0311，也只能用 ASCII
+            description = desktopPackageName
             copyright = "Copyright (C) NihilDigit"
             windows {
                 menuGroup = desktopPackageName

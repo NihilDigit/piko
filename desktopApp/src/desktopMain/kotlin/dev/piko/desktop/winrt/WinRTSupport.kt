@@ -2,6 +2,7 @@ package dev.piko.desktop.winrt
 
 import java.awt.Desktop
 import java.io.File
+import java.net.URI
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -28,6 +29,12 @@ object WinRTSupport {
 
     private val comThread = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "Piko-WinRT").also { it.isDaemon = true }
+    }
+
+    // Desktop.browse/open 同步走 ShellExecute，要等浏览器或关联程序接手才返回，冷启动时界面卡住一两秒。
+    // 与 comThread 分开：那边的 Toast 调用带超时等待，不该排在一次慢的打开后面
+    private val shellThread = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "Piko-Shell").also { it.isDaemon = true }
     }
 
     /** 在专用线程上执行一次 WinRT 调用。线程第一次用时初始化 WinRT，之后一直保持。 */
@@ -181,20 +188,24 @@ object WinRTSupport {
         }
     }
 
-    fun openFolder(folder: File) {
+    fun openUrl(url: String) {
+        shellThread.execute { runCatching { Desktop.getDesktop().browse(URI(url)) } }
+    }
+
+    fun openFolder(folder: File) = shellThread.execute {
         runCatching {
             if (!folder.exists()) folder.mkdirs()
-            if (openWithDesktop(folder)) return
+            if (openWithDesktop(folder)) return@execute
             if (isWindows) {
                 ProcessBuilder("explorer", folder.absolutePath).start()
             }
         }
     }
 
-    fun openFile(file: File) {
-        if (!file.exists()) return
+    fun openFile(file: File) = shellThread.execute {
+        if (!file.exists()) return@execute
         runCatching {
-            if (openWithDesktop(file)) return
+            if (openWithDesktop(file)) return@execute
             if (isWindows) {
                 // start "" <path> 经 shell 走默认关联，比 explorer 更稳。
                 ProcessBuilder("cmd", "/c", "start", "", file.absolutePath).start()
