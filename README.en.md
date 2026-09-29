@@ -89,6 +89,8 @@ from source by GitHub Actions, and the release page lists which file to download
 
 ## Contributing
 
+The roadmap is in [#10](https://github.com/NihilDigit/piko/issues/10).
+
 Issues and pull requests are welcome. Small bug fixes, crash reports and documentation fixes can go
 straight in as a pull request.
 

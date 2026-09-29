@@ -84,6 +84,8 @@
 
 ## 贡献
 
+路线图见 [#10](https://github.com/NihilDigit/piko/issues/10)。
+
 欢迎提交 Issue 与 PR。小的 Bug 修复、崩溃排查与文档补充可以直接提交。
 
 计划新增功能或调整架构时，请先提交 Issue，说明使用场景与拟定方案，确认方向后再实现。
