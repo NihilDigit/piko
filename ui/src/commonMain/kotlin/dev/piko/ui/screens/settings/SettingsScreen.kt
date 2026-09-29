@@ -23,6 +23,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material3.RadioButton
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -522,108 +526,106 @@ fun SettingsScreen(
     }
 
     if (showDownloadDirDialog) {
-        val isDefaultDownloadDir = downloadDirPath.isEmpty()
-        AlertDialog(
-            onDismissRequest = { showDownloadDirDialog = false },
-            title = { Text("下载位置") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    DownloadLocationCard(path = resolvedDownloadPath, isDefault = isDefaultDownloadDir)
-                    Text(
-                        text = downloadLocation.description,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        FilledTonalButton(onClick = pickDownloadDir) {
-                            Icon(Icons.Outlined.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("更改文件夹")
-                        }
-                        if (!isDefaultDownloadDir) {
-                            TextButton(onClick = { scope.launch { sessionManager.setDownloadDirPath("") } }) {
-                                Text("恢复默认")
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showDownloadDirDialog = false }) { Text("完成") }
-            },
+        DownloadLocationDialog(
+            description = downloadLocation.description,
+            defaultPath = remember { downloadLocation.displayName("") },
+            customPath = resolvedDownloadPath.takeIf { downloadDirPath.isNotEmpty() },
+            onUseDefault = { scope.launch { sessionManager.setDownloadDirPath("") } },
+            onPickFolder = pickDownloadDir,
+            onDismiss = { showDownloadDirDialog = false },
         )
     }
 }
 
 /**
- * 下载位置对话框里的当前位置：文件夹名作标题，完整路径可选中复制。
- * Android 选了 SAF 目录时 [path] 只有文件夹名，此时不再重复一行。
+ * 下载位置：两个单选项，默认位置与自定义位置，各带路径。照 M3 的基本对话框排：头部图标、标题、一句说明，
+ * 可选的内容放在正文里，动作只有「完成」一个。
+ *
+ * 原来正文里一个「更改文件夹」、一个「恢复默认」，底部再一个「完成」，三个动作并排，而 M3 dialogs 规定对话框
+ * 至多两个动作（一个确认、一个取消）。换成单选列表后「恢复默认」就是选中默认那一项，「更改」是点自定义那一项，
+ * 两样都成了正文里的选项，读起来也是「现在用的是哪一个」，不必再挂一个「默认」标签。
+ *
+ * [customPath] 为 null 表示正用默认位置。已选自定义时再点它，照旧弹目录选择框，换一个文件夹。
  */
 @Composable
-private fun DownloadLocationCard(path: String, isDefault: Boolean) {
-    val folderName = path.trimEnd('/', '\\').substringAfterLast('/').substringAfterLast('\\').ifEmpty { path }
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-    ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(MaterialTheme.shapes.medium)
-                    .background(MaterialTheme.colorScheme.secondaryContainer),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.Folder,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                )
-            }
-            Spacer(modifier = Modifier.width(16.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = folderName,
-                        style = MaterialTheme.typography.titleMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false),
+private fun DownloadLocationDialog(
+    description: String,
+    defaultPath: String,
+    customPath: String?,
+    onUseDefault: () -> Unit,
+    onPickFolder: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Outlined.FolderOpen, contentDescription = null) },
+        title = { Text("下载位置") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text(description, style = MaterialTheme.typography.bodyMedium)
+                Column(modifier = Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    DownloadLocationOption(
+                        title = "默认位置",
+                        path = defaultPath,
+                        selected = customPath == null,
+                        onClick = onUseDefault,
                     )
-                    if (isDefault) {
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.secondaryContainer,
-                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                        ) {
-                            Text(
-                                text = "默认",
-                                style = MaterialTheme.typography.labelSmall,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                            )
-                        }
-                    }
-                }
-                if (folderName != path) {
-                    SelectionContainer {
-                        Text(
-                            text = path,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 3,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
+                    DownloadLocationOption(
+                        title = "自定义位置",
+                        path = customPath ?: "选择一个文件夹",
+                        selected = customPath != null,
+                        onClick = onPickFolder,
+                        // 已选中时这一行点下去是换文件夹，不是切换，给一个编辑的提示
+                        trailingIcon = if (customPath != null) Icons.Outlined.Edit else null,
+                    )
                 }
             }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("完成") }
+        },
+    )
+}
+
+/**
+ * 单选列表的一行：整行可点、至少 56dp 高，单选钮不单独接点击（onClick 为 null），免得点钮和点行各触发一次。
+ * 路径可能很长，最多两行，从中间省掉的话头尾都看不全，末尾省略保住开头的盘符与上级目录。
+ */
+@Composable
+private fun DownloadLocationOption(
+    title: String,
+    path: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    trailingIcon: ImageVector? = null,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 56.dp)
+            .clip(MaterialTheme.shapes.medium)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = null, modifier = Modifier.padding(horizontal = 12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                text = path,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (trailingIcon != null) {
+            Icon(
+                imageVector = trailingIcon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 12.dp).size(20.dp),
+            )
         }
     }
 }
