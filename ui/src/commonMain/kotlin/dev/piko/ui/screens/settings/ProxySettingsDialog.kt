@@ -17,12 +17,11 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.RadioButton
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.ToggleButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -30,12 +29,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.net.ProxyMode
 import dev.piko.shared.net.ProxyProtocol
 import dev.piko.shared.net.ProxySetting
+import dev.piko.ui.components.connectedToggleShapes
 
 /**
  * 网络代理：跟随系统、不使用或手动填写。登录页与设置页共用，登录页也要有，
@@ -70,14 +71,20 @@ fun ProxySettingsDialog(
                     ProxyModeRow("手动", "指定 HTTP 或 SOCKS5 代理", mode == ProxyMode.MANUAL) { mode = ProxyMode.MANUAL }
                 }
                 if (mode == ProxyMode.MANUAL) {
-                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    // 与分享的提取码、设置页的深色模式同一种连体按钮组
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
+                    ) {
                         ProxyProtocol.entries.forEachIndexed { index, entry ->
-                            SegmentedButton(
-                                selected = protocol == entry,
-                                onClick = { protocol = entry },
-                                shape = SegmentedButtonDefaults.itemShape(index, ProxyProtocol.entries.size),
-                                label = { Text(entry.label) },
-                            )
+                            ToggleButton(
+                                checked = protocol == entry,
+                                onCheckedChange = { protocol = entry },
+                                shapes = connectedToggleShapes(index, ProxyProtocol.entries.size),
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text(entry.label, maxLines = 1)
+                            }
                         }
                     }
                     OutlinedTextField(
@@ -126,6 +133,7 @@ private fun ProxyModeRow(title: String, supporting: String, selected: Boolean, o
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 56.dp)
+            .clip(MaterialTheme.shapes.medium)
             .selectable(selected = selected, onClick = onSelect, role = Role.RadioButton),
     ) {
         RadioButton(selected = selected, onClick = null, modifier = Modifier.padding(end = 16.dp))

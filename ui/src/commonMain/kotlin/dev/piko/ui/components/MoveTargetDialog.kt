@@ -1,7 +1,6 @@
 package dev.piko.ui.components
 
 import androidx.compose.animation.Crossfade
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,15 +19,14 @@ import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Folder
@@ -36,13 +34,15 @@ import androidx.compose.material.icons.outlined.History
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ListItemDefaults
+import androidx.compose.material3.ListItemShapes
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedListItem
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -63,22 +63,25 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.backhandler.BackHandler
-import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import dev.piko.data.repository.PathBreadcrumb
+import dev.piko.shared.sync.PikoSettingsSync
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.platform.LocalPikoPlatform
-import dev.piko.ui.theme.PikoMotion
+import dev.piko.ui.theme.LocalPikoMotion
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.launch
 
 /**
- * 全屏目录选择器。维护自己的路径栈，不触碰 driveRepo.folderStackFlow，
+ * 目录选择器，compact 下全屏，更宽时是居中的基本对话框。维护自己的路径栈，不触碰 driveRepo.folderStackFlow，
  * 否则选目标会把网盘主界面的位置一并改掉。
  *
  * onConfirm 只回传选中的目标目录，后续动作、刷新与提示由调用方负责。
@@ -102,6 +105,7 @@ fun FolderPickerDialog(
     recentTargets: List<List<PathBreadcrumb>> = emptyList(),
     onConfirmPath: (List<PathBreadcrumb>) -> Unit = {},
 ) {
+    val fullscreen = currentWidthClass() == WidthClass.Compact
     val content: @Composable () -> Unit = {
         FolderPickerContent(
             title = title,
@@ -110,6 +114,7 @@ fun FolderPickerDialog(
             blockedFolderHint = blockedFolderHint,
             confirmBlockedReason = confirmBlockedReason,
             recentTargets = recentTargets,
+            fullscreen = fullscreen,
             onDismiss = onDismiss,
             onConfirm = { path ->
                 onConfirmPath(path)
@@ -118,7 +123,7 @@ fun FolderPickerDialog(
         )
     }
     // M3 的全屏对话框只用于 compact 窗口；更宽时铺满整个窗口反而难以聚焦，改为居中的基本对话框
-    if (currentWidthClass() == WidthClass.Compact) {
+    if (fullscreen) {
         LocalPikoPlatform.current.FullscreenDialog(
             onDismiss = onDismiss,
             immersive = false,
@@ -139,10 +144,12 @@ fun FolderPickerDialog(
             onDismissRequest = onDismiss,
             properties = DialogProperties(usePlatformDefaultWidth = false),
         ) {
+            // 高度写死比例：Android 的对话框按内容定高，换一层目录、文件夹数一变整个对话框就跳。
+            // 底色照 M3 对话框取 surfaceContainerHigh：取 surface 时深色主题下与变暗的背景分不开。文件夹行因此高一级，见 FolderPickerRow
             Surface(
                 modifier = Modifier
                     .widthIn(max = 560.dp)
-                    .fillMaxWidth(0.9f)
+                    .fillMaxWidth(0.92f)
                     .fillMaxHeight(0.85f),
                 shape = MaterialTheme.shapes.extraLarge,
                 color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -195,6 +202,7 @@ private fun FolderPickerContent(
     blockedFolderHint: String?,
     confirmBlockedReason: (PathBreadcrumb) -> String?,
     recentTargets: List<List<PathBreadcrumb>>,
+    fullscreen: Boolean,
     onDismiss: () -> Unit,
     onConfirm: (path: List<PathBreadcrumb>) -> Unit,
 ) {
@@ -241,7 +249,8 @@ private fun FolderPickerContent(
                 return
             }
             val (list, next) = page
-            val childFolders = list.filter(FileStat::isFolder)
+            // 根目录里放同步设置的 .piko 不列出来，与网盘页同一条规则（DriveScreenState.withoutSyncFolder）
+            val childFolders = list.filter { it.isFolder && !PikoSettingsSync.isSyncFolder(it, current.id) }
             if (childFolders.isNotEmpty()) {
                 folders = folders + childFolders
                 added += childFolders.size
@@ -299,27 +308,35 @@ private fun FolderPickerContent(
     val blockedReason = confirmBlockedReason(current)
     val confirmEnabled = !isLoading && blockedReason == null
 
+    // 关闭照 M3：全屏形态（compact）左上角放关闭，浮着的对话框不画关闭，底栏「取消」在主按钮左边。
+    // 新建文件夹只放顶栏：底栏再放一个就是同一动作的两个入口，还把确认键挤窄
     Scaffold(
         modifier = Modifier.fillMaxSize(),
+        containerColor = Color.Transparent,
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         topBar = {
             PikoTopBar(
                 title = title,
-                navigationIcon = {
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Outlined.Close, contentDescription = "取消")
+                navigationIcon = if (fullscreen) {
+                    {
+                        IconButton(onClick = onDismiss) {
+                            Icon(Icons.Outlined.Close, contentDescription = "关闭")
+                        }
                     }
+                } else {
+                    null
                 },
                 actions = {
-                    IconButton(
+                    TooltipIconButton(
+                        icon = Icons.Outlined.CreateNewFolder,
+                        label = "新建文件夹",
                         onClick = {
                             newFolderName = ""
                             showNewFolderDialog = true
                         },
-                    ) {
-                        Icon(Icons.Outlined.CreateNewFolder, contentDescription = "新建文件夹")
-                    }
+                    )
                 },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
             )
         },
         bottomBar = {
@@ -331,10 +348,7 @@ private fun FolderPickerContent(
                 confirmLabel = confirmLabel,
                 confirmEnabled = confirmEnabled,
                 disabledReason = blockedReason,
-                onNewFolder = {
-                    newFolderName = ""
-                    showNewFolderDialog = true
-                },
+                onCancel = onDismiss.takeUnless { fullscreen },
                 onConfirm = { onConfirm(path) },
             )
         },
@@ -344,17 +358,15 @@ private fun FolderPickerContent(
                 .fillMaxSize()
                 .padding(top = innerPadding.calculateTopPadding()),
         ) {
+            // 面包屑固定、下面的列表滚动，不画分隔线：文件夹行各有底色，滚到面包屑下沿就被裁掉，层次已经分开
             BreadcrumbBar(
                 breadcrumbs = path.drop(1),
                 onBreadcrumbClick = { index -> path = path.take(index + 1) },
             )
-            // 面包屑固定、下面的列表滚动，两者之间没有容器可以区分，只能靠这条线。
-            // 不用 alpha 兑色：对比度会随底下是 surface 还是对话框的容器色变，深色主题下几乎看不见
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
             Crossfade(
                 targetState = isLoading,
-                animationSpec = PikoMotion.StateCrossfadeSpec,
+                animationSpec = LocalPikoMotion.current.stateCrossfade,
                 label = "folder_picker_loading",
             ) { loading ->
                 if (loading) {
@@ -375,15 +387,21 @@ private fun FolderPickerContent(
                         state = listState,
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(
+                            start = 16.dp,
+                            end = 16.dp,
                             bottom = innerPadding.calculateBottomPadding() + 8.dp,
                         ),
+                        verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap),
                     ) {
-                        items(items = folders, key = { it.id }) { folder ->
+                        itemsIndexed(items = folders, key = { _, folder -> folder.id }) { index, folder ->
                             val isBlocked = folder.id in blockedFolderIds
                             FolderPickerRow(
                                 name = folder.name,
                                 enabled = !isBlocked,
                                 hint = if (isBlocked) blockedFolderHint else null,
+                                shapes = ListItemDefaults.segmentedShapes(index = index, count = folders.size),
+                                // 全屏形态铺在 surface 上，照设置页取 surfaceContainer；浮着的对话框底是 surfaceContainerHigh，行再高一级
+                                containerColor = if (fullscreen) MaterialTheme.colorScheme.surfaceContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
                                 onClick = { path = path + PathBreadcrumb(folder.id, folder.name) },
                             )
                         }
@@ -425,10 +443,13 @@ private fun FolderPickerContent(
 
     if (showNewFolderDialog) {
         val unfixable = isUnfixableDriveName(newFolderName)
+        val nameFocus = remember { FocusRequester() }
         AlertDialog(
             onDismissRequest = { if (!isCreatingFolder) showNewFolderDialog = false },
             title = { Text("新建文件夹") },
             text = {
+                // 在对话框自己的组合里要焦点：放在外面时对话框的内容还没挂上
+                LaunchedEffect(Unit) { runCatching { nameFocus.requestFocus() } }
                 Column {
                     Text(
                         text = "创建于 ${current.name}，创建后自动进入",
@@ -446,7 +467,7 @@ private fun FolderPickerContent(
                         supportingText = {
                             Text(driveNameHint(newFolderName, autoCleanNames), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         },
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().focusRequester(nameFocus),
                         shape = MaterialTheme.shapes.largeIncreased,
                     )
                 }
@@ -482,7 +503,10 @@ private fun FolderPickerContent(
     }
 }
 
-/** 底栏：最近目标、目标位置、新建与确认。最近目标放在这里，拇指够得着，点完就在确认键上方。 */
+/**
+ * 底栏：最近目标一行，下面左边是目标位置与不能确认的原因，右边是操作。最近目标放在这里，拇指够得着，点完就在确认键上方。
+ * [onCancel] 为 null 时不放「取消」，全屏形态由左上角的关闭代替。
+ */
 @Composable
 private fun FolderPickerActionBar(
     recentTargets: List<List<PathBreadcrumb>>,
@@ -492,92 +516,47 @@ private fun FolderPickerActionBar(
     confirmLabel: String,
     confirmEnabled: Boolean,
     disabledReason: String?,
-    onNewFolder: () -> Unit,
+    onCancel: (() -> Unit)?,
     onConfirm: () -> Unit,
 ) {
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        tonalElevation = 3.dp,
-    ) {
-        Column(modifier = Modifier.fillMaxWidth().navigationBarsPadding()) {
-            if (recentTargets.isNotEmpty()) {
-                // 横滑的一行要贴到两边，不能放进下面带内边距的那一栏，否则滑到头会在边距处被裁掉
-                RecentTargetsRow(
-                    targets = recentTargets,
-                    currentId = currentId,
-                    onSelect = onRecentSelect,
-                    modifier = Modifier.padding(top = 8.dp),
-                )
-            }
-            FolderPickerActionContent(pathLabel, confirmLabel, confirmEnabled, disabledReason, onNewFolder, onConfirm)
-        }
-    }
-}
-
-@Composable
-private fun FolderPickerActionContent(
-    pathLabel: String,
-    confirmLabel: String,
-    confirmEnabled: Boolean,
-    disabledReason: String?,
-    onNewFolder: () -> Unit,
-    onConfirm: () -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-    ) {
-        Text(
-            text = "目标位置",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
-            text = pathLabel,
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        if (disabledReason != null) {
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = disabledReason,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
+    Column(modifier = Modifier.fillMaxWidth().navigationBarsPadding()) {
+        if (recentTargets.isNotEmpty()) {
+            // 横滑的一行要贴到两边，不能放进下面带内边距的那一栏，否则滑到头会在边距处被裁掉
+            RecentTargetsRow(
+                targets = recentTargets,
+                currentId = currentId,
+                onSelect = onRecentSelect,
+                modifier = Modifier.padding(top = 8.dp),
             )
         }
-        Spacer(modifier = Modifier.height(10.dp))
         Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 24.dp, end = 24.dp, top = 12.dp, bottom = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            OutlinedButton(
-                onClick = onNewFolder,
-                shape = MaterialTheme.shapes.medium,
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.CreateNewFolder,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
+            // 不能确认的原因顶替「目标位置」这一行，不另起一行：底栏高度随之变化的话，进出源目录时列表会上下跳
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = disabledReason ?: "目标位置",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (disabledReason != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("新建文件夹")
+                Text(
+                    text = pathLabel,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
-            Button(
-                onClick = onConfirm,
-                enabled = confirmEnabled,
-                shape = MaterialTheme.shapes.medium,
-                modifier = Modifier.weight(1f),
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.Check,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                )
-                Spacer(modifier = Modifier.width(6.dp))
+            if (onCancel != null) {
+                TextButton(onClick = onCancel) { Text("取消") }
+            }
+            Button(onClick = onConfirm, enabled = confirmEnabled, shape = MaterialTheme.shapes.medium) {
                 Text(confirmLabel)
             }
         }
@@ -611,49 +590,30 @@ private fun RecentTargetsRow(
     }
 }
 
+/** 一个子文件夹，设置页那样的分段行，点了进去。 */
 @Composable
 private fun FolderPickerRow(
     name: String,
     enabled: Boolean,
     hint: String?,
+    shapes: ListItemShapes,
+    containerColor: Color,
     onClick: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 14.dp)
-            .alpha(if (enabled) 1f else 0.38f),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            imageVector = Icons.Outlined.Folder,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(24.dp),
-        )
-        Spacer(modifier = Modifier.width(16.dp))
-        Text(
-            text = name,
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
-        if (hint != null) {
-            Text(
-                text = hint,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        } else {
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.outline,
-                modifier = Modifier.size(20.dp),
-            )
-        }
-    }
+    SegmentedListItem(
+        onClick = onClick,
+        enabled = enabled,
+        shapes = shapes,
+        // 禁用时底色照旧，只淡化内容：默认的禁用底色在对话框底上是一块突兀的亮条
+        colors = ListItemDefaults.segmentedColors(containerColor = containerColor, disabledContainerColor = containerColor),
+        leadingContent = { Icon(Icons.Outlined.Folder, contentDescription = null) },
+        trailingContent = {
+            if (hint != null) {
+                Text(hint, style = MaterialTheme.typography.labelMedium)
+            } else {
+                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null)
+            }
+        },
+        content = { Text(name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+    )
 }

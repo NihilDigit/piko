@@ -13,9 +13,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import dev.piko.ui.platform.LocalPikoPlatform
 
@@ -40,9 +44,20 @@ fun FileNameField(
     isError: Boolean = false,
     supportingText: String? = null,
     onDone: () -> Unit = {},
+    /** 为真时一出现就取得焦点，专门用来改名的对话框用。 */
+    autoFocus: Boolean = false,
+    /** 刚出现时选中的范围，例如重命名时照资源管理器只选主名、不选扩展名。null 时光标在末尾。 */
+    initialSelection: TextRange? = null,
 ) {
     val focusManager = LocalFocusManager.current
     var isFocused by remember { mutableStateOf(false) }
+    // 选区要用 TextFieldValue 才表达得了；对外仍只收发字符串。外面改了值（清空、换成修正后的名字）时光标放到末尾
+    var field by remember { mutableStateOf(TextFieldValue(value, initialSelection ?: TextRange(value.length))) }
+    val shown = if (field.text == value) field else TextFieldValue(value, TextRange(value.length))
+    val focusRequester = remember { FocusRequester() }
+    if (autoFocus) {
+        LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
+    }
     val finish = {
         focusManager.clearFocus()
         onDone()
@@ -56,13 +71,16 @@ fun FileNameField(
         wasImeVisible = isImeVisible
     }
     OutlinedTextField(
-        value = value,
+        value = shown,
         onValueChange = { input ->
-            if ('\n' in input) {
-                onValueChange(input.replace("\n", ""))
+            if ('\n' in input.text) {
+                val text = input.text.replace("\n", "")
+                field = TextFieldValue(text, TextRange(text.length))
+                onValueChange(text)
                 finish()
             } else {
-                onValueChange(input)
+                field = input
+                onValueChange(input.text)
             }
         },
         label = { Text(label) },
@@ -76,6 +94,7 @@ fun FileNameField(
         keyboardActions = KeyboardActions(onDone = { finish() }),
         shape = MaterialTheme.shapes.largeIncreased,
         modifier = modifier
+            .focusRequester(focusRequester)
             .onFocusChanged { isFocused = it.isFocused }
             // 动画只为收起与展开之间的那一跳。对话框里的框不收起，却随输入折行长高：Android 的
             // 对话框是按内容定尺寸的独立窗口，高度逐帧变化就逐帧改窗口尺寸，窗口表面跟不上，

@@ -42,14 +42,14 @@ internal fun ShortcutsDialog(modifier: ShortcutModifier, onDismiss: () -> Unit) 
             (if (mac) "⌘↑" else "Alt+↑") to "上一级",
             (if (mac) "⌘[ / ⌘]" else "Backspace 或 Alt+← / Alt+→") to "后退、前进（鼠标侧键也行）",
             (if (mac) "⌘L" else "Ctrl+L、Alt+D 或 F4") to "在地址栏输入路径",
-            "Tab" to "地址栏里补全当前一段",
-            "Delete" to "地址栏里删除挑中的最近一项",
+            "Tab" to "地址栏中补全当前一段",
+            "Delete" to "地址栏中删除所选的最近记录",
             "${primary}F" to "搜索",
             "F5" to "刷新",
             "${primary}A" to "全选",
-            (if (mac) "⌘⌫" else "Delete") to "移入回收站",
+            (if (mac) "⌘⌫" else "Delete") to "将所选条目移入回收站",
             (if (mac) "回车 或 F2" else "F2") to "重命名，选了几项时批量重命名",
-            "${primary}Z" to "撤销上一次移动、删除或重命名",
+            "${primary}Z" to "撤销上一次移动、删除、重命名或归档改动",
             "${primary}I" to "详情栏",
             "菜单键 或 Shift+F10" to "操作菜单",
         ),
@@ -104,8 +104,10 @@ internal fun ShortcutsDialog(modifier: ShortcutModifier, onDismiss: () -> Unit) 
                         Text(group, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
                         for ((keys, action) in rows) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                KeyCap(keys, Modifier.widthIn(min = 180.dp))
-                                Text(action, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(start = 12.dp))
+                                // 两栏按比例分，不按内容撑：原先键位一栏只设了最小宽度，最长的「Backspace 或 Alt+← / Alt+→」
+                                // 超出后那一行的说明往右错开。窄窗口里键位放不下时在键帽里折行
+                                KeyCap(keys, Modifier.weight(0.4f))
+                                Text(action, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(0.6f).padding(start = 12.dp))
                             }
                         }
                     }

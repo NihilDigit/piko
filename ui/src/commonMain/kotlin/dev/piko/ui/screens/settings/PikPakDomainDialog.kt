@@ -18,6 +18,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -91,6 +92,7 @@ private fun DomainRow(title: String, supporting: String, selected: Boolean, onSe
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 56.dp)
+            .clip(MaterialTheme.shapes.medium)
             .selectable(selected = selected, onClick = onSelect, role = Role.RadioButton),
     ) {
         RadioButton(selected = selected, onClick = null, modifier = Modifier.padding(end = 16.dp))

@@ -102,9 +102,10 @@ fun ShareDialog(
 @Composable
 private fun SharedItems(files: List<FileStat>) {
     val first = files.first()
+    // 对话框自己就是 surfaceContainerHigh，卡片取高一级才看得出边界
     Surface(
         shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        color = MaterialTheme.colorScheme.surfaceContainerHighest,
         modifier = Modifier.fillMaxWidth(),
     ) {
         Row(
@@ -141,21 +142,21 @@ private fun ShareOptions(state: ShareCreateState) {
             enabled = !state.isCreating,
             onSelect = { state.passCodeMode = it },
         )
-        if (state.passCodeMode == SharePassCodeMode.Custom) {
-            val showError = state.customPassCode.isNotEmpty() && !state.isCustomPassCodeValid
-            OutlinedTextField(
-                value = state.customPassCode,
-                onValueChange = { value -> state.customPassCode = value.filter { it.isLetterOrDigit() && it.code < 128 }.take(10) },
-                label = { Text("提取码") },
-                supportingText = { Text("4 至 10 位字母或数字") },
-                isError = showError,
-                singleLine = true,
-                enabled = !state.isCreating,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
-                shape = MaterialTheme.shapes.largeIncreased,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
+        // 输入框常驻，不选「自定义」时置灰：随选项出现、消失的话，Android 上按内容定高的对话框每切一次就跳一下
+        val custom = state.passCodeMode == SharePassCodeMode.Custom
+        val showError = custom && state.customPassCode.isNotEmpty() && !state.isCustomPassCodeValid
+        OutlinedTextField(
+            value = state.customPassCode,
+            onValueChange = { value -> state.customPassCode = value.filter { it.isLetterOrDigit() && it.code < 128 }.take(10) },
+            label = { Text("自定义提取码") },
+            supportingText = { Text("4 至 10 位字母或数字") },
+            isError = showError,
+            singleLine = true,
+            enabled = custom && !state.isCreating,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+            shape = MaterialTheme.shapes.largeIncreased,
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
     Option("有效期") {
         ConnectedToggle(
@@ -166,7 +167,15 @@ private fun ShareOptions(state: ShareCreateState) {
             onSelect = { state.expirationDays = it },
         )
     }
-    state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+    // 报错行常驻，没有报错时留空占位，理由同上
+    Text(
+        text = state.error.orEmpty(),
+        color = MaterialTheme.colorScheme.error,
+        style = MaterialTheme.typography.bodySmall,
+        minLines = 1,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+    )
 }
 
 @Composable
@@ -213,7 +222,7 @@ private fun ShareResult(url: String, passCode: String, expirationDays: Int) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Surface(
             shape = MaterialTheme.shapes.large,
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            color = MaterialTheme.colorScheme.surfaceContainerHighest,
             modifier = Modifier.fillMaxWidth(),
         ) {
             SelectionContainer {

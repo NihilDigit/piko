@@ -1,5 +1,6 @@
 package dev.piko.ui.screens.duplicates
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,7 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.TaskAlt
@@ -22,7 +23,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -37,6 +38,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.data.ScanStop
@@ -64,7 +67,7 @@ import kotlinx.coroutines.delay
  * 否则操作栏的底色停在横条上方，横条那一截是面板的颜色。宿主须把 contentWindowInsets 设为空。
  */
 @Composable
-fun DuplicatesSheetContent(state: DuplicateFinderState) {
+fun DuplicatesSheetContent(state: DuplicateFinderState, inSideSheet: Boolean = false) {
     var confirming by remember { mutableStateOf(false) }
     // 面板盖在网盘页的 Snackbar 之上，一次性提示就地显示几秒，与添加链接面板相同
     var notice by remember { mutableStateOf<String?>(null) }
@@ -81,13 +84,13 @@ fun DuplicatesSheetContent(state: DuplicateFinderState) {
     val showsSelectionBar = state.phase == Phase.DONE && hasGroups
 
     Column(modifier = Modifier.fillMaxWidth()) {
-        SheetHeader(state)
+        SheetHeader(state, showTitle = !inSideSheet)
         notice?.let {
             Text(
                 text = it,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
         }
         Box(modifier = Modifier.weight(1f, fill = false).fillMaxWidth()) {
@@ -180,15 +183,21 @@ fun DuplicatesSheetHandle(
     )
 }
 
-/** 标题与范围。面板有拖动条，下滑、点遮罩、返回都能关，与添加链接面板一样不放关闭按钮。 */
+/**
+ * 标题与范围。面板有拖动条，下滑、点遮罩、返回都能关，与添加链接面板一样不放关闭按钮。
+ * 侧栏形态顶上已有标题与收起那一行，[showTitle] 为 false，这里只写范围。
+ */
 @Composable
-private fun SheetHeader(state: DuplicateFinderState) {
+private fun SheetHeader(state: DuplicateFinderState, showTitle: Boolean) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 12.dp, bottom = 8.dp),
+        // 左边距与下面的扫描摘要、分组标题与各行同为 16，标题与内容左缘对齐
+        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(modifier = Modifier.weight(1f)) {
-            Text(text = "查找重复", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface)
+            if (showTitle) {
+                Text(text = "查找重复", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface)
+            }
             Text(
                 text = state.root.name,
                 style = MaterialTheme.typography.bodyMedium,
@@ -288,22 +297,19 @@ private fun LazyListScope.groups(groups: List<DuplicateGroup>, state: DuplicateF
         item(key = "$prefix:head") {
             GroupHeader(group, state)
         }
-        items(group.rows, key = { "$prefix:${it.file.id}" }) { row ->
+        // 一组的几行连成一段分段列表，组与组靠段与段之间的空隙分开，不画分隔线
+        itemsIndexed(group.rows, key = { _, row -> "$prefix:${row.file.id}" }) { index, row ->
             DuplicateRowItem(
                 row = row,
                 rootName = state.root.name,
                 checked = row.file.id in state.selectedIds,
                 kept = row.file.id == group.keptId && row.file.id !in state.selectedIds,
                 enabled = !state.isTrashing,
+                shape = ListItemDefaults.segmentedShapes(index = index, count = group.rows.size).shape,
                 onToggle = { state.toggle(row.file.id) },
-            )
-        }
-        // 组与组之间没有容器区分，分割线是唯一的边界。不用 alpha 兑色：兑出来的对比度取决于底下是
-        // surface 还是对话框的 surfaceContainerHigh，深色主题下几乎看不见
-        item(key = "$prefix:divider") {
-            HorizontalDivider(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                color = MaterialTheme.colorScheme.outlineVariant,
+                modifier = Modifier
+                    .padding(horizontal = 16.dp)
+                    .padding(top = if (index == 0) 4.dp else ListItemDefaults.SegmentedGap, bottom = if (index == group.rows.lastIndex) 12.dp else 0.dp),
             )
         }
     }
@@ -349,14 +355,19 @@ private fun DuplicateRowItem(
     checked: Boolean,
     kept: Boolean,
     enabled: Boolean,
+    shape: Shape,
     onToggle: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val file = row.file
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
+            .clip(shape)
+            // 面板是 surfaceContainerLow，段取高两级才看得出分段，与条目操作面板一致
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
             .clickable(enabled = enabled, onClick = onToggle)
-            .padding(start = 4.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
+            .padding(start = 4.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Checkbox(checked = checked, onCheckedChange = { onToggle() }, enabled = enabled)
