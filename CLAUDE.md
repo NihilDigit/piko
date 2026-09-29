@@ -17,6 +17,8 @@ Piko 是 PikPak 的第三方跨平台客户端。Android、Windows 与 macOS（�
 ./gradlew :desktopApp:desktopTest          # 桌面端测试，含 WinRT 与窗口过程，只能在 Windows 上跑
 ./gradlew :app:testDebugUnitTest           # Android 单测
 ./gradlew :desktopApp:createReleaseDistributable  # release 包（ProGuard + AOT），keep 规则一类问题只在这里暴露
+gh workflow run test.yml -f desktop=true   # 手动跑全部测试，含 Windows、macOS 的安装与更新冒烟
+gh workflow run release.yml -f version=9.9.9  # 发版演练：测试、构建、汇总照常，不建 release
 ```
 
 `gradlew :desktopApp:run` 直接读 `build/classes`，开发版运行期间重新编译它加载的模块，正在运行的进程会在
@@ -118,6 +120,10 @@ expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以
   取 `Frame.kt` 的 `FrameTopRowHeight`、`FrameBottomRowHeight`，与侧边栏的图标行、账号行对齐。
 - 图标：平时一律描边（Outlined），选中、打开、正在生效时换实心（Filled），侧边栏、导航项、视图切换、开关按钮都照此。
   挑图标时选实心与描边长得不一样的：History、Share、SyncAlt 两种写法同形，切换了看不出。播放器叠在画面上的操作按钮例外，用实心。
+- 顶栏滚动换色：列表页用 `PikoTopBar.kt` 的 `rememberListScrollTint`，按列表是否在顶端设顶栏状态，不要挂
+  `pinnedScrollBehavior` 的 nestedScroll。后者累加滚动量，列表换了内容（进子文件夹、换筛选）或根本滚不动时
+  仍停在换过色的状态。
+- 搜索框右端一直有取消按钮：有字时清空，没字时关掉搜索。触屏上没有 Esc，没有这个按钮就退不出去。
 - 返回栈：`PikoMainScaffold` 用 Navigation 3 的 `NavDisplay`，栈底 `Screen.Home` 是导航栏与三个根页面，
   其余页面压在上面、连同导航栏一起盖住。被盖住的 Home 离开组合，回来时重建，所以根页面的状态要经得起
   重建（网盘页的目录内容与滚动位置记在仓库里）。新页面加一个 `Screen` 子类、登记进 `NavKeyConfiguration`、
@@ -206,7 +212,10 @@ Compose 桌面端悬停移动事件的 `previousPosition` 恒等于 `position`�
 平台没有的能力返回 null 或 false，界面据此隐藏入口，例如桌面端没有系统分享。应用内更新两端都有，
 检查与版本比较在 `shared/.../shared/update`，安装各走各的：Android 交给 PackageInstaller；Windows 按文件清单
 决定只换补丁文件（exe、全部 jar、AOT 缓存、启动配置）、MSI 安装版整包重装，还是便携版从便携 zip 只换不同的文件，
-由 `apply-update.ps1` 在应用退出后执行，它要等 JVM 与启动器两个进程都退出（jpackage 的启动器另起同名子进程跑 JVM）；
+由 `apply-update.ps1` 在应用退出后执行，它要等 JVM 与启动器两个进程都退出（jpackage 的启动器另起同名子进程跑 JVM）。
+脚本里的相对路径逐级比对目录名得出，不按前缀截取：`%TEMP%` 可能是 8.3 短路径（`MARVIN~1`），与展开后的长路径
+前缀对不上，CI 上出过换完文件又重启、无限循环。增量补丁（zstd）在解码器加载不了的机器上（Windows ARM64）跳过，
+退回换整个文件；
 macOS 整个 .app 换成新 DMG 里的（`apply-update-mac.sh`），不逐个换文件，那会破坏签名封印。
 检查更新依次取 GitHub API、`releases/latest/download/release.json`（API 匿名限流，走代理的用户常被 403）。
 版本信息不经镜像取：附件摘要就在其中，镜像能连摘要一起伪造。下载附件在一个字节都没收到时退到 ghfast.top，
@@ -316,7 +325,8 @@ piko 源码仍是 MIT，但发版时要附 GPLv3 与第三方声明，并指明�
   否则安装后缓存作废（`msiexec /a` 解出安装包即可验证）。
   jlink、jpackage 与 ProGuard 用 Azul 的 JDK 25 工具链，与运行 Gradle 的 JDK 无关；Temurin 25 不带 jmods，ProGuard 会失败。
   打出 MSI 后由 `package/windows/transactional-upgrade.ps1` 把卸载旧版挪进安装事务：新版装失败时旧版文件保留，
-  但 Windows Installer 只把它记为「通告」状态，之后的应用内更新退回下载页。打包会弹出训练窗口约 12 秒。
+  但 Windows Installer 只把它记为「通告」状态，之后的应用内更新退回下载页。它还给 app 目录登记 `*.jar`、`*.xml`
+  的 RemoveFile 规则：增量更新换进来的新名字 jar 不在 MSI 的文件表里，没有这条卸载时会留下。打包会弹出训练窗口约 12 秒。
 - **原生**：mpv 与 FFmpeg 的 DLL 解开放在应用资源目录的 `mpv/` 下，启动时经
   `MpvMediampPlayer.prepareLibraries` 指过去；MediaMP 默认每次运行都解压一份到 `%TEMP%` 且删不掉。
   Toast 经 FFM 直调 combase 与 COM 虚表（`WindowsToast`），不用 kotlin-winrt。未打包应用的 AUMID
@@ -351,7 +361,9 @@ piko 源码仍是 MIT，但发版时要附 GPLv3 与第三方声明，并指明�
   写进去会破坏签名封印）；播放器全屏用 `WindowPlacement.Fullscreen`；magnet 链接、Cmd+Q 与点 Dock 图标
   经 Apple 事件进来；通知经 osascript（署名为脚本编辑器，自己署名要签过名的 bundle），防休眠经 caffeinate；
   快捷键的主修饰键由 `PikoPlatform.shortcutModifier` 给出，mac 上是 ⌘。平台胶水集中在 `MacOs.kt`。
-  更新器只给下载页。没有开发者证书，包未经签名与公证。
+  应用内更新整个换掉 .app（见「平台差异」一节）：新包先拷到旁边，过了 `codesign --verify` 再去掉隔离属性、换进去；
+  任何一步失败都留着旧包、重新打开它，下次启动时提示更新未完成（脚本写的 `failed` 标记）。
+  没有开发者证书，包未经签名与公证。
 
 ## 开发用 CLI
 
