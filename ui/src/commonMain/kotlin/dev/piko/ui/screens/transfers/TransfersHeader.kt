@@ -1,5 +1,9 @@
 package dev.piko.ui.screens.transfers
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.runtime.getValue
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -53,9 +57,8 @@ import dev.piko.ui.platform.windowDragArea
 /**
  * 传输页的页头。速度与蜗牛模式在底栏（TransfersFooter）。
  *
- * compact 是手机的样子：标题「传输」的顶栏，「全部继续」「清除已完成」是顶栏右边的图标按钮，类型筛选另起一行；
+ * compact 是手机的样子：标题「传输」、类型筛选与「全部继续」「清除已完成」图标按钮同在一行，见 [CompactTransfersHeader]；
  * 有选中项时顶栏换成上下文顶栏（关闭、「已选择 N 项」与批量操作），与网盘页的多选顶栏同一形状。
- * 手机上筛选与操作挤在一行里放不下，筛选只露出一截，也没有一处写明这是哪一页。
  *
  * 更宽时只有一行：左边是类型筛选，右边是操作，有选中项时换成「已选 N 项」与批量操作。宽窗口是带字的按钮，
  * medium 放不下，换成图标按钮，名字在悬停提示里。整行铺满窗口宽、内容按 [sidePadding] 缩进：
@@ -75,9 +78,11 @@ internal fun TransfersHeader(
     onPauseSelected: (() -> Unit)?,
     onResumeSelected: (() -> Unit)?,
     onDeleteSelected: () -> Unit,
+    /** 列表已离开顶端。compact 的页头据此换成 surfaceContainer，与内容分开（M3 top app bar 的 on scroll 状态）。 */
+    scrolled: Boolean = false,
 ) {
     if (compact) {
-        CompactTransfersHeader(state, selectedCount, showFilter, onPauseSelected, onResumeSelected, onDeleteSelected)
+        CompactTransfersHeader(state, selectedCount, showFilter, scrolled, onPauseSelected, onResumeSelected, onDeleteSelected)
         return
     }
     val caption = rememberCaptionSlot()
@@ -121,44 +126,70 @@ internal fun TransfersHeader(
     }
 }
 
+/**
+ * 手机上的页头只有一行：标题「传输」、类型筛选、操作。筛选原来另起一行，页头连状态栏占去一百多 dp，
+ * 手机上一屏本就放不下几项传输。筛选夹在中间带权重，放不下时自己横向滚动，标题与操作不被挤掉。
+ *
+ * 列表滚离顶端时底色换成 surfaceContainer（[scrolled]），与 M3 top app bar 的 on scroll 状态相同，
+ * 页头与滚到它下面的内容分得开；颜色渐变过去，不跳。有选中项时仍是上下文顶栏，同样随滚动换色。
+ */
 @Composable
 private fun CompactTransfersHeader(
     state: TransfersState,
     selectedCount: Int,
     showFilter: Boolean,
+    scrolled: Boolean,
     onPauseSelected: (() -> Unit)?,
     onResumeSelected: (() -> Unit)?,
     onDeleteSelected: () -> Unit,
 ) {
-    Column {
-        if (selectedCount > 0) {
-            PikoTopBar(
-                title = "已选择 $selectedCount 项",
-                navigationIcon = { TooltipIconButton(Icons.Outlined.Close, "取消选择", state::clearSelection, shortcut = "Esc") },
-                actions = {
-                    onPauseSelected?.let { HeaderAction(Icons.Outlined.Pause, "暂停", wide = false, it) }
-                    onResumeSelected?.let { HeaderAction(Icons.Outlined.PlayArrow, "继续", wide = false, it) }
-                    HeaderAction(Icons.Outlined.Delete, "删除", wide = false, onDeleteSelected, destructive = true, shortcut = "Delete")
-                },
-            )
-        } else {
-            PikoTopBar(
-                title = "传输",
-                actions = {
-                    if (state.canResumeAll) HeaderAction(Icons.Outlined.PlayArrow, "全部继续", wide = false, state::resumeAll)
-                    if (state.canClearCompleted) HeaderAction(Icons.Outlined.ClearAll, "清除已完成", wide = false, state::clearCompleted)
-                },
-            )
+    val colors = MaterialTheme.colorScheme
+    val container by animateColorAsState(
+        targetValue = if (scrolled) colors.surfaceContainer else colors.surface,
+        animationSpec = MaterialTheme.motionScheme.defaultEffectsSpec(),
+    )
+    if (selectedCount > 0) {
+        PikoTopBar(
+            title = "已选择 $selectedCount 项",
+            navigationIcon = { TooltipIconButton(Icons.Outlined.Close, "取消选择", state::clearSelection, shortcut = "Esc") },
+            actions = {
+                onPauseSelected?.let { HeaderAction(Icons.Outlined.Pause, "暂停", wide = false, it) }
+                onResumeSelected?.let { HeaderAction(Icons.Outlined.PlayArrow, "继续", wide = false, it) }
+                HeaderAction(Icons.Outlined.Delete, "删除", wide = false, onDeleteSelected, destructive = true, shortcut = "Delete")
+            },
+            colors = TopAppBarDefaults.topAppBarColors(containerColor = container, titleContentColor = colors.onSurface),
+        )
+        return
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(container)
+            .windowInsetsPadding(TopAppBarDefaults.windowInsets)
+            .heightIn(min = 64.dp)
+            .padding(start = 16.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "传输",
+            style = MaterialTheme.typography.titleLargeEmphasized,
+            maxLines = 1,
+        )
+        Spacer(Modifier.width(12.dp))
+        Box(modifier = Modifier.weight(1f)) {
+            // 留白放在滚动区里面：放在外面的话，按钮滑到边上之前就被裁掉，看着像到头了
+            if (showFilter) {
+                KindFilter(
+                    current = state.filter,
+                    counts = state.counts,
+                    onChange = state::changeFilter,
+                    contentPadding = PaddingValues(end = 8.dp),
+                    itemPadding = 12.dp,
+                )
+            }
         }
-        // 留白放在滚动区里面：放在外面的话，按钮滑到屏幕边之前就被裁掉，看着像到头了
-        if (showFilter) {
-            KindFilter(
-                current = state.filter,
-                counts = state.counts,
-                onChange = state::changeFilter,
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 8.dp),
-            )
-        }
+        if (state.canResumeAll) HeaderAction(Icons.Outlined.PlayArrow, "全部继续", wide = false, state::resumeAll)
+        if (state.canClearCompleted) HeaderAction(Icons.Outlined.ClearAll, "清除已完成", wide = false, state::clearCompleted)
     }
 }
 
@@ -195,6 +226,8 @@ private fun KindFilter(
     onChange: (TransferKind) -> Unit,
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(),
+    /** 每个按钮两侧的内边距。手机上与标题挤在一行，收窄一些，多露出一个类别。 */
+    itemPadding: Dp = 16.dp,
 ) {
     val kinds = TransferKind.entries
     val scroll = rememberScrollState()
@@ -207,7 +240,7 @@ private fun KindFilter(
                 checked = kind == current,
                 onCheckedChange = { if (kind != current) onChange(kind) },
                 shapes = connectedToggleShapes(index, kinds.size),
-                contentPadding = PaddingValues(horizontal = 16.dp),
+                contentPadding = PaddingValues(horizontal = itemPadding),
             ) {
                 FilterLabel(kind.label, counts[kind] ?: 0)
             }

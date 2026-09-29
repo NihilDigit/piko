@@ -40,6 +40,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -344,6 +345,8 @@ fun TransfersScreen(
     }
 
     val gridState = rememberLazyGridState()
+    // 列表离开顶端，页头据此换色；derivedStateOf 让滚动中每帧的偏移变化只在跨过顶端时才触发重组
+    val scrolled by remember { derivedStateOf { gridState.firstVisibleItemIndex > 0 || gridState.firstVisibleItemScrollOffset > 0 } }
     // 只响应进页之后的变化：计数器由主界面持有，切回本页时它已是旧值，不该再滚一次
     val initialScrollRequests = remember { scrollToTopRequests }
     LaunchedEffect(scrollToTopRequests) {
@@ -374,6 +377,7 @@ fun TransfersScreen(
                 onPauseSelected = pauseSelected,
                 onResumeSelected = resumeSelected,
                 onDeleteSelected = { confirmingDelete = true },
+                scrolled = scrolled,
             )
         },
     ) { innerPadding ->

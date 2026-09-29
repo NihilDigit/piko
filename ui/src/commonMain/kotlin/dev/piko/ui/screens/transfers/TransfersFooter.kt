@@ -62,6 +62,9 @@ internal fun TransfersFooter(state: TransfersState, sidePadding: Dp, compact: Bo
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            // 手机上底栏紧贴在导航栏上面，取导航栏的底色 surfaceContainer（M3 navigation bar 的容器色），
+            // 两条连成一块底座；页面本色的话，列表与导航栏之间多夹一条颜色不同的窄带。宽窗口它落在外框色上，不另上色
+            .then(if (compact) Modifier.background(MaterialTheme.colorScheme.surfaceContainer) else Modifier)
             // 导航栏在下面时它已让开系统导航条；平板上没有导航栏（侧边栏形态）时要自己让，否则底栏压在手势条下
             .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal))
             .height(FrameBottomRowHeight)
