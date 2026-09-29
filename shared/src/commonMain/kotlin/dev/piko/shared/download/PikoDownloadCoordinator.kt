@@ -134,9 +134,11 @@ class PikoDownloadCoordinator(
      * 只查内存任务表会在 App 重启后失忆（表是空的），明明下好的片子又去云端取流。
      * 这里以磁盘为准：sanitize 后的文件名对上、长度落满才算数，暂停中的半截文件不算。
      */
+    private fun localNameOf(file: FileStat): String = localFileNameOf(file)
+
     suspend fun findCompletedLocalPath(file: FileStat): String? = withContext(Dispatchers.IO) {
         if (file.sizeBytes <= 0L) return@withContext null
-        val name = FileNameSanitizer.sanitize(file.name)
+        val name = localNameOf(file)
         if (!storage.exists(name)) return@withContext null
         if (storage.existingLength(name) < file.sizeBytes) return@withContext null
         // SAF 目录返回的是 content: URI，播放器认不了，维持走云端（与之前行为一致）。
@@ -147,7 +149,7 @@ class PikoDownloadCoordinator(
         // 正在下载的同一个文件再点一次下载，不能用一份 PENDING 的新任务盖掉进行中的那份
         if (jobs.value[file.id]?.isActive == true) return
         onDownloadStarted?.invoke()
-        val name = FileNameSanitizer.sanitize(file.name)
+        val name = localNameOf(file)
         val existing = scope.launch(Dispatchers.IO) {
             val downloaded = storage.existingLength(name)
             val complete = downloaded >= file.sizeBytes && file.sizeBytes > 0L
@@ -462,4 +464,14 @@ class PikoDownloadCoordinator(
         val json = Json { ignoreUnknownKeys = true }
         val taskListSerializer = ListSerializer(DownloadTask.serializer())
     }
+}
+
+/**
+ * 存到本机的文件名。离线下载进来的文件常常名字里不带扩展名（「…[繁日雙語MP4][1080P]」），扩展名单在
+ * file_extension 里；照名字原样存，系统就不知道拿什么打开。名字里已经是这个扩展名的不重复补。
+ */
+internal fun localFileNameOf(file: FileStat): String {
+    val extension = file.fileExtension.trim().removePrefix(".")
+    val named = extension.isEmpty() || file.name.endsWith(".$extension", ignoreCase = true)
+    return FileNameSanitizer.sanitize(if (named) file.name else "${file.name}.$extension")
 }
