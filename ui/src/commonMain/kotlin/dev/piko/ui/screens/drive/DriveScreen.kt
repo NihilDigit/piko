@@ -60,6 +60,9 @@ import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.DriveFolderUpload
 import androidx.compose.material.icons.outlined.FileCopy
+import androidx.compose.material.icons.outlined.ContentCut
+import dev.piko.ui.components.CollapsedSheetHandle
+import dev.piko.ui.components.formatTimeMs
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Refresh
@@ -370,7 +373,7 @@ fun DriveScreen(
         renameTargetFile = file
         renameNewName = file.name
     }
-    var segmentTargetFile by remember { mutableStateOf<FileStat?>(null) }
+    val segmentSession = LocalPikoServices.current.segmentSession
     var actionTargetFile by remember { mutableStateOf<FileStat?>(null) }
     // 待移动的条目。选择器只负责选目录，移动本身与刷新在这里做，
     // 所以单项操作和多选工具栏可以共用同一套状态。
@@ -585,7 +588,7 @@ fun DriveScreen(
             onTogglePreview = { state.toggleSpoiler(file.id) },
             onToggleStar = { state.setStarred(file, starred = !file.isStarred) },
             onDownload = { enqueueDownload(file) },
-            onDownloadSegment = { segmentTargetFile = file },
+            onDownloadSegment = { segmentSession.open(file) },
             onRename = { startRename(file) },
             onMove = { moveTargetIds = setOf(file.id) },
             onCopy = { copyTargetIds = setOf(file.id) },
@@ -1048,6 +1051,9 @@ fun DriveScreen(
                 if (duplicateState != null && !duplicateSession.isSheetOpen) {
                     add(StashItem(Icons.Outlined.FileCopy, "继续查找重复", duplicateSession::reopen, "结束查找重复", duplicateSession::end))
                 }
+                if (segmentSession.file != null && !segmentSession.isSheetOpen) {
+                    add(StashItem(Icons.Outlined.ContentCut, "继续下载片段", segmentSession::reopen, "放弃下载片段", segmentSession::end))
+                }
                 // 挂起的信息流：打开它就是继续刷，关掉它才清空队列，见 PikoMainScaffold 的 resumeFeed 与 setFeedShown
                 if (feedStashed) {
                     onFeedShownChange?.let { feed ->
@@ -1246,6 +1252,16 @@ fun DriveScreen(
                                 state = duplicateState,
                                 onExpand = duplicateSession::reopen,
                                 onClose = duplicateSession::end,
+                            )
+                        }
+                        val collapsedSegment = segmentSession.file
+                        if (collapsedSegment != null && !segmentSession.isSheetOpen && !pathInTopBar) {
+                            CollapsedSheetHandle(
+                                title = collapsedSegment.name,
+                                status = "下载片段 ${formatTimeMs(segmentSession.startPosMs)} 至 ${formatTimeMs(segmentSession.endPosMs)}",
+                                closeLabel = "放弃下载片段",
+                                onExpand = segmentSession::reopen,
+                                onClose = segmentSession::end,
                             )
                         }
                     }
@@ -1564,7 +1580,7 @@ fun DriveScreen(
             onToggleStar = { state.setStarred(target, starred = !target.isStarred) },
             onDismiss = { actionTargetFile = null },
             onDownload = { enqueueDownload(target) },
-            onDownloadSegment = { segmentTargetFile = target },
+            onDownloadSegment = { segmentSession.open(target) },
             onRename = { startRename(target) },
             onMove = { moveTargetIds = setOf(target.id) },
             onCopy = { copyTargetIds = setOf(target.id) },
@@ -1710,13 +1726,13 @@ fun DriveScreen(
         )
     }
 
-    segmentTargetFile?.let { target ->
+    val segmentTarget = segmentSession.file
+    if (segmentTarget != null && segmentSession.isSheetOpen) {
         SegmentDownloadSheet(
-            file = target,
-            onDismiss = { segmentTargetFile = null },
+            session = segmentSession,
             onConfirmDownload = { startByte, lengthBytes, timeLabel, startMs, endMs, streamUrl ->
                 downloadManager.enqueueSegment(
-                    file = target,
+                    file = segmentTarget,
                     startMs = startMs,
                     endMs = endMs,
                     timeRangeLabel = timeLabel,
@@ -1724,7 +1740,7 @@ fun DriveScreen(
                     startByte = startByte,
                     lengthBytes = lengthBytes,
                 )
-                segmentTargetFile = null
+                segmentSession.end()
                 openTransfers()
             },
         )

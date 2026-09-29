@@ -1,6 +1,7 @@
 package dev.piko.ui
 
 import dev.piko.shared.sync.PikoSettingsSync
+import dev.piko.ui.components.SegmentSession
 import androidx.compose.runtime.staticCompositionLocalOf
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.repository.DriveRepository
@@ -86,6 +87,9 @@ class PikoServices(
             },
         )
     }
+
+    /** 下载片段的面板收起后选好的区间还在，见 [SegmentSession]。 */
+    val segmentSession: SegmentSession by lazy { SegmentSession() }
 
     val duplicateSession: DuplicateSession by lazy {
         DuplicateSession(

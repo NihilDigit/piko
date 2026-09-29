@@ -28,6 +28,7 @@ import androidx.compose.material3.ToggleButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -62,49 +63,105 @@ fun formatTimeMs(ms: Long): String {
     }
 }
 
-private enum class Handle(val label: String) { START("起点"), END("终点") }
+internal enum class Handle(val label: String) { START("起点"), END("终点") }
 
 // 片段至少这么长：再短抽出来只剩关键帧前后的零头
 private const val MIN_CLIP_MS = 500L
 
 /**
- * 下载视频片段：选起点与终点，原画质无损抽取为 MP4。
+ * 一次下载片段，活得比面板长：面板划走、点遮罩或返回只是收起，选好的起点与终点留着，
+ * 窄窗口底部留把手、宽窗口收进命令栏右端，点回来接着调；点关闭或下载了才结束。与 DuplicateSession 同一个形状，
+ * 挂在 PikoServices 上，网盘页被压栈页盖住、离开组合时也不丢。
+ *
+ * 对同一个文件再点「下载指定段落」回到这一次；换一个文件就丢掉旧的、开新的。
+ */
+@Stable
+class SegmentSession {
+    var file by mutableStateOf<FileStat?>(null)
+        private set
+
+    var isSheetOpen by mutableStateOf(false)
+        private set
+
+    internal var initialRange: LongRange? = null
+    internal var mediaInfo by mutableStateOf<PlayableMediaInfo?>(null)
+    internal var loaded by mutableStateOf(false)
+    internal var totalDurationMs by mutableLongStateOf(0L)
+    var startPosMs by mutableLongStateOf(0L)
+        internal set
+    var endPosMs by mutableLongStateOf(0L)
+        internal set
+    internal var editing by mutableStateOf(Handle.START)
+
+    /** [initialRange] 是信息流里「下载这一段」带过来的区间；为 null 时从头起一分钟。 */
+    fun open(target: FileStat, initialRange: LongRange? = null) {
+        if (file?.id != target.id || initialRange != null) {
+            end()
+            file = target
+            this.initialRange = initialRange
+        }
+        isSheetOpen = true
+    }
+
+    fun reopen() {
+        if (file != null) isSheetOpen = true
+    }
+
+    fun collapse() {
+        isSheetOpen = false
+    }
+
+    fun end() {
+        file = null
+        isSheetOpen = false
+        initialRange = null
+        mediaInfo = null
+        loaded = false
+        totalDurationMs = 0L
+        startPosMs = 0L
+        endPosMs = 0L
+        editing = Handle.START
+    }
+}
+
+/**
+ * 下载视频片段：选起点与终点，不转码抽取为 MP4。原片里 MP4 装不下的轨道（内封字幕、部分音轨）会丢，
+ * 所以界面上不说「无损」。状态在 [session] 里，收起再打开时原样回来。
  *
  * 只放一个预览，用「起点 | 终点」切换它显示哪一端；拖动区间滑块时自动跟随被拖的那一端。
  * 原先两张半屏宽的预览并排，画面小到看不清，且各开一个代理会话，白占一份账号连接预算。
- * 取消靠关闭面板（下滑、点遮罩或宽窗口的关闭按钮），不另设按钮。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SegmentDownloadSheet(
-    file: FileStat,
-    onDismiss: () -> Unit,
+    session: SegmentSession,
     onConfirmDownload: (startByte: Long, lengthBytes: Long, timeLabel: String, startMs: Long, endMs: Long, streamUrl: String?) -> Unit,
-    /** 初始区间，随机片段里「下载这一段」带过来；为 null 时从头起一分钟。 */
-    initialRange: LongRange? = null,
 ) {
+    val file = session.file ?: return
     val mediaRepo = LocalPikoServices.current.mediaRepository
 
-    var mediaInfo by remember { mutableStateOf<PlayableMediaInfo?>(null) }
-    var isLoading by remember { mutableStateOf(true) }
-    var totalDurationMs by remember { mutableLongStateOf(0L) }
-    var startPosMs by remember { mutableLongStateOf(0L) }
-    var endPosMs by remember { mutableLongStateOf(0L) }
-    var editing by remember { mutableStateOf(Handle.START) }
-
+    // 收起再打开时已经取过就不再取：区间跟着会话留着，重取会把它按初始区间盖掉
     LaunchedEffect(file.id) {
-        isLoading = true
+        if (session.loaded) return@LaunchedEffect
         mediaRepo.prepareMedia(file.id).onSuccess { info ->
-            mediaInfo = info
+            session.mediaInfo = info
             val duration = info.durationSeconds * 1000L
             if (duration > 0) {
-                totalDurationMs = duration
-                startPosMs = initialRange?.first?.coerceIn(0L, duration - MIN_CLIP_MS) ?: 0L
-                endPosMs = initialRange?.last?.coerceIn(startPosMs + MIN_CLIP_MS, duration) ?: minOf(duration, 60_000L)
+                val initialRange = session.initialRange
+                session.totalDurationMs = duration
+                session.startPosMs = initialRange?.first?.coerceIn(0L, duration - MIN_CLIP_MS) ?: 0L
+                session.endPosMs = initialRange?.last?.coerceIn(session.startPosMs + MIN_CLIP_MS, duration) ?: minOf(duration, 60_000L)
             }
         }
-        isLoading = false
+        session.loaded = true
     }
+
+    var totalDurationMs by session::totalDurationMs
+    var startPosMs by session::startPosMs
+    var endPosMs by session::endPosMs
+    var editing by session::editing
+    val mediaInfo = session.mediaInfo
+    val isLoading = !session.loaded
 
     val editingPosition = if (editing == Handle.START) startPosMs else endPosMs
     fun nudge(deltaMs: Long) {
@@ -114,7 +171,8 @@ fun SegmentDownloadSheet(
         }
     }
 
-    PikoSheet(onDismissRequest = onDismiss) {
+    // 划走、点遮罩、返回都只是收起，见 SegmentSession
+    PikoSheet(onDismissRequest = session::collapse) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -229,7 +287,7 @@ fun SegmentDownloadSheet(
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Text(
-                    text = "原画质无损抽取，起点会对齐到之前最近的关键帧",
+                    text = "起点对齐到前一个关键帧",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
