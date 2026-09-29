@@ -50,14 +50,18 @@ internal fun ColumnScope.BatchList(
     batch: InstantBatchState,
     state: InstantSheetState,
     notice: String?,
+    /** 侧栏形态的标题在面板顶上那一行，这里只留说明。 */
+    showTitle: Boolean,
     onPickTarget: () -> Unit,
 ) {
     Column {
-        Text(
-            text = "添加链接",
-            style = MaterialTheme.typography.titleLarge,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
+        if (showTitle) {
+            Text(
+                text = "添加链接",
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
         Text(
             text = "${batch.rows.size} 条链接，点开可勾选文件",
             style = MaterialTheme.typography.bodyMedium,

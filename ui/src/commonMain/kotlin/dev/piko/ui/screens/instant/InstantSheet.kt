@@ -103,6 +103,11 @@ import kotlinx.coroutines.flow.merge
 @Composable
 fun InstantSheetContent(
     state: InstantSheetState,
+    /**
+     * 在侧栏或模态侧边面板里：标题由面板顶上那一行画，内容不再画；侧栏只有三百来 dp，两边留白收窄。
+     * 底部 sheet 没有那一行，标题照旧在内容里。
+     */
+    inSideSheet: Boolean = false,
     /** 预览的文件已秒传进 Piko-Temp，交给播放器打开。 */
     onPreview: (fileId: String, fileName: String) -> Unit,
 ) {
@@ -146,8 +151,8 @@ fun InstantSheetContent(
             .fillMaxWidth()
             // 点面板的空白处交出输入框的焦点。子项自己的点击先消费，走不到这里
             .pointerInput(Unit) { detectTapGestures { focusManager.clearFocus() } }
-            .padding(horizontal = 24.dp)
-            .padding(bottom = 24.dp),
+            .padding(horizontal = if (inSideSheet) 16.dp else 24.dp)
+            .padding(bottom = if (inSideSheet) 16.dp else 24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         val openedRow = batch?.openedRow
@@ -155,17 +160,19 @@ fun InstantSheetContent(
             if (openedRow != null) {
                 BatchRowDetail(batch, openedRow, notice)
             } else {
-                BatchList(batch, state, notice, onPickTarget = { showTargetPicker = true })
+                BatchList(batch, state, notice, showTitle = !inSideSheet, onPickTarget = { showTargetPicker = true })
             }
             return@Column
         }
 
-        // 面板有拖动条，下滑、点遮罩、返回都能关，标题行不再放关闭按钮
-        Text(
-            text = "添加链接",
-            style = MaterialTheme.typography.titleLarge,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
+        // 底部 sheet 有拖动条，下滑、点遮罩、返回都能关，标题行不再放关闭按钮
+        if (!inSideSheet) {
+            Text(
+                text = "添加链接",
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
 
         if (state.isInputVisible) {
             OutlinedTextField(

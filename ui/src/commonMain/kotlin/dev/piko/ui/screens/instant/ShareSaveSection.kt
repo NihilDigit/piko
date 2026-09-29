@@ -3,6 +3,7 @@ package dev.piko.ui.screens.instant
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -47,62 +48,47 @@ import kotlinx.coroutines.delay
  * 保存位置与磁力共用同一个目标目录。
  */
 @Composable
-internal fun ShareSaveSection(
+internal fun ColumnScope.ShareSaveSection(
     state: ShareSaveState,
     target: PathBreadcrumb?,
     onPickTarget: () -> Unit,
 ) {
+    // 与磁力那一套用同一组部件：读取中、出错横幅、保存位置与保存按钮，两种链接看起来是同一个面板
     val info = state.info
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        when {
-            state.needsPassCode -> PassCodeRow(state)
-            info != null -> {
-                Text(
-                    text = listOf(info.title, info.owner.nickname.takeIf { it.isNotBlank() }?.let { "分享者 $it" })
-                        .filterNotNull().joinToString("  "),
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                ShareBrowser(state)
-            }
+    when {
+        state.needsPassCode -> PassCodeRow(state)
+        info != null -> {
+            Text(
+                text = listOf(info.title, info.owner.nickname.takeIf { it.isNotBlank() }?.let { "分享者 $it" })
+                    .filterNotNull().joinToString("  "),
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            // 与磁力的文件列表一样占去剩下的高度，不定死：长分享在面板里自己滚动，短的照常收缩
+            ShareBrowser(state, modifier = Modifier.weight(1f, fill = false))
         }
+    }
 
-        if (state.isLoading) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                InlineLoadingIndicator()
-                Spacer(Modifier.width(12.dp))
-                Text("正在读取分享", style = MaterialTheme.typography.bodyMedium)
-            }
+    if (state.isLoading) ResolvingRow(text = "正在读取分享")
+    state.errorMessage?.let { ErrorBanner(message = it, onRetry = null) }
+    state.doneMessage?.let { message ->
+        SaveCaption(message)
+        LaunchedEffect(message) {
+            delay(DONE_MESSAGE_MILLIS)
+            state.doneMessage = null
         }
-        state.errorMessage?.let {
-            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
-        }
-        state.doneMessage?.let { message ->
-            Text(message, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodyMedium)
-            LaunchedEffect(message) {
-                delay(DONE_MESSAGE_MILLIS)
-                state.doneMessage = null
-            }
-        }
+    }
 
-        if (info != null && !state.needsPassCode) {
-            TargetRow(target = target, notice = null, enabled = !state.isSaving, onClick = onPickTarget)
-            Button(
-                onClick = { target?.let { state.save(PikoPathBreadcrumb(it.id, it.name)) } },
-                enabled = target != null && state.selectedIds.isNotEmpty() && !state.isSaving,
-                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-            ) {
-                if (state.isSaving) {
-                    InlineLoadingIndicator(color = LocalContentColor.current)
-                    Spacer(Modifier.width(8.dp))
-                    Text("正在转存")
-                } else {
-                    val size = state.selectedBytes.takeIf { it > 0 }?.let { "（${it.toReadableSize()}）" }.orEmpty()
-                    Text(if (state.selectedIds.isEmpty()) "勾选要转存的内容" else "转存 ${state.selectedIds.size} 项$size")
-                }
-            }
-        }
+    if (info != null && !state.needsPassCode) {
+        TargetRow(target = target, notice = null, enabled = !state.isSaving, onClick = onPickTarget)
+        val size = state.selectedBytes.takeIf { it > 0 }?.let { "（${it.toReadableSize()}）" }.orEmpty()
+        SaveButton(
+            label = if (state.selectedIds.isEmpty()) "勾选要转存的内容" else "转存 ${state.selectedIds.size} 项$size",
+            enabled = target != null && state.selectedIds.isNotEmpty(),
+            isSaving = state.isSaving,
+            onClick = { target?.let { state.save(PikoPathBreadcrumb(it.id, it.name)) } },
+        )
     }
 }
 
@@ -122,10 +108,10 @@ private fun PassCodeRow(state: ShareSaveState) {
     }
 }
 
-/** 当前层的列表。上方一行是所在位置，可退回上一层。列表限高，长分享在面板里自己滚动。 */
+/** 当前层的列表。上方一行是所在位置，可退回上一层。 */
 @Composable
-private fun ShareBrowser(state: ShareSaveState) {
-    Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+private fun ShareBrowser(state: ShareSaveState, modifier: Modifier = Modifier) {
+    Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainerHigh, modifier = modifier) {
         Column {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 12.dp),
@@ -152,7 +138,7 @@ private fun ShareBrowser(state: ShareSaveState) {
                     }
                 }
             }
-            LazyColumn(modifier = Modifier.heightIn(max = BROWSER_MAX_HEIGHT)) {
+            LazyColumn(modifier = Modifier.weight(1f, fill = false)) {
                 items(state.entries, key = { it.id }) { file ->
                     ShareEntryRow(
                         file = file,
@@ -198,5 +184,4 @@ private fun ShareEntryRow(file: FileStat, checked: Boolean, onToggle: () -> Unit
     }
 }
 
-private val BROWSER_MAX_HEIGHT = 360.dp
 private const val DONE_MESSAGE_MILLIS = 4_000L
