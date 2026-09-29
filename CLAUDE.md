@@ -419,6 +419,8 @@ piko 源码仍是 MIT，但发版时要附 GPLv3 与第三方声明，并指明�
   它自己去 GitHub 查、只信 .zsync 里的 SHA-1，退不到 ghfast.top，也校验不了 GitHub 的摘要。
   新文件写在旧文件旁边（`.<名字>.piko-update`），校验过即改名换上，**不必等退出**：运行中的 AppImage 由 FUSE 挂载进程开着旧 inode。
   重新打开要等退出，否则新进程撞上单实例锁、转交完就走：由 `setsid sh` 等本进程的 pid 消失再 exec 新的 AppImage。
+  它的环境要去掉 `_JPACKAGE_LAUNCHER`：jpackage 的启动器在本进程里设了它，带着它起的新启动器不读 Piko.cfg，只打出 java 的用法。
+  应用自己起的子进程再拉起 Piko（例如经 xdg-open）都有这个问题。
   所在目录不可写或不是 AppImage 运行（解开的 app-image）时只给下载页。
 - **冒烟**：`package-smoke/linux.sh`，CI 的 `linux-package`（推送时不跑），`fake_release.py` 认单段 Range 并记下每次送出的字节数，
   断言差分确实只下了一部分。停应用只杀 JVM（挂载目录里的 `usr/bin/Piko`），先杀 AppImage 的运行时会把挂载从 JVM 底下拆掉，
@@ -473,7 +475,7 @@ Git Bash 会把以 `/` 开头的参数改写成 Windows 路径，传网盘路径
 
 都在 `.github/workflows/test.yml`，业务逻辑放 JVM 上测，原生行为在真机器上冒烟：Linux 上的 `:shared:desktopTest`，
 Windows 上的 `:desktopApp:desktopTest`，Android 单测，x86_64 模拟器（API 34）上的 `:app:connectedDebugAndroidTest`，
-以及 Windows、macOS 上对安装包的冒烟（`windows-package`、`macos-package`，推送时不跑）：安装、应用内更新，
+以及 Windows、macOS、Linux 上对安装包的冒烟（`windows-package`、`macos-package`、`linux-package`，推送时不跑）：安装、应用内更新，
 再验默认打开方式、在资源管理器中显示这类依赖系统真实行为的，包里的入口是 `SelfTest.kt`。冒烟走真实 libmpv、
 真实代理，PikPak 服务端用 MockEngine 顶替，SDK 的请求、鉴权与解析仍走真实代码。本地不必跑，以 CI 结果为准；
 安装与更新冒烟的脚本本机也能跑，见上面「平台差异」一节末尾。
