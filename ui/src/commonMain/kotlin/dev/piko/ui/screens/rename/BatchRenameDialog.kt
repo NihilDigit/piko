@@ -3,68 +3,84 @@ package dev.piko.ui.screens.rename
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.Button
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import dev.piko.shared.state.BatchRenameState
-import dev.piko.shared.state.BatchRenameState.Phase
-import dev.piko.shared.state.RenameProblem
-import dev.piko.shared.state.RenameRow
+import dev.piko.shared.rename.BatchRenameMemory
+import dev.piko.shared.rename.BatchRenameState
+import dev.piko.shared.rename.BatchRenameState.Phase
+import dev.piko.shared.rename.RenamePlan
+import dev.piko.shared.rename.RenameProblem
+import dev.piko.shared.rename.RenameRow
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.platform.LocalPikoPlatform
+import dev.piko.ui.theme.FrameCardShape
 import io.github.nihildigit.pikpak.FileStat
+import kotlinx.coroutines.flow.first
 
 /**
- * 批量重命名。规则与逐行预览在同一页，点「重命名」即确认，此前不发任何改名请求。
+ * 批量重命名，照 PowerToys 的 PowerRename：查找替换（可用正则）、序号与随机字符、日期、大小写格式，逐行预览，
+ * 点「重命名」即确认，此前不发任何改名请求。
+ *
+ * 用对话框，不停进右侧那一栏：预览要并排放原名与新名，那一栏太窄；执行前所选的一批也不该随着左边的浏览改变。
+ * expanded 下规则在左、预览是右边一张卡片；medium 是居中的单栏对话框，compact 全屏，都是规则在上、预览接在下面一起滚。
+ * 分区靠底色与圆角，不画分隔线：规则是设置页那样的分段行，预览是一张卡片。
+ * 关闭照 M3：全屏对话框（compact）才在左上角放关闭；浮着的基本对话框不画关闭，底栏「取消」在主按钮左边。
+ * Esc 在各档都等于取消。
  *
  * [onFinished] 在执行结束时收到一句结果，由调用方显示并退出多选。全部成功时对话框随即关闭；
  * 有失败或中途停止时留着，列出没改成的项，由用户点「完成」关闭。执行期间不能关闭，
@@ -76,9 +92,14 @@ fun BatchRenameDialog(
     onDismiss: () -> Unit,
     onFinished: (message: String) -> Unit,
 ) {
-    val driveRepo = LocalPikoServices.current.driveRepository
+    val services = LocalPikoServices.current
+    // 上次的选项读出来之前不画：先画默认值再跳成上次的，选项会闪一下
+    val remembered by produceState<Pair<BatchRenameMemory, Boolean>?>(null) {
+        value = BatchRenameMemory.load(services.preferences) to services.preferences.renameRegexTextModeFlow.first()
+    }
+    val (memory, textMode) = remembered ?: return
     val scope = rememberCoroutineScope()
-    val state = remember(files) { BatchRenameState(driveRepo, scope, files) }
+    val state = remember(files) { BatchRenameState(services.driveRepository, services.preferences, scope, files, memory, textMode) }
     val latestOnFinished by rememberUpdatedState(onFinished)
     val latestOnDismiss by rememberUpdatedState(onDismiss)
     // 结果与关闭放在同一个协程里依次做：分成两个 effect 的话，对话框可能先关掉，结果就收不到了
@@ -90,9 +111,8 @@ fun BatchRenameDialog(
     }
     val dismiss = { if (state.phase != Phase.RUNNING) onDismiss() }
 
-    // 与目录选择器相同：compact 下全屏，更宽时是居中的对话框
-    if (currentWidthClass() == WidthClass.Compact) {
-        LocalPikoPlatform.current.FullscreenDialog(
+    when (currentWidthClass()) {
+        WidthClass.Compact -> LocalPikoPlatform.current.FullscreenDialog(
             onDismiss = dismiss,
             immersive = false,
             systemBarsVisible = true,
@@ -100,262 +120,268 @@ fun BatchRenameDialog(
             Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
                 // 底部由底栏自己让开手势横条，底色才能铺到横条下面
                 Box(modifier = Modifier.windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))) {
-                    BatchRenameContent(state, dismiss)
+                    CompositionLocalProvider(LocalRenameRowColor provides MaterialTheme.colorScheme.surfaceContainer) {
+                        BatchRenameContent(state, dismiss, twoPane = false, fullscreen = true)
+                    }
                 }
             }
         }
-    } else {
-        Dialog(onDismissRequest = dismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-            Surface(
-                modifier = Modifier
-                    .widthIn(max = 640.dp)
-                    .fillMaxWidth(0.9f)
-                    .fillMaxHeight(0.85f),
-                shape = MaterialTheme.shapes.extraLarge,
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            ) {
-                BatchRenameContent(state, dismiss)
+        WidthClass.Medium -> RenameDialogSurface(dismiss, maxWidth = 640) {
+            BatchRenameContent(state, dismiss, twoPane = false, fullscreen = false)
+        }
+        WidthClass.Expanded -> RenameDialogSurface(dismiss, maxWidth = 1120) {
+            BatchRenameContent(state, dismiss, twoPane = true, fullscreen = false)
+        }
+    }
+}
+
+/**
+ * 分段行与预览卡片的底色。照 M3：全屏形态铺在 surface 上，行取 surfaceContainer，与设置页一致；
+ * 浮动的对话框本身是 surfaceContainerHigh，行要再高一级才分得出来，取 surfaceContainerHighest。
+ */
+internal val LocalRenameRowColor = staticCompositionLocalOf { Color.Unspecified }
+
+@Composable
+private fun RenameDialogSurface(onDismiss: () -> Unit, maxWidth: Int, content: @Composable () -> Unit) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(
+            // 高度写死比例，不随内容变：Android 的对话框按内容定高，预览行数一变整个对话框就跳
+            modifier = Modifier
+                .widthIn(max = maxWidth.dp)
+                .fillMaxWidth(0.92f)
+                .fillMaxHeight(0.88f),
+            shape = MaterialTheme.shapes.extraLarge,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        ) {
+            CompositionLocalProvider(LocalRenameRowColor provides MaterialTheme.colorScheme.surfaceContainerHighest) {
+                content()
             }
         }
     }
 }
 
 @Composable
-private fun BatchRenameContent(state: BatchRenameState, onClose: () -> Unit) {
-    val listState = rememberLazyListState()
+private fun BatchRenameContent(state: BatchRenameState, onClose: () -> Unit, twoPane: Boolean, fullscreen: Boolean) {
+    val focusSearch = !fullscreen
+    var changedOnly by remember { mutableStateOf(false) }
+    val searchFocus = remember { FocusRequester() }
+    // 触屏上一打开就弹出键盘会盖住预览，只在宽窗口里直接把焦点给查找框
+    if (focusSearch) {
+        LaunchedEffect(state) {
+            // 等一帧：单栏时查找框在懒加载列表里，测量时才组合出来
+            withFrameNanos {}
+            runCatching { searchFocus.requestFocus() }
+        }
+    }
     // 有问题的排在前面：几百项里只有一两项冲突时，不必滚到底去找
     val rows by remember(state) {
         derivedStateOf {
-            if (state.phase == Phase.DONE) state.failures.toList()
-            else state.plan.rows.sortedBy { it.problem == null }
+            if (state.phase == Phase.DONE) {
+                state.failures.toList()
+            } else {
+                state.plan.rows
+                    .filter { !changedOnly || it.isChanged || it.problem != null }
+                    .sortedBy { it.problem == null }
+            }
         }
     }
     val editable = state.phase == Phase.EDITING
+    val showRules = state.phase != Phase.DONE
 
     Column(modifier = Modifier.fillMaxSize()) {
         PikoTopBar(
-            title = "批量重命名 ${state.sources.size} 项",
-            navigationIcon = {
-                IconButton(onClick = onClose, enabled = state.phase != Phase.RUNNING) {
-                    Icon(Icons.Outlined.Close, contentDescription = "关闭")
+            title = "批量重命名",
+            navigationIcon = if (fullscreen) {
+                {
+                    IconButton(onClick = onClose, enabled = state.phase != Phase.RUNNING) {
+                        Icon(Icons.Outlined.Close, contentDescription = "关闭")
+                    }
                 }
+            } else {
+                null
             },
-            // 宽窗口下底色是对话框的容器色，顶栏自带的 surface 色会显出一条色带
             colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
         )
-        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
-                if (state.phase != Phase.DONE) {
-                    item(key = "rules") { RenameRules(state, enabled = editable) }
-                }
-                item(key = "header") { PreviewHeader(state) }
-                items(rows, key = { it.source.id }) { row -> PreviewRow(row) }
-            }
-            LocalPikoPlatform.current.ListScrollbar(listState, Modifier.align(Alignment.CenterEnd))
-        }
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        RenameActionBar(state, onClose)
-    }
-}
-
-@Composable
-private fun RenameRules(state: BatchRenameState, enabled: Boolean) {
-    Column(
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        val detected = state.detected
-        if (detected.prefix.isEmpty() && detected.suffix.isEmpty()) {
-            Text(
-                text = "所选名称没有共同的开头或结尾",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        if (detected.prefix.isNotEmpty()) {
-            AffixToggle("去掉共同开头", detected.prefix, state.stripPrefix, enabled) { state.stripPrefix = it }
-        }
-        if (detected.suffix.isNotEmpty()) {
-            AffixToggle("去掉共同结尾", detected.suffix, state.stripSuffix, enabled) { state.stripSuffix = it }
-        }
-        OutlinedTextField(
-            value = state.find,
-            onValueChange = { state.find = it },
-            label = { Text("查找") },
-            singleLine = true,
-            enabled = enabled,
-            modifier = Modifier.fillMaxWidth(),
-            shape = MaterialTheme.shapes.largeIncreased,
-        )
-        OutlinedTextField(
-            value = state.replacement,
-            onValueChange = { state.replacement = it },
-            label = { Text("替换为") },
-            singleLine = true,
-            enabled = enabled,
-            supportingText = { Text("只改扩展名之前的部分，留空即删除查找到的文字") },
-            modifier = Modifier.fillMaxWidth(),
-            shape = MaterialTheme.shapes.largeIncreased,
-        )
-    }
-}
-
-/** 识别出的前缀或后缀原样显示，用户据此判断该不该去掉。 */
-@Composable
-private fun AffixToggle(label: String, affix: String, checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(MaterialTheme.shapes.medium)
-            .toggleable(value = checked, enabled = enabled, role = Role.Checkbox, onValueChange = onChange)
-            .padding(vertical = 4.dp),
-    ) {
-        Checkbox(checked = checked, onCheckedChange = null, enabled = enabled)
-        Column(modifier = Modifier.weight(1f)) {
-            Text(label, style = MaterialTheme.typography.bodyMedium)
-            Text(
-                // 首尾的空格在界面上看不出来，用引号框住
-                text = "「$affix」",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-@Composable
-private fun PreviewHeader(state: BatchRenameState) {
-    val text = when {
-        state.phase != Phase.DONE -> "预览"
-        state.failures.isNotEmpty() -> "以下 ${state.failures.size} 项未能重命名"
-        else -> return
-    }
-    Text(
-        text = text,
-        style = MaterialTheme.typography.titleSmall,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 4.dp),
-    )
-}
-
-@Composable
-private fun PreviewRow(row: RenameRow) {
-    val problem = row.problem
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-    ) {
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(
-                text = row.source.name,
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (row.isChanged) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (row.isChanged) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Outlined.ArrowForward,
-                        contentDescription = "改为",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(16.dp),
+        if (twoPane) {
+            Row(modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp)) {
+                if (showRules) {
+                    BatchRenameOptions(
+                        state = state,
+                        enabled = editable,
+                        searchFocus = searchFocus,
+                        modifier = Modifier
+                            .width(380.dp)
+                            .fillMaxHeight()
+                            .verticalScroll(rememberScrollState())
+                            .padding(bottom = 16.dp),
                     )
+                    Spacer(Modifier.width(16.dp))
+                }
+                Surface(
+                    shape = FrameCardShape,
+                    color = LocalRenameRowColor.current,
+                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                ) {
+                    Column {
+                        PreviewHeader(state, changedOnly, { changedOnly = it }, Modifier.padding(start = 16.dp, end = 12.dp, top = 12.dp, bottom = 4.dp))
+                        PreviewColumnHeader(Modifier.padding(bottom = 4.dp))
+                        PreviewList(state, rows, wide = true, segmented = false, contentPadding = PaddingValues(bottom = 8.dp), modifier = Modifier.weight(1f)) {}
+                    }
+                }
+            }
+        } else {
+            PreviewList(state, rows, wide = false, segmented = true, contentPadding = PaddingValues(horizontal = 16.dp), modifier = Modifier.weight(1f)) {
+                if (showRules) {
+                    item(key = "rules") {
+                        BatchRenameOptions(state = state, enabled = editable, searchFocus = searchFocus, collapsible = true)
+                    }
+                }
+                item(key = "header") {
+                    PreviewHeader(state, changedOnly, { changedOnly = it }, Modifier.padding(start = 16.dp, top = 24.dp, bottom = 8.dp))
+                }
+            }
+        }
+        RenameActionBar(state, onClose, showCancel = !fullscreen)
+    }
+}
+
+/**
+ * 预览列表。[header] 放在各行之前，单栏时规则区与计数即由此接进同一个列表一起滚。
+ * [segmented] 时每行自带设置页那样的分段底色；两栏时整个列表已在一张卡片里，行不再另上底色。
+ */
+@Composable
+private fun PreviewList(
+    state: BatchRenameState,
+    rows: List<RenameRow>,
+    wide: Boolean,
+    segmented: Boolean,
+    contentPadding: PaddingValues,
+    modifier: Modifier,
+    header: LazyListScope.() -> Unit,
+) {
+    val listState = rememberLazyListState()
+    Box(modifier = modifier.fillMaxWidth()) {
+        LazyColumn(state = listState, contentPadding = contentPadding, modifier = Modifier.fillMaxSize()) {
+            header()
+            itemsIndexed(rows, key = { _, row -> row.source.id }) { index, row ->
+                PreviewRow(
+                    row = row,
+                    highlights = if (state.phase == Phase.DONE) emptyList() else state.highlights(row.source),
+                    included = row.source.id !in state.excludedIds,
+                    onIncludedChange = if (state.phase == Phase.DONE) null else { checked -> state.setIncluded(row.source.id, checked) },
+                    wide = wide,
+                    container = if (segmented) ListItemDefaults.segmentedShapes(index = index, count = rows.size).shape else null,
+                    selectionActions = if (state.phase != Phase.EDITING) {
+                        null
+                    } else {
+                        SelectionActions(
+                            propose = { range, edit, text -> state.proposeSelection(row.source, range, edit, text) },
+                            apply = state::applySelection,
+                            replacesRule = state.effectiveOptions.search.isNotEmpty() || state.effectiveOptions.replacement.isNotEmpty(),
+                        )
+                    },
+                )
+                if (segmented && index < rows.lastIndex) Spacer(Modifier.height(ListItemDefaults.SegmentedGap))
+            }
+            if (state.phase == Phase.EDITING && rows.isEmpty()) {
+                item(key = "empty") {
                     Text(
-                        text = row.newName.ifEmpty { "（空）" },
+                        text = "无变更项",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = if (problem != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(16.dp),
                     )
                 }
             }
-            if (problem != null) {
-                Text(problemLabel(problem), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-            }
         }
-        if (!row.isChanged) {
-            Text("不改", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
+        LocalPikoPlatform.current.ListScrollbar(listState, Modifier.align(Alignment.CenterEnd))
     }
 }
 
-private fun problemLabel(problem: RenameProblem): String = when (problem) {
-    RenameProblem.EMPTY -> "去掉后名称为空"
-    RenameProblem.TAKEN -> "与同目录已有的名称重复"
-    RenameProblem.DUPLICATE -> "与所选其他项的新名称重复"
-    RenameProblem.CYCLE -> "与所选其他项的名称互换，无法依次改名"
-}
-
+/**
+ * 底栏：左边一句说明，右边是操作，说明写的正是按钮为什么不可用或正在做什么。能执行时不写说明，
+ * 按钮上的「重命名 N 项」已经说全了。[showCancel] 用于浮着的对话框：取消在主按钮左边；全屏形态由左上角的关闭代替。
+ */
 @Composable
-private fun RenameActionBar(state: BatchRenameState, onClose: () -> Unit) {
+private fun RenameActionBar(state: BatchRenameState, onClose: () -> Unit, showCancel: Boolean) {
+    val colors = MaterialTheme.colorScheme
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+            .padding(horizontal = 24.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        when (state.phase) {
-            Phase.EDITING -> EditingStatus(state)
-            Phase.RUNNING -> {
-                Text(
-                    text = "正在重命名 ${state.processed}/${state.total}",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                LinearProgressIndicator(
-                    progress = { if (state.total == 0) 0f else state.processed.toFloat() / state.total },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            Phase.DONE -> {
-                val succeeded = state.processed - state.failures.size
-                Text(
-                    text = if (state.wasStopped) "已停止，重命名了 $succeeded 项" else "已重命名 $succeeded 项，${state.failures.size} 项失败",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            }
+        if (state.phase == Phase.RUNNING) {
+            LinearProgressIndicator(
+                progress = { if (state.total == 0) 0f else state.processed.toFloat() / state.total },
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
-        ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            val (status, isError) = actionStatus(state)
+            Text(
+                text = status,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (isError) colors.error else colors.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
+            val count = state.plan.changeCount
+            val renameButton: @Composable () -> Unit = {
+                Button(onClick = state::rename, enabled = state.canRename, shape = MaterialTheme.shapes.medium) {
+                    Text(if (count == 0) "重命名" else "重命名 $count 项")
+                }
+            }
             when (state.phase) {
                 Phase.EDITING -> {
-                    OutlinedButton(onClick = onClose, shape = MaterialTheme.shapes.medium) { Text("取消") }
-                    Button(onClick = state::rename, enabled = state.canRename, shape = MaterialTheme.shapes.medium) {
-                        Text(if (state.plan.order.isEmpty()) "重命名" else "重命名 ${state.plan.order.size} 项")
-                    }
+                    if (state.siblingsFailed) TextButton(onClick = state::loadSiblings) { Text("重试") }
+                    if (showCancel) TextButton(onClick = onClose) { Text("取消") }
+                    renameButton()
                 }
-                Phase.RUNNING -> OutlinedButton(onClick = state::stop, shape = MaterialTheme.shapes.medium) { Text("停止") }
+                // 执行中「停止」占「取消」的位置，全屏形态本来没有取消，也放在同一处
+                Phase.RUNNING -> {
+                    TextButton(onClick = state::stop) { Text("停止") }
+                    renameButton()
+                }
                 Phase.DONE -> Button(onClick = onClose, shape = MaterialTheme.shapes.medium) { Text("完成") }
             }
         }
     }
 }
 
-@Composable
-private fun EditingStatus(state: BatchRenameState) {
-    val problemCount = state.plan.problemCount
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(
-            text = when {
-                state.isCheckingSiblings -> "正在检查同目录的名称"
-                state.siblingsFailed -> "无法检查同目录的名称"
-                problemCount > 0 -> "$problemCount 项有问题，处理后才能重命名"
-                state.plan.order.isEmpty() -> "按当前规则，没有需要改名的项"
-                else -> {
-                    val unchanged = state.sources.size - state.plan.order.size
-                    "将重命名 ${state.plan.order.size} 项" + if (unchanged > 0) "，$unchanged 项不改" else ""
-                }
-            },
-            style = MaterialTheme.typography.bodyMedium,
-            color = if (state.siblingsFailed || problemCount > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(1f),
-        )
-        if (state.siblingsFailed) TextButton(onClick = state::loadSiblings) { Text("重试") }
+/**
+ * 有问题时底栏的说明。撞上同目录现有名称的与受其牵连的分开报数：只选一部分重新编号时，真正要处理的是那一两个重名，
+ * 把它们一并选中或换个起始序号即可，其余会跟着解开。撞上的是哪个名称写在各行里，这里不重复，文件名太长放不下。
+ */
+private fun problemStatus(plan: RenamePlan): String {
+    val taken = plan.rows.count { it.problem == RenameProblem.TAKEN }
+    val blocked = plan.rows.count { it.problem == RenameProblem.BLOCKED }
+    if (taken == 0) return "${plan.problemCount} 项存在问题，修正或取消勾选后方可执行"
+    val others = plan.problemCount - taken - blocked
+    return buildString {
+        append("$taken 项与同目录现有文件重名")
+        if (blocked > 0) append("，另有 $blocked 项受其牵连")
+        if (others > 0) append("，$others 项另有问题")
+        append("。可一并选中重名的文件，或调整新名称")
+    }
+}
+
+/** 底栏左边的说明，以及它是否是错误。 */
+private fun actionStatus(state: BatchRenameState): Pair<String, Boolean> {
+    val plan = state.plan
+    return when (state.phase) {
+        Phase.RUNNING -> "正在重命名 ${state.processed}/${state.total}" to false
+        Phase.DONE -> {
+            val succeeded = state.processed - state.failures.size
+            if (state.wasStopped) "已停止，已重命名 $succeeded 项" to false else "已重命名 $succeeded 项，${state.failures.size} 项失败" to true
+        }
+        Phase.EDITING -> when {
+            state.patternError != null -> "正则表达式有误" to true
+            state.isCheckingSiblings -> "正在检查同目录名称" to false
+            state.siblingsFailed -> "无法检查同目录名称" to true
+            plan.problemCount > 0 -> problemStatus(plan) to true
+            plan.changeCount == 0 -> "无需改名" to false
+            else -> "" to false
+        }
     }
 }
