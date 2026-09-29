@@ -1,13 +1,12 @@
 package dev.piko.shared.smoke
 
 import dev.piko.data.auth.PikoUserPreferences
-import dev.piko.data.auth.QuotaSnapshot
 import dev.piko.data.auth.SidePanelPrefs
 import dev.piko.data.auth.SnailMode
 import dev.piko.shared.net.ProxySetting
-import dev.piko.data.auth.UserSession
 import dev.piko.shared.data.PikoCredentials
 import dev.piko.shared.data.PikoSessionStore
+import dev.piko.shared.data.SavedAccounts
 import io.github.nihildigit.pikpak.Session
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -35,6 +34,8 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun setSpoilerBlurEnabled(enabled: Boolean) = Unit
     override val autoCheckUpdatesFlow: Flow<Boolean> = MutableStateFlow(true)
     override suspend fun setAutoCheckUpdates(enabled: Boolean) = Unit
+    override val reduceMotionFlow: Flow<Boolean> = MutableStateFlow(false)
+    override suspend fun setReduceMotion(enabled: Boolean) = Unit
     override val heuristicFilterFlow: Flow<Boolean> = MutableStateFlow(false)
     override suspend fun setHeuristicFilterEnabled(enabled: Boolean) = Unit
     override val nameParsingFlow: Flow<Boolean> = MutableStateFlow(true)
@@ -67,12 +68,6 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun setPikpakDomain(root: String) = Unit
     override val snailModeFlow: Flow<SnailMode> = MutableStateFlow(SnailMode())
     override suspend fun setSnailMode(mode: SnailMode) = Unit
-    override val sessionFlow: Flow<UserSession> = MutableStateFlow(UserSession())
-    override suspend fun saveSession(token: String, refreshToken: String, userId: String, username: String, avatarUrl: String) = Unit
-    override suspend fun saveProfile(username: String, avatarUrl: String, email: String) = Unit
-    override val quotaSnapshotFlow: Flow<QuotaSnapshot?> = MutableStateFlow(null)
-    override suspend fun saveQuotaSnapshot(usageBytes: Long, limitBytes: Long) = Unit
-    override suspend fun clearSession() = Unit
     private val acceleration = MutableStateFlow(true)
     override val concurrentAccelerationFlow: Flow<Boolean> = acceleration
     override val concurrentConnectionsFlow: Flow<Int> = acceleration.map { if (it) 4 else 1 }
@@ -103,6 +98,10 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun saveRecentMoveTargets(serialized: String) = Unit
     override val pinnedFoldersFlow: Flow<String> = MutableStateFlow("")
     override suspend fun savePinnedFolders(serialized: String) = Unit
+    override val batchRenameFlow: Flow<String> = MutableStateFlow("")
+    override suspend fun saveBatchRename(serialized: String) = Unit
+    override val renameRegexTextModeFlow: Flow<Boolean> = MutableStateFlow(false)
+    override suspend fun setRenameRegexTextMode(enabled: Boolean) = Unit
     override val proxySettingFlow: Flow<ProxySetting> = MutableStateFlow(ProxySetting())
     override suspend fun saveProxySetting(setting: ProxySetting) = Unit
     override suspend fun getIgnoredUpdateVersion(): String? = null
@@ -113,7 +112,7 @@ class MemoryPreferences : PikoUserPreferences {
 class MemorySessionStore : PikoSessionStore {
     val sessions = ConcurrentHashMap<String, Session>()
     val passwords = ConcurrentHashMap<String, String>()
-    @Volatile var lastAccount: String? = null
+    @Volatile var accounts = SavedAccounts()
 
     override suspend fun load(account: String): Session? = sessions[account]
     override suspend fun save(account: String, session: Session) {
@@ -122,12 +121,9 @@ class MemorySessionStore : PikoSessionStore {
     override suspend fun clear(account: String) {
         sessions.remove(account)
     }
-    override suspend fun loadLastAccount(): String? = lastAccount
-    override suspend fun saveLastAccount(account: String) {
-        lastAccount = account
-    }
-    override suspend fun clearLastAccount() {
-        lastAccount = null
+    override suspend fun loadAccounts(): SavedAccounts = accounts
+    override suspend fun saveAccounts(accounts: SavedAccounts) {
+        this.accounts = accounts
     }
     override suspend fun loadCredentials(account: String): PikoCredentials? =
         passwords[account]?.let { PikoCredentials(account, it) }

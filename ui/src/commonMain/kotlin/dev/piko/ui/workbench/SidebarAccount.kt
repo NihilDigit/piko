@@ -46,7 +46,8 @@ import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.screens.settings.AccountCard
 import dev.piko.ui.screens.settings.Avatar
-import dev.piko.ui.screens.settings.LogoutDialog
+import dev.piko.ui.screens.settings.AccountSwitcher
+import dev.piko.ui.screens.settings.LogoutButton
 import dev.piko.ui.screens.settings.rememberAccountSummary
 import dev.piko.update.UpdateStatus
 
@@ -60,7 +61,7 @@ import dev.piko.update.UpdateStatus
 @Composable
 internal fun SidebarAccountRow(selected: Boolean, onOpenSettings: () -> Unit, collapsed: Boolean = false) {
     val account = rememberAccountSummary()
-    val session = account.session
+    val saved = account.saved
     val availableUpdate = (LocalPikoPlatform.current.updater?.status as? UpdateStatus.Available)?.update
     val colors = MaterialTheme.colorScheme
     val shortcut = LocalPikoPlatform.current.shortcutModifier.label(",")
@@ -82,7 +83,7 @@ internal fun SidebarAccountRow(selected: Boolean, onOpenSettings: () -> Unit, co
                 contentAlignment = Alignment.Center,
             ) {
                 BadgedBox(badge = { if (availableUpdate != null) Badge() }) {
-                    Avatar(session?.username, session?.avatarUrl, size = 32.dp)
+                    Avatar(saved?.displayName, saved?.avatarUrl, size = 32.dp)
                 }
             }
             return@TooltipBox
@@ -100,10 +101,10 @@ internal fun SidebarAccountRow(selected: Boolean, onOpenSettings: () -> Unit, co
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Avatar(session?.username, session?.avatarUrl, size = 32.dp)
+            Avatar(saved?.displayName, saved?.avatarUrl, size = 32.dp)
             Column(Modifier.weight(1f)) {
                 Text(
-                    session?.username?.ifEmpty { null } ?: "PikPak 用户",
+                    saved?.displayName ?: "PikPak 用户",
                     style = MaterialTheme.typography.labelLarge,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -130,7 +131,7 @@ internal fun SidebarAccountRow(selected: Boolean, onOpenSettings: () -> Unit, co
 }
 
 /**
- * 设置页里「账号」一类的内容：账号卡片与退出登录。有整条侧边栏的宽窗口没有「我的」页，它们放在设置的最前；
+ * 设置页里「账号」一类的内容：账号卡片、切换与添加账号、退出登录。有整条侧边栏的宽窗口没有「我的」页，它们放在设置的最前；
  * 手机上它们在「我的」页。
  *
  * 账号卡片不放进侧边栏的下拉菜单：菜单按内容的固有尺寸定大小，卡片展开流量额度后的用量表格是
@@ -138,19 +139,10 @@ internal fun SidebarAccountRow(selected: Boolean, onOpenSettings: () -> Unit, co
  */
 @Composable
 internal fun ColumnScope.AccountSettings(onLogout: () -> Unit) {
-    var confirmLogout by remember { mutableStateOf(false) }
-    AccountCard(rememberAccountSummary())
+    // 宽窗口没有下拉刷新，另给按钮
+    AccountCard(rememberAccountSummary(), showRefresh = true)
     Spacer(Modifier.height(12.dp))
-    OutlinedButton(
-        onClick = { confirmLogout = true },
-        modifier = Modifier.fillMaxWidth(),
-        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-    ) {
-        Icon(Icons.AutoMirrored.Outlined.Logout, contentDescription = null, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(8.dp))
-        Text("退出登录")
-    }
-    if (confirmLogout) {
-        LogoutDialog(onDismiss = { confirmLogout = false }, onLoggedOut = onLogout)
-    }
+    AccountSwitcher()
+    Spacer(Modifier.height(12.dp))
+    LogoutButton(onLoggedOut = onLogout)
 }

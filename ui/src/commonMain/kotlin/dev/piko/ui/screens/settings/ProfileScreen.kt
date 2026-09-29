@@ -28,6 +28,9 @@ import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.Refresh
+import dev.piko.ui.components.TooltipIconButton
+import kotlinx.coroutines.coroutineScope
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Share
@@ -81,6 +84,7 @@ import dev.piko.ui.adaptive.readableSidePadding
 import dev.piko.ui.adaptive.readableWidth
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.navigation.Screen
+import io.github.nihildigit.pikpak.CountQuota
 import io.github.nihildigit.pikpak.TransferAllowances
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
@@ -88,7 +92,7 @@ import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import java.util.Locale
 import kotlinx.coroutines.launch
-import dev.piko.data.auth.UserSession
+import dev.piko.shared.data.SavedAccount
 import androidx.compose.ui.unit.Dp
 
 /**
@@ -110,8 +114,7 @@ fun ProfileScreen(
     onBackClick: (() -> Unit)? = null,
 ) {
     val account = rememberAccountSummary()
-    val session = account.session
-    var showLogoutDialog by remember { mutableStateOf(false) }
+    val saved = account.saved
     val snackbarHostState = remember { SnackbarHostState() }
 
     // 顶栏写的是账号名而不是「我的」：写「我的」只是把导航栏标签抄一遍，账号名才是这一页在讲的
@@ -119,8 +122,7 @@ fun ProfileScreen(
     // 内容。副标题在收起态也在（flexible 顶栏的 subtitle 同时用作收起态的小副标题），只放一行短字，
     // 头像与会员期留在下面的账号卡里
     val topBarScrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
-    val accountLabel = session?.email?.ifBlank { null }
-        ?: session?.userId?.ifBlank { null }?.let { "UID $it" }
+    val accountLabel = saved?.email?.ifBlank { null } ?: saved?.account?.takeIf { it != saved.displayName }
     PikoScaffold(
         modifier = modifier
             .fillMaxSize()
@@ -137,7 +139,7 @@ fun ProfileScreen(
                     actions = { caption.buttons?.invoke() },
                     title = {
                         Text(
-                            text = session?.username?.ifEmpty { null } ?: "PikPak 用户",
+                            text = saved?.displayName ?: "PikPak 用户",
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -168,6 +170,10 @@ fun ProfileScreen(
                 .readableWidth(),
         ) {
             AccountCard(account)
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            AccountSwitcher()
 
             Spacer(modifier = Modifier.height(16.dp))
 
@@ -237,62 +243,72 @@ fun ProfileScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            OutlinedButton(
-                onClick = { showLogoutDialog = true },
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.outlinedButtonColors(
-                    contentColor = MaterialTheme.colorScheme.error,
-                ),
-            ) {
-                Icon(Icons.AutoMirrored.Outlined.Logout, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("退出登录")
-            }
+            LogoutButton(onLoggedOut = onLogout)
         }
     }
-
-    if (showLogoutDialog) LogoutDialog(onDismiss = { showLogoutDialog = false }, onLoggedOut = onLogout)
 }
 
 /** 账号卡片要的数据：会话、网盘空间与流量额度。「我的」页与桌面侧边栏左下角的账号菜单共用。 */
 internal class AccountSummary(
-    val session: UserSession?,
+    /** 当前账号在列表里记着的资料；启动恢复前为 null。 */
+    val saved: SavedAccount?,
     val quota: QuotaSnapshot?,
     val allowances: TransferAllowances?,
     val allowancesError: String?,
+    /** 每日离线次数，只有免费账号有上限。 */
+    val cloudDownload: CountQuota?,
+    val refreshing: Boolean,
+    val refresh: () -> Unit,
 )
 
-/** 取 [AccountSummary]，并在进入组合时刷新一次空间、流量额度与昵称头像。 */
+/** 取 [AccountSummary]，并在进入组合时与 [AccountSummary.refresh] 时刷新空间、流量额度与昵称头像。 */
 @Composable
 internal fun rememberAccountSummary(): AccountSummary {
     val services = LocalPikoServices.current
-    val sessionManager = services.preferences
     val driveRepo = services.driveRepository
-    val session by sessionManager.sessionFlow.collectAsStateWithLifecycle(initialValue = null)
-    // 网络回来之前先用上次存下的数字渲染，否则卡片整块缺席、刷新完再跳出来
+    val accounts by services.clientManager.accounts.collectAsStateWithLifecycle()
+    val client by services.clientManager.currentClient.collectAsStateWithLifecycle()
+    val saved = client?.account?.let(accounts::find)
+    // 网络回来之前先用列表里记着的数字渲染，否则卡片整块缺席、刷新完再跳出来
     val liveQuota by driveRepo.quotaFlow.collectAsStateWithLifecycle()
-    val cachedQuota by sessionManager.quotaSnapshotFlow.collectAsStateWithLifecycle(initialValue = null)
+    val cachedQuota = saved?.takeIf { it.limitBytes > 0 }?.let { QuotaSnapshot(it.usageBytes, it.limitBytes) }
     val quota = liveQuota?.let { QuotaSnapshot(it.quota.usageBytes, it.quota.limitBytes) } ?: cachedQuota
     // 不落盘，只在本页存活期间保留；失败时留着上一次的值，只在旁边补一行错误文字
     val transferQuota by driveRepo.transferQuotaFlow.collectAsStateWithLifecycle()
     var transferQuotaError by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(Unit) {
-        driveRepo.getQuota()
-        // 昵称与头像不随登录态返回，每次进入取一次。
-        // 失败不提示：头像本就有首字母兜底，为它弹一条错误反而扰人。
-        services.accountRepository.refreshProfile()
+    var refreshCount by remember { mutableStateOf(0) }
+    var refreshing by remember { mutableStateOf(false) }
+    LaunchedEffect(refreshCount) {
+        refreshing = true
+        coroutineScope {
+            launch {
+                driveRepo.getQuota()
+                // 昵称与头像不随登录态返回，每次进入取一次。
+                // 失败不提示：头像本就有首字母兜底，为它弹一条错误反而扰人。
+                services.accountRepository.refreshProfile()
+            }
+            launch {
+                driveRepo.getTransferQuota()
+                    .onSuccess { transferQuotaError = null }
+                    .onFailure { transferQuotaError = "流量额度加载失败" }
+            }
+        }
+        refreshing = false
     }
-    LaunchedEffect(Unit) {
-        driveRepo.getTransferQuota()
-            .onSuccess { transferQuotaError = null }
-            .onFailure { transferQuotaError = "流量额度加载失败" }
-    }
-    return AccountSummary(session, quota, transferQuota?.account, transferQuotaError)
+    return AccountSummary(
+        saved = saved,
+        quota = quota,
+        allowances = transferQuota?.account,
+        allowancesError = transferQuotaError,
+        cloudDownload = liveQuota?.quotas?.cloudDownload,
+        refreshing = refreshing,
+        refresh = { refreshCount++ },
+    )
 }
 
-/** 退出登录前的确认。「我的」页与桌面侧边栏的账号菜单共用。 */
+/** 退出当前账号前的确认。[next] 是退出后要切过去的已保存账号，没有时回登录页。 */
 @Composable
-internal fun LogoutDialog(onDismiss: () -> Unit, onLoggedOut: () -> Unit) {
+internal fun LogoutDialog(next: SavedAccount?, onDismiss: () -> Unit, onLoggedOut: () -> Unit) {
     val clientManager = LocalPikoServices.current.clientManager
     val scope = rememberCoroutineScope()
     AlertDialog(
@@ -304,8 +320,11 @@ internal fun LogoutDialog(onDismiss: () -> Unit, onLoggedOut: () -> Unit) {
                 tint = MaterialTheme.colorScheme.error,
             )
         },
-        title = { Text("退出登录") },
-        text = { Text("退出后将清除本机保存的 PikPak 登录凭据。") },
+        title = { Text(if (next == null) "退出登录" else "退出此账号") },
+        text = {
+            val after = next?.let { "，随后切换至「${it.displayName}」" }.orEmpty()
+            Text("将清除本机保存的该账号登录凭据$after。")
+        },
         // 对话框的按钮一律是 text button，破坏性确认也一样：对话框本身已经拦了一道，
         // 确认键不必再用一块红色抢视线，error 色的文字足以说明后果
         confirmButton = {
@@ -339,9 +358,9 @@ internal fun LogoutDialog(onDismiss: () -> Unit, onLoggedOut: () -> Unit) {
  * 是 Surface 不是 Card：M3 的 card 是可以点进去的单一主题入口，这一块不可点，只是个容器。
  */
 @Composable
-internal fun AccountCard(account: AccountSummary) {
-    val username = account.session?.username
-    val avatarUrl = account.session?.avatarUrl
+internal fun AccountCard(account: AccountSummary, showRefresh: Boolean = false) {
+    val username = account.saved?.displayName
+    val avatarUrl = account.saved?.avatarUrl
     val quota = account.quota
     val allowances = account.allowances
     val allowancesError = account.allowancesError
@@ -353,21 +372,31 @@ internal fun AccountCard(account: AccountSummary) {
         Column(modifier = Modifier.padding(16.dp)) {
             // 头像、会员期与空间并成一行：名字挪到顶栏之后，头像旁边只剩一枚会员期，单独占一行太空。
             // 会员期缩成小胶囊挂在「网盘空间」那一行的尾部，它和空间同属「这个账号有多少」
-            val memberUntil = allowances?.expireTime?.let(::formatExpireDate)
+            // 免费账号的保存与离线规则不同，写明账号类型，行为上的差别才有来由
+            val tier = when {
+                allowances == null -> null
+                allowances.isPremium -> allowances.expireTime.let(::formatExpireDate)?.let { "会员至 $it" }
+                else -> "免费账号"
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Avatar(username = username, avatarUrl = avatarUrl)
                 Spacer(modifier = Modifier.width(16.dp))
                 if (quota != null) {
-                    StorageSection(quota, memberUntil, Modifier.weight(1f))
-                } else if (memberUntil != null) {
-                    MemberChip(memberUntil)
+                    StorageSection(quota, tier, Modifier.weight(1f))
+                } else if (tier != null) {
+                    TierChip(tier)
+                }
+                if (showRefresh) {
+                    if (quota == null) Spacer(modifier = Modifier.weight(1f))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    TooltipIconButton(Icons.Outlined.Refresh, "刷新", account.refresh, enabled = !account.refreshing)
                 }
             }
 
             if (allowances != null || allowancesError != null) {
                 // 折叠行自带上下内边距作点击区，这里的间距比视觉上的段距小
                 Spacer(modifier = Modifier.height(8.dp))
-                TransferSection(allowances, allowancesError)
+                TransferSection(allowances, account.cloudDownload, allowancesError)
             }
         }
     }
@@ -406,7 +435,7 @@ internal fun Avatar(username: String?, avatarUrl: String?, size: Dp = AvatarSize
 private val AvatarSize = 48.dp
 
 @Composable
-private fun MemberChip(memberUntil: String, modifier: Modifier = Modifier) {
+private fun TierChip(tier: String, modifier: Modifier = Modifier) {
     Surface(
         shape = CircleShape,
         color = MaterialTheme.colorScheme.secondaryContainer,
@@ -414,7 +443,7 @@ private fun MemberChip(memberUntil: String, modifier: Modifier = Modifier) {
         modifier = modifier,
     ) {
         Text(
-            text = "会员至 $memberUntil",
+            text = tier,
             style = MaterialTheme.typography.labelSmall,
             maxLines = 1,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
@@ -423,14 +452,14 @@ private fun MemberChip(memberUntil: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun StorageSection(quota: QuotaSnapshot, memberUntil: String?, modifier: Modifier = Modifier) {
+private fun StorageSection(quota: QuotaSnapshot, tier: String?, modifier: Modifier = Modifier) {
     val fraction = usedFraction(quota.usageBytes, quota.limitBytes)
     val nearlyFull = fraction >= NEARLY_FULL_FRACTION
     val accent = if (nearlyFull) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
     Column(modifier = modifier) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             SectionLabel("网盘空间", Modifier.weight(1f))
-            if (memberUntil != null) MemberChip(memberUntil)
+            if (tier != null) TierChip(tier)
         }
         Spacer(modifier = Modifier.height(2.dp))
         Row(modifier = Modifier.fillMaxWidth()) {
@@ -468,13 +497,25 @@ private fun StorageSection(quota: QuotaSnapshot, memberUntil: String?, modifier:
 }
 
 /**
- * 默认折叠成一行，只报用得最满的一项：流量额度要掂量的是「哪一项快见底了」，其余几格平时用不着看。
- * 展开后才写重置天数，折叠行放不下两段摘要，而天数只在某项接近用完时才有意义。
+ * 额度分两块，按重置的周期分：「今日额度」只有免费账号有（每日下载与每日离线次数，新加坡时间 0 点重置），
+ * 「本月流量」两种账号都有（每月 1 日重置）。放在一块里，标题与重置说明总有一半说不对。
  */
 @Composable
-private fun TransferSection(allowances: TransferAllowances?, error: String?) {
-    var expanded by rememberSaveable { mutableStateOf(false) }
-    val usages = allowances?.let(::transferUsages).orEmpty()
+private fun TransferSection(allowances: TransferAllowances?, cloudDownload: CountQuota?, error: String?) {
+    val daily = allowances?.let { dailyUsages(it, cloudDownload) }.orEmpty()
+    Column {
+        if (daily.isNotEmpty()) UsageSection("今日额度", daily, ::dailyQuotaResetLabel, error = null)
+        UsageSection("本月流量", allowances?.let(::monthlyUsages).orEmpty(), ::transferQuotaResetLabel, error)
+    }
+}
+
+/**
+ * 默认折叠成一行，只报用得最满的一项：额度要掂量的是「哪一项快见底了」，其余几格平时用不着看。
+ * 展开后才写多久重置，折叠行放不下两段摘要，而重置时间只在某项接近用完时才有意义。
+ */
+@Composable
+private fun UsageSection(title: String, usages: List<Usage>, resetLabel: () -> String, error: String?) {
+    var expanded by rememberSaveable(title) { mutableStateOf(false) }
     val tightest = usages.maxByOrNull { usedFraction(it.usedBytes, it.limitBytes) }
     Column {
         Row(
@@ -489,9 +530,9 @@ private fun TransferSection(allowances: TransferAllowances?, error: String?) {
                 .padding(vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            SectionLabel("本月流量", Modifier.weight(1f))
+            SectionLabel(title, Modifier.weight(1f))
             val summary = when {
-                expanded -> transferQuotaResetLabel()
+                expanded -> resetLabel()
                 tightest != null -> tightestUsageLabel(tightest)
                 else -> null
             }
@@ -527,12 +568,22 @@ private fun TransferSection(allowances: TransferAllowances?, error: String?) {
     }
 }
 
-private fun transferUsages(allowances: TransferAllowances): List<Usage> = buildList {
-    add(Usage("离线", allowances.offline.usedBytes, allowances.offline.limitBytes))
-    add(Usage("下载", allowances.download.usedBytes, allowances.download.limitBytes))
-    add(Usage("上传", allowances.upload.usedBytes, allowances.upload.limitBytes))
+private fun monthlyUsages(allowances: TransferAllowances): List<Usage> = listOf(
+    Usage("离线", allowances.offline.usedBytes, allowances.offline.limitBytes),
+    Usage("下载", allowances.download.usedBytes, allowances.download.limitBytes),
+    Usage("上传", allowances.upload.usedBytes, allowances.upload.limitBytes),
+)
+
+/** 会员两项都没有：每日下载的上限为 0，离线次数不限。 */
+private fun dailyUsages(allowances: TransferAllowances, cloudDownload: CountQuota?): List<Usage> = buildList {
     if (allowances.downloadDaily.limitBytes > 0) {
-        add(Usage("每日下载", allowances.downloadDaily.usedBytes, allowances.downloadDaily.limitBytes))
+        add(Usage("下载", allowances.downloadDaily.usedBytes, allowances.downloadDaily.limitBytes))
+    }
+    // 秒传不算离线次数，这一格只数离线任务
+    val remaining = cloudDownload?.remaining
+    if (cloudDownload != null && remaining != null) {
+        val limit = cloudDownload.limit.toLong()
+        add(Usage("离线", limit - remaining, limit, format = { "$it 次" }))
     }
 }
 
@@ -541,7 +592,7 @@ private fun tightestUsageLabel(usage: Usage): String =
     if (usage.limitBytes > 0) {
         "${usage.title}已用 ${(usedFraction(usage.usedBytes, usage.limitBytes) * 100).toInt()}%"
     } else {
-        "${usage.title}已用 ${usage.usedBytes.toReadableSize()}"
+        "${usage.title}已用 ${usage.format(usage.usedBytes)}"
     }
 
 @Composable
@@ -580,7 +631,12 @@ private fun UsageGrid(usages: List<Usage>) {
  * 月度流量额度（离线下载、下载、上传）的一格。流量额度是官方网页流量配额弹窗在客户端的对应物；
  * 第三方应用共享的 `connectedApps` 那 25% 不显示：piko 走的是账号自身额度，不占用那一份。
  */
-private class Usage(val title: String, val usedBytes: Long, val limitBytes: Long)
+private class Usage(
+    val title: String,
+    val usedBytes: Long,
+    val limitBytes: Long,
+    val format: (Long) -> String = { it.toReadableSize() },
+)
 
 private val USAGE_TILE_MIN_WIDTH = 88.dp
 
@@ -605,13 +661,13 @@ private fun UsageTile(usage: Usage, modifier: Modifier = Modifier) {
                 maxLines = 1,
             )
             Text(
-                text = usage.usedBytes.toReadableSize(),
+                text = usage.format(usage.usedBytes),
                 style = MaterialTheme.typography.titleMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                text = "/ ${usage.limitBytes.toReadableSize()}",
+                text = "/ ${usage.format(usage.limitBytes)}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -635,6 +691,13 @@ private fun transferQuotaResetLabel(): String {
     val today = OffsetDateTime.now(ZoneOffset.ofHours(8)).toLocalDate()
     val reset = today.plusMonths(1).withDayOfMonth(1)
     return "${ChronoUnit.DAYS.between(today, reset)} 天后重置"
+}
+
+/** 距下一次每日重置（新加坡时间 0 点）还有几小时，不足 1 小时写「1 小时内」。 */
+private fun dailyQuotaResetLabel(): String {
+    val now = OffsetDateTime.now(ZoneOffset.ofHours(8))
+    val hours = ChronoUnit.HOURS.between(now, now.toLocalDate().plusDays(1).atStartOfDay().atOffset(now.offset))
+    return if (hours < 1) "1 小时内重置" else "$hours 小时后重置"
 }
 
 /** 非会员时 [TransferAllowances.expireTime] 为空字符串，解析失败也一并按「没有」处理。 */

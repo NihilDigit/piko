@@ -1,6 +1,5 @@
 package dev.piko.desktop
 
-import dev.piko.data.auth.UserSession
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.runBlocking
 import java.io.File
@@ -11,22 +10,6 @@ import kotlin.test.assertFalse
 class DesktopPikoPreferencesTest {
 
     private fun tempFile(): File = File.createTempFile("piko-prefs-test", ".properties").also { it.delete() }
-
-    @Test
-    fun session_survivesStoreRecreation() = runBlocking {
-        val file = tempFile()
-        DesktopPikoPreferences(DesktopSettingsStore(file))
-            .saveSession("tok", "ref", "u1", "nobody", "http://a/v.png")
-
-        val reloaded = DesktopPikoPreferences(DesktopSettingsStore(file))
-        val session = (reloaded.sessionFlow as StateFlow<UserSession>).value
-        assertEquals("tok", session.token)
-        assertEquals("nobody", session.username)
-
-        reloaded.clearSession()
-        val cleared = (DesktopPikoPreferences(DesktopSettingsStore(file)).sessionFlow as StateFlow<UserSession>).value
-        assertFalse(cleared.isLoggedIn)
-    }
 
     @Test
     fun playbackFolderAndSwitches_roundTrip() = runBlocking {

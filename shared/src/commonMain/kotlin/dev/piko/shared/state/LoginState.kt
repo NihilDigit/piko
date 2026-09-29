@@ -17,8 +17,9 @@ import kotlinx.coroutines.launch
 class LoginState(
     private val clientManager: PikoClientManager,
     private val scope: CoroutineScope,
+    initialAccount: String = "",
 ) {
-    var account by mutableStateOf("")
+    var account by mutableStateOf(initialAccount)
         private set
     var password by mutableStateOf("")
         private set
@@ -42,6 +43,32 @@ class LoginState(
     fun dismissError() {
         errorMessage = null
     }
+
+    /**
+     * 登录页列出的已保存账号：会话还有效就直接进去；失效了又没存密码时填上账号名，等用户输密码。
+     */
+    fun useSaved(saved: String, onExpired: () -> Unit = {}) {
+        if (isLoggingIn) return
+        isLoggingIn = true
+        usingSaved = saved
+        errorMessage = null
+        scope.launch {
+            try {
+                clientManager.switchTo(saved).onFailure {
+                    account = saved
+                    errorMessage = "登录已失效，请输入密码"
+                    onExpired()
+                }
+            } finally {
+                isLoggingIn = false
+                usingSaved = null
+            }
+        }
+    }
+
+    /** 正在经 [useSaved] 进入的已保存账号，界面在那一行上转圈。 */
+    var usingSaved by mutableStateOf<String?>(null)
+        private set
 
     fun login() {
         if (!canSubmit) return

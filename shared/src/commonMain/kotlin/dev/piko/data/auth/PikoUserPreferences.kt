@@ -3,20 +3,7 @@ package dev.piko.data.auth
 import dev.piko.shared.net.ProxySetting
 import kotlinx.coroutines.flow.Flow
 
-data class UserSession(
-    val token: String = "",
-    val refreshToken: String = "",
-    val userId: String = "",
-    val username: String = "",
-    val avatarUrl: String = "",
-    /** 服务端返回时已打码（a***@example.com），API 取不到完整地址。 */
-    val email: String = "",
-    val concurrentConnections: Int = 8,
-) {
-    val isLoggedIn: Boolean get() = token.isNotEmpty()
-}
-
-/** 上次取回的配额。用于进页面时先出数字，避免等网络期间卡片整块缺席。 */
+/** 网盘空间用量。取到之前先用账号列表里记着的上一次的值，免得卡片整块缺席。 */
 data class QuotaSnapshot(val usageBytes: Long, val limitBytes: Long)
 
 /** 侧栏的开关与宽度。[widthDp] 为 null 表示从未拖过，取调用方的默认宽度。 */
@@ -121,19 +108,6 @@ interface PikoUserPreferences {
     val snailModeFlow: Flow<SnailMode>
     suspend fun setSnailMode(mode: SnailMode)
 
-    val sessionFlow: Flow<UserSession>
-    suspend fun saveSession(token: String, refreshToken: String = "", userId: String = "", username: String = "", avatarUrl: String = "")
-
-    /**
-     * 只更新昵称、头像与邮箱。saveSession 会无条件重写 token，
-     * 用它写资料会在刷新资料时把登录态覆盖掉。
-     */
-    suspend fun saveProfile(username: String, avatarUrl: String, email: String)
-
-    val quotaSnapshotFlow: Flow<QuotaSnapshot?>
-    suspend fun saveQuotaSnapshot(usageBytes: Long, limitBytes: Long)
-
-    suspend fun clearSession()
     val concurrentAccelerationFlow: Flow<Boolean>
     val concurrentConnectionsFlow: Flow<Int>
     val downloadDirPathFlow: Flow<String>
@@ -165,6 +139,17 @@ interface PikoUserPreferences {
     val pinnedFoldersFlow: Flow<String>
     suspend fun savePinnedFolders(serialized: String)
 
+    /** 批量重命名上次的选项与最近用过的查找、替换串，JSON，见 BatchRenameMemory。空串表示从未保存。每台设备各自的，不同步。 */
+    val batchRenameFlow: Flow<String>
+    suspend fun saveBatchRename(serialized: String)
+
+    /**
+     * 批量重命名的查找替换写成正则文本，而不是拼积木。默认关（积木）。记的是用户手动切换的结果，
+     * 因正则无法图形化而停在文本模式的那一次不算。跨设备同步：它反映的是这个人的水平。
+     */
+    val renameRegexTextModeFlow: Flow<Boolean>
+    suspend fun setRenameRegexTextMode(enabled: Boolean)
+
     /** 应用内网络请求用的代理，见 PikoProxySelector。 */
     val proxySettingFlow: Flow<ProxySetting>
     suspend fun saveProxySetting(setting: ProxySetting)
@@ -172,6 +157,10 @@ interface PikoUserPreferences {
     /** 开屏自动检查更新，默认开。关掉后只在设置页手动检查。 */
     val autoCheckUpdatesFlow: Flow<Boolean>
     suspend fun setAutoCheckUpdates(enabled: Boolean)
+
+    /** 设置里的「减少动画」，默认关，与系统的减少动画取或。每台设备各自的，不同步：系统那一半本来就按设备。 */
+    val reduceMotionFlow: Flow<Boolean>
+    suspend fun setReduceMotion(enabled: Boolean)
 
     /** 开屏提示里点了「忽略此版本」的版本号。只比相等，更新的版本出来照常提示。 */
     suspend fun getIgnoredUpdateVersion(): String?

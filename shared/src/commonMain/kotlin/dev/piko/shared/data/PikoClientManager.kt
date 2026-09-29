@@ -1,6 +1,7 @@
 package dev.piko.shared.data
 
 import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFailure
 import io.github.nihildigit.pikpak.PikPakClient
 import io.github.nihildigit.pikpak.PikPakException
 import io.github.nihildigit.pikpak.Session
@@ -14,6 +15,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.time.TimeSource
 
 /**
@@ -23,6 +26,9 @@ import kotlin.time.TimeSource
 class PasswordRequiredException : IllegalStateException("登录已失效，请重新登录")
 
 /**
+ * 登录态与已保存的账号。同一时刻只有一个账号在用（[currentClient]），其余登录过、没退出的记在 [accounts] 里，
+ * 手动切换（[switchTo]）。切换即换一个 client，各仓库照旧只认 [currentClient]，按账号的东西在账号变了时各自换一份。
+ *
  * @param httpClient 交给 SDK 的 API 客户端。缺省由 SDK 自建；冒烟测试在这里换成 Ktor 的
  *   MockEngine，走的仍是 SDK 真实的鉴权、重试与解析路径。
  */
@@ -36,6 +42,17 @@ class PikoClientManager(
 
     private val _isInitializing = MutableStateFlow(true)
     val isInitializing: StateFlow<Boolean> = _isInitializing.asStateFlow()
+
+    private val _accounts = MutableStateFlow(SavedAccounts())
+    val accounts: StateFlow<SavedAccounts> = _accounts.asStateFlow()
+    private val accountsLock = Mutex()
+
+    /** 登录着一个账号、又打开登录页去加另一个。登录成功或取消时结束；这期间当前账号照常在后台工作。 */
+    private val _addingAccount = MutableStateFlow(false)
+    val addingAccount: StateFlow<Boolean> = _addingAccount.asStateFlow()
+
+    // 切换、登录与退出都在换 client，交错时后完成的会把先完成的换掉，而账号列表记的是先完成的那个
+    private val switchLock = Mutex()
 
     private var reconnectJob: Job? = null
 
@@ -56,12 +73,14 @@ class PikoClientManager(
      */
     suspend fun restore() {
         try {
-            val account = sessionStore.loadLastAccount()?.takeIf { it.isNotBlank() } ?: run {
-                PikoLog.i(TAG, "启动：没有上次的账号，进登录页")
+            val saved = sessionStore.loadAccounts()
+            _accounts.value = saved
+            val account = saved.current?.takeIf { it.isNotBlank() } ?: run {
+                PikoLog.i(TAG, "启动：没有上次的账号，进登录页，已保存 ${saved.accounts.size} 个账号")
                 return
             }
-            val credentials = sessionStore.loadCredentials(account)
-            PikoLog.i(TAG, "启动：恢复上次的账号，${credentialState(account, credentials?.password != null)}")
+            val credentials = credentialsOf(account)
+            PikoLog.i(TAG, "启动：恢复上次的账号，${credentialState(account, credentials?.password != null)}，已保存 ${saved.accounts.size} 个账号")
             val client = clientFor(account, credentials?.password)
             when (val failure = tryLogin(client, "恢复会话")) {
                 null -> _currentClient.value = client
@@ -70,8 +89,12 @@ class PikoClientManager(
                     _currentClient.value = client
                     scheduleReconnect(client)
                 }
-                // 刷新令牌失效时 SDK 已在改用密码登录之前把会话从存储里清掉，这里不必再清
-                is LoginFailure.Rejected -> client.close()
+                // 刷新令牌失效时 SDK 已在改用密码登录之前把会话从存储里清掉，这里不必再清。
+                // 账号留在列表里：登录页据此列出它，重新输入密码即可
+                is LoginFailure.Rejected -> {
+                    client.close()
+                    editAccounts { it.copy(current = null) }
+                }
             }
         } finally {
             _isInitializing.value = false
@@ -87,9 +110,8 @@ class PikoClientManager(
             try {
                 client.login()
                 PikoLog.i(TAG, "密码登录成功，用时 ${started.elapsedNow().inWholeMilliseconds} ms")
-                sessionStore.saveLastAccount(account)
                 sessionStore.saveCredentials(account, password)
-                replaceClient(client)
+                switchLock.withLock { adopt(client) }
                 client
             } catch (e: Throwable) {
                 client.close()
@@ -114,8 +136,7 @@ class PikoClientManager(
             try {
                 client.login()
                 PikoLog.i(TAG, "令牌登录成功")
-                sessionStore.saveLastAccount(account)
-                replaceClient(client)
+                switchLock.withLock { adopt(client) }
                 client
             } catch (e: Throwable) {
                 client.close()
@@ -124,32 +145,125 @@ class PikoClientManager(
         }.onFailure { PikoLog.w(TAG, "令牌登录失败，${describeAuthError(it)}", it) }
 
     /**
-     * 退出登录。清凭据在进程级的 [scope] 里做，调用方被取消也照样做完：退出按钮在对话框里，
-     * 对话框一关，它的协程作用域就取消了。旧实现在调用方的协程里清，界面已显示退出、
-     * 磁盘上的凭据却还在，下次启动又自动登录。返回的 Job 供需要等清完的调用方 join。
+     * 切到已保存的 [account]。本地会话还有效时不发请求，当场换好；断网时照样切过去，后台等网络恢复，与启动时一样。
+     * 会话被服务端拒绝、又没有保存的密码时失败，仍停在原来的账号，由界面引导重新登录。
+     */
+    suspend fun switchTo(account: String): Result<Unit> = runSuspendCatching {
+        switchLock.withLock {
+            if (_currentClient.value?.account == account) return@withLock
+            val credentials = credentialsOf(account)
+            PikoLog.i(TAG, "切换账号，${credentialState(account, credentials?.password != null)}")
+            val client = clientFor(account, credentials?.password)
+            val failure = tryLogin(client, "切换账号")
+            if (failure is LoginFailure.Rejected) {
+                client.close()
+                throw failure.error
+            }
+            adopt(client)
+            if (failure is LoginFailure.Transient) scheduleReconnect(client)
+        }
+    }
+
+    /**
+     * 打开登录页去加一个账号，当前账号不退出。[account] 非空时登录页预先填上它：已保存的账号会话失效，要重新输入密码。
+     */
+    fun beginAddingAccount(account: String = "") {
+        addingPrefill = account
+        _addingAccount.value = true
+    }
+
+    /** 登录页打开时读一次，见 [beginAddingAccount]。 */
+    var addingPrefill: String = ""
+        private set
+
+    /** 见 [PikoSessionStore.encryptsAtRest]。 */
+    suspend fun credentialsEncrypted(): Boolean = runSuspendCatching { sessionStore.encryptsAtRest() }.getOrDefault(false)
+
+    fun cancelAddingAccount() {
+        _addingAccount.value = false
+    }
+
+    /**
+     * 退出当前账号：清掉它的会话与密码，从列表里去掉，再切到最近用过的另一个已保存账号；切不过去的跳过，
+     * 一个也没有时回登录页。
      *
-     * 正在退出时再调，返回同一个 Job，不另起一份：两份交错时，后一份看到 client 已被摘下，
-     * 直接清掉 last account，前一份随后就判断不出凭据归谁。调用都在主线程，检查与赋值之间没有挂起点。
+     * 在进程级的 [scope] 里做，调用方被取消也照样做完：退出按钮在对话框里，对话框一关，它的协程作用域就取消了，
+     * 在那里清的话界面已显示退出、磁盘上的凭据却还在，下次启动又自动登录。返回的 Job 供需要等清完的调用方 join。
+     * 正在退出时再调，返回同一个 Job，不另起一份，否则第二份会把刚切过去的账号也退掉。
      */
     fun logout(): Job = logoutJob?.takeIf { it.isActive } ?: startLogout().also { logoutJob = it }
 
     private var logoutJob: Job? = null
 
     private fun startLogout(): Job = scope.launch {
-        PikoLog.i(TAG, "退出登录")
-        reconnectJob?.cancel()
-        val current = _currentClient.value
-        // 先摘下 client 再关、再清：界面不再拿它发请求；关掉之后它也不会在刷新令牌时把会话写回，
-        // 先清后关则可能被这样写回
-        _currentClient.value = null
-        if (current != null) {
-            current.close()
-            // 先清密码再清会话：Desktop 的存储以 last account 判断归属，清会话会连它一起删掉，
-            // 之后再清密码就找不到主人了。
-            sessionStore.clearCredentials(current.account)
-            sessionStore.clear(current.account)
+        switchLock.withLock {
+            val leaving = _currentClient.value ?: return@withLock
+            PikoLog.i(TAG, "退出登录")
+            reconnectJob?.cancel()
+            // 先摘下、关掉 client 再清：界面不再拿它发请求；关掉之后它也不会在刷新令牌时把会话写回，
+            // 先清后关则可能被这样写回
+            _currentClient.value = null
+            leaving.close()
+            forgetStored(leaving.account)
+            val next = _accounts.value.accounts.sortedByDescending { it.usedAt }.firstNotNullOfOrNull { candidate ->
+                val credentials = credentialsOf(candidate.account)
+                val client = clientFor(candidate.account, credentials?.password)
+                when (val failure = tryLogin(client, "退出后切换账号")) {
+                    is LoginFailure.Rejected -> null.also { client.close() }
+                    else -> client to failure
+                }
+            }
+            if (next == null) {
+                PikoLog.i(TAG, "没有可用的已保存账号，回登录页")
+                return@withLock
+            }
+            val (client, failure) = next
+            adopt(client)
+            if (failure is LoginFailure.Transient) scheduleReconnect(client)
         }
-        sessionStore.clearLastAccount()
+    }
+
+    /** 从列表里去掉一个不在用的账号，连同它的会话与密码。在用的那个走 [logout]。 */
+    fun forget(account: String): Job = scope.launch {
+        switchLock.withLock {
+            if (_currentClient.value?.account == account) return@withLock
+            PikoLog.i(TAG, "移除已保存的账号")
+            forgetStored(account)
+        }
+    }
+
+    // 凭据删不掉（钥匙串锁着）也照样从列表里去掉：留在列表里等于没退出。残留的机密没有账号指向它，下次同名登录时覆盖
+    private suspend fun forgetStored(account: String) {
+        runSuspendCatching {
+            sessionStore.clearCredentials(account)
+            sessionStore.clear(account)
+        }.logFailure(TAG, "清除账号凭据失败")
+        editAccounts { it.without(account) }
+    }
+
+    /** 改 [account] 在列表里记着的资料或用量。不在列表里（已经退出）时不写。 */
+    suspend fun updateAccount(account: String, edit: (SavedAccount) -> SavedAccount) {
+        editAccounts { saved -> saved.find(account)?.let { saved.upsert(edit(it)) } ?: saved }
+    }
+
+    private suspend fun editAccounts(edit: (SavedAccounts) -> SavedAccounts) {
+        accountsLock.withLock {
+            val next = edit(_accounts.value)
+            if (next == _accounts.value) return@withLock
+            _accounts.value = next
+            runSuspendCatching { sessionStore.saveAccounts(next) }.logFailure(TAG, "账号列表保存失败")
+        }
+    }
+
+    /** 登录或切换成功的 [client] 成为当前账号，记进列表。调用方持有 [switchLock]。 */
+    private suspend fun adopt(client: PikPakClient) {
+        val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
+        editAccounts { saved ->
+            val entry = saved.find(client.account) ?: SavedAccount(client.account)
+            saved.upsert(entry.copy(usedAt = now)).copy(current = client.account)
+        }
+        replaceClient(client)
+        _addingAccount.value = false
     }
 
     private fun replaceClient(client: PikPakClient) {
@@ -173,7 +287,10 @@ class PikoClientManager(
                     is LoginFailure.Rejected -> {
                         // 网络恢复后才发现会话已不可用。这时回登录页是唯一出路
                         PikoLog.w(TAG, "重连时会话被拒，回登录页")
-                        if (_currentClient.compareAndSet(client, null)) client.close()
+                        if (_currentClient.compareAndSet(client, null)) {
+                            client.close()
+                            editAccounts { it.copy(current = null) }
+                        }
                         return@launch
                     }
                 }
@@ -181,6 +298,16 @@ class PikoClientManager(
             }
         }
     }
+
+    /**
+     * 保存的密码。平台的凭据存储暂时不可用（钥匙串锁着、用户拒绝解锁）时抛异常，这里当作没有密码：
+     * 会话本身还有效就照常进去；会话也读不出时 SDK 的 login 同样失败，按网络错误处理，后台重连时再读。
+     * 不能把这种失败当成已退出，否则钥匙串一时锁着就把人踢回登录页。
+     */
+    private suspend fun credentialsOf(account: String): PikoCredentials? =
+        runSuspendCatching { sessionStore.loadCredentials(account) }
+            .onFailure { PikoLog.w(TAG, "读取保存的密码失败，本次按没有密码处理", it) }
+            .getOrNull()
 
     /** [step] 写进日志，说明这次登录因何而起：启动恢复、第几次重连。 */
     private suspend fun tryLogin(client: PikPakClient, step: String): LoginFailure? {

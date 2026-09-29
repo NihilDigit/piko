@@ -5,6 +5,8 @@ import dev.piko.ui.components.SegmentSession
 import androidx.compose.runtime.staticCompositionLocalOf
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.repository.DriveRepository
+import dev.piko.shared.data.VaultStore
+import dev.piko.shared.data.AccountScopedPreferences
 import dev.piko.shared.data.InstantMagnetRepository
 import dev.piko.shared.data.MoveHistory
 import dev.piko.shared.data.OfflinePackTracker
@@ -16,6 +18,7 @@ import dev.piko.shared.data.TaskRepository
 import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.state.ArchiveExtractSession
+import dev.piko.shared.state.FolderVaultSession
 import dev.piko.shared.state.ClipFeedSession
 import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.DuplicateSession
@@ -29,6 +32,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 
 /**
@@ -36,7 +42,7 @@ import kotlinx.coroutines.launch
  * 经 [LocalPikoServices] 交给界面。这些对象的生命周期是进程，不是某个屏幕。
  */
 class PikoServices(
-    val preferences: PikoUserPreferences,
+    platformPreferences: PikoUserPreferences,
     val clientManager: PikoClientManager,
     val downloadManager: PikoDownloadCoordinator,
     val mediaRepository: PikoMediaRepository,
@@ -45,15 +51,27 @@ class PikoServices(
     onUploadStarted: (() -> Unit)? = null,
     /** 记下的文件夹内容跨进程保留在这里，见 FolderContentMemory。 */
     cacheStore: PikoCacheStore? = null,
-    val driveRepository: DriveRepository = DriveRepository(clientManager, preferences, cacheStore),
-    val accountRepository: PikoAccountRepository = PikoAccountRepository(clientManager, preferences),
-    val instantMagnetRepository: InstantMagnetRepository = InstantMagnetRepository(clientManager),
-    val taskRepository: TaskRepository = TaskRepository(clientManager, driveRepository),
 ) {
     // 不随任何界面结束的后台工作：离线任务的跟踪与 Piko-Temp 的清理
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
+    /** 平台偏好，其中记着文件夹 ID 的几项换成按账号存的，见 AccountScopedPreferences。 */
+    val preferences: PikoUserPreferences =
+        cacheStore?.let { AccountScopedPreferences(platformPreferences, clientManager, it) } ?: platformPreferences
+
+    val driveRepository: DriveRepository = DriveRepository(clientManager, preferences, cacheStore)
+    val accountRepository: PikoAccountRepository = PikoAccountRepository(clientManager, driveRepository, backgroundScope)
+    val instantMagnetRepository: InstantMagnetRepository = InstantMagnetRepository(clientManager)
+    val taskRepository: TaskRepository = TaskRepository(clientManager, driveRepository)
+
     val previewTempFolder = PreviewTempFolder(driveRepository, instantMagnetRepository, backgroundScope)
+
+    init {
+        // 打开归档条目时借的对象放进 Piko-Temp：取到直链就删，偶有删不掉的也随 Piko-Temp 一起清走
+        mediaRepository.leaseFolder = { previewTempFolder.folderId().getOrThrow() }
+    }
+
+    val vaultStore: VaultStore get() = driveRepository.vault
 
     val offlinePacks = OfflinePackTracker(instantMagnetRepository, driveRepository, preferences)
 
@@ -83,6 +101,7 @@ class PikoServices(
                     instantSaveRecords,
                     scope,
                     magnet,
+                    vaultStore,
                 )
             },
         )
@@ -108,12 +127,34 @@ class PikoServices(
         )
     }
 
+    // 主线程且与进程同寿：离开网盘页后归档仍要继续
+    val folderVaultSession: FolderVaultSession by lazy {
+        FolderVaultSession(driveRepository, CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate))
+    }
+
     // 主线程且与进程同寿：打开完整播放器时随机片段页可能被销毁，队列要留着回来接着看
     val clipFeedSession: ClipFeedSession by lazy {
         ClipFeedSession(driveRepository, mediaRepository, cacheStore, CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate))
     }
 
     init {
+        // 未完成的添加链接、查重、解压、信息流与归档都属于上一个账号：保存目标、文件 ID 都是那边的。
+        // 退出到登录页也算，同一账号登回来不算
+        backgroundScope.launch {
+            var previous: String? = null
+            clientManager.currentClient.map { it?.account }.distinctUntilChanged().collect { account ->
+                if (previous != null && account != previous) {
+                    withContext(Dispatchers.Main) {
+                        instantSession.end()
+                        duplicateSession.end()
+                        archiveExtractSession.clear()
+                        clipFeedSession.close()
+                        folderVaultSession.cancel()
+                    }
+                }
+                if (account != null) previous = account
+            }
+        }
         backgroundScope.launch {
             val cleanedAccounts = mutableSetOf<String>()
             clientManager.currentClient.collectLatest { client ->

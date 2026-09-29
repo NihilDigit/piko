@@ -81,17 +81,11 @@ private class LegacyPlaybackPositionMigration(
 class SessionManager(private val context: Context) : PikoUserPreferences {
 
     private object PreferencesKeys {
-        val TOKEN = stringPreferencesKey("auth_token")
-        val REFRESH_TOKEN = stringPreferencesKey("refresh_token")
-        val USER_ID = stringPreferencesKey("user_id")
-        val USERNAME = stringPreferencesKey("username")
-        val AVATAR_URL = stringPreferencesKey("avatar_url")
-        val EMAIL = stringPreferencesKey("email")
-        val CONCURRENT_CONNECTIONS = intPreferencesKey("concurrent_connections")
         val CONCURRENT_ACCELERATION = booleanPreferencesKey("concurrent_acceleration")
         val DOWNLOAD_DIR_PATH = stringPreferencesKey("download_dir_path")
         val SPOILER_BLUR_ENABLED = booleanPreferencesKey("spoiler_blur_enabled")
         val AUTO_CHECK_UPDATES = booleanPreferencesKey("auto_check_updates")
+        val REDUCE_MOTION = booleanPreferencesKey("reduce_motion")
         val HEURISTIC_FILTER_ENABLED = booleanPreferencesKey("heuristic_filter_enabled")
         val BUNDLE_SUBTITLES_ENABLED = booleanPreferencesKey("bundle_subtitles_enabled")
         val AUTO_CLEAN_NAMES_ENABLED = booleanPreferencesKey("auto_clean_names_enabled")
@@ -112,14 +106,14 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val SNAIL_UPLOAD_KIBPS = intPreferencesKey("snail_upload_kibps")
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val THEME_SEED = stringPreferencesKey("theme_seed")
-        val QUOTA_USAGE_BYTES = longPreferencesKey("quota_usage_bytes")
-        val QUOTA_LIMIT_BYTES = longPreferencesKey("quota_limit_bytes")
         val LAST_FOLDER_ID = stringPreferencesKey("last_folder_id")
         val LAST_FOLDER_NAME = stringPreferencesKey("last_folder_name")
         val LAST_FOLDER_STACK_SERIALIZED = stringPreferencesKey("last_folder_stack")
         val ARCHIVE_PASSWORDS = stringPreferencesKey("archive_passwords")
         val RECENT_MOVE_TARGETS = stringPreferencesKey("recent_move_targets")
         val PINNED_FOLDERS = stringPreferencesKey("pinned_folders")
+        val BATCH_RENAME = stringPreferencesKey("batch_rename")
+        val RENAME_REGEX_TEXT_MODE = booleanPreferencesKey("rename_regex_text_mode")
         val PROXY_SETTING = stringPreferencesKey("proxy_setting")
         val IGNORED_UPDATE_VERSION = stringPreferencesKey("ignored_update_version")
     }
@@ -175,6 +169,14 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun setAutoCheckUpdates(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.AUTO_CHECK_UPDATES] = enabled
+        }
+    }
+
+    override val reduceMotionFlow: Flow<Boolean> = preference { it[PreferencesKeys.REDUCE_MOTION] ?: false }
+
+    override suspend fun setReduceMotion(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.REDUCE_MOTION] = enabled
         }
     }
 
@@ -344,60 +346,6 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
-    override val sessionFlow: Flow<UserSession> = preference { preferences ->
-        UserSession(
-            token = preferences[PreferencesKeys.TOKEN].orEmpty(),
-            refreshToken = preferences[PreferencesKeys.REFRESH_TOKEN].orEmpty(),
-            userId = preferences[PreferencesKeys.USER_ID].orEmpty(),
-            username = preferences[PreferencesKeys.USERNAME].orEmpty(),
-            avatarUrl = preferences[PreferencesKeys.AVATAR_URL].orEmpty(),
-            email = preferences[PreferencesKeys.EMAIL].orEmpty(),
-            concurrentConnections = preferences[PreferencesKeys.CONCURRENT_CONNECTIONS] ?: 8,
-        )
-    }
-
-    override suspend fun saveSession(
-        token: String,
-        refreshToken: String,
-        userId: String,
-        username: String,
-        avatarUrl: String,
-    ) {
-        context.dataStore.edit { preferences ->
-            preferences[PreferencesKeys.TOKEN] = token
-            if (refreshToken.isNotEmpty()) {
-                preferences[PreferencesKeys.REFRESH_TOKEN] = refreshToken
-            } else {
-                preferences.remove(PreferencesKeys.REFRESH_TOKEN)
-            }
-            if (userId.isNotEmpty()) preferences[PreferencesKeys.USER_ID] = userId
-            if (username.isNotEmpty()) preferences[PreferencesKeys.USERNAME] = username
-            if (avatarUrl.isNotEmpty()) preferences[PreferencesKeys.AVATAR_URL] = avatarUrl
-        }
-    }
-
-    override val quotaSnapshotFlow: Flow<QuotaSnapshot?> = preference { preferences ->
-        val limit = preferences[PreferencesKeys.QUOTA_LIMIT_BYTES]
-        val usage = preferences[PreferencesKeys.QUOTA_USAGE_BYTES]
-        // 只有上限有值才算拿到过配额：零上限会让占比计算除零
-        if (limit != null && usage != null && limit > 0) QuotaSnapshot(usage, limit) else null
-    }
-
-    override suspend fun saveQuotaSnapshot(usageBytes: Long, limitBytes: Long) {
-        context.dataStore.edit { preferences ->
-            preferences[PreferencesKeys.QUOTA_USAGE_BYTES] = usageBytes
-            preferences[PreferencesKeys.QUOTA_LIMIT_BYTES] = limitBytes
-        }
-    }
-
-    override suspend fun saveProfile(username: String, avatarUrl: String, email: String) {
-        context.dataStore.edit { preferences ->
-            if (username.isNotEmpty()) preferences[PreferencesKeys.USERNAME] = username
-            if (avatarUrl.isNotEmpty()) preferences[PreferencesKeys.AVATAR_URL] = avatarUrl
-            if (email.isNotEmpty()) preferences[PreferencesKeys.EMAIL] = email
-        }
-    }
-
     override val concurrentAccelerationFlow: Flow<Boolean> = preference { preferences ->
         preferences[PreferencesKeys.CONCURRENT_ACCELERATION] ?: true
     }
@@ -478,6 +426,22 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
+    override val batchRenameFlow: Flow<String> = preference { it[PreferencesKeys.BATCH_RENAME].orEmpty() }
+
+    override suspend fun saveBatchRename(serialized: String) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.BATCH_RENAME] = serialized
+        }
+    }
+
+    override val renameRegexTextModeFlow: Flow<Boolean> = preference { it[PreferencesKeys.RENAME_REGEX_TEXT_MODE] ?: false }
+
+    override suspend fun setRenameRegexTextMode(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.RENAME_REGEX_TEXT_MODE] = enabled
+        }
+    }
+
     override val proxySettingFlow: Flow<ProxySetting> =
         preference { ProxySetting.decode(it[PreferencesKeys.PROXY_SETTING].orEmpty()) }
 
@@ -493,17 +457,6 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun setIgnoredUpdateVersion(version: String) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.IGNORED_UPDATE_VERSION] = version
-        }
-    }
-
-    override suspend fun clearSession() {
-        context.dataStore.edit { preferences ->
-            preferences.remove(PreferencesKeys.TOKEN)
-            preferences.remove(PreferencesKeys.REFRESH_TOKEN)
-            preferences.remove(PreferencesKeys.USER_ID)
-            preferences.remove(PreferencesKeys.USERNAME)
-            preferences.remove(PreferencesKeys.AVATAR_URL)
-            preferences.remove(PreferencesKeys.EMAIL)
         }
     }
 }

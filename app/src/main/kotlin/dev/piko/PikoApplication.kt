@@ -15,6 +15,7 @@ import dev.piko.download.AndroidPikoSegmentDownloader
 import dev.piko.download.PikoDownloadService
 import dev.piko.download.WorkResultNotifier
 import dev.piko.platform.AndroidPikoPlatform
+import dev.piko.platform.followSystemAnimatorScale
 import dev.piko.shared.data.FilePikoCacheStore
 import dev.piko.shared.data.InstantMagnetRepository
 import dev.piko.shared.data.PikoClientManager
@@ -28,6 +29,7 @@ import dev.piko.shared.net.PikoProxySelector
 import dev.piko.shared.state.InstantSession
 import dev.piko.shared.upload.PikoUploadCoordinator
 import dev.piko.ui.PikoServices
+import dev.piko.ui.theme.PikoMotionScale
 import dev.piko.upload.AndroidPikoUploadSources
 import dev.piko.update.AppUpdater
 import java.util.concurrent.TimeUnit
@@ -73,14 +75,14 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
 
         sessionManager = SessionManager(this)
         installProxy()
-        val clientManager = PikoClientManager(AndroidPikoSessionStore(this, sessionManager), appScope)
+        val clientManager = PikoClientManager(AndroidPikoSessionStore(this), appScope)
         val mediaRepository = PikoMediaRepository(
             clientManager,
             sessionManager,
             clipCache = FileClipCache(File(cacheDir, "piko/clip-cache")),
         )
         services = PikoServices(
-            preferences = sessionManager,
+            platformPreferences = sessionManager,
             clientManager = clientManager,
             mediaRepository = mediaRepository,
             downloadManager = PikoDownloadCoordinator(
@@ -96,7 +98,9 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
             onUploadStarted = { PikoDownloadService.start(this) },
             cacheStore = FilePikoCacheStore(File(cacheDir, "piko").path),
         )
-        platform = AndroidPikoPlatform(this) { appUpdater }
+        val motionScale = PikoMotionScale().apply { followSystemAnimatorScale(this@PikoApplication) }
+        appScope.launch { sessionManager.reduceMotionFlow.collect { motionScale.appReduced = it } }
+        platform = AndroidPikoPlatform(this, { appUpdater }, motionScale)
         WorkResultNotifier(this, services, appScope).start()
     }
 

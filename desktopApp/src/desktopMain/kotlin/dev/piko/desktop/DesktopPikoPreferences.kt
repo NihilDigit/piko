@@ -1,10 +1,8 @@
 package dev.piko.desktop
 
 import dev.piko.data.auth.PikoUserPreferences
-import dev.piko.data.auth.QuotaSnapshot
 import dev.piko.data.auth.SidePanelPrefs
 import dev.piko.data.auth.SnailMode
-import dev.piko.data.auth.UserSession
 import dev.piko.shared.net.ProxySetting
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,6 +17,7 @@ import kotlinx.coroutines.flow.asStateFlow
 class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoUserPreferences {
     private val spoiler = MutableStateFlow(settings.get(KEY_SPOILER, "true").toBoolean())
     private val autoCheckUpdates = MutableStateFlow(settings.get(KEY_AUTO_CHECK_UPDATES, "true").toBoolean())
+    private val reduceMotion = MutableStateFlow(settings.get(KEY_REDUCE_MOTION) == "true")
     private val heuristic = MutableStateFlow(settings.get(KEY_HEURISTIC, "true").toBoolean())
     private val nameParsing = MutableStateFlow(settings.get(KEY_NAME_PARSING, "true").toBoolean())
     private val bundleSubtitles = MutableStateFlow(settings.get(KEY_BUNDLE_SUBTITLES, "true").toBoolean())
@@ -56,25 +55,15 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
     )
     private val acceleration = MutableStateFlow(settings.get(KEY_ACCELERATION, "true").toBoolean())
     private val connections = MutableStateFlow(settings.get(KEY_CONNECTIONS, "8").toIntOrNull() ?: 8)
-    private val session = MutableStateFlow(loadSession())
-    private val quota = MutableStateFlow<QuotaSnapshot?>(null)
     private val archivePasswords = MutableStateFlow(settings.get(KEY_ARCHIVE_PASSWORDS))
     private val recentMoveTargets = MutableStateFlow(settings.get(KEY_RECENT_MOVE_TARGETS))
     private val pinnedFolders = MutableStateFlow(settings.get(KEY_PINNED_FOLDERS))
+    private val batchRename = MutableStateFlow(settings.get(KEY_BATCH_RENAME))
+    private val renameRegexTextMode = MutableStateFlow(settings.get(KEY_RENAME_REGEX_TEXT_MODE) == "true")
     private val proxySetting = MutableStateFlow(ProxySetting.decode(settings.get(KEY_PROXY_SETTING)))
     private val downloadPath = MutableStateFlow(
         settings.get(KEY_DOWNLOAD_DIR, settings.downloadDirectory.absolutePath),
     )
-
-    private fun loadSession(): UserSession =
-        UserSession(
-            token = settings.get(KEY_SESSION_TOKEN),
-            refreshToken = settings.get(KEY_SESSION_REFRESH),
-            userId = settings.get(KEY_SESSION_USER_ID),
-            username = settings.get(KEY_SESSION_USERNAME),
-            avatarUrl = settings.get(KEY_SESSION_AVATAR),
-            concurrentConnections = connections.value,
-        )
 
     override suspend fun savePlaybackPosition(fileId: String, positionMs: Long) {
         settings.set(KEY_PLAYBACK_PREFIX + fileId, positionMs.toString())
@@ -112,6 +101,12 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
     override suspend fun setAutoCheckUpdates(enabled: Boolean) {
         settings.set(KEY_AUTO_CHECK_UPDATES, enabled.toString())
         autoCheckUpdates.value = enabled
+    }
+
+    override val reduceMotionFlow: Flow<Boolean> = reduceMotion.asStateFlow()
+    override suspend fun setReduceMotion(enabled: Boolean) {
+        settings.set(KEY_REDUCE_MOTION, enabled.toString())
+        reduceMotion.value = enabled
     }
 
     override val heuristicFilterFlow: Flow<Boolean> = heuristic.asStateFlow()
@@ -214,40 +209,6 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         snailMode.value = mode
     }
 
-    override val sessionFlow: Flow<UserSession> = session.asStateFlow()
-    override suspend fun saveSession(token: String, refreshToken: String, userId: String, username: String, avatarUrl: String) {
-        settings.set(KEY_SESSION_TOKEN, token)
-        settings.set(KEY_SESSION_REFRESH, refreshToken)
-        settings.set(KEY_SESSION_USER_ID, userId)
-        settings.set(KEY_SESSION_USERNAME, username)
-        settings.set(KEY_SESSION_AVATAR, avatarUrl)
-        // 邮箱只在内存里，重写会话时带过去，否则令牌刷新后要等下次取资料才重新出现
-        session.value = loadSession().copy(email = session.value.email)
-    }
-
-    override suspend fun saveProfile(username: String, avatarUrl: String, email: String) {
-        session.value = session.value.copy(
-            username = username.ifEmpty { session.value.username },
-            avatarUrl = avatarUrl.ifEmpty { session.value.avatarUrl },
-            email = email.ifEmpty { session.value.email },
-        )
-    }
-
-    override suspend fun clearSession() {
-        settings.set(KEY_SESSION_TOKEN, "")
-        settings.set(KEY_SESSION_REFRESH, "")
-        settings.set(KEY_SESSION_USER_ID, "")
-        settings.set(KEY_SESSION_USERNAME, "")
-        settings.set(KEY_SESSION_AVATAR, "")
-        session.value = loadSession()
-    }
-
-    // 配额与秒传目标是纯会话态，与上游 Android 实现一致放内存，不落盘。
-    override val quotaSnapshotFlow: Flow<QuotaSnapshot?> = quota.asStateFlow()
-    override suspend fun saveQuotaSnapshot(usageBytes: Long, limitBytes: Long) {
-        quota.value = QuotaSnapshot(usageBytes, limitBytes)
-    }
-
     override val concurrentAccelerationFlow: Flow<Boolean> = acceleration.asStateFlow()
     override val concurrentConnectionsFlow: Flow<Int> = connections.asStateFlow()
     override val downloadDirPathFlow: Flow<String> = downloadPath.asStateFlow()
@@ -302,6 +263,18 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         pinnedFolders.value = serialized
     }
 
+    override val batchRenameFlow: Flow<String> = batchRename.asStateFlow()
+    override suspend fun saveBatchRename(serialized: String) {
+        settings.set(KEY_BATCH_RENAME, serialized)
+        batchRename.value = serialized
+    }
+
+    override val renameRegexTextModeFlow: Flow<Boolean> = renameRegexTextMode.asStateFlow()
+    override suspend fun setRenameRegexTextMode(enabled: Boolean) {
+        settings.set(KEY_RENAME_REGEX_TEXT_MODE, enabled.toString())
+        renameRegexTextMode.value = enabled
+    }
+
     override val proxySettingFlow: Flow<ProxySetting> = proxySetting.asStateFlow()
     override suspend fun saveProxySetting(setting: ProxySetting) {
         settings.set(KEY_PROXY_SETTING, setting.encode())
@@ -322,10 +295,13 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         const val KEY_ARCHIVE_PASSWORDS = "drive.archivePasswords"
         const val KEY_RECENT_MOVE_TARGETS = "drive.recentMoveTargets"
         const val KEY_PINNED_FOLDERS = "drive.pinnedFolders"
+        const val KEY_BATCH_RENAME = "drive.batchRename"
+        const val KEY_RENAME_REGEX_TEXT_MODE = "drive.renameRegexTextMode"
         const val KEY_PROXY_SETTING = "network.proxy"
         const val KEY_IGNORED_UPDATE = "update.ignoredVersion"
         const val KEY_SPOILER = "ui.spoilerBlur"
         const val KEY_AUTO_CHECK_UPDATES = "update.autoCheck"
+        const val KEY_REDUCE_MOTION = "ui.reduceMotion"
         const val KEY_HEURISTIC = "ui.heuristicFilter"
         const val KEY_BUNDLE_SUBTITLES = "ui.bundleSubtitles"
         const val KEY_AUTO_CLEAN_NAMES = "drive.autoCleanNames"
@@ -350,11 +326,6 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         const val KEY_ACCELERATION = "download.concurrentAcceleration"
         const val KEY_CONNECTIONS = "download.concurrentConnections"
         const val KEY_DOWNLOAD_DIR = "download.directory"
-        const val KEY_SESSION_TOKEN = "session.token"
-        const val KEY_SESSION_REFRESH = "session.refreshToken"
-        const val KEY_SESSION_USER_ID = "session.userId"
-        const val KEY_SESSION_USERNAME = "session.username"
-        const val KEY_SESSION_AVATAR = "session.avatarUrl"
         const val KEY_LAST_FOLDER_ID = "drive.lastFolderId"
         const val KEY_LAST_FOLDER_NAME = "drive.lastFolderName"
         const val KEY_LAST_FOLDER_STACK = "drive.lastFolderStack"

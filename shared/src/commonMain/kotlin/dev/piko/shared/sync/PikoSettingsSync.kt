@@ -52,6 +52,8 @@ val SyncedSettings: List<SyncedSetting> = listOf(
     bool("bundleSubtitles", { it.bundleSubtitlesFlow }) { setBundleSubtitlesEnabled(it) },
     bool("autoCleanNames", { it.autoCleanNamesFlow }) { setAutoCleanNamesEnabled(it) },
     bool("syncPlayHistory", { it.syncPlayHistoryFlow }) { setSyncPlayHistoryEnabled(it) },
+    // 批量重命名用积木还是写正则，看的是这个人的水平，不是这台设备
+    bool("renameRegexTextMode", { it.renameRegexTextModeFlow }) { setRenameRegexTextMode(it) },
     // 空串是「跟随系统」。设置接口没有写回跟随系统的入口，远端的空值不往本机写
     SyncedSetting("themeMode", { prefs -> prefs.themeModeFlow.map { it.orEmpty() } }, { prefs, value -> if (value.isNotEmpty()) prefs.setThemeMode(value) }),
     SyncedSetting("themeSeed", { prefs -> prefs.themeSeedFlow.map { it.orEmpty() } }, { prefs, value -> prefs.setThemeSeed(value.ifEmpty { null }) }),
@@ -192,8 +194,15 @@ class PikoSettingsSync(
     private data class Document(val version: Int, val values: Map<String, Entry>)
 
     companion object {
-        /** 网盘根目录下放同步文件的文件夹，Piko 自己的列表里不显示它。 */
+        /** 网盘根目录下放同步文件的文件夹，Piko 自己的列表里不显示它，见 [isSyncFolder]。 */
         const val FOLDER_NAME = ".piko"
+
+        /**
+         * [file] 是不是 [parentId] 里放同步文件的文件夹。只认网盘根目录里的：别处同名的是用户自己的文件夹，照常列出。
+         * 网盘页、目录选择器、命令面板都靠它把这个文件夹藏起来，规则只写这一处。
+         */
+        fun isSyncFolder(file: FileStat, parentId: String): Boolean =
+            parentId.isEmpty() && file.isFolder && file.name == FOLDER_NAME
         private const val VERSION = 1
         private const val PUSH_DELAY_MS = 3_000L
         private const val TAG = "SettingsSync"

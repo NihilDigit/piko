@@ -1,6 +1,8 @@
 package dev.piko.shared.smoke
 
 import dev.piko.shared.data.PikoClientManager
+import dev.piko.shared.data.SavedAccount
+import dev.piko.shared.data.SavedAccounts
 import dev.piko.shared.state.LoginState
 import io.github.nihildigit.pikpak.Session
 import kotlin.test.Test
@@ -21,7 +23,7 @@ class SessionSmokeTest {
     fun `an offline cold start keeps the session and refreshes once the network is back`() = smoke { scope ->
         val server = FakePikPakServer()
         val store = MemorySessionStore().apply {
-            lastAccount = account
+            accounts = SavedAccounts(account, listOf(SavedAccount(account)))
             passwords[account] = "pw"
             sessions[account] = Session(accessToken = "OLD", refreshToken = "RT", sub = "UID", expiresAt = 1L)
         }
@@ -52,7 +54,37 @@ class SessionSmokeTest {
 
         assertNull(manager.currentClient.value)
         assertTrue(store.passwords.isEmpty(), "失败的密码不能落盘")
-        assertNull(store.lastAccount)
+        assertNull(store.accounts.current)
+    }
+
+    /**
+     * 防的是退出一个账号时连带清掉别的账号的凭据，或退出后停在登录页、不切到还保存着的账号：
+     * 单账号时代的存储以「上次的账号」判断凭据归属，多账号下这个判断不成立。
+     */
+    @Test
+    fun `logging out of one account switches to another and keeps its credentials`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val store = MemorySessionStore()
+        val manager = PikoClientManager(store, scope, server.httpClient())
+        awaitUntil("恢复流程结束") { !manager.isInitializing.value }
+        val other = "other@piko.dev"
+
+        manager.login(account) { "pw-a" }.getOrThrow()
+        manager.beginAddingAccount()
+        manager.login(other) { "pw-b" }.getOrThrow()
+        assertEquals(other, manager.currentClient.value?.account)
+        assertEquals(false, manager.addingAccount.value)
+        assertEquals(listOf(account, other), manager.accounts.value.accounts.map { it.account })
+
+        manager.switchTo(account).getOrThrow()
+        assertEquals(account, manager.currentClient.value?.account)
+        assertEquals(account, store.accounts.current)
+
+        manager.logout().join()
+        assertEquals(other, manager.currentClient.value?.account)
+        assertNull(store.passwords[account])
+        assertEquals("pw-b", store.passwords[other])
+        assertEquals(listOf(other), store.accounts.accounts.map { it.account })
     }
 
     /** 防的是退出登录后明文密码仍留在磁盘上：旧实现从不调用 clearCredentials。 */
@@ -74,6 +106,6 @@ class SessionSmokeTest {
         assertNull(manager.currentClient.value)
         assertTrue(store.passwords.isEmpty())
         assertNull(store.sessions[account])
-        assertNull(store.lastAccount)
+        assertNull(store.accounts.current)
     }
 }
