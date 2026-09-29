@@ -167,6 +167,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.coerceIn
 import dev.piko.ui.platform.windowDragArea
 import dev.piko.ui.platform.LocalWindowCaption
+import dev.piko.ui.platform.LocalWindowResizing
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.foundation.layout.height
 import dev.piko.ui.theme.FrameContentShape
 import dev.piko.ui.theme.LocalFramed
@@ -410,6 +412,14 @@ fun PikoMainScaffold(
     // Home 被压栈页盖住时整个离开组合，回来时重建。网盘页经得起：目录内容与滚动位置都记在仓库里，
     // 重建后首帧即是原样。内容区的尺寸记在这里而不是 Home 里，侧栏放不放得下在重建前后一致
     var contentSize by remember { mutableStateOf(IntSize.Zero) }
+    // 拖着窗口边框时量到的尺寸先存着，松手才算数：侧栏放不放得下决定信息流与面板的形态，拖动中途不来回换
+    val resizing = LocalWindowResizing.current
+    val latestResizing by rememberUpdatedState(resizing)
+    var pendingContentSize by remember { mutableStateOf<IntSize?>(null) }
+    LaunchedEffect(resizing) {
+        if (!resizing) pendingContentSize?.let { contentSize = it }
+        pendingContentSize = null
+    }
     val density = LocalDensity.current
 
     // 信息流：网盘页顶栏上的开关，单独一个状态，不动存下的视图，关掉即回到原来的列表。
@@ -690,7 +700,7 @@ fun PikoMainScaffold(
                 transitionSpec = { fadeIn(PikoMotion.TopLevelEnterFade) togetherWith fadeOut(PikoMotion.TopLevelExitFade) },
                 modifier = Modifier
                     .fillMaxSize()
-                    .onSizeChanged { contentSize = it },
+                    .onSizeChanged { if (latestResizing) pendingContentSize = it else contentSize = it },
                 label = "mainTab",
             ) { tab ->
                 when (tab) {

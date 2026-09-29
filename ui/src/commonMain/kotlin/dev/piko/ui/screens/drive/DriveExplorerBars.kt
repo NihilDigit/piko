@@ -103,7 +103,8 @@ import androidx.compose.material.icons.outlined.FilterList
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.ui.layout.Placeable
-import androidx.compose.ui.layout.SubcomposeLayout
+import androidx.compose.ui.layout.Layout
+import androidx.compose.runtime.key
 import androidx.compose.ui.unit.Constraints
 import dev.piko.data.repository.label
 import dev.piko.shared.data.PikoSortField
@@ -456,7 +457,7 @@ private class OverflowHolder {
  * 放不下时照 M3 toolbars 的 Container 与 Adaptive design 两节：容器要整个露在屏幕上，放不下的操作收进末端的
  * overflow 菜单，窗口变宽再放出来。按 [BarItem.priority] 从低往高收，同级的先收靠后的；收起的进「更多」，
  * 排在它原有的几项前面。收哪几项只由宽度决定，与上一次的结果无关，拖动窗口边缘时不会来回跳。
- * 用 SubcomposeLayout 而不是 Row：要先量出各项的宽度，才知道「更多」里放什么、要不要摆出来。
+ * 用自定义的 Layout 而不是 Row：要先量出各项的宽度，才知道「更多」里放什么、要不要摆出来。
  */
 @Composable
 private fun CommandBarLayout(
@@ -468,15 +469,27 @@ private fun CommandBarLayout(
     modifier: Modifier = Modifier,
 ) {
     val overflow = remember { OverflowHolder() }
-    SubcomposeLayout(modifier) { constraints ->
+    val items = leading + trailing
+    // 各项、「更多」、分区跳转与拖动空白都在正常的组合里，测量时只量不组合，放不下的不摆。
+    // 不用 SubcomposeLayout：它在测量时才组合各项，里面的菜单、提示若恰在那时离开组合，
+    // 就是在测量途中销毁一层弹层，桌面端整个窗口抛 RootNodeOwner is already disposed（见 desktopApp 的 PikoWindow）
+    Layout(
+        modifier = modifier,
+        content = {
+            items.forEach { item -> key(item.key) { Box(contentAlignment = Alignment.Center) { item.content() } } }
+            MoreButton { overflow.actions }
+            Box(Modifier.widthIn(max = SectionJumperMaxWidth).padding(horizontal = 8.dp)) { sectionJumper() }
+            // 命令栏中间这段空白也能拖动窗口（标题栏并进内容时）。一直摆着，没有空白时宽度为 0，登记的拖动区随之为空
+            Spacer(Modifier.fillMaxSize().windowDragArea())
+        },
+    ) { measurables, constraints ->
         val height = constraints.maxHeight
         val gap = BarItemGap.roundToPx()
         val loose = Constraints(maxHeight = height)
-        val items = leading + trailing
-        val placeables = items.map { item ->
-            subcompose(item.key) { Box(contentAlignment = Alignment.Center) { item.content() } }.first().measure(loose)
-        }
-        val more = subcompose(MoreSlot) { MoreButton { overflow.actions } }.first().measure(loose)
+        val placeables = measurables.subList(0, items.size).map { it.measure(loose) }
+        val more = measurables[items.size].measure(loose)
+        val jumperMeasurable = measurables[items.size + 1]
+        val dragMeasurable = measurables[items.size + 2]
 
         val shown = BooleanArray(items.size) { true }
         fun needsMore() = moreMenu || items.indices.any { !shown[it] && items[it].overflow.isNotEmpty() }
@@ -524,20 +537,12 @@ private fun CommandBarLayout(
         // 分区跳转占剩下的宽度，最多 SectionJumperMaxWidth；窄到放不下一个名字就不摆
         val room = trailingStart - leadingEnd
         val jumper = if (room >= SectionJumperMinWidth.roundToPx()) {
-            subcompose(JumperSlot) {
-                Box(Modifier.widthIn(max = SectionJumperMaxWidth).padding(horizontal = 8.dp)) { sectionJumper() }
-            }.first().measure(Constraints(maxWidth = room, maxHeight = height))
+            jumperMeasurable.measure(Constraints(maxWidth = room, maxHeight = height))
         } else {
             null
         }
         val dragStart = leadingEnd + (jumper?.width ?: 0)
-        // 命令栏中间这段空白也能拖动窗口（标题栏并进内容时）
-        val dragArea = if (trailingStart > dragStart) {
-            subcompose(DragSlot) { Spacer(Modifier.fillMaxSize().windowDragArea()) }
-                .first().measure(Constraints.fixed(trailingStart - dragStart, height))
-        } else {
-            null
-        }
+        val dragArea = dragMeasurable.measure(Constraints.fixed((trailingStart - dragStart).coerceAtLeast(0), height))
         layout(constraints.maxWidth, height) {
             fun Placeable.placeAt(x: Int) = place(x, (height - this.height) / 2)
             var x = 0
@@ -547,7 +552,7 @@ private fun CommandBarLayout(
             }
             if (showMore) more.placeAt(x)
             jumper?.placeAt(leadingEnd)
-            dragArea?.place(dragStart, 0)
+            dragArea.place(dragStart, 0)
             x = trailingStart
             for (index in trailingIndices) {
                 placeables[index].placeAt(x)
@@ -566,9 +571,6 @@ private fun MoreButton(actions: () -> List<SheetAction>) {
     }
 }
 
-private const val MoreSlot = "more"
-private const val JumperSlot = "sectionJumper"
-private const val DragSlot = "dragArea"
 private val BarItemGap = 2.dp
 private val SectionJumperMinWidth = 72.dp
 

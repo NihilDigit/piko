@@ -42,6 +42,12 @@ interface WindowCaption {
 val LocalWindowCaption = compositionLocalOf<WindowCaption?> { null }
 
 /**
+ * 正拖着窗口边框改尺寸。这期间按尺寸换形态的判断停在拖动前，松手再换，由桌面端提供（Windows 的 WindowFrame）。
+ * LocalWindowInfo 的尺寸在那里已经换成松手后的，这一项给自己量内容区宽度的地方（PikoMainScaffold 的 panelFits）用。
+ */
+val LocalWindowResizing = compositionLocalOf { false }
+
+/**
  * 一行内容是否要画窗口按钮：挂上 [modifier] 的那一行若从窗口顶上开始、右沿贴着窗口右沿，[buttons] 不为 null，
  * 放在这一行的末尾。
  *

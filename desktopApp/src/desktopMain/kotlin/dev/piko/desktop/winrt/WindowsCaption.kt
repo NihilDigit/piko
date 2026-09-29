@@ -75,6 +75,13 @@ internal class WindowsCaption(private val window: Window) {
         private set
 
     /**
+     * 正拖着边框改尺寸或拖着标题栏挪窗口（系统的移动与缩放循环，WM_ENTERSIZEMOVE 到 WM_EXITSIZEMOVE）。
+     * 界面按宽度换形态的判断据此等到松手，见 WindowFrame 的 settledWindowInfo。
+     */
+    var isSizing: Boolean by mutableStateOf(false)
+        private set
+
+    /**
      * 标题栏按系统的激活状态显示，取自 WM_NCACTIVATE，与系统标题栏变灰的时机一致。不用 AWT 的焦点：
      * 后台进程新开的窗口在自己的线程里是激活的，AWT 报告已获得焦点，系统却没有把它放到前台。
      */
@@ -181,6 +188,8 @@ internal class WindowsCaption(private val window: Window) {
                     }
                 }
                 WM_NCACTIVATE -> isActive = wParam != 0L
+                WM_ENTERSIZEMOVE -> isSizing = true
+                WM_EXITSIZEMOVE -> isSizing = false
                 WM_SIZE -> {
                     when (wParam) {
                         SIZE_MAXIMIZED -> isMaximized = true
@@ -399,6 +408,8 @@ internal class WindowsCaption(private val window: Window) {
         const val WM_NCLBUTTONDBLCLK = 0x00A3
         const val WM_SYSCOMMAND = 0x0112
         const val WM_NCMOUSELEAVE = 0x02A2
+        const val WM_ENTERSIZEMOVE = 0x0231
+        const val WM_EXITSIZEMOVE = 0x0232
 
         const val SIZE_RESTORED = 0L
         const val SIZE_MAXIMIZED = 2L

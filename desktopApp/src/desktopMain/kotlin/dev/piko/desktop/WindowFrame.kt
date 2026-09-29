@@ -37,6 +37,10 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.platform.WindowInfo
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.runtime.State
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.platform.Typeface
 import androidx.compose.ui.text.style.TextOverflow
@@ -48,6 +52,7 @@ import dev.piko.desktop.winrt.WindowsCaption
 import dev.piko.ui.platform.FramelessWindow
 import dev.piko.ui.platform.LocalFramelessWindow
 import dev.piko.ui.platform.LocalWindowCaption
+import dev.piko.ui.platform.LocalWindowResizing
 import dev.piko.ui.platform.WindowCaption
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.shape.CircleShape
@@ -122,7 +127,7 @@ fun FrameWindowScope.WindowFrame(
                     }
                 }
                 DisposableEffect(frameless) { onDispose { caption.clearLayout() } }
-                CompositionLocalProvider(LocalFramelessWindow provides frameless) { content() }
+                CompositionLocalProvider(LocalFramelessWindow provides frameless) { SettledWindowInfo(caption) { content() } }
                 return
             }
             val compact = remember(caption, compactCaption) { caption?.takeIf { compactCaption }?.let(::CompactCaption) }
@@ -133,7 +138,7 @@ fun FrameWindowScope.WindowFrame(
             Column(Modifier.fillMaxSize()) {
                 if (showTitleBar && caption != null && !hosted) WindowsTitleBar(caption, title, icon, colors)
                 Box(Modifier.fillMaxWidth().weight(1f)) {
-                    CompositionLocalProvider(LocalWindowCaption provides compact) { content() }
+                    CompositionLocalProvider(LocalWindowCaption provides compact) { SettledWindowInfo(caption) { content() } }
                     // 兜底：声明了却一时没有哪一行贴着右上角来画按钮，就浮在角上画一组，窗口总关得掉
                     if (hosted && compact.rowsWithButtons == 0) {
                         Box(Modifier.align(Alignment.TopEnd).padding(8.dp)) { compact.ButtonRow(countAsRow = false) }
@@ -150,6 +155,36 @@ fun FrameWindowScope.WindowFrame(
         }
         else -> content()
     }
+}
+
+/**
+ * 拖着边框改尺寸期间，内容看到的窗口尺寸停在拖动前，松手才换成新的。界面按宽度换形态（侧边栏、面板停在哪、
+ * 几栏）都读 LocalWindowInfo 的尺寸（Material 的 currentWindowAdaptiveInfo 也读它），这里换掉它一处即可：
+ * - 拖动中不在断点处来回换形态，画面不抽搐，也不必每挪一个像素就整页重组；
+ * - 改尺寸时 Compose 不等下一帧、当场测量一次，把挂着的重组一并做掉。这时若有弹层随形态变化离开组合，
+ *   就是在测量途中被销毁，整个窗口抛 RootNodeOwner is already disposed（见 PikoWindow 的 isDisposedLayerRace）。
+ *   形态等到松手再换，这类重组落在拖动之外。
+ * 窗口内容本身照旧跟着真实尺寸排布，只是按宽度的判断延后。最大化与贴靠不走拖动循环，当场生效。
+ * macOS 的 AWT 没有开始与结束缩放的事件，仍是实时的。
+ */
+@Composable
+private fun SettledWindowInfo(caption: WindowsCaption?, content: @Composable () -> Unit) {
+    if (caption == null) {
+        content()
+        return
+    }
+    val live = LocalWindowInfo.current
+    val settled = remember(live) { mutableStateOf(live.containerSize) }
+    LaunchedEffect(live, caption) {
+        snapshotFlow { if (caption.isSizing) null else live.containerSize }
+            .collect { size -> if (size != null) settled.value = size }
+    }
+    val info = remember(live) { SettledSizeWindowInfo(live, settled) }
+    CompositionLocalProvider(LocalWindowInfo provides info, LocalWindowResizing provides caption.isSizing) { content() }
+}
+
+private class SettledSizeWindowInfo(base: WindowInfo, private val size: State<IntSize>) : WindowInfo by base {
+    override val containerSize: IntSize get() = size.value
 }
 
 /** 与 Windows 11 标题栏按钮（46×32 epx）同高。 */

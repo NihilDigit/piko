@@ -341,6 +341,15 @@ piko 源码仍是 MIT，但发版时要附 GPLv3 与第三方声明，并指明�
   问 `GetDeviceRemovedReason`，失效了就让 `PikoWindow` 以 `generation` 为 key 重建所有窗口。它读的是 skiko 的内部布局
   （`Direct3DRedrawer.device` 与 `DirectXDevice` 结构体的槽位），升级 skiko 要对照源码核对。复现：管理员执行
   `dxcap -forcetdr` 后拉一下窗口。mediamp 的日志经 `MpvLogBridge` 进应用日志，tag 是 mpv。
+- **测量途中销毁弹层**：Compose 桌面场景每帧先拷一份「主层加各弹层」的列表再逐个测量，测主层时若有弹层
+  （菜单、提示、对话框）离开组合，它当场被销毁却仍在列表里，轮到它时整个窗口抛 `RootNodeOwner is already disposed`，
+  出帧协程随之结束（Compose 的 bug，jb-main 仍在）。在测量时才组合的地方最容易撞上：`SubcomposeLayout`、
+  Scaffold 的槽位、`BoxWithConstraints`、懒加载列表。规避：
+  - 放弹层的自定义布局用普通 `Layout`，不用 `SubcomposeLayout`（命令栏的 `CommandBarLayout` 即因此改过）。
+  - 拖着窗口边框改尺寸时，Compose 不等下一帧、当场测量，最易触发。Windows 上 `WindowFrame` 在拖动期间把
+    `LocalWindowInfo` 的尺寸停在拖动前，并提供 `LocalWindowResizing`，按宽度换形态的判断都等松手；自己量尺寸
+    做判断的地方照 `PikoMainScaffold` 的 `panelFits` 那样，拖动中先存着、松手再算。
+  - 兜底：`PikoWindow` 的异常处理认出这一个异常，重建出事的窗口，不弹错误框。认的是 require 的文案，升级 Compose 时核对。
 - **单实例**：`SingleInstance` 以 `~/.piko/instance.lock` 的文件锁决定主实例，后来者经同目录的
   Unix domain socket 转交启动参数（磁力链接）后退出。安装版与 `gradlew :desktopApp:run` 共用这把锁，
   装好的 Piko 开着时，开发构建一启动就把参数转交过去然后退出，调试前先关掉安装版。AOT 训练进程不参与。
