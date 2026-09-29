@@ -132,8 +132,8 @@ fun DuplicatesSheetContent(state: DuplicateFinderState) {
             text = {
                 Text(
                     buildString {
-                        append("将 $count 个文件移入回收站，共 ${state.selectedBytes.toReadableSize()}，可在回收站恢复。")
-                        if (fullyRemoved > 0) append("\n其中 $fullyRemoved 组的所有副本都已勾选，移走后网盘里不再保留这些内容。")
+                        append("$count 个文件，共 ${state.selectedBytes.toReadableSize()}，可在回收站恢复。")
+                        if (fullyRemoved > 0) append("\n其中 $fullyRemoved 组一份不留。")
                     },
                 )
             },
@@ -254,7 +254,7 @@ private fun ResultList(state: DuplicateFinderState) {
             sectionHeader(
                 key = "identical",
                 title = "完全相同 ${report.identical.size} 组",
-                description = "内容一致，默认保留名字里没有「(1)」「副本」这类标记的一份，其次最早存入的",
+                description = "默认保留原件，勾选副本",
             )
             groups(report.identical, state)
         }
@@ -262,7 +262,7 @@ private fun ResultList(state: DuplicateFinderState) {
             sectionHeader(
                 key = "versions",
                 title = "同集不同版本 ${report.versions.size} 组",
-                description = "按文件名判断为同一集，内容不同。默认不勾选，比较后自行决定",
+                description = "同一集的不同文件，默认不勾选",
             )
             groups(report.versions, state)
         }
@@ -439,12 +439,12 @@ private fun SelectionBar(count: Int, bytes: Long, busy: Boolean, onTrash: () -> 
 private fun scanSummary(state: DuplicateFinderState): String = buildString {
     append("扫描了 ${state.scannedFolders} 个文件夹，${state.scannedFiles} 个文件")
     when (state.scanStop) {
-        ScanStop.CANCELLED -> append("。扫描已停止，结果只含已扫描的部分")
-        ScanStop.FOLDER_LIMIT, ScanStop.FILE_LIMIT -> append("。已达扫描上限，结果只含已扫描的部分，可进入子文件夹分别查找")
-        ScanStop.TIMEOUT -> append("。扫描超时，结果只含已扫描的部分，可进入子文件夹分别查找")
+        ScanStop.CANCELLED -> append("。已停止，结果不全")
+        ScanStop.FOLDER_LIMIT, ScanStop.FILE_LIMIT -> append("。已达上限，结果不全，可分子文件夹查找")
+        ScanStop.TIMEOUT -> append("。已超时，结果不全，可分子文件夹查找")
         null -> Unit
     }
-    if (state.failedFolders > 0) append("。${state.failedFolders} 个文件夹读取失败，已跳过")
+    if (state.failedFolders > 0) append("。${state.failedFolders} 个文件夹读取失败")
 }
 
 private fun formatDuration(seconds: Long): String {
