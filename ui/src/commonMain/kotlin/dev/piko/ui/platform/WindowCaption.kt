@@ -15,6 +15,12 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.isPrimaryPressed
+import androidx.compose.ui.input.pointer.pointerInput
 
 /**
  * 标题栏并进内容时（照 Chrome）由桌面端提供：不再有单独的一条标题栏，窗口按钮由贴着窗口右上角的那一行
@@ -37,7 +43,48 @@ interface WindowCaption {
 
     /** 登记一块能拖动窗口的区域（窗口坐标），[bounds] 为 null 时撤掉。同一个 [key] 后登记的替换先登记的。 */
     fun setDragArea(key: Any, bounds: Rect?)
+
+    /**
+     * 鼠标左键正按着时调用：把这一次按下交给系统，当作按在标题栏上，之后的拖动、贴靠与拖离最大化都由系统处理。
+     * 系统接走后内容收不到原本的松开，窗口过程事后补发一次，见 [dragWindowOnLongPress]。
+     */
+    fun beginWindowDrag()
 }
+
+/**
+ * 按住不动一会儿就改成拖动窗口，给本身能点的控件用（地址栏）：点一下照常，按住等 [LongPressMs] 再动是拖窗口。
+ * 地址栏几乎占满顶栏，只剩两头的空白能拖，窗口不好抓。
+ *
+ * 只认鼠标左键；按住期间挪出了阈值就放弃，那是别的拖动（选文字、拖放）。交给系统后补发的松开在 Initial 阶段吃掉，
+ * 里面的可点击项看到的是已消费的松开，不当作一次单击。
+ */
+@Composable
+fun Modifier.dragWindowOnLongPress(): Modifier {
+    val caption = LocalWindowCaption.current ?: return this
+    return pointerInput(caption) {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            if (down.type != PointerType.Mouse || !currentEvent.buttons.isPrimaryPressed) return@awaitEachGesture
+            // 到时之前松开或挪动了就有值，按住不动到时是 null
+            val endedEarly = withTimeoutOrNull(LongPressMs) {
+                while (true) {
+                    val change = awaitPointerEvent(PointerEventPass.Initial).changes.firstOrNull { it.id == down.id } ?: break
+                    if (!change.pressed || (change.position - down.position).getDistance() > viewConfiguration.touchSlop) break
+                }
+                true
+            }
+            if (endedEarly != null) return@awaitEachGesture
+            caption.beginWindowDrag()
+            while (true) {
+                val change = awaitPointerEvent(PointerEventPass.Initial).changes.firstOrNull { it.id == down.id } ?: break
+                change.consume()
+                if (!change.pressed) break
+            }
+        }
+    }
+}
+
+private const val LongPressMs = 400L
 
 val LocalWindowCaption = compositionLocalOf<WindowCaption?> { null }
 

@@ -94,6 +94,7 @@ import dev.piko.ui.components.menuItemShape
 import dev.piko.ui.components.releasesFocusOnOutsidePress
 import dev.piko.ui.components.verticalWheelScrollsRow
 import dev.piko.ui.platform.LocalPikoPlatform
+import dev.piko.ui.platform.dragWindowOnLongPress
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -157,6 +158,8 @@ internal fun DrivePathTitle(model: AddressBarModel, editRequests: Int) {
                 .fillMaxWidth()
                 .height(40.dp)
                 .onSizeChanged { barWidth = it.width }
+                // 输入时按住是选文字，不拖窗口
+                .then(if (editing) Modifier else Modifier.dragWindowOnLongPress())
                 // 点到列表、命令栏、侧边栏这些不可聚焦的地方也要收起输入：输入框失焦即收起，见 AddressField
                 .releasesFocusOnOutsidePress()
                 .clip(CircleShape)

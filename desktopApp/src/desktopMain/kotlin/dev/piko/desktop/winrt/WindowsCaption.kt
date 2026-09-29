@@ -127,6 +127,34 @@ internal class WindowsCaption(private val window: Window) {
         layout = Layout(dragAreas, buttons)
     }
 
+    /**
+     * 把正按着的左键当作按在标题栏上交给系统（内容里的长按拖窗口）。界面线程调用，窗口过程在工具包线程上，
+     * 所以只投一条消息过去，真正的交接在 [dragFromClient] 里做：释放捕获只对持有它的线程有效。
+     */
+    fun beginDrag() {
+        if (frame == MemorySegment.NULL) return
+        User32.postMessage.invokeWithArguments(frame, WM_PIKO_BEGIN_DRAG, 0L, 0L)
+    }
+
+    /**
+     * 按下时 Skiko 的画布拿着鼠标捕获，先放掉，再照真按在标题栏上一样发 WM_NCLBUTTONDOWN/HTCAPTION：
+     * DefWindowProc 据此进入移动循环，贴靠、拖离最大化与真标题栏相同。
+     * 移动循环吃掉了松开，画布那边的 Compose 仍当左键按着，下一次单击会被当成拖动的延续；循环返回后
+     * 按光标当前位置给画布补发一次 WM_LBUTTONUP。
+     */
+    private fun dragFromClient(hwnd: MemorySegment) {
+        User32.getCursorPos.invokeWithArguments(point)
+        val screen = packPoint(point.get(JAVA_INT, 0), point.get(JAVA_INT, 4))
+        User32.releaseCapture.invokeWithArguments()
+        callFrame(hwnd, WM_NCLBUTTONDOWN, HTCAPTION.toLong(), screen)
+        val target = if (canvas != MemorySegment.NULL) canvas else hwnd
+        User32.getCursorPos.invokeWithArguments(point)
+        User32.screenToClient.invokeWithArguments(target, point)
+        User32.postMessage.invokeWithArguments(target, WM_LBUTTONUP, 0L, packPoint(point.get(JAVA_INT, 0), point.get(JAVA_INT, 4)))
+    }
+
+    private fun packPoint(x: Int, y: Int): Long = ((y and 0xFFFF).toLong() shl 16) or (x and 0xFFFF).toLong()
+
     /** 不显示标题栏时（如播放器全屏）整个窗口都是客户区。 */
     fun clearLayout() {
         layout = null
@@ -179,6 +207,10 @@ internal class WindowsCaption(private val window: Window) {
                         if (button == wasPressed) perform(hwnd, button)
                         return 0
                     }
+                }
+                WM_PIKO_BEGIN_DRAG -> {
+                    if (hasCaption()) dragFromClient(hwnd)
+                    return 0
                 }
                 WM_NCACTIVATE -> isActive = wParam != 0L
                 WM_SIZE -> {
@@ -367,6 +399,8 @@ internal class WindowsCaption(private val window: Window) {
         val getClientRect = handle("GetClientRect", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
         val screenToClient = handle("ScreenToClient", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
         val trackMouseEvent = handle("TrackMouseEvent", FunctionDescriptor.of(JAVA_INT, ADDRESS))
+        val getCursorPos = handle("GetCursorPos", FunctionDescriptor.of(JAVA_INT, ADDRESS))
+        val releaseCapture = handle("ReleaseCapture", FunctionDescriptor.of(JAVA_INT))
         val getDpiForWindow = handle("GetDpiForWindow", FunctionDescriptor.of(JAVA_INT, ADDRESS))
         val getSystemMetricsForDpi = handle("GetSystemMetricsForDpi", FunctionDescriptor.of(JAVA_INT, JAVA_INT, JAVA_INT))
         val setWindowPos = handle(
@@ -399,6 +433,9 @@ internal class WindowsCaption(private val window: Window) {
         const val WM_NCLBUTTONDBLCLK = 0x00A3
         const val WM_SYSCOMMAND = 0x0112
         const val WM_NCMOUSELEAVE = 0x02A2
+        const val WM_LBUTTONUP = 0x0202
+        /** WM_APP 起是应用自用的消息号。 */
+        const val WM_PIKO_BEGIN_DRAG = 0x8000 + 1
 
         const val SIZE_RESTORED = 0L
         const val SIZE_MAXIMIZED = 2L

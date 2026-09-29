@@ -275,6 +275,8 @@ private class CompactCaption(private val caption: WindowsCaption) : WindowCaptio
         publish()
     }
 
+    override fun beginWindowDrag() = caption.beginDrag()
+
     fun publish() {
         if (!hosted) return
         caption.updateLayout(dragAreas.values.toList(), buttons.values.fold(emptyMap()) { all, one -> all + one })
