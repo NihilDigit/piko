@@ -6,9 +6,9 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import dev.piko.PikoApplication
 import dev.piko.data.auth.AndroidPikoSessionStore
-import dev.piko.data.auth.DataStoreSessionStore
+import dev.piko.shared.data.SavedAccount
+import dev.piko.shared.data.SavedAccounts
 import dev.piko.data.auth.dataStore
 import dev.piko.shared.data.PikoClientManager
 import io.github.nihildigit.pikpak.Session
@@ -41,14 +41,16 @@ class SessionStorageSmokeTest {
      */
     @Test
     fun savedSessionRestoresOnColdStartWithoutNetwork() = runBlocking {
-        val store = AndroidPikoSessionStore(context, PikoApplication.instance.sessionManager)
+        val store = AndroidPikoSessionStore(context)
         val account = "smoke-restore@piko.dev"
-        val previousAccount = store.loadLastAccount()
+        val previousAccounts = store.loadAccounts()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         try {
             val expiresAt = System.currentTimeMillis() / 1000 + 3_600
-            store.save(account, Session(accessToken = "AT", refreshToken = "RT", sub = "UID", expiresAt = expiresAt))
-            store.saveLastAccount(account)
+            store.save(account, Session(accessToken = "AT", refreshToken = "refresh-secret", sub = "UID", expiresAt = expiresAt))
+            store.saveAccounts(SavedAccounts(account, listOf(SavedAccount(account))))
+            val raw = context.dataStore.data.first()[stringPreferencesKey("pikpak_session_$account")]
+            assertFalse("会话以明文落盘", raw.orEmpty().contains("refresh-secret"))
 
             // 新建一个 manager 就是一次冷启动的恢复流程，读的是同一份落盘数据
             val manager = PikoClientManager(store, scope)
@@ -57,21 +59,21 @@ class SessionStorageSmokeTest {
         } finally {
             scope.cancel()
             store.clear(account)
-            if (previousAccount != null) store.saveLastAccount(previousAccount) else store.clearLastAccount()
+            store.saveAccounts(previousAccounts)
         }
     }
 
     /** 防的是密码以明文进 DataStore：配合关闭备份，文件被拷走也拿不到密码。 */
     @Test
     fun savedPasswordIsSealedAndReadsBack() = runBlocking {
-        val store = DataStoreSessionStore(context)
+        val store = AndroidPikoSessionStore(context)
         val account = "smoke-cipher@piko.dev"
         try {
             store.saveCredentials(account, "s3cret-密码")
             val raw = context.dataStore.data.first()[stringPreferencesKey("pikpak_password_$account")]
             assertNotNull(raw)
             assertFalse("密码以明文落盘", raw!!.contains("s3cret"))
-            assertEquals("s3cret-密码", store.loadCredentials(account))
+            assertEquals("s3cret-密码", store.loadCredentials(account)?.password)
         } finally {
             store.clearCredentials(account)
         }
@@ -80,14 +82,14 @@ class SessionStorageSmokeTest {
     /** 防的是升级后旧版本存下的明文密码读不出来，老用户被迫重新登录，或明文一直留着。 */
     @Test
     fun legacyPlaintextPasswordStillWorksAndGetsSealed() = runBlocking {
-        val store = DataStoreSessionStore(context)
+        val store = AndroidPikoSessionStore(context)
         val account = "smoke-legacy@piko.dev"
         val key = stringPreferencesKey("pikpak_password_$account")
         try {
             context.dataStore.edit { it[key] = "legacy-pw" }
-            assertEquals("legacy-pw", store.loadCredentials(account))
+            assertEquals("legacy-pw", store.loadCredentials(account)?.password)
             assertFalse("读过一次后仍是明文", context.dataStore.data.first()[key] == "legacy-pw")
-            assertEquals("legacy-pw", store.loadCredentials(account))
+            assertEquals("legacy-pw", store.loadCredentials(account)?.password)
         } finally {
             store.clearCredentials(account)
         }

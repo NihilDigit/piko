@@ -116,6 +116,39 @@ jobs:
           path: desktopApp/build/reports/tests
           retention-days: 7
 
+  # 凭据存进钥匙串的行为（-U 覆盖、-i 的行长上限、锁着时的退出码）只能在真实的 macOS 上验，本地没有 Mac
+  macos-keychain:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/checkout@v5
+        if: format('{0}', inputs.sdk-main) != 'false'
+        with:
+          repository: NihilDigit/pikpak-kotlin
+          path: pikpak-kotlin
+
+      - name: Build against the SDK source
+        if: format('{0}', inputs.sdk-main) != 'false'
+        shell: bash
+        run: echo "pikpak.sdk.dir=pikpak-kotlin" >> local.properties
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: zulu
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Keychain tests
+        run: ./gradlew :shared:desktopTest --tests '*MacKeychainVaultTest*' --no-daemon --stacktrace
+
+      # 锁着的钥匙串报什么退出码与错误要记下来，成败都打出测试的标准输出
+      - name: Print test output
+        if: always()
+        run: cat shared/build/test-results/desktopTest/TEST-*MacKeychainVaultTest*.xml || true
+
   android-unit:
     runs-on: ubuntu-latest
     timeout-minutes: 30

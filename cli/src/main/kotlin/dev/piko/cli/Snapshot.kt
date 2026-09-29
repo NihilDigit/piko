@@ -1,13 +1,11 @@
 package dev.piko.cli
 
+import dev.piko.shared.auth.DesktopSessionStore
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.PikPakClient
-import io.github.nihildigit.pikpak.Session
 import io.github.nihildigit.pikpak.SessionStore
 import io.github.nihildigit.pikpak.listFiles
-import java.io.File
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -77,32 +75,22 @@ internal suspend fun resolvePath(client: PikPakClient, path: String): String {
 }
 
 /**
- * 与 app 共用 ~/.piko 下的会话。SDK 刷新 token 时会轮换 refresh token，新会话必须写回同一个文件，
- * 否则 app 手里那份作废，下次打开要重新登录。写法与桌面端的 FilePikoSessionStore 相同：先写临时文件再原子替换。
+ * 与桌面端共用 ~/.piko 下的登录态，取桌面端当前的账号。SDK 刷新 token 时会轮换 refresh token，
+ * 新会话必须写回桌面端读的同一处，否则桌面端手里那份作废，下次打开要重新登录。
  */
-class AppSessionStore(private val root: File = File(System.getProperty("user.home"), ".piko")) : SessionStore {
-    private val json = Json { ignoreUnknownKeys = true }
-    private val sessionFile = File(root, "pikpak-session.json")
-
-    fun account(): String = File(root, "pikpak-account.txt").takeIf { it.isFile }?.readText()?.trim()
+class AppSessionStore(private val store: DesktopSessionStore = DesktopSessionStore()) : SessionStore by store {
+    fun account(): String = runBlocking { store.loadAccounts().current }
         ?: error("~/.piko 下没有登录信息，先在桌面端登录一次")
 
-    fun password(): String = File(root, "pikpak-password.txt").readText()
+    suspend fun password(account: String): String = store.loadCredentials(account)?.password
+        ?: error("没有保存这个账号的密码，先在桌面端重新登录一次")
 
-    override suspend fun load(account: String): Session? =
-        sessionFile.takeIf { it.isFile }?.let { json.decodeFromString(Session.serializer(), it.readText()) }
-
-    override suspend fun save(account: String, session: Session) {
-        val staging = File(root, "${sessionFile.name}.tmp")
-        staging.writeText(json.encodeToString(Session.serializer(), session))
-        Files.move(staging.toPath(), sessionFile.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-    }
-
-    // 会话失效时 SDK 会调它；这里不删文件，留给 app 自己处理重新登录
+    // 会话失效时 SDK 会调它；这里不删，留给桌面端自己处理重新登录
     override suspend fun clear(account: String) = Unit
 }
 
 fun appClient(): PikPakClient {
     val store = AppSessionStore()
-    return PikPakClient(store.account(), passwordSupplier = { store.password() }, sessionStore = store)
+    val account = store.account()
+    return PikPakClient(account, passwordSupplier = { store.password(account) }, sessionStore = store)
 }
