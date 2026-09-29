@@ -128,7 +128,7 @@ internal fun TransfersHeader(
 
 /**
  * 手机上的页头只有一行：标题「传输」、类型筛选、操作。筛选原来另起一行，页头连状态栏占去一百多 dp，
- * 手机上一屏本就放不下几项传输。筛选夹在中间带权重，放不下时自己横向滚动，标题与操作不被挤掉。
+ * 手机上一屏本就放不下几项传输。筛选夹在中间，四个按钮等宽铺满标题与操作之间的宽度。
  *
  * 列表滚离顶端时底色换成 surfaceContainer（[scrolled]），与 M3 top app bar 的 on scroll 状态相同，
  * 页头与滚到它下面的内容分得开；颜色渐变过去，不跳。有选中项时仍是上下文顶栏，同样随滚动换色。
@@ -177,14 +177,16 @@ private fun CompactTransfersHeader(
         )
         Spacer(Modifier.width(12.dp))
         Box(modifier = Modifier.weight(1f)) {
-            // 留白放在滚动区里面：放在外面的话，按钮滑到边上之前就被裁掉，看着像到头了
+            // 四类按钮等宽铺满标题与操作之间的这一段：手机宽度正好放得下，不必滚动；各按内容定宽时
+            // 挤在左边、宽窄不一，右边空出一截，连体按钮看着像没摆完
             if (showFilter) {
                 KindFilter(
                     current = state.filter,
                     counts = state.counts,
                     onChange = state::changeFilter,
                     contentPadding = PaddingValues(end = 8.dp),
-                    itemPadding = 12.dp,
+                    itemPadding = 8.dp,
+                    fillWidth = true,
                 )
             }
         }
@@ -226,13 +228,19 @@ private fun KindFilter(
     onChange: (TransferKind) -> Unit,
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(),
-    /** 每个按钮两侧的内边距。手机上与标题挤在一行，收窄一些，多露出一个类别。 */
+    /** 每个按钮两侧的内边距。手机上与标题挤在一行，收窄一些。 */
     itemPadding: Dp = 16.dp,
+    /** 为 true 时各按钮等宽铺满可用宽度，不滚动；否则按内容定宽，放不下时横向滚动。 */
+    fillWidth: Boolean = false,
 ) {
     val kinds = TransferKind.entries
     val scroll = rememberScrollState()
     Row(
-        modifier = modifier.verticalWheelScrollsRow(scroll).horizontalScroll(scroll).padding(contentPadding),
+        modifier = if (fillWidth) {
+            modifier.fillMaxWidth().padding(contentPadding)
+        } else {
+            modifier.verticalWheelScrollsRow(scroll).horizontalScroll(scroll).padding(contentPadding)
+        },
         horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
     ) {
         kinds.forEachIndexed { index, kind ->
@@ -241,6 +249,7 @@ private fun KindFilter(
                 onCheckedChange = { if (kind != current) onChange(kind) },
                 shapes = connectedToggleShapes(index, kinds.size),
                 contentPadding = PaddingValues(horizontal = itemPadding),
+                modifier = if (fillWidth) Modifier.weight(1f) else Modifier,
             ) {
                 FilterLabel(kind.label, counts[kind] ?: 0)
             }
