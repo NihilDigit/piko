@@ -83,6 +83,8 @@ import dev.piko.ui.components.menuItemShape
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.verticalWheelScrollsRow
 import dev.piko.ui.platform.LocalPikoPlatform
+import dev.piko.ui.platform.rememberCaptionSlot
+import dev.piko.ui.platform.windowDragArea
 
 /**
  * 多选态顶栏。动作都作用于整批选中项，没有可以下放到别处的。
@@ -153,10 +155,11 @@ internal fun DriveSearchTopBar(
     val focusRequester = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
     LaunchedEffect(Unit) { focusRequester.requestFocus() }
+    val caption = rememberCaptionSlot()
 
     TopAppBar(
         // 窄窗口的桌面端：点到列表即让出焦点，方向键回到列表上；搜索栏与搜索词留着
-        modifier = Modifier.releasesFocusOnOutsidePress(),
+        modifier = Modifier.releasesFocusOnOutsidePress().then(caption.modifier),
         navigationIcon = {
             IconButton(onClick = onClose) {
                 Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "关闭搜索")
@@ -216,6 +219,7 @@ internal fun DriveSearchTopBar(
             IconButton(onClick = { if (query.isNotEmpty()) onQueryChange("") else onClose() }) {
                 Icon(Icons.Outlined.Close, contentDescription = if (query.isNotEmpty()) "清除搜索词" else "关闭搜索")
             }
+            caption.buttons?.invoke()
         },
         colors = TopAppBarDefaults.topAppBarColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -240,20 +244,29 @@ internal fun DriveBrowseTopBar(
     navigationIcon: (@Composable () -> Unit)?,
     actions: @Composable RowScope.() -> Unit,
 ) {
+    val caption = rememberCaptionSlot()
     TopAppBar(
+        modifier = caption.modifier,
         title = {
-            Column {
-                Text(
-                    text = title,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.titleLargeEmphasized,
-                )
-                SectionJumper(currentSection, sections, onSectionSelected)
+            // 标题后面的空白是拖动区。不把整格登记上去：副标题是能点的分区菜单，落在拖动区里就点不到了
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column {
+                    Text(
+                        text = title,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.titleLargeEmphasized,
+                    )
+                    SectionJumper(currentSection, sections, onSectionSelected)
+                }
+                if (caption.atTop) Spacer(Modifier.weight(1f).height(TopAppBarDefaults.TopAppBarExpandedHeight).windowDragArea())
             }
         },
         navigationIcon = { navigationIcon?.invoke() },
-        actions = actions,
+        actions = {
+            actions()
+            caption.buttons?.invoke()
+        },
         colors = TopAppBarDefaults.topAppBarColors(
             containerColor = MaterialTheme.colorScheme.surface,
             scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,

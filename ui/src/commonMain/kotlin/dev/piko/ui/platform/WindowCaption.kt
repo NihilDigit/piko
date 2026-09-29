@@ -48,17 +48,24 @@ val LocalWindowCaption = compositionLocalOf<WindowCaption?> { null }
  * 按位置判断而不是由各页声明：同一页在有没有右侧面板时，贴着右上角的是不同的行，只有布局知道。
  * 按钮画在这一行里面，这一行自己的边界不随之变化，判断不会来回翻。
  */
-class CaptionSlot(val modifier: Modifier, val buttons: (@Composable () -> Unit)?)
+class CaptionSlot(
+    val modifier: Modifier,
+    val buttons: (@Composable () -> Unit)?,
+    /** 这一行从窗口顶上开始，属于并进内容的标题栏：行里的空白应当登记成拖动区。 */
+    val atTop: Boolean = false,
+)
 
 @Composable
 fun rememberCaptionSlot(): CaptionSlot {
     val caption = LocalWindowCaption.current ?: return NoCaptionSlot
     val windowWidth = LocalWindowInfo.current.containerSize.width
     var touches by remember { mutableStateOf(false) }
+    var atTop by remember { mutableStateOf(false) }
     val modifier = Modifier.onGloballyPositioned { coordinates ->
         val bounds = coordinates.boundsInWindow()
         // 容一个像素：边界按浮点算，贴边的行可能差零点几
-        touches = bounds.right >= windowWidth - 1f && bounds.top <= 1f
+        atTop = bounds.top <= 1f
+        touches = bounds.right >= windowWidth - 1f && atTop
     }
     return CaptionSlot(
         modifier,
@@ -73,6 +80,7 @@ fun rememberCaptionSlot(): CaptionSlot {
         } else {
             null
         },
+        atTop,
     )
 }
 

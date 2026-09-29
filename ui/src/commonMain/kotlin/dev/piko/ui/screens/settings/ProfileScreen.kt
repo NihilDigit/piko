@@ -51,6 +51,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MediumFlexibleTopAppBar
 import androidx.compose.material3.OutlinedButton
 import dev.piko.ui.components.PikoScaffold
+import dev.piko.ui.platform.rememberCaptionSlot
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -129,7 +130,11 @@ fun ProfileScreen(
             // 宽窗口里下面的内容收在居中的一栏，标题与返回一起缩进同样的量，底色仍铺满
             BoxWithConstraints {
                 val sideInset = readableSidePadding(maxWidth)
+                // 桌面端手机宽度的窗口里这一行贴着右上角，窗口按钮接在动作的位置上
+                val caption = rememberCaptionSlot()
                 MediumFlexibleTopAppBar(
+                    modifier = caption.modifier,
+                    actions = { caption.buttons?.invoke() },
                     title = {
                         Text(
                             text = session?.username?.ifEmpty { null } ?: "PikPak 用户",

@@ -519,9 +519,9 @@ fun DriveScreen(
     }
     // 记住的回调里读它的最新值：窗口从宽变窄时不该还能开标签
     val latestOpenInNewTab by rememberUpdatedState(openInNewTab)
-    // 快速访问列在侧边栏与命令面板里，与标签同在宽窗口，窄窗口不给固定的入口
+    // 快速访问列在侧边栏与命令面板里：有侧边栏（比手机宽）才给固定的入口，手机上固定了也看不到
     val pinnedFolders by driveRepo.pinnedFoldersFlow.collectAsStateWithLifecycle(emptyList())
-    val togglePin: ((FileStat) -> Unit)? = if (tabsAvailable) {
+    val togglePin: ((FileStat) -> Unit)? = if (currentWidthClass() != WidthClass.Compact) {
         { folder ->
             if (pinnedFolders.any { it.id == folder.id }) {
                 driveRepo.unpinFolder(folder.id)
@@ -1629,10 +1629,13 @@ fun DriveScreen(
 
     // 秒传面板。划走只是收起，会话还在，底部留把手，见 InstantSession
     if (instantState != null && instantSession.isSheetOpen) {
-        PikoSheet(onDismissRequest = instantSession::collapse) {
+        // 侧栏形态的顶上已有标题与关闭那一行，标题交给它，内容里不再画第二个
+        PikoSheet(onDismissRequest = instantSession::collapse, sideSheetTitle = "添加链接") {
+            val sideSheet = isSideSheet
             Column {
                 InstantSheetContent(
                     state = instantState,
+                    inSideSheet = sideSheet,
                     // 先收起面板：Android 上它是独立窗口，会盖在应用内的播放器上面
                     onPreview = { fileId, fileName ->
                         instantSession.collapse()

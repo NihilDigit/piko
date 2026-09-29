@@ -1,6 +1,11 @@
 package dev.piko.ui.components
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.ui.Alignment
+import dev.piko.ui.platform.windowDragArea
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.add
@@ -106,14 +111,23 @@ private fun PikoTopBarContent(
     } else {
         colors
     }
+    val barHeight = if (LocalFramed.current) FrameTopRowHeight else TopAppBarDefaults.TopAppBarExpandedHeight
     TopAppBar(
         title = {
-            Text(
-                text = title,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.titleLargeEmphasized,
-            )
+            // 在窗口顶上时标题这一格铺满返回与动作之间的空白，整块是拖动区：原来只有窗口按钮前那一截能拖，
+            // 设置这类只有标题的页，顶上一大片空白按住不动。高度写死为顶栏高：标题格的高度不设上限，
+            // fillMaxHeight 会把整条顶栏撑到窗口那么高（实测）
+            Box(
+                modifier = if (caption.atTop) Modifier.fillMaxWidth().height(barHeight).windowDragArea() else Modifier,
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                Text(
+                    text = title,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.titleLargeEmphasized,
+                )
+            }
         },
         modifier = modifier.then(caption.modifier),
         navigationIcon = {
@@ -135,7 +149,7 @@ private fun PikoTopBarContent(
         windowInsets = TopAppBarDefaults.windowInsets.add(WindowInsets(left = sideInset, right = sideInset)),
         colors = barColors,
         // 外框里与网盘页地址栏那一行、侧边栏的图标行同高（56dp），换页时卡片的上沿不跳；M3 默认的 64dp 会低出一截
-        expandedHeight = if (LocalFramed.current) FrameTopRowHeight else TopAppBarDefaults.TopAppBarExpandedHeight,
+        expandedHeight = barHeight,
         scrollBehavior = scrollBehavior,
     )
 }

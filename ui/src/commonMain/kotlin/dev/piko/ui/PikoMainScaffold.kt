@@ -171,6 +171,11 @@ import androidx.compose.foundation.layout.height
 import dev.piko.ui.theme.FrameContentShape
 import dev.piko.ui.theme.LocalFramed
 import dev.piko.ui.theme.SidebarMinWindowWidth
+import dev.piko.ui.theme.SidebarPushMinWindowWidth
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Surface
 import dev.piko.ui.theme.frame
 import androidx.compose.ui.draw.clip
 import androidx.compose.material3.MaterialTheme
@@ -240,8 +245,6 @@ private val NavKeyConfiguration = SavedStateConfiguration {
     }
 }
 
-/** 「我的」与它的详情页拼成的两栏，两者的 scene key 相同才会并排。 */
-private const val ProfileScene = "profile"
 
 /**
  * 主界面：Navigation 3 的返回栈加导航套件。
@@ -269,14 +272,14 @@ fun PikoMainScaffold(
     val topScreen = backStack.lastOrNull() as? Screen
     val onHome = backStack.size <= 1
 
-    // 大窗口换成一整条侧边栏：上面是三个去处，下面是网盘的快捷访问，照 Finder 的边栏与资源管理器的导航窗格。
-    // 不在导航栏旁边另起一栏：两栏并排都是竖着的导航，选中态各亮一处，看不出谁管谁。
+    // 比手机宽就是一整条侧边栏：上面是去处，下面是网盘的快捷访问与库，照 Finder 的边栏与资源管理器的导航窗格。
+    // 只有两套：手机的底部导航栏与这条侧边栏，不再有导航套件的侧轨或横向底栏，见 SidebarMinWindowWidth。
     // 侧边栏在返回栈外面，打开「我的」里的星标、回收站这些页时不被盖住；应用内的播放器这类整窗的页照旧盖住
-    val largeWindow = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.width.toDp() } >= SidebarMinWindowWidth
-    val sidebarMode = largeWindow && (onHome || topScreen == Screen.Profile || topScreen in ProfilePanes)
-    // 「我的」与它的详情页并排两栏，只在 expanded 而又没有整条侧边栏时：侧边栏在时星标、回收站、设置这些
-    // 直接列在侧边栏上，点了就占满内容区，再垫一栏「我的」是把侧边栏抄一遍
-    val twoPane = widthClass == WidthClass.Expanded && !largeWindow
+    val windowWidth = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.width.toDp() }
+    val sidebarWindow = windowWidth >= SidebarMinWindowWidth
+    val sidebarMode = sidebarWindow && (onHome || topScreen == Screen.Profile || topScreen in ProfilePanes)
+    // 窄的侧边栏窗口里只留窄轨的位置，展开时浮在内容上，见 SidebarPushMinWindowWidth
+    val sidebarOverlays = windowWidth < SidebarPushMinWindowWidth
 
     fun resetToHome() {
         while (backStack.size > 1) backStack.removeLastOrNull()
@@ -297,22 +300,13 @@ fun PikoMainScaffold(
     }
 
     // 两个详情页互相替换，不叠在一起：从回收站点到设置，返回应当回到「我的」而不是回收站。
-    // 两栏时先垫一个「我的」作列表栏
     // 读栈的当下，不读组合时的 topScreen：openPage 先 resetToHome 再调这里，topScreen 还是清栈前的那一页，
     // 照它弹栈弹掉的是栈底的 Home，此后「文件」再也回不去（2026-09-28）
     fun openProfilePane(screen: Screen) {
         val top = backStack.lastOrNull()
         if (top == screen) return
         if (top in ProfilePanes && backStack.size > 1) backStack.removeLastOrNull()
-        if (twoPane && backStack.lastOrNull() != Screen.Profile) backStack.add(Screen.Profile)
         backStack.add(screen)
-    }
-
-    // 窄窗口里打开的详情页下面没有列表栏，窗口拉宽后补上，否则两栏的左边是空的
-    LaunchedEffect(twoPane, topScreen) {
-        if (twoPane && topScreen in ProfilePanes && backStack.getOrNull(backStack.lastIndex - 1) != Screen.Profile) {
-            backStack.add(backStack.lastIndex, Screen.Profile)
-        }
     }
 
     // 监听外部传入的磁力链接，自动切到文件页并关闭压栈页
@@ -429,8 +423,17 @@ fun PikoMainScaffold(
     // 同样要头一帧就对：先按不带扩展名排出来再换，名字会整排跳一下
     val initialShowExtensions = remember { runBlocking { preferences.showExtensionsFlow.first() } }
     val showExtensions by preferences.showExtensionsFlow.collectAsStateWithLifecycle(initialShowExtensions)
+    // 窄窗口里浮起来的那一层展开的侧边栏。只记这一回：它是临时借一下地方，不改存下的收起状态
+    var sidebarFloatRequested by remember { mutableStateOf(false) }
+    val sidebarFloating = sidebarFloatRequested && sidebarOverlays && sidebarMode
+    // 去了别处就收回：点了浮层里的一项，或窗口拉宽到推得开、缩到没有侧边栏
+    LaunchedEffect(currentTab, topScreen, sidebarOverlays, sidebarMode) { sidebarFloatRequested = false }
     fun toggleSidebar() {
-        coroutineScope.launch { preferences.setSidebarCollapsed(!sidebarCollapsed) }
+        if (sidebarOverlays) {
+            sidebarFloatRequested = !sidebarFloating
+        } else {
+            coroutineScope.launch { preferences.setSidebarCollapsed(!sidebarCollapsed) }
+        }
     }
     val initialPanelPrefs = remember { runBlocking { preferences.clipPanelFlow.first() } }
     val panelPrefs by preferences.clipPanelFlow.collectAsStateWithLifecycle(initialPanelPrefs)
@@ -470,7 +473,9 @@ fun PikoMainScaffold(
 
     // 信息流刷的是打开时网盘页所在的文件夹，连同子文件夹
     val folderStack by services.driveRepository.folderStackFlow.collectAsStateWithLifecycle()
-    val quickAccess = remember { QuickAccessState(services.driveRepository, services.clientManager, coroutineScope) }
+    // 浮着的侧边栏里点快速访问或库，换的只是文件夹，不经上面那几个键
+    LaunchedEffect(folderStack) { sidebarFloatRequested = false }
+    val quickAccess =remember { QuickAccessState(services.driveRepository, services.clientManager, coroutineScope) }
     val pinnedFolders by quickAccess.pinnedFolders.collectAsStateWithLifecycle(emptyList())
     // 快捷键一览，F1 或主修饰键+/
     var shortcutsOpen by remember { mutableStateOf(false) }
@@ -735,14 +740,9 @@ fun PikoMainScaffold(
                 currentTab = MainTab.FILES
             }
 
-            // 导航栏的款式交给库按窗口挑：compact 是 64dp 的 ShortNavigationBar，更宽是收起态的
-            // WideNavigationRail。不用旧重载的 calculateFromAdaptiveInfo，它给的是 80dp 的 NavigationBar
-            // 与 NavigationRail，M3 Expressive 已把这两款标为不再推荐
-            val navigationSuiteType = if (sidebar) {
-                NavigationSuiteType.None
-            } else {
-                NavigationSuiteScaffoldDefaults.navigationSuiteType(currentWindowAdaptiveInfo())
-            }
+            // 导航套件只剩手机的底部导航栏，64dp 的 ShortNavigationBar。写死而不交给库挑：库还看窗口高度，
+            // 横握的手机宽够了、高度不够，给的是一条占地方的横向底栏
+            val navigationSuiteType = if (sidebar) NavigationSuiteType.None else NavigationSuiteType.ShortNavigationBarCompact
             NavigationSuiteScaffold(
                 navigationItems = {
                     MainTab.entries.forEach { tab ->
@@ -784,29 +784,8 @@ fun PikoMainScaffold(
         }
     }
 
-    // 分几栏不用库默认的 calculatePaneScaffoldDirective：那一套按 WindowSizeClass 算，与全应用按
-    // currentWidthClass 取的断点各算各的。列表栏宽取 M3 布局规范 expanded 档固定栏的 360dp；
-    // 两栏各是一整页，自带顶栏与底色，中间不再留空隙也不画分隔线
-    val listDetailDirective = remember(twoPane) {
-        PaneScaffoldDirective(
-            maxHorizontalPartitions = if (twoPane) 2 else 1,
-            horizontalPartitionSpacerSize = 0.dp,
-            maxVerticalPartitions = 1,
-            verticalPartitionSpacerSize = 0.dp,
-            defaultPanePreferredWidth = ProfilePaneWidth,
-            excludedBounds = emptyList(),
-        )
-    }
-    // 返回一次出一条（详情连同垫着的列表栏，见 popBack）。默认的 PopUntilScaffoldValueChange 在两栏时
-    // 出栈不改变分栏形态，会把整组一次退光
-    val listDetailStrategy = rememberListDetailSceneStrategy<NavKey>(
-        backNavigationBehavior = BackNavigationBehavior.PopLatest,
-        directive = listDetailDirective,
-    )
-    // 两栏时详情页不给返回：返回按钮只属于单栏的详情页（M3 canonical layouts 的 list-detail），
-    // 退出两栏在列表栏的顶栏上
-    // 侧边栏在时也不给：出口就是侧边栏
-    val paneBack: (() -> Unit)? = if (twoPane || largeWindow) null else ::popBack
+    // 侧边栏在时详情页不给返回：出口就是侧边栏
+    val paneBack: (() -> Unit)? = if (sidebarWindow) null else ::popBack
     val selectedPane = topScreen?.takeIf { it in ProfilePanes }
 
     fun openFolderStack(stack: List<PikoPathBreadcrumb>) {
@@ -922,8 +901,9 @@ fun PikoMainScaffold(
                 },
         ) {
             val frameModifier = if (sidebarMode) Modifier.background(MaterialTheme.colorScheme.frame) else Modifier
-            // 有外框时接管标题栏：侧边栏顶上那一行能拖，右上角的那一行画窗口按钮
-            if (sidebarMode) LocalWindowCaption.current?.Host()
+            // 主界面一律接管标题栏，手机宽度的桌面窗口也是：各页顶栏贴着右上角时画窗口按钮、空白处能拖。
+            // 只有外框时接管的话，窄窗口顶上叠着系统的一条标题栏，再下面才是页面的顶栏
+            LocalWindowCaption.current?.Host()
             // 侧边栏不能拖宽，只有展开与收起两档：拖宽的话，宽了挤内容，窄了文件夹名只剩几个字，要的其实是让出地方，
             // 那就整个收成只剩图标的窄轨
             val sidebarWidth by animateDpAsState(
@@ -931,29 +911,36 @@ fun PikoMainScaffold(
                 animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
                 label = "sidebarWidth",
             )
-            // 有外框时面板停进右侧那一栏，见 SidePanelHost
-            CompositionLocalProvider(LocalFramed provides sidebarMode, LocalSidePanelHost provides panelHost.takeIf { sidebarMode }) { Row(Modifier.fillMaxSize().then(frameModifier)) {
+            @Composable
+            fun Sidebar(width: Dp, collapsed: Boolean) {
+                MainSidebar(
+                    width = width,
+                    currentTab = currentTab,
+                    onTabClick = { tab ->
+                        resetToHome()
+                        onTabClick(tab)
+                    },
+                    quickAccess = quickAccess,
+                    pinned = pinnedFolders,
+                    folderStack = folderStack,
+                    onQuickAccessOpened = {
+                        resetToHome()
+                        currentTab = MainTab.FILES
+                    },
+                    selectedPage = selectedPane,
+                    onOpenPage = ::openPage,
+                    onToggleLibrary = ::toggleLibrary,
+                    collapsed = collapsed,
+                    onToggleCollapsed = ::toggleSidebar,
+                )
+            }
+            BackHandler(enabled = sidebarFloating) { sidebarFloatRequested = false }
+            // 有外框、右边又放得下一栏时面板停进右侧那一栏，见 SidePanelHost。放不下时（外框从 600dp 起就有）
+            // 不给宿主，PikoSheet 退回模态侧边面板或底部 sheet，不把列表挤成一条
+            CompositionLocalProvider(LocalFramed provides sidebarMode, LocalSidePanelHost provides panelHost.takeIf { sidebarMode && panelFits }) { Box(Modifier.fillMaxSize()) { Row(Modifier.fillMaxSize().then(frameModifier)) {
                 if (sidebarMode) {
-                    MainSidebar(
-                        width = sidebarWidth,
-                        currentTab = currentTab,
-                        onTabClick = { tab ->
-                            resetToHome()
-                            onTabClick(tab)
-                        },
-                        quickAccess = quickAccess,
-                        pinned = pinnedFolders,
-                        folderStack = folderStack,
-                        onQuickAccessOpened = {
-                            resetToHome()
-                            currentTab = MainTab.FILES
-                        },
-                        selectedPage = selectedPane,
-                        onOpenPage = ::openPage,
-                        onToggleLibrary = ::toggleLibrary,
-                        collapsed = sidebarCollapsed,
-                        onToggleCollapsed = ::toggleSidebar,
-                    )
+                    // 窄窗口里这一条恒为窄轨，展开的那一份浮在上面，见下
+                    if (sidebarOverlays) Sidebar(SidebarRailWidth, collapsed = true) else Sidebar(sidebarWidth, sidebarCollapsed)
                     Spacer(Modifier.width(SidebarGap))
                 }
                 Column(Modifier.weight(1f).fillMaxHeight()) {
@@ -964,7 +951,6 @@ fun PikoMainScaffold(
                         NavDisplay(
                             backStack = backStack,
                             onBack = ::popBack,
-                            sceneStrategies = listOf(listDetailStrategy),
                             // 压栈与返回：新页从右侧滑入五分之一屏并淡入，旧页反向让开。走满整屏是 lateral 的做法，
                             // 规范明说别拿它做层级导航
                             transitionSpec = {
@@ -996,7 +982,8 @@ fun PikoMainScaffold(
                             },
                             entryProvider = entryProvider {
                                 entry<Screen.Home> { HomeContent() }
-                                entry<Screen.Profile>(metadata = ListDetailSceneStrategy.listPane(sceneKey = ProfileScene)) {
+                                // 原来的两栏布局才压这一页，只为恢复旧版存下的返回栈而留着
+                                entry<Screen.Profile> {
                                     ProfileScreen(
                                         onLogout = onLogout,
                                         onOpenPane = ::openProfilePane,
@@ -1006,14 +993,13 @@ fun PikoMainScaffold(
                                         onBackClick = if (sidebarMode) null else ::closeProfile,
                                     )
                                 }
-                                val detail = ListDetailSceneStrategy.detailPane(ProfileScene)
-                                entry<Screen.MyShares>(metadata = detail) { MySharesScreen(onBackClick = paneBack, onLocate = ::revealInDrive) }
-                                entry<Screen.Settings>(metadata = detail) {
+                                entry<Screen.MyShares> { MySharesScreen(onBackClick = paneBack, onLocate = ::revealInDrive) }
+                                entry<Screen.Settings> {
                                     SettingsScreen(
                                         onBackClick = paneBack,
-                                        // 有整条侧边栏时没有「我的」页，账号、退出登录与关于放在设置里
-                                        account = if (largeWindow) ({ AccountSettings(onLogout) }) else null,
-                                        showAbout = largeWindow,
+                                        // 有侧边栏时没有「我的」页，账号、退出登录与关于放在设置里
+                                        account = if (sidebarWindow) ({ AccountSettings(onLogout) }) else null,
+                                        showAbout = sidebarWindow,
                                     )
                                 }
                                 entry<Screen.VideoPlayer> { screen ->
@@ -1021,6 +1007,38 @@ fun PikoMainScaffold(
                                 }
                             },
                         )
+                    }
+                }
+            }
+                // 窄窗口里展开的侧边栏：浮在内容上、压一层遮罩，照 M3 的模态抽屉，点遮罩、返回或去了别处都收回
+                if (sidebarMode && sidebarOverlays) {
+                    val scrimAlpha by animateFloatAsState(
+                        if (sidebarFloating) SidebarScrimAlpha else 0f,
+                        animationSpec = MaterialTheme.motionScheme.defaultEffectsSpec(),
+                        label = "sidebarScrim",
+                    )
+                    if (scrimAlpha > 0f) {
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .background(MaterialTheme.colorScheme.scrim.copy(alpha = scrimAlpha))
+                                .clickable(interactionSource = null, indication = null, enabled = sidebarFloating) {
+                                    sidebarFloatRequested = false
+                                },
+                        )
+                    }
+                    AnimatedVisibility(
+                        visible = sidebarFloating,
+                        enter = slideInHorizontally(MaterialTheme.motionScheme.defaultSpatialSpec()) { -it },
+                        exit = slideOutHorizontally(MaterialTheme.motionScheme.defaultSpatialSpec()) { -it },
+                    ) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.frame,
+                            shape = RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp),
+                            shadowElevation = 6.dp,
+                        ) {
+                            Sidebar(SidebarWidth, collapsed = false)
+                        }
                     }
                 }
             } }
@@ -1056,8 +1074,6 @@ private val FeedResumeBarFabClearance = 56.dp + 16.dp
 /** 「我的」的详情页。它们互相替换，不叠在一起。 */
 private val ProfilePanes = setOf<NavKey?>(Screen.MyShares, Screen.Settings)
 
-/** 两栏时「我的」列表栏的宽度：M3 布局规范 expanded 档固定栏的默认宽度。 */
-private val ProfilePaneWidth = 360.dp
 
 private fun MainTab.icon(selected: Boolean) = when (this) {
     MainTab.FILES -> if (selected) Icons.Filled.Folder else Icons.Outlined.Folder
@@ -1068,6 +1084,9 @@ private fun MainTab.icon(selected: Boolean) = when (this) {
 
 /** 侧边栏与内容卡片之间的间隔。 */
 private val SidebarGap = 8.dp
+
+/** 浮起的侧边栏下面那层遮罩，M3 模态抽屉的 32%。 */
+private const val SidebarScrimAlpha = 0.32f
 
 @Composable
 private fun MainSidebar(

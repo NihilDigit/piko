@@ -166,10 +166,12 @@ private fun CompactTransfersHeader(
         )
         return
     }
+    val caption = rememberCaptionSlot()
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(container)
+            .then(caption.modifier)
             .windowInsetsPadding(TopAppBarDefaults.windowInsets)
             .heightIn(min = 64.dp)
             .padding(start = 16.dp, end = 4.dp),
@@ -179,6 +181,7 @@ private fun CompactTransfersHeader(
             text = "传输",
             style = MaterialTheme.typography.titleLargeEmphasized,
             maxLines = 1,
+            modifier = if (caption.atTop) Modifier.windowDragArea() else Modifier,
         )
         Spacer(Modifier.width(12.dp))
         Box(modifier = Modifier.weight(1f)) {
@@ -198,6 +201,7 @@ private fun CompactTransfersHeader(
         if (state.canResumeAll) HeaderAction(Icons.Outlined.PlayArrow, "全部继续", wide = false, state::resumeAll)
         if (state.canClearCompleted) HeaderAction(Icons.Outlined.ClearAll, "清除已完成", wide = false, state::clearCompleted)
         onRefresh?.let { TooltipIconButton(Icons.Outlined.Refresh, "刷新", it) }
+        caption.buttons?.invoke()
     }
 }
 

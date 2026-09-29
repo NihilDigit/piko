@@ -88,6 +88,7 @@ import dev.piko.shared.state.Clip
 import dev.piko.ui.components.formatTimeMs
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.windowDragArea
+import dev.piko.ui.platform.rememberCaptionSlot
 import dev.piko.ui.screens.player.PlayerSeekBar
 import dev.piko.ui.screens.player.handCursor
 import kotlin.math.roundToInt
@@ -113,9 +114,12 @@ internal fun ClipFeedTopBar(
     onDock: (() -> Unit)? = null,
 ) {
     val buttonSize = if (compact) 40.dp else 48.dp
+    // 在主窗口里全屏或停在右侧一栏时，这一行贴着窗口右上角，窗口按钮接在关闭后面
+    val caption = rememberCaptionSlot()
     Row(
         modifier = modifier
             .fillMaxWidth()
+            .then(caption.modifier)
             .background(Brush.verticalGradient(TopScrim))
             .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top))
             .padding(horizontal = if (compact) 4.dp else 8.dp, vertical = if (compact) 4.dp else 8.dp),
@@ -152,6 +156,7 @@ internal fun ClipFeedTopBar(
                 if (onPopOut != null) ChromeIconButton(Icons.AutoMirrored.Outlined.OpenInNew, "在独立窗口播放", onPopOut, buttonSize, tooltip = true)
                 if (onClose != null) ChromeIconButton(Icons.Filled.Close, "关闭信息流", onClose, buttonSize, tooltip = true)
             }
+            caption.buttons?.invoke()
         }
     }
 }
