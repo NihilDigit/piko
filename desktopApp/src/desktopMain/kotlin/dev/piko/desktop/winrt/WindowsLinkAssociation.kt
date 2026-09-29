@@ -36,6 +36,8 @@ internal object WindowsLinkAssociation : LinkAssociation {
     private const val REGISTERED_NAME = "Piko"
     private const val CAPABILITIES = "Software\\Piko\\Capabilities"
     private const val CLASSES = "Software\\Classes"
+    private const val APP_NAME = "Piko"
+    private const val MUI_CACHE = "Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\MuiCache"
 
     override val needsSystemConfirmation: Boolean = true
     override val canUnregister: Boolean = true
@@ -90,6 +92,7 @@ internal object WindowsLinkAssociation : LinkAssociation {
                 if (magnetIsOurs) Registry.deleteTree("$CLASSES\\magnet") else true,
                 if (Registry.getString("$CLASSES\\.torrent", null) == TORRENT_PROG_ID) Registry.deleteValue("$CLASSES\\.torrent", null) else true,
                 Registry.deleteValue("$CLASSES\\.torrent\\OpenWithProgids", TORRENT_PROG_ID),
+                launcher()?.let { Registry.deleteTree("$CLASSES\\Applications\\${it.name}") } ?: true,
                 Registry.deleteTree("Software\\Piko\\Capabilities"),
                 Registry.deleteValue("Software\\RegisteredApplications", REGISTERED_NAME),
             ).all { it }
@@ -116,13 +119,36 @@ internal object WindowsLinkAssociation : LinkAssociation {
             Registry.setString("$CLASSES\\.torrent", null, TORRENT_PROG_ID),
             // 「打开方式」菜单里列出 Piko，即便 .torrent 另有默认
             Registry.setEmpty("$CLASSES\\.torrent\\OpenWithProgids", TORRENT_PROG_ID),
-            Registry.setString(CAPABILITIES, "ApplicationName", "Piko"),
+            // 「打开方式」与默认应用列表里的名字。不写时 Windows 取 exe 的文件描述，而那是按路径缓存的（见 forgetStaleName）
+            Registry.setString("$CLASSES\\$MAGNET_PROG_ID\\Application", "ApplicationName", APP_NAME),
+            Registry.setString("$CLASSES\\$TORRENT_PROG_ID\\Application", "ApplicationName", APP_NAME),
+            Registry.setString("$CLASSES\\Applications\\${exe.name}", "FriendlyAppName", APP_NAME),
+            Registry.setString(CAPABILITIES, "ApplicationName", APP_NAME),
             Registry.setString(CAPABILITIES, "ApplicationDescription", "PikPak 客户端"),
             Registry.setString("$CAPABILITIES\\URLAssociations", "magnet", MAGNET_PROG_ID),
             Registry.setString("$CAPABILITIES\\FileAssociations", ".torrent", TORRENT_PROG_ID),
             Registry.setString("Software\\RegisteredApplications", REGISTERED_NAME, CAPABILITIES),
         )
+        forgetStaleName(exe)
         return writes.all { it }
+    }
+
+    /**
+     * 资源管理器把 exe 的文件描述按路径缓存在 MuiCache 里，exe 换了也不刷新。1.1.0 之前的 exe 描述是一句英文简介，
+     * 从那时装上来的人在「打开方式」里看到的一直是那句简介而不是 Piko。只删这个 exe 自己的那几项，
+     * 值已是 Piko 时不动；删掉后系统下次按新 exe 重新生成。启动时调一次，没登记过关联的人也不会看到旧名。
+     */
+    fun forgetStaleName(exe: File? = launcher()) {
+        exe ?: return
+        runCatching {
+            val prefix = exe.absolutePath
+            val cached = Registry.getString(MUI_CACHE, "$prefix.FriendlyAppName")
+            if (cached != null && cached != APP_NAME) {
+                Registry.deleteValue(MUI_CACHE, "$prefix.FriendlyAppName")
+                Registry.deleteValue(MUI_CACHE, "$prefix.ApplicationCompany")
+                PikoLog.i(TAG, "已清除过期的应用名缓存")
+            }
+        }.onFailure { PikoLog.w(TAG, "清除应用名缓存失败", it) }
     }
 
     // 资源管理器缓存了关联与图标，不通知的话 .torrent 文件要到下次登录才换成 Piko 的图标
