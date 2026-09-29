@@ -19,6 +19,7 @@ import dev.piko.ui.theme.Appearance
 import dev.piko.ui.theme.ThemeMode
 import java.io.File
 import javax.swing.SwingUtilities
+import kotlinx.coroutines.Dispatchers
 import org.jetbrains.skia.EncodedImageFormat
 import org.jetbrains.skia.Image
 
@@ -55,8 +56,9 @@ class AppScene private constructor(private val scene: ImageComposeScene) : AutoC
         return false
     }
 
-    private fun nodes(): List<SemanticsNode> = edt {
-        scene.semanticsOwners.flatMap { owner ->
+    private fun nodes(topmost: Boolean = false): List<SemanticsNode> = edt {
+        val owners = scene.semanticsOwners.toList()
+        (if (topmost) owners.takeLast(1) else owners).flatMap { owner ->
             val out = mutableListOf<SemanticsNode>()
             fun walk(node: SemanticsNode) {
                 out += node
@@ -72,18 +74,19 @@ class AppScene private constructor(private val scene: ImageComposeScene) : AutoC
             (config.getOrNull(SemanticsProperties.ContentDescription) ?: emptyList())
 
     /** 文本或内容描述等于 [text] 的节点；没有时退而找包含它的。弹层（对话框、菜单）里的也算。 */
-    fun find(text: String): SemanticsNode? {
-        val all = nodes()
+    fun find(text: String, topmost: Boolean = false): SemanticsNode? {
+        val all = nodes(topmost)
         return all.firstOrNull { node -> node.texts().any { it == text } }
             ?: all.firstOrNull { node -> node.texts().any { it.contains(text) } }
     }
 
     fun hasText(text: String) = find(text) != null
 
-    fun click(text: String, button: PointerButton = PointerButton.Primary) {
+    /** [topmost] 只在最上层的弹层里找：对话框底下的页面有同名节点时，默认先找到的是页面上的那个。 */
+    fun click(text: String, button: PointerButton = PointerButton.Primary, topmost: Boolean = false) {
         // 目标可能还在路上（文件夹的解析名要等描述取回来），等一会儿再算找不到
-        if (find(text) == null) pumpUntil(5_000) { find(text) != null }
-        val node = find(text) ?: error("找不到「$text」。界面上现有的文本：${texts().take(60)}")
+        if (find(text, topmost) == null) pumpUntil(5_000) { find(text, topmost) != null }
+        val node = find(text, topmost) ?: error("找不到「$text」。界面上现有的文本：${texts().take(60)}")
         click(node.boundsInRoot.center, button)
     }
 
@@ -188,8 +191,11 @@ class AppScene private constructor(private val scene: ImageComposeScene) : AutoC
                 isClipFeedOpen = { feedWindow.value },
                 closeClipFeed = { feedWindow.value = false },
             )
+            // 效果的协程放在 EDT 上，与桌面入口一样。场景默认用 Unconfined，挂起后在哪个线程恢复就在哪里接着跑，
+            // 目录选择器进子文件夹后在后台线程上 scrollToItem，撞上界面线程正在测量，抛
+            // 「performMeasureAndLayout called during measure layout」
             val scene = edt {
-                ImageComposeScene(width, height, Density(1f)) {
+                ImageComposeScene(width, height, Density(1f), coroutineContext = Dispatchers.Main) {
                     PikoApp(env.services, env.platform, Appearance(mode = mode), player)
                 }
             }
@@ -232,6 +238,7 @@ private fun keyNamed(name: String): Key = when (name.lowercase()) {
     "f11" -> Key.F11
     "f12" -> Key.F12
     "menu" -> Key.Menu
+    "comma" -> Key.Comma
     else -> if (name.length == 1 && name[0].isLetterOrDigit()) {
         Key(nativeKeyCode = java.awt.event.KeyEvent.getExtendedKeyCodeForChar(name[0].uppercaseChar().code))
     } else {

@@ -3,6 +3,8 @@ package dev.piko.shots
 import kotlinx.serialization.json.jsonArray
 import dev.piko.shared.data.PikoCredentials
 import dev.piko.shared.data.PikoSessionStore
+import dev.piko.shared.data.SavedAccount
+import dev.piko.shared.data.SavedAccounts
 import io.github.nihildigit.pikpak.Session
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
@@ -57,6 +59,12 @@ class FakePikPak {
     fun addFile(name: String, size: Long, parentId: String = "", modified: String = "2026-09-18T21:30:00.000+08:00", trashed: Boolean = false, starred: Boolean = false): Node =
         add(Node(newId(), parentId, name, false, size, modified, trashed, starred))
 
+    // 带内容的文件（归档清单），直链指向 /blob/<id>，由同一个拦截器作答：没有单独注入 CDN 客户端时，SDK 下载也走它
+    private val blobs = ConcurrentHashMap<String, ByteArray>()
+
+    fun addBlob(name: String, bytes: ByteArray, parentId: String = ""): Node =
+        addFile(name, bytes.size.toLong(), parentId).also { blobs[it.id] = bytes }
+
     fun addTask(name: String, phase: String, progress: Int, size: Long, created: String = "2026-09-27T09:00:00.000+08:00") {
         tasks += Task(newId(), name, phase, progress, size, created)
     }
@@ -110,6 +118,7 @@ class FakePikPak {
         val path = url.encodedPath
         val method = request.method
         calls += "$method $path?${url.encodedQuery.orEmpty()}"
+        if (path.startsWith("/blob/")) return blob(request, path.substringAfterLast('/'))
         val (code, text) = when {
             path.endsWith("/v1/shield/captcha/init") -> 200 to """{"captcha_token":"CAP","expires_in":300,"url":""}"""
             path.endsWith("/v1/auth/signin") || path.endsWith("/v1/auth/token") ->
@@ -146,6 +155,21 @@ class FakePikPak {
             .code(code)
             .message(if (code == 200) "OK" else "Not Found")
             .body(text.toResponseBody("application/json".toMediaType()))
+            .build()
+    }
+
+    // SDK 按 Range 读，只认 bytes=a-b 这一种写法
+    private fun blob(request: okhttp3.Request, id: String): Response {
+        val builder = Response.Builder().request(request).protocol(Protocol.HTTP_1_1)
+        val bytes = blobs[id] ?: return builder.code(404).message("Not Found").body("".toResponseBody(null)).build()
+        val range = request.header("Range")?.removePrefix("bytes=")?.split('-')
+        val start = range?.getOrNull(0)?.toIntOrNull() ?: 0
+        val end = range?.getOrNull(1)?.toIntOrNull()?.coerceAtMost(bytes.lastIndex) ?: bytes.lastIndex
+        if (range != null) builder.header("Content-Range", "bytes $start-$end/${bytes.size}")
+        return builder
+            .code(if (range != null) 206 else 200)
+            .message("OK")
+            .body(bytes.copyOfRange(start, end + 1).toResponseBody("application/octet-stream".toMediaType()))
             .build()
     }
 
@@ -216,6 +240,15 @@ class FakePikPak {
         put("created_time", node.modified)
         put("modified_time", node.modified)
         if (node.trashed) put("delete_time", "2026-09-25T12:00:00.000+08:00")
+        if (blobs.containsKey(node.id)) {
+            put("links", buildJsonObject {
+                put("application/octet-stream", buildJsonObject {
+                    put("url", "https://fake-cdn.piko.test/blob/${node.id}")
+                    put("token", "")
+                    put("expire", "2099-01-01T00:00:00.000+08:00")
+                })
+            })
+        }
     }
 
     private fun mimeOf(name: String) = when (name.substringAfterLast('.').lowercase()) {
@@ -236,7 +269,7 @@ class FakePikPak {
 /** 内存会话存储，预先放好一个未过期的会话，PikoClientManager 恢复时不发登录请求。 */
 class MemorySessionStore(account: String) : PikoSessionStore {
     private val sessions = ConcurrentHashMap<String, Session>()
-    @Volatile private var lastAccount: String? = account
+    @Volatile private var accounts = SavedAccounts(account, listOf(SavedAccount(account)))
 
     init {
         sessions[account] = Session(accessToken = "AT", refreshToken = "RT", sub = "UID", expiresAt = 4_000_000_000L)
@@ -245,9 +278,8 @@ class MemorySessionStore(account: String) : PikoSessionStore {
     override suspend fun load(account: String): Session? = sessions[account]
     override suspend fun save(account: String, session: Session) { sessions[account] = session }
     override suspend fun clear(account: String) { sessions.remove(account) }
-    override suspend fun loadLastAccount(): String? = lastAccount
-    override suspend fun saveLastAccount(account: String) { lastAccount = account }
-    override suspend fun clearLastAccount() { lastAccount = null }
+    override suspend fun loadAccounts(): SavedAccounts = accounts
+    override suspend fun saveAccounts(accounts: SavedAccounts) { this.accounts = accounts }
     override suspend fun loadCredentials(account: String): PikoCredentials? = PikoCredentials(account, "pw")
     override suspend fun saveCredentials(account: String, password: String) = Unit
     override suspend fun clearCredentials(account: String) = Unit

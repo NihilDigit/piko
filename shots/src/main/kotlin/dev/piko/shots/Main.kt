@@ -8,8 +8,9 @@ import kotlin.system.exitProcess
 
 private const val USAGE = """用法：piko-shots <命令> [选项]
 
-  all [-o <目录>]
+  all [--only <前缀>] [-o <目录>]
       渲染一整套：网盘在四档窗口宽度与深色下、子目录、传输、我的及其三个详情页、条目详情面板。
+      --only 只渲染名字以它开头的几张，如 --only rename。
   shot <名字> [--size <宽>x<高>] [--dark] [步骤…] [-o <目录>]
       渲染一张。步骤按写的顺序执行：
         --click <文本>        点击文本或内容描述为它的节点（先精确匹配，没有则包含匹配）
@@ -27,7 +28,8 @@ private const val USAGE = """用法：piko-shots <命令> [选项]
 经 gradle run 时相对仓库根目录。数据来自 FakePikPak.seed()，每张图都从登录后的网盘根目录开始。"""
 
 private sealed interface Step {
-    data class Click(val text: String, val button: PointerButton = PointerButton.Primary) : Step
+    /** [topmost] 只在最上层（最后打开的对话框、菜单）里找，底下的页面有同名节点时用。 */
+    data class Click(val text: String, val button: PointerButton = PointerButton.Primary, val topmost: Boolean = false) : Step
     data class Hover(val text: String) : Step
     data class Drag(val from: Offset, val to: Offset) : Step
     data object Release : Step
@@ -43,6 +45,49 @@ private class Shot(
     val height: Int = 900,
     val mode: ThemeMode = ThemeMode.LIGHT,
     val steps: List<Step> = emptyList(),
+    /** 网盘页的视图，LIST、POSTER、GALLERY；null 是默认的海报墙。 */
+    val viewMode: String? = null,
+    /** 只给这一张加的数据，放在 [seed] 之后。公共的 seed 不动，免得别的图跟着变。 */
+    val extraSeed: FakePikPak.() -> Unit = {},
+)
+
+/** 进番剧目录，框选几集后按 F2 打开批量重命名。框从 SPs 那一行右侧的空白处拖起，起点落在空白处才是框选。 */
+private fun renameSteps(from: Offset = Offset(1380f, 250f), to: Offset = Offset(600f, 700f)): List<Step> = listOf(
+    Step.Click("Frieren"), Step.Key("Enter"), Step.Wait("SPs"), Step.Pump(800), Step.Drag(from, to), Step.Release, Step.Pump(400),
+    Step.Key("F2"), Step.Pump(1_500),
+)
+
+/**
+ * 拼一组积木：每加一块会自动打开它的编辑面板，点一下预览的列头收起再加下一块。不用 Esc：
+ * 焦点不在弹出的面板里，Esc 到不了它。也不点标题「批量重命名」：网盘页工具栏的按钮同名，先找到的是它。
+ */
+private fun blockSteps(): List<Step> {
+    val close = listOf(Step.Pump(500), Step.Click("原名"), Step.Pump(300))
+    // 菜单弹出时有放大动画，动画没走完就点，落点会偏到上一项
+    fun add(menu: String, item: String) = listOf(Step.Click(menu), Step.Pump(500), Step.Click(item))
+    return add("添加查找积木", "开头") + close +
+        add("添加查找积木", "括号内容") + listOf(Step.Pump(500), Step.Click("方括号")) + close +
+        add("添加查找积木", "任意字符") + close +
+        // 打完字先点别处收成积木：否则点添加按钮时输入框失焦、积木条重排，按钮在点下去之前就挪了位置
+        listOf(Step.Click("输入要查找的文字"), Step.Type(" - ")) + close +
+        add("添加查找积木", "数字") + listOf(Step.Pump(500), Step.Click("取出，供替换引用")) + close +
+        listOf(Step.Click("输入替换成的文字"), Step.Type("第")) + close +
+        add("添加替换积木", "片段①") + close +
+        listOf(Step.Click("输入替换成的文字"), Step.Type("集"), Step.Pump(800))
+}
+
+/**
+ * 右键「文档」文件夹，点「移动到」打开目录选择器；移动的是文件夹，列表里能看到它自己置灰。
+ * 先等归档条目列出来：它插进网格后各项的位置会变，早点右键的话落在空白处，弹出的是空白处的菜单。
+ */
+private fun pickerSteps(): List<Step> = listOf(
+    Step.Wait("Blade"), Step.Pump(1_500),
+    Step.Click("文档", PointerButton.Secondary), Step.Pump(800), Step.Click("移动到"), Step.Pump(3_000),
+)
+
+/** 第一行原名里「02」的位置按 1440x900 的布局量出，布局改了要跟着改。 */
+private fun selectEpisodeSteps(): List<Step> = listOf(
+    Step.Drag(Offset(819f, 208f), Offset(839f, 208f)), Step.Release, Step.Pump(800),
 )
 
 /** `all` 的清单。改了布局先跑它，再挑有关的几张细看。 */
@@ -58,6 +103,19 @@ private val standardSet = listOf(
         "files-history-1440x900",
         steps = listOf(Step.Click("Frieren"), Step.Wait("SPs"), Step.Key("Alt+Left"), Step.Pump(800), Step.Click("电影"), Step.Pump(1_000)),
     ),
+    // 归档标记：根目录里一个归档条目；「电影」里直接放着归档条目，列过一次后文件夹上也挂标记。三种视图各一张
+    Shot("vault-poster-1440x900", steps = listOf(Step.Wait("Blade"), Step.Pump(1_500))),
+    Shot("vault-list-1440x900", viewMode = "LIST", steps = listOf(Step.Wait("Blade"), Step.Pump(1_500))),
+    Shot("vault-gallery-1440x900", viewMode = "GALLERY", steps = listOf(Step.Pump(2_000))),
+    Shot("vault-movies-list-1440x900", viewMode = "LIST", steps = listOf(Step.Click("电影"), Step.Wait("Arrival"), Step.Pump(800), Step.Key("Alt+Left"), Step.Pump(1_200))),
+    // 目录选择器：右键「移动到」打开，进一层子文件夹；手机宽度时全屏。
+    // 进子文件夹要点对话框里的「动画」，网格里有同名的文件夹，所以只找最上层
+    Shot("picker-1440x900", steps = pickerSteps()),
+    Shot("picker-sub-1440x900", steps = pickerSteps() + listOf(Step.Click("动画", topmost = true), Step.Pump(1_500))),
+    Shot("picker-760x800", 760, 800, steps = pickerSteps()),
+    Shot("picker-dark-1440x900", mode = ThemeMode.DARK, steps = pickerSteps() + listOf(Step.Click("动画", topmost = true), Step.Pump(1_500))),
+    Shot("picker-400x860", 400, 860, steps = pickerSteps()),
+    Shot("picker-sub-400x860", 400, 860, steps = pickerSteps() + listOf(Step.Click("动画", topmost = true), Step.Pump(1_500))),
     Shot("details-1440x900", steps = listOf(Step.Click("更多操作"), Step.Pump(800))),
     Shot("details-400x860", 400, 860, steps = listOf(Step.Click("更多操作"), Step.Pump(800))),
     Shot("context-menu-1440x900", steps = listOf(Step.Click("Oppenheimer", PointerButton.Secondary), Step.Pump(500))),
@@ -79,6 +137,35 @@ private val standardSet = listOf(
         steps = listOf(
             Step.Click("动画"), Step.Wait("SPs"), Step.Pump(600), Step.Click("详情"), Step.Pump(800),
             Step.Drag(Offset(1050f, 780f), Offset(600f, 400f)), Step.Release, Step.Pump(600),
+        ),
+    ),
+    // 批量重命名：框选一批后 F2。刚打开时与输入查找替换后各一张，宽窗口两栏，medium 单栏
+    Shot("rename-1440x900", steps = renameSteps()),
+    // 查找命中共同开头里的一段，再去掉替换后仍共有的开头与结尾：新名是「第02.mkv」这样
+    Shot(
+        "rename-typed-1440x900",
+        steps = renameSteps() + listOf(
+            Step.Type("Frieren - "), Step.Click("输入替换成的文字"), Step.Type("第"), Step.Pump(500),
+            Step.Click("去掉共同开头"), Step.Click("去掉共同结尾"), Step.Pump(800),
+        ),
+    ),
+    // 积木：开头、方括号、任意字符、「 - 」、取出的数字，替换成「第①集」；预览按积木上色
+    Shot("rename-blocks-1440x900", steps = renameSteps() + blockSteps()),
+    // 积木用法：积木模式下展开，宽窗口在左栏、手机宽度在规则区里
+    Shot("rename-guide-1440x900", steps = renameSteps() + listOf(Step.Click("积木用法"), Step.Pump(800))),
+    Shot("rename-guide-400x860", 400, 860, steps = renameSteps(Offset(390f, 260f), Offset(60f, 700f)) + listOf(Step.Click("积木用法"), Step.Pump(800))),
+    // 在第一行原名里拖选集数「02」：弹出菜单，再选「改为编号」，生成按位置匹配的积木
+    Shot("rename-select-1440x900", steps = renameSteps() + selectEpisodeSteps()),
+    Shot("rename-select-number-1440x900", steps = renameSteps() + selectEpisodeSteps() + listOf(Step.Click("改为编号"), Step.Pump(800))),
+    // 同一组积木切到正则文本
+    Shot("rename-textmode-1440x900", steps = renameSteps() + blockSteps() + listOf(Step.Click("正则表达式"), Step.Pump(800))),
+    Shot("rename-typed-800x860", 800, 860, steps = renameSteps(Offset(780f, 250f), Offset(300f, 700f)) + listOf(Step.Type("Frieren - "), Step.Pump(800))),
+    Shot("rename-400x860", 400, 860, steps = renameSteps(Offset(390f, 260f), Offset(60f, 700f))),
+    // 冲突：正则把集号都换成同一个字母，各项的新名重复
+    Shot(
+        "rename-conflict-1440x900",
+        steps = renameSteps() + listOf(
+            Step.Click("正则表达式"), Step.Pump(300), Step.Click("查找（正则表达式）"), Step.Type("[0-9]+"), Step.Key("Tab"), Step.Type("E"), Step.Pump(800),
         ),
     ),
     // 命令面板：没输入时最近的文件夹与去处在前；输入后模糊匹配文件夹与命令
@@ -106,11 +193,65 @@ private val standardSet = listOf(
     Shot("sidebar-starred-1440x900", steps = listOf(Step.Pump(1_000), Step.Click("动画"), Step.Wait("SPs"))),
     Shot("feed-popped-1440x900", steps = listOf(Step.Click("信息流"), Step.Pump(1_000), Step.Click("在独立窗口播放"), Step.Pump(800))),
     Shot("transfers-1440x900", steps = listOf(Step.Click("传输"), Step.Wait("Dandadan"))),
+    // 文件夹下载收成一组，展开后各文件接在下面
+    // 宽窗口的「传输」按钮有传输时写的是项数：暂停的一部电影与这一组
+    Shot("transfers-batch-1440x900", steps = listOf(Step.Click("2 项"), Step.Wait("Frieren S01"), Step.Click("展开"), Step.Pump(800))),
+    Shot("transfers-batch-400x860", 400, 860, steps = listOf(Step.Click("传输"), Step.Wait("Frieren S01"), Step.Click("展开"), Step.Pump(800))),
     Shot("profile-1440x900", steps = listOf(Step.Click("我的"), Step.Pump(1_000))),
     Shot("profile-starred-1440x900", steps = listOf(Step.Click("我的"), Step.Pump(1_000), Step.Click("已加星标的文件与文件夹"), Step.Wait("Dune"))),
     Shot("profile-trash-1440x900", steps = listOf(Step.Click("我的"), Step.Pump(1_000), Step.Click("回收站"), Step.Wait("old-backup"))),
     Shot("profile-settings-1440x900", steps = listOf(Step.Click("我的"), Step.Pump(1_000), Step.Click("设置"), Step.Pump(1_000))),
     Shot("profile-settings-760x800", 760, 800, steps = listOf(Step.Click("我的"), Step.Pump(1_000), Step.Click("设置"), Step.Pump(1_000))),
+    // 对话框与面板：各在宽窗口与手机宽度下一张
+    *dialogShots("dlg-share", menuSteps("文档", "分享")),
+    *dialogShots("dlg-share-custom", menuSteps("文档", "分享") + listOf(Step.Click("自定义", topmost = true), Step.Pump(600))),
+    *dialogShots("dlg-rename", menuSteps("文档", "重命名")),
+    // 重命名文件：打开即有焦点，只选主名
+    Shot("dlg-rename-file-1440x900", steps = menuSteps("Oppenheimer", "重命名")),
+    Shot("picker-newfolder-1440x900", steps = pickerSteps() + listOf(Step.Click("新建文件夹", topmost = true), Step.Pump(800))),
+    // 名称里带「?」，确认时弹出修正名称。输入框打开时没有焦点，先点一下
+    *dialogShots(
+        "dlg-unsupported",
+        menuSteps("文档", "重命名") + listOf(Step.Click("新名称", topmost = true), Step.Type("?"), Step.Click("确定", topmost = true), Step.Pump(800)),
+    ),
+    *dialogShots(
+        "dlg-duplicates",
+        listOf(Step.Pump(800), Step.Key("Ctrl+K"), Step.Pump(500), Step.Type("查找重复"), Step.Key("Enter"), Step.Pump(4_000)),
+        extraSeed = { seedDuplicates() },
+    ),
+    // 设置里的几个对话框只出宽窗口：手机宽度下那几行在首屏之外，截图脚本不会滚动
+    Shot("dlg-proxy-1440x900", steps = settingsSteps("网络代理")),
+    Shot("dlg-proxy-manual-1440x900", steps = settingsSteps("网络代理") + listOf(Step.Click("手动", topmost = true), Step.Pump(600))),
+    Shot("dlg-domain-1440x900", steps = settingsSteps("服务器域名")),
+    Shot("dlg-download-location-1440x900", steps = settingsSteps("下载位置")),
+    Shot("dlg-logout-1440x900", steps = listOf(Step.Pump(800), Step.Key("Ctrl+Comma"), Step.Pump(1_200), Step.Click("退出登录"), Step.Pump(1_000))),
+    *dialogShots("dlg-shortcuts", listOf(Step.Pump(800), Step.Key("F1"), Step.Pump(800))),
+    *dialogShots("dlg-actions", listOf(Step.Wait("Blade"), Step.Pump(1_000), Step.Key("Down"), Step.Key("Shift+F10"), Step.Pump(1_000))),
+)
+
+/** 同一组步骤在宽窗口（1440x900）与手机宽度（400x860）下各出一张。 */
+private fun dialogShots(name: String, steps: List<Step>, extraSeed: FakePikPak.() -> Unit = {}): Array<Shot> = arrayOf(
+    Shot("$name-1440x900", steps = steps, extraSeed = extraSeed),
+    Shot("$name-400x860", 400, 860, steps = steps, extraSeed = extraSeed),
+)
+
+/** 查重要有结果：另一个字幕组的两集，与「动画」里的同集构成「同集不同版本」。 */
+private fun FakePikPak.seedDuplicates() {
+    val folder = addFolder("备份")
+    for (ep in 1..2) {
+        addFile("[ANi] Frieren - %02d [1080P][Baha][WEB-DL][AAC AVC][CHT].mp4".format(ep), 380L * (1 shl 20), parentId = folder.id)
+    }
+}
+
+/** 右键 [target]，点菜单里的 [item]。先等归档条目列出来，理由见 [pickerSteps]。 */
+private fun menuSteps(target: String, item: String): List<Step> = listOf(
+    Step.Wait("Blade"), Step.Pump(1_500),
+    Step.Click(target, PointerButton.Secondary), Step.Pump(800), Step.Click(item, topmost = true), Step.Pump(1_500),
+)
+
+/** 经快捷键打开设置，由左侧目录跳到「传输与网络」，点其中的 [row]。 */
+private fun settingsSteps(row: String): List<Step> = listOf(
+    Step.Pump(800), Step.Key("Ctrl+Comma"), Step.Pump(1_200), Step.Click("传输与网络"), Step.Pump(1_000), Step.Click(row), Step.Pump(1_000),
 )
 
 fun main(args: Array<String>) {
@@ -122,7 +263,17 @@ fun main(args: Array<String>) {
     val outDir = File(option(rest, "-o") ?: "build/shots")
     try {
         when (args[0]) {
-            "all" -> standardSet.forEach { render(it, outDir) }
+            "all" -> {
+                val only = option(rest, "--only").orEmpty()
+                // 一张找不到要点的节点不拖累其余几张
+                standardSet.filter { it.name.startsWith(only) }.forEach { shot ->
+                    try {
+                        render(shot, outDir)
+                    } catch (e: IllegalStateException) {
+                        System.err.println("[${shot.name}] ${e.message}")
+                    }
+                }
+            }
             "shot" -> {
                 val name = rest.firstOrNull()?.takeUnless { it.startsWith("-") } ?: fail("shot 要一个名字")
                 render(parseShot(name, rest.drop(1)), outDir)
@@ -147,12 +298,12 @@ private fun render(shot: Shot, outDir: File) {
 private fun printTexts(shot: Shot) = run(shot) { app -> app.texts().forEach(::println) }
 
 private fun run(shot: Shot, finish: (AppScene) -> Unit) {
-    ShotEnv().use { env ->
+    ShotEnv(shot.viewMode, shot.extraSeed).use { env ->
         AppScene.open(env, shot.width, shot.height, shot.mode).use { app ->
             var lastDragEnd: Offset? = null
             for (step in shot.steps) {
                 when (step) {
-                    is Step.Click -> app.click(step.text, step.button)
+                    is Step.Click -> app.click(step.text, step.button, step.topmost)
                     is Step.Hover -> app.hover(step.text)
                     is Step.Drag -> {
                         app.drag(step.from, step.to)
