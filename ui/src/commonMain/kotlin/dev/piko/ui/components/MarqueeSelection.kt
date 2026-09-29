@@ -186,7 +186,7 @@ private suspend fun AwaitPointerEventScope.awaitBackgroundTap(down: PointerInput
  * 刚在 Initial 阶段收到的抬起，里面的可点击项在 Main 阶段是否把它接走了。同一个事件在各阶段依次派发，
  * 这里接着等它的 Final 阶段，照 waitForUpOrCancellation 的做法。
  */
-internal suspend fun AwaitPointerEventScope.isReleaseConsumed(id: PointerId): Boolean =
+private suspend fun AwaitPointerEventScope.isReleaseConsumed(id: PointerId): Boolean =
     awaitPointerEvent(PointerEventPass.Final).changes.firstOrNull { it.id == id }?.isConsumed == true
 
 private fun LazyGridItemInfo.bounds() = Rect(offset.toOffset(), size.toSize())

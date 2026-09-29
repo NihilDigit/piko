@@ -15,17 +15,6 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalWindowInfo
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.PointerType
-import androidx.compose.ui.input.pointer.isPrimaryPressed
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.PointerInputChange
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.unit.Dp
-import androidx.compose.runtime.DisposableEffect
-import dev.piko.ui.components.isReleaseConsumed
 
 /**
  * 标题栏并进内容时（照 Chrome）由桌面端提供：不再有单独的一条标题栏，窗口按钮由贴着窗口右上角的那一行
@@ -48,99 +37,7 @@ interface WindowCaption {
 
     /** 登记一块能拖动窗口的区域（窗口坐标），[bounds] 为 null 时撤掉。同一个 [key] 后登记的替换先登记的。 */
     fun setDragArea(key: Any, bounds: Rect?)
-
-    /**
-     * 登记一块标题栏以下、仍算标题栏的区域（窗口坐标），[bounds] 为 null 时撤掉。开了标签时地址栏那一行在标签栏下面，
-     * 不在顶上那一行里，见 [captionGestures]。
-     */
-    fun setHoldArea(key: Any, bounds: Rect?)
-
-    /** [position]（窗口坐标）是否落在 [setHoldArea] 登记的区域里。 */
-    fun inHoldArea(position: Offset): Boolean
-
-    /**
-     * 鼠标左键正按着时调用：把这一次按下交给系统，当作按在标题栏上，之后的拖动、贴靠与拖离最大化都由系统处理。
-     * 系统接走后内容收不到原本的松开，窗口过程事后补发一次，见 [captionGestures]。
-     */
-    fun beginWindowDrag()
-
-    /** 最大化与还原之间切换，与双击系统标题栏相同。 */
-    fun toggleMaximize()
 }
-
-/**
- * 把所在元素登记成标题栏的一部分：长按拖动窗口、空白处双击最大化，与顶上那一行相同。只给顶上那一行以外的行用
- * （开了标签时的地址栏那一行），顶上那一行本来就算。
- */
-@Composable
-fun Modifier.windowHoldArea(): Modifier {
-    val key = remember { Any() }
-    val caption = LocalWindowCaption.current ?: return this
-    DisposableEffect(caption) { onDispose { caption.setHoldArea(key, null) } }
-    return onGloballyPositioned { caption.setHoldArea(key, it.boundsInWindow()) }
-}
-
-/**
- * 标题栏并进内容时，挂在窗口内容的根上，让自绘的标题栏整条都像系统标题栏：
- * - 长按：按住不动 [LongPressMs] 就交给系统拖动窗口，按在能点的控件上也一样。标题栏里的控件一多（地址栏几乎占满），
- *   登记成拖动区的空白就不好找。按住期间挪出了阈值就放弃，那是别的拖动（选文字、拖放）。交给系统后补发的松开
- *   在 Initial 阶段吃掉，控件看到的是已消费的松开，不当作一次单击。
- * - 双击：两次松开都没被控件接走（Final 阶段仍未消费）才算点在空白上，切换最大化。登记成拖动区的空白由系统
- *   直接答 HTCAPTION，事件到不了这里，双击本来就由系统处理；这里管的是标题文字这类没登记、也不可点的地方。
- *
- * 标题栏的范围是窗口顶上 [stripHeight] 高的一条，加上 [WindowCaption.setHoldArea] 登记的区域。只认鼠标左键。
- */
-fun Modifier.captionGestures(caption: WindowCaption, stripHeight: Dp): Modifier = pointerInput(caption, stripHeight) {
-    var lastClick: Pair<Long, Offset>? = null
-    awaitEachGesture {
-        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-        if (down.type != PointerType.Mouse || !currentEvent.buttons.isPrimaryPressed) return@awaitEachGesture
-        if (down.position.y >= stripHeight.toPx() && !caption.inHoldArea(down.position)) {
-            lastClick = null
-            return@awaitEachGesture
-        }
-        var release: PointerInputChange? = null
-        // 到时之前松开或挪动了就有值，按住不动到时是 null
-        val endedEarly = withTimeoutOrNull(LongPressMs) {
-            while (true) {
-                val change = awaitPointerEvent(PointerEventPass.Initial).changes.firstOrNull { it.id == down.id } ?: break
-                if ((change.position - down.position).getDistance() > viewConfiguration.touchSlop) break
-                if (!change.pressed) {
-                    release = change
-                    break
-                }
-            }
-            true
-        }
-        if (endedEarly == null) {
-            lastClick = null
-            caption.beginWindowDrag()
-            while (true) {
-                val change = awaitPointerEvent(PointerEventPass.Initial).changes.firstOrNull { it.id == down.id } ?: break
-                change.consume()
-                if (!change.pressed) break
-            }
-            return@awaitEachGesture
-        }
-        val up = release
-        if (up == null || isReleaseConsumed(down.id)) {
-            lastClick = null
-            return@awaitEachGesture
-        }
-        val previous = lastClick
-        val isDouble = previous != null &&
-            up.uptimeMillis - previous.first <= viewConfiguration.doubleTapTimeoutMillis &&
-            (up.position - previous.second).getDistance() <= viewConfiguration.touchSlop
-        if (isDouble) {
-            lastClick = null
-            caption.toggleMaximize()
-        } else {
-            lastClick = up.uptimeMillis to up.position
-        }
-    }
-}
-
-private const val LongPressMs = 400L
 
 val LocalWindowCaption = compositionLocalOf<WindowCaption?> { null }
 
