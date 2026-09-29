@@ -28,6 +28,7 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -78,11 +79,13 @@ internal fun TransfersHeader(
     onPauseSelected: (() -> Unit)?,
     onResumeSelected: (() -> Unit)?,
     onDeleteSelected: () -> Unit,
+    /** 下拉刷新用不了（鼠标）或多半用不上（宽窗口）时给的刷新按钮，见 showsRefreshButton。 */
+    onRefresh: (() -> Unit)? = null,
     /** 列表已离开顶端。compact 的页头据此换成 surfaceContainer，与内容分开（M3 top app bar 的 on scroll 状态）。 */
     scrolled: Boolean = false,
 ) {
     if (compact) {
-        CompactTransfersHeader(state, selectedCount, showFilter, scrolled, onPauseSelected, onResumeSelected, onDeleteSelected)
+        CompactTransfersHeader(state, selectedCount, showFilter, scrolled, onPauseSelected, onResumeSelected, onDeleteSelected, onRefresh)
         return
     }
     val caption = rememberCaptionSlot()
@@ -121,6 +124,7 @@ internal fun TransfersHeader(
         } else {
             if (state.canResumeAll) HeaderAction(Icons.Outlined.PlayArrow, "全部继续", wide, state::resumeAll)
             if (state.canClearCompleted) HeaderAction(Icons.Outlined.ClearAll, "清除已完成", wide, state::clearCompleted)
+            onRefresh?.let { TooltipIconButton(Icons.Outlined.Refresh, "刷新", it) }
         }
         caption.buttons?.invoke()
     }
@@ -142,6 +146,7 @@ private fun CompactTransfersHeader(
     onPauseSelected: (() -> Unit)?,
     onResumeSelected: (() -> Unit)?,
     onDeleteSelected: () -> Unit,
+    onRefresh: (() -> Unit)?,
 ) {
     val colors = MaterialTheme.colorScheme
     val container by animateColorAsState(
@@ -192,6 +197,7 @@ private fun CompactTransfersHeader(
         }
         if (state.canResumeAll) HeaderAction(Icons.Outlined.PlayArrow, "全部继续", wide = false, state::resumeAll)
         if (state.canClearCompleted) HeaderAction(Icons.Outlined.ClearAll, "清除已完成", wide = false, state::clearCompleted)
+        onRefresh?.let { TooltipIconButton(Icons.Outlined.Refresh, "刷新", it) }
     }
 }
 

@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.LazyGridScope
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import dev.piko.ui.components.PikoItemGrid
 import dev.piko.ui.components.marqueeSelection
 import dev.piko.ui.components.fullLineItem
@@ -61,14 +60,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.key.Key
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.awaitHorizontalTouchSlopOrCancellation
-import androidx.compose.foundation.gestures.horizontalDrag
-import androidx.compose.ui.input.pointer.PointerType
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChange
-import kotlin.math.abs
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.height
+import androidx.compose.runtime.snapshotFlow
+import dev.piko.shared.state.TransferSections
+import dev.piko.ui.components.LocalPointerSource
+import dev.piko.ui.components.RefreshBox
+import dev.piko.ui.components.showsRefreshButton
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
@@ -352,13 +354,31 @@ fun TransfersScreen(
         }
     }
 
-    val gridState = rememberLazyGridState()
+    // 每一类一页、各有滚动位置：横划时相邻那一页跟着手指进来，切回来还停在原处
+    val kinds = TransferKind.entries
+    val gridStates = remember { kinds.associateWith { LazyGridState() } }
+    val gridState = gridStates.getValue(state.filter)
     // 列表离开顶端，页头据此换色；derivedStateOf 让滚动中每帧的偏移变化只在跨过顶端时才触发重组
-    val scrolled by remember { derivedStateOf { gridState.firstVisibleItemIndex > 0 || gridState.firstVisibleItemScrollOffset > 0 } }
+    val scrolled by remember(gridState) {
+        derivedStateOf { gridState.firstVisibleItemIndex > 0 || gridState.firstVisibleItemScrollOffset > 0 }
+    }
     // 只响应进页之后的变化：计数器由主界面持有，切回本页时它已是旧值，不该再滚一次
     val initialScrollRequests = remember { scrollToTopRequests }
     LaunchedEffect(scrollToTopRequests) {
         if (scrollToTopRequests != initialScrollRequests) gridState.animateScrollToItem(0)
+    }
+
+    // 页与筛选双向同步：划停在哪一页就筛哪一类，点页头的筛选则滑到那一页。筛选取 settledPage 而不是
+    // currentPage：划到一半就换筛选会清掉选中项，手指退回原页时选中已经没了
+    val pagerState = rememberPagerState(initialPage = kinds.indexOf(state.filter)) { kinds.size }
+    LaunchedEffect(state, pagerState) {
+        snapshotFlow { pagerState.settledPage }.collect { page ->
+            if (kinds[page] != state.filter) state.changeFilter(kinds[page])
+        }
+    }
+    LaunchedEffect(state, state.filter) {
+        val page = kinds.indexOf(state.filter)
+        if (pagerState.targetPage != page) pagerState.animateScrollToPage(page)
     }
 
     // 触屏上退出多选靠返回键；键盘的 Esc 在下面的 onKeyEvent 里先接住
@@ -385,15 +405,18 @@ fun TransfersScreen(
                 onPauseSelected = pauseSelected,
                 onResumeSelected = resumeSelected,
                 onDeleteSelected = { confirmingDelete = true },
+                onRefresh = if (showsRefreshButton()) state::refresh else null,
                 scrolled = scrolled,
             )
         },
     ) { innerPadding ->
-        Box(
+        // 下拉刷新包住三种样子：空状态与骨架也要能拉，刚装好、一项传输也没有时正想看看云端有没有
+        RefreshBox(
+            isRefreshing = state.isRefreshing,
+            onRefresh = state::refresh,
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding)
-                .swipeBetweenKinds(current = { state.filter }, onChange = state::changeFilter),
+                .padding(innerPadding),
         ) {
             val sidePadding = SidePadding
             Column(Modifier.fillMaxSize()) {
@@ -410,13 +433,12 @@ fun TransfersScreen(
                     label = "transfersPhase",
                 ) { current ->
                     when (current) {
-                        TransfersPhase.CONTENT -> TransfersList(
-                            state = state,
-                            sidePadding = sidePadding,
-                            deletedExpanded = deletedExpanded,
-                            onToggleDeleted = { deletedExpanded = !deletedExpanded },
-                            renderItem = renderItem,
-                            gridState = gridState,
+                        // 横划切换类别，照 M3 tabs 的内容区横划：相邻一类跟着手指进来。只认手指：鼠标在列表上
+                        // 按住拖动是框选（marqueeSelection），分页不能抢
+                        TransfersPhase.CONTENT -> HorizontalPager(
+                            state = pagerState,
+                            userScrollEnabled = LocalPointerSource.current.isTouchLike,
+                            key = { kinds[it] },
                             modifier = Modifier
                                 .fillMaxSize()
                                 .pageFocusTarget(listFocus)
@@ -433,15 +455,26 @@ fun TransfersScreen(
                                     }
                                     true
                                 },
-                        )
+                        ) { page ->
+                            val kind = kinds[page]
+                            val sections by remember(state, kind) { derivedStateOf { state.sectionsOf(kind) } }
+                            TransfersList(
+                                state = state,
+                                kind = kind,
+                                sections = sections,
+                                sidePadding = sidePadding,
+                                deletedExpanded = deletedExpanded,
+                                onToggleDeleted = { deletedExpanded = !deletedExpanded },
+                                renderItem = renderItem,
+                                gridState = gridStates.getValue(kind),
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        }
                         // 骨架与真实列表对齐：同样的两侧留白，头一格让出分段标题那一行
                         TransfersPhase.LOADING -> FileListSkeleton(
                             modifier = Modifier.padding(start = sidePadding, end = sidePadding, top = 8.dp + SectionHeaderHeight),
                         )
-                        TransfersPhase.EMPTY -> Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center,
-                        ) {
+                        TransfersPhase.EMPTY -> PullableCentered {
                             PikoEmptyState(
                                 title = "暂无传输任务",
                                 description = "下载、上传、离线与秒传将显示于此",
@@ -483,9 +516,29 @@ fun TransfersScreen(
     }
 }
 
+/**
+ * 居中放一段说明，整块可以竖着拉动。下拉刷新只认嵌套滚动传上来的量，不能滚的内容拉不动；
+ * 在 verticalScroll 里高度不设上限，按外面量到的高度撑满才居中得了。
+ */
+@Composable
+private fun PullableCentered(content: @Composable BoxScope.() -> Unit) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .verticalScroll(rememberScrollState())
+                .fillMaxWidth()
+                .height(maxHeight),
+            contentAlignment = Alignment.Center,
+            content = content,
+        )
+    }
+}
+
 @Composable
 private fun TransfersList(
     state: TransfersState,
+    kind: TransferKind,
+    sections: TransferSections,
     sidePadding: Dp,
     deletedExpanded: Boolean,
     onToggleDeleted: () -> Unit,
@@ -493,22 +546,22 @@ private fun TransfersList(
     gridState: LazyGridState,
     modifier: Modifier = Modifier,
 ) {
-    val filteredEmpty = state.inProgress.isEmpty() && state.needsAttention.isEmpty() &&
-        state.completed.isEmpty() && state.outputDeleted.isEmpty()
     Box(modifier) {
-        if (filteredEmpty) {
+        if (sections.isEmpty) {
             // 筛到一项不剩时说清是这一类没有，而不是整页空白像没加载出来
-            Text(
-                text = "没有${state.filter.label}任务",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.align(Alignment.Center),
-            )
+            PullableCentered {
+                Text(
+                    text = "没有${kind.label}任务",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             return@Box
         }
         // 能框选的只有条目，分组标题的 key 带 header: 前缀，不算
-        val selectable = remember(state.inProgress, state.needsAttention, state.completed, state.outputDeleted, deletedExpanded) {
-            (state.inProgress + state.needsAttention + state.completed + if (deletedExpanded) state.outputDeleted else emptyList())
+        val selectable = remember(sections, deletedExpanded) {
+            (sections.inProgress + sections.needsAttention + sections.completed +
+                if (deletedExpanded) sections.outputDeleted else emptyList())
                 .mapTo(HashSet()) { it.key }
         }
         PikoItemGrid(
@@ -525,11 +578,11 @@ private fun TransfersList(
                 movable = { false },
             ),
         ) {
-            transferSection("进行中", state.inProgress, renderItem)
-            transferSection("需要处理", state.needsAttention, renderItem, onClearCloud = state::clearFailedCloud)
-            transferSection("已完成", state.completed, renderItem)
+            transferSection("进行中", sections.inProgress, renderItem)
+            transferSection("需要处理", sections.needsAttention, renderItem, onClearCloud = state::clearFailedCloud)
+            transferSection("已完成", sections.completed, renderItem)
             deletedOutputSection(
-                items = state.outputDeleted,
+                items = sections.outputDeleted,
                 expanded = deletedExpanded,
                 onToggle = onToggleDeleted,
                 renderItem = renderItem,
@@ -677,34 +730,3 @@ private fun LazyGridScope.deletedOutputSection(
         }
     }
 }
-
-/**
- * 手指在列表上左右横划，在页头的四个类别之间切换：左划下一个，右划上一个，到头就停，照 M3 tabs 的「内容区横划切换」。
- *
- * 只认触屏：鼠标在列表上按住拖动是框选（marqueeSelection），不能抢。先过横向的触摸阈值才算横划，
- * 竖向先过阈值的交给列表自己滚动（它在 Main 阶段比这里先收到事件，竖向拖动会被它消费掉）。
- * 横划满 [SwipeThreshold] 才换，短的一下只当作手抖，免得竖着滑时稍一带歪就换了类别。
- */
-private fun Modifier.swipeBetweenKinds(current: () -> TransferKind, onChange: (TransferKind) -> Unit): Modifier =
-    pointerInput(Unit) {
-        val threshold = SwipeThreshold.toPx()
-        awaitEachGesture {
-            val down = awaitFirstDown(requireUnconsumed = false)
-            if (down.type != PointerType.Touch) return@awaitEachGesture
-            var total = 0f
-            val drag = awaitHorizontalTouchSlopOrCancellation(down.id) { change, over ->
-                change.consume()
-                total += over
-            } ?: return@awaitEachGesture
-            horizontalDrag(drag.id) { change ->
-                total += change.positionChange().x
-                change.consume()
-            }
-            if (abs(total) < threshold) return@awaitEachGesture
-            val kinds = TransferKind.entries
-            val next = kinds.indexOf(current()) + if (total < 0) 1 else -1
-            kinds.getOrNull(next)?.let(onChange)
-        }
-    }
-
-private val SwipeThreshold = 72.dp

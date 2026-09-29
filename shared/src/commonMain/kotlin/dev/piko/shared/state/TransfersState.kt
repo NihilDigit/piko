@@ -67,6 +67,17 @@ sealed interface TransferItem {
     }
 }
 
+/** 某一类传输按「进行中」「需要处理」「已完成」「文件已删除」分成的四段。 */
+class TransferSections(
+    val inProgress: List<TransferItem>,
+    val needsAttention: List<TransferItem>,
+    val completed: List<TransferItem>,
+    val outputDeleted: List<TransferItem>,
+) {
+    val isEmpty: Boolean
+        get() = inProgress.isEmpty() && needsAttention.isEmpty() && completed.isEmpty() && outputDeleted.isEmpty()
+}
+
 /**
  * 传输页的类型筛选。秒传记录归「云端」：它与离线任务出自同一个「添加链接」，东西落在网盘里；
  * 从本机传上去却命中秒传的仍是一项上传，归「上传」。
@@ -176,10 +187,22 @@ class TransfersState(
         )
     }
 
-    val inProgress: List<TransferItem> by derivedStateOf { allInProgress.filter(filter::matches) }
-    val needsAttention: List<TransferItem> by derivedStateOf { allNeedsAttention.filter(filter::matches) }
-    val completed: List<TransferItem> by derivedStateOf { allCompleted.filter(filter::matches) }
-    val outputDeleted: List<TransferItem> by derivedStateOf { allOutputDeleted.filter(filter::matches) }
+    /**
+     * 某一类的四段。横划切换类别时相邻的一页跟着手指进来，它列的是还没选中的那一类，所以不能只有 [filter] 的一份。
+     * 读的是派生状态，调用方包一层 derivedStateOf 即可随任务刷新。
+     */
+    fun sectionsOf(kind: TransferKind): TransferSections = TransferSections(
+        inProgress = allInProgress.filter(kind::matches),
+        needsAttention = allNeedsAttention.filter(kind::matches),
+        completed = allCompleted.filter(kind::matches),
+        outputDeleted = allOutputDeleted.filter(kind::matches),
+    )
+
+    private val current: TransferSections by derivedStateOf { sectionsOf(filter) }
+    val inProgress: List<TransferItem> get() = current.inProgress
+    val needsAttention: List<TransferItem> get() = current.needsAttention
+    val completed: List<TransferItem> get() = current.completed
+    val outputDeleted: List<TransferItem> get() = current.outputDeleted
 
     /** 各类的项数，按全部任务算，筛选按钮上显示。 */
     val counts: Map<TransferKind, Int> by derivedStateOf {
@@ -417,6 +440,11 @@ class TransfersState(
 
     /** 可见期间轮询云端任务，挂起直到调用方的协程被取消。 */
     suspend fun whileVisible() = cloud.pollWhileVisible()
+
+    /** 下拉刷新。本机的下载与上传本就实时，只有云端任务要重新拉取。 */
+    val isRefreshing: Boolean get() = cloud.isRefreshing
+
+    fun refresh() = cloud.refresh()
 
     fun pauseLocal(taskId: String) = coordinator.pauseDownload(taskId)
 
