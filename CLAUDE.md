@@ -204,6 +204,33 @@ mac：⌘↓ 打开，回车改名（条目自己在 onPreviewKeyEvent 里接住
 宽窗口要另给按钮。快捷键的主修饰键取 `PikoPlatform.shortcutModifier`（mac 上是 ⌘），不要写死 Ctrl。
 Compose 桌面端悬停移动事件的 `previousPosition` 恒等于 `position`，判断「鼠标动了」要自己记上一次的位置。
 
+### 动效
+
+按平台分，不按输入方式分（按输入方式分时手感随触屏、鼠标来回变）：`PikoPlatform.motionStyle` 给出，
+Android 是 `MotionScheme.expressive()`，桌面是 `standard()`（几乎不回弹，同样距离约 200ms 到位，expressive 要约 400ms）。
+播放器控件另在 `PlayerTheme` 里用 expressive，不随平台。
+- 页面转场不走 motionScheme，走 `theme/Motion.kt` 的 `PikoMotion`，经 `LocalPikoMotion` 随主题注入，按平台取时长：
+  桌面取 WinUI 的 83、167、250ms，Android 取 M3 的 150 到 400ms；离场任何平台都不超过 200ms。切根页面是旧页淡完新页再淡入，
+  压栈是横滑加淡化，旧页淡完新页才开始淡入，两页不叠成半透明。新写转场用它给的 `topLevel`、`forward` 一类，不要自己写 tween。
+- 右键菜单与命令栏菜单在桌面上只淡入 80ms、不缩放（`MenuMotion`，只包这两处）。DropdownMenu 默认从 0.8 放大到 1，
+  graphicsLayer 的缩放同样作用于点击判定，右键后立刻点会点偏。右键菜单以指针为原点（`PointerMenuPositionProvider`）：
+  向右下展开，放不下就朝反方向，不用下拉菜单的规则（那会在下方放不下时整个翻到锚点上沿以上，锚点是整个条目乃至整片网格）。
+  工具栏按钮的下拉菜单仍用下拉规则。
+- 面板的 `hideThen` 当场通知关闭再执行动作，不等收起动画，面板直接消失。不能反过来先执行、等动画完再通知：
+  动作若改了开关面板的那个状态会被随后的关闭清掉，动作若让页面离开组合，关闭通知就发不出去。
+- 减少动画：系统设置与设置里的「减少动画」（`reduceMotionFlow`，每台设备各自的，不同步）取或，汇到进程里唯一的
+  `PikoMotionScale`（`MotionDurationScale`），为 0 时所有动画当场跳到终点。它由入口放进 Recomposer 的协程上下文：
+  桌面是 `Main.kt` 的 `runBlocking(motionScale) { awaitApplication { … } }`，窗口、弹层与对话框的 Recomposer 都从那里继承，
+  `MotionScaleInjectionTest` 守着这条链，升级 Compose 时看它；Android 是 `MainActivity` 给装饰视图换一个带缩放的
+  WindowRecomposer，注入之后 Compose 不再自己读开发者选项的动画缩放，由 `followSystemAnimatorScale` 接上。
+  系统设置的读取在 `desktop/motion/SystemReducedMotion`：Windows 读 `SPI_GETCLIENTAREAANIMATION`（即「辅助功能 → 视觉效果
+  → 动画效果」），经 `WindowsCaption` 窗口过程收到的 `WM_SETTINGCHANGE` 当场重读；macOS 读
+  `accessibilityDisplayShouldReduceMotion`，Linux 读 GNOME 的 `enable-animations`，两者在应用重新激活时重读。
+  减少动画时切页与面板也是跳切，与 Android 的「移除动画」一致。不要再试「归零之外给切页补淡入淡出」：Transition
+  （AnimatedContent、AnimatedVisibility 都靠它）每一帧从自己所在 LaunchedEffect 的协程上下文读缩放，那是 Recomposer 的
+  effect 上下文，整棵组合共用一份，没有按个别动画覆盖的入口；NavDisplay 又在内部自己驱动转场，外面包不进去。
+  缩放为 0 时无限动画停在终点那一帧，一直循环的装饰动画要读 `LocalPikoMotion.current.reduced` 自己画静态的样子（见骨架屏）。
+
 ### 平台差异用接口，不用 expect/actual
 
 两端相同、只是要用 JDK API 的代码放 `shared/src/jvmSharedMain`（Android 与 Desktop 共用的中间 source set），
@@ -265,6 +292,31 @@ macOS 整个 .app 换成新 DMG 里的（`apply-update-mac.sh`），不逐个换
 仓库层还有 `refreshEvents`，供界面外的改动（如解压完成）通知列表刷新，`DriveScreenState`
 已在 `init` 里订阅，视图不要再订阅一遍。
 
+### 账号与凭据
+
+同一时刻一个账号在用（`PikoClientManager.currentClient`），登录过、没退出的记在 `accounts`（`SavedAccounts`，
+只有账号名、昵称、头像与上次的用量，不含机密）里手动切换。切换就是换一个 client，别处照旧只认 `currentClient`；
+按账号的东西在账号变了时各自换一份，新写的按账号的状态照这个做，不要假定账号不变：
+- 网盘页的位置、标签、历史、剪贴板、撤销记录与列表缓存：`PikoDriveRepository.enterAccount`，收集者与网盘页都调，谁先到谁做。
+- 进程级会话（秒传、查重、解压、信息流、归档）在 `PikoServices` 里随账号结束；下载任务带 `account`，别的账号的暂停。
+- 记着文件夹 ID 的偏好（快速访问、最近移动目标）经 `AccountScopedPreferences` 按账号存进缓存目录。它们的旧值在平台偏好里
+  原样留着、另记「已被哪个账号接走」：清空的话，同机先后打开的旧版本会把「本机改成了空」同步进网盘。
+- 退出只退当前账号，随后切到最近用过的另一个；钥匙串一时读不出密码时按没有密码处理，不当成已退出。
+
+机密（会话与密码）按账号合成一份交给平台保管：Windows 是 DPAPI（FFM 直调），macOS 经 `/usr/bin/security` 进登录钥匙串
+（不用 SecItem 直调：ad-hoc 签名每版都变，直调每次更新后都弹授权框），Linux 经 libsecret 进 Secret Service
+（Flatpak 里自动走 portal），都用不了时退回 0600 文件。分层读取先读兜底文件：留在那里的只可能是平台存储锁着时写下的，
+比平台里那份新。桌面实现在 `shared/src/desktopMain/.../auth`（CLI 共用），FFM 那几份在 desktopApp 的 `secrets` 包：
+shared 按 JDK 21 编译，FFM 在那里还是预览 API。v0.10.0 起的明文文件在首次启动时迁移，读回一致才删。
+
+### 归档（vault）
+
+归档条目是网盘里不占空间、只留引用的文件：每个文件夹一份清单 `.piko-vault-v<版本>-<随机串>.json`（`VaultStore`），
+记着 gcid、大小与来源。列表经 `listBrowsable` 把条目并进真实文件，ID 以 `piko-vault:` 开头；播放、下载、信息流打开它们时
+按 gcid 秒传一个对象到 Piko-Temp，取到直链就删（SDK 的 `leaseDetail` 与 `fileHandle(leased = true)`，免费账号另有
+`LeaseBudget` 限制同时借出的字节数）。清单是可信写入：版本大的赢，同版本随机串小的赢，输的一方把自己的纯函数改动套到
+赢家上重写，只存状态不存历史。代码里叫 vault，与压缩包（ArchiveRepository、服务端解压）区分；界面上叫「归档」。
+
 ## PikPak API 的既有约束
 
 这些是实测结论，不要重新推导：
@@ -280,6 +332,8 @@ macOS 整个 .app 换成新 DMG 里的（`apply-update-mac.sh`），不逐个换
 - **列回收站必须带 `parent_id=*`**，否则只返回从根目录删除的条目。SDK 0.6.8 起 `listTrash` 已带上。
 - **服务端解不了分卷压缩包**（2026-09-25 实测 7z、zip、RAR5 分卷）：它只读交给它的那一个文件，不去同目录找其余分卷。
   多数分卷当场回 `INVALID_FILE_FORMAT`；zip span 的最后一卷能列出目录，解压任务却以 `E_INVALID_FORMAT` 失败。
+- **文件名上限按 UTF-8 算，1024 字节**（2026-09-29 实测，文件与文件夹相同）：ASCII 1024 个、汉字 341 个、
+  补充平面字符 256 个，再多一个字符回 `file_name_too_long`（error_code=3，HTTP 400）。批量重命名据此当场标出。
 - **上传中的文件**（`phase` 为 PENDING）在开始上传时就出现在目录里，交给解压服务回 `file not complete`。
   上传会话的凭据 12 小时过期；刚传完的内容立刻进 CID 索引，再传同一文件即秒传。
 
