@@ -10,7 +10,7 @@ import kotlinx.coroutines.runBlocking
 
 /**
  * 装好的包里跑一段依赖系统真实行为的操作，写出结果后退出，不开窗口。给 CI 的安装冒烟用
- * （desktopApp/package/update-smoke/）：这些行为只有装在真机器上、由真的启动器跑起来才测得出，
+ * （desktopApp/package/package-smoke/）：这些行为只有装在真机器上、由真的启动器跑起来才测得出，
  * JVM 单测里的注册表与 LaunchServices 都是假的。
  *
  * 带 `-Dpiko.selftest=<名字>` 启动，结果逐行追加到 `-Dpiko.selftest.out` 指的文件（启动器是窗口程序，

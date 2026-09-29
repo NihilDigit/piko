@@ -226,7 +226,7 @@ macOS 整个 .app 换成新 DMG 里的（`apply-update-mac.sh`），不逐个换
 版本信息不经镜像取：附件摘要就在其中，镜像能连摘要一起伪造。下载附件在一个字节都没收到时退到 ghfast.top，
 按取自 GitHub 的摘要校验。jsDelivr 不能用：
 它按 tag 取，tag 推上去时 release 还是草稿。开屏自动检查可在设置里关掉（`autoCheckUpdatesFlow`）。
-带 `-Dpiko.update.auto=true` 启动时查到新版即自动装上，`desktopApp/package/update-smoke/` 用它对着假 Release
+带 `-Dpiko.update.auto=true` 启动时查到新版即自动装上，`desktopApp/package/package-smoke/` 用它对着假 Release
 （`fake_release.py`）端到端地测安装与更新，本机也能跑：测试包用 `pikoDesktopUpgradeUuid` 与 `pikoDesktopPackageName`
 另起一个产品，不碰已装的 Piko。
 公告不做进应用：发在 Telegram 频道（`t.me/piko_dev`），「关于」里有入口。
@@ -429,7 +429,8 @@ Git Bash 会把以 `/` 开头的参数改写成 Windows 路径，传网盘路径
 
 都在 `.github/workflows/test.yml`，业务逻辑放 JVM 上测，原生行为在真机器上冒烟：Linux 上的 `:shared:desktopTest`，
 Windows 上的 `:desktopApp:desktopTest`，Android 单测，x86_64 模拟器（API 34）上的 `:app:connectedDebugAndroidTest`，
-以及 Windows、macOS 上的安装与应用内更新（`windows-update`、`macos-update`，推送时不跑）。冒烟走真实 libmpv、
+以及 Windows、macOS 上对安装包的冒烟（`windows-package`、`macos-package`，推送时不跑）：安装、应用内更新，
+再验默认打开方式、在资源管理器中显示这类依赖系统真实行为的，包里的入口是 `SelfTest.kt`。冒烟走真实 libmpv、
 真实代理，PikPak 服务端用 MockEngine 顶替，SDK 的请求、鉴权与解析仍走真实代码。本地不必跑，以 CI 结果为准；
 安装与更新冒烟的脚本本机也能跑，见上面「平台差异」一节末尾。
 

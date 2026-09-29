@@ -129,4 +129,4 @@ save_logs
 stop_app
 echo '::endgroup::'
 
-echo 'update smoke passed'
+echo 'package smoke passed'

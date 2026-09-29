@@ -6,7 +6,8 @@ name: Test
 # - 业务逻辑的单测放在 JVM 上：shared 的 desktop 测试（解析、代理、同步、更新来源等，Linux 上跑得最快）、
 #   desktopApp 的测试（WinRT、窗口过程、更新清单，只能在 Windows 上跑）、Android 的单测。
 # - 原生行为的冒烟在真机器上：Android 模拟器上的真实 libmpv 与回环代理；Windows 与 macOS 上真装、
-#   真启动、真的应用内更新，断言落到磁盘上的结果（windows-update、macos-update）。
+#   真启动、真的应用内更新，再验依赖系统真实行为的（默认打开方式、在资源管理器中显示），
+#   断言落到磁盘与系统上的结果（windows-package、macos-package）。
 #
 # 推送与 PR 时不跑两个桌面冒烟：它们要打两遍安装包，一次二十来分钟。手动触发与发版时都跑。
 
@@ -233,9 +234,9 @@ jobs:
 
   # 全新安装与应用内更新：同一份源码打两个版本（9.9.0 与 9.9.1），装旧的、让它自己更新成新的，
   # 逐文件核对落盘结果。装好之后顺带验依赖系统真实行为的：设为 magnet 与 .torrent 的默认打开方式，
-  # 系统真把链接交给 Piko（包里的自检见 desktopApp SelfTest.kt）。场景与断言见 desktopApp/package/update-smoke/windows.ps1。
-  # 用测试专用的 UpgradeCode 与包名打，与正式版互不认识
-  windows-update:
+  # 系统真把链接交给 Piko，在资源管理器中显示下载的文件（包里的自检见 desktopApp SelfTest.kt）。
+  # 场景与断言见 desktopApp/package/package-smoke/windows.ps1。用测试专用的 UpgradeCode 与包名打，与正式版互不认识
+  windows-package:
     if: inputs.desktop == true
     runs-on: windows-latest
     timeout-minutes: 90
@@ -287,24 +288,24 @@ jobs:
             Get-ChildItem $out | Format-Table Name, Length
           }
 
-      - name: Install and update
+      - name: Install, update and system integration
         shell: pwsh
         run: >
-          ./desktopApp/package/update-smoke/windows.ps1
+          ./desktopApp/package/package-smoke/windows.ps1
           -Base smoke-dist/9.9.0 -Next smoke-dist/9.9.1 -BaseVersion 9.9.0 -NextVersion 9.9.1
-          -PackageName $env:SMOKE_PACKAGE -UpgradeCode $env:SMOKE_UPGRADE_CODE -Work "$env:RUNNER_TEMP/update-smoke"
+          -PackageName $env:SMOKE_PACKAGE -UpgradeCode $env:SMOKE_UPGRADE_CODE -Work "$env:RUNNER_TEMP/package-smoke"
 
       - name: Upload logs
         if: failure()
         uses: actions/upload-artifact@v6
         with:
-          name: windows-update-smoke-logs
-          path: ${{ runner.temp }}/update-smoke/logs
+          name: windows-package-smoke-logs
+          path: ${{ runner.temp }}/package-smoke/logs
           if-no-files-found: ignore
 
   # macOS 同样打两个 DMG，从 DMG 装进 ~/Applications，再让它整包换成新的；装好之后同样验默认打开方式
-  # 与系统送来的链接（openURI、openFiles）。见 update-smoke/macos.sh
-  macos-update:
+  # 与系统送来的链接（openURI、openFiles）。见 package-smoke/macos.sh
+  macos-package:
     if: inputs.desktop == true
     runs-on: macos-15
     timeout-minutes: 90
@@ -343,13 +344,13 @@ jobs:
           done
           ls -lR smoke-dist
 
-      - name: Install and update
-        run: bash desktopApp/package/update-smoke/macos.sh smoke-dist/9.9.0 smoke-dist/9.9.1 9.9.0 9.9.1 "$SMOKE_PACKAGE" "$RUNNER_TEMP/update-smoke"
+      - name: Install, update and system integration
+        run: bash desktopApp/package/package-smoke/macos.sh smoke-dist/9.9.0 smoke-dist/9.9.1 9.9.0 9.9.1 "$SMOKE_PACKAGE" "$RUNNER_TEMP/package-smoke"
 
       - name: Upload logs
         if: failure()
         uses: actions/upload-artifact@v6
         with:
-          name: macos-update-smoke-logs
-          path: ${{ runner.temp }}/update-smoke/logs
+          name: macos-package-smoke-logs
+          path: ${{ runner.temp }}/package-smoke/logs
           if-no-files-found: ignore
