@@ -1,7 +1,9 @@
 import groovy.json.JsonOutput
 import java.nio.file.attribute.FileTime
 import java.security.MessageDigest
+import java.util.Collections
 import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 import org.gradle.api.tasks.JavaExec
 import org.gradle.api.tasks.testing.Test
@@ -20,18 +22,34 @@ plugins {
 }
 
 // 打包不能交叉构建：jpackage 只出宿主系统的安装包，mpv 与 skiko 的原生库也按宿主取
-val isMacHost = System.getProperty("os.name").startsWith("Mac")
+val hostOs = System.getProperty("os.name").let { name ->
+    when {
+        name.startsWith("Mac") -> "macos"
+        name.startsWith("Windows") -> "windows"
+        else -> "linux"
+    }
+}
+val isMacHost = hostOs == "macos"
+val isWindowsHost = hostOs == "windows"
+val isLinuxHost = hostOs == "linux"
 val hostArch = if (System.getProperty("os.arch") == "aarch64") "arm64" else "x64"
-val hostPlatform = "${if (isMacHost) "macos" else "windows"}-$hostArch"
+val hostPlatform = "$hostOs-$hostArch"
+// MediaMP 0.5.0 的 mpv 运行库只有 linux-x64，没有 linux-arm64，Linux 只出 x64
 val hostMpvRuntime = "org.openani.mediamp:mediamp-mpv-runtime-$hostPlatform:${libs.versions.mediamp.get()}"
 // 等同 compose.desktop.currentOs，但版本跟界面库走，而不是跟打包插件走（两者版本不同，见 libs.versions.toml）
 val composeDesktopRuntime = "org.jetbrains.compose.desktop:desktop-jvm-$hostPlatform:${libs.versions.composeMultiplatform.get()}"
-// 应用内差分更新的解码器。不带 classifier 的 jar 捆了二十个平台的原生库，按平台的只捆一个，类是同一套
+// 应用内差分更新的解码器。不带 classifier 的 jar 捆了二十个平台的原生库，按平台的只捆一个，类是同一套。
+// Linux 的差分走 zsync，用不上它，只为 UpdateManifest 的类能加载
 val hostZstdClassifier = when (hostPlatform) {
     "windows-x64" -> "win_amd64"
     "windows-arm64" -> "win_aarch64"
+    "linux-x64" -> "linux_amd64"
+    "linux-arm64" -> "linux_aarch64"
     else -> "darwin_aarch64"
 }
+// Linux 的应用 ID：.desktop、AppStream、图标与 WM_CLASS 都用它，Flathub 以它为包名。域名 nihildigit.dev 归作者，
+// Flathub 据此验证。上线之后改名代价很大，定了不再改
+val linuxAppId = "dev.nihildigit.Piko"
 val hostZstdJni = "com.github.luben:zstd-jni:${libs.versions.zstdJni.get()}:$hostZstdClassifier"
 
 kotlin {
@@ -133,13 +151,37 @@ val hostMpvRuntimeJar = configurations.detachedConfiguration(dependencies.create
 val hostZstdJniJar = configurations.detachedConfiguration(dependencies.create(hostZstdJni)).apply {
     isTransitive = false
 }
+/**
+ * jar 存不了符号链接，Linux 的运行库把同一个库以真实文件名、SONAME 与开发用的无版本名各存一份
+ * （libavcodec.so.62.11.100、libavcodec.so.62、libavcodec.so，各 11 MB）。动态链接器只按 SONAME
+ * 找依赖，mediamp 只加载 libmediampv.so，其余两个名字没人读，只留 SONAME 那一份：
+ * 带更长版本号、以另一个带版本的名字为前缀的是真实文件名；无版本的 libX.so 另有带版本的同名库时是开发用的名字。
+ */
+fun linuxSonameFiles(jar: File): Set<String> {
+    val library = Regex("""lib.+\.so(\.[0-9]+)*""")
+    val names: Set<String> = ZipFile(jar).use { zip ->
+        Collections.list(zip.entries()).map { entry -> entry.name }
+            .filter { name: String -> !name.contains('/') && library.matches(name) }
+            .toSet()
+    }
+    val versioned: List<String> = names.filter { name: String -> name.contains(".so.") }
+    return names.filterNot { name: String ->
+        versioned.any { other: String -> other != name && name.startsWith("$other.") } ||
+            (name.endsWith(".so") && versioned.any { other: String -> other.startsWith("$name.") })
+    }.toSet()
+}
+
 val bundledAppResources by tasks.registering(Sync::class) {
     from({ hostMpvRuntimeJar.map { zipTree(it) } }) {
         include("*.dll", "*.dylib", "*.txt")
+        if (isLinuxHost) {
+            val keep by lazy { linuxSonameFiles(hostMpvRuntimeJar.singleFile) }
+            include { !it.isDirectory && it.name in keep }
+        }
         into("mpv")
     }
-    // macOS 没有应用内安装，不捆
-    if (!isMacHost) {
+    // 只有 Windows 的更新用 zstd 差分，别处不捆
+    if (isWindowsHost) {
         from({ hostZstdJniJar.map { zipTree(it) } }) {
             include("**/*.dll")
             eachFile { path = "zstd/$name" }
@@ -160,6 +202,12 @@ val desktopPackageName = providers.gradleProperty("pikoDesktopPackageName").getO
 val releaseVersion = providers.gradleProperty("pikoDesktopVersion").map { it.trim() }.filter { it.isNotEmpty() }
 val desktopPackageVersion = releaseVersion.getOrElse("1.0.0")
 
+// X11 窗口的 WM_CLASS 由 AWT 按主类名生成（dev-piko-desktop-MainKt），桌面环境拿它对 .desktop 文件，
+// 对不上时 Dock 与任务栏认不出 Piko，显示成一个没有图标的 java 窗口。它没有公开的设置方法，
+// LinuxDesktop.setWmClass 经反射改 XToolkit 的字段，要开这个包。只在 Linux 上加：别的系统的 JDK
+// 没有这个包，启动时会打一行警告
+val linuxJvmArgs = if (isLinuxHost) listOf("--add-opens=java.desktop/sun.awt.X11=ALL-UNNAMED") else emptyList()
+
 compose.desktop {
     application {
         mainClass = "dev.piko.desktop.MainKt"
@@ -173,6 +221,7 @@ compose.desktop {
         // （例如 12 代酷睿）上随机报 EXCEPTION_ILLEGAL_INSTRUCTION，崩在 AdapterBlob。训练与运行都读这里的参数，
         // 两处一起关掉；类的加载与链接照常缓存，启动加速的大头仍在
         jvmArgs += listOf("-XX:+UnlockDiagnosticVMOptions", "-XX:-AOTAdapterCaching", "-XX:-AOTStubCaching")
+        jvmArgs += linuxJvmArgs
         buildTypes.release.proguard {
             isEnabled = true
             configurationFiles.from(project.file("proguard-rules.pro"))
@@ -183,7 +232,9 @@ compose.desktop {
         }
         // JDK 25 的 AOT 缓存（JEP 483/514）：打包时跑一遍训练，把启动路径上的类预先加载、链接好
         // 存进 app.aot，启动时直接映射。训练运行由 Main 在开窗后自行退出，见 AOT_TRAINING_PROPERTY。
-        // macOS 不做：jpackage 建 .app 时已经签了名，训练之后才写进去的 app.aot 会破坏签名封印
+        // macOS 不做：jpackage 建 .app 时已经签了名，训练之后才写进去的 app.aot 会破坏签名封印。
+        // Linux 做：训练要开窗，CI 上套一层 xvfb-run。AppImage 每次挂载在不同的目录下，缓存照样认，
+        // JDK 只比对类路径各项之间的相对位置
         if (!isMacHost) {
             buildTypes.release.aot {
                 mode = AotMode.AotPrebuild
@@ -281,6 +332,10 @@ compose.desktop {
                     """.trimIndent()
                 }
             }
+            linux {
+                // jpackage 的 app-image 放一份在 lib 下，窗口图标仍取自类路径里的 app-icon.png
+                iconFile.set(project.file("src/desktopMain/resources/app-icon.png"))
+            }
         }
     }
 }
@@ -289,6 +344,7 @@ compose.desktop {
 // 不加现在只是 warning，未来 JDK 会直接拦截。exe 启动器的那份在上面的 application.jvmArgs。
 tasks.withType<Test> {
     jvmArgs("--enable-native-access=ALL-UNNAMED")
+    jvmArgs(linuxJvmArgs)
     // 播放冒烟读仓库里的样片，路径由这里给出，不依赖测试进程的工作目录
     systemProperty("piko.testdata", rootProject.file("testdata/media").absolutePath)
 }
@@ -408,5 +464,33 @@ tasks.register<UpdateArtifactsTask>("packageReleaseUpdate") {
 project.afterEvaluate {
     tasks.named<JavaExec>("run") {
         jvmArgs("--enable-native-access=ALL-UNNAMED")
+        jvmArgs(linuxJvmArgs)
+    }
+}
+
+/**
+ * Linux 的两个发布产物，都由 jpackage 的 app-image 得来（createReleaseDistributable）：
+ * - piko-linux-x64-<版本>.tar.gz：app-image 原样打包。日后 Flathub 的 manifest 直接取它重新打包，不另建一条构建线；
+ * - piko-linux-x64-<版本>.AppImage 与 .AppImage.zsync：包成 AppImage，内嵌更新信息，zsync 供差分更新。
+ * 组装与打包在 package/linux/build-appimage.sh 里，本机与 CI 同一个脚本；appimagetool 与运行时按版本与摘要钉死。
+ */
+if (isLinuxHost) {
+    tasks.register<Exec>("packageReleaseAppImage") {
+        dependsOn("createReleaseDistributable")
+        val appImage = layout.buildDirectory.dir("compose/binaries/main-release/app/$desktopPackageName")
+        val outDir = layout.buildDirectory.dir("compose/binaries/main-release/appimage")
+        inputs.dir(appImage)
+        inputs.dir("package/linux")
+        outputs.dir(outDir)
+        commandLine(
+            "bash", file("package/linux/build-appimage.sh").absolutePath,
+            appImage.get().asFile.absolutePath,
+            desktopPackageName,
+            desktopPackageVersion,
+            linuxAppId,
+            "piko-$hostPlatform-$desktopPackageVersion",
+            outDir.get().asFile.absolutePath,
+            layout.buildDirectory.dir("appimage-tools").get().asFile.absolutePath,
+        )
     }
 }

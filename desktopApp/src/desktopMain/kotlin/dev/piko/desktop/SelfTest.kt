@@ -34,6 +34,7 @@ internal fun runSelfTest(name: String): Int {
                 val registered = when {
                     WinRTSupport.isWindows -> WindowsLinkAssociation.writeAndNotify()
                     isMacOs -> MacLinkAssociation.register()
+                    isLinux -> LinuxLinkAssociation.register()
                     else -> false
                 }
                 val state = currentLinkState()
@@ -41,7 +42,11 @@ internal fun runSelfTest(name: String): Int {
                 registered && state == LinkAssociationState.Default
             }
             "link-unregister" -> runBlocking {
-                val removed = if (WinRTSupport.isWindows) WindowsLinkAssociation.unregister() else false
+                val removed = when {
+                    WinRTSupport.isWindows -> WindowsLinkAssociation.unregister()
+                    isLinux -> LinuxLinkAssociation.unregister()
+                    else -> false
+                }
                 val state = currentLinkState()
                 report("unregistered=$removed state=$state")
                 removed && state == LinkAssociationState.NotDefault
@@ -49,14 +54,35 @@ internal fun runSelfTest(name: String): Int {
             // 在资源管理器里选中环境变量 PIKO_SELFTEST_PATH 指的文件，与传输页「打开所在文件夹」同一个调用。
             // 路径要带空格才验得到那个问题，经 JAVA_TOOL_OPTIONS 传会被空格拆开，所以走环境变量。
             // 这里只看接口答成功；窗口是否真的开在那个文件夹、选中了那个文件，由冒烟脚本经 Shell.Application 查
+            // Linux 上看 org.freedesktop.FileManager1 答没答成功，要有实现了它的文件管理器在跑
             "reveal" -> {
                 val path = System.getenv(SELF_TEST_PATH_ENV).orEmpty()
-                val selected = WinRTSupport.isWindows && File(path).isFile && run {
-                    WindowsToast.initializeThread()
-                    ShellReveal.select(File(path).absolutePath)
+                val selected = File(path).isFile && when {
+                    WinRTSupport.isWindows -> {
+                        WindowsToast.initializeThread()
+                        ShellReveal.select(File(path).absolutePath)
+                    }
+                    isLinux -> LinuxDesktop.revealNow(File(path))
+                    else -> false
                 }
                 report("selected=$selected")
                 selected
+            }
+            // 开窗放 PIKO_SELFTEST_PATH 指的本机视频，见 playbackSelfTest。PIKO_SELFTEST_HOLD 为放通之后窗口再留的秒数
+            "play" -> playbackSelfTest(
+                File(System.getenv(SELF_TEST_PATH_ENV).orEmpty()),
+                holdMillis = (System.getenv("PIKO_SELFTEST_HOLD")?.toLongOrNull() ?: 0L) * 1000,
+                report = ::report,
+            )
+            // 系统接没接下通知。Linux 上要有通知服务（org.freedesktop.Notifications）在跑
+            "notify" -> {
+                val shown = when {
+                    isLinux -> LinuxDesktop.showNotification("Piko 自检", "这是一条测试通知。")
+                    isMacOs -> MacOs.showNotification("Piko 自检", "这是一条测试通知。")
+                    else -> WinRTSupport.showNotification("Piko 自检", "这是一条测试通知。")
+                }
+                report("shown=$shown")
+                shown
             }
             else -> {
                 report("unknown self test: $name")
@@ -74,5 +100,6 @@ internal fun runSelfTest(name: String): Int {
 private suspend fun currentLinkState(): LinkAssociationState? = when {
     WinRTSupport.isWindows -> WindowsLinkAssociation.state()
     isMacOs -> MacLinkAssociation.state()
+    isLinux -> LinuxLinkAssociation.state()
     else -> null
 }

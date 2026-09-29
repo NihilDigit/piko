@@ -5,6 +5,8 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import dev.piko.desktop.LinuxDesktop
+import dev.piko.desktop.isLinux
 import dev.piko.desktop.isMacOs
 import dev.piko.shared.media.player.ExternalSubtitle
 import dev.piko.shared.media.player.MPV_SUBTITLE_LANGUAGES
@@ -188,7 +190,8 @@ internal class MediampPlaybackBackend(
         subtitles: List<ExternalSubtitle>,
     ) {
         val uri = when (target) {
-            is PlaybackTarget.LocalFile -> File(target.path).toURI().toString()
+            // 经 Path 取 URI：File.toURI 给的是 file:/home/…，mpv 只认带 // 的 file://，否则当成文件名，打开即失败
+            is PlaybackTarget.LocalFile -> File(target.path).toPath().toUri().toString()
             is PlaybackTarget.Url -> target.url
         }
         awaitingReady = true
@@ -331,8 +334,13 @@ private fun mpvHandleOf(player: MediampPlayer): MPVHandle? = runCatching {
     JvmMpvMediampPlayer::class.java.getMethod("getHandle" + "$" + "mediamp_mpv").invoke(player) as? MPVHandle
 }.getOrNull()
 
-// macOS 的 libass 经 CoreText 找字体，苹方同样简繁都全，系统自带
-private val SUBTITLE_FALLBACK_FONT = if (isMacOs) "PingFang SC" else "Microsoft YaHei"
+// macOS 的 libass 经 CoreText 找字体，苹方同样简繁都全，系统自带。Linux 的 libass 经 fontconfig 找，
+// 取界面用的那个中文字体，都没装时交给 fontconfig 按 sans-serif 挑
+private val SUBTITLE_FALLBACK_FONT = when {
+    isMacOs -> "PingFang SC"
+    isLinux -> LinuxDesktop.cjkFontFamily ?: "sans-serif"
+    else -> "Microsoft YaHei"
+}
 
 private const val MIB = 1024 * 1024
 

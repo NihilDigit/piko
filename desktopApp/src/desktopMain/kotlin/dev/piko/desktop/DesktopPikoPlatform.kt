@@ -69,7 +69,8 @@ class DesktopPikoPlatform(
     // jpackage 启动器写进 -Djpackage.app-version；gradle run 时没有，显示为开发版
     override val appVersion: String = System.getProperty("jpackage.app-version") ?: "开发版"
 
-    override val updater: DesktopAppUpdater = DesktopAppUpdater.create()
+    // Flatpak 里为 null：更新归 flatpak 管，自己也写不进 /app，界面据此不给检查更新的入口
+    override val updater: DesktopAppUpdater? = DesktopAppUpdater.create()
 
     // Windows 没有 Monet 那样的整套取色，强调色只有一个值，撑不起 M3 的色调方案
     override val supportsDynamicColor: Boolean = false
@@ -88,9 +89,13 @@ class DesktopPikoPlatform(
     // 中文 Windows 自己的界面字体，西文部分取自 Segoe UI。默认字体族在 Windows 上只有 Segoe UI 与
     // Arial，汉字全靠系统后备，英文系统按英文 locale 挑，常用字落到日文字体、简体字落到雅黑，
     // 一个词里两种字体。Compose 1.12 不把 TextStyle 的 localeList 交给 Skia，标注语言也改不了后备的选择。
-    // macOS 的后备同样按系统语言挑，指定系统自带的苹方
+    // macOS 的后备同样按系统语言挑，指定系统自带的苹方；Linux 挑一个装了的简体中文字体，见 LinuxDesktop.cjkFontFamily
     @OptIn(ExperimentalTextApi::class)
-    override val fontFamily: FontFamily = FontFamily(if (isMacOs) "PingFang SC" else "Microsoft YaHei UI")
+    override val fontFamily: FontFamily = when {
+        isMacOs -> FontFamily("PingFang SC")
+        isLinux -> LinuxDesktop.cjkFontFamily?.let { FontFamily(it) } ?: FontFamily.Default
+        else -> FontFamily("Microsoft YaHei UI")
+    }
 
     override val shortcutModifier: ShortcutModifier = if (isMacOs) ShortcutModifier.Command else ShortcutModifier.Ctrl
 
@@ -113,7 +118,7 @@ class DesktopPikoPlatform(
         return withContext(Dispatchers.IO) { runCatching { target.writeText(content) }.isSuccess }
     }
 
-    override fun openUrl(url: String) = WinRTSupport.openUrl(url)
+    override fun openUrl(url: String) = if (isLinux) LinuxDesktop.open(url) else WinRTSupport.openUrl(url)
 
     @Composable
     override fun isImeVisible(): Boolean = false
@@ -131,11 +136,22 @@ class DesktopPikoPlatform(
 
         override fun exists(path: String): Boolean = File(path).exists()
 
-        override fun openExternally(path: String, isMedia: Boolean) = WinRTSupport.openFile(File(path))
+        override fun openExternally(path: String, isMedia: Boolean) {
+            val file = File(path)
+            if (isLinux) {
+                if (file.exists()) LinuxDesktop.open(file.absolutePath)
+            } else {
+                WinRTSupport.openFile(file)
+            }
+        }
 
         override fun openContainingFolder(path: String) {
             val file = File(path)
-            if (isMacOs && file.exists()) MacOs.revealInFinder(file) else WinRTSupport.revealInExplorer(file)
+            when {
+                isLinux -> LinuxDesktop.reveal(file)
+                isMacOs && file.exists() -> MacOs.revealInFinder(file)
+                else -> WinRTSupport.revealInExplorer(file)
+            }
         }
 
         // Windows 的共享面板要 WinRT 的 DataTransferManager 挂在窗口句柄上，收益不抵这套接线
@@ -202,7 +218,13 @@ class DesktopPikoPlatform(
     override val linkAssociation: LinkAssociation? = when {
         WinRTSupport.isWindows -> WindowsLinkAssociation
         isMacOs -> MacLinkAssociation
+        isLinux -> LinuxLinkAssociation
         else -> null
+    }
+
+    init {
+        // AppImage 挪过位置时把登记过的 .desktop 指到新路径，读写几个小文件，放后台
+        if (isLinux) Thread(LinuxLinkAssociation::refreshIfRegistered, "Piko-Linux-Setup").apply { isDaemon = true; start() }
     }
 
     override val videoPreview: VideoPreviewSupport = object : VideoPreviewSupport {

@@ -33,6 +33,8 @@ import dev.piko.desktop.PixelAlignedContentEffect
 import dev.piko.desktop.TitleBarColors
 import dev.piko.desktop.TitleBarThemeEffect
 import dev.piko.desktop.WindowFrame
+import dev.piko.desktop.LinuxDesktop
+import dev.piko.desktop.isLinux
 import dev.piko.desktop.isMacOs
 import dev.piko.desktop.rememberRememberedWindowState
 import dev.piko.desktop.winrt.WinRTSupport
@@ -61,6 +63,9 @@ import dev.piko.ui.theme.PikoTheme
 import dev.piko.shared.media.player.PLAYER_SUBTITLE_EXTENSIONS
 import dev.piko.shared.media.player.isPlayerSubtitleName
 import io.github.nihildigit.pikpak.FileStat
+import androidx.compose.ui.awt.ComposeWindow
+import dev.piko.shared.log.PikoLog
+import kotlinx.coroutines.delay
 import java.awt.KeyboardFocusManager
 import java.awt.Point
 import java.awt.Toolkit
@@ -122,7 +127,9 @@ fun VideoPlayerWindow(
             LocalPikoPlatform provides platform,
             LocalPointerSource provides pointerSource,
         ) {
-            val inFullscreen = if (isMacOs) windowState.placement == WindowPlacement.Fullscreen else isFullscreen
+            // 只有 Windows 自己铺满屏幕（WindowsFullscreen），别处用系统的全屏
+            val usesSystemFullscreen = !WinRTSupport.isWindows
+            val inFullscreen = if (usesSystemFullscreen) windowState.placement == WindowPlacement.Fullscreen else isFullscreen
             PikoTheme(appearance = appearance) {
                 WindowFrame(
                     title = "$title - Piko 播放器",
@@ -135,11 +142,13 @@ fun VideoPlayerWindow(
                     VideoPlayerContent(
                         request = request,
                         services = services,
+                        window = window,
                         isFullscreen = inFullscreen,
                         onToggleFullscreen = {
-                            if (isMacOs) {
-                                // macOS 走系统的全屏空间。WindowsFullscreen 绕开的崩溃出在 Skiko 的 D3D 路径上，
-                                // macOS 渲染走 Metal，不经过它；按标题栏绿灯进出全屏时 placement 同样跟着变
+                            if (usesSystemFullscreen) {
+                                // macOS 走系统的全屏空间，Linux 经 _NET_WM_STATE_FULLSCREEN 交给窗口管理器。
+                                // WindowsFullscreen 绕开的崩溃出在 Skiko 的 D3D 路径上，macOS 走 Metal、Linux 走 OpenGL，
+                                // 都不经过它；按标题栏绿灯进出全屏时 placement 同样跟着变
                                 windowState.placement = if (windowState.placement == WindowPlacement.Fullscreen) {
                                     WindowPlacement.Floating
                                 } else {
@@ -201,6 +210,7 @@ private val PlayerTitleBarColors = TitleBarColors(container = Color.Black, conte
 private fun VideoPlayerContent(
     request: VideoPlayerRequest,
     services: PikoServices,
+    window: ComposeWindow,
     isFullscreen: Boolean,
     onToggleFullscreen: () -> Unit,
     onTitleChange: (String) -> Unit,
@@ -256,11 +266,24 @@ private fun VideoPlayerContent(
         state.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
     }
 
+    // Linux 上 MediaMP 的画面经 GLX 与 Skiko 共享纹理，Skiko 退到软件渲染时（没有硬件 OpenGL，llvmpipe 也被它拒绝）
+    // 画面一直是黑的，打开也不返回。说一句原因，免得用户对着黑屏等。渲染方式在窗口头几帧里才定下来
+    if (isLinux) {
+        LaunchedEffect(window) {
+            delay(1_000)
+            if (window.renderApi.name.startsWith("SOFTWARE")) {
+                PikoLog.w("Player", "Skiko 以 ${window.renderApi} 渲染，Linux 上播放器画面出不来")
+                snackbarHostState.showSnackbar("没有可用的硬件 OpenGL，无法显示视频画面。请检查显卡驱动", withDismissAction = true)
+            }
+        }
+    }
+
     // 播放防锁屏：正在播才持有，暂停与关窗时释放
     DisposableEffect(state.isPlaying) {
         val displayLease = when {
             !state.isPlaying -> null
             isMacOs -> MacOs.preventSleep()
+            isLinux -> LinuxDesktop.preventSleep()
             else -> WinRTSupport.acquireDisplayRequest()
         }
         onDispose { displayLease?.close() }

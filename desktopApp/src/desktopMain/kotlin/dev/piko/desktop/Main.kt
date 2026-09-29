@@ -93,6 +93,8 @@ fun main(args: Array<String>) {
     val singleInstance = if (isAotTraining) null else SingleInstance.acquireOrForward(absoluteTorrentPaths(args.toList())) ?: return
     // 拿到单实例锁之后才装：转交完参数就退出的后来者不该和主实例写同一个文件
     installLog()
+    // 赶在建窗口之前，理由见 setWmClass
+    if (isLinux) LinuxDesktop.setWmClass()
     if (WinRTSupport.isWindows) {
         // 进程级 AUMID 必须在建窗口/发 Toast 之前设置；通知登记放后台线程，不挡启动。
         // magnet 与种子的关联不在这里静默写入：那会每次启动都抢走别的下载工具的协议，改为首次启动时询问，
@@ -197,7 +199,7 @@ fun main(args: Array<String>) {
         }
         // 更新脚本等本进程退出后才替换文件。下载会被中断，更新对话框已先征得用户同意
         LaunchedEffect(Unit) {
-            platform.updater.exitRequests.collect { exitApplication() }
+            platform.updater?.exitRequests?.collect { exitApplication() }
         }
 
         if (isInBackground) {
@@ -217,9 +219,13 @@ fun main(args: Array<String>) {
                 isInBackground = true
                 // Toast 同步等系统结果，不能压在界面线程上
                 Thread {
-                    // macOS 的托盘图标在菜单栏
-                    val trayPlace = if (isMacOs) "菜单栏" else "通知区域"
-                    showSystemNotification("Piko 在后台继续传输", "传输完成后自动退出，可从${trayPlace}图标重新打开。")
+                    // macOS 的托盘图标在菜单栏；Linux 未必有托盘
+                    val reopenHint = when {
+                        isMacOs -> "可从菜单栏图标重新打开"
+                        isLinux -> LinuxDesktop.backgroundHint()
+                        else -> "可从通知区域图标重新打开"
+                    }
+                    showSystemNotification("Piko 在后台继续传输", "传输完成后自动退出，$reopenHint。")
                 }.start()
             } else {
                 exitApplication()
@@ -402,7 +408,7 @@ internal fun bringToFront(window: java.awt.Frame) {
  */
 private fun useBundledMpvRuntime() {
     val dir = System.getProperty("compose.application.resources.dir")?.let { File(it, "mpv") } ?: return
-    // Windows 上是 mediampv.dll，macOS 上是 libmediampv.dylib
+    // Windows 上是 mediampv.dll，macOS 上是 libmediampv.dylib，Linux 上是 libmediampv.so
     if (!dir.resolve(System.mapLibraryName("mediampv")).isFile) return
     // 设置目录时 mediamp 会校验并加载封装层，连带 mpv 与 FFmpeg 一串依赖，放后台线程，不挡开窗
     Thread(
@@ -471,5 +477,8 @@ private fun installLog() {
     )
 }
 
-private fun showSystemNotification(title: String, message: String): Boolean =
-    if (isMacOs) MacOs.showNotification(title, message) else WinRTSupport.showNotification(title, message)
+private fun showSystemNotification(title: String, message: String): Boolean = when {
+    isMacOs -> MacOs.showNotification(title, message)
+    isLinux -> LinuxDesktop.showNotification(title, message)
+    else -> WinRTSupport.showNotification(title, message)
+}
