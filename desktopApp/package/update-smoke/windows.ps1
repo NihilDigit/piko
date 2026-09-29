@@ -324,6 +324,9 @@ try {
     New-Item -ItemType Directory -Force -Path $revealDir | Out-Null
     $revealFile = Join-Path $revealDir '[Group] Show - 01 [1080p].mkv'
     [System.IO.File]::WriteAllText($revealFile, 'smoke')
+    # 要在调用之前看：没有外壳时这次调用会自己拉起 explorer.exe
+    $session = (Get-Process -Id $PID).SessionId
+    $shellRunning = @(Get-Process explorer -ErrorAction SilentlyContinue | Where-Object SessionId -eq $session).Count -gt 0
     $env:PIKO_SELFTEST_PATH = $revealFile
     try { Invoke-SelfTest $installDir 'reveal' } finally { Remove-Item Env:PIKO_SELFTEST_PATH }
     $explorer = $null
@@ -331,9 +334,19 @@ try {
         $explorer = Find-ExplorerSelection $revealFile
         if (-not $explorer) { Start-Sleep -Seconds 1 }
     }
-    if (-not $explorer) { Fail "Explorer did not open $revealDir with the file selected" }
-    Write-Host 'Explorer opened the folder with the file selected'
-    $explorer.Quit()
+    if ($explorer) {
+        Write-Host 'Explorer opened the folder with the file selected'
+        $explorer.Quit()
+    } else {
+        $windows = @((New-Object -ComObject Shell.Application).Windows() | ForEach-Object { try { $_.Document.Folder.Self.Path } catch { '(no folder)' } })
+        $explorers = @(Get-Process explorer -ErrorAction SilentlyContinue | ForEach-Object { "pid $($_.Id) session $($_.SessionId)" })
+        Write-Host "session $session, shell running before the call: $shellRunning"
+        Write-Host "explorer processes: $($explorers -join '; ')"
+        Write-Host "shell windows: $($windows -join '; ')"
+        # 托管 runner 未必有登录的桌面外壳，那里选没选中无从观察，self test 已确认调用成功
+        if ($shellRunning) { Fail "Explorer did not open $revealDir with the file selected" }
+        Write-Host '::warning::No Explorer shell in this session; reveal checked only by its return value'
+    }
     EndStep
 
     Step '2. MSI install, patch update'
