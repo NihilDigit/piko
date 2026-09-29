@@ -232,7 +232,8 @@ jobs:
           if-no-files-found: ignore
 
   # 全新安装与应用内更新：同一份源码打两个版本（9.9.0 与 9.9.1），装旧的、让它自己更新成新的，
-  # 逐文件核对落盘结果。场景与断言见 desktopApp/package/update-smoke/windows.ps1。
+  # 逐文件核对落盘结果。装好之后顺带验依赖系统真实行为的：设为 magnet 与 .torrent 的默认打开方式，
+  # 系统真把链接交给 Piko（包里的自检见 desktopApp SelfTest.kt）。场景与断言见 desktopApp/package/update-smoke/windows.ps1。
   # 用测试专用的 UpgradeCode 与包名打，与正式版互不认识
   windows-update:
     if: inputs.desktop == true
@@ -301,7 +302,8 @@ jobs:
           path: ${{ runner.temp }}/update-smoke/logs
           if-no-files-found: ignore
 
-  # macOS 同样打两个 DMG，从 DMG 装进 ~/Applications，再让它整包换成新的。见 update-smoke/macos.sh
+  # macOS 同样打两个 DMG，从 DMG 装进 ~/Applications，再让它整包换成新的；装好之后同样验默认打开方式
+  # 与系统送来的链接（openURI、openFiles）。见 update-smoke/macos.sh
   macos-update:
     if: inputs.desktop == true
     runs-on: macos-15
