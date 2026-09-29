@@ -57,11 +57,11 @@ private val ARCHIVE_EXTENSIONS = setOf("zip", "rar", "7z")
 
 private val VOLUME_PATTERNS = listOf(
     // 新式 RAR 分卷：name.part1.rar、name.part01.rar
-    Regex("""\.part\d+\.rar$""", RegexOption.IGNORE_CASE),
+    Regex("""\.part[0-9]+\.rar$""", RegexOption.IGNORE_CASE),
     // 7-Zip 按字节切的分卷：name.7z.001、name.zip.001
-    Regex("""\.(7z|zip|rar)\.\d{3}$""", RegexOption.IGNORE_CASE),
+    Regex("""\.(7z|zip|rar)\.[0-9]{3}$""", RegexOption.IGNORE_CASE),
     // zip 的 span 分卷 name.z01 与旧式 RAR 分卷 name.r00
-    Regex("""\.[zr]\d{2}$""", RegexOption.IGNORE_CASE),
+    Regex("""\.[zr][0-9]{2}$""", RegexOption.IGNORE_CASE),
 )
 
 /**

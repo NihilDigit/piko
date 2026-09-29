@@ -4,52 +4,52 @@ package dev.piko.shared.naming
 // （[中文字幕]、[HD]）剥掉之后，番号必须是第一个记号。在全文里找会把动画文件名里的
 // 「Naruto_198」「HEVC-10」当成番号。
 
-private val FC2 = Regex("""^FC2[\s_-]*(?:PPV[\s_-]*)?(\d{5,8})(?![0-9])""", RegexOption.IGNORE_CASE)
+private val FC2 = Regex("""^FC2[\s_-]*(?:PPV[\s_-]*)?([0-9]{5,8})(?![0-9])""", RegexOption.IGNORE_CASE)
 
 // 「fc2765224」「FC980638」：FC 后面紧跟的数字整体是编号，其中打头的 2 不是 FC2 的 2。
 // 网盘里人手整理过的目录名（FC2-PPV-2765224）给出了这个答案；FC2 的 2 只在后面有分隔或 PPV 时才算前缀
-private val FC_GLUED = Regex("""^FC(\d{6,8})(?![0-9])""", RegexOption.IGNORE_CASE)
+private val FC_GLUED = Regex("""^FC([0-9]{6,8})(?![0-9])""", RegexOption.IGNORE_CASE)
 // 日期加序号的站点：一本道 092415_001、加勒比 021014-540，站点名在前或在后都有
-private val ONE_PONDO = Regex("""^(?:1pon(?:do)?|一本道)[\s_-]*(\d{6})[-_](\d{3})(?![0-9])""", RegexOption.IGNORE_CASE)
-private val CARIB = Regex("""^(?:carib(?:bean(?:com)?|com)?|加勒比)[\s_-]*(\d{6})[-_](\d{3})(?![0-9])""", RegexOption.IGNORE_CASE)
-private val CARIB_TRAILING = Regex("""^(\d{6})[-_](\d{3})[-_]carib""", RegexOption.IGNORE_CASE)
+private val ONE_PONDO = Regex("""^(?:1pon(?:do)?|一本道)[\s_-]*([0-9]{6})[-_]([0-9]{3})(?![0-9])""", RegexOption.IGNORE_CASE)
+private val CARIB = Regex("""^(?:carib(?:bean(?:com)?|com)?|加勒比)[\s_-]*([0-9]{6})[-_]([0-9]{3})(?![0-9])""", RegexOption.IGNORE_CASE)
+private val CARIB_TRAILING = Regex("""^([0-9]{6})[-_]([0-9]{3})[-_]carib""", RegexOption.IGNORE_CASE)
 
 // Heydouga 的写法最乱：hey4017_244、heydouga 4017-175、HeyDouga-4017-228；「しろハメ」是 4017 这个频道的名字
-private val HEYDOUGA = Regex("""^(?:しろハメ[\s_-]*(?:hey(?:douga)?)?|hey(?:douga)?)[\s_-]*(\d{4})[\s_-]+(\d{2,5})(?![0-9])""", RegexOption.IGNORE_CASE)
+private val HEYDOUGA = Regex("""^(?:しろハメ[\s_-]*(?:hey(?:douga)?)?|hey(?:douga)?)[\s_-]*([0-9]{4})[\s_-]+([0-9]{2,5})(?![0-9])""", RegexOption.IGNORE_CASE)
 
 // 没写站点名的日期番号：月日年六位加三位序号，如 123014_949、072815-931。月日须合法，
 // 否则「202401-001」这类编号也会被当成番号
-private val BARE_DATED = Regex("""^((?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{2})([-_])(\d{3})(?![0-9])""")
+private val BARE_DATED = Regex("""^((?:0[1-9]|1[0-2])(?:0[1-9]|[12][0-9]|3[01])[0-9]{2})([-_])([0-9]{3})(?![0-9])""")
 
 // 字母段里夹一位数字（MCB3DBD-47），或数字段前带一个字母（MKBD-S94）。只收全大写，
 // 与「Show-S01」这类季号写法区分
-private val DIGIT_IN_PREFIX = Regex("""^([A-Z]{2,5}\d[A-Z]{2,5})-(\d{2,4})(?![0-9])""")
-private val LETTER_IN_NUMBER = Regex("""^([A-Z]{2,6})-([A-Z]\d{2,4})(?![0-9]|E\d)""")
+private val DIGIT_IN_PREFIX = Regex("""^([A-Z]{2,5}[0-9][A-Z]{2,5})-([0-9]{2,4})(?![0-9])""")
+private val LETTER_IN_NUMBER = Regex("""^([A-Z]{2,6})-([A-Z][0-9]{2,4})(?![0-9]|E[0-9])""")
 
 // 四位补零的连写：xss0057
-private val GLUED_PADDED = Regex("""^([A-Za-z]{2,6})(0\d{3})(?![0-9])""")
+private val GLUED_PADDED = Regex("""^([A-Za-z]{2,6})(0[0-9]{3})(?![0-9])""")
 
 // 素人系列带数字前缀：104DANDAN-015、300MIUM-123、259LUXU-1234
-private val NUMBERED_LABEL = Regex("""^(\d{3}[A-Za-z]{2,8})[-_](\d{3,4})(?![0-9])""")
+private val NUMBERED_LABEL = Regex("""^([0-9]{3}[A-Za-z]{2,8})[-_]([0-9]{3,4})(?![0-9])""")
 
 // Tokyo-Hot：单字母 n 或 k 加四位数，如 n0421。单字母前缀太宽，四位数后面紧跟字母的不算，
 // 否则「k1080p」会被认成 K1080
-private val TOKYO_HOT = Regex("""^([nk])(\d{4})(?=$|[\s_.\-\[(])""", RegexOption.IGNORE_CASE)
+private val TOKYO_HOT = Regex("""^([nk])([0-9]{4})(?=$|[\s_.\-\[(])""", RegexOption.IGNORE_CASE)
 
-private val HEYZO = Regex("""^HEYZO[\s_-]*(?:HD[\s_-]*)?(\d{3,5})(?![0-9])""", RegexOption.IGNORE_CASE)
+private val HEYZO = Regex("""^HEYZO[\s_-]*(?:HD[\s_-]*)?([0-9]{3,5})(?![0-9])""", RegexOption.IGNORE_CASE)
 
 // 分隔写法：字母段与数字段之间有 - 或 _。字母段须全大写或全小写，「Naruto_198」这种首字母大写的
 // 普通单词不是番号
-private val SEPARATED = Regex("""^([A-Za-z]{2,6})[-_](\d{2,5})(?![0-9])""")
+private val SEPARATED = Regex("""^([A-Za-z]{2,6})[-_]([0-9]{2,5})(?![0-9])""")
 
 // 连写：abcd00123pl、ABCD123C。没有分隔符时与普通单词更难区分，只接受 DMM 式的五位补零，
 // 或数字后紧跟已知后缀（C 中字、pl/ps 封面）的写法。补零须是两个：三位编号补成五位才是 DMM 的写法，
 // 「clhlh06822」这种账号名只是恰好以 0 开头
-private val GLUED_DMM = Regex("""^([A-Za-z]{2,6})(00\d{3})(?![0-9])""")
-private val GLUED_SUFFIXED = Regex("""^([A-Za-z]{2,6})(\d{3})(C|pl|ps)$""")
+private val GLUED_DMM = Regex("""^([A-Za-z]{2,6})(00[0-9]{3})(?![0-9])""")
+private val GLUED_SUFFIXED = Regex("""^([A-Za-z]{2,6})([0-9]{3})(C|pl|ps)$""")
 
 // 「image-2026.04.01」：数字后面接着月和日，是日期，不是番号
-private val DATE_CONTINUATION = Regex("""[._-](0[1-9]|1[0-2])[._-]\d{2}(?!\d)""")
+private val DATE_CONTINUATION = Regex("""[._-](0[1-9]|1[0-2])[._-][0-9]{2}(?![0-9])""")
 
 private val NOT_A_PREFIX = setOf(
     "HEVC", "AVC", "AAC", "FLAC", "DTS", "AC", "EAC", "MP", "FHD", "UHD", "HD", "SD", "BD", "DVD", "WEB", "CD",
@@ -59,28 +59,28 @@ private val NOT_A_PREFIX = setOf(
     "ENDING", "OPENING", "TRACK", "CAM", "DB", "DBZ", "DBS", "DBGT", "AT-X",
 )
 
-private val LOOSE = Regex("""^([A-Za-z]{2,6})\s?(\d{2,5})(?![0-9])""")
+private val LOOSE = Regex("""^([A-Za-z]{2,6})\s?([0-9]{2,5})(?![0-9])""")
 private val SUFFIX_PIECE = Regex("""([-_.\s]*)([^-_.\s]+)""")
 private val LEADING_TAG_BRACKET = Regex("""[\[【]([^\]】]*)[\]】]""")
 private val SITE_AT = Regex("""^(.*)@(?=[A-Za-z0-9])""")
-private val SITE_NUMBERED = Regex("""^\d{3,8}_([A-Za-z0-9.]+)_""")
+private val SITE_NUMBERED = Regex("""^[0-9]{3,8}_([A-Za-z0-9.]+)_""")
 private val DOMAIN = Regex("""(?i)^(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|me|tv|cc|xyz|top|vip|club|fun|app|live|info|io|co|in|site|online|pw|ru|jp|tw|la|cn)$""")
 private val LEADING_BRACKET = Regex("""^\s*[\[【(]([^\]】)]*)[\]】)]\s*""")
 
 private val UNCENSORED_WORDS = setOf("u", "uncensored", "ucensored", "uncen", "leak", "leaked", "无码", "無碼", "無修正", "无修正", "破解", "流出")
 private val CHINESE_WORDS = setOf("c", "ch", "chs", "cht", "中文字幕", "中字", "sub", "zh")
-private val PART = Regex("""^(?:cd|part|pt|disc|disk)[\s.]?(\d{1,2})$""", RegexOption.IGNORE_CASE)
+private val PART = Regex("""^(?:cd|part|pt|disc|disk)[\s.]?([0-9]{1,2})$""", RegexOption.IGNORE_CASE)
 private val GLUED_PART_LETTERS = setOf("A", "B", "D", "E", "F")
 private val PART_LETTER = Regex("""^[A-Fa-f]$""")
 private val PART_DIGIT = Regex("""^0?[1-9]$""")
 // Heydouga 的分段写成 fhd1、hd2
-private val PART_QUALITY = Regex("""^f?hd(\d{1,2})$""", RegexOption.IGNORE_CASE)
+private val PART_QUALITY = Regex("""^f?hd([0-9]{1,2})$""", RegexOption.IGNORE_CASE)
 private val IGNORED_SUFFIXES = setOf("full", "hd", "pl", "ps", "jp", "mosaic", "high", "low")
 
 // 片名两端的标记与附注：「【無】」「『完全顔出し』」「~ vol.48 ~」在前，「※特典高画質」「【個人撮影】」在后。
 // 无码、中字已经成了标签，这里不再重复
 // 开头只去掉短标记（【無】『完全顔出し』【個撮】），「【 あの人気シリーズ 】」这种长的是片名的一部分
-private val LEADING_MARK = Regex("""^\s*(?:[【『\[(（]\s*[^】』\])）\s]{1,7}\s*[】』\])）]|~[^~]{1,12}~|vol\.?\s*\d{1,3}\s*~?)\s*""", RegexOption.IGNORE_CASE)
+private val LEADING_MARK = Regex("""^\s*(?:[【『\[(（]\s*[^】』\])）\s]{1,7}\s*[】』\])）]|~[^~]{1,12}~|vol\.?\s*[0-9]{1,3}\s*~?)\s*""", RegexOption.IGNORE_CASE)
 private val TRAILING_NOTE = Regex("""\s*※.*$""")
 private val TRAILING_MARK = Regex("""\s*[【『\[(（][^】』\])）]{1,12}[】』\])）]\s*$""")
 

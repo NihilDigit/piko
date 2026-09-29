@@ -265,8 +265,13 @@ class ClipFeedSession(
                     val folders = files.filter { it.isFolder }
                     next += folders.map { it.id }
                     folders.forEach { folderNames[it.id] = it.name }
-                    // 解析整目录的文件名要花些时间，不放在主线程上
-                    val folded = withContext(Dispatchers.Default) { analyzeDriveFolder(files).foldedIds }
+                    // 解析整目录的文件名要花些时间，不放在主线程上。解析出错只少折叠这一个目录，不能让整个信息流崩掉
+                    val folded = withContext(Dispatchers.Default) {
+                        runCatching { analyzeDriveFolder(files).foldedIds }
+                            .onFailure { if (it is CancellationException) throw it }
+                            .logFailure(TAG, "随机片段解析目录失败，不折叠")
+                            .getOrDefault(emptySet())
+                    }
                     val candidates = files.filter { it.id !in folded && it.isClipCandidate() }
                     candidates.forEach { listedFiles[it.id] = it }
                     candidates.forEach(::addToPool)

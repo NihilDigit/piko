@@ -65,7 +65,7 @@ object PikoProxySelector : ProxySelector() {
         host == null || host.equals("localhost", ignoreCase = true) || host == "::1" || host == "[::1]" ||
             LOOPBACK_V4.matches(host)
 
-    private val LOOPBACK_V4 = Regex("""127\.\d{1,3}\.\d{1,3}\.\d{1,3}""")
+    private val LOOPBACK_V4 = Regex("""127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}""")
 
     private val NO_PROXY = listOf(Proxy.NO_PROXY)
 }

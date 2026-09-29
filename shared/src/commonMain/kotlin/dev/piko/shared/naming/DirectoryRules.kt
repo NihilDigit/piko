@@ -52,7 +52,7 @@ private val SECONDARY_DIRS: Map<String, SecondaryReason> = buildMap {
 }
 
 private val NEUTRAL_DIR = Regex(
-    """(?i)^(season|s|series|part|vol\.?|volume|disc|disk|box|set|batch|cd)\s*[\d一二三四五六七八九十]+.*$|^(subs?|subtitles?|字幕|english subtitles|srt subtitles|sub(title)?s? \w+|completed|content|tv|output|\d{3,4}p.*|.*内嵌.*|.*内封.*|chs|cht|gb|big5|720p avc|1080p avc|hevc|avc)$""",
+    """(?i)^(season|s|series|part|vol\.?|volume|disc|disk|box|set|batch|cd)\s*[0-9一二三四五六七八九十]+.*$|^(subs?|subtitles?|字幕|english subtitles|srt subtitles|sub(title)?s? \w+|completed|content|tv|output|[0-9]{3,4}p.*|.*内嵌.*|.*内封.*|chs|cht|gb|big5|720p avc|1080p avc|hevc|avc)$""",
 )
 
 internal fun directoryMeaning(rawName: String): DirectoryMeaning {
@@ -80,7 +80,7 @@ internal fun directoryMeaning(rawName: String): DirectoryMeaning {
 internal val DISC_STRUCTURE_DIRS = setOf("BDMV", "VIDEO_TS", "CERTIFICATE", "AACS", "AUDIO_TS", "BDSVM")
 
 /** 「DISC_01」「Disc 1」「D10」「Vol.1」「BLEACH SET 1 DISC 1」里的盘号。 */
-private val DISC_NUMBER = Regex("""(?i)(?:^|[\s_\-.\[(])(?:disc|disk|dvd|bd|vol(?:ume)?\.?|d)[\s_.\-]?(\d{1,2})(?=$|[\s_\-.\])])""")
+private val DISC_NUMBER = Regex("""(?i)(?:^|[\s_\-.\[(])(?:disc|disk|dvd|bd|vol(?:ume)?\.?|d)[\s_.\-]?([0-9]{1,2})(?=$|[\s_\-.\])])""")
 
 internal class DiscName(val title: String?, val number: Int?)
 

@@ -87,7 +87,7 @@ private const val LINK_BODY = """[^\s"'<>，。；！？、（）【】「」『
 private val MAGNET = Regex("""magnet:\?$LINK_BODY""", RegexOption.IGNORE_CASE)
 private val WEB_LINK = Regex("""(?:https?|thunder)://$LINK_BODY""", RegexOption.IGNORE_CASE)
 // ed2k 的文件名段可以带空格，按竖线分段匹配，到末尾的「|/」为止
-private val ED2K = Regex("""ed2k://\|file\|[^|\r\n]+\|\d+\|[0-9A-Fa-f]{32}\|(?:[^|\s]*\|)*/?""", RegexOption.IGNORE_CASE)
+private val ED2K = Regex("""ed2k://\|file\|[^|\r\n]+\|[0-9]+\|[0-9A-Fa-f]{32}\|(?:[^|\s]*\|)*/?""", RegexOption.IGNORE_CASE)
 private val BTIH = Regex("""xt=urn:btih:([A-Za-z0-9]+)""", RegexOption.IGNORE_CASE)
 private val BARE_HASH = Regex("""(?<![A-Za-z0-9])(?:[0-9A-Fa-f]{40}|[A-Za-z2-7]{32})(?![A-Za-z0-9])""")
 
