@@ -16,6 +16,10 @@ import androidx.compose.material3.TopAppBarColors
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.TopAppBarScrollBehavior
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -25,6 +29,28 @@ import dev.piko.ui.platform.rememberCaptionSlot
 import dev.piko.ui.theme.LocalFramed
 import dev.piko.ui.theme.FrameTopRowHeight
 import androidx.compose.ui.graphics.Color
+
+/**
+ * 列表离开顶端时顶栏换成滚动态的填充色（M3 top app bar 的 on scroll），按列表眼下的位置判断：[atTop]
+ * 读列表状态，例如 `{ state.firstVisibleItemIndex == 0 && state.firstVisibleItemScrollOffset == 0 }`。
+ *
+ * 不用 pinnedScrollBehavior 自带的那一套：它经 nestedScroll 把滚动量累加进 contentOffset，只增减不校正，
+ * 换了一份内容也不清零。网盘页换文件夹、恢复上次的滚动位置、我的分享取消几项后变短，列表明明在顶端、
+ * 甚至根本滚不动，顶栏仍是滚动态的颜色。这里每逢 [atTop] 变化直接写 contentOffset：在顶端为 0，
+ * 否则写到最小，overlappedFraction 即为 1。调用方不要再挂它的 nestedScrollConnection，两边会互相改写。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun rememberListScrollTint(atTop: () -> Boolean): TopAppBarScrollBehavior {
+    val behavior = TopAppBarDefaults.pinnedScrollBehavior()
+    val latestAtTop by rememberUpdatedState(atTop)
+    LaunchedEffect(behavior) {
+        snapshotFlow { latestAtTop() }.collect { top ->
+            behavior.state.contentOffset = if (top) 0f else -Float.MAX_VALUE
+        }
+    }
+    return behavior
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

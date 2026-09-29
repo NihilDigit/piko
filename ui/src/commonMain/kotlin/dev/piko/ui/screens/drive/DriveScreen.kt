@@ -104,6 +104,7 @@ import dev.piko.ui.theme.FrameCardShape
 import dev.piko.ui.theme.FrameCardBottomMargin
 import dev.piko.ui.components.LocalSidePanelHost
 import dev.piko.ui.components.LocalShowExtensions
+import dev.piko.ui.components.rememberListScrollTint
 import dev.piko.ui.components.defaultPanelBottomMargin
 import dev.piko.ui.components.HostedPanelContent
 import androidx.compose.material.icons.outlined.SwipeVertical
@@ -900,8 +901,11 @@ fun DriveScreen(
         return true
     }
 
-    // 列表滚动后顶栏换上填充色与内容分开，M3 app bar 规范的滚动态
-    val topBarScrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
+    // 列表离开顶端时顶栏换上填充色与内容分开，M3 app bar 规范的滚动态。按列表眼下的位置判断，
+    // gridState 按目录重建，换文件夹、恢复滚动位置都跟着对，见 rememberListScrollTint
+    val topBarScrollBehavior = rememberListScrollTint {
+        gridState.firstVisibleItemIndex == 0 && gridState.firstVisibleItemScrollOffset == 0
+    }
 
     val history by state.history.collectAsStateWithLifecycle()
 
@@ -1220,9 +1224,7 @@ fun DriveScreen(
             },
     ) {
             Scaffold(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .nestedScroll(topBarScrollBehavior.nestedScrollConnection),
+                modifier = Modifier.fillMaxSize(),
                 // 宽窗口的两行栏与标签栏落在页眉的底色上，内容区自己铺页面本色
                 containerColor = if (pathInTopBar) MaterialTheme.colorScheme.frame else MaterialTheme.colorScheme.background,
                 snackbarHost = { SnackbarHost(hostState = snackbarHostState) },

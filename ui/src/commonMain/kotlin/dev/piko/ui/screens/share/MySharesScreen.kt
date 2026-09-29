@@ -78,6 +78,7 @@ import dev.piko.ui.components.ItemDetailsSheet
 import dev.piko.ui.components.MetaRow
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoTopBar
+import dev.piko.ui.components.rememberListScrollTint
 import dev.piko.ui.components.RefreshBox
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.TooltipIconButton
@@ -157,11 +158,12 @@ fun MySharesScreen(
     var confirmCancelSelected by remember { mutableStateOf(false) }
     BackHandler(enabled = selecting) { state.clearSelection() }
 
-    val topBarScrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
+    // 按列表眼下的位置换色，取消几项后列表变短回到顶端，顶栏跟着回来，见 rememberListScrollTint
+    val topBarScrollBehavior = rememberListScrollTint {
+        gridState.firstVisibleItemIndex == 0 && gridState.firstVisibleItemScrollOffset == 0
+    }
     PikoScaffold(
-        modifier = modifier
-            .fillMaxSize()
-            .nestedScroll(topBarScrollBehavior.nestedScrollConnection),
+        modifier = modifier.fillMaxSize(),
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         topBar = {
             PikoTopBar(
