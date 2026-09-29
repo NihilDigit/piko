@@ -17,6 +17,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import dev.piko.ui.platform.LocalPikoPlatform
 
 /**
  * 应用图标，路径照抄 docs/icon.svg。ui 模块没有图片资源，为一张图接上资源插件不值得，
@@ -46,7 +47,7 @@ val PikoLogo: ImageVector by lazy {
     }.build()
 }
 
-/** 图标加应用名，放在侧边栏左上角。 */
+/** 图标、应用名与版本号，放在侧边栏左上角。 */
 @Composable
 fun PikoBrand(modifier: Modifier = Modifier) {
     Row(
@@ -55,6 +56,20 @@ fun PikoBrand(modifier: Modifier = Modifier) {
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Image(PikoLogo, contentDescription = null, modifier = Modifier.size(28.dp))
-        Text("Piko", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                "Piko",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.alignByBaseline(),
+            )
+            Text(
+                LocalPikoPlatform.current.appVersion,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                modifier = Modifier.alignByBaseline(),
+            )
+        }
     }
 }
