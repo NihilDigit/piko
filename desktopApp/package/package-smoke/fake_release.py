@@ -2,8 +2,8 @@
 
 目录结构：<root>/<版本>/<附件>，<root>/latest.txt 写要公布的版本，改它即换「最新版」，不必重启服务。
   GET /latest               与 GitHub 同形的 Release JSON，附件带 digest（应用据此校验下载）
-  GET /assets/<版本>/<名字> 附件本身
-每个请求记进 <root>/requests.log，失败时对照应用到底下了什么。
+  GET /assets/<版本>/<名字> 附件本身，认单段的 Range
+每个请求记进 <root>/requests.log，失败时对照应用到底下了什么；每次送出的附件字节数记进 <root>/bytes.log。
 
 用法：python fake_release.py <root> [端口]
 """
@@ -80,13 +80,35 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not os.path.isfile(path):
             self.send_error(404)
             return
-        self.send_response(200)
+        size = os.path.getsize(path)
+        start, end = 0, size - 1
+        # Linux 的 zsync 差分更新按 Range 取单段，与 GitHub 的附件地址一样回 206；每段记进 bytes.log，
+        # 冒烟据此算差分实际下了多少字节
+        ranged = self.headers.get("Range", "")
+        if ranged.startswith("bytes="):
+            first, _, last = ranged[len("bytes="):].partition("-")
+            start, end = int(first), min(int(last), size - 1) if last else size - 1
+            if start > end:
+                self.send_error(416)
+                return
+            self.send_response(206)
+            self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
+        else:
+            self.send_response(200)
         self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Content-Length", str(os.path.getsize(path)))
+        self.send_header("Content-Length", str(end - start + 1))
         self.end_headers()
+        with open(os.path.join(ROOT, "bytes.log"), "a", encoding="utf-8") as log:
+            log.write("%s %d\n" % (os.path.basename(path), end - start + 1))
         with open(path, "rb") as f:
-            for chunk in iter(lambda: f.read(1 << 16), b""):
+            f.seek(start)
+            remaining = end - start + 1
+            while remaining > 0:
+                chunk = f.read(min(1 << 16, remaining))
+                if not chunk:
+                    break
                 self.wfile.write(chunk)
+                remaining -= len(chunk)
 
 
 # Windows 上 SO_REUSEADDR 让第二个进程也能绑同一个端口，请求被分给上一次没关掉的那个，

@@ -5,11 +5,11 @@ name: Test
 # 两类：
 # - 业务逻辑的单测放在 JVM 上：shared 的 desktop 测试（解析、代理、同步、更新来源等，Linux 上跑得最快）、
 #   desktopApp 的测试（WinRT、窗口过程、更新清单，只能在 Windows 上跑）、Android 的单测。
-# - 原生行为的冒烟在真机器上：Android 模拟器上的真实 libmpv 与回环代理；Windows 与 macOS 上真装、
+# - 原生行为的冒烟在真机器上：Android 模拟器上的真实 libmpv 与回环代理；Windows、macOS 与 Linux 上真装、
 #   真启动、真的应用内更新，再验依赖系统真实行为的（默认打开方式、在资源管理器中显示），
-#   断言落到磁盘与系统上的结果（windows-package、macos-package）。
+#   断言落到磁盘与系统上的结果（windows-package、macos-package、linux-package）。
 #
-# 推送与 PR 时不跑两个桌面冒烟：它们要打两遍安装包，一次二十来分钟。手动触发与发版时都跑。
+# 推送与 PR 时不跑三个桌面冒烟：它们要打两遍安装包，一次二十来分钟。手动触发与发版时都跑。
 
 on:
   push:
@@ -352,5 +352,58 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: macos-package-smoke-logs
+          path: ${{ runner.temp }}/package-smoke/logs
+          if-no-files-found: ignore
+
+  # Linux 打两个 AppImage，拷进 ~/Applications 启动，让它按 zsync 只下变了的块、换成新的；装好之后同样验
+  # 默认打开方式（.desktop 加 xdg-mime）与 xdg-open 送来的链接。见 package-smoke/linux.sh。
+  # 没有显示器，打包（AOT 训练）与冒烟都套一层 xvfb-run
+  linux-package:
+    if: inputs.desktop == true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/checkout@v5
+        if: format('{0}', inputs.sdk-main) != 'false'
+        with:
+          repository: NihilDigit/pikpak-kotlin
+          path: pikpak-kotlin
+
+      - name: Build against the SDK source
+        if: format('{0}', inputs.sdk-main) != 'false'
+        shell: bash
+        run: echo "pikpak.sdk.dir=pikpak-kotlin" >> local.properties
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: zulu
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      # fuse3 挂载 AppImage；xdg-utils 与 desktop-file-utils 是默认打开方式那一段要的
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsync appstream desktop-file-utils xvfb xauth xdg-utils fuse3
+
+      - name: Build two versions
+        run: |
+          set -euo pipefail
+          for version in 9.9.0 9.9.1; do
+            xvfb-run -a ./gradlew :desktopApp:packageReleaseAppImage --no-daemon --stacktrace "-PpikoDesktopVersion=$version"
+            mkdir -p "smoke-dist/$version"
+            cp desktopApp/build/compose/binaries/main-release/appimage/piko-linux-x64-"$version".AppImage* "smoke-dist/$version/"
+          done
+          ls -lR smoke-dist
+
+      - name: Install, update and system integration
+        run: xvfb-run -a bash desktopApp/package/package-smoke/linux.sh smoke-dist/9.9.0 smoke-dist/9.9.1 9.9.0 9.9.1 "$RUNNER_TEMP/package-smoke"
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-package-smoke-logs
           path: ${{ runner.temp }}/package-smoke/logs
           if-no-files-found: ignore

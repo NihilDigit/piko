@@ -3,8 +3,8 @@ name: Release
 # 打 tag 发版。安装包只在这里构建：本机不产出、也拿不到签名密钥，所以「这个安装包是从这份
 # 源码编出来的」有据可查。
 #
-# 先由 test 跑完全部测试（test.yml：各平台的单测与冒烟，含 Windows 与 macOS 的安装和应用内更新），全绿后
-# android、windows（x64 与 arm64）、macos 三个 job 并行构建，只产出、不发布；产物交给 release
+# 先由 test 跑完全部测试（test.yml：各平台的单测与冒烟，含 Windows、macOS 与 Linux 的安装和应用内更新），全绿后
+# android、windows（x64 与 arm64）、macos、linux 四个 job 并行构建，只产出、不发布；产物交给 release
 # 统一算校验和、生成构建来源证明，再建一个草稿 release。附件先齐、后公开：此前各平台各自往一个
 # 已公开的 Release 上挂附件，中间有一段时间 Release 已可见而附件不全，应用内更新可能看到缺了
 # 自己平台安装包的版本。
@@ -259,8 +259,53 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # x64 AppImage 与 app-image 的 tar.gz。MediaMP 的 mpv 运行库没有 linux-arm64，Linux 只出 x64。
+  # 打包时的 AOT 训练要开窗，套一层 xvfb-run；appimagetool 与运行时的版本和摘要钉在 build-appimage.sh 里
+  linux:
+    needs: [version, test]
+    runs-on: ubuntu-24.04
+    env:
+      ORG_GRADLE_PROJECT_pikoDesktopVersion: ${{ needs.version.outputs.name }}
+      VERSION: ${{ needs.version.outputs.name }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # 与 Windows 相同用 Zulu：打包的 jlink 与 ProGuard 要 jmods
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: zulu
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      # zsync 出 .zsync，appstream 校验 AppStream 元数据，desktop-file-utils 校验 .desktop
+      - name: Install packaging tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsync appstream desktop-file-utils xvfb
+
+      - name: Build
+        run: xvfb-run -a ./gradlew :desktopApp:packageReleaseAppImage --no-daemon --stacktrace
+
+      - name: Verify classes
+        run: java -Xverify:all desktopApp/package/VerifyClasses.java desktopApp/build/compose/binaries/main-release/app/Piko/lib/app
+
+      - name: Collect artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # 名字由 packageReleaseAppImage 定好：piko-linux-x64-<版本>.AppImage、.AppImage.zsync 与 .tar.gz
+          cp desktopApp/build/compose/binaries/main-release/appimage/piko-linux-x64-"$VERSION".* dist/
+          ls -l dist
+          test -x "dist/piko-linux-x64-$VERSION.AppImage"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: linux-dist
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
   release:
-    needs: [version, android, windows, macos]
+    needs: [version, android, windows, macos, linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -290,11 +335,12 @@ jobs:
         run: |
           (cd dist && sha256sum * > SHA256SUMS.txt)
           ls -l dist
-          # generator 要 base64 过的 sha256sum 输出。只列会被安装或执行的文件：APK、MSI、DMG、
-          # 便携 zip 与应用内更新解开的 app.zip 和差分包；files.json 与 mapping 由 SHA256SUMS.txt 覆盖。
+          # generator 要 base64 过的 sha256sum 输出。只列会被安装或执行的文件：APK、MSI、DMG、AppImage、
+          # 便携 zip、Linux 的 app-image tar.gz 与应用内更新解开的 app.zip 和差分包；files.json、.zsync 与 mapping
+          # 由 SHA256SUMS.txt 覆盖。
           # 写进文件而不走 job 输出：这一长串 base64 偶然含有某个较短 secret 的值时，Actions 会
           # 以「可能含 secret」为由丢掉整条输出（Bilby 发版时撞上过）。文件放在 dist 外，免得被当成附件
-          (cd dist && sha256sum *.apk *.msi *.dmg *.zip | base64 -w0) > slsa-subjects.b64
+          (cd dist && sha256sum *.apk *.msi *.dmg *.AppImage *.tar.gz *.zip | base64 -w0) > slsa-subjects.b64
 
       # 检查更新的备用来源：GitHub API 被限流（匿名按出口 IP 每小时 60 次）或连不上时，应用改取
       # releases/latest/download/release.json，见 GithubReleaseClient.LATEST_RELEASE_SOURCES。与 API 的
@@ -359,6 +405,8 @@ jobs:
             dist/*.apk
             dist/*.msi
             dist/*.dmg
+            dist/*.AppImage
+            dist/*.tar.gz
             dist/*.zip
 
       # 正文是附件表与校验说明，更新日志由人在公开前写在最前面
