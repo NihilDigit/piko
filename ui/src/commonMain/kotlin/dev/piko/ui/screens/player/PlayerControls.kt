@@ -517,6 +517,8 @@ internal fun PlayerBottomBar(
     showEpisodes: Boolean,
     /** 上一集、下一集两个快捷键。窄窗口不给，换集走选集面板。 */
     showEpisodeSkip: Boolean,
+    /** 窄窗口：选集只留图标，见下。 */
+    compactWidth: Boolean,
     hasPrevious: Boolean,
     hasNext: Boolean,
     onPrevious: () -> Unit,
@@ -603,7 +605,13 @@ internal fun PlayerBottomBar(
                 }
             }
             if (showEpisodes) {
-                PlayerChipButton(text = "选集", icon = Icons.Outlined.VideoLibrary, onClick = onEpisodesClick)
+                // 窄窗口只留图标，名字在提示里：带字的这一格约 80dp，省下的地方让旋转按钮常驻，
+                // 360dp 的手机竖屏里时间、倍速、选集、旋转、全屏才排得下
+                if (compactWidth) {
+                    PlayerIconButton(icon = Icons.Outlined.VideoLibrary, label = "选集", onClick = onEpisodesClick)
+                } else {
+                    PlayerChipButton(text = "选集", icon = Icons.Outlined.VideoLibrary, onClick = onEpisodesClick)
+                }
             }
             // 一次转 90 度，与 R 键相同。原先在播放设置里列四个角度，要转画面得先开面板，
             // 桌面上转了窗口还跟着对调，这一步该是顺手就点的

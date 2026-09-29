@@ -688,6 +688,7 @@ fun MobilePlayerControls(
                         playbackSpeed = playbackSpeed,
                         showEpisodes = hasPlaylist,
                         showEpisodeSkip = hasPlaylist && !compactWidth,
+                        compactWidth = compactWidth,
                         hasPrevious = hasPrevious,
                         hasNext = hasNext,
                         onPrevious = {
@@ -712,7 +713,8 @@ fun MobilePlayerControls(
                             onSpeedChange(it)
                         },
                         onEpisodesClick = { openSheet = PlayerSheet.Episodes },
-                        onRotate = rotationDegrees?.takeIf { !compactWidth }?.let { degrees ->
+                        // 窄窗口也给：桌面上横的窗口转一下就成了竖的窄窗口，按钮随之消失的话转不回去
+                        onRotate = rotationDegrees?.let { degrees ->
                             {
                                 interacted()
                                 onRotationChange((degrees + 90) % 360)
