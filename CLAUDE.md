@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Piko 是 PikPak 的第三方跨平台客户端。Android、Windows 与 macOS（实验性）共用一套 Material 3 Expressive 界面，
+Piko 是 PikPak 的第三方跨平台客户端。Android、Windows、macOS 与 Linux（后两者实验性）共用一套 Material 3 Expressive 界面，
 按窗口宽度自适应；业务逻辑与屏幕状态在 `shared`，界面在 `ui`，两端只剩入口与平台实现。
 
 ## 常用命令
@@ -76,7 +76,7 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 ## 架构
 
 四个模块：`shared`（状态与业务，commonMain + android/desktop 两个 target）、`ui`（共享界面，
-同样两个 target）、`app`（Android 入口、平台实现与播放器）、`desktopApp`（Windows 与 macOS 入口、
+同样两个 target）、`app`（Android 入口、平台实现与播放器）、`desktopApp`（Windows、macOS 与 Linux 入口、
 平台实现与播放器窗口）。
 
 ### 界面写一次
@@ -379,6 +379,50 @@ piko 源码仍是 MIT，但发版时要附 GPLv3 与第三方声明，并指明�
   应用内更新整个换掉 .app（见「平台差异」一节）：新包先拷到旁边，过了 `codesign --verify` 再去掉隔离属性、换进去；
   任何一步失败都留着旧包、重新打开它，下次启动时提示更新未完成（脚本写的 `failed` 标记）。
   没有开发者证书，包未经签名与公证。
+
+## Linux（实验性）
+
+同一个 `desktopApp`，只出 x64：MediaMP 0.5.0 的 mpv 运行库只有 `linux-x64`。打包照 Animeko 的路子，差别在下面逐条写明。
+
+- **应用 ID `dev.nihildigit.Piko`，不再改**：.desktop、AppStream（`package/linux/`）、图标名、WM_CLASS 都用它，Flathub 以它为包名，
+  按 `nihildigit.dev` 域名验证。Flathub 要求域名部分小写，末段可以大写。Android 与 macOS 已发版的 `dev.piko`、`dev.piko.desktop` 不动。
+  WM_CLASS 默认取主类名（`dev-piko-desktop-MainKt`），桌面环境对不上 .desktop，Dock 里是一个没有图标的 java；
+  `LinuxDesktop.setWmClass` 经反射改 XToolkit 的字段，要 `--add-opens java.desktop/sun.awt.X11`，只在 Linux 宿主上加。
+- **产物**：`./gradlew :desktopApp:packageReleaseAppImage`（只在 Linux 宿主上注册）先出 jpackage 的 app-image，
+  再由 `package/linux/build-appimage.sh` 出三个附件：app-image 原样的 `.tar.gz`（日后 Flathub 取它）、`.AppImage`、`.AppImage.zsync`。
+  appimagetool 与 AppImage 头部的运行时按版本与摘要钉死，不用 continuous。AppImage 内嵌
+  `gh-releases-zsync|NihilDigit|piko|latest|piko-linux-x64-*.AppImage.zsync`，AppImageUpdate 一类外部工具也能更新；
+  .zsync 的 URL 写相对名，经镜像取时照样对得上。打包前的 AOT 训练要开窗，CI 上套 `xvfb-run`；本机 Gradle 的 foojay 0.9
+  在 Gradle 9.6 上自动下载工具链会失败，要自己装一份 Zulu 25 写进 `org.gradle.java.installations.paths`。
+- **AOT 缓存照做**：AppImage 每次挂载在不同的 `/tmp/.mount_*` 下，JDK 只比对类路径各项的相对位置，缓存照样认（`-Xlog:aot` 可见
+  Opened AOT cache）。squashfs 的修改时间只到秒，与 Windows 取整到偶数秒同一个处理。**不能设 `SOURCE_DATE_EPOCH`**：
+  mksquashfs 见到它会把所有文件的修改时间改成同一个值，缓存整份作废。
+- **原生库**：mpv 运行库的 jar 存不了符号链接，同一个库以真实文件名、SONAME、无版本名各存一份（libavcodec 三份各 11 MB），
+  `bundledAppResources` 只取 SONAME 那一份，放在资源目录的 `mpv/` 下，各库自带 `$ORIGIN` 的 RUNPATH，不上 `java.library.path`，
+  也就不必照 Animeko 那样挪目录、patchelf。运行库要 glibc 2.38（Ubuntu 24.04、Debian 13 起），更老的系统开不了播放器。
+- **画面要硬件 OpenGL**：MediaMP 在 Linux 上经 GLX 与 Skiko 共享纹理，只认 Skiko 的 `LinuxOpenGLRedrawer`。Skiko 把 llvmpipe 列为
+  不支持，没有硬件驱动（虚拟机、xvfb、WSLg 默认）时退到软件渲染，画面一直是黑的，打开也不返回；播放器窗口据此提示一句。
+  WSLg 里设 `GALLIUM_DRIVER=d3d12` 才走显卡。JVM 单测测不到这一段，装好的包里有自检：`-Dpiko.selftest=play`，
+  `PIKO_SELFTEST_PATH` 指一个本机视频（`SelfTest.kt`、`PlaybackSelfTest.kt`）。
+- **平台胶水**（`LinuxDesktop.kt`）：打开链接与文件交给 `xdg-open`，通知与「在文件管理器中显示」经 gdbus 调
+  `org.freedesktop.Notifications`、`org.freedesktop.FileManager1.ShowItems`（后者失败退回打开所在目录），防休眠经 `systemd-inhibit`。
+  一律不走 AWT 的 Desktop：它在 Linux 上靠 GTK，会把系统的 glib 载入进程，与 mpv 运行库自带的那份撞 SONAME。
+  中文字体挑一个装了的简体字体（Noto Sans CJK SC 等），理由同 Windows 指定雅黑。标题栏用系统的，不自绘；
+  播放器全屏用 `WindowPlacement.Fullscreen`；主修饰键是 Ctrl。GNOME 默认没有托盘，关窗后台传输时提示「再次打开 Piko」，
+  单实例把后来者的启动转成叫回窗口。
+- **默认打开方式**（`LinuxLinkAssociation`）：在 `~/.local/share/applications` 写一个 NoDisplay 的 .desktop（Exec 指 `$APPIMAGE`），
+  再 `xdg-mime default` 写进 mimeapps.list，当场生效，首次启动问一次。只在以 AppImage 运行时可用，每次启动若 AppImage 挪了位置就改写 Exec。
+  取消关联删掉这个文件与 mimeapps.list 里指向它的项。WSL 里 xdg-utils 认出 WSL 就把 xdg-open 转给 Windows，本机验证要换 `gio open`。
+- **应用内更新**：只认 AppImage（`$APPIMAGE`），Flatpak（`FLATPAK_ID` 或 `/.flatpak-info`）里整个关掉，`updater` 为 null。
+  查到新版时先取 .zsync（按 GitHub 的摘要校验），拿本机 AppImage 滚动对照，只按 Range 下缺的块（`Zsync.kt` 是 zsync 0.6.2 客户端的
+  Kotlin 实现，含 MD4），拼好后按 GitHub 公布的 SHA-256 核对，拼不出来或对不上就整包下载。不照 Animeko 捆 appimageupdatetool：
+  它自己去 GitHub 查、只信 .zsync 里的 SHA-1，退不到 ghfast.top，也校验不了 GitHub 的摘要。
+  新文件写在旧文件旁边（`.<名字>.piko-update`），校验过即改名换上，**不必等退出**：运行中的 AppImage 由 FUSE 挂载进程开着旧 inode。
+  重新打开要等退出，否则新进程撞上单实例锁、转交完就走：由 `setsid sh` 等本进程的 pid 消失再 exec 新的 AppImage。
+  所在目录不可写或不是 AppImage 运行（解开的 app-image）时只给下载页。
+- **冒烟**：`package-smoke/linux.sh`，CI 的 `linux-package`（推送时不跑），`fake_release.py` 认单段 Range 并记下每次送出的字节数，
+  断言差分确实只下了一部分。停应用只杀 JVM（挂载目录里的 `usr/bin/Piko`），先杀 AppImage 的运行时会把挂载从 JVM 底下拆掉，
+  它下次读类文件时 SIGBUS。
 
 ## 开发用 CLI
 
