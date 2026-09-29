@@ -1095,7 +1095,14 @@ private fun MainSidebar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = if (collapsed) Arrangement.Center else Arrangement.Start,
         ) {
-            if (!collapsed) PikoBrand(Modifier.weight(1f).fillMaxHeight().windowDragArea().padding(start = 24.dp))
+            // 图标与名字只在标题栏并进内容时画：单独的标题栏上已经画着图标与标题
+            if (!collapsed) {
+                if (LocalWindowCaption.current != null) {
+                    PikoBrand(Modifier.weight(1f).fillMaxHeight().windowDragArea().padding(start = 24.dp))
+                } else {
+                    Spacer(Modifier.weight(1f))
+                }
+            }
             TooltipIconButton(
                 icon = if (collapsed) Icons.Outlined.Menu else Icons.AutoMirrored.Outlined.MenuOpen,
                 label = if (collapsed) "展开侧边栏" else "收起侧边栏",
