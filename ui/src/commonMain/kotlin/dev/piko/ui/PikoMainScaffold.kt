@@ -589,7 +589,9 @@ fun PikoMainScaffold(
                         folderName = clipFeedSession.root?.name,
                         onResume = ::resumeFeed,
                         onClose = { setFeedShown(false) },
-                        modifier = Modifier.align(Alignment.BottomCenter),
+                        // 抬到网盘页 FAB 的上方：同在底边时，窄屏上条的右端（关闭按钮）正好压在右下角的 FAB 底下。
+                        // M3 里浮在内容上的条（snackbar 之类）都放在 FAB 之上，不与它重叠
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = FeedResumeBarFabClearance),
                     )
                 }
             },
@@ -1047,6 +1049,9 @@ fun PikoMainScaffold(
 /** 侧栏的宽度下限：竖排的片段控件与横屏画面在这个宽度里还放得开。 */
 private val ClipPanelMinWidth = 360.dp
 private val ClipPanelDefaultWidth = 420.dp
+
+// 「继续刷」条让出网盘页的 FAB：FAB 默认 56dp 高，条自己已带 16dp 外边距，再隔 16dp
+private val FeedResumeBarFabClearance = 56.dp + 16.dp
 
 /** 「我的」的详情页。它们互相替换，不叠在一起。 */
 private val ProfilePanes = setOf<NavKey?>(Screen.MyShares, Screen.Settings)
