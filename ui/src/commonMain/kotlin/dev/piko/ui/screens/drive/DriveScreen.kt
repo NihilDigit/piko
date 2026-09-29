@@ -157,6 +157,7 @@ import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.components.PikoSheet
 import dev.piko.ui.platform.ShortcutModifier
+import dev.piko.ui.platform.LocalWindowCaption
 import dev.piko.ui.screens.share.ShareDialog
 import dev.piko.ui.screens.rename.BatchRenameDialog
 import dev.piko.ui.LocalPikoServices
@@ -1352,7 +1353,8 @@ fun DriveScreen(
                                     // 顶栏只留信息流与搜索：M3 顶栏放一到两个动作，新建与秒传同属「往网盘里添东西」，
                                     // 一起收进 FAB 菜单；排序与视图切换作用于列表，放在列表页眉。
                                     if (commands.feed && onFeedShownChange != null) {
-                                        FeedToggle(shown = feedShown, onShownChange = onFeedShownChange)
+                                        // 标题栏并进内容时这一行还要画三个窗口按钮，信息流收成图标，目录名才露得出来
+                                        FeedToggle(shown = feedShown, onShownChange = onFeedShownChange, iconOnly = LocalWindowCaption.current != null)
                                     }
                                     // 清空回收站、清空播放历史，窄窗口里没有命令栏，放在顶栏
                                     libraryPageActions(libraryView, state.files.isEmpty(), { libraryConfirm = it }, { state.files.map { it.id } })

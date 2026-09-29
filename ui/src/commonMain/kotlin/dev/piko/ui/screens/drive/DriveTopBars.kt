@@ -57,6 +57,12 @@ import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Unarchive
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalIconToggleButton
+import androidx.compose.material3.PlainTooltip
+import androidx.compose.material3.TooltipAnchorPosition
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.rememberTooltipState
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -282,8 +288,32 @@ internal fun DriveBrowseTopBar(
  * 它打开的是另一种浏览方式：随机刷这个文件夹里的视频片段，所以单独一个带名字的按钮，开着时是选中态。
  * 已弹出到独立窗口时仍是开着的，再点一下连同窗口一起关掉。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun FeedToggle(shown: Boolean, onShownChange: (Boolean) -> Unit) {
+internal fun FeedToggle(
+    shown: Boolean,
+    onShownChange: (Boolean) -> Unit,
+    /**
+     * 只留图标，名字在提示里。窄窗口的桌面端把三个窗口按钮也画在这一行，带字的这一格一占，
+     * 目录名只剩一两个字（实测）。
+     */
+    iconOnly: Boolean = false,
+) {
+    if (iconOnly) {
+        TooltipBox(
+            positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
+            tooltip = { PlainTooltip { Text(if (shown) "关闭信息流" else "信息流") } },
+            state = rememberTooltipState(),
+        ) {
+            FilledTonalIconToggleButton(checked = shown, onCheckedChange = onShownChange) {
+                Icon(
+                    imageVector = if (shown) Icons.Filled.SwipeVertical else Icons.Outlined.SwipeVertical,
+                    contentDescription = "信息流",
+                )
+            }
+        }
+        return
+    }
     TonalToggleButton(
         checked = shown,
         onCheckedChange = onShownChange,
