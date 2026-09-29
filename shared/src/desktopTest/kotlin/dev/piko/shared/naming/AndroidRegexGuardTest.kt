@@ -7,7 +7,7 @@ import kotlin.test.assertTrue
 /**
  * Android 的 java.util.regex 底下是 ICU，不认 Java 专有的 \p{IsXxx}、\p{InXxx}：Android 8 上编译即抛
  * PatternSyntaxException，写在顶层 val 里的正则让整个类初始化失败，1.0.0 在 Android 8 上一解析文件名就崩。
- * 桌面测试跑在 HotSpot 上照常通过，CI 的模拟器是 API 34 且不走命名解析，都抓不到，只能扫源码。
+ * 桌面测试跑在 HotSpot 上照常通过，CI 的模拟器是 API 34（NamingUnicodeDigitsSmokeTest 在那里跑解析，但系统太新），都抓不到，只能扫源码。
  * 脚本写 \p{script=Han}，区块写 \p{block=CJKUnifiedIdeographs}，两边都认。
  *
  * \d 也不能用：ICU 的 \d 是全部 Unicode 数字（\p{Nd}），HotSpot 的只是 0-9。文件名里的 𝟐（数学粗体）在 Android 上
