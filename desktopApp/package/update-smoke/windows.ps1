@@ -10,6 +10,7 @@
 # 场景，依次：
 #   1. 全新安装 MSI，启动后存活，没有新版时不动
 #   1b. 设为 magnet 与 .torrent 的默认打开方式：系统真把磁力链接与种子交给 Piko（拉起与转交各一次），再取消关联
+#   1c. 「打开所在文件夹」：资源管理器开在文件所在的文件夹并选中它，文件名带空格与方括号
 #   2. MSI 安装版增量更新（换补丁文件）：目录与新版清单逐文件一致，jar 的修改时间原样（AOT 缓存认它）
 #   3. MSI 安装版整包更新：先弄坏一个运行时文件，增量更新不成立，走 msiexec；登记的版本随之更新
 #   4. 卸载：安装目录下 app 与 runtime 不留任何文件。打过补丁与整包更新之后各卸一次，都当场查
@@ -238,6 +239,21 @@ function Wait-IncomingLink([string] $kind, [int] $before, [string] $what) {
     Fail "Piko did not log receiving the $kind from $what within 60 s"
 }
 
+# 资源管理器里开着这个文件夹、选中了这个文件的那个窗口，没有时为 null。按完整路径比，不按 Name：
+# 资源管理器默认隐藏已知扩展名，Name 里没有 .mkv
+function Find-ExplorerSelection([string] $file) {
+    $folder = Split-Path -Parent $file
+    foreach ($window in @((New-Object -ComObject Shell.Application).Windows())) {
+        try {
+            if ($window.Document.Folder.Self.Path -ine $folder) { continue }
+            foreach ($item in @($window.Document.SelectedItems())) {
+                if ($item.Path -ieq $file) { return $window }
+            }
+        } catch { }
+    }
+    return $null
+}
+
 # 最小的种子：info 里只有一个 1 字节的文件。Piko 在本地算它的 infohash，换成磁力链接
 function New-SmokeTorrent([string] $path) {
     $ascii = [System.Text.Encoding]::ASCII
@@ -300,6 +316,24 @@ try {
     Wait-IncomingLink 'torrent' $before 'a .torrent file'
     Stop-App $installDir
     Invoke-SelfTest $installDir 'link-unregister'
+    EndStep
+
+    Step '1c. reveal a downloaded file in Explorer'
+    # 名字带空格与方括号，照下载下来的剧集名：拼 explorer /select 命令行时，空格让资源管理器退回打开「文档」
+    $revealDir = Join-Path $Work 'reveal test'
+    New-Item -ItemType Directory -Force -Path $revealDir | Out-Null
+    $revealFile = Join-Path $revealDir '[Group] Show - 01 [1080p].mkv'
+    [System.IO.File]::WriteAllText($revealFile, 'smoke')
+    $env:PIKO_SELFTEST_PATH = $revealFile
+    try { Invoke-SelfTest $installDir 'reveal' } finally { Remove-Item Env:PIKO_SELFTEST_PATH }
+    $explorer = $null
+    for ($i = 0; $i -lt 20 -and -not $explorer; $i++) {
+        $explorer = Find-ExplorerSelection $revealFile
+        if (-not $explorer) { Start-Sleep -Seconds 1 }
+    }
+    if (-not $explorer) { Fail "Explorer did not open $revealDir with the file selected" }
+    Write-Host 'Explorer opened the folder with the file selected'
+    $explorer.Quit()
     EndStep
 
     Step '2. MSI install, patch update'

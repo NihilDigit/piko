@@ -202,19 +202,28 @@ object WinRTSupport {
         }
     }
 
-    /** 在资源管理器里打开所在文件夹并选中该文件；文件已不在时退回打开文件夹。 */
+    /**
+     * 在资源管理器里打开所在文件夹并选中该文件；文件已不在时退回打开文件夹。
+     *
+     * 经 SHOpenFolderAndSelectItems，不拼 explorer /select 的命令行：路径带空格时 Java 给整个参数
+     * 「/select,路径」加上引号，explorer 不认，退回打开「文档」（2026-09-29 出过，下载的剧集名里常有空格）。
+     * 在 COM 线程上异步做，不让点击等资源管理器起来。
+     */
     fun revealInExplorer(file: File) {
         if (!file.exists()) {
             file.parentFile?.let(::openFolder)
             return
         }
-        runCatching {
-            if (isWindows) {
-                // /select 与路径之间是逗号，整段作为一个参数交给 explorer
-                ProcessBuilder("explorer", "/select,${file.absolutePath}").start()
-            } else {
-                openFolder(file.parentFile ?: file)
-            }
+        if (!isWindows) {
+            openFolder(file.parentFile ?: file)
+            return
+        }
+        comThread.execute {
+            val selected = runCatching {
+                WindowsToast.initializeThread()
+                ShellReveal.select(file.absolutePath)
+            }.getOrDefault(false)
+            if (!selected) file.parentFile?.let(::openFolder)
         }
     }
 

@@ -1,7 +1,9 @@
 package dev.piko.desktop
 
+import dev.piko.desktop.winrt.ShellReveal
 import dev.piko.desktop.winrt.WinRTSupport
 import dev.piko.desktop.winrt.WindowsLinkAssociation
+import dev.piko.desktop.winrt.WindowsToast
 import dev.piko.ui.platform.LinkAssociationState
 import java.io.File
 import kotlinx.coroutines.runBlocking
@@ -16,6 +18,7 @@ import kotlinx.coroutines.runBlocking
  */
 internal const val SELF_TEST_PROPERTY = "piko.selftest"
 private const val SELF_TEST_OUT_PROPERTY = "piko.selftest.out"
+private const val SELF_TEST_PATH_ENV = "PIKO_SELFTEST_PATH"
 
 internal fun runSelfTest(name: String): Int {
     val out = System.getProperty(SELF_TEST_OUT_PROPERTY)?.let(::File)
@@ -42,6 +45,18 @@ internal fun runSelfTest(name: String): Int {
                 val state = currentLinkState()
                 report("unregistered=$removed state=$state")
                 removed && state == LinkAssociationState.NotDefault
+            }
+            // 在资源管理器里选中环境变量 PIKO_SELFTEST_PATH 指的文件，与传输页「打开所在文件夹」同一个调用。
+            // 路径要带空格才验得到那个问题，经 JAVA_TOOL_OPTIONS 传会被空格拆开，所以走环境变量。
+            // 这里只看接口答成功；窗口是否真的开在那个文件夹、选中了那个文件，由冒烟脚本经 Shell.Application 查
+            "reveal" -> {
+                val path = System.getenv(SELF_TEST_PATH_ENV).orEmpty()
+                val selected = WinRTSupport.isWindows && File(path).isFile && run {
+                    WindowsToast.initializeThread()
+                    ShellReveal.select(File(path).absolutePath)
+                }
+                report("selected=$selected")
+                selected
             }
             else -> {
                 report("unknown self test: $name")
