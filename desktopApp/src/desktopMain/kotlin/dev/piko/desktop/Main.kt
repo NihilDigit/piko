@@ -22,13 +22,16 @@ import androidx.compose.ui.res.loadImageBitmap
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.WindowPlacement
-import androidx.compose.ui.window.application
+import androidx.compose.ui.window.awaitApplication
+import dev.piko.desktop.motion.SystemReducedMotion
+import dev.piko.ui.theme.PikoMotionScale
 import androidx.compose.ui.window.Tray
 import dev.piko.desktop.ui.clips.ClipFeedWindow
 import dev.piko.desktop.ui.player.VideoPlayerWindow
 import dev.piko.desktop.ui.player.MpvLogBridge
 import dev.piko.desktop.update.WindowsInstaller
 import dev.piko.desktop.winrt.WinRTSupport
+import dev.piko.desktop.winrt.WindowsLinkAssociation
 import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
 import dev.piko.shared.data.FilePikoCacheStore
@@ -102,6 +105,8 @@ fun main(args: Array<String>) {
         runCatching { WinRTSupport.ensureAppUserModelId() }
         Thread(
             {
+                // 便携版同样有旧名缓存，放在只限安装版的登记之前
+                WindowsLinkAssociation.forgetStaleName()
                 // 只有 MSI 装的那份写登记：便携版、测试镜像与 gradle run 写的话，会盖掉安装版的通知图标
                 runCatching { WindowsInstaller.installedExecutable() }.getOrNull() ?: return@Thread
                 // 图标随安装包放在资源目录里，与窗口图标同源
@@ -119,7 +124,11 @@ fun main(args: Array<String>) {
     // 赶在任何 OkHttpClient 建出来之前，理由见 PikoProxySelector
     PikoProxySelector.install(runBlocking { preferences.proxySettingFlow.first() })
     CoroutineScope(Dispatchers.Default).launch { preferences.proxySettingFlow.collect(PikoProxySelector::apply) }
-    val platform = DesktopPikoPlatform(settings)
+    val motionScale = PikoMotionScale()
+    SystemReducedMotion.follow(motionScale)
+    motionScale.appReduced = runBlocking { preferences.reduceMotionFlow.first() }
+    CoroutineScope(Dispatchers.Default).launch { preferences.reduceMotionFlow.collect { motionScale.appReduced = it } }
+    val platform = DesktopPikoPlatform(settings, motionScale)
     val services = createServices(settings, preferences)
     // 外面送来的链接交给添加链接面板，四条路进来：启动参数、后来的进程转交、macOS 的 openURI 与 openFiles。
     // 记一行日志，只记哪一类、从哪条路来，不记链接本身：安装冒烟据此确认系统真把链接交给了 Piko
@@ -159,7 +168,10 @@ fun main(args: Array<String>) {
     // 偏好在内存里，同步读很快；先读好再开窗，首帧就是用户选的主题
     val initialAppearance = runBlocking { appearanceFlow.first() }
 
-    application {
+    // 与 application {} 相同，只是给根协程带上动画时长缩放：应用的 Recomposer 取这个上下文，各窗口（主窗口、
+    // 播放器、信息流）的 Recomposer 又取自应用组合里的协程作用域，弹层与对话框共用所在窗口的，一路都带着它。
+    // Compose Desktop 自己不提供 MotionDurationScale，不注入的话减少动画无从生效
+    runBlocking(motionScale) { awaitApplication {
         // 任务栏/标题栏图标：desktopMain/resources/app-icon.png（docs/icon.svg 同源）。
         val appIcon = remember {
             object {}.javaClass.getResourceAsStream("/app-icon.png")
@@ -340,7 +352,9 @@ fun main(args: Array<String>) {
                 )
             }
         }
-    }
+    } }
+    // 照 application {} 的默认做法当场结束进程，否则关窗后进程还要挂一到四秒才退
+    exitProcess(0)
 }
 
 // 侧栏拖宽处的悬停光标。公共代码里的 PointerIcon 没有调整大小这一种，见 LocalHorizontalResizeCursor
@@ -420,14 +434,14 @@ private fun useBundledMpvRuntime() {
 private fun createServices(settings: DesktopSettingsStore, preferences: DesktopPikoPreferences): PikoServices {
     // 进程级作用域，与 Android 的 appScope 对应：下载与会话刷新不随某个窗口的组合结束
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    val clientManager = PikoClientManager(FilePikoSessionStore(), appScope)
+    val clientManager = PikoClientManager(desktopSessionStore(), appScope)
     val mediaRepository = PikoMediaRepository(
         clientManager,
         preferences,
         clipCache = FileClipCache(File(System.getProperty("user.home"), ".piko/cache/clip-cache")),
     )
     return PikoServices(
-        preferences = preferences,
+        platformPreferences = preferences,
         clientManager = clientManager,
         mediaRepository = mediaRepository,
         downloadManager = PikoDownloadCoordinator(

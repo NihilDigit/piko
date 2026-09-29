@@ -24,6 +24,8 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.remember
+import dev.piko.ui.theme.LocalPikoMotion
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Shape
@@ -51,13 +53,17 @@ private val LocalSkeletonAlpha = compositionLocalOf<State<Float>> { mutableFloat
  */
 @Composable
 fun SkeletonGroup(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
-    val transition = rememberInfiniteTransition(label = "skeleton")
-    val alpha = transition.animateFloat(
-        initialValue = 1f,
-        targetValue = 0.5f,
-        animationSpec = infiniteRepeatable(tween(SKELETON_PULSE_MS), RepeatMode.Reverse),
-        label = "skeletonAlpha",
-    )
+    // 减少动画时不脉动。只靠时长缩放为 0 的话，无限动画会跳到终点停住，整片停在半透明的那一档
+    val alpha = if (LocalPikoMotion.current.reduced) {
+        remember { mutableFloatStateOf(1f) }
+    } else {
+        rememberInfiniteTransition(label = "skeleton").animateFloat(
+            initialValue = 1f,
+            targetValue = 0.5f,
+            animationSpec = infiniteRepeatable(tween(SKELETON_PULSE_MS), RepeatMode.Reverse),
+            label = "skeletonAlpha",
+        )
+    }
     Box(modifier = modifier.clearAndSetSemantics { }) {
         CompositionLocalProvider(LocalSkeletonAlpha provides alpha, content = content)
     }

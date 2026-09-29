@@ -17,7 +17,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DropdownMenuPopup
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.MenuAnchorPosition
 import androidx.compose.material3.MenuDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -31,9 +30,13 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.DpOffset
+import androidx.compose.material3.DropdownMenuPopupPositionProvider
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
+import kotlin.math.roundToInt
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
@@ -60,10 +63,8 @@ fun ContextMenuArea(
     content: @Composable () -> Unit,
 ) {
     var menuAt by remember { mutableStateOf<Offset?>(null) }
-    var height by remember { mutableStateOf(0) }
     Box(
         modifier = modifier
-            .onSizeChanged { height = it.height }
             .pointerInput(enabled) {
                 if (!enabled) return@pointerInput
                 awaitPointerEventScope {
@@ -82,11 +83,54 @@ fun ContextMenuArea(
         content()
         val position = menuAt
         if (position != null) {
-            // 菜单以锚点的左下角为原点，纵向偏移要减去条目高度才落在指针处
-            val offset = with(LocalDensity.current) { DpOffset(position.x.toDp(), (position.y - height).toDp()) }
-            ActionMenu(actions = actions(), offset = offset, onDismiss = { menuAt = null })
+            val positionProvider = remember(position) { PointerMenuPositionProvider(position) }
+            MenuMotion { ActionMenu(actions = actions(), positionProvider = positionProvider, onDismiss = { menuAt = null }) }
         }
     }
+}
+
+/**
+ * 右键菜单以指针为原点，照桌面惯例：左上角落在指针处向右下展开，右边放不下向左、下边放不下向上。
+ * 不用 DropdownMenu 的下拉规则（MenuAnchorPosition.Below）：它挂在锚点下方，下面放不下时整个翻到锚点上沿以上，
+ * 锚点是一整个条目乃至整片网格，靠窗口下半部右键时菜单跳到离指针很远的地方。
+ *
+ * @param pointer 指针在锚点（ContextMenuArea 那一层）里的位置。
+ */
+private class PointerMenuPositionProvider(private val pointer: Offset) : DropdownMenuPopupPositionProvider {
+    // 按展开方向取角，菜单若有缩放就从指针那一角长出来。在测量之后才知道方向，读的时机晚于这里写
+    override var transformOrigin: TransformOrigin by mutableStateOf(TransformOrigin(0f, 0f))
+        private set
+
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize,
+    ): IntOffset {
+        val inWindow = IntOffset(anchorBounds.left + pointer.x.roundToInt(), anchorBounds.top + pointer.y.roundToInt())
+        val position = pointerMenuPosition(inWindow, popupContentSize, windowSize)
+        transformOrigin = TransformOrigin(
+            pivotFractionX = if (position.x < inWindow.x) 1f else 0f,
+            pivotFractionY = if (position.y < inWindow.y) 1f else 0f,
+        )
+        return position
+    }
+}
+
+/**
+ * 以窗口坐标下的指针 [pointer] 为原点摆一个 [menu] 大小的菜单。两个方向各自判断：先向右（下），放不下向左（上），
+ * 两边都放不下就贴着窗口的右（下）边，比窗口还大时贴左（上）边，菜单自己能滚动。
+ */
+fun pointerMenuPosition(pointer: IntOffset, menu: IntSize, window: IntSize): IntOffset =
+    IntOffset(
+        x = placeAlong(pointer.x, menu.width, window.width),
+        y = placeAlong(pointer.y, menu.height, window.height),
+    )
+
+private fun placeAlong(pointer: Int, size: Int, window: Int): Int = when {
+    pointer + size <= window -> pointer
+    pointer - size >= 0 -> pointer - size
+    else -> (window - size).coerceAtLeast(0)
 }
 
 /**
@@ -98,7 +142,7 @@ fun ContextMenuArea(
  * 回车执行。焦点落进菜单之后，按键先经过这里的 onPreviewKeyEvent，Popup 本身不必暴露按键回调。
  */
 @Composable
-private fun ActionMenu(actions: List<SheetAction>, offset: DpOffset, onDismiss: () -> Unit) {
+private fun ActionMenu(actions: List<SheetAction>, positionProvider: DropdownMenuPopupPositionProvider, onDismiss: () -> Unit) {
     val (regular, destructive) = actions.partition { !it.destructive }
     val groups = (regular.groupBy { it.group }.values + listOf(destructive)).filter { it.isNotEmpty() }
     val focusManager = LocalFocusManager.current
@@ -116,7 +160,7 @@ private fun ActionMenu(actions: List<SheetAction>, offset: DpOffset, onDismiss: 
                     else -> false
                 }
             },
-        popupPositionProvider = MenuDefaults.rememberDropdownMenuPopupPositionProvider(MenuAnchorPosition.Below, offset),
+        popupPositionProvider = positionProvider,
     ) {
         LaunchedEffect(Unit) { runCatching { firstItem.requestFocus() } }
         // 一个容器，组与组之间一道细线。各组各带容器、之间留缝（M3E 竖向菜单的分组）在四五组时像一摞碎块

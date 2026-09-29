@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -114,7 +116,9 @@ fun CommandPalette(items: List<PaletteItem>, onDismiss: () -> Unit) {
     }
     LaunchedEffect(results) { selected = 0 }
     val listState = rememberLazyListState()
-    LaunchedEffect(selected) { if (results.isNotEmpty()) listState.animateScrollToItem(selected) }
+    // 照 IDE 的列表：选中项露在外面就不动，出界了只挪到刚好露出，也不做动画。原来每按一次都把它滚到顶上，
+    // 按住方向键连发时整个列表跟着一格一格地跳
+    LaunchedEffect(selected) { if (results.isNotEmpty()) listState.revealItem(selected) }
     val focus = remember { FocusRequester() }
 
     fun runAt(index: Int) {
@@ -255,6 +259,26 @@ private fun PaletteRow(item: PaletteItem, selected: Boolean, onClick: () -> Unit
                 modifier = Modifier.padding(start = 12.dp).widthIn(max = 240.dp),
             )
         }
+    }
+}
+
+/** 让第 [index] 项整个露出来，挪得最少：在上沿之外就贴上沿，在下沿之外就贴下沿。 */
+private suspend fun LazyListState.revealItem(index: Int) {
+    val layout = layoutInfo
+    val viewportHeight = layout.viewportEndOffset - layout.viewportStartOffset
+    val item = layout.visibleItemsInfo.firstOrNull { it.index == index }
+    when {
+        item == null -> {
+            // 不在可见范围里时没有它的位置可比，先把它放到顶上；在下方的再往回挪到贴着下沿
+            val below = index > (layout.visibleItemsInfo.lastOrNull()?.index ?: 0)
+            scrollToItem(index)
+            if (below) {
+                val size = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }?.size ?: return
+                scrollBy(-(viewportHeight - size).toFloat())
+            }
+        }
+        item.offset < layout.viewportStartOffset -> scrollBy((item.offset - layout.viewportStartOffset).toFloat())
+        item.offset + item.size > layout.viewportEndOffset -> scrollBy((item.offset + item.size - layout.viewportEndOffset).toFloat())
     }
 }
 

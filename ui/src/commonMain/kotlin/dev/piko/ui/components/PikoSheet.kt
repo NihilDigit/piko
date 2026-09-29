@@ -33,11 +33,8 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -45,7 +42,6 @@ import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.theme.LocalFramed
-import kotlinx.coroutines.launch
 
 /** [PikoSheet] 内容所在的作用域。 */
 interface PikoSheetScope : ColumnScope {
@@ -53,8 +49,11 @@ interface PikoSheetScope : ColumnScope {
     val isSideSheet: Boolean
 
     /**
-     * 先播完收起的动画再执行 [action]。直接移出组合会让面板瞬间消失，
-     * 接着弹出的对话框也少了一个视觉上的因果。[action] 之前已经通知过 onDismissRequest。
+     * 关掉面板并当场执行 [action]：先通知 onDismissRequest，再执行 [action]，面板随调用方移出组合，不播收起动画。
+     *
+     * 原来等收起动画走完才执行，选了一项要白等三四百毫秒。也试过先执行、动画走完再通知关闭，否决了：
+     * [action] 若又改了调用方用来开关面板的那个状态，稍后的关闭通知会把它清掉；[action] 若让调用方离开组合
+     * （跳去别的页），关闭通知就再也发不出来，状态留在「开着」，回来时面板又冒出来。
      */
     fun hideThen(action: () -> Unit)
 }
@@ -95,7 +94,7 @@ fun PikoSheet(
         return
     }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val scope = rememberCoroutineScope()
+    val latestDismiss by rememberUpdatedState(onDismissRequest)
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,
         sheetState = sheetState,
@@ -104,10 +103,8 @@ fun PikoSheet(
         Column(Modifier.wheelStaysInSheet()) {
             val sheetScope = remember(this) {
                 SheetScopeImpl(this, isSideSheet = false) { action ->
-                    scope.launch { sheetState.hide() }.invokeOnCompletion {
-                        onDismissRequest()
-                        action()
-                    }
+                    latestDismiss()
+                    action()
                 }
             }
             sheetScope.content()
@@ -119,15 +116,10 @@ fun PikoSheet(
 private fun ModalSideSheet(onDismissRequest: () -> Unit, title: String?, content: @Composable PikoSheetScope.() -> Unit) {
     val visibility = remember { MutableTransitionState(false).apply { targetState = true } }
     val latestDismiss by rememberUpdatedState(onDismissRequest)
-    // 划出去之后要做的事：人关掉时是空的，经 hideThen 关掉时是那个动作
-    var afterHide by remember { mutableStateOf<(() -> Unit)?>(null) }
     val dismiss = { visibility.targetState = false }
-    // 划出去的动画走完才真正关：此刻才通知调用方把它移出组合
+    // 人关掉时划出去的动画走完才真正关：此刻才通知调用方把它移出组合。经 hideThen 关掉的不走这里
     LaunchedEffect(visibility.isIdle, visibility.currentState) {
-        if (visibility.isIdle && !visibility.currentState && !visibility.targetState) {
-            latestDismiss()
-            afterHide?.invoke()
-        }
+        if (visibility.isIdle && !visibility.currentState && !visibility.targetState) latestDismiss()
     }
     LocalPikoPlatform.current.FullscreenDialog(onDismiss = dismiss, immersive = false, systemBarsVisible = true) {
         Box(modifier = Modifier.fillMaxSize()) {
@@ -169,8 +161,8 @@ private fun ModalSideSheet(onDismissRequest: () -> Unit, title: String?, content
                         }
                         val sheetScope = remember(this) {
                             SheetScopeImpl(this, isSideSheet = true) { action ->
-                                afterHide = action
-                                dismiss()
+                                latestDismiss()
+                                action()
                             }
                         }
                         sheetScope.content()

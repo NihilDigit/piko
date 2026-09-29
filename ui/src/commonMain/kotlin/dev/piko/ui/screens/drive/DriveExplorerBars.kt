@@ -86,6 +86,7 @@ import androidx.compose.ui.unit.dp
 import dev.piko.data.repository.FileCategory
 import dev.piko.data.repository.FileSortOrder
 import dev.piko.ui.components.InlineLoadingIndicator
+import dev.piko.ui.components.MenuMotion
 import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.TooltipIconButton
@@ -724,7 +725,7 @@ private fun MenuTextButton(icon: androidx.compose.ui.graphics.vector.ImageVector
 
 /** 组号变了画一道细线，收进「更多」的几组与它原有的几项由此分开；几选一的当前项打勾。 */
 @Composable
-private fun ActionMenu(expanded: Boolean, onDismiss: () -> Unit, actions: List<SheetAction>) {
+private fun ActionMenu(expanded: Boolean, onDismiss: () -> Unit, actions: List<SheetAction>) = MenuMotion {
     PikoDropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
         actions.forEachIndexed { index, action ->
             if (index > 0 && actions[index - 1].group != action.group) {

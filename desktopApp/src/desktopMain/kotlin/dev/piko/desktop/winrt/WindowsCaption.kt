@@ -5,6 +5,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import dev.piko.desktop.motion.SystemReducedMotion
 import java.awt.Window
 import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
@@ -188,6 +189,8 @@ internal class WindowsCaption(private val window: Window) {
                     }
                 }
                 WM_NCACTIVATE -> isActive = wParam != 0L
+                // 系统改设置时向每个顶层窗口广播一次；开着几个窗口就收到几次，重读很便宜，不去重
+                WM_SETTINGCHANGE -> SystemReducedMotion.onSystemSettingChange()
                 WM_ENTERSIZEMOVE -> isSizing = true
                 WM_EXITSIZEMOVE -> isSizing = false
                 WM_SIZE -> {
@@ -398,6 +401,7 @@ internal class WindowsCaption(private val window: Window) {
         const val GW_CHILD = 5
 
         const val WM_SIZE = 0x0005
+        const val WM_SETTINGCHANGE = 0x001A
         const val WM_NCDESTROY = 0x0082
         const val WM_NCCALCSIZE = 0x0083
         const val WM_NCHITTEST = 0x0084

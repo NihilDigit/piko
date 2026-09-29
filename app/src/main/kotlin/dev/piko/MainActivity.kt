@@ -36,6 +36,7 @@ import dev.piko.ui.VideoPlayerHost
 import dev.piko.ui.screens.player.MediampVideoPlayerScreen
 import dev.piko.ui.theme.appearanceFlow
 import dev.piko.ui.theme.isDark
+import dev.piko.platform.installMotionScale
 import dev.piko.util.PikPakAppLink
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.combine
@@ -77,6 +78,8 @@ class MainActivity : ComponentActivity() {
             )
         }
 
+        // 设置里的「减少动画」经这一份缩放生效，见 PikoMotionScale
+        installMotionScale(app.platform.motionScale, lifecycle)
         setContent {
             val appearance by appearanceFlow.collectAsStateWithLifecycle(initialAppearance)
             val darkTheme = appearance.isDark()

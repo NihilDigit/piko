@@ -55,11 +55,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
@@ -153,7 +150,7 @@ import dev.piko.ui.screens.clips.FeedResumeBar
 import androidx.compose.ui.Alignment
 import dev.piko.ui.screens.share.MySharesScreen
 import dev.piko.ui.screens.transfers.TransfersScreen
-import dev.piko.ui.theme.PikoMotion
+import dev.piko.ui.theme.LocalPikoMotion
 import dev.piko.ui.components.PikoBrand
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.screens.drive.LocalSidebarCollapsed
@@ -692,12 +689,13 @@ fun PikoMainScaffold(
 
     @Composable
     fun HomeContent() {
+        val motion = LocalPikoMotion.current
         val mainContent: @Composable () -> Unit = {
-            // M3 的 top level 模式：旧页淡出走完再淡入新页，见 PikoMotion.TopLevelEnterFade。
+            // M3 的 top level 模式：旧页淡出走完再淡入新页，见 PikoMotion.topLevel。
             // 原来是 when 直接换子树，跳切被规范单列为要避免的做法：读者得不到任何线索说明换了页
             AnimatedContent(
                 targetState = currentTab,
-                transitionSpec = { fadeIn(PikoMotion.TopLevelEnterFade) togetherWith fadeOut(PikoMotion.TopLevelExitFade) },
+                transitionSpec = { motion.topLevel() },
                 modifier = Modifier
                     .fillMaxSize()
                     .onSizeChanged { if (latestResizing) pendingContentSize = it else contentSize = it },
@@ -780,14 +778,8 @@ fun PikoMainScaffold(
             BackHandler(enabled = feedFullScreen) { setFeedShown(false) }
             AnimatedVisibility(
                 visible = feedFullScreen,
-                enter = slideInHorizontally(
-                    animationSpec = PikoMotion.ForwardEnterSlide,
-                    initialOffsetX = { it / PikoMotion.ForwardSlideFraction },
-                ) + fadeIn(animationSpec = PikoMotion.ForwardEnterFade),
-                exit = slideOutHorizontally(
-                    animationSpec = PikoMotion.ForwardExitSlide,
-                    targetOffsetX = { it / PikoMotion.ForwardSlideFraction },
-                ) + fadeOut(animationSpec = PikoMotion.ForwardExitFade),
+                enter = motion.overlayEnter(),
+                exit = motion.overlayExit(),
             ) {
                 FeedContent(compact = false, visible = feedFullScreen)
             }
@@ -958,38 +950,14 @@ fun PikoMainScaffold(
                     // 所以在网盘页上看不出卡片的上沿，页眉与侧边栏、标题栏连成一片
                     val cardModifier = if (sidebarMode) Modifier.clip(FrameContentShape) else Modifier
                     Box(Modifier.weight(1f).fillMaxWidth().then(cardModifier)) {
+                        val motion = LocalPikoMotion.current
                         NavDisplay(
                             backStack = backStack,
                             onBack = ::popBack,
-                            // 压栈与返回：新页从右侧滑入五分之一屏并淡入，旧页反向让开。走满整屏是 lateral 的做法，
-                            // 规范明说别拿它做层级导航
-                            transitionSpec = {
-                                (
-                                    slideInHorizontally(PikoMotion.ForwardEnterSlide) { it / PikoMotion.ForwardSlideFraction } +
-                                        fadeIn(PikoMotion.ForwardEnterFade)
-                                    ) togetherWith (
-                                    slideOutHorizontally(PikoMotion.ForwardExitSlide) { -it / PikoMotion.ForwardSlideFraction } +
-                                        fadeOut(PikoMotion.ForwardExitFade)
-                                    )
-                            },
-                            popTransitionSpec = {
-                                (
-                                    slideInHorizontally(PikoMotion.ForwardEnterSlide) { -it / PikoMotion.ForwardSlideFraction } +
-                                        fadeIn(PikoMotion.ForwardEnterFade)
-                                    ) togetherWith (
-                                    slideOutHorizontally(PikoMotion.ForwardExitSlide) { it / PikoMotion.ForwardSlideFraction } +
-                                        fadeOut(PikoMotion.ForwardExitFade)
-                                    )
-                            },
-                            predictivePopTransitionSpec = { _ ->
-                                (
-                                    slideInHorizontally(PikoMotion.ForwardEnterSlide) { -it / PikoMotion.ForwardSlideFraction } +
-                                        fadeIn(PikoMotion.ForwardEnterFade)
-                                    ) togetherWith (
-                                    slideOutHorizontally(PikoMotion.ForwardExitSlide) { it / PikoMotion.ForwardSlideFraction } +
-                                        fadeOut(PikoMotion.ForwardExitFade)
-                                    )
-                            },
+                            // 压栈与返回，见 PikoMotion.forward
+                            transitionSpec = { motion.forward() },
+                            popTransitionSpec = { motion.backward() },
+                            predictivePopTransitionSpec = { _ -> motion.backward() },
                             entryProvider = entryProvider {
                                 entry<Screen.Home> { HomeContent() }
                                 // 原来的两栏布局才压这一页，只为恢复旧版存下的返回栈而留着
@@ -1063,8 +1031,11 @@ fun PikoMainScaffold(
                         recent = recent,
                         pinned = pinnedFolders,
                         subfolders = folderStack.lastOrNull()
-                            ?.let { services.driveRepository.cachedFiles(it.id, PikoFileSortOrder.NAME_ASC) }
-                            .orEmpty().filter { it.isFolder && it.name != PikoSettingsSync.FOLDER_NAME },
+                            ?.let { here ->
+                                services.driveRepository.cachedFiles(here.id, PikoFileSortOrder.NAME_ASC)
+                                    ?.filter { it.isFolder && !PikoSettingsSync.isSyncFolder(it, here.id) }
+                            }
+                            .orEmpty(),
                         contributed = palette.items(),
                     ),
                     onDismiss = { paletteOpen = false },

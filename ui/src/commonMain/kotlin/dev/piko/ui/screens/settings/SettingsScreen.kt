@@ -34,6 +34,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
+import androidx.compose.material.icons.outlined.Animation
 import androidx.compose.material.icons.outlined.AutoFixHigh
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.CleaningServices
@@ -305,7 +306,7 @@ fun SettingsScreen(
                     SettingsGroup(soleTitle(SettingsSection.Appearance)) {
                         val appearance = LocalAppearance.current
                         val compactTitleBar = platform.compactTitleBar
-                        val appearanceCount = if (compactTitleBar != null) 3 else 2
+                        val appearanceCount = if (compactTitleBar != null) 4 else 3
                         ThemeModeRow(
                             mode = appearance.mode,
                             onModeChange = { scope.launch { sessionManager.setThemeMode(it.name) } },
@@ -327,6 +328,16 @@ fun SettingsScreen(
                                 onCheckedChange = compactTitleBar::set,
                             )
                         }
+                        // 与系统设置取或，见 PikoMotionScale。系统已关掉动画时这里开不开都一样，提示一句免得以为开关失灵
+                        val motionScale = platform.motionScale
+                        SettingsSwitchRow(
+                            index = appearanceCount - 1, count = appearanceCount,
+                            icon = Icons.Outlined.Animation,
+                            title = "减少动画",
+                            supporting = if (motionScale.systemScale == 0f) "系统已关闭动画" else "界面切换不播放过渡",
+                            checked = motionScale.appReduced,
+                            onCheckedChange = { scope.launch { sessionManager.setReduceMotion(it) } },
+                        )
                     }
                     }
 

@@ -3,12 +3,15 @@ package dev.piko.ui.components
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
+import dev.piko.ui.theme.LocalPikoMotion
+import dev.piko.ui.theme.PikoMotion
 
 /**
  * M3 Expressive 的竖向菜单：圆角容器与 standard 配色。全应用的弹出菜单都走这里，
@@ -34,6 +37,16 @@ fun PikoDropdownMenu(
         containerColor = MenuDefaults.containerColor,
         content = content,
     )
+}
+
+/**
+ * 右键菜单与命令栏菜单换用 [PikoMotion.menuScheme]（桌面上只淡入不缩放），只在这两处，别的菜单与组件不受影响。
+ * 菜单的弹层继承调用处的 CompositionLocal，所以包在弹出菜单的调用外面即可。
+ */
+@Composable
+internal fun MenuMotion(content: @Composable () -> Unit) {
+    val scheme = LocalPikoMotion.current.menuScheme
+    if (scheme == null) content() else MaterialTheme(motionScheme = scheme, content = content)
 }
 
 /**

@@ -37,6 +37,8 @@ import dev.piko.ui.platform.PreviewBackend
 import dev.piko.ui.platform.ShortcutModifier
 import dev.piko.ui.platform.UploadPicker
 import dev.piko.ui.platform.VideoPreviewSupport
+import dev.piko.ui.theme.MotionStyle
+import dev.piko.ui.theme.PikoMotionScale
 import java.awt.Desktop
 import java.awt.KeyboardFocusManager
 import java.awt.Toolkit
@@ -65,7 +67,11 @@ private class StoredToggle(private val settings: DesktopSettingsStore, private v
 /** 共享界面在 Windows 上的平台能力。 */
 class DesktopPikoPlatform(
     private val settings: DesktopSettingsStore,
+    /** 入口传进注入 Recomposer 的那一份（见 Main.kt）；截图与测试不注入，用一份不接系统的。 */
+    override val motionScale: PikoMotionScale = PikoMotionScale(),
 ) : PikoPlatform {
+    override val motionStyle: MotionStyle = MotionStyle.Standard
+
     // jpackage 启动器写进 -Djpackage.app-version；gradle run 时没有，显示为开发版
     override val appVersion: String = System.getProperty("jpackage.app-version") ?: "开发版"
 

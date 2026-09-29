@@ -8,6 +8,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import dev.piko.shared.media.player.PlaybackBackend
+import dev.piko.ui.theme.MotionStyle
+import dev.piko.ui.theme.PikoMotionScale
 import dev.piko.update.AppUpdateService
 import kotlinx.coroutines.flow.StateFlow
 
@@ -45,6 +47,12 @@ interface PikoPlatform {
     val fontFamily: FontFamily get() = FontFamily.Default
 
     val shortcutModifier: ShortcutModifier get() = ShortcutModifier.Ctrl
+
+    /** 动效的风格与转场时长，见 [MotionStyle]。 */
+    val motionStyle: MotionStyle
+
+    /** 入口注入到 Recomposer 的那一份动画时长缩放；主题从它读出「减少动画」。 */
+    val motionScale: PikoMotionScale
 
     /** 导出日志时写在开头的运行环境：系统版本、机型或架构。 */
     val deviceSummary: String

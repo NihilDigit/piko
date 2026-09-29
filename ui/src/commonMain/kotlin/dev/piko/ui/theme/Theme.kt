@@ -16,7 +16,8 @@ val LocalStatusColors = staticCompositionLocalOf { PikoLightStatusColors }
 
 /**
  * Piko 全局主题，使用 [MaterialExpressiveTheme] 作为统一入口。
- * 遵循 Material 3 Expressive 规范，激活组件物理弹性响应，配置 10 档形状与 30 档排版。
+ * 遵循 Material 3 Expressive 规范，配置 10 档形状与 30 档排版。动效按平台取 motionScheme 与 [PikoMotion]，
+ * 见 [MotionStyle]：Android 是 expressive，桌面是 standard。
  *
  * Documentation references:
  * - Material 3 Expressive Theming: `m3-material-mirror/pages/styles/`
@@ -30,9 +31,15 @@ fun PikoTheme(
     content: @Composable () -> Unit,
 ) {
     val darkTheme = appearance.isDark()
-    val motionScheme = MotionScheme.expressive()
+    val platform = LocalPikoPlatform.current
+    val reduced = platform.motionScale.reduced
+    val motion = remember(platform.motionStyle, reduced) { PikoMotion.of(platform.motionStyle, reduced) }
+    val motionScheme = when (platform.motionStyle) {
+        MotionStyle.Expressive -> MotionScheme.expressive()
+        MotionStyle.Standard -> MotionScheme.standard()
+    }
     val colorScheme = animateColorScheme(appearance.colorScheme(darkTheme), motionScheme)
-    val fontFamily = LocalPikoPlatform.current.fontFamily
+    val fontFamily = platform.fontFamily
     val typography = remember(fontFamily) { pikoTypography(fontFamily) }
 
     MaterialExpressiveTheme(
@@ -43,6 +50,7 @@ fun PikoTheme(
     ) {
         CompositionLocalProvider(
             LocalAppearance provides appearance,
+            LocalPikoMotion provides motion,
             LocalFixedColors provides FixedColors,
             LocalStatusColors provides if (darkTheme) PikoDarkStatusColors else PikoLightStatusColors,
         ) {

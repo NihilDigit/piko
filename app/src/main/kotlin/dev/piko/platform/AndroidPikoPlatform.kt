@@ -43,6 +43,8 @@ import dev.piko.ui.platform.PikoPlatform
 import dev.piko.ui.platform.PreviewBackend
 import dev.piko.ui.platform.UploadPicker
 import dev.piko.ui.platform.VideoPreviewSupport
+import dev.piko.ui.theme.MotionStyle
+import dev.piko.ui.theme.PikoMotionScale
 import dev.piko.ui.screens.player.MpvPlaybackBackend
 import dev.piko.ui.screens.player.MpvVideoSurface
 import dev.piko.update.AppUpdateService
@@ -60,8 +62,11 @@ import kotlinx.coroutines.withContext
 class AndroidPikoPlatform(
     private val context: Context,
     updater: () -> AppUpdateService,
+    override val motionScale: PikoMotionScale,
 ) : PikoPlatform {
     override val appVersion: String = BuildConfig.VERSION_NAME
+
+    override val motionStyle: MotionStyle = MotionStyle.Expressive
 
     // 开屏检查时才建，不挡 Application.onCreate
     private val lazyUpdater by lazy(updater)
@@ -189,6 +194,8 @@ class AndroidPikoPlatform(
         override fun exists(path: String): Boolean = File(path).exists()
 
         override fun openExternally(path: String, isMedia: Boolean) {
+            // 文件夹下载的「打开文件夹」传进来的是文件夹，交给文件管理器；按文件的 MIME 发出去没有应用接
+            if (isDirectory(path)) return openDirectory(path)
             val uri = downloadUri(path) ?: return
             startActivity(
                 Intent(Intent.ACTION_VIEW)
@@ -220,6 +227,29 @@ class AndroidPikoPlatform(
                 val file = File(path)
                 if (!file.exists()) return
                 FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file.parentFile ?: file)
+            }
+            startActivity(
+                Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(uri, "vnd.android.document/directory")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION),
+            )
+        }
+
+        private fun isDirectory(path: String): Boolean =
+            if (path.startsWith("content:")) {
+                DocumentFile.fromSingleUri(context, Uri.parse(path))?.isDirectory == true
+            } else {
+                File(path).isDirectory
+            }
+
+        private fun openDirectory(path: String) {
+            val uri = if (path.startsWith("content:")) {
+                val folderUri = Uri.parse(path)
+                val authority = folderUri.authority ?: return
+                val documentId = runCatching { DocumentsContract.getDocumentId(folderUri) }.getOrNull() ?: return
+                DocumentsContract.buildTreeDocumentUri(authority, documentId)
+            } else {
+                FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", File(path))
             }
             startActivity(
                 Intent(Intent.ACTION_VIEW)
