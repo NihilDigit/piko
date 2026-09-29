@@ -30,6 +30,19 @@
 </picture>
 </p>
 
+## 信息流
+
+随机播放当前文件夹里的视频片段，上下滑动切换。
+
+<p align="center">
+<picture>
+<source media="(prefers-color-scheme: dark)" type="image/avif" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed-dark.avif">
+<source type="image/avif" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed.avif">
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed-dark.jpg">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed.jpg" alt="网盘右侧的信息流，上下滑动切换视频片段">
+</picture>
+</p>
+
 ## 链接与文件名解析
 
 解析磁力链接、种子、下载地址与分享链接，保存前可完整预览、按文件挑选。文件按作品与集数整理，收起样片与花絮。
@@ -38,17 +51,6 @@
 <picture>
 <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/links-dark.jpg">
 <img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/links.jpg" alt="网盘中按作品整理的剧集，右侧是解析磁力链接的面板">
-</picture>
-</p>
-
-## 信息流
-
-随机播放当前文件夹里的视频片段，上下滑动切换。
-
-<p align="center">
-<picture>
-<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed-dark.jpg">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed.jpg" alt="网盘右侧的信息流，正在播放一段视频片段">
 </picture>
 </p>
 

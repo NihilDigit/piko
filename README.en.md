@@ -30,6 +30,19 @@ Built for mouse and keyboard on the desktop, clean and simple on the phone.
 </picture>
 </p>
 
+## Feed
+
+Plays random clips from the videos in the current folder. Swipe up or down to switch.
+
+<p align="center">
+<picture>
+<source media="(prefers-color-scheme: dark)" type="image/avif" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed-dark.avif">
+<source type="image/avif" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed.avif">
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed-dark.jpg">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed.jpg" alt="The feed beside the drive, swiping between clips">
+</picture>
+</p>
+
 ## Link and file name parsing
 
 Parses magnet links, torrents, download URLs and share links, with a full preview and per-file
@@ -39,17 +52,6 @@ selection before saving. Files are grouped by work and episode, with samples and
 <picture>
 <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/links-dark.jpg">
 <img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/links.jpg" alt="Episodes grouped by work, with a parsed magnet link in the side panel">
-</picture>
-</p>
-
-## Feed
-
-Plays random clips from the videos in the current folder. Swipe up or down to switch.
-
-<p align="center">
-<picture>
-<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed-dark.jpg">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed.jpg" alt="The feed beside the drive, playing a clip">
 </picture>
 </p>
 
