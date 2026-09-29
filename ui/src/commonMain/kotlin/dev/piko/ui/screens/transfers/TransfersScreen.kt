@@ -61,6 +61,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.key.Key
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitHorizontalTouchSlopOrCancellation
+import androidx.compose.foundation.gestures.horizontalDrag
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
+import kotlin.math.abs
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
@@ -381,7 +389,12 @@ fun TransfersScreen(
             )
         },
     ) { innerPadding ->
-        Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .swipeBetweenKinds(current = { state.filter }, onChange = state::changeFilter),
+        ) {
             val sidePadding = SidePadding
             Column(Modifier.fillMaxSize()) {
                 val phase = when {
@@ -664,3 +677,34 @@ private fun LazyGridScope.deletedOutputSection(
         }
     }
 }
+
+/**
+ * 手指在列表上左右横划，在页头的四个类别之间切换：左划下一个，右划上一个，到头就停，照 M3 tabs 的「内容区横划切换」。
+ *
+ * 只认触屏：鼠标在列表上按住拖动是框选（marqueeSelection），不能抢。先过横向的触摸阈值才算横划，
+ * 竖向先过阈值的交给列表自己滚动（它在 Main 阶段比这里先收到事件，竖向拖动会被它消费掉）。
+ * 横划满 [SwipeThreshold] 才换，短的一下只当作手抖，免得竖着滑时稍一带歪就换了类别。
+ */
+private fun Modifier.swipeBetweenKinds(current: () -> TransferKind, onChange: (TransferKind) -> Unit): Modifier =
+    pointerInput(Unit) {
+        val threshold = SwipeThreshold.toPx()
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            if (down.type != PointerType.Touch) return@awaitEachGesture
+            var total = 0f
+            val drag = awaitHorizontalTouchSlopOrCancellation(down.id) { change, over ->
+                change.consume()
+                total += over
+            } ?: return@awaitEachGesture
+            horizontalDrag(drag.id) { change ->
+                total += change.positionChange().x
+                change.consume()
+            }
+            if (abs(total) < threshold) return@awaitEachGesture
+            val kinds = TransferKind.entries
+            val next = kinds.indexOf(current()) + if (total < 0) 1 else -1
+            kinds.getOrNull(next)?.let(onChange)
+        }
+    }
+
+private val SwipeThreshold = 72.dp
