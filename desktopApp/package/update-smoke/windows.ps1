@@ -9,6 +9,7 @@
 #
 # 场景，依次：
 #   1. 全新安装 MSI，启动后存活，没有新版时不动
+#   1b. 设为 magnet 与 .torrent 的默认打开方式：系统真把磁力链接与种子交给 Piko（拉起与转交各一次），再取消关联
 #   2. MSI 安装版增量更新（换补丁文件）：目录与新版清单逐文件一致，jar 的修改时间原样（AOT 缓存认它）
 #   3. MSI 安装版整包更新：先弄坏一个运行时文件，增量更新不成立，走 msiexec；登记的版本随之更新
 #   4. 卸载：安装目录下 app 与 runtime 不留任何文件。打过补丁与整包更新之后各卸一次，都当场查
@@ -205,6 +206,45 @@ function Assert-NoAppFiles([string] $when) {
 
 function Reset-Staging { if (Test-Path -LiteralPath $staging) { Remove-Item -Recurse -Force -LiteralPath $staging } }
 
+# 装好的包里跑一段自检（SelfTest.kt），结果写进文件：启动器是窗口程序，标准输出接不出来
+function Invoke-SelfTest([string] $dir, [string] $name) {
+    $out = Join-Path $logs "selftest-$name.txt"
+    if (Test-Path -LiteralPath $out) { Remove-Item -LiteralPath $out }
+    $env:JAVA_TOOL_OPTIONS = "-Dpiko.selftest=$name -Dpiko.selftest.out=`"$out`""
+    try { Start-Process -FilePath (Join-Path $dir $exeName) -WorkingDirectory $dir | Out-Null }
+    finally { Remove-Item Env:JAVA_TOOL_OPTIONS }
+    for ($i = 0; $i -lt 120; $i++) {
+        if ((Test-Path -LiteralPath $out) -and (Select-String -LiteralPath $out -Pattern '^(PASS|FAIL)$' -Quiet)) { break }
+        Start-Sleep -Milliseconds 500
+    }
+    $text = if (Test-Path -LiteralPath $out) { Get-Content -Raw -LiteralPath $out } else { '(no output)' }
+    Write-Host "self test $name : $text"
+    if ($text -notmatch '(?m)^PASS$') { Fail "self test $name failed: $text" }
+}
+
+# 应用日志里「收到外部链接」的行数。Piko 只记类别与来路，不记链接本身（Main.kt 的 deliverIncoming）
+function Count-IncomingLinks([string] $kind) {
+    $appLogs = Join-Path $HOME '.piko\logs'
+    if (-not (Test-Path -LiteralPath $appLogs)) { return 0 }
+    @(Get-ChildItem -LiteralPath $appLogs -File | Select-String -Pattern "IncomingLink.*$kind" -Encoding utf8).Count
+}
+
+function Wait-IncomingLink([string] $kind, [int] $before, [string] $what) {
+    for ($i = 0; $i -lt 60; $i++) {
+        if ((Count-IncomingLinks $kind) -gt $before) { Write-Host "Piko received the $kind from $what"; return }
+        Start-Sleep -Seconds 1
+    }
+    Save-UpdateLogs 'link-association'
+    Fail "Piko did not log receiving the $kind from $what within 60 s"
+}
+
+# 最小的种子：info 里只有一个 1 字节的文件。Piko 在本地算它的 infohash，换成磁力链接
+function New-SmokeTorrent([string] $path) {
+    $ascii = [System.Text.Encoding]::ASCII
+    $bytes = $ascii.GetBytes('d4:infod6:lengthi1e4:name9:smoke.bin12:piece lengthi16384e6:pieces20:') + (New-Object byte[] 20) + $ascii.GetBytes('ee')
+    [System.IO.File]::WriteAllBytes($path, $bytes)
+}
+
 # ---------------------------------------------------------------------------
 
 New-Item -ItemType Directory -Force -Path $Work, $releases, $logs | Out-Null
@@ -244,6 +284,22 @@ try {
     Assert-Alive $installDir 25
     if ((Installed-Version $installDir) -ne $BaseVersion) { Fail 'app changed itself without a newer release' }
     Stop-App $installDir
+    EndStep
+
+    Step '1b. magnet and torrent association'
+    # 全新的 runner 没有 UserChoice，Classes 下的登记当场生效，所以这里验的是系统真按登记把链接交给 Piko：
+    # 没开着时拉起它（启动参数），开着时由新进程转交（单实例）
+    Invoke-SelfTest $installDir 'link-register'
+    $before = Count-IncomingLinks 'magnet'
+    Start-Process 'magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=smoke'
+    Wait-IncomingLink 'magnet' $before 'the magnet protocol'
+    $torrent = Join-Path $Work 'smoke.torrent'
+    New-SmokeTorrent $torrent
+    $before = Count-IncomingLinks 'torrent'
+    Start-Process $torrent
+    Wait-IncomingLink 'torrent' $before 'a .torrent file'
+    Stop-App $installDir
+    Invoke-SelfTest $installDir 'link-unregister'
     EndStep
 
     Step '2. MSI install, patch update'

@@ -21,8 +21,8 @@ private const val ASKED_KEY = "linkAssociation.asked"
  * 首次启动时问一次要不要把磁力链接与种子文件交给 Piko 打开。无论怎么答都记下，不再弹出；
  * 之后要改走设置页的同一项。
  *
- * [association] 为 null（非 Windows）或 state 为 Unavailable（开发版、便携版）时既不问也不记，
- * 同一台机器装上安装版后仍会问一次。
+ * [association] 为 null（系统不支持）或 state 为 Unavailable（开发版）时既不问也不记，
+ * 同一台机器装上正式的包后仍会问一次。
  */
 @Composable
 internal fun LinkAssociationPrompt(association: LinkAssociation?, settings: DesktopSettingsStore) {
@@ -49,7 +49,15 @@ internal fun LinkAssociationPrompt(association: LinkAssociation?, settings: Desk
         // 点外面或按 Esc 关掉也算答过：用户已经看到了这个问题
         onDismissRequest = answer,
         title = { Text("用 Piko 打开磁力链接与种子文件？") },
-        text = { Text("需在随后打开的系统设置中确认。之后也可在设置的「添加链接」中更改。") },
+        text = {
+            Text(
+                if (association.needsSystemConfirmation) {
+                    "需在随后打开的系统设置中确认。之后也可在设置的「链接」中更改。"
+                } else {
+                    "之后也可在设置的「链接」中更改。"
+                },
+            )
+        },
         confirmButton = {
             TextButton(
                 onClick = {

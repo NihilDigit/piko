@@ -222,7 +222,11 @@ compose.desktop {
                 // MediaMP 的 mpv 运行库以 macOS 12 为最低版本编译
                 minimumSystemVersion = "12.0"
                 appCategory = "public.app-category.utilities"
-                // magnet: 链接交给 Piko。macOS 不像 Windows 那样把 URL 作为启动参数传入，见 Main 的 installMacHandlers
+                // magnet: 链接与 .torrent 交给 Piko。macOS 不像 Windows 那样把它们作为启动参数传入，
+                // 见 Main 的 installMacHandlers；设为默认打开方式见 MacLinkAssociation。
+                // 种子类型照 Transmission 的 UTI 引入一份：没装任何 BT 客户端的机器上系统不认得 .torrent，
+                // 引入之后 Piko 才出现在「打开方式」里，也才能被设为默认。Rank 取 Alternate：只声明能打开，
+                // 不在安装时抢走已有客户端的默认，抢不抢由用户在设置或首次询问里定
                 infoPlist {
                     extraKeysRawXml = """
                         <key>CFBundleURLTypes</key>
@@ -234,6 +238,43 @@ compose.desktop {
                                 <array>
                                     <string>magnet</string>
                                 </array>
+                            </dict>
+                        </array>
+                        <key>CFBundleDocumentTypes</key>
+                        <array>
+                            <dict>
+                                <key>CFBundleTypeName</key>
+                                <string>BitTorrent 种子文件</string>
+                                <key>CFBundleTypeRole</key>
+                                <string>Viewer</string>
+                                <key>LSHandlerRank</key>
+                                <string>Alternate</string>
+                                <key>LSItemContentTypes</key>
+                                <array>
+                                    <string>org.bittorrent.torrent</string>
+                                </array>
+                            </dict>
+                        </array>
+                        <key>UTImportedTypeDeclarations</key>
+                        <array>
+                            <dict>
+                                <key>UTTypeIdentifier</key>
+                                <string>org.bittorrent.torrent</string>
+                                <key>UTTypeDescription</key>
+                                <string>BitTorrent 种子文件</string>
+                                <key>UTTypeConformsTo</key>
+                                <array>
+                                    <string>public.data</string>
+                                </array>
+                                <key>UTTypeTagSpecification</key>
+                                <dict>
+                                    <key>public.filename-extension</key>
+                                    <array>
+                                        <string>torrent</string>
+                                    </array>
+                                    <key>public.mime-type</key>
+                                    <string>application/x-bittorrent</string>
+                                </dict>
                             </dict>
                         </array>
                     """.trimIndent()

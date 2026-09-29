@@ -88,6 +88,7 @@ fun main(args: Array<String>) {
         Thread({ Thread.sleep(AOT_TRAINING_MILLIS); exitProcess(0) }, "Piko-Aot-Training")
             .apply { isDaemon = true; start() }
     }
+    System.getProperty(SELF_TEST_PROPERTY)?.let { exitProcess(runSelfTest(it)) }
     // 打包机上可能正开着一个 Piko，训练进程不能把自己当成后来者转交后退出
     val singleInstance = if (isAotTraining) null else SingleInstance.acquireOrForward(absoluteTorrentPaths(args.toList())) ?: return
     // 拿到单实例锁之后才装：转交完参数就退出的后来者不该和主实例写同一个文件
@@ -118,21 +119,35 @@ fun main(args: Array<String>) {
     CoroutineScope(Dispatchers.Default).launch { preferences.proxySettingFlow.collect(PikoProxySelector::apply) }
     val platform = DesktopPikoPlatform(settings)
     val services = createServices(settings, preferences)
+    // 外面送来的链接交给添加链接面板，四条路进来：启动参数、后来的进程转交、macOS 的 openURI 与 openFiles。
+    // 记一行日志，只记哪一类、从哪条路来，不记链接本身：安装冒烟据此确认系统真把链接交给了 Piko
+    fun deliverIncoming(args: List<String>, via: String): Boolean {
+        val link = magnetIn(args) ?: return false
+        PikoLog.i("IncomingLink", "收到外部链接：${linkKindOf(args)}，经$via")
+        services.instantMagnetRepository.onIncomingMagnet(link)
+        return true
+    }
     // magnet: 链接与种子经登记的关联唤起时，以启动参数进来；已在运行时由后来的进程转交过来
-    val launchLink = magnetIn(args.toList())
-    launchLink?.let(services.instantMagnetRepository::onIncomingMagnet)
+    val launchedWithLink = deliverIncoming(args.toList(), "启动参数")
     // 带着链接启动时添加链接面板正要弹出，不再叠一个询问框，留到下次普通启动再问；训练进程没人回答
-    val askLinkAssociation = launchLink == null && !isAotTraining
+    val askLinkAssociation = !launchedWithLink && !isAotTraining
     val activations = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     singleInstance?.listen { forwarded ->
-        magnetIn(forwarded)?.let(services.instantMagnetRepository::onIncomingMagnet)
+        deliverIncoming(forwarded, "转交")
         activations.tryEmit(Unit)
     }
     val quitRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     installMacHandlers(
         onOpenUri = { uri ->
-            magnetIn(listOf(uri))?.let(services.instantMagnetRepository::onIncomingMagnet)
+            deliverIncoming(listOf(uri), "openURI")
             activations.tryEmit(Unit)
+        },
+        // 种子要读文件再算 infohash，回调在界面线程上，挪到后台做
+        onOpenFiles = { files ->
+            CoroutineScope(Dispatchers.IO).launch {
+                deliverIncoming(files.map { it.absolutePath }, "openFiles")
+                activations.tryEmit(Unit)
+            }
         },
         onQuit = { quitRequests.tryEmit(Unit) },
         onReopen = { activations.tryEmit(Unit) },
@@ -341,6 +356,13 @@ private fun magnetIn(args: List<String>): String? {
 }
 
 private fun isTorrentPath(arg: String): Boolean = arg.endsWith(".torrent", ignoreCase = true) && File(arg).isFile
+
+/** 日志里记的链接类别，与 [magnetIn] 认的顺序一致。 */
+private fun linkKindOf(args: List<String>): String = when {
+    args.any { it.startsWith("magnet:", ignoreCase = true) } -> "magnet"
+    args.any { InstantSheetState.findShareLink(it) != null } -> "share"
+    else -> "torrent"
+}
 
 /** 相对路径按本进程的工作目录解析，转交给主实例之前先换成绝对路径，主实例的工作目录未必相同。 */
 private fun absoluteTorrentPaths(args: List<String>): List<String> =

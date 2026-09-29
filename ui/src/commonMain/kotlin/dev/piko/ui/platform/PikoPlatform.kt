@@ -192,19 +192,37 @@ interface VideoPreviewSupport {
 }
 
 /**
- * 把 magnet: 链接与 .torrent 文件交给 Piko 打开。系统不许应用自己改默认打开方式，
- * 所以分两步：应用登记成可选项，再由用户在系统设置里选定。
+ * 把 magnet: 链接与 .torrent 文件交给 Piko 打开。Windows 不许应用自己改默认打开方式，
+ * 分两步：应用登记成可选项，再由用户在系统设置里选定；macOS 由 LaunchServices 直接改。
  */
 interface LinkAssociation {
-    /** 读系统眼下的选择。读的是注册表，调用方放在后台协程里。 */
+    /** 读系统眼下的选择。读注册表或问 LaunchServices，调用方放在后台协程里。 */
     suspend fun state(): LinkAssociationState
 
-    /** 登记为可选的打开方式，再打开系统的默认应用设置。返回 false 表示登记失败，设置页也没有打开。 */
+    /**
+     * 设为默认打开方式。[needsSystemConfirmation] 时只是登记成可选项并打开系统的默认应用设置，
+     * 由用户在那里选定。返回 false 表示没办成（登记失败、设置页也没打开）。
+     */
     suspend fun register(): Boolean
+
+    /**
+     * 取消关联：删掉 Piko 写的登记，系统回头让用户另选。只在 [canUnregister] 时有意义。
+     * 返回 false 表示没办成。
+     */
+    suspend fun unregister(): Boolean
+
+    /**
+     * 能不能取消关联。macOS 没有「不设默认」这一说，只能把默认改给另一个应用，那是替用户挑应用，
+     * 不做；换回去在那个应用里设为默认即可，界面据此不给取消的按钮。
+     */
+    val canUnregister: Boolean
+
+    /** 还要用户在系统设置里确认一次（Windows）。界面据此决定说明怎么写。 */
+    val needsSystemConfirmation: Boolean
 }
 
 enum class LinkAssociationState {
-    /** 这份构建不能登记，例如开发版与便携版：登记的路径是临时的，或会与安装版互相覆盖。 */
+    /** 这份构建不能登记，例如开发版：登记的是开发工具的进程，不是 Piko。 */
     Unavailable,
     NotDefault,
     /** 磁力链接与种子文件都已由 Piko 打开。 */

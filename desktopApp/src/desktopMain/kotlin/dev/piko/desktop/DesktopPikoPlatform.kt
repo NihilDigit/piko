@@ -201,7 +201,11 @@ class DesktopPikoPlatform(
 
     // macOS 按 Info.plist 的 CFBundleURLTypes 自动列为候选，改默认要调已弃用的 LaunchServices 接口，
     // 包又没有签名，不给入口。开发版与便携版由 state 报 Unavailable，设置页同样不显示
-    override val linkAssociation: LinkAssociation? = if (WinRTSupport.isWindows) WindowsLinkAssociation else null
+    override val linkAssociation: LinkAssociation? = when {
+        WinRTSupport.isWindows -> WindowsLinkAssociation
+        isMacOs -> MacLinkAssociation
+        else -> null
+    }
 
     override val videoPreview: VideoPreviewSupport = object : VideoPreviewSupport {
         @Composable

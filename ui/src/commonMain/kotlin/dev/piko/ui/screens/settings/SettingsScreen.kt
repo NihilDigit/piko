@@ -128,6 +128,7 @@ import dev.piko.ui.components.connectedToggleShapes
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.verticalWheelScrollsRow
 import dev.piko.ui.platform.LinkAssociationState
+import dev.piko.ui.platform.LinkAssociation
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.screens.archive.SavedArchivePasswordsDialog
 import dev.piko.ui.theme.Appearance
@@ -321,7 +322,7 @@ fun SettingsScreen(
                                 index = 2, count = appearanceCount,
                                 icon = Icons.Outlined.WebAsset,
                                 title = "紧凑标题栏",
-                                supporting = "窗口按钮并入界面右上角，窗口足够宽时生效",
+                                supporting = "窗口按钮并入界面右上角，省去单独的标题栏",
                                 checked = compact,
                                 onCheckedChange = compactTitleBar::set,
                             )
@@ -430,25 +431,12 @@ fun SettingsScreen(
                                 )
                             }
                         }
-                        val shownLinkAssociation = linkAssociation?.takeIf { linkAssociationState != LinkAssociationState.Unavailable }
-                        if (shownLinkAssociation != null) SettingsGroup("链接") {
-                            SettingsNavigationRow(
-                                index = 0, count = 1,
-                                icon = Icons.Outlined.Link,
-                                title = "磁力链接与种子文件",
-                                supporting = if (linkAssociationState == LinkAssociationState.Default) {
-                                    "默认由 Piko 打开"
-                                } else {
-                                    "设为默认打开方式，需在系统设置中确认"
-                                },
-                                onClick = {
-                                    scope.launch {
-                                        if (!shownLinkAssociation.register()) {
-                                            snackbarHostState.showSnackbar("无法设为默认打开方式", withDismissAction = true)
-                                        }
-                                    }
-                                },
-                                trailingIcon = Icons.AutoMirrored.Outlined.OpenInNew,
+                        if (linkAssociation != null) SettingsGroup("链接") {
+                            LinkAssociationRow(
+                                association = linkAssociation,
+                                state = linkAssociationState,
+                                onStateChange = { linkAssociationState = it },
+                                onFailure = { message -> scope.launch { snackbarHostState.showSnackbar(message, withDismissAction = true) } },
                             )
                         }
                         SettingsGroup("连接") {
@@ -773,6 +761,57 @@ private fun StaticSegmentedRow(
 
 // SegmentedListItem 图标与标题之间的距离，经典 ListItem 是 16dp
 private val StaticRowLeadingGap = 12.dp
+
+/**
+ * 磁力链接与种子文件的默认打开方式：说明眼下是谁在打开，行尾一个按钮，不是 Piko 时「设为默认」，
+ * 是 Piko 时「取消关联」，随时能撤销、重做。整行不可点：两个方向的动作都有后果，放在明写着的按钮上。
+ * 系统不能取消的（macOS，见 LinkAssociation.canUnregister）已是默认时不给按钮，说明怎么换回去。
+ *
+ * 开发版也列出来，按钮不可点并写明原因：藏起来的话，在开发版里找这一项的人会以为功能不存在。
+ */
+@Composable
+private fun LinkAssociationRow(
+    association: LinkAssociation,
+    state: LinkAssociationState,
+    onStateChange: (LinkAssociationState) -> Unit,
+    onFailure: (String) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    val isDefault = state == LinkAssociationState.Default
+    StaticSegmentedRow(
+        shapes = ListItemDefaults.segmentedShapes(index = 0, count = 1),
+        leadingContent = { Icon(Icons.Outlined.Link, contentDescription = null) },
+        supportingContent = {
+            Text(
+                when {
+                    state == LinkAssociationState.Unavailable -> "开发版不能设为默认打开方式，需用安装版或便携版"
+                    isDefault && !association.canUnregister -> "由 Piko 打开。要换回其他应用，在该应用中设为默认"
+                    isDefault -> "由 Piko 打开"
+                    association.needsSystemConfirmation -> "由其他应用打开。设为默认需在系统设置中确认"
+                    else -> "由其他应用打开"
+                },
+            )
+        },
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("磁力链接与种子文件", modifier = Modifier.weight(1f))
+            if (!isDefault || association.canUnregister) TextButton(
+                enabled = state != LinkAssociationState.Unavailable && !busy,
+                onClick = {
+                    busy = true
+                    scope.launch {
+                        val done = if (isDefault) association.unregister() else association.register()
+                        if (!done) onFailure(if (isDefault) "无法取消关联" else "无法设为默认打开方式")
+                        // 不经系统设置的平台当场就改好了，窗口不会失焦再回来，这里重读一次
+                        onStateChange(association.state())
+                        busy = false
+                    }
+                },
+            ) { Text(if (isDefault) "取消关联" else "设为默认") }
+        }
+    }
+}
 
 /** 深色模式三选一，用 M3 Expressive 的连体按钮组，与播放器倍速选择的写法一致。 */
 @Composable

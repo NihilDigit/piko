@@ -11,6 +11,8 @@
 #
 # 场景：
 #   1. 从 DMG 全新安装，启动后存活，没有新版时不动
+#   1b. 设为 magnet 与 .torrent 的默认打开方式（NSWorkspace）：系统真把磁力链接交给 Piko（openURI，拉起），
+#       再把种子交给开着的 Piko（openFiles）。macOS 不做取消关联，见 LinkAssociation.canUnregister
 #   2. 应用内更新：Info.plist 的版本变成 Next，签名仍完好（codesign --verify），新版本被重新打开，
 #      旁边不留临时的包，用户自己放在旁边的同名备份原样留着
 #
@@ -44,6 +46,24 @@ start_app() {
     [ "${1:-}" = auto ] && options="$options -Dpiko.update.auto=true"
     JAVA_TOOL_OPTIONS="$options" nohup "$bundle/Contents/MacOS/$package" > "$logs/app-$(date +%s).out" 2>&1 &
 }
+# 装好的包里跑一段自检（SelfTest.kt），前台跑完，结果写进文件
+self_test() {
+    local out="$logs/selftest-$1.txt"
+    rm -f "$out"
+    JAVA_TOOL_OPTIONS="-Dpiko.selftest=$1 -Dpiko.selftest.out=$out" "$bundle/Contents/MacOS/$package" > "$logs/selftest-$1.out" 2>&1 || true
+    echo "self test $1: $(cat "$out" 2>/dev/null || echo '(no output)')"
+    grep -qx PASS "$out" 2>/dev/null || fail "self test $1 failed"
+}
+# 应用日志里「收到外部链接」的行数。Piko 只记类别与来路，不记链接本身（Main.kt 的 deliverIncoming）
+incoming_links() { cat "$HOME/.piko/logs/"* 2>/dev/null | grep -c "IncomingLink.*$1" || true; }
+wait_incoming() {
+    local kind="$1" before="$2" what="$3"
+    for _ in $(seq 60); do
+        [ "$(incoming_links "$kind")" -gt "$before" ] && { echo "Piko received the $kind from $what"; return 0; }
+        sleep 1
+    done
+    fail "Piko did not log receiving the $kind from $what within 60 s"
+}
 
 for pair in "$base_dir:$base_version" "$next_dir:$next_version"; do
     dir="${pair%%:*}"; version="${pair##*:}"
@@ -69,6 +89,22 @@ start_app auto
 sleep 25
 app_running || fail 'app exited within 25 s after launch'
 [ "$(bundle_version)" = "$base_version" ] || fail 'app changed itself without a newer release'
+stop_app
+echo '::endgroup::'
+
+echo '::group::1b. magnet and torrent association'
+# 刚解出来的包先登记进 LaunchServices：只启动过一次时它未必已登记，设默认打开方式要它在册
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$bundle"
+self_test link-register
+before="$(incoming_links magnet)"
+open 'magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=smoke'
+wait_incoming magnet "$before" 'the magnet scheme'
+# 最小的种子：info 里只有一个 1 字节的文件，Piko 在本地算 infohash 换成磁力链接
+torrent="$work/smoke.torrent"
+{ printf 'd4:infod6:lengthi1e4:name9:smoke.bin12:piece lengthi16384e6:pieces20:'; head -c 20 /dev/zero; printf 'ee'; } > "$torrent"
+before="$(incoming_links torrent)"
+open "$torrent"
+wait_incoming torrent "$before" 'a .torrent file'
 stop_app
 echo '::endgroup::'
 
