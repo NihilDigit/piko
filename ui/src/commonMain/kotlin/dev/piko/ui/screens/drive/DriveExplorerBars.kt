@@ -232,7 +232,12 @@ internal fun ExplorerSearchField(
             query.isNotBlank() && !isGlobalSearchActive ->
                 TextButton(onClick = onStartGlobalSearch, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("全盘") }
         }
-        if (query.isNotEmpty()) TooltipIconButton(Icons.Outlined.Close, "清除", { onQueryChange("") }, shortcut = "Esc")
+        // 取消一直在，与 Esc 相同：有字时清空，没字时收起（让出焦点即收回成搜索图标）
+        if (query.isNotEmpty()) {
+            TooltipIconButton(Icons.Outlined.Close, "清除", { onQueryChange("") }, shortcut = "Esc")
+        } else {
+            TooltipIconButton(Icons.Outlined.Close, "关闭搜索", { focusManager.clearFocus() }, shortcut = "Esc")
+        }
     }
 }
 

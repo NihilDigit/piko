@@ -211,10 +211,10 @@ internal fun DriveSearchTopBar(
                     }
                 }
             }
-            if (query.isNotEmpty()) {
-                IconButton(onClick = { onQueryChange("") }) {
-                    Icon(Icons.Outlined.Close, contentDescription = "清除搜索词")
-                }
+            // 右端一直有个取消：有字时清掉搜索词，没字时收起搜索。只在有字时才出现的话，刚点开搜索时右边空着，
+            // 要找退路得回到左上角的返回，拇指够不着
+            IconButton(onClick = { if (query.isNotEmpty()) onQueryChange("") else onClose() }) {
+                Icon(Icons.Outlined.Close, contentDescription = if (query.isNotEmpty()) "清除搜索词" else "关闭搜索")
             }
         },
         colors = TopAppBarDefaults.topAppBarColors(

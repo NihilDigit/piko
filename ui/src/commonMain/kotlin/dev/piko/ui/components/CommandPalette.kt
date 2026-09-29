@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -175,6 +176,14 @@ fun CommandPalette(items: List<PaletteItem>, onDismiss: () -> Unit) {
                                     },
                             )
                         }
+                        // 与搜索框同一条规矩：右端一直有个取消，有字时清空，没字时关掉面板。触屏上没有 Esc
+                        TooltipIconButton(
+                            icon = Icons.Outlined.Close,
+                            label = if (query.isNotEmpty()) "清除" else "关闭",
+                            onClick = { if (query.isNotEmpty()) query = "" else onDismiss() },
+                            shortcut = if (query.isNotEmpty()) null else "Esc",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                     if (results.isEmpty()) {
                         Text(
