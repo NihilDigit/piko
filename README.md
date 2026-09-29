@@ -7,8 +7,9 @@
 <p align="center">
 <a href="#安装"><img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-306EFF?style=flat-square&logo=android&logoColor=white"></a>
 <a href="#安装"><img alt="Windows 10+ x64 | arm64" src="https://img.shields.io/badge/Windows-10%2B%20x64%20%7C%20arm64-306EFF?style=flat-square&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0yIDJoOS41djkuNUgyek0xMi41IDJIMjJ2OS41aC05LjV6TTIgMTIuNWg5LjVWMjJIMnpNMTIuNSAxMi41SDIyVjIyaC05LjV6Ii8+PC9zdmc+"></a>
-<a href="https://github.com/NihilDigit/piko/releases/latest"><img alt="Latest Release" src="https://img.shields.io/github/v/release/NihilDigit/piko?style=flat-square&color=306EFF"></a>
-<a href="LICENSE"><img alt="MIT" src="https://img.shields.io/github/license/NihilDigit/piko?style=flat-square&color=306EFF"></a>
+<a href="#安装"><img alt="macOS 12+ arm64" src="https://img.shields.io/badge/macOS-12%2B%20arm64-306EFF?style=flat-square&logo=apple&logoColor=white"></a>
+<a href="https://github.com/NihilDigit/piko/attestations"><img alt="SLSA Build L3" src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/badges/slsa-l3.svg"></a>
+<a href="LICENSE"><img alt="MIT" src="https://img.shields.io/github/license/NihilDigit/piko?style=flat-square&color=306EFF&logo=opensourceinitiative&logoColor=white"></a>
 <br>
 <img alt="Kotlin Multiplatform" src="https://img.shields.io/badge/Kotlin%20Multiplatform-306EFF?style=flat-square&logo=kotlin&logoColor=white">
 <img alt="Compose Multiplatform" src="https://img.shields.io/badge/Compose%20Multiplatform-306EFF?style=flat-square&logo=jetpackcompose&logoColor=white">
@@ -17,64 +18,70 @@
 
 <p align="center"><b>高性能、多平台的 PikPak 客户端</b></p>
 
-## 双端支持
+## 自适应布局
 
-基于 Kotlin Multiplatform 构建，两端共用界面与业务代码，界面遵循 Material 3 Expressive 设计规范：
-- **Android**：原生实现，界面基于 Jetpack Compose，播放基于 libmpv。
-- **Windows**：基于 Compose Multiplatform 的 GPU 加速界面，视频画面经 D3D11 直通 Skia，零拷贝合成。
+桌面端贴合键鼠操作，移动端简洁易用。
 
 <p align="center">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/desktop.jpg" height="380" alt="Windows：海报墙">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/phone.jpg" height="380" alt="Android：海报墙">
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/hero-dark.jpg">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/hero.jpg" alt="桌面端与手机端的海报墙">
+</picture>
 </p>
 
-## 离线下载
+## 链接与文件名解析
 
-磁力链接按作品、分区与集数解析，字幕随视频归组。已收录的视频可在保存前完整预览，保存时只保留勾选的文件。
+解析磁力链接、种子、下载地址与分享链接，保存前可完整预览、按文件挑选。文件按作品与集数整理，收起样片与花絮。
 
 <p align="center">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/magnet.jpg" height="528" alt="磁力解析">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/magnet-sections.jpg" height="528" alt="多部作品与分区">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/preview.jpg" height="528" alt="保存前预览">
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/links-dark.jpg">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/links.jpg" alt="网盘中按作品整理的剧集，右侧是解析磁力链接的面板">
+</picture>
 </p>
 
-## 按作品浏览网盘
+## 信息流
 
-网盘目录同样按作品、分区与集数分组，支持海报墙视图与全盘搜索。
+随机播放当前文件夹里的视频片段，上下滑动切换。
 
 <p align="center">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/drive.jpg" height="528" alt="列表视图">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/search.jpg" height="528" alt="全盘搜索">
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed-dark.jpg">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed.jpg" alt="网盘右侧的信息流，正在播放一段视频片段">
+</picture>
 </p>
 
-## 播放
+## 传输
 
-选集按作品与分区划分，播放进度与 PikPak 官方客户端同步。Android 支持手势调节亮度、音量与进度，Windows 支持鼠标与键盘操作。
+多连接并发，自动绕开缓慢或无响应的节点，优化弱网下的使用体验。蜗牛模式限速，不影响播放。
 
 <p align="center">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/player.jpg" width="410" alt="横屏播放">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/episodes.jpg" width="410" alt="选集">
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/transfers-dark.jpg">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/transfers.jpg" alt="传输页：进行中与已完成的下载、上传与云端任务">
+</picture>
 </p>
 
-## 传输与整理
+## 文件处理
 
-下载与在线播放以 8 条连接并发读取，弱网下也能用满带宽。另支持无损截取视频片段、上传、服务端解压与查找重复。
+支持截取视频片段与查找重复文件。
 
 <p align="center">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/segment.jpg" height="528" alt="片段下载">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/duplicates.jpg" height="528" alt="查找重复">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/account.jpg" height="528" alt="网盘与流量">
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/tools-dark.jpg">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/tools.jpg" alt="手机上的截取视频片段与查找重复">
+</picture>
 </p>
 
 ## 安装
 
-前往 [Releases](https://github.com/NihilDigit/piko/releases/latest) 下载。所有安装包均由 GitHub Actions 从仓库源码构建，Release 页面按设备列出应下载的文件，每个附件的 SHA-256 显示在附件列表中。
+前往 [Releases](https://github.com/NihilDigit/piko/releases/latest) 下载。安装包均由 GitHub Actions 从源码构建，Release 页面按设备列出应下载的文件。
 
-- **Android**：需要 Android 8.0 或更高版本。按设备架构选择 APK，无法确定时选 `universal`。
-- **Windows**：需要 Windows 10 或更高版本，提供 x64 与 arm64 两种架构。
-  - `.msi`：安装到当前用户目录，无需管理员权限，支持应用内更新。
-  - `.zip`：便携版，解压后运行 `Piko.exe`。
-- **macOS**（实验性）：需要 macOS 12 或更高版本，仅支持 Apple 芯片。安装包未经公证，首次打开需在「系统设置」→「隐私与安全性」中放行。
+- **Android**：Android 8.0 及以上。按设备架构选择 APK，无法确定时选 `universal`。
+- **Windows**：Windows 10 及以上，x64 与 arm64。`.msi` 为安装版，`.zip` 为便携版。
+- **macOS**（实验性）：macOS 12 及以上，仅 Apple 芯片。安装包未经公证，首次打开需在「系统设置」→「隐私与安全性」中放行。
+
+更新动态见 Telegram 频道 [@piko_dev](https://t.me/piko_dev)。
 
 ## 贡献
 
@@ -90,3 +97,12 @@
 - PikPak 接口实现参考了 [52funny/pikpakcli](https://github.com/52funny/pikpakcli)。
 - 多项功能设计参考了 PikPak 网页端增强脚本 [digbug82/PikPak_Enhancement_Master](https://github.com/digbug82/PikPak_Enhancement_Master)。
 - Windows 端 mpv 的零拷贝渲染由 [MediaMP](https://github.com/open-ani/mediamp) 实现。
+
+## Star History
+
+<a href="https://www.star-history.com/#nihildigit/piko&Date">
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=nihildigit/piko&type=Date&theme=dark&legend=bottom-right">
+<img alt="Star History Chart" src="https://api.star-history.com/svg?repos=nihildigit/piko&type=Date&legend=bottom-right">
+</picture>
+</a>
