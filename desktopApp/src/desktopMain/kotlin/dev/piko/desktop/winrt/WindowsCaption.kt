@@ -153,6 +153,11 @@ internal class WindowsCaption(private val window: Window) {
         User32.postMessage.invokeWithArguments(target, WM_LBUTTONUP, 0L, packPoint(point.get(JAVA_INT, 0), point.get(JAVA_INT, 4)))
     }
 
+    fun toggleMaximize() {
+        if (frame == MemorySegment.NULL) return
+        perform(frame, Button.MAXIMIZE)
+    }
+
     private fun packPoint(x: Int, y: Int): Long = ((y and 0xFFFF).toLong() shl 16) or (x and 0xFFFF).toLong()
 
     /** 不显示标题栏时（如播放器全屏）整个窗口都是客户区。 */

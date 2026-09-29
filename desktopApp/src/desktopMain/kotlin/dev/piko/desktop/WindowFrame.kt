@@ -49,6 +49,9 @@ import dev.piko.ui.platform.FramelessWindow
 import dev.piko.ui.platform.LocalFramelessWindow
 import dev.piko.ui.platform.LocalWindowCaption
 import dev.piko.ui.platform.WindowCaption
+import dev.piko.ui.platform.captionGestures
+import dev.piko.ui.theme.FrameTopRowHeight
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
@@ -132,7 +135,9 @@ fun FrameWindowScope.WindowFrame(
             LaunchedEffect(hosted) { if (hosted) compact?.publish() }
             Column(Modifier.fillMaxSize()) {
                 if (showTitleBar && caption != null && !hosted) WindowsTitleBar(caption, title, icon, colors)
-                Box(Modifier.fillMaxWidth().weight(1f)) {
+                // 顶上那一行都是自绘的标题栏：长按拖窗口、空白处双击最大化，按在控件上也能拖
+                val gestures = if (hosted) Modifier.captionGestures(compact, FrameTopRowHeight) else Modifier
+                Box(Modifier.fillMaxWidth().weight(1f).then(gestures)) {
                     CompositionLocalProvider(LocalWindowCaption provides compact) { content() }
                     // 兜底：声明了却一时没有哪一行贴着右上角来画按钮，就浮在角上画一组，窗口总关得掉
                     if (hosted && compact.rowsWithButtons == 0) {
@@ -275,7 +280,17 @@ private class CompactCaption(private val caption: WindowsCaption) : WindowCaptio
         publish()
     }
 
+    private val holdAreas = HashMap<Any, Rect>()
+
+    override fun setHoldArea(key: Any, bounds: Rect?) {
+        if (bounds == null) holdAreas.remove(key) else holdAreas[key] = bounds
+    }
+
+    override fun inHoldArea(position: Offset): Boolean = holdAreas.values.any { it.contains(position) }
+
     override fun beginWindowDrag() = caption.beginDrag()
+
+    override fun toggleMaximize() = caption.toggleMaximize()
 
     fun publish() {
         if (!hosted) return
