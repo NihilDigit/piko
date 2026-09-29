@@ -9,7 +9,8 @@
 <a href="#安装"><img alt="Windows 10+ x64 | arm64" src="https://img.shields.io/badge/Windows-10%2B%20x64%20%7C%20arm64-306EFF?style=flat-square&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0yIDJoOS41djkuNUgyek0xMi41IDJIMjJ2OS41aC05LjV6TTIgMTIuNWg5LjVWMjJIMnpNMTIuNSAxMi41SDIyVjIyaC05LjV6Ii8+PC9zdmc+"></a>
 <a href="#安装"><img alt="macOS 12+ arm64" src="https://img.shields.io/badge/macOS-12%2B%20arm64-306EFF?style=flat-square&logo=apple&logoColor=white"></a>
 <a href="https://github.com/NihilDigit/piko/attestations"><img alt="SLSA Build L3" src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/badges/slsa-l3.svg"></a>
-<a href="LICENSE"><img alt="MIT" src="https://img.shields.io/github/license/NihilDigit/piko?style=flat-square&color=306EFF&logo=opensourceinitiative&logoColor=white"></a>
+<a href="LICENSE"><img alt="License MIT" src="https://img.shields.io/badge/License-MIT-306EFF?style=flat-square&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xIDIxdi0yaDEwVjcuODI1UTEwLjM1IDcuNiA5Ljg3NSA3LjEyNVQ5LjE3NSA2SDZsMyA3cTAgMS4yNS0xLjAyNSAyLjEyNVQ1LjUgMTZxLTEuNDUgMC0yLjQ3NS0uODc1VDIgMTNsMy03SDNWNGg2LjE3NXEuMy0uODc1IDEuMDc1LTEuNDM3VDEyIDJxLjk3NSAwIDEuNzUuNTYzVDE0LjgyNSA0SDIxdjJoLTJsMyA3cTAgMS4yNS0xLjAyNSAyLjEyNVQxOC41IDE2cS0xLjQ1IDAtMi40NzUtLjg3NVQxNSAxM2wzLTdoLTMuMTc1cS0uMjI1LjY1LS43IDEuMTI1VDEzIDcuODI1VjE5aDEwdjJIMVptMTUuNjI1LThoMy43NUwxOC41IDguNjUgMTYuNjI1IDEzWm0tMTMgMGgzLjc1TDUuNSA4LjY1IDMuNjI1IDEzWk0xMiA2cS40MjUgMCAuNzEzLS4yODhUMTMgNXEwLS40MjUtLjI4OC0uNzEzVDEyIDRxLS40MjUgMC0uNzEzLjI4OFQxMSA1cTAgLjQyNS4yODguNzEzVDEyIDZaIi8+PC9zdmc+Cg=="></a>
+<a href="https://t.me/piko_dev"><img alt="Telegram @piko_dev" src="https://img.shields.io/badge/Telegram-@piko__dev-306EFF?style=flat-square&logo=telegram&logoColor=white"></a>
 <br>
 <img alt="Kotlin Multiplatform" src="https://img.shields.io/badge/Kotlin%20Multiplatform-306EFF?style=flat-square&logo=kotlin&logoColor=white">
 <img alt="Compose Multiplatform" src="https://img.shields.io/badge/Compose%20Multiplatform-306EFF?style=flat-square&logo=jetpackcompose&logoColor=white">
@@ -80,8 +81,6 @@
 - **Android**：Android 8.0 及以上。按设备架构选择 APK，无法确定时选 `universal`。
 - **Windows**：Windows 10 及以上，x64 与 arm64。`.msi` 为安装版，`.zip` 为便携版。
 - **macOS**（实验性）：macOS 12 及以上，仅 Apple 芯片。安装包未经公证，首次打开需在「系统设置」→「隐私与安全性」中放行。
-
-更新动态见 Telegram 频道 [@piko_dev](https://t.me/piko_dev)。
 
 ## 贡献
 

@@ -9,7 +9,8 @@
 <a href="#install"><img alt="Windows 10+ x64 | arm64" src="https://img.shields.io/badge/Windows-10%2B%20x64%20%7C%20arm64-306EFF?style=flat-square&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0yIDJoOS41djkuNUgyek0xMi41IDJIMjJ2OS41aC05LjV6TTIgMTIuNWg5LjVWMjJIMnpNMTIuNSAxMi41SDIyVjIyaC05LjV6Ii8+PC9zdmc+"></a>
 <a href="#install"><img alt="macOS 12+ arm64" src="https://img.shields.io/badge/macOS-12%2B%20arm64-306EFF?style=flat-square&logo=apple&logoColor=white"></a>
 <a href="https://github.com/NihilDigit/piko/attestations"><img alt="SLSA Build L3" src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/badges/slsa-l3.svg"></a>
-<a href="LICENSE"><img alt="MIT" src="https://img.shields.io/github/license/NihilDigit/piko?style=flat-square&color=306EFF&logo=opensourceinitiative&logoColor=white"></a>
+<a href="LICENSE"><img alt="License MIT" src="https://img.shields.io/badge/License-MIT-306EFF?style=flat-square&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xIDIxdi0yaDEwVjcuODI1UTEwLjM1IDcuNiA5Ljg3NSA3LjEyNVQ5LjE3NSA2SDZsMyA3cTAgMS4yNS0xLjAyNSAyLjEyNVQ1LjUgMTZxLTEuNDUgMC0yLjQ3NS0uODc1VDIgMTNsMy03SDNWNGg2LjE3NXEuMy0uODc1IDEuMDc1LTEuNDM3VDEyIDJxLjk3NSAwIDEuNzUuNTYzVDE0LjgyNSA0SDIxdjJoLTJsMyA3cTAgMS4yNS0xLjAyNSAyLjEyNVQxOC41IDE2cS0xLjQ1IDAtMi40NzUtLjg3NVQxNSAxM2wzLTdoLTMuMTc1cS0uMjI1LjY1LS43IDEuMTI1VDEzIDcuODI1VjE5aDEwdjJIMVptMTUuNjI1LThoMy43NUwxOC41IDguNjUgMTYuNjI1IDEzWm0tMTMgMGgzLjc1TDUuNSA4LjY1IDMuNjI1IDEzWk0xMiA2cS40MjUgMCAuNzEzLS4yODhUMTMgNXEwLS40MjUtLjI4OC0uNzEzVDEyIDRxLS40MjUgMC0uNzEzLjI4OFQxMSA1cTAgLjQyNS4yODguNzEzVDEyIDZaIi8+PC9zdmc+Cg=="></a>
+<a href="https://t.me/piko_dev"><img alt="Telegram @piko_dev" src="https://img.shields.io/badge/Telegram-@piko__dev-306EFF?style=flat-square&logo=telegram&logoColor=white"></a>
 <br>
 <img alt="Kotlin Multiplatform" src="https://img.shields.io/badge/Kotlin%20Multiplatform-306EFF?style=flat-square&logo=kotlin&logoColor=white">
 <img alt="Compose Multiplatform" src="https://img.shields.io/badge/Compose%20Multiplatform-306EFF?style=flat-square&logo=jetpackcompose&logoColor=white">
@@ -85,8 +86,6 @@ from source by GitHub Actions, and the release page lists which file to download
 - **Windows**: Windows 10 or later, x64 or arm64. `.msi` is the installer, `.zip` the portable build.
 - **macOS** (experimental): macOS 12 or later, Apple silicon only. The package is not notarized;
   allow it once under System Settings → Privacy & Security.
-
-News is posted on the Telegram channel [@piko_dev](https://t.me/piko_dev).
 
 ## Contributing
 
