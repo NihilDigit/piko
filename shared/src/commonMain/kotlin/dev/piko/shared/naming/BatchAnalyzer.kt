@@ -38,17 +38,17 @@ private class Item(val index: Int, val path: String, val size: Long, knownKind: 
 }
 
 // 序号多在结尾，也有夹在中间的：「绿裙子  IMG_5845 (1) 6669」
-private val COPY_MARKER = Regex("""\s*\((\d{1,2})\)""")
+private val COPY_MARKER = Regex("""\s*\(([0-9]{1,2})\)""")
 
 private val WHITESPACE_RUN = Regex("""\s+""")
 
 // [发布组] 作品名 [条目名] 其后全是方括号
 private val BRACKET_ENTRY = Regex("""^\[([^\]]+)\]\s*([^\[\]]+?)\s*\[([^\]]+)\]((?:\s*\[[^\]]*\])*)\s*$""")
-private val TRAILING_SEASON = Regex("""(?i)\s+(?:season\s*\d{1,2}|s\d{1,2})$""")
+private val TRAILING_SEASON = Regex("""(?i)\s+(?:season\s*[0-9]{1,2}|s[0-9]{1,2})$""")
 private val BRACKET_SEGMENT = Regex("""\[([^\]]*)\]""")
 
 // 「22 标题」：开头一到三位数字、空格、再接标题
-private val LEADING_SEQUENCE = Regex("""^(\d{1,3})\s+(\S.*?)(?:\.[^.]+)?$""")
+private val LEADING_SEQUENCE = Regex("""^([0-9]{1,3})\s+(\S.*?)(?:\.[^.]+)?$""")
 
 private class BatchAnalyzer(inputs: List<MediaFileInput>) {
     private val items = inputs.mapIndexed { index, input -> Item(index, input.path.replace('\\', '/').trim('/'), input.size, input.kind) }

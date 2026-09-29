@@ -27,8 +27,8 @@ internal class AlignedCluster(
 
 // 技术数字整体当文字：「ABC-123 1080p」与「ABC-123 720p」是两个版本，1080 与 720 不是分段号
 private val ALIGN_TOKEN = Regex(
-    """((?:19|20)\d{2}[-._]?(?:0[1-9]|1[0-2])[-._]?(?:0[1-9]|[12]\d|3[01])(?!\d))|(\d{2}[-:.]\d{2}[-:.]\d{2}(?!\d))|""" +
-        """((?i:\d{3,4}[pi]|\d[k]|[xh]\.?26[45]|\d{1,2}bit|\d{2,3}fps)(?![a-z0-9]))|(\d+)|([A-Za-z]+)|(\s+)|(.)""",
+    """((?:19|20)[0-9]{2}[-._]?(?:0[1-9]|1[0-2])[-._]?(?:0[1-9]|[12][0-9]|3[01])(?![0-9]))|([0-9]{2}[-:.][0-9]{2}[-:.][0-9]{2}(?![0-9]))|""" +
+        """((?i:[0-9]{3,4}[pi]|[0-9][k]|[xh]\.?26[45]|[0-9]{1,2}bit|[0-9]{2,3}fps)(?![a-z0-9]))|([0-9]+)|([A-Za-z]+)|(\s+)|(.)""",
 )
 
 private sealed interface AlignToken {
@@ -113,7 +113,7 @@ internal fun alignedTitle(text: String): String? {
 }
 
 private val CONTAINERS = setOf("mp4", "mkv", "avi", "ts", "mov", "wmv", "m4v", "flv", "webm", "rmvb")
-private val COPY_SUFFIX = Regex("""\s*\(\d{1,2}\)""")
+private val COPY_SUFFIX = Regex("""\s*\([0-9]{1,2}\)""")
 private val VERSION_SEPARATORS = Regex("""[\s_.\-\[\]()【】（）+,]+""")
 
 /**

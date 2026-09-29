@@ -870,4 +870,4 @@ private val DigitKeys = listOf(
     Key.Zero, Key.One, Key.Two, Key.Three, Key.Four, Key.Five, Key.Six, Key.Seven, Key.Eight, Key.Nine,
 )
 private const val SUBTITLE_LABEL_MAX_LENGTH = 16
-private val PLAIN_EPISODE = Regex("""\d+(\.\d+)?""")
+private val PLAIN_EPISODE = Regex("""[0-9]+(\.[0-9]+)?""")

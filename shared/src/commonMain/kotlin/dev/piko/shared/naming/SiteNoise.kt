@@ -29,7 +29,7 @@ private val BRACKETED = Regex("""[\[【(]\s*(${host(ANY_TLD)})\s*[\]】)]""", Re
 private val CHANNEL_AD = Regex("""[\p{script=Han}A-Za-z]{0,12}(?:Telegram|TG|电报)[^@\s丨|]{0,12}@[A-Za-z0-9_]+[丨|\s_-]*""", RegexOption.IGNORE_CASE)
 
 // 论坛与分享站：短域名后缀，或名字里带数字（98t.la、2048.cc、hhd800.com）。出品方多是完整单词加 .com
-private val FORUM_LIKE = Regex("""(?i)\.(?:la|cc|vip|xyz|top|club|cn)$|\d""")
+private val FORUM_LIKE = Regex("""(?i)\.(?:la|cc|vip|xyz|top|club|cn)$|[0-9]""")
 
 internal fun stripSiteNoise(stem: String): String {
     var s = stem.replace(CHANNEL_AD, "").replace(AT_PREFIX, "").replace(ANYWHERE_AT, "")

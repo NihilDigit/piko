@@ -60,7 +60,7 @@ private class SceneRelease(val site: String, val label: String, val tags: List<M
 
 // scene 发布名：站点.YY.MM.DD.演员.标题[.XXX.1080p.MP4-组]。站点后面紧跟的是日期，不是集号
 private val SCENE_STOP_KINDS = setOf(TagKind.RESOLUTION, TagKind.VIDEO_CODEC, TagKind.AUDIO_CODEC, TagKind.SOURCE, TagKind.BIT_DEPTH, TagKind.FRAME_RATE)
-private val SCENE_RELEASE = Regex("""^([A-Za-z][A-Za-z0-9-]*[A-Za-z0-9])\.(\d{2})\.(0[1-9]|1[0-2])\.(0[1-9]|[12]\d|3[01])[.\-](.+)$""")
+private val SCENE_RELEASE = Regex("""^([A-Za-z][A-Za-z0-9-]*[A-Za-z0-9])\.([0-9]{2})\.(0[1-9]|1[0-2])\.(0[1-9]|[12][0-9]|3[01])[.\-](.+)$""")
 
 /**
  * 站点是作品，行标题是日期加标题。日期要留在行里：同一演员的几部，标题常常只有演员名。
@@ -115,21 +115,21 @@ internal sealed interface NameToken {
 }
 
 private val H26_DOTTED = Regex("""(?i)\bh\.26([45])\b""")
-private val UNDERSCORED_NUMBER = Regex("""(?<=\w)_(\d{1,4})(?=[_\s\[(]|$)""")
+private val UNDERSCORED_NUMBER = Regex("""(?<=\w)_([0-9]{1,4})(?=[_\s\[(]|$)""")
 private val MARKER_SPACES = Regex("""[\s_]+""")
 private val MENTION_SEPARATORS = Regex("""[\s_&+,.-]+""")
 private val AMBIGUOUS_MARKERS = setOf("op", "ed", "sp", "cm", "cf")
-private val SHORT_NUMBER = Regex("""^\d{1,2}$""")
-private val ABSOLUTE_NUMBER = Regex("""^\d{2,4}$""")
+private val SHORT_NUMBER = Regex("""^[0-9]{1,2}$""")
+private val ABSOLUTE_NUMBER = Regex("""^[0-9]{2,4}$""")
 private val WHITESPACE = Regex("""\s+""")
 // 完整日期与拍摄时间戳合成一个记号，否则点与下划线换成空格后月份、日子、毫秒各自成了集号候选：
 // 「archlinux-2026.04.01」的 04、「VID_20260913_090829_383」的 383
-private val DOTTED_DATE = Regex("""(?<!\d)((?:19|20)\d{2})[._](0[1-9]|1[0-2])[._](0[1-9]|[12]\d|3[01])(?!\d)""")
-private val CAMERA_TIMESTAMP = Regex("""(?<!\d)((?:19|20)\d{6})_(\d{6})(?:_(\d{1,3}))?(?!\d)""")
+private val DOTTED_DATE = Regex("""(?<![0-9])((?:19|20)[0-9]{2})[._](0[1-9]|1[0-2])[._](0[1-9]|[12][0-9]|3[01])(?![0-9])""")
+private val CAMERA_TIMESTAMP = Regex("""(?<![0-9])((?:19|20)[0-9]{6})_([0-9]{6})(?:_([0-9]{1,3}))?(?![0-9])""")
 // scene release 的两位年份日期：「blacked.25.08.26.name」「Hegre 21 02 23 name」。补成四位年份，交给词表当日期噪声
-private val SCENE_DATE = Regex("""(?<=[A-Za-z][._ ])(\d{2})[. ](0[1-9]|1[0-2])[. ](0[1-9]|[12]\d|3[01])(?=[._ ]|$)""")
+private val SCENE_DATE = Regex("""(?<=[A-Za-z][._ ])([0-9]{2})[. ](0[1-9]|1[0-2])[. ](0[1-9]|[12][0-9]|3[01])(?=[._ ]|$)""")
 // 整个主干只是「名字.编号」：czechstreets.121
-private val NAME_DOT_NUMBER = Regex("""^([A-Za-z]{2,})\.(\d{2,4})$""")
+private val NAME_DOT_NUMBER = Regex("""^([A-Za-z]{2,})\.([0-9]{2,4})$""")
 private val PARENTHESIZED = Regex("""[(（][^)）]*[)）]""")
 
 private val BRACKET_PAIRS = mapOf('[' to ']', '(' to ')', '【' to '】', '{' to '}', '（' to '）')
@@ -263,25 +263,25 @@ private const val STRENGTH_MARKER = 35
 private const val STRENGTH_DESCRIBED = 30
 private const val STRENGTH_WEAK = 10
 
-private val SE = Regex("""^S(\d{1,2})[\s.]?EP?(\d{1,4})(?:(?:-|~)E?P?(\d{1,4}))?(v\d+)?$""", RegexOption.IGNORE_CASE)
-private val NXNN = Regex("""^(\d{1,2})x(\d{2,3})$""")
-private val ABS_NXNN = Regex("""^(\d{2,4})-(\d{1,2})x(\d{2,3})$""")
-private val E_PREFIXED = Regex("""^(?:E|EP|Ep\.)(\d{1,4})(?:-E?P?(\d{1,4}))?(v\d+)?$""", RegexOption.IGNORE_CASE)
-private val EPISODE_PHRASE = Regex("""^(?:Episode|Ep\.?)\s*(\d{1,4})$""", RegexOption.IGNORE_CASE)
-private val HASH = Regex("""^[#＃](\d{1,4})$""")
-private val CJK_EPISODE = Regex("""^第?(\d{1,4})[话話集回]$""")
-private val CJK_EPISODE_IN_WORD = Regex("""第(\d{1,4})[话話集回]""")
-private val PLAIN_NUMBER = Regex("""^(\d{1,4})(?:\.(\d))?(?:([vV]\d{1,2})|([a-e]))?$""")
-private val LEADING_NUMBER = Regex("""^(\d{1,4})(?:-.*)?$""")
-private val RANGE = Regex("""^(\d{1,4})\s?[-~]\s?(\d{1,4})$""")
-private val NUMBER_WITH_SECTION = Regex("""^(\d{1,4})\s*\(\s*(SP|OVA|OAD|OAV|Special)\s*\)$""", RegexOption.IGNORE_CASE)
-private val SEASON_TAIL = Regex("""(?i)(?:\s+|^)(?:S(\d{1,2})|Season\s*(\d{1,2})|(\d{1,2})(?:st|nd|rd|th)\s+Season|第([一二三四五六七八九十\d]{1,3})季)$""")
-private val VERSION = Regex("""^(?:[vV](\d{1,2})|(Beta|Alpha)(?:[.\s]?Ver\.?)?|Ver\.?\s?(\d{1,2}))$""", RegexOption.IGNORE_CASE)
-private val DESCRIBED_WITH_NUMBER = Regex("""^(.*\p{L}.*?)[\s_]+(\d{1,3})$""")
+private val SE = Regex("""^S([0-9]{1,2})[\s.]?EP?([0-9]{1,4})(?:(?:-|~)E?P?([0-9]{1,4}))?(v[0-9]+)?$""", RegexOption.IGNORE_CASE)
+private val NXNN = Regex("""^([0-9]{1,2})x([0-9]{2,3})$""")
+private val ABS_NXNN = Regex("""^([0-9]{2,4})-([0-9]{1,2})x([0-9]{2,3})$""")
+private val E_PREFIXED = Regex("""^(?:E|EP|Ep\.)([0-9]{1,4})(?:-E?P?([0-9]{1,4}))?(v[0-9]+)?$""", RegexOption.IGNORE_CASE)
+private val EPISODE_PHRASE = Regex("""^(?:Episode|Ep\.?)\s*([0-9]{1,4})$""", RegexOption.IGNORE_CASE)
+private val HASH = Regex("""^[#＃]([0-9]{1,4})$""")
+private val CJK_EPISODE = Regex("""^第?([0-9]{1,4})[话話集回]$""")
+private val CJK_EPISODE_IN_WORD = Regex("""第([0-9]{1,4})[话話集回]""")
+private val PLAIN_NUMBER = Regex("""^([0-9]{1,4})(?:\.([0-9]))?(?:([vV][0-9]{1,2})|([a-e]))?$""")
+private val LEADING_NUMBER = Regex("""^([0-9]{1,4})(?:-.*)?$""")
+private val RANGE = Regex("""^([0-9]{1,4})\s?[-~]\s?([0-9]{1,4})$""")
+private val NUMBER_WITH_SECTION = Regex("""^([0-9]{1,4})\s*\(\s*(SP|OVA|OAD|OAV|Special)\s*\)$""", RegexOption.IGNORE_CASE)
+private val SEASON_TAIL = Regex("""(?i)(?:\s+|^)(?:S([0-9]{1,2})|Season\s*([0-9]{1,2})|([0-9]{1,2})(?:st|nd|rd|th)\s+Season|第([一二三四五六七八九十0-9]{1,3})季)$""")
+private val VERSION = Regex("""^(?:[vV]([0-9]{1,2})|(Beta|Alpha)(?:[.\s]?Ver\.?)?|Ver\.?\s?([0-9]{1,2}))$""", RegexOption.IGNORE_CASE)
+private val DESCRIBED_WITH_NUMBER = Regex("""^(.*\p{L}.*?)[\s_]+([0-9]{1,3})$""")
 private val GROUP_LIKE = Regex("""(?i)raws?\b|subs?\b|fansub|studio|字幕|&|组|組|社|team|\.com|\.net""")
-private val PART_WORD = Regex("""^(?:Part|Pt)[.\s]?(\d{1,2})$""", RegexOption.IGNORE_CASE)
-private val GLUED_LETTERS_NUMBER = Regex("""^([A-Za-z]{2,})(\d{1,4})$""")
-private val GLUED_TITLE_NUMBER = Regex("""^(\D.*?)-(\d{2,4})$""")
+private val PART_WORD = Regex("""^(?:Part|Pt)[.\s]?([0-9]{1,2})$""", RegexOption.IGNORE_CASE)
+private val GLUED_LETTERS_NUMBER = Regex("""^([A-Za-z]{2,})([0-9]{1,4})$""")
+private val GLUED_TITLE_NUMBER = Regex("""^([^0-9].*?)-([0-9]{2,4})$""")
 
 /** 分区标记词。键为小写，多词标记以单空格连接。 */
 private val MARKERS: Map<String, Section> = buildMap {
@@ -305,14 +305,14 @@ private val MARKERS: Map<String, Section> = buildMap {
 private val MARKERS_NEEDING_NUMBER = setOf("op", "ed", "cm", "cf", "film", "spot", "extra", "making", "images")
 
 private val MARKER_WITH_NUMBER = Regex(
-    """^(game\s?op|game\s?ed|ncop|nced|nc\s?op|nc\s?ed|op|ed|pv|cm|cf|sp|ova|oad|oav|menu|tokuten|special|movie|preview|trailer|teaser|opening|ending|images|extra|interview|m)[\s._-]?(\d{1,3})([a-e])?(?:[_-](\d{1,2}))?(?:v\d{1,2})?$""",
+    """^(game\s?op|game\s?ed|ncop|nced|nc\s?op|nc\s?ed|op|ed|pv|cm|cf|sp|ova|oad|oav|menu|tokuten|special|movie|preview|trailer|teaser|opening|ending|images|extra|interview|m)[\s._-]?([0-9]{1,3})([a-e])?(?:[_-]([0-9]{1,2}))?(?:v[0-9]{1,2})?$""",
     RegexOption.IGNORE_CASE,
 )
 
 private fun markerSection(text: String): Section? = MARKERS[text.lowercase().replace(MARKER_SPACES, " ").trim()]
 
 // 访谈：VCB-Studio 写作 IV01、IV02_1
-private val INTERVIEW_ENTRY = Regex("""^IV\d{1,2}(?:[_-]\d{1,2})?$""", RegexOption.IGNORE_CASE)
+private val INTERVIEW_ENTRY = Regex("""^IV[0-9]{1,2}(?:[_-][0-9]{1,2})?$""", RegexOption.IGNORE_CASE)
 
 /**
  * 方括号里的条目名属于哪个分区：「[CM]」「[PV Collection]」「[Menu01_1]」「[IV02_1]」「[Making Documentary]」。
@@ -809,7 +809,7 @@ private fun taggedBracketNumber(tokens: List<NameToken>, tagStart: Int): Hit? {
 }
 
 // 只收两三位：写在这个位置的集号都补零到两位，一位数与音轨数一类分不开
-private val TAGGED_EPISODE = Regex("""^(\d{2,3})(?:\s*(?:Fin|END|完))?$""", RegexOption.IGNORE_CASE)
+private val TAGGED_EPISODE = Regex("""^([0-9]{2,3})(?:\s*(?:Fin|END|完))?$""", RegexOption.IGNORE_CASE)
 
 /** 第一个标签段的位置：方括号整体是标签，或词在标签词表里。没有时为记号总数。 */
 private fun firstTagIndex(tokens: List<NameToken>, from: Int): Int {
