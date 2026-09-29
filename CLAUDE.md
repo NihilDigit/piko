@@ -104,8 +104,11 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 
 布局只看窗口宽度，不看设备：`ui/.../adaptive/WindowWidth.kt` 按 M3 断点给出 compact、medium、
 expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以 Android 平板为准。
-- 导航：`NavigationSuiteScaffold` 在 compact 下是底部导航栏，更宽时换成侧边导航栏。窗口到 1200dp（M3 large）
-  换成一整条侧边栏（`MainSidebar`）：上面是三个去处，下面是快速访问（`QuickAccessSection` / `QuickAccessState`），
+- 导航只有两套：compact 下是 `NavigationSuiteScaffold` 的底部导航栏（写死 `ShortNavigationBarCompact`，不交给库按窗口挑：
+  库还看高度，横握的手机会得到一条横向底栏），比 compact 宽（`SidebarMinWindowWidth`，600dp）一律是一整条侧边栏
+  （`MainSidebar`），连同外框与并进内容的标题栏。窗口不到 `SidebarPushMinWindowWidth`（1000dp）时侧边栏只占窄轨，
+  展开的那一份带遮罩浮在内容上（照模态抽屉，点遮罩、返回或去了别处就收回，不改存下的收起状态）；更宽时展开是推开内容。
+  侧边栏上面是去处，下面是快速访问（`QuickAccessSection` / `QuickAccessState`），
   照资源管理器只列用户固定的文件夹，文件夹右键「固定到快速访问」。PikPak 没有这项，存在偏好 `pinnedFolders` 里
   经设置同步带走（`PinnedFolders`，只存 ID 与名字，打开时按 ID 查上级）。只亮一处：人在固定的文件夹里时亮它，否则亮当前页。
   不要在导航栏旁边再并排一栏导航。侧边栏在 `NavDisplay` 外面，打开「我的」里的各页时不被盖住（应用内播放器这类
@@ -116,6 +119,8 @@ expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以
   原来窗口底部的状态栏已去掉，不要再加回。
   这一档画外框（`theme/Frame.kt`）：侧边栏、网盘页页眉与右侧面板同为外框色，各页内容是一张卡片；标题栏在 Windows 上
   可并进内容（设置里的「紧凑标题栏」，`WindowCaption`）：贴着窗口右上角的那一行自己画窗口按钮，空白处经 `windowDragArea` 登记为拖动区。
+  并进与否不看宽度：主界面任何宽度都接管（手机宽度时是各页顶栏画按钮），登录页这类主界面之外的页仍是系统标题栏。
+  新写的顶栏要能画按钮：挂 `rememberCaptionSlot()` 的 modifier，按钮接在动作后面，标题后面的空白登记为拖动区。
   各页一律用 `PikoScaffold`，不直接用 `Scaffold`：有外框时它把顶栏、底栏放在外框色上，内容裁成卡片；顶栏与底栏的高度
   取 `Frame.kt` 的 `FrameTopRowHeight`、`FrameBottomRowHeight`，与侧边栏的图标行、账号行对齐。
 - 图标：平时一律描边（Outlined），选中、打开、正在生效时换实心（Filled），侧边栏、导航项、视图切换、开关按钮都照此。
@@ -134,8 +139,8 @@ expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以
   回收站或事件接口取；库里平铺不解析、不折叠、不给排序，不能新建、上传、粘贴，也不接拖放。回收站只有恢复与彻底删除，
   最近添加与播放历史多一个「移除记录」，各库都多「在网盘中显示」。侧边栏里它们是开关：停在这个库时再点一下回到打开之前的位置。
   我的分享列的是链接不是文件，仍是单独的页。
-- 「我的」的详情页（我的分享、设置）：窄窗口是单页；expanded 由 `ListDetailSceneStrategy`
-  与垫在下面的 `Screen.Profile` 拼成两栏，列表栏 360dp，两栏时详情页不给返回，退出在列表栏的顶栏上。
+- 「我的」只在手机上是一页（底部导航栏的第三项）；有侧边栏时库与设置直接列在侧边栏上，账号、退出登录与关于并进设置，
+  详情页（我的分享、设置）占满内容区、不给返回。原来 600–1200dp 的两栏（`ListDetailSceneStrategy`）已去掉。
 - 对话框：目录选择器在 compact 下全屏，更宽时是居中的基本对话框。
 - 面板：一律经 `PikoSheet`。有外框时（大窗口）停进外框右侧那一栏（`SidePanelHost`），不带遮罩、不挡列表，与详情栏共用宽度；
   expanded 而没有外框时是从末端滑入的模态侧边面板，其余是只有展开一档的底部 sheet；
@@ -358,8 +363,9 @@ piko 源码仍是 MIT，但发版时要附 GPLv3 与第三方声明，并指明�
 - **macOS（实验性，仅 Apple 芯片）**：同一个 `desktopApp`，原生库与 Compose 运行库按宿主系统取，jpackage
   不能交叉构建，DMG 只在 `release.yml` 的 macos-15 runner 上打。mpv 运行库照 Animeko 用 MediaMP 的
   `mediamp-mpv-runtime-macos-arm64`，画面走 Metal。与 Windows 的差别：不做 AOT 缓存（训练晚于 jpackage 签名，
-  写进去会破坏签名封印）；播放器全屏用 `WindowPlacement.Fullscreen`；magnet 链接、Cmd+Q 与点 Dock 图标
-  经 Apple 事件进来；通知经 osascript（署名为脚本编辑器，自己署名要签过名的 bundle），防休眠经 caffeinate；
+  写进去会破坏签名封印）；播放器全屏用 `WindowPlacement.Fullscreen`；magnet 链接、.torrent、Cmd+Q 与点 Dock 图标
+  经 Apple 事件进来（回调在界面线程上，读种子挪到后台）；设为 magnet 与种子的默认打开方式经 LaunchServices 直接改
+  （`MacLinkAssociation`，Windows 则是登记后跳系统设置，见 `WindowsLinkAssociation`），首次启动问一次，答过不再问；通知经 osascript（署名为脚本编辑器，自己署名要签过名的 bundle），防休眠经 caffeinate；
   快捷键的主修饰键由 `PikoPlatform.shortcutModifier` 给出，mac 上是 ⌘。平台胶水集中在 `MacOs.kt`。
   应用内更新整个换掉 .app（见「平台差异」一节）：新包先拷到旁边，过了 `codesign --verify` 再去掉隔离属性、换进去；
   任何一步失败都留着旧包、重新打开它，下次启动时提示更新未完成（脚本写的 `failed` 标记）。
