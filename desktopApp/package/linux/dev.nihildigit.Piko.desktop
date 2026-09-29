@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=Piko
+GenericName=PikPak Client
+GenericName[zh_CN]=PikPak 客户端
+Comment=Third-party PikPak client for browsing, streaming and transferring files
+Comment[zh_CN]=PikPak 第三方客户端：浏览网盘、在线播放、上传下载
+Exec=@EXEC@ %U
+Icon=dev.nihildigit.Piko
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=PikPak;cloud;magnet;torrent;
+Keywords[zh_CN]=PikPak;网盘;磁力;种子;
+MimeType=x-scheme-handler/magnet;application/x-bittorrent;
+StartupWMClass=dev.nihildigit.Piko
+SingleMainWindow=true
