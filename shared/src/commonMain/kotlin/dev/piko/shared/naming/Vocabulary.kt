@@ -159,24 +159,24 @@ private val WEAK_TITLE_WORDS = setOf(
     "gb", "cr", "nf", "web", "ma", "hq", "dd", "remastered", "dubbed", "pcm",
 )
 
-private val RESOLUTION_P = Regex("""^(\d{3,4})[pPiI]$""")
+private val RESOLUTION_P = Regex("""^([0-9]{3,4})[pPiI]$""")
 
 // 「NNNp」只认常见的画面高度：合集名里的「200P」「435P」是图片张数
 internal val STANDARD_HEIGHTS = setOf(240, 288, 360, 480, 540, 576, 720, 900, 1080, 1440, 2160, 4320)
 
 // 合集的体积与数量：「45.7G」「69.2 GB」「154V」「42P+17V」「338V81P51G」。认得但不显示，
 // 这样整段方括号才会被当作标签段，从标题里去掉；数字后面的 GB 也就不会被当成简体字幕的 GB
-private val SIZE_OR_COUNT = Regex("""^(?:\d+(?:\.\d+)?[VPGMT]B?)+$""", RegexOption.IGNORE_CASE)
+private val SIZE_OR_COUNT = Regex("""^(?:[0-9]+(?:\.[0-9]+)?[VPGMT]B?)+$""", RegexOption.IGNORE_CASE)
 private val SIZE_UNITS = setOf("gb", "mb", "tb", "g", "m", "t")
-private val RESOLUTION_WXH = Regex("""^(\d{3,4})[xX×*](\d{3,4})$""")
+private val RESOLUTION_WXH = Regex("""^([0-9]{3,4})[xX×*]([0-9]{3,4})$""")
 private val CRC = Regex("""^[0-9A-Fa-f]{8}$""")
-private val AUDIO_WITH_CHANNELS = Regex("""^(aac|flac|ac3|eac3|e-ac3|dd|ddp|dd\+|dts|opus|lpcm|pcm|truehd)[\d.x]+$""", RegexOption.IGNORE_CASE)
-private val CHANNELS = Regex("""^\d\.\d(ch)?$|^\d+ch$""", RegexOption.IGNORE_CASE)
-private val FRAME_RATE = Regex("""^(\d{2,3})fps$""", RegexOption.IGNORE_CASE)
-private val YEAR = Regex("""^(19[5-9]\d|20[0-4]\d)$""")
-private val DATE_CODE = Regex("""^\d{6}$""")
-private val DATE = Regex("""^(19|20)\d{2}[-./](0?[1-9]|1[0-2]|00)[-./]\d{1,2}$""")
-private val VERSION_WORD = Regex("""^[vV]\d{1,2}$""")
+private val AUDIO_WITH_CHANNELS = Regex("""^(aac|flac|ac3|eac3|e-ac3|dd|ddp|dd\+|dts|opus|lpcm|pcm|truehd)[0-9.x]+$""", RegexOption.IGNORE_CASE)
+private val CHANNELS = Regex("""^[0-9]\.[0-9](ch)?$|^[0-9]+ch$""", RegexOption.IGNORE_CASE)
+private val FRAME_RATE = Regex("""^([0-9]{2,3})fps$""", RegexOption.IGNORE_CASE)
+private val YEAR = Regex("""^(19[5-9][0-9]|20[0-4][0-9])$""")
+private val DATE_CODE = Regex("""^[0-9]{6}$""")
+private val DATE = Regex("""^(19|20)[0-9]{2}[-./](0?[1-9]|1[0-2]|00)[-./][0-9]{1,2}$""")
+private val VERSION_WORD = Regex("""^[vV][0-9]{1,2}$""")
 
 private class Phrase(val hint: String, val regex: Regex, val replacement: String)
 

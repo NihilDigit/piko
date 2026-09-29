@@ -126,7 +126,7 @@ object PikoLog {
     // 只留协议与域名，排查时知道是哪台服务器就够了。本机回环代理的地址不含这些，照原样留着
     private val REMOTE_URL = Regex("""(https?://(?!127\.0\.0\.1|localhost)[^/\s"'<>]+)/[^\s"'<>]*""")
     private val EMAIL = Regex("""[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}""")
-    private val PHONE = Regex("""(?<!\d)1[3-9]\d{9}(?!\d)""")
+    private val PHONE = Regex("""(?<![0-9])1[3-9][0-9]{9}(?![0-9])""")
 
     // Windows 盘符路径、Android 与桌面的常见绝对路径、content: 与 file: URI。文件名里可以有空格，
     // 所以一直吃到行尾、引号或 Java 异常惯用的「 (原因)」之前
@@ -262,7 +262,7 @@ private class RollingLogFiles(private val directory: Path) {
 }
 
 /** 一条记录的开头：行首的时间戳，取到时间戳本身为止。 */
-private val ENTRY_START = Regex("""^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}""", RegexOption.MULTILINE)
+private val ENTRY_START = Regex("""^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}""", RegexOption.MULTILINE)
 
 /** [text] 里第一条时间不早于 [cutoff] 的记录从哪个字符开始；一条都没有时为 null。 */
 internal fun firstEntryNotBefore(text: String, cutoff: String): Int? =

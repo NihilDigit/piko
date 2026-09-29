@@ -109,7 +109,7 @@ private fun worthRewriting(
     return fromName.group != null || nameTags.isNotEmpty() || range != null || season != null || extras.isNotEmpty()
 }
 
-private val FOLDER_PART = Regex("""(?i)(?<![a-z])(?:pt|part)[\s.-]?\d""")
+private val FOLDER_PART = Regex("""(?i)(?<![a-z])(?:pt|part)[\s.-]?[0-9]""")
 
 private fun representsFolder(work: MediaWork, contentCount: Int): Boolean =
     isWork(work) && contentCount >= 2 && work.sections.sumOf { it.entries.size } * 2 >= contentCount
@@ -161,7 +161,7 @@ private fun mergeTags(primary: List<MediaTag>, secondary: List<MediaTag>): List<
 }
 
 // 后面跟着「号」「日」的是日期：「7月28-29号」
-private val FOLDER_RANGE = Regex("""(?<![\d.月])(?:第|E|EP)?(\d{1,4})\s*(?:-|~|～|到)\s*(?:E|EP)?(\d{1,4})(?![\d]|-?bit|p\b|\s*[号號日])""", RegexOption.IGNORE_CASE)
+private val FOLDER_RANGE = Regex("""(?<![0-9.月])(?:第|E|EP)?([0-9]{1,4})\s*(?:-|~|～|到)\s*(?:E|EP)?([0-9]{1,4})(?![0-9]|-?bit|p\b|\s*[号號日])""", RegexOption.IGNORE_CASE)
 
 private val SEASON_PREFIX = Regex("""(?i)(?:\b(?:season|part|vol\.?|set|disc)\s*|(?:^|[^a-z])s)$""")
 
@@ -187,7 +187,7 @@ private fun uniformSeason(work: MediaWork): Int? =
 
 // 「S01-04」「Season 1-4」是季的范围，不是某一季，交给 folderRange
 private val FOLDER_SEASON = Regex(
-    """(?i)(?<![a-z\d])(?:season\s*(\d{1,2})|s(\d{1,2})|(\d{1,2})(?:st|nd|rd|th)\s+season)(?!\d|\s*[-~～]\s*\d|e\d)""",
+    """(?i)(?<![a-z0-9])(?:season\s*([0-9]{1,2})|s([0-9]{1,2})|([0-9]{1,2})(?:st|nd|rd|th)\s+season)(?![0-9]|\s*[-~～]\s*[0-9]|e[0-9])""",
 )
 
 private fun folderSeason(name: String): Int? =
@@ -195,7 +195,7 @@ private fun folderSeason(name: String): Int? =
 
 // 文件夹名「Yuru Camp Season 2」里的 2 会被当成集号，作品名剩下一个悬空的「Season」。
 // 季号写在单独的方括号里时（「[Sousou no Frieren Season 2]」）不会被当成集号，季号连同数字留在作品名里
-private val DANGLING_SEASON = Regex("""(?i)\s+(?:season|s)(?:\s*\d{1,2})?$""")
+private val DANGLING_SEASON = Regex("""(?i)\s+(?:season|s)(?:\s*[0-9]{1,2})?$""")
 
 private fun stripSeasonWord(title: String): String = title.replace(DANGLING_SEASON, "").ifBlank { title }
 

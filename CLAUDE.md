@@ -436,6 +436,7 @@ Windows 上的 `:desktopApp:desktopTest`，Android 单测，x86_64 模拟器（A
 
 JVM 测试看不出 Android 与 HotSpot 的差异：Android 的正则是 ICU，不认 `\p{IsHan}` 这类 Java 专有写法，
 Android 8 上一编译就崩（1.0.0 出过）。`AndroidRegexGuardTest` 扫源码拦着，写脚本类用 `\p{script=Han}`。
+ICU 的 `\d` 还是全部 Unicode 数字，文件名里的 `𝟐` 被抓出来后 `toInt()` 就抛（1.1.0 信息流闪退），数字一律写 `[0-9]`，同一个测试拦着。
 对话框在 Android 上是按内容定高、居中的独立窗口，内容高度一变整个对话框就跳：对话框里不做尺寸动画，
 提示行常驻、出错只变色（issue #9）。
 老格式样片在 `testdata/media/`，直接提交，生成方式见 `generate.sh`；没有 WMV3/VC-1 样片，因为 ffmpeg 没有它的编码器。

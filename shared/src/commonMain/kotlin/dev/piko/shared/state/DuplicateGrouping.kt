@@ -115,7 +115,7 @@ internal val KEEP_ORDER: Comparator<DuplicateFile> =
         .thenBy { it.id }
 
 // 扩展名前的「 (1)」「(2)」「 - Copy」「 - 副本」「 copy」，可以连着好几个
-private val COPY_MARKER = Regex("""\s*\(\d{1,3}\)|\s*-\s*(?:copy\b|副本|复制)|\s+copy\b""", RegexOption.IGNORE_CASE)
+private val COPY_MARKER = Regex("""\s*\([0-9]{1,3}\)|\s*-\s*(?:copy\b|副本|复制)|\s+copy\b""", RegexOption.IGNORE_CASE)
 
 internal fun copyMarkerCount(name: String): Int {
     var stem = name.substringBeforeLast('.')
@@ -253,20 +253,20 @@ private fun episodeIdentity(
     }
 }
 
-private val REVISION = Regex("""(?i)v\d+""")
+private val REVISION = Regex("""(?i)v[0-9]+""")
 
 // 前后不能紧挨字母或数字：1920x1080 的 1920、2160p、校验码「[AB2019CD]」里的 2019 都不算年份
-private val YEAR = Regex("""(?<![\dA-Za-z×])((?:19|20)\d{2})(?![\dA-Za-z×])""")
+private val YEAR = Regex("""(?<![0-9A-Za-z×])((?:19|20)[0-9]{2})(?![0-9A-Za-z×])""")
 
 /** 文件名里最后一个像年份的数。取最后一个：「Blade Runner 2049 (2017)」的年份在后面。 */
 internal fun releaseYear(fileName: String): Int? =
     YEAR.findAll(fileName.substringBeforeLast('.')).lastOrNull()?.groupValues?.get(1)?.toInt()
 
 private val SEASON_PATTERNS = listOf(
-    Regex("""(?i)\bseason\s*(\d{1,2})\b"""),
-    Regex("""(?i)\b(\d{1,2})(?:st|nd|rd|th)\s+season\b"""),
-    Regex("""(?i)(?:^|[^a-z0-9])s(\d{1,2})(?:$|[^a-z0-9])"""),
-    Regex("""第\s*(\d{1,2})\s*[季期]"""),
+    Regex("""(?i)\bseason\s*([0-9]{1,2})\b"""),
+    Regex("""(?i)\b([0-9]{1,2})(?:st|nd|rd|th)\s+season\b"""),
+    Regex("""(?i)(?:^|[^a-z0-9])s([0-9]{1,2})(?:$|[^a-z0-9])"""),
+    Regex("""第\s*([0-9]{1,2})\s*[季期]"""),
 )
 private val CHINESE_SEASON = Regex("""第\s*([一二三四五六七八九十])\s*[季期]""")
 private const val CHINESE_DIGITS = "一二三四五六七八九十"
