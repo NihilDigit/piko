@@ -143,7 +143,7 @@ internal fun LocalTransferRow(
     val statusColor = task.statusColor()
 
     FileListItem(
-        headline = task.fileName,
+        headline = task.displayName,
         leading = { LocalTransferVisual(task = task, isMedia = isMedia, isSpoilerBlurred = isSpoilerBlurred) },
         onClick = { localPrimaryAction(task, files, onPlay, onStart, onPause)?.invoke() },
         onMoreClick = onMoreClick,
@@ -271,7 +271,7 @@ internal fun localTransferActions(
 internal fun LocalTransferSheet(task: DownloadTask, actions: List<SheetAction>, onDismiss: () -> Unit) {
     val statusColor = task.statusColor()
     ItemDetailsSheet(
-        title = task.fileName,
+        title = task.displayName,
         headerIcon = { ListLeadingIcon(task.typeIcon()) },
         actions = actions,
         onDismiss = onDismiss,

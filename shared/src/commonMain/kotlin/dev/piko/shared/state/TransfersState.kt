@@ -5,8 +5,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import dev.piko.download.DownloadBatch
 import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
+import dev.piko.shared.download.FolderListing
 import dev.piko.shared.data.OfflinePackJob
 import dev.piko.shared.data.OfflinePackStage
 import dev.piko.shared.data.OfflinePackTracker
@@ -36,6 +38,36 @@ sealed interface TransferItem {
     data class Local(val task: DownloadTask) : TransferItem {
         override val key: String get() = "local:${task.taskId}"
         override val createdAtMs: Long get() = task.createdAtMs
+    }
+
+    /**
+     * 一次文件夹下载：列出中或等确认时只有 [listing]，之后是任务表里同一批的 [tasks]。
+     * 各文件仍是普通任务，展开后各占一行（[Local]）。
+     */
+    data class LocalBatch(val batch: DownloadBatch, val tasks: List<DownloadTask>, val listing: FolderListing?) : TransferItem {
+        override val key: String get() = "batch:${batch.id}"
+        override val createdAtMs: Long get() = listing?.createdAtMs ?: tasks.minOfOrNull { it.createdAtMs } ?: 0L
+
+        val totalBytes: Long get() = tasks.sumOf { it.totalBytes }
+        val downloadedBytes: Long get() = tasks.sumOf { it.downloadedBytes }
+        val completedCount: Int get() = tasks.count { it.status == DownloadStatus.COMPLETED }
+        val failedCount: Int get() = tasks.count { it.status == DownloadStatus.FAILED }
+        val speedBytesPerSec: Long get() = tasks.sumOf { it.speedBytesPerSec }
+        val progress: Float get() = totalBytes.takeIf { it > 0 }?.let { (downloadedBytes.toFloat() / it).coerceIn(0f, 1f) } ?: 0f
+
+        /**
+         * 整组的状态：有一个还在下、排着或暂停就算进行中，其余有失败的算失败，否则完成。
+         * 列出失败与超额待确认都要用户处理，记作失败。
+         */
+        val status: DownloadStatus
+            get() = when {
+                listing != null -> if (listing.isListing) DownloadStatus.PENDING else DownloadStatus.FAILED
+                tasks.any { it.status == DownloadStatus.DOWNLOADING } -> DownloadStatus.DOWNLOADING
+                tasks.any { it.status == DownloadStatus.PENDING } -> DownloadStatus.PENDING
+                tasks.any { it.status == DownloadStatus.PAUSED } -> DownloadStatus.PAUSED
+                failedCount > 0 -> DownloadStatus.FAILED
+                else -> DownloadStatus.COMPLETED
+            }
     }
 
     data class Upload(val task: UploadTask) : TransferItem {
@@ -91,7 +123,7 @@ enum class TransferKind(val label: String) {
 
     fun matches(item: TransferItem): Boolean = when (this) {
         ALL -> true
-        DOWNLOAD -> item is TransferItem.Local
+        DOWNLOAD -> item is TransferItem.Local || item is TransferItem.LocalBatch
         UPLOAD -> item is TransferItem.Upload
         CLOUD -> item is TransferItem.Cloud || item is TransferItem.Pack || item is TransferItem.Instant
     }
@@ -120,6 +152,17 @@ class TransfersState(
     private val cloud = OfflineTasksState(taskRepo, scope)
 
     private var localTasks by mutableStateOf(coordinator.tasks.value.values.toList())
+
+    private var listings by mutableStateOf(coordinator.listings.value)
+
+    /** 文件夹下载，一批一项。还在列出的只有 listing，列完的只有任务。 */
+    private val batches: List<TransferItem.LocalBatch> by derivedStateOf {
+        val grouped = localTasks.filter { it.batch != null }.groupBy { it.batch!!.id }
+        (grouped.keys + listings.keys).map { id ->
+            val tasks = grouped[id].orEmpty().sortedBy { it.fileName }
+            TransferItem.LocalBatch(tasks.firstOrNull()?.batch ?: listings.getValue(id).batch, tasks, listings[id])
+        }
+    }
 
     private var uploadTasks by mutableStateOf(uploads.tasks.value.values.filter { it.account == account })
 
@@ -151,6 +194,7 @@ class TransfersState(
     private val allInProgress: List<TransferItem> by derivedStateOf {
         section(
             localFilter = { it.status in IN_PROGRESS_LOCAL },
+            batchFilter = { it.status in IN_PROGRESS_LOCAL },
             uploadFilter = { it.status.isActive || it.status == UploadStatus.PAUSED },
             cloudFilter = { it.phase == TaskPhase.PENDING || it.phase == TaskPhase.RUNNING },
             packFilter = { it.isActive },
@@ -160,6 +204,7 @@ class TransfersState(
     private val allNeedsAttention: List<TransferItem> by derivedStateOf {
         section(
             localFilter = { it.status == DownloadStatus.FAILED },
+            batchFilter = { it.status == DownloadStatus.FAILED },
             uploadFilter = { it.status == UploadStatus.FAILED },
             cloudFilter = { it.phase == TaskPhase.ERROR && !it.isOutputDeleted },
             packFilter = { it.stage == OfflinePackStage.FAILED },
@@ -168,7 +213,13 @@ class TransfersState(
 
     /** 已完成但产出文件后来被删的云端任务。不是失败，排在最后弱化显示。 */
     private val allOutputDeleted: List<TransferItem> by derivedStateOf {
-        section(localFilter = { false }, uploadFilter = { false }, cloudFilter = { it.isOutputDeleted }, packFilter = { false })
+        section(
+            localFilter = { false },
+            batchFilter = { false },
+            uploadFilter = { false },
+            cloudFilter = { it.isOutputDeleted },
+            packFilter = { false },
+        )
     }
 
     // 窗口起点在重算时取当前时刻，不随时钟自行推进；任务表一变就会重算，
@@ -177,6 +228,7 @@ class TransfersState(
         val windowStartMs = nowMs() - COMPLETED_CLOUD_WINDOW.inWholeMilliseconds
         section(
             localFilter = { it.status == DownloadStatus.COMPLETED },
+            batchFilter = { it.status == DownloadStatus.COMPLETED },
             uploadFilter = { it.status == UploadStatus.COMPLETED },
             cloudFilter = { task ->
                 val finishedAt = parseEpochMillis(task.updatedTime)
@@ -247,7 +299,9 @@ class TransfersState(
      * 「清除已完成」能清掉的记录：云端任务、上传、秒传与整包离线。本地下载不在内：它的记录就是找回
      * 下载文件的入口，删记录只能连文件一起删，那是逐项的「删除本地文件」，不该混进一键清除。
      */
-    val canClearCompleted: Boolean by derivedStateOf { allCompleted.any { it !is TransferItem.Local } }
+    val canClearCompleted: Boolean by derivedStateOf {
+        allCompleted.any { it !is TransferItem.Local && it !is TransferItem.LocalBatch }
+    }
 
     fun pauseAll() = allInProgress.filter(::isPausable).forEach(::pause)
 
@@ -261,7 +315,7 @@ class TransfersState(
                 is TransferItem.Upload -> removeUpload(item.task.taskId)
                 is TransferItem.Instant -> removeInstant(item.record.id)
                 is TransferItem.Pack -> discardPack(item.job.taskId)
-                is TransferItem.Local, is TransferItem.Cloud -> Unit
+                is TransferItem.Local, is TransferItem.LocalBatch, is TransferItem.Cloud -> Unit
             }
         }
     }
@@ -282,9 +336,11 @@ class TransfersState(
     var checkboxMode by mutableStateOf(false)
         private set
 
-    /** 选中项里还在列表上的，条目被移除后自然不算。 */
+    /** 选中项里还在列表上的，条目被移除后自然不算。文件夹下载展开后其中的文件也选得中。 */
     val selectedItems: List<TransferItem> by derivedStateOf {
-        (inProgress + needsAttention + completed + outputDeleted).filter { it.key in selectedKeys }
+        (inProgress + needsAttention + completed + outputDeleted)
+            .flatMap { item -> listOf(item) + (item as? TransferItem.LocalBatch)?.tasks.orEmpty().map { TransferItem.Local(it) } }
+            .filter { it.key in selectedKeys }
     }
 
     fun selectOnly(key: String) {
@@ -333,6 +389,9 @@ class TransfersState(
 
     fun isPausable(item: TransferItem): Boolean = when (item) {
         is TransferItem.Local -> item.task.status == DownloadStatus.DOWNLOADING || item.task.status == DownloadStatus.PENDING
+        // 列出中的一组还没有任务可停
+        is TransferItem.LocalBatch -> item.listing == null &&
+            item.tasks.any { it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.PENDING }
         is TransferItem.Upload -> item.task.status.isActive
         else -> false
     }
@@ -340,6 +399,7 @@ class TransfersState(
     /** 暂停的继续、失败的重试，都算「继续」。云端失败的重试要重新提交，走各自的操作。 */
     fun isResumable(item: TransferItem): Boolean = when (item) {
         is TransferItem.Local -> item.task.status == DownloadStatus.PAUSED || item.task.status == DownloadStatus.FAILED
+        is TransferItem.LocalBatch -> item.tasks.any { it.status == DownloadStatus.PAUSED || it.status == DownloadStatus.FAILED }
         is TransferItem.Upload -> item.task.status == UploadStatus.PAUSED || item.task.status == UploadStatus.FAILED
         else -> false
     }
@@ -347,6 +407,7 @@ class TransfersState(
     fun pause(item: TransferItem) {
         when (item) {
             is TransferItem.Local -> pauseLocal(item.task.taskId)
+            is TransferItem.LocalBatch -> coordinator.pauseBatch(item.batch.id)
             is TransferItem.Upload -> pauseUpload(item.task.taskId)
             else -> Unit
         }
@@ -355,6 +416,7 @@ class TransfersState(
     fun resume(item: TransferItem) {
         when (item) {
             is TransferItem.Local -> resumeLocal(item.task.taskId)
+            is TransferItem.LocalBatch -> coordinator.resumeBatch(item.batch.id)
             is TransferItem.Upload -> resumeUpload(item.task.taskId)
             else -> Unit
         }
@@ -364,6 +426,7 @@ class TransfersState(
     fun remove(item: TransferItem) {
         when (item) {
             is TransferItem.Local -> removeLocal(item.task.taskId)
+            is TransferItem.LocalBatch -> removeBatch(item.batch.id)
             is TransferItem.Upload -> removeUpload(item.task.taskId)
             is TransferItem.Cloud -> deleteCloud(item.task.id)
             is TransferItem.Pack -> discardPack(item.job.taskId)
@@ -392,7 +455,7 @@ class TransfersState(
             when (item) {
                 is TransferItem.Cloud -> item.task.fileId
                 is TransferItem.Pack -> item.job.outputId
-                is TransferItem.Local, is TransferItem.Upload, is TransferItem.Instant -> null
+                is TransferItem.Local, is TransferItem.LocalBatch, is TransferItem.Upload, is TransferItem.Instant -> null
             }?.takeIf { it.isNotEmpty() }
         }
     }
@@ -405,6 +468,9 @@ class TransfersState(
     init {
         scope.launch {
             coordinator.tasks.collect { localTasks = it.values.toList() }
+        }
+        scope.launch {
+            coordinator.listings.collect { listings = it }
         }
         scope.launch {
             packTracker.jobs.collect { packJobs = it }
@@ -454,6 +520,26 @@ class TransfersState(
     /** 取消并删除本地文件。已完成的任务删的是成品，未完成的删的是半截文件。 */
     fun removeLocal(taskId: String) = coordinator.cancelDownload(taskId)
 
+    /** 取消整个文件夹下载，已下载的文件一并删除；还在列出的停下。 */
+    fun removeBatch(batchId: String) = coordinator.cancelBatch(batchId)
+
+    fun pauseBatch(batchId: String) = coordinator.pauseBatch(batchId)
+
+    fun resumeBatch(batchId: String) = coordinator.resumeBatch(batchId)
+
+    fun retryListing(batchId: String) = coordinator.retryListing(batchId)
+
+    /** 超出今日下载额度也照样下载。 */
+    fun confirmListing(batchId: String) = coordinator.confirmListing(batchId)
+
+    /** 打开一组对应的文件夹：交给平台前要先查出它在本机的位置，SAF 目录下是查一遍目录树。 */
+    fun withBatchFolder(batch: DownloadBatch, open: (String) -> Unit) {
+        scope.launch {
+            val path = coordinator.batchFolderPath(batch)
+            if (path == null) _messages.tryEmit("文件夹已不存在") else open(path)
+        }
+    }
+
     fun pauseUpload(taskId: String) = uploads.pause(taskId)
 
     /** 继续暂停的上传，或重试失败的上传。 */
@@ -493,12 +579,15 @@ class TransfersState(
 
     private fun section(
         localFilter: (DownloadTask) -> Boolean,
+        batchFilter: (TransferItem.LocalBatch) -> Boolean,
         uploadFilter: (UploadTask) -> Boolean,
         cloudFilter: (DriveTask) -> Boolean,
         packFilter: (OfflinePackJob) -> Boolean,
         instantFilter: (InstantSaveRecord) -> Boolean = { false },
     ): List<TransferItem> {
-        val localItems = localTasks.filter(localFilter).map { TransferItem.Local(it) } +
+        // 文件夹下载里的文件只在它那一组里，按整组的状态归段
+        val localItems = localTasks.filter { it.batch == null && localFilter(it) }.map { TransferItem.Local(it) } +
+            batches.filter(batchFilter) +
             uploadTasks.filter(uploadFilter).map { TransferItem.Upload(it) }
         // 被整包离线跟踪的任务只以 Pack 出现：列表接口仍会返回它，不滤掉就是两行
         val packIds = packJobs.mapTo(HashSet()) { it.taskId }

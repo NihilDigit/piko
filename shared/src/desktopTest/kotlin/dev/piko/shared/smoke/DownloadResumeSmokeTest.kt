@@ -17,13 +17,15 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /** 与 DesktopPikoDownloadStorage 同样的落盘方式：普通目录，写入即最终位置。 */
-private class DirectoryStorage(private val directory: File) : PikoDownloadStorage {
+internal class DirectoryStorage(private val directory: File) : PikoDownloadStorage {
     override fun pathFor(fileName: String): String = directory.resolve(fileName).absolutePath
     override suspend fun downloadTarget(fileName: String): String = pathFor(fileName)
     override suspend fun commit(fileName: String, downloadedPath: String): String = downloadedPath
     override suspend fun existingLength(fileName: String): Long = directory.resolve(fileName).length()
     override suspend fun exists(fileName: String): Boolean = directory.resolve(fileName).exists()
     override suspend fun delete(path: String): Boolean = File(path).delete()
+    override suspend fun locate(fileName: String): String? = directory.resolve(fileName).takeIf { it.exists() }?.absolutePath
+    override suspend fun pruneEmptyFolders(folder: String) = Unit
 }
 
 class DownloadResumeSmokeTest {

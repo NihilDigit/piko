@@ -22,17 +22,26 @@ object FileNameSanitizer {
             fallback.isNotEmpty() -> fallback
             else -> ""
         }
-        var cleanBase = rawBase
-            .replace(':', ' ').replace('/', '-').replace('\\', '-').replace('|', '-')
-            .replace('?', ' ').replace('*', ' ').replace('"', '\'')
-            .replace('<', '[').replace('>', ']').replace(ILLEGAL_CHARS, " ")
-            .replace('\u00A0', ' ').replace('\u200B', ' ').replace(MULTI_SPACE, " ")
-            .trim().trimEnd('.', ' ', '-').trimStart('.', ' ')
+        var cleanBase = clean(rawBase)
         if (cleanBase.isBlank()) cleanBase = if (isVideoFileName("file$finalExt")) "unnamed_video" else "unnamed_file"
         val maxBaseLength = 200 - finalExt.length
         if (cleanBase.length > maxBaseLength) cleanBase = cleanBase.take(maxBaseLength).trimEnd('.', ' ', '-')
         return cleanBase + finalExt
     }
+
+    /**
+     * \u6587\u4EF6\u5939\u540D\u3002\u4E0D\u6309\u6269\u5C55\u540D\u62C6\uFF1Asanitize \u4F1A\u628A\u300CShow.S01\u300D\u7684\u300C.S01\u300D\u5F53\u6269\u5C55\u540D\u6539\u6210\u5C0F\u5199\uFF0C
+     * \u540C\u4E00\u90E8\u5267\u7684\u51E0\u5B63\u6587\u4EF6\u5939\u843D\u5230\u672C\u673A\u5C31\u4E0E\u7F51\u76D8\u91CC\u7684\u540D\u5B57\u5BF9\u4E0D\u4E0A\u4E86\u3002
+     */
+    fun sanitizeFolderName(rawName: String): String =
+        clean(rawName).take(200).trimEnd('.', ' ', '-').ifBlank { "unnamed_folder" }
+
+    private fun clean(raw: String): String = raw
+        .replace(':', ' ').replace('/', '-').replace('\\', '-').replace('|', '-')
+        .replace('?', ' ').replace('*', ' ').replace('"', '\'')
+        .replace('<', '[').replace('>', ']').replace(ILLEGAL_CHARS, " ")
+        .replace('\u00A0', ' ').replace('\u200B', ' ').replace(MULTI_SPACE, " ")
+        .trim().trimEnd('.', ' ', '-').trimStart('.', ' ')
 
     fun findDominantVideoIndex(files: List<Pair<String, Long>>): Int? {
         val videos = files.mapIndexedNotNull { index, (name, size) -> if (isVideoFileName(name)) Triple(index, name, size) else null }

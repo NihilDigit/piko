@@ -11,17 +11,19 @@ class DesktopPikoDownloadStorage(
 ) : PikoDownloadStorage {
     private val directory: File get() = directoryProvider()
 
+    // File.resolve 在 Windows 上也认 / 分隔的相对路径
     override fun pathFor(fileName: String): String = directory.resolve(fileName).absolutePath
 
     override suspend fun downloadTarget(fileName: String): String = withContext(Dispatchers.IO) {
-        directory.mkdirs()
-        directory.resolve(fileName).absolutePath
+        val target = directory.resolve(fileName)
+        target.parentFile?.mkdirs()
+        target.absolutePath
     }
 
     override suspend fun commit(fileName: String, downloadedPath: String): String = downloadedPath
 
     override suspend fun existingLength(fileName: String): Long = withContext(Dispatchers.IO) {
-        directory.resolve(fileName).takeIf { it.exists() }?.length() ?: 0L
+        directory.resolve(fileName).takeIf { it.isFile }?.length() ?: 0L
     }
 
     override suspend fun exists(fileName: String): Boolean = withContext(Dispatchers.IO) {
@@ -30,5 +32,15 @@ class DesktopPikoDownloadStorage(
 
     override suspend fun delete(path: String): Boolean = withContext(Dispatchers.IO) {
         File(path).takeIf { it.isAbsolute }?.delete() == true || directory.resolve(path).delete()
+    }
+
+    override suspend fun locate(fileName: String): String? = withContext(Dispatchers.IO) {
+        directory.resolve(fileName).takeIf { it.exists() }?.absolutePath
+    }
+
+    override suspend fun pruneEmptyFolders(folder: String) = withContext(Dispatchers.IO) {
+        val root = directory.resolve(folder)
+        // 自底向上：子文件夹先删空，上级才删得掉
+        if (root.isDirectory) root.walkBottomUp().filter { it.isDirectory }.forEach { it.delete() }
     }
 }

@@ -172,6 +172,13 @@ fun TransfersScreen(
 
     // 只记本次查看：这一组是低价值的历史，默认收起
     var deletedExpanded by rememberSaveable { mutableStateOf(false) }
+    // 展开了的文件夹下载，按组的 key。默认收起：一组可能有上千个文件
+    val expandedBatches = rememberSaveable(saver = listSaver({ it.toList() }, { it.toMutableStateList() })) {
+        mutableStateListOf<String>()
+    }
+    fun toggleBatch(key: String) {
+        if (!expandedBatches.remove(key)) expandedBatches.add(key)
+    }
 
     // 片段的 fileId 是源视频的，播放器找不到本地文件时会按它退回云端，放出来的是整段原片。
     // 片段只该播本地文件，不给 fileId，打不开就报错
@@ -185,8 +192,23 @@ fun TransfersScreen(
 
     val localFiles = platform.localFiles
 
+    fun batchIntents(item: TransferItem.LocalBatch): LocalBatchIntents {
+        val id = item.batch.id
+        return LocalBatchIntents(
+            onToggleExpand = { toggleBatch(item.key) },
+            onPause = { state.pauseBatch(id) },
+            onResume = { state.resumeBatch(id) },
+            onRetryListing = { state.retryListing(id) },
+            onConfirm = { state.confirmListing(id) },
+            onOpenFolder = { state.withBatchFolder(item.batch) { localFiles.openExternally(it, isMedia = false) } },
+            onRevealFolder = { state.withBatchFolder(item.batch) { localFiles.openContainingFolder(it) } },
+            onRemove = { state.removeBatch(id) },
+        )
+    }
+
     // 一项的全部操作，详情面板与右键菜单共用：两处给的总是同一组
     fun actionsFor(item: TransferItem): List<SheetAction> = when (item) {
+        is TransferItem.LocalBatch -> localBatchActions(item, item.key in expandedBatches, batchIntents(item))
         is TransferItem.Local -> localTransferActions(
             task = item.task,
             files = localFiles,
@@ -224,6 +246,7 @@ fun TransfersScreen(
 
     // 点按一项做的事，轻点与鼠标双击共用
     fun primaryActionFor(item: TransferItem): (() -> Unit)? = when (item) {
+        is TransferItem.LocalBatch -> localBatchPrimaryAction(item, batchIntents(item)) { detailsKey = item.key }
         is TransferItem.Local -> localPrimaryAction(
             task = item.task,
             files = localFiles,
@@ -246,9 +269,9 @@ fun TransfersScreen(
         is TransferItem.Instant -> { { openCloudFileById(item.record.locateId, item.record.name) } }
     }
 
-    // 眼前列出的先后，连选与全选按它。收起的「文件已删除」组不在其中
+    // 眼前列出的先后，连选与全选按它。收起的「文件已删除」组不在其中，展开的文件夹下载连同其中的文件
     val visibleOrder = (state.inProgress + state.needsAttention + state.completed +
-        if (deletedExpanded) state.outputDeleted else emptyList()).map { it.key }
+        if (deletedExpanded) state.outputDeleted else emptyList()).withBatchChildren(expandedBatches).map { it.key }
     val selectionActive = state.selectedKeys.isNotEmpty()
     var confirmingDelete by remember { mutableStateOf(false) }
 
@@ -273,6 +296,13 @@ fun TransfersScreen(
     fun TransferRow(item: TransferItem) {
         val selection = rowSelection(item)
         when (item) {
+            is TransferItem.LocalBatch -> LocalBatchRow(
+                item = item,
+                expanded = item.key in expandedBatches,
+                intents = batchIntents(item),
+                onMoreClick = { detailsKey = item.key },
+                selection = selection,
+            )
             is TransferItem.Local -> LocalTransferRow(
                 task = item.task,
                 onPlay = { playLocal(item.task) },
@@ -346,7 +376,7 @@ fun TransfersScreen(
                             focusList()
                         },
                         onOpen = { primaryActionFor(item)?.invoke() },
-                        trailingPassThrough = NarrowRowTrailingWidth,
+                        trailingPassThrough = if (item is TransferItem.LocalBatch) BatchRowTrailingWidth else NarrowRowTrailingWidth,
                     ),
             ) {
                 TransferRow(item)
@@ -465,6 +495,7 @@ fun TransfersScreen(
                                 sidePadding = sidePadding,
                                 deletedExpanded = deletedExpanded,
                                 onToggleDeleted = { deletedExpanded = !deletedExpanded },
+                                expandedBatches = expandedBatches,
                                 renderItem = renderItem,
                                 gridState = gridStates.getValue(kind),
                                 modifier = Modifier.fillMaxSize(),
@@ -500,14 +531,17 @@ fun TransfersScreen(
         )
     }
 
+    // 文件夹下载里的文件不在各段里，要到各组里找
     val detailsItem = detailsKey?.let { key ->
         sequenceOf(state.inProgress, state.needsAttention, state.completed, state.outputDeleted)
             .flatten()
+            .flatMap { item -> sequenceOf(item) + ((item as? TransferItem.LocalBatch)?.tasks.orEmpty().map { TransferItem.Local(it) }) }
             .firstOrNull { it.key == key }
     }
     val closeDetails = { detailsKey = null }
     when (detailsItem) {
         null -> Unit
+        is TransferItem.LocalBatch -> LocalBatchSheet(detailsItem, actionsFor(detailsItem), closeDetails)
         is TransferItem.Local -> LocalTransferSheet(detailsItem.task, actionsFor(detailsItem), closeDetails)
         is TransferItem.Upload -> UploadTransferSheet(detailsItem.task, actionsFor(detailsItem), closeDetails)
         is TransferItem.Cloud -> CloudTransferSheet(detailsItem.task, actionsFor(detailsItem), closeDetails)
@@ -542,6 +576,7 @@ private fun TransfersList(
     sidePadding: Dp,
     deletedExpanded: Boolean,
     onToggleDeleted: () -> Unit,
+    expandedBatches: List<String>,
     renderItem: @Composable (TransferItem, Modifier) -> Unit,
     gridState: LazyGridState,
     modifier: Modifier = Modifier,
@@ -559,9 +594,11 @@ private fun TransfersList(
             return@Box
         }
         // 能框选的只有条目，分组标题的 key 带 header: 前缀，不算
-        val selectable = remember(sections, deletedExpanded) {
+        val expanded = expandedBatches.toSet()
+        val selectable = remember(sections, deletedExpanded, expanded) {
             (sections.inProgress + sections.needsAttention + sections.completed +
                 if (deletedExpanded) sections.outputDeleted else emptyList())
+                .withBatchChildren(expanded)
                 .mapTo(HashSet()) { it.key }
         }
         PikoItemGrid(
@@ -578,9 +615,9 @@ private fun TransfersList(
                 movable = { false },
             ),
         ) {
-            transferSection("进行中", sections.inProgress, renderItem)
-            transferSection("需要处理", sections.needsAttention, renderItem, onClearCloud = state::clearFailedCloud)
-            transferSection("已完成", sections.completed, renderItem)
+            transferSection("进行中", sections.inProgress, expanded, renderItem)
+            transferSection("需要处理", sections.needsAttention, expanded, renderItem, onClearCloud = state::clearFailedCloud)
+            transferSection("已完成", sections.completed, expanded, renderItem)
             deletedOutputSection(
                 items = sections.outputDeleted,
                 expanded = deletedExpanded,
@@ -597,7 +634,9 @@ private fun TransfersList(
  */
 @Composable
 private fun DeleteSelectedDialog(items: List<TransferItem>, onConfirm: () -> Unit, onDismiss: () -> Unit) {
-    val deletesFiles = items.any { it is TransferItem.Local && it.task.status == DownloadStatus.COMPLETED }
+    val deletesFiles = items.any {
+        (it is TransferItem.Local && it.task.status == DownloadStatus.COMPLETED) || (it is TransferItem.LocalBatch && it.completedCount > 0)
+    }
     val cancelsUploads = items.any { it is TransferItem.Upload && it.task.status != UploadStatus.COMPLETED }
     val notes = listOfNotNull(
         "已下载的文件会从本机删除。".takeIf { deletesFiles },
@@ -641,9 +680,39 @@ private val SectionHeaderHeight = 48.dp
  */
 private val SidePadding = 8.dp
 
+/** 展开的文件夹下载后面接上其中的各文件，其余照旧。 */
+private fun List<TransferItem>.withBatchChildren(expanded: Collection<String>): List<TransferItem> = flatMap { item ->
+    if (item is TransferItem.LocalBatch && item.key in expanded) listOf(item) + item.tasks.map { TransferItem.Local(it) } else listOf(item)
+}
+
+/**
+ * 一段的条目。展开的文件夹下载占满一行作组头，其中的文件接在下面，末尾再用一个占满一行的空项断开：
+ * 网格是多栏的，不断开的话段里下一项会挤进最后一个文件旁边的空格，看着像是组里的。
+ */
+private fun LazyGridScope.transferItems(
+    items: List<TransferItem>,
+    expanded: Set<String>,
+    renderItem: @Composable (TransferItem, Modifier) -> Unit,
+) {
+    var start = 0
+    fun flushUntil(end: Int) {
+        if (end > start) items(items.subList(start, end), key = { it.key }) { item -> renderItem(item, Modifier.animateItem()) }
+    }
+    items.forEachIndexed { index, item ->
+        if (item !is TransferItem.LocalBatch || item.key !in expanded) return@forEachIndexed
+        flushUntil(index)
+        start = index + 1
+        fullLineItem(key = item.key) { renderItem(item, Modifier.animateItem()) }
+        items(item.tasks, key = { "local:${it.taskId}" }) { task -> renderItem(TransferItem.Local(task), Modifier.animateItem()) }
+        fullLineItem(key = "end:${item.key}") {}
+    }
+    flushUntil(items.size)
+}
+
 private fun LazyGridScope.transferSection(
     title: String,
     items: List<TransferItem>,
+    expanded: Set<String>,
     renderItem: @Composable (TransferItem, Modifier) -> Unit,
     /** 清除这一段的云端任务记录。只在段内有云端任务时给出，本地下载不受影响。 */
     onClearCloud: (() -> Unit)? = null,
@@ -671,9 +740,7 @@ private fun LazyGridScope.transferSection(
             }
         }
     }
-    items(items, key = { it.key }) { item ->
-        renderItem(item, Modifier.animateItem())
-    }
+    transferItems(items, expanded, renderItem)
 }
 
 /**

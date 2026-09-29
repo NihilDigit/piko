@@ -51,7 +51,8 @@ internal fun rememberTransferActivity(): TransferActivity {
     return TransferActivity(
         downloadSpeed = activeDownloads.sumOf { it.speedBytesPerSec },
         uploadSpeed = activeUploads.sumOf { it.speedBytesPerSec },
-        count = activeDownloads.size + activeUploads.size + activeCloud,
+        // 文件夹下载一批算一项，与传输页一致；按文件数的话一个文件夹就是上千项
+        count = activeDownloads.distinctBy { it.batch?.id ?: it.taskId }.size + activeUploads.size + activeCloud,
     )
 }
 

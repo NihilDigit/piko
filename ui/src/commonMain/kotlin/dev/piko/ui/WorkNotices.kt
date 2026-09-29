@@ -1,6 +1,7 @@
 package dev.piko.ui
 
 import androidx.compose.runtime.snapshotFlow
+import dev.piko.download.DownloadBatch
 import dev.piko.download.DownloadStatus
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.download.PikoDownloadCoordinator
@@ -40,14 +41,33 @@ private fun downloadNotices(downloads: PikoDownloadCoordinator): Flow<WorkNotice
         val previous = previousStatuses
         previousStatuses = tasks.mapValues { it.value.status }
         if (previous == null) return@collect
+        val changedBatches = mutableSetOf<DownloadBatch>()
         tasks.forEach { (id, task) ->
             val before = previous[id] ?: return@forEach
             if (before == task.status) return@forEach
+            // 文件夹下载逐个报会刷屏，整批停下时汇总成一条
+            task.batch?.let {
+                changedBatches += it
+                return@forEach
+            }
             when (task.status) {
                 DownloadStatus.COMPLETED -> emit(WorkNotice("下载完成", "${task.fileName} 已下载到本机"))
                 DownloadStatus.FAILED -> emit(WorkNotice("下载失败", "${task.fileName}：${task.errorMessage ?: "未知错误"}"))
                 else -> Unit
             }
+        }
+        changedBatches.forEach { batch ->
+            val members = tasks.values.filter { it.batch?.id == batch.id }
+            // 还有在下、排着或暂停的，这一批就还没结束
+            if (members.any { it.status != DownloadStatus.COMPLETED && it.status != DownloadStatus.FAILED }) return@forEach
+            val failed = members.count { it.status == DownloadStatus.FAILED }
+            emit(
+                if (failed == 0) {
+                    WorkNotice("下载完成", "${batch.folderName} 已下载到本机，共 ${members.size} 个文件")
+                } else {
+                    WorkNotice("下载失败", "${batch.folderName}：$failed 个文件下载失败")
+                },
+            )
         }
     }
 }
