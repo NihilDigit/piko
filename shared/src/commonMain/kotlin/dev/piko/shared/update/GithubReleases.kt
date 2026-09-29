@@ -6,6 +6,7 @@ import io.ktor.client.request.header
 import io.ktor.client.request.prepareGet
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.HttpStatusCode
 import io.ktor.http.isSuccess
 import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.CancellationException
@@ -155,6 +156,51 @@ class GithubReleaseClient(
                         }
                     }
                     check(asset.size <= 0 || written == asset.size) { "下载不完整：$written / ${asset.size}" }
+                }
+                return
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                if (written > 0) throw e
+                failure = e.also { current -> failure?.let(current::addSuppressed) }
+            }
+        }
+        throw checkNotNull(failure) { "${asset.name} 没有下载地址" }
+    }
+
+    /**
+     * 只下附件的一段，[range] 为闭区间。Linux 的 zsync 差分更新用它取新 AppImage 里本机没有的块。
+     * 换地址的规则同 [download]。服务器不认 Range、回的是整个文件（200）或别的区间时算失败，换下一个地址：
+     * 照单全收会把整包写进这一段的位置。
+     */
+    suspend fun downloadRange(
+        asset: ReleaseAsset,
+        range: LongRange,
+        onChunk: (buffer: ByteArray, length: Int) -> Unit,
+    ) {
+        val expected = range.last - range.first + 1
+        var failure: Throwable? = null
+        for (url in asset.urls) {
+            var written = 0L
+            try {
+                http.prepareGet(url) {
+                    header("User-Agent", userAgent)
+                    header("Range", "bytes=${range.first}-${range.last}")
+                }.execute { response ->
+                    check(response.status == HttpStatusCode.PartialContent) { "HTTP ${response.status.value}，不是分段响应 ($url)" }
+                    val contentRange = response.headers["Content-Range"].orEmpty()
+                    check(contentRange.startsWith("bytes ${range.first}-${range.last}/")) { "分段响应的区间不符：$contentRange ($url)" }
+                    val channel = response.bodyAsChannel()
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        val read = channel.readAvailable(buffer)
+                        if (read < 0) break
+                        if (read == 0) continue
+                        check(written + read <= expected) { "分段响应超出区间 ($url)" }
+                        onChunk(buffer, read)
+                        written += read
+                    }
+                    check(written == expected) { "分段下载不完整：$written / $expected" }
                 }
                 return
             } catch (e: CancellationException) {

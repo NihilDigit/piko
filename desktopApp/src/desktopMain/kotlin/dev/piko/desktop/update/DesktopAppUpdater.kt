@@ -1,6 +1,8 @@
 package dev.piko.desktop.update
 
 import com.github.luben.zstd.util.ZstdVersion
+import dev.piko.desktop.LinuxDesktop
+import dev.piko.desktop.isLinux
 import dev.piko.desktop.isMacOs
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.update.ChecksumMismatchException
@@ -36,6 +38,8 @@ data class DesktopUpdate(
             is DesktopUpdatePlan.Installer -> plan.msi.size
             is DesktopUpdatePlan.Portable -> plan.zip.size
             is DesktopUpdatePlan.MacBundle -> plan.dmg.size
+            // 控制文件在检查时已经下过了，不算在内
+            is DesktopUpdatePlan.AppImage -> plan.delta?.plan?.downloadBytes ?: plan.appImage.size
             is DesktopUpdatePlan.Manual -> plan.download.size
         }
     override val canInstallInApp: Boolean get() = plan !is DesktopUpdatePlan.Manual
@@ -67,14 +71,26 @@ sealed interface DesktopUpdatePlan {
     data class MacBundle(val dmg: ReleaseAsset, val bundle: File) : DesktopUpdatePlan
 
     /**
+     * Linux：整个 AppImage 换成新版。[target] 是本机正在用的那个文件（APPIMAGE 给出的路径）。
+     * [delta] 不为 null 时按 zsync 只下本机没有的块，拼不出来再整包下载；为 null 时（Release 没有 .zsync、
+     * 本机文件读不了）直接整包下载。新文件先写在 [target] 旁边，校验过才改名换上。
+     */
+    data class AppImage(val appImage: ReleaseAsset, val target: File, val delta: ZsyncDelta?) : DesktopUpdatePlan
+
+    /** zsync 差分：控制文件（Release 附件）与拿本机 AppImage 对照出的下载计划。 */
+    class ZsyncDelta internal constructor(val control: ReleaseAsset, internal val plan: ZsyncPlan)
+
+    /**
      * 只给下载页：开发时从 gradle 直接跑；macOS 上 .app 所在的位置换不了（在 DMG 里直接开的、所在目录不可写、
-     * 被系统随机挪到只读位置运行的）。[download] 是该平台的安装包，只用来显示大小。
+     * 被系统随机挪到只读位置运行的）；Linux 上不是以 AppImage 运行（解开的 app-image），或 AppImage 所在目录不可写。
+     * [download] 是该平台的安装包，只用来显示大小。
      */
     data class Manual(val download: ReleaseAsset) : DesktopUpdatePlan
 }
 
 /**
- * Windows 端的应用内更新。
+ * 桌面端的应用内更新。以下说的是 Windows；macOS 整包换 .app（[DesktopUpdatePlan.MacBundle]），
+ * Linux 整个换 AppImage、按 zsync 只下变了的块（[DesktopUpdatePlan.AppImage]）。
  *
  * 每个版本除了 MSI 与便携 zip，还附一份应用目录清单（files.json）与只含易变文件的 app.zip。
  * 检查时把本机应用目录与新版清单逐个比对：不同之处都在 app.zip 里就增量更新，否则 MSI 安装的
@@ -110,6 +126,7 @@ class DesktopAppUpdater private constructor(
     val exitRequests: SharedFlow<Unit> = mutableExitRequests.asSharedFlow()
 
     override suspend fun resolve(release: LatestRelease): DesktopUpdate? {
+        if (isLinux) return resolveAppImage(release)
         if (isMacOs) {
             val dmg = release.asset("piko-macos-$ARCH-${release.version}.dmg") ?: return null
             val bundle = installation?.let { replaceableBundle(it.exe) }
@@ -139,6 +156,31 @@ class DesktopAppUpdater private constructor(
             }
         }
     }
+
+    /**
+     * Linux 只认 AppImage。查到新版时就拿本机的 AppImage 对照 .zsync 算好要下多少，弹窗里的大小才是实际下载量：
+     * 版本之间多半只有 jar 与 AOT 缓存变了，整包一百多 MB，差分通常只有其中一小部分。
+     * 对照要把本机文件整个读一遍（几秒），只在确有新版时做。
+     */
+    private suspend fun resolveAppImage(release: LatestRelease): DesktopUpdate? {
+        val name = "piko-linux-$ARCH-${release.version}.AppImage"
+        val appImage = release.asset(name) ?: return null
+        fun update(plan: DesktopUpdatePlan) = DesktopUpdate(release.version, release.notes, release.pageUrl, plan)
+        val target = installation?.exe?.takeIf { replaceableAppImage(it) } ?: return update(DesktopUpdatePlan.Manual(appImage))
+        val delta = release.asset("$name.zsync")?.let { control ->
+            runCatching {
+                val parsed = ZsyncControl.parse(fetchVerified(control))
+                val plan = withContext(Dispatchers.IO) { planZsync(parsed, target) }
+                PikoLog.i("Update", "zsync：${plan.control.blockCount} 块，本机已有 ${plan.reusedBytes} 字节，要下 ${plan.downloadBytes} 字节，${plan.ranges.size} 段")
+                DesktopUpdatePlan.ZsyncDelta(control, plan)
+            }.onFailure { if (it is CancellationException) throw it; log("zsync 对照失败，改为整包下载", it) }.getOrNull()
+        }
+        return update(DesktopUpdatePlan.AppImage(appImage, target, delta))
+    }
+
+    /** AppImage 所在目录可写才能在旁边写新文件、改名换上；装在 /opt 一类位置的给下载页。 */
+    private fun replaceableAppImage(file: File): Boolean =
+        file.isFile && file.parentFile?.let { java.nio.file.Files.isWritable(it.toPath()) } == true
 
     /**
      * 带 [AUTO_INSTALL_PROPERTY] 启动时，开屏查到新版就直接下载、退出、安装，不等人点弹窗。
@@ -216,8 +258,60 @@ class DesktopAppUpdater private constructor(
                 zip.delete()
             }
             is DesktopUpdatePlan.MacBundle -> download(plan.dmg, staging.resolve(plan.dmg.name), update)
+            is DesktopUpdatePlan.AppImage -> stageAppImage(plan, update)
             is DesktopUpdatePlan.Manual -> error("只给下载页的更新不能在应用内安装")
         }
+    }
+
+    /**
+     * 新的 AppImage 写在旧的旁边（同一个文件系统，换上时改名即可，不必再拷一遍），先试 zsync 差分，
+     * 拼不出来或摘要对不上就删掉重下整包。两条路最后都按 GitHub 公布的 SHA-256 核对。
+     */
+    private suspend fun stageAppImage(plan: DesktopUpdatePlan.AppImage, update: DesktopUpdate) {
+        val staged = stagedAppImage(plan.target)
+        staged.delete()
+        val delta = plan.delta
+        if (delta != null) {
+            try {
+                val expected = plan.appImage.sha256 ?: throw ChecksumMismatchException("Release 没有公布 ${plan.appImage.name} 的摘要")
+                var fetched = 0L
+                var reported = 0f
+                val progressLock = Any()
+                assembleZsync(delta.plan, plan.target, staged) { range, onChunk ->
+                    releases.downloadRange(plan.appImage, range) { buffer, length ->
+                        onChunk(buffer, length)
+                        // 几段同时在下；每涨 1% 才改一次状态，同 GithubReleaseClient.download
+                        synchronized(progressLock) {
+                            fetched += length
+                            val progress = (fetched.toFloat() / delta.plan.downloadBytes.coerceAtLeast(1)).coerceIn(0f, 1f)
+                            if (progress - reported >= 0.01f) {
+                                reported = progress
+                                status = UpdateStatus.Downloading(update, progress)
+                            }
+                        }
+                    }
+                }
+                val actual = staged.inputStream().use(::sha256Hex)
+                if (actual != expected) throw ChecksumMismatchException("${plan.appImage.name}（zsync 拼出）: $actual != $expected")
+                PikoLog.i("Update", "zsync 拼出新版 AppImage，下载 $fetched 字节，整包 ${plan.appImage.size} 字节")
+                makeExecutable(staged)
+                return
+            } catch (e: CancellationException) {
+                staged.delete()
+                throw e
+            } catch (e: Exception) {
+                // 本机的 AppImage 被改过、镜像不认 Range、半路断网：都退回整包下载，整包也下不来才算失败
+                log("zsync 差分未成，改下整包", e)
+                staged.delete()
+                status = UpdateStatus.Downloading(update, 0f)
+            }
+        }
+        download(plan.appImage, staged, update)
+        makeExecutable(staged)
+    }
+
+    private fun makeExecutable(file: File) {
+        check(file.setExecutable(true, false)) { "无法给 ${file.name} 加上执行权限" }
     }
 
     private suspend fun stagePatch(plan: DesktopUpdatePlan.Patch, staging: File, update: DesktopUpdate) {
@@ -286,6 +380,7 @@ class DesktopAppUpdater private constructor(
     private fun launchApplyScript(update: DesktopUpdate, installation: Installation) {
         val plan = update.plan
         if (plan is DesktopUpdatePlan.MacBundle) return launchMacScript(update, plan, installation)
+        if (plan is DesktopUpdatePlan.AppImage) return installAppImage(update, plan)
         val staging = stagingDir(update)
         val script = staging.resolve("apply-update.ps1")
         val resource = checkNotNull(javaClass.getResourceAsStream("/update/apply-update.ps1")) { "缺少更新脚本" }
@@ -293,7 +388,7 @@ class DesktopAppUpdater private constructor(
         val (mode, source) = when (plan) {
             is DesktopUpdatePlan.Patch, is DesktopUpdatePlan.Delta, is DesktopUpdatePlan.Portable -> "patch" to staging.resolve(PATCH_DIR)
             is DesktopUpdatePlan.Installer -> "msi" to staging.resolve(plan.msi.name)
-            is DesktopUpdatePlan.MacBundle, is DesktopUpdatePlan.Manual -> error("不是 Windows 的更新方式：$plan")
+            is DesktopUpdatePlan.MacBundle, is DesktopUpdatePlan.AppImage, is DesktopUpdatePlan.Manual -> error("不是 Windows 的更新方式：$plan")
         }
         val checksums = staging.resolve(CHECKSUMS_FILE)
         checksums.writeText(stagedChecksums(update.plan, staging).joinToString("") { (sha256, path) -> "$sha256  $path\n" })
@@ -347,6 +442,45 @@ class DesktopAppUpdater private constructor(
     }
 
     /**
+     * Linux：换上新的 AppImage，再起一个脱离本进程的 sh，等本进程退出后打开新版。
+     *
+     * 换文件不必等退出：正在运行的 AppImage 由它的运行时经 FUSE 挂载，挂载进程开着旧文件，改名只换掉目录项，
+     * 旧的 inode 读到进程结束为止。所以在这里当场换，换不上（目录权限变了之类）时状态直接报给界面，旧文件原样不动。
+     * 重新打开要等退出：新进程起来时本进程还握着单实例锁，它会把自己当成后来者，转交完参数就退出。
+     * 与 macOS 一样不带本进程的 JAVA_TOOL_OPTIONS 与 AppImage 的环境变量，新版本按自己的启动方式起来。
+     */
+    private fun installAppImage(update: DesktopUpdate, plan: DesktopUpdatePlan.AppImage) {
+        val staged = stagedAppImage(plan.target)
+        // 同 macOS 与 Windows 的脚本：换上之前再核一遍，暂存文件在下载完到此刻之间可能被改写
+        val expected = checkNotNull(plan.appImage.sha256)
+        val actual = staged.inputStream().use(::sha256Hex)
+        if (actual != expected) throw ChecksumMismatchException("${staged.name}: $actual != $expected")
+        makeExecutable(staged)
+        java.nio.file.Files.move(
+            staged.toPath(),
+            plan.target.toPath(),
+            java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+            java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+        )
+        PikoLog.i("Update", "已换上 ${update.version} 的 AppImage")
+        val staging = stagingDir(update)
+        val relaunch = listOf("/bin/sh", "-c", RELAUNCH_SCRIPT, "piko-relaunch", ProcessHandle.current().pid().toString(), plan.target.absolutePath)
+        fun start(command: List<String>) = ProcessBuilder(command)
+            .directory(staging)
+            .redirectErrorStream(true)
+            .redirectOutput(staging.resolve("relaunch.log"))
+            // _JPACKAGE_LAUNCHER 是 jpackage 的启动器在本进程里设的，带着它起新的启动器，后者以为 JVM 参数已经备好，
+            // 不读 Piko.cfg，只打出 java 的用法就退出（实测）
+            .apply { environment().keys.removeAll(listOf("APPIMAGE", "APPDIR", "ARGV0", "OWD", "JAVA_TOOL_OPTIONS", "_JPACKAGE_LAUNCHER")) }
+            .start()
+        // setsid 让它脱离本进程所在的会话，终端里启动的 Piko 退出时不连带它收到 SIGHUP；没有 setsid 的系统照样起
+        runCatching { start(listOf("setsid") + relaunch) }.getOrElse { start(relaunch) }
+    }
+
+    /** 新 AppImage 暂存的位置：与旧文件同目录的隐藏文件，换上时改名即可。 */
+    private fun stagedAppImage(target: File) = File(target.parentFile, ".${target.name}.piko-update")
+
+    /**
      * 本机的 .app 能不能整包换掉。换不了的给下载页：
      * - 在挂载的 DMG 里直接打开的，所在卷只读；
      * - 从带隔离标记的位置打开、被系统随机挪到只读位置运行的（App Translocation，路径里有 AppTranslocation）；
@@ -387,6 +521,7 @@ class DesktopAppUpdater private constructor(
         is DesktopUpdatePlan.Delta -> plan.fallback.manifest.patchChecksums()
         is DesktopUpdatePlan.Installer -> listOf(checkNotNull(plan.msi.sha256) to plan.msi.name)
         is DesktopUpdatePlan.MacBundle -> listOf(checkNotNull(plan.dmg.sha256) to plan.dmg.name)
+        is DesktopUpdatePlan.AppImage -> error("AppImage 在本进程里换上，不经脚本")
         // 解出了哪些随本机情况而定，按实际解出的列
         is DesktopUpdatePlan.Portable -> {
             val byPath = plan.manifest.files.associateBy { it.path }
@@ -399,7 +534,7 @@ class DesktopAppUpdater private constructor(
         is DesktopUpdatePlan.Patch -> plan.manifest
         is DesktopUpdatePlan.Delta -> plan.fallback.manifest
         is DesktopUpdatePlan.Portable -> plan.manifest
-        is DesktopUpdatePlan.Installer, is DesktopUpdatePlan.MacBundle, is DesktopUpdatePlan.Manual -> null
+        is DesktopUpdatePlan.Installer, is DesktopUpdatePlan.MacBundle, is DesktopUpdatePlan.AppImage, is DesktopUpdatePlan.Manual -> null
     }
 
     private fun UpdateManifest.patchChecksums() = files.filter { it.patch }.map { it.sha256 to "$PATCH_DIR/${it.path}" }
@@ -485,12 +620,37 @@ class DesktopAppUpdater private constructor(
         private val ROOT_PATCHED = Regex("""[^\\/]+\.exe""")
         private val APP_PATCHED = Regex("""[^\\/]+\.(jar|cfg|aot)|\.jpackage\.xml""")
 
-        fun create(): DesktopAppUpdater {
+        /**
+         * 等本进程退出后打开新的 AppImage，参数是本进程的 pid 与 AppImage 的路径。等上两分钟还没退出就放弃，
+         * 不在用户手动重开之后再多开一个。
+         */
+        private val RELAUNCH_SCRIPT = """
+            deadline=${'$'}(( ${'$'}(date +%s) + 120 ))
+            while kill -0 "${'$'}1" 2>/dev/null; do
+                if [ "${'$'}(date +%s)" -gt "${'$'}deadline" ]; then echo 'app did not exit within 120 s'; exit 1; fi
+                sleep 0.2
+            done
+            exec "${'$'}2"
+        """
+
+        /** 上次下到一半或没换上的 AppImage 暂存文件，见 [stagedAppImage]。 */
+        private fun removeStagedAppImage(appImage: File) {
+            val staged = File(appImage.parentFile, ".${appImage.name}.piko-update")
+            if (staged.isFile && staged.delete()) PikoLog.i("Update", "清掉未换上的 AppImage 暂存文件")
+        }
+
+        /** Flatpak 里返回 null：更新由 flatpak 负责，应用自己也写不进 /app。 */
+        fun create(): DesktopAppUpdater? {
+            if (isLinux && LinuxDesktop.isFlatpak) return null
             useBundledZstd()
             // jpackage 启动器写进这两个属性；gradle run 时都没有
             val version = System.getProperty("jpackage.app-version")
-            val exe = System.getProperty("jpackage.app-path")?.let(::File)?.takeIf { it.isFile }
-            exe?.parentFile?.let(::removeUpdateLeftovers)
+            // Linux 上要换的是 AppImage 文件本身，不是挂载目录里的启动器；解开的 app-image 没有 APPIMAGE，只给下载页
+            val exe = if (isLinux) {
+                LinuxDesktop.appImage?.also(::removeStagedAppImage)
+            } else {
+                System.getProperty("jpackage.app-path")?.let(::File)?.takeIf { it.isFile }?.also { it.parentFile?.let(::removeUpdateLeftovers) }
+            }
             val releases = GithubReleaseClient(
                 http = HttpClient(OkHttp),
                 userAgent = "Piko/${version ?: "dev"}",
