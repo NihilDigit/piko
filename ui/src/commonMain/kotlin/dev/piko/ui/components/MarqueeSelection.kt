@@ -17,7 +17,10 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.AwaitPointerEventScope
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerId
+import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.isPrimaryPressed
 import androidx.compose.ui.input.pointer.isShiftPressed
@@ -44,7 +47,7 @@ import kotlin.math.min
  * - 按着主修饰键或 Shift 开始时保留原来的选择，框住的加进去；否则框住的就是全部。
  * - 拖到网格上下边缘自动滚动；滚出视口、先前框住的条目仍算框住，框缩回来时再按眼前的位置重算。
  * - 空白处单击（没拖动、没按修饰键）调 [onBackgroundClick]，网盘页用它退出多选。
- * - 只认鼠标：触屏在空白处拖动是滚动。
+ * - 框选只认鼠标：触屏在空白处拖动是滚动。手指在空白处轻点同样调 [onBackgroundClick]。
  *
  * [boxedKey] 把条目的 key 换成可选中的 ID，整行项返回 null。
  */
@@ -71,10 +74,17 @@ fun Modifier.marqueeSelection(
         coroutineScope {
             awaitEachGesture {
                 val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                // 分组标题这类整行项不算条目：点在它的空白上与点在网格空白上一样，退出多选
+                val pressedKey = gridState.layoutInfo.visibleItemsInfo
+                    .firstOrNull { it.bounds().contains(down.position) }
+                    ?.let { keyOf(it.key) }
+                val onItem = pressedKey != null
+                if (down.type == PointerType.Touch) {
+                    if (!onItem) awaitBackgroundTap(down) { backgroundClick() }
+                    return@awaitEachGesture
+                }
                 if (down.type != PointerType.Mouse || !currentEvent.buttons.isPrimaryPressed) return@awaitEachGesture
-                val pressedItem = gridState.layoutInfo.visibleItemsInfo.firstOrNull { it.bounds().contains(down.position) }
-                val onItem = pressedItem != null
-                if (pressedItem?.let { keyOf(it.key) }?.let(canMove) == true) return@awaitEachGesture
+                if (pressedKey?.let(canMove) == true) return@awaitEachGesture
                 val modifiers = currentEvent.keyboardModifiers
                 val keep = shortcut.isPressed(modifiers) || modifiers.isShiftPressed
                 val base = if (keep) selected else emptySet()
@@ -114,10 +124,14 @@ fun Modifier.marqueeSelection(
                 }
 
                 var autoScroll: Job? = null
+                var releasedOnChild = false
                 while (true) {
                     val event = awaitPointerEvent(PointerEventPass.Initial)
                     val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                    if (!change.pressed) break
+                    if (!change.pressed) {
+                        releasedOnChild = isReleaseConsumed(down.id)
+                        break
+                    }
                     pointer = change.position
                     // 按在条目上时要比条目的拖放（8dp 起拖）先认出是拖动，否则那边先起了拖
                     val slop = if (onItem) ItemMarqueeSlopDp.dp.toPx() else viewConfiguration.touchSlop
@@ -139,8 +153,8 @@ fun Modifier.marqueeSelection(
                 }
                 autoScroll?.cancel()
                 box = null
-                // 按在条目上没拖动是点了那一项，由条目自己处理，不算点了空白
-                if (!dragging && !keep && !onItem) backgroundClick()
+                // 按在条目上没拖动是点了那一项，由条目自己处理，不算点了空白；标题行里的按钮同理
+                if (!dragging && !keep && !onItem && !releasedOnChild) backgroundClick()
             }
         }
     }.drawWithContent {
@@ -151,6 +165,29 @@ fun Modifier.marqueeSelection(
         }
     }
 }
+
+/**
+ * 手指在空白处轻点：没挪出触摸阈值、不是长按、抬起时也没被里面的按钮接走。挪动了是在滚动列表，不算。
+ * 触屏不框选，只借这一处退出多选，照 [marqueeSelection] 对鼠标单击空白的处理。
+ */
+private suspend fun AwaitPointerEventScope.awaitBackgroundTap(down: PointerInputChange, onTap: () -> Unit) {
+    while (true) {
+        val change = awaitPointerEvent(PointerEventPass.Initial).changes.firstOrNull { it.id == down.id } ?: return
+        if ((change.position - down.position).getDistance() > viewConfiguration.touchSlop) return
+        if (!change.pressed) {
+            val held = change.uptimeMillis - down.uptimeMillis
+            if (held < viewConfiguration.longPressTimeoutMillis && !isReleaseConsumed(down.id)) onTap()
+            return
+        }
+    }
+}
+
+/**
+ * 刚在 Initial 阶段收到的抬起，里面的可点击项在 Main 阶段是否把它接走了。同一个事件在各阶段依次派发，
+ * 这里接着等它的 Final 阶段，照 waitForUpOrCancellation 的做法。
+ */
+private suspend fun AwaitPointerEventScope.isReleaseConsumed(id: PointerId): Boolean =
+    awaitPointerEvent(PointerEventPass.Final).changes.firstOrNull { it.id == id }?.isConsumed == true
 
 private fun LazyGridItemInfo.bounds() = Rect(offset.toOffset(), size.toSize())
 
