@@ -8,6 +8,8 @@ import androidx.compose.runtime.setValue
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.data.PikoCacheStore
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.data.PikoFileSortOrder
+import dev.piko.shared.data.isVaulted
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
@@ -260,7 +262,9 @@ class ClipFeedSession(
             while (level.isNotEmpty()) {
                 val next = mutableListOf<String>()
                 for (folderId in level) {
-                    val files = driveRepo.listAllFiles(folderId).logFailure(TAG, "随机片段列目录失败，跳过").getOrNull() ?: continue
+                    // 与网盘页同一份列表：归档条目也在里面
+                    val files = driveRepo.listBrowsable(folderId, PikoFileSortOrder.TIME_DESC)
+                        .logFailure(TAG, "随机片段列目录失败，跳过").getOrNull() ?: continue
                     if (listed++ == 0) PikoLog.d(TAG, "列出第一个目录：${files.size} 项，${started.elapsedNow().inWholeMilliseconds} ms")
                     val folders = files.filter { it.isFolder }
                     next += folders.map { it.id }
@@ -328,9 +332,13 @@ class ClipFeedSession(
                     val batch = candidates.take(minOf(missing, VERIFY_BATCH))
                     if (batch.isEmpty()) break
                     val checkStarted = TimeSource.Monotonic.markNow()
-                    val checked = coroutineScope {
-                        batch.map { file -> async { file to transcodeOf(file.id) } }.awaitAll()
+                    val probed = coroutineScope {
+                        batch.map { file -> async { file.id to transcodeOf(file) } }.awaitAll()
                     }
+                    // 查过之后池里的那份才带着时长；量出来太短的（多是样片、花絮）从此不挑
+                    val (checked, tooShort) = probed.mapNotNull { (id, transcode) -> pooled(id)?.let { it to transcode } }
+                        .partition { (file, _) -> file.durationMs() >= MIN_DURATION_MS }
+                    tooShort.forEach { (file, _) -> rejected[file.id] = Clock.System.now().toEpochMilliseconds() }
                     PikoLog.d(TAG, "查转码 ${batch.size} 个，有 ${checked.count { it.second == Transcode.Yes }} 个：${checkStarted.elapsedNow().inWholeMilliseconds} ms")
                     val now = Clock.System.now().toEpochMilliseconds()
                     checked.forEach { (file, transcode) ->
@@ -358,12 +366,23 @@ class ClipFeedSession(
 
     private enum class Transcode { Yes, JustFoundMissing, KnownMissing }
 
-    private suspend fun transcodeOf(fileId: String): Transcode = when {
-        fileId in verified -> Transcode.Yes
-        fileId in untranscoded -> Transcode.KnownMissing
-        media.hasClipTranscode(fileId) -> Transcode.Yes
-        else -> Transcode.JustFoundMissing
+    /** 没有时长的（归档条目）不走记下的结论，要查一次：时长只能从详情里取。 */
+    private suspend fun transcodeOf(file: FileStat): Transcode {
+        val timed = file.durationMs() > 0
+        if (timed && file.id in verified) return Transcode.Yes
+        if (timed && file.id in untranscoded) return Transcode.KnownMissing
+        val probe = media.clipProbe(file.id)
+        probe.durationMs?.let { learnDuration(file.id, it) }
+        return if (probe.hasTranscode) Transcode.Yes else Transcode.JustFoundMissing
     }
+
+    /** 记进候选池，随队列存下：下次打开不必再借一次对象去量。 */
+    private fun learnDuration(fileId: String, durationMs: Long) {
+        val seconds = (durationMs / 1000.0).toString()
+        pool.replaceAll { if (it.id == fileId) it.copy(params = it.params + ("duration" to seconds)) else it }
+    }
+
+    private fun pooled(fileId: String): FileStat? = pool.firstOrNull { it.id == fileId }
 
     /**
      * 挑的先后：有转码的（与还没查过的）先于只有原画的；同一档里当前这一层先于子文件夹，
@@ -476,9 +495,10 @@ class ClipFeedSession(
     /**
      * 能挑出片段的视频。没有时长的跳过：随机起点要按时长算，先打开再量又要多等一次连接；
      * 服务端抽过元数据的视频列目录时就带着时长，没有的多半也放不了。
+     * 归档条目例外：它们存自磁力解析，本来就没有时长，挑中后查转码时从借出的详情里量，见 [transcodeOf]。
      */
     private fun FileStat.isClipCandidate(): Boolean =
-        isPlayableVideo() && !isUploading && durationMs() >= MIN_DURATION_MS
+        isPlayableVideo() && !isUploading && (isVaulted || durationMs() >= MIN_DURATION_MS)
 
     private fun FileStat.durationMs(): Long =
         ((params["duration"]?.toDoubleOrNull() ?: 0.0) * 1000).toLong()

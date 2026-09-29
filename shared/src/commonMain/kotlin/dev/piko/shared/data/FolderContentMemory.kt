@@ -14,6 +14,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import kotlin.concurrent.Volatile
 
@@ -64,19 +65,40 @@ internal class FolderContentMemory(
         scheduleSave()
     }
 
+    private val vaulted = MutableStateFlow<Set<String>>(emptySet())
+
+    /**
+     * 直接放着归档条目的文件夹，文件夹上据此挂标记。跨进程保留：列表接口不给文件夹里有什么，不记下的话
+     * 每次重启都要把目录重新点一遍，标记才出来。只认进过的与 Piko 自己写过清单的文件夹。
+     *
+     * 与文件名分开存一份：归档一整棵树时，子文件夹的清单是 Piko 写的，没人列过它们，没有文件名可记；
+     * 塞进文件名那份就成了「记下的内容是空表」，文件夹行会当它是空的去探。
+     */
+    val vaultedFolders: StateFlow<Set<String>> = vaulted.asStateFlow()
+
+    fun markVaulted(folderId: String, has: Boolean) {
+        if ((folderId in vaulted.value) == has) return
+        vaulted.update { if (has) it + folderId else it - folderId }
+        scheduleSave()
+    }
+
     /** 换账号或退出登录。退出时只清内存，磁盘上的留给下次登录同一账号。 */
     fun switchAccount(newAccount: String?) {
         if (newAccount == account) return
         pendingSave?.cancel()
         account = newAccount
         contents.value = emptyMap()
+        vaulted.value = emptySet()
         val cacheStore = store ?: return
         if (newAccount == null) return
         scope.launch {
             val stored = cacheStore.read(keyOf(newAccount))?.let { text -> runCatching { json.decodeFromString(serializer, text) }.getOrNull() }
-            if (account != newAccount || stored == null) return@launch
+            val storedVaulted = cacheStore.read(vaultKeyOf(newAccount))?.let { text -> runCatching { json.decodeFromString(vaultSerializer, text) }.getOrNull() }
+            if (account != newAccount) return@launch
+            // 载入期间本会话记下的更新，留着它们。本会话里去掉的标记会被磁盘上的旧值加回来，下次列到那个目录再去掉
+            if (storedVaulted != null) vaulted.update { current -> current + storedVaulted }
+            if (stored == null) return@launch
             val loaded = stored.associate { folder -> folder.id to folder.files.map { ChildFile(it.name, it.category) } }
-            // 载入期间本会话记下的更新，留着它们
             contents.update { current -> loaded - current.keys + current }
             _loads.update { it + 1 }
         }
@@ -92,10 +114,13 @@ internal class FolderContentMemory(
                 StoredFolder(id, files.take(SAVED_FILES_PER_FOLDER).map { StoredFile(it.name, it.category) })
             }
             cacheStore.write(keyOf(owner), json.encodeToString(serializer, snapshot))
+            cacheStore.write(vaultKeyOf(owner), json.encodeToString(vaultSerializer, vaulted.value.toList()))
         }
     }
 
     private fun keyOf(account: String) = "folder-contents-" + account.replace(UNSAFE_KEY_CHARS, "_") + ".json"
+
+    private fun vaultKeyOf(account: String) = "vault-folders-" + account.replace(UNSAFE_KEY_CHARS, "_") + ".json"
 
     @Serializable
     private class StoredFolder(val id: String, val files: List<StoredFile>)
@@ -110,5 +135,6 @@ internal class FolderContentMemory(
         val UNSAFE_KEY_CHARS = Regex("""[^A-Za-z0-9._@-]""")
         val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
         val serializer = ListSerializer(StoredFolder.serializer())
+        val vaultSerializer = ListSerializer(String.serializer())
     }
 }

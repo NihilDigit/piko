@@ -1,7 +1,11 @@
 package dev.piko.shared.log
 
+import dev.piko.shared.data.VaultEntry
+import io.github.nihildigit.pikpak.InstantContentUnavailableException
+import io.github.nihildigit.pikpak.PikPakException
 import kotlin.time.Clock
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.io.IOException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
@@ -169,11 +173,30 @@ object PikoLog {
  */
 fun logFile(id: String?, name: String): String {
     val extension = name.substringAfterLast('.', "").takeIf { it.isNotEmpty() && it.length <= 8 }
-    return "文件 ${id ?: "?"}" + (extension?.let { "（.${it.lowercase()}）" } ?: "")
+    // 归档条目的 ID 里带着 gcid、大小与文件名，只留条目自己的 ID
+    val shown = id?.let { VaultEntry.entryIdOf(it)?.let { entryId -> "归档 $entryId" } ?: it } ?: "?"
+    return "文件 $shown" + (extension?.let { "（.${it.lowercase()}）" } ?: "")
 }
 
 /** 失败时记一条警告并原样返回，接在给用户看的 onFailure 前面：提示只有一句话，异常本身留在日志里。 */
 fun <T> Result<T>.logFailure(tag: String, message: String): Result<T> = onFailure { PikoLog.w(tag, message, it) }
+
+/**
+ * 用户做 [action]（「保存」「移动」）失败时看到的一句。能说清原因、用户能照着处理的写原因，其余只说失败了：
+ * 服务端的错误名、HTTP 状态与英文描述用户读不懂，也做不了什么，只进日志，见 [reportFailure]。
+ */
+fun failureText(action: String, error: Throwable): String = when {
+    error is InstantContentUnavailableException -> "云端暂无该文件内容，需离线下载"
+    error is PikPakException && error.errorMessage == "file_duplicated_name" -> "${action}失败：目标位置已有同名文件"
+    error is IOException -> "${action}失败：网络连接中断，请重试"
+    else -> "${action}失败，请重试"
+}
+
+/** 失败时记一条日志，再把 [failureText] 交给 [show]。日志与提示出自同一处，两边说的是同一件事。 */
+fun <T> Result<T>.reportFailure(tag: String, action: String, show: (String) -> Unit): Result<T> = onFailure {
+    PikoLog.w(tag, "${action}失败", it)
+    show(failureText(action, it))
+}
 
 /**
  * piko.log 写满 [MAX_FILE_BYTES] 就改名为 piko.1.log，旧的依次后移，最多留 [KEPT_FILES] 份旧文件。

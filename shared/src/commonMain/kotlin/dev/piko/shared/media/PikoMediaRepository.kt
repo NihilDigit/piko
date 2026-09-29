@@ -3,7 +3,9 @@ package dev.piko.shared.media
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.log.PikoLog
+import dev.piko.shared.data.VaultEntry
 import dev.piko.shared.log.logRangeAttempt
+import io.github.nihildigit.pikpak.leaseDetail
 import dev.piko.shared.media.proxy.PikPakByteSource
 import dev.piko.shared.media.proxy.PikoMediaProxy
 import dev.piko.shared.media.proxy.ProxyByteSource
@@ -91,6 +93,9 @@ class PreparedPlayback internal constructor(
     }
 }
 
+/** [PikoMediaRepository.clipProbe] 的结果。时长取不到时为 null。 */
+class ClipProbe(val hasTranscode: Boolean, val durationMs: Long?)
+
 class PikoMediaRepository(
     private val clientManager: PikoClientProvider,
     private val preferences: PikoUserPreferences? = null,
@@ -98,6 +103,12 @@ class PikoMediaRepository(
     private val clipCache: ClipCache? = null,
 ) {
     private val client get() = clientManager.currentClient.value ?: error("Not logged in")
+
+    /**
+     * 打开归档条目时借用的文件对象放在哪个目录，返回它的 ID。PikoServices 组装好 Piko-Temp 之后设上：
+     * 媒体仓库在各端入口建出来时，Piko-Temp 还不存在。
+     */
+    var leaseFolder: (suspend () -> String)? = null
 
     // 按磁盘记录重建的切片在这里提前取直链，见 cachedClip
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -113,7 +124,7 @@ class PikoMediaRepository(
     suspend fun prepareMedia(fileId: String, preferredResolution: String? = null): Result<PlayableMediaInfo> =
         withContext(Dispatchers.Default) {
             runSuspendCatching {
-                val detail = client.getFile(fileId)
+                val detail = detailOf(client, fileId)
                 val resolved = detail.resolveVariant(preferenceFor(preferredResolution))
                 playableMediaInfo(detail, resolved, fileId)
             }
@@ -132,10 +143,11 @@ class PikoMediaRepository(
         withContext(Dispatchers.Default) {
             runSuspendCatching {
                 val client = client
-                val detail = client.getFile(fileId)
+                val detail = detailOf(client, fileId)
                 val resolved = detail.resolveVariant(preferenceFor(preferredResolution))
                 val info = playableMediaInfo(detail, resolved, fileId)
-                val stream = if (info.kind == PlayableMediaKind.Video) openProxyStream(client, detail, resolved) else null
+                val leased = VaultEntry.isVaulted(fileId)
+                val stream = if (info.kind == PlayableMediaKind.Video) openProxyStream(client, detail, resolved, leased = leased) else null
                 PreparedPlayback(info, stream)
             }
         }
@@ -160,17 +172,19 @@ class PikoMediaRepository(
             runSuspendCatching {
                 val key = clipKey(fileId, startMs)
                 val client = client
+                val leased = VaultEntry.isVaulted(fileId)
                 clipCache?.record(key)?.let { record ->
-                    cachedClip(client, record, startMs, videoDurationMs, role)?.let { return@runSuspendCatching it }
+                    cachedClip(client, record, startMs, videoDurationMs, role, leased)?.let { return@runSuspendCatching it }
                 }
-                val detail = takeFreshDetail(fileId) ?: client.getFile(fileId)
+                val detail = takeFreshDetail(fileId) ?: detailOf(client, fileId)
                 val transcode = detail.resolveVariant(VariantPreference.Resolution(CLIP_RESOLUTION))
                 if (!transcode.isOrigin && videoDurationMs > 0) {
-                    openClipSlice(client, detail, transcode, key, startMs, videoDurationMs, role)?.let { return@runSuspendCatching it }
+                    openClipSlice(client, detail, transcode, key, startMs, videoDurationMs, role, leased)
+                        ?.let { return@runSuspendCatching it }
                 }
                 val original = detail.resolveVariant(VariantPreference.Original)
                 val info = playableMediaInfo(detail, original, fileId)
-                val stream = openProxyStream(client, detail, original, role)
+                val stream = openProxyStream(client, detail, original, role, leased)
                 val bytesPerMs = if (videoDurationMs > 0) detail.sizeBytes.toDouble() / videoDurationMs else 0.0
                 PreparedClip(stream, fallbackUrl = info.currentUrl, sliced = false, clipStartMs = startMs, bytesPerMs = bytesPerMs)
             }
@@ -186,6 +200,7 @@ class PikoMediaRepository(
         startMs: Long,
         videoDurationMs: Long,
         role: StreamRole,
+        leased: Boolean,
     ): PreparedClip? {
         val bytesPerMs = if (videoDurationMs > 0) record.streamBytes.toDouble() / videoDurationMs else 0.0
         val handle = PikPakFileHandle(
@@ -196,6 +211,7 @@ class PikoMediaRepository(
             initialFileId = record.fileId,
             mediaId = record.mediaId,
             parentId = record.parentId,
+            leased = leased,
             onRangeAttempt = ::logRangeAttempt,
             streamSize = record.streamBytes,
             blockStore = sliceStore(record.sliceOffset, record.sliceLength, bytesPerMs),
@@ -215,26 +231,47 @@ class PikoMediaRepository(
         kept = PreparedClip.sliceRanges(sliceLength, bytesPerMs).map { it.first + sliceOffset..it.last + sliceOffset }
     }
 
-    // 同一个视频、同一个起点才是同一截；换了清晰度截出来的字节就不同
-    private fun clipKey(fileId: String, startMs: Long) = "${fileId}_${startMs}_$CLIP_RESOLUTION"
+    // 同一个视频、同一个起点才是同一截；换了清晰度截出来的字节就不同。
+    // 归档条目的 ID 带着文件名，拼进磁盘上的文件名会超长，只用条目自己的 ID
+    private fun clipKey(fileId: String, startMs: Long): String {
+        val id = VaultEntry.entryIdOf(fileId)?.let { "vault-$it" } ?: fileId
+        return "${id}_${startMs}_$CLIP_RESOLUTION"
+    }
 
     /**
-     * 这个文件有没有随机片段要的那档转码。列目录不带转码信息，只能逐个查详情；
+     * 这个文件有没有随机片段要的那档转码，以及详情里的时长。列目录不带转码信息，只能逐个查详情；
      * 查不到按没有算，信息流把它排到有转码的后面，轮到时放原画。
+     *
+     * 时长是给归档条目的：它们存自磁力解析，没有时长，而信息流的随机起点要按时长算。借一次对象的详情里
+     * 两样都有；这份详情随即留给 [prepareClip]，挑中后不必再借。
      */
-    suspend fun hasClipTranscode(fileId: String): Boolean =
+    suspend fun clipProbe(fileId: String): ClipProbe =
         withContext(Dispatchers.Default) {
             runSuspendCatching {
-                val detail = client.getFile(fileId)
+                val detail = detailOf(client, fileId)
                 freshDetailsLock.withLock {
                     freshDetails.entries.removeAll { it.value.second.elapsedNow() > FRESH_DETAIL_FOR }
                     freshDetails[fileId] = detail to TimeSource.Monotonic.markNow()
                 }
-                detail.medias.any { !it.isOrigin && it.mediaName == CLIP_RESOLUTION && it.url != null }
-            }.getOrDefault(false)
+                ClipProbe(
+                    hasTranscode = detail.medias.any { !it.isOrigin && it.mediaName == CLIP_RESOLUTION && it.url != null },
+                    durationMs = detail.params["duration"]?.toDoubleOrNull()?.let { (it * 1000).toLong() },
+                )
+            }.getOrDefault(ClipProbe(hasTranscode = false, durationMs = null))
         }
 
-    /** [hasClipTranscode] 刚查过的详情，还新鲜就拿走，省一次查询。 */
+    /**
+     * 文件详情。归档条目在网盘里没有常驻的文件，按 gcid 借一个对象查完就删（SDK 的 leaseDetail）：
+     * 详情里的直链照样能用，6 GB 的免费空间因此整块留给正在看的那一个文件。
+     * 读这份详情建 handle 时要带 leased，直链过期后重建出的对象才会同样删掉。
+     */
+    private suspend fun detailOf(client: PikPakClient, fileId: String): FileDetail {
+        val vaulted = VaultEntry.resolvedFileOf(fileId) ?: return client.getFile(fileId)
+        val folder = leaseFolder ?: error("归档条目无法打开")
+        return client.leaseDetail(vaulted, parentId = folder())
+    }
+
+    /** [clipProbe] 刚查过的详情，还新鲜就拿走，省一次查询。 */
     private suspend fun takeFreshDetail(fileId: String): FileDetail? = freshDetailsLock.withLock {
         freshDetails.remove(fileId)?.takeIf { it.second.elapsedNow() <= FRESH_DETAIL_FOR }?.first
     }
@@ -247,10 +284,11 @@ class PikoMediaRepository(
         startMs: Long,
         videoDurationMs: Long,
         role: StreamRole,
+        leased: Boolean,
     ): PreparedClip? {
         val mediaId = transcode.mediaId ?: return null
         val store = clipCache?.let { RangeLimitedStore(it.blocks) }
-        val source = openByteSource(client, detail, transcode, blockStore = store) ?: return null
+        val source = openByteSource(client, detail, transcode, blockStore = store, leased = leased) ?: return null
         // 长度是 188 的整数倍是 TS 的样子；不是 TS 截出来就放不了，退回原画
         if (source.size % TS_PACKET_BYTES != 0L) {
             source.close()
@@ -352,9 +390,9 @@ class PikoMediaRepository(
         withContext(Dispatchers.Default) {
             runSuspendCatching {
                 val client = client
-                val detail = client.getFile(fileId)
+                val detail = detailOf(client, fileId)
                 val resolved = detail.resolveVariant(VariantPreference.Original)
-                openProxyStream(client, detail, resolved)
+                openProxyStream(client, detail, resolved, leased = VaultEntry.isVaulted(fileId))
             }.getOrNull()
         }
 
@@ -365,7 +403,8 @@ class PikoMediaRepository(
      * 服务端会悄悄丢掉同一文件间隔太短的上报（实测 1.5 秒丢、6 秒收），节流由调用方负责。
      */
     suspend fun reportPlay(fileId: String, positionMillis: Long, durationMillis: Long) {
-        if (fileId.isBlank() || positionMillis <= 0L || durationMillis <= 0L) return
+        // 归档条目在网盘里没有常驻的文件，播放历史记不上；续播位置照样记在本机
+        if (fileId.isBlank() || VaultEntry.isVaulted(fileId) || positionMillis <= 0L || durationMillis <= 0L) return
         withContext(Dispatchers.Default) {
             runSuspendCatching {
                 if (isPlayHistorySynced()) client.reportPlay(fileId, positionMillis / 1000, durationMillis / 1000)
@@ -378,7 +417,7 @@ class PikoMediaRepository(
      * 服务端不能按文件查，只看第一页（最近播放的 100 条）：从历史里点进来的一定在里面，更早的就算了。
      */
     suspend fun cloudPlaybackPosition(fileId: String): Long? {
-        if (fileId.isBlank()) return null
+        if (fileId.isBlank() || VaultEntry.isVaulted(fileId)) return null
         // 读偏好也包在里面：这只是续播的参考，任何一步失败都不该挡住开播
         return withContext(Dispatchers.Default) {
             runSuspendCatching {
@@ -404,8 +443,9 @@ class PikoMediaRepository(
         detail: FileDetail,
         resolved: ResolvedVariant,
         role: StreamRole = StreamRole.FOREGROUND,
+        leased: Boolean = false,
     ): ProxyStream? {
-        val source = openByteSource(client, detail, resolved) ?: return null
+        val source = openByteSource(client, detail, resolved, leased = leased) ?: return null
         return registerProxy(source, fileName = detail.name.takeIf { resolved.isOrigin }, role = role)
     }
 
@@ -431,9 +471,10 @@ class PikoMediaRepository(
         withContext(Dispatchers.Default) {
             runSuspendCatching {
                 val client = client
-                val detail = client.getFile(fileId)
+                val detail = detailOf(client, fileId)
                 val resolved = detail.resolveVariant(VariantPreference.Original)
-                val source = openByteSource(client, detail, resolved) ?: error("文件缺少内容哈希，无法读取")
+                val source = openByteSource(client, detail, resolved, leased = VaultEntry.isVaulted(fileId))
+                    ?: error("文件缺少内容哈希，无法读取")
                 ReaderRandomAccessSource(source)
             }
         }
@@ -447,16 +488,19 @@ class PikoMediaRepository(
         detail: FileDetail,
         resolved: ResolvedVariant,
         blockStore: BlockStore? = null,
+        leased: Boolean = false,
     ): PikPakByteSource? {
         // handle 在直链被拒时按 gcid 重建文件对象，没有 gcid 就失去了它存在的意义
         if (detail.hash.isBlank()) return null
-        // 原文件被删后 handle 会按 gcid 秒传重建一份，落在原来的目录（fileHandle 默认取详情里的 parentId）
+        // 原文件被删后 handle 会按 gcid 秒传重建一份，落在原来的目录（fileHandle 默认取详情里的 parentId）。
+        // 归档条目的 detail 出自 leaseDetail，对象已经删了：直链过期时重建出的那份，handle 取完链同样删掉
         val handle = client.fileHandle(
             detail,
             mediaId = resolved.mediaId,
             blockStore = blockStore,
             coroutineContext = proxy.readerContext,
             onRangeAttempt = ::logRangeAttempt,
+            leased = leased,
         )
         return try {
             // 原画的大小已知；转码流没有，本进程头一回会发一次 1 字节探测

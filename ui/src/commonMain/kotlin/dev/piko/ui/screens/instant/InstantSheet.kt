@@ -70,8 +70,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.data.repository.PathBreadcrumb
+import androidx.compose.material3.AlertDialog
+import dev.piko.shared.state.InstantActionKind
+import dev.piko.shared.state.InstantFallback
+import dev.piko.shared.state.SaveRoute
 import dev.piko.shared.state.InstantGroup
 import dev.piko.shared.state.InstantPrimaryAction
+import dev.piko.shared.state.SavePlan
 import dev.piko.shared.state.InstantRow
 import dev.piko.shared.state.InstantSheetState
 import dev.piko.shared.state.NameGroupSummary
@@ -250,22 +255,35 @@ fun InstantSheetContent(
 /**
  * 保存栏只有一个「保存」。走秒传还是整包离线由 [planSave] 决定，用户不必知道，
  * 两条路各扣哪项额度也不预先说明：额度充裕时这些信息只是噪声。
- * 只有碰到限制才出声：整包放不进网盘时不让提交，说明缺多少，并给出只存选中文件的退路。
+ * 只有碰到限制才出声：整包放不进网盘或离线次数用完时不让提交，说明原因，并给出只存选中文件的退路。
+ * 免费账号要整包离线时先问一句：一天只有几次离线，未收录的那几个未必值得。
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun SaveBar(state: InstantSheetState, action: InstantPrimaryAction) {
-    val plan = state.savePlan.takeIf { state.resolution != null }
+    val plan = state.savePlan.takeIf { state.resolution != null && !state.contentMissing }
     val fallback = plan?.fallback
+    val confirm = when {
+        !state.confirmsOffline -> null
+        action.kind == InstantActionKind.SUBMIT_OFFLINE -> OfflineConfirm.WholeLink
+        plan == null || plan.blocked || plan.route != SaveRoute.OFFLINE_PACK -> null
+        fallback != null -> OfflineConfirm.PackOrInstant(plan, fallback)
+        else -> OfflineConfirm.Pack(plan)
+    }
+    var askOffline by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (plan != null && plan.lacksSpace) {
+            // 秒传没有退路按钮可给，只能少选几项；整包离线的退路在下面的按钮上
+            val hint = if (plan.route == SaveRoute.INSTANT) "，请减少勾选" else ""
             ErrorBanner(
-                message = "网盘空间不足：需要 ${plan.packBytes.toReadableSize()}，" +
-                    "剩余 ${(state.remainingBytes ?: 0L).coerceAtLeast(0L).toReadableSize()}",
+                message = "网盘空间不足：需要 ${plan.neededBytes.toReadableSize()}，" +
+                    "剩余 ${(state.remainingBytes ?: 0L).coerceAtLeast(0L).toReadableSize()}$hint",
                 onRetry = null,
             )
+        } else if (plan != null && plan.lacksOfflineCount) {
+            ErrorBanner(message = "今日离线次数已用完", onRetry = null)
         }
-        if (fallback != null) {
+        if (plan?.blocked == true && fallback != null) {
             SaveButton(
                 label = "只保存所选文件",
                 enabled = state.canSaveSelection,
@@ -275,13 +293,77 @@ private fun SaveBar(state: InstantSheetState, action: InstantPrimaryAction) {
             if (fallback.skippedCount > 0) SaveCaption("将跳过 ${fallback.skippedCount} 个未收录文件")
         } else {
             SaveButton(
-                label = "保存",
+                label = if (state.contentMissing) "离线下载" else "保存",
                 enabled = action.enabled,
                 isSaving = state.isSaving,
-                onClick = state::performPrimaryAction,
+                onClick = { if (confirm != null) askOffline = true else state.performPrimaryAction() },
             )
         }
     }
+    if (askOffline && confirm != null) {
+        OfflineConfirmDialog(
+            confirm = confirm,
+            offlineLeft = state.offlineLeft,
+            onOffline = {
+                askOffline = false
+                state.performPrimaryAction()
+            },
+            onInstant = {
+                askOffline = false
+                state.saveSelectionInstantly()
+            },
+            onDismiss = { askOffline = false },
+        )
+    }
+}
+
+/** 免费账号建离线任务前要确认的几种情形。离线一天只有几次，每一次都写明代价。 */
+private sealed interface OfflineConfirm {
+    /** 整条链接交给离线：未收录的磁力、非磁力链接、云端暂无内容的单文件。大小未知。 */
+    data object WholeLink : OfflineConfirm
+
+    /** 选中的全是未收录的，只能整包离线。 */
+    data class Pack(val plan: SavePlan) : OfflineConfirm
+
+    /** 一部分未收录：整包离线，或只秒传已收录的。 */
+    data class PackOrInstant(val plan: SavePlan, val fallback: InstantFallback) : OfflineConfirm
+}
+
+/** 代价低的一项放在最右的主位，手快点错也不白占一次离线。 */
+@Composable
+private fun OfflineConfirmDialog(
+    confirm: OfflineConfirm,
+    offlineLeft: Int?,
+    onOffline: () -> Unit,
+    onInstant: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val count = offlineLeft?.let { "（今日剩 $it 次）" }.orEmpty()
+    val (title, message) = when (confirm) {
+        OfflineConfirm.WholeLink -> "离线下载" to "将占用 1 次离线$count。"
+        is OfflineConfirm.Pack -> "整包离线" to
+            "所选文件未收录，需整包离线，占用 ${confirm.plan.packBytes.toReadableSize()} 空间与 1 次离线$count。"
+        is OfflineConfirm.PackOrInstant -> "部分文件未收录" to
+            "${confirm.fallback.skippedCount} 个文件未收录，需整包离线，" +
+            "占用 ${confirm.plan.packBytes.toReadableSize()} 空间与 1 次离线$count。" +
+            "也可只秒传已收录的 ${confirm.fallback.fileCount} 个文件。"
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Text(message) },
+        confirmButton = {
+            if (confirm is OfflineConfirm.PackOrInstant) {
+                Row {
+                    TextButton(onClick = onOffline) { Text("整包离线") }
+                    TextButton(onClick = onInstant) { Text("只存已收录的") }
+                }
+            } else {
+                TextButton(onClick = onOffline) { Text("离线") }
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)

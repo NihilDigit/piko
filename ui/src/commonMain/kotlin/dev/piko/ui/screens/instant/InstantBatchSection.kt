@@ -95,10 +95,12 @@ internal fun ColumnScope.BatchList(
 
     if (batch.lacksSpace) {
         ErrorBanner(
-            message = "网盘空间不足：需要 ${batch.packBytes.toReadableSize()}，" +
+            message = "网盘空间不足：需要 ${batch.neededBytes.toReadableSize()}，" +
                 "剩余 ${(batch.remainingBytes ?: 0L).coerceAtLeast(0L).toReadableSize()}",
             onRetry = null,
         )
+    } else if (batch.lacksOfflineCount) {
+        ErrorBanner(message = "需要 ${batch.offlineCount} 次离线，今日还剩 ${batch.offlineLeft} 次", onRetry = null)
     }
     TargetRow(
         target = state.target,
@@ -114,7 +116,10 @@ internal fun ColumnScope.BatchList(
             onClick = batch::saveAll,
         )
         val skipped = batch.rows.count { it.status == InstantBatchRowStatus.NOTHING_SELECTED }
-        val caption = batch.blockedReason ?: "$skipped 项未勾选文件，将跳过".takeIf { skipped > 0 }
+        // 批量时不逐条确认离线，只在这里写明要用几次，想换成秒传的点开那一行改
+        val offline = "其中 ${batch.offlineCount} 项需离线".takeIf { batch.confirmsOffline && batch.offlineCount > 0 }
+        val caption = batch.blockedReason
+            ?: listOfNotNull("$skipped 项未勾选文件，将跳过".takeIf { skipped > 0 }, offline).joinToString("，").ifEmpty { null }
         caption?.let { SaveCaption(it) }
     }
 }

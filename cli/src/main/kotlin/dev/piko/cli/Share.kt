@@ -24,7 +24,7 @@ suspend fun describeShare(client: PikPakClient, url: String, passCode: String): 
         add("分享 $shareId：${info.title}（${info.shareStatus}）所有者 ${info.owner.nickname}，${info.fileNum} 项")
         info.files.forEach { file ->
             val kind = if (file.kind == FileKind.FOLDER) "目录" else "文件"
-            add("  $kind  ${file.name}  ${file.sizeBytes} 字节  id=${file.id}")
+            add("  $kind  ${file.name}  ${file.sizeBytes} 字节  id=${file.id}  gcid=${file.hash.ifEmpty { "无" }}")
         }
     }
 }

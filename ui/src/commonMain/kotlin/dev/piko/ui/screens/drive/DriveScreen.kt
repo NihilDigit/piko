@@ -1,6 +1,9 @@
 package dev.piko.ui.screens.drive
 
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.CloudDownload
+import androidx.compose.material.icons.outlined.Link
+import dev.piko.shared.data.isVaulted
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
@@ -136,6 +139,7 @@ import androidx.compose.ui.input.pointer.isBackPressed
 import androidx.compose.ui.input.pointer.isForwardPressed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -153,6 +157,7 @@ import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.InstantSaveOutcome
 import dev.piko.shared.upload.UploadSelection
 import dev.piko.shared.upload.isUploading
+import dev.piko.shared.download.DriveDownloadFolderSource
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.components.PikoSheet
@@ -252,6 +257,7 @@ fun DriveScreen(
     modifier: Modifier = Modifier,
 ) {
     val driveRepo = LocalPikoServices.current.driveRepository
+    val clientManager = LocalPikoServices.current.clientManager
     val instantRepo = LocalPikoServices.current.instantMagnetRepository
     val instantSession = LocalPikoServices.current.instantSession
     val duplicateSession = LocalPikoServices.current.duplicateSession
@@ -286,6 +292,12 @@ fun DriveScreen(
     LaunchedEffect(archiveSession) {
         archiveSession.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
     }
+    // 归档文件夹：成功经改动日志带「撤销」提示，失败与没有可归档的在这里提示
+    val vaultSession = LocalPikoServices.current.folderVaultSession
+    LaunchedEffect(vaultSession) {
+        vaultSession.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
+    }
+    var vaultTarget by remember { mutableStateOf<FileStat?>(null) }
 
     // 视图模式存进偏好，切 Tab 与重启后保持上次的选择
     // 初值同步读：异步给默认值的话，选了列表的用户每次进来都先闪一帧海报墙。DataStore 在
@@ -311,7 +323,12 @@ fun DriveScreen(
     }
 
     LaunchedEffect(Unit) {
-        val restoredStack = if (folderStack.size == 1 && folderStack[0].id.isEmpty() && currentFolderId.isEmpty()) {
+        // 位置按账号存在标签里（restoreTabs）。有多账号之前只存一份在偏好里，那时只有一个账号：
+        // 这个账号没存过标签时接过去一次，随即清掉，不留给之后登录的别的账号。
+        // 换号后网盘页随账号重建，此刻仓库可能还停在上一个账号的位置，先换过来再看
+        driveRepo.enterAccount(clientManager.currentClient.value?.account)
+        val startStack = driveRepo.folderStackFlow.value
+        val legacyStack = if (startStack.size == 1 && startStack[0].id.isEmpty() && currentFolderId.isEmpty()) {
             val (lastId, lastName, serialized) = sessionManager.getLastFolder()
             when {
                 lastId.isEmpty() -> emptyList()
@@ -319,20 +336,13 @@ fun DriveScreen(
                 else -> LastFolderStack.decode(serialized).ifEmpty { listOf(PathBreadcrumb(lastId, lastName)) }
             }
         } else emptyList()
+        if (legacyStack.isNotEmpty()) sessionManager.saveLastFolder("", "", "")
 
-        // 上次开着几个标签就全部恢复；只有一个时照旧恢复那一个位置。
-        // restoreFolderStack 与 restoreTabs 自带加载，几条路各触发一次，不能都调。
+        // restoreFolderStack 与 restoreTabs 自带加载，几条路各触发一次，不能都调
         when {
             currentFolderId.isEmpty() && state.restoreTabs() -> Unit
-            restoredStack.isNotEmpty() -> state.restoreFolderStack(restoredStack)
+            legacyStack.isNotEmpty() -> state.restoreFolderStack(legacyStack)
             else -> state.load()
-        }
-    }
-
-    LaunchedEffect(folderStack) {
-        val last = folderStack.lastOrNull()
-        if (last != null) {
-            sessionManager.saveLastFolder(last.id, last.name, LastFolderStack.encode(folderStack))
         }
     }
 
@@ -449,6 +459,7 @@ fun DriveScreen(
 
     val displayedFiles = state.displayedFiles
     val folderEmptiness by state.folderEmptiness.collectAsStateWithLifecycle()
+    val vaultedFolders by state.vaultedFolders.collectAsStateWithLifecycle()
     val highlightedFileIds = state.highlightedFileIds
     // 每一项都要问一次「是否选中」，SnapshotStateList 的 contains 是线性查找
     val selectedIdSet by remember { derivedStateOf { state.selectedFileIds.toSet() } }
@@ -504,11 +515,15 @@ fun DriveScreen(
     val pickFiles = platform.uploadPicker.rememberFilesLauncher { upload(UploadSelection(files = it)) }
     val pickFolder = platform.uploadPicker.rememberFolderLauncher { upload(UploadSelection(folders = listOf(it))) }
 
-    // 下载的成品只在传输页里看得到，与上传、离线一样提交后切过去
-    fun enqueueDownload(file: FileStat) {
-        downloadManager.enqueue(file)
-        openTransfers()
+    // 下载的成品只在传输页里看得到，与上传、离线一样提交后切过去。文件夹各成一批，在后台列出其中的文件
+    fun download(files: List<FileStat>) {
+        val singles = files.filter { !it.isFolder && !it.isUploading }
+        singles.forEach(downloadManager::enqueue)
+        val batches = downloadManager.enqueueFolders(files.filter { it.isFolder }, DriveDownloadFolderSource(driveRepo))
+        if (singles.isNotEmpty() || batches > 0) openTransfers()
     }
+
+    fun enqueueDownload(file: FileStat) = download(listOf(file))
 
     // 回调对象只建一次，列表项拿到的引用不变；外部传入的导航回调经 rememberUpdatedState 取最新值
     val navigateToPlayer by rememberUpdatedState(onNavigateToVideoPlayer)
@@ -550,17 +565,40 @@ fun DriveScreen(
             )
         }
         val ids = files.map { it.id }.toSet()
-        val renamable = files.filterNot { it.isUploading }
+        // 归档条目只在清单里，改名、分享都要网盘里的文件；移动与复制由 state 拦下并提示
+        val renamable = files.filterNot { it.isUploading || it.isVaulted }
         val remove = library?.takeIf { it.isEventLog }?.let {
             SheetAction(Icons.Outlined.Delete, "从${it.title}中移除", { state.removeFromLibrary(ids) })
         }
-        return listOfNotNull(remove) + listOf(
+        val restore = files.filter { it.isVaulted }.takeIf { it.isNotEmpty() }?.let { vaulted ->
+            SheetAction(Icons.Outlined.CloudDownload, "恢复到网盘", { state.restoreFromVault(vaulted.map { it.id }) })
+        }
+        val downloadable = files.filterNot { it.isUploading }.takeIf { it.isNotEmpty() }?.let { targets ->
+            SheetAction(Icons.Outlined.Download, "下载到本地", { download(targets) })
+        }
+        return listOfNotNull(remove, restore, downloadable) + listOf(
             SheetAction(Icons.Outlined.DriveFileMove, "移动到", { moveTargetIds = ids }),
             SheetAction(Icons.Outlined.ContentCopy, "复制到", { copyTargetIds = ids }),
             SheetAction(Icons.Outlined.Edit, "批量重命名", { batchRenameTargets = renamable }),
             SheetAction(Icons.Outlined.Share, "分享", { shareTargets = renamable }),
             SheetAction(Icons.Outlined.Delete, "移入回收站", { state.moveToTrash(ids.toList()) }, destructive = true),
         )
+    }
+
+    // 归档条目只是清单里的一行：能做的是打开、下载、改名、复制来源，以及恢复成网盘文件或从清单里去掉
+    fun vaultActions(file: FileStat): List<SheetAction> = buildList {
+        add(SheetAction(Icons.Outlined.CloudDownload, "恢复到网盘", { state.restoreFromVault(listOf(file.id)) }))
+        add(SheetAction(Icons.Outlined.Download, "下载到本地", { enqueueDownload(file) }))
+        when (file.source) {
+            FileSource.Magnet -> add(SheetAction(Icons.Outlined.Link, "复制磁力链接", { copySource(file) }))
+            FileSource.Share -> {
+                add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "打开来源分享", { file.sourceUrl?.let(platform::openUrl) }))
+                add(SheetAction(Icons.Outlined.Link, "复制分享链接", { copySource(file) }))
+            }
+            null -> Unit
+        }
+        add(SheetAction(Icons.Outlined.Edit, "重命名", { startRename(file) }))
+        add(SheetAction(Icons.Outlined.Delete, "从归档移除", { state.removeFromVault(listOf(file.id)) }, destructive = true))
     }
 
     // 一项的全部操作，右键菜单、详情栏与操作面板共用。库读 state 上的当下值：记住的回调里拿不到重组后的局部变量。
@@ -576,6 +614,7 @@ fun DriveScreen(
                 onDelete = { libraryConfirm = LibraryConfirm.DeleteForever(listOf(file.id), emptying = false) },
             )
         }
+        if (file.isVaulted) return vaultActions(file)
         val extras = library?.let {
             libraryExtraActions(it, onReveal = { state.revealInDrive(file) }, onRemove = { state.removeFromLibrary(listOf(file.id)) })
         }.orEmpty()
@@ -603,6 +642,8 @@ fun DriveScreen(
             onOpenInNewTab = latestOpenInNewTab?.let { { it(file) } },
             onTogglePin = latestTogglePin?.let { { it(file) } },
             isPinned = latestPinnedFolders.any { it.id == file.id },
+            // 库里列的是散落各处的条目，归档一个文件夹要在它所在的地方做
+            onVault = if (library == null) ({ vaultTarget = file }) else null,
         )
     }
 
@@ -649,7 +690,7 @@ fun DriveScreen(
                     state.displayedFiles.filter { it.id in state.selectedFileIds }
                 } else {
                     listOf(file)
-                }.filterNot { it.isUploading }
+                }.filterNot { it.isUploading || it.isVaulted }
                 if (batch.isEmpty()) {
                     null
                 } else {
@@ -1086,8 +1127,8 @@ fun DriveScreen(
                     add(SheetAction(Icons.Outlined.ContentCopy, "复制到…", { copyTargetIds = movable.map { it.id }.toSet() }))
                 }
                 if (commands.download) {
-                    val files = movable.filterNot { it.isFolder }
-                    add(SheetAction(Icons.Outlined.Download, "下载到本地", { files.forEach(::enqueueDownload) }))
+                    val targets = movable
+                    add(SheetAction(Icons.Outlined.Download, "下载到本地", { download(targets) }))
                 }
                 if (commands.extract) {
                     val archives = movable.filter { it.isExtractableArchive || it.isArchiveVolume }
@@ -1239,6 +1280,7 @@ fun DriveScreen(
                     Column {
                         // 队列为空时不占位
                         ArchiveExtractStatus(archiveSession, Modifier.fillMaxWidth())
+                        VaultFolderStatus(vaultSession, Modifier.fillMaxWidth())
                         // 收起后的把手只在窄窗口：宽窗口的命令栏上「添加链接」「查找重复」点了就是放回收起的会话，
                         // 底部再挂一条是同一件事的第二个入口
                         if (instantState != null && !instantSession.isSheetOpen && !pathInTopBar) {
@@ -1524,6 +1566,7 @@ fun DriveScreen(
                                         columnReferenceWidth = listAreaWidth,
                                         activeItemId = commandFile?.id,
                                         emptyFolders = folderEmptiness,
+                                        vaultedFolders = vaultedFolders,
                                         keyboardFocusTarget = keyboardFocusTarget,
                                         onKeyboardFocusMoved = { keyboardFocusTarget = null },
                                         header = {
@@ -1567,7 +1610,7 @@ fun DriveScreen(
             file = target,
             locationLabel = rowNotes[target.id],
             // 回收站里的条目查不了详情，文件夹也统计不了
-            actionsOverride = if (inTrash) itemActions(target) else null,
+            actionsOverride = if (inTrash || target.isVaulted) itemActions(target) else null,
             leadingActions = libraryView?.takeIf { !inTrash }?.let { library ->
                 libraryExtraActions(library, onReveal = { state.revealInDrive(target) }, onRemove = { state.removeFromLibrary(listOf(target.id)) })
             }.orEmpty(),
@@ -1596,7 +1639,12 @@ fun DriveScreen(
             onOpenInNewTab = openInNewTab?.let { { it(target) } },
             onTogglePin = togglePin?.let { { it(target) } },
             isPinned = pinnedFolders.any { it.id == target.id },
+            onVault = if (libraryView == null) ({ vaultTarget = target }) else null,
         )
+    }
+
+    vaultTarget?.let { folder ->
+        VaultFolderDialog(PathBreadcrumb(folder.id, folder.name), vaultSession, onDismiss = { vaultTarget = null })
     }
 
     libraryConfirm?.let { request ->
@@ -1640,8 +1688,9 @@ fun DriveScreen(
         PikoSheet(
             onDismissRequest = duplicateSession::collapse,
             bottomSheetInsets = { WindowInsets(0) },
+            sideSheetTitle = "查找重复",
         ) {
-            DuplicatesSheetContent(duplicateState)
+            DuplicatesSheetContent(duplicateState, inSideSheet = isSideSheet)
         }
     }
 
@@ -1688,6 +1737,8 @@ fun DriveScreen(
             onValueChange = { renameNewName = it },
             confirmLabel = "确定",
             confirmEnabled = renameNewName.isNotBlank() && renameNewName != target.name,
+            // 照资源管理器只选主名：改名多半不动扩展名。文件夹没有扩展名，整个选中
+            initialSelection = TextRange(0, if (target.isFolder) target.name.length else target.name.lastIndexOf('.').takeIf { it > 0 } ?: target.name.length),
             onDismiss = { renameTargetFile = null },
             onConfirm = { name ->
                 val id = target.id
@@ -1900,6 +1951,7 @@ private fun NameInputDialog(
     confirmEnabled: Boolean,
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit,
+    initialSelection: TextRange? = null,
 ) {
     val autoClean by LocalPikoServices.current.preferences.autoCleanNamesFlow.collectAsStateWithLifecycle(initialValue = false)
     var pendingName by remember { mutableStateOf<String?>(null) }
@@ -1920,6 +1972,8 @@ private fun NameInputDialog(
                 isError = unfixable,
                 supportingText = driveNameHint(value, autoClean),
                 onDone = { if (canConfirm) confirm() },
+                autoFocus = true,
+                initialSelection = initialSelection,
             )
         },
         confirmButton = {

@@ -9,9 +9,16 @@ import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.repository.FileCategory
 import dev.piko.data.repository.FileNameSanitizer
 import dev.piko.data.repository.fileCategory
+import dev.piko.shared.data.VaultEdits
+import dev.piko.shared.data.VaultEntry
+import dev.piko.shared.data.VaultStore
 import dev.piko.shared.data.InstantFileItem
+import dev.piko.shared.data.ancestorsOf
+import dev.piko.shared.data.runSuspendCatching
+import kotlin.time.Clock
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
+import dev.piko.shared.log.reportFailure
 import dev.piko.shared.data.InstantMagnetRepository
 import dev.piko.shared.data.MagnetResolutionResult
 import dev.piko.shared.data.OfflinePackTracker
@@ -20,6 +27,7 @@ import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.PreviewTempFolder
 import dev.piko.shared.naming.MediaFileInput
 import io.github.nihildigit.pikpak.InstantContentUnavailableException
+import io.github.nihildigit.pikpak.QuotaResponse
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -72,7 +80,10 @@ sealed interface InstantSaveOutcome {
 data class InstantPreviewRequest(val fileId: String, val fileName: String)
 
 /** 一次会话里各条链接共用的部分。批量时每条链接各有一个 [InstantSheetState]，共用这一份。 */
-internal class InstantSharedContext {
+internal class InstantSharedContext(
+    /** 免费账号保存时把引用记进这里。测试里不给，免费账号退回秒传。 */
+    val vaultStore: VaultStore? = null,
+) {
     /** 保存目标对全部链接生效，在任一处更换都改这一份。 */
     val target = mutableStateOf<PikoPathBreadcrumb?>(null)
     val targetNotice = mutableStateOf<String?>(null)
@@ -87,6 +98,14 @@ internal class InstantSharedContext {
 
     // 一次粘几十条时不同时压给服务端；单条时只有一个请求，不受影响
     val resolvePermits = Semaphore(RESOLVE_CONCURRENCY)
+
+    /** 各条链接按同一个账号定路线，随网盘余量一起查。 */
+    val account = mutableStateOf(SaveAccount())
+
+    /** 从一次余量查询里取账号约束。账号类型登录时已取，这里不另发请求。 */
+    fun updateAccount(free: Boolean?, quota: QuotaResponse) {
+        account.value = SaveAccount(free = free == true, offlineLeft = quota.quotas.cloudDownload.remaining)
+    }
 
     private companion object {
         const val RESOLVE_CONCURRENCY = 3
@@ -134,9 +153,10 @@ class InstantSheetState private constructor(
         saveRecords: InstantSaveRecords,
         scope: CoroutineScope,
         initialMagnet: String = "",
+        vaultStore: VaultStore? = null,
     ) : this(
         instantRepo, driveRepo, preferences, previewFolder, packTracker, saveRecords, scope, initialMagnet,
-        InstantSharedContext(), isRoot = true,
+        InstantSharedContext(vaultStore), isRoot = true,
     )
 
     var input by mutableStateOf(initialMagnet)
@@ -252,9 +272,22 @@ class InstantSheetState private constructor(
             !(willCreateFolder && folderName.isBlank())
     }
 
+    /** 今天还能建几个离线任务，会员或未知时为 null。 */
+    val offlineLeft: Int? get() = shared.account.value.offlineLeft
+
+    /** 免费账号每建一个离线任务都先确认，见 [SaveAccount]。 */
+    val confirmsOffline: Boolean get() = shared.account.value.free
+
+    /**
+     * 解析到了 gcid，秒传时云端却还没有内容（别人上传到一半）。会员自动改交离线；
+     * 免费账号的离线一天只有几次，停下来改由主操作提交，走一遍确认。
+     */
+    var contentMissing by mutableStateOf(false)
+        private set
+
     /** 路线与代价，见 [planSave]。没勾任何一项时为 null。 */
     val savePlan: SavePlan? by derivedStateOf {
-        planSave(items, selectedIndices, selectedEntryCount, remainingBytes)
+        planSave(items, selectedIndices, selectedEntryCount, remainingBytes, shared.account.value)
     }
 
     val isAllSelected: Boolean by derivedStateOf {
@@ -299,12 +332,17 @@ class InstantSheetState private constructor(
      */
     val primaryAction: InstantPrimaryAction? by derivedStateOf {
         when {
+            resolution != null && contentMissing -> InstantPrimaryAction(
+                kind = InstantActionKind.SUBMIT_OFFLINE,
+                fileCount = 0,
+                enabled = target != null && !isSaving && shared.account.value.offlineLeft != 0,
+            )
             resolution != null -> {
                 val plan = savePlan
                 InstantPrimaryAction(
                     kind = if (plan?.route == SaveRoute.OFFLINE_PACK) InstantActionKind.OFFLINE_PACK else InstantActionKind.INSTANT_SAVE,
                     fileCount = plan?.fileCount ?: 0,
-                    enabled = canSaveSelection && plan?.lacksSpace != true,
+                    enabled = canSaveSelection && plan?.blocked != true,
                 )
             }
             input.isBlank() -> null
@@ -312,7 +350,7 @@ class InstantSheetState private constructor(
             else -> InstantPrimaryAction(
                 kind = InstantActionKind.SUBMIT_OFFLINE,
                 fileCount = 0,
-                enabled = target != null && !isSaving && !isResolving,
+                enabled = target != null && !isSaving && !isResolving && shared.account.value.offlineLeft != 0,
             )
         }
     }
@@ -336,6 +374,8 @@ class InstantSheetState private constructor(
                 if (shared.usedPreviewFolder) previewFolder.clearInBackground()
             }
             scope.launch { followDriveFolder() }
+            // 账号约束要在解析之前就位：整条交给离线的链接不解析，免费账号也要先确认
+            scope.launch { refreshRemainingBytes() }
         }
         scope.launch { preferences.bundleSubtitlesFlow.collect { saveAttachedSubtitles = it } }
         if (initialMagnet.isNotBlank() && !startBatchIfMany()) {
@@ -470,23 +510,30 @@ class InstantSheetState private constructor(
     /** 按 [savePlan] 的路线保存当前勾选。 */
     fun saveSelection() {
         val plan = savePlan ?: return
-        if (isSaving || plan.lacksSpace) return
+        if (isSaving || plan.blocked) return
         val toSave = itemsToSave
         isSaving = true
         scope.launch {
             try {
                 val targetBread = target ?: resolveTarget()
                 when (plan.route) {
-                    SaveRoute.INSTANT -> saveInstantOrOffline(targetBread, toSave).onSuccess { ids ->
-                        _outcomes.emit(
-                            if (ids != null) InstantSaveOutcome.InstantSaved(ids, targetBread) else InstantSaveOutcome.OfflineTaskCreated(targetBread),
-                        )
+                    SaveRoute.INSTANT -> if (savesToVault) {
+                        saveToVault(targetBread, toSave, intoNewFolder = willCreateFolder).onSuccess { _outcomes.emit(it) }
+                    } else if (willCreateFolder) {
+                        saveIntoNewFolder(targetBread, toSave).onSuccess { _outcomes.emit(it) }
+                    } else {
+                        saveInstantOrOffline(targetBread, toSave).onSuccess { ids ->
+                            _outcomes.emit(
+                                if (ids != null) InstantSaveOutcome.InstantSaved(ids, targetBread) else InstantSaveOutcome.OfflineTaskCreated(targetBread),
+                            )
+                        }
                     }
                     SaveRoute.OFFLINE_PACK -> {
                         // 提交前再查一次：解析时查到的余量可能已经过时，而离线一旦提交就是整包落盘。
                         // 放不下时 savePlan 随 remainingBytes 变为 lacksSpace，保存栏换成空间不足的说明
                         val remaining = refreshRemainingBytes()
                         if (remaining != null && plan.packBytes > remaining) return@launch
+                        if (shared.account.value.offlineLeft == 0) return@launch
                         packSave(targetBread, toSave)
                             .onSuccess { _outcomes.emit(InstantSaveOutcome.OfflineTaskCreated(targetBread)) }
                     }
@@ -498,7 +545,7 @@ class InstantSheetState private constructor(
     }
 
     /**
-     * 空间放不下整包时的退路：只秒传选中的文件，按种子里的目录结构存进新建的文件夹。
+     * 整包离线走不通时的退路：只秒传选中的文件，按种子里的目录结构存进新建的文件夹。
      * 未收录的文件没有 gcid，这条路存不了，保存栏已写明会跳过几个。
      */
     fun saveSelectionInstantly() {
@@ -508,21 +555,83 @@ class InstantSheetState private constructor(
         scope.launch {
             try {
                 val targetBread = target ?: resolveTarget()
-                val name = FileNameSanitizer.sanitize(folderName)
-                val folderId = driveRepo.createFolder(targetBread.id, name).getOrElse { err ->
-                    PikoLog.w(TAG, "新建保存目录失败", err)
-                    errorMessage = "新建文件夹失败：${err.message}"
-                    return@launch
+                val saved = if (savesToVault) {
+                    saveToVault(targetBread, toSave, intoNewFolder = true)
+                } else {
+                    saveIntoNewFolder(targetBread, toSave)
                 }
-                val folder = PikoPathBreadcrumb(folderId, name)
-                instantSave(folder, toSave, keepStructure = true)
-                    .onSuccess { ids ->
-                        saveRecords.add(name, ids.size, toSave.sumOf { it.file.size }, targetBread.name, locateId = folderId)
-                        _outcomes.emit(InstantSaveOutcome.InstantSaved(ids, folder))
-                    }
+                saved.onSuccess { _outcomes.emit(it) }
             } finally {
                 isSaving = false
             }
+        }
+    }
+
+    /** 免费账号只记引用，见 [saveToVault]。 */
+    private val savesToVault: Boolean get() = shared.account.value.free && shared.vaultStore != null
+
+    /**
+     * 免费账号的保存：不秒传出实体，只把引用记进目标目录的清单，打开时再造、取完直链就删，
+     * 6 GB 整块留给正在看的那一个文件。来源在这一刻最清楚，一并记下：秒传出来的文件不带来源。
+     *
+     * [intoNewFolder] 时照种子里的目录结构建真实的文件夹（文件夹不占空间），条目记进各自那一层。
+     * 没有 gcid 的（未收录）记不了，与秒传一样跳过。
+     */
+    private suspend fun saveToVault(
+        target: PikoPathBreadcrumb,
+        toSave: List<InstantFileItem>,
+        intoNewFolder: Boolean,
+    ): Result<InstantSaveOutcome.InstantSaved> {
+        val store = shared.vaultStore ?: return Result.failure(IllegalStateException("没有归档清单"))
+        val source = submittedUrl()
+        val addedAt = Clock.System.now().toEpochMilliseconds()
+        val files = toSave.map { it.file }.filter { it.gcid != null }
+        return runSuspendCatching {
+            // 同名文件夹已在就存进去，不新建：再存一次同一个包（或上次存到一半）是常事，
+            // 清单按同名同内容去重，已存的那几集不会多出一行。PikPak 也不许同一层有两个同名文件夹
+            val folder = if (intoNewFolder) {
+                val name = FileNameSanitizer.sanitize(folderName)
+                PikoPathBreadcrumb(driveRepo.folderNamed(target.id, name).getOrThrow(), name)
+            } else {
+                target
+            }
+            val dirIds = mutableMapOf("" to folder.id)
+            if (intoNewFolder) {
+                val dirs = files.flatMap { ancestorsOf(it.path) }.distinct().sortedBy { dir -> dir.count { it == '/' } }
+                for (dir in dirs) {
+                    dirIds[dir] = driveRepo.folderNamed(dirIds.getValue(dir.substringBeforeLast('/', "")), dir.substringAfterLast('/')).getOrThrow()
+                }
+            }
+            val ids = mutableListOf<String>()
+            for ((dir, group) in files.groupBy { if (intoNewFolder) it.path.substringBeforeLast('/', "") else "" }) {
+                val entries = group.mapNotNull { file ->
+                    file.gcid?.let { VaultEntry.create(file.name, file.size, it, source = source, addedAt = addedAt) }
+                }
+                store.update(dirIds.getValue(dir), VaultEdits.add(entries)).getOrThrow()
+                ids += entries.map { it.virtualId }
+            }
+            // 定位指向所在的文件夹：虚拟条目没有网盘里的 ID 可找
+            val recordName = if (intoNewFolder) folder.name else files.maxByOrNull { it.size }?.name.orEmpty()
+            saveRecords.add(recordName, ids.size, files.sumOf { it.size }, target.name, locateId = folder.id)
+            InstantSaveOutcome.InstantSaved(ids, folder)
+        }.reportSaveFailure()
+    }
+
+    /** 秒传 [toSave]，按种子里的目录结构存进 [target] 下以 [folderName] 新建的文件夹。 */
+    private suspend fun saveIntoNewFolder(
+        target: PikoPathBreadcrumb,
+        toSave: List<InstantFileItem>,
+    ): Result<InstantSaveOutcome.InstantSaved> {
+        val name = FileNameSanitizer.sanitize(folderName)
+        val folderId = driveRepo.createFolder(target.id, name).getOrElse { err ->
+            PikoLog.w(TAG, "新建保存目录失败", err)
+            errorMessage = "新建文件夹失败：${err.message}"
+            return Result.failure(err)
+        }
+        val folder = PikoPathBreadcrumb(folderId, name)
+        return instantSave(folder, toSave, keepStructure = true).map { ids ->
+            saveRecords.add(name, ids.size, toSave.sumOf { it.file.size }, target.name, locateId = folderId)
+            InstantSaveOutcome.InstantSaved(ids, folder)
         }
     }
 
@@ -557,6 +666,9 @@ class InstantSheetState private constructor(
             return when {
                 resolution == null -> submitWhole(target).map { null }
                 plan == null -> Result.failure(IllegalStateException("未勾选文件"))
+                plan.route == SaveRoute.INSTANT && savesToVault ->
+                    saveToVault(target, toSave, intoNewFolder = willCreateFolder).map { it.createdIds }
+                plan.route == SaveRoute.INSTANT && willCreateFolder -> saveIntoNewFolder(target, toSave).map { it.createdIds }
                 plan.route == SaveRoute.INSTANT -> saveInstantOrOffline(target, toSave)
                 else -> packSave(target, toSave).map { null }
             }
@@ -568,8 +680,7 @@ class InstantSheetState private constructor(
     private suspend fun submitWhole(target: PikoPathBreadcrumb): Result<Unit> =
         instantRepo.enqueueOfflineTask(submittedUrl(), target.id)
             .map { }
-            .logFailure(TAG, "保存失败")
-            .onFailure { errorMessage = "保存失败：${it.message}" }
+            .reportSaveFailure()
 
     private fun scheduleResolve(debounce: Boolean = true) {
         val magnet = normalizeMagnet(input)
@@ -581,6 +692,7 @@ class InstantSheetState private constructor(
         selectedIndices = emptySet()
         errorMessage = null
         isUnindexed = false
+        contentMissing = false
         if (magnet == null) return
         resolveJob = scope.launch {
             // 防抖。粘贴一次就是一条完整的链，等待只为压掉手敲时中途的半条链接，所以取短值。
@@ -627,10 +739,11 @@ class InstantSheetState private constructor(
         if (isRoot) scope.launch { refreshRemainingBytes() }
     }
 
-    /** 查一次网盘余量。limit 为 0 的账号当作不限；查询失败保留上一次的数。 */
+    /** 查一次网盘余量与今天剩下的离线次数。limit 为 0 的账号当作不限；查询失败保留上一次的数。 */
     private suspend fun refreshRemainingBytes(): Long? {
         driveRepo.getQuota().onSuccess { response ->
             remainingBytes = response.quota.takeIf { it.limitBytes > 0 }?.remainingBytes
+            shared.updateAccount(driveRepo.isFreeAccount(), response)
         }
         return remainingBytes
     }
@@ -699,7 +812,14 @@ class InstantSheetState private constructor(
      */
     private suspend fun saveInstantOrOffline(target: PikoPathBreadcrumb, toSave: List<InstantFileItem>): Result<List<String>?> {
         val instant = rawInstantSave(target, toSave, keepStructure = false)
-        if (items.size == 1 && instant.exceptionOrNull() is InstantContentUnavailableException) {
+        val missing = instant.exceptionOrNull() as? InstantContentUnavailableException
+        if (items.size == 1 && missing != null) {
+            if (shared.account.value.free) {
+                PikoLog.i(TAG, "云端没有这个文件的内容，等用户确认离线")
+                contentMissing = true
+                errorMessage = "云端暂无该文件内容，需离线下载"
+                return Result.failure(missing)
+            }
             PikoLog.i(TAG, "云端没有这个文件的内容，改交离线任务")
             return submitWhole(target).map { null }
         }
@@ -716,8 +836,7 @@ class InstantSheetState private constructor(
         saveRecords.add(main.file.name, saved.size, saved.sumOf { (item, _) -> item.file.size }, target.name, locateId = mainId)
     }
 
-    private fun <T> Result<T>.reportSaveFailure(): Result<T> =
-        logFailure(TAG, "保存失败").onFailure { errorMessage = "保存失败：${it.message}" }
+    private fun <T> Result<T>.reportSaveFailure(): Result<T> = reportFailure(TAG, "保存") { errorMessage = it }
 
     private suspend fun packSave(target: PikoPathBreadcrumb, toSave: List<InstantFileItem>): Result<Unit> {
         val allItems = items
@@ -732,8 +851,7 @@ class InstantSheetState private constructor(
             keptBytes = toSave.sumOf { it.file.size },
         )
             .map { }
-            .logFailure(TAG, "保存失败")
-            .onFailure { errorMessage = "保存失败：${it.message}" }
+            .reportSaveFailure()
     }
 
     companion object {

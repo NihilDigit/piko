@@ -25,11 +25,19 @@ class PreviewTempFolder(
 
     /** 秒传到 Piko-Temp，目录不存在就先建。返回新文件的 id。 */
     suspend fun put(file: ResolvedFile): Result<String> = lock.withLock {
-        val parentId = folderId
-            ?: findFolders().getOrElse { return Result.failure(it) }.firstOrNull()
-            ?: driveRepo.createFolder("", FOLDER_NAME).getOrElse { return Result.failure(it) }
-        folderId = parentId
+        val parentId = ensureFolder().getOrElse { return Result.failure(it) }
         instantRepo.instantCreate(file, parentId)
+    }
+
+    /** Piko-Temp 的 ID，不存在就先建。 */
+    suspend fun folderId(): Result<String> = lock.withLock { ensureFolder() }
+
+    private suspend fun ensureFolder(): Result<String> {
+        folderId?.let { return Result.success(it) }
+        val found = findFolders().getOrElse { return Result.failure(it) }.firstOrNull()
+            ?: driveRepo.createFolder("", FOLDER_NAME).getOrElse { return Result.failure(it) }
+        folderId = found
+        return Result.success(found)
     }
 
     /** 永久删除 Piko-Temp，找不到就什么也不做。 */

@@ -68,6 +68,33 @@ class InstantSavePlanTest {
         assertFalse(plan.lacksSpace)
     }
 
+    /** 免费账号的离线一天只有几次：能秒传的不离线，要离线时先给秒传的退路，次数用完就拦。 */
+    @Test
+    fun `a free account saves indexed entries instantly and offers a way around offline`() {
+        val free = SaveAccount(free = true, offlineLeft = 2)
+        // 只记引用，剩余空间比所选的小也照样能存
+        val indexed = assertNotNull(planSave(pack, setOf(0, 2), selectedEntryCount = 2, remainingBytes = gb, account = free))
+        assertEquals(SaveRoute.INSTANT, indexed.route)
+        assertFalse(indexed.lacksSpace)
+
+        val mixed = assertNotNull(planSave(pack, setOf(0, 3), selectedEntryCount = 2, remainingBytes = 5 * gb, account = free))
+        assertEquals(SaveRoute.OFFLINE_PACK, mixed.route)
+        assertFalse(mixed.blocked)
+        assertEquals(1, mixed.fallback?.fileCount)
+
+        val spent = assertNotNull(planSave(pack, setOf(0, 3), selectedEntryCount = 2, remainingBytes = 5 * gb, account = free.copy(offlineLeft = 0)))
+        assertTrue(spent.lacksOfflineCount)
+        assertNotNull(spent.fallback)
+    }
+
+    /** 秒传的文件同样占空间，比的是选中的大小。 */
+    @Test
+    fun `an instant save that does not fit is blocked`() {
+        val plan = assertNotNull(planSave(pack, setOf(0, 1), selectedEntryCount = 1, remainingBytes = gb))
+        assertEquals(SaveRoute.INSTANT, plan.route)
+        assertTrue(plan.lacksSpace)
+    }
+
     @Test
     fun `upload charge is fifteen percent rounded up`() {
         assertEquals(15, uploadCharge(100))

@@ -1,5 +1,9 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.ui.theme.LocalFixedColors
+import androidx.compose.foundation.shape.CircleShape
+import dev.piko.shared.data.isVaulted
+import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
@@ -52,6 +56,8 @@ internal fun GalleryTile(
     onLongClick: () -> Unit,
     onSelectToggle: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    /** 文件夹里直接放着归档条目，见 itemMarks。 */
+    folderHasVault: Boolean = false,
 ) {
     val shape = MaterialTheme.shapes.small
     Box(
@@ -94,6 +100,26 @@ internal fun GalleryTile(
                 )
             }
             TileName(file.name, Modifier.align(Alignment.BottomStart))
+        }
+        // 方格上没有标题行，标记压在左上角；垫一层圆底，压在任何画面上都看得清
+        if (file.isVaulted || (file.isFolder && folderHasVault)) {
+            val fixed = LocalFixedColors.current
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(6.dp)
+                    .size(22.dp)
+                    .clip(CircleShape)
+                    .background(fixed.ScrimOnMedia.copy(alpha = 0.55f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Inventory2,
+                    contentDescription = if (file.isFolder) "含归档条目" else "已归档",
+                    tint = fixed.OnMedia,
+                    modifier = Modifier.size(14.dp),
+                )
+            }
         }
         if (isSelectionMode) {
             Checkbox(

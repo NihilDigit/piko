@@ -12,11 +12,12 @@ import androidx.compose.material.icons.outlined.OndemandVideo
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FileCopy
+import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.SwipeVertical
 import androidx.compose.material.icons.outlined.Tab
 import dev.piko.shared.upload.isUploading
-import androidx.compose.material.icons.outlined.Star
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material.icons.outlined.Unarchive
 import androidx.compose.material.icons.outlined.PushPin
@@ -74,6 +75,7 @@ internal fun FileActionsSheet(
     onOpenInNewTab: (() -> Unit)? = null,
     onTogglePin: (() -> Unit)? = null,
     isPinned: Boolean = false,
+    onVault: (() -> Unit)? = null,
     /** 库里多出的操作（在网盘中显示、移除记录），排在最前。 */
     leadingActions: List<SheetAction> = emptyList(),
     /** 整个取代文件操作，回收站用：那里只能恢复与彻底删除。 */
@@ -110,6 +112,7 @@ internal fun FileActionsSheet(
         onOpenInNewTab = onOpenInNewTab,
         onTogglePin = onTogglePin,
         isPinned = isPinned,
+        onVault = onVault,
     )
 
     ItemDetailsSheet(
@@ -153,6 +156,8 @@ internal fun fileActions(
     /** 固定或取消固定到快速访问；为 null 时没有快速访问可去（窄窗口），不给这一项。 */
     onTogglePin: (() -> Unit)? = null,
     isPinned: Boolean = false,
+    /** 把文件夹里的文件换成归档记录，腾出空间；为 null 时不给这一项。 */
+    onVault: (() -> Unit)? = null,
 ): List<SheetAction> = buildList {
     // 文件夹在宽窗口里可以在新标签页打开，放在最前：它是「打开」的另一种
     if (file.isFolder && onOpenInNewTab != null) add(SheetAction(Icons.Outlined.Tab, "在新标签页打开", onOpenInNewTab))
@@ -170,14 +175,16 @@ internal fun fileActions(
     }
     add(
         SheetAction(
-            icon = if (file.isStarred) Icons.Outlined.StarOutline else Icons.Outlined.Star,
+            // 图标画的是现状，与信息流的星标按钮一致：已加星标时实心，未加时描边
+            icon = if (file.isStarred) Icons.Filled.Star else Icons.Outlined.StarOutline,
             label = if (file.isStarred) "取消星标" else "添加星标",
             onClick = onToggleStar,
         ),
     )
     if (file.isExtractableArchive || file.isArchiveVolume) add(SheetAction(Icons.Outlined.Unarchive, "解压到当前位置", onExtract))
+    // 文件夹连同子文件夹整个下载
+    if (!file.isUploading) add(SheetAction(Icons.Outlined.Download, "下载到本地", onDownload))
     if (!file.isFolder) {
-        add(SheetAction(Icons.Outlined.Download, "下载到本地", onDownload))
         if (file.isPlayableVideo()) {
             if (onOpenInExternalPlayer != null) {
                 add(SheetAction(Icons.Outlined.OndemandVideo, "用外部播放器打开", onOpenInExternalPlayer))
@@ -194,6 +201,7 @@ internal fun fileActions(
         null -> Unit
     }
     if (file.isFolder) add(SheetAction(Icons.Outlined.FileCopy, "查找重复", onFindDuplicates))
+    if (file.isFolder && onVault != null) add(SheetAction(Icons.Outlined.Inventory2, "归档", onVault))
     // 上传中的文件分享出去对方打不开
     if (!file.isUploading) add(SheetAction(Icons.Outlined.Share, "分享", onShare))
     add(SheetAction(Icons.Outlined.Edit, "重命名", onRename))

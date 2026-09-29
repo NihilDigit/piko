@@ -1,5 +1,7 @@
 package dev.piko.ui.components
 
+import dev.piko.shared.data.isVaulted
+import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.foundation.background
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -250,6 +252,8 @@ fun FileListItem(
     tags: List<String> = emptyList(),
     /** 番号芯片，排在标签行最前。 */
     code: String? = null,
+    /** 文件夹里直接放着归档条目，见 [itemMarks]。 */
+    folderHasVault: Boolean = false,
 ) {
     val hover = remember { MutableInteractionSource() }
     val hovered by hover.collectIsHoveredAsState()
@@ -262,11 +266,7 @@ fun FileListItem(
         onMoreClick = onDetailsClick,
         trailing = { ItemDetailsButton(visible = !detailsOnHover || hovered, onClick = onDetailsClick) },
         modifier = modifier.hoverable(hover),
-        badge = if (file.isStarred) {
-            { StarMark() }
-        } else {
-            null
-        },
+        badge = itemMarks(file, folderHasVault),
         supporting = {
             Column {
                 if (tags.isNotEmpty() || code != null) MediaTagRow(tags = tags, lead = code, modifier = Modifier.padding(vertical = 2.dp))
@@ -378,6 +378,35 @@ fun StarMark(modifier: Modifier = Modifier) {
 }
 
 private val StarMarkSize = 16.dp
+
+/**
+ * 归档标记：条目本身是归档记录（网盘里没有它的文件，打开时才临时取回），或文件夹里直接放着归档条目。
+ * 图标与「归档」操作同一个。用 secondary：tertiary 给了星标，primary 给了定位与选中。
+ */
+@Composable
+fun VaultMark(inFolder: Boolean, modifier: Modifier = Modifier) {
+    Icon(
+        imageVector = Icons.Filled.Inventory2,
+        contentDescription = if (inFolder) "含归档条目" else "已归档",
+        tint = MaterialTheme.colorScheme.secondary,
+        modifier = modifier.size(StarMarkSize),
+    )
+}
+
+/**
+ * 标题旁的标记：星标与归档，都没有时为 null。[folderHasVault] 是文件夹里直接放着归档条目，
+ * 见 PikoDriveRepository.vaultedFolders。
+ */
+fun itemMarks(file: FileStat, folderHasVault: Boolean): (@Composable () -> Unit)? {
+    val vault = file.isVaulted || (file.isFolder && folderHasVault)
+    if (!file.isStarred && !vault) return null
+    return {
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (file.isStarred) StarMark()
+            if (vault) VaultMark(inFolder = file.isFolder)
+        }
+    }
+}
 
 /** 条目旁的一枚文字角标，查重里标「保留」。被定位的条目不用它，见 [locateHighlight]。 */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)

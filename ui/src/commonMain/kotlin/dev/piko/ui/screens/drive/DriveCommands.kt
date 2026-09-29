@@ -2,6 +2,7 @@ package dev.piko.ui.screens.drive
 
 import dev.piko.shared.data.isArchiveVolume
 import dev.piko.shared.data.isExtractableArchive
+import dev.piko.shared.data.isVaulted
 import dev.piko.shared.upload.isUploading
 import io.github.nihildigit.pikpak.FileStat
 
@@ -97,8 +98,8 @@ internal fun driveCommands(input: CommandInputs): DriveCommands = with(input) {
     val inTrash = place == CommandPlace.TRASH
     val eventLog = place == CommandPlace.RECENT || place == CommandPlace.HISTORY
     val hasTargets = targets.isNotEmpty()
-    // 上传中的文件改名、移动、分享都会失败，作用对象里有它就不给这几样
-    val settled = hasTargets && targets.none { it.isUploading }
+    // 上传中的文件改名、移动、分享都会失败，作用对象里有它就不给这几样；归档条目在网盘里没有文件，同理
+    val settled = hasTargets && targets.none { it.isUploading || it.isVaulted }
     // 详情栏开着时它已整列摆出这几项的全部操作，命令栏不再重复一遍；剪切、复制、粘贴除外：
     // 它们是键盘上的习惯动作，详情栏里也没有
     val itemActionsHere = hasTargets && panel != PanelContent.DETAILS
@@ -113,7 +114,8 @@ internal fun driveCommands(input: CommandInputs): DriveCommands = with(input) {
         moveToTrash = itemActionsHere && !inTrash,
         restoreOrDelete = itemActionsHere && inTrash,
         moveCopyTo = itemActionsHere && settled && !inTrash,
-        download = itemActionsHere && !inTrash && targets.any { !it.isFolder && !it.isUploading },
+        // 文件夹整个下载，见 PikoDownloadCoordinator.enqueueFolders
+        download = itemActionsHere && !inTrash && targets.any { !it.isUploading },
         extract = itemActionsHere && !inTrash && targets.any { it.isExtractableArchive || it.isArchiveVolume },
         removeRecord = itemActionsHere && eventLog,
         // 清空只在有东西可清时。与 libraryPageActions 对应：只有回收站与播放历史有清空

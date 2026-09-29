@@ -1,7 +1,13 @@
 package dev.piko.shared.state
 
 import dev.piko.shared.sync.PikoSettingsSync
+import dev.piko.shared.data.VaultEdit
+import dev.piko.shared.data.VaultEdits
+import dev.piko.shared.data.VaultEntry
 import dev.piko.shared.data.DriveChangeJournal
+import dev.piko.shared.data.isVaulted
+import dev.piko.shared.data.runSuspendCatching
+import io.github.nihildigit.pikpak.InstantContentUnavailableException
 import dev.piko.shared.data.DriveClipboard
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -18,6 +24,7 @@ import dev.piko.shared.log.PikoLog
 import io.github.nihildigit.pikpak.DriveEvent
 import io.github.nihildigit.pikpak.EventPage
 import dev.piko.shared.log.logFailure
+import dev.piko.shared.log.reportFailure
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoFileSortOrder
 import dev.piko.shared.data.PikoPathBreadcrumb
@@ -70,6 +77,9 @@ private const val PREFETCH_DWELL_MILLIS = 400L
 private val HIGHLIGHT_RETRY_DELAYS = listOf(300L, 600L, 800L, 1000L)
 
 private const val TAG = "Drive"
+
+/** 对归档条目做只有网盘文件才能做的事时的提示。 */
+private const val VAULTED_NEEDS_RESTORE = "已归档的条目需先恢复到网盘"
 
 /**
  * 网盘浏览的全部状态与动作，两端共用。
@@ -171,6 +181,9 @@ class DriveScreenState(
 
     /** 列过的文件夹空不空，见 PikoDriveRepository.folderEmptiness。 */
     val folderEmptiness get() = driveRepo.folderEmptiness
+
+    /** 直接放着归档条目的文件夹，见 PikoDriveRepository.vaultedFolders。 */
+    val vaultedFolders get() = driveRepo.vaultedFolders
 
     /** 按文件夹 id 的显示信息，后台算好逐个填入。解析关闭时界面不读它。 */
     val folderViews = mutableStateMapOf<String, DriveFolderView>()
@@ -398,7 +411,7 @@ class DriveScreenState(
 
     // 根目录里放同步设置的 .piko 文件夹不列出来：它是 Piko 自己的，点进去也没有要看的
     private fun withoutSyncFolder(folderId: String, listing: List<FileStat>): List<FileStat> =
-        if (folderId.isNotEmpty()) listing else listing.filterNot { it.isFolder && it.name == PikoSettingsSync.FOLDER_NAME }
+        listing.filterNot { PikoSettingsSync.isSyncFolder(it, folderId) }
 
     /** [useCache] 与 [showRefreshing] 都为 false 是静默重列：不用缓存，也不出任何加载指示，见 [catchUpWithHighlight]。 */
     private fun load(useCache: Boolean, showRefreshing: Boolean) {
@@ -407,7 +420,7 @@ class DriveScreenState(
             loadLibrary(library, useCache, showRefreshing)
             return
         }
-        val cached = if (useCache) driveRepo.cachedFiles(folderId, sortOrder) else null
+        val cached = if (useCache) driveRepo.cachedBrowsable(folderId, sortOrder) else null
         when {
             cached != null -> {
                 files = withoutSyncFolder(folderId, cached)
@@ -419,7 +432,7 @@ class DriveScreenState(
         }
         loadJob?.cancel()
         loadJob = scope.launch {
-            val listing = driveRepo.listAllFiles(parentId = folderId, sortOrder = sortOrder)
+            val listing = driveRepo.listBrowsable(parentId = folderId, sortOrder = sortOrder)
             // 空列表可能是目录已经不在了：上次退出时停在的目录后来被删，或在别的客户端进了回收站。
             // 这时退回上一级，而不是把一个不存在的目录画成「此文件夹为空」。上一级也不在的话，
             // 它的加载会再退一级。只在列表为空时才多查一次详情，平常的目录不多花请求
@@ -914,8 +927,14 @@ class DriveScreenState(
     fun rename(fileId: String, newName: String) {
         if (newName.isBlank()) return
         val trimmed = newName.trim()
-        val oldName = knownFile(fileId)?.name
+        if (VaultEntry.isVaulted(fileId)) {
+            renameInVault(fileId, trimmed)
+            return
+        }
+        val listedName = knownFile(fileId)?.name
         scope.launch {
+            // 撤销要用旧名字。列表刚被别的改动刷走、还没列回来时找不到这一项，改之前向服务端查一次
+            val oldName = listedName ?: driveRepo.getFileDetail(fileId).getOrNull()?.name
             driveRepo.rename(fileId, trimmed)
                 .onSuccess {
                     load()
@@ -932,6 +951,10 @@ class DriveScreenState(
 
     /** 加或去星标。星标只体现在列表条目的 tags 里，完成后重新列一次，这一项的状态才跟着变。 */
     fun setStarred(file: FileStat, starred: Boolean) {
+        if (file.isVaulted) {
+            _messages.tryEmit(VAULTED_NEEDS_RESTORE)
+            return
+        }
         scope.launch {
             driveRepo.setStarred(listOf(file.id), starred)
                 .onSuccess {
@@ -943,15 +966,18 @@ class DriveScreenState(
         }
     }
 
+    /** 归档条目没有文件可进回收站，删它就是从清单里移除，见 [removeFromVault]。 */
     fun moveToTrash(ids: List<String>) {
-        if (ids.isEmpty()) return
+        val (vaulted, real) = ids.partition(VaultEntry::isVaulted)
+        removeFromVault(vaulted)
+        if (real.isEmpty()) return
         scope.launch {
-            driveRepo.trash(ids)
+            driveRepo.trash(real)
                 .onSuccess {
                     exitSelection()
                     load()
                     driveRepo.changes.record(
-                        DriveChangeJournal.Change.Trash(ids, if (ids.size == 1) "已移入回收站" else "已将 ${ids.size} 项移入回收站"),
+                        DriveChangeJournal.Change.Trash(real, if (real.size == 1) "已移入回收站" else "已将 ${real.size} 项移入回收站"),
                     )
                 }
                 .logFailure(TAG, "移入回收站失败")
@@ -966,7 +992,7 @@ class DriveScreenState(
     fun move(ids: List<String>, targetId: String, targetName: String, sources: Map<String, String> = emptyMap()) {
         fun sourceOf(id: String) = knownFile(id)?.parentId ?: sources[id]
         // 已经在目标里的不动：拖回原处、把文件夹拖到它自己上面，服务端要么白做一次、要么拒绝
-        val moving = ids.filter { it != targetId && sourceOf(it) != targetId }
+        val moving = withoutVaulted(ids).filter { it != targetId && sourceOf(it) != targetId }
         if (moving.isEmpty()) return
         val from = moving.associateWith { sourceOf(it) ?: activeFolderId }
         scope.launch {
@@ -994,7 +1020,8 @@ class DriveScreenState(
     private fun knownFile(id: String): FileStat? = displayedFiles.firstOrNull { it.id == id } ?: files.firstOrNull { it.id == id }
 
     /** 剪切或复制到剪贴板，照资源管理器：换个目录粘贴，见 [paste]。 */
-    fun putOnClipboard(ids: List<String>, cut: Boolean) {
+    fun putOnClipboard(requested: List<String>, cut: Boolean) {
+        val ids = withoutVaulted(requested)
         if (ids.isEmpty()) return
         driveRepo.setClipboard(DriveClipboard(ids.associateWith { knownFile(it)?.parentId ?: activeFolderId }, cut))
         val verb = if (cut) "剪切" else "复制"
@@ -1014,7 +1041,8 @@ class DriveScreenState(
         }
     }
 
-    fun copy(ids: List<String>, targetId: String, targetName: String) {
+    fun copy(requested: List<String>, targetId: String, targetName: String) {
+        val ids = withoutVaulted(requested)
         if (ids.isEmpty()) return
         scope.launch {
             driveRepo.copy(ids, targetId)
@@ -1026,6 +1054,126 @@ class DriveScreenState(
                 }
                 .logFailure(TAG, "复制失败")
                 .onFailure { _messages.tryEmit("复制失败") }
+        }
+    }
+
+    /**
+     * 去掉归档条目并提示一句。移动、复制与剪切要的是网盘里的文件，归档条目只是清单里的一行；
+     * 在这里拦而不是在各个按钮上：键盘、拖放与命令栏都走到这几个入口。
+     */
+    private fun withoutVaulted(ids: List<String>): List<String> {
+        val real = ids.filterNot(VaultEntry::isVaulted)
+        if (real.size < ids.size) _messages.tryEmit(VAULTED_NEEDS_RESTORE)
+        return real
+    }
+
+    /** 眼前列表里的归档条目，按所在文件夹分组：清单一个文件夹一份。值是列表里的虚拟 ID。 */
+    private fun vaultedByFolder(ids: Collection<String>): Map<String, Set<String>> =
+        ids.filter(VaultEntry::isVaulted)
+            .groupBy { knownFile(it)?.parentId ?: activeFolderId }
+            .mapValues { it.value.toSet() }
+
+    private fun entryIds(virtualIds: Collection<String>): Set<String> = virtualIds.mapNotNullTo(HashSet(), VaultEntry::entryIdOf)
+
+    /** 从清单里去掉这几条，可以撤销。网盘里本来就没有它们的文件，这是删除归档条目的唯一含义。 */
+    fun removeFromVault(ids: Collection<String>) {
+        val byFolder = vaultedByFolder(ids)
+        if (byFolder.isEmpty()) return
+        scope.launch {
+            val removed = mutableMapOf<String, List<VaultEntry>>()
+            val result = runSuspendCatching {
+                for ((folderId, virtualIds) in byFolder) {
+                    val entryIds = entryIds(virtualIds)
+                    val write = driveRepo.vault.update(folderId, VaultEdits.remove(entryIds)).getOrThrow()
+                    removed[folderId] = write.before.filter { it.id in entryIds }
+                }
+            }
+            // 部分文件夹已经改成功也要记：撤销时把已移除的那些写回去
+            val count = removed.values.sumOf { it.size }
+            if (count > 0) {
+                exitSelection()
+                load()
+                driveRepo.changes.record(
+                    DriveChangeJournal.Change.Vault(
+                        removed.mapValues { (_, entries) -> VaultEdits.add(entries) },
+                        if (count == 1) "已从归档移除" else "已从归档移除 $count 项",
+                    ),
+                )
+            }
+            result.reportFailure(TAG, "从归档移除") { _messages.tryEmit(it) }
+        }
+    }
+
+    /**
+     * 恢复成网盘里的文件：按 gcid 秒传回所在的文件夹，成功的从清单里去掉。要占网盘空间，
+     * 先比一次剩余；云端已不存的秒传不出来，也不扣额度，留在清单里。
+     */
+    fun restoreFromVault(ids: Collection<String>) {
+        val byFolder = vaultedByFolder(ids)
+        if (byFolder.isEmpty()) return
+        scope.launch {
+            val needed = byFolder.values.flatten().sumOf { VaultEntry.resolvedFileOf(it)?.size ?: 0L }
+            val remaining = driveRepo.getQuota().getOrNull()?.quota?.takeIf { it.limitBytes > 0 }?.remainingBytes
+            if (remaining != null && needed > remaining) {
+                _messages.tryEmit("网盘空间不足，放不下这 ${byFolder.values.sumOf { it.size }} 项")
+                return@launch
+            }
+            var restored = 0
+            var missing = 0
+            val created = mutableListOf<String>()
+            val reverts = mutableMapOf<String, VaultEdit>()
+            for ((folderId, virtualIds) in byFolder) {
+                val done = mutableSetOf<String>()
+                for (virtualId in virtualIds) {
+                    val file = VaultEntry.resolvedFileOf(virtualId) ?: continue
+                    driveRepo.instantCreate(file, folderId)
+                        .onSuccess {
+                            done += virtualId
+                            created += it
+                        }
+                        .onFailure { if (it is InstantContentUnavailableException) missing++ }
+                        .logFailure(TAG, "恢复归档条目失败")
+                }
+                if (done.isEmpty()) continue
+                // 清单没改成的话，文件已恢复、条目还在，列表里会重复一行，不丢东西
+                val doneIds = entryIds(done)
+                driveRepo.vault.update(folderId, VaultEdits.remove(doneIds))
+                    .onSuccess { write -> reverts[folderId] = VaultEdits.add(write.before.filter { it.id in doneIds }) }
+                    .logFailure(TAG, "恢复后改写归档清单失败")
+                restored += done.size
+            }
+            exitSelection()
+            load()
+            val failed = byFolder.values.sumOf { it.size } - restored
+            val summary = when {
+                failed == 0 -> if (restored == 1) "已恢复到网盘" else "已恢复 $restored 项"
+                missing == failed -> "已恢复 $restored 项，$missing 项云端已无内容"
+                else -> "已恢复 $restored 项，$failed 项失败"
+            }
+            if (created.isNotEmpty()) {
+                driveRepo.changes.record(DriveChangeJournal.Change.Vault(reverts, summary, trashOnRevert = created))
+            } else {
+                _messages.tryEmit(summary)
+            }
+        }
+    }
+
+    private fun renameInVault(fileId: String, newName: String) {
+        val folderId = knownFile(fileId)?.parentId ?: activeFolderId
+        val entryId = VaultEntry.entryIdOf(fileId) ?: return
+        scope.launch {
+            driveRepo.vault.update(folderId, VaultEdits.rename(entryId, newName))
+                .onSuccess { write ->
+                    load()
+                    val oldName = write.before.firstOrNull { it.id == entryId }?.name
+                    if (oldName != null && oldName != newName) {
+                        val revert = mapOf(folderId to VaultEdits.rename(entryId, oldName))
+                        driveRepo.changes.record(DriveChangeJournal.Change.Vault(revert, "已重命名"))
+                    } else {
+                        _messages.tryEmit("已重命名")
+                    }
+                }
+                .reportFailure(TAG, "重命名") { _messages.tryEmit(it) }
         }
     }
 }

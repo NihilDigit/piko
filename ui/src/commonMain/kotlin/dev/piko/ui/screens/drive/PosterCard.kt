@@ -1,5 +1,6 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.ui.components.itemMarks
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -67,7 +68,6 @@ import dev.piko.ui.components.locateHighlight
 import dev.piko.ui.components.MediaTag
 import dev.piko.ui.components.MediaTagRow
 import dev.piko.ui.components.SpoilerThumbnail
-import dev.piko.ui.components.StarMark
 import dev.piko.ui.components.PosterSpoilerBlur
 import dev.piko.ui.components.SkeletonBlock
 import dev.piko.ui.components.SkeletonTextLine
@@ -138,6 +138,8 @@ internal fun PosterCard(
     code: String? = null,
     /** 清晰度，放在封面右下角；[tags] 里的同一项不再重复显示。 */
     resolution: String? = null,
+    /** 文件夹里直接放着归档条目，见 itemMarks。 */
+    folderHasVault: Boolean = false,
 ) {
     val coverShape = MaterialTheme.shapes.medium
     val hover = remember { MutableInteractionSource() }
@@ -229,8 +231,10 @@ internal fun PosterCard(
                 modifier = Modifier.fillMaxWidth().padding(end = if (reserveTrailing) CARD_TRAILING_SIZE else 0.dp),
                 verticalAlignment = Alignment.Top,
             ) {
-                // 星标放在标题前而不上封面，封面的角已经给了标签与番号；对齐首行（bodyMedium 行高 20，图标 16）
-                if (file.isStarred) StarMark(modifier = Modifier.padding(top = 2.dp, end = 4.dp))
+                // 星标与归档标记放在标题前而不上封面，封面的角已经给了标签与番号；对齐首行（bodyMedium 行高 20，图标 16）
+                itemMarks(file, folderHasVault)?.let { marks ->
+                    Box(Modifier.padding(top = 2.dp, end = 4.dp)) { marks() }
+                }
                 Text(
                     text = title ?: file.displayTitle(),
                     style = MaterialTheme.typography.bodyMedium,
@@ -380,15 +384,16 @@ private fun StackedSheets(
                         imageVector = PikoBrandIcons.Glyph,
                         contentDescription = null,
                         tint = colors.onSurfaceVariant.copy(alpha = 0.3f),
-                        modifier = Modifier.padding(top = (visibleHeight - iconSize) / 2).size(iconSize),
+                        modifier = Modifier.padding(top = ((visibleHeight - iconSize) / 2).coerceAtLeast(0.dp)).size(iconSize),
                     )
                 }
-                // 前板落在纸上的影子，贴着前板上沿往上渐淡
+                // 前板落在纸上的影子，贴着前板上沿往上渐淡。卡片很窄时露出的一截比影子还矮，影子就只占那一截
+                val shadowHeight = minOf(FOLDER_SHADOW_HEIGHT, visibleHeight)
                 Box(
                     Modifier
-                        .padding(top = visibleHeight - FOLDER_SHADOW_HEIGHT)
+                        .padding(top = visibleHeight - shadowHeight)
                         .fillMaxWidth()
-                        .height(FOLDER_SHADOW_HEIGHT)
+                        .height(shadowHeight)
                         .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.22f)))),
                 )
             }
@@ -397,7 +402,7 @@ private fun StackedSheets(
         Box(
             Modifier
                 .fillMaxSize()
-                .padding(top = frontTop - FOLDER_FRONT_STEP)
+                .padding(top = (frontTop - FOLDER_FRONT_STEP).coerceAtLeast(0.dp))
                 .clip(FolderFrontShape(FOLDER_FRONT_STEP, 12.dp, FOLDER_PERSPECTIVE_INSET))
                 .background(Brush.verticalGradient(listOf(frontLit, frontShade))),
         )

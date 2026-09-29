@@ -212,6 +212,8 @@ internal fun DriveFileGrid(
     activeItemId: String?,
     /** 列过的文件夹空不空，海报墙给空文件夹画空的封面，见 PikoDriveRepository.folderEmptiness。 */
     emptyFolders: Map<String, Boolean> = emptyMap(),
+    /** 直接放着归档条目的文件夹，文件夹上挂归档标记，见 PikoDriveRepository.vaultedFolders。 */
+    vaultedFolders: Set<String> = emptySet(),
     /** 要把键盘焦点移到的那一项，移过去后回调 [onKeyboardFocusMoved]。 */
     keyboardFocusTarget: String?,
     onKeyboardFocusMoved: () -> Unit,
@@ -315,6 +317,7 @@ internal fun DriveFileGrid(
                             callbacks = callbacks,
                             detailsOnHover = detailsOnHover,
                             isEmptyFolder = file.isFolder && emptyFolders[file.id] == true,
+                            folderHasVault = file.isFolder && file.id in vaultedFolders,
                             requestFocus = file.id == keyboardFocusTarget,
                             onFocusRequested = onKeyboardFocusMoved,
                             modifier = Modifier.animateItem(),
@@ -488,6 +491,7 @@ private fun DriveCell(
     callbacks: DriveItemCallbacks,
     detailsOnHover: Boolean,
     isEmptyFolder: Boolean,
+    folderHasVault: Boolean,
     requestFocus: Boolean,
     onFocusRequested: () -> Unit,
     modifier: Modifier,
@@ -561,6 +565,7 @@ private fun DriveCell(
                 onClick = { callbacks.onOpen(file) },
                 onLongClick = { callbacks.onLongPress(file) },
                 onSelectToggle = { callbacks.onSelect(file, it) },
+                folderHasVault = folderHasVault,
             )
             DriveViewMode.POSTER -> PosterCard(
                 file = file,
@@ -578,6 +583,7 @@ private fun DriveCell(
                 tags = text.tags,
                 code = text.code,
                 resolution = text.resolution,
+                folderHasVault = folderHasVault,
             )
             DriveViewMode.LIST -> FileListItem(
                 file = file,
@@ -595,6 +601,7 @@ private fun DriveCell(
                 title = text.title,
                 tags = text.tags,
                 code = text.code,
+                folderHasVault = folderHasVault,
             )
         }
     }

@@ -17,6 +17,10 @@ import io.github.nihildigit.pikpak.FileDetail
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.PikPakException
 import io.github.nihildigit.pikpak.QuotaResponse
+import io.github.nihildigit.pikpak.LeaseBudget
+import io.github.nihildigit.pikpak.ResolvedFile
+import io.github.nihildigit.pikpak.instantCreate
+import io.github.nihildigit.pikpak.sampleCid
 import io.github.nihildigit.pikpak.SearchHit
 import io.github.nihildigit.pikpak.CreatedShare
 import io.github.nihildigit.pikpak.ShareInfo
@@ -66,6 +70,11 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import dev.piko.shared.log.logFailure
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.getAndUpdate
@@ -75,6 +84,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
 
@@ -108,9 +118,20 @@ open class PikoDriveRepository(
     protected val folderMeaninglessCache: Map<String, Boolean> get() = folderMeaninglessCacheFlow.value
     private val _quotaFlow = MutableStateFlow<QuotaResponse?>(null)
     val quotaFlow: StateFlow<QuotaResponse?> = _quotaFlow.asStateFlow()
+
+    // 带上取的是哪个账号：取回来之前可能已经换了号，按 quotaFlow 的当下值记会记到新账号头上
+    private val _quotaUpdates = MutableSharedFlow<Pair<String, QuotaResponse>>(extraBufferCapacity = 4)
+    val quotaUpdates: SharedFlow<Pair<String, QuotaResponse>> = _quotaUpdates.asSharedFlow()
     // 不落盘：与存储配额不同，官方也没有把它算进「上次已知值」这类离线展示的必要
     private val _transferQuotaFlow = MutableStateFlow<TransferQuota?>(null)
     val transferQuotaFlow: StateFlow<TransferQuota?> = _transferQuotaFlow.asStateFlow()
+
+    /**
+     * 当前账号是不是免费账号，未取到时为 null。取自流量额度的 vip_status，登录与换号时各取一次。
+     * 免费账号的保存与离线规则不同，见 SDK 的 FreeAccountProbeTest 实测结论。
+     */
+    val isFreeAccountFlow: StateFlow<Boolean?> =
+        _transferQuotaFlow.map { it?.account?.isPremium?.not() }.stateIn(backgroundScope, SharingStarted.Eagerly, null)
     private val _folderStackFlow = MutableStateFlow(listOf(ROOT_BREADCRUMB))
     val folderStackFlow: StateFlow<List<PikoPathBreadcrumb>> = _folderStackFlow.asStateFlow()
 
@@ -162,17 +183,18 @@ open class PikoDriveRepository(
     }
 
     /**
-     * 启动时恢复上次的标签，只在还停在初始状态（一个标签、在根目录）时做。上次只有一个标签的返回 false，
-     * 由调用方照旧恢复那一个位置。恢复不记历史，与 [restoreFolderStack] 相同。
+     * 启动或换号后恢复这个账号上次的标签与位置，只在还停在初始状态（一个标签、在根目录）时做。没有存过的返回 false。
+     * 恢复不记历史，与 [restoreFolderStack] 相同。
      */
     suspend fun restoreTabs(): Boolean {
         val store = cacheStore ?: return false
         val account = clientManager.currentClient.value?.account ?: return false
+        enterAccount(account)
         if (_tabs.value.size > 1 || _folderStackFlow.value.size > 1) return false
         val saved = runCatching { store.read(tabsKey(account))?.let { tabsJson.decodeFromString(SavedTabs.serializer(), it) } }.getOrNull()
             ?: return false
         val stacks = saved.tabs.map { stack -> stack.map { PikoPathBreadcrumb(it.id, it.name) } }.filter { it.isNotEmpty() }
-        if (stacks.size <= 1) return false
+        if (stacks.isEmpty()) return false
         val tabs = stacks.map { DriveTab(nextTabId++, it) }
         val active = tabs[saved.active.coerceIn(0, tabs.lastIndex)]
         _tabs.value = tabs
@@ -184,7 +206,38 @@ open class PikoDriveRepository(
         return true
     }
 
-    private fun tabsKey(account: String) = "drive-tabs-" + account.replace(Regex("[^A-Za-z0-9._@-]"), "_") + ".json"
+    // 眼前的路径、标签与缓存属于哪个账号，见 enterAccount
+    private val navigationAccount = MutableStateFlow<String?>(null)
+
+    /**
+     * 换号后把网盘页的位置、标签、历史、剪贴板、撤销记录与列表缓存换成新账号的一份：全回到根目录，
+     * 由网盘页接着恢复新账号上次的标签。同一账号再调不做事，所以账号变化的收集者与网盘页都调它，谁先到谁做。
+     * 不写回标签：写回会拿根目录盖掉新账号存着的那一份，恢复就没了。
+     */
+    fun enterAccount(account: String?) {
+        while (true) {
+            val previous = navigationAccount.value
+            if (previous == account) return
+            if (!navigationAccount.compareAndSet(previous, account)) continue
+            if (previous == null) return
+            break
+        }
+        val root = DriveTab(nextTabId++, listOf(ROOT_BREADCRUMB))
+        _tabs.value = listOf(root)
+        _activeTabId.value = root.id
+        _historyFlow.value = FolderHistory()
+        _folderStackFlow.value = root.stack
+        _tabsFlow.value = _tabs.value
+        _clipboard.value = null
+        listingCache.value = emptyMap()
+        scrollAnchors.value = emptyMap()
+        subfolderCache.value = emptyMap()
+        folderMeaninglessCacheFlow.value = emptyMap()
+        _folderEmptiness.value = emptyMap()
+        changes.clear()
+    }
+
+    private fun tabsKey(account: String) ="drive-tabs-" + account.replace(Regex("[^A-Za-z0-9._@-]"), "_") + ".json"
 
     /** 在活动标签后面开一个新标签，停在 [stack]。[activate] 为 false 是在后台开（中键点文件夹）。 */
     fun openTab(stack: List<PikoPathBreadcrumb>, activate: Boolean = true): Long {
@@ -423,7 +476,7 @@ open class PikoDriveRepository(
     }
 
     private fun foldersIn(parentId: String, files: List<FileStat>) = files.asSequence()
-        .filter { it.isFolder && !it.trashed && !(parentId.isEmpty() && it.name == PikoSettingsSync.FOLDER_NAME) }
+        .filter { it.isFolder && !it.trashed && !PikoSettingsSync.isSyncFolder(it, parentId) }
         .sortedWith(compareBy(NaturalOrder) { it.name })
         .map { PikoPathBreadcrumb(it.id, it.name) }
         .toList()
@@ -449,6 +502,38 @@ open class PikoDriveRepository(
     fun cachedFiles(folderId: String, sortOrder: PikoFileSortOrder): List<FileStat>? =
         listingCache.value[folderId]?.let { sortFiles(it, sortOrder, folderId) }
 
+    /** 各目录的归档清单，见 [VaultStore]。 */
+    val vault = VaultStore(this)
+
+    /**
+     * 网盘页看到的列表：清单文件不列，换成其中的归档条目。清单读不出来时照样列出真实文件，
+     * 只少了归档的那几行，不让整个目录打不开。
+     */
+    suspend fun listBrowsable(parentId: String, sortOrder: PikoFileSortOrder): Result<List<FileStat>> =
+        listAllFiles(parentId, sortOrder).map { listing ->
+            val entries = vault.read(parentId, listing).logFailure(TAG, "读取归档清单失败")
+                .onSuccess { vaultEntriesKnown(parentId, it) }
+                .getOrDefault(emptyList())
+            withVaulted(parentId, listing, entries, sortOrder)
+        }
+
+    /** [cachedFiles] 的 [listBrowsable] 版本。清单还没读过时先不列归档条目，等随后的刷新补上。 */
+    fun cachedBrowsable(folderId: String, sortOrder: PikoFileSortOrder): List<FileStat>? =
+        listingCache.value[folderId]?.let { listing ->
+            withVaulted(folderId, listing, vault.cached(folderId, listing).orEmpty(), sortOrder)
+        }
+
+    private fun withVaulted(
+        folderId: String,
+        listing: List<FileStat>,
+        entries: List<VaultEntry>,
+        sortOrder: PikoFileSortOrder,
+    ): List<FileStat> {
+        if (entries.isEmpty() && listing.none(VaultStore::looksLikeManifest)) return sortFiles(listing, sortOrder, folderId)
+        val real = listing.filterNot(VaultStore::looksLikeManifest)
+        return sortFiles(real + entries.map { it.toFileStat(folderId) }, sortOrder, folderId)
+    }
+
     /**
      * 文件夹里的文件，只供文件夹行解析作品名（describeFolder）。列表接口只给文件夹的缩略图，
      * 不给其中的文件名，所以来源只有两处：列过的目录，以及 [fetchChildContents] 补取的一页。
@@ -465,6 +550,30 @@ open class PikoDriveRepository(
                 recentFolders.switchAccount(it?.account)
             }
         }
+        // 额度与账号类型属于账号：换号时先清掉，否则新账号在取到之前沿用上一个账号的，
+        // 免费与会员的规则会用反。断线重连换的是同一账号的新 client，不清
+        backgroundScope.launch {
+            var account: String? = null
+            clientManager.currentClient.collectLatest { client ->
+                if (client?.account != account) {
+                    account = client?.account
+                    _quotaFlow.value = null
+                    _transferQuotaFlow.value = null
+                    // 退出到登录页不算换号：同一账号登回来时位置还在，别的账号登进来时再换
+                    if (client != null) enterAccount(client.account)
+                }
+                if (client != null && _transferQuotaFlow.value == null) {
+                    getTransferQuota().logFailure(TAG, "取账号类型失败")
+                }
+                // 免费账号只有 6 GB：打开归档条目借出的对象要按全额占空间，同时借的总量不能超过剩余，
+                // 否则信息流一批并行核对时后面的秒传直接失败。留一成余量给清单这类小文件
+                if (client != null && isFreeAccountFlow.value == true && client.leaseBudget == null) {
+                    getQuota().getOrNull()?.quota?.takeIf { it.limitBytes > 0 }?.let { quota ->
+                        client.leaseBudget = LeaseBudget(quota.remainingBytes.coerceAtLeast(0) * 9 / 10)
+                    }
+                }
+            }
+        }
     }
 
     /** 从磁盘载入完成一次就加一，文件夹行据此重新描述。 */
@@ -472,9 +581,23 @@ open class PikoDriveRepository(
 
     fun knownChildContents(folderId: String): List<ChildFile>? = childContents.get(folderId)
 
-    private fun rememberChildContents(folderId: String, files: List<FileStat>) {
-        childContents.put(folderId, files.filterNot(FileStat::isFolder).take(MAX_REMEMBERED_CHILD_NAMES).map(ChildFile::of))
+    /** [complete] 为假时 [files] 只是一页：其中没有清单不说明文件夹里没有，只加标记、不去掉。 */
+    private fun rememberChildContents(folderId: String, files: List<FileStat>, complete: Boolean = true) {
+        // 清单文件不是用户的文件，不拿来解析作品名；有没有它说明这个文件夹里有没有归档条目。
+        // 清单读过、确认已经空了的不算
+        val (manifests, real) = files.partition(VaultStore::looksLikeManifest)
+        childContents.put(folderId, real.filterNot(FileStat::isFolder).take(MAX_REMEMBERED_CHILD_NAMES).map(ChildFile::of))
+        val hasEntries = manifests.isNotEmpty() && vault.cached(folderId, files)?.isNotEmpty() != false
+        if (hasEntries || complete) childContents.markVaulted(folderId, hasEntries)
         _folderEmptiness.update { it + (folderId to files.isEmpty()) }
+    }
+
+    /** 直接放着归档条目的文件夹，见 FolderContentMemory.vaultedFolders。 */
+    val vaultedFolders: StateFlow<Set<String>> get() = childContents.vaultedFolders
+
+    /** 清单读到或写成之后，按其中还有没有条目更新文件夹的标记。 */
+    internal fun vaultEntriesKnown(folderId: String, entries: List<VaultEntry>) {
+        childContents.markVaulted(folderId, entries.isNotEmpty())
     }
 
     /*
@@ -514,7 +637,7 @@ open class PikoDriveRepository(
             childContents.get(folderId)?.let { return@withPermit it }
             val files = runSuspendCatching { client.listFilesPaged(parentId = folderId, pageSize = CHILD_NAME_PAGE).files }
                 .getOrNull() ?: return@withPermit null
-            rememberChildContents(folderId, files)
+            rememberChildContents(folderId, files, complete = files.size < CHILD_NAME_PAGE)
             childContents.get(folderId)
         }
     }
@@ -671,12 +794,17 @@ open class PikoDriveRepository(
 
     suspend fun getQuota(): Result<QuotaResponse> = withContext(Dispatchers.Default) {
         runSuspendCatching {
-            client.getQuota().also {
+            val asked = client
+            asked.getQuota().also {
                 _quotaFlow.value = it
-                preferences?.saveQuotaSnapshot(it.quota.usageBytes, it.quota.limitBytes)
+                _quotaUpdates.tryEmit(asked.account to it)
             }
         }
     }
+
+    /** [isFreeAccountFlow] 的当前值，登录时那一次还没取到就现取。取不到时为 null。 */
+    suspend fun isFreeAccount(): Boolean? =
+        isFreeAccountFlow.value ?: getTransferQuota().getOrNull()?.account?.isPremium?.not()
 
     /** 离线下载、下载、上传三项月度流量额度，见 [TransferQuota] 上的计费实测结论。 */
     suspend fun getTransferQuota(): Result<TransferQuota> = withContext(Dispatchers.Default) {
@@ -704,15 +832,42 @@ open class PikoDriveRepository(
         }
     }
 
-    /** 读出一个小文件的全部内容，与 [uploadBytes] 配对。 */
+    /**
+     * 读出一个小文件的全部内容，与 [uploadBytes] 配对。
+     *
+     * 刚传完的文件查详情有时还没有直链，稍后再查就有（设置同步与归档清单都撞到过，SDK 的 instantCreate 也记着同样的现象），
+     * 所以没有直链时隔一会儿再查，几次都没有才算失败。
+     */
     suspend fun readBytes(fileId: String): Result<ByteArray> = withContext(Dispatchers.Default) {
         runSuspendCatching {
-            val detail = client.getFile(fileId)
+            var detail = client.getFile(fileId)
+            for (wait in LINK_RETRY_DELAYS) {
+                if (detail.downloadUrl != null) break
+                delay(wait)
+                detail = client.getFile(fileId)
+            }
             val url = detail.downloadUrl ?: error("没有下载链接")
             val size = detail.size.toLongOrNull() ?: error("大小未知")
             if (size == 0L) return@runSuspendCatching ByteArray(0)
             client.streamRangeFromUrl(url, start = 0L, length = size, {}) { stream -> stream.channel.toByteArray() }
         }
+    }
+
+    /** [parentId] 下名为 [name] 的文件夹，没有就新建。返回它的 ID。 */
+    suspend fun folderNamed(parentId: String, name: String): Result<String> {
+        val existing = listAllFiles(parentId).getOrElse { return Result.failure(it) }
+            .firstOrNull { it.isFolder && it.name == name && !it.trashed }
+        return existing?.let { Result.success(it.id) } ?: createFolder(parentId, name)
+    }
+
+    /** [fileId] 的取样 CID，读 60 KB。归档时记下，日后只读体检用，见 [VaultEntry.cid]。 */
+    suspend fun sampleCid(fileId: String): Result<String> = withContext(Dispatchers.Default) {
+        runSuspendCatching { client.sampleCid(client.getFile(fileId)) }
+    }
+
+    /** 按 gcid 秒传出一个文件，恢复归档条目用。 */
+    suspend fun instantCreate(file: ResolvedFile, parentId: String): Result<String> = withContext(Dispatchers.Default) {
+        runSuspendCatching { client.instantCreate(file, parentId) }.onSuccess { forgetEmptiness(parentId) }
     }
 
     suspend fun createFolder(parentId: String, name: String): Result<String> = withContext(Dispatchers.Default) {
@@ -937,6 +1092,8 @@ open class PikoDriveRepository(
 
     companion object {
         val ROOT_BREADCRUMB = PikoPathBreadcrumb("", "网盘")
+        private const val TAG = "DriveRepository"
+        private val LINK_RETRY_DELAYS = listOf(500.milliseconds, 1.seconds, 2.seconds)
         private const val FIRST_TAB_ID = 1L
         private const val TABS_SAVE_DELAY_MS = 1_000L
         private const val MAX_LOCATE_DEPTH = 64

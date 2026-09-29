@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.log.failureText
 import dev.piko.shared.log.logFailure
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -100,16 +101,26 @@ class InstantBatchState internal constructor(
         rows.filter { it.status == InstantBatchRowStatus.READY || it.status == InstantBatchRowStatus.WHOLE_OFFLINE }
     }
 
-    /** 全部整包离线的合计大小。离线要先把整包落进网盘，比的是整包，不是勾选的部分。 */
-    val packBytes: Long by derivedStateOf {
-        submittableRows
-            .filter { it.status == InstantBatchRowStatus.READY }
-            .mapNotNull { it.state.savePlan }
-            .filter { it.route == SaveRoute.OFFLINE_PACK }
-            .sumOf { it.packBytes }
+    private val readyPlans: List<SavePlan> by derivedStateOf {
+        submittableRows.filter { it.status == InstantBatchRowStatus.READY }.mapNotNull { it.state.savePlan }
     }
 
-    val lacksSpace: Boolean by derivedStateOf { remainingBytes?.let { packBytes > it } == true }
+    /** 全部要落进网盘的合计：秒传是选中的文件，整包离线是整包，下完才删掉没选的。 */
+    val neededBytes: Long by derivedStateOf { readyPlans.sumOf { it.neededBytes } }
+
+    val lacksSpace: Boolean by derivedStateOf { remainingBytes?.let { neededBytes > it } == true }
+
+    /** 要建的离线任务数：整包离线的行与整条交给离线的行各一个。 */
+    val offlineCount: Int by derivedStateOf {
+        readyPlans.count { it.route == SaveRoute.OFFLINE_PACK } +
+            submittableRows.count { it.status == InstantBatchRowStatus.WHOLE_OFFLINE }
+    }
+
+    val offlineLeft: Int? get() = shared.account.value.offlineLeft
+
+    val confirmsOffline: Boolean get() = shared.account.value.free
+
+    val lacksOfflineCount: Boolean by derivedStateOf { offlineLeft?.let { offlineCount > it } == true }
 
     val submittableCount: Int by derivedStateOf { submittableRows.size }
 
@@ -128,7 +139,7 @@ class InstantBatchState internal constructor(
     }
 
     val canSaveAll: Boolean by derivedStateOf {
-        !isSaving && shared.target.value != null && blockedReason == null && !lacksSpace
+        !isSaving && shared.target.value != null && blockedReason == null && !lacksSpace && !lacksOfflineCount
     }
 
     init {
@@ -153,14 +164,15 @@ class InstantBatchState internal constructor(
         if (!canSaveAll) return
         val target = shared.target.value ?: return
         val toSubmit = submittableRows
-        val needed = packBytes
+        val needed = neededBytes
         isSaving = true
         saveErrors.clear()
         scope.launch {
             try {
-                // 解析时查到的余量可能已经过时，而离线一旦提交就是整包落盘
+                // 解析时查到的余量与次数可能已经过时，而离线一旦提交就是整包落盘
                 val remaining = refreshRemainingBytes()
                 if (remaining != null && needed > remaining) return@launch
+                if (lacksOfflineCount) return@launch
                 val createdIds = mutableListOf<String>()
                 var allInstant = true
                 val succeeded = mutableListOf<InstantBatchRow>()
@@ -171,8 +183,8 @@ class InstantBatchState internal constructor(
                             if (ids == null) allInstant = false else createdIds += ids
                             succeeded += row
                         }
-                        .logFailure("Instant", "批量保存失败")
-                        .onFailure { saveErrors[row.key] = "保存失败：${it.message}" }
+                        // 行里的保存已经记过日志，这里只换成给列表看的一句
+                        .onFailure { saveErrors[row.key] = failureText("保存", it) }
                 }
                 if (saveErrors.isEmpty()) {
                     emitOutcome(
@@ -213,6 +225,7 @@ class InstantBatchState internal constructor(
     private suspend fun refreshRemainingBytes(): Long? {
         driveRepo.getQuota().onSuccess { response ->
             remainingBytes = response.quota.takeIf { it.limitBytes > 0 }?.remainingBytes
+            shared.updateAccount(driveRepo.isFreeAccount(), response)
         }
         return remainingBytes
     }
