@@ -182,7 +182,7 @@ class AppScene private constructor(private val scene: ImageComposeScene) : AutoC
 
     companion object {
         /** 开一个 [width]×[height]（dp，密度 1）的窗口，等根目录列出来再交给调用方。 */
-        fun open(env: ShotEnv, width: Int, height: Int, mode: ThemeMode): AppScene {
+        fun open(env: ShotEnv, width: Int, height: Int, mode: ThemeMode, showPlayer: Boolean = false): AppScene {
             // 信息流的独立窗口不画，只记开没开着：应用内据此收起侧栏，弹出后的样子也能截
             val feedWindow = mutableStateOf(false)
             val player = VideoPlayerHost.Detached(
@@ -196,12 +196,13 @@ class AppScene private constructor(private val scene: ImageComposeScene) : AutoC
             // 「performMeasureAndLayout called during measure layout」
             val scene = edt {
                 ImageComposeScene(width, height, Density(1f), coroutineContext = Dispatchers.Main) {
-                    PikoApp(env.services, env.platform, Appearance(mode = mode), player)
+                    if (showPlayer) PlayerPreview(env, mode)
+                    else PikoApp(env.services, env.platform, Appearance(mode = mode), player)
                 }
             }
             val app = AppScene(scene)
             // 以根目录里一部作品的名字为准：原名或解析后的名字都含这一段
-            if (!app.pumpUntil { app.hasText("Kusuriya") }) {
+            if (!showPlayer && !app.pumpUntil { app.hasText("Kusuriya") }) {
                 System.err.println("根目录没有列出来，界面文本：${app.texts().take(40)}")
             }
             app.pump(600)

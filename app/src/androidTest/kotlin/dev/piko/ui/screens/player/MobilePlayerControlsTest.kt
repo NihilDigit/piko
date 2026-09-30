@@ -131,6 +131,16 @@ class MobilePlayerControlsTest {
         assertEquals(0, playPauseCount)
     }
 
+    @Test
+    fun doubleTapPauseHasAnIndicatorWhenControlsAreHidden() {
+        setControls()
+        rule.mainClock.advanceTimeBy(10_000)
+        rule.onRoot().performTouchInput { doubleClick(Offset(width * 0.5f, height * GESTURE_Y_FRACTION)) }
+        rule.mainClock.advanceTimeBy(80)
+        assertEquals(1, playPauseCount)
+        rule.onNodeWithContentDescription("已暂停").assertExists()
+    }
+
     private companion object {
         const val START_MILLIS = 60_000L
         const val DURATION_MILLIS = 600_000L

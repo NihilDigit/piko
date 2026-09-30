@@ -49,6 +49,7 @@ private class Shot(
     val viewMode: String? = null,
     /** 只给这一张加的数据，放在 [seed] 之后。公共的 seed 不动，免得别的图跟着变。 */
     val extraSeed: FakePikPak.() -> Unit = {},
+    val showPlayer: Boolean = false,
 )
 
 /** 进番剧目录，框选几集后按 F2 打开批量重命名。框从 SPs 那一行右侧的空白处拖起，起点落在空白处才是框选。 */
@@ -92,6 +93,11 @@ private fun selectEpisodeSteps(): List<Step> = listOf(
 
 /** `all` 的清单。改了布局先跑它，再挑有关的几张细看。 */
 private val standardSet = listOf(
+    Shot("player-portrait", 400, 860, showPlayer = true),
+    Shot("player-portrait-menu", 400, 860, steps = listOf(Step.Click("更多操作")), showPlayer = true),
+    Shot("player-landscape", 860, 400, showPlayer = true),
+    Shot("player-boost-portrait", 400, 860,
+        steps = listOf(Step.Drag(Offset(200f, 260f), Offset(200f, 260f)), Step.Pump(800)), showPlayer = true),
     Shot("files-1440x900"),
     Shot("files-1100x800", 1100, 800),
     Shot("files-760x800", 760, 800),
@@ -299,7 +305,7 @@ private fun printTexts(shot: Shot) = run(shot) { app -> app.texts().forEach(::pr
 
 private fun run(shot: Shot, finish: (AppScene) -> Unit) {
     ShotEnv(shot.viewMode, shot.extraSeed).use { env ->
-        AppScene.open(env, shot.width, shot.height, shot.mode).use { app ->
+        AppScene.open(env, shot.width, shot.height, shot.mode, shot.showPlayer).use { app ->
             var lastDragEnd: Offset? = null
             for (step in shot.steps) {
                 when (step) {

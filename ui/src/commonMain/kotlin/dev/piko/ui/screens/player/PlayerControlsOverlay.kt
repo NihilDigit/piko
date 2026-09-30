@@ -20,6 +20,15 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FastForward
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.material3.Icon
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.outlined.Rotate90DegreesCw
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material3.MaterialTheme
@@ -60,7 +69,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalAccessibilityManager
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.toSize
 import dev.piko.shared.media.player.MediaTrack
 import dev.piko.shared.media.player.PlayerAspectRatio
@@ -171,6 +179,7 @@ fun MobilePlayerControls(
     var isScrubbing by remember { mutableStateOf(false) }
     var openSheet by remember { mutableStateOf<PlayerSheet?>(null) }
     var isSpeedPopupOpen by remember { mutableStateOf(false) }
+    var isTopMenuOpen by remember { mutableStateOf(false) }
     var mouseMoveCount by remember { mutableIntStateOf(0) }
     var isMouseIdle by remember { mutableStateOf(false) }
     // 每次用户操作控件时加一，让自动隐藏重新计时
@@ -404,7 +413,7 @@ fun MobilePlayerControls(
     val isHoveringControls by controlsHover.collectIsHoveredAsState()
     // 倍速浮层挂在底栏上，底栏一收起它就跟着消失，开着时同样不收
     val holdControls = !isPlaying || isScrubbing || openSheet != null || isSpeedPopupOpen || errorMessage != null ||
-        isHoveringControls
+        isHoveringControls || isTopMenuOpen
     val currentHoldControls by rememberUpdatedState(holdControls)
     // 鼠标与手指对点按的解释不同，见 [PointerSource]。鼠标沿用桌面播放器的通行约定：单击播放或暂停，
     // 双击全屏，控件由移动光标唤出；手指单击切换控件，双击按落点进退或暂停
@@ -505,7 +514,6 @@ fun MobilePlayerControls(
                 progress = if (durationMillis > 0) target.toFloat() / durationMillis else null,
             )
         }
-        isBoosting -> CenterIndicator(Icons.Filled.FastForward, formatSpeedMultiplier(boostSpeed), "倍速播放中")
         doubleTapVisible -> {
             val sign = if (doubleTapForward) "+" else "−"
             CenterIndicator(
@@ -600,7 +608,12 @@ fun MobilePlayerControls(
                 onDoubleTap = { zone ->
                     when {
                         !pointerSource.isTouchLike -> onToggleFullscreen()
-                        zone == DoubleTapZone.PlayPause -> onPlayPause()
+                        zone == DoubleTapZone.PlayPause -> {
+                            flash(CenterIndicator(if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                if (isPlaying) "暂停" else "播放", if (isPlaying) "已暂停" else "继续播放"))
+                            onPlayPause()
+                            interacted()
+                        }
                         else -> stepSeek(forward = zone == DoubleTapZone.Forward)
                     }
                 },
@@ -668,6 +681,7 @@ fun MobilePlayerControls(
                                 onPickLocalSubtitle != null || onPickDriveSubtitle != null
                         },
                         fileActions = fileActions,
+                        onMenuVisibilityChange = { isTopMenuOpen = it; if (it) interacted() },
                         modifier = Modifier
                             .align(Alignment.TopCenter)
                             .hoverable(controlsHover)
@@ -739,7 +753,7 @@ fun MobilePlayerControls(
             // 播放键不在控件栏的淡入淡出里：加载时与有读数时，它要单独留在画面中央，
             // 变形后承载加载指示或读数，不再另叠一层
             AnimatedVisibility(
-                visible = (chromeVisible || isLoading || centerIndicator != null) && errorMessage == null,
+                visible = ((chromeVisible && !isBoosting) || isLoading || centerIndicator != null) && errorMessage == null,
                 enter = fadeIn(motion.defaultEffectsSpec()) + scaleIn(motion.defaultSpatialSpec(), initialScale = CENTER_ENTER_SCALE),
                 exit = fadeOut(motion.fastEffectsSpec()) + scaleOut(motion.fastSpatialSpec(), targetScale = CENTER_ENTER_SCALE),
                 modifier = Modifier.align(Alignment.Center),
@@ -758,6 +772,23 @@ fun MobilePlayerControls(
                         }
                     },
                 )
+            }
+
+            if (isBoosting) {
+                Surface(
+                    modifier = Modifier.align(Alignment.TopCenter)
+                        .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
+                        .padding(top = 64.dp),
+                    shape = MaterialTheme.shapes.extraLarge,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.9f),
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                ) {
+                    Row(Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.FastForward, contentDescription = "倍速播放中", modifier = Modifier.size(16.dp))
+                        Text(formatSpeedMultiplier(boostSpeed), style = MaterialTheme.typography.labelLarge)
+                    }
+                }
             }
 
             // 锁定键跟随控件栏显隐；锁定后单击只唤出它自己

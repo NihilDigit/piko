@@ -37,6 +37,7 @@ dependencies {
     implementation(project(":shared"))
     implementation("org.jetbrains.compose.desktop:desktop-jvm-$hostOs-$hostArch:${libs.versions.composeMultiplatform.get()}")
     implementation(libs.kotlinx.coroutines.core)
+    implementation(libs.cmp.material.icons.extended)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.ktor.client.okhttp)
     // 应用内更新的差分解码器随 DesktopPikoPlatform 加载；desktopApp 只带宿主那一份原生库，Linux 上没有

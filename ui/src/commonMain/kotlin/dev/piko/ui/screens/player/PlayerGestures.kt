@@ -17,6 +17,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
 import kotlin.math.abs
+import dev.piko.shared.media.player.playerSeekDragDelta
 
 /**
  * 竖滑手势与上下方向键调节的一路电平，取值 0 到 1。由平台实现：Android 的亮度是窗口属性、
@@ -141,11 +142,13 @@ internal fun PlayerGestureLayer(
                 if (isLocked) return@pointerInput
                 // 方向只判一次；竖滑而平台没有对应电平时，这次拖动整个忽略
                 var directionDecided = false
+                var previousEventTime = 0L
                 detectDragGestures(
                     onDragStart = { offset ->
                         dragOrigin = offset
                         dragTotal = Offset.Zero
                         directionDecided = false
+                        previousEventTime = 0L
                         publish(null)
                     },
                     onDragEnd = {
@@ -183,8 +186,9 @@ internal fun PlayerGestureLayer(
 
                         when (val active = gesture) {
                             is PlayerGesture.Seek -> {
-                                val delta = dragTotal.x / size.width * SEEK_FULL_SWEEP_MILLIS
-                                publish(active.copy(deltaMillis = delta.toLong()))
+                                val elapsed = if (previousEventTime == 0L) 0L else change.uptimeMillis - previousEventTime
+                                val delta = playerSeekDragDelta(duration, size.width.toFloat(), dragAmount.x, elapsed)
+                                publish(active.copy(deltaMillis = active.deltaMillis + delta))
                             }
 
                             is PlayerGesture.Adjust -> {
@@ -200,6 +204,7 @@ internal fun PlayerGestureLayer(
 
                             null -> Unit
                         }
+                        previousEventTime = change.uptimeMillis
                     },
                 )
             },
@@ -213,10 +218,6 @@ private fun levelFor(
 ): PlayerLevelControl? = if (kind == VerticalAdjust.Brightness) brightness else volume
 
 internal const val SIDE_ZONE_FRACTION = 0.35f
-
-// 横向划过整个手势层宽度对应的时长。按宽度比例而不是按像素换算，
-// 同一手势在不同密度、不同朝向下的幅度一致
-private const val SEEK_FULL_SWEEP_MILLIS = 180_000f
 
 // 竖向划过手势层高度的 75% 对应亮度或音量的全量程
 private const val ADJUST_TRAVEL_RATIO = 0.75f

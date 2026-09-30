@@ -57,7 +57,10 @@ import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.ui.platform.LocalWindowInfo
+import dev.piko.ui.components.ActionDropdownMenu
 import androidx.compose.material.icons.outlined.Subtitles
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.VideoLibrary
@@ -81,6 +84,7 @@ import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -162,9 +166,21 @@ fun PlayerTopBar(
     onTracksClick: (() -> Unit)? = null,
     /** 作用于正在播的这个文件的操作（分享、下载），排在播放设置之前。 */
     fileActions: List<SheetAction> = emptyList(),
+    onMenuVisibilityChange: (Boolean) -> Unit = {},
 ) {
     // 桌面端独立的播放窗口没有标题栏：关窗按钮放在右上角，与其他按钮同款，左边的返回键与它重复，不再显示
     val framelessWindow = LocalFramelessWindow.current
+    val compactActions = framelessWindow == null && with(LocalDensity.current) {
+        LocalWindowInfo.current.containerSize.width.toDp() < 600.dp
+    }
+    var moreOpen by remember { mutableStateOf(false) }
+    fun setMoreOpen(open: Boolean) { moreOpen = open; onMenuVisibilityChange(open) }
+    LaunchedEffect(compactActions) { if (!compactActions && moreOpen) setMoreOpen(false) }
+    DisposableEffect(Unit) { onDispose { onMenuVisibilityChange(false) } }
+    val actions = fileActions + listOfNotNull(
+        onTracksClick?.let { SheetAction(Icons.Outlined.Subtitles, "音轨与字幕", it) },
+        onSettingsClick?.let { SheetAction(Icons.Outlined.Tune, "播放设置", it) },
+    )
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -221,24 +237,31 @@ fun PlayerTopBar(
                 }
             }
         }
-        fileActions.forEach { action ->
-            PlayerIconButton(icon = action.icon, label = action.label, onClick = action.onClick, tooltipBelow = true)
-        }
-        if (onTracksClick != null) {
-            PlayerIconButton(
-                icon = Icons.Outlined.Subtitles,
-                label = "音轨与字幕",
-                onClick = onTracksClick,
-                tooltipBelow = true,
-            )
-        }
-        if (onSettingsClick != null) {
-            PlayerIconButton(
-                icon = Icons.Outlined.Tune,
-                label = "播放设置",
-                onClick = onSettingsClick,
-                tooltipBelow = true,
-            )
+        if (compactActions && actions.isNotEmpty()) {
+            Box {
+                PlayerIconButton(Icons.Outlined.MoreVert, "更多操作", { setMoreOpen(true) }, tooltipBelow = true)
+                ActionDropdownMenu(moreOpen, actions) { setMoreOpen(false) }
+            }
+        } else {
+            fileActions.forEach { action ->
+                PlayerIconButton(icon = action.icon, label = action.label, onClick = action.onClick, tooltipBelow = true)
+            }
+            if (onTracksClick != null) {
+                PlayerIconButton(
+                    icon = Icons.Outlined.Subtitles,
+                    label = "音轨与字幕",
+                    onClick = onTracksClick,
+                    tooltipBelow = true,
+                )
+            }
+            if (onSettingsClick != null) {
+                PlayerIconButton(
+                    icon = Icons.Outlined.Tune,
+                    label = "播放设置",
+                    onClick = onSettingsClick,
+                    tooltipBelow = true,
+                )
+            }
         }
         if (framelessWindow != null) {
             val onTop = framelessWindow.isAlwaysOnTop

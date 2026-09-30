@@ -220,3 +220,13 @@ private fun ActionMenuItem(action: SheetAction, shape: Shape, onDismiss: () -> U
         },
     )
 }
+
+/** 按钮锚定的操作菜单，与右键菜单使用相同条目样式。 */
+@Composable
+fun ActionDropdownMenu(expanded: Boolean, actions: List<SheetAction>, onDismiss: () -> Unit) {
+    PikoDropdownMenu(expanded, onDismiss) {
+        actions.forEachIndexed { index, action ->
+            ActionMenuItem(action, menuItemShape(index, actions.size), onDismiss)
+        }
+    }
+}
