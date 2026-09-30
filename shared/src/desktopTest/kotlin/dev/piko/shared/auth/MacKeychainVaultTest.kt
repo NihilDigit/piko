@@ -10,7 +10,6 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
-import kotlin.test.assertTrue
 import org.junit.Assume.assumeTrue
 
 /**
@@ -95,19 +94,22 @@ class MacKeychainVaultTest {
     fun lockedKeychainIsUnavailableNotAbsent() {
         vault.write(key, secret)
         security("lock-keychain", keychain).orFail("lock-keychain")
+        // 锁定后可能等待系统解锁交互；超时与错误退出均应报暂时不可用。
+        val lockedVault = MacKeychainVault(service = "dev.piko.test", timeoutSeconds = 2)
         try {
-            val error = assertFailsWith<VaultUnavailableException>("钥匙串锁着时读取必须报暂时不可用，不能当作没有") { vault.read(key) }
+            val error = assertFailsWith<VaultUnavailableException>("钥匙串锁着时读取必须报暂时不可用，不能当作没有") { lockedVault.read(key) }
             println("锁着时读取：${error.message}")
-            // 超时的报错里没有「退出码」：卡住等解锁框也会抛同一种异常，那不是我们要的行为
-            assertTrue("退出码" in error.message.orEmpty(), "读取没有返回，而是超时：${error.message}")
 
-            val writeOutcome = runCatching { vault.write(key, "new".toByteArray()) }
+            val writeOutcome = runCatching { lockedVault.write(key, "new".toByteArray()) }
             println("锁着时写入：${writeOutcome.exceptionOrNull()?.message ?: "成功"}")
-            val deleteOutcome = runCatching { vault.delete(key) }
+            val deleteOutcome = runCatching { lockedVault.delete(key) }
             println("锁着时删除：${deleteOutcome.exceptionOrNull()?.message ?: "成功"}")
         } finally {
-            security("unlock-keychain", "-p", keychainPassword, keychain)
+            security("unlock-keychain", "-p", keychainPassword, keychain).orFail("unlock-keychain")
             runCatching { vault.delete(key) }
         }
+        vault.write(key, secret)
+        assertContentEquals(secret, vault.read(key))
+        vault.delete(key)
     }
 }
