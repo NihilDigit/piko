@@ -123,13 +123,14 @@ internal fun VaultFolderStatus(session: FolderVaultSession, modifier: Modifier =
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = "归档中 ${progress.done} / ${progress.total}",
+                    text = if (progress.prepared < progress.total) "准备归档 ${progress.prepared} / ${progress.total}"
+                        else "归档中 ${progress.done} / ${progress.total}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 if (progress.total > 0) {
                     LinearProgressIndicator(
-                        progress = { progress.done.toFloat() / progress.total },
+                        progress = { (progress.prepared.toFloat() + progress.done) / (progress.total.toFloat() * 2) },
                         modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
                     )
                 }

@@ -17,6 +17,17 @@ import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.TaskPhase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -26,19 +37,21 @@ import kotlin.time.Clock
 /**
  * 把文件夹里的真实文件换成归档条目，腾出网盘空间。进程级：离开网盘页照常进行，一次归档一个文件夹。
  *
- * 逐层做：一层的条目写进这一层的清单、写成之后，才处置这一层的原文件。清单没写成就不动文件，
- * 中途失败时已做完的几层保持归档，其余原样。
+ * 两个目录并行处理，各自清单确认写成后才处置原文件。中途失败时已写成的引用与恢复依据保留。
  *
  * 原文件怎么处置看账号：会员移进回收站，出了岔子十五天内还能找回；免费账号直接删除，因为回收站里的文件
  * 照样占空间（2026-09-29 实测，移进回收站 45 秒用量不变，彻底删除 6 秒即还回），移进去等于没腾出来。
  * 整次归档记一条可撤销的改动：会员从回收站恢复，免费账号按 gcid 秒传回去，再去掉清单里的条目。
  *
- * 每个文件归档时读 60 KB 算出 CID，日后只读体检用（gcidByCid 只收 CID）；算不出就不记，不挡归档。
+ * 全局四个任务取样 CID，同内容只取一次；取样超时不挡归档。CID 用于日后的只读体检。
  */
-class FolderVaultSession(
-    private val driveRepo: PikoDriveRepository,
+class FolderVaultSession internal constructor(
+    private val operations: FolderVaultOperations,
     private val scope: CoroutineScope,
+    private val cidTimeoutMillis: Long = 5_000,
 ) {
+    constructor(driveRepo: PikoDriveRepository, scope: CoroutineScope) : this(DriveFolderVaultOperations(driveRepo), scope)
+
     /**
      * 一次归档之前的清点，给确认框用。没有来源记录的（自己上传、秒传）单独计。
      * [deletesOriginals] 为真时原文件直接删除（免费账号），否则移进回收站。
@@ -52,7 +65,7 @@ class FolderVaultSession(
     )
 
     /** 正在归档的文件夹与进度。 */
-    class Progress(val folderName: String, val done: Int, val total: Int)
+    class Progress(val folderName: String, val done: Int, val total: Int, val prepared: Int = done)
 
     var progress by mutableStateOf<Progress?>(null)
         private set
@@ -69,7 +82,7 @@ class FolderVaultSession(
         Survey(files.size, files.sumOf { it.sizeBytes }, unsourced.size, unsourced.sumOf { it.sizeBytes }, deletesOriginals())
     }
 
-    private suspend fun deletesOriginals(): Boolean = driveRepo.isFreeAccount() == true
+    private suspend fun deletesOriginals(): Boolean = operations.deletesOriginals()
 
     /** 开始归档 [folder]。[includeUnsourced] 为假时没有来源记录的文件原样留着。已有一个在做时不接。 */
     fun archive(folder: PikoPathBreadcrumb, includeUnsourced: Boolean) {
@@ -88,39 +101,54 @@ class FolderVaultSession(
                 }.filter { it.second.isNotEmpty() }
                 val total = levels.sumOf { it.second.size }
                 var done = 0
-                progress = Progress(folder.name, 0, total)
-                for ((folderId, files) in levels) {
-                    val addedAt = Clock.System.now().toEpochMilliseconds()
-                    val entries = files.map { file ->
-                        val cid = driveRepo.sampleCid(file.id).getOrNull()
-                        progress = Progress(folder.name, ++done, total)
-                        VaultEntry.create(file.name, file.sizeBytes, file.hash, file.sourceUrl, addedAt, cid)
-                    }
-                    driveRepo.vault.update(folderId, VaultEdits.add(entries)).getOrThrow()
-                    if (delete) {
-                        driveRepo.delete(files.map { it.id }).getOrThrow()
-                        deleted[folderId] = entries
-                    } else {
-                        reverts[folderId] = VaultEdits.remove(entries.mapTo(HashSet()) { it.id })
-                        driveRepo.trash(files.map { it.id }).getOrThrow()
-                        trashed += files.map { it.id }
-                    }
+                var prepared = 0
+                val progressLock = Mutex()
+                progress = Progress(folder.name, 0, total, 0)
+                coroutineScope {
+                    val sampler = VaultCidSampler(this, operations::sampleCid, cidTimeoutMillis)
+                    val folders = Semaphore(2)
+                    levels.map { (folderId, files) -> async {
+                        folders.withPermit {
+                            val addedAt = Clock.System.now().toEpochMilliseconds()
+                            val entries = files.map { file -> async {
+                                val cid = sampler.sample(file)
+                                progressLock.withLock {
+                                    prepared++
+                                    progress = Progress(folder.name, done, total, prepared)
+                                }
+                                VaultEntry.create(file.name, file.sizeBytes, file.hash, file.sourceUrl, addedAt, cid)
+                            } }.awaitAll()
+                            operations.write(folderId, entries)
+                            // 删除请求的返回状态可能不明确，先记录恢复依据；撤销时跳过仍在原位的文件。
+                            progressLock.withLock {
+                                if (delete) deleted[folderId] = entries
+                                else reverts[folderId] = VaultEdits.remove(entries.mapTo(HashSet()) { it.id })
+                            }
+                            operations.remove(files.map { it.id }, delete)
+                            progressLock.withLock {
+                                if (!delete) trashed += files.map { it.id }
+                                done += files.size
+                                progress = Progress(folder.name, done, total, prepared)
+                            }
+                        }
+                    } }.awaitAll()
                 }
                 total
             }
             progress = null
             // 做完的几层记成一条改动，哪怕后面失败了：撤销得回已经归档的那些
             if (reverts.isNotEmpty() || deleted.isNotEmpty()) {
-                val count = result.getOrNull()?.let { "已归档 $it 个文件" } ?: "部分文件已归档，其余未变动"
-                val summary = if (deleted.isNotEmpty()) "$count，原文件已删除" else "$count，原文件已移入回收站"
-                driveRepo.changes.record(
+                val count = result.getOrNull()?.let { "已归档 $it 个文件" }
+                val summary = if (count == null) "部分归档记录已写入，原文件处理未全部完成"
+                    else if (deleted.isNotEmpty()) "$count，原文件已删除" else "$count，原文件已移入回收站"
+                operations.record(
                     DriveChangeJournal.Change.Vault(reverts, summary, untrashOnRevert = trashed, recreateOnRevert = deleted),
                 )
             } else if (result.getOrNull() == 0) {
                 _messages.tryEmit("无可归档的文件")
             }
             result.reportFailure(TAG, "归档") { _messages.tryEmit(it) }
-            driveRepo.requestRefresh()
+            operations.refresh()
         }
     }
 
@@ -139,22 +167,82 @@ class FolderVaultSession(
      */
     private suspend fun walk(rootId: String): List<Pair<String, List<FileStat>>> {
         val levels = mutableListOf<Pair<String, List<FileStat>>>()
-        val queue = ArrayDeque(listOf(rootId))
+        var queue = listOf(rootId)
+        val visited = mutableSetOf(rootId)
         while (queue.isNotEmpty()) {
-            val folderId = queue.removeFirst()
-            val listing = driveRepo.listAllFiles(folderId).getOrThrow()
-            listing.filter { it.isFolder && it.name !in SKIPPED_FOLDERS }.forEach { queue.addLast(it.id) }
-            levels += folderId to listing.filter(::archivable)
+            val next = mutableListOf<String>()
+            for (chunk in queue.chunked(4)) {
+                val listings = coroutineScope { chunk.map { id -> async { operations.list(id) } }.awaitAll() }
+                chunk.zip(listings).forEach { (folderId, listing) ->
+                    listing.filter { it.isFolder && it.name !in SKIPPED_FOLDERS && !it.trashed }
+                        .forEach { if (visited.add(it.id)) next += it.id }
+                    levels += folderId to listing.filter(::archivable)
+                }
+            }
+            queue = next
         }
         return levels
     }
 
     private fun archivable(file: FileStat): Boolean =
-        !file.isFolder && !file.isVaulted && !VaultStore.looksLikeManifest(file) &&
+        !file.isFolder && !file.trashed && !file.isVaulted && !VaultStore.looksLikeManifest(file) &&
             file.phase == TaskPhase.COMPLETE && file.hash.isNotBlank()
 
     private companion object {
         const val TAG = "Vault"
         val SKIPPED_FOLDERS = setOf("Piko-Temp", ".piko")
+    }
+}
+
+internal interface FolderVaultOperations {
+    suspend fun list(folderId: String): List<FileStat>
+    suspend fun deletesOriginals(): Boolean
+    suspend fun sampleCid(file: FileStat): String?
+    suspend fun write(folderId: String, entries: List<VaultEntry>)
+    suspend fun remove(ids: List<String>, permanently: Boolean)
+    fun record(change: DriveChangeJournal.Change.Vault)
+    fun refresh()
+}
+
+private class DriveFolderVaultOperations(private val drive: PikoDriveRepository) : FolderVaultOperations {
+    override suspend fun list(folderId: String) = drive.listAllFiles(folderId).getOrThrow()
+    override suspend fun deletesOriginals() = drive.isFreeAccount() == true
+    override suspend fun sampleCid(file: FileStat) = drive.sampleCid(file.id).getOrNull()
+    override suspend fun write(folderId: String, entries: List<VaultEntry>) {
+        drive.vault.update(folderId, VaultEdits.add(entries)).getOrThrow()
+    }
+    override suspend fun remove(ids: List<String>, permanently: Boolean) {
+        if (permanently) drive.delete(ids).getOrThrow() else drive.trash(ids).getOrThrow()
+    }
+    override fun record(change: DriveChangeJournal.Change.Vault) = drive.changes.record(change)
+    override fun refresh() = drive.requestRefresh()
+}
+
+/** CID 是可选的体检资料；取样并发受限，同内容只取一次，慢节点超时不阻塞归档。 */
+internal class VaultCidSampler(
+    private val scope: CoroutineScope,
+    private val sample: suspend (FileStat) -> String?,
+    private val timeoutMillis: Long,
+) {
+    private val slots = Semaphore(4)
+    private val lock = Mutex()
+    private val samples = mutableMapOf<Pair<String, Long>, Deferred<String?>>()
+
+    suspend fun sample(file: FileStat): String? {
+        val key = file.hash.uppercase() to file.sizeBytes
+        val result = lock.withLock {
+            samples.getOrPut(key) {
+                scope.async(start = CoroutineStart.LAZY) {
+                    slots.withPermit {
+                        withTimeoutOrNull(timeoutMillis) {
+                            try { sample.invoke(file) }
+                            catch (e: CancellationException) { throw e }
+                            catch (_: Exception) { null }
+                        }
+                    }
+                }.also { it.start() }
+            }
+        }
+        return result.await()
     }
 }

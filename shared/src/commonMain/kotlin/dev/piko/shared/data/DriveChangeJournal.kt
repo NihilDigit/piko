@@ -5,6 +5,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import dev.piko.shared.log.logFailure
 import io.github.nihildigit.pikpak.ResolvedFile
+import io.github.nihildigit.pikpak.TaskPhase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -129,7 +130,10 @@ class DriveChangeJournal internal constructor(
                 if (change.untrashOnRevert.isNotEmpty()) driveRepo.restore(change.untrashOnRevert).getOrThrow()
                 var missing = 0
                 change.recreateOnRevert.forEach { (folderId, entries) ->
+                    val present = driveRepo.listAllFiles(folderId).getOrThrow().filter { !it.trashed && it.phase == TaskPhase.COMPLETE }
+                        .mapTo(mutableSetOf()) { Triple(it.name, it.hash.uppercase(), it.sizeBytes) }
                     val back = entries.filter { entry ->
+                        if (Triple(entry.name, entry.gcid.uppercase(), entry.size) in present) return@filter true
                         val file = ResolvedFile(path = entry.name, size = entry.size, gcid = entry.gcid)
                         driveRepo.instantCreate(file, folderId).isSuccess.also { if (!it) missing++ }
                     }

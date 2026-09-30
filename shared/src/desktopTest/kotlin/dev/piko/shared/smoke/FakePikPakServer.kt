@@ -394,6 +394,7 @@ class FakePikPakServer {
         put("name", node.name)
         put("size", node.size.toString())
         put("hash", node.hash)
+        put("phase", if (!node.isFolder && node.hash in unheldHashes) "PHASE_TYPE_PENDING" else "PHASE_TYPE_COMPLETE")
         put("trashed", node.trashed)
         put("modified_time", "2026-09-01T00:00:00.000+08:00")
     }
