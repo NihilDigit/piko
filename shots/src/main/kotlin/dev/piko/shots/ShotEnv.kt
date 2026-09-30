@@ -138,7 +138,7 @@ class ShotEnv(viewMode: String? = null, extraSeed: FakePikPak.() -> Unit = {}) :
             downloadManager = PikoDownloadCoordinator(
                 clientManager,
                 preferences,
-                DesktopPikoDownloadStorage { downloads },
+                DesktopPikoDownloadStorage(File(dir, "download-cache")) { downloads },
                 scope,
                 segmentDownloader = DesktopPikoSegmentDownloader(),
                 mediaRepository = media,
@@ -216,4 +216,3 @@ private fun seededFolderBatch(dir: File, createdAtMs: Long, thumbnail: String): 
         task(14, "Subs/Frieren - 02.ass", 80_000, 0, DownloadStatus.PAUSED),
     )
 }
-

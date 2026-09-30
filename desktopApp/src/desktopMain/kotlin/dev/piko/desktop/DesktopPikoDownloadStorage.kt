@@ -7,11 +7,12 @@ import java.io.File
 
 /** 下载目录每次现取：设置页改了位置之后，新任务直接落到新目录，不必重建下载调度器。 */
 class DesktopPikoDownloadStorage(
+    private val cacheDirectory: File = File(System.getProperty("user.home"), ".piko/download-cache"),
     private val directoryProvider: () -> File,
 ) : PikoDownloadStorage {
     override suspend fun cacheTarget(name: String): String = withContext(Dispatchers.IO) {
         // 放在下载目录以外，目录大小与用户看到的文件不包含暂存数据。
-        val root = File(System.getProperty("user.home"), ".piko/download-cache")
+        val root = cacheDirectory
         root.mkdirs()
         root.resolve("$name.data").absolutePath
     }

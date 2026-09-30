@@ -14,6 +14,16 @@ import kotlin.test.assertTrue
  * （同名文件夹下过别的批次、用户自己放的），换成递归删除就连它们一起没了。
  */
 class DesktopPikoDownloadStorageTest {
+    @Test
+    fun `an isolated environment keeps its cache inside its own directory`() = runBlocking<Unit> {
+        val root = Files.createTempDirectory("piko-isolated-storage").toFile()
+        val cache = root.resolve("cache")
+        val storage = DesktopPikoDownloadStorage(cache) { root.resolve("Downloads") }
+        val target = File(storage.cacheTarget("content"))
+        assertEquals(cache.resolve("content.data").canonicalFile, target.canonicalFile)
+        assertTrue(cache.isDirectory)
+        root.deleteRecursively()
+    }
 
     @Test
     fun `relative paths land in subfolders and pruning keeps folders that still hold files`() = runBlocking<Unit> {
