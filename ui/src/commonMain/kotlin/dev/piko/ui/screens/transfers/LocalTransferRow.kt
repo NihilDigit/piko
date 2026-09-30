@@ -237,6 +237,9 @@ internal fun localTransferActions(
     val isMedia = task.isMedia()
     val intents = LocalFileIntents(files, task, isMedia)
     return buildList {
+        if (task.status != DownloadStatus.COMPLETED && !task.isSegment && isMedia && task.cachePath != null && task.downloadedBytes > 0) {
+            add(SheetAction(Icons.Outlined.PlayArrow, "播放", onPlay))
+        }
         if (previewHidden != null) {
             add(
                 SheetAction(

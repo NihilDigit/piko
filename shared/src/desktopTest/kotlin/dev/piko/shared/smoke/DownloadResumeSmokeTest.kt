@@ -48,10 +48,14 @@ class DownloadResumeSmokeTest {
         val local = directory.resolve("movie.mkv")
 
         coordinator.enqueue(file)
-        awaitUntil("写入了一部分") { local.length() > 0 }
+        awaitUntil("写入了一部分") {
+            coordinator.tasks.value[remote.id]?.cachePath?.let { File(it).length() > 0 } == true && !local.exists()
+        }
         coordinator.pauseDownload(remote.id)
-        awaitUntil("任务进入暂停") { coordinator.tasks.value[remote.id]?.status == DownloadStatus.PAUSED }
-        val pausedAt = local.length()
+        awaitUntil("任务进入暂停") {
+            coordinator.tasks.value[remote.id]?.let { it.status == DownloadStatus.PAUSED && it.downloadedBytes > 0 } == true
+        }
+        val pausedAt = coordinator.tasks.value.getValue(remote.id).downloadedBytes
         assertTrue(pausedAt < content.size, "暂停时应停在半途，否则这个用例没有测到续传")
 
         server.cdnDelayMs = 0

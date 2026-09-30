@@ -183,7 +183,8 @@ fun TransfersScreen(
     // 片段的 fileId 是源视频的，播放器找不到本地文件时会按它退回云端，放出来的是整段原片。
     // 片段只该播本地文件，不给 fileId，打不开就报错
     val playLocal = { task: DownloadTask ->
-        onNavigateToVideoPlayer(if (task.isSegment) "" else task.fileId, task.fileName, task.destinationPath)
+        onNavigateToVideoPlayer(if (task.isSegment) "" else task.fileId, task.fileName,
+            task.destinationPath.takeIf { task.status == dev.piko.download.DownloadStatus.COMPLETED })
     }
     val resubmitAction = { task: DriveTask -> task.sourceUrl?.let { { state.resubmitCloud(task) } } }
 

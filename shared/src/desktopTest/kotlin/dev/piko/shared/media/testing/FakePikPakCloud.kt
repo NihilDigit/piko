@@ -43,6 +43,7 @@ internal class FakePikPakCloud(
     val cdnRequests = AtomicInteger()
     val expiredResponses = AtomicInteger()
     val overBudgetResponses = AtomicInteger()
+    val deliveredCdnBytes = java.util.concurrent.atomic.AtomicLong()
 
     private val generationLock = Any()
     private var generation = 1
@@ -122,6 +123,7 @@ internal class FakePikPakCloud(
             if (blockDelayMillis > 0) delay(blockDelayMillis)
             val (start, endInclusive) = parseRange(request.headers[HttpHeaders.Range], body.size.toLong())
             val slice = body.copyOfRange(start.toInt(), endInclusive.toInt() + 1)
+            deliveredCdnBytes.addAndGet(slice.size.toLong())
             return respond(
                 content = ByteReadChannel(slice),
                 status = HttpStatusCode.PartialContent,

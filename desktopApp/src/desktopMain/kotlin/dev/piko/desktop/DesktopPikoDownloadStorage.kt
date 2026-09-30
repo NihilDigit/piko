@@ -9,6 +9,12 @@ import java.io.File
 class DesktopPikoDownloadStorage(
     private val directoryProvider: () -> File,
 ) : PikoDownloadStorage {
+    override suspend fun cacheTarget(name: String): String = withContext(Dispatchers.IO) {
+        // 放在下载目录以外，目录大小与用户看到的文件不包含暂存数据。
+        val root = File(System.getProperty("user.home"), ".piko/download-cache")
+        root.mkdirs()
+        root.resolve("$name.data").absolutePath
+    }
     private val directory: File get() = directoryProvider()
 
     // File.resolve 在 Windows 上也认 / 分隔的相对路径

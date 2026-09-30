@@ -43,6 +43,27 @@ class AndroidPikoDownloadStorage(
     override fun pathFor(fileName: String): String = configuredDirectory.takeIf { it.startsWith("content:") }
         ?: File(resolveDirectory(), fileName).absolutePath
 
+    override suspend fun cacheTarget(name: String): String = withContext(Dispatchers.IO) {
+        val directory = File(stagingDirectory, "blocks")
+        directory.mkdirs()
+        File(directory, "$name.data").absolutePath
+    }
+
+    override suspend fun existingLengths(fileNames: List<String>): Map<String, Long> = withContext(Dispatchers.IO) {
+        val tree = treeUri ?: return@withContext fileNames.associateWith { File(resolveDirectory(), it).length() }
+        val root = DocumentFile.fromTreeUri(context, tree) ?: return@withContext emptyMap()
+        buildMap {
+            for ((parent, names) in fileNames.groupBy { it.substringBeforeLast('/', "") }) {
+                val folder = folderLock.withLock { findDocument(root, parent.split('/').filter { it.isNotEmpty() }, false) }
+                val lengths = folder?.listFiles()?.associate { it.name to it.length() }.orEmpty()
+                for (name in names) {
+                    val staged = File(stagingDirectory, name)
+                    put(name, if (staged.isFile) staged.length() else lengths[name.substringAfterLast('/')] ?: 0L)
+                }
+            }
+        }
+    }
+
     // 暂存区与私有目录里照搬相对路径建子文件夹，与最终位置一一对应，续传时凭同一个 fileName 找回半截文件
     override suspend fun downloadTarget(fileName: String): String = withContext(Dispatchers.IO) {
         val target = if (treeUri != null) File(stagingDirectory, fileName) else File(resolveDirectory(), fileName)

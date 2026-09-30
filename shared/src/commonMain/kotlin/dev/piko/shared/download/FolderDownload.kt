@@ -62,11 +62,13 @@ internal class PlannedFile(val file: FileStat, val path: String)
 internal suspend fun planFolderDownload(
     folder: FileStat,
     source: DownloadFolderSource,
+    rootName: String = FileNameSanitizer.sanitizeFolderName(folder.name),
     onProgress: (files: Int, bytes: Long) -> Unit,
 ): List<PlannedFile> {
     val planned = mutableListOf<PlannedFile>()
     var bytes = 0L
-    var level = listOf(folder.id to FileNameSanitizer.sanitizeFolderName(folder.name))
+    var level = listOf(folder.id to rootName)
+    val visited = mutableSetOf(folder.id)
     while (level.isNotEmpty()) {
         val next = mutableListOf<Pair<String, String>>()
         for (chunk in level.chunked(LIST_CONCURRENCY)) {
@@ -78,7 +80,7 @@ internal suspend fun planFolderDownload(
                     if (entry.trashed) continue
                     if (entry.isFolder) {
                         val name = unique(FileNameSanitizer.sanitizeFolderName(entry.name), taken, keepExtension = false)
-                        next += entry.id to "$path/$name"
+                        if (visited.add(entry.id)) next += entry.id to "$path/$name"
                     } else if (!entry.isUploading) {
                         planned += PlannedFile(entry, "$path/${unique(localFileNameOf(entry), taken, keepExtension = true)}")
                         bytes += entry.sizeBytes

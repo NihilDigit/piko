@@ -1,6 +1,7 @@
 package dev.piko.shared.media.proxy
 
 import io.github.nihildigit.pikpak.PikPakFileHandle
+import io.github.nihildigit.pikpak.PikPakFileCache
 import io.github.nihildigit.pikpak.PikPakStreamReader
 import io.github.nihildigit.pikpak.StreamRole
 import kotlinx.coroutines.Deferred
@@ -57,22 +58,30 @@ interface ProxyReader : AutoCloseable {
 }
 
 /**
- * PikPak 文件的字节来源。直链过期重取、连接预算、分块缓存与预读都在 SDK 的 handle 里，这里只做转接。
- * 同一个 handle 开出的 reader 共用一份缓存，开多少个都只有一组连接；缓存的 worker 跑在建 handle 时给的上下文里。
+ * PikPak 文件的字节来源。handle 负责直链恢复，cache 负责分块缓存与预读。
+ * 所有 reader 共用一份 cache；关闭来源时先释放 cache，再释放 handle。
  */
 internal class PikPakByteSource(
     private val handle: PikPakFileHandle,
-    override val size: Long,
+    private val cache: PikPakFileCache,
+    private val release: (() -> Unit)? = null,
 ) : ProxyByteSource {
+    override val size: Long get() = cache.size
+
     override suspend fun openReader(): ProxyReader = openReader(StreamRole.FOREGROUND)
 
-    override suspend fun openReader(role: StreamRole): ProxyReader = PikPakProxyReader(handle.openStream(role))
+    override suspend fun openReader(role: StreamRole): ProxyReader = PikPakProxyReader(cache.openStream(role))
 
     override suspend fun prefetch(ranges: List<LongRange>, role: StreamRole, priority: Int?): Deferred<Unit> =
-        handle.prefetch(ranges, role, priority)
+        cache.prefetch(ranges, role, priority)
 
     override fun close() {
-        handle.close()
+        release?.let { it(); return }
+        try {
+            cache.close()
+        } finally {
+            handle.close()
+        }
     }
 }
 

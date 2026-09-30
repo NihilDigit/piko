@@ -136,7 +136,7 @@ internal fun LocalBatchRow(
         leading = {
             ListLeadingMedia(
                 thumbnail = null,
-                fallback = { ListLeadingIcon(if (expanded) Icons.Filled.Folder else Icons.Outlined.Folder) },
+                fallback = { ListLeadingIcon(if (!item.batch.isFolder) Icons.Outlined.Download else if (expanded) Icons.Filled.Folder else Icons.Outlined.Folder) },
                 isSpoilerBlurred = false,
             )
         },

@@ -12,6 +12,8 @@ import dev.piko.shared.media.proxy.ProxyByteSource
 import dev.piko.shared.media.proxy.ProxyStream
 import dev.piko.shared.media.proxy.SlicedByteSource
 import io.github.nihildigit.pikpak.BlockStore
+import dev.piko.shared.media.cache.PikoFileCachePool
+import dev.piko.download.DownloadTask
 import io.github.nihildigit.pikpak.FileDetail
 import io.github.nihildigit.pikpak.MediaVariant
 import io.github.nihildigit.pikpak.PikPakClient
@@ -110,6 +112,10 @@ class PikoMediaRepository(
      */
     var leaseFolder: (suspend () -> String)? = null
 
+    /** 下载调度器提供；原画播放与完整下载共用缓存，转码片段仍用 ClipCache。 */
+    var fileCachePool: PikoFileCachePool? = null
+    var partialDownload: ((fileId: String) -> DownloadTask?)? = null
+
     // 按磁盘记录重建的切片在这里提前取直链，见 cachedClip
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -143,6 +149,16 @@ class PikoMediaRepository(
         withContext(Dispatchers.Default) {
             runSuspendCatching {
                 val client = client
+                if (preferredResolution.isNullOrBlank() || preferredResolution == ORIGINAL_QUALITY) {
+                    partialSource(client, fileId)?.let { (task, source) ->
+                        val info = PlayableMediaInfo(fileId, task.displayName.substringAfterLast('/'), task.gcid,
+                            currentUrl = "", durationSeconds = 0, availableVariants = emptyList(),
+                            currentResolution = ORIGINAL_QUALITY, sizeBytes = task.totalBytes)
+                        val stream = registerProxy(source, task.fileName.substringAfterLast('/'), StreamRole.FOREGROUND)
+                            ?: error("无法创建本地播放会话")
+                        return@runSuspendCatching PreparedPlayback(info, stream)
+                    }
+                }
                 val detail = detailOf(client, fileId)
                 val resolved = detail.resolveVariant(preferenceFor(preferredResolution))
                 val info = playableMediaInfo(detail, resolved, fileId)
@@ -214,11 +230,18 @@ class PikoMediaRepository(
             leased = leased,
             onRangeAttempt = ::logRangeAttempt,
             streamSize = record.streamBytes,
-            blockStore = sliceStore(record.sliceOffset, record.sliceLength, bytesPerMs),
-            coroutineContext = proxy.readerContext,
         )
+        val cache = try {
+            handle.openCache(
+                blockStore = sliceStore(record.sliceOffset, record.sliceLength, bytesPerMs),
+                coroutineContext = proxy.readerContext,
+            )
+        } catch (e: Throwable) {
+            handle.close()
+            throw e
+        }
         backgroundScope.launch { runCatching { handle.prewarm() } }
-        val source = SlicedByteSource(PikPakByteSource(handle, record.streamBytes), record.sliceOffset, record.sliceLength)
+        val source = SlicedByteSource(PikPakByteSource(handle, cache), record.sliceOffset, record.sliceLength)
         val stream = registerProxy(source, fileName = "clip.ts", role = role) ?: return null
         return PreparedClip(stream, fallbackUrl = null, sliced = true, clipStartMs = record.sliceStartMs, bytesPerMs = bytesPerMs, fromDisk = true)
     }
@@ -471,6 +494,7 @@ class PikoMediaRepository(
         withContext(Dispatchers.Default) {
             runSuspendCatching {
                 val client = client
+                partialSource(client, fileId)?.let { return@runSuspendCatching ReaderRandomAccessSource(it.second) }
                 val detail = detailOf(client, fileId)
                 val resolved = detail.resolveVariant(VariantPreference.Original)
                 val source = openByteSource(client, detail, resolved, leased = VaultEntry.isVaulted(fileId))
@@ -478,6 +502,15 @@ class PikoMediaRepository(
                 ReaderRandomAccessSource(source)
             }
         }
+
+    private suspend fun partialSource(client: PikPakClient, fileId: String): Pair<DownloadTask, PikPakByteSource>? {
+        val task = partialDownload?.invoke(fileId) ?: return null
+        val pool = fileCachePool ?: return null
+        if (task.totalBytes <= 0 || task.gcid.isBlank() || task.cachePath == null) return null
+        val lease = pool.acquire(client, task.fileId, task.gcid, task.totalBytes, task.fileName,
+            parentId = task.parentId, leased = VaultEntry.isVaulted(fileId), savedPath = task.cachePath)
+        return task to PikPakByteSource(lease.entry.handle, lease.entry.cache, lease::close)
+    }
 
     /**
      * 建 handle 与字节来源。handle 的内容哈希、文件对象与第一条直链都取自 [detail]，第一次读不必再查。
@@ -492,19 +525,24 @@ class PikoMediaRepository(
     ): PikPakByteSource? {
         // handle 在直链被拒时按 gcid 重建文件对象，没有 gcid 就失去了它存在的意义
         if (detail.hash.isBlank()) return null
+        if (resolved.isOrigin && blockStore == null) {
+            fileCachePool?.let { pool ->
+                val lease = pool.acquire(client, detail.id, detail.hash, detail.sizeBytes, detail.name,
+                    parentId = detail.parentId, leased = leased, detail = detail)
+                return PikPakByteSource(lease.entry.handle, lease.entry.cache, lease::close)
+            }
+        }
         // 原文件被删后 handle 会按 gcid 秒传重建一份，落在原来的目录（fileHandle 默认取详情里的 parentId）。
         // 归档条目的 detail 出自 leaseDetail，对象已经删了：直链过期时重建出的那份，handle 取完链同样删掉
         val handle = client.fileHandle(
             detail,
             mediaId = resolved.mediaId,
-            blockStore = blockStore,
-            coroutineContext = proxy.readerContext,
             onRangeAttempt = ::logRangeAttempt,
             leased = leased,
         )
         return try {
             // 原画的大小已知；转码流没有，本进程头一回会发一次 1 字节探测
-            PikPakByteSource(handle, handle.streamSize())
+            PikPakByteSource(handle, handle.openCache(blockStore, proxy.readerContext))
         } catch (e: CancellationException) {
             handle.close()
             throw e

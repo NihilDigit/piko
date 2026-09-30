@@ -41,6 +41,8 @@ data class DownloadTask(
      * 单独下载的文件与旧版本存下的任务为 null。
      */
     val batch: DownloadBatch? = null,
+    /** 稀疏暂存文件的位置。有此字段时，续传与进度必须读取有效块记录。 */
+    val cachePath: String? = null,
 ) {
     val progress: Float
         get() = progressFraction?.coerceIn(0f, 1f)
@@ -48,7 +50,7 @@ data class DownloadTask(
 
     /** 列表里显示的名字：文件夹下载里的文件只写文件夹之内的路径，文件夹名已在组的那一行上。 */
     val displayName: String
-        get() = batch?.let { fileName.removePrefix("${it.folderName}/") } ?: fileName
+        get() = batch?.takeIf { it.isFolder }?.let { fileName.removePrefix("${it.folderName}/") } ?: fileName
 }
 
 /** 一次文件夹下载。同一批的任务落在下载目录里同一个文件夹下，传输页收成一组。 */
@@ -57,4 +59,6 @@ data class DownloadBatch(
     val id: String,
     /** 本机上的文件夹名，已按文件名规则清理过。 */
     val folderName: String,
+    val isFolder: Boolean = true,
+    val sourceFolderId: String? = null,
 )

@@ -518,7 +518,7 @@ fun DriveScreen(
     // 下载的成品只在传输页里看得到，与上传、离线一样提交后切过去。文件夹各成一批，在后台列出其中的文件
     fun download(files: List<FileStat>) {
         val singles = files.filter { !it.isFolder && !it.isUploading }
-        singles.forEach(downloadManager::enqueue)
+        downloadManager.enqueueFiles(singles)
         val batches = downloadManager.enqueueFolders(files.filter { it.isFolder }, DriveDownloadFolderSource(driveRepo))
         if (singles.isNotEmpty() || batches > 0) openTransfers()
     }
@@ -2002,4 +2002,3 @@ private val DriveViewMode.paletteLabel: String
         DriveViewMode.POSTER -> "海报墙"
         DriveViewMode.GALLERY -> "图库"
     }
-

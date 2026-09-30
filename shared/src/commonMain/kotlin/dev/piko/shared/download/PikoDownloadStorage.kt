@@ -3,8 +3,8 @@ package dev.piko.shared.download
 /**
  * 下载落盘的平台边界。调度器不接触 Context 或 java.io.File。
  *
- * 写入由 SDK 的 downloadTo 完成：它只接受文件系统路径，按顺序追加写入，文件长度即续传点。
- * 所以存储层只负责给出写入路径和完成后的交付，不再自己搬运字节。
+ * 整文件下载先写入共享稀疏缓存，以有效块记录恢复进度，写满后交付到 downloadTarget 与 commit。
+ * 存储层提供缓存、交付路径和最终文件查询；旧版顺序下载的前缀仍可导入。
  *
  * 各方法的 fileName 是相对下载目录的路径，以 / 分隔，每一段都已清理过（文件夹下载的文件是
  * 「文件夹/子文件夹/文件」）。中间的文件夹由实现在写入与交付时建出，查询时逐级解析、不建。
@@ -12,6 +12,8 @@ package dev.piko.shared.download
  * 路径放在名字里，旧任务（不带 /）照旧落在下载目录根下。
  */
 interface PikoDownloadStorage {
+    /** 原画播放与下载共享的暂存文件；有效块记录与它放在一起。 */
+    suspend fun cacheTarget(name: String): String = downloadTarget(".piko-cache/$name.data")
     /** 完成后文件所在的位置，用于展示与播放。 */
     fun pathFor(fileName: String): String
 
@@ -26,6 +28,8 @@ interface PikoDownloadStorage {
 
     /** 已落盘的字节数：完成的文件取最终文件长度，未完成的取暂存文件长度。 */
     suspend fun existingLength(fileName: String): Long
+    /** 批量核对时允许平台复用目录枚举，避免每个文件重新遍历 SAF 目录。 */
+    suspend fun existingLengths(fileNames: List<String>): Map<String, Long> = fileNames.associateWith { existingLength(it) }
     suspend fun exists(fileName: String): Boolean
     suspend fun delete(path: String): Boolean
 

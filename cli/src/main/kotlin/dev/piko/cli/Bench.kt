@@ -56,24 +56,24 @@ suspend fun benchClipHeads(
         val handle = client.fileHandle(
             detail,
             mediaId = variant.mediaId,
-            blockStore = store,
-            coroutineContext = Dispatchers.IO,
             onRangeAttempt = { attempts += origin.elapsedNow().inWholeMilliseconds to it },
         )
-        val size = handle.streamSize()
+        val cache = handle.openCache(blockStore = store, coroutineContext = Dispatchers.IO)
+        val size = cache.size
         val durationMs = ((file.params["duration"]?.toDoubleOrNull() ?: 0.0) * 1000).toLong()
         val bytesPerMs = size.toDouble() / durationMs
         val start = (size * 0.4).toLong()
         val length = (bytesPerMs * headSeconds * 1000 * 1.5).toLong().coerceAtLeast(512L * 1024)
-        heads += Head(file.id, handle, start until (start + length).coerceAtMost(size))
+        heads += Head(file.id, handle, cache, start until (start + length).coerceAtMost(size))
     }
     // 模拟 app 里正在放的那一段：另一个视频开一路前台读者，按片段的码率一秒读一秒的量。
     // SDK 在账号有前台读者时会限制别的文件，这一路决定实验与 app 是不是同一个条件
     val playing = if (withPlayer) {
         val file = candidates.drop(heads.size).firstOrNull() ?: candidates.last()
         val detail = client.getFile(file.id)
-        val handle = client.fileHandle(detail, mediaId = detail.resolveVariant(VariantPreference.Resolution("720P")).mediaId, coroutineContext = Dispatchers.IO)
-        handle to handle.openStream(StreamRole.FOREGROUND).also { it.seekTo((handle.streamSize() * 0.4).toLong()) }
+        val handle = client.fileHandle(detail, mediaId = detail.resolveVariant(VariantPreference.Resolution("720P")).mediaId)
+        val cache = handle.openCache(coroutineContext = Dispatchers.IO)
+        Triple(handle, cache, cache.openStream(StreamRole.FOREGROUND).also { it.seekTo((cache.size * 0.4).toLong()) })
     } else {
         null
     }
@@ -84,7 +84,7 @@ suspend fun benchClipHeads(
     attempts.clear()
     val started = clock.markNow()
     val startedAtMs = origin.elapsedNow().inWholeMilliseconds
-    val player = playing?.let { (_, reader) ->
+    val player = playing?.let { (_, _, reader) ->
         kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
             val buffer = ByteArray(64 * 1024)
             // 约 1 MB/s，高于 720P 转码的码率：读得比实际播放还紧，只会让条件更苛刻
@@ -105,13 +105,13 @@ suspend fun benchClipHeads(
         val t = clock.markNow()
         if (backgroundFirst) {
             // 照 app 的备会话：先以后台身份读开头找关键帧，读到一块就转去预取，后台读留在原处
-            val reader = head.handle.openStream(StreamRole.BACKGROUND)
+            val reader = head.cache.openStream(StreamRole.BACKGROUND)
             reader.seekTo(head.range.first)
             reader.read(ByteArray(64 * 1024), 0, 64 * 1024)
-            head.handle.prefetch(listOf(head.range), StreamRole.FOREGROUND).await()
+            head.cache.prefetch(listOf(head.range), StreamRole.FOREGROUND).await()
             reader.close()
         } else {
-            head.handle.prefetch(listOf(head.range), StreamRole.FOREGROUND).await()
+            head.cache.prefetch(listOf(head.range), StreamRole.FOREGROUND).await()
         }
         println("  ${head.fileId} 取好：${t.elapsedNow().inWholeMilliseconds} ms（开始后 ${started.elapsedNow().inWholeMilliseconds} ms）")
     }
@@ -122,11 +122,15 @@ suspend fun benchClipHeads(
     }
     val wallMs = started.elapsedNow().inWholeMilliseconds.coerceAtLeast(1)
     player?.cancel()
-    playing?.let { (handle, reader) ->
+    playing?.let { (handle, cache, reader) ->
         reader.close()
+        cache.close()
         handle.close()
     }
-    heads.forEach { it.handle.close() }
+    heads.forEach {
+        it.cache.close()
+        it.handle.close()
+    }
 
     val done = attempts.toList()
     val bytes = done.sumOf { it.second.delivered }
@@ -151,4 +155,9 @@ suspend fun benchClipHeads(
     )
 }
 
-private class Head(val fileId: String, val handle: io.github.nihildigit.pikpak.PikPakFileHandle, val range: LongRange)
+private class Head(
+    val fileId: String,
+    val handle: io.github.nihildigit.pikpak.PikPakFileHandle,
+    val cache: io.github.nihildigit.pikpak.PikPakFileCache,
+    val range: LongRange,
+)
