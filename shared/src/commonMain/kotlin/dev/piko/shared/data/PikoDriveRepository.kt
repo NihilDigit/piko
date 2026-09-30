@@ -9,7 +9,7 @@ import io.github.nihildigit.pikpak.streamRangeFromUrl
 import io.github.nihildigit.pikpak.upload
 import io.github.nihildigit.pikpak.PikPakHash
 import dev.piko.data.repository.NaturalOrder
-import dev.piko.shared.sync.PikoSettingsSync
+import dev.piko.shared.data.isPikoInternalFolder
 import dev.piko.data.auth.PikoUserPreferences
 import io.github.nihildigit.pikpak.EventPage
 import io.github.nihildigit.pikpak.EventType
@@ -65,6 +65,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -476,7 +477,7 @@ open class PikoDriveRepository(
     }
 
     private fun foldersIn(parentId: String, files: List<FileStat>) = files.asSequence()
-        .filter { it.isFolder && !it.trashed && !PikoSettingsSync.isSyncFolder(it, parentId) }
+        .filter { it.isFolder && !it.trashed && !isPikoInternalFolder(it, parentId) }
         .sortedWith(compareBy(NaturalOrder) { it.name })
         .map { PikoPathBreadcrumb(it.id, it.name) }
         .toList()
@@ -529,8 +530,9 @@ open class PikoDriveRepository(
         entries: List<VaultEntry>,
         sortOrder: PikoFileSortOrder,
     ): List<FileStat> {
-        if (entries.isEmpty() && listing.none(VaultStore::looksLikeManifest)) return sortFiles(listing, sortOrder, folderId)
-        val real = listing.filterNot(VaultStore::looksLikeManifest)
+        val visible = listing.filterNot { isPikoInternalFolder(it, folderId) }
+        if (entries.isEmpty() && visible.none(VaultStore::looksLikeManifest)) return sortFiles(visible, sortOrder, folderId)
+        val real = visible.filterNot(VaultStore::looksLikeManifest)
         return sortFiles(real + entries.map { it.toFileStat(folderId) }, sortOrder, folderId)
     }
 
@@ -926,7 +928,10 @@ open class PikoDriveRepository(
      * 遍历的深度、目录数与超时上限由 SDK 的默认值兜底。
      */
     fun searchRecursive(query: String, parentId: String = ""): Flow<SearchHit> =
-        client.searchFilesRecursive(query, parentId)
+        client.searchFilesRecursive(query, parentId).filter { hit ->
+            !isPikoInternalFolder(hit.file) && !VaultStore.looksLikeManifest(hit.file) &&
+                !(parentId.isEmpty() && hit.breadcrumb.firstOrNull()?.let(::isPikoInternalFolderName) == true)
+        }
 
     suspend fun trashFiles(): Result<List<FileStat>> = withContext(Dispatchers.Default) {
         runSuspendCatching { client.listTrash() }

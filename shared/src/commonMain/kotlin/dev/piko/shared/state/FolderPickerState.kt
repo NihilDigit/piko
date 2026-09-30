@@ -9,6 +9,7 @@ import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.data.PikoPathBreadcrumb
 import io.github.nihildigit.pikpak.FileStat
+import dev.piko.shared.data.isPikoInternalFolder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -126,7 +127,7 @@ class FolderPickerState(
                         loadError = error.message ?: "未知错误"
                         return
                     }
-                val childFolders = list.filter(FileStat::isFolder)
+                val childFolders = list.filter { it.isFolder && !isPikoInternalFolder(it, parentId) }
                 if (childFolders.isNotEmpty()) {
                     folders = folders + childFolders
                     added += childFolders.size

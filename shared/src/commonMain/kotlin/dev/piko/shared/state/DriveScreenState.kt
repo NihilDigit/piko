@@ -1,6 +1,6 @@
 package dev.piko.shared.state
 
-import dev.piko.shared.sync.PikoSettingsSync
+import dev.piko.shared.data.isPikoInternalFolder
 import dev.piko.shared.data.VaultEdit
 import dev.piko.shared.data.VaultEdits
 import dev.piko.shared.data.VaultEntry
@@ -409,9 +409,9 @@ class DriveScreenState(
      */
     fun load(refresh: Boolean = false) = load(useCache = !refresh, showRefreshing = refresh)
 
-    // 根目录里放同步设置的 .piko 文件夹不列出来：它是 Piko 自己的，点进去也没有要看的
-    private fun withoutSyncFolder(folderId: String, listing: List<FileStat>): List<FileStat> =
-        listing.filterNot { PikoSettingsSync.isSyncFolder(it, folderId) }
+    // 根目录里的同步与临时文件夹不进入浏览视图。
+    private fun withoutInternalFolders(folderId: String, listing: List<FileStat>): List<FileStat> =
+        listing.filterNot { isPikoInternalFolder(it, folderId) }
 
     /** [useCache] 与 [showRefreshing] 都为 false 是静默重列：不用缓存，也不出任何加载指示，见 [catchUpWithHighlight]。 */
     private fun load(useCache: Boolean, showRefreshing: Boolean) {
@@ -423,7 +423,7 @@ class DriveScreenState(
         val cached = if (useCache) driveRepo.cachedBrowsable(folderId, sortOrder) else null
         when {
             cached != null -> {
-                files = withoutSyncFolder(folderId, cached)
+                files = withoutInternalFolders(folderId, cached)
                 loadedFolderId = folderId
                 isLoading = false
             }
@@ -445,7 +445,7 @@ class DriveScreenState(
             }
             listing
                 .onSuccess {
-                    files = withoutSyncFolder(folderId, it)
+                    files = withoutInternalFolders(folderId, it)
                     loadedFolderId = folderId
                     loadError = null
                 }

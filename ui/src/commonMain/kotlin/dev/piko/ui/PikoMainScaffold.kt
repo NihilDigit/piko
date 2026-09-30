@@ -10,7 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import dev.piko.ui.workbench.SidebarAccountRow
 import dev.piko.ui.workbench.AccountSettings
 import dev.piko.ui.screens.drive.SectionLabel
-import dev.piko.shared.sync.PikoSettingsSync
+import dev.piko.shared.data.isPikoInternalFolder
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.DriveLibrary
 import dev.piko.shared.data.library
@@ -1033,7 +1033,7 @@ fun PikoMainScaffold(
                         subfolders = folderStack.lastOrNull()
                             ?.let { here ->
                                 services.driveRepository.cachedFiles(here.id, PikoFileSortOrder.NAME_ASC)
-                                    ?.filter { it.isFolder && !PikoSettingsSync.isSyncFolder(it, here.id) }
+                                    ?.filter { it.isFolder && !isPikoInternalFolder(it, here.id) }
                             }
                             .orEmpty(),
                         contributed = palette.items(),

@@ -71,7 +71,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import dev.piko.data.repository.PathBreadcrumb
-import dev.piko.shared.sync.PikoSettingsSync
+import dev.piko.shared.data.isPikoInternalFolder
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
@@ -250,7 +250,7 @@ private fun FolderPickerContent(
             }
             val (list, next) = page
             // 根目录里放同步设置的 .piko 不列出来，与网盘页同一条规则（DriveScreenState.withoutSyncFolder）
-            val childFolders = list.filter { it.isFolder && !PikoSettingsSync.isSyncFolder(it, current.id) }
+            val childFolders = list.filter { it.isFolder && !isPikoInternalFolder(it, current.id) }
             if (childFolders.isNotEmpty()) {
                 folders = folders + childFolders
                 added += childFolders.size

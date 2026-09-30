@@ -4,8 +4,7 @@ import dev.piko.data.repository.FileNameSanitizer
 import dev.piko.download.DownloadBatch
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoFileSortOrder
-import dev.piko.shared.data.PreviewTempFolder
-import dev.piko.shared.sync.PikoSettingsSync
+import dev.piko.shared.data.isPikoInternalFolder
 import dev.piko.shared.upload.isUploading
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.async
@@ -99,7 +98,7 @@ internal suspend fun planFolderDownload(
  * 只认根目录里的，别处同名的是用户自己的文件夹。
  */
 internal fun isPikoFolder(folder: FileStat): Boolean =
-    folder.parentId.isEmpty() && (folder.name == PreviewTempFolder.FOLDER_NAME || PikoSettingsSync.isSyncFolder(folder, folder.parentId))
+    isPikoInternalFolder(folder)
 
 private fun unique(name: String, taken: MutableSet<String>, keepExtension: Boolean): String {
     if (taken.add(name.lowercase())) return name
