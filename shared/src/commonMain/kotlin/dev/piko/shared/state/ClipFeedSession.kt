@@ -126,6 +126,7 @@ class ClipFeedSession(
 
     private val pool = mutableListOf<FileStat>()
     private val poolIds = HashSet<String>()
+    private val selectionCounts = HashMap<String, Int>()
 
     // 取不到流的，不再挑，值是扔掉的时刻；过了 [REJECT_TTL_MS] 再给一次机会
     private val rejected = HashMap<String, Long>()
@@ -157,6 +158,8 @@ class ClipFeedSession(
         streams.closeAll()
         pool.clear()
         poolIds.clear()
+        selectionCounts.clear()
+        failedOnce.clear()
         rejected.clear()
         verified.clear()
         untranscoded.clear()
@@ -172,6 +175,11 @@ class ClipFeedSession(
         saved?.untranscoded?.forEach { (id, at) -> if (now - at < REJECT_TTL_MS) untranscoded[id] = at }
         saved?.verified?.let(verified::addAll)
         saved?.pool?.forEach { addToPool(it.toFileStat()) }
+        selectionCounts.putAll(saved?.selectionCounts.orEmpty())
+        if (selectionCounts.isEmpty()) saved?.clips?.forEach {
+            val key = contentKey(it.fileId)
+            selectionCounts[key] = selectionCounts.getOrElse(key) { 0 } + 1
+        }
         val current = saved?.current?.coerceIn(0, (saved.clips.size - 1).coerceAtLeast(0)) ?: 0
         // 关掉信息流就是清空了队列，看过的不再摆回翻页器；还没看的那些接着用，它们的开头多半已在磁盘上，
         // 打开即有现成的段。存盘时取好的，这回的会话早关了，得重新取，所以都回到候补。
@@ -182,6 +190,7 @@ class ClipFeedSession(
         currentIndex = 0
         furthestIndex = 0
         // 存下的候选够挑就先挑，不等遍历
+        isCollecting = true
         fillAhead()
         collectJob = scope.launch { collect(folder.id) }
     }
@@ -207,6 +216,8 @@ class ClipFeedSession(
     private fun addToPool(file: FileStat) {
         if (poolIds.add(file.id)) pool += file
     }
+
+    private fun contentKey(fileId: String): String = pooled(fileId)?.clipContentKey() ?: "id:$fileId"
 
     /**
      * 候补里的 [clip] 取好了，接到翻页器的末尾。
@@ -313,17 +324,12 @@ class ClipFeedSession(
                     val readyAhead = (clips.size - 1 - furthestIndex) + upcoming.size
                     val missing = KEPT_AROUND - readyAhead
                     if (missing <= 0) break
-                    val used = (clips + upcoming).mapTo(HashSet()) { it.fileId }
-                    val fresh = pool.filter { it.id !in used && it.id !in rejected }
-                    // 都放过一轮了再开一轮，起点重新随机，只避开最近放过的；视频不多时至多避开一半，
-                    // 否则一个几十个视频的文件夹第二轮就挑不出来。遍历还在进行时先等新的
-                    val candidates = ranked(
-                        fresh.ifEmpty {
-                            if (isCollecting) return@launch
-                            val playable = pool.filter { it.id !in rejected }
-                            val recent = (clips + upcoming).takeLast(minOf(2 * KEPT_AROUND, playable.size / 2)).mapTo(HashSet()) { it.fileId }
-                            playable.filter { it.id !in recent }
-                        },
+                    val candidates = selectFeedCandidates(
+                        ranked = ranked(pool.filter { it.id !in rejected }),
+                        queued = (clips.drop(furthestIndex + 1) + upcoming).mapTo(HashSet()) { contentKey(it.fileId) },
+                        recent = clips.take(furthestIndex + 1).map { contentKey(it.fileId) },
+                        counts = selectionCounts,
+                        collecting = isCollecting,
                     )
                     // 眼前只剩原画可挑时，遍历还没走完、手上又还有段可放，就先等：后面列出的目录里可能有转码的。
                     // 一段都没有了才不等，免得停在转圈上
@@ -354,6 +360,10 @@ class ClipFeedSession(
                     val lowOnClips = readyAhead < LOW_ON_CLIPS
                     val added = checked.filter { lowOnClips || it.second != Transcode.JustFoundMissing }.map { clipOf(it.first) }
                     if (added.isNotEmpty()) {
+                        added.forEach {
+                            val key = contentKey(it.fileId)
+                            selectionCounts[key] = selectionCounts.getOrElse(key) { 0 } + 1
+                        }
                         upcoming = upcoming + added
                         save()
                     }
@@ -435,7 +445,8 @@ class ClipFeedSession(
         return SavedFeed(
             clips = window,
             current = currentIndex - from,
-            pool = pool.map { SavedCandidate(it.id, it.name, it.parentId, it.durationMs()) },
+            pool = pool.map { SavedCandidate(it.id, it.name, it.parentId, it.durationMs(), it.hash, it.size) },
+            selectionCounts = selectionCounts.toMap(),
             verified = verified.toList(),
             rejected = rejected.toMap(),
             untranscoded = untranscoded.toMap(),
@@ -467,12 +478,13 @@ class ClipFeedSession(
         val rejected: Map<String, Long> = emptyMap(),
         val folders: Map<String, String> = emptyMap(),
         val untranscoded: Map<String, Long> = emptyMap(),
+        val selectionCounts: Map<String, Int> = emptyMap(),
     )
 
     /** 候选池里的一个视频，只存挑段要用的几项：时长定随机起点，名字与所在目录带进段里。 */
     @Serializable
-    private class SavedCandidate(val id: String, val name: String, val parentId: String, val durationMs: Long) {
-        fun toFileStat() = FileStat(id = id, name = name, parentId = parentId, params = mapOf("duration" to (durationMs / 1000.0).toString()))
+    private class SavedCandidate(val id: String, val name: String, val parentId: String, val durationMs: Long, val hash: String = "", val size: String = "") {
+        fun toFileStat() = FileStat(id = id, name = name, parentId = parentId, hash = hash, size = size, params = mapOf("duration" to (durationMs / 1000.0).toString()))
     }
 
     private companion object {
