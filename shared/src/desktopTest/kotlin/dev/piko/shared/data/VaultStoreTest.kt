@@ -13,6 +13,24 @@ import kotlin.time.Duration
  * 规则错一处，丢的是用户刚存下的一集，或者删了又冒出来的一行，而列表照样画得出来，看不出坏了。
  */
 class VaultStoreTest {
+    @Test
+    fun `a stale confirmation listing does not trigger a redundant upload`() = runBlocking {
+        val drive = MemoryFolder()
+        drive.beforeList(3) { drive.hideCurrentFiles(2) }
+        val store = VaultStore(drive, confirmDelay = Duration.ZERO)
+        val saved = entry("E01")
+        assertEquals(listOf(saved), store.update("f", VaultEdits.add(listOf(saved))).getOrThrow().after)
+        assertEquals(1, drive.uploads)
+    }
+    @Test
+    fun `a newly uploaded manifest waits for listing visibility without being reuploaded`() = runBlocking {
+        val drive = MemoryFolder().apply { listingLag = 3 }
+        val store = VaultStore(drive, confirmDelay = Duration.ZERO)
+        val saved = entry("E01")
+        assertEquals(listOf(saved), store.update("f", VaultEdits.add(listOf(saved))).getOrThrow().after)
+        assertEquals(1, drive.uploads)
+        assertEquals(1, drive.files.size)
+    }
 
     private fun entry(name: String) = VaultEntry.create(name, 100, "G-$name", source = null, addedAt = 0)
 
@@ -74,6 +92,9 @@ class VaultStoreTest {
         private val phases = HashMap<String, String>()
         private var nextId = 0
         private var lists = 0
+        var listingLag = 0
+        var uploads = 0
+        private val visibleAt = HashMap<String, Int>()
         private val hooks = HashMap<Int, suspend () -> Unit>()
 
         /** 第 [nth] 次列目录之前先做 [action]，模拟另一台设备恰好在这时写入。 */
@@ -81,9 +102,11 @@ class VaultStoreTest {
             hooks[nth] = action
         }
 
+        fun hideCurrentFiles(lag: Int) { files.keys.forEach { visibleAt[it] = lists + lag } }
+
         override suspend fun list(folderId: String): List<FileStat> {
             hooks.remove(++lists)?.invoke()
-            return files.map { (id, file) ->
+            return files.filterKeys { lists >= (visibleAt[it] ?: 0) }.map { (id, file) ->
                 FileStat(kind = FileKind.FILE, id = id, name = file.first, phase = phases[id] ?: TaskPhase.COMPLETE)
             }
         }
@@ -96,6 +119,8 @@ class VaultStoreTest {
             val id = "id${nextId++}"
             files[id] = name to bytes
             phases[id] = phase
+            visibleAt[id] = lists + listingLag
+            uploads++
             return id
         }
 

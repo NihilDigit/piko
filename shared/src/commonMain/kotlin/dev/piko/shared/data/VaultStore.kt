@@ -246,7 +246,13 @@ class VaultStore(
     /** 眼下 [version] 这一版里算数的是不是 [token]。 */
     private suspend fun won(folderId: String, version: Int, token: String, afterDelay: Boolean = false): Boolean {
         if (afterDelay) delay(confirmDelay)
-        val rivals = io.list(folderId).mapNotNull(::candidateOf).filter { it.version >= version }
+        var rivals = io.list(folderId).mapNotNull(::candidateOf).filter { it.version >= version }
+        // 上传成功与目录列表可见并非同时发生，后续列表也可能暂时回退。等待自己的版本出现，避免误判冲突。
+        for (wait in listOf(100L, 200L, 400L, 800L, 1600L)) {
+            if (rivals.any { it.version > version || (it.version == version && it.token == token) }) break
+            delay(wait)
+            rivals = io.list(folderId).mapNotNull(::candidateOf).filter { it.version >= version }
+        }
         return rivals.minWithOrNull(ORDER)?.let { it.version == version && it.token == token } ?: false
     }
 
