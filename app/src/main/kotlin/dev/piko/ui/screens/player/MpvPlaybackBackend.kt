@@ -98,6 +98,7 @@ internal class MpvPlaybackBackend(
 
     // 以下字段只在主线程读写
     private var surfaceAttached = false
+    private var attachedSurface: Surface? = null
     private var videoOutputDisabled = false
     private var pendingLoad: Array<String>? = null
     private var released = false
@@ -352,6 +353,7 @@ internal class MpvPlaybackBackend(
 
     fun attachSurface(surface: Surface) {
         if (released) return
+        attachedSurface = surface
         val restoreVideoOutput = videoOutputDisabled
         surfaceAttached = true
         videoOutputDisabled = false
@@ -394,7 +396,13 @@ internal class MpvPlaybackBackend(
      * vo 还握着它就会崩。给了 [afterDetached] 就在 mpv 线程上放手之后调它，这里立即返回：
      * TextureView 可以先不释放，由调用方在回调里释放。
      */
-    fun detachSurface(afterDetached: (() -> Unit)? = null) {
+    fun detachSurface(surface: Surface, afterDetached: (() -> Unit)? = null) {
+        // 转屏或预览复用时，新 Surface 可能先挂上，旧视图随后才销毁。旧回调不能解绑新画面。
+        if (attachedSurface !== surface) {
+            if (afterDetached != null) calls.execute { afterDetached() }
+            return
+        }
+        attachedSurface = null
         redrawGate.releaseAll()
         if (!surfaceAttached) {
             afterDetached?.invoke()

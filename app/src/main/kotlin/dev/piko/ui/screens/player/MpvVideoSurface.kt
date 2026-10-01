@@ -39,12 +39,19 @@ internal fun MpvVideoSurface(
  * 配着旧方向的画面先上屏，画面被拉伸一下（暂停时一直拉伸着）。见 SurfaceRedrawGate。
  */
 private class SurfaceBridge(private val backend: MpvPlaybackBackend) : SurfaceHolder.Callback2 {
-    override fun surfaceCreated(holder: SurfaceHolder) = backend.attachSurface(holder.surface)
+    private var surface: Surface? = null
+    override fun surfaceCreated(holder: SurfaceHolder) {
+        surface = holder.surface
+        backend.attachSurface(holder.surface)
+    }
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) =
         backend.setSurfaceSize(width, height)
 
-    override fun surfaceDestroyed(holder: SurfaceHolder) = backend.detachSurface()
+    override fun surfaceDestroyed(holder: SurfaceHolder) {
+        surface?.let { backend.detachSurface(it) }
+        surface = null
+    }
 
     override fun surfaceRedrawNeeded(holder: SurfaceHolder) = Unit
 
@@ -70,8 +77,12 @@ private class TextureBridge(private val backend: MpvPlaybackBackend) : TextureVi
     override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
         val released = surface
         surface = null
-        backend.detachSurface {
-            released?.release()
+        if (released == null) {
+            texture.release()
+            return false
+        }
+        backend.detachSurface(released) {
+            released.release()
             texture.release()
         }
         return false
