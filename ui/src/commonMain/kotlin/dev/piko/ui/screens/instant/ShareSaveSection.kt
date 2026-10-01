@@ -55,6 +55,7 @@ internal fun ColumnScope.ShareSaveSection(
     onPickTarget: () -> Unit,
     onPreview: (FileStat) -> Unit,
     previewingId: String?,
+    onDownload: (FileStat) -> Unit,
 ) {
     // 与磁力那一套用同一组部件：读取中、出错横幅、保存位置与保存按钮，两种链接看起来是同一个面板
     val info = state.info
@@ -69,7 +70,7 @@ internal fun ColumnScope.ShareSaveSection(
                 overflow = TextOverflow.Ellipsis,
             )
             // 与磁力的文件列表一样占去剩下的高度，不定死：长分享在面板里自己滚动，短的照常收缩
-            ShareBrowser(state, onPreview, previewingId, modifier = Modifier.weight(1f, fill = false))
+            ShareBrowser(state, onPreview, previewingId, onDownload, modifier = Modifier.weight(1f, fill = false))
         }
     }
 
@@ -113,7 +114,7 @@ private fun PassCodeRow(state: ShareSaveState) {
 
 /** 当前层的列表。上方一行是所在位置，可退回上一层。 */
 @Composable
-private fun ShareBrowser(state: ShareSaveState, onPreview: (FileStat) -> Unit, previewingId: String?, modifier: Modifier = Modifier) {
+private fun ShareBrowser(state: ShareSaveState, onPreview: (FileStat) -> Unit, previewingId: String?, onDownload: (FileStat) -> Unit, modifier: Modifier = Modifier) {
     Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainerHigh, modifier = modifier) {
         Column {
             Row(
@@ -150,6 +151,7 @@ private fun ShareBrowser(state: ShareSaveState, onPreview: (FileStat) -> Unit, p
                         onOpen = { state.enter(file) },
                         onPreview = if (file.isPlayableVideo() && file.hash.isNotBlank()) ({ onPreview(file) }) else null,
                         isPreviewing = file.id == previewingId,
+                        onDownload = if (!file.isFolder && file.hash.isNotBlank()) ({ onDownload(file) }) else null,
                     )
                 }
             }
@@ -158,7 +160,7 @@ private fun ShareBrowser(state: ShareSaveState, onPreview: (FileStat) -> Unit, p
 }
 
 @Composable
-private fun ShareEntryRow(file: FileStat, checked: Boolean, onToggle: () -> Unit, onOpen: () -> Unit, onPreview: (() -> Unit)?, isPreviewing: Boolean) {
+private fun ShareEntryRow(file: FileStat, checked: Boolean, onToggle: () -> Unit, onOpen: () -> Unit, onPreview: (() -> Unit)?, isPreviewing: Boolean, onDownload: (() -> Unit)?) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -188,6 +190,7 @@ private fun ShareEntryRow(file: FileStat, checked: Boolean, onToggle: () -> Unit
         } else if (onPreview != null) {
             PreviewButton(onClick = onPreview, isPreviewing = isPreviewing)
         }
+        if (onDownload != null) DownloadContentButton(onDownload)
     }
 }
 

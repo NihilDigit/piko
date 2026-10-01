@@ -120,6 +120,8 @@ class FakePikPak {
         calls += "$method $path?${url.encodedQuery.orEmpty()}"
         if (path.startsWith("/blob/")) return blob(request, path.substringAfterLast('/'))
         val (code, text) = when {
+            path.endsWith("/drive/v1/share") -> 200 to """{"share_status":"OK","pass_code_token":"SHOT","title":"Frieren 分享内容","files":[{"id":"shared-video","kind":"drive#file","name":"[SweetSub] Frieren - 01 [1080p].mkv","size":"524288000","hash":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","phase":"PHASE_TYPE_COMPLETE"},{"id":"shared-sub","kind":"drive#file","name":"Frieren - 01.ass","size":"102400","hash":"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB","phase":"PHASE_TYPE_COMPLETE"}]}"""
+            path.endsWith("/drive/v1/resource/list") -> 200 to """{"list_id":"SHOT","list":{"page_size":500,"resources":[{"id":"root","name":"Frieren S01","file_size":"1048576000","is_dir":true,"meta":{},"dir":{"resources":[{"id":"ep1","name":"Frieren - 01.mkv","file_size":"524288000","is_dir":false,"meta":{"hash":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}},{"id":"ep2","name":"Frieren - 02.mkv","file_size":"524288000","is_dir":false,"meta":{"hash":"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"}}]}}]}}"""
             path.endsWith("/v1/shield/captcha/init") -> 200 to """{"captcha_token":"CAP","expires_in":300,"url":""}"""
             path.endsWith("/v1/auth/signin") || path.endsWith("/v1/auth/token") ->
                 200 to """{"access_token":"AT","refresh_token":"RT","sub":"UID","expires_in":3600}"""

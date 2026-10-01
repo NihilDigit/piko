@@ -251,6 +251,19 @@ class PikoDownloadCoordinator(
 
     /** 多选文件一次入队，共用全局并发上限；重复文件复用已有任务。 */
     fun enqueueFiles(files: List<FileStat>) {
+        enqueueFiles(files, leasedSource = false)
+    }
+
+    /** 分享或解析得到的内容直接下载，临时文件对象不随解析面板关闭。 */
+    fun enqueueResolved(files: List<io.github.nihildigit.pikpak.ResolvedFile>, parentId: String = "") {
+        enqueueFiles(files.mapNotNull { file ->
+            val hash = file.gcid?.takeIf { it.isNotBlank() }?.uppercase() ?: return@mapNotNull null
+            FileStat(id = "piko-content:$hash:${file.size}", name = file.name, hash = hash,
+                size = file.size.toString(), parentId = parentId, phase = io.github.nihildigit.pikpak.TaskPhase.COMPLETE)
+        }, leasedSource = true)
+    }
+
+    private fun enqueueFiles(files: List<FileStat>, leasedSource: Boolean) {
         val account = currentAccount()
         val accepted = files.filter { !it.isFolder && !it.isUploading }.distinctBy { it.id }
         if (accepted.isEmpty()) return
@@ -275,7 +288,7 @@ class PikoDownloadCoordinator(
                             destinationPath = if (complete) storage.locate(name) ?: name else name,
                             status = if (complete) DownloadStatus.COMPLETED else DownloadStatus.PENDING,
                             fullFileSize = file.sizeBytes, thumbnailLink = file.thumbnailLink, parentId = file.parentId,
-                            createdAtMs = now, account = account, batch = batch,
+                            createdAtMs = now, account = account, batch = batch, leasedSource = leasedSource,
                         )
                     }
                 }
@@ -543,7 +556,7 @@ class PikoDownloadCoordinator(
         try {
             val concurrency = preferences.concurrentConnectionsFlow.first().coerceIn(1, 8)
             lease = fileCachePool.acquire(client, task.fileId, task.gcid, task.totalBytes, task.fileName,
-                parentId = task.parentId, leased = VaultEntry.isVaulted(task.fileId),
+                parentId = task.parentId, leased = task.leasedSource || VaultEntry.isVaulted(task.fileId),
                 retained = true, concurrency = concurrency, savedPath = task.cachePath, owner = taskId)
             val entry = lease.entry
             update(taskId) { it.copy(account = client.account, cachePath = entry.store.path, downloadedBytes = entry.store.heldBytes.value,

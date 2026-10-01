@@ -508,7 +508,7 @@ class PikoMediaRepository(
         val pool = fileCachePool ?: return null
         if (task.totalBytes <= 0 || task.gcid.isBlank() || task.cachePath == null) return null
         val lease = pool.acquire(client, task.fileId, task.gcid, task.totalBytes, task.fileName,
-            parentId = task.parentId, leased = VaultEntry.isVaulted(fileId), savedPath = task.cachePath)
+            parentId = task.parentId, leased = task.leasedSource || VaultEntry.isVaulted(fileId), savedPath = task.cachePath)
         return task to PikPakByteSource(lease.entry.handle, lease.entry.cache, lease::close)
     }
 

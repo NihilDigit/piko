@@ -117,6 +117,7 @@ fun InstantSheetContent(
     onPreview: (fileId: String, fileName: String) -> Unit,
 ) {
     val platform = LocalPikoPlatform.current
+    val downloads = LocalPikoServices.current.downloadManager
     var showTargetPicker by remember { mutableStateOf(false) }
 
     val batch = state.batch
@@ -207,6 +208,10 @@ fun InstantSheetContent(
                 onPickTarget = { showTargetPicker = true },
                 onPreview = state::previewSharedFile,
                 previewingId = state.previewingSharedId,
+                onDownload = { file ->
+                    downloads.enqueueResolved(listOf(io.github.nihildigit.pikpak.ResolvedFile(file.name, file.sizeBytes, file.hash)), state.target?.id.orEmpty())
+                    notice = "已加入下载队列"
+                },
             )
         }
 
@@ -543,6 +548,7 @@ private fun SelectionHeader(state: InstantSheetState) {
 @Composable
 private fun FileTreeList(state: InstantSheetState, modifier: Modifier = Modifier) {
     val rows = state.treeRows
+    val downloads = LocalPikoServices.current.downloadManager
 
     Surface(
         shape = MaterialTheme.shapes.large,
@@ -579,6 +585,9 @@ private fun FileTreeList(state: InstantSheetState, modifier: Modifier = Modifier
                                 null
                             },
                             isPreviewing = state.previewingIndex == node.index,
+                            onDownload = if (state.items[node.index].isInstantReady) ({
+                                downloads.enqueueResolved(node.indices.map { state.items[it].file }, state.target?.id.orEmpty())
+                            }) else null,
                         )
                     }
                 }
@@ -717,6 +726,7 @@ private fun InstantFileRow(
     onCheckedChange: (Boolean) -> Unit,
     onPreview: (() -> Unit)?,
     isPreviewing: Boolean,
+    onDownload: (() -> Unit)?,
 ) {
     val isCompact = row.label.length <= SHORT_LABEL
     val meta = listOfNotNull(
@@ -796,6 +806,9 @@ private fun InstantFileRow(
         if (onPreview != null) {
             PreviewButton(onClick = onPreview, isPreviewing = isPreviewing)
         }
+        if (onDownload != null) {
+            DownloadContentButton(onClick = onDownload)
+        }
         if (!isInstantReady) {
             UnindexedMark()
         }
@@ -818,6 +831,12 @@ internal fun PreviewButton(onClick: () -> Unit, isPreviewing: Boolean) {
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
+}
+
+@Composable
+internal fun DownloadContentButton(onClick: () -> Unit) {
+    TooltipIconButton(Icons.Outlined.CloudDownload, "下载", onClick,
+        modifier = Modifier.padding(start = 4.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
 /**

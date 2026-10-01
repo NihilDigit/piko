@@ -43,6 +43,8 @@ data class DownloadTask(
     val batch: DownloadBatch? = null,
     /** 稀疏暂存文件的位置。有此字段时，续传与进度必须读取有效块记录。 */
     val cachePath: String? = null,
+    /** 只有内容哈希、没有当前账号文件 ID 的来源，下载时由 SDK 临时借出文件对象。 */
+    val leasedSource: Boolean = false,
 ) {
     val progress: Float
         get() = progressFraction?.coerceIn(0f, 1f)

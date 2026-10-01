@@ -63,6 +63,7 @@ class FakePikPakServer {
 
     private val lock = Any()
     private val nodes = LinkedHashMap<String, Node>()
+    private val cdnContent = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
     private val tasks = CopyOnWriteArrayList<Task>()
     private val magnetResources = HashMap<String, String>()
     private val nextId = AtomicInteger(1)
@@ -172,7 +173,11 @@ class FakePikPakServer {
         override val currentClient: StateFlow<PikPakClient?> = MutableStateFlow(client)
     }
 
-    private fun add(node: Node): Node = synchronized(lock) { nodes[node.id] = node; node }
+    private fun add(node: Node): Node = synchronized(lock) {
+        nodes[node.id] = node
+        if (!node.isFolder) cdnContent[node.id] = node.content
+        node
+    }
 
     private fun newId(): String = "N${nextId.getAndIncrement()}"
 
@@ -334,7 +339,9 @@ class FakePikPakServer {
             else -> {
                 val hash = body["hash"]?.jsonPrimitive?.content.orEmpty()
                 instantCreates.incrementAndGet()
-                val file = addFile(name, parentId, hash = hash)
+                val held = synchronized(lock) { nodes.values.firstOrNull { !it.isFolder && it.hash == hash }?.content } ?: ByteArray(0)
+                val size = body["size"]?.jsonPrimitive?.content?.toLongOrNull() ?: held.size.toLong()
+                val file = add(Node(newId(), parentId, name, false, hash = hash, content = held, size = size))
                 json(buildJsonObject {
                     put("upload_type", "UPLOAD_TYPE_RESUMABLE")
                     put("file", buildJsonObject {
@@ -393,9 +400,9 @@ class FakePikPakServer {
     }
 
     private suspend fun MockRequestHandleScope.cdn(request: HttpRequestData, id: String): HttpResponseData {
-        val node = node(id) ?: return respond("", HttpStatusCode.NotFound)
+        // 已发出的签名 CDN 链接不随临时文件对象删除而失效。
+        val content = cdnContent[id] ?: return respond("", HttpStatusCode.NotFound)
         if (cdnDelayMs > 0) delay(cdnDelayMs)
-        val content = node.content
         val range = request.headers[HttpHeaders.Range]
         if (range == null) return respond(ByteReadChannel(content), HttpStatusCode.OK)
         val (fromText, toText) = range.removePrefix("bytes=").split('-')
