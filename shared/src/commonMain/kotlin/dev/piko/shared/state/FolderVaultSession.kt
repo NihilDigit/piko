@@ -39,13 +39,13 @@ private const val LARGE_FILE_MIN_BYTES = 50L * 1024 * 1024
 /**
  * 把文件夹里的真实文件换成归档条目，腾出网盘空间。进程级：离开网盘页照常进行，一次归档一个文件夹。
  *
- * 两个目录并行处理，各自清单确认写成后才处置原文件。中途失败时已写成的引用与恢复依据保留。
+ * 八个目录并行处理，各自清单确认写成后才处置原文件。中途失败时已写成的引用与恢复依据保留。
  *
  * 原文件怎么处置看账号：会员移进回收站，出了岔子十五天内还能找回；免费账号直接删除，因为回收站里的文件
  * 照样占空间（2026-09-29 实测，移进回收站 45 秒用量不变，彻底删除 6 秒即还回），移进去等于没腾出来。
  * 整次归档记一条可撤销的改动：会员从回收站恢复，免费账号按 gcid 秒传回去，再去掉清单里的条目。
  *
- * 全局四个任务取样 CID，同内容只取一次；取样超时不挡归档。CID 用于日后的只读体检。
+ * 全局十六个任务取样 CID，同内容只取一次；取样超时不挡归档。CID 用于日后的只读体检。
  */
 class FolderVaultSession internal constructor(
     private val operations: FolderVaultOperations,
@@ -115,7 +115,7 @@ class FolderVaultSession internal constructor(
                 progress = Progress(folder.name, 0, total, 0)
                 coroutineScope {
                     val sampler = VaultCidSampler(this, operations::sampleCid, cidTimeoutMillis)
-                    val folders = Semaphore(2)
+                    val folders = Semaphore(8)
                     levels.map { (folderId, files) -> async {
                         folders.withPermit {
                             val addedAt = Clock.System.now().toEpochMilliseconds()
@@ -233,7 +233,7 @@ internal class VaultCidSampler(
     private val sample: suspend (FileStat) -> String?,
     private val timeoutMillis: Long,
 ) {
-    private val slots = Semaphore(4)
+    private val slots = Semaphore(16)
     private val lock = Mutex()
     private val samples = mutableMapOf<Pair<String, Long>, Deferred<String?>>()
 

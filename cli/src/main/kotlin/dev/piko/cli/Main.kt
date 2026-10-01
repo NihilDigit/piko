@@ -38,6 +38,12 @@ private const val USAGE = """piko-cli：Piko 开发工具
   share <分享链接> [--pass <提取码>] [--restore]
       只读地列出一个分享的顶层内容。--restore 实测转存：把其中最小的一个文件转存进
       根目录下新建的 piko-probe-restore-* 文件夹，等任务结束后列出结果，再永久删除该文件夹。
+
+  archive-bench /Dramas [--parallel <1,2,4,8,16,32>] [--count <32>] [--timeout <15>] [--api-rate <1000>] [--combined]
+      只读取 Dramas 内的文件，分别测文件详情 API 与归档 CID 取样的并发吞吐，不写清单、不处置原文件。
+
+  archive-write-bench /Dramas [--parallel <1,2,4,8,16,32>] [--count <32>] [--timeout <60>] [--api-rate <1000>]
+      在 Dramas 内新建独立测试目录，实测清单写入和延迟确认。只删除本次新建的目录及其内容。
 """
 
 fun main(args: Array<String>) {
@@ -47,6 +53,40 @@ fun main(args: Array<String>) {
     val command = args.firstOrNull() ?: usage()
     val options = Options(args.drop(1))
     when (command) {
+        "archive-write-cleanup" -> runBlocking {
+            val path = options.positional.firstOrNull() ?: "/Dramas"
+            val client = appClient()
+            try { cleanArchiveProbe(client, path, options.value("--probe-id") ?: usage(), options.value("--probe-name") ?: usage()) }
+            finally { client.close() }
+        }
+        "archive-write-bench" -> runBlocking {
+            val path = options.positional.firstOrNull() ?: "/Dramas"
+            require(path.trim('/').split('/').first() == "Dramas") { "此实验仅允许 Dramas 内的路径" }
+            val apiRate = options.value("--api-rate")?.toInt() ?: 1000
+            require(apiRate in 1..1000)
+            val http = archiveBenchmarkHttpClient()
+            val client = appClient(io.github.nihildigit.pikpak.RateLimiter(capacity = minOf(apiRate, 128), refillPerSecond = apiRate.toDouble()), http)
+            try {
+                benchArchiveWrites(client, path,
+                    options.value("--parallel")?.split(',')?.map { it.toInt() } ?: listOf(1, 2, 4, 8, 16, 32),
+                    options.value("--count")?.toInt() ?: 32,
+                    options.value("--timeout")?.toLong() ?: 60)
+            } finally { client.close(); http.close() }
+        }
+        "archive-bench" -> runBlocking {
+            val path = options.positional.firstOrNull() ?: "/Dramas"
+            require(path.trim('/').split('/').first() == "Dramas") { "此实验仅允许 Dramas 内的路径" }
+            val apiRate = options.value("--api-rate")?.toInt() ?: 1000
+            require(apiRate in 1..1000)
+            val http = archiveBenchmarkHttpClient()
+            val client = appClient(io.github.nihildigit.pikpak.RateLimiter(capacity = minOf(apiRate, 128), refillPerSecond = apiRate.toDouble()), http)
+            try {
+                benchArchiveReads(client, path,
+                    options.value("--parallel")?.split(',')?.map { it.toInt() } ?: listOf(1, 2, 4, 8, 16, 32),
+                    options.value("--count")?.toInt() ?: 32,
+                    options.value("--timeout")?.toLong() ?: 15, apiRate, "--combined" in options.flags)
+            } finally { client.close(); http.close() }
+        }
         "snapshot" -> {
             val output = File(options.value("-o") ?: usage())
             val snapshot = runBlocking {
@@ -139,6 +179,6 @@ private class Options(args: List<String>) {
 
     companion object {
         // 不带值的开关
-        val FLAGS = setOf("--visited", "--restore", "--sequential", "--playing", "--background-first")
+        val FLAGS = setOf("--visited", "--restore", "--sequential", "--playing", "--background-first", "--combined")
     }
 }

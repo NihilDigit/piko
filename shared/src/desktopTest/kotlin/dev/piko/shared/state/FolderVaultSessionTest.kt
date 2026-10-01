@@ -22,6 +22,21 @@ import kotlin.test.assertTrue
 
 class FolderVaultSessionTest {
     @Test
+    fun `directory confirmation stays within eight slots and cancellation leaves originals intact`() = smoke { scope ->
+        val drive = Drive().apply { stalledWrites = true; sampleDelayMs = 1 }
+        drive.directories["Dramas"] = (0..31).map { folder("dir-$it") }
+        (0..31).forEach { drive.directories["dir-$it"] = listOf(file("file-$it")) }
+        val session = FolderVaultSession(drive, scope)
+        session.archive(PikoPathBreadcrumb("Dramas", "Dramas"), true)
+        awaitUntil("八个目录等待确认") { drive.writes.get() == 8 }
+        assertEquals(8, drive.maximumWrites.get())
+        assertTrue(drive.removed.isEmpty())
+        session.cancel()
+        awaitUntil("目录写入已取消") { drive.writes.get() == 0 }
+        assertTrue(drive.removed.isEmpty())
+        assertTrue(drive.manifests.isEmpty())
+    }
+    @Test
     fun `large file archive keeps files below 50 MiB without sampling them`() = smoke { scope ->
         val drive = Drive()
         val threshold = 50L * 1024 * 1024
@@ -57,6 +72,7 @@ class FolderVaultSessionTest {
         var stalled: String? = null
         var failRemove = false
         var sampleDelayMs = 50L
+        var stalledWrites = false
         override suspend fun list(folderId: String) = directories[folderId].orEmpty()
         override suspend fun deletesOriginals() = free
         override suspend fun sampleCid(file: FileStat): String? {
@@ -73,6 +89,7 @@ class FolderVaultSessionTest {
             val active = writes.incrementAndGet()
             maximumWrites.updateAndGet { maxOf(it, active) }
             try {
+                if (stalledWrites) awaitCancellation()
                 delay(200)
                 if (folderId == failFolder) throw IOException("write failed")
                 manifests[folderId] = entries
@@ -108,8 +125,8 @@ class FolderVaultSessionTest {
         session.archive(PikoPathBreadcrumb("Dramas", "Dramas"), true)
         awaitUntil("归档完成") { drive.changes.isNotEmpty() }
         println("15 个文件模拟取样及清单确认：${(System.nanoTime() - started) / 1_000_000} ms；最大取样并发 ${drive.maximum.get()}，目录并发 ${drive.maximumWrites.get()}")
-        assertEquals(4, drive.maximum.get())
-        assertTrue(drive.maximumWrites.get() in 1..2)
+        assertTrue(drive.maximum.get() in 5..16)
+        assertTrue(drive.maximumWrites.get() in 1..8)
         assertEquals(15, drive.samples.size)
         assertEquals(3, drive.removed.size, "每个目录一次批量处置")
         assertEquals(setOf("one", "two", "three"), drive.manifests.keys)
@@ -147,10 +164,10 @@ class FolderVaultSessionTest {
     fun `cancelled sampling releases all slots without changing files`() = smoke { scope ->
         val drive = Drive()
         drive.sampleDelayMs = 10_000
-        drive.directories["Dramas"] = (0..9).map { file("$it") }
+        drive.directories["Dramas"] = (0..31).map { file("$it") }
         val session = FolderVaultSession(drive, scope)
         session.archive(PikoPathBreadcrumb("Dramas", "Dramas"), true)
-        awaitUntil("取样并发启动") { drive.inFlight.get() == 4 }
+        awaitUntil("取样并发启动") { drive.inFlight.get() == 16 }
         session.cancel()
         awaitUntil("取样已取消") { drive.inFlight.get() == 0 }
         assertTrue(drive.removed.isEmpty())

@@ -89,8 +89,8 @@ class AppSessionStore(private val store: DesktopSessionStore = DesktopSessionSto
     override suspend fun clear(account: String) = Unit
 }
 
-fun appClient(): PikPakClient {
+fun appClient(rateLimiter: io.github.nihildigit.pikpak.RateLimiter = io.github.nihildigit.pikpak.RateLimiter.default(), httpClient: io.ktor.client.HttpClient? = null): PikPakClient {
     val store = AppSessionStore()
     val account = store.account()
-    return PikPakClient(account, passwordSupplier = { store.password(account) }, sessionStore = store)
+    return PikPakClient(account, passwordSupplier = { store.password(account) }, sessionStore = store, rateLimiter = rateLimiter, httpClient = httpClient)
 }

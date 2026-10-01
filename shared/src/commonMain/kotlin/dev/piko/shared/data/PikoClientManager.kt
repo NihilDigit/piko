@@ -373,6 +373,8 @@ class PikoClientManager(
             httpClient = httpClient,
             connectionBudget = CONNECTION_BUDGET,
             accountConnectionBudget = ACCOUNT_CONNECTION_BUDGET,
+            // 每个账号共用请求预算，批量工作和交互请求合计保持每秒 16 次；实测依据见 development/archive.md。
+            rateLimiter = io.github.nihildigit.pikpak.RateLimiter(capacity = 16, refillPerSecond = 16.0),
         )
     }
 
