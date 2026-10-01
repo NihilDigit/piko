@@ -21,6 +21,28 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class FolderVaultSessionTest {
+    @Test
+    fun `large file archive keeps files below 50 MiB without sampling them`() = smoke { scope ->
+        val drive = Drive()
+        val threshold = 50L * 1024 * 1024
+        drive.directories["Dramas"] = listOf(
+            file("small").copy(size = (threshold - 1).toString()),
+            file("boundary").copy(size = threshold.toString()),
+            file("large").copy(size = (threshold + 1).toString()),
+            file("unsourced").copy(size = threshold.toString(), params = emptyMap()),
+        )
+        val session = FolderVaultSession(drive, scope)
+        val survey = session.survey(PikoPathBreadcrumb("Dramas", "Dramas")).getOrThrow()
+        assertEquals(4, survey.files)
+        assertEquals(3, survey.largeFiles?.files)
+        assertEquals(1, survey.largeFiles?.unsourcedFiles)
+        session.archive(PikoPathBreadcrumb("Dramas", "Dramas"), includeUnsourced = false, onlyLargeFiles = true)
+        awaitUntil("大文件归档完成") { drive.changes.isNotEmpty() }
+        assertEquals(setOf("boundary", "large"), drive.removed.flatten().toSet())
+        assertEquals(setOf("boundary", "large"), drive.samples.toSet())
+        assertEquals(2, drive.manifests.getValue("Dramas").size)
+    }
+
     private class Drive(private val free: Boolean = false) : FolderVaultOperations {
         val directories = ConcurrentHashMap<String, List<FileStat>>()
         val manifests = ConcurrentHashMap<String, List<VaultEntry>>()

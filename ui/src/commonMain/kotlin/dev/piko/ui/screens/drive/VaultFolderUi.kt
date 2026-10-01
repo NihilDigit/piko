@@ -42,7 +42,8 @@ internal fun VaultFolderDialog(
 ) {
     val survey by produceState<Result<FolderVaultSession.Survey>?>(null, folder.id) { value = session.survey(folder) }
     var includeUnsourced by remember { mutableStateOf(false) }
-    val counted = survey?.getOrNull()
+    var onlyLargeFiles by remember { mutableStateOf(false) }
+    val counted = survey?.getOrNull()?.let { if (onlyLargeFiles) it.largeFiles else it }
     val files = counted?.let { if (includeUnsourced) it.files else it.files - it.unsourcedFiles } ?: 0
     val bytes = counted?.let { if (includeUnsourced) it.bytes else it.bytes - it.unsourcedBytes } ?: 0L
     AlertDialog(
@@ -50,6 +51,14 @@ internal fun VaultFolderDialog(
         title = { Text("归档「${folder.name}」") },
         text = {
             Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth().toggleable(value = onlyLargeFiles, role = Role.Checkbox) { onlyLargeFiles = it },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Checkbox(checked = onlyLargeFiles, onCheckedChange = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("只归档大文件（至少 50 MiB）")
+                }
                 when {
                     survey == null -> Row(verticalAlignment = Alignment.CenterVertically) {
                         InlineLoadingIndicator()
@@ -91,7 +100,7 @@ internal fun VaultFolderDialog(
             TextButton(
                 enabled = files > 0,
                 onClick = {
-                    session.archive(folder, includeUnsourced)
+                    session.archive(folder, includeUnsourced, onlyLargeFiles)
                     onDismiss()
                 },
             ) { Text("归档") }

@@ -34,6 +34,8 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import kotlin.time.Clock
 
+private const val LARGE_FILE_MIN_BYTES = 50L * 1024 * 1024
+
 /**
  * 把文件夹里的真实文件换成归档条目，腾出网盘空间。进程级：离开网盘页照常进行，一次归档一个文件夹。
  *
@@ -62,6 +64,7 @@ class FolderVaultSession internal constructor(
         val unsourcedFiles: Int,
         val unsourcedBytes: Long,
         val deletesOriginals: Boolean,
+        val largeFiles: Survey? = null,
     )
 
     /** 正在归档的文件夹与进度。 */
@@ -79,13 +82,17 @@ class FolderVaultSession internal constructor(
     suspend fun survey(folder: PikoPathBreadcrumb): Result<Survey> = runSuspendCatching {
         val files = walk(folder.id).flatMap { it.second }
         val unsourced = files.filter { it.sourceUrl.isNullOrBlank() }
-        Survey(files.size, files.sumOf { it.sizeBytes }, unsourced.size, unsourced.sumOf { it.sizeBytes }, deletesOriginals())
+        val large = files.filter { it.sizeBytes >= LARGE_FILE_MIN_BYTES }
+        val largeUnsourced = large.filter { it.sourceUrl.isNullOrBlank() }
+        val delete = deletesOriginals()
+        Survey(files.size, files.sumOf { it.sizeBytes }, unsourced.size, unsourced.sumOf { it.sizeBytes }, delete,
+            Survey(large.size, large.sumOf { it.sizeBytes }, largeUnsourced.size, largeUnsourced.sumOf { it.sizeBytes }, delete))
     }
 
     private suspend fun deletesOriginals(): Boolean = operations.deletesOriginals()
 
     /** 开始归档 [folder]。[includeUnsourced] 为假时没有来源记录的文件原样留着。已有一个在做时不接。 */
-    fun archive(folder: PikoPathBreadcrumb, includeUnsourced: Boolean) {
+    fun archive(folder: PikoPathBreadcrumb, includeUnsourced: Boolean, onlyLargeFiles: Boolean = false) {
         if (job?.isActive == true) {
             _messages.tryEmit("「${progress?.folderName}」归档中，请稍后再试")
             return
@@ -97,7 +104,9 @@ class FolderVaultSession internal constructor(
             val result = runSuspendCatching {
                 val delete = deletesOriginals()
                 val levels = walk(folder.id).map { (folderId, files) ->
-                    folderId to files.filter { includeUnsourced || !it.sourceUrl.isNullOrBlank() }
+                    folderId to files.filter {
+                        (includeUnsourced || !it.sourceUrl.isNullOrBlank()) && (!onlyLargeFiles || it.sizeBytes >= LARGE_FILE_MIN_BYTES)
+                    }
                 }.filter { it.second.isNotEmpty() }
                 val total = levels.sumOf { it.second.size }
                 var done = 0
