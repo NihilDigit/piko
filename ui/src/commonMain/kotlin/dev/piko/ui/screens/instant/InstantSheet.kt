@@ -205,6 +205,8 @@ fun InstantSheetContent(
                 state = shareState,
                 target = state.target,
                 onPickTarget = { showTargetPicker = true },
+                onPreview = state::previewSharedFile,
+                previewingId = state.previewingSharedId,
             )
         }
 
@@ -802,7 +804,7 @@ private fun InstantFileRow(
 
 /** 预览按钮。秒传进 Piko-Temp 要一两秒，期间换成转圈，免得连点。 */
 @Composable
-private fun PreviewButton(onClick: () -> Unit, isPreviewing: Boolean) {
+internal fun PreviewButton(onClick: () -> Unit, isPreviewing: Boolean) {
     if (isPreviewing) {
         Box(modifier = Modifier.padding(start = 4.dp).size(48.dp), contentAlignment = Alignment.Center) {
             InlineLoadingIndicator()
@@ -907,4 +909,3 @@ fun InstantSheetHandle(
         closeEnabled = !isSaving,
     )
 }
-

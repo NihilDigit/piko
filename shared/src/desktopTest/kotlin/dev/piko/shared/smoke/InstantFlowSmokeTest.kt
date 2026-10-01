@@ -31,6 +31,29 @@ import kotlin.test.assertTrue
  * 秒传工作台从解析到落盘的完整流程。两端都只剩布局，这里坏了两端一起坏。
  */
 class InstantFlowSmokeTest {
+    @Test
+    fun `shared video preview reuses the temporary copy and cleans it on close`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val rig = Rig(server, MemoryPreferences(), scope)
+        val sessionScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val state = rig.sheet(sessionScope, "https://mypikpak.com/s/S1")
+        val file = io.github.nihildigit.pikpak.FileStat(id = "owner-video", name = "episode.mkv", hash = "SHARED", size = "1024")
+        suspend fun preview(): String {
+            val request = scope.async(start = CoroutineStart.UNDISPATCHED) { state.previewRequests.first() }
+            state.previewSharedFile(file)
+            return request.await().fileId
+        }
+        val first = preview()
+        val folder = server.children("").single { it.name == PreviewTempFolder.FOLDER_NAME }
+        assertEquals(folder.id, server.node(first)?.parentId)
+        awaitUntil("预览状态复位") { state.previewingIndex == null }
+        assertEquals(first, preview())
+        assertEquals(1, server.instantCreates.get())
+        sessionScope.cancel()
+        awaitUntil("临时预览副本已清理") { server.node(folder.id) == null }
+        assertNull(server.node(first))
+    }
+
     private val magnet = "magnet:?xt=urn:btih:" + "a".repeat(40)
     private val season = listOf(
         Triple("E01.mkv", 700L shl 20, "GCID01"),

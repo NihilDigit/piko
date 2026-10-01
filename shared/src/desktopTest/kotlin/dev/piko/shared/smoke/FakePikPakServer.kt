@@ -69,6 +69,7 @@ class FakePikPakServer {
 
     /** 每个请求记一条「方法 路径」，用于判断某类请求有没有发生、发生了几次。 */
     val calls = CopyOnWriteArrayList<String>()
+    val shares = java.util.concurrent.ConcurrentHashMap<String, List<String>>()
 
     /** 为真时所有请求在传输层失败，模拟断网。 */
     @Volatile var offline = false
@@ -189,6 +190,15 @@ class FakePikPakServer {
                     tokenResponse()
                 }
             path.endsWith("/v1/auth/token") -> tokenResponse()
+            path.endsWith("/drive/v1/share/restore") -> restoreShare(request)
+            path.endsWith("/drive/v1/share") -> {
+                val ids = shares[request.url.parameters["share_id"]].orEmpty()
+                json(buildJsonObject {
+                    put("share_status", "OK")
+                    put("pass_code_token", "SHARE_TOKEN")
+                    put("files", buildJsonArray { ids.mapNotNull(::node).forEach { add(buildJsonObject { putNode(it) }) } })
+                }.toString())
+            }
             request.url.host == CDN_HOST -> cdn(request, path.removePrefix("/"))
             path.endsWith("/drive/v1/resource/list") -> resolveMagnet(request)
             path.endsWith("/drive/v1/about") -> about()
@@ -207,6 +217,17 @@ class FakePikPakServer {
             path.contains("/drive/v1/files/") -> fileDetail(path.substringAfterLast('/'))
             else -> json("""{"error":"not_found"}""", HttpStatusCode.NotFound)
         }
+    }
+
+    private fun MockRequestHandleScope.restoreShare(request: HttpRequestData): HttpResponseData {
+        val body = Json.parseToJsonElement(request.body.text()).jsonObject
+        val specified = body["specify_parent_id"]?.jsonPrimitive?.content == "true"
+        val parent = if (specified) body["parent_id"]!!.jsonPrimitive.content else
+            children("").firstOrNull { it.name == "Pack From Shared" }?.id ?: addFolder("Pack From Shared").id
+        body["file_ids"]!!.jsonArray.mapNotNull { node(it.jsonPrimitive.content) }.forEach {
+            add(Node(newId(), parent, it.name, it.isFolder, hash = it.hash, content = it.content, size = it.size))
+        }
+        return json("""{"share_status":"OK","restore_status":"RESTORE_COMPLETE","restore_task_id":""}""")
     }
 
     private fun MockRequestHandleScope.about(): HttpResponseData = json(

@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import dev.piko.data.repository.PathBreadcrumb
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.state.ShareSaveState
+import dev.piko.data.repository.isPlayableVideo
 import dev.piko.ui.components.FileTypeIcon
 import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.toReadableSize
@@ -52,6 +53,8 @@ internal fun ColumnScope.ShareSaveSection(
     state: ShareSaveState,
     target: PathBreadcrumb?,
     onPickTarget: () -> Unit,
+    onPreview: (FileStat) -> Unit,
+    previewingId: String?,
 ) {
     // 与磁力那一套用同一组部件：读取中、出错横幅、保存位置与保存按钮，两种链接看起来是同一个面板
     val info = state.info
@@ -66,7 +69,7 @@ internal fun ColumnScope.ShareSaveSection(
                 overflow = TextOverflow.Ellipsis,
             )
             // 与磁力的文件列表一样占去剩下的高度，不定死：长分享在面板里自己滚动，短的照常收缩
-            ShareBrowser(state, modifier = Modifier.weight(1f, fill = false))
+            ShareBrowser(state, onPreview, previewingId, modifier = Modifier.weight(1f, fill = false))
         }
     }
 
@@ -110,7 +113,7 @@ private fun PassCodeRow(state: ShareSaveState) {
 
 /** 当前层的列表。上方一行是所在位置，可退回上一层。 */
 @Composable
-private fun ShareBrowser(state: ShareSaveState, modifier: Modifier = Modifier) {
+private fun ShareBrowser(state: ShareSaveState, onPreview: (FileStat) -> Unit, previewingId: String?, modifier: Modifier = Modifier) {
     Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainerHigh, modifier = modifier) {
         Column {
             Row(
@@ -145,6 +148,8 @@ private fun ShareBrowser(state: ShareSaveState, modifier: Modifier = Modifier) {
                         checked = file.id in state.selectedIds,
                         onToggle = { state.toggle(file) },
                         onOpen = { state.enter(file) },
+                        onPreview = if (file.isPlayableVideo() && file.hash.isNotBlank()) ({ onPreview(file) }) else null,
+                        isPreviewing = file.id == previewingId,
                     )
                 }
             }
@@ -153,7 +158,7 @@ private fun ShareBrowser(state: ShareSaveState, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun ShareEntryRow(file: FileStat, checked: Boolean, onToggle: () -> Unit, onOpen: () -> Unit) {
+private fun ShareEntryRow(file: FileStat, checked: Boolean, onToggle: () -> Unit, onOpen: () -> Unit, onPreview: (() -> Unit)?, isPreviewing: Boolean) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -180,6 +185,8 @@ private fun ShareEntryRow(file: FileStat, checked: Boolean, onToggle: () -> Unit
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        } else if (onPreview != null) {
+            PreviewButton(onClick = onPreview, isPreviewing = isPreviewing)
         }
     }
 }

@@ -483,9 +483,23 @@ class InstantSheetState private constructor(
      */
     fun preview(index: Int) {
         val item = items.getOrNull(index) ?: return
-        val gcid = item.file.gcid ?: return
+        previewFile(item.file, index)
+    }
+
+    var previewingSharedId by mutableStateOf<String?>(null)
+        private set
+
+    fun previewSharedFile(file: io.github.nihildigit.pikpak.FileStat) {
+        if (file.isFolder || file.name.fileCategory() != FileCategory.VIDEO || file.hash.isBlank() || previewingIndex != null) return
+        previewingSharedId = file.id
+        previewFile(io.github.nihildigit.pikpak.ResolvedFile(file.name, file.sizeBytes, file.hash), -1)
+        if (previewingIndex == null) previewingSharedId = null
+    }
+
+    private fun previewFile(file: io.github.nihildigit.pikpak.ResolvedFile, index: Int) {
+        val gcid = file.gcid ?: return
         previewedIds[gcid]?.let { fileId ->
-            _previewRequests.tryEmit(InstantPreviewRequest(fileId, item.file.name))
+            _previewRequests.tryEmit(InstantPreviewRequest(fileId, file.name))
             return
         }
         if (previewingIndex != null) return
@@ -494,15 +508,16 @@ class InstantSheetState private constructor(
         shared.usedPreviewFolder = true
         scope.launch {
             try {
-                previewFolder.put(item.file)
+                previewFolder.put(file)
                     .onSuccess { fileId ->
                         previewedIds[gcid] = fileId
-                        _previewRequests.emit(InstantPreviewRequest(fileId, item.file.name))
+                        _previewRequests.emit(InstantPreviewRequest(fileId, file.name))
                     }
                     .logFailure(TAG, "预览失败")
                     .onFailure { _messages.emit("预览失败：${it.message}") }
             } finally {
                 previewingIndex = null
+                previewingSharedId = null
             }
         }
     }
