@@ -51,6 +51,7 @@ private class Shot(
     val extraSeed: FakePikPak.() -> Unit = {},
     val showPlayer: Boolean = false,
     val initialLink: String? = null,
+    val highlightName: String? = null,
 )
 
 /** 进番剧目录，框选几集后按 F2 打开批量重命名。框从 SPs 那一行右侧的空白处拖起，起点落在空白处才是框选。 */
@@ -94,6 +95,7 @@ private fun selectEpisodeSteps(): List<Step> = listOf(
 
 /** `all` 的清单。改了布局先跑它，再挑有关的几张细看。 */
 private val standardSet = listOf(
+    Shot("reveal-folder-400x860", 400, 860, steps = listOf(Step.Pump(9_000)), highlightName = "文档"),
     Shot("content-share-400x860", 400, 860, steps = listOf(Step.Pump(2_000)), initialLink = "https://mypikpak.com/s/SHOT"),
     Shot("content-magnet-400x860", 400, 860, steps = listOf(Step.Pump(2_000)), initialLink = "magnet:?xt=urn:btih:" + "a".repeat(40)),
     Shot("player-portrait", 400, 860, showPlayer = true),
@@ -309,6 +311,10 @@ private fun printTexts(shot: Shot) = run(shot) { app -> app.texts().forEach(::pr
 private fun run(shot: Shot, finish: (AppScene) -> Unit) {
     ShotEnv(shot.viewMode, shot.extraSeed).use { env ->
         AppScene.open(env, shot.width, shot.height, shot.mode, shot.showPlayer).use { app ->
+            shot.highlightName?.let { name ->
+                val file = kotlinx.coroutines.runBlocking { env.services.driveRepository.listBrowsable("", dev.piko.shared.data.PikoFileSortOrder.TIME_DESC).getOrThrow().first { it.name == name } }
+                edt { env.services.driveRepository.requestHighlight(setOf(file.id)) }
+            }
             shot.initialLink?.let { link -> edt { env.services.instantSession.start(link) } }
             var lastDragEnd: Offset? = null
             for (step in shot.steps) {

@@ -15,6 +15,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.runtime.snapshotFlow
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.data.ChildFile
@@ -133,6 +134,8 @@ class DriveScreenState(
 
     var highlightedFileIds by mutableStateOf(driveRepo.takePendingHighlight())
         private set
+    var highlightRevision by mutableStateOf(0)
+        private set
 
     /**
      * 「显示全部」按目录记住：规则仍可能误判，用户在某个目录里点开过，回到这里时应当还是展开的。
@@ -178,6 +181,7 @@ class DriveScreenState(
     private var analysis by mutableStateOf<DriveStructure?>(null)
 
     private val currentAnalysis: DriveStructure? by derivedStateOf { analysis?.takeIf { analyzedFiles === files } }
+    val isDisplayStructureReady: Boolean by derivedStateOf { isSearching || libraryView != null || currentAnalysis != null }
 
     /** 列过的文件夹空不空，见 PikoDriveRepository.folderEmptiness。 */
     val folderEmptiness get() = driveRepo.folderEmptiness
@@ -334,7 +338,7 @@ class DriveScreenState(
         }
         // 同理，高亮请求随时可能来，不只在网盘页建出来的那一刻
         scope.launch {
-            driveRepo.pendingHighlights.collect { ids -> if (ids.isNotEmpty()) highlightedFileIds = driveRepo.takePendingHighlight() }
+            driveRepo.pendingHighlights.collect { ids -> if (ids.isNotEmpty()) highlight(driveRepo.takePendingHighlight()) }
         }
         scope.launch {
             snapshotFlow { highlightedFileIds to activeFolderId }.collectLatest { (ids, folderId) ->
@@ -345,8 +349,7 @@ class DriveScreenState(
         scope.launch {
             snapshotFlow { highlightedFileIds to currentAnalysis }.collect { (ids, structure) ->
                 if (ids.isEmpty() || structure == null) return@collect
-                if (isFoldingActive && ids.any { it in structure.foldedIds }) setShowAllFiles(true)
-                structure.blocks.filter { block -> block.fileIds.any { it in ids } }.forEach { expandSection(it.id) }
+                revealHighlightedItems(structure, ids)
             }
         }
         // 解析放到后台：上千个文件的目录要算几秒。按内容缓存，重组、刷新与返回上级都不重算
@@ -355,8 +358,11 @@ class DriveScreenState(
                 val key = DriveViewMemory.fingerprint(list)
                 val structure = DriveViewMemory.structure(key)
                     ?: withContext(Dispatchers.Default) { analyzeDriveFolder(list) }.also { DriveViewMemory.putStructure(key, it) }
-                analysis = structure
-                analyzedFiles = list
+                Snapshot.withMutableSnapshot {
+                    revealHighlightedItems(structure, highlightedFileIds)
+                    analysis = structure
+                    analyzedFiles = list
+                }
             }
         }
         scope.launch {
@@ -524,7 +530,7 @@ class DriveScreenState(
                 .logFailure(TAG, "定位条目失败")
                 .onSuccess { parents ->
                     driveRepo.updateFolderStack(parents)
-                    highlightedFileIds = setOf(file.id)
+                    highlight(setOf(file.id))
                 }
                 .onFailure { _messages.tryEmit("找不到它所在的文件夹") }
         }
@@ -884,7 +890,17 @@ class DriveScreenState(
     }
 
     fun highlight(ids: Set<String>) {
-        highlightedFileIds = ids
+        Snapshot.withMutableSnapshot {
+            currentAnalysis?.let { revealHighlightedItems(it, ids) }
+            highlightedFileIds = ids
+            highlightRevision++
+        }
+    }
+
+    private fun revealHighlightedItems(structure: DriveStructure, ids: Set<String>) {
+        if (ids.isEmpty()) return
+        if (ids.any { it in structure.foldedIds }) setShowAllFiles(true)
+        structure.blocks.filter { block -> block.fileIds.any { it in ids } }.forEach { expandSection(it.id) }
     }
 
     fun clearHighlight() {

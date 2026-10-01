@@ -62,6 +62,9 @@ import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.first
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -196,6 +199,9 @@ internal fun DriveFileGrid(
     isSelectionMode: Boolean,
     selectedIds: Set<String>,
     highlightedIds: Set<String>,
+    highlightRevision: Int,
+    structureReady: Boolean,
+    locatedItemId: String?,
     isBlurred: (FileStat) -> Boolean,
     hitLocations: Map<String, String>,
     /** 文件夹的解析结果；原始文件名模式下恒为 null。 */
@@ -222,6 +228,9 @@ internal fun DriveFileGrid(
     modifier: Modifier = Modifier,
 ) {
     val leadingItemCount = driveLeadingItemCount(foldBanner != null)
+    val latestItems by rememberUpdatedState(items)
+    val latestStructureReady by rememberUpdatedState(structureReady)
+    val latestLeadingItemCount by rememberUpdatedState(leadingItemCount)
     val horizontalPadding = gridHorizontalPadding(viewMode)
     val itemSpacing = gridItemSpacing(viewMode)
     // 整行项在网格视图里已有页边距，列表视图里自己缩进
@@ -230,10 +239,13 @@ internal fun DriveFileGrid(
     Box(modifier = modifier.fillMaxSize()) {
         // 有条目要定位时滚到它（刚秒传的、从别处「在网盘中显示」的）。视图模式是异步读出来的偏好，首帧拿到的还是默认值，
         // 所以它也要进 key，否则真值到达前的滚动会停在错误的位置。
-        LaunchedEffect(items, highlightedIds, viewMode) {
+        LaunchedEffect(highlightRevision, highlightedIds, viewMode) {
             if (highlightedIds.isEmpty()) return@LaunchedEffect
-            val entryIndex = items.indexOfFirst { it is DriveListItem.File && it.file.id in highlightedIds }
-            if (entryIndex >= 0) gridState.animateScrollToItem(leadingItemCount + entryIndex)
+            val index = snapshotFlow {
+                if (!latestStructureReady) -1 else latestItems.indexOfFirst { it is DriveListItem.File && it.file.id in highlightedIds }
+                    .takeIf { it >= 0 }?.let { latestLeadingItemCount + it } ?: -1
+            }.first { it >= 0 }
+            gridState.animateScrollToItem(index)
         }
 
         val fileKeys = remember(items) { items.mapNotNullTo(HashSet()) { (it as? DriveListItem.File)?.key } }
@@ -311,7 +323,7 @@ internal fun DriveFileGrid(
                             viewMode = viewMode,
                             isSelectionMode = isSelectionMode,
                             isSelected = file.id in selectedIds,
-                            isHighlighted = file.id in highlightedIds,
+                            isHighlighted = file.id in highlightedIds || file.id == locatedItemId,
                             isBlurred = isBlurred(file),
                             locationLabel = hitLocations[file.id],
                             callbacks = callbacks,

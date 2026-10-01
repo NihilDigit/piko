@@ -370,6 +370,7 @@ fun DriveScreen(
     // 宽窗口命令栏作用的那一项：最近取得焦点的一项，失焦后仍留着。点开命令栏的下拉菜单时焦点进了弹窗，
     // 按 focusedFile 算的话菜单里的操作就落空了。换目录、点空白处时清掉，与资源管理器的选中相同
     var commandFile by remember { mutableStateOf<FileStat?>(null) }
+    var locatedFileId by remember { mutableStateOf<String?>(null) }
     // 宽窗口里常驻搜索框取得焦点的请求，主修饰键+F 加一
     var searchFocusRequests by remember { mutableIntStateOf(0) }
     var keyboardFocusTarget by remember { mutableStateOf<String?>(null) }
@@ -463,7 +464,7 @@ fun DriveScreen(
     val highlightedFileIds = state.highlightedFileIds
     // 每一项都要问一次「是否选中」，SnapshotStateList 的 contains 是线性查找
     val selectedIdSet by remember { derivedStateOf { state.selectedFileIds.toSet() } }
-    LaunchedEffect(activeFolderId) { commandFile = null }
+    LaunchedEffect(activeFolderId) { commandFile = null; locatedFileId = null }
     // 命令栏与剪切、复制快捷键作用的条目：多选时是选中的几项，否则是 commandFile（已不在列表里的不算）
     val commandTargets: List<FileStat> = if (state.isSelectionMode) {
         displayedFiles.filter { it.id in selectedIdSet }
@@ -474,13 +475,20 @@ fun DriveScreen(
 
     // 渐隐单独一个 effect：并进滚动定位那个的话，视图模式到位会把 8 秒重新计一遍。
     // 从条目出现在列表里起算：刚存进去的文件要等状态类重列几次才露面，从请求起算的话看到的高亮只剩一半
-    LaunchedEffect(highlightedFileIds) {
+    LaunchedEffect(highlightedFileIds, state.highlightRevision) {
         if (highlightedFileIds.isEmpty()) return@LaunchedEffect
         withTimeoutOrNull(HighlightAppearTimeoutMs) {
-            snapshotFlow { state.files.any { it.id in highlightedFileIds } }.first { it }
+            snapshotFlow { state.isDisplayStructureReady && state.displayedFiles.any { it.id in highlightedFileIds } }.first { it }
         }
         delay(8000)
         state.clearHighlight()
+    }
+    LaunchedEffect(highlightedFileIds, state.highlightRevision) {
+        if (highlightedFileIds.isEmpty()) return@LaunchedEffect
+        val target = snapshotFlow {
+            if (state.isDisplayStructureReady) state.displayedFiles.firstOrNull { it.id in highlightedFileIds } else null
+        }.first { it != null }
+        locatedFileId = target?.id
     }
 
     val platform = LocalPikoPlatform.current
@@ -707,10 +715,12 @@ fun DriveScreen(
             },
             onBackgroundClick = {
                 commandFile = null
+                locatedFileId = null
                 if (state.isSelectionMode) state.exitSelection()
             },
             onFocusChanged = { file, focused ->
                 if (focused) {
+                    if (locatedFileId != file.id) locatedFileId = null
                     focusedFile = file
                     commandFile = file
                 } else if (focusedFile?.id == file.id) {
@@ -1557,6 +1567,9 @@ fun DriveScreen(
                                         isSelectionMode = state.isSelectionMode,
                                         selectedIds = selectedIdSet,
                                         highlightedIds = highlightedFileIds,
+                                        highlightRevision = state.highlightRevision,
+                                        structureReady = state.isDisplayStructureReady,
+                                        locatedItemId = locatedFileId,
                                         isBlurred = { isSpoilerBlurEnabled && it.id !in state.revealedFileIds },
                                         hitLocations = rowNotes,
                                         callbacks = callbacks,
