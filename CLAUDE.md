@@ -77,7 +77,9 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 
 四个模块：`shared`（状态与业务，commonMain + android/desktop 两个 target）、`ui`（共享界面，
 同样两个 target）、`app`（Android 入口、平台实现与播放器）、`desktopApp`（Windows、macOS 与 Linux 入口、
-平台实现与播放器窗口）。
+平台实现与播放器窗口）。Windows 触摸与笔输入接入 Compose Desktop 的桥不在本仓库，是单独发布的
+`dev.nihildigit:compose-windows-touch`（仓库 NihilDigit/compose-windows-touch，版本在 `libs.versions.toml`）。
+联调时在 `local.properties` 写 `windowstouch.dir=../compose-windows-touch`，与 SDK 同一套复合构建。
 
 ### 界面写一次
 
@@ -414,6 +416,18 @@ piko 源码仍是 MIT，但发版时要附 GPLv3 与第三方声明，并指明�
   （`WindowsCaption`）：WM_NCCALCSIZE 只收回顶边，WM_NCHITTEST 答 HTCAPTION 与三个按钮的命中码，
   贴靠布局、边缘缩放、阴影与 Win+方向键因此仍由系统负责；按钮的悬停与按下来自非客户区消息，不是 Compose
   指针事件。macOS 用根面板属性把内容铺进标题栏，再由 Skiko 的 `disableTitleBar` 接管拖动，红绿灯保留。
+- **触摸与笔**：AWT 不处理 WM_POINTER，触摸被降级成单个鼠标指针，没有多指、压力与笔的类型。`compose-windows-touch` 在
+  `WindowsCaption` 的两个窗口过程里（框架窗口与 Skiko 画布，WM_POINTER 发给鼠标下的画布）截下 WM_POINTER*，
+  经反射注入 Compose 内部的 `ComposeScene.sendPointerEvent` 列表重载。要点：
+  - 不碰 WM_NCPOINTER*：落在标题栏与边框的触摸由系统合成鼠标消息，窗口移动与标题栏按钮才照旧。
+  - 对 Compose 的反射在第一条指针消息到来时才建立，取不到就一直走 AWT 的鼠标路径。它读 `composePanel`、
+    `_composeContainer`、`mediator` 与 `sendPointerEvent-` 的 10 参重载，**升级 CMP 时先看这里**；
+    release 的 ProGuard 要显式保留这些成员（`proguard-rules.pro`），否则只在 release 里悄悄退回鼠标。
+  - 堆积的 MOVE 在事件分发线程前合并，较早的采样留作 `HistoricalChange`，并要自己设
+    `originalEventPosition`，否则速度跟踪器从原点起算，fling 快得离谱。
+  - 触摸阈值：Compose Desktop 写死 18dp，`ProvideTouchViewConfiguration` 换成 Android 的 8dp。鼠标阈值是它的固定
+    比例（0.125dp / 18dp），换了之后仍不到一个物理像素，鼠标手感不变。
+  冒烟用 `InjectTouchInput`（虚拟数字化仪，无需触摸屏），在 `:desktopApp:desktopTest` 里，只能在 Windows 上跑。
 - **模态文件框一律经 `AwtDialogs`**（FileDialog、JFileChooser）：它只有挂起函数，里面换到专用线程上弹。
   在界面线程上同步弹，模态框就地嵌套一层 AWT 事件循环，里面又渲染一帧、又 flush 一次 Compose 不可重入的
   FlushCoroutineDispatcher，同一个续体被恢复两次，窗口整个崩掉（issue #7，macOS 上边放视频边改下载位置复现）。

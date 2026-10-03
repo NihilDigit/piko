@@ -48,3 +48,11 @@ localProperties.getProperty("pikpak.sdk.dir")?.let { sdkDir ->
         }
     }
 }
+// 同理联调触摸桥：windowstouch.dir=../compose-windows-touch
+localProperties.getProperty("windowstouch.dir")?.let { dir ->
+    includeBuild(dir) {
+        dependencySubstitution {
+            substitute(module("dev.nihildigit:compose-windows-touch")).using(project(":"))
+        }
+    }
+}

@@ -23,6 +23,7 @@ kotlinxDatetime = "0.7.1"
 # 却只把 kotlinx-io 声明为 runtime 依赖，调用方编译时要自己引入
 kotlinxIo = "0.9.0"
 pikpakSdk = "2.0.0"
+windowsTouch = "0.1.0"
 # 桌面端停在 CMP 1.12，与 Animeko 一致：1.13 的 alpha 带的 skiko 0.152 把各渲染后端包进
 # OnScreenRedrawer，mediamp（0.5.0 仍是）的 mpv D3D11 画面表面要直接拿 Direct3DRedrawer，
 # 一开播放器窗口就抛 IllegalStateException。Android 端的 Compose 版本由 BOM 决定，不受影响。
@@ -65,6 +66,7 @@ cmp-navigation3-ui = { module = "org.jetbrains.androidx.navigation3:navigation3-
 cmp-ui-backhandler = { module = "org.jetbrains.compose.ui:ui-backhandler", version.ref = "composeMultiplatform" }
 cmp-material-icons-extended = { module = "org.jetbrains.compose.material:material-icons-extended", version.ref = "cmpMaterialIcons" }
 pikpak-kotlin = { module = "io.github.nihildigit:pikpak-kotlin", version.ref = "pikpakSdk" }
+windows-touch = { module = "dev.nihildigit:compose-windows-touch", version.ref = "windowsTouch" }
 mediamp-all = { module = "org.openani.mediamp:mediamp-all", version.ref = "mediamp" }
 libmpv-android = { module = "dev.jdtech.mpv:libmpv", version.ref = "libmpv" }
 mediamp-source-ktxio = { module = "org.openani.mediamp:mediamp-source-ktxio", version.ref = "mediamp" }

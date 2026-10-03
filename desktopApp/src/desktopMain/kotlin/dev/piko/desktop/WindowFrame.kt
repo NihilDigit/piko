@@ -59,6 +59,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.draw.clip
+import dev.nihildigit.windowstouch.ProvideTouchViewConfiguration
 import java.awt.Container
 import kotlinx.coroutines.delay
 import org.jetbrains.skia.FontMgr
@@ -127,7 +128,7 @@ fun FrameWindowScope.WindowFrame(
                     }
                 }
                 DisposableEffect(frameless) { onDispose { caption.clearLayout() } }
-                CompositionLocalProvider(LocalFramelessWindow provides frameless) { SettledWindowInfo(caption) { content() } }
+                CompositionLocalProvider(LocalFramelessWindow provides frameless) { SettledWindowInfo(caption) { ProvideTouchViewConfiguration(content) } }
                 return
             }
             val compact = remember(caption, compactCaption) { caption?.takeIf { compactCaption }?.let(::CompactCaption) }
@@ -138,7 +139,7 @@ fun FrameWindowScope.WindowFrame(
             Column(Modifier.fillMaxSize()) {
                 if (showTitleBar && caption != null && !hosted) WindowsTitleBar(caption, title, icon, colors)
                 Box(Modifier.fillMaxWidth().weight(1f)) {
-                    CompositionLocalProvider(LocalWindowCaption provides compact) { SettledWindowInfo(caption) { content() } }
+                    CompositionLocalProvider(LocalWindowCaption provides compact) { SettledWindowInfo(caption) { ProvideTouchViewConfiguration(content) } }
                     // 兜底：声明了却一时没有哪一行贴着右上角来画按钮，就浮在角上画一组，窗口总关得掉
                     if (hosted && compact.rowsWithButtons == 0) {
                         Box(Modifier.align(Alignment.TopEnd).padding(8.dp)) { compact.ButtonRow(countAsRow = false) }

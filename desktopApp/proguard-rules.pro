@@ -25,6 +25,20 @@
     long childProc(java.lang.foreign.MemorySegment, int, long, long);
 }
 
+# 触摸桥（compose-windows-touch）经反射取 Compose Desktop 的内部入口，注入 WM_POINTER 的触摸。
+# 取不到时静默退回鼠标路径，release 里看不出来，所以这些成员要显式保留
+-keepclassmembers class androidx.compose.ui.awt.** {
+    *** composePanel;
+    *** _composeContainer;
+    *** mediator;
+    *** getContentComponent();
+}
+-keepclassmembers class androidx.compose.ui.scene.ComposeSceneMediator {
+    *** scene$delegate;
+    *** getSceneBoundsInPx();
+    static *** access$getScene(androidx.compose.ui.scene.ComposeSceneMediator);
+}
+
 # ServiceLoader 装载的实现类。ProGuard 不像 R8 那样自动保留 META-INF/services 里列出的类
 -keep class coil3.network.okhttp.internal.OkHttpNetworkFetcherServiceLoaderTarget { *; }
 -keep class io.ktor.client.engine.okhttp.OkHttpEngineContainer { *; }

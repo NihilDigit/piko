@@ -65,6 +65,7 @@ kotlin {
             dependencies {
                 implementation(project(":shared"))
                 implementation(project(":ui"))
+                implementation(libs.windows.touch)
                 implementation(composeDesktopRuntime)
                 implementation(libs.cmp.material.icons.extended)
                 implementation(libs.mediamp.all)
