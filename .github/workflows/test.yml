@@ -21,6 +21,10 @@ on:
         description: 同时跑桌面端的安装与更新冒烟
         type: boolean
         default: true
+      sdk-main:
+        description: 使用 SDK main 源码（关闭则使用已发布版本）
+        type: boolean
+        default: true
   workflow_call:
     inputs:
       desktop:
