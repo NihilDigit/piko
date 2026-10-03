@@ -113,7 +113,7 @@ class FolderVaultSession internal constructor(
                         folders.withPermit {
                             val addedAt = Clock.System.now().toEpochMilliseconds()
                             val entries = files.map { file -> async {
-                                val cid = sampler.sample(file)
+                                val cid = file.params["piko_vault_cid"] ?: sampler.sample(file)
                                 progressLock.withLock {
                                     prepared++
                                     progress = Progress(folder.name, done, total, prepared)
@@ -124,7 +124,7 @@ class FolderVaultSession internal constructor(
                             // 删除请求的返回状态可能不明确，先记录恢复依据；撤销时跳过仍在原位的文件。
                             progressLock.withLock {
                                 if (delete) deleted[folderId] = entries
-                                else reverts[folderId] = VaultEdits.remove(entries.mapTo(HashSet()) { it.id })
+                                else reverts[folderId] = VaultEdits.restore(entries.zip(files).associate { (entry, file) -> entry.id to file })
                             }
                             operations.remove(files.map { it.id }, delete)
                             progressLock.withLock {
@@ -187,7 +187,7 @@ class FolderVaultSession internal constructor(
     }
 
     private fun archivable(file: FileStat): Boolean =
-        !file.isFolder && !file.trashed && !file.isVaulted && !VaultStore.looksLikeManifest(file) &&
+        !file.isFolder && !file.trashed && !file.isVaulted && !VaultStore.looksLikeManifest(file) && !VaultStore.isRecoveryFile(file) &&
             file.phase == TaskPhase.COMPLETE && file.hash.isNotBlank()
 
     private companion object {
@@ -206,7 +206,7 @@ internal interface FolderVaultOperations {
 }
 
 private class DriveFolderVaultOperations(private val drive: PikoDriveRepository) : FolderVaultOperations {
-    override suspend fun list(folderId: String) = drive.listAllFiles(folderId).getOrThrow()
+    override suspend fun list(folderId: String) = drive.listBrowsable(folderId, dev.piko.shared.data.PikoFileSortOrder.TIME_DESC).getOrThrow()
     override suspend fun sampleCid(file: FileStat) = drive.sampleCid(file.id).getOrNull()
     override suspend fun write(folderId: String, entries: List<VaultEntry>) {
         drive.vault.update(folderId, VaultEdits.add(entries)).getOrThrow()

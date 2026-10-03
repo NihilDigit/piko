@@ -504,7 +504,7 @@ open class PikoDriveRepository(
         listingCache.value[folderId]?.let { sortFiles(it, sortOrder, folderId) }
 
     /** 各目录的归档清单，见 [VaultStore]。 */
-    val vault = VaultStore(this)
+    open val vault = VaultStore(this)
 
     /**
      * 网盘页看到的列表：清单文件不列，换成其中的归档条目。清单读不出来时照样列出真实文件，
@@ -533,7 +533,9 @@ open class PikoDriveRepository(
         val visible = listing.filterNot { isPikoInternalFolder(it, folderId) }
         if (entries.isEmpty() && visible.none(VaultStore::looksLikeManifest)) return sortFiles(visible, sortOrder, folderId)
         val real = visible.filterNot(VaultStore::looksLikeManifest)
-        return sortFiles(real + entries.map { it.toFileStat(folderId) }, sortOrder, folderId)
+        val restoredMetadata = entries.filterNot { it.isArchived }
+        val enriched = real.map { file -> restoredMetadata.firstOrNull { it.matches(file) }?.enrich(file) ?: file }
+        return sortFiles(enriched + entries.filter { it.isArchived }.map { it.toFileStat(folderId) }, sortOrder, folderId)
     }
 
     /**
@@ -589,7 +591,7 @@ open class PikoDriveRepository(
         // 清单读过、确认已经空了的不算
         val (manifests, real) = files.partition(VaultStore::looksLikeManifest)
         childContents.put(folderId, real.filterNot(FileStat::isFolder).take(MAX_REMEMBERED_CHILD_NAMES).map(ChildFile::of))
-        val hasEntries = manifests.isNotEmpty() && vault.cached(folderId, files)?.isNotEmpty() != false
+        val hasEntries = manifests.isNotEmpty() && vault.cached(folderId, files)?.any { it.isArchived } != false
         if (hasEntries || complete) childContents.markVaulted(folderId, hasEntries)
         _folderEmptiness.update { it + (folderId to files.isEmpty()) }
     }
@@ -599,7 +601,7 @@ open class PikoDriveRepository(
 
     /** 清单读到或写成之后，按其中还有没有条目更新文件夹的标记。 */
     internal fun vaultEntriesKnown(folderId: String, entries: List<VaultEntry>) {
-        childContents.markVaulted(folderId, entries.isNotEmpty())
+        childContents.markVaulted(folderId, entries.any { it.isArchived })
     }
 
     /*

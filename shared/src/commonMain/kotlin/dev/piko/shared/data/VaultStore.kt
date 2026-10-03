@@ -41,7 +41,24 @@ data class VaultEntry(
     val source: String? = null,
     /** 记进清单的时刻，毫秒。 */
     val addedAt: Long,
+    /** 已取回时关联真实文件，保留来源元数据，不再作为虚拟条目显示。 */
+    val restoredFileId: String? = null,
 ) {
+    val isArchived: Boolean get() = restoredFileId == null
+
+    fun matches(file: FileStat): Boolean = !file.isFolder &&
+        file.hash.equals(gcid, ignoreCase = true) && file.sizeBytes == size &&
+        (file.id == restoredFileId || file.name == name)
+
+    fun enrich(file: FileStat): FileStat {
+        if (!matches(file)) return file
+        val metadata = buildMap {
+            if (!source.isNullOrBlank() && file.sourceUrl.isNullOrBlank()) put("url", source)
+            if (cid != null) put("piko_vault_cid", cid)
+        }
+        return file.copy(params = file.params + metadata)
+    }
+
     /**
      * 列表里代表这一条的 ID。带前缀，不会与 PikPak 的文件 ID 撞上。条目 ID、gcid、大小与名字都在里面：
      * 播放器、下载这些只拿着 ID 的地方凭它就能借出对象，见 [resolvedFileOf]；改动凭它找回条目，见 [entryIdOf]。
@@ -119,6 +136,11 @@ object VaultEdits {
     }
 
     fun remove(ids: Set<String>): VaultEdit = { current -> current.filterNot { it.id in ids } }
+
+    /** 取回后保留来源及 CID，同时跟随真实文件的新名称。 */
+    fun restore(files: Map<String, FileStat>): VaultEdit = { current ->
+        current.map { entry -> files[entry.id]?.let { entry.copy(name = it.name, restoredFileId = it.id) } ?: entry }
+    }
 }
 
 /** 一次改写前后的条目，撤销要用改之前的。 */
@@ -226,6 +248,7 @@ class VaultStore(
                     val text = JSON.encodeToString(Manifest.serializer(), Manifest(after))
                     // 上传完成即内容已按 gcid 核对过，不读回：刚传完的文件常常一时还没有直链，读回反倒失败。
                     // 自己写的这份直接记进缓存，确认输赢时不必下载
+                    writeRecoveryFiles(folderId, after)
                     val id = io.upload(folderId, nameOf(version, token), text.encodeToByteArray())
                     parsed.update { it + (id to after) }
 
@@ -242,6 +265,21 @@ class VaultStore(
                 error("清单写入冲突，重试 $MAX_ATTEMPTS 次仍未写成")
             }
         }
+
+    /** 可读文件与来源链接先落盘，原文件之后才能处置。每个来源只保存一份链接。 */
+    private suspend fun writeRecoveryFiles(folderId: String, entries: List<VaultEntry>) {
+        val sources = entries.mapNotNull { it.source?.takeIf(String::isNotBlank) }.distinct()
+        if (sources.isEmpty()) return
+        val listing = io.list(folderId)
+        for (source in sources) {
+            val magnet = source.startsWith("magnet:", ignoreCase = true)
+            val name = "归档来源-${sourceToken(source)}.${if (magnet) "magnet" else "txt"}"
+            val bytes = (source + "\n").encodeToByteArray()
+            val existing = listing.firstOrNull { !it.isFolder && it.name == name }
+            if (existing == null) io.upload(folderId, name, bytes)
+            else check(io.read(existing.id).contentEquals(bytes)) { "来源文件同名但内容不同，未处置原文件：$name" }
+        }
+    }
 
     /** 眼下 [version] 这一版里算数的是不是 [token]。 */
     private suspend fun won(folderId: String, version: Int, token: String, afterDelay: Boolean = false): Boolean {
@@ -284,6 +322,15 @@ class VaultStore(
 
         private fun versionOf(file: FileStat): Pair<Int, String>? =
             NAME.matchEntire(file.name)?.let { it.groupValues[1].toInt() to it.groupValues[2] }
+
+        private val SOURCE_NAME = Regex("""归档来源-[0-9a-f]{16}\.(magnet|txt)""")
+        fun isRecoveryFile(file: FileStat): Boolean = !file.isFolder && SOURCE_NAME.matches(file.name)
+
+        private fun sourceToken(source: String): String {
+            var hash = 0xcbf29ce484222325uL
+            for (byte in source.encodeToByteArray()) hash = (hash xor byte.toUByte().toULong()) * 0x100000001b3uL
+            return hash.toString(16).padStart(16, '0')
+        }
 
         /**
          * 能算数的清单。上传中途进程被杀会留下 PENDING 的空壳，读不出内容，不算：

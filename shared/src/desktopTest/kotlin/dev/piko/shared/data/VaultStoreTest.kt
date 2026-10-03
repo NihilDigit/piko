@@ -6,6 +6,7 @@ import io.github.nihildigit.pikpak.TaskPhase
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import kotlin.time.Duration
 
 /**
@@ -84,6 +85,42 @@ class VaultStoreTest {
         store.update("f", VaultEdits.remove(setOf("no-such-entry"))).getOrThrow()
         store.update("f", VaultEdits.add(listOf(saved))).getOrThrow()
         assertEquals(before, drive.files.keys)
+    }
+
+    @Test
+    fun `portable links are exported once and restored metadata follows renames`() = runBlocking {
+        val drive = MemoryFolder()
+        val store = VaultStore(drive, Duration.ZERO)
+        val magnet = "magnet:?xt=urn:btih:" + "a".repeat(40)
+        val share = "https://mypikpak.com/s/share?password=1234"
+        val one = entry("E01").copy(source = magnet, cid = "CID")
+        val two = entry("E02").copy(source = magnet)
+        val three = entry("E03").copy(source = share)
+        store.update("f", VaultEdits.add(listOf(one, two, three))).getOrThrow()
+        assertEquals(1, drive.files.values.count { it.first.endsWith(".magnet") })
+        assertTrue(drive.files.values.any { it.first.endsWith(".txt") && it.second.decodeToString() == share + "\n" })
+        val restored = one.toFileStat("f").copy(id = "real-id")
+        store.update("f", VaultEdits.restore(mapOf(one.id to restored))).getOrThrow()
+        val reader = VaultStore(drive, Duration.ZERO)
+        val saved = reader.read("f", drive.list("f")).getOrThrow().single { it.id == one.id }
+        assertEquals("real-id", saved.restoredFileId)
+        val renamed = restored.copy(name = "renamed.mkv", params = emptyMap())
+        assertEquals(magnet, saved.enrich(renamed).sourceUrl)
+        assertEquals("CID", saved.enrich(renamed).params["piko_vault_cid"])
+        assertEquals(1, drive.files.values.count { it.first.endsWith(".magnet") })
+    }
+
+    @Test
+    fun `a changed portable source file prevents committing another archive`() = runBlocking {
+        val drive = MemoryFolder()
+        val store = VaultStore(drive, Duration.ZERO)
+        val source = "magnet:?xt=urn:btih:" + "a".repeat(40)
+        val one = entry("E01").copy(source = source)
+        store.update("f", VaultEdits.add(listOf(one))).getOrThrow()
+        val sourceFile = drive.files.entries.single { it.value.first.endsWith(".magnet") }
+        drive.files[sourceFile.key] = sourceFile.value.first to "different source".encodeToByteArray()
+        assertTrue(store.update("f", VaultEdits.add(listOf(entry("E02").copy(source = source)))).isFailure)
+        assertEquals(listOf(one), store.read("f", drive.list("f")).getOrThrow())
     }
 
     /** 一个目录，列出时按插入顺序。 */

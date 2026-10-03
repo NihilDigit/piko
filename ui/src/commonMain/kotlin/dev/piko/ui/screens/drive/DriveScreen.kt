@@ -298,6 +298,7 @@ fun DriveScreen(
         vaultSession.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
     }
     var vaultTarget by remember { mutableStateOf<FileStat?>(null) }
+    var restoreVaultTarget by remember { mutableStateOf<FileStat?>(null) }
 
     // 视图模式存进偏好，切 Tab 与重启后保持上次的选择
     // 初值同步读：异步给默认值的话，选了列表的用户每次进来都先闪一帧海报墙。DataStore 在
@@ -652,6 +653,7 @@ fun DriveScreen(
             isPinned = latestPinnedFolders.any { it.id == file.id },
             // 库里列的是散落各处的条目，归档一个文件夹要在它所在的地方做
             onVault = if (library == null) ({ vaultTarget = file }) else null,
+            onRestoreVault = if (library == null) ({ restoreVaultTarget = file }) else null,
         )
     }
 
@@ -1291,6 +1293,7 @@ fun DriveScreen(
                         // 队列为空时不占位
                         ArchiveExtractStatus(archiveSession, Modifier.fillMaxWidth())
                         VaultFolderStatus(vaultSession, Modifier.fillMaxWidth())
+                        VaultRestoreStatus(state.vaultRestoreProgress, Modifier.fillMaxWidth())
                         // 收起后的把手只在窄窗口：宽窗口的命令栏上「添加链接」「查找重复」点了就是放回收起的会话，
                         // 底部再挂一条是同一件事的第二个入口
                         if (instantState != null && !instantSession.isSheetOpen && !pathInTopBar) {
@@ -1653,6 +1656,22 @@ fun DriveScreen(
             onTogglePin = togglePin?.let { { it(target) } },
             isPinned = pinnedFolders.any { it.id == target.id },
             onVault = if (libraryView == null) ({ vaultTarget = target }) else null,
+            onRestoreVault = if (libraryView == null) ({ restoreVaultTarget = target }) else null,
+        )
+    }
+
+    restoreVaultTarget?.let { folder ->
+        AlertDialog(
+            onDismissRequest = { restoreVaultTarget = null },
+            title = { Text("取消「${folder.name}」的归档？") },
+            text = { Text("将恢复此文件夹及子文件夹中的归档条目，未归档的文件保持原样。恢复需要网盘空间；云端内容已失效的条目会保留在归档中。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    restoreVaultTarget = null
+                    state.restoreVaultFolder(folder.id, folder.name)
+                }) { Text("恢复到网盘") }
+            },
+            dismissButton = { TextButton(onClick = { restoreVaultTarget = null }) { Text("取消") } },
         )
     }
 

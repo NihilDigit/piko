@@ -1124,53 +1124,124 @@ class DriveScreenState(
      * 恢复成网盘里的文件：按 gcid 秒传回所在的文件夹，成功的从清单里去掉。要占网盘空间，
      * 先比一次剩余；云端已不存的秒传不出来，也不扣额度，留在清单里。
      */
+    data class VaultRestoreProgress(
+        val folderName: String,
+        val stage: String = "正在扫描归档条目",
+        val scannedFolders: Int = 0,
+        val done: Int = 0,
+        val total: Int? = null,
+        val fileName: String? = null,
+    )
+
+    var vaultRestoreProgress by mutableStateOf<VaultRestoreProgress?>(null)
+        private set
+
     fun restoreFromVault(ids: Collection<String>) {
         val byFolder = vaultedByFolder(ids)
-        if (byFolder.isEmpty()) return
+        if (byFolder.isEmpty() || vaultRestoreProgress != null) return
+        vaultRestoreProgress = VaultRestoreProgress("恢复所选文件")
         scope.launch {
-            val needed = byFolder.values.flatten().sumOf { VaultEntry.resolvedFileOf(it)?.size ?: 0L }
-            val remaining = driveRepo.getQuota().getOrNull()?.quota?.takeIf { it.limitBytes > 0 }?.remainingBytes
-            if (remaining != null && needed > remaining) {
-                _messages.tryEmit("网盘空间不足，放不下这 ${byFolder.values.sumOf { it.size }} 项")
-                return@launch
-            }
-            var restored = 0
-            var missing = 0
-            val created = mutableListOf<String>()
-            val reverts = mutableMapOf<String, VaultEdit>()
-            for ((folderId, virtualIds) in byFolder) {
-                val done = mutableSetOf<String>()
-                for (virtualId in virtualIds) {
-                    val file = VaultEntry.resolvedFileOf(virtualId) ?: continue
-                    driveRepo.instantCreate(file, folderId)
-                        .onSuccess {
-                            done += virtualId
-                            created += it
-                        }
-                        .onFailure { if (it is InstantContentUnavailableException) missing++ }
-                        .logFailure(TAG, "恢复归档条目失败")
+            try {
+                runSuspendCatching { restoreVaultEntries(byFolder) }
+                    .reportFailure(TAG, "恢复归档") { _messages.tryEmit(it) }
+            } finally { vaultRestoreProgress = null }
+        }
+    }
+
+    /** 递归恢复文件夹中的归档条目，真实文件保持原样。清点失败时不开始恢复。 */
+    fun restoreVaultFolder(folderId: String, folderName: String = "文件夹") {
+        if (vaultRestoreProgress != null) return
+        vaultRestoreProgress = VaultRestoreProgress(folderName)
+        scope.launch {
+            try {
+                val result = runSuspendCatching {
+                    val byFolder = mutableMapOf<String, Set<String>>()
+                    val queue = ArrayDeque<String>()
+                    val visited = mutableSetOf<String>()
+                    queue.add(folderId)
+                    while (queue.isNotEmpty()) {
+                        val id = queue.removeFirst()
+                        if (!visited.add(id)) continue
+                        val listing = driveRepo.listAllFiles(id).getOrThrow()
+                        val entries = driveRepo.vault.read(id, listing).getOrThrow().filter { it.isArchived }
+                        vaultRestoreProgress = vaultRestoreProgress?.copy(scannedFolders = visited.size)
+                        if (entries.isNotEmpty()) byFolder[id] = entries.mapTo(HashSet()) { it.virtualId }
+                        listing.filter { it.isFolder && !it.trashed && it.name !in setOf("Piko-Temp", ".piko") }
+                            .forEach { queue.add(it.id) }
+                    }
+                    if (byFolder.isEmpty()) _messages.tryEmit("这个文件夹中没有归档条目")
+                    else restoreVaultEntries(byFolder)
                 }
-                if (done.isEmpty()) continue
-                // 清单没改成的话，文件已恢复、条目还在，列表里会重复一行，不丢东西
-                val doneIds = entryIds(done)
-                driveRepo.vault.update(folderId, VaultEdits.remove(doneIds))
-                    .onSuccess { write -> reverts[folderId] = VaultEdits.add(write.before.filter { it.id in doneIds }) }
-                    .logFailure(TAG, "恢复后改写归档清单失败")
-                restored += done.size
+                result.reportFailure(TAG, "取消文件夹归档") { _messages.tryEmit(it) }
+            } finally { vaultRestoreProgress = null }
+        }
+    }
+
+    private suspend fun restoreVaultEntries(byFolder: Map<String, Set<String>>) {
+        vaultRestoreProgress = vaultRestoreProgress?.copy(stage = "正在检查恢复空间", total = byFolder.values.sumOf { it.size })
+        val trash = driveRepo.trashFiles().getOrNull().orEmpty()
+        val originals = byFolder.flatMap { (folderId, ids) ->
+            ids.mapNotNull { id ->
+                val file = VaultEntry.resolvedFileOf(id) ?: return@mapNotNull null
+                trash.firstOrNull {
+                    !it.isFolder && it.parentId == folderId && it.name == file.name &&
+                        it.hash.equals(file.gcid, ignoreCase = true) && it.sizeBytes == file.size
+                }?.let { id to it.id }
             }
-            exitSelection()
-            load()
-            val failed = byFolder.values.sumOf { it.size } - restored
-            val summary = when {
-                failed == 0 -> if (restored == 1) "已恢复到网盘" else "已恢复 $restored 项"
-                missing == failed -> "已恢复 $restored 项，$missing 项云端已无内容"
-                else -> "已恢复 $restored 项，$failed 项失败"
+        }.toMap()
+        val needed = byFolder.values.flatten().filterNot { it in originals }
+            .sumOf { VaultEntry.resolvedFileOf(it)?.size ?: 0L }
+        val remaining = driveRepo.getQuota().getOrNull()?.quota?.takeIf { it.limitBytes > 0 }?.remainingBytes
+        if (remaining != null && needed > remaining) {
+            _messages.tryEmit("网盘空间不足，放不下这 ${byFolder.values.sumOf { it.size }} 项")
+            return
+        }
+        var restored = 0
+        var missing = 0
+        val created = mutableListOf<String>()
+        val reverts = mutableMapOf<String, VaultEdit>()
+        for ((folderId, virtualIds) in byFolder) {
+            val done = mutableSetOf<String>()
+            val restoredFiles = mutableMapOf<String, FileStat>()
+            for (virtualId in virtualIds) {
+                val file = VaultEntry.resolvedFileOf(virtualId) ?: continue
+                vaultRestoreProgress = vaultRestoreProgress?.copy(stage = "正在恢复到网盘", fileName = file.name)
+                val originalId = originals[virtualId]
+                val restoredFile = if (originalId != null) driveRepo.restore(listOf(originalId)).map { originalId }
+                    else driveRepo.instantCreate(file, folderId)
+                restoredFile
+                    .onSuccess {
+                        done += virtualId
+                        created += it
+                        VaultEntry.entryIdOf(virtualId)?.let { entryId ->
+                            restoredFiles[entryId] = FileStat(id = it, name = file.name, hash = file.gcid.orEmpty(), size = file.size.toString())
+                        }
+                    }
+                    .onFailure { if (it is InstantContentUnavailableException) missing++ }
+                    .logFailure(TAG, "恢复归档条目失败")
+                vaultRestoreProgress = vaultRestoreProgress?.let { it.copy(done = it.done + 1) }
             }
-            if (created.isNotEmpty()) {
-                driveRepo.changes.record(DriveChangeJournal.Change.Vault(reverts, summary, trashOnRevert = created))
-            } else {
-                _messages.tryEmit(summary)
-            }
+            if (done.isEmpty()) continue
+            // 清单没改成的话，文件已恢复、条目还在，列表里会重复一行，不丢东西
+            val doneIds = entryIds(done)
+            vaultRestoreProgress = vaultRestoreProgress?.copy(stage = "正在更新归档记录", fileName = null)
+            driveRepo.vault.update(folderId, VaultEdits.restore(restoredFiles))
+                .onSuccess { write -> reverts[folderId] = VaultEdits.add(write.before.filter { it.id in doneIds }) }
+                .logFailure(TAG, "恢复后改写归档清单失败")
+            restored += done.size
+        }
+        exitSelection()
+        load()
+        val failed = byFolder.values.sumOf { it.size } - restored
+        val summary = when {
+            failed == 0 -> if (restored == 1) "已恢复到网盘" else "已恢复 $restored 项"
+            missing == failed -> "已恢复 $restored 项，$missing 项云端已无内容"
+            else -> "已恢复 $restored 项，$failed 项失败"
+        }
+        if (created.isNotEmpty()) {
+            driveRepo.changes.record(DriveChangeJournal.Change.Vault(reverts, summary, trashOnRevert = created))
+        } else {
+            _messages.tryEmit(summary)
         }
     }
 

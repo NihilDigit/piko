@@ -313,9 +313,10 @@ shared 按 JDK 21 编译，FFM 在那里还是预览 API。v0.10.0 起的明文�
 
 归档条目是网盘里不占空间、只留引用的文件：每个文件夹一份清单 `.piko-vault-v<版本>-<随机串>.json`（`VaultStore`），
 记着 gcid、大小与来源。列表经 `listBrowsable` 把条目并进真实文件，ID 以 `piko-vault:` 开头；播放、下载、信息流打开它们时
-按 gcid 秒传一个对象到 Piko-Temp，取到直链就删（SDK 的 `leaseDetail` 与 `fileHandle(leased = true)`，免费账号另有
-`LeaseBudget` 限制同时借出的字节数）。清单是可信写入：版本大的赢，同版本随机串小的赢，输的一方把自己的纯函数改动套到
-赢家上重写，只存状态不存历史。代码里叫 vault，与压缩包（ArchiveRepository、服务端解压）区分；界面上叫「归档」。
+按 gcid 秒传一个对象到 Piko-Temp，取到直链就删（SDK 的 `leaseDetail` 与 `fileHandle(leased = true)`，所有账号均以
+`LeaseBudget` 按剩余空间限制同时借出的字节数）。清单是可信写入：版本大的赢，同版本随机串小的赢，输的一方把自己的纯函数改动套到
+赢家上重写，只存状态不存历史。取回后条目以 `restoredFileId` 保留来源和 CID，不再显示虚拟文件；真实文件按 ID 与内容标识补回元数据，供再次归档使用。
+同目录另存完整来源：磁力为 `归档来源-<标识>.magnet`，分享链接为 `.txt`，其他客户端可直接读取；这些文件不参与归档。代码里叫 vault，与压缩包（ArchiveRepository、服务端解压）区分；界面上叫「归档」。
 
 ## PikPak API 的既有约束
 

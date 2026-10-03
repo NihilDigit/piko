@@ -76,6 +76,7 @@ internal fun FileActionsSheet(
     onTogglePin: (() -> Unit)? = null,
     isPinned: Boolean = false,
     onVault: (() -> Unit)? = null,
+    onRestoreVault: (() -> Unit)? = null,
     /** 库里多出的操作（在网盘中显示、移除记录），排在最前。 */
     leadingActions: List<SheetAction> = emptyList(),
     /** 整个取代文件操作，回收站用：那里只能恢复与彻底删除。 */
@@ -113,6 +114,7 @@ internal fun FileActionsSheet(
         onTogglePin = onTogglePin,
         isPinned = isPinned,
         onVault = onVault,
+        onRestoreVault = onRestoreVault,
     )
 
     ItemDetailsSheet(
@@ -158,6 +160,7 @@ internal fun fileActions(
     isPinned: Boolean = false,
     /** 把文件夹里的文件换成归档记录，腾出空间；为 null 时不给这一项。 */
     onVault: (() -> Unit)? = null,
+    onRestoreVault: (() -> Unit)? = null,
 ): List<SheetAction> = buildList {
     // 文件夹在宽窗口里可以在新标签页打开，放在最前：它是「打开」的另一种
     if (file.isFolder && onOpenInNewTab != null) add(SheetAction(Icons.Outlined.Tab, "在新标签页打开", onOpenInNewTab))
@@ -202,6 +205,7 @@ internal fun fileActions(
     }
     if (file.isFolder) add(SheetAction(Icons.Outlined.FileCopy, "查找重复", onFindDuplicates))
     if (file.isFolder && onVault != null) add(SheetAction(Icons.Outlined.Inventory2, "归档", onVault))
+    if (file.isFolder && onRestoreVault != null) add(SheetAction(Icons.Outlined.Unarchive, "取消归档", onRestoreVault))
     // 上传中的文件分享出去对方打不开
     if (!file.isUploading) add(SheetAction(Icons.Outlined.Share, "分享", onShare))
     add(SheetAction(Icons.Outlined.Edit, "重命名", onRename))

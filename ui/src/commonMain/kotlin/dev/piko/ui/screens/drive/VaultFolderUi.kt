@@ -35,6 +35,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.data.PikoPathBreadcrumb
+import dev.piko.shared.state.DriveScreenState
 import dev.piko.shared.state.FolderVaultSession
 import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.toReadableSize
@@ -178,6 +179,36 @@ internal fun VaultFolderStatus(session: FolderVaultSession, modifier: Modifier =
                         progress = { (progress.prepared.toFloat() + progress.done) / (progress.total.toFloat() * 2) },
                         modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
                     )
+                }
+            }
+        }
+    }
+}
+
+/** 取消归档的扫描、恢复与清单提交进度。 */
+@Composable
+internal fun VaultRestoreStatus(progress: DriveScreenState.VaultRestoreProgress?, modifier: Modifier = Modifier) {
+    progress ?: return
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+    ) {
+        Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            InlineLoadingIndicator()
+            Spacer(Modifier.width(16.dp))
+            Column(Modifier.weight(1f)) {
+                Text(progress.folderName, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    if (progress.total == null) "${progress.stage} · 已扫描 ${progress.scannedFolders} 个文件夹"
+                    else "${progress.stage} · ${progress.done} / ${progress.total}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                progress.fileName?.let { Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                val total = progress.total
+                if (total != null && total > 0) {
+                    LinearProgressIndicator(progress = { progress.done.toFloat() / total }, modifier = Modifier.fillMaxWidth().padding(top = 6.dp))
                 }
             }
         }
