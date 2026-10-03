@@ -9,13 +9,8 @@ import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.repository.FileCategory
 import dev.piko.data.repository.FileNameSanitizer
 import dev.piko.data.repository.fileCategory
-import dev.piko.shared.data.VaultEdits
-import dev.piko.shared.data.VaultEntry
-import dev.piko.shared.data.VaultStore
 import dev.piko.shared.data.InstantFileItem
-import dev.piko.shared.data.ancestorsOf
 import dev.piko.shared.data.runSuspendCatching
-import kotlin.time.Clock
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.log.reportFailure
@@ -80,10 +75,7 @@ sealed interface InstantSaveOutcome {
 data class InstantPreviewRequest(val fileId: String, val fileName: String)
 
 /** 一次会话里各条链接共用的部分。批量时每条链接各有一个 [InstantSheetState]，共用这一份。 */
-internal class InstantSharedContext(
-    /** 免费账号保存时把引用记进这里。测试里不给，免费账号退回秒传。 */
-    val vaultStore: VaultStore? = null,
-) {
+internal class InstantSharedContext {
     /** 保存目标对全部链接生效，在任一处更换都改这一份。 */
     val target = mutableStateOf<PikoPathBreadcrumb?>(null)
     val targetNotice = mutableStateOf<String?>(null)
@@ -153,10 +145,9 @@ class InstantSheetState private constructor(
         saveRecords: InstantSaveRecords,
         scope: CoroutineScope,
         initialMagnet: String = "",
-        vaultStore: VaultStore? = null,
     ) : this(
         instantRepo, driveRepo, preferences, previewFolder, packTracker, saveRecords, scope, initialMagnet,
-        InstantSharedContext(vaultStore), isRoot = true,
+        InstantSharedContext(), isRoot = true,
     )
 
     var input by mutableStateOf(initialMagnet)
@@ -532,9 +523,7 @@ class InstantSheetState private constructor(
             try {
                 val targetBread = target ?: resolveTarget()
                 when (plan.route) {
-                    SaveRoute.INSTANT -> if (savesToVault) {
-                        saveToVault(targetBread, toSave, intoNewFolder = willCreateFolder).onSuccess { _outcomes.emit(it) }
-                    } else if (willCreateFolder) {
+                    SaveRoute.INSTANT -> if (willCreateFolder) {
                         saveIntoNewFolder(targetBread, toSave).onSuccess { _outcomes.emit(it) }
                     } else {
                         saveInstantOrOffline(targetBread, toSave).onSuccess { ids ->
@@ -570,66 +559,17 @@ class InstantSheetState private constructor(
         scope.launch {
             try {
                 val targetBread = target ?: resolveTarget()
-                val saved = if (savesToVault) {
-                    saveToVault(targetBread, toSave, intoNewFolder = true)
-                } else {
-                    saveIntoNewFolder(targetBread, toSave)
+                val remaining = refreshRemainingBytes()
+                if (remaining != null && toSave.sumOf { it.file.size } > remaining) {
+                    errorMessage = "网盘空间不足，无法保存所选文件"
+                    return@launch
                 }
+                val saved = saveIntoNewFolder(targetBread, toSave)
                 saved.onSuccess { _outcomes.emit(it) }
             } finally {
                 isSaving = false
             }
         }
-    }
-
-    /** 免费账号只记引用，见 [saveToVault]。 */
-    private val savesToVault: Boolean get() = shared.account.value.free && shared.vaultStore != null
-
-    /**
-     * 免费账号的保存：不秒传出实体，只把引用记进目标目录的清单，打开时再造、取完直链就删，
-     * 6 GB 整块留给正在看的那一个文件。来源在这一刻最清楚，一并记下：秒传出来的文件不带来源。
-     *
-     * [intoNewFolder] 时照种子里的目录结构建真实的文件夹（文件夹不占空间），条目记进各自那一层。
-     * 没有 gcid 的（未收录）记不了，与秒传一样跳过。
-     */
-    private suspend fun saveToVault(
-        target: PikoPathBreadcrumb,
-        toSave: List<InstantFileItem>,
-        intoNewFolder: Boolean,
-    ): Result<InstantSaveOutcome.InstantSaved> {
-        val store = shared.vaultStore ?: return Result.failure(IllegalStateException("没有归档清单"))
-        val source = submittedUrl()
-        val addedAt = Clock.System.now().toEpochMilliseconds()
-        val files = toSave.map { it.file }.filter { it.gcid != null }
-        return runSuspendCatching {
-            // 同名文件夹已在就存进去，不新建：再存一次同一个包（或上次存到一半）是常事，
-            // 清单按同名同内容去重，已存的那几集不会多出一行。PikPak 也不许同一层有两个同名文件夹
-            val folder = if (intoNewFolder) {
-                val name = FileNameSanitizer.sanitize(folderName)
-                PikoPathBreadcrumb(driveRepo.folderNamed(target.id, name).getOrThrow(), name)
-            } else {
-                target
-            }
-            val dirIds = mutableMapOf("" to folder.id)
-            if (intoNewFolder) {
-                val dirs = files.flatMap { ancestorsOf(it.path) }.distinct().sortedBy { dir -> dir.count { it == '/' } }
-                for (dir in dirs) {
-                    dirIds[dir] = driveRepo.folderNamed(dirIds.getValue(dir.substringBeforeLast('/', "")), dir.substringAfterLast('/')).getOrThrow()
-                }
-            }
-            val ids = mutableListOf<String>()
-            for ((dir, group) in files.groupBy { if (intoNewFolder) it.path.substringBeforeLast('/', "") else "" }) {
-                val entries = group.mapNotNull { file ->
-                    file.gcid?.let { VaultEntry.create(file.name, file.size, it, source = source, addedAt = addedAt) }
-                }
-                store.update(dirIds.getValue(dir), VaultEdits.add(entries)).getOrThrow()
-                ids += entries.map { it.virtualId }
-            }
-            // 定位指向所在的文件夹：虚拟条目没有网盘里的 ID 可找
-            val recordName = if (intoNewFolder) folder.name else files.maxByOrNull { it.size }?.name.orEmpty()
-            saveRecords.add(recordName, ids.size, files.sumOf { it.size }, target.name, locateId = folder.id)
-            InstantSaveOutcome.InstantSaved(ids, folder)
-        }.reportSaveFailure()
     }
 
     /** 秒传 [toSave]，按种子里的目录结构存进 [target] 下以 [folderName] 新建的文件夹。 */
@@ -681,8 +621,6 @@ class InstantSheetState private constructor(
             return when {
                 resolution == null -> submitWhole(target).map { null }
                 plan == null -> Result.failure(IllegalStateException("未勾选文件"))
-                plan.route == SaveRoute.INSTANT && savesToVault ->
-                    saveToVault(target, toSave, intoNewFolder = willCreateFolder).map { it.createdIds }
                 plan.route == SaveRoute.INSTANT && willCreateFolder -> saveIntoNewFolder(target, toSave).map { it.createdIds }
                 plan.route == SaveRoute.INSTANT -> saveInstantOrOffline(target, toSave)
                 else -> packSave(target, toSave).map { null }

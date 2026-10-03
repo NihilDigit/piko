@@ -72,10 +72,12 @@ class InstantSavePlanTest {
     @Test
     fun `a free account saves indexed entries instantly and offers a way around offline`() {
         val free = SaveAccount(free = true, offlineLeft = 2)
-        // 只记引用，剩余空间比所选的小也照样能存
+        // 秒传创建真实文件，免费账号也要检查容量并计算上传消耗
         val indexed = assertNotNull(planSave(pack, setOf(0, 2), selectedEntryCount = 2, remainingBytes = gb, account = free))
         assertEquals(SaveRoute.INSTANT, indexed.route)
-        assertFalse(indexed.lacksSpace)
+        assertTrue(indexed.lacksSpace)
+        assertEquals(4 * gb, indexed.neededBytes)
+        assertEquals(uploadCharge(4 * gb), indexed.uploadCostBytes)
 
         val mixed = assertNotNull(planSave(pack, setOf(0, 3), selectedEntryCount = 2, remainingBytes = 5 * gb, account = free))
         assertEquals(SaveRoute.OFFLINE_PACK, mixed.route)

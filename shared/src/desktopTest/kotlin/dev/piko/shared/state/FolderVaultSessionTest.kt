@@ -58,7 +58,20 @@ class FolderVaultSessionTest {
         assertEquals(2, drive.manifests.getValue("Dramas").size)
     }
 
-    private class Drive(private val free: Boolean = false) : FolderVaultOperations {
+    @Test
+    fun `explicit permanent deletion records instant recreation rather than trash restoration`() = smoke { scope ->
+        val drive = Drive(permanentlyDelete = true)
+        drive.directories["Dramas"] = listOf(file("one"))
+        val session = FolderVaultSession(drive, scope)
+        session.archive(PikoPathBreadcrumb("Dramas", "Dramas"), true, moveToTrash = false)
+        awaitUntil("永久删除完成") { drive.changes.isNotEmpty() }
+        val change = drive.changes.single()
+        assertTrue(change.untrashOnRevert.isEmpty())
+        assertEquals(1, change.recreateOnRevert.getValue("Dramas").size)
+        assertEquals(listOf(listOf("one")), drive.removed.toList())
+    }
+
+    private class Drive(private val permanentlyDelete: Boolean = false) : FolderVaultOperations {
         val directories = ConcurrentHashMap<String, List<FileStat>>()
         val manifests = ConcurrentHashMap<String, List<VaultEntry>>()
         val removed = CopyOnWriteArrayList<List<String>>()
@@ -74,7 +87,6 @@ class FolderVaultSessionTest {
         var sampleDelayMs = 50L
         var stalledWrites = false
         override suspend fun list(folderId: String) = directories[folderId].orEmpty()
-        override suspend fun deletesOriginals() = free
         override suspend fun sampleCid(file: FileStat): String? {
             samples += file.hash
             val active = inFlight.incrementAndGet()
@@ -96,7 +108,7 @@ class FolderVaultSessionTest {
             } finally { writes.decrementAndGet() }
         }
         override suspend fun remove(ids: List<String>, permanently: Boolean) {
-            assertEquals(free, permanently)
+            assertEquals(permanentlyDelete, permanently)
             for (id in ids) {
                 val folder = directories.entries.single { (_, files) -> files.any { it.id == id } }.key
                 assertTrue(manifests[folder]?.isNotEmpty() == true, "清单确认之前不得处置原文件")
@@ -140,7 +152,7 @@ class FolderVaultSessionTest {
         drive.stalled = "SLOW"
         drive.directories["Dramas"] = listOf(file("a", "SAME"), file("b", "SAME"), file("c", "SLOW"))
         val session = FolderVaultSession(drive, scope, cidTimeoutMillis = 100)
-        session.archive(PikoPathBreadcrumb("Dramas", "Dramas"), true)
+        session.archive(PikoPathBreadcrumb("Dramas", "Dramas"), true, moveToTrash = false)
         awaitUntil("慢取样仍可归档") { drive.changes.isNotEmpty() }
         assertEquals(2, drive.samples.size)
         assertNull(drive.manifests.getValue("Dramas").single { it.name == "c.mkv" }.cid)
@@ -181,7 +193,7 @@ class FolderVaultSessionTest {
         drive.failRemove = true
         drive.directories["Dramas"] = listOf(file("one"), file("two"))
         val session = FolderVaultSession(drive, scope)
-        session.archive(PikoPathBreadcrumb("Dramas", "Dramas"), true)
+        session.archive(PikoPathBreadcrumb("Dramas", "Dramas"), true, moveToTrash = false)
         awaitUntil("失败仍记录恢复依据") { drive.changes.isNotEmpty() }
         assertEquals(2, drive.manifests.getValue("Dramas").size)
         assertEquals(2, drive.changes.single().recreateOnRevert.getValue("Dramas").size)

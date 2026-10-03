@@ -567,9 +567,9 @@ open class PikoDriveRepository(
                 if (client != null && _transferQuotaFlow.value == null) {
                     getTransferQuota().logFailure(TAG, "取账号类型失败")
                 }
-                // 免费账号只有 6 GB：打开归档条目借出的对象要按全额占空间，同时借的总量不能超过剩余，
+                // 所有账号打开归档条目都受剩余空间约束，同时借出的总量不能超过剩余，
                 // 否则信息流一批并行核对时后面的秒传直接失败。留一成余量给清单这类小文件
-                if (client != null && isFreeAccountFlow.value == true && client.leaseBudget == null) {
+                if (client != null && client.leaseBudget == null) {
                     getQuota().getOrNull()?.quota?.takeIf { it.limitBytes > 0 }?.let { quota ->
                         client.leaseBudget = LeaseBudget(quota.remainingBytes.coerceAtLeast(0) * 9 / 10)
                     }

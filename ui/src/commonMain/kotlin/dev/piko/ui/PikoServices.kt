@@ -101,7 +101,6 @@ class PikoServices(
                     instantSaveRecords,
                     scope,
                     magnet,
-                    vaultStore,
                 )
             },
         )

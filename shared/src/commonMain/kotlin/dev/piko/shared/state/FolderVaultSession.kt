@@ -41,9 +41,7 @@ private const val LARGE_FILE_MIN_BYTES = 50L * 1024 * 1024
  *
  * 八个目录并行处理，各自清单确认写成后才处置原文件。中途失败时已写成的引用与恢复依据保留。
  *
- * 原文件怎么处置看账号：会员移进回收站，出了岔子十五天内还能找回；免费账号直接删除，因为回收站里的文件
- * 照样占空间（2026-09-29 实测，移进回收站 45 秒用量不变，彻底删除 6 秒即还回），移进去等于没腾出来。
- * 整次归档记一条可撤销的改动：会员从回收站恢复，免费账号按 gcid 秒传回去，再去掉清单里的条目。
+ * 默认将原文件移入回收站，也可选择永久删除。撤销时按实际处置方式恢复，再去掉清单条目。
  *
  * 全局十六个任务取样 CID，同内容只取一次；取样超时不挡归档。CID 用于日后的只读体检。
  */
@@ -56,14 +54,12 @@ class FolderVaultSession internal constructor(
 
     /**
      * 一次归档之前的清点，给确认框用。没有来源记录的（自己上传、秒传）单独计。
-     * [deletesOriginals] 为真时原文件直接删除（免费账号），否则移进回收站。
      */
     class Survey(
         val files: Int,
         val bytes: Long,
         val unsourcedFiles: Int,
         val unsourcedBytes: Long,
-        val deletesOriginals: Boolean,
         val largeFiles: Survey? = null,
     )
 
@@ -84,15 +80,12 @@ class FolderVaultSession internal constructor(
         val unsourced = files.filter { it.sourceUrl.isNullOrBlank() }
         val large = files.filter { it.sizeBytes >= LARGE_FILE_MIN_BYTES }
         val largeUnsourced = large.filter { it.sourceUrl.isNullOrBlank() }
-        val delete = deletesOriginals()
-        Survey(files.size, files.sumOf { it.sizeBytes }, unsourced.size, unsourced.sumOf { it.sizeBytes }, delete,
-            Survey(large.size, large.sumOf { it.sizeBytes }, largeUnsourced.size, largeUnsourced.sumOf { it.sizeBytes }, delete))
+        Survey(files.size, files.sumOf { it.sizeBytes }, unsourced.size, unsourced.sumOf { it.sizeBytes },
+            Survey(large.size, large.sumOf { it.sizeBytes }, largeUnsourced.size, largeUnsourced.sumOf { it.sizeBytes }))
     }
 
-    private suspend fun deletesOriginals(): Boolean = operations.deletesOriginals()
-
     /** 开始归档 [folder]。[includeUnsourced] 为假时没有来源记录的文件原样留着。已有一个在做时不接。 */
-    fun archive(folder: PikoPathBreadcrumb, includeUnsourced: Boolean, onlyLargeFiles: Boolean = false) {
+    fun archive(folder: PikoPathBreadcrumb, includeUnsourced: Boolean, onlyLargeFiles: Boolean = false, moveToTrash: Boolean = true) {
         if (job?.isActive == true) {
             _messages.tryEmit("「${progress?.folderName}」归档中，请稍后再试")
             return
@@ -102,7 +95,7 @@ class FolderVaultSession internal constructor(
             val trashed = mutableListOf<String>()
             val deleted = mutableMapOf<String, List<VaultEntry>>()
             val result = runSuspendCatching {
-                val delete = deletesOriginals()
+                val delete = !moveToTrash
                 val levels = walk(folder.id).map { (folderId, files) ->
                     folderId to files.filter {
                         (includeUnsourced || !it.sourceUrl.isNullOrBlank()) && (!onlyLargeFiles || it.sizeBytes >= LARGE_FILE_MIN_BYTES)
@@ -205,7 +198,6 @@ class FolderVaultSession internal constructor(
 
 internal interface FolderVaultOperations {
     suspend fun list(folderId: String): List<FileStat>
-    suspend fun deletesOriginals(): Boolean
     suspend fun sampleCid(file: FileStat): String?
     suspend fun write(folderId: String, entries: List<VaultEntry>)
     suspend fun remove(ids: List<String>, permanently: Boolean)
@@ -215,7 +207,6 @@ internal interface FolderVaultOperations {
 
 private class DriveFolderVaultOperations(private val drive: PikoDriveRepository) : FolderVaultOperations {
     override suspend fun list(folderId: String) = drive.listAllFiles(folderId).getOrThrow()
-    override suspend fun deletesOriginals() = drive.isFreeAccount() == true
     override suspend fun sampleCid(file: FileStat) = drive.sampleCid(file.id).getOrNull()
     override suspend fun write(folderId: String, entries: List<VaultEntry>) {
         drive.vault.update(folderId, VaultEdits.add(entries)).getOrThrow()

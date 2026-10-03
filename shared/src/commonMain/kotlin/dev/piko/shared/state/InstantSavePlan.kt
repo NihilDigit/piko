@@ -75,12 +75,11 @@ fun planSave(
     if (chosen.isEmpty()) return null
     if (chosen.all { it.isInstantReady } && (selectedEntryCount == 1 || account.free)) {
         val chosenBytes = chosen.sumOf { it.file.size }
-        // 免费账号只把引用记进清单，打开时才造，保存时不占空间
-        val neededBytes = if (account.free) 0 else chosenBytes
+        val neededBytes = chosenBytes
         return SavePlan(
             route = SaveRoute.INSTANT,
             fileCount = chosen.size,
-            uploadCostBytes = if (account.free) 0 else uploadCharge(chosenBytes),
+            uploadCostBytes = uploadCharge(chosenBytes),
             neededBytes = neededBytes,
             lacksSpace = remainingBytes != null && neededBytes > remainingBytes,
         )

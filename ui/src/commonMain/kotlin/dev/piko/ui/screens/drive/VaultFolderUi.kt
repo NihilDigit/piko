@@ -1,5 +1,10 @@
 package dev.piko.ui.screens.drive
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -7,6 +12,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Warning
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.LinearProgressIndicator
@@ -43,6 +52,7 @@ internal fun VaultFolderDialog(
     val survey by produceState<Result<FolderVaultSession.Survey>?>(null, folder.id) { value = session.survey(folder) }
     var includeUnsourced by remember { mutableStateOf(false) }
     var onlyLargeFiles by remember { mutableStateOf(false) }
+    var moveToTrash by remember { mutableStateOf(true) }
     val counted = survey?.getOrNull()?.let { if (onlyLargeFiles) it.largeFiles else it }
     val files = counted?.let { if (includeUnsourced) it.files else it.files - it.unsourcedFiles } ?: 0
     val bytes = counted?.let { if (includeUnsourced) it.bytes else it.bytes - it.unsourcedBytes } ?: 0L
@@ -50,49 +60,60 @@ internal fun VaultFolderDialog(
         onDismissRequest = onDismiss,
         title = { Text("归档「${folder.name}」") },
         text = {
-            Column {
-                Row(
-                    modifier = Modifier.fillMaxWidth().toggleable(value = onlyLargeFiles, role = Role.Checkbox) { onlyLargeFiles = it },
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Checkbox(checked = onlyLargeFiles, onCheckedChange = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("只归档大文件（至少 50 MiB）")
-                }
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 when {
                     survey == null -> Row(verticalAlignment = Alignment.CenterVertically) {
                         InlineLoadingIndicator()
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Text("统计中")
+                        Spacer(Modifier.width(12.dp))
+                        Text("正在统计文件")
                     }
                     counted == null -> Text("统计失败，请重试")
                     counted.files == 0 -> Text("无可归档的文件")
                     else -> {
-                        // 免费账号的回收站照样占空间，原文件直接删除，这一点要说在前面
-                        val originals = if (counted.deletesOriginals) "原文件随即删除并释放空间" else "原文件移入回收站，保留 15 天"
-                        Text(
-                            "$files 个文件（${bytes.toReadableSize()}）将转为归档记录，$originals。" +
-                                "归档文件仍在原位显示，打开时自云端获取；云端不再保存时无法恢复。",
-                        )
-                        if (counted.unsourcedFiles > 0) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(top = 12.dp)
-                                    .toggleable(value = includeUnsourced, role = Role.Checkbox) { includeUnsourced = it },
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Checkbox(checked = includeUnsourced, onCheckedChange = null)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                val risk = if (counted.deletesOriginals) "删除后可能无法找回" else "更难恢复"
-                                Text(
-                                    "包含 ${counted.unsourcedFiles} 个无来源记录的文件（${counted.unsourcedBytes.toReadableSize()}）。" +
-                                        "此类文件多为本地上传或秒传，$risk。",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                )
-                            }
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("$files 个文件 · ${bytes.toReadableSize()}", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+                            Text("文件仍在原目录显示，打开时从云端取回。", style = MaterialTheme.typography.bodySmall)
                         }
                     }
+                }
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.medium,
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.15f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.25f)),
+                ) {
+                    Row(Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Icon(Icons.Outlined.Warning, contentDescription = null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.error)
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("仅保存引用，文件可能无法找回", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
+                            Text("归档不保存文件内容。云端不再保存对应内容时，将无法播放、下载或恢复。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
+                            Text("建议用于很少使用的合集文件。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+                VaultCheckboxOption(
+                    checked = onlyLargeFiles,
+                    onCheckedChange = { onlyLargeFiles = it },
+                    label = "只归档大文件",
+                    supporting = "至少 50 MiB，小文件留在网盘中",
+                )
+                if (counted != null && counted.unsourcedFiles > 0) {
+                    VaultCheckboxOption(
+                        checked = includeUnsourced,
+                        onCheckedChange = { includeUnsourced = it },
+                        label = "包含无来源记录的文件",
+                        supporting = "${counted.unsourcedFiles} 个文件 · ${counted.unsourcedBytes.toReadableSize()}。云端内容失效后，无法通过来源链接重新添加。",
+                    )
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                VaultCheckboxOption(
+                    checked = moveToTrash,
+                    onCheckedChange = { moveToTrash = it },
+                    label = "将原文件移入回收站",
+                    supporting = if (moveToTrash) "保留 15 天，期间仍占用网盘空间" else "直接删除原文件，释放网盘空间",
+                )
+                if (!moveToTrash) {
+                    Text("原文件将永久删除，回收站中不会保留副本。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 }
             }
         },
@@ -100,13 +121,28 @@ internal fun VaultFolderDialog(
             TextButton(
                 enabled = files > 0,
                 onClick = {
-                    session.archive(folder, includeUnsourced, onlyLargeFiles)
+                    session.archive(folder, includeUnsourced, onlyLargeFiles, moveToTrash)
                     onDismiss()
                 },
-            ) { Text("归档") }
+            ) { Text(if (moveToTrash) "归档" else "归档并删除原文件") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
+}
+
+@Composable
+private fun VaultCheckboxOption(checked: Boolean, onCheckedChange: (Boolean) -> Unit, label: String, supporting: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth().toggleable(value = checked, role = Role.Checkbox, onValueChange = onCheckedChange).padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Checkbox(checked = checked, onCheckedChange = null)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
+            Text(supporting, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
 }
 
 /** 归档进行中的状态条，与解压的状态条同处。没有在归档时不占位。 */

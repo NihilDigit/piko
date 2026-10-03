@@ -149,6 +149,12 @@ class InstantFlowSmokeTest {
         assertEquals(1, fallback.skippedCount, "未收录的 nfo 秒传不了")
 
         state.saveSelectionInstantly()
+        awaitUntil("所选文件也超过余量，停止保存") { !state.isSaving && state.errorMessage != null }
+        assertEquals("网盘空间不足，无法保存所选文件", state.errorMessage)
+        assertEquals(0, server.instantCreates.get())
+        // 腾出空间后只容得下已收录部分，整包仍多出未收录的 nfo。
+        server.quotaUsage = server.quotaLimit - season.filter { it.third.isNotEmpty() }.sumOf { it.second }
+        state.saveSelectionInstantly()
         val saved = assertIs<InstantSaveOutcome.InstantSaved>(outcome.await())
         assertEquals("Show S01", saved.target.name)
         assertEquals(setOf("E01.mkv", "E02.mkv", "sample/sample.mkv"), server.tree(saved.target.id).toSet())

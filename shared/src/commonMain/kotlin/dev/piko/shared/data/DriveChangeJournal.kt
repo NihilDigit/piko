@@ -51,7 +51,7 @@ class DriveChangeJournal internal constructor(
             /** 归档时移进回收站的原文件，撤销时先从回收站恢复，再去掉清单里的条目，理由同上。 */
             val untrashOnRevert: List<String> = emptyList(),
             /**
-             * 归档时直接删掉原文件的条目（免费账号：回收站照样占空间），按文件夹分。撤销时按 gcid 秒传回去，
+             * 归档时选择永久删除原文件的条目，按文件夹分。撤销时按 gcid 秒传回去，
              * 只去掉秒传成功的那几条：云端已不存的留在清单里，引用不丢。
              */
             val recreateOnRevert: Map<String, List<VaultEntry>> = emptyMap(),
