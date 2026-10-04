@@ -96,6 +96,14 @@ class BatchRenameState(
         modeNote = null
     }
 
+    /** 换上起手式：查找与替换整组换掉，输入框里没收的文字一并清掉，否则它会接在起手式的积木后面。 */
+    fun applyPreset(preset: RenamePreset) {
+        pendingFindText = ""
+        pendingReplaceText = ""
+        updateFindBlocks(preset.find)
+        updateReplaceBlocks(preset.replace)
+    }
+
     /** 把输入框里的文字收成积木，加别的积木或在输入框里回车时调用，之后新加的积木排在它后面。 */
     fun commitPendingText() {
         if (pendingFindText.isNotEmpty()) updateFindBlocks(findBlocks + FindBlock.Text(pendingFindText))

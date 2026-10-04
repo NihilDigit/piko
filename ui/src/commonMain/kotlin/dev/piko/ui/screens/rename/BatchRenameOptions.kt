@@ -22,7 +22,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.Color
 import dev.piko.shared.rename.BlockGuide
 import dev.piko.shared.rename.BlockGuideExample
+import dev.piko.shared.rename.RenamePresets
 import dev.piko.shared.rename.ReplaceBlock
+import androidx.compose.material3.SuggestionChip
 import dev.piko.shared.rename.captureNumbers
 import dev.piko.shared.rename.circled
 import androidx.compose.material.icons.outlined.ExpandLess
@@ -122,9 +124,12 @@ internal fun BatchRenameOptions(
                     RecentMenu(state.recentReplacements, enabled, state::useRecentReplacement)
                 }
             } else {
+                val replaceFocus = remember { FocusRequester() }
+                PresetRow(state, enabled, replaceFocus)
+                Spacer(Modifier.height(12.dp))
                 FindBlockBar(state, enabled, searchFocus, onSubmit = state::rename)
                 Spacer(Modifier.height(8.dp))
-                ReplaceBlockBar(state, enabled, onSubmit = state::rename)
+                ReplaceBlockBar(state, enabled, replaceFocus, onSubmit = state::rename)
                 Spacer(Modifier.height(8.dp))
                 BlockGuideSection()
                 Spacer(Modifier.height(8.dp))
@@ -247,6 +252,31 @@ private fun BlockGuideSection() {
                     entry.example?.let { GuideExample(it) }
                 }
             }
+        }
+    }
+}
+
+/**
+ * 起手式一排，放在积木条上面：不会拼积木的人按要做的事挑一个，积木随即换上、预览随即变化，看着结果再改。
+ * 要填文字的（加前缀、加后缀）把焦点交给替换条的输入框，接着打字就是前缀。
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun PresetRow(state: BatchRenameState, enabled: Boolean, replaceFocus: FocusRequester) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        itemVerticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("常用", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        for (preset in RenamePresets) {
+            SuggestionChip(
+                onClick = {
+                    state.applyPreset(preset)
+                    if (preset.focusReplace) runCatching { replaceFocus.requestFocus() }
+                },
+                enabled = enabled,
+                label = { Text(preset.label) },
+            )
         }
     }
 }

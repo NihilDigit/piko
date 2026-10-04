@@ -174,12 +174,13 @@ private fun RecentBlocksMenu(entries: List<Pair<String, String>>, enabled: Boole
 
 /** 替换的积木条。 */
 @Composable
-internal fun ReplaceBlockBar(state: BatchRenameState, enabled: Boolean, onSubmit: () -> Unit) {
+internal fun ReplaceBlockBar(state: BatchRenameState, enabled: Boolean, focusRequester: FocusRequester, onSubmit: () -> Unit) {
     val blocks = state.replaceBlocks
     val captureCount = captureNumbers(state.effectiveFindBlocks).count { it != null }
     BlockBar(
         caption = "替换为：" + describeReplace(state.effectiveReplaceBlocks),
         count = blocks.size,
+        inputModifier = Modifier.focusRequester(focusRequester),
         enabled = enabled,
         placeholder = "输入替换成的文字",
         addLabel = "添加替换积木",
