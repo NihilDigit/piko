@@ -48,6 +48,12 @@ interface PikoPlatform {
 
     val shortcutModifier: ShortcutModifier get() = ShortcutModifier.Ctrl
 
+    /**
+     * 密码框里刚打的那个字先明文显示一下。这是手机的习惯（软键盘容易按错）；Windows 与 macOS 的密码框直接显示圆点，
+     * 桌面端照做。桌面端开着它时密码框每打一个字的出帧耗时是普通输入框的两倍（实测帧间隔 21–32ms 对 10ms）。
+     */
+    val revealsLastTypedPassword: Boolean get() = false
+
     /** 动效的风格与转场时长，见 [MotionStyle]。 */
     val motionStyle: MotionStyle
 

@@ -70,6 +70,8 @@ class AndroidPikoPlatform(
 
     override val motionStyle: MotionStyle = MotionStyle.Expressive
 
+    override val revealsLastTypedPassword: Boolean = true
+
     // 开屏检查时才建，不挡 Application.onCreate
     private val lazyUpdater by lazy(updater)
     override val updater: AppUpdateService get() = lazyUpdater

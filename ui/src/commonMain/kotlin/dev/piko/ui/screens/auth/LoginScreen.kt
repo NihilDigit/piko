@@ -56,6 +56,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.autofill.ContentType
 import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.background
+import dev.piko.ui.components.IslandTabBarHeight
+import dev.piko.ui.platform.LocalWindowCaption
+import dev.piko.ui.platform.LocalPikoPlatform
+import dev.piko.ui.platform.rememberCaptionSlot
+import dev.piko.ui.platform.windowDragArea
+import dev.piko.ui.theme.FrameCardShape
+import dev.piko.ui.theme.IslandGap
+import dev.piko.ui.theme.frame
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -100,27 +109,63 @@ fun LoginScreen(
     if (onCancel != null) BackHandler(onBack = onCancel)
 
     val wide = currentWidthClass() == WidthClass.Expanded
-    Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
-        Row(modifier = Modifier.fillMaxSize()) {
-            if (wide) BrandPane(Modifier.weight(1f).fillMaxHeight())
-            Box(modifier = Modifier.weight(1f).fillMaxHeight().safeDrawingPadding()) {
-                LoginForm(
-                    state = state,
-                    saved = if (onCancel == null) savedAccounts.accounts else emptyList(),
-                    adding = onCancel != null,
-                    showLogo = !wide,
-                    proxySummary = proxySetting.summary(),
-                    onOpenProxy = { showProxyDialog = true },
-                    modifier = Modifier.align(Alignment.Center),
-                )
-                if (onCancel != null) {
-                    TooltipIconButton(
-                        Icons.Outlined.Close,
-                        "取消",
-                        onClick = onCancel,
-                        enabled = !state.isLoggingIn,
-                        modifier = Modifier.align(Alignment.TopStart).padding(8.dp),
+    // 标题栏并进内容，与主界面相同：顶上一行画窗口按钮，空白处能拖。宽窗口里左边的品牌区是外框色，
+    // 右边的表单是一块圆角的岛浮在上面（四角露出外框色），两块颜色相接处由浅的一方圆角压在深的一方上；
+    // 原来两块直接拼接，接缝是一条硬直线，标题栏还是系统的一条
+    val windowCaption = LocalWindowCaption.current
+    windowCaption?.Host()
+    val caption = rememberCaptionSlot()
+    Surface(modifier = modifier.fillMaxSize(), color = if (wide) MaterialTheme.colorScheme.frame else MaterialTheme.colorScheme.surface) {
+        Column(Modifier.fillMaxSize()) {
+            // 只在接管了标题栏的桌面窗口里有这一行；手机上顶上是状态栏，表单自己让开
+            if (windowCaption != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().then(caption.modifier).height(IslandTabBarHeight),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Spacer(Modifier.weight(1f).fillMaxHeight().windowDragArea())
+                    caption.buttons?.invoke()
+                }
+            } else if (wide) {
+                // 平板上没有标题栏这一行，岛的上沿也离开边缘一截
+                Spacer(Modifier.height(IslandGap))
+            }
+            Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                if (wide) BrandPane(Modifier.weight(1f).fillMaxHeight())
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .then(
+                            if (wide) {
+                                Modifier
+                                    .padding(end = IslandGap, bottom = IslandGap)
+                                    .clip(FrameCardShape)
+                                    .background(MaterialTheme.colorScheme.surface)
+                            } else {
+                                Modifier
+                            },
+                        )
+                        .safeDrawingPadding(),
+                ) {
+                    LoginForm(
+                        state = state,
+                        saved = if (onCancel == null) savedAccounts.accounts else emptyList(),
+                        adding = onCancel != null,
+                        showLogo = !wide,
+                        proxySummary = proxySetting.summary(),
+                        onOpenProxy = { showProxyDialog = true },
+                        modifier = Modifier.align(Alignment.Center),
                     )
+                    if (onCancel != null) {
+                        TooltipIconButton(
+                            Icons.Outlined.Close,
+                            "取消",
+                            onClick = onCancel,
+                            enabled = !state.isLoggingIn,
+                            modifier = Modifier.align(Alignment.TopStart).padding(8.dp),
+                        )
+                    }
                 }
             }
         }
@@ -138,10 +183,10 @@ fun LoginScreen(
     }
 }
 
-/** 宽窗口左边的品牌区：图标、名字与一句定位，垫一层容器色，与右边的表单分开。 */
+/** 宽窗口左边的品牌区：图标、名字与一句定位，直接落在外框色上，右边的表单是浮在上面的岛。 */
 @Composable
 private fun BrandPane(modifier: Modifier) {
-    Surface(modifier = modifier, color = MaterialTheme.colorScheme.surfaceContainer) {
+    Box(modifier = modifier) {
         Column(
             modifier = Modifier.fillMaxSize().padding(48.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -269,7 +314,11 @@ private fun LoginForm(
                         )
                     }
                 },
-                textObfuscationMode = if (passwordVisible) TextObfuscationMode.Visible else TextObfuscationMode.RevealLastTyped,
+                textObfuscationMode = when {
+                    passwordVisible -> TextObfuscationMode.Visible
+                    LocalPikoPlatform.current.revealsLastTypedPassword -> TextObfuscationMode.RevealLastTyped
+                    else -> TextObfuscationMode.Hidden
+                },
                 enabled = !isLoading,
                 isError = errorMessage != null,
                 supportingText = errorMessage?.let { msg -> { Text(msg) } },
