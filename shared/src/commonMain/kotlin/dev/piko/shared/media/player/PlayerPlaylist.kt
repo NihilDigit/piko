@@ -77,7 +77,12 @@ fun buildPlaylist(files: List<PlaylistEntry>, subtitles: List<SubtitleRef> = emp
             usedLabels += sectionLabel
             val sectionKey = "${work.key}/${workSection.section.name}"
             // 同一内容的几个版本成一组，组里体积最大的排在最前；编号相同而内容不同的文件各自成组
-            for (entry in workSection.entries) {
+            for (sectionEntry in workSection.entries) {
+                // 配不上视频的字幕，解析器照网盘页的需要当正文，自成条目或与同名视频并成一条。
+                // 播放列表只收视频：序号不小于 files.size 的是字幕，先剔掉再分组
+                val videoFiles = sectionEntry.files.filter { it.index < files.size }
+                if (videoFiles.isEmpty()) continue
+                val entry = sectionEntry.copy(files = videoFiles)
                 val distinct = entry.distinctFiles()
                 for (file in distinct) {
                     val base = entry.label ?: stemOf(files[file.index].name)

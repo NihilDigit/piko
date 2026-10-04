@@ -49,6 +49,23 @@ class PlayerPlaylistTest {
         assertEquals("简", list[1].subtitles.single().language)
     }
 
+    /**
+     * 配不上任何视频的字幕被解析器当成正文，自成条目。它的序号落在视频之后，1.1.0 拿它去取视频，
+     * 同目录里有这种字幕的视频一打开就崩。
+     */
+    @Test
+    fun `subtitles without a matching video stay out of the list`() {
+        val videos = listOf(1, 2).map { n ->
+            PlaylistEntry(fileId = "v$n", name = "[Grp] Show - 0$n [1080p].mkv", label = "", size = 700L shl 20)
+        }
+        val subtitles = listOf(
+            SubtitleRef("s3", "[Grp] Show - 03 [1080p].chs.ass", null),
+            SubtitleRef("other", "Another Film.en.srt", null),
+        )
+        val list = buildPlaylist(videos, subtitles)
+        assertEquals(listOf("v1", "v2"), list.map { it.fileId })
+    }
+
     @Test
     fun `a name that is a prefix of another is not stripped to nothing`() {
         assertEquals(listOf("Movie", "Movie Extended"), distinctLabels(listOf("Movie.mkv", "Movie Extended.mkv")))
