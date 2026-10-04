@@ -182,7 +182,9 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 按 gcid 秒传一个对象到 Piko-Temp，取到直链就删（SDK 的 `leaseDetail` 与 `fileHandle(leased = true)`，所有账号均以
 `LeaseBudget` 按剩余空间限制同时借出的字节数）。清单是可信写入：版本大的赢，同版本随机串小的赢，输的一方把自己的纯函数改动套到
 赢家上重写，只存状态不存历史。取回后条目以 `restoredFileId` 保留来源和 CID，不再显示虚拟文件；真实文件按 ID 与内容标识补回元数据，供再次归档使用。
-同目录另存完整来源：磁力为 `归档来源-<标识>.magnet`，分享链接为 `.txt`，其他客户端可直接读取；这些文件不参与归档。代码里叫 vault，与压缩包（ArchiveRepository、服务端解压）区分；界面上叫「归档」。
+文件夹上的归档标记除了直接放着条目的，还推到归档时选的那一层：清单只在放着条目的那一层，外层看不出来，
+所以整棵归档过的树另记一张表（`VaultTrees`），跨设备存在网盘 `.piko/vault-trees-<时间戳>.json`（`VaultTreeSync`，跟着设置同步的开关，
+与设置文件分开，合并取并集）。同目录另存完整来源：磁力为 `归档来源-<标识>.magnet`，分享链接为 `.txt`，其他客户端可直接读取；这些文件不参与归档。代码里叫 vault，与压缩包（ArchiveRepository、服务端解压）区分；界面上叫「归档」。
 并发与写入的实测数据在 `docs/development/archive.md`。
 
 免费账号与会员的取舍：目标排序是 Piko+会员 > 官方+会员 > Piko+免费 > 官方+免费。免费账号的归档、播放、信息流不设上限，

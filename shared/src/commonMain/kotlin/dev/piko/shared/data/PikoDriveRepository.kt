@@ -73,6 +73,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import dev.piko.shared.log.logFailure
@@ -546,12 +547,16 @@ open class PikoDriveRepository(
     private val childContents = FolderContentMemory(cacheStore, backgroundScope)
     private val childNameFetches = Semaphore(CHILD_NAME_CONCURRENCY)
 
+    /** 整棵归档过的文件夹，见 [VaultTrees]。跨设备的同步在 VaultTreeSync。 */
+    val vaultTrees = VaultTrees(cacheStore, backgroundScope)
+
     init {
         // 记下的目录内容按账号存：换号时换一份，退出登录只清内存
         backgroundScope.launch {
             clientManager.currentClient.collect {
                 childContents.switchAccount(it?.account)
                 recentFolders.switchAccount(it?.account)
+                vaultTrees.switchAccount(it?.account)
             }
         }
         // 额度与账号类型属于账号：换号时先清掉，否则新账号在取到之前沿用上一个账号的，
@@ -596,8 +601,11 @@ open class PikoDriveRepository(
         _folderEmptiness.update { it + (folderId to files.isEmpty()) }
     }
 
-    /** 直接放着归档条目的文件夹，见 FolderContentMemory.vaultedFolders。 */
-    val vaultedFolders: StateFlow<Set<String>> get() = childContents.vaultedFolders
+    /** 挂归档标记的文件夹：直接放着归档条目的，加上归档时选的那一层到它们之间的各层，见 VaultTrees.marked。 */
+    val vaultedFolders: StateFlow<Set<String>> by lazy {
+        combine(childContents.vaultedFolders, childContents.listedFolders, vaultTrees.flow, VaultTrees::marked)
+            .stateIn(backgroundScope, SharingStarted.Eagerly, emptySet())
+    }
 
     /** 清单读到或写成之后，按其中还有没有条目更新文件夹的标记。 */
     internal fun vaultEntriesKnown(folderId: String, entries: List<VaultEntry>) {

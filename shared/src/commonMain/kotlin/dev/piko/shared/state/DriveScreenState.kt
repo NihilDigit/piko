@@ -187,7 +187,7 @@ class DriveScreenState(
     /** 列过的文件夹空不空，见 PikoDriveRepository.folderEmptiness。 */
     val folderEmptiness get() = driveRepo.folderEmptiness
 
-    /** 直接放着归档条目的文件夹，见 PikoDriveRepository.vaultedFolders。 */
+    /** 挂归档标记的文件夹，见 PikoDriveRepository.vaultedFolders。 */
     val vaultedFolders get() = driveRepo.vaultedFolders
 
     /** 按文件夹 id 的显示信息，后台算好逐个填入。解析关闭时界面不读它。 */

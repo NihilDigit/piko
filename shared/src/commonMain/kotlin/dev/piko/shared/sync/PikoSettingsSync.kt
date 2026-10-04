@@ -221,10 +221,14 @@ interface RemoteSettingsStore {
 }
 
 /**
- * 网盘里的同步文件：`.piko/settings-<毫秒时间戳>.json`。PikPak 上传同名文件不覆盖，另起一个带序号的，
+ * 网盘里的同步文件：`.piko/<filePrefix><毫秒时间戳>.json`。设置是 `settings-`，整棵归档过的文件夹是 `vault-trees-`
+ * （见 VaultTreeSync），各管各的一份。PikPak 上传同名文件不覆盖，另起一个带序号的，
  * 所以每次写一个新文件、再删掉旧的；读的时候取时间戳最大的一个。删旧文件失败也无妨，下次读的仍是最新的那个。
  */
-class DriveSettingsStore(private val driveRepo: PikoDriveRepository) : RemoteSettingsStore {
+class DriveSettingsStore(
+    private val driveRepo: PikoDriveRepository,
+    private val filePrefix: String = "settings-",
+) : RemoteSettingsStore {
     // 各账号的 .piko 文件夹 ID：找它要列整个根目录，每次同步都找一遍太贵
     private val folderIds = HashMap<String, String>()
 
@@ -235,24 +239,25 @@ class DriveSettingsStore(private val driveRepo: PikoDriveRepository) : RemoteSet
 
     override suspend fun write(account: String, text: String, stamp: Long) {
         val folder = folderOf(account)
-        val name = "$FILE_PREFIX$stamp$FILE_SUFFIX"
+        val name = "$filePrefix$stamp$FILE_SUFFIX"
         driveRepo.uploadBytes(folder, name, text.encodeToByteArray()).getOrThrow()
         // 只删比这一份旧的：另一台设备同时在同步时，它更新的那份（可能还在上传）留给它自己收拾
         val stale = driveRepo.listAllFiles(folder).getOrNull().orEmpty().filter { it.isSettingsFile() && it.stamp() < stamp }
         if (stale.isNotEmpty()) driveRepo.delete(stale.map { it.id }).logFailure(TAG, "删除旧的设置文件失败")
     }
 
-    // 记着的文件夹可能已被删掉或移走：列不出来就忘掉它，重新找一次
-    private suspend fun folderOf(account: String): String {
+    // 记着的文件夹可能已被删掉或移走：列不出来就忘掉它，重新找一次。找与建在全部实例共用的锁里：
+    // 设置与归档树两份同步在登录后同时开始，各自没找到就各建一个 .piko
+    private suspend fun folderOf(account: String): String = folderLock.withLock {
         folderIds[account]?.let { known ->
-            if (driveRepo.listAllFiles(known).isSuccess) return known
+            if (driveRepo.listAllFiles(known).isSuccess) return@withLock known
             folderIds.remove(account)
         }
         val root = driveRepo.listAllFiles("").getOrThrow()
         val id = root.firstOrNull { it.isFolder && it.name == PikoSettingsSync.FOLDER_NAME && !it.trashed }?.id
             ?: driveRepo.createFolder("", PikoSettingsSync.FOLDER_NAME).getOrThrow()
         folderIds[account] = id
-        return id
+        id
     }
 
     // 上传是先建文件、再传内容，进程死在两步之间就留下一份 PENDING 的空壳，没有下载链接。
@@ -262,12 +267,15 @@ class DriveSettingsStore(private val driveRepo: PikoDriveRepository) : RemoteSet
             .filter { it.isSettingsFile() && it.phase == TaskPhase.COMPLETE }
             .maxByOrNull { it.stamp() }
 
-    private fun FileStat.isSettingsFile() = !isFolder && name.startsWith(FILE_PREFIX) && name.endsWith(FILE_SUFFIX)
+    // 前缀后面紧跟时间戳：「settings-」不会把「vault-trees-」的文件认成自己的，反过来也一样
+    private fun FileStat.isSettingsFile() = !isFolder && name.startsWith(filePrefix) && name.endsWith(FILE_SUFFIX) && stampOrNull() != null
 
-    private fun FileStat.stamp() = name.removePrefix(FILE_PREFIX).removeSuffix(FILE_SUFFIX).toLongOrNull() ?: 0L
+    private fun FileStat.stampOrNull() = name.removePrefix(filePrefix).removeSuffix(FILE_SUFFIX).toLongOrNull()
+
+    private fun FileStat.stamp() = stampOrNull() ?: 0L
 
     private companion object {
-        const val FILE_PREFIX = "settings-"
+        val folderLock = Mutex()
         const val FILE_SUFFIX = ".json"
         const val TAG = "SettingsSync"
     }

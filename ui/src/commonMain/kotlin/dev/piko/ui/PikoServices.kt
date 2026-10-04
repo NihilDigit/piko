@@ -1,6 +1,7 @@
 package dev.piko.ui
 
 import dev.piko.shared.sync.PikoSettingsSync
+import dev.piko.shared.sync.VaultTreeSync
 import dev.piko.ui.components.SegmentSession
 import androidx.compose.runtime.staticCompositionLocalOf
 import dev.piko.data.auth.PikoUserPreferences
@@ -79,6 +80,8 @@ class PikoServices(
 
     /** 部分设置同步到网盘的 .piko 文件夹，登录后自己开始，见 PikoSettingsSync。 */
     val settingsSync = PikoSettingsSync(clientManager, driveRepository, preferences, cacheStore, backgroundScope, preferences.settingsSyncFlow)
+        .also { it.start() }
+    private val vaultTreeSync = VaultTreeSync(clientManager, driveRepository, backgroundScope, preferences.settingsSyncFlow)
         .also { it.start() }
 
     /** API 走哪个根域名：用户固定的，或登录后测速自动挑的，见 PikPakDomainSelector。 */

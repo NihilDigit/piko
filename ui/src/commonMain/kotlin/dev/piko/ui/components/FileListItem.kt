@@ -394,8 +394,8 @@ fun VaultMark(inFolder: Boolean, modifier: Modifier = Modifier) {
 }
 
 /**
- * 标题旁的标记：星标与归档，都没有时为 null。[folderHasVault] 是文件夹里直接放着归档条目，
- * 见 PikoDriveRepository.vaultedFolders。
+ * 标题旁的标记：星标与归档，都没有时为 null。[folderHasVault] 是文件夹里放着归档条目（直接放着的，
+ * 或是归档时选的那一层），见 PikoDriveRepository.vaultedFolders。
  */
 fun itemMarks(file: FileStat, folderHasVault: Boolean): (@Composable () -> Unit)? {
     val vault = file.isVaulted || (file.isFolder && folderHasVault)

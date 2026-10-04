@@ -142,9 +142,10 @@ class FolderVaultSession internal constructor(
             val reverts = mutableMapOf<String, VaultEdit>()
             val trashed = mutableListOf<String>()
             val deleted = mutableMapOf<String, List<VaultEntry>>()
+            val parents = mutableMapOf<String, String>()
             val result = runSuspendCatching {
                 val delete = !moveToTrash
-                val levels = walk(folder.id, until = { stopping }).map { (folderId, files) ->
+                val levels = walk(folder.id, until = { stopping }, parents = parents).map { (folderId, files) ->
                     folderId to files.filter {
                         (includeUnsourced || !it.sourceUrl.isNullOrBlank()) && (!onlyLargeFiles || it.sizeBytes >= LARGE_FILE_MIN_BYTES)
                     }
@@ -188,6 +189,7 @@ class FolderVaultSession internal constructor(
             }
             progress = null
             val stopped = stopping
+            operations.rememberTree(vaultTree(folder.id, reverts.keys + deleted.keys, parents))
             // 做完的几层记成一条改动，哪怕后面失败了：撤销得回已经归档的那些
             if (reverts.isNotEmpty() || deleted.isNotEmpty()) {
                 val count = result.getOrNull()?.let { if (stopped) "已停止，已归档 $it 个文件" else "已归档 $it 个文件" }
@@ -429,7 +431,12 @@ class FolderVaultSession internal constructor(
      * [rootId] 整棵树，每层一项：目录 ID 与其中能归档的文件。已是归档条目的、清单文件、还在上传的、
      * 没有 gcid 的都不算；Piko-Temp 与同步设置的 .piko 不进去。
      */
-    private suspend fun walk(rootId: String, until: () -> Boolean = { false }): List<Pair<String, List<FileStat>>> {
+    private suspend fun walk(
+        rootId: String,
+        until: () -> Boolean = { false },
+        /** 填上子文件夹 → 上一层，归档后据此记下从选的那一层到各写了清单的文件夹之间的路径。 */
+        parents: MutableMap<String, String>? = null,
+    ): List<Pair<String, List<FileStat>>> {
         val levels = mutableListOf<Pair<String, List<FileStat>>>()
         var queue = listOf(rootId)
         val visited = mutableSetOf(rootId)
@@ -439,7 +446,12 @@ class FolderVaultSession internal constructor(
                 val listings = coroutineScope { chunk.map { id -> async { operations.list(id) } }.awaitAll() }
                 chunk.zip(listings).forEach { (folderId, listing) ->
                     listing.filter { it.isFolder && it.name !in SKIPPED_FOLDERS && !it.trashed }
-                        .forEach { if (visited.add(it.id)) next += it.id }
+                        .forEach {
+                            if (visited.add(it.id)) {
+                                next += it.id
+                                parents?.put(it.id, folderId)
+                            }
+                        }
                     levels += folderId to listing.filter(::archivable)
                 }
             }
@@ -459,6 +471,22 @@ class FolderVaultSession internal constructor(
 
 private val SKIPPED_FOLDERS = setOf("Piko-Temp", ".piko")
 
+/**
+ * 从选的那一层 [rootId] 到各写了清单的文件夹（[written]）之间的每一层 → 其下写了清单的那些，
+ * 见 FolderContentMemory.markedFolders。写了清单的文件夹自己不进来，它们有直接的标记。
+ */
+internal fun vaultTree(rootId: String, written: Set<String>, parents: Map<String, String>): Map<String, Set<String>> {
+    val tree = mutableMapOf<String, MutableSet<String>>()
+    for (folderId in written) {
+        var current = folderId
+        while (current != rootId) {
+            current = parents[current] ?: break
+            tree.getOrPut(current) { mutableSetOf() } += folderId
+        }
+    }
+    return tree
+}
+
 internal interface FolderVaultOperations {
     suspend fun list(folderId: String): List<FileStat>
     suspend fun sampleCid(file: FileStat): String?
@@ -466,6 +494,7 @@ internal interface FolderVaultOperations {
     suspend fun remove(ids: List<String>, permanently: Boolean)
     fun record(change: DriveChangeJournal.Change.Vault)
     fun refresh()
+    fun rememberTree(members: Map<String, Set<String>>) {}
 
     /** [folderId] 的子文件夹与仍归档着的条目。清单读不出来就失败：当作没有条目会漏掉恢复。 */
     suspend fun archived(folderId: String): ArchivedLevel
@@ -492,6 +521,9 @@ private class DriveFolderVaultOperations(private val drive: PikoDriveRepository)
     }
     override fun record(change: DriveChangeJournal.Change.Vault) = drive.changes.record(change)
     override fun refresh() = drive.requestRefresh()
+    override fun rememberTree(members: Map<String, Set<String>>) {
+        drive.vaultTrees.merge(members)
+    }
 
     override suspend fun archived(folderId: String): ArchivedLevel {
         val listing = drive.listAllFiles(folderId).getOrThrow()

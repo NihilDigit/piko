@@ -13,6 +13,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
@@ -81,6 +83,9 @@ internal class FolderContentMemory(
         vaulted.update { if (has) it + folderId else it - folderId }
         scheduleSave()
     }
+
+    /** 列过、记下了内容的文件夹。归档树里的内层文件夹没列过时，外层按「还有条目」算，见 VaultTrees.marked。 */
+    val listedFolders: Flow<Set<String>> = contents.map { it.keys }
 
     /** 换账号或退出登录。退出时只清内存，磁盘上的留给下次登录同一账号。 */
     fun switchAccount(newAccount: String?) {

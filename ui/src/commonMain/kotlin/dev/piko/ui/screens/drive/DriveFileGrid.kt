@@ -218,7 +218,7 @@ internal fun DriveFileGrid(
     activeItemId: String?,
     /** 列过的文件夹空不空，海报墙给空文件夹画空的封面，见 PikoDriveRepository.folderEmptiness。 */
     emptyFolders: Map<String, Boolean> = emptyMap(),
-    /** 直接放着归档条目的文件夹，文件夹上挂归档标记，见 PikoDriveRepository.vaultedFolders。 */
+    /** 挂归档标记的文件夹，见 PikoDriveRepository.vaultedFolders。 */
     vaultedFolders: Set<String> = emptySet(),
     /** 要把键盘焦点移到的那一项，移过去后回调 [onKeyboardFocusMoved]。 */
     keyboardFocusTarget: String?,
