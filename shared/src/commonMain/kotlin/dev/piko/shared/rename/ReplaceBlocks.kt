@@ -153,21 +153,21 @@ private fun placeholderBlock(content: String): ReplaceBlock? {
 
 /** 一块替换积木的中文说明。 */
 fun ReplaceBlock.describe(): String = when (this) {
-    is ReplaceBlock.Piece -> if (number == 0) "整个匹配" else "片段" + circled(number)
+    is ReplaceBlock.Piece -> if (number == 0) "匹配内容" else "片段" + circled(number)
     is ReplaceBlock.Text -> "「$text」"
-    is ReplaceBlock.Counter -> buildString {
-        append("序号，从 $start 开始")
-        if (increment != 1) append("，步长 $increment")
-        if (padding > 0) append("，补足 $padding 位")
-    }
+    // 直接写出前两个号：「序号 01、02…」比「从 1 开始，步长 1，补足 2 位」一眼看得懂
+    is ReplaceBlock.Counter -> "序号 ${counterValue(start, padding)}、${counterValue(start + increment, padding)}…"
     is ReplaceBlock.Date -> DATE_TOKEN_LABELS.getValue(token)
     is ReplaceBlock.RandomText -> "$length 位${kind.label}"
     ReplaceBlock.Uuid -> "随机 UUID"
 }
 
-/** 整条替换拼成一句话，如「片段①、「 - 」、序号，从 1 开始」。 */
+private fun counterValue(value: Int, padding: Int): String =
+    if (value < 0) "-" + (-value).toString().padStart(padding, '0') else value.toString().padStart(padding, '0')
+
+/** 整条替换拼成一句话，如「片段①、「 - 」、序号 01、02…」。 */
 fun describeReplace(blocks: List<ReplaceBlock>): String =
-    if (blocks.isEmpty()) "删去匹配到的部分" else blocks.joinToString("、") { it.describe() }
+    if (blocks.isEmpty()) "留空将删除匹配内容" else blocks.joinToString("、") { it.describe() }
 
 /** 日期积木可选的各项及其说明，按 [DATE_TOKENS] 的顺序。 */
 val DATE_TOKEN_CHOICES: List<Pair<String, String>> get() = DATE_TOKENS.map { it to DATE_TOKEN_LABELS.getValue(it) }

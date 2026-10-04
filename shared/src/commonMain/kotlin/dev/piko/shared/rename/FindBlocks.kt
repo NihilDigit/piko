@@ -43,10 +43,10 @@ sealed interface FindBlock {
 }
 
 enum class BracketKind(val open: Char, val close: Char, val label: String) {
-    SQUARE('[', ']', "方括号"),
-    LENTICULAR('【', '】', "【】括号"),
-    ROUND('(', ')', "圆括号"),
-    FULLWIDTH_ROUND('（', '）', "全角圆括号"),
+    SQUARE('[', ']', "[ ]"),
+    LENTICULAR('【', '】', "【 】"),
+    ROUND('(', ')', "( )"),
+    FULLWIDTH_ROUND('（', '）', "（ ）"),
 }
 
 /** 积木拼出的正则。相邻的文字积木应先经 [normalizeFindBlocks] 合并，否则反向解析时它们会并成一块。 */
@@ -117,10 +117,11 @@ fun FindBlock.describe(): String = when (this) {
         min == max -> "$min 位数字"
         else -> "$min 至 $max 位数字"
     }
-    is FindBlock.Letters -> "字母"
-    is FindBlock.AnyText -> if (until == null) "任意字符" else "「$until」之前的任意字符"
-    is FindBlock.Bracketed -> (if (optional) "可有可无的" else "") + (kind?.label ?: "括号") + "内容"
-    is FindBlock.OneOf -> options.joinToString("") { "「$it」" } + "之一"
+    is FindBlock.Letters -> "英文字母"
+    is FindBlock.AnyText -> if (until == null) "任意文字" else "「$until」前的任意文字"
+    // 写成括号本身（[…]）比「方括号内容」一眼看得懂，块上也短
+    is FindBlock.Bracketed -> (kind?.let { "${it.open}…${it.close}" } ?: "括号及内容") + (if (optional) "（可选）" else "")
+    is FindBlock.OneOf -> options.joinToString("或") { "「$it」" }
     FindBlock.Start -> "开头"
     FindBlock.End -> "结尾"
 }

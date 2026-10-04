@@ -34,7 +34,7 @@ class BlockGuideTest {
 
     @Test
     fun `numbering preset counts each item once`() {
-        val preset = RenamePresets.single { it.label == "改为编号" }
+        val preset = RenamePresets.single { it.label == "改为序号" }
         val options = FindReplaceOptions(
             search = findBlocksToRegex(preset.find),
             replacement = replaceBlocksToTemplate(preset.replace),

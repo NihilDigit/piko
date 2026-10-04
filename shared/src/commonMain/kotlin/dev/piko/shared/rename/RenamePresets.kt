@@ -19,14 +19,14 @@ class RenamePreset(
 
 val RenamePresets: List<RenamePreset> = listOf(
     RenamePreset(
-        label = "加前缀",
+        label = "添加前缀",
         find = listOf(FindBlock.Start),
         replace = emptyList(),
         focusReplace = true,
         example = BlockGuideExample(listOf(FindBlock.Start), listOf(ReplaceBlock.Text("合集 ")), "名字 - 01", "合集 名字 - 01"),
     ),
     RenamePreset(
-        label = "加后缀",
+        label = "添加后缀",
         // 范围默认只含扩展名之前的部分，结尾即扩展名之前
         find = listOf(FindBlock.End),
         replace = emptyList(),
@@ -34,10 +34,10 @@ val RenamePresets: List<RenamePreset> = listOf(
         example = BlockGuideExample(listOf(FindBlock.End), listOf(ReplaceBlock.Text(" 完")), "名字 - 01", "名字 - 01 完"),
     ),
     RenamePreset(
-        label = "改为编号",
+        label = "改为序号",
         find = listOf(FindBlock.Start, FindBlock.AnyText(), FindBlock.End),
         replace = listOf(ReplaceBlock.Counter(start = 1, padding = 2)),
-        focusReplace = false,
+        focusReplace = true,
         example = BlockGuideExample(
             listOf(FindBlock.Start, FindBlock.AnyText(), FindBlock.End),
             listOf(ReplaceBlock.Text("第"), ReplaceBlock.Counter(start = 1, padding = 2), ReplaceBlock.Text("集")),
