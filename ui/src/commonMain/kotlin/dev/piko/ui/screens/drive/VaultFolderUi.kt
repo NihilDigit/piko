@@ -71,10 +71,7 @@ internal fun VaultFolderDialog(
                 VaultDialogHeading(folder.name, survey, counted?.files, files, bytes, emptyText = "无可归档的文件")
                 // 选「移入回收站」也照样醒目：清空回收站是常事，人会想「反正有归档」，清空后只剩引用。
                 // 这条风险与原文件去哪无关，不能只在选了永久删除时才说
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("原文件删除后，只能从云端取回", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
-                    Text("云端不再保存这份内容时将无法找回。清空回收站同样会删除原文件。", style = MaterialTheme.typography.bodyMedium)
-                }
+                Text("原文件删除后只保留引用，云端内容失效时无法找回", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
                         SegmentedButton(moveToTrash, { moveToTrash = true }, SegmentedButtonDefaults.itemShape(0, 2)) { Text("原文件移入回收站") }
