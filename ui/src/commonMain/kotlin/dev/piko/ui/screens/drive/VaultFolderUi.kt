@@ -42,6 +42,9 @@ import dev.piko.ui.components.toReadableSize
 /**
  * 归档一个文件夹之前的确认。先清点整棵树：多少文件、多大，其中没有来源记录的（自己上传、秒传）单独计，
  * 默认不带上：它们没有磁力或分享链接可凭，PikPak 不再保存时就找不回来。
+ *
+ * 丢失的风险只在这里讲清楚。考虑过给回收站里的原件打标记、清空时再提醒，否决了：官方客户端照样能清空回收站，
+ * Piko 拦不住，拦一半只会让人以为有保护。
  */
 @Composable
 internal fun VaultFolderDialog(
