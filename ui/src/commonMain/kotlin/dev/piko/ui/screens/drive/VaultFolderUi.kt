@@ -1,9 +1,7 @@
 package dev.piko.ui.screens.drive
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,10 +12,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Warning
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -55,67 +53,48 @@ internal fun VaultFolderDialog(
     var includeUnsourced by remember { mutableStateOf(false) }
     var onlyLargeFiles by remember { mutableStateOf(false) }
     var moveToTrash by remember { mutableStateOf(true) }
-    val counted = survey?.getOrNull()?.let { if (onlyLargeFiles) it.largeFiles else it }
+    var showScope by remember { mutableStateOf(false) }
+    val all = survey?.getOrNull()
+    val counted = all?.let { if (onlyLargeFiles) it.largeFiles else it }
     val files = counted?.let { if (includeUnsourced) it.files else it.files - it.unsourcedFiles } ?: 0
     val bytes = counted?.let { if (includeUnsourced) it.bytes else it.bytes - it.unsourcedBytes } ?: 0L
+    // 两项筛选合起来只说留下了几个：默认留下的几乎都是字幕一类的小文件，绝大多数人不必管为什么
+    val leftOut = all?.let { it.files - files } ?: 0
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("归档「${folder.name}」") },
+        title = { Text("归档文件夹") },
         text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                when {
-                    survey == null -> Row(verticalAlignment = Alignment.CenterVertically) {
-                        InlineLoadingIndicator()
-                        Spacer(Modifier.width(12.dp))
-                        Text("正在统计文件")
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                VaultDialogHeading(folder.name, survey, counted?.files, files, bytes, emptyText = "无可归档的文件")
+                // 不用红框：归档可以撤销，红色只留给下面的永久删除
+                Text("只保存引用，打开时从云端取回；云端失效后无法找回。", style = MaterialTheme.typography.bodyMedium)
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                        SegmentedButton(moveToTrash, { moveToTrash = true }, SegmentedButtonDefaults.itemShape(0, 2)) { Text("原文件移入回收站") }
+                        SegmentedButton(!moveToTrash, { moveToTrash = false }, SegmentedButtonDefaults.itemShape(1, 2)) { Text("永久删除") }
                     }
-                    counted == null -> Text("统计失败，请重试")
-                    counted.files == 0 -> Text("无可归档的文件")
-                    else -> {
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("$files 个文件，共 ${bytes.toReadableSize()}", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
-                            Text("文件仍在原目录显示，打开时从云端取回。", style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
-                }
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = MaterialTheme.shapes.medium,
-                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.15f),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.25f)),
-                ) {
-                    Row(Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Icon(Icons.Outlined.Warning, contentDescription = null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.error)
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("仅保存引用，文件可能无法找回", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
-                            Text("归档不保存文件内容。云端不再保存对应内容时，将无法播放、下载或恢复。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
-                            Text("建议用于很少使用的合集文件。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                }
-                VaultCheckboxOption(
-                    checked = onlyLargeFiles,
-                    onCheckedChange = { onlyLargeFiles = it },
-                    label = "只归档大文件",
-                    supporting = "至少 50 MiB，小文件留在网盘中",
-                )
-                if (counted != null && counted.unsourcedFiles > 0) {
-                    VaultCheckboxOption(
-                        checked = includeUnsourced,
-                        onCheckedChange = { includeUnsourced = it },
-                        label = "包含无来源记录的文件",
-                        supporting = "${counted.unsourcedFiles} 个文件，共 ${counted.unsourcedBytes.toReadableSize()}。云端内容失效后，无法通过来源链接重新添加。",
+                    Text(
+                        if (moveToTrash) "15 天后释放空间" else "立即释放空间，无法撤销",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (moveToTrash) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
                     )
                 }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                VaultCheckboxOption(
-                    checked = moveToTrash,
-                    onCheckedChange = { moveToTrash = it },
-                    label = "将原文件移入回收站",
-                    supporting = if (moveToTrash) "保留 15 天，期间仍占用网盘空间" else "直接删除原文件，释放网盘空间",
-                )
-                if (!moveToTrash) {
-                    Text("原文件将永久删除，回收站中不会保留副本。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                if (all != null && (leftOut > 0 || showScope)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            if (leftOut > 0) "另有 $leftOut 个文件不归档" else "归档全部文件",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = { showScope = !showScope }) { Text(if (showScope) "收起" else "更改") }
+                    }
+                }
+                if (showScope && all != null) {
+                    if (all.unsourcedFiles > 0) {
+                        VaultCheckboxOption(includeUnsourced, { includeUnsourced = it }, "包括无来源的文件", "自己上传或秒传，失效后无法重新添加")
+                    }
+                    VaultCheckboxOption(onlyLargeFiles, { onlyLargeFiles = it }, "只归档 50 MiB 以上的文件", null)
                 }
             }
         },
@@ -126,10 +105,28 @@ internal fun VaultFolderDialog(
                     session.archive(folder, includeUnsourced, onlyLargeFiles, moveToTrash)
                     onDismiss()
                 },
-            ) { Text(if (moveToTrash) "归档" else "归档并删除原文件") }
+            ) { Text(if (moveToTrash) "归档" else "归档并删除") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
+}
+
+/** 两个对话框的开头：文件夹名单行截断，下面是统计结果。名字放进标题的话，长名字一换行，标题成了最吵的东西。 */
+@Composable
+private fun VaultDialogHeading(name: String, survey: Result<*>?, total: Int?, files: Int, bytes: Long, emptyText: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
+        when {
+            survey == null -> Row(verticalAlignment = Alignment.CenterVertically) {
+                InlineLoadingIndicator()
+                Spacer(Modifier.width(12.dp))
+                Text("正在统计", style = MaterialTheme.typography.titleMedium)
+            }
+            survey.isFailure -> Text("统计失败，请重试", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.error)
+            total == 0 -> Text(emptyText, style = MaterialTheme.typography.titleMedium)
+            else -> Text("$files 个文件，${bytes.toReadableSize()}", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+        }
+    }
 }
 
 /**
@@ -146,37 +143,25 @@ internal fun RestoreVaultFolderDialog(
     val counted = survey?.getOrNull()
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("取消「${folder.name}」的归档") },
+        title = { Text("取消归档") },
         text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                when {
-                    survey == null -> Row(verticalAlignment = Alignment.CenterVertically) {
-                        InlineLoadingIndicator()
-                        Spacer(Modifier.width(12.dp))
-                        Text("正在统计归档条目")
-                    }
-                    counted == null -> Text("统计失败，请重试")
-                    counted.entries == 0 -> Text("此文件夹及子文件夹中没有归档条目")
-                    else -> {
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("${counted.entries} 个文件，共 ${counted.bytes.toReadableSize()}", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
-                            Text("未归档的文件保持原样。", style = MaterialTheme.typography.bodySmall)
-                        }
-                        if (counted.fromTrash > 0) {
-                            Text("其中 ${counted.fromTrash} 个从回收站取回原文件，不占新空间。", style = MaterialTheme.typography.bodyMedium)
-                        }
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                VaultDialogHeading(folder.name, survey, counted?.entries, counted?.entries ?: 0, counted?.bytes ?: 0L, emptyText = "没有归档的文件")
+                if (counted != null && counted.entries > 0) {
+                    val parts = buildList {
+                        if (counted.fromTrash > 0) add("${counted.fromTrash} 个从回收站取回")
                         if (counted.neededBytes > 0) {
-                            val remaining = counted.remainingBytes?.let { "，剩余 ${it.toReadableSize()}" }.orEmpty()
-                            Text(
-                                "需占用网盘空间 ${counted.neededBytes.toReadableSize()}$remaining。云端已无内容的条目保留在归档中。",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = if (counted.fits) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error,
-                            )
-                        }
-                        if (!counted.fits) {
-                            Text("网盘空间不足，请先腾出空间。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                            add("需占用 ${counted.neededBytes.toReadableSize()}" + counted.remainingBytes?.let { "，剩余 ${it.toReadableSize()}" }.orEmpty())
                         }
                     }
+                    if (parts.isNotEmpty()) {
+                        Text(
+                            parts.joinToString("；"),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (counted.fits) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error,
+                        )
+                    }
+                    if (!counted.fits) Text("空间不足", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 }
             }
         },
@@ -194,7 +179,7 @@ internal fun RestoreVaultFolderDialog(
 }
 
 @Composable
-private fun VaultCheckboxOption(checked: Boolean, onCheckedChange: (Boolean) -> Unit, label: String, supporting: String) {
+private fun VaultCheckboxOption(checked: Boolean, onCheckedChange: (Boolean) -> Unit, label: String, supporting: String?) {
     Row(
         modifier = Modifier.fillMaxWidth().toggleable(value = checked, role = Role.Checkbox, onValueChange = onCheckedChange).padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -203,7 +188,7 @@ private fun VaultCheckboxOption(checked: Boolean, onCheckedChange: (Boolean) -> 
         Checkbox(checked = checked, onCheckedChange = null)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
-            Text(supporting, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (supporting != null) Text(supporting, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
