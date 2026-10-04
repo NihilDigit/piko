@@ -48,14 +48,22 @@ class DriveFoldingTest {
     }
 
     @Test
-    fun `subtitles become tags on their video instead of rows`() {
+    fun `subtitles become tags on their video and rows in a collapsed section of their own`() {
         val files = folderOf("")
-        val items = buildDriveItems(files, analyzeDriveFolder(files), hideFolded = true) { true }
-        val rows = items.filterIsInstance<DriveListItem.File>()
+        val structure = analyzeDriveFolder(files)
+        val collapsed = buildDriveItems(files, structure, hideFolded = true) { it.defaultExpanded }
+        val rows = collapsed.filterIsInstance<DriveListItem.File>()
         assertTrue(rows.none { it.file.name.endsWith(".ass") })
         val first = rows.single { it.file.name.startsWith("[DBD-Raws][Steins;Gate][01]") }
         assertEquals("01", first.view?.title)
         assertEquals(2, first.view!!.tags.size, "简繁两份字幕各成一个标签：${first.view!!.tags}")
+
+        // 只剩标签的话，单独下载、改名、删掉一个字幕都无从下手；展开那一栏，每个字幕都是一行
+        val subtitles = files.filter { it.name.endsWith(".ass") }
+        assertTrue(collapsed.any { it is DriveListItem.SectionHeader && it.label == "外挂字幕" && !it.expanded })
+        val expanded = buildDriveItems(files, structure, hideFolded = true) { true }
+        val subtitleRows = expanded.filterIsInstance<DriveListItem.File>().filter { it.file.name.endsWith(".ass") }
+        assertEquals(subtitles.map { it.id }.toSet(), subtitleRows.map { it.file.id }.toSet())
     }
 
     @Test

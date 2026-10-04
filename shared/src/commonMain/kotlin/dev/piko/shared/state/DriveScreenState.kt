@@ -280,7 +280,8 @@ class DriveScreenState(
         val shown = buildDriveItems(files, structure, hideFolded) { true }.mapNotNull { (it as? DriveListItem.File)?.file }
         val shownIds = shown.mapTo(HashSet()) { it.id }
         val attachments = files.filter { file -> structure.attachedTo[file.id]?.let { it in shownIds } == true }
-        (shown + attachments).filterNot(::isHiddenByThumbnails)
+        // 字幕与音轨既挂在宿主下、又在自己那一栏里占一行，只算一次
+        (shown + attachments).distinctBy { it.id }.filterNot(::isHiddenByThumbnails)
     }
 
     /** 列表项里的分区标题及其下标。顶栏副标题按首个可见项反查，分区菜单据此跳转。 */

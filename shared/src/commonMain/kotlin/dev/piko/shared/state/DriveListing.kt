@@ -119,8 +119,8 @@ data class DriveBlock(
  * 一个目录的分析结果，与折叠开关、展开状态、原始文件名开关无关，所以可以按目录内容缓存。
  *
  * [blocks] 为空表示没有认出任何作品，界面按原样平铺。[foldedIds] 是可折叠的条目：解析器判为
- * 次要的文件，以及扫图、截图、样片、字体一类的子目录。附件（外挂字幕、音轨、封面）既不在
- * 块里也不在 [foldedIds] 里，它们已化作宿主行上的标签。
+ * 次要的文件，以及扫图、截图、样片、字体一类的子目录。附件（外挂字幕、音轨、封面）不在 [foldedIds] 里，
+ * 在宿主行上化作标签；字幕与音轨另在末尾各成一个默认收起的块，见 attachmentBlocks。
  */
 class DriveStructure(
     val blocks: List<DriveBlock>,
@@ -142,6 +142,7 @@ internal fun ChildFile.toMediaFileInput(): MediaFileInput = MediaFileInput(name,
 
 internal const val SECONDARY_BLOCK_ID = "secondary"
 private const val OTHERS_BLOCK_ID = "unknown"
+private const val ATTACHMENT_BLOCK_PREFIX = "attached:"
 private const val FLAT_BLOCK_MAX = 2
 
 /**
@@ -167,7 +168,9 @@ fun analyzeDriveFolder(files: List<FileStat>): DriveStructure {
             }
         }
     }
-    val blocks = if (batch.works.any { it.kind != WorkKind.UNKNOWN }) buildBlocks(batch, regular) else emptyList()
+    val workBlocks = if (batch.works.any { it.kind != WorkKind.UNKNOWN }) buildBlocks(batch, regular) else emptyList()
+    // 没认出作品时整个目录平铺，附件本来就各占一行，不必另起一栏
+    val blocks = if (workBlocks.isEmpty()) workBlocks else workBlocks + attachmentBlocks(batch, regular)
     val views = if (blocks.isEmpty()) emptyMap() else withoutCollidingStandalone(buildViews(batch, regular), batch, regular)
     return DriveStructure(
         blocks = blocks,
@@ -178,7 +181,26 @@ fun analyzeDriveFolder(files: List<FileStat>): DriveStructure {
     )
 }
 
-private val CONTENT_KINDS = setOf(NamingFileKind.VIDEO, NamingFileKind.IMAGE, NamingFileKind.AUDIO, NamingFileKind.DISC_IMAGE)
+/**
+ * 外挂字幕与音轨各成一栏，默认收起。它们在宿主行上化作「简日」一类的标签，原来就只剩这个标签：
+ * 不在任何作品块里，也不算次要文件，「显示全部文件」放不出来，单独下载、改名、删除都无从下手。
+ * 不并进宿主的操作面板：那样一个字幕要先找到它挂在哪一集下面，而这一栏点开就是普通的文件行。
+ * 封面与原盘的成员文件不列，前者是图片、后者属于原盘目录，不是要单独拿出来处理的东西。
+ */
+private fun attachmentBlocks(batch: MediaBatch, files: List<FileStat>): List<DriveBlock> {
+    val byKind = batch.works.asSequence()
+        .flatMap { it.sections }.flatMap { it.entries }.flatMap { it.files }.flatMap { it.attachments }
+        .groupBy({ it.kind }, { it.index })
+    return listOfNotNull(
+        byKind[AttachmentKind.SUBTITLE]?.let { attachmentBlock("${ATTACHMENT_BLOCK_PREFIX}subtitle", "外挂字幕", it, files) },
+        byKind[AttachmentKind.AUDIO_TRACK]?.let { attachmentBlock("${ATTACHMENT_BLOCK_PREFIX}audio", "外挂音轨", it, files) },
+    )
+}
+
+private fun attachmentBlock(id: String, label: String, indices: List<Int>, files: List<FileStat>) =
+    DriveBlock(id, label, label, false, null, null, emptyList(), indices.distinct().sorted().map { files[it].id })
+
+private val CONTENT_KINDS =setOf(NamingFileKind.VIDEO, NamingFileKind.IMAGE, NamingFileKind.AUDIO, NamingFileKind.DISC_IMAGE)
 
 /** 正片、SP、OVA、剧场版默认展开；PV、NCOP、特典、菜单、其他默认收起。 */
 private val EXPANDED_BY_DEFAULT = setOf(Section.MAIN, Section.SPECIAL, Section.OVA, Section.MOVIE)
@@ -389,7 +411,9 @@ fun buildDriveItems(
     val worksWithOneBlock = structure.blocks.groupingBy { it.workKey }.eachCount()
     val (flat, grouped) = structure.blocks.partition { block ->
         val untitled = block.workKey != null && block.workTitle == null && block.label == Section.MAIN.label && worksWithOneBlock[block.workKey] == 1
-        block.id == OTHERS_BLOCK_ID || block.fileIds.size <= FLAT_BLOCK_MAX || untitled
+        // 字幕与音轨那一栏只有一两个文件也留着标题：平铺到最前，就成了与正片并列的条目
+        val attachments = block.id.startsWith(ATTACHMENT_BLOCK_PREFIX)
+        !attachments && (block.id == OTHERS_BLOCK_ID || block.fileIds.size <= FLAT_BLOCK_MAX || untitled)
     }
     val flatIds = flat.flatMap { it.fileIds }.sortedBy { id -> files.indexOfFirst { it.id == id } }
     val flatWorks = flat.filter { it.id != OTHERS_BLOCK_ID }.flatMap { it.fileIds }.toSet()
