@@ -167,7 +167,7 @@ fun SidePanelLayout(
                                 PaneTitle(title, Modifier.weight(1f))
                                 headerActions()
                                 // 收起而不是关掉：里面的东西都找得回来（详情一按就开，面板的会话还在），用 × 读起来像没了。
-                                // 与命令栏上「收着的东西」那个按钮、信息流窗口的「收回到主窗口」同一个图标，看得出是一对
+                                // 与信息流窗口的「收回到主窗口」同一个图标，看得出是一对
                                 TooltipIconButton(
                                     Icons.AutoMirrored.Outlined.ViewSidebar,
                                     closeDescription,

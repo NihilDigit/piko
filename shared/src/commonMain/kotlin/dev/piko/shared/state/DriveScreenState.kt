@@ -347,9 +347,6 @@ class DriveScreenState(
                     if (libraryView == DriveLibrary.DUPLICATES) showDuplicates()
                 }
             }
-            scope.launch {
-                snapshotFlow { libraryView }.collect { if (it != DriveLibrary.DUPLICATES) preselectedFinder = null }
-            }
         }
         // 同理，高亮请求随时可能来，不只在网盘页建出来的那一刻
         scope.launch {
@@ -538,9 +535,6 @@ class DriveScreenState(
 
     // region 查找重复
 
-    /** 这一次查重的建议勾选已经套用过了：人改过的勾选不再被盖回去。离开这个位置后作废，回来再套一次。 */
-    private var preselectedFinder: DuplicateFinderState? = null
-
     /** 查重结果换了（扫完、移走了文件、撤销）就重画。files 只放去重后的文件，供按 ID 找回与空态判断。 */
     private fun showDuplicates() {
         val finder = duplicates?.state
@@ -552,15 +546,18 @@ class DriveScreenState(
         loadedFolderId = DriveLibrary.DUPLICATES.id
         loadError = null
         isLoading = false
-        if (finder != null && finder.phase == DuplicateFinderState.Phase.DONE && preselectedFinder !== finder) {
-            preselectedFinder = finder
-            val suggested = finder.suggestedIds
-            if (suggested.isNotEmpty()) {
-                exitSelection()
-                isSelectionMode = true
-                selectedFileIds.addAll(suggested)
-            }
-        }
+    }
+
+    /**
+     * 选中查重建议移走的那些，之后就是普通的多选与删除。不在进来时自动选上：曾经那样做，一进来就在多选里，
+     * 单击变成勾选、播不了也看不了预览，点一下空白处整组勾选又没了。
+     */
+    fun selectSuggestedDuplicates() {
+        val suggested = duplicates?.state?.suggestedIds.orEmpty()
+        if (suggested.isEmpty()) return
+        exitSelection()
+        isSelectionMode = true
+        selectedFileIds.addAll(suggested)
     }
 
     /**

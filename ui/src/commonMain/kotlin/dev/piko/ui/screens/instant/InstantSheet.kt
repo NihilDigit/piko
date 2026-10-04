@@ -905,28 +905,36 @@ fun InstantSheetHandle(
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val result = state.resolution
-    val batch = state.batch
-    val isSaving = state.isSaving || batch?.isSaving == true
-    val title = when {
-        batch != null -> "${batch.rows.size} 条链接"
-        else -> result?.resource?.name ?: state.input.trim().ifEmpty { "添加链接" }
-    }
-    val status = when {
-        isSaving -> "正在保存"
-        batch != null -> batch.blockedReason ?: "可保存 ${batch.submittableCount} 项"
-        state.isResolving -> "正在查询云端索引"
-        state.errorMessage != null -> state.errorMessage
-        result != null -> "已选 ${state.selectedEntryCount} / ${state.entryCount}"
-        else -> null
-    }
+    val summary = state.summary()
     CollapsedSheetHandle(
-        title = title,
-        status = status,
+        title = summary.title,
+        status = summary.status,
         closeLabel = "放弃这次添加",
         onExpand = onExpand,
         onClose = onClose,
         modifier = modifier,
-        closeEnabled = !isSaving,
+        closeEnabled = !summary.busy,
     )
+}
+
+/** 收起后的一行：标题是链接或资源名，状态是解析与勾选的进度。窄窗口的把手与宽窗口的浮动卡片共用。 */
+internal class InstantSummary(val title: String, val status: String?, val busy: Boolean, val resolving: Boolean)
+
+internal fun InstantSheetState.summary(): InstantSummary {
+    val result = resolution
+    val batch = batch
+    val saving = isSaving || batch?.isSaving == true
+    val title = when {
+        batch != null -> "${batch.rows.size} 条链接"
+        else -> result?.resource?.name ?: input.trim().ifEmpty { "添加链接" }
+    }
+    val status = when {
+        saving -> "正在保存"
+        batch != null -> batch.blockedReason ?: "可保存 ${batch.submittableCount} 项"
+        isResolving -> "正在查询云端索引"
+        errorMessage != null -> errorMessage
+        result != null -> "已选 $selectedEntryCount / $entryCount"
+        else -> null
+    }
+    return InstantSummary(title, status, busy = saving, resolving = saving || isResolving)
 }

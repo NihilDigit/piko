@@ -1,6 +1,5 @@
 package dev.piko.ui.screens.drive
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.hoverable
@@ -9,11 +8,12 @@ import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -21,7 +21,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PlainTooltip
@@ -34,10 +37,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.isTertiaryPressed
 import androidx.compose.ui.input.pointer.pointerInput
@@ -45,6 +54,10 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.data.DriveTab
+import dev.piko.shared.state.DuplicateFinderState
+import dev.piko.ui.components.IslandTab
+import dev.piko.ui.components.IslandTabBarHeight
+import androidx.compose.foundation.layout.Spacer
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.fileDropTarget
 import dev.piko.ui.components.verticalWheelScrollsRow
@@ -69,6 +82,8 @@ internal fun DriveTabBar(
     onClose: (Long) -> Unit,
     onNewTab: () -> Unit,
     newTabShortcut: String,
+    /** 查重标签上显示它的进度与结果。 */
+    duplicates: DuplicateFinderState?,
     modifier: Modifier = Modifier,
 ) {
     val scroll = rememberScrollState()
@@ -87,19 +102,31 @@ internal fun DriveTabBar(
             .fillMaxWidth()
             .then(caption.modifier)
             .onGloballyPositioned { dragArea.onRow(it.boundsInWindow()) }
-            .height(TabBarHeight)
-            .padding(horizontal = 12.dp),
+            .height(IslandTabBarHeight)
+            // 第一个标签贴着页眉那块岛的左边，活动时左边竖直上去，与岛的左边连成一条线
+            .padding(end = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // 标签与「+」挤在左边，占满除窗口按钮外的宽度，窗口按钮才落在最右
-        Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+        Row(modifier = Modifier.weight(1f).fillMaxHeight(), verticalAlignment = Alignment.CenterVertically) {
+            // 标签贴着这一行的下沿，活动的那个与下面的页眉连成一片
             Row(
-                modifier = Modifier.weight(1f, fill = false).verticalWheelScrollsRow(scroll).horizontalScroll(scroll).selectableGroup(),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f, fill = false).fillMaxHeight().verticalWheelScrollsRow(scroll).horizontalScroll(scroll).selectableGroup(),
+                verticalAlignment = Alignment.Bottom,
             ) {
-                for (tab in tabs) {
-                    TabChip(tab, active = tab.id == activeId, onSelect = { onSelect(tab.id) }, onClose = { onClose(tab.id) })
+                val activeIndex = tabs.indexOfFirst { it.id == activeId }
+                tabs.forEachIndexed { index, tab ->
+                    TabChip(
+                        tab,
+                        duplicates = duplicates.takeIf { tab.isDuplicates },
+                        active = index == activeIndex,
+                        first = index == 0,
+                        // 两个非活动标签之间画一道分隔，挨着活动标签的不画：活动标签自己的轮廓已经分开了
+                        divider = index < tabs.lastIndex && index != activeIndex && index + 1 != activeIndex,
+                        onSelect = { onSelect(tab.id) },
+                        // 只剩一个时关不掉，不给叉
+                        onClose = if (tabs.size > 1) ({ onClose(tab.id) }) else null,
+                    )
                 }
             }
             TooltipIconButton(
@@ -139,66 +166,95 @@ private class TabBarDragArea(private val caption: WindowCaption?) {
     }
 }
 
+/** 一个位置标签，等宽，形状与切换见 [IslandTab]。 */
 @Composable
-private fun TabChip(tab: DriveTab, active: Boolean, onSelect: () -> Unit, onClose: () -> Unit) {
+private fun TabChip(
+    tab: DriveTab,
+    duplicates: DuplicateFinderState?,
+    active: Boolean,
+    first: Boolean,
+    divider: Boolean,
+    onSelect: () -> Unit,
+    onClose: (() -> Unit)?,
+) {
     val colors = MaterialTheme.colorScheme
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
-    val target = tab.stack.lastOrNull()
+    val contentColor = if (active) colors.onSurface else colors.onSurfaceVariant
+    // 查重标签不接拖放：那里不是文件夹
+    val target = tab.stack.lastOrNull()?.takeIf { !tab.isDuplicates }
+    val title = if (duplicates != null) "查重：${duplicates.root.name}" else tab.title
+    val tooltip = when {
+        duplicates == null -> tab.stack.joinToString(" › ") { it.name }
+        duplicates.isScanning -> "正在查找重复，已扫描 ${duplicates.scannedFolders} 个文件夹。关闭标签页即结束查找"
+        else -> "找到 ${duplicates.report.identical.size + duplicates.report.versions.size} 组。关闭标签页即结束查找"
+    }
     TooltipBox(
         positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
-        tooltip = { PlainTooltip { Text(tab.stack.joinToString(" › ") { it.name }) } },
+        tooltip = { PlainTooltip { Text(tooltip) } },
         state = rememberTooltipState(),
     ) {
-        Row(
+        IslandTab(
+            active = active,
+            first = first,
+            divider = divider,
+            onClick = onSelect,
+            interactionSource = interaction,
             modifier = Modifier
                 // 拖到别的标签上：移进它停着的文件夹
                 .then(if (!active && target != null) Modifier.fileDropTarget("tab:${tab.id}", target) else Modifier)
-                .clip(CircleShape)
-                .background(if (active) colors.secondaryContainer else Color.Transparent)
-                .hoverable(interaction)
+                .width(TabWidth)
                 .pointerInput(Unit) {
                     awaitPointerEventScope {
                         while (true) {
                             val event = awaitPointerEvent()
-                            if (event.type == PointerEventType.Press && event.buttons.isTertiaryPressed) onClose()
+                            if (event.type == PointerEventType.Press && event.buttons.isTertiaryPressed) onClose?.invoke()
                         }
                     }
-                }
-                // 与 M3 的 Tab 相同用 selectable：只用 clickable 时活动标签只是底色不同，读屏说不出哪个是当前的
-                .selectable(selected = active, role = Role.Tab, onClick = onSelect)
-                .height(32.dp)
-                .padding(start = 12.dp, end = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
+                },
         ) {
-            Icon(
-                Icons.Outlined.Folder,
-                contentDescription = null,
-                tint = if (active) colors.onSecondaryContainer else colors.onSurfaceVariant,
-                modifier = Modifier.size(16.dp),
-            )
+            Spacer(Modifier.width(10.dp))
+            if (duplicates?.isScanning == true) {
+                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+            } else {
+                Icon(
+                    if (tab.isDuplicates) Icons.Outlined.FileCopy else Icons.Outlined.Folder,
+                    contentDescription = null,
+                    tint = if (active) colors.primary else colors.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
             Text(
-                tab.title,
+                title,
                 style = MaterialTheme.typography.labelLarge,
-                color = if (active) colors.onSecondaryContainer else colors.onSurfaceVariant,
+                color = contentColor,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 8.dp).widthIn(max = TabTitleMaxWidth),
+                modifier = Modifier.padding(start = 8.dp).weight(1f),
             )
             // 叉的位置一直留着，出现与消失时标签不变宽
             Box(Modifier.padding(start = 4.dp).size(24.dp), contentAlignment = Alignment.Center) {
-                if (active || hovered) {
+                if (onClose != null && (active || hovered)) {
                     Icon(
                         Icons.Outlined.Close,
                         contentDescription = "关闭标签页",
-                        tint = if (active) colors.onSecondaryContainer else colors.onSurfaceVariant,
+                        tint = contentColor,
                         modifier = Modifier.size(24.dp).clip(CircleShape).clickable(onClick = onClose).padding(4.dp),
                     )
                 }
             }
+            Spacer(Modifier.width(4.dp))
         }
     }
 }
 
-private val TabBarHeight = 44.dp
-private val TabTitleMaxWidth = 180.dp
+/**
+ * 页眉上地址栏与搜索框的底色。在页眉岛里照 M3 搜索栏取 surfaceContainerHigh；没有标签栏的窗口里页眉直接在外框色上，
+ * 外框色就是 surfaceContainerHigh，那里取页面本色。由页眉所在处经 [LocalHeaderOnIsland] 告知。
+ */
+internal val ColorScheme.headerFieldColor: Color
+    @Composable get() = if (LocalHeaderOnIsland.current) surfaceContainerHigh else surface
+
+internal val LocalHeaderOnIsland = staticCompositionLocalOf { false }
+
+private val TabWidth = 220.dp

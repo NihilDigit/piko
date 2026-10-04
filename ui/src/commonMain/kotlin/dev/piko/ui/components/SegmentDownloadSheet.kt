@@ -25,6 +25,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RangeSlider
 import androidx.compose.material3.Text
 import androidx.compose.material3.ToggleButton
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -69,21 +70,23 @@ internal enum class Handle(val label: String) { START("起点"), END("终点") }
 private const val MIN_CLIP_MS = 500L
 
 /**
- * 一次下载片段，活得比面板长：面板划走、点遮罩或返回只是收起，选好的起点与终点留着，
- * 窄窗口底部留把手、宽窗口收进命令栏右端，点回来接着调；点关闭或下载了才结束。与 DuplicateSession 同一个形状，
- * 挂在 PikoServices 上，网盘页被压栈页盖住、离开组合时也不丢。
+ * 一次下载片段，挂在 PikoServices 上，网盘页被压栈页盖住、离开组合时也不丢。面板关掉就是放弃，下载了也结束。
+ * 曾经关掉只是收起、选好的区间留着，窄窗口底部留把手、宽窗口收进命令栏右端的菜单：选一段通常几十秒就完，
+ * 收起再回来的需求少，为它常驻一个入口不值；改过区间的关掉前确认一次，免得误点遮罩丢掉。
  *
- * 对同一个文件再点「下载指定段落」回到这一次；换一个文件就丢掉旧的、开新的。
+ * 换一个文件就丢掉旧的、开新的。
  */
 @Stable
 class SegmentSession {
     var file by mutableStateOf<FileStat?>(null)
         private set
 
-    var isSheetOpen by mutableStateOf(false)
-        private set
-
     internal var initialRange: LongRange? = null
+
+    /** 取到时长后定下的起点与终点。区间与它不同就是人调过，关掉前要确认。 */
+    internal var defaultRange: Pair<Long, Long>? = null
+
+    internal val isEdited: Boolean get() = defaultRange?.let { it != (startPosMs to endPosMs) } == true
     internal var mediaInfo by mutableStateOf<PlayableMediaInfo?>(null)
     internal var loaded by mutableStateOf(false)
     internal var totalDurationMs by mutableLongStateOf(0L)
@@ -100,21 +103,12 @@ class SegmentSession {
             file = target
             this.initialRange = initialRange
         }
-        isSheetOpen = true
-    }
-
-    fun reopen() {
-        if (file != null) isSheetOpen = true
-    }
-
-    fun collapse() {
-        isSheetOpen = false
     }
 
     fun end() {
         file = null
-        isSheetOpen = false
         initialRange = null
+        defaultRange = null
         mediaInfo = null
         loaded = false
         totalDurationMs = 0L
@@ -151,6 +145,7 @@ fun SegmentDownloadSheet(
                 session.totalDurationMs = duration
                 session.startPosMs = initialRange?.first?.coerceIn(0L, duration - MIN_CLIP_MS) ?: 0L
                 session.endPosMs = initialRange?.last?.coerceIn(session.startPosMs + MIN_CLIP_MS, duration) ?: minOf(duration, 60_000L)
+                session.defaultRange = session.startPosMs to session.endPosMs
             }
         }
         session.loaded = true
@@ -171,8 +166,18 @@ fun SegmentDownloadSheet(
         }
     }
 
-    // 划走、点遮罩、返回都只是收起，见 SegmentSession
-    PikoSheet(onDismissRequest = session::collapse) {
+    // 划走、点遮罩、返回都是放弃，调过区间的先确认，见 SegmentSession
+    var confirmDiscard by remember { mutableStateOf(false) }
+    if (confirmDiscard) {
+        PikoDialog(
+            onDismissRequest = { confirmDiscard = false },
+            title = { Text("放弃下载片段？") },
+            text = { Text("选好的起点与终点不会保留。") },
+            confirmButton = { PikoDialogConfirm("放弃", onClick = { confirmDiscard = false; session.end() }) },
+            dismissButton = { TextButton(onClick = { confirmDiscard = false }) { Text("继续编辑") } },
+        )
+    }
+    PikoSheet(onDismissRequest = { if (session.isEdited) confirmDiscard = true else session.end() }) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()

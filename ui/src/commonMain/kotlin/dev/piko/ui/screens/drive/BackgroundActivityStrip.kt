@@ -28,31 +28,40 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.state.ArchiveExtractSession
 import dev.piko.shared.state.ArchiveJobStatus
+import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.FolderVaultSession
 import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.screens.archive.ArchiveExtractStatus
 
 /**
- * 网盘页底部的后台工作：服务端解压、归档与取消归档。只有一项时照原样画那一条；多于一项时收成一行摘要，
+ * 网盘页底部的后台工作：服务端解压、归档、取消归档与查找重复的扫描。只有一项时照原样画那一条；多于一项时收成一行摘要，
  * 点开才逐条列出，各条的停止与进度不变。
  *
  * 原来三条各占一行叠在底部，几样同时在跑时吃掉列表小半个屏幕。Fluent 的进度指引是同类的进程合成一条汇总，
  * 细节放进行内展开的抽屉；这里照做。
  */
 @Composable
-internal fun BackgroundActivityStrip(archive: ArchiveExtractSession, vault: FolderVaultSession, modifier: Modifier = Modifier) {
+internal fun BackgroundActivityStrip(
+    archive: ArchiveExtractSession,
+    vault: FolderVaultSession,
+    duplicates: DuplicateFinderState?,
+    modifier: Modifier = Modifier,
+) {
     val jobs = archive.jobs
     val archiving = vault.progress
     val restoring = vault.restoreProgress
+    val scanning = duplicates?.takeIf { it.isScanning }
     val parts = buildList {
         if (jobs.isNotEmpty()) add(if (jobs.size == 1) "解压 1 个压缩包" else "解压 ${jobs.size} 个压缩包")
         archiving?.let { add("归档「${it.folderName}」") }
         restoring?.let { add("取消归档「${it.folderName}」") }
+        scanning?.let { add("查找重复「${it.root.name}」") }
     }
     val strips: List<@Composable () -> Unit> = buildList {
         if (jobs.isNotEmpty()) add { ArchiveExtractStatus(archive, Modifier.fillMaxWidth()) }
         if (archiving != null) add { VaultFolderStatus(vault, Modifier.fillMaxWidth()) }
         if (restoring != null) add { VaultRestoreStatus(vault, Modifier.fillMaxWidth()) }
+        if (scanning != null) add { DuplicateScanStatus(scanning, Modifier.fillMaxWidth()) }
     }
     when (strips.size) {
         0 -> return

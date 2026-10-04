@@ -11,14 +11,18 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.TaskAlt
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.shared.data.ScanStop
 import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.DuplicateFinderState.Phase
@@ -29,18 +33,23 @@ import dev.piko.ui.components.PikoLoadingIndicator
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.toReadableSize
 
-/** 查找重复里每一行的位置，写在行下面那一栏：从查找的起点算起的文件夹。 */
+/**
+ * 查找重复里每一行的位置，写在行下面那一栏：从查找的起点算起的文件夹。建议移走的在后面注明，
+ * 不进多选也看得出建议的是哪几份。
+ */
 internal fun duplicateLocations(finder: DuplicateFinderState?): Map<String, String> {
     val report = finder?.report ?: return emptyMap()
+    val suggested = finder.suggestedIds
     return (report.identical + report.versions).flatMap { it.rows }.associate { row ->
         val folder = row.file.folderPath
-        row.file.id to if (folder.isEmpty()) finder.root.name else "${finder.root.name}/$folder"
+        val location = if (folder.isEmpty()) finder.root.name else "${finder.root.name}/$folder"
+        row.file.id to if (row.file.id in suggested) "$location，建议移走" else location
     }
 }
 
 /**
  * 有结果时列表顶上的一行：查的是哪里、扫了多少、能腾出多少，结果不全时用错误色。
- * 勾选与移入回收站是网盘页的多选，这里只有重新扫描与结束。
+ * 「选中建议移走的」是这一页的主操作（命令栏右端或 FAB），勾选与移入回收站是网盘页的多选；这里只有重新扫描与结束。
  */
 @Composable
 internal fun DuplicatesBanner(finder: DuplicateFinderState, onEnd: () -> Unit, modifier: Modifier = Modifier) {
@@ -96,7 +105,7 @@ internal fun DuplicatesEmptyState(finder: DuplicateFinderState?, onLeave: () -> 
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    text = "已扫描 ${finder.scannedFolders} 个文件夹，${finder.scannedFiles} 个文件。可以先去别处，扫完会提示",
+                    text = "已扫描 ${finder.scannedFolders} 个文件夹，${finder.scannedFiles} 个文件。可以先去别处，扫描照常进行",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -115,7 +124,32 @@ internal fun DuplicatesEmptyState(finder: DuplicateFinderState?, onLeave: () -> 
     }
 }
 
-/** 窄窗口里不在查重结果页时，底部留一条把手回去；宽窗口由命令栏的「收着的东西」承担。 */
+/** 扫描中在后台工作条里的一条。停止不丢弃已扫描的部分，扫完的提示里有「查看」。 */
+@Composable
+internal fun DuplicateScanStatus(finder: DuplicateFinderState, modifier: Modifier = Modifier) {
+    Surface(modifier = modifier, shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+        Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            InlineLoadingIndicator()
+            Spacer(Modifier.width(16.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = "查找重复「${finder.root.name}」",
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = if (finder.phase == Phase.ANALYZING) "正在比对" else "已扫描 ${finder.scannedFolders} 个文件夹，${finder.scannedFiles} 个文件",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (finder.phase == Phase.SCANNING) TextButton(onClick = finder::stopScan) { Text("停止") }
+        }
+    }
+}
+
+/** 窄窗口里不在查重结果页时，底部留一条把手回去；宽窗口是查重标签或右下角的浮动卡片。扫描中由 [DuplicateScanStatus] 代替。 */
 @Composable
 internal fun DuplicatesHandle(finder: DuplicateFinderState, onOpen: () -> Unit, onEnd: () -> Unit, modifier: Modifier = Modifier) {
     val report = finder.report

@@ -30,8 +30,6 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.SelectAll
-import androidx.compose.material.icons.automirrored.filled.ViewSidebar
-import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.Refresh
@@ -58,7 +56,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -88,6 +85,9 @@ import dev.piko.data.repository.FileSortOrder
 import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.MenuMotion
 import dev.piko.ui.components.PikoDropdownMenu
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
+import dev.piko.ui.components.PrimaryActionButton
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.menuItemShape
@@ -98,10 +98,8 @@ import androidx.compose.material.icons.outlined.Home
 import dev.piko.ui.platform.windowDragArea
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.automirrored.outlined.Sort
-import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.FilterList
-import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.ui.layout.Placeable
 import androidx.compose.ui.layout.Layout
@@ -191,7 +189,7 @@ internal fun ExplorerSearchField(
             // 点到列表或别处即失焦；没有字时随之收起
             .releasesFocusOnOutsidePress()
             .clip(CircleShape)
-            .background(colors.surface)
+            .background(colors.headerFieldColor)
             .padding(start = 12.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -276,15 +274,13 @@ internal fun ExplorerCommandBar(
     onTypeFilterChange: (FileCategory?) -> Unit,
     onSelectAll: () -> Unit,
     onFindDuplicates: () -> Unit,
-    /** 收着的东西，见 [StashTray]；为空时不画。 */
-    stash: List<StashItem>,
     sectionJumper: @Composable () -> Unit,
     moreActions: List<SheetAction>,
     onRefresh: () -> Unit,
     onHome: () -> Unit,
     viewSwitcher: @Composable () -> Unit,
-    /** 为 null 时不摆添加链接，见 [DriveCommands.addLink]。 */
-    onAddLink: (() -> Unit)?,
+    /** 这一页的主操作，常驻在右端，见 [PrimaryActionButton]。网盘里是添加链接，库里是清空、查重里是选中建议移走的。 */
+    primaryAction: SheetAction?,
 ) {
     val label = shortcuts::label
     val mac = shortcuts == ShortcutModifier.Command
@@ -398,22 +394,12 @@ internal fun ExplorerCommandBar(
         // 详情栏的开关不放在这里：它看的是某一项，入口在条目上悬停出现的详情按钮；关闭在详情栏自己的顶上，
         // 主修饰键+I 照旧开关
         add(BarItem("view", FixedPriority) { viewSwitcher() })
-        if (onAddLink != null) {
-            // 往网盘里添东西最常用的一件，用主色常驻在右端，不收在「新建」菜单里；窗口窄到连它也放不下时才进「更多」。
-            // 收起它在面板自己的顶上
-            add(BarItem("addLink", 90, listOf(SheetAction(Icons.Outlined.Bolt, "添加链接", onAddLink, group = 5))) {
-                Button(
-                    onClick = onAddLink,
-                    contentPadding = PaddingValues(start = 12.dp, end = 16.dp),
-                    modifier = Modifier.padding(horizontal = 6.dp).heightIn(min = 40.dp),
-                ) {
-                    Icon(Icons.Outlined.Bolt, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("添加链接")
-                }
+        if (primaryAction != null) {
+            // 常驻在右端，不收在菜单里；窗口窄到连它也放不下时才进「更多」
+            add(BarItem("primary", 90, listOf(primaryAction)) {
+                PrimaryActionButton(primaryAction, Modifier.padding(horizontal = 6.dp))
             })
         }
-        if (stash.isNotEmpty()) add(BarItem("stash", FixedPriority) { StashTray(stash) })
     }
     // 没有自己的底色：与导航栏同在页眉那一块外框色里（theme/Frame.kt），下面的列表是卡片。
     // 两行各带底色、或中间再画一条线，底色叠了三层，看着重复
@@ -575,59 +561,6 @@ private fun MoreButton(actions: () -> List<SheetAction>) {
 private val BarItemGap = 2.dp
 private val SectionJumperMinWidth = 72.dp
 
-/** 收着的一样东西：点它继续，点它后面的 × 丢掉。 */
-internal class StashItem(
-    val icon: ImageVector,
-    val label: String,
-    val onResume: () -> Unit,
-    /** × 的提示，说清丢掉的是什么，如「放弃添加链接」。 */
-    val discardLabel: String,
-    val onDiscard: () -> Unit,
-)
-
-/**
- * 命令栏最右端「有东西收着」的指示：收起的添加链接、收起的查找重复、挂起的信息流。没有收着的就不画，
- * 有就亮着（实心图标、主色底），点开列出收着的几样，点一项是继续，点它后面的 × 是丢掉。
- * 图标与侧栏顶上的收起按钮、信息流窗口的「收回到主窗口」同一个：收起与找回是一对。
- *
- * 丢掉放在这里而不是面板顶上：面板顶上只有收起，离开时不必先决定还要不要；东西收在哪就在哪清理，
- * 与浏览器的下载列表、移动端底部的把手（展开与关闭）是同一个路数。代价是只收着一样时也要先点开再继续。
- */
-@Composable
-private fun StashTray(stash: List<StashItem>) {
-    if (stash.isEmpty()) return
-    var expanded by remember { mutableStateOf(false) }
-    Box {
-        TooltipBox(
-            positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
-            tooltip = { PlainTooltip { Text(stash.singleOrNull()?.label ?: "${stash.size} 项收着") } },
-            state = rememberTooltipState(),
-        ) {
-            FilledTonalIconButton(onClick = { expanded = true }) {
-                Icon(Icons.AutoMirrored.Filled.ViewSidebar, contentDescription = "收着的面板")
-            }
-        }
-        PikoDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            stash.forEachIndexed { index, item ->
-                DropdownMenuItem(
-                    text = { Text(item.label) },
-                    leadingIcon = { Icon(item.icon, contentDescription = null, modifier = Modifier.size(20.dp)) },
-                    trailingIcon = {
-                        TooltipIconButton(Icons.Outlined.Close, item.discardLabel, {
-                            expanded = false
-                            item.onDiscard()
-                        })
-                    },
-                    shape = menuItemShape(index, stash.size),
-                    onClick = {
-                        expanded = false
-                        item.onResume()
-                    },
-                )
-            }
-        }
-    }
-}
 
 
 /**
@@ -640,6 +573,7 @@ internal fun ViewSwitcher(
     onViewModeChange: (DriveViewMode) -> Unit,
     feedShown: Boolean,
     onFeedShownChange: ((Boolean) -> Unit)?,
+    feedSuspended: Boolean = false,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val count = if (onFeedShownChange == null) 1 else 2
@@ -692,11 +626,15 @@ internal fun ViewSwitcher(
                 contentPadding = PaddingValues(start = 12.dp, end = 16.dp),
                 modifier = Modifier.heightIn(min = 40.dp),
             ) {
-                Icon(
-                    imageVector = if (feedShown) Icons.Filled.SwipeVertical else Icons.Outlined.SwipeVertical,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                )
+                // 挂起的信息流（被详情栏挤掉、队列还在）在图标上点一个小圆点，点开就是接着刷。
+                // 原来另在命令栏右端的「收着的东西」里放一项「继续刷信息流」，与这个按钮是同一件事的两个入口
+                BadgedBox(badge = { if (feedSuspended) Badge() }) {
+                    Icon(
+                        imageVector = if (feedShown) Icons.Filled.SwipeVertical else Icons.Outlined.SwipeVertical,
+                        contentDescription = if (feedSuspended) "信息流已暂停" else null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
                 Spacer(Modifier.width(6.dp))
                 Text("信息流")
             }
@@ -704,10 +642,13 @@ internal fun ViewSwitcher(
     }
 }
 
+// 组与组之间只留一段空白，不画竖线：竖线在岛的页眉色上显得碎，分组靠间距已经读得出
 @Composable
 private fun BarDivider() {
-    VerticalDivider(modifier = Modifier.height(24.dp).padding(horizontal = 4.dp), color = MaterialTheme.colorScheme.outlineVariant)
+    Spacer(Modifier.width(GroupGap))
 }
+
+private val GroupGap = 12.dp
 
 @Composable
 private fun MenuTextButton(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String, actions: List<SheetAction>) {

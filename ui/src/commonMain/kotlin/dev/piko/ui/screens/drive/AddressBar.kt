@@ -160,8 +160,7 @@ internal fun DrivePathTitle(model: AddressBarModel, editRequests: Int) {
                 // 点到列表、命令栏、侧边栏这些不可聚焦的地方也要收起输入：输入框失焦即收起，见 AddressField
                 .releasesFocusOnOutsidePress()
                 .clip(CircleShape)
-                // 嵌在页眉的底色里，取比页眉浅的页面本色
-                .background(colors.surface)
+                .background(colors.headerFieldColor)
                 // 各段自己接住单击；落在段外的（路径后面的空白）进入输入
                 .then(if (editing) Modifier else Modifier.clickable(onClickLabel = "输入路径") { editing = true })
                 .padding(start = 8.dp),

@@ -12,7 +12,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * 查找重复的结果是网盘页里的一个位置：建议移走的预先勾上，删除与撤销都走网盘页的那一套，
+ * 查找重复的结果是网盘页里的一个位置：建议移走的一键选中，删除与撤销都走网盘页的那一套，
  * 结果跟着撤销日志重新分组，不必重扫。
  */
 class DuplicatesLocationSmokeTest {
@@ -36,8 +36,10 @@ class DuplicatesLocationSmokeTest {
         repository.updateFolderStack(listOf(DriveLibrary.DUPLICATES.crumb))
         awaitUntil("扫完并列出") { session.state?.phase == DuplicateFinderState.Phase.DONE && drive.displayedFiles.size == 3 }
 
-        // 名字里没有副本标记、存入最早的那份留着，另外两份预先勾上
-        awaitUntil("建议移走的已勾上") { drive.isSelectionMode && drive.selectedFileIds.toSet() == setOf(copy.id, nested.id) }
+        // 进来时不在多选里，单击照常打开；名字里没有副本标记、存入最早的那份留着，选中的是另外两份
+        assertTrue(!drive.isSelectionMode)
+        drive.selectSuggestedDuplicates()
+        assertEquals(setOf(copy.id, nested.id), drive.selectedFileIds.toSet())
         assertTrue(original.id !in drive.selectedFileIds)
         val keys = drive.displayItems.map { it.key }
         assertEquals(keys.size, keys.toSet().size, "列表项的 key 不能重复")

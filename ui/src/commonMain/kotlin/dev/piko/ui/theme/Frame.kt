@@ -7,10 +7,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
 /**
- * 大窗口的外框：标题栏、侧边栏、状态栏与网盘页的页眉同为这一种底色，连成一体；各页的内容是嵌在里面的一张卡片，
- * 取页面本色。只在有侧边栏的窗口这样画，窄窗口没有侧边栏，外框只剩标题栏一条，单独上色反而突兀。
+ * 大窗口的外框：窗口的底色，标题栏那一行、标签栏与右侧详情栏直接落在上面；侧边栏与各页内容是浮在上面的圆角岛，
+ * 只在岛与岛之间露出来，见 [IslandGap]。只在有侧边栏的窗口这样画，窄窗口没有侧边栏，外框只剩标题栏一条，单独上色反而突兀。
+ *
+ * 比岛深两档（岛是 surface，页眉与活动标签是 [islandHeader]）：只深一档时活动标签与外框几乎同色，
+ * 开着几个标签看不出眼前是哪一个。
  */
-val ColorScheme.frame: Color get() = surfaceContainer
+val ColorScheme.frame: Color get() = surfaceContainerHigh
 
 /** 内容卡片的形状。只圆左边两个角：右边与窗口边缘齐平，圆了就在窗口边上露出一小块外框色。 */
 val FrameContentShape = RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp)
@@ -20,6 +23,24 @@ val FrameContentShape = RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp
  * 各页经 PikoScaffold 得到它，网盘页的列表区自己裁。
  */
 val FrameCardShape = RoundedCornerShape(16.dp)
+
+/**
+ * 岛与岛之间、岛与窗口边缘之间露出的外框色。有侧边栏的窗口里，侧边栏、网盘页的页眉（连同活动标签）与内容各是一块岛，
+ * 浮在外框色上：原来侧边栏与页眉直接画在外框色上，标签无处可连，开着几个标签也看不出哪个是眼前这一页。
+ */
+val IslandGap = 8.dp
+
+/**
+ * 岛上半段页眉的底色，活动标签与它同色相连。页眉与下面的内容是同一块岛，页眉比内容高一档色阶，
+ * 靠色差分出上下两段，不画分隔线：一道线横在岛中间，读起来像两样东西拼在一起。
+ */
+val ColorScheme.islandHeader: Color get() = surfaceContainerLow
+
+/** 岛的页眉与内容之间，内容上沿的小圆角：露出一点页眉的底色，像内容被页眉包着。 */
+val IslandInnerCorner = 12.dp
+
+/** 岛的圆角，与 [FrameCardShape] 相同。拆成单独的值是因为网盘页那块岛由页眉与列表拼成，各自只圆一半。 */
+val IslandCorner = 16.dp
 
 /** 没有底栏时，卡片下沿离窗口底边留的外框色。 */
 val FrameCardBottomMargin = 8.dp

@@ -153,7 +153,7 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 `PikoDriveRepository` 持有 `folderStackFlow`，是网盘主界面的全局位置，并持久化。
 宽窗口可以开几个标签（`tabsFlow`、`openTab`、`switchTab`、`closeTab`），各有自己的路径栈与历史；`folderStackFlow` 与
 `historyFlow` 始终是活动标签的那一份，切标签时仓库把它们换掉，所以别处照旧只认这两个，不必知道有标签。
-标签栏（`DriveTabBar`）只在开了不止一个标签时出现；Ctrl+T、Ctrl+W、Ctrl+Tab，中键点文件夹在后台新标签打开，
+标签栏（`DriveTabBar`）在宽窗口里一直在，只开一个标签时也是；Ctrl+T、Ctrl+W、Ctrl+Tab，中键点文件夹在后台新标签打开，
 拖到别的标签上即移进它停着的文件夹。标签按账号存进缓存目录（只存位置，不存历史），重启后由 `restoreTabs` 恢复。目录选择器
 一类的浮层**必须维护自己的路径栈**，碰它会把主界面的位置一起改掉。
 浏览历史（`historyFlow`，后退与前进）也在这里，每次换栈记一步；「上一级」与它无关。从别处跳进网盘（在网盘中显示、

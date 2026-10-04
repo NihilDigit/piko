@@ -200,7 +200,8 @@ private fun ActionGroup(actions: List<SheetAction>) {
                 onClick = action.onClick,
                 shapes = ListItemDefaults.segmentedShapes(index = index, count = actions.size),
                 colors = ListItemDefaults.segmentedColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    // 详情栏直接落在外框色（surfaceContainerHigh）上，操作行取岛的页面本色才分得出来
+                    containerColor = MaterialTheme.colorScheme.surface,
                     contentColor = color,
                     leadingContentColor = if (action.destructive) color else MaterialTheme.colorScheme.onSurfaceVariant,
                 ),

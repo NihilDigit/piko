@@ -3,6 +3,7 @@ package dev.piko.ui
 import dev.piko.ui.workbench.rememberTransferActivity
 import androidx.compose.material.icons.outlined.Keyboard
 import dev.piko.ui.workbench.ShortcutsDialog
+import dev.piko.ui.workbench.FloatingTasks
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.foundation.layout.fillMaxWidth
 import dev.piko.ui.workbench.SidebarTransferReadout
@@ -166,7 +167,9 @@ import dev.piko.ui.platform.LocalWindowCaption
 import dev.piko.ui.platform.LocalWindowResizing
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.foundation.layout.height
+import dev.piko.ui.theme.FrameCardShape
 import dev.piko.ui.theme.FrameContentShape
+import dev.piko.ui.theme.IslandGap
 import dev.piko.ui.theme.LocalFramed
 import dev.piko.ui.theme.SidebarMinWindowWidth
 import dev.piko.ui.theme.SidebarPushMinWindowWidth
@@ -592,7 +595,7 @@ fun PikoMainScaffold(
                 Column(Modifier.fillMaxSize()) {
                     Box(Modifier.weight(1f).fillMaxWidth()) { drive() }
                     FeedResumeBar(
-                        // 有命令栏的宽窗口里，挂起的信息流在命令栏右端「收着的东西」里继续，不再另挂一条
+                        // 有命令栏的宽窗口里，挂起的信息流由命令栏「信息流」按钮上的小圆点提示，点它继续，不再另挂一条
                         visible = feedSuspended && widthClass == WidthClass.Compact,
                         folderName = clipFeedSession.root?.name,
                         onResume = ::resumeFeed,
@@ -936,9 +939,17 @@ fun PikoMainScaffold(
             BackHandler(enabled = sidebarFloating) { sidebarFloatRequested = false }
             CompositionLocalProvider(LocalFramed provides sidebarMode) { Box(Modifier.fillMaxSize()) { Row(Modifier.fillMaxSize().then(frameModifier)) {
                 if (sidebarMode) {
-                    // 窄窗口里这一条恒为窄轨，展开的那一份浮在上面，见下
-                    if (sidebarOverlays) Sidebar(SidebarRailWidth, collapsed = true) else Sidebar(sidebarWidth, sidebarCollapsed)
-                    Spacer(Modifier.width(SidebarGap))
+                    // 侧边栏是一块岛，与页面同色，浮在外框色上，见 IslandGap
+                    Box(
+                        Modifier
+                            .padding(start = IslandGap, top = IslandGap, bottom = IslandGap)
+                            .clip(FrameCardShape)
+                            .background(MaterialTheme.colorScheme.surface),
+                    ) {
+                        // 窄窗口里这一条恒为窄轨，展开的那一份浮在上面，见下
+                        if (sidebarOverlays) Sidebar(SidebarRailWidth, collapsed = true) else Sidebar(sidebarWidth, sidebarCollapsed)
+                    }
+                    Spacer(Modifier.width(IslandGap))
                 }
                 Column(Modifier.weight(1f).fillMaxHeight()) {
                     // 有外框时各页嵌成一张卡片。页面自己铺底色，这里只裁出形状；网盘页的页眉取的也是外框色，
@@ -1014,6 +1025,19 @@ fun PikoMainScaffold(
                         }
                     }
                 }
+                // 后台任务的浮动卡片。只在有侧边栏、高度够的窗口里：手机仍是网盘页底部的状态条与把手，以后再统一
+                if (sidebarMode && !heightCompact) {
+                    FloatingTasks(
+                        archive = services.archiveExtractSession,
+                        vault = services.folderVaultSession,
+                        instant = services.instantSession,
+                        // 与网盘页的标签栏同一个条件（twoPane）：有标签时查重开在自己的标签里
+                        duplicates = services.duplicateSession.takeIf { widthClass != WidthClass.Expanded },
+                        viewingDuplicates = onHome && currentTab == MainTab.FILES && folderStack.firstOrNull()?.id == DriveLibrary.DUPLICATES.id,
+                        onOpenDuplicates = { openLibrary(DriveLibrary.DUPLICATES) },
+                        modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+                    )
+                }
             } }
             // 拖动网盘条目时指针旁的说明，盖在一切之上
             FileDragOverlay(fileDrag)
@@ -1056,9 +1080,6 @@ private fun MainTab.icon(selected: Boolean) = when (this) {
     MainTab.TRANSFERS -> if (selected) Icons.Filled.SwapVerticalCircle else Icons.Outlined.SwapVerticalCircle
     MainTab.SETTINGS -> if (selected) Icons.Filled.Person else Icons.Outlined.Person
 }
-
-/** 侧边栏与内容卡片之间的间隔。 */
-private val SidebarGap = 8.dp
 
 /** 浮起的侧边栏下面那层遮罩，M3 模态抽屉的 32%。 */
 private const val SidebarScrimAlpha = 0.32f

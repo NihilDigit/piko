@@ -73,6 +73,9 @@ class DuplicateFinderState(
         report.identical.flatMapTo(HashSet()) { group -> group.rows.map { it.file.id }.filter { it != group.keptId } }
     }
 
+    /** 还在扫描或比对，结果还没出来。 */
+    val isScanning: Boolean get() = phase == Phase.SCANNING || phase == Phase.ANALYZING
+
     private var scanner: DuplicateScanner? = null
     private var scanJob: Job? = null
 

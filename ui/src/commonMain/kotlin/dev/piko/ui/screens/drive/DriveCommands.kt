@@ -80,9 +80,9 @@ internal class DriveCommands(
     val download: Boolean,
     val extract: Boolean,
     val removeRecord: Boolean,
-    /** 清空回收站、清空播放历史。 */
-    val emptyPlace: Boolean,
     // 以下作用于整个位置
+    /** 清空回收站、清空播放历史。是这一页的主操作，不在「更多」里，见 PrimaryActionButton。 */
+    val emptyPlace: Boolean,
     val selectAll: Boolean,
     val findDuplicates: Boolean,
     val sort: Boolean,
@@ -90,7 +90,7 @@ internal class DriveCommands(
     val feed: Boolean,
     val addLink: Boolean,
 ) {
-    val moreMenu: Boolean get() = moveCopyTo || download || extract || removeRecord || emptyPlace
+    val moreMenu: Boolean get() = moveCopyTo || download || extract || removeRecord
 }
 
 internal fun driveCommands(input: CommandInputs): DriveCommands = with(input) {

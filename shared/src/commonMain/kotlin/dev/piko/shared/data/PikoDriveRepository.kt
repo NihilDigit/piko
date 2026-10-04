@@ -1132,6 +1132,9 @@ private val tabsJson = Json { ignoreUnknownKeys = true }
 /** 网盘页的一个标签：停在哪（[stack]）与它自己的后退、前进。 */
 data class DriveTab(val id: Long, val stack: List<PikoPathBreadcrumb>, val history: FolderHistory = FolderHistory()) {
     val title: String get() = stack.lastOrNull()?.name.orEmpty()
+
+    /** 停在查重结果里。结果只活在这一次会话里，标签随它关掉。 */
+    val isDuplicates: Boolean get() = stack.firstOrNull()?.id == DriveLibrary.DUPLICATES.id
 }
 
 /**

@@ -258,11 +258,7 @@ internal fun VaultFolderStatus(session: FolderVaultSession, modifier: Modifier =
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = when {
-                        session.stopping -> STOPPING_TEXT
-                        progress.prepared < progress.total -> "准备归档 ${progress.prepared} / ${progress.total}"
-                        else -> "归档中 ${progress.done} / ${progress.total}"
-                    },
+                    text = vaultArchiveStatus(session).orEmpty(),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -293,11 +289,7 @@ internal fun VaultRestoreStatus(session: FolderVaultSession, modifier: Modifier 
             Column(Modifier.weight(1f)) {
                 Text(progress.folderName, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
-                    when {
-                        session.stopping -> STOPPING_TEXT
-                        progress.total == null -> "${progress.stage}，已扫描 ${progress.scannedFolders} 个文件夹"
-                        else -> "${progress.stage} ${progress.done} / ${progress.total}"
-                    },
+                    vaultRestoreStatus(session).orEmpty(),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -312,6 +304,26 @@ internal fun VaultRestoreStatus(session: FolderVaultSession, modifier: Modifier 
 }
 
 private const val STOPPING_TEXT = "正在停止，进行中的文件夹处理完即停"
+
+/** 归档进度的一行状态，底部状态条与浮动任务卡片共用。没有在归档时为 null。 */
+internal fun vaultArchiveStatus(session: FolderVaultSession): String? {
+    val progress = session.progress ?: return null
+    return when {
+        session.stopping -> STOPPING_TEXT
+        progress.prepared < progress.total -> "准备归档 ${progress.prepared} / ${progress.total}"
+        else -> "归档中 ${progress.done} / ${progress.total}"
+    }
+}
+
+/** 取消归档进度的一行状态。 */
+internal fun vaultRestoreStatus(session: FolderVaultSession): String? {
+    val progress = session.restoreProgress ?: return null
+    return when {
+        session.stopping -> STOPPING_TEXT
+        progress.total == null -> "${progress.stage}，已扫描 ${progress.scannedFolders} 个文件夹"
+        else -> "${progress.stage} ${progress.done} / ${progress.total}"
+    }
+}
 
 @Composable
 private fun VaultStopButton(session: FolderVaultSession) {
