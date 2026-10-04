@@ -9,11 +9,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import dev.piko.ui.LocalPikoServices
-import kotlinx.coroutines.launch
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
@@ -61,39 +56,15 @@ fun PikoScaffold(
         // 卡片上下都让开：顶栏与底栏都落在外框色上，卡片夹在中间。没有底栏的页，卡片离窗口底边留一截外框色，
         // 不贴着窗口边缘截断；有底栏的不再多留，否则底栏被垫高，与侧边栏底部的账号行对不齐
         val bottom = innerPadding.calculateBottomPadding().takeIf { it > 0.dp } ?: FrameCardBottomMargin
-        val card: @Composable () -> Unit = {
-            Box(Modifier.fillMaxSize().clip(FrameCardShape).background(colors.surface)) {
-                content(PaddingValues())
-            }
-        }
         Box(
             Modifier
                 .fillMaxSize()
                 .padding(top = innerPadding.calculateTopPadding(), bottom = bottom)
-                .consumeWindowInsets(innerPadding),
+                .consumeWindowInsets(innerPadding)
+                .clip(FrameCardShape)
+                .background(colors.surface),
         ) {
-            HostedSidePanel(card)
+            content(PaddingValues())
         }
     }
-}
-
-/** 卡片右边停进来的面板（见 SidePanelHost），与网盘页的详情栏同一种侧栏、同一个宽度。没有面板时只有卡片。 */
-@Composable
-private fun HostedSidePanel(main: @Composable () -> Unit) {
-    val hosted = LocalSidePanelHost.current?.top
-    val preferences = LocalPikoServices.current.preferences
-    val prefs by preferences.inspectorPanelFlow.collectAsStateWithLifecycle(initialValue = null)
-    val scope = rememberCoroutineScope()
-    SidePanelLayout(
-        open = hosted != null,
-        savedWidthDp = prefs?.widthDp,
-        title = hosted?.title.orEmpty(),
-        closeDescription = "收起侧栏",
-        onClose = { hosted?.close() },
-        onWidthChange = { scope.launch { preferences.setInspectorPanelWidth(it) } },
-        defaultWidth = HostedPanelDefaultWidth,
-        minWidth = HostedPanelMinWidth,
-        main = main,
-        panel = { hosted?.let { HostedPanelContent(it) } },
-    )
 }

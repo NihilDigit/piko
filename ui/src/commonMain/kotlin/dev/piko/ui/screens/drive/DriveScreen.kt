@@ -108,14 +108,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.PaddingValues
 import dev.piko.ui.theme.FrameCardShape
 import dev.piko.ui.theme.FrameCardBottomMargin
-import dev.piko.ui.components.LocalSidePanelHost
 import dev.piko.ui.components.LocalShowExtensions
 import dev.piko.ui.components.rememberListScrollTint
 import dev.piko.ui.components.defaultPanelBottomMargin
-import dev.piko.ui.components.HostedPanelContent
 import androidx.compose.material.icons.outlined.SwipeVertical
-import dev.piko.ui.components.HostedPanelDefaultWidth
-import dev.piko.ui.components.HostedPanelMinWidth
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.layout.onSizeChanged
@@ -237,7 +233,7 @@ fun DriveScreen(
     onFeedShownChange: ((Boolean) -> Unit)? = null,
     /**
      * 详情要占右侧那一栏，信息流让出来：挂起，不是关掉，队列留着，「继续刷」回来时详情关掉。
-     * 那一栏同一时刻只放一样东西，见 SidePanelHost。
+     * 那一栏同一时刻只放详情或信息流中的一样。
      */
     onFeedYield: () -> Unit = {},
     /** 信息流挂起着（队列还在、应用内不画），宽窗口的命令栏据此在「收着的东西」里给出继续刷。 */
@@ -356,7 +352,7 @@ fun DriveScreen(
         isSearchOpen = false
     }
 
-    // 返回键（桌面上是 Esc）的优先级，后声明的 BackHandler 先收到：停进侧栏的面板（它自己的）> 多选 > 详情栏
+    // 返回键（桌面上是 Esc）的优先级，后声明的 BackHandler 先收到：多选 > 详情栏
     // > 单击高亮 > 搜索 > 上一级目录。越临时、越晚出现的越先被吃掉；后三样声明在下面，挨着它们要看的状态
     BackHandler(enabled = folderStack.size > 1) { state.navigateUp() }
     BackHandler(enabled = folderStack.size == 1 && libraryView != null) { leaveLibrary() }
@@ -773,8 +769,6 @@ fun DriveScreen(
     }
     val inspectorAvailable = currentWidthClass() == WidthClass.Expanded
     val inspectorOpen = inspectorAvailable && inspectorPrefs?.open == true && !feedShown
-    // 停进右侧那一栏的面板（添加链接、查找重复这些），盖在详情栏上，见 SidePanelHost
-    val hostedPanel = LocalSidePanelHost.current?.top
 
     // Esc 依次吃掉的三样，优先级见上面 BackHandler 那一段。
     // 单击高亮：鼠标点过的那一项留着焦点底色，命令栏也作用于它；Esc 让它回到没点过的样子，焦点交回页面，快捷键照常
@@ -784,7 +778,7 @@ fun DriveScreen(
         runCatching { shortcutFocus.requestFocus() }
     }
     // 详情栏：刚点详情按钮打开的，Esc 收起
-    BackHandler(enabled = inspectorOpen && hostedPanel == null) {
+    BackHandler(enabled = inspectorOpen) {
         scope.launch { sessionManager.setInspectorPanelOpen(false) }
     }
     BackHandler(enabled = state.isSelectionMode) { state.exitSelection() }
@@ -998,7 +992,6 @@ fun DriveScreen(
             targets = commandTargets,
             selecting = state.isSelectionMode && selectedIdSet.isNotEmpty(),
             panel = when {
-                hostedPanel != null -> PanelContent.SHEET
                 inspectorOpen -> PanelContent.DETAILS
                 feedShown -> PanelContent.FEED
                 else -> PanelContent.NONE
@@ -1245,22 +1238,20 @@ fun DriveScreen(
                 .onSizeChanged { listAreaWidth = with(density) { it.width.toDp() } },
         ) {
             contentFrame {
-                // 停进侧栏的面板（添加链接、查找重复这些，见 SidePanelHost）盖在详情栏上，关掉后详情栏回来
-                val hosted = hostedPanel
                 SidePanelLayout(
-                    open = hosted != null || inspectorOpen,
+                    open = inspectorOpen,
                     savedWidthDp = inspectorPrefs?.widthDp,
-                    title = hosted?.title ?: "详情",
+                    title = "详情",
                     closeDescription = "收起侧栏",
-                    onClose = { if (hosted != null) hosted.close() else scope.launch { sessionManager.setInspectorPanelOpen(false) } },
+                    onClose = { scope.launch { sessionManager.setInspectorPanelOpen(false) } },
                     onWidthChange = { scope.launch { sessionManager.setInspectorPanelWidth(it) } },
-                    defaultWidth = HostedPanelDefaultWidth,
-                    minWidth = HostedPanelMinWidth,
+                    defaultWidth = InspectorDefaultWidth,
+                    minWidth = InspectorMinWidth,
                     ready = inspectorPrefs != null,
                     // 这一块外面已让出离窗口底边的那截外框色，侧栏不再另留，下沿与列表卡片齐平
                     bottomMargin = if (pathInTopBar) 0.dp else defaultPanelBottomMargin(),
                     main = list,
-                    panel = { if (hosted != null) HostedPanelContent(hosted) else inspectorPanel() },
+                    panel = { inspectorPanel() },
                 )
             }
         }

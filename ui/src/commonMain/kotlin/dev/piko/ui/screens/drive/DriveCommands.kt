@@ -13,8 +13,8 @@ import io.github.nihildigit.pikpak.FileStat
  * 眼下的状态由四样东西决定，全在 [CommandInputs] 里：
  * - 在哪（[CommandPlace]）：网盘根目录、文件夹、搜索结果、星标这类库、最近添加与播放历史、回收站。
  * - 作用于哪几项：选中的几项；没有选中时是焦点所在（鼠标点过）的一项；都没有时为空，这时只剩作用于整个位置的操作。
- * - 右侧那一栏里是什么（[PanelContent]）：空着、详情、信息流、停进来的面板。那一栏同一时刻只放一样东西，
- *   谁进来原来的让出去；详情栏开着时，条目的操作已经整列摆在那里。
+ * - 右侧那一栏里是什么（[PanelContent]）：空着、详情或信息流，同一时刻只放一样；
+ *   详情栏开着时，条目的操作已经整列摆在那里。
  * - 剪贴板里有没有东西，眼前的列表有几项、有几类。
  */
 
@@ -39,8 +39,8 @@ internal enum class CommandPlace {
     TRASH,
 }
 
-/** 右侧那一栏眼下放着什么，见 SidePanelHost。 */
-internal enum class PanelContent { NONE, DETAILS, FEED, SHEET }
+/** 右侧那一栏眼下放着什么。 */
+internal enum class PanelContent { NONE, DETAILS, FEED }
 
 internal class CommandInputs(
     val place: CommandPlace,

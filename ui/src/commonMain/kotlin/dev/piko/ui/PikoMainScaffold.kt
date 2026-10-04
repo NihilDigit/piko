@@ -18,8 +18,6 @@ import dev.piko.shared.data.PikoFileSortOrder
 import dev.piko.ui.theme.ThemeMode
 import dev.piko.ui.components.LocalPaletteRegistry
 import dev.piko.ui.components.LocalShowExtensions
-import dev.piko.ui.components.LocalSidePanelHost
-import dev.piko.ui.components.SidePanelHost
 import dev.piko.ui.components.PaletteRegistry
 import dev.piko.ui.components.PaletteItem
 import dev.piko.ui.components.CommandPalette
@@ -492,15 +490,13 @@ fun PikoMainScaffold(
         clipFeedSession.open(folderStack.lastOrNull() ?: PikoDriveRepository.ROOT_BREADCRUMB)
         feedOpened = true
     }
-    // 右侧那一栏的宿主，面板（添加链接、查找重复这些）停在这里，见 SidePanelHost
-    val panelHost = remember { SidePanelHost() }
     // 信息流所在的那块地方里，人最后停在哪：离开时挂起，「继续刷」回到这里
     var feedHome by remember { mutableStateOf<PikoDriveRepository.DriveLocation?>(null) }
 
     /**
      * 信息流挂起，与「在网盘中显示」同一种状态：队列与看到哪一段都留着，应用内不画它，网盘里留一个「继续刷」，
      * 继续刷就回到 [from]。凡是让它离开那一栏或那块地方的都走这里，不再各有各的收起：
-     * 离开开始时的文件夹、侧栏被详情或停进来的面板占去、从信息流跳去网盘看文件。
+     * 离开开始时的文件夹、侧栏被详情占去、从信息流跳去网盘看文件。
      * 独立窗口不挂起，它本来就在旁边，不挡网盘。
      */
     fun suspendFeed(from: PikoDriveRepository.DriveLocation) {
@@ -517,11 +513,6 @@ fun PikoMainScaffold(
         } else {
             suspendFeed(feedHome ?: services.driveRepository.currentLocation())
         }
-    }
-    // 有面板停进侧栏时信息流让出那一栏，同样是挂起
-    val hostedPanel = panelHost.top
-    LaunchedEffect(hostedPanel) {
-        if (hostedPanel != null) suspendFeed(services.driveRepository.currentLocation())
     }
 
     fun playFromFeed(file: FileStat, startMillis: Long) = playVideo(file, listOf(file), startMillis)
@@ -552,9 +543,8 @@ fun PikoMainScaffold(
         val detour = feedDetour ?: return
         services.driveRepository.returnTo(detour)
         feedDetour = null
-        // 信息流要回到那一栏，占着它的详情与面板关掉：那一栏同一时刻只放一样东西，
+        // 信息流要回到那一栏，占着它的详情关掉：那一栏同一时刻只放一样东西，
         // 详情不藏在底下等信息流关了再冒出来
-        panelHost.closeAll()
         coroutineScope.launch { preferences.setInspectorPanelOpen(false) }
         resetToHome()
         currentTab = MainTab.FILES
@@ -936,9 +926,7 @@ fun PikoMainScaffold(
                 )
             }
             BackHandler(enabled = sidebarFloating) { sidebarFloatRequested = false }
-            // 有外框、右边又放得下一栏时面板停进右侧那一栏，见 SidePanelHost。放不下时（外框从 600dp 起就有）
-            // 不给宿主，PikoSheet 退回模态侧边面板或底部 sheet，不把列表挤成一条
-            CompositionLocalProvider(LocalFramed provides sidebarMode, LocalSidePanelHost provides panelHost.takeIf { sidebarMode && panelFits }) { Box(Modifier.fillMaxSize()) { Row(Modifier.fillMaxSize().then(frameModifier)) {
+            CompositionLocalProvider(LocalFramed provides sidebarMode) { Box(Modifier.fillMaxSize()) { Row(Modifier.fillMaxSize().then(frameModifier)) {
                 if (sidebarMode) {
                     // 窄窗口里这一条恒为窄轨，展开的那一份浮在上面，见下
                     if (sidebarOverlays) Sidebar(SidebarRailWidth, collapsed = true) else Sidebar(sidebarWidth, sidebarCollapsed)

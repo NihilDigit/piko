@@ -41,7 +41,6 @@ import androidx.compose.ui.unit.dp
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.platform.LocalPikoPlatform
-import dev.piko.ui.theme.LocalFramed
 
 /** [PikoSheet] 内容所在的作用域。 */
 interface PikoSheetScope : ColumnScope {
@@ -60,6 +59,10 @@ interface PikoSheetScope : ColumnScope {
 
 /**
  * 模态面板。宽窗口（expanded）里是从末端边缘滑入的侧边面板，其余是只有展开一档的底部 sheet。
+ *
+ * 面板承接的是临时任务（条目操作、传输详情、添加链接），一律浮在内容上，不停进外框右侧那一栏。
+ * 曾经停进去过，图它不挡列表；但那一栏还放详情与信息流，三者轮流让位，返回键关的是哪一个说不清。
+ * scaffold.md 的划分是常驻的工具与内容并排，临时任务无论多宽都浮着，右栏因此只留给详情与信息流。
  *
  * bottom-sheets.md 的 Adaptive design 一节："On larger expanded breakpoints, like desktop, a bottom
  * sheet can be swapped for a side sheet that shows similar content." 底部 sheet 在宽窗口里只能在正中
@@ -83,12 +86,6 @@ fun PikoSheet(
     sideSheetTitle: String? = null,
     content: @Composable PikoSheetScope.() -> Unit,
 ) {
-    // 有外框时停进右侧那一栏，见 SidePanelHost
-    val host = LocalSidePanelHost.current
-    if (host != null && LocalFramed.current) {
-        HostedSheet(host, sideSheetTitle, onDismissRequest, content)
-        return
-    }
     if (currentWidthClass() == WidthClass.Expanded) {
         ModalSideSheet(onDismissRequest, sideSheetTitle, content)
         return
@@ -173,7 +170,7 @@ private fun ModalSideSheet(onDismissRequest: () -> Unit, title: String?, content
     }
 }
 
-internal class SheetScopeImpl(
+private class SheetScopeImpl(
     column: ColumnScope,
     override val isSideSheet: Boolean,
     private val hide: (() -> Unit) -> Unit,

@@ -246,3 +246,7 @@ private fun formatDuration(seconds: Long): String {
 }
 
 private val PropertyLabelWidth = 72.dp
+
+/** 详情栏的默认宽度与下限，拖宽后存进偏好 inspectorPanelFlow。 */
+internal val InspectorDefaultWidth = 320.dp
+internal val InspectorMinWidth = 280.dp
