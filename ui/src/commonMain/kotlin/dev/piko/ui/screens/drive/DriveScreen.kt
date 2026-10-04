@@ -156,6 +156,7 @@ import dev.piko.shared.upload.isUploading
 import dev.piko.shared.download.DriveDownloadFolderSource
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
+import dev.piko.ui.adaptive.isHeightCompact
 import dev.piko.ui.components.PikoSheet
 import dev.piko.ui.platform.ShortcutModifier
 import dev.piko.ui.platform.LocalWindowCaption
@@ -373,8 +374,13 @@ fun DriveScreen(
     var keyboardFocusTarget by remember { mutableStateOf<String?>(null) }
     val focusManager = LocalFocusManager.current
     var renameNewName by remember { mutableStateOf("") }
-    // 宽窗口的顶栏是地址栏加后退、前进与上一级，照资源管理器；窄屏仍是目录名作标题、上级另成一行面包屑
-    val pathInTopBar = currentWidthClass() != WidthClass.Compact
+    // 宽窗口的顶栏是地址栏加后退、前进与上一级，照资源管理器；窄屏仍是目录名作标题、上级另成一行面包屑。
+    // 横握的手机（高度 compact）也按窄屏：地址栏加命令栏两行在三百多 dp 里太高，而且它仍是触屏，
+    // FAB、底部把手与长按多选比资源管理器那一套顺手
+    val heightCompact = isHeightCompact()
+    val pathInTopBar = currentWidthClass() != WidthClass.Compact && !heightCompact
+    // 右侧的详情栏与标签栏：只在宽、又不矮的窗口里开，高度 compact 时双栏不现实
+    val twoPane = currentWidthClass() == WidthClass.Expanded && !heightCompact
     // 地址栏进入输入的请求，快捷键加一，见 DrivePathTitle
     var addressEditRequests by remember { mutableIntStateOf(0) }
     // 输入框从原名开始改；只设目标的话，框里留着上一次改名时输入的字
@@ -535,7 +541,7 @@ fun DriveScreen(
     // 标签：宽窗口里一个标签一个位置，见 PikoDriveRepository.tabsFlow
     val tabs by driveRepo.tabsFlow.collectAsStateWithLifecycle()
     val activeTabId by driveRepo.activeTabId.collectAsStateWithLifecycle()
-    val tabsAvailable = currentWidthClass() == WidthClass.Expanded
+    val tabsAvailable = twoPane
     val openInNewTab: ((FileStat) -> Unit)? = if (tabsAvailable) {
         { folder -> driveRepo.openTab(folderStack + PathBreadcrumb(folder.id, folder.name), activate = false) }
     } else {
@@ -658,7 +664,7 @@ fun DriveScreen(
 
     // 条目上的详情按钮：宽窗口里这一项取得焦点、打开详情栏看它，与信息流占同一个位置，开详情就收起信息流；
     // 没有详情栏时打开操作面板。记住的回调里经 rememberUpdatedState 取窗口宽窄的最新值
-    val detailsInPanel = currentWidthClass() == WidthClass.Expanded
+    val detailsInPanel = twoPane
     val showDetails by rememberUpdatedState<(FileStat) -> Unit> { file ->
         if (detailsInPanel) {
             keyboardFocusTarget = file.id
@@ -767,7 +773,7 @@ fun DriveScreen(
     val inspectorPrefs by produceState<SidePanelPrefs?>(null, sessionManager) {
         sessionManager.inspectorPanelFlow.collect { value = it }
     }
-    val inspectorAvailable = currentWidthClass() == WidthClass.Expanded
+    val inspectorAvailable = twoPane
     val inspectorOpen = inspectorAvailable && inspectorPrefs?.open == true && !feedShown
 
     // Esc 依次吃掉的三样，优先级见上面 BackHandler 那一段。

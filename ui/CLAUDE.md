@@ -10,6 +10,10 @@
 
 布局只看窗口宽度，不看设备：`ui/.../adaptive/WindowWidth.kt` 按 M3 断点给出 compact、medium、
 expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以 Android 平板为准。
+另看高度一项：`isHeightCompact()`（不到 480dp，几乎就是横握的手机）。这时侧边栏只有窄轨、不能展开，不开详情栏与标签，
+网盘页顶栏按窄屏的样子，信息流全屏并收起系统栏（`PikoPlatform.HideSystemBars`，不锁方向），目录选择器与批量重命名全屏，
+面板在 medium 宽度下也用侧边形态。横握的手机不是缩小的桌面：它仍是触屏，三百多 dp 的高度放不下第二栏。
+按宽度开第二栏或展开侧边栏的新代码要同时看它。
 - 导航只有两套：compact 下是 `NavigationSuiteScaffold` 的底部导航栏（写死 `ShortNavigationBarCompact`，不交给库按窗口挑：
   库还看高度，横握的手机会得到一条横向底栏），比 compact 宽（`SidebarMinWindowWidth`，600dp）一律是一整条侧边栏
   （`MainSidebar`），连同外框与并进内容的标题栏。窗口不到 `SidebarPushMinWindowWidth`（1000dp）时侧边栏只占窄轨，

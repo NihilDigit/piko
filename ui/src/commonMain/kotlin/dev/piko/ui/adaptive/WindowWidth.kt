@@ -28,6 +28,15 @@ fun currentWidthClass(): WidthClass {
 }
 
 /**
+ * 窗口高度不到 480dp（M3 的 compact 高度），几乎就是横握的手机。window-size-classes.md：这时宽度多是 medium，
+ * 「但高度是 compact，双栏不现实」。只看宽度的话，横握的手机会被当成小号的桌面：侧边栏、详情栏、停在右边的信息流
+ * 都挤在三百多 dp 的高度里。凡是按宽度开第二栏或展开侧边栏的地方，都要同时看它。
+ */
+@Composable
+fun isHeightCompact(): Boolean =
+    !currentWindowAdaptiveInfo().windowSizeClass.isHeightAtLeastBreakpoint(WindowSizeClass.HEIGHT_DP_MEDIUM_LOWER_BOUND)
+
+/**
  * 单栏内容在宽窗口里的最大行长。M3 布局规范要求宽窗口控制行长，而不是把一行设置或
  * 一条传输任务拉满两千像素；超出部分留白，内容居中。
  */

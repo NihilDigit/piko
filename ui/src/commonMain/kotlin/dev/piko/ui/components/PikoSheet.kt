@@ -40,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
+import dev.piko.ui.adaptive.isHeightCompact
 import dev.piko.ui.platform.LocalPikoPlatform
 
 /** [PikoSheet] 内容所在的作用域。 */
@@ -86,7 +87,9 @@ fun PikoSheet(
     sideSheetTitle: String? = null,
     content: @Composable PikoSheetScope.() -> Unit,
 ) {
-    if (currentWidthClass() == WidthClass.Expanded) {
+    // 横握的手机宽度多在 medium，但只有三百多 dp 高：底部 sheet 只露几行，侧边面板能用满整个高度
+    val widthClass = currentWidthClass()
+    if (widthClass == WidthClass.Expanded || (widthClass == WidthClass.Medium && isHeightCompact())) {
         ModalSideSheet(onDismissRequest, sideSheetTitle, content)
         return
     }

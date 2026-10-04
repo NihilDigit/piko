@@ -66,6 +66,7 @@ import dev.piko.shared.rename.RenameRow
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
+import dev.piko.ui.adaptive.isHeightCompact
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.theme.FrameCardShape
@@ -111,7 +112,8 @@ fun BatchRenameDialog(
     }
     val dismiss = { if (state.phase != Phase.RUNNING) onDismiss() }
 
-    when (currentWidthClass()) {
+    // 高度 compact 时规则与预览上下叠着放不下，同窄屏一样全屏
+    when (if (isHeightCompact()) WidthClass.Compact else currentWidthClass()) {
         WidthClass.Compact -> LocalPikoPlatform.current.FullscreenDialog(
             onDismiss = dismiss,
             immersive = false,

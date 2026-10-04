@@ -120,6 +120,7 @@ import dev.piko.download.DownloadStatus
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
+import dev.piko.ui.adaptive.isHeightCompact
 import dev.piko.ui.components.SidePanelLayout
 import dev.piko.ui.components.sidePanelFits
 import dev.piko.ui.components.trackInputModality
@@ -275,8 +276,10 @@ fun PikoMainScaffold(
     val windowWidth = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.width.toDp() }
     val sidebarWindow = windowWidth >= SidebarMinWindowWidth
     val sidebarMode = sidebarWindow && (onHome || topScreen == Screen.Profile || topScreen in ProfilePanes)
+    // 横握的手机（高度 compact）只要窄轨，不能展开：展开的侧边栏连同快速访问与库，在三百多 dp 的高度里放不下几行
+    val heightCompact = isHeightCompact()
     // 窄的侧边栏窗口里只留窄轨的位置，展开时浮在内容上，见 SidebarPushMinWindowWidth
-    val sidebarOverlays = windowWidth < SidebarPushMinWindowWidth
+    val sidebarOverlays = windowWidth < SidebarPushMinWindowWidth || heightCompact
 
     fun resetToHome() {
         while (backStack.size > 1) backStack.removeLastOrNull()
@@ -430,10 +433,11 @@ fun PikoMainScaffold(
     val showExtensions by preferences.showExtensionsFlow.collectAsStateWithLifecycle(initialShowExtensions)
     // 窄窗口里浮起来的那一层展开的侧边栏。只记这一回：它是临时借一下地方，不改存下的收起状态
     var sidebarFloatRequested by remember { mutableStateOf(false) }
-    val sidebarFloating = sidebarFloatRequested && sidebarOverlays && sidebarMode
+    val sidebarFloating = sidebarFloatRequested && sidebarOverlays && sidebarMode && !heightCompact
     // 去了别处就收回：点了浮层里的一项，或窗口拉宽到推得开、缩到没有侧边栏
     LaunchedEffect(currentTab, topScreen, sidebarOverlays, sidebarMode) { sidebarFloatRequested = false }
     fun toggleSidebar() {
+        if (heightCompact) return
         if (sidebarOverlays) {
             sidebarFloatRequested = !sidebarFloating
         } else {
@@ -443,7 +447,9 @@ fun PikoMainScaffold(
     val initialPanelPrefs = remember { runBlocking { preferences.clipPanelFlow.first() } }
     val panelPrefs by preferences.clipPanelFlow.collectAsStateWithLifecycle(initialPanelPrefs)
     val contentWidth = with(density) { contentSize.width.toDp() }.takeIf { contentSize != IntSize.Zero }
-    val panelFits = contentWidth != null && widthClass == WidthClass.Expanded && sidePanelFits(contentWidth, ClipPanelMinWidth)
+    // 高度 compact 时不开右栏，信息流因此走全屏：横握手机正适合刷视频，不该挤在侧栏里
+    val panelFits = contentWidth != null && widthClass == WidthClass.Expanded && !heightCompact &&
+        sidePanelFits(contentWidth, ClipPanelMinWidth)
     // null 是还没量出内容区宽度。上次开着侧栏退出的，只在这回仍放得下侧栏时照样打开；
     // 放不下就是全屏形态，窄窗口一启动就开始播不是谁想要的
     var feedShownState by rememberSaveable { mutableStateOf<Boolean?>(null) }
@@ -770,6 +776,8 @@ fun PikoMainScaffold(
                 enter = motion.overlayEnter(),
                 exit = motion.overlayExit(),
             ) {
+                // 横握手机刷信息流时收起状态栏与导航条，只按窗口形状决定，不锁方向：竖着刷照旧留着系统栏
+                if (heightCompact && feedFullScreen) LocalPikoPlatform.current.HideSystemBars()
                 FeedContent(compact = false, visible = feedFullScreen)
             }
         }
@@ -922,7 +930,7 @@ fun PikoMainScaffold(
                     onOpenPage = ::openPage,
                     onToggleLibrary = ::toggleLibrary,
                     collapsed = collapsed,
-                    onToggleCollapsed = ::toggleSidebar,
+                    onToggleCollapsed = if (heightCompact) null else ::toggleSidebar,
                 )
             }
             BackHandler(enabled = sidebarFloating) { sidebarFloatRequested = false }
@@ -1070,13 +1078,14 @@ private fun MainSidebar(
     onToggleLibrary: (DriveLibrary) -> Unit,
     /** 收成只剩图标的窄轨，见 LocalSidebarCollapsed。 */
     collapsed: Boolean,
-    onToggleCollapsed: () -> Unit,
+    /** 收起与展开的开关。为 null 时不能展开（横握的手机），省掉开关所在的那一行，把高度留给各项。 */
+    onToggleCollapsed: (() -> Unit)?,
 ) {
     // 上面随内容多少滚动，左下角的账号与设置钉在底部，照桌面应用的通行做法（VS Code、Discord）
     CompositionLocalProvider(LocalSidebarCollapsed provides collapsed) { Column(modifier = Modifier.width(width).fillMaxHeight()) {
         // 与网盘页地址栏那一行同高，图标与后退按钮落在同一条水平线上。标题栏并进内容时，拖动窗口主要靠这一行。
         // 收起与展开的开关在这一行：展开时在 Piko 字样右端，收起时只剩它
-        Row(
+        if (onToggleCollapsed != null) Row(
             modifier = Modifier.fillMaxWidth().height(56.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = if (collapsed) Arrangement.Center else Arrangement.Start,

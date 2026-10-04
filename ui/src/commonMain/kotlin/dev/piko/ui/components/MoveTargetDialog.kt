@@ -75,6 +75,7 @@ import dev.piko.shared.data.isPikoInternalFolder
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
+import dev.piko.ui.adaptive.isHeightCompact
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.theme.LocalPikoMotion
 import io.github.nihildigit.pikpak.FileStat
@@ -105,7 +106,8 @@ fun FolderPickerDialog(
     recentTargets: List<List<PathBreadcrumb>> = emptyList(),
     onConfirmPath: (List<PathBreadcrumb>) -> Unit = {},
 ) {
-    val fullscreen = currentWidthClass() == WidthClass.Compact
+    // 高度 compact 时居中的对话框只剩两三行可滚，也全屏
+    val fullscreen = currentWidthClass() == WidthClass.Compact || isHeightCompact()
     val content: @Composable () -> Unit = {
         FolderPickerContent(
             title = title,

@@ -20,6 +20,7 @@ import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -47,6 +48,7 @@ import dev.piko.ui.theme.MotionStyle
 import dev.piko.ui.theme.PikoMotionScale
 import dev.piko.ui.screens.player.MpvPlaybackBackend
 import dev.piko.ui.screens.player.MpvVideoSurface
+import dev.piko.ui.screens.player.findActivity
 import dev.piko.update.AppUpdateService
 import java.io.File
 import android.os.StatFs
@@ -151,6 +153,17 @@ class AndroidPikoPlatform(
         ) {
             if (immersive) ImmersiveSystemBars(visible = systemBarsVisible)
             content()
+        }
+    }
+
+    @Composable
+    override fun HideSystemBars() {
+        val window = LocalContext.current.findActivity()?.window ?: return
+        DisposableEffect(window) {
+            val controller = WindowCompat.getInsetsController(window, window.decorView)
+            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            onDispose { controller.show(WindowInsetsCompat.Type.systemBars()) }
         }
     }
 
