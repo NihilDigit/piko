@@ -16,6 +16,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -69,9 +71,12 @@ internal fun VaultFolderDialog(
     val counted = all?.let { if (chosen.skipSmallFiles) it.largeFiles else it }
     val files = counted?.let { if (chosen.sourcedOnly) it.files - it.unsourcedFiles else it.files } ?: 0
     val bytes = counted?.let { if (chosen.sourcedOnly) it.bytes - it.unsourcedBytes else it.bytes } ?: 0L
+    // 试样：标题小一号、圆角收紧、确认用有底色的按钮，照桌面上的对话框。M3 的基本对话框按触屏设计，
+    // 大标题加无底色的文字按钮，在宽窗口里像一张漂在中间的手机卡片
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("归档文件夹") },
+        shape = MaterialTheme.shapes.large,
+        title = { Text("归档文件夹", style = MaterialTheme.typography.titleLarge) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 VaultDialogHeading(folder.name, survey, counted?.files, files, bytes, emptyText = "无可归档的文件")
@@ -114,7 +119,6 @@ internal fun VaultFolderDialog(
                         onCheckedChange = { update(current.copy(toTrash = it)) },
                         label = "原文件放入回收站",
                         supporting = if (current.toTrash) "清空回收站前仍可找回原文件" else "原文件将永久删除",
-                        supportingIsWarning = !current.toTrash,
                     )
                     VaultCheckboxOption(
                         checked = current.skipSmallFiles,
@@ -126,13 +130,21 @@ internal fun VaultFolderDialog(
             }
         },
         confirmButton = {
-            TextButton(
+            // 永久删除原文件时按钮换成错误色，后果落在要按下去的那一处。复选框下的说明不染红：
+            // M3 的错误色只给校验出错，取消勾选不是错；在警告框里另加一行红字也试过，像补丁
+            val destructive = !chosen.toTrash
+            Button(
+                colors = if (destructive) {
+                    ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError)
+                } else {
+                    ButtonDefaults.buttonColors()
+                },
                 enabled = files > 0 && options != null,
                 onClick = {
                     session.archive(folder, includeUnsourced = !chosen.sourcedOnly, onlyLargeFiles = chosen.skipSmallFiles, moveToTrash = chosen.toTrash)
                     onDismiss()
                 },
-            ) { Text(if (chosen.toTrash) "归档" else "归档并删除") }
+            ) { Text("归档") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
@@ -211,7 +223,6 @@ private fun VaultCheckboxOption(
     onCheckedChange: (Boolean) -> Unit,
     label: String,
     supporting: String?,
-    supportingIsWarning: Boolean = false,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth().toggleable(value = checked, role = Role.Checkbox, onValueChange = onCheckedChange).padding(vertical = 4.dp),
@@ -223,11 +234,7 @@ private fun VaultCheckboxOption(
             Text(label, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
             // 说明写的是勾或不勾的后果，做决定要看，与标签同一档字号，不缩成附注
             if (supporting != null) {
-                Text(
-                    supporting,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (supportingIsWarning) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Text(supporting, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
