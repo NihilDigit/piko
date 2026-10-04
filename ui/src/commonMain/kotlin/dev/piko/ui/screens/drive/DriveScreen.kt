@@ -39,7 +39,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.consumeWindowInsets
@@ -165,7 +164,6 @@ import dev.piko.ui.screens.rename.BatchRenameDialog
 import dev.piko.ui.LocalPikoServices
 import dev.piko.shared.data.isArchiveVolume
 import dev.piko.shared.data.isExtractableArchive
-import dev.piko.ui.screens.archive.ArchiveExtractStatus
 import dev.piko.ui.components.BreadcrumbBar
 import dev.piko.ui.components.FileNameField
 import dev.piko.ui.components.FolderPickerDialog
@@ -1295,10 +1293,8 @@ fun DriveScreen(
                 snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
                 bottomBar = {
                     Column {
-                        // 队列为空时不占位
-                        ArchiveExtractStatus(archiveSession, Modifier.fillMaxWidth())
-                        VaultFolderStatus(vaultSession, Modifier.fillMaxWidth())
-                        VaultRestoreStatus(vaultSession, Modifier.fillMaxWidth())
+                        // 没有后台工作时不占位
+                        BackgroundActivityStrip(archiveSession, vaultSession, Modifier.fillMaxWidth())
                         // 收起后的把手只在窄窗口：宽窗口的命令栏上「添加链接」「查找重复」点了就是放回收起的会话，
                         // 底部再挂一条是同一件事的第二个入口
                         if (instantState != null && !instantSession.isSheetOpen && !pathInTopBar) {
