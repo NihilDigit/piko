@@ -7,6 +7,10 @@ import dev.piko.data.repository.NaturalOrder
  *
  * 路径可以带目录，也可以只有文件名（网盘里被拍平的旧数据）：没有目录时分区只看文件名里的标记。
  * 输出作品 → 分区 → 条目，字幕与外挂音轨挂在视频下，次要文件单列并注明原因。
+ *
+ * 解析的长尾在这一层按兄弟文件拽回来（重复后缀、上传者编号、哈希编号），不给单个文件名加规则：
+ * 只看一个文件名，信息不足以判断开头的数字是作品名还是编号，加了容易误伤；同目录里成群出现的模式才是可靠证据。
+ * 孤立的文件解析得不完美也放过，它只占一行。
  */
 fun analyzeMediaBatch(files: List<MediaFileInput>): MediaBatch = BatchAnalyzer(files).run()
 

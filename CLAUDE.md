@@ -5,6 +5,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Piko 是 PikPak 的第三方跨平台客户端。Android、Windows、macOS 与 Linux（后两者实验性）共用一套 Material 3 Expressive 界面，
 按窗口宽度自适应；业务逻辑与屏幕状态在 `shared`，界面在 `ui`，两端只剩入口与平台实现。
 
+本文件只写跨模块的约定。各模块的细节在所在目录的 CLAUDE.md，读到那里的文件时自动加载；只搜索、不读文件时要自己打开：
+
+| 文件 | 内容 |
+| --- | --- |
+| `ui/CLAUDE.md` | 响应式布局、导航与侧边栏、外框与标题栏、面板、图标、鼠标与键盘、命令面板、动效与减少动画 |
+| `ui/.../screens/drive/CLAUDE.md` | 网盘页：库、命令栏、地址栏、详情栏、选中与框选、拖放、键位 |
+| `ui/.../screens/clips/CLAUDE.md` | 信息流：范围、挂起与继续、挑段先后、取流调度 |
+| `desktopApp/CLAUDE.md` | 桌面端：界面库版本、release 与 AOT、原生库、显卡失效、弹层崩溃、标题栏、触摸、文件框、macOS、Linux |
+| `shared/.../shared/update/CLAUDE.md` | 应用内更新：检查、镜像、各平台安装、安装与更新冒烟 |
+| `shared/src/desktopMain/.../auth/CLAUDE.md` | 桌面端机密存储 |
+| `cli/CLAUDE.md`、`shots/CLAUDE.md` | 开发用 CLI、截图工具 |
+
 ## 常用命令
 
 ```bash
@@ -22,10 +34,11 @@ gh workflow run release.yml -f version=9.9.9  # 发版演练：测试、构建�
 ```
 
 `gradlew :desktopApp:run` 直接读 `build/classes`，开发版运行期间重新编译它加载的模块，正在运行的进程会在
-下一次加载类时报 `NoClassDefFoundError`。要编译先关掉开发版。
+下一次加载类时报 `NoClassDefFoundError`。要编译先关掉开发版。改完代码直接结束开发版进程、编译、在后台重新
+`:desktopApp:run`，不必先问或等我点完界面；安装版的 Piko 要关仍先问。
 
 改完务必两端都编译：`shared` 与 `ui` 的改动会同时波及 `app` 与 `desktopApp`，只编译一端看不出来。
-`ui` 的桌面端与 Android 端用的 material3 版本不同（见「桌面端」一节），同一行代码可能只在一端报错。
+`ui` 的桌面端与 Android 端用的 material3 版本不同（见 `desktopApp/CLAUDE.md`），同一行代码可能只在一端报错。
 
 版本号来自环境变量 `PIKO_VERSION_NAME` / `PIKO_VERSION_CODE`，本地不设则用默认值，无需配置。
 
@@ -86,7 +99,7 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 `ui/src/commonMain` 是全部界面：主题、导航、网盘、传输、设置、登录与各组件，两端共用。
 入口是 `PikoApp`：`MainActivity` 与桌面的 `Main.kt` 各自拼好 `PikoServices`（进程级的仓库与调度器）
 与 `PikoPlatform`（平台能力），传进去即可。屏幕里经 `LocalPikoServices`、`LocalPikoPlatform` 取用，
-不要再引用 `PikoApplication.instance`。
+不要再引用 `PikoApplication.instance`。布局只看窗口宽度，不看设备，细节见 `ui/CLAUDE.md`。
 
 `shared/.../shared/state/DriveScreenState.kt` 仍是核心接缝：文件列表、加载态、排序、搜索、多选、
 启发式折叠、防窥揭示、目录导航与增删改动作都在这里。约定：
@@ -102,137 +115,6 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 进程级，挂在 `PikoServices` 上，离开网盘页照常进行）。
 播放器的准备策略是 `shared/.../shared/media/player/PlayerScreenState`，见「播放器」一节。
 
-### 响应式布局
-
-布局只看窗口宽度，不看设备：`ui/.../adaptive/WindowWidth.kt` 按 M3 断点给出 compact、medium、
-expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以 Android 平板为准。
-- 导航只有两套：compact 下是 `NavigationSuiteScaffold` 的底部导航栏（写死 `ShortNavigationBarCompact`，不交给库按窗口挑：
-  库还看高度，横握的手机会得到一条横向底栏），比 compact 宽（`SidebarMinWindowWidth`，600dp）一律是一整条侧边栏
-  （`MainSidebar`），连同外框与并进内容的标题栏。窗口不到 `SidebarPushMinWindowWidth`（1000dp）时侧边栏只占窄轨，
-  展开的那一份带遮罩浮在内容上（照模态抽屉，点遮罩、返回或去了别处就收回，不改存下的收起状态）；更宽时展开是推开内容。
-  侧边栏上面是去处，下面是快速访问（`QuickAccessSection` / `QuickAccessState`），
-  照资源管理器只列用户固定的文件夹，文件夹右键「固定到快速访问」。PikPak 没有这项，存在偏好 `pinnedFolders` 里
-  经设置同步带走（`PinnedFolders`，只存 ID 与名字，打开时按 ID 查上级）。只亮一处：人在固定的文件夹里时亮它，否则亮当前页。
-  不要在导航栏旁边再并排一栏导航。侧边栏在 `NavDisplay` 外面，打开「我的」里的各页时不被盖住（应用内播放器这类
-  整窗的页照旧盖住，见 `sidebarMode`）。快速访问的条目右键可以在新标签页打开或取消固定。侧边栏不能拖宽，只能收起成只剩图标的窄轨
-  （顶上的开关或主修饰键+B，`sidebarCollapsedFlow`，每台设备各自的；各行读 `LocalSidebarCollapsed` 自己换成窄轨的样子）。
-  蜗牛模式开着时「传输」按钮整个用强调色，有没有传输都是。「文件」与「传输」是一组连体按钮；有传输在跑时「传输」按钮上写速度（上下行取快的一边）或项数
-  （`workbench/TransferActivity`），蜗牛模式（限速，偏好 `snailModeFlow`，每台设备各自的，不同步）开着时用强调色。
-  原来窗口底部的状态栏已去掉，不要再加回。
-  这一档画外框（`theme/Frame.kt`）：侧边栏、网盘页页眉与右侧面板同为外框色，各页内容是一张卡片；标题栏在 Windows 上
-  可并进内容（设置里的「紧凑标题栏」，`WindowCaption`）：贴着窗口右上角的那一行自己画窗口按钮，空白处经 `windowDragArea` 登记为拖动区。
-  并进与否不看宽度：主界面任何宽度都接管（手机宽度时是各页顶栏画按钮），登录页这类主界面之外的页仍是系统标题栏。
-  新写的顶栏要能画按钮：挂 `rememberCaptionSlot()` 的 modifier，按钮接在动作后面，标题后面的空白登记为拖动区。
-  各页一律用 `PikoScaffold`，不直接用 `Scaffold`：有外框时它把顶栏、底栏放在外框色上，内容裁成卡片；顶栏与底栏的高度
-  取 `Frame.kt` 的 `FrameTopRowHeight`、`FrameBottomRowHeight`，与侧边栏的图标行、账号行对齐。
-- 图标：平时一律描边（Outlined），选中、打开、正在生效时换实心（Filled），侧边栏、导航项、视图切换、开关按钮都照此。
-  挑图标时选实心与描边长得不一样的：History、Share、SyncAlt 两种写法同形，切换了看不出。播放器叠在画面上的操作按钮例外，用实心。
-- 顶栏滚动换色：列表页用 `PikoTopBar.kt` 的 `rememberListScrollTint`，按列表是否在顶端设顶栏状态，不要挂
-  `pinnedScrollBehavior` 的 nestedScroll。后者累加滚动量，列表换了内容（进子文件夹、换筛选）或根本滚不动时
-  仍停在换过色的状态。
-- 搜索框右端一直有取消按钮：有字时清空，没字时关掉搜索。触屏上没有 Esc，没有这个按钮就退不出去。
-- 返回栈：`PikoMainScaffold` 用 Navigation 3 的 `NavDisplay`，栈底 `Screen.Home` 是导航栏与三个根页面，
-  其余页面压在上面、连同导航栏一起盖住。被盖住的 Home 离开组合，回来时重建，所以根页面的状态要经得起
-  重建（网盘页的目录内容与滚动位置记在仓库里）。新页面加一个 `Screen` 子类、登记进 `NavKeyConfiguration`、
-  在 `entryProvider` 里写一条 entry；切页与收起压栈页用 `resetToHome`，不要 `clear`，栈底必须留着 Home。
-- 库：最近添加、星标、播放历史与回收站不是单独的页，是网盘页里的位置（`DriveLibrary`），列表、视图、详情栏、
-  多选与右键菜单全用网盘页的。它占路径栈的第一级、取代根目录（`[星标]`、`[星标, 某文件夹]`），ID 带 `piko:` 前缀，
-  后退、标签、恢复上次位置因此照常工作。`DriveScreenState.libraryView` 为眼前列的是哪个库，`load` 据此改从星标、
-  回收站或事件接口取；库里平铺不解析、不折叠、不给排序，不能新建、上传、粘贴，也不接拖放。回收站只有恢复与彻底删除，
-  最近添加与播放历史多一个「移除记录」，各库都多「在网盘中显示」。侧边栏里它们是开关：停在这个库时再点一下回到打开之前的位置。
-  我的分享列的是链接不是文件，仍是单独的页。
-- 「我的」只在手机上是一页（底部导航栏的第三项）；有侧边栏时库与设置直接列在侧边栏上，账号、退出登录与关于并进设置，
-  详情页（我的分享、设置）占满内容区、不给返回。原来 600–1200dp 的两栏（`ListDetailSceneStrategy`）已去掉。
-- 对话框：目录选择器在 compact 下全屏，更宽时是居中的基本对话框。
-- 面板：一律经 `PikoSheet`。有外框时（大窗口）停进外框右侧那一栏（`SidePanelHost`），不带遮罩、不挡列表，与详情栏共用宽度；
-  expanded 而没有外框时是从末端滑入的模态侧边面板，其余是只有展开一档的底部 sheet；
-  不要直接用 `ModalBottomSheet`（播放器的面板另有横屏侧栏，除外）。
-- 右侧那一栏同一时刻只放一样东西：详情、信息流或停进来的面板，谁进来原来的让出去。详情与面板让出去是关掉，
-  信息流让出去是挂起（见下）。
-- 宽窗口网盘页的命令栏：每一样显不显示由 `DriveCommands.kt` 的 `driveCommands` 按规则算出，输入是在哪、作用于哪几项、
-  右侧那一栏里是什么、剪贴板与眼前列表的情形。做不了的不摆，别处已经摆着的不重复（详情栏开着时条目操作只在详情栏里）。
-  加按钮先在那里加规则，不在命令栏里零散判断。放不下时由 `CommandBarLayout` 按优先级把低的收进「更多」
-  （M3 toolbars 的 overflow），收哪几项只看宽度，拖动窗口时不跳；显示什么仍只由规则决定。
-- 网盘页：compact 以上顶栏照资源管理器：后退、前进、上一级，加一条地址栏（`DrivePathTitle`，每段能点、能接住拖来的条目）；
-  compact 仍是目录名作标题、上级另成一行面包屑。
-- 详情栏：expanded 的网盘页右侧（`InspectorPane`），条目上悬停出现的详情按钮（`ItemDetailsButton`，取代原来的三点；
-  触屏与窄窗口一直显示，打开操作面板）、空白处右键或主修饰键+I 打开，关闭在它自己的顶上。看选中的几项，没选时看焦点所在的
-  一项，都没有时是当前目录；操作与右键菜单同一份。与信息流侧栏占同一个位置，开详情时信息流挂起。
-  以后刮削到的作品信息放在预览与属性之间。
-- 信息流：刷**网盘页当前文件夹**里的视频，子文件夹里的也算，其余一切都为刷得顺服务。宽窗口是网盘页右侧的侧栏，
-  放不下时全屏，桌面端还能弹出到独立窗口。范围在打开的那一刻取定；进子文件夹不换。离开这个文件夹（路径栈里不再有它）、
-  右侧那一栏被详情或面板占去，都是挂起，与「在网盘中显示」同一种状态（`suspendFeed`），不收起；独立窗口不挂起。挑段的先后在 `ClipFeedSession.ranked`：有 720P 转码的先于只有原画的，当前层先于子文件夹；
-  没有转码的照样能放（原画 seek，起播慢），有转码的挑完了才轮到。不要再加范围菜单或「订阅」一类的入口。
-  在信息流里「在网盘中显示」是「刷到有趣的，去研究一下」：信息流**挂起**（队列与看到哪一段都留着，应用内不画），
-  出发点记成 `DriveLocation`，之后左边的浏览是临时的，离开文件夹也不收起；网盘页底部的 `FeedResumeBar` 给「继续刷」
-  （`returnTo` 连历史一起回到出发点，临时浏览整段丢掉）与关闭。只有关闭才清空队列（`ClipFeedSession.close`）。
-  取流的调度：每段只预取切片开头 5 秒（`PreparedClip.sliceRanges`）；放过 3 秒才升档，播放器的缓冲（`setBufferAhead`，
-  mpv 的 cache-secs）与代理的预读一起放开到 10 秒，此前两者都压着。播放器的缓冲读在 SDK 里是最高档，不压就越过所有预取。
-  冷开时头一段画面走起来之前只备前三段（`COLD_START_CLIPS`）。各段的会话与预取（`ClipStreams`）挂在 `ClipFeedSession` 上，
-  不随页面走：Android 上「看完整」压栈时信息流离开组合，回来不必重取。取不到的一段先挪到队尾重取一次，第二次才拉黑。
-  原画开头比转码开头低一档（7 对 8），不要改成独占通道：一段直链坏了会把其余原画全堵住。
-  「当前页」一松手就取 `targetPage`，不等 `settledPage`：手机上吸附动画收尾要几百毫秒，等它就是每段起步顿一下。
-  SDK 的阻塞读分两档：`PikPakStreamReader.urgent`（拖动后、卡顿、未出首帧）是 100，播放器平时往后缓冲是 50；
-  「有人在等」由界面判断后设上，桌面端后端拖动时不报缓冲，拖动要单独记。
-
-鼠标与键盘：条目右键弹出与操作面板相同的菜单（`ContextMenuArea`）；右键点在几项选中里的一项上时菜单作用于全部选中的，
-照资源管理器。网盘网格的空白处另有一层右键菜单（查看、刷新、粘贴、新建、全选、详情），条目的菜单在里层先接住。
-列表一律用按行对齐的 `LazyVerticalGrid`（`PikoItemGrid`），不用瀑布流：瀑布流按最矮的一栏放，顺序会在各栏间跳。每页把一项的操作写成一个
-`actionsFor`，面板与菜单都读它（网盘页是 `fileActions`）；新列表照做。
-网盘页的点击与键位照各自系统的文件管理器（Windows 照资源管理器，mac 照 Finder），不自创：
-鼠标单击是选中（条目取得焦点，`focusIndication` 盖一层底色，详情栏跟着它），双击才打开；触屏轻点照旧打开。
-多选时条目上画着勾选框，鼠标单击照旧是勾选。按住主修饰键点选是加选，
-Shift 点选是连选（`selectionClicks`，状态在 `DriveScreenState.toggleSelected` / `selectRange`）。
-在网格空白处拖动是框选
-（`marqueeSelection`，`selectBoxed`），空白处单击退出多选。按在已选中或刚点过（焦点所在）的条目上拖动是拖放移动，按在空白或别的条目上拖动是框选，照相册的做法：
-海报墙与图库几乎没有空白可按。拖放移动：
-拖到侧边栏的文件夹、路径栏的上级或网格里的文件夹上，按着 Ctrl（mac 上 ⌥）是复制。拖放是应用内自己做的
-（`FileDragState`，根上一份，落点经 `fileDropTarget` 登记范围），不走平台拖放；拖出去的一批自带落下后做什么，
-落点只提供文件夹。
-移动、移入回收站与重命名做完都记进 `DriveChangeJournal`（`driveRepository.changes`），提示带「撤销」，
-Ctrl+Z 撤销最近一次；以后的批量改动（自动重命名、按刮削结果整理）也记一条，撤销即反向再做一次。
-快捷键一览（F1 或主修饰键+/，`ShortcutsDialog`）是手写的一张表，加了快捷键要同时写进去。
-命令面板（主修饰键+K，`CommandPalette`）：模糊搜索最近去过的与快速访问里的文件夹、当前目录的子文件夹、去处与命令，方向键挑、回车执行。
-全局的命令在 `PikoMainScaffold` 的 `paletteItems`；某一页自己的命令在页里经 `ContributePaletteItems` 登记，页面离开组合时撤掉
-（网盘页登记了新建文件夹、上传、视图、详情栏等）。新页面有值得键盘直达的操作就照这样登记。
-网盘页的键盘：方向键在条目间走（焦点所在的一项由 `focusIndication` 描边，键盘导航时描边、鼠标点的盖底色，
-输入方式由根上的 `trackInputModality` 记），菜单键或 Shift+F10 打开操作面板，
-Delete 与 F2 作用于焦点所在项或选中的几项；鼠标点到哪一项，键盘就从哪一项接着走。鼠标侧键是后退、前进。
-Windows：Enter 打开，Backspace 与 Alt+←/→ 后退、前进，Alt+↑ 上一级。
-mac：⌘↓ 打开，回车改名（条目自己在 onPreviewKeyEvent 里接住，否则条目的单击先把它当打开），⌘[ ⌘] 后退、前进，⌘↑ 上一级。
-横排的内容挂 `verticalWheelScrollsRow`，鼠标的竖滚轮才滚得动它；
-图标按钮用 `TooltipIconButton`，快捷键写在提示里；Esc 经 `BackHandler` 触发返回；网盘页快捷键见
-`DriveScreen` 的 `handleShortcut`。新加的界面同时照顾触屏与鼠标：下拉刷新之类只有触屏能用的操作，
-宽窗口要另给按钮。快捷键的主修饰键取 `PikoPlatform.shortcutModifier`（mac 上是 ⌘），不要写死 Ctrl。
-Compose 桌面端悬停移动事件的 `previousPosition` 恒等于 `position`，判断「鼠标动了」要自己记上一次的位置。
-
-### 动效
-
-按平台分，不按输入方式分（按输入方式分时手感随触屏、鼠标来回变）：`PikoPlatform.motionStyle` 给出，
-Android 是 `MotionScheme.expressive()`，桌面是 `standard()`（几乎不回弹，同样距离约 200ms 到位，expressive 要约 400ms）。
-播放器控件另在 `PlayerTheme` 里用 expressive，不随平台。
-- 页面转场不走 motionScheme，走 `theme/Motion.kt` 的 `PikoMotion`，经 `LocalPikoMotion` 随主题注入，按平台取时长：
-  桌面取 WinUI 的 83、167、250ms，Android 取 M3 的 150 到 400ms；离场任何平台都不超过 200ms。切根页面是旧页淡完新页再淡入，
-  压栈是横滑加淡化，旧页淡完新页才开始淡入，两页不叠成半透明。新写转场用它给的 `topLevel`、`forward` 一类，不要自己写 tween。
-- 右键菜单与命令栏菜单在桌面上只淡入 80ms、不缩放（`MenuMotion`，只包这两处）。DropdownMenu 默认从 0.8 放大到 1，
-  graphicsLayer 的缩放同样作用于点击判定，右键后立刻点会点偏。右键菜单以指针为原点（`PointerMenuPositionProvider`）：
-  向右下展开，放不下就朝反方向，不用下拉菜单的规则（那会在下方放不下时整个翻到锚点上沿以上，锚点是整个条目乃至整片网格）。
-  工具栏按钮的下拉菜单仍用下拉规则。
-- 面板的 `hideThen` 当场通知关闭再执行动作，不等收起动画，面板直接消失。不能反过来先执行、等动画完再通知：
-  动作若改了开关面板的那个状态会被随后的关闭清掉，动作若让页面离开组合，关闭通知就发不出去。
-- 减少动画：系统设置与设置里的「减少动画」（`reduceMotionFlow`，每台设备各自的，不同步）取或，汇到进程里唯一的
-  `PikoMotionScale`（`MotionDurationScale`），为 0 时所有动画当场跳到终点。它由入口放进 Recomposer 的协程上下文：
-  桌面是 `Main.kt` 的 `runBlocking(motionScale) { awaitApplication { … } }`，窗口、弹层与对话框的 Recomposer 都从那里继承，
-  `MotionScaleInjectionTest` 守着这条链，升级 Compose 时看它；Android 是 `MainActivity` 给装饰视图换一个带缩放的
-  WindowRecomposer，注入之后 Compose 不再自己读开发者选项的动画缩放，由 `followSystemAnimatorScale` 接上。
-  系统设置的读取在 `desktop/motion/SystemReducedMotion`：Windows 读 `SPI_GETCLIENTAREAANIMATION`（即「辅助功能 → 视觉效果
-  → 动画效果」），经 `WindowsCaption` 窗口过程收到的 `WM_SETTINGCHANGE` 当场重读；macOS 读
-  `accessibilityDisplayShouldReduceMotion`，Linux 读 GNOME 的 `enable-animations`，两者在应用重新激活时重读。
-  减少动画时切页与面板也是跳切，与 Android 的「移除动画」一致。不要再试「归零之外给切页补淡入淡出」：Transition
-  （AnimatedContent、AnimatedVisibility 都靠它）每一帧从自己所在 LaunchedEffect 的协程上下文读缩放，那是 Recomposer 的
-  effect 上下文，整棵组合共用一份，没有按个别动画覆盖的入口；NavDisplay 又在内部自己驱动转场，外面包不进去。
-  缩放为 0 时无限动画停在终点那一帧，一直循环的装饰动画要读 `LocalPikoMotion.current.reduced` 自己画静态的样子（见骨架屏）。
-
 ### 平台差异用接口，不用 expect/actual
 
 两端相同、只是要用 JDK API 的代码放 `shared/src/jvmSharedMain`（Android 与 Desktop 共用的中间 source set），
@@ -244,21 +126,7 @@ Android 是 `MotionScheme.expressive()`，桌面是 `standard()`（几乎不回�
 下载位置选择、本地文件的打开与分享、片段预览的播放后端、全屏对话框、应用内更新）集中在
 `ui/.../platform/PikoPlatform.kt`，实现是 `AndroidPikoPlatform` 与 `DesktopPikoPlatform`。
 平台没有的能力返回 null 或 false，界面据此隐藏入口，例如桌面端没有系统分享。应用内更新两端都有，
-检查与版本比较在 `shared/.../shared/update`，安装各走各的：Android 交给 PackageInstaller；Windows 按文件清单
-决定只换补丁文件（exe、全部 jar、AOT 缓存、启动配置）、MSI 安装版整包重装，还是便携版从便携 zip 只换不同的文件，
-由 `apply-update.ps1` 在应用退出后执行，它要等 JVM 与启动器两个进程都退出（jpackage 的启动器另起同名子进程跑 JVM）。
-脚本里的相对路径逐级比对目录名得出，不按前缀截取：`%TEMP%` 可能是 8.3 短路径（`MARVIN~1`），与展开后的长路径
-前缀对不上，CI 上出过换完文件又重启、无限循环。增量补丁（zstd）在解码器加载不了的机器上（Windows ARM64）跳过，
-退回换整个文件；
-macOS 整个 .app 换成新 DMG 里的（`apply-update-mac.sh`），不逐个换文件，那会破坏签名封印。
-检查更新依次取 GitHub API、`releases/latest/download/release.json`（API 匿名限流，走代理的用户常被 403）。
-版本信息不经镜像取：附件摘要就在其中，镜像能连摘要一起伪造。下载附件在一个字节都没收到时退到 ghfast.top，
-按取自 GitHub 的摘要校验。jsDelivr 不能用：
-它按 tag 取，tag 推上去时 release 还是草稿。开屏自动检查可在设置里关掉（`autoCheckUpdatesFlow`）。
-带 `-Dpiko.update.auto=true` 启动时查到新版即自动装上，`desktopApp/package/package-smoke/` 用它对着假 Release
-（`fake_release.py`）端到端地测安装与更新，本机也能跑：测试包用 `pikoDesktopUpgradeUuid` 与 `pikoDesktopPackageName`
-另起一个产品，不碰已装的 Piko。
-公告不做进应用：发在 Telegram 频道（`t.me/piko_dev`），「关于」里有入口。
+见 `shared/.../shared/update/CLAUDE.md`。公告不做进应用：发在 Telegram 频道（`t.me/piko_dev`），「关于」里有入口。
 
 本机文件上传的调度在 `shared/.../shared/upload/PikoUploadCoordinator`，一次传一个，会话随任务存盘以便跨进程续传；
 平台只提供读文件（`PikoUploadSources`，桌面端是路径，Android 是 content: URI）与选择器（`PikoPlatform.uploadPicker`）。
@@ -305,11 +173,7 @@ macOS 整个 .app 换成新 DMG 里的（`apply-update-mac.sh`），不逐个换
   原样留着、另记「已被哪个账号接走」：清空的话，同机先后打开的旧版本会把「本机改成了空」同步进网盘。
 - 退出只退当前账号，随后切到最近用过的另一个；钥匙串一时读不出密码时按没有密码处理，不当成已退出。
 
-机密（会话与密码）按账号合成一份交给平台保管：Windows 是 DPAPI（FFM 直调），macOS 经 `/usr/bin/security` 进登录钥匙串
-（不用 SecItem 直调：ad-hoc 签名每版都变，直调每次更新后都弹授权框），Linux 经 libsecret 进 Secret Service
-（Flatpak 里自动走 portal），都用不了时退回 0600 文件。分层读取先读兜底文件：留在那里的只可能是平台存储锁着时写下的，
-比平台里那份新。桌面实现在 `shared/src/desktopMain/.../auth`（CLI 共用），FFM 那几份在 desktopApp 的 `secrets` 包：
-shared 按 JDK 21 编译，FFM 在那里还是预览 API。v0.10.0 起的明文文件在首次启动时迁移，读回一致才删。
+机密（会话与密码）按账号合成一份交给平台保管，桌面端的实现见 `shared/src/desktopMain/.../auth/CLAUDE.md`。
 
 ### 归档（vault）
 
@@ -319,10 +183,17 @@ shared 按 JDK 21 编译，FFM 在那里还是预览 API。v0.10.0 起的明文�
 `LeaseBudget` 按剩余空间限制同时借出的字节数）。清单是可信写入：版本大的赢，同版本随机串小的赢，输的一方把自己的纯函数改动套到
 赢家上重写，只存状态不存历史。取回后条目以 `restoredFileId` 保留来源和 CID，不再显示虚拟文件；真实文件按 ID 与内容标识补回元数据，供再次归档使用。
 同目录另存完整来源：磁力为 `归档来源-<标识>.magnet`，分享链接为 `.txt`，其他客户端可直接读取；这些文件不参与归档。代码里叫 vault，与压缩包（ArchiveRepository、服务端解压）区分；界面上叫「归档」。
+并发与写入的实测数据在 `docs/development/archive.md`。
+
+免费账号与会员的取舍：目标排序是 Piko+会员 > 官方+会员 > Piko+免费 > 官方+免费。免费账号的归档、播放、信息流不设上限，
+画质与速度不由 Piko 限制（服务端的限额照旧生效），只在结构上低于会员：不做激进优化（不悬停预借、不额外并行预取）。
+已否决：按日限额、限画质、Piko 侧限速、刻意降级、伪装流量。账号等级自动识别（`TransferAllowances.isPremium`），不给开关。
 
 ## PikPak API 的既有约束
 
-这些是实测结论，不要重新推导：
+这些是实测结论，不要重新推导。新的实测可以直接在我的真实账号上做，不必先问：在 `../pikpak-kotlin` 写 opt-in 的
+jvmTest（`PIKPAK_PROBE=1`，凭据在它的 `.env`），总量不超过 100 GB，只创建、改动、删除实验自己建的任务与文件，结束后移入回收站。
+碰到网盘原有内容、超过 100 GB 或会消耗免费账号每日次数的，先问。
 
 - **没有服务端按名搜索**。`/drive/v1/files` 的 `filters` 只认 phase / trashed / kind /
   starred / modified_time，`name` 一律 404，`q` 与 `search_text` 被接受后忽略。官方 Web 端
@@ -369,176 +240,11 @@ URL。直链过期重取、连接预算、预读与缓存都在 SDK 的 `PikPakF
 **Android 分发包是 GPLv3**：jdtech 包里的 FFmpeg 以 `--enable-gpl --enable-version3` 构建，mpv 也是 GPL 构建。
 piko 源码仍是 MIT，但发版时要附 GPLv3 与第三方声明，并指明对应源码的获取方式。
 
-## 桌面端
-
-- **版本**：界面库停在 CMP 1.12.0、material3 1.12.0-alpha03、MediaMP 0.5.0，与 Animeko 一致。CMP 1.13 的
-  alpha 带的 skiko 0.152 把渲染后端包进 `OnScreenRedrawer`，MediaMP 的 D3D11 画面表面要直接拿
-  `Direct3DRedrawer`，一开播放器就崩。打包插件单独用 1.13 的 alpha，因为 release 的 AOT 缓存 DSL 从这一版才有；
-  所以 `desktopApp` 不用 `compose.desktop.currentOs`，而是按版本号写出运行库坐标。1.12 的 material3 里
-  部分 API 仍是实验性，`ui` 模块已统一 opt-in；它也缺少无点击的 `SegmentedListItem`，设置页用
-  `StaticSegmentedRow` 顶替。
-- **release**：`./gradlew :desktopApp:packageReleaseMsi`（或 `createReleaseDistributable`）。ProGuard 只裁剪不混淆，
-  规则在 `desktopApp/proguard-rules.pro`，JNA、MediaMP、ServiceLoader 实现、isoparser 必须保留；
-  经 `MethodHandles` 按名字取出、交给 FFM 做 upcall 的方法（`WindowsCaption` 的窗口过程）代码里没有直接调用，
-  同样要写 keep，否则 release 包里悄悄失效，debug 看不出来。
-  打包时会跑一遍 AOT 训练（进程带 `compose.aot.training-run`，由 `Main.kt` 在 12 秒后自行退出），
-  得到 `app.aot`。训练与运行都带 `-XX:-AOTAdapterCaching -XX:-AOTStubCaching`：JDK 25 会把训练机上生成的
-  调用适配代码存进缓存且不核对 CPU 特性，CI runner 有 AVX-512，缓存装到没有它的 CPU 上随机崩在 AdapterBlob。AOT 缓存按 jar 的修改时间校验，MSI 与 zip 只存到偶数秒，训练前先把 jar 的时间取整，
-  否则安装后缓存作废（`msiexec /a` 解出安装包即可验证）。
-  jlink、jpackage 与 ProGuard 用 Azul 的 JDK 25 工具链，与运行 Gradle 的 JDK 无关；Temurin 25 不带 jmods，ProGuard 会失败。
-  打出 MSI 后由 `package/windows/transactional-upgrade.ps1` 把卸载旧版挪进安装事务：新版装失败时旧版文件保留，
-  但 Windows Installer 只把它记为「通告」状态，之后的应用内更新退回下载页。它还给 app 目录登记 `*.jar`、`*.xml`
-  的 RemoveFile 规则：增量更新换进来的新名字 jar 不在 MSI 的文件表里，没有这条卸载时会留下。打包会弹出训练窗口约 12 秒。
-- **原生**：mpv 与 FFmpeg 的 DLL 解开放在应用资源目录的 `mpv/` 下，启动时经
-  `MpvMediampPlayer.prepareLibraries` 指过去；MediaMP 默认每次运行都解压一份到 `%TEMP%` 且删不掉。
-  Toast 经 FFM 直调 combase 与 COM 虚表（`WindowsToast`），不用 kotlin-winrt。未打包应用的 AUMID
-  要在 `HKCU\Software\Classes\AppUserModelId` 登记才会显示通知，安装版首次启动时写入。
-- **显卡设备失效**：驱动复位 GPU（NVIDIA 事件 153、TDR）时 D3D 设备一律失效，skiko 0.150 不检查 HRESULT，
-  下一次改窗口尺寸就在 `makeDirectXSurface` 里解引用空指针，整个 JVM 崩溃。`GpuDeviceWatch` 在改尺寸前与每秒一次
-  问 `GetDeviceRemovedReason`，失效了就让 `PikoWindow` 以 `generation` 为 key 重建所有窗口。它读的是 skiko 的内部布局
-  （`Direct3DRedrawer.device` 与 `DirectXDevice` 结构体的槽位），升级 skiko 要对照源码核对。复现：管理员执行
-  `dxcap -forcetdr` 后拉一下窗口。mediamp 的日志经 `MpvLogBridge` 进应用日志，tag 是 mpv。
-- **测量途中销毁弹层**：Compose 桌面场景每帧先拷一份「主层加各弹层」的列表再逐个测量，测主层时若有弹层
-  （菜单、提示、对话框）离开组合，它当场被销毁却仍在列表里，轮到它时整个窗口抛 `RootNodeOwner is already disposed`，
-  出帧协程随之结束（Compose 的 bug，jb-main 仍在）。在测量时才组合的地方最容易撞上：`SubcomposeLayout`、
-  Scaffold 的槽位、`BoxWithConstraints`、懒加载列表。规避：
-  - 放弹层的自定义布局用普通 `Layout`，不用 `SubcomposeLayout`（命令栏的 `CommandBarLayout` 即因此改过）。
-  - 拖着窗口边框改尺寸时，Compose 不等下一帧、当场测量，最易触发。Windows 上 `WindowFrame` 在拖动期间把
-    `LocalWindowInfo` 的尺寸停在拖动前，并提供 `LocalWindowResizing`，按宽度换形态的判断都等松手；自己量尺寸
-    做判断的地方照 `PikoMainScaffold` 的 `panelFits` 那样，拖动中先存着、松手再算。
-  - 兜底：`PikoWindow` 的异常处理认出这一个异常，重建出事的窗口，不弹错误框。认的是 require 的文案，升级 Compose 时核对。
-- **单实例**：`SingleInstance` 以 `~/.piko/instance.lock` 的文件锁决定主实例，后来者经同目录的
-  Unix domain socket 转交启动参数（磁力链接）后退出。安装版与 `gradlew :desktopApp:run` 共用这把锁，
-  装好的 Piko 开着时，开发构建一启动就把参数转交过去然后退出，调试前先关掉安装版。AOT 训练进程不参与。
-- **关窗**：仍有下载进行时关主窗口不退出，藏进托盘，下完自动退出。窗口位置、大小与最大化状态存在
-  settings.properties 的 `window.<名称>.*` 下。
-- **标题栏**：自绘，入口是 `WindowFrame`。Windows 上不用 undecorated，而是经 FFM 子类化窗口过程
-  （`WindowsCaption`）：WM_NCCALCSIZE 只收回顶边，WM_NCHITTEST 答 HTCAPTION 与三个按钮的命中码，
-  贴靠布局、边缘缩放、阴影与 Win+方向键因此仍由系统负责；按钮的悬停与按下来自非客户区消息，不是 Compose
-  指针事件。macOS 用根面板属性把内容铺进标题栏，再由 Skiko 的 `disableTitleBar` 接管拖动，红绿灯保留。
-- **触摸与笔**：AWT 不处理 WM_POINTER，触摸被降级成单个鼠标指针，没有多指、压力与笔的类型。`compose-windows-touch` 在
-  `WindowsCaption` 的两个窗口过程里（框架窗口与 Skiko 画布，WM_POINTER 发给鼠标下的画布）截下 WM_POINTER*，
-  经反射注入 Compose 内部的 `ComposeScene.sendPointerEvent` 列表重载。要点：
-  - 不碰 WM_NCPOINTER*：落在标题栏与边框的触摸由系统合成鼠标消息，窗口移动与标题栏按钮才照旧。
-  - 对 Compose 的反射在第一条指针消息到来时才建立，取不到就一直走 AWT 的鼠标路径。它读 `composePanel`、
-    `_composeContainer`、`mediator` 与 `sendPointerEvent-` 的 10 参重载，**升级 CMP 时先看这里**；
-    release 的 ProGuard 要显式保留这些成员（`proguard-rules.pro`），否则只在 release 里悄悄退回鼠标。
-  - 堆积的 MOVE 在事件分发线程前合并，较早的采样留作 `HistoricalChange`，并要自己设
-    `originalEventPosition`，否则速度跟踪器从原点起算，fling 快得离谱。
-  - 触摸阈值：Compose Desktop 写死 18dp，`ProvideTouchViewConfiguration` 换成 Android 的 8dp。鼠标阈值是它的固定
-    比例（0.125dp / 18dp），换了之后仍不到一个物理像素，鼠标手感不变。
-  冒烟用 `InjectTouchInput`（虚拟数字化仪，无需触摸屏），在 `:desktopApp:desktopTest` 里，只能在 Windows 上跑。
-- **模态文件框一律经 `AwtDialogs`**（FileDialog、JFileChooser）：它只有挂起函数，里面换到专用线程上弹。
-  在界面线程上同步弹，模态框就地嵌套一层 AWT 事件循环，里面又渲染一帧、又 flush 一次 Compose 不可重入的
-  FlushCoroutineDispatcher，同一个续体被恢复两次，窗口整个崩掉（issue #7，macOS 上边放视频边改下载位置复现）。
-  `AwtDialogsGuardTest` 扫 import，别处出现就不过。Windows 的原生框（`FolderPicker`、`SaveFilePicker`）本来就在自己的
-  STA 线程上。属主窗口要在点击的当下取，再传进去。
-- Compose 与 MediaMP 的桌面依赖带进了 ui-test、junit、truth 与 kotlinx-coroutines-test，
-  在 `desktopRuntimeClasspath` 里排除，测试类路径不受影响。
-- **版本号**：`-PpikoDesktopVersion` 只在 tag 构建时传（CI 经 `ORG_GRADLE_PROJECT_pikoDesktopVersion`），
-  同时写入 `-Dpiko.release-build=true`，更新器只在带这个标记时启动即检查。不传时默认 1.0.0：macOS 的
-  CFBundleVersion 首位必须大于 0，jpackage 拒绝 0.x；它可能与正式版同号，所以不能靠版本号认开发构建。
-- **macOS（实验性，仅 Apple 芯片）**：同一个 `desktopApp`，原生库与 Compose 运行库按宿主系统取，jpackage
-  不能交叉构建，DMG 只在 `release.yml` 的 macos-15 runner 上打。mpv 运行库照 Animeko 用 MediaMP 的
-  `mediamp-mpv-runtime-macos-arm64`，画面走 Metal。与 Windows 的差别：不做 AOT 缓存（训练晚于 jpackage 签名，
-  写进去会破坏签名封印）；播放器全屏用 `WindowPlacement.Fullscreen`；magnet 链接、.torrent、Cmd+Q 与点 Dock 图标
-  经 Apple 事件进来（回调在界面线程上，读种子挪到后台）；设为 magnet 与种子的默认打开方式经 LaunchServices 直接改
-  （`MacLinkAssociation`，Windows 则是登记后跳系统设置，见 `WindowsLinkAssociation`），首次启动问一次，答过不再问；通知经 osascript（署名为脚本编辑器，自己署名要签过名的 bundle），防休眠经 caffeinate；
-  快捷键的主修饰键由 `PikoPlatform.shortcutModifier` 给出，mac 上是 ⌘。平台胶水集中在 `MacOs.kt`。
-  应用内更新整个换掉 .app（见「平台差异」一节）：新包先拷到旁边，过了 `codesign --verify` 再去掉隔离属性、换进去；
-  任何一步失败都留着旧包、重新打开它，下次启动时提示更新未完成（脚本写的 `failed` 标记）。
-  没有开发者证书，包未经签名与公证。
-
-## Linux（实验性）
-
-同一个 `desktopApp`，只出 x64：MediaMP 0.5.0 的 mpv 运行库只有 `linux-x64`。打包照 Animeko 的路子，差别在下面逐条写明。
-
-- **应用 ID `dev.nihildigit.Piko`，不再改**：.desktop、AppStream（`package/linux/`）、图标名、WM_CLASS 都用它，Flathub 以它为包名，
-  按 `nihildigit.dev` 域名验证。Flathub 要求域名部分小写，末段可以大写。Android 与 macOS 已发版的 `dev.piko`、`dev.piko.desktop` 不动。
-  WM_CLASS 默认取主类名（`dev-piko-desktop-MainKt`），桌面环境对不上 .desktop，Dock 里是一个没有图标的 java；
-  `LinuxDesktop.setWmClass` 经反射改 XToolkit 的字段，要 `--add-opens java.desktop/sun.awt.X11`，只在 Linux 宿主上加。
-- **产物**：`./gradlew :desktopApp:packageReleaseAppImage`（只在 Linux 宿主上注册）先出 jpackage 的 app-image，
-  再由 `package/linux/build-appimage.sh` 出三个附件：app-image 原样的 `.tar.gz`（日后 Flathub 取它）、`.AppImage`、`.AppImage.zsync`。
-  appimagetool 与 AppImage 头部的运行时按版本与摘要钉死，不用 continuous。AppImage 内嵌
-  `gh-releases-zsync|NihilDigit|piko|latest|piko-linux-x64-*.AppImage.zsync`，AppImageUpdate 一类外部工具也能更新；
-  .zsync 的 URL 写相对名，经镜像取时照样对得上。打包前的 AOT 训练要开窗，CI 上套 `xvfb-run`；本机 Gradle 的 foojay 0.9
-  在 Gradle 9.6 上自动下载工具链会失败，要自己装一份 Zulu 25 写进 `org.gradle.java.installations.paths`。
-- **AOT 缓存照做**：AppImage 每次挂载在不同的 `/tmp/.mount_*` 下，JDK 只比对类路径各项的相对位置，缓存照样认（`-Xlog:aot` 可见
-  Opened AOT cache）。squashfs 的修改时间只到秒，与 Windows 取整到偶数秒同一个处理。**不能设 `SOURCE_DATE_EPOCH`**：
-  mksquashfs 见到它会把所有文件的修改时间改成同一个值，缓存整份作废。
-- **原生库**：mpv 运行库的 jar 存不了符号链接，同一个库以真实文件名、SONAME、无版本名各存一份（libavcodec 三份各 11 MB），
-  `bundledAppResources` 只取 SONAME 那一份，放在资源目录的 `mpv/` 下，各库自带 `$ORIGIN` 的 RUNPATH，不上 `java.library.path`，
-  也就不必照 Animeko 那样挪目录、patchelf。运行库要 glibc 2.38（Ubuntu 24.04、Debian 13 起），更老的系统开不了播放器。
-- **画面要硬件 OpenGL**：MediaMP 在 Linux 上经 GLX 与 Skiko 共享纹理，只认 Skiko 的 `LinuxOpenGLRedrawer`。Skiko 把 llvmpipe 列为
-  不支持，没有硬件驱动（虚拟机、xvfb、WSLg 默认）时退到软件渲染，画面一直是黑的，打开也不返回；播放器窗口据此提示一句。
-  WSLg 里设 `GALLIUM_DRIVER=d3d12` 才走显卡。JVM 单测测不到这一段，装好的包里有自检：`-Dpiko.selftest=play`，
-  `PIKO_SELFTEST_PATH` 指一个本机视频（`SelfTest.kt`、`PlaybackSelfTest.kt`）。
-- **平台胶水**（`LinuxDesktop.kt`）：打开链接与文件交给 `xdg-open`，通知与「在文件管理器中显示」经 gdbus 调
-  `org.freedesktop.Notifications`、`org.freedesktop.FileManager1.ShowItems`（后者失败退回打开所在目录），防休眠经 `systemd-inhibit`。
-  一律不走 AWT 的 Desktop：它在 Linux 上靠 GTK，会把系统的 glib 载入进程，与 mpv 运行库自带的那份撞 SONAME。
-  中文字体挑一个装了的简体字体（Noto Sans CJK SC 等），理由同 Windows 指定雅黑。标题栏用系统的，不自绘；
-  播放器全屏用 `WindowPlacement.Fullscreen`；主修饰键是 Ctrl。GNOME 默认没有托盘，关窗后台传输时提示「再次打开 Piko」，
-  单实例把后来者的启动转成叫回窗口。
-- **默认打开方式**（`LinuxLinkAssociation`）：在 `~/.local/share/applications` 写一个 NoDisplay 的 .desktop（Exec 指 `$APPIMAGE`），
-  再 `xdg-mime default` 写进 mimeapps.list，当场生效，首次启动问一次。只在以 AppImage 运行时可用，每次启动若 AppImage 挪了位置就改写 Exec。
-  取消关联删掉这个文件与 mimeapps.list 里指向它的项。WSL 里 xdg-utils 认出 WSL 就把 xdg-open 转给 Windows，本机验证要换 `gio open`。
-- **应用内更新**：只认 AppImage（`$APPIMAGE`），Flatpak（`FLATPAK_ID` 或 `/.flatpak-info`）里整个关掉，`updater` 为 null。
-  查到新版时先取 .zsync（按 GitHub 的摘要校验），拿本机 AppImage 滚动对照，只按 Range 下缺的块（`Zsync.kt` 是 zsync 0.6.2 客户端的
-  Kotlin 实现，含 MD4），拼好后按 GitHub 公布的 SHA-256 核对，拼不出来或对不上就整包下载。不照 Animeko 捆 appimageupdatetool：
-  它自己去 GitHub 查、只信 .zsync 里的 SHA-1，退不到 ghfast.top，也校验不了 GitHub 的摘要。
-  新文件写在旧文件旁边（`.<名字>.piko-update`），校验过即改名换上，**不必等退出**：运行中的 AppImage 由 FUSE 挂载进程开着旧 inode。
-  重新打开要等退出，否则新进程撞上单实例锁、转交完就走：由 `setsid sh` 等本进程的 pid 消失再 exec 新的 AppImage。
-  它的环境要去掉 `_JPACKAGE_LAUNCHER`：jpackage 的启动器在本进程里设了它，带着它起的新启动器不读 Piko.cfg，只打出 java 的用法。
-  应用自己起的子进程再拉起 Piko（例如经 xdg-open）都有这个问题。
-  所在目录不可写或不是 AppImage 运行（解开的 app-image）时只给下载页。
-- **冒烟**：`package-smoke/linux.sh`，CI 的 `linux-package`（推送时不跑），`fake_release.py` 认单段 Range 并记下每次送出的字节数，
-  断言差分确实只下了一部分。停应用只杀 JVM（挂载目录里的 `usr/bin/Piko`），先杀 AppImage 的运行时会把挂载从 JVM 底下拆掉，
-  它下次读类文件时 SIGBUS。
-
-## 开发用 CLI
-
-`:cli` 是开发工具，不随应用发布。`./gradlew :cli:installDist` 后执行 `cli/build/install/piko-cli/bin/piko-cli`：
-
-- `snapshot -o <文件> [--root <路径>] [--depth <层数>] [--deep <名字,…>]`：只读列网盘目录，存成快照，
-  只含文件名、类型、大小。会话取自 `~/.piko`，token 轮换后写回，与桌面端共用。
-- `dryrun <快照> [--path <前缀>] [-o <文件>]`：离线对快照跑网盘页的解析流水线，逐行写出原名与界面上的样子。
-  调的是 `DriveScreenState` 同一组函数（`analyzeDriveFolder`、`buildDriveItems`、`describeDriveFolder`）。
-- `ls <路径>`：只读列一个目录，打印每项的 `params`。列目录接口在这里带回来源链接（离线下载的磁力、
-  分享转存的 `mypikpak.com/s/` 链接）与视频的 `duration`、`width`、`height`，不必另查详情。
-- `parse <文件名>…`：单独解析文件名。
-- `share <分享链接> [--pass <提取码>] [--restore]`：只读列出分享的顶层。`--restore` 实测转存：把分享里
-  最小的一个文件转存进根目录下新建的 `piko-probe-restore-*`，等任务结束后列出结果，再永久删除该文件夹。
-  实测结论：文件直接落在目标目录下，不带分享里的上级目录；任务秒级完成；任务 params 里没有新旧 id 的映射。
-
-Git Bash 会把以 `/` 开头的参数改写成 Windows 路径，传网盘路径时前面加 `MSYS_NO_PATHCONV=1`。
-
-快照含真实文件名，放在仓库外，不要提交。改解析规则后重跑 `dryrun` 对比即可，不必重新请求网盘。
-
 ## 截图
 
 **只在全自动工作流里，或我明确要求时才跑 `:shots`。** 平常改完界面直接编译、重启桌面开发版（或装到 Android 真机），
 交给我手测。截图环境的假数据放不了视频、没有窗口外框，看不出的问题比看得出的多，反复出图只是拖慢来回。
-
-`:shots` 也是开发工具，不随应用发布：无头运行整个应用（`PikoApp`，与桌面入口同一套界面、状态与平台实现），
-数据来自假的 PikPak 服务端，按任意窗口尺寸与深浅主题出 PNG。改了布局就跑它看图，不必开真实账号，
-也不用在 Windows 上：Linux 与没有显示器的机器同样能跑。
-
-```bash
-./gradlew :shots:run --args="all"                        # 一整套，写到 build/shots/，约一分钟
-./gradlew :shots:run --args="shot starred --size 1100x800 --click 我的 --click 星标 --wait Dune"
-./gradlew :shots:run --args="texts --click 传输"          # 打印界面上的文本，找 --click 的目标用
-```
-
-- 步骤有 `--click`、`--right-click`、`--hover`、`--key`、`--type`（往有焦点的输入框打字，中文也行）、`--drag`（按住左键拖，
-  坐标按 dp）、`--release`、`--wait`、`--pump`，
-  按写的顺序执行；点击按文本或内容描述找节点，
-  弹层里的也算。`all` 的清单在 `shots/.../Main.kt` 的 `standardSet`，改了哪类界面就往里加一张。
-- 数据在 `ShotEnv.kt` 的 `FakePikPak.seed()`：一部 12 集的番剧、一个子目录、电影与文档、回收站、星标、
-  离线任务与四个本地下载。假服务端（`FakePikPak`）经 OkHttp 拦截器作答，SDK 的请求与解析仍走真实代码；
-  只答界面读得到的接口，其余回 404，新页面要什么就补什么。与冒烟测试的 `FakePikPakServer` 是两份，那份要 MockEngine。
-- 没有窗口外框：自绘标题栏与拖放层不在画面里。Linux 上没有微软雅黑，中文落到别的字体，字宽与 Windows 略有出入。
-- 网络缩略图与海报不画，播放历史与我的分享是空的。
-- 参数里有中文时，Linux 上要 UTF-8 的 locale（`LC_ALL=C.UTF-8`），否则 Gradle 传给进程时变成问号，按文本找不到节点。
+用法见 `shots/CLAUDE.md`。
 
 ## 冒烟测试
 
@@ -547,13 +253,11 @@ Windows 上的 `:desktopApp:desktopTest`，Android 单测，x86_64 模拟器（A
 以及 Windows、macOS、Linux 上对安装包的冒烟（`windows-package`、`macos-package`、`linux-package`，推送时不跑）：安装、应用内更新，
 再验默认打开方式、在资源管理器中显示这类依赖系统真实行为的，包里的入口是 `SelfTest.kt`。冒烟走真实 libmpv、
 真实代理，PikPak 服务端用 MockEngine 顶替，SDK 的请求、鉴权与解析仍走真实代码。本地不必跑，以 CI 结果为准；
-安装与更新冒烟的脚本本机也能跑，见上面「平台差异」一节末尾。
+安装与更新冒烟的脚本本机也能跑，见 `shared/.../shared/update/CLAUDE.md`。
 
 JVM 测试看不出 Android 与 HotSpot 的差异：Android 的正则是 ICU，不认 `\p{IsHan}` 这类 Java 专有写法，
 Android 8 上一编译就崩（1.0.0 出过）。`AndroidRegexGuardTest` 扫源码拦着，写脚本类用 `\p{script=Han}`。
 ICU 的 `\d` 还是全部 Unicode 数字，文件名里的 `𝟐` 被抓出来后 `toInt()` 就抛（1.1.0 信息流闪退），数字一律写 `[0-9]`，同一个测试拦着。
 模拟器上的 `NamingUnicodeDigitsSmokeTest` 把文件名解析的各个入口（网盘页、信息流、查重、播放列表）在 ICU 上跑一遍，
 文件名里的数字逐位换成数学粗体、全角等别的数字，不许抛异常；解析入口有新增时往里补一行。
-对话框在 Android 上是按内容定高、居中的独立窗口，内容高度一变整个对话框就跳：对话框里不做尺寸动画，
-提示行常驻、出错只变色（issue #9）。
 老格式样片在 `testdata/media/`，直接提交，生成方式见 `generate.sh`；没有 WMV3/VC-1 样片，因为 ffmpeg 没有它的编码器。
