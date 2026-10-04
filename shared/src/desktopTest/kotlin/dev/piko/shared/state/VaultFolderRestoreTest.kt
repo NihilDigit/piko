@@ -105,6 +105,22 @@ class VaultFolderRestoreTest {
     }
 
     @Test
+    fun `survey counts originals in trash apart from space the rest needs`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val folder = server.addFolder("Show")
+        server.addFile("one.mkv", folder.id, content = ByteArray(100), hash = "G1", trashed = true)
+        val entries = listOf(VaultEntry.create("one.mkv", 100, "G1", null, 0), VaultEntry.create("two.mkv", 300, "G2", null, 0))
+        val body = buildJsonObject { put("entries", Json.encodeToJsonElement(entries)) }
+        server.addFile(".piko-vault-v1-${"0".repeat(16)}.json", folder.id, content = body.toString().encodeToByteArray())
+        val prefs = MemoryPreferences()
+        val survey = FolderVaultSession(repository(server, prefs), scope).surveyRestore(PikoPathBreadcrumb(folder.id, folder.name)).getOrThrow()
+        assertEquals(2, survey.entries)
+        assertEquals(400, survey.bytes)
+        assertEquals(1, survey.fromTrash)
+        assertEquals(300, survey.neededBytes)
+    }
+
+    @Test
     fun `an entry renamed after archiving still takes back its original from trash`() = smoke { scope ->
         val server = FakePikPakServer()
         val folder = server.addFolder("Show")

@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -37,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.state.FolderVaultSession
 import dev.piko.ui.components.InlineLoadingIndicator
+import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.toReadableSize
 
 /**
@@ -71,7 +73,7 @@ internal fun VaultFolderDialog(
                     counted.files == 0 -> Text("无可归档的文件")
                     else -> {
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("$files 个文件 · ${bytes.toReadableSize()}", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+                            Text("$files 个文件，共 ${bytes.toReadableSize()}", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
                             Text("文件仍在原目录显示，打开时从云端取回。", style = MaterialTheme.typography.bodySmall)
                         }
                     }
@@ -102,7 +104,7 @@ internal fun VaultFolderDialog(
                         checked = includeUnsourced,
                         onCheckedChange = { includeUnsourced = it },
                         label = "包含无来源记录的文件",
-                        supporting = "${counted.unsourcedFiles} 个文件 · ${counted.unsourcedBytes.toReadableSize()}。云端内容失效后，无法通过来源链接重新添加。",
+                        supporting = "${counted.unsourcedFiles} 个文件，共 ${counted.unsourcedBytes.toReadableSize()}。云端内容失效后，无法通过来源链接重新添加。",
                     )
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -125,6 +127,67 @@ internal fun VaultFolderDialog(
                     onDismiss()
                 },
             ) { Text(if (moveToTrash) "归档" else "归档并删除原文件") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+/**
+ * 取消一个文件夹的归档之前的确认。先清点整棵树：多少条，其中几条能从回收站取回原文件，其余要占多少新空间；
+ * 放不下时直接说明，不让人点了再失败。
+ */
+@Composable
+internal fun RestoreVaultFolderDialog(
+    folder: PikoPathBreadcrumb,
+    session: FolderVaultSession,
+    onDismiss: () -> Unit,
+) {
+    val survey by produceState<Result<FolderVaultSession.RestoreSurvey>?>(null, folder.id) { value = session.surveyRestore(folder) }
+    val counted = survey?.getOrNull()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("取消「${folder.name}」的归档") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                when {
+                    survey == null -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        InlineLoadingIndicator()
+                        Spacer(Modifier.width(12.dp))
+                        Text("正在统计归档条目")
+                    }
+                    counted == null -> Text("统计失败，请重试")
+                    counted.entries == 0 -> Text("此文件夹及子文件夹中没有归档条目")
+                    else -> {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("${counted.entries} 个文件，共 ${counted.bytes.toReadableSize()}", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+                            Text("未归档的文件保持原样。", style = MaterialTheme.typography.bodySmall)
+                        }
+                        if (counted.fromTrash > 0) {
+                            Text("其中 ${counted.fromTrash} 个从回收站取回原文件，不占新空间。", style = MaterialTheme.typography.bodyMedium)
+                        }
+                        if (counted.neededBytes > 0) {
+                            val remaining = counted.remainingBytes?.let { "，剩余 ${it.toReadableSize()}" }.orEmpty()
+                            Text(
+                                "需占用网盘空间 ${counted.neededBytes.toReadableSize()}$remaining。云端已无内容的条目保留在归档中。",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (counted.fits) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error,
+                            )
+                        }
+                        if (!counted.fits) {
+                            Text("网盘空间不足，请先腾出空间。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = counted != null && counted.entries > 0 && counted.fits,
+                onClick = {
+                    session.restoreFolder(folder)
+                    onDismiss()
+                },
+            ) { Text("恢复到网盘") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
@@ -168,8 +231,11 @@ internal fun VaultFolderStatus(session: FolderVaultSession, modifier: Modifier =
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = if (progress.prepared < progress.total) "准备归档 ${progress.prepared} / ${progress.total}"
-                        else "归档中 ${progress.done} / ${progress.total}",
+                    text = when {
+                        session.stopping -> STOPPING_TEXT
+                        progress.prepared < progress.total -> "准备归档 ${progress.prepared} / ${progress.total}"
+                        else -> "归档中 ${progress.done} / ${progress.total}"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -180,14 +246,15 @@ internal fun VaultFolderStatus(session: FolderVaultSession, modifier: Modifier =
                     )
                 }
             }
+            VaultStopButton(session)
         }
     }
 }
 
-/** 取消归档的扫描、恢复与清单提交进度。 */
+/** 取消归档的扫描与恢复进度。 */
 @Composable
-internal fun VaultRestoreStatus(progress: FolderVaultSession.RestoreProgress?, modifier: Modifier = Modifier) {
-    progress ?: return
+internal fun VaultRestoreStatus(session: FolderVaultSession, modifier: Modifier = Modifier) {
+    val progress = session.restoreProgress ?: return
     Surface(
         modifier = modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
@@ -199,8 +266,11 @@ internal fun VaultRestoreStatus(progress: FolderVaultSession.RestoreProgress?, m
             Column(Modifier.weight(1f)) {
                 Text(progress.folderName, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
-                    if (progress.total == null) "${progress.stage} · 已扫描 ${progress.scannedFolders} 个文件夹"
-                    else "${progress.stage} · ${progress.done} / ${progress.total}",
+                    when {
+                        session.stopping -> STOPPING_TEXT
+                        progress.total == null -> "${progress.stage}，已扫描 ${progress.scannedFolders} 个文件夹"
+                        else -> "${progress.stage} ${progress.done} / ${progress.total}"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -209,6 +279,19 @@ internal fun VaultRestoreStatus(progress: FolderVaultSession.RestoreProgress?, m
                     LinearProgressIndicator(progress = { progress.done.toFloat() / total }, modifier = Modifier.fillMaxWidth().padding(top = 6.dp))
                 }
             }
+            VaultStopButton(session)
         }
     }
+}
+
+private const val STOPPING_TEXT = "正在停止，进行中的文件夹处理完即停"
+
+@Composable
+private fun VaultStopButton(session: FolderVaultSession) {
+    TooltipIconButton(
+        icon = Icons.Outlined.Close,
+        label = "停止",
+        onClick = session::stop,
+        enabled = !session.stopping,
+    )
 }

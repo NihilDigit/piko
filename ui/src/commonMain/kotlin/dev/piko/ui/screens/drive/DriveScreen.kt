@@ -1296,7 +1296,7 @@ fun DriveScreen(
                         // 队列为空时不占位
                         ArchiveExtractStatus(archiveSession, Modifier.fillMaxWidth())
                         VaultFolderStatus(vaultSession, Modifier.fillMaxWidth())
-                        VaultRestoreStatus(vaultSession.restoreProgress, Modifier.fillMaxWidth())
+                        VaultRestoreStatus(vaultSession, Modifier.fillMaxWidth())
                         // 收起后的把手只在窄窗口：宽窗口的命令栏上「添加链接」「查找重复」点了就是放回收起的会话，
                         // 底部再挂一条是同一件事的第二个入口
                         if (instantState != null && !instantSession.isSheetOpen && !pathInTopBar) {
@@ -1664,18 +1664,7 @@ fun DriveScreen(
     }
 
     restoreVaultTarget?.let { folder ->
-        AlertDialog(
-            onDismissRequest = { restoreVaultTarget = null },
-            title = { Text("取消「${folder.name}」的归档？") },
-            text = { Text("将恢复此文件夹及子文件夹中的归档条目，未归档的文件保持原样。恢复需要网盘空间；云端内容已失效的条目会保留在归档中。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    restoreVaultTarget = null
-                    vaultSession.restoreFolder(PathBreadcrumb(folder.id, folder.name))
-                }) { Text("恢复到网盘") }
-            },
-            dismissButton = { TextButton(onClick = { restoreVaultTarget = null }) { Text("取消") } },
-        )
+        RestoreVaultFolderDialog(PathBreadcrumb(folder.id, folder.name), vaultSession, onDismiss = { restoreVaultTarget = null })
     }
 
     vaultTarget?.let { folder ->

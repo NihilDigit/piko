@@ -38,6 +38,24 @@ class FolderVaultSessionTest {
         assertTrue(drive.manifests.isEmpty())
     }
     @Test
+    fun `stopping finishes the folders in hand and leaves the rest untouched`() = smoke { scope ->
+        val drive = Drive()
+        drive.directories["Dramas"] = (0..31).map { folder("dir-$it") }
+        (0..31).forEach { drive.directories["dir-$it"] = listOf(file("file-$it")) }
+        val session = FolderVaultSession(drive, scope)
+        session.archive(PikoPathBreadcrumb("Dramas", "Dramas"), true)
+        awaitUntil("开始写清单") { drive.writes.get() > 0 }
+        session.stop()
+        awaitUntil("停止后收口") { drive.changes.isNotEmpty() }
+        assertTrue(drive.manifests.size in 1..16, "停止后不再开始新的目录：${drive.manifests.size}")
+        // 写成清单的目录都处置完原文件，不留下条目与原文件并存
+        assertEquals(drive.manifests.keys.map { it.removePrefix("dir-") }.toSet(), drive.removed.flatten().map { it.removePrefix("file-") }.toSet())
+        assertEquals(drive.manifests.size, drive.changes.single().untrashOnRevert.size)
+        assertTrue(drive.changes.single().summary.startsWith("已停止"))
+        assertNull(session.progress)
+    }
+
+    @Test
     fun `large file archive keeps files below 50 MiB without sampling them`() = smoke { scope ->
         val drive = Drive()
         val threshold = 50L * 1024 * 1024

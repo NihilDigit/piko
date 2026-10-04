@@ -89,11 +89,37 @@ class FolderVaultSession internal constructor(
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val messages: SharedFlow<String> = _messages.asSharedFlow()
 
+    /**
+     * 一次归档或恢复的结局，给不在眼前的用户发系统通知（见 ui 的 workNotices）。[messages] 只有网盘页收，
+     * 用户切到别处或应用退到后台时没人看见；归档动辄几分钟，正是会走开的时候。
+     */
+    class Outcome(val title: String, val message: String)
+
+    private val _outcomes = MutableSharedFlow<Outcome>(extraBufferCapacity = 8)
+    val outcomes: SharedFlow<Outcome> = _outcomes.asSharedFlow()
+
+    /** 归档或恢复正在进行，Android 据此保持前台服务。 */
+    val isRunning: Boolean get() = progress != null || restoreProgress != null
+
     private var job: Job? = null
 
-    /** 已有一件在做时提示一句并返回 true。 */
+    /**
+     * 用户要求停下。不取消协程：一个目录的清单写成与处置原文件之间被打断，会留下条目与原文件并存，
+     * 撤销记录也不全。只是不再开始新的目录与文件，正在做的做完，做完的照常记撤销。
+     */
+    var stopping by mutableStateOf(false)
+        private set
+
+    fun stop() {
+        if (job?.isActive == true) stopping = true
+    }
+
+    /** 已有一件在做时提示一句并返回 true，否则为新的一件清掉停止标记。 */
     private fun busy(): Boolean {
-        if (job?.isActive != true) return false
+        if (job?.isActive != true) {
+            stopping = false
+            return false
+        }
         val running = progress?.let { "「${it.folderName}」归档中" } ?: restoreProgress?.let { "「${it.folderName}」恢复中" } ?: "归档处理中"
         _messages.tryEmit("$running，请稍后再试")
         return true
@@ -118,7 +144,7 @@ class FolderVaultSession internal constructor(
             val deleted = mutableMapOf<String, List<VaultEntry>>()
             val result = runSuspendCatching {
                 val delete = !moveToTrash
-                val levels = walk(folder.id).map { (folderId, files) ->
+                val levels = walk(folder.id, until = { stopping }).map { (folderId, files) ->
                     folderId to files.filter {
                         (includeUnsourced || !it.sourceUrl.isNullOrBlank()) && (!onlyLargeFiles || it.sizeBytes >= LARGE_FILE_MIN_BYTES)
                     }
@@ -133,6 +159,7 @@ class FolderVaultSession internal constructor(
                     val folders = Semaphore(8)
                     levels.map { (folderId, files) -> async {
                         folders.withPermit {
+                            if (stopping) return@withPermit
                             val addedAt = Clock.System.now().toEpochMilliseconds()
                             val entries = files.map { file -> async {
                                 val cid = file.params["piko_vault_cid"] ?: sampler.sample(file)
@@ -157,21 +184,31 @@ class FolderVaultSession internal constructor(
                         }
                     } }.awaitAll()
                 }
-                total
+                done
             }
             progress = null
+            val stopped = stopping
             // 做完的几层记成一条改动，哪怕后面失败了：撤销得回已经归档的那些
             if (reverts.isNotEmpty() || deleted.isNotEmpty()) {
-                val count = result.getOrNull()?.let { "已归档 $it 个文件" }
+                val count = result.getOrNull()?.let { if (stopped) "已停止，已归档 $it 个文件" else "已归档 $it 个文件" }
                 val summary = if (count == null) "部分归档记录已写入，原文件处理未全部完成"
                     else if (deleted.isNotEmpty()) "$count，原文件已删除" else "$count，原文件已移入回收站"
                 operations.record(
                     DriveChangeJournal.Change.Vault(reverts, summary, untrashOnRevert = trashed, recreateOnRevert = deleted),
                 )
+                val title = when {
+                    result.isFailure -> "归档未全部完成"
+                    stopped -> "归档已停止"
+                    else -> "归档完成"
+                }
+                _outcomes.tryEmit(Outcome(title, "「${folder.name}」：$summary"))
             } else if (result.getOrNull() == 0) {
-                _messages.tryEmit("无可归档的文件")
+                _messages.tryEmit(if (stopped) "已停止归档" else "无可归档的文件")
             }
-            result.reportFailure(TAG, "归档") { _messages.tryEmit(it) }
+            result.reportFailure(TAG, "归档") { message ->
+                _messages.tryEmit(message)
+                if (reverts.isEmpty() && deleted.isEmpty()) _outcomes.tryEmit(Outcome(message, "「${folder.name}」"))
+            }
             operations.refresh()
         }
     }
@@ -191,7 +228,7 @@ class FolderVaultSession internal constructor(
         val requested = files.filter { it.isVaulted }.groupBy { it.parentId }
             .mapValues { (_, rows) -> rows.mapNotNullTo(HashSet()) { VaultEntry.entryIdOf(it.id) } }
         if (requested.isEmpty() || busy()) return
-        restoreProgress = RestoreProgress("恢复所选文件")
+        restoreProgress = RestoreProgress("所选文件")
         job = scope.launch {
             try {
                 runSuspendCatching {
@@ -202,9 +239,24 @@ class FolderVaultSession internal constructor(
                         }.awaitAll()
                     }.filter { it.second.isNotEmpty() }.toMap()
                     restoreEntries(byFolder)
-                }.reportFailure(TAG, "恢复归档") { _messages.tryEmit(it) }
+                }.reportFailure(TAG, "恢复归档") { restoreFailed(it) }
             } finally { restoreProgress = null }
         }
+    }
+
+    /**
+     * 取消归档之前的清点，给确认框用：多少条、多大，其中几条能从回收站取回原文件，其余要占多少新空间。
+     * [remainingBytes] 为 null 时不限量或查不到。
+     */
+    class RestoreSurvey(val entries: Int, val bytes: Long, val fromTrash: Int, val neededBytes: Long, val remainingBytes: Long?) {
+        val fits: Boolean get() = remainingBytes == null || neededBytes <= remainingBytes
+    }
+
+    suspend fun surveyRestore(folder: PikoPathBreadcrumb): Result<RestoreSurvey> = runSuspendCatching {
+        val byFolder = scanArchived(folder.id)
+        val plan = planRestore(byFolder)
+        val entries = byFolder.values.flatten()
+        RestoreSurvey(entries.size, entries.sumOf { it.size }, plan.originals.size, plan.neededBytes, plan.remainingBytes)
     }
 
     /** 递归恢复 [folder] 中的归档条目，真实文件保持原样。清点失败时不开始恢复。 */
@@ -214,20 +266,35 @@ class FolderVaultSession internal constructor(
         job = scope.launch {
             try {
                 runSuspendCatching {
-                    val byFolder = scanArchived(folder.id)
-                    if (byFolder.isEmpty()) _messages.tryEmit("这个文件夹中没有归档条目")
-                    else restoreEntries(byFolder)
-                }.reportFailure(TAG, "取消文件夹归档") { _messages.tryEmit(it) }
+                    // 确认框里清点过一次，这里重扫：确认前后别的设备可能已改了清单，照旧的恢复会多秒传一份
+                    val byFolder = scanArchived(folder.id, until = { stopping }) { scanned ->
+                        restoreProgress = restoreProgress?.copy(scannedFolders = scanned)
+                    }
+                    when {
+                        stopping -> _messages.tryEmit("已停止恢复")
+                        byFolder.isEmpty() -> _messages.tryEmit("这个文件夹中没有归档条目")
+                        else -> restoreEntries(byFolder)
+                    }
+                }.reportFailure(TAG, "取消文件夹归档") { restoreFailed(it) }
             } finally { restoreProgress = null }
         }
     }
 
-    private suspend fun scanArchived(rootId: String): Map<String, List<VaultEntry>> {
+    private fun restoreFailed(message: String) {
+        _messages.tryEmit(message)
+        _outcomes.tryEmit(Outcome(message, "「${restoreProgress?.folderName.orEmpty()}」"))
+    }
+
+    private suspend fun scanArchived(
+        rootId: String,
+        until: () -> Boolean = { false },
+        onScanned: (Int) -> Unit = {},
+    ): Map<String, List<VaultEntry>> {
         val found = mutableMapOf<String, List<VaultEntry>>()
         val visited = mutableSetOf(rootId)
         var queue = listOf(rootId)
         var scanned = 0
-        while (queue.isNotEmpty()) {
+        while (queue.isNotEmpty() && !until()) {
             val next = mutableListOf<String>()
             for (chunk in queue.chunked(8)) {
                 val levels = coroutineScope { chunk.map { id -> async { operations.archived(id) } }.awaitAll() }
@@ -236,11 +303,20 @@ class FolderVaultSession internal constructor(
                     level.subfolders.forEach { if (visited.add(it.id)) next += it.id }
                 }
                 scanned += chunk.size
-                restoreProgress = restoreProgress?.copy(scannedFolders = scanned)
+                onScanned(scanned)
             }
             queue = next
         }
         return found
+    }
+
+    private class RestorePlan(val originals: Map<String, FileStat>, val neededBytes: Long, val remainingBytes: Long?)
+
+    private suspend fun planRestore(byFolder: Map<String, List<VaultEntry>>): RestorePlan {
+        val trash = runSuspendCatching { operations.trash() }.logFailure(TAG, "读取回收站失败").getOrDefault(emptyList())
+        val originals = trashOriginals(byFolder, trash)
+        val needed = byFolder.values.flatten().filter { it.id !in originals }.sumOf { it.size }
+        return RestorePlan(originals, needed, operations.remainingBytes())
     }
 
     /**
@@ -250,11 +326,9 @@ class FolderVaultSession internal constructor(
     private suspend fun restoreEntries(byFolder: Map<String, List<VaultEntry>>) {
         val total = byFolder.values.sumOf { it.size }
         restoreProgress = restoreProgress?.copy(stage = "正在检查恢复空间", total = total)
-        val trash = runSuspendCatching { operations.trash() }.logFailure(TAG, "读取回收站失败").getOrDefault(emptyList())
-        val originals = trashOriginals(byFolder, trash)
-        val needed = byFolder.values.flatten().filter { it.id !in originals }.sumOf { it.size }
-        val remaining = operations.remainingBytes()
-        if (remaining != null && needed > remaining) {
+        val plan = planRestore(byFolder)
+        val originals = plan.originals
+        if (plan.remainingBytes != null && plan.neededBytes > plan.remainingBytes) {
             _messages.tryEmit("网盘空间不足，放不下这 $total 项")
             return
         }
@@ -268,6 +342,7 @@ class FolderVaultSession internal constructor(
             val recreates = Semaphore(16)
             byFolder.map { (folderId, entries) -> async {
                 folders.withPermit {
+                    if (stopping) return@withPermit
                     val restored = mutableMapOf<String, FileStat>()
                     suspend fun finish(entry: VaultEntry, fileId: String?) = lock.withLock {
                         if (fileId != null) {
@@ -291,6 +366,7 @@ class FolderVaultSession internal constructor(
                     }
                     fromCloud.map { entry -> async {
                         recreates.withPermit {
+                            if (stopping) return@withPermit
                             val id = runSuspendCatching { operations.recreate(entry, folderId) }
                                 .onFailure { if (it is InstantContentUnavailableException) lock.withLock { missing++ } }
                                 .logFailure(TAG, "恢复归档条目失败")
@@ -308,6 +384,7 @@ class FolderVaultSession internal constructor(
         }
         val failed = total - created.size
         val summary = when {
+            stopping -> if (created.isEmpty()) "已停止恢复" else "已停止，已恢复 ${created.size} 项"
             failed == 0 -> if (total == 1) "已恢复到网盘" else "已恢复 $total 项"
             missing == failed -> "已恢复 ${created.size} 项，$missing 项云端已无内容"
             else -> "已恢复 ${created.size} 项，$failed 项失败"
@@ -317,6 +394,13 @@ class FolderVaultSession internal constructor(
         } else {
             _messages.tryEmit(summary)
         }
+        val title = when {
+            stopping -> "恢复已停止"
+            failed == 0 -> "恢复完成"
+            created.isEmpty() -> "恢复失败"
+            else -> "恢复未全部完成"
+        }
+        _outcomes.tryEmit(Outcome(title, "「${restoreProgress?.folderName.orEmpty()}」：$summary"))
         operations.refresh()
     }
 
@@ -345,11 +429,11 @@ class FolderVaultSession internal constructor(
      * [rootId] 整棵树，每层一项：目录 ID 与其中能归档的文件。已是归档条目的、清单文件、还在上传的、
      * 没有 gcid 的都不算；Piko-Temp 与同步设置的 .piko 不进去。
      */
-    private suspend fun walk(rootId: String): List<Pair<String, List<FileStat>>> {
+    private suspend fun walk(rootId: String, until: () -> Boolean = { false }): List<Pair<String, List<FileStat>>> {
         val levels = mutableListOf<Pair<String, List<FileStat>>>()
         var queue = listOf(rootId)
         val visited = mutableSetOf(rootId)
-        while (queue.isNotEmpty()) {
+        while (queue.isNotEmpty() && !until()) {
             val next = mutableListOf<String>()
             for (chunk in queue.chunked(4)) {
                 val listings = coroutineScope { chunk.map { id -> async { operations.list(id) } }.awaitAll() }
