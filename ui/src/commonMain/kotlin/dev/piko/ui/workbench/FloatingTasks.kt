@@ -23,7 +23,7 @@ import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.Lock
-import androidx.compose.material.icons.outlined.Minimize
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -108,9 +108,14 @@ internal fun FloatingTasks(
             }
             return@Column
         }
-        TooltipIconButton(Icons.Outlined.Minimize, "收到角落", { minimized = true }, modifier = Modifier.size(32.dp))
-        tasks.forEach { task ->
-            TaskCard(task, expanded = expanded == task.key, onToggle = { expanded = if (expanded == task.key) null else task.key })
+        // 收起整摞的按钮在最上面那张卡片的右端：单独浮在卡片上方时不属于哪一张，像是多出来的一道横线
+        tasks.forEachIndexed { index, task ->
+            TaskCard(
+                task,
+                expanded = expanded == task.key,
+                onToggle = { expanded = if (expanded == task.key) null else task.key },
+                onMinimize = if (index == 0) ({ minimized = true }) else null,
+            )
         }
     }
 }
@@ -132,15 +137,16 @@ private class FloatingTask(
 )
 
 @Composable
-private fun TaskCard(task: FloatingTask, expanded: Boolean, onToggle: () -> Unit) {
+private fun TaskCard(task: FloatingTask, expanded: Boolean, onToggle: () -> Unit, onMinimize: (() -> Unit)?) {
     val colors = MaterialTheme.colorScheme
     Surface(
-        modifier = Modifier.fillMaxWidth().animateContentSize(),
+        modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
         color = colors.surfaceContainerHigh,
         shadowElevation = 6.dp,
     ) {
-        Column {
+        // 尺寸动画放在卡片里面：animateContentSize 会把内容裁到自己的边界，挂在卡片外面时连阴影一起裁掉，右下角成了直角
+        Column(Modifier.animateContentSize()) {
             Row(
                 modifier = Modifier
                     .then(if (task.detail != null) Modifier.clickable(onClickLabel = if (expanded) "收起" else "展开", onClick = onToggle) else Modifier)
@@ -169,6 +175,7 @@ private fun TaskCard(task: FloatingTask, expanded: Boolean, onToggle: () -> Unit
                     Icon(if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, contentDescription = null, modifier = Modifier.padding(horizontal = 4.dp))
                 }
                 task.dismiss?.let { (label, onClick) -> TooltipIconButton(Icons.Outlined.Close, label, onClick) }
+                onMinimize?.let { TooltipIconButton(Icons.Outlined.KeyboardArrowDown, "收到角落", it) }
             }
             AnimatedVisibility(expanded && task.detail != null) {
                 Column(
