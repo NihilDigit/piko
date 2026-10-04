@@ -54,6 +54,14 @@ import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.components.verticalWheelScrollsRow
 import dev.piko.ui.platform.rememberCaptionSlot
 import dev.piko.ui.platform.windowDragArea
+import dev.piko.ui.components.IslandTab
+import androidx.compose.material.icons.outlined.Cloud
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.SwapVert
+import androidx.compose.material.icons.outlined.Upload
+import dev.piko.ui.components.IslandTabBarHeight
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.selection.selectableGroup
 
 /**
  * 传输页的页头。速度与蜗牛模式在底栏（TransfersFooter）。
@@ -129,6 +137,124 @@ internal fun TransfersHeader(
         caption.buttons?.invoke()
     }
 }
+
+/**
+ * 有外框时传输页顶上那一行：类别是一排标签，与网盘页的位置标签同一种（[IslandTab]），活动的那个接着下面的岛。
+ * 原来是一组连体筛选按钮，与网盘页的标签栏长得不一样，从网盘切过来时顶上整行换了样子。
+ * 这一行贴着窗口顶，标题栏并进内容时窗口按钮画在末尾，标签后面的空白是拖动区。
+ */
+@Composable
+internal fun TransfersTabRow(state: TransfersState, showTabs: Boolean) {
+    val caption = rememberCaptionSlot()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(caption.modifier)
+            .windowInsetsPadding(TopAppBarDefaults.windowInsets)
+            .height(IslandTabBarHeight)
+            .padding(end = if (caption.buttons != null) 8.dp else 12.dp),
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        if (showTabs) {
+            val kinds = TransferKind.entries
+            val activeIndex = kinds.indexOf(state.filter)
+            Row(Modifier.selectableGroup(), verticalAlignment = Alignment.Bottom) {
+                kinds.forEachIndexed { index, kind ->
+                    IslandTab(
+                        active = index == activeIndex,
+                        first = index == 0,
+                        divider = index < kinds.lastIndex && index != activeIndex && index + 1 != activeIndex,
+                        onClick = { state.changeFilter(kind) },
+                        modifier = Modifier.widthIn(min = KindTabMinWidth),
+                    ) {
+                        Spacer(Modifier.width(14.dp))
+                        Icon(
+                            kind.icon,
+                            contentDescription = null,
+                            tint = if (index == activeIndex) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            kind.label,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = if (index == activeIndex) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            (state.counts[kind] ?: 0).toString(),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                        Spacer(Modifier.width(16.dp))
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.weight(1f).fillMaxHeight().windowDragArea())
+        Box(Modifier.fillMaxHeight(), contentAlignment = Alignment.Center) { caption.buttons?.invoke() }
+    }
+}
+
+/**
+ * 岛上半段的一行。左边是读数：上下行速度与下载剩余时间。右边是能动手的，隔开一段分成两组：
+ * 整页操作（有选中项时是「已选 N 项」与批量操作）与蜗牛模式。
+ * 原来速度在窗口底部另成一行，这一行只有右端两三个按钮，上下都空。容量条试过放在末尾，挤得这一行读不清，去掉了；
+ * 网盘用量侧边栏的账号行里已有。
+ */
+@Composable
+internal fun TransfersActionBar(
+    state: TransfersState,
+    selectedCount: Int,
+    wide: Boolean,
+    onPauseSelected: (() -> Unit)?,
+    onResumeSelected: (() -> Unit)?,
+    onDeleteSelected: () -> Unit,
+    onRefresh: (() -> Unit)?,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = 20.dp, end = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Rates(state)
+        Spacer(Modifier.width(12.dp))
+        DownloadEta(state)
+        Spacer(Modifier.weight(1f))
+        // 操作一律图标按钮，名字在悬停提示里：带字的按钮与蜗牛开关、容量条挤在一行，按钮的字与开关的字分不清谁是谁
+        if (selectedCount > 0) {
+            Text(
+                "已选 $selectedCount 项",
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.padding(horizontal = 8.dp),
+            )
+            onPauseSelected?.let { TooltipIconButton(Icons.Outlined.Pause, "暂停", it) }
+            onResumeSelected?.let { TooltipIconButton(Icons.Outlined.PlayArrow, "继续", it) }
+            TooltipIconButton(Icons.Outlined.Delete, "删除", onDeleteSelected, shortcut = "Delete", tint = MaterialTheme.colorScheme.error)
+            TooltipIconButton(Icons.Outlined.Close, "取消选择", state::clearSelection, shortcut = "Esc")
+        } else {
+            if (state.canResumeAll) TooltipIconButton(Icons.Outlined.PlayArrow, "全部继续", state::resumeAll)
+            if (state.canClearCompleted) TooltipIconButton(Icons.Outlined.ClearAll, "清除已完成", state::clearCompleted)
+            onRefresh?.let { TooltipIconButton(Icons.Outlined.Refresh, "刷新", it) }
+        }
+        // 两组之间只留空白，不画竖线，与网盘页的命令栏相同
+        Spacer(Modifier.width(12.dp))
+        SnailModeToggle()
+    }
+}
+
+/** 类别标签上的图标，与侧边栏、各行用的同一套。 */
+private val TransferKind.icon: ImageVector
+    get() = when (this) {
+        TransferKind.ALL -> Icons.Outlined.SwapVert
+        TransferKind.DOWNLOAD -> Icons.Outlined.Download
+        TransferKind.UPLOAD -> Icons.Outlined.Upload
+        TransferKind.CLOUD -> Icons.Outlined.Cloud
+    }
+
+private val KindTabMinWidth = 96.dp
 
 /**
  * 手机上的页头只有一行：标题「传输」、类型筛选、操作。筛选原来另起一行，页头连状态栏占去一百多 dp，

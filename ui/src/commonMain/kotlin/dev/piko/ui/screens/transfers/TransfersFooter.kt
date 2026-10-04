@@ -63,7 +63,8 @@ internal fun TransfersFooter(state: TransfersState, sidePadding: Dp, compact: Bo
         modifier = Modifier
             .fillMaxWidth()
             // 手机上底栏紧贴在导航栏上面，取导航栏的底色 surfaceContainer（M3 navigation bar 的容器色），
-            // 两条连成一块底座；页面本色的话，列表与导航栏之间多夹一条颜色不同的窄带。宽窗口它落在外框色上，不另上色
+            // 两条连成一块底座；页面本色的话，列表与导航栏之间多夹一条颜色不同的窄带。宽窗口它是岛的下半段，
+            // 底色由岛给（与岛上半段的操作行同色），不另上色
             .then(if (compact) Modifier.background(MaterialTheme.colorScheme.surfaceContainer) else Modifier)
             // 导航栏在下面时它已让开系统导航条；平板上没有导航栏（侧边栏形态）时要自己让，否则底栏压在手势条下
             .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal))
@@ -74,28 +75,39 @@ internal fun TransfersFooter(state: TransfersState, sidePadding: Dp, compact: Bo
     ) {
         // 上下行是一对读数，挨得比后面的蜗牛开关近。compact 里这一组带权重：带权重的最后量，
         // 开关先拿够自己的宽度，窄屏上被压缩的是速度后面的空白，不是开关上的字
-        Row(
-            modifier = if (compact) Modifier.weight(1f) else Modifier,
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Rate(Icons.Outlined.ArrowDownward, "下行", state.downloadSpeed)
-            Rate(Icons.Outlined.ArrowUpward, "上行", state.uploadSpeed)
-        }
+        Rates(state, if (compact) Modifier.weight(1f) else Modifier)
         SnailModeToggle()
         if (compact) return@Row
         Spacer(Modifier.weight(1f))
-        state.downloadEtaSeconds?.let { seconds ->
-            Text(
-                "下载剩余${formatRemaining(seconds)}",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-            )
-        }
+        DownloadEta(state)
         // 两条容量要一定的宽度才读得出，窄窗口只留速度与剩余时间
         if (wide) CapacityBars(state)
     }
+}
+
+/** 上下行速度，一对读数，挨得比后面的蜗牛开关近。有外框时它们在传输页那块岛的操作行里，见 TransfersActionBar。 */
+@Composable
+internal fun Rates(state: TransfersState, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Rate(Icons.Outlined.ArrowDownward, "下行", state.downloadSpeed)
+        Rate(Icons.Outlined.ArrowUpward, "上行", state.uploadSpeed)
+    }
+}
+
+/** 排队中的下载还要多久，没有在下的不显示。 */
+@Composable
+internal fun DownloadEta(state: TransfersState) {
+    val seconds = state.downloadEtaSeconds ?: return
+    Text(
+        "下载剩余${formatRemaining(seconds)}",
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1,
+    )
 }
 
 @Composable

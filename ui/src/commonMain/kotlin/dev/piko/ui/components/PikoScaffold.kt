@@ -11,6 +11,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.dp
 import dev.piko.ui.theme.FrameCardBottomMargin
 import dev.piko.ui.theme.FrameCardShape
@@ -31,6 +32,8 @@ fun PikoScaffold(
     bottomBar: @Composable () -> Unit = {},
     snackbarHost: @Composable () -> Unit = {},
     floatingActionButton: @Composable () -> Unit = {},
+    /** 有外框时内容卡片的形状。顶上接着标签的页（传输）在第一个标签活动时左上角不圆，见 IslandTab。 */
+    cardShape: Shape = FrameCardShape,
     content: @Composable (PaddingValues) -> Unit,
 ) {
     if (!LocalFramed.current) {
@@ -61,7 +64,7 @@ fun PikoScaffold(
                 .fillMaxSize()
                 .padding(top = innerPadding.calculateTopPadding(), bottom = bottom)
                 .consumeWindowInsets(innerPadding)
-                .clip(FrameCardShape)
+                .clip(cardShape)
                 .background(colors.surface),
         ) {
             content(PaddingValues())

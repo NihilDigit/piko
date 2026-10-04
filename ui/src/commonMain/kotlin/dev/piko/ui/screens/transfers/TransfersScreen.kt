@@ -33,6 +33,15 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import dev.piko.ui.components.PikoScaffold
+import dev.piko.ui.components.islandTopStart
+import dev.piko.ui.theme.FrameCardShape
+import dev.piko.ui.theme.IslandCorner
+import dev.piko.ui.theme.IslandInnerCorner
+import dev.piko.ui.theme.LocalFramed
+import dev.piko.ui.theme.islandHeader
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -420,28 +429,7 @@ fun TransfersScreen(
     val pauseSelected = selected.filter(state::isPausable).takeIf { it.isNotEmpty() }?.let { items -> { items.forEach(state::pause) } }
     val resumeSelected = selected.filter(state::isResumable).takeIf { it.isNotEmpty() }?.let { items -> { items.forEach(state::resume) } }
 
-    // 页头是筛选与批量操作（TransfersHeader），放在顶栏的位置上，有外框时与别的页一样落在外框色上，
-    // 下面的卡片里才是列表。只有 compact 带标题「传输」，更宽时标题与侧边的导航项逐字重复
-    PikoScaffold(
-        modifier = modifier.fillMaxSize(),
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-        bottomBar = { TransfersFooter(state = state, sidePadding = SidePadding, compact = compact, wide = wide) },
-        topBar = {
-            TransfersHeader(
-                state = state,
-                selectedCount = selected.size,
-                compact = compact,
-                wide = wide,
-                sidePadding = SidePadding,
-                showFilter = !state.isEmpty,
-                onPauseSelected = pauseSelected,
-                onResumeSelected = resumeSelected,
-                onDeleteSelected = { confirmingDelete = true },
-                onRefresh = if (showsRefreshButton()) state::refresh else null,
-                scrolled = scrolled,
-            )
-        },
-    ) { innerPadding ->
+    val transfersBody: @Composable (PaddingValues) -> Unit = { innerPadding ->
         // 下拉刷新包住三种样子：空状态与骨架也要能拉，刚装好、一项传输也没有时正想看看云端有没有
         RefreshBox(
             isRefreshing = state.isRefreshing,
@@ -519,6 +507,70 @@ fun TransfersScreen(
                     }
                 }
             }
+        }
+    }
+
+    // 有外框时与网盘页同一套：顶上一排类别标签，下面一块岛，岛的上半段是速度、容量与操作，下面是列表。
+    // 原来筛选与操作在外框色上的一行、速度与容量在窗口底部另一行，列表是夹在中间的一张卡片，与网盘页的岛对不上
+    val island = LocalFramed.current && !compact
+    val showTabs = !state.isEmpty
+    PikoScaffold(
+        modifier = modifier.fillMaxSize(),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
+        bottomBar = { if (!island) TransfersFooter(state = state, sidePadding = SidePadding, compact = compact, wide = wide) },
+        topBar = {
+            if (island) {
+                TransfersTabRow(state, showTabs = showTabs)
+            } else {
+                // 只有 compact 带标题「传输」，更宽时标题与侧边的导航项逐字重复
+                TransfersHeader(
+                    state = state,
+                    selectedCount = selected.size,
+                    compact = compact,
+                    wide = wide,
+                    sidePadding = SidePadding,
+                    showFilter = showTabs,
+                    onPauseSelected = pauseSelected,
+                    onResumeSelected = resumeSelected,
+                    onDeleteSelected = { confirmingDelete = true },
+                    onRefresh = if (showsRefreshButton()) state::refresh else null,
+                    scrolled = scrolled,
+                )
+            }
+        },
+        cardShape = if (island) {
+            RoundedCornerShape(
+                topStart = islandTopStart(firstActive = showTabs && state.filter == TransferKind.entries.first()),
+                topEnd = IslandCorner,
+                bottomStart = IslandCorner,
+                bottomEnd = IslandCorner,
+            )
+        } else {
+            FrameCardShape
+        },
+    ) { innerPadding ->
+        if (!island) {
+            transfersBody(innerPadding)
+            return@PikoScaffold
+        }
+        Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.islandHeader)) {
+            TransfersActionBar(
+                state = state,
+                selectedCount = selected.size,
+                wide = wide,
+                onPauseSelected = pauseSelected,
+                onResumeSelected = resumeSelected,
+                onDeleteSelected = { confirmingDelete = true },
+                onRefresh = if (showsRefreshButton()) state::refresh else null,
+            )
+            Box(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    // 与网盘页相同：上沿是小圆角、露出页眉的底色，下沿就是岛的下沿
+                    .clip(RoundedCornerShape(topStart = IslandInnerCorner, topEnd = IslandInnerCorner, bottomStart = IslandCorner, bottomEnd = IslandCorner))
+                    .background(MaterialTheme.colorScheme.surface),
+            ) { transfersBody(innerPadding) }
         }
     }
 
