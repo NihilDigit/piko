@@ -1,10 +1,11 @@
 package dev.piko.desktop
 
+import dev.piko.shared.PikoHome
 import java.io.File
 import java.util.Properties
 
 class DesktopSettingsStore(
-    private val file: File = File(System.getProperty("user.home"), ".piko/settings.properties"),
+    private val file: File = PikoHome.root.resolve("settings.properties").toFile(),
 ) {
     private val properties = Properties().also { values ->
         if (file.isFile) file.inputStream().use(values::load)

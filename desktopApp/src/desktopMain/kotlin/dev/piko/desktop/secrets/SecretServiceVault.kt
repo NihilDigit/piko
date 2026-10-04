@@ -1,5 +1,6 @@
 package dev.piko.desktop.secrets
 
+import dev.piko.shared.PikoHome
 import dev.piko.shared.auth.SecretVault
 import dev.piko.shared.auth.VaultUnavailableException
 import dev.piko.shared.log.PikoLog
@@ -165,7 +166,8 @@ internal class LibSecret(private val timeoutSeconds: Long) {
         }
 
     private fun attributes(arena: Arena, key: String): Array<Any> = arrayOf(
-        arena.allocateFrom(ATTRIBUTE_SERVICE), arena.allocateFrom(SERVICE),
+        // 换了数据根目录（开发版、便携版）的另成一份，见 PikoHome.secretNamespace
+        arena.allocateFrom(ATTRIBUTE_SERVICE), arena.allocateFrom(SERVICE + PikoHome.secretNamespace),
         arena.allocateFrom(ATTRIBUTE_KEY), arena.allocateFrom(key),
         MemorySegment.NULL,
     )

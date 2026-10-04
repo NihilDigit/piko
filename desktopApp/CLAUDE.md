@@ -41,9 +41,13 @@ Windows、macOS 与 Linux 的入口、平台实现与播放器窗口。应用内
     `LocalWindowInfo` 的尺寸停在拖动前，并提供 `LocalWindowResizing`，按宽度换形态的判断都等松手；自己量尺寸
     做判断的地方照 `PikoMainScaffold` 的 `panelFits` 那样，拖动中先存着、松手再算。
   - 兜底：`PikoWindow` 的异常处理认出这一个异常，重建出事的窗口，不弹错误框。认的是 require 的文案，升级 Compose 时核对。
-- **单实例**：`SingleInstance` 以 `~/.piko/instance.lock` 的文件锁决定主实例，后来者经同目录的
-  Unix domain socket 转交启动参数（磁力链接）后退出。安装版与 `gradlew :desktopApp:run` 共用这把锁，
-  装好的 Piko 开着时，开发构建一启动就把参数转交过去然后退出，调试前先关掉安装版。AOT 训练进程不参与。
+- **数据目录**：一律经 `PikoHome.root`，不自己拼 user.home。`:desktopApp:run` 与 CLI 用 `~/.piko-dev`（系统属性 `piko.home`），
+  安装版用 `~/.piko`，Windows 便携版（zip 里 `Piko.exe` 旁有 `portable` 文件）用程序目录的 `data\`，写不进时退回 `~/.piko`。
+  标记只进 zip：在 `packageReleaseUpdate` 生成清单之后才放，所以不在 `files.json` 里，便携整包更新解压时跳过它、也不装进来
+  （经应用内更新升上来的旧便携版数据在 `~/.piko`，多出标记就改读 `data\`）。macOS 钥匙串与 Linux Secret Service 的条目名
+  随非默认的根目录加后缀（`PikoHome.secretNamespace`）。Coil 的磁盘缓存与更新暂存目录还在 `%TEMP%`，不随根目录走。
+- **单实例**：`SingleInstance` 以数据根目录下 `instance.lock` 的文件锁决定主实例，后来者经 Unix domain socket
+  （`PikoHome.instanceSocket`）转交启动参数（磁力链接）后退出。开发版与安装版的根目录不同，可以同时开着。AOT 训练进程不参与。
 - **关窗**：仍有下载进行时关主窗口不退出，藏进托盘，下完自动退出。窗口位置、大小与最大化状态存在
   settings.properties 的 `window.<名称>.*` 下。
 - **标题栏**：自绘，入口是 `WindowFrame`。Windows 上不用 undecorated，而是经 FFM 子类化窗口过程

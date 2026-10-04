@@ -201,8 +201,14 @@ jobs:
           $appDir = "$binaries/app/Piko"
           if (-not (Test-Path "$appDir/Piko.exe")) { throw "缺少 $appDir/Piko.exe" }
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          # 便携版：整个应用目录打包，解压即得 Piko 目录
-          Compress-Archive -Path $appDir -DestinationPath "dist/piko-windows-${{ matrix.arch }}-$env:VERSION.zip"
+          # 便携版：整个应用目录打包，解压即得 Piko 目录。Piko.exe 旁的 portable 标记让数据落在 Piko\data 而不是
+          # ~/.piko（PikoHome）。MSI 与应用内更新包在前面已经打好，标记只进 zip
+          New-Item -ItemType File -Force -Path "$appDir/portable" | Out-Null
+          try {
+            Compress-Archive -Path $appDir -DestinationPath "dist/piko-windows-${{ matrix.arch }}-$env:VERSION.zip"
+          } finally {
+            Remove-Item -LiteralPath "$appDir/portable"
+          }
           # 两个架构的 MSI 同名，按架构改名
           $msi = Get-ChildItem "$binaries/msi/*.msi" | Select-Object -First 1
           if (-not $msi) { throw 'packageReleaseMsi 没有产出 MSI' }

@@ -75,8 +75,8 @@ internal suspend fun resolvePath(client: PikPakClient, path: String): String {
 }
 
 /**
- * 与桌面端共用 ~/.piko 下的登录态，取桌面端当前的账号。SDK 刷新 token 时会轮换 refresh token，
- * 新会话必须写回桌面端读的同一处，否则桌面端手里那份作废，下次打开要重新登录。
+ * 与开发版共用 ~/.piko-dev 下的登录态（见 Main 的 piko.home），取它当前的账号。SDK 刷新 token 时会轮换 refresh token，
+ * 新会话必须写回开发版读的同一处，否则开发版手里那份作废，下次打开要重新登录。
  */
 class AppSessionStore(private val store: DesktopSessionStore = DesktopSessionStore()) : SessionStore by store {
     fun account(): String = runBlocking { store.loadAccounts().current }

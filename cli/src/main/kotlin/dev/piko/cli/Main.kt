@@ -12,7 +12,7 @@ private const val USAGE = """piko-cli：Piko 开发工具
   snapshot -o <文件> [--root <路径>] [--depth <层数>] [--deep <名字,…>]
       只读地列网盘目录，存成快照（文件名、类型、大小）。
       从 --root（默认 /）起列 --depth 层（默认 1，即根目录与其下一层）；
-      --deep 里的 root 直属子目录递归到底。会话取自 ~/.piko，与桌面端共用。
+      --deep 里的 root 直属子目录递归到底。会话取自 ~/.piko-dev，与开发版共用。
 
   dryrun <快照> [--path <前缀>] [--visited] [-o <文件>]
       离线对快照跑网盘页的解析流水线，逐行写出原名与界面上的样子。
@@ -50,6 +50,11 @@ fun main(args: Array<String>) {
     // Windows 控制台默认按系统代码页输出，中文文件名会变成问号
     System.setOut(PrintStream(System.out, true, Charsets.UTF_8))
     System.setErr(PrintStream(System.err, true, Charsets.UTF_8))
+    // 与开发版共用 ~/.piko-dev 的登录态，不碰安装版的 ~/.piko：两边轮换 refresh token 会互相把对方踢回登录页，见 PikoHome。
+    // 要在任何东西读 PikoHome 之前设
+    if (System.getProperty("piko.home").isNullOrBlank()) {
+        System.setProperty("piko.home", File(System.getProperty("user.home"), ".piko-dev").path)
+    }
     val command = args.firstOrNull() ?: usage()
     val options = Options(args.drop(1))
     when (command) {

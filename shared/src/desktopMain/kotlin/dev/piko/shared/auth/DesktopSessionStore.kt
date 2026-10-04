@@ -1,5 +1,6 @@
 package dev.piko.shared.auth
 
+import dev.piko.shared.PikoHome
 import dev.piko.shared.data.PikoCredentials
 import dev.piko.shared.data.PikoSessionStore
 import dev.piko.shared.data.SavedAccount
@@ -203,13 +204,13 @@ internal data class AccountSecrets(val session: Session? = null, val password: S
 internal fun vaultKey(account: String): String =
     MessageDigest.getInstance("SHA-256").digest(account.toByteArray()).joinToString("") { "%02x".format(it) }.take(16)
 
-fun defaultPikoRoot(): Path = Path.of(System.getProperty("user.home"), ".piko")
+fun defaultPikoRoot(): Path = PikoHome.root
 
 /** 本平台的系统保管处。Windows 上这是经 PowerShell 的 DPAPI，桌面端换成 FFM 直调的那一份。 */
 fun platformSecretVault(directory: Path): SecretVault? {
     val os = System.getProperty("os.name")
     return when {
-        os.startsWith("Mac") -> MacKeychainVault()
+        os.startsWith("Mac") -> MacKeychainVault(service = "dev.piko.desktop" + PikoHome.secretNamespace)
         os.startsWith("Windows") -> PowerShellDpapiVault(directory)
         else -> null
     }

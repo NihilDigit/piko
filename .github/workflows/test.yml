@@ -317,8 +317,15 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "build $version failed" }
             $out = "smoke-dist/$version"
             New-Item -ItemType Directory -Force -Path $out | Out-Null
-            # 与 release.yml 的 Collect artifacts 同样的名字与打法，更新走的是同一条路
-            Compress-Archive -Path "$binaries/app/$env:SMOKE_PACKAGE" -DestinationPath "$out/piko-windows-x64-$version.zip"
+            # 与 release.yml 的 Collect artifacts 同样的名字与打法，更新走的是同一条路，便携标记也照放。
+            # 打完即删：下一轮的 MSI 从同一个应用目录打，留着它装出来的就成了便携版
+            $marker = "$binaries/app/$env:SMOKE_PACKAGE/portable"
+            New-Item -ItemType File -Force -Path $marker | Out-Null
+            try {
+              Compress-Archive -Path "$binaries/app/$env:SMOKE_PACKAGE" -DestinationPath "$out/piko-windows-x64-$version.zip"
+            } finally {
+              Remove-Item -LiteralPath $marker
+            }
             # 按版本号取：上一轮的 MSI 可能还留在同一个目录里
             Copy-Item "$binaries/msi/$env:SMOKE_PACKAGE-$version.msi" "$out/piko-windows-x64-$version.msi"
             Copy-Item "$binaries/update/*" $out

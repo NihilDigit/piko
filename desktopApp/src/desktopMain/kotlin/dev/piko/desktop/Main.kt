@@ -1,6 +1,7 @@
 package dev.piko.desktop
 
 import androidx.compose.material3.MaterialTheme
+import dev.piko.shared.PikoHome
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -438,7 +439,7 @@ private fun createServices(settings: DesktopSettingsStore, preferences: DesktopP
     val mediaRepository = PikoMediaRepository(
         clientManager,
         preferences,
-        clipCache = FileClipCache(File(System.getProperty("user.home"), ".piko/cache/clip-cache")),
+        clipCache = FileClipCache(PikoHome.root.resolve("cache/clip-cache").toFile()),
     )
     return PikoServices(
         platformPreferences = preferences,
@@ -453,7 +454,7 @@ private fun createServices(settings: DesktopSettingsStore, preferences: DesktopP
             mediaRepository = mediaRepository,
         ),
         uploadSources = DesktopPikoUploadSources(),
-        cacheStore = FilePikoCacheStore(File(System.getProperty("user.home"), ".piko/cache").path),
+        cacheStore = FilePikoCacheStore(PikoHome.root.resolve("cache").toString()),
     )
 }
 
@@ -473,11 +474,12 @@ private fun WorkNotifications(services: PikoServices, shouldNotify: () -> Boolea
     }
 }
 
-/** 日志在 ~/.piko/logs。警告以上同时进标准错误，gradle run 时看得到；安装版的标准错误无人读，代价只是一次写入。 */
+/** 日志在数据根目录的 logs 下（PikoHome）。警告以上同时进标准错误，gradle run 时看得到；安装版的标准错误无人读，代价只是一次写入。 */
 private fun installLog() {
-    PikoLog.install(File(System.getProperty("user.home"), ".piko/logs").path) { level, tag, message, error ->
+    PikoLog.install(PikoHome.root.resolve("logs").toString()) { level, tag, message, error ->
         if (level >= LogLevel.WARN) System.err.println("Piko/$tag: $message" + (error?.let { "\n" + it.stackTraceToString() } ?: ""))
     }
+    PikoHome.fallbackNote?.let { PikoLog.w("App", it) }
     MpvLogBridge.install()
     val previous = Thread.getDefaultUncaughtExceptionHandler()
     Thread.setDefaultUncaughtExceptionHandler { thread, error ->

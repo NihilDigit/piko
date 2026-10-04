@@ -466,6 +466,8 @@ project.afterEvaluate {
     tasks.named<JavaExec>("run") {
         jvmArgs("--enable-native-access=ALL-UNNAMED")
         jvmArgs(linuxJvmArgs)
+        // 开发版的数据放在 ~/.piko-dev，与安装版的 ~/.piko 分开，见 PikoHome。不放进 build 目录：clean 一次就要重新登录
+        jvmArgs("-Dpiko.home=" + File(System.getProperty("user.home"), ".piko-dev").path)
     }
 }
 

@@ -2,6 +2,7 @@ package dev.piko.desktop.update
 
 import com.github.luben.zstd.ZstdDecompressCtx
 import com.github.luben.zstd.ZstdException
+import dev.piko.shared.PikoHome
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.update.ChecksumMismatchException
 import java.io.File
@@ -94,6 +95,9 @@ internal fun extractChanged(zip: File, manifest: UpdateManifest, installDir: Fil
         for (entry in archive.entries()) {
             if (entry.isDirectory) continue
             val path = entry.name.replace('\\', '/').substringAfter('/')
+            // 便携标记只进 zip、不在清单里（清单在放标记之前生成）。也不装进来：经应用内更新升上来的便携版
+            // 数据原本在 ~/.piko，凭空多出标记会让它改读 data/，登录与设置像是丢了
+            if (path == PikoHome.PORTABLE_MARKER) continue
             val spec = expected[path] ?: throw ChecksumMismatchException("便携包里有清单外的文件：${entry.name}")
             if (path in unchanged) continue
             val out = root.resolve(spec.path).canonicalFile

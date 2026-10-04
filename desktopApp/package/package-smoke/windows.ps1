@@ -148,6 +148,9 @@ function Save-UpdateLogs([string] $name) {
     }
     $appLogs = Join-Path $HOME '.piko\logs'
     if (Test-Path -LiteralPath $appLogs) { Copy-Item -Recurse -Force $appLogs (Join-Path $target 'app-logs') }
+    # 便携版的日志在程序目录的 data\logs 下（PikoHome）
+    $portableLogs = Join-Path $Work "portable\$PackageName\data\logs"
+    if (Test-Path -LiteralPath $portableLogs) { Copy-Item -Recurse -Force $portableLogs (Join-Path $target 'portable-app-logs') }
 }
 
 # 等更新完成：目录里的版本变成 Next，且新版本已被重新拉起。失败记号出现即失败

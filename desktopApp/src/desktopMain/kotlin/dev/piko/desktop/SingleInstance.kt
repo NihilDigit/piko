@@ -1,5 +1,6 @@
 package dev.piko.desktop
 
+import dev.piko.shared.PikoHome
 import dev.piko.shared.log.PikoLog
 import java.io.File
 import java.lang.foreign.Arena
@@ -45,8 +46,8 @@ class SingleInstance private constructor(
 
     companion object {
         private const val TAG = "SingleInstance"
-        private val directory = File(System.getProperty("user.home"), ".piko")
-        private val socketFile = directory.resolve("instance.sock")
+        private val directory = PikoHome.root.toFile()
+        private val socketFile = PikoHome.instanceSocket.toFile()
 
         /**
          * 成为主实例则返回它；已有实例在运行时把 [args] 转交过去并返回 null，调用方应直接退出。

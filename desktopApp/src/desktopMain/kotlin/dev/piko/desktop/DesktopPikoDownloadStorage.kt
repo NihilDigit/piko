@@ -1,5 +1,6 @@
 package dev.piko.desktop
 
+import dev.piko.shared.PikoHome
 import dev.piko.shared.download.PikoDownloadStorage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -7,7 +8,7 @@ import java.io.File
 
 /** 下载目录每次现取：设置页改了位置之后，新任务直接落到新目录，不必重建下载调度器。 */
 class DesktopPikoDownloadStorage(
-    private val cacheDirectory: File = File(System.getProperty("user.home"), ".piko/download-cache"),
+    private val cacheDirectory: File = PikoHome.root.resolve("download-cache").toFile(),
     private val directoryProvider: () -> File,
 ) : PikoDownloadStorage {
     override suspend fun cacheTarget(name: String): String = withContext(Dispatchers.IO) {

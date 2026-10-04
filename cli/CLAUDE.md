@@ -3,7 +3,7 @@
 `:cli` 是开发工具，不随应用发布。`./gradlew :cli:installDist` 后执行 `cli/build/install/piko-cli/bin/piko-cli`：
 
 - `snapshot -o <文件> [--root <路径>] [--depth <层数>] [--deep <名字,…>]`：只读列网盘目录，存成快照，
-  只含文件名、类型、大小。会话取自 `~/.piko`，token 轮换后写回，与桌面端共用。
+  只含文件名、类型、大小。会话取自 `~/.piko-dev`，token 轮换后写回，与开发版（`:desktopApp:run`）共用，不碰安装版的 `~/.piko`。
 - `dryrun <快照> [--path <前缀>] [-o <文件>]`：离线对快照跑网盘页的解析流水线，逐行写出原名与界面上的样子。
   调的是 `DriveScreenState` 同一组函数（`analyzeDriveFolder`、`buildDriveItems`、`describeDriveFolder`）。
 - `ls <路径>`：只读列一个目录，打印每项的 `params`。列目录接口在这里带回来源链接（离线下载的磁力、
