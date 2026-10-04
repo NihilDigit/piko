@@ -143,6 +143,10 @@ interface PikoUserPreferences {
     val batchRenameFlow: Flow<String>
     suspend fun saveBatchRename(serialized: String)
 
+    /** 归档对话框上次的三个勾选，JSON，见 VaultArchiveOptions。空串表示从未保存。每台设备各自的，不同步。 */
+    val vaultArchiveOptionsFlow: Flow<String>
+    suspend fun saveVaultArchiveOptions(serialized: String)
+
     /**
      * 批量重命名的查找替换写成正则文本，而不是拼积木。默认关（积木）。记的是用户手动切换的结果，
      * 因正则无法图形化而停在文本模式的那一次不算。跨设备同步：它反映的是这个人的水平。

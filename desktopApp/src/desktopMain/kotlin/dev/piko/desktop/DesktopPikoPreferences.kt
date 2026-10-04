@@ -59,6 +59,7 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
     private val recentMoveTargets = MutableStateFlow(settings.get(KEY_RECENT_MOVE_TARGETS))
     private val pinnedFolders = MutableStateFlow(settings.get(KEY_PINNED_FOLDERS))
     private val batchRename = MutableStateFlow(settings.get(KEY_BATCH_RENAME))
+    private val vaultArchiveOptions = MutableStateFlow(settings.get(KEY_VAULT_ARCHIVE_OPTIONS))
     private val renameRegexTextMode = MutableStateFlow(settings.get(KEY_RENAME_REGEX_TEXT_MODE) == "true")
     private val proxySetting = MutableStateFlow(ProxySetting.decode(settings.get(KEY_PROXY_SETTING)))
     private val downloadPath = MutableStateFlow(
@@ -269,6 +270,12 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         batchRename.value = serialized
     }
 
+    override val vaultArchiveOptionsFlow: Flow<String> = vaultArchiveOptions.asStateFlow()
+    override suspend fun saveVaultArchiveOptions(serialized: String) {
+        settings.set(KEY_VAULT_ARCHIVE_OPTIONS, serialized)
+        vaultArchiveOptions.value = serialized
+    }
+
     override val renameRegexTextModeFlow: Flow<Boolean> = renameRegexTextMode.asStateFlow()
     override suspend fun setRenameRegexTextMode(enabled: Boolean) {
         settings.set(KEY_RENAME_REGEX_TEXT_MODE, enabled.toString())
@@ -296,6 +303,7 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         const val KEY_RECENT_MOVE_TARGETS = "drive.recentMoveTargets"
         const val KEY_PINNED_FOLDERS = "drive.pinnedFolders"
         const val KEY_BATCH_RENAME = "drive.batchRename"
+        const val KEY_VAULT_ARCHIVE_OPTIONS = "drive.vaultArchiveOptions"
         const val KEY_RENAME_REGEX_TEXT_MODE = "drive.renameRegexTextMode"
         const val KEY_PROXY_SETTING = "network.proxy"
         const val KEY_IGNORED_UPDATE = "update.ignoredVersion"

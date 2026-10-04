@@ -1,5 +1,6 @@
 package dev.piko.ui.screens.drive
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -8,22 +9,27 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import dev.piko.shared.state.VaultArchiveOptions
+import dev.piko.ui.LocalPikoServices
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -52,64 +58,81 @@ internal fun VaultFolderDialog(
     session: FolderVaultSession,
     onDismiss: () -> Unit,
 ) {
+    val preferences = LocalPikoServices.current.preferences
     val survey by produceState<Result<FolderVaultSession.Survey>?>(null, folder.id) { value = session.survey(folder) }
-    var includeUnsourced by remember { mutableStateOf(false) }
-    var onlyLargeFiles by remember { mutableStateOf(false) }
-    var moveToTrash by remember { mutableStateOf(true) }
-    var showScope by remember { mutableStateOf(false) }
+    // 读出上次的选择之前不画勾选，免得先按默认值画出来再跳
+    var options by remember { mutableStateOf<VaultArchiveOptions?>(null) }
+    LaunchedEffect(Unit) { options = VaultArchiveOptions.load(preferences) }
+    val scope = rememberCoroutineScope()
+    val chosen = options ?: VaultArchiveOptions()
     val all = survey?.getOrNull()
-    val counted = all?.let { if (onlyLargeFiles) it.largeFiles else it }
-    val files = counted?.let { if (includeUnsourced) it.files else it.files - it.unsourcedFiles } ?: 0
-    val bytes = counted?.let { if (includeUnsourced) it.bytes else it.bytes - it.unsourcedBytes } ?: 0L
-    // 两项筛选合起来只说留下了几个：默认留下的几乎都是字幕一类的小文件，绝大多数人不必管为什么
-    val leftOut = all?.let { it.files - files } ?: 0
+    val counted = all?.let { if (chosen.skipSmallFiles) it.largeFiles else it }
+    val files = counted?.let { if (chosen.sourcedOnly) it.files - it.unsourcedFiles else it.files } ?: 0
+    val bytes = counted?.let { if (chosen.sourcedOnly) it.bytes - it.unsourcedBytes else it.bytes } ?: 0L
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("归档文件夹") },
         text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 VaultDialogHeading(folder.name, survey, counted?.files, files, bytes, emptyText = "无可归档的文件")
-                // 选「移入回收站」也照样醒目：清空回收站是常事，人会想「反正有归档」，清空后只剩引用。
-                // 这条风险与原文件去哪无关，不能只在选了永久删除时才说
-                Text("原文件删除后只保留引用，云端内容失效时无法找回", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                        SegmentedButton(moveToTrash, { moveToTrash = true }, SegmentedButtonDefaults.itemShape(0, 2)) { Text("原文件移入回收站") }
-                        SegmentedButton(!moveToTrash, { moveToTrash = false }, SegmentedButtonDefaults.itemShape(1, 2)) { Text("永久删除") }
+                // 原文件放进回收站也一样醒目：清空回收站是常事，人会想「反正有归档」，清空后只剩引用
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.medium,
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.15f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.25f)),
+                ) {
+                    Row(Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Icon(Icons.Outlined.Warning, contentDescription = null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.error)
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("仅保存引用，文件可能无法找回", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
+                            Text("归档不保存文件内容。云端不再保存对应内容时，将无法播放、下载或恢复。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
+                            Text("建议用于很少使用的合集文件。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
-                    Text(
-                        if (moveToTrash) "清空回收站前仍可找回原文件" else "立即释放空间，原文件无法找回",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (moveToTrash) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+                }
+                val current = options
+                if (current != null) {
+                    // 是偏好而不是这一次的参数：一改就存，取消归档也记住，与设置页的开关相同
+                    fun update(next: VaultArchiveOptions) {
+                        options = next
+                        scope.launch { VaultArchiveOptions.save(preferences, next) }
+                    }
+                    val unsourced = all?.unsourcedFiles ?: 0
+                    VaultCheckboxOption(
+                        checked = current.sourcedOnly,
+                        onCheckedChange = { update(current.copy(sourcedOnly = it)) },
+                        label = "仅归档有来源记录的文件",
+                        supporting = when {
+                            !current.sourcedOnly -> "自己上传或秒传的文件失效后无法重新添加"
+                            unsourced > 0 -> "$unsourced 个无来源记录的文件留在网盘"
+                            else -> "无来源记录的文件留在网盘"
+                        },
                     )
-                }
-                if (all != null && (leftOut > 0 || showScope)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            if (leftOut > 0) "另有 $leftOut 个文件不归档" else "归档全部文件",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(1f),
-                        )
-                        TextButton(onClick = { showScope = !showScope }) { Text(if (showScope) "收起" else "更改") }
-                    }
-                }
-                if (showScope && all != null) {
-                    if (all.unsourcedFiles > 0) {
-                        VaultCheckboxOption(includeUnsourced, { includeUnsourced = it }, "包括无来源的文件", "自己上传或秒传，失效后无法重新添加")
-                    }
-                    VaultCheckboxOption(onlyLargeFiles, { onlyLargeFiles = it }, "只归档 50 MiB 以上的文件", null)
+                    VaultCheckboxOption(
+                        checked = current.toTrash,
+                        onCheckedChange = { update(current.copy(toTrash = it)) },
+                        label = "原文件放入回收站",
+                        supporting = if (current.toTrash) "清空回收站前仍可找回原文件" else "原文件将永久删除",
+                        supportingIsWarning = !current.toTrash,
+                    )
+                    VaultCheckboxOption(
+                        checked = current.skipSmallFiles,
+                        onCheckedChange = { update(current.copy(skipSmallFiles = it)) },
+                        label = "不归档小文件",
+                        supporting = "50 MiB 以下的文件留在网盘",
+                    )
                 }
             }
         },
         confirmButton = {
             TextButton(
-                enabled = files > 0,
+                enabled = files > 0 && options != null,
                 onClick = {
-                    session.archive(folder, includeUnsourced, onlyLargeFiles, moveToTrash)
+                    session.archive(folder, includeUnsourced = !chosen.sourcedOnly, onlyLargeFiles = chosen.skipSmallFiles, moveToTrash = chosen.toTrash)
                     onDismiss()
                 },
-            ) { Text(if (moveToTrash) "归档" else "归档并删除") }
+            ) { Text(if (chosen.toTrash) "归档" else "归档并删除") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
@@ -183,7 +206,13 @@ internal fun RestoreVaultFolderDialog(
 }
 
 @Composable
-private fun VaultCheckboxOption(checked: Boolean, onCheckedChange: (Boolean) -> Unit, label: String, supporting: String?) {
+private fun VaultCheckboxOption(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    label: String,
+    supporting: String?,
+    supportingIsWarning: Boolean = false,
+) {
     Row(
         modifier = Modifier.fillMaxWidth().toggleable(value = checked, role = Role.Checkbox, onValueChange = onCheckedChange).padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -191,8 +220,15 @@ private fun VaultCheckboxOption(checked: Boolean, onCheckedChange: (Boolean) -> 
     ) {
         Checkbox(checked = checked, onCheckedChange = null)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
-            if (supporting != null) Text(supporting, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(label, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
+            // 说明写的是勾或不勾的后果，做决定要看，与标签同一档字号，不缩成附注
+            if (supporting != null) {
+                Text(
+                    supporting,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (supportingIsWarning) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }

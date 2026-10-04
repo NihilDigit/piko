@@ -113,6 +113,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val RECENT_MOVE_TARGETS = stringPreferencesKey("recent_move_targets")
         val PINNED_FOLDERS = stringPreferencesKey("pinned_folders")
         val BATCH_RENAME = stringPreferencesKey("batch_rename")
+        val VAULT_ARCHIVE_OPTIONS = stringPreferencesKey("vault_archive_options")
         val RENAME_REGEX_TEXT_MODE = booleanPreferencesKey("rename_regex_text_mode")
         val PROXY_SETTING = stringPreferencesKey("proxy_setting")
         val IGNORED_UPDATE_VERSION = stringPreferencesKey("ignored_update_version")
@@ -431,6 +432,14 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun saveBatchRename(serialized: String) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.BATCH_RENAME] = serialized
+        }
+    }
+
+    override val vaultArchiveOptionsFlow: Flow<String> = preference { it[PreferencesKeys.VAULT_ARCHIVE_OPTIONS].orEmpty() }
+
+    override suspend fun saveVaultArchiveOptions(serialized: String) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.VAULT_ARCHIVE_OPTIONS] = serialized
         }
     }
 

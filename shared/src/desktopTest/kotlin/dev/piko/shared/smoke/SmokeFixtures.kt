@@ -100,6 +100,8 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun savePinnedFolders(serialized: String) = Unit
     override val batchRenameFlow: Flow<String> = MutableStateFlow("")
     override suspend fun saveBatchRename(serialized: String) = Unit
+    override val vaultArchiveOptionsFlow: Flow<String> = MutableStateFlow("")
+    override suspend fun saveVaultArchiveOptions(serialized: String) = Unit
     override val renameRegexTextModeFlow: Flow<Boolean> = MutableStateFlow(false)
     override suspend fun setRenameRegexTextMode(enabled: Boolean) = Unit
     override val proxySettingFlow: Flow<ProxySetting> = MutableStateFlow(ProxySetting())
