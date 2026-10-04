@@ -64,9 +64,8 @@ sealed interface DriveListItem {
     ) : DriveListItem
 
     /** [view] 为 null 时照原样显示文件名。 */
-    class File(val file: FileStat, val view: DriveFileView?) : DriveListItem {
-        override val key: String get() = file.id
-    }
+    /** [key] 平常就是文件 ID；查找重复里同一个文件可能同时在两组，要带上组名区分。 */
+    class File(val file: FileStat, val view: DriveFileView?, override val key: String = file.id) : DriveListItem
 }
 
 /**

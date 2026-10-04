@@ -61,8 +61,11 @@ class DriveChangeJournal internal constructor(
 
     class Renamed(val id: String, val oldName: String, val newName: String)
 
-    /** 做完一次改动或撤销一次，给用户看的一句话。[change] 不为 null 时这一条可以撤销。 */
-    class Event(val message: String, val change: Change?)
+    /**
+     * 做完一次改动或撤销一次，给用户看的一句话。[change] 不为 null 时这一条可以撤销。
+     * [undone] 是撤销成功的那一次，记着网盘快照的（查找重复）据此把撤回来的文件补回去。
+     */
+    class Event(val message: String, val change: Change?, val undone: Change? = null)
 
     private val _events = MutableSharedFlow<Event>(extraBufferCapacity = 8)
     val events: SharedFlow<Event> = _events.asSharedFlow()
@@ -153,7 +156,9 @@ class DriveChangeJournal internal constructor(
         }
         result.logFailure(TAG, "撤销失败")
         driveRepo.requestRefresh()
-        _events.emit(Event(if (result.isSuccess) "已撤销" else "撤销失败，可能已被别处改动", null))
+        _events.emit(
+            if (result.isSuccess) Event("已撤销", null, undone = change) else Event("撤销失败，可能已被别处改动", null),
+        )
     }
 
     private companion object {

@@ -4,30 +4,31 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.data.DuplicateScanEvent
 import dev.piko.shared.log.PikoLog
-import dev.piko.shared.log.logFailure
 import dev.piko.shared.data.DuplicateScanner
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.ScanStop
 import dev.piko.shared.data.ScannedFile
+import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * 查找重复：递归扫描 [root]，分出完全相同与同集不同版本两类，勾选后移入回收站。
+ * 查找重复：递归扫描 [root]，分出完全相同与同集不同版本两类。
  *
- * 创建即开始扫描。扫描在 [scope] 里进行，调用方关掉界面时取消 scope 即可一并停下。
- * 勾选以文件 id 记录，同一个文件既是完全相同组里保留的一份、又代表版本组里的一行时，两处的勾选是同一个。
+ * 创建即开始扫描。扫描在 [scope] 里进行，调用方结束这一次时取消 scope 即可一并停下。
+ * 结果在网盘页的「查找重复」位置里按组列出，勾选与移入回收站都是网盘页的多选与删除，这里不另记勾选。
+ *
+ * 结果是扫描那一刻的快照。之后经撤销日志（[DriveChangeJournal]）移入回收站的，不管在哪一页删的，都从结果里拿掉
+ * 再重新分组：代表版本组那一行的文件被移走后，应由它的相同副本接替，逐行删做不到。撤销回来的照样补回。
  */
 class DuplicateFinderState(
     private val clients: PikoClientProvider,
@@ -56,26 +57,22 @@ class DuplicateFinderState(
 
     var report by mutableStateOf(DuplicateReport.EMPTY)
         private set
-    var selectedIds by mutableStateOf<Set<String>>(emptySet())
-        private set
-    var isTrashing by mutableStateOf(false)
-        private set
 
-    private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
-    val messages: SharedFlow<String> = _messages.asSharedFlow()
+    private var scanned by mutableStateOf<List<ScannedFile>>(emptyList())
 
-    private val filesById: Map<String, DuplicateFile> by derivedStateOf {
-        (report.identical + report.versions).flatMap { it.rows }.associate { it.file.id to it.file }
+    /** 扫描后移入回收站的。不从 [scanned] 里删：撤销时要按原样补回。 */
+    private var gone: Set<String> = emptySet()
+
+    private val statsById: Map<String, FileStat> by derivedStateOf { scanned.associate { it.file.id to it.file } }
+
+    /** 结果里出现的文件，按 ID 取回完整的 [FileStat]，网盘页据此画缩略图、打开与操作。 */
+    fun fileStat(id: String): FileStat? = statsById[id]
+
+    /** 建议移走的：完全相同的组里，默认保留的那份以外的。版本组不建议，挑哪一版由人定。 */
+    val suggestedIds: Set<String> by derivedStateOf {
+        report.identical.flatMapTo(HashSet()) { group -> group.rows.map { it.file.id }.filter { it != group.keptId } }
     }
 
-    val selectedBytes: Long by derivedStateOf { selectedIds.sumOf { filesById[it]?.size ?: 0L } }
-
-    /** 所有副本都被勾选的完全相同组数。移走后网盘里不再留有这份内容，确认时单独提醒。 */
-    val fullyRemovedGroups: Int by derivedStateOf {
-        report.identical.count { group -> group.rows.all { it.file.id in selectedIds } }
-    }
-
-    private var scanned: List<ScannedFile> = emptyList()
     private var scanner: DuplicateScanner? = null
     private var scanJob: Job? = null
 
@@ -83,6 +80,16 @@ class DuplicateFinderState(
 
     init {
         rescan()
+        scope.launch {
+            driveRepo.changes.events.collect { event ->
+                val trashed = (event.change as? DriveChangeJournal.Change.Trash)?.ids
+                val restored = (event.undone as? DriveChangeJournal.Change.Trash)?.ids
+                when {
+                    trashed != null -> updateGone(gone + trashed)
+                    restored != null -> updateGone(gone - restored.toSet())
+                }
+            }
+        }
     }
 
     fun rescan() {
@@ -95,7 +102,8 @@ class DuplicateFinderState(
         failedFolders = 0
         errorMessage = null
         report = DuplicateReport.EMPTY
-        selectedIds = emptySet()
+        scanned = emptyList()
+        gone = emptySet()
         scanJob = scope.launch {
             try {
                 scanner.scan(root.id).collect { event ->
@@ -111,11 +119,7 @@ class DuplicateFinderState(
                             failedFolders = event.failedFolders
                             phase = Phase.ANALYZING
                             scanned = event.files
-                            val result = withContext(Dispatchers.Default) { findDuplicates(scanned, rootName) }
-                            report = result
-                            selectedIds = result.identical.flatMap { group ->
-                                group.rows.map { it.file.id }.filter { it != group.keptId }
-                            }.toSet()
+                            regroup()
                             phase = Phase.DONE
                         }
                     }
@@ -135,39 +139,15 @@ class DuplicateFinderState(
         scanner?.stop()
     }
 
-    fun toggle(fileId: String) {
-        selectedIds = if (fileId in selectedIds) selectedIds - fileId else selectedIds + fileId
+    private fun updateGone(next: Set<String>) {
+        if (next == gone) return
+        gone = next
+        // 扫描还没出结果时只记下，出结果那一刻一并扣掉
+        if (phase == Phase.DONE) scope.launch { regroup() }
     }
 
-    fun keepAll(group: DuplicateGroup) {
-        selectedIds = selectedIds - group.rows.map { it.file.id }.toSet()
-    }
-
-    /** 完全相同组回到默认：除保留的一份外全选。 */
-    fun selectDefault(group: DuplicateGroup) {
-        val keptId = group.keptId ?: return
-        selectedIds = selectedIds + group.rows.map { it.file.id }.filter { it != keptId }
-    }
-
-    fun trashSelected() {
-        val ids = selectedIds.toList()
-        if (ids.isEmpty() || isTrashing) return
-        isTrashing = true
-        scope.launch {
-            driveRepo.trash(ids)
-                .onSuccess {
-                    val removed = ids.toSet()
-                    scanned = scanned.filterNot { it.file.id in removed }
-                    // 重新分组而不是逐行删：代表版本组那一行的文件被移走后，应由它的相同副本接替
-                    report = withContext(Dispatchers.Default) { findDuplicates(scanned, rootName) }
-                    // 组解散后留下的勾选看不见也取消不了，一并清掉
-                    selectedIds = selectedIds.filter { it !in removed && it in filesById }.toSet()
-                    driveRepo.requestRefresh()
-                    _messages.tryEmit("已将 ${ids.size} 个文件移入回收站")
-                }
-                .logFailure("Duplicates", "移入回收站失败")
-                .onFailure { _messages.tryEmit("移入回收站失败") }
-            isTrashing = false
-        }
+    private suspend fun regroup() {
+        val present = gone.let { removed -> scanned.filterNot { it.file.id in removed } }
+        report = withContext(Dispatchers.Default) { findDuplicates(present, rootName) }
     }
 }

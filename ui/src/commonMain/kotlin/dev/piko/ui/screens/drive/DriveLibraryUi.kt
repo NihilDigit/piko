@@ -39,7 +39,8 @@ import java.util.Locale
  * 回收站是何时彻底清除。星标没有可说的，为 null。
  */
 internal fun libraryNote(library: DriveLibrary, file: FileStat, event: DriveEvent?): String? = when (library) {
-    DriveLibrary.STARRED -> null
+    // 查找重复的位置要从扫描结果取，见 duplicateLocations
+    DriveLibrary.STARRED, DriveLibrary.DUPLICATES -> null
     // delete_time 是服务端排定的彻底清除时间。实测为移入回收站后 15 天，但期限由服务端决定，不在这里按固定天数推算
     DriveLibrary.TRASH -> file.deleteTime.takeIf { it.isNotEmpty() }?.let { "将于 ${it.take(10)} 彻底删除" }
     DriveLibrary.RECENT -> event?.let {
@@ -77,6 +78,8 @@ internal val DriveLibrary.empty: LibraryEmpty
         DriveLibrary.STARRED -> LibraryEmpty("暂无星标", "在文件菜单中添加星标后显示于此", Icons.Outlined.StarOutline)
         DriveLibrary.HISTORY -> LibraryEmpty("暂无播放记录", "包含 PikPak 各客户端的播放记录", Icons.Outlined.PlayCircle)
         DriveLibrary.TRASH -> LibraryEmpty("回收站为空", "移入回收站的文件显示于此，可恢复或彻底删除", Icons.Outlined.DeleteOutline)
+        // 实际画的是 DuplicatesEmptyState，要分扫描中、失败与已结束
+        DriveLibrary.DUPLICATES -> LibraryEmpty("没有重复文件", "", Icons.Outlined.FolderOpen)
     }
 
 /**

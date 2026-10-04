@@ -13,6 +13,12 @@ enum class DriveLibrary(val id: String, val title: String) {
     STARRED("piko:starred", "星标"),
     HISTORY("piko:history", "播放历史"),
     TRASH("piko:trash", "回收站"),
+
+    /**
+     * 查找重复的结果，按组列出，每组一个分区标题。内容来自进程级的 DuplicateSession，不经网络；
+     * 不在侧边栏里，由「查找重复」进来。做成网盘页的位置而不是面板：要挑留哪一份，得看得到缩略图与详情。
+     */
+    DUPLICATES("piko:duplicates", "查找重复"),
     ;
 
     val crumb: PikoPathBreadcrumb get() = PikoPathBreadcrumb(id, title)

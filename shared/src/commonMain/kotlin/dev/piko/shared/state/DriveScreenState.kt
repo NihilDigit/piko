@@ -18,6 +18,7 @@ import androidx.compose.runtime.snapshotFlow
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.data.ChildFile
 import dev.piko.shared.data.DriveLibrary
+import dev.piko.shared.data.readableSize
 import dev.piko.shared.data.library
 import dev.piko.shared.log.PikoLog
 import io.github.nihildigit.pikpak.DriveEvent
@@ -95,6 +96,8 @@ class DriveScreenState(
     private val driveRepo: PikoDriveRepository,
     private val preferences: PikoUserPreferences,
     private val scope: CoroutineScope,
+    /** 「查找重复」这个位置列的内容，见 [DriveLibrary.DUPLICATES]。为 null 时那里是空的。 */
+    private val duplicates: DuplicateSession? = null,
     initialSortOrder: PikoFileSortOrder = PikoFileSortOrder.TIME_DESC,
 ) {
     var files by mutableStateOf<List<FileStat>>(emptyList())
@@ -254,6 +257,7 @@ class DriveScreenState(
         when {
             filter != null -> searchedFiles.filter { !it.isFolder && it.fileCategory() == filter }.map { DriveListItem.File(it, null) }
             isGlobalSearchActive || searchQuery.isNotBlank() -> searchedFiles.map { DriveListItem.File(it, null) }
+            libraryView == DriveLibrary.DUPLICATES -> duplicateItems
             // 库里的条目散在全盘各处，按作品与分区归拢的是一个目录里的东西，这里照原来的先后平铺
             structure == null || libraryView != null -> files.map { DriveListItem.File(it, null) }
             !isNameParsing || structure.blocks.isEmpty() ->
@@ -269,7 +273,8 @@ class DriveScreenState(
     val displayedFiles: List<FileStat> by derivedStateOf {
         val structure = currentAnalysis
         if (isSearching || libraryView != null || structure == null || !isNameParsing || structure.blocks.isEmpty()) {
-            return@derivedStateOf displayItems.mapNotNull { (it as? DriveListItem.File)?.file }
+            // 查找重复里同一个文件可能在两组各占一行，全选与翻页只算一次
+            return@derivedStateOf displayItems.mapNotNull { (it as? DriveListItem.File)?.file }.distinctBy { it.id }
         }
         val hideFolded = isFoldingActive && !showAllFilesTemporarily
         val shown = buildDriveItems(files, structure, hideFolded) { true }.mapNotNull { (it as? DriveListItem.File)?.file }
@@ -332,6 +337,17 @@ class DriveScreenState(
                 if (id == activeFolderId) return@collect
                 activeFolderId = id
                 onFolderChanged()
+            }
+        }
+        // 查重的结果随扫描、删除与撤销变化，不经 load：停在那个位置时跟着重画
+        if (duplicates != null) {
+            scope.launch {
+                snapshotFlow { duplicates.state.let { it to it?.report to it?.phase } }.collect {
+                    if (libraryView == DriveLibrary.DUPLICATES) showDuplicates()
+                }
+            }
+            scope.launch {
+                snapshotFlow { libraryView }.collect { if (it != DriveLibrary.DUPLICATES) preselectedFinder = null }
             }
         }
         // 同理，高亮请求随时可能来，不只在网盘页建出来的那一刻
@@ -471,6 +487,12 @@ class DriveScreenState(
     private val libraryListings = mutableMapOf<DriveLibrary, LibraryListing>()
 
     private fun loadLibrary(library: DriveLibrary, useCache: Boolean, showRefreshing: Boolean) {
+        if (library == DriveLibrary.DUPLICATES) {
+            loadJob?.cancel()
+            isRefreshing = false
+            showDuplicates()
+            return
+        }
         val cached = if (useCache) libraryListings[library] else null
         when {
             cached != null -> {
@@ -510,7 +532,73 @@ class DriveScreenState(
         DriveLibrary.TRASH -> driveRepo.trashFiles().map { LibraryListing(it, emptyMap()) }
         DriveLibrary.RECENT -> driveRepo.recentlyAdded().map(::eventListing)
         DriveLibrary.HISTORY -> driveRepo.playHistory().map(::eventListing)
+        DriveLibrary.DUPLICATES -> error("查找重复的内容来自 DuplicateSession，不经网络")
     }
+
+    // region 查找重复
+
+    /** 这一次查重的建议勾选已经套用过了：人改过的勾选不再被盖回去。离开这个位置后作废，回来再套一次。 */
+    private var preselectedFinder: DuplicateFinderState? = null
+
+    /** 查重结果换了（扫完、移走了文件、撤销）就重画。files 只放去重后的文件，供按 ID 找回与空态判断。 */
+    private fun showDuplicates() {
+        val finder = duplicates?.state
+        val report = finder?.report ?: DuplicateReport.EMPTY
+        files = (report.identical + report.versions)
+            .flatMap { group -> group.rows.mapNotNull { finder?.fileStat(it.file.id) } }
+            .distinctBy { it.id }
+        libraryEvents = emptyMap()
+        loadedFolderId = DriveLibrary.DUPLICATES.id
+        loadError = null
+        isLoading = false
+        if (finder != null && finder.phase == DuplicateFinderState.Phase.DONE && preselectedFinder !== finder) {
+            preselectedFinder = finder
+            val suggested = finder.suggestedIds
+            if (suggested.isNotEmpty()) {
+                exitSelection()
+                isSelectionMode = true
+                selectedFileIds.addAll(suggested)
+            }
+        }
+    }
+
+    /**
+     * 每组一个分区标题，下面是组里的各份。同一个文件可能既在完全相同的组里、又代表版本组里的一行，
+     * 列表项的 key 因此带上组；勾选仍按文件 ID，两处是同一个勾。
+     */
+    private val duplicateItems: List<DriveListItem> by derivedStateOf {
+        val finder = duplicates?.state ?: return@derivedStateOf emptyList()
+        val report = finder.report
+        buildList {
+            for (group in report.identical + report.versions) {
+                val blockId = "dup:${group.kind}:${group.key}"
+                val expanded = DriveViewMemory.expanded[expandKey(blockId)] ?: true
+                add(DriveListItem.SectionHeader(blockId, blockId, duplicateLabel(group), group.title, expanded))
+                if (!expanded) continue
+                for (row in group.rows) {
+                    val file = finder.fileStat(row.file.id) ?: continue
+                    add(DriveListItem.File(file, duplicateView(file, row, group), key = "$blockId/${file.id}"))
+                }
+            }
+        }
+    }
+
+    private fun duplicateLabel(group: DuplicateGroup): String = when (group.kind) {
+        DuplicateKind.IDENTICAL -> "${group.title}：${group.rows.size} 份相同，可腾出 ${readableSize(group.reclaimableBytes)}"
+        DuplicateKind.VERSIONS -> "${group.title}：${group.rows.size} 个版本，共 ${readableSize(group.totalBytes)}"
+    }
+
+    // 标签写这一份与同组其余几份的区别：字幕组、分辨率这些，以及默认留哪一份
+    private fun duplicateView(file: FileStat, row: DuplicateRow, group: DuplicateGroup): DriveFileView {
+        val tags = buildList {
+            if (file.id == group.keptId) add("建议保留")
+            addAll(row.details)
+            if (row.sameCopies > 0) add("另有 ${row.sameCopies} 份相同")
+        }
+        return DriveFileView(title = file.name, tags = tags, heading = file.name, fields = emptyList())
+    }
+
+    // endregion
 
     /**
      * 文件已删除的记录服务端照样返回，只是不再内嵌文件；移进回收站的仍内嵌着。两种都不列：

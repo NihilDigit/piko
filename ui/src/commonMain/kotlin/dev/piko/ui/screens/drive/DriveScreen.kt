@@ -170,8 +170,6 @@ import dev.piko.ui.components.BreadcrumbBar
 import dev.piko.ui.components.FileNameField
 import dev.piko.ui.components.FolderPickerDialog
 import dev.piko.ui.components.MoveTargetDialog
-import dev.piko.ui.screens.duplicates.DuplicatesSheetContent
-import dev.piko.ui.screens.duplicates.DuplicatesSheetHandle
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoErrorState
 import dev.piko.ui.components.RefreshBox
@@ -266,7 +264,7 @@ fun DriveScreen(
     val sessionManager = LocalPikoServices.current.preferences
     val isSpoilerBlurEnabled by sessionManager.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = true)
 
-    val state = remember { DriveScreenState(driveRepo, sessionManager, scope) }
+    val state = remember { DriveScreenState(driveRepo, sessionManager, scope, duplicateSession) }
 
     LaunchedEffect(state) {
         state.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
@@ -394,14 +392,21 @@ fun DriveScreen(
     // 所以单项操作和多选工具栏可以共用同一套状态。
     var moveTargetIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     val duplicateState = duplicateSession.state
-    // 扫描在面板收起时完成，没人看得到结果，提示一下；面板开着时结果就在眼前
+    val inDuplicates = state.libraryView == DriveLibrary.DUPLICATES
+
+    /** 去查重结果那一页。同一个起点的扫描还在就回到它，不重扫；换了起点就结束旧的、从头扫。 */
+    fun openDuplicates(root: PathBreadcrumb) {
+        duplicateSession.open(root)
+        if (!inDuplicates) driveRepo.updateFolderStack(listOf(DriveLibrary.DUPLICATES.crumb))
+    }
+    // 人去了别处时扫描完成，提示一下；停在结果页时结果就在眼前
     LaunchedEffect(duplicateState) {
         val finder = duplicateState ?: return@LaunchedEffect
         snapshotFlow { finder.phase }.first { it == DuplicateFinderState.Phase.DONE || it == DuplicateFinderState.Phase.FAILED }
-        if (duplicateSession.isSheetOpen) return@LaunchedEffect
+        if (state.libraryView == DriveLibrary.DUPLICATES) return@LaunchedEffect
         val message = if (finder.phase == DuplicateFinderState.Phase.FAILED) "查找重复失败" else "查找重复完成"
         val result = snackbarHostState.showSnackbar(message, actionLabel = "查看", withDismissAction = true)
-        if (result == SnackbarResult.ActionPerformed) duplicateSession.reopen()
+        if (result == SnackbarResult.ActionPerformed) openDuplicates(finder.root)
     }
     val selectedArchives by remember(state) {
         derivedStateOf { state.displayedFiles.filter { it.id in state.selectedFileIds && (it.isExtractableArchive || it.isArchiveVolume) } }
@@ -649,7 +654,7 @@ fun DriveScreen(
             onTrash = { state.moveToTrash(listOf(file.id)) },
             onCopySource = { copySource(file) },
             onOpenSource = { file.sourceUrl?.let(platform::openUrl) },
-            onFindDuplicates = { duplicateSession.open(PathBreadcrumb(file.id, file.name)) },
+            onFindDuplicates = { openDuplicates(PathBreadcrumb(file.id, file.name)) },
             onExtract = { archiveSession.extract(listOf(file)) },
             onShare = { shareTargets = listOf(file) },
             onOpenInExternalPlayer = platform.externalPlayer?.let { { openInExternalPlayer(file) } },
@@ -766,6 +771,7 @@ fun DriveScreen(
     val libraryEvents = state.libraryEvents
     val libraryNotes = remember(libraryView, state.files, libraryEvents) {
         if (libraryView == null) emptyMap()
+        else if (libraryView == DriveLibrary.DUPLICATES) duplicateLocations(duplicateState)
         else state.files.mapNotNull { file -> libraryNote(libraryView, file, libraryEvents[file.id])?.let { file.id to it } }.toMap()
     }
     val rowNotes = if (libraryNotes.isEmpty()) state.hitLocations else state.hitLocations + libraryNotes
@@ -1098,14 +1104,13 @@ fun DriveScreen(
                 onDelete = { libraryConfirm = LibraryConfirm.DeleteForever(targetIds, emptying = false) },
             ),
             onSelectAll = { state.toggleSelectAll() },
-            // 宽窗口没有收起后的把手，有会话时点它是放回来
-            onFindDuplicates = { if (duplicateState != null) duplicateSession.reopen() else duplicateSession.open(activeFolder) },
+            onFindDuplicates = { openDuplicates(activeFolder) },
             stash = buildList {
                 if (instantState != null && !instantSession.isSheetOpen) {
                     add(StashItem(Icons.Outlined.Bolt, "继续添加链接", instantSession::reopen, "放弃添加链接", instantSession::end))
                 }
-                if (duplicateState != null && !duplicateSession.isSheetOpen) {
-                    add(StashItem(Icons.Outlined.FileCopy, "继续查找重复", duplicateSession::reopen, "结束查找重复", duplicateSession::end))
+                if (duplicateState != null && !inDuplicates) {
+                    add(StashItem(Icons.Outlined.FileCopy, "回到查重结果", { openDuplicates(duplicateState.root) }, "结束查找重复", duplicateSession::end))
                 }
                 if (segmentSession.file != null && !segmentSession.isSheetOpen) {
                     add(StashItem(Icons.Outlined.ContentCut, "继续下载片段", segmentSession::reopen, "放弃下载片段", segmentSession::end))
@@ -1205,7 +1210,7 @@ fun DriveScreen(
                 }
             }
             if (libraryView == null) {
-                add(PaletteItem("在当前文件夹查找重复", Icons.Outlined.FileCopy, "网盘", keywords = "duplicate dedupe") { duplicateSession.open(activeFolder) })
+                add(PaletteItem("在当前文件夹查找重复", Icons.Outlined.FileCopy, "网盘", keywords = "duplicate dedupe") { openDuplicates(activeFolder) })
             }
         }
     }
@@ -1303,11 +1308,11 @@ fun DriveScreen(
                                 onClose = instantSession::end,
                             )
                         }
-                        if (duplicateState != null && !duplicateSession.isSheetOpen && !pathInTopBar) {
-                            DuplicatesSheetHandle(
-                                state = duplicateState,
-                                onExpand = duplicateSession::reopen,
-                                onClose = duplicateSession::end,
+                        if (duplicateState != null && !inDuplicates && !pathInTopBar) {
+                            DuplicatesHandle(
+                                finder = duplicateState,
+                                onOpen = { openDuplicates(duplicateState.root) },
+                                onEnd = duplicateSession::end,
                             )
                         }
                         val collapsedSegment = segmentSession.file
@@ -1488,7 +1493,7 @@ fun DriveScreen(
                                 FloatingActionButtonMenuItem(
                                     onClick = {
                                         isFabMenuExpanded = false
-                                        duplicateSession.open(activeFolder)
+                                        openDuplicates(activeFolder)
                                     },
                                     icon = { Icon(Icons.Outlined.FileCopy, contentDescription = null) },
                                     text = { Text("查找重复") },
@@ -1557,7 +1562,14 @@ fun DriveScreen(
 
                                 val bottomPadding = innerPadding.calculateBottomPadding() + FabClearance
                                 // 筛选或图库视图下为空时仍给列表：空目录页没有页眉，筛选撤不掉，视图也切不回去
-                                if (state.displayItems.isEmpty() && state.typeFilter == null && !state.thumbnailsOnly) {
+                                if (inDuplicates && state.files.isEmpty()) {
+                                    breadcrumbs()
+                                    DuplicatesEmptyState(
+                                        finder = duplicateState,
+                                        onLeave = { driveRepo.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB)) },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                } else if (state.displayItems.isEmpty() && state.typeFilter == null && !state.thumbnailsOnly) {
                                     // 空目录没有列表页眉，面包屑单独放在空状态上方
                                     breadcrumbs()
                                     DriveEmptyState(state = state, modifier = Modifier.weight(1f))
@@ -1590,6 +1602,9 @@ fun DriveScreen(
                                             // 钉住的面包屑会在它下面留一条底色不同的带子
                                             Column {
                                                 breadcrumbs()
+                                                if (inDuplicates && duplicateState != null) {
+                                                    DuplicatesBanner(duplicateState, onEnd = duplicateSession::end)
+                                                }
                                                 // 起始只留 4dp：排序是 TextButton，自带 12dp 内边距，合起来图标落在 16dp
                                                 // 页边距上。末端的视图切换是 ToggleButton，没有内边距，要给足 16dp
                                                 Box(modifier = Modifier.padding(start = 4.dp, end = 16.dp)) {
@@ -1648,7 +1663,7 @@ fun DriveScreen(
             onTrash = { state.moveToTrash(listOf(target.id)) },
             onCopySource = { copySource(target) },
             onOpenSource = { target.sourceUrl?.let(platform::openUrl) },
-            onFindDuplicates = { duplicateSession.open(PathBreadcrumb(target.id, target.name)) },
+            onFindDuplicates = { openDuplicates(PathBreadcrumb(target.id, target.name)) },
             onExtract = { archiveSession.extract(listOf(target)) },
             onShare = { shareTargets = listOf(target) },
             onOpenInExternalPlayer = platform.externalPlayer?.let { { openInExternalPlayer(target) } },
@@ -1704,16 +1719,6 @@ fun DriveScreen(
         )
     }
 
-    // 查找重复的面板。划走只是收起，扫描照常进行，底部留把手，见 DuplicateSession
-    if (duplicateState != null && duplicateSession.isSheetOpen) {
-        PikoSheet(
-            onDismissRequest = duplicateSession::collapse,
-            bottomSheetInsets = { WindowInsets(0) },
-            sideSheetTitle = "查找重复",
-        ) {
-            DuplicatesSheetContent(duplicateState, inSideSheet = isSideSheet)
-        }
-    }
 
     // 秒传面板。划走只是收起，会话还在，底部留把手，见 InstantSession
     if (instantState != null && instantSession.isSheetOpen) {
