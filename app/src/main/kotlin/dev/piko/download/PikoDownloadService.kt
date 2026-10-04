@@ -138,15 +138,18 @@ class PikoDownloadService : Service() {
         }
     }
 
-    /** 在服务端进行、不传字节的工作：解压中的压缩包数，正在查找重复的目录名。 */
-    private data class ServerWork(val extractions: Int, val scanningRoot: String?) {
-        val isIdle: Boolean get() = extractions == 0 && scanningRoot == null
+    /** 在服务端进行、不传字节的工作：解压中的压缩包数，正在查找重复的目录名，正在归档或恢复的文件夹。 */
+    private data class ServerWork(val extractions: Int, val scanningRoot: String?, val vault: String?) {
+        val isIdle: Boolean get() = extractions == 0 && scanningRoot == null && vault == null
 
         companion object {
             fun of(services: PikoServices): ServerWork {
                 val finder = services.duplicateSession.state
                 val scanning = finder?.phase == DuplicateFinderState.Phase.SCANNING || finder?.phase == DuplicateFinderState.Phase.ANALYZING
-                return ServerWork(services.archiveExtractSession.jobs.size, finder?.root?.name?.takeIf { scanning })
+                val vaultSession = services.folderVaultSession
+                val vault = vaultSession.progress?.let { "归档「${it.folderName}」" }
+                    ?: vaultSession.restoreProgress?.let { "恢复「${it.folderName}」" }
+                return ServerWork(services.archiveExtractSession.jobs.size, finder?.root?.name?.takeIf { scanning }, vault)
             }
         }
     }
@@ -168,6 +171,7 @@ class PikoDownloadService : Service() {
             uploads.takeIf { it.isNotEmpty() }?.let { "上传 ${it.size} 个文件" },
             work.extractions.takeIf { it > 0 }?.let { "解压 $it 个压缩包" },
             work.scanningRoot?.let { "查找「$it」中的重复" },
+            work.vault,
         ).joinToString("，", prefix = "正在")
     }
 

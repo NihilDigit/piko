@@ -25,7 +25,7 @@ import kotlin.time.Clock
 class WorkNotice(val title: String, val message: String)
 
 /**
- * 下载、上传、解压、查找重复的结局汇成一条流。何时呈现由各端决定：应用或窗口在前台时，
+ * 下载、上传、解压、查找重复、归档与恢复的结局汇成一条流。何时呈现由各端决定：应用或窗口在前台时，
  * 列表与 Snackbar 已经说明了，通常不必再发。只报订阅之后结束的工作，启动时读回的旧记录不报。
  */
 fun PikoServices.workNotices(): Flow<WorkNotice> = merge(
@@ -33,6 +33,7 @@ fun PikoServices.workNotices(): Flow<WorkNotice> = merge(
     uploadNotices(uploadManager, clientManager),
     archiveExtractSession.outcomes.map { WorkNotice(if (it.succeeded) "解压完成" else "解压失败", it.message) },
     duplicateNotices(duplicateSession),
+    folderVaultSession.outcomes.map { WorkNotice(it.title, it.message) },
 )
 
 private fun downloadNotices(downloads: PikoDownloadCoordinator): Flow<WorkNotice> = flow {

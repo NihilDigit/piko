@@ -51,7 +51,7 @@ internal class WorkResultNotifier(
         val scanning = services.duplicateSession.state?.phase.let {
             it == DuplicateFinderState.Phase.SCANNING || it == DuplicateFinderState.Phase.ANALYZING
         }
-        return services.archiveExtractSession.jobs.isNotEmpty() || scanning
+        return services.archiveExtractSession.jobs.isNotEmpty() || scanning || services.folderVaultSession.isRunning
     }
 
     private fun post(notice: WorkNotice) {
