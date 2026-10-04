@@ -15,7 +15,8 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Warning
-import androidx.compose.material3.AlertDialog
+import dev.piko.ui.components.PikoDialog
+import dev.piko.ui.components.PikoDialogConfirm
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
@@ -71,12 +72,9 @@ internal fun VaultFolderDialog(
     val counted = all?.let { if (chosen.skipSmallFiles) it.largeFiles else it }
     val files = counted?.let { if (chosen.sourcedOnly) it.files - it.unsourcedFiles else it.files } ?: 0
     val bytes = counted?.let { if (chosen.sourcedOnly) it.bytes - it.unsourcedBytes else it.bytes } ?: 0L
-    // 试样：标题小一号、圆角收紧、确认用有底色的按钮，照桌面上的对话框。M3 的基本对话框按触屏设计，
-    // 大标题加无底色的文字按钮，在宽窗口里像一张漂在中间的手机卡片
-    AlertDialog(
+    PikoDialog(
         onDismissRequest = onDismiss,
-        shape = MaterialTheme.shapes.large,
-        title = { Text("归档文件夹", style = MaterialTheme.typography.titleLarge) },
+        title = { Text("归档文件夹") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 VaultDialogHeading(folder.name, survey, counted?.files, files, bytes, emptyText = "无可归档的文件")
@@ -130,21 +128,17 @@ internal fun VaultFolderDialog(
             }
         },
         confirmButton = {
-            // 永久删除原文件时按钮换成错误色，后果落在要按下去的那一处。复选框下的说明不染红：
-            // M3 的错误色只给校验出错，取消勾选不是错；在警告框里另加一行红字也试过，像补丁
-            val destructive = !chosen.toTrash
-            Button(
-                colors = if (destructive) {
-                    ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError)
-                } else {
-                    ButtonDefaults.buttonColors()
-                },
+            // 永久删除原文件时按钮换成错误色。复选框下的说明不染红：M3 的错误色只给校验出错，取消勾选不是错；
+            // 在警告框里另加一行红字也试过，像补丁
+            PikoDialogConfirm(
+                label = "归档",
+                destructive = !chosen.toTrash,
                 enabled = files > 0 && options != null,
                 onClick = {
                     session.archive(folder, includeUnsourced = !chosen.sourcedOnly, onlyLargeFiles = chosen.skipSmallFiles, moveToTrash = chosen.toTrash)
                     onDismiss()
                 },
-            ) { Text("归档") }
+            )
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
@@ -180,7 +174,7 @@ internal fun RestoreVaultFolderDialog(
 ) {
     val survey by produceState<Result<FolderVaultSession.RestoreSurvey>?>(null, folder.id) { value = session.surveyRestore(folder) }
     val counted = survey?.getOrNull()
-    AlertDialog(
+    PikoDialog(
         onDismissRequest = onDismiss,
         title = { Text("取消归档") },
         text = {
@@ -205,13 +199,14 @@ internal fun RestoreVaultFolderDialog(
             }
         },
         confirmButton = {
-            TextButton(
+            PikoDialogConfirm(
+                label = "恢复到网盘",
                 enabled = counted != null && counted.entries > 0 && counted.fits,
                 onClick = {
                     session.restoreFolder(folder)
                     onDismiss()
                 },
-            ) { Text("恢复到网盘") }
+            )
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )

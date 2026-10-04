@@ -6,7 +6,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Folder
-import androidx.compose.material3.AlertDialog
+import dev.piko.ui.components.PikoDialog
+import dev.piko.ui.components.PikoDialogConfirm
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -52,7 +53,7 @@ fun UploadRequestHost(uploads: PikoUploadCoordinator, driveRepository: PikoDrive
         return
     }
 
-    AlertDialog(
+    PikoDialog(
         onDismissRequest = uploads::clearRequest,
         title = { Text("上传 ${request.describe()}") },
         text = {
@@ -72,12 +73,13 @@ fun UploadRequestHost(uploads: PikoUploadCoordinator, driveRepository: PikoDrive
             }
         },
         confirmButton = {
-            TextButton(
+            PikoDialogConfirm(
+                label = "上传",
                 onClick = {
                     uploads.enqueue(request, target.first, target.second)
                     uploads.clearRequest()
                 },
-            ) { Text("上传") }
+            )
         },
         dismissButton = { TextButton(onClick = uploads::clearRequest) { Text("取消") } },
     )

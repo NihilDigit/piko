@@ -44,7 +44,8 @@ import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.FolderShared
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.AlertDialog
+import dev.piko.ui.components.PikoDialog
+import dev.piko.ui.components.PikoDialogConfirm
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -311,7 +312,7 @@ internal fun rememberAccountSummary(): AccountSummary {
 internal fun LogoutDialog(next: SavedAccount?, onDismiss: () -> Unit, onLoggedOut: () -> Unit) {
     val clientManager = LocalPikoServices.current.clientManager
     val scope = rememberCoroutineScope()
-    AlertDialog(
+    PikoDialog(
         onDismissRequest = onDismiss,
         icon = {
             Icon(
@@ -325,10 +326,10 @@ internal fun LogoutDialog(next: SavedAccount?, onDismiss: () -> Unit, onLoggedOu
             val after = next?.let { "，随后切换至「${it.displayName}」" }.orEmpty()
             Text("将清除本机保存的该账号登录凭据$after。")
         },
-        // 对话框的按钮一律是 text button，破坏性确认也一样：对话框本身已经拦了一道，
-        // 确认键不必再用一块红色抢视线，error 色的文字足以说明后果
         confirmButton = {
-            TextButton(
+            PikoDialogConfirm(
+                label = "退出",
+                destructive = true,
                 onClick = {
                     // 退出在进程级作用域里跑，对话框的作用域被取消也照样清完凭据。
                     // 对话框等它做完再关：先关的话这个作用域随即取消，回调就到不了
@@ -339,10 +340,7 @@ internal fun LogoutDialog(next: SavedAccount?, onDismiss: () -> Unit, onLoggedOu
                         onLoggedOut()
                     }
                 },
-                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
-            ) {
-                Text("退出")
-            }
+            )
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {

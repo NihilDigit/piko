@@ -65,7 +65,7 @@ import androidx.compose.material.icons.outlined.Subtitles
 import androidx.compose.material.icons.outlined.TextFields
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.outlined.Wallpaper
-import androidx.compose.material3.AlertDialog
+import dev.piko.ui.components.PikoDialog
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
@@ -555,7 +555,7 @@ private fun DownloadLocationDialog(
     onPickFolder: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    AlertDialog(
+    PikoDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Outlined.FolderOpen, contentDescription = null) },
         title = { Text("下载位置") },

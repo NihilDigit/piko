@@ -36,7 +36,8 @@ import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.LinkOff
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material3.AlertDialog
+import dev.piko.ui.components.PikoDialog
+import dev.piko.ui.components.PikoDialogConfirm
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -287,40 +288,40 @@ fun MySharesScreen(
 
     if (confirmCancelSelected) {
         val count = state.selectedIds.size
-        AlertDialog(
+        PikoDialog(
             onDismissRequest = { confirmCancelSelected = false },
             icon = { Icon(Icons.Outlined.LinkOff, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
             title = { Text("取消所选的 $count 个分享") },
             text = { Text("这些链接将立即失效且无法恢复，网盘中的文件不受影响。") },
             confirmButton = {
-                TextButton(
+                PikoDialogConfirm(
+                    label = "取消分享",
+                    destructive = true,
                     onClick = {
                         confirmCancelSelected = false
                         state.cancelSelected()
                     },
-                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                ) { Text("取消分享") }
+                )
             },
             dismissButton = { TextButton(onClick = { confirmCancelSelected = false }) { Text("保留") } },
         )
     }
 
     confirmCancel?.let { share ->
-        AlertDialog(
+        PikoDialog(
             onDismissRequest = { confirmCancel = null },
             icon = { Icon(Icons.Outlined.LinkOff, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
             title = { Text("取消分享") },
             text = { Text("链接将立即失效且无法恢复，网盘中的文件不受影响。") },
             confirmButton = {
-                TextButton(
+                PikoDialogConfirm(
+                    label = "取消分享",
+                    destructive = true,
                     onClick = {
                         confirmCancel = null
                         state.cancel(share)
                     },
-                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                ) {
-                    Text("取消分享")
-                }
+                )
             },
             dismissButton = {
                 TextButton(onClick = { confirmCancel = null }) { Text("保留") }

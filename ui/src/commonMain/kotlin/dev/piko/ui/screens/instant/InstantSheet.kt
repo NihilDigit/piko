@@ -70,7 +70,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.data.repository.PathBreadcrumb
-import androidx.compose.material3.AlertDialog
+import dev.piko.ui.components.PikoDialog
+import dev.piko.ui.components.PikoDialogConfirm
 import dev.piko.shared.state.InstantActionKind
 import dev.piko.shared.state.InstantFallback
 import dev.piko.shared.state.SaveRoute
@@ -355,18 +356,19 @@ private fun OfflineConfirmDialog(
             "占用 ${confirm.plan.packBytes.toReadableSize()} 空间与 1 次离线$count。" +
             "也可只秒传已收录的 ${confirm.fallback.fileCount} 个文件。"
     }
-    AlertDialog(
+    PikoDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = { Text(message) },
         confirmButton = {
+            // 两条路并列时都是文字按钮：哪条更好由人按空间与次数定，给哪条底色都是替人选
             if (confirm is OfflineConfirm.PackOrInstant) {
                 Row {
                     TextButton(onClick = onOffline) { Text("整包离线") }
                     TextButton(onClick = onInstant) { Text("只存已收录的") }
                 }
             } else {
-                TextButton(onClick = onOffline) { Text("离线") }
+                PikoDialogConfirm("离线", onClick = onOffline)
             }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },

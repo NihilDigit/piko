@@ -13,7 +13,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Public
-import androidx.compose.material3.AlertDialog
+import dev.piko.ui.components.PikoDialog
+import dev.piko.ui.components.PikoDialogConfirm
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -56,7 +57,7 @@ fun ProxySettingsDialog(
     val portInvalid = port.isNotEmpty() && draft.port !in 1..65535
     val canSave = mode != ProxyMode.MANUAL || draft.isManualComplete
 
-    AlertDialog(
+    PikoDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Outlined.Public, contentDescription = null) },
         title = { Text("网络代理") },
@@ -118,7 +119,7 @@ fun ProxySettingsDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onSave(draft) }, enabled = canSave) { Text("保存") }
+            PikoDialogConfirm("保存", onClick = { onSave(draft) }, enabled = canSave)
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("取消") }

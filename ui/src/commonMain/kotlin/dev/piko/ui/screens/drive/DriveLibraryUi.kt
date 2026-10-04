@@ -11,7 +11,8 @@ import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material.icons.outlined.RestoreFromTrash
 import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.material.icons.outlined.StarOutline
-import androidx.compose.material3.AlertDialog
+import dev.piko.ui.components.PikoDialog
+import dev.piko.ui.components.PikoDialogConfirm
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -122,16 +123,11 @@ internal sealed interface LibraryConfirm {
 
 @Composable
 internal fun LibraryConfirmDialog(request: LibraryConfirm, onConfirm: () -> Unit, onDismiss: () -> Unit) {
-    AlertDialog(
+    PikoDialog(
         onDismissRequest = onDismiss,
         title = { Text(request.title) },
         text = { Text(request.message) },
-        confirmButton = {
-            TextButton(
-                onClick = onConfirm,
-                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
-            ) { Text(request.confirmLabel) }
-        },
+        confirmButton = { PikoDialogConfirm(request.confirmLabel, onClick = onConfirm, destructive = true) },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
 }

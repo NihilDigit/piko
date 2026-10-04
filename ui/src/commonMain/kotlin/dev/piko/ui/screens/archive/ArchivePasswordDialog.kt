@@ -17,7 +17,6 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
@@ -45,6 +44,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import dev.piko.shared.state.ArchiveJob
 import dev.piko.shared.state.ArchiveJobStatus
+import dev.piko.ui.components.PikoDialog
+import dev.piko.ui.components.PikoDialogConfirm
 import dev.piko.ui.components.TooltipIconButton
 
 /**
@@ -70,7 +71,7 @@ internal fun ArchivePasswordDialog(
     LaunchedEffect(job.id) { if (savedPasswords.isEmpty() || incorrect) focus.requestFocus() }
     val submit = { if (password.isNotEmpty()) onSubmit(password) }
 
-    AlertDialog(
+    PikoDialog(
         onDismissRequest = onSkip,
         properties = DialogProperties(dismissOnClickOutside = false),
         icon = { Icon(Icons.Outlined.Key, contentDescription = null) },
@@ -132,7 +133,7 @@ internal fun ArchivePasswordDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = submit, enabled = password.isNotEmpty()) { Text("解压") }
+            PikoDialogConfirm("解压", onClick = submit, enabled = password.isNotEmpty())
         },
         dismissButton = {
             TextButton(onClick = onSkip) { Text("跳过") }
@@ -173,7 +174,7 @@ fun SavedArchivePasswordsDialog(
     onDelete: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    AlertDialog(
+    PikoDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Outlined.Key, contentDescription = null) },
         title = { Text("解压密码") },

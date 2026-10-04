@@ -14,7 +14,8 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Share
-import androidx.compose.material3.AlertDialog
+import dev.piko.ui.components.PikoDialog
+import dev.piko.ui.components.PikoDialogConfirm
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -57,7 +58,7 @@ fun ShareDialog(
     val state = remember(files) { ShareCreateState(services.driveRepository, scope, files) }
     val created = state.created
 
-    AlertDialog(
+    PikoDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Outlined.Share, contentDescription = null) },
         title = { Text(if (created == null) "分享" else "已创建分享链接") },
@@ -76,20 +77,17 @@ fun ShareDialog(
         },
         confirmButton = {
             if (created == null) {
-                TextButton(onClick = state::create, enabled = state.canCreate) {
-                    Text(if (state.isCreating) "正在创建" else "创建链接")
-                }
+                PikoDialogConfirm(if (state.isCreating) "正在创建" else "创建链接", onClick = state::create, enabled = state.canCreate)
             } else {
-                TextButton(
+                // 与我的分享同一个说法：复制的总是 shareText，有提取码时连同提取码
+                PikoDialogConfirm(
+                    label = "复制链接",
                     onClick = {
                         platform.copyToClipboard("分享链接", state.shareText.orEmpty())
                         onDismiss()
                         onCopied()
                     },
-                ) {
-                    // 与我的分享同一个说法：复制的总是 shareText，有提取码时连同提取码
-                    Text("复制链接")
-                }
+                )
             }
         },
         dismissButton = {

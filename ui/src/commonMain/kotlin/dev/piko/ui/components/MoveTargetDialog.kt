@@ -31,7 +31,6 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.History
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -446,7 +445,7 @@ private fun FolderPickerContent(
     if (showNewFolderDialog) {
         val unfixable = isUnfixableDriveName(newFolderName)
         val nameFocus = remember { FocusRequester() }
-        AlertDialog(
+        PikoDialog(
             onDismissRequest = { if (!isCreatingFolder) showNewFolderDialog = false },
             title = { Text("新建文件夹") },
             text = {
@@ -475,12 +474,11 @@ private fun FolderPickerContent(
                 }
             },
             confirmButton = {
-                TextButton(
+                PikoDialogConfirm(
+                    label = "创建",
                     enabled = newFolderName.isNotBlank() && !isCreatingFolder && !unfixable,
                     onClick = { pendingFolderName = submitDriveName(newFolderName, autoCleanNames, ::createFolder) },
-                ) {
-                    Text("创建")
-                }
+                )
             },
             dismissButton = {
                 TextButton(

@@ -6,7 +6,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Speed
-import androidx.compose.material3.AlertDialog
+import dev.piko.ui.components.PikoDialog
+import dev.piko.ui.components.PikoDialogConfirm
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -35,7 +36,7 @@ fun SnailModeDialog(
     val downloadValue = download.toIntOrNull()?.takeIf { it > 0 }
     val uploadValue = upload.toIntOrNull()?.takeIf { it > 0 }
 
-    AlertDialog(
+    PikoDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Outlined.Speed, contentDescription = null) },
         title = { Text("蜗牛模式") },
@@ -51,10 +52,11 @@ fun SnailModeDialog(
             }
         },
         confirmButton = {
-            TextButton(
+            PikoDialogConfirm(
+                label = "保存",
                 onClick = { onSave(current.copy(downloadKiBps = downloadValue!!, uploadKiBps = uploadValue!!)) },
                 enabled = downloadValue != null && uploadValue != null,
-            ) { Text("保存") }
+            )
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("取消") }

@@ -15,7 +15,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.PersonAdd
-import androidx.compose.material3.AlertDialog
+import dev.piko.ui.components.PikoDialog
+import dev.piko.ui.components.PikoDialogConfirm
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -101,18 +102,19 @@ internal fun AccountSwitcher() {
         }
     }
     forgetting?.let { saved ->
-        AlertDialog(
+        PikoDialog(
             onDismissRequest = { forgetting = null },
             title = { Text("移除账号") },
             text = { Text("将清除本机保存的「${saved.displayName}」登录凭据，再次使用需重新登录。") },
             confirmButton = {
-                TextButton(
+                PikoDialogConfirm(
+                    label = "移除",
+                    destructive = true,
                     onClick = {
                         clientManager.forget(saved.account)
                         forgetting = null
                     },
-                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                ) { Text("移除") }
+                )
             },
             dismissButton = { TextButton(onClick = { forgetting = null }) { Text("取消") } },
         )

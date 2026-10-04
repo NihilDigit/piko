@@ -27,7 +27,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.SyncAlt
-import androidx.compose.material3.AlertDialog
+import dev.piko.ui.components.PikoDialog
+import dev.piko.ui.components.PikoDialogConfirm
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -644,13 +645,11 @@ private fun DeleteSelectedDialog(items: List<TransferItem>, onConfirm: () -> Uni
         "未传完的上传会取消，网盘里上传到一半的文件随之删除。".takeIf { cancelsUploads },
         "云端任务只删记录，已保存到网盘的文件不受影响。".takeIf { items.any { TransferKind.CLOUD.matches(it) } },
     )
-    AlertDialog(
+    PikoDialog(
         onDismissRequest = onDismiss,
         title = { Text("删除所选的 ${items.size} 项？") },
         text = if (notes.isEmpty()) null else ({ Text(notes.joinToString("\n")) }),
-        confirmButton = {
-            TextButton(onClick = onConfirm) { Text("删除", color = MaterialTheme.colorScheme.error) }
-        },
+        confirmButton = { PikoDialogConfirm("删除", onClick = onConfirm, destructive = true) },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
 }

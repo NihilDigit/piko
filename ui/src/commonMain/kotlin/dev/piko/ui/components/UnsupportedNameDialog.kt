@@ -9,7 +9,6 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AutoFixHigh
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -71,7 +70,7 @@ fun UnsupportedNameDialog(
             }
         }
     }
-    AlertDialog(
+    PikoDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Outlined.AutoFixHigh, contentDescription = null) },
         title = { Text("修正名称") },
@@ -113,7 +112,8 @@ fun UnsupportedNameDialog(
             }
         },
         confirmButton = {
-            TextButton(
+            PikoDialogConfirm(
+                label = "使用此名称",
                 // 先写偏好再交出名称：交出后对话框随即关闭，它的作用域一取消，还没写完的偏好就丢了
                 onClick = {
                     scope.launch {
@@ -121,9 +121,7 @@ fun UnsupportedNameDialog(
                         onUseCleaned(cleaned)
                     }
                 },
-            ) {
-                Text("使用此名称")
-            }
+            )
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("返回修改") }

@@ -9,7 +9,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
+import dev.piko.ui.components.PikoDialog
+import dev.piko.ui.components.PikoDialogConfirm
 import androidx.compose.material3.Button
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -73,7 +74,7 @@ fun UpdateDialog(
         }
     }
 
-    AlertDialog(
+    PikoDialog(
         onDismissRequest = { if (!downloading) onDismiss() },
         // 平台默认宽度是给一句话加两个按钮定的，更新说明按它排每行只剩十来个字
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -146,15 +147,18 @@ fun UpdateDialog(
     )
 
     if (confirmInterrupt) {
-        AlertDialog(
+        PikoDialog(
             onDismissRequest = { confirmInterrupt = false },
             title = { Text("中断下载并更新？") },
             text = { Text("重启更新会中断正在进行的下载。") },
             confirmButton = {
-                TextButton(onClick = {
-                    confirmInterrupt = false
-                    scope.launch { updater.restartToInstall(update) }
-                }) { Text("重启并更新") }
+                PikoDialogConfirm(
+                    label = "重启并更新",
+                    onClick = {
+                        confirmInterrupt = false
+                        scope.launch { updater.restartToInstall(update) }
+                    },
+                )
             },
             dismissButton = {
                 TextButton(onClick = { confirmInterrupt = false }) { Text("取消") }

@@ -1,6 +1,7 @@
 package dev.piko.desktop
 
-import androidx.compose.material3.AlertDialog
+import dev.piko.ui.components.PikoDialog
+import dev.piko.ui.components.PikoDialogConfirm
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -45,7 +46,7 @@ internal fun LinkAssociationPrompt(association: LinkAssociation?, settings: Desk
         settings.set(ASKED_KEY, "true")
         isShown = false
     }
-    AlertDialog(
+    PikoDialog(
         // 点外面或按 Esc 关掉也算答过：用户已经看到了这个问题
         onDismissRequest = answer,
         title = { Text("用 Piko 打开磁力链接与种子文件？") },
@@ -59,12 +60,13 @@ internal fun LinkAssociationPrompt(association: LinkAssociation?, settings: Desk
             )
         },
         confirmButton = {
-            TextButton(
+            PikoDialogConfirm(
+                label = "设为默认",
                 onClick = {
                     answer()
                     scope.launch { association.register() }
                 },
-            ) { Text("设为默认") }
+            )
         },
         dismissButton = {
             TextButton(onClick = answer) { Text("暂不") }

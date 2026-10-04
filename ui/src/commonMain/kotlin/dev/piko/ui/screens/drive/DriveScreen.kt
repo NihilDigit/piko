@@ -72,7 +72,8 @@ import androidx.compose.material.icons.outlined.TextFields
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.SearchOff
 import androidx.compose.material.icons.outlined.UploadFile
-import androidx.compose.material3.AlertDialog
+import dev.piko.ui.components.PikoDialog
+import dev.piko.ui.components.PikoDialogConfirm
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButtonMenu
 import androidx.compose.material3.FloatingActionButtonMenuItem
@@ -1982,7 +1983,7 @@ private fun NameInputDialog(
     fun confirm() {
         pendingName = submitDriveName(value, autoClean, onConfirm)
     }
-    AlertDialog(
+    PikoDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = {
@@ -1999,7 +2000,7 @@ private fun NameInputDialog(
             )
         },
         confirmButton = {
-            TextButton(onClick = ::confirm, enabled = canConfirm) { Text(confirmLabel) }
+            PikoDialogConfirm(confirmLabel, onClick = ::confirm, enabled = canConfirm)
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("取消") }

@@ -9,7 +9,7 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Dns
-import androidx.compose.material3.AlertDialog
+import dev.piko.ui.components.PikoDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
@@ -40,7 +40,7 @@ fun PikPakDomainDialog(
     onProbeAgain: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    AlertDialog(
+    PikoDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Outlined.Dns, contentDescription = null) },
         title = { Text("服务器域名") },
