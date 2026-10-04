@@ -55,6 +55,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MediumFlexibleTopAppBar
 import androidx.compose.material3.OutlinedButton
 import dev.piko.ui.components.PikoScaffold
+import dev.piko.ui.components.IslandPage
+import dev.piko.ui.components.IslandTitle
+import dev.piko.ui.components.IslandHeaderSpace
 import dev.piko.ui.platform.rememberCaptionSlot
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -129,6 +132,11 @@ fun ProfileScreen(
             .fillMaxSize()
             .nestedScroll(topBarScrollBehavior.nestedScrollConnection),
         snackbarHost = { SnackbarHost(snackbarHostState) },
+        // 有外框时（恢复旧版存下的返回栈才会在宽窗口里打开这一页）与别的页同一副骨架，页名是账号名
+        island = IslandPage(header = {
+            IslandTitle(saved?.displayName ?: "PikPak 用户")
+            IslandHeaderSpace()
+        }),
         topBar = {
             // 宽窗口里下面的内容收在居中的一栏，标题与返回一起缩进同样的量，底色仍铺满
             BoxWithConstraints {

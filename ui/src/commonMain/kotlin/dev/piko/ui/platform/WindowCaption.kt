@@ -4,7 +4,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -61,16 +63,21 @@ class CaptionSlot(
     val atTop: Boolean = false,
 )
 
+/**
+ * [topInset] 是这一行离窗口顶边允许的间距：没有标签的页，岛的上沿与侧边栏岛对齐、离窗口顶边留一道外框色，
+ * 页眉那一行仍算贴着顶，窗口按钮画在它末尾（见 PikoScaffold 的 IslandScaffold）。
+ */
 @Composable
-fun rememberCaptionSlot(): CaptionSlot {
+fun rememberCaptionSlot(topInset: Dp = 0.dp): CaptionSlot {
     val caption = LocalWindowCaption.current ?: return NoCaptionSlot
     val windowWidth = LocalWindowInfo.current.containerSize.width
+    val insetPx = with(LocalDensity.current) { topInset.toPx() }
     var touches by remember { mutableStateOf(false) }
     var atTop by remember { mutableStateOf(false) }
     val modifier = Modifier.onGloballyPositioned { coordinates ->
         val bounds = coordinates.boundsInWindow()
         // 容一个像素：边界按浮点算，贴边的行可能差零点几
-        atTop = bounds.top <= 1f
+        atTop = bounds.top <= insetPx + 1f
         touches = bounds.right >= windowWidth - 1f && atTop
     }
     return CaptionSlot(

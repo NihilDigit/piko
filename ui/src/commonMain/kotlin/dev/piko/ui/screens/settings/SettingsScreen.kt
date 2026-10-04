@@ -77,6 +77,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.ProvideTextStyle
 import dev.piko.ui.components.PikoScaffold
+import dev.piko.ui.components.IslandPage
+import dev.piko.ui.components.IslandTitle
+import dev.piko.ui.components.IslandHeaderSpace
 import androidx.compose.material3.SegmentedListItem
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -237,6 +240,11 @@ fun SettingsScreen(
     PikoScaffold(
         modifier = modifier.fillMaxSize(),
         snackbarHost = { SnackbarHost(snackbarHostState) },
+        // 有外框时：不分标签（各类连着排、左栏是目录），页名写在岛的页眉里
+        island = IslandPage(header = {
+            IslandTitle("设置")
+            IslandHeaderSpace()
+        }),
         topBar = {
             PikoTopBar(
                 title = "设置",

@@ -44,6 +44,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import dev.piko.ui.components.PikoScaffold
+import dev.piko.ui.components.IslandPage
+import dev.piko.ui.components.IslandTitle
+import dev.piko.ui.components.IslandHeaderSpace
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -166,6 +169,39 @@ fun MySharesScreen(
     PikoScaffold(
         modifier = modifier.fillMaxSize(),
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
+        // 有外框时：没有分类，不放标签，页名写在岛的页眉开头；有选中项时整行换成「已选 N 项」与批量操作
+        island = IslandPage(
+            header = {
+                if (selecting) {
+                    IslandTitle("已选 ${state.selectedIds.size} 项")
+                    IslandHeaderSpace()
+                    TooltipIconButton(
+                        icon = Icons.Outlined.LinkOff,
+                        label = "取消所选分享",
+                        onClick = { confirmCancelSelected = true },
+                        tint = MaterialTheme.colorScheme.error,
+                    )
+                    TooltipIconButton(Icons.Outlined.Close, "取消选择", state::clearSelection, shortcut = "Esc")
+                } else {
+                    IslandTitle("我的分享")
+                    if (state.shares.isNotEmpty()) {
+                        Text(
+                            "${state.shares.size} 个",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 8.dp),
+                        )
+                    }
+                    IslandHeaderSpace()
+                    TooltipIconButton(
+                        icon = Icons.Outlined.Refresh,
+                        label = "刷新",
+                        onClick = { state.load(refresh = true) },
+                        enabled = !state.isRefreshing,
+                    )
+                }
+            },
+        ),
         topBar = {
             PikoTopBar(
                 scrollBehavior = topBarScrollBehavior,
