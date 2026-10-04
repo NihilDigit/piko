@@ -3,6 +3,7 @@ package dev.piko.shared.state
 import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.VaultEntry
+import dev.piko.shared.data.VaultWrite
 import dev.piko.shared.smoke.awaitUntil
 import dev.piko.shared.smoke.smoke
 import io.github.nihildigit.pikpak.FileKind
@@ -118,6 +119,15 @@ class FolderVaultSessionTest {
         }
         override fun record(change: DriveChangeJournal.Change.Vault) { changes += change }
         override fun refresh() = Unit
+
+        // 恢复走真实仓库与假服务端，见 VaultFolderRestoreTest
+        override suspend fun archived(folderId: String): ArchivedLevel = error("unused")
+        override suspend fun trash(): List<FileStat> = error("unused")
+        override suspend fun remainingBytes(): Long? = error("unused")
+        override suspend fun untrash(ids: List<String>) = error("unused")
+        override suspend fun rename(id: String, name: String) = error("unused")
+        override suspend fun recreate(entry: VaultEntry, folderId: String): String = error("unused")
+        override suspend fun markRestored(folderId: String, files: Map<String, FileStat>): VaultWrite = error("unused")
     }
 
     private fun file(id: String, hash: String = id) = FileStat(

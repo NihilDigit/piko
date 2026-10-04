@@ -35,7 +35,6 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.data.PikoPathBreadcrumb
-import dev.piko.shared.state.DriveScreenState
 import dev.piko.shared.state.FolderVaultSession
 import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.toReadableSize
@@ -187,7 +186,7 @@ internal fun VaultFolderStatus(session: FolderVaultSession, modifier: Modifier =
 
 /** 取消归档的扫描、恢复与清单提交进度。 */
 @Composable
-internal fun VaultRestoreStatus(progress: DriveScreenState.VaultRestoreProgress?, modifier: Modifier = Modifier) {
+internal fun VaultRestoreStatus(progress: FolderVaultSession.RestoreProgress?, modifier: Modifier = Modifier) {
     progress ?: return
     Surface(
         modifier = modifier.fillMaxWidth(),
@@ -205,7 +204,6 @@ internal fun VaultRestoreStatus(progress: DriveScreenState.VaultRestoreProgress?
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                progress.fileName?.let { Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 val total = progress.total
                 if (total != null && total > 0) {
                     LinearProgressIndicator(progress = { progress.done.toFloat() / total }, modifier = Modifier.fillMaxWidth().padding(top = 6.dp))

@@ -24,6 +24,7 @@ import kotlin.test.assertTrue
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeout
 
 class VaultFolderRestoreTest {
     // 清单读写留在假网盘中，文件恢复仍走 SDK 与假服务端。
@@ -49,7 +50,7 @@ class VaultFolderRestoreTest {
         val prefs = MemoryPreferences()
         val repo = repository(server, prefs)
         repo.vault.update(folder.id, VaultEdits.add(listOf(entry))).getOrThrow()
-        DriveScreenState(repo, prefs, scope).restoreVaultFolder(folder.id)
+        FolderVaultSession(repo, scope).restoreFolder(PikoPathBreadcrumb(folder.id, folder.name))
         awaitUntil("取回且保留元数据") { repo.changes.latest.value != null }
         val metadata = repo.vault.read(folder.id, repo.listAllFiles(folder.id).getOrThrow()).getOrThrow().single()
         assertEquals(source, metadata.source)
@@ -72,9 +73,13 @@ class VaultFolderRestoreTest {
         assertEquals("OLD-CID", archived.cid)
         assertEquals(1, server.children(folder.id).count { it.name.endsWith(".magnet") })
         restarted.changes.undo(assertNotNull(restarted.changes.latest.value))
-        awaitUntil("撤销再次归档") { restarted.changes.latest.value == null }
-        val undone = restarted.vault.read(folder.id, restarted.listAllFiles(folder.id).getOrThrow()).getOrThrow().single()
-        assertTrue(!undone.isArchived)
+        // latest 在撤销开始时就已清空，不能拿它当撤销完成的信号，直接等清单
+        suspend fun current() = restarted.vault.read(folder.id, restarted.listAllFiles(folder.id).getOrThrow()).getOrThrow().single()
+        val undone = withTimeout(10_000) {
+            var entry = current()
+            while (entry.isArchived) { delay(20); entry = current() }
+            entry
+        }
         assertEquals(source, undone.source)
         assertEquals("OLD-CID", undone.cid)
     }
@@ -90,13 +95,31 @@ class VaultFolderRestoreTest {
         server.quotaUsage = server.quotaLimit
         val prefs = MemoryPreferences()
         val repo = repository(server, prefs)
-        DriveScreenState(repo, prefs, scope).restoreVaultFolder(folder.id)
+        FolderVaultSession(repo, scope).restoreFolder(PikoPathBreadcrumb(folder.id, folder.name))
         awaitUntil("回收站原文件恢复，归档记录清除") {
             repo.changes.latest.value != null && server.tree(folder.id).filterNot { it.substringAfterLast('/').startsWith(".piko-vault-") } == listOf("episode.mkv")
         }
         assertEquals(original.id, server.children(folder.id).single { it.name == "episode.mkv" }.id)
         assertEquals(0, server.instantCreates.get())
         assertTrue(repo.vault.read(folder.id, repo.listAllFiles(folder.id).getOrThrow()).getOrThrow().none { it.isArchived })
+    }
+
+    @Test
+    fun `an entry renamed after archiving still takes back its original from trash`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val folder = server.addFolder("Show")
+        val original = server.addFile("episode.mkv", folder.id, content = ByteArray(100), hash = "GCID", trashed = true)
+        val entry = VaultEntry.create("Episode 01.mkv", 100, "GCID", null, 0)
+        val body = buildJsonObject { put("entries", Json.encodeToJsonElement(listOf(entry))) }
+        server.addFile(".piko-vault-v1-${"0".repeat(16)}.json", folder.id, content = body.toString().encodeToByteArray())
+        val prefs = MemoryPreferences()
+        val repo = repository(server, prefs)
+        val row = repo.listBrowsable(folder.id, PikoFileSortOrder.NAME_ASC).getOrThrow().single { it.name == "Episode 01.mkv" }
+        FolderVaultSession(repo, scope).restore(listOf(row))
+        awaitUntil("原文件恢复并换成条目的名字") {
+            repo.changes.latest.value != null && server.children(folder.id).any { it.id == original.id && !it.trashed && it.name == "Episode 01.mkv" }
+        }
+        assertEquals(0, server.instantCreates.get())
     }
 
     @Test
@@ -114,18 +137,18 @@ class VaultFolderRestoreTest {
         manifest(child.id, "making.mkv")
         val prefs = MemoryPreferences()
         val repo = repository(server, prefs)
-        val state = DriveScreenState(repo, prefs, scope)
-        state.restoreVaultFolder(folder.id, "Show")
-        assertEquals("正在扫描归档条目", assertNotNull(state.vaultRestoreProgress).stage)
-        state.restoreVaultFolder(folder.id, "Show") // 进行中重复点击不启动第二次恢复
-        awaitUntil("显示恢复总数与已扫描目录") { state.vaultRestoreProgress?.total == 2 }
-        assertEquals(2, state.vaultRestoreProgress?.scannedFolders)
+        val state = FolderVaultSession(repo, scope)
+        state.restoreFolder(PikoPathBreadcrumb(folder.id, "Show"))
+        assertEquals("正在扫描归档条目", assertNotNull(state.restoreProgress).stage)
+        state.restoreFolder(PikoPathBreadcrumb(folder.id, "Show")) // 进行中重复点击不启动第二次恢复
+        awaitUntil("显示恢复总数与已扫描目录") { state.restoreProgress?.total == 2 }
+        assertEquals(2, state.restoreProgress?.scannedFolders)
         awaitUntil("两层归档均恢复并移除清单") {
             repo.changes.latest.value != null &&
                 server.tree(folder.id).filterNot { it.substringAfterLast('/').startsWith(".piko-vault-") }.toSet() == setOf("subtitle.ass", "episode.mkv", "Extras/making.mkv")
         }
-        awaitUntil("恢复进度收起") { state.vaultRestoreProgress == null }
-        assertNull(state.vaultRestoreProgress)
+        awaitUntil("恢复进度收起") { state.restoreProgress == null }
+        assertNull(state.restoreProgress)
         assertEquals(2, server.instantCreates.get())
         for (id in listOf(folder.id, child.id)) {
             assertTrue(repo.vault.read(id, repo.listAllFiles(id).getOrThrow()).getOrThrow().none { it.isArchived })

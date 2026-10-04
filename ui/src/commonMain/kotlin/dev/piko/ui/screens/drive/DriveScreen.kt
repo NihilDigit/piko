@@ -580,7 +580,10 @@ fun DriveScreen(
             SheetAction(Icons.Outlined.Delete, "从${it.title}中移除", { state.removeFromLibrary(ids) })
         }
         val restore = files.filter { it.isVaulted }.takeIf { it.isNotEmpty() }?.let { vaulted ->
-            SheetAction(Icons.Outlined.CloudDownload, "恢复到网盘", { state.restoreFromVault(vaulted.map { it.id }) })
+            SheetAction(Icons.Outlined.CloudDownload, "恢复到网盘", {
+                state.exitSelection()
+                vaultSession.restore(vaulted)
+            })
         }
         val downloadable = files.filterNot { it.isUploading }.takeIf { it.isNotEmpty() }?.let { targets ->
             SheetAction(Icons.Outlined.Download, "下载到本地", { download(targets) })
@@ -596,7 +599,7 @@ fun DriveScreen(
 
     // 归档条目只是清单里的一行：能做的是打开、下载、改名、复制来源，以及恢复成网盘文件或从清单里去掉
     fun vaultActions(file: FileStat): List<SheetAction> = buildList {
-        add(SheetAction(Icons.Outlined.CloudDownload, "恢复到网盘", { state.restoreFromVault(listOf(file.id)) }))
+        add(SheetAction(Icons.Outlined.CloudDownload, "恢复到网盘", { vaultSession.restore(listOf(file)) }))
         add(SheetAction(Icons.Outlined.Download, "下载到本地", { enqueueDownload(file) }))
         when (file.source) {
             FileSource.Magnet -> add(SheetAction(Icons.Outlined.Link, "复制磁力链接", { copySource(file) }))
@@ -1293,7 +1296,7 @@ fun DriveScreen(
                         // 队列为空时不占位
                         ArchiveExtractStatus(archiveSession, Modifier.fillMaxWidth())
                         VaultFolderStatus(vaultSession, Modifier.fillMaxWidth())
-                        VaultRestoreStatus(state.vaultRestoreProgress, Modifier.fillMaxWidth())
+                        VaultRestoreStatus(vaultSession.restoreProgress, Modifier.fillMaxWidth())
                         // 收起后的把手只在窄窗口：宽窗口的命令栏上「添加链接」「查找重复」点了就是放回收起的会话，
                         // 底部再挂一条是同一件事的第二个入口
                         if (instantState != null && !instantSession.isSheetOpen && !pathInTopBar) {
@@ -1668,7 +1671,7 @@ fun DriveScreen(
             confirmButton = {
                 TextButton(onClick = {
                     restoreVaultTarget = null
-                    state.restoreVaultFolder(folder.id, folder.name)
+                    vaultSession.restoreFolder(PathBreadcrumb(folder.id, folder.name))
                 }) { Text("恢复到网盘") }
             },
             dismissButton = { TextButton(onClick = { restoreVaultTarget = null }) { Text("取消") } },
