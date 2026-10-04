@@ -3,45 +3,33 @@ package dev.piko.ui.screens.rename
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.HelpOutline
+import androidx.compose.material.icons.outlined.ArrowDropDown
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.DataObject
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.ui.graphics.Color
-import dev.piko.shared.rename.BlockGuide
-import dev.piko.shared.rename.BlockGuideExample
-import dev.piko.shared.rename.RenamePresets
-import dev.piko.shared.rename.ReplaceBlock
-import androidx.compose.material3.SuggestionChip
-import dev.piko.shared.rename.captureNumbers
-import dev.piko.shared.rename.circled
-import androidx.compose.material.icons.outlined.ExpandLess
-import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.History
-import androidx.compose.material3.Icon
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.ButtonGroupDefaults
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ListItemDefaults
-import androidx.compose.material3.ListItemShapes
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SegmentedListItem
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
-import androidx.compose.material3.Text
 import androidx.compose.material3.ToggleButton
+import dev.piko.ui.components.connectedToggleShapes
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -49,6 +37,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.Key
@@ -61,195 +50,203 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.rename.BatchRenameState
 import dev.piko.shared.rename.FindReplaceOptions
+import dev.piko.shared.rename.RenamePresets
 import dev.piko.shared.rename.RenameScope
 import dev.piko.shared.rename.TextCase
 import dev.piko.shared.rename.TimeSource
 import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.TooltipIconButton
-import dev.piko.ui.components.connectedToggleShapes
 
 /**
- * 规则区，照设置页的分段列表分组：开关是带开关的行，互斥的选项是连体按钮组，每组一个小标题。
- * 回车在两个输入框里即执行，与 PowerRename 的「应用」相同；不挂在整个区域上，否则焦点停在开关行上时
- * 回车既切换它又执行。
+ * 规则区，按 M3 的分工用几类控件：两种写法用一组连体按钮切换，几选一用下拉菜单，
+ * 开关用复选框（对话框里的改动到点「重命名」才生效，M3 规定这种场合不用开关），常用动作用 assist chip。
+ * 几选一试过连体按钮组，左栏排了四组，太重。
+ * 分组靠间距，不加小标题；控件不压缩，点击区域保持 48dp（M3 明确不在对话框里提高密度）。
  *
- * [collapsible] 用于单栏：预览接在规则下面，选项全展开要滚过一整屏才看得到预览，打字时看不到结果。
- * 所以单栏只常驻两个输入框，其余选项收进一行，行上写着眼下生效的选项，点开才展开。
+ * 原先照设置页排成分段行，每个开关一行，左栏要翻一页多；后来改成一排可勾选的筛选小块，
+ * 但 filter chip 是给过滤内容用的，拿来当设置开关，左栏四种小块混在一起分不出层级。
+ * 回车在两个输入框里即执行，与 PowerRename 的「应用」相同；不挂在整个区域上，否则焦点停在复选框上时回车既切换它又执行。
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun BatchRenameOptions(
     state: BatchRenameState,
     enabled: Boolean,
     searchFocus: FocusRequester,
+    changedOnly: Boolean,
+    onChangedOnlyChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
-    collapsible: Boolean = false,
 ) {
     val options = state.options
-    var expanded by remember { mutableStateOf(false) }
     fun update(change: FindReplaceOptions.() -> FindReplaceOptions) {
         state.options = state.options.change()
     }
 
-    Column(modifier = modifier) {
-        OptionGroup("查找与替换", first = true) {
-            if (state.textMode) {
-                val patternError = state.patternError
-                RenameTextField(
-                    value = options.search,
-                    onValueChange = { update { copy(search = it) } },
-                    label = "查找（正则表达式）",
-                    // 提示行常驻、出错只变色：Android 的对话框按内容定高，多出一行整个对话框会跳
-                    supporting = when {
-                        patternError != null -> "正则表达式有误：$patternError"
-                        options.search.isEmpty() -> "留空则仅调整大小写"
-                        else -> "替换中以 \$1 至 \$9 引用分组"
-                    },
-                    isError = patternError != null,
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        // 写法的切换放在最上面：块拼不出的，要能马上找到正则。左栏只有这一组连体按钮，几选一的选项都用下拉菜单，
+        // 四组连体按钮排在一起太重；标签页也试过，与下面的控件不成一体
+        Row(horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)) {
+            listOf(false to "块", true to "正则表达式").forEachIndexed { index, (textMode, label) ->
+                ToggleButton(
+                    checked = state.textMode == textMode,
+                    onCheckedChange = { if (state.textMode != textMode) { if (textMode) state.switchToTextMode() else state.switchToBlockMode() } },
+                    shapes = connectedToggleShapes(index, 2),
                     enabled = enabled,
-                    onSubmit = state::rename,
-                    modifier = Modifier.focusRequester(searchFocus),
-                ) {
-                    RecentMenu(state.recentSearches, enabled, state::useRecentSearch)
-                }
-                RenameTextField(
-                    value = options.replacement,
-                    onValueChange = { update { copy(replacement = it) } },
-                    label = "替换为",
-                    supporting = "可插入序号、随机字符与日期",
-                    isError = false,
-                    enabled = enabled,
-                    onSubmit = state::rename,
-                ) {
-                    SnippetMenu(useRegex = true, enabled) { snippet -> update { copy(replacement = replacement + snippet) } }
-                    RecentMenu(state.recentReplacements, enabled, state::useRecentReplacement)
-                }
-            } else {
-                val replaceFocus = remember { FocusRequester() }
-                PresetRow(state, enabled, replaceFocus)
-                Spacer(Modifier.height(12.dp))
-                FindBlockBar(state, enabled, searchFocus, onSubmit = state::rename)
-                Spacer(Modifier.height(8.dp))
-                ReplaceBlockBar(state, enabled, replaceFocus, onSubmit = state::rename)
-                Spacer(Modifier.height(8.dp))
-                BlockGuideSection()
-                Spacer(Modifier.height(8.dp))
+                    modifier = Modifier.weight(1f),
+                ) { Text(label, maxLines = 1) }
             }
-            // 写法的切换一直露在外面，不随「选项」收起：积木拼不出的，要能马上找到正则
-            SwitchRow(
-                index = 0,
-                count = if (collapsible) 1 else 3,
-                title = "正则表达式",
-                supporting = state.modeNote ?: if (state.textMode) "关闭可切回积木图形化编辑" else "打开可直接编辑正则文本",
-                checked = state.textMode,
+        }
+        state.modeNote?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
+        if (state.textMode) {
+            val patternError = state.patternError
+            RenameTextField(
+                value = options.search,
+                onValueChange = { update { copy(search = it) } },
+                label = "查找（正则表达式）",
+                // 提示行常驻、出错只变色：Android 的对话框按内容定高，多出一行整个对话框会跳
+                supporting = when {
+                    patternError != null -> "正则表达式有误：$patternError"
+                    options.search.isEmpty() -> "留空将仅调整大小写"
+                    else -> "在替换中用 \$1 到 \$9 引用分组"
+                },
+                isError = patternError != null,
                 enabled = enabled,
-            ) { if (it) state.switchToTextMode() else state.switchToBlockMode() }
-            if (!collapsible) MatchRows(options, enabled, first = 1, count = 3, ::update)
-        }
-
-        if (collapsible) {
-            Spacer(Modifier.height(12.dp))
-            MoreOptionsRow(expanded, optionSummary(state)) { expanded = !expanded }
-            if (!expanded) return@Column
-            OptionGroup("匹配") { MatchRows(options, enabled, first = 0, count = 2, ::update) }
-        }
-
-        val detected = state.detected
-        val affixes = listOfNotNull(
-            detected.prefix.takeIf { it.isNotEmpty() }?.let { Triple("去掉共同开头", it, true) },
-            detected.suffix.takeIf { it.isNotEmpty() }?.let { Triple("去掉共同结尾", it, false) },
-        )
-        if (affixes.isNotEmpty()) {
-            OptionGroup("共同部分") {
-                affixes.forEachIndexed { index, (title, affix, isPrefix) ->
-                    // 首尾的空格在界面上看不出来，用引号框住
-                    SwitchRow(index, affixes.size, title, "「$affix」", if (isPrefix) state.stripPrefix else state.stripSuffix, enabled) {
-                        if (isPrefix) state.stripPrefix = it else state.stripSuffix = it
-                    }
-                }
+                onSubmit = state::rename,
+                modifier = Modifier.focusRequester(searchFocus),
+            ) {
+                RecentMenu(state.recentSearches, enabled, state::useRecentSearch)
             }
+            RenameTextField(
+                value = options.replacement,
+                onValueChange = { update { copy(replacement = it) } },
+                label = "替换为",
+                supporting = "可插入序号、随机字符和日期",
+                isError = false,
+                enabled = enabled,
+                onSubmit = state::rename,
+            ) {
+                SnippetMenu(useRegex = true, enabled) { snippet -> update { copy(replacement = replacement + snippet) } }
+                RecentMenu(state.recentReplacements, enabled, state::useRecentReplacement)
+            }
+        } else {
+            val replaceFocus = remember { FocusRequester() }
+            PresetRow(state, enabled, replaceFocus)
+            FindBlockBar(state, enabled, searchFocus, onSubmit = state::rename)
+            ReplaceBlockBar(state, enabled, replaceFocus, onSubmit = state::rename)
         }
 
-        OptionGroup("范围") {
-            ChoiceRow(
-                index = 0,
-                count = 3,
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            DropdownChoice(
                 title = "应用于",
-                supporting = null,
                 choices = listOf(RenameScope.NAME to "主名", RenameScope.EXTENSION to "扩展名", RenameScope.FULL to "全名"),
                 selected = options.scope,
                 enabled = enabled,
             ) { update { copy(scope = it) } }
-            SwitchRow(1, 3, "包含文件", null, options.includeFiles, enabled) { update { copy(includeFiles = it) } }
-            SwitchRow(2, 3, "包含文件夹", null, options.includeFolders, enabled) { update { copy(includeFolders = it) } }
-        }
-
-        OptionGroup("格式") {
-            val count = if (state.usesTime) 2 else 1
-            ChoiceRow(
-                index = 0,
-                count = count,
-                title = "大小写",
-                // 按钮只放得下两个字，完整的说法写在这里
-                supporting = CASE_DESCRIPTIONS.getValue(options.textCase),
-                choices = CASE_LABELS,
-                selected = options.textCase,
+            // 原先是「包含文件」「包含文件夹」两个开关，两个都关掉没有意义，实为三选一
+            DropdownChoice(
+                title = "对象",
+                choices = listOf(ItemKinds.ALL to "文件和文件夹", ItemKinds.FILES to "仅文件", ItemKinds.FOLDERS to "仅文件夹"),
+                selected = ItemKinds.of(options),
                 enabled = enabled,
-            ) { update { copy(textCase = it) } }
+            ) { kinds -> update { copy(includeFiles = kinds != ItemKinds.FOLDERS, includeFolders = kinds != ItemKinds.FILES) } }
+            DropdownChoice("大小写", CASE_LABELS, options.textCase, enabled) { update { copy(textCase = it) } }
             // 只在替换串里写了日期时才有意义，平时不占地方
             if (state.usesTime) {
-                ChoiceRow(
-                    index = 1,
-                    count = count,
+                DropdownChoice(
                     title = "日期取自",
-                    supporting = null,
                     choices = listOf(TimeSource.CREATED to "创建时间", TimeSource.MODIFIED to "修改时间"),
                     selected = options.timeSource,
                     enabled = enabled,
                 ) { update { copy(timeSource = it) } }
             }
         }
+
+        Column {
+            Row {
+                CheckboxRow("区分大小写", options.caseSensitive, enabled, Modifier.weight(1f)) { update { copy(caseSensitive = it) } }
+                CheckboxRow("全部替换", options.matchAll, enabled, Modifier.weight(1f)) { update { copy(matchAll = it) } }
+            }
+            // 首尾的空格在界面上看不出来，用引号框住
+            state.detected.prefix.takeIf { it.isNotEmpty() }?.let { prefix ->
+                CheckboxRow("移除开头「$prefix」", state.stripPrefix, enabled) { state.stripPrefix = it }
+            }
+            state.detected.suffix.takeIf { it.isNotEmpty() }?.let { suffix ->
+                CheckboxRow("移除结尾「$suffix」", state.stripSuffix, enabled) { state.stripSuffix = it }
+            }
+            // 只过滤预览，不改规则；放在这里是为了预览卡片里只剩文件名
+            CheckboxRow("仅显示变更项", changedOnly, enabled = true, onChange = onChangedOnlyChange)
+        }
     }
 }
 
+private enum class ItemKinds {
+    ALL, FILES, FOLDERS;
+
+    companion object {
+        // 两个都关掉的旧值不对应任何一项，三个按钮都不选中，点哪个都能回到有效状态
+        fun of(options: FindReplaceOptions): ItemKinds? = when {
+            options.includeFiles && options.includeFolders -> ALL
+            options.includeFiles -> FILES
+            options.includeFolders -> FOLDERS
+            else -> null
+        }
+    }
+}
+
+/** 复选框连同文字整行可点，至少 48dp 高。 */
 @Composable
-private fun MatchRows(
-    options: FindReplaceOptions,
-    enabled: Boolean,
-    first: Int,
-    count: Int,
-    update: (FindReplaceOptions.() -> FindReplaceOptions) -> Unit,
-) {
-    SwitchRow(first, count, "区分大小写", null, options.caseSensitive, enabled) { update { copy(caseSensitive = it) } }
-    SwitchRow(first + 1, count, "全部替换", "关闭时仅替换第一处", options.matchAll, enabled) { update { copy(matchAll = it) } }
+private fun CheckboxRow(label: String, checked: Boolean, enabled: Boolean, modifier: Modifier = Modifier, onChange: (Boolean) -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = modifier
+            .heightIn(min = 48.dp)
+            .toggleable(value = checked, enabled = enabled, role = Role.Checkbox, onValueChange = onChange),
+    ) {
+        Checkbox(checked = checked, onCheckedChange = null, enabled = enabled)
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+            modifier = Modifier.padding(start = 12.dp, end = 8.dp),
+        )
+    }
 }
 
 /**
- * 积木用法说明，只在积木模式出现，默认收起，写给不会写正则的人；会写正则的人打开开关就是文本模式，不需要教程。
- * 展开的内容排在规则区里，随规则区一起滚：规则区本来就在可滚动的区域里，对话框高度写死，展开不会让 Android 上的
- * 对话框整体跳动。不做弹层：边看例子边拼积木，弹层会挡住积木条。
+ * 一行下拉选择：标签在左，描边按钮占满其余宽度，点开是菜单，当前项带勾。几项选项统一用它，不各自用连体按钮：
+ * 左栏四组连体按钮排在一起太重，菜单项也能写全称（「标题格式，虚词小写」），不必另起一行解释。
+ * 不用 ExposedDropdownMenuBox：它自建弹层，桌面端测量途中销毁弹层的崩溃（见 desktopApp/CLAUDE.md）不好排查。
+ * [selected] 为 null 时（旧的无效组合）按钮上写「请选择」。
  */
 @Composable
-private fun BlockGuideSection() {
+private fun <T> DropdownChoice(title: String, choices: List<Pair<T, String>>, selected: T?, enabled: Boolean, onSelect: (T) -> Unit) {
     var open by remember { mutableStateOf(false) }
-    val colors = MaterialTheme.colorScheme
-    val count = if (open) BlockGuide.size + 1 else 1
-    Column(verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
-        SegmentedListItem(
-            onClick = { open = !open },
-            shapes = stableShapes(0, count),
-            colors = renameRowColors(),
-            leadingContent = { Icon(Icons.AutoMirrored.Outlined.HelpOutline, contentDescription = null) },
-            trailingContent = { Icon(if (open) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, contentDescription = if (open) "收起" else "展开") },
-            supportingContent = { Text("拼法、取出与从预览生成，附文件名例子") },
-            content = { Text("积木用法") },
-        )
-        if (!open) return@Column
-        BlockGuide.forEachIndexed { index, entry ->
-            Surface(shape = stableShapes(index + 1, count).shape, color = LocalRenameRowColor.current, modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(entry.title, style = MaterialTheme.typography.titleSmall, color = colors.onSurface)
-                    Text(entry.body, style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
-                    entry.example?.let { GuideExample(it) }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(title, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(72.dp))
+        Box(modifier = Modifier.weight(1f)) {
+            OutlinedButton(
+                onClick = { open = true },
+                enabled = enabled,
+                shape = MaterialTheme.shapes.medium,
+                contentPadding = PaddingValues(start = 16.dp, end = 8.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                val label = choices.firstOrNull { it.first == selected }?.second ?: "请选择"
+                Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                Icon(Icons.Outlined.ArrowDropDown, contentDescription = null)
+            }
+            PikoDropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                for ((value, label) in choices) {
+                    DropdownMenuItem(
+                        text = { Text(label) },
+                        trailingIcon = if (value == selected) ({ Icon(Icons.Outlined.Check, contentDescription = "当前") }) else null,
+                        onClick = {
+                            open = false
+                            onSelect(value)
+                        },
+                    )
                 }
             }
         }
@@ -257,8 +254,9 @@ private fun BlockGuideSection() {
 }
 
 /**
- * 起手式一排，放在积木条上面：不会拼积木的人按要做的事挑一个，积木随即换上、预览随即变化，看着结果再改。
- * 要填文字的（加前缀、加后缀）把焦点交给替换条的输入框，接着打字就是前缀。
+ * 起手式一排，放在查找条上面：不会拼块的人按要做的事挑一个，块随即换上、预览随即变化，看着结果再改。
+ * 要填文字的（添加前缀、添加后缀）把焦点交给替换条的输入框，接着打字就是前缀。
+ * 用 assist chip：M3 的 suggestion chip 是给动态生成的建议用的，固定的、动词开头的动作属于 assist。
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -269,7 +267,7 @@ private fun PresetRow(state: BatchRenameState, enabled: Boolean, replaceFocus: F
     ) {
         Text("常用", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         for (preset in RenamePresets) {
-            SuggestionChip(
+            AssistChip(
                 onClick = {
                     state.applyPreset(preset)
                     if (preset.focusReplace) runCatching { replaceFocus.requestFocus() }
@@ -281,112 +279,13 @@ private fun PresetRow(state: BatchRenameState, enabled: Boolean, replaceFocus: F
     }
 }
 
-/** 例子里的积木照积木条的样子画：同样的颜色、同样的字，读者对照着就能在积木条上拼出来。 */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun GuideExample(example: BlockGuideExample) {
-    val label = MaterialTheme.typography.bodySmall
-    val colors = MaterialTheme.colorScheme
-    val numbers = captureNumbers(example.find)
-    Column(modifier = Modifier.padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        GuideBlocks("查找") {
-            example.find.forEachIndexed { index, block ->
-                MiniChip(chipLabel(block) + (numbers[index]?.let(::circled) ?: ""), blockColor(index))
-            }
-        }
-        GuideBlocks("替换") {
-            if (example.replace.isEmpty()) Text("（留空）", style = label, color = colors.onSurfaceVariant)
-            example.replace.forEach { block ->
-                val source = (block as? ReplaceBlock.Piece)?.number?.let { number -> numbers.indexOf(number).takeIf { it >= 0 } }
-                MiniChip(chipLabel(block), if (source != null) blockColor(source) else colors.surfaceContainerHighest)
-            }
-        }
-        Text("「${example.input}」改为「${example.result}」", style = label, color = colors.primary)
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun GuideBlocks(name: String, content: @Composable () -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(name, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) { content() }
-    }
-}
-
-@Composable
-private fun MiniChip(text: String, color: Color) {
-    Surface(
-        shape = RoundedCornerShape(6.dp),
-        color = color,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-    ) {
-        Text(text, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
-    }
-}
-
-@Composable
-private fun MoreOptionsRow(expanded: Boolean, summary: String, onToggle: () -> Unit) {
-    SegmentedListItem(
-        onClick = onToggle,
-        shapes = stableShapes(0, 1),
-        colors = renameRowColors(),
-        trailingContent = {
-            Icon(if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, contentDescription = if (expanded) "收起" else "展开")
-        },
-        supportingContent = { Text(summary, maxLines = 2, overflow = TextOverflow.Ellipsis) },
-        content = { Text("选项") },
-    )
-}
-
-/** 收起时写在「选项」一行上的摘要：眼下生效的各项，默认的也写，读者不必记得默认是什么。 */
-private fun optionSummary(state: BatchRenameState): String {
-    val options = state.options
-    return buildList {
-        if (state.stripPrefix && state.detected.prefix.isNotEmpty()) add("去掉共同开头")
-        if (state.stripSuffix && state.detected.suffix.isNotEmpty()) add("去掉共同结尾")
-        if (options.caseSensitive) add("区分大小写")
-        add(if (options.matchAll) "全部替换" else "仅替换第一处")
-        add(
-            when (options.scope) {
-                RenameScope.NAME -> "应用于主名"
-                RenameScope.EXTENSION -> "应用于扩展名"
-                RenameScope.FULL -> "应用于全名"
-            },
-        )
-        if (!options.includeFiles) add("不含文件")
-        if (!options.includeFolders) add("不含文件夹")
-        if (options.textCase != TextCase.NONE) add(CASE_DESCRIPTIONS.getValue(options.textCase))
-    }.joinToString("，")
-}
-
 private val CASE_LABELS = listOf(
-    TextCase.NONE to "原样",
-    TextCase.UPPER to "大写",
-    TextCase.LOWER to "小写",
-    TextCase.TITLE to "标题",
-    TextCase.CAPITALIZED to "词首",
-)
-
-private val CASE_DESCRIPTIONS = mapOf(
     TextCase.NONE to "保持原样",
     TextCase.UPPER to "全部大写",
     TextCase.LOWER to "全部小写",
     TextCase.TITLE to "标题格式，虚词小写",
     TextCase.CAPITALIZED to "每词首字母大写",
 )
-
-/** 一组选项，小标题的样式与间距同设置页的分组。 */
-@Composable
-private fun OptionGroup(title: String, first: Boolean = false, content: @Composable ColumnScope.() -> Unit) {
-    Text(
-        text = title,
-        style = MaterialTheme.typography.titleSmall,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(start = 16.dp, top = if (first) 8.dp else 24.dp, bottom = 8.dp),
-    )
-    Column(verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap), content = content)
-}
 
 /**
  * 查找与替换共用的输入框：同高、单行，提示行常驻。行尾按钮的位置两个框一样，
@@ -426,80 +325,6 @@ private fun RenameTextField(
         shape = MaterialTheme.shapes.largeIncreased,
     )
 }
-
-@Composable
-private fun SwitchRow(
-    index: Int,
-    count: Int,
-    title: String,
-    supporting: String?,
-    checked: Boolean,
-    enabled: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-) {
-    SegmentedListItem(
-        checked = checked,
-        onCheckedChange = onCheckedChange,
-        enabled = enabled,
-        shapes = stableShapes(index, count),
-        colors = renameRowColors(),
-        // 开关只作指示，整行的 checked 语义已由列表项提供
-        trailingContent = { Switch(checked = checked, onCheckedChange = null, enabled = enabled) },
-        supportingContent = supporting?.let { { Text(it, maxLines = 1, overflow = TextOverflow.Ellipsis) } },
-        content = { Text(title) },
-    )
-}
-
-/** 标题下面一排连体按钮的分段行，照设置页「深色模式」那一行。 */
-@Composable
-private fun <T> ChoiceRow(
-    index: Int,
-    count: Int,
-    title: String,
-    supporting: String?,
-    choices: List<Pair<T, String>>,
-    selected: T,
-    enabled: Boolean,
-    onSelect: (T) -> Unit,
-) {
-    val colors = MaterialTheme.colorScheme
-    Surface(shape = stableShapes(index, count).shape, color = LocalRenameRowColor.current, modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge, color = colors.onSurface)
-            if (supporting != null) {
-                Text(supporting, style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
-            ) {
-                choices.forEachIndexed { choiceIndex, (value, label) ->
-                    ToggleButton(
-                        checked = value == selected,
-                        onCheckedChange = { if (value != selected) onSelect(value) },
-                        shapes = connectedToggleShapes(choiceIndex, choices.size),
-                        enabled = enabled,
-                        contentPadding = PaddingValues(horizontal = 8.dp),
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text(label, maxLines = 1)
-                    }
-                }
-            }
-        }
-    }
-}
-
-// 选中色与底色取同一值，理由见设置页的 settingsRowColors；底色随对话框形态变，见 LocalRenameRowColor
-@Composable
-private fun renameRowColors() = LocalRenameRowColor.current.let { ListItemDefaults.segmentedColors(containerColor = it, selectedContainerColor = it) }
-
-/** 各状态同一个形状，理由见设置页的 stableSegmentedShapes。 */
-@Composable
-private fun stableShapes(index: Int, count: Int): ListItemShapes =
-    ListItemDefaults.segmentedShapes(index = index, count = count).let {
-        it.copy(selectedShape = it.shape, pressedShape = it.shape, focusedShape = it.shape, hoveredShape = it.shape, draggedShape = it.shape)
-    }
 
 /** 最近用过的查找或替换串，照 PowerRename 的下拉历史。 */
 @Composable

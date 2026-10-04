@@ -94,6 +94,21 @@ class RenameBlocksTest {
     @Test
     fun `description folds anchors into the neighbouring block`() {
         val blocks = listOf(FindBlock.Start, FindBlock.Bracketed(BracketKind.SQUARE), FindBlock.AnyText(), FindBlock.Digits(2, 2, capture = true), FindBlock.End)
-        assertEquals("开头的方括号内容、任意字符、结尾的 2 位数字①", describeFind(blocks))
+        assertEquals("开头的[…]、任意文字、结尾的 2 位数字①", describeFind(blocks))
+    }
+
+    @Test
+    fun `moving a selected group lands on the same side as a single block would`() {
+        val list = listOf("a", "b", "c", "d", "e", "f")
+        // 单块与 add(to, removeAt(from)) 一致
+        for (from in list.indices) for (to in list.indices) {
+            if (from == to) continue
+            assertEquals(list.toMutableList().apply { add(to, removeAt(from)) }, list.moveGroup(setOf(from), to), "$from → $to")
+        }
+        assertEquals(listOf("a", "d", "e", "b", "c", "f"), list.moveGroup(setOf(1, 2), 4))
+        assertEquals(listOf("d", "e", "a", "b", "c", "f"), list.moveGroup(setOf(3, 4), 0))
+        // 不连续的一组收拢到一起，组内保持原来的先后
+        assertEquals(listOf("b", "d", "e", "a", "c", "f"), list.moveGroup(setOf(0, 2), 4))
+        assertEquals(list, list.moveGroup(setOf(1, 2), 2))
     }
 }

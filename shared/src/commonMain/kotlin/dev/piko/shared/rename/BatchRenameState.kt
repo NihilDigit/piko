@@ -77,18 +77,27 @@ class BatchRenameState(
     var pendingFindText by mutableStateOf("")
     var pendingReplaceText by mutableStateOf("")
 
-    /** 积木条上显示的积木，含末尾还在输入的文字。 */
+    /**
+     * 输入框停在第几块之前，即没收的文字插在哪里；null 是末尾。不固定在末尾，是因为「第 01 集」这类写法要在序号前面
+     * 打字：点了「改为序号」后插入点停在序号前，输入框为空时左右方向键在块之间移动它。块被删掉时压回有效范围。
+     */
+    var findInsertAt by mutableStateOf<Int?>(null)
+    var replaceInsertAt by mutableStateOf<Int?>(null)
+
+    val findInsertIndex: Int get() = (findInsertAt ?: findBlocks.size).coerceIn(0, findBlocks.size)
+    val replaceInsertIndex: Int get() = (replaceInsertAt ?: replaceBlocks.size).coerceIn(0, replaceBlocks.size)
+
+    /** 积木条上显示的积木，含输入框里还在输入的文字。 */
     val effectiveFindBlocks: List<FindBlock> by derivedStateOf {
-        normalizeFindBlocks(findBlocks + FindBlock.Text(pendingFindText))
+        normalizeFindBlocks(findBlocks.toMutableList().apply { add(findInsertIndex, FindBlock.Text(pendingFindText)) })
     }
     val effectiveReplaceBlocks: List<ReplaceBlock> by derivedStateOf {
-        normalizeReplaceBlocks(replaceBlocks + ReplaceBlock.Text(pendingReplaceText))
+        normalizeReplaceBlocks(replaceBlocks.toMutableList().apply { add(replaceInsertIndex, ReplaceBlock.Text(pendingReplaceText)) })
     }
 
     fun updateFindBlocks(blocks: List<FindBlock>) {
         findBlocks = normalizeFindBlocks(blocks)
         modeNote = null
-        selectionNote = null
     }
 
     fun updateReplaceBlocks(blocks: List<ReplaceBlock>) {
@@ -96,19 +105,33 @@ class BatchRenameState(
         modeNote = null
     }
 
-    /** 换上起手式：查找与替换整组换掉，输入框里没收的文字一并清掉，否则它会接在起手式的积木后面。 */
+    /**
+     * 换上起手式：查找与替换整组换掉，输入框里没收的文字一并清掉，否则它会接进起手式的积木里。
+     * 替换的插入点放到最前：添加前缀时替换条是空的，最前即末尾；改为序号时接着打的字落在序号前面。
+     */
     fun applyPreset(preset: RenamePreset) {
         pendingFindText = ""
         pendingReplaceText = ""
+        findInsertAt = null
+        replaceInsertAt = 0
         updateFindBlocks(preset.find)
         updateReplaceBlocks(preset.replace)
     }
 
-    /** 把输入框里的文字收成积木，加别的积木或在输入框里回车时调用，之后新加的积木排在它后面。 */
+    /**
+     * 把输入框里的文字收成积木，加别的积木或在输入框里回车时调用。插入点停在刚收下的文字后面，接着打的字跟在它后面。
+     * 按插入点之后还剩几块来算新位置：收下的文字可能与相邻的文字积木合并，按下标加一会算错。
+     */
     fun commitPendingText() {
-        if (pendingFindText.isNotEmpty()) updateFindBlocks(findBlocks + FindBlock.Text(pendingFindText))
+        if (pendingFindText.isNotEmpty()) {
+            val tail = findBlocks.size - findInsertIndex
+            updateFindBlocks(findBlocks.toMutableList().apply { add(findInsertIndex, FindBlock.Text(pendingFindText)) })
+            if (findInsertAt != null) findInsertAt = findBlocks.size - tail
+        }
         if (pendingReplaceText.isNotEmpty() && isExpressibleText(pendingReplaceText)) {
-            updateReplaceBlocks(replaceBlocks + ReplaceBlock.Text(pendingReplaceText))
+            val tail = replaceBlocks.size - replaceInsertIndex
+            updateReplaceBlocks(replaceBlocks.toMutableList().apply { add(replaceInsertIndex, ReplaceBlock.Text(pendingReplaceText)) })
+            if (replaceInsertAt != null) replaceInsertAt = replaceBlocks.size - tail
         }
         pendingFindText = ""
         if (isExpressibleText(pendingReplaceText)) pendingReplaceText = ""
@@ -145,9 +168,9 @@ class BatchRenameState(
         val replace = templateToReplaceBlocks(options.replacement)
         if (find == null || replace == null) {
             modeNote = when {
-                find == null && replace == null -> "查找与替换都无法图形化，仍以正则文本编辑"
-                find == null -> "查找无法图形化，仍以正则文本编辑"
-                else -> "替换无法图形化，仍以正则文本编辑"
+                find == null && replace == null -> "查找和替换无法用块表示，将继续使用正则表达式"
+                find == null -> "查找无法用块表示，将继续使用正则表达式"
+                else -> "替换无法用块表示，将继续使用正则表达式"
             }
             return
         }
@@ -171,7 +194,7 @@ class BatchRenameState(
             pendingFindText = ""
             updateFindBlocks(blocks)
         } else {
-            forceTextMode(effectiveOptions.copy(search = search), "这条查找无法图形化，已换成正则文本")
+            forceTextMode(effectiveOptions.copy(search = search), "此查找无法用块表示，已切换到正则表达式")
         }
     }
 
@@ -185,7 +208,7 @@ class BatchRenameState(
             pendingReplaceText = ""
             updateReplaceBlocks(blocks)
         } else {
-            forceTextMode(effectiveOptions.copy(replacement = replacement), "这条替换无法图形化，已换成正则文本")
+            forceTextMode(effectiveOptions.copy(replacement = replacement), "此替换无法用块表示，已切换到正则表达式")
         }
     }
 
@@ -199,31 +222,6 @@ class BatchRenameState(
         scope.launch { preferences.setRenameRegexTextMode(textMode) }
     }
 
-    /** 由预览里的选区生成规则后的说明，如「已匹配 6 项中的同一位置」。改动积木时清掉。 */
-    var selectionNote by mutableStateOf<String?>(null)
-        private set
-
-    /** 预览里选中了 [source] 原名的 [selection] 一段，打算做 [edit]：先算出会生成的规则，界面据此给出匹配数。 */
-    fun proposeSelection(source: RenameSource, selection: IntRange, edit: SelectionEdit, replacement: String = ""): SelectionProposal? =
-        proposeSelectionRule(sources.filter { it.id !in excludedIds }, effectiveOptions, source, selection, edit, replacement)
-
-    /**
-     * 用选区生成的规则取代当前的查找与替换，换到积木模式（不记成用户的选择，那是切换开关才算的）。
-     * 规则就是左栏的积木，看得见、改得了，不对单个文件做隐式修改。
-     */
-    fun applySelection(proposal: SelectionProposal) {
-        if (textMode) {
-            options = options.copy(search = "", replacement = "")
-            textMode = false
-        }
-        pendingFindText = ""
-        pendingReplaceText = ""
-        findBlocks = proposal.find
-        replaceBlocks = proposal.replace
-        modeNote = null
-        selectionNote = if (proposal.generalized) "已匹配 ${proposal.total} 项中 ${proposal.matched} 项的同一位置" else null
-    }
-
     /** 取出第 [number] 段（从 1 起）的查找积木在 [effectiveFindBlocks] 里的位置，界面据此给替换里的 ①② 配同一种颜色。 */
     fun captureBlockIndex(number: Int): Int? = captureNumbers(effectiveFindBlocks).indexOf(number).takeIf { it >= 0 }
 
@@ -233,6 +231,9 @@ class BatchRenameState(
 
     /** [source] 原名里被查找匹配到的各段，按积木标号，供预览上色。正则写错时为空。 */
     fun highlights(source: RenameSource): List<MatchHighlight> = highlighter?.highlights(source).orEmpty()
+
+    /** 原名里查找作用得到的一段，预览把其余部分调暗；这一项不参与时为 null，整个原名都调暗。 */
+    fun searchRange(source: RenameSource): IntRange? = searchPart(source, effectiveOptions)
 
     // endregion
 

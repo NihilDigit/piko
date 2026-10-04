@@ -68,14 +68,14 @@ private fun blockSteps(): List<Step> {
     val close = listOf(Step.Pump(500), Step.Click("原名"), Step.Pump(300))
     // 菜单弹出时有放大动画，动画没走完就点，落点会偏到上一项
     fun add(menu: String, item: String) = listOf(Step.Click(menu), Step.Pump(500), Step.Click(item))
-    return add("添加查找积木", "开头") + close +
-        add("添加查找积木", "括号内容") + listOf(Step.Pump(500), Step.Click("方括号")) + close +
-        add("添加查找积木", "任意字符") + close +
+    return add("添加查找块", "开头") + close +
+        add("添加查找块", "括号及内容") + listOf(Step.Pump(500), Step.Click("[ ]")) + close +
+        add("添加查找块", "任意文字") + close +
         // 打完字先点别处收成积木：否则点添加按钮时输入框失焦、积木条重排，按钮在点下去之前就挪了位置
         listOf(Step.Click("输入要查找的文字"), Step.Type(" - ")) + close +
-        add("添加查找积木", "数字") + listOf(Step.Pump(500), Step.Click("取出，供替换引用")) + close +
+        add("添加查找块", "数字") + listOf(Step.Pump(500), Step.Click("记为片段，供替换使用")) + close +
         listOf(Step.Click("输入替换成的文字"), Step.Type("第")) + close +
-        add("添加替换积木", "片段①") + close +
+        add("添加替换块", "片段①") + close +
         listOf(Step.Click("输入替换成的文字"), Step.Type("集"), Step.Pump(800))
 }
 
@@ -89,10 +89,6 @@ private fun pickerSteps(): List<Step> = listOf(
 )
 
 /** 第一行原名里「02」的位置按 1440x900 的布局量出，布局改了要跟着改。 */
-private fun selectEpisodeSteps(): List<Step> = listOf(
-    Step.Drag(Offset(819f, 208f), Offset(839f, 208f)), Step.Release, Step.Pump(800),
-)
-
 /** `all` 的清单。改了布局先跑它，再挑有关的几张细看。 */
 private val standardSet = listOf(
     Shot("reveal-folder-400x860", 400, 860, steps = listOf(Step.Pump(9_000)), highlightName = "文档"),
@@ -157,17 +153,14 @@ private val standardSet = listOf(
         "rename-typed-1440x900",
         steps = renameSteps() + listOf(
             Step.Type("Frieren - "), Step.Click("输入替换成的文字"), Step.Type("第"), Step.Pump(500),
-            Step.Click("去掉共同开头"), Step.Click("去掉共同结尾"), Step.Pump(800),
+            Step.Click("移除开头"), Step.Click("移除结尾"), Step.Pump(800),
         ),
     ),
     // 积木：开头、方括号、任意字符、「 - 」、取出的数字，替换成「第①集」；预览按积木上色
     Shot("rename-blocks-1440x900", steps = renameSteps() + blockSteps()),
-    // 积木用法：积木模式下展开，宽窗口在左栏、手机宽度在规则区里
-    Shot("rename-guide-1440x900", steps = renameSteps() + listOf(Step.Click("积木用法"), Step.Pump(800))),
-    Shot("rename-guide-400x860", 400, 860, steps = renameSteps(Offset(390f, 260f), Offset(60f, 700f)) + listOf(Step.Click("积木用法"), Step.Pump(800))),
-    // 在第一行原名里拖选集数「02」：弹出菜单，再选「改为编号」，生成按位置匹配的积木
-    Shot("rename-select-1440x900", steps = renameSteps() + selectEpisodeSteps()),
-    Shot("rename-select-number-1440x900", steps = renameSteps() + selectEpisodeSteps() + listOf(Step.Click("改为编号"), Step.Pump(800))),
+    // 使用说明：底栏左下角的问号，宽窗口两栏、手机宽度一栏
+    Shot("rename-guide-1440x900", steps = renameSteps() + listOf(Step.Click("使用说明"), Step.Pump(800))),
+    Shot("rename-guide-400x860", 400, 860, steps = renameSteps(Offset(390f, 260f), Offset(60f, 700f)) + listOf(Step.Click("使用说明"), Step.Pump(800))),
     // 同一组积木切到正则文本
     Shot("rename-textmode-1440x900", steps = renameSteps() + blockSteps() + listOf(Step.Click("正则表达式"), Step.Pump(800))),
     Shot("rename-typed-800x860", 800, 860, steps = renameSteps(Offset(780f, 250f), Offset(300f, 700f)) + listOf(Step.Type("Frieren - "), Step.Pump(800))),

@@ -26,6 +26,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.HelpOutline
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -68,6 +69,7 @@ import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.adaptive.isHeightCompact
 import dev.piko.ui.components.PikoTopBar
+import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.theme.FrameCardShape
 import io.github.nihildigit.pikpak.FileStat
@@ -79,7 +81,7 @@ import kotlinx.coroutines.flow.first
  *
  * 用对话框，不用侧边面板：预览要并排放原名与新名，侧边面板太窄；执行前所选的一批也不该随着左边的浏览改变。
  * expanded 下规则在左、预览是右边一张卡片；medium 是居中的单栏对话框，compact 全屏，都是规则在上、预览接在下面一起滚。
- * 分区靠底色与圆角，不画分隔线：规则是设置页那样的分段行，预览是一张卡片。
+ * 分区靠底色与圆角，不画分隔线。积木的教程在底栏左下角的问号里。
  * 关闭照 M3：全屏对话框（compact）才在左上角放关闭；浮着的基本对话框不画关闭，底栏「取消」在主按钮左边。
  * Esc 在各档都等于取消。
  *
@@ -143,15 +145,16 @@ fun BatchRenameDialog(
  */
 internal val LocalRenameRowColor = staticCompositionLocalOf { Color.Unspecified }
 
+/** 批量重命名的外框。使用说明也用它，传小一圈的尺寸，盖在上面时看得出是另一层。 */
 @Composable
-private fun RenameDialogSurface(onDismiss: () -> Unit, maxWidth: Int, content: @Composable () -> Unit) {
+internal fun RenameDialogSurface(onDismiss: () -> Unit, maxWidth: Int, heightFraction: Float = 0.88f, content: @Composable () -> Unit) {
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(
             // 高度写死比例，不随内容变：Android 的对话框按内容定高，预览行数一变整个对话框就跳
             modifier = Modifier
                 .widthIn(max = maxWidth.dp)
                 .fillMaxWidth(0.92f)
-                .fillMaxHeight(0.88f),
+                .fillMaxHeight(heightFraction),
             shape = MaterialTheme.shapes.extraLarge,
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
         ) {
@@ -211,6 +214,8 @@ private fun BatchRenameContent(state: BatchRenameState, onClose: () -> Unit, two
                         state = state,
                         enabled = editable,
                         searchFocus = searchFocus,
+                        changedOnly = changedOnly,
+                        onChangedOnlyChange = { changedOnly = it },
                         modifier = Modifier
                             .width(380.dp)
                             .fillMaxHeight()
@@ -224,23 +229,18 @@ private fun BatchRenameContent(state: BatchRenameState, onClose: () -> Unit, two
                     color = LocalRenameRowColor.current,
                     modifier = Modifier.weight(1f).fillMaxHeight(),
                 ) {
-                    Column {
-                        PreviewHeader(state, changedOnly, { changedOnly = it }, Modifier.padding(start = 16.dp, end = 12.dp, top = 12.dp, bottom = 4.dp))
-                        PreviewColumnHeader(Modifier.padding(bottom = 4.dp))
-                        PreviewList(state, rows, wide = true, segmented = false, contentPadding = PaddingValues(bottom = 8.dp), modifier = Modifier.weight(1f)) {}
-                    }
+                    // 卡片里只有文件名：不写「原名」「新名」列头，箭头与新名的加粗已分得清两边
+                    PreviewList(state, rows, wide = true, segmented = false, contentPadding = PaddingValues(vertical = 8.dp), modifier = Modifier.fillMaxSize()) {}
                 }
             }
         } else {
             PreviewList(state, rows, wide = false, segmented = true, contentPadding = PaddingValues(horizontal = 16.dp), modifier = Modifier.weight(1f)) {
                 if (showRules) {
                     item(key = "rules") {
-                        BatchRenameOptions(state = state, enabled = editable, searchFocus = searchFocus, collapsible = true)
+                        BatchRenameOptions(state = state, enabled = editable, searchFocus = searchFocus, changedOnly = changedOnly, onChangedOnlyChange = { changedOnly = it })
                     }
                 }
-                item(key = "header") {
-                    PreviewHeader(state, changedOnly, { changedOnly = it }, Modifier.padding(start = 16.dp, top = 24.dp, bottom = 8.dp))
-                }
+                item(key = "gap") { Spacer(Modifier.height(24.dp)) }
             }
         }
         RenameActionBar(state, onClose, showCancel = !fullscreen)
@@ -269,19 +269,11 @@ private fun PreviewList(
                 PreviewRow(
                     row = row,
                     highlights = if (state.phase == Phase.DONE) emptyList() else state.highlights(row.source),
+                    searchRange = if (state.phase == Phase.DONE) row.source.name.indices else state.searchRange(row.source),
                     included = row.source.id !in state.excludedIds,
                     onIncludedChange = if (state.phase == Phase.DONE) null else { checked -> state.setIncluded(row.source.id, checked) },
                     wide = wide,
                     container = if (segmented) ListItemDefaults.segmentedShapes(index = index, count = rows.size).shape else null,
-                    selectionActions = if (state.phase != Phase.EDITING) {
-                        null
-                    } else {
-                        SelectionActions(
-                            propose = { range, edit, text -> state.proposeSelection(row.source, range, edit, text) },
-                            apply = state::applySelection,
-                            replacesRule = state.effectiveOptions.search.isNotEmpty() || state.effectiveOptions.replacement.isNotEmpty(),
-                        )
-                    },
                 )
                 if (segmented && index < rows.lastIndex) Spacer(Modifier.height(ListItemDefaults.SegmentedGap))
             }
@@ -321,6 +313,12 @@ private fun RenameActionBar(state: BatchRenameState, onClose: () -> Unit, showCa
             )
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            // 教程只讲积木，正则文本模式下不给
+            if (state.phase == Phase.EDITING && !state.textMode) {
+                var showGuide by remember { mutableStateOf(false) }
+                TooltipIconButton(Icons.AutoMirrored.Outlined.HelpOutline, "使用说明", { showGuide = true })
+                if (showGuide) RenameGuideDialog(onDismiss = { showGuide = false })
+            }
             val (status, isError) = actionStatus(state)
             Text(
                 text = status,
@@ -358,13 +356,13 @@ private fun RenameActionBar(state: BatchRenameState, onClose: () -> Unit, showCa
 private fun problemStatus(plan: RenamePlan): String {
     val taken = plan.rows.count { it.problem == RenameProblem.TAKEN }
     val blocked = plan.rows.count { it.problem == RenameProblem.BLOCKED }
-    if (taken == 0) return "${plan.problemCount} 项存在问题，修正或取消勾选后方可执行"
+    if (taken == 0) return "${plan.problemCount} 项有问题，修正或取消勾选后才能重命名"
     val others = plan.problemCount - taken - blocked
     return buildString {
         append("$taken 项与同目录现有文件重名")
-        if (blocked > 0) append("，另有 $blocked 项受其牵连")
-        if (others > 0) append("，$others 项另有问题")
-        append("。可一并选中重名的文件，或调整新名称")
+        if (blocked > 0) append("，另有 $blocked 项因此无法重命名")
+        if (others > 0) append("，$others 项有其他问题")
+        append("。可同时选中重名的文件，或调整新名称")
     }
 }
 
