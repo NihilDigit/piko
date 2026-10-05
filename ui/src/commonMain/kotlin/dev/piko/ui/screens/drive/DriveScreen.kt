@@ -543,6 +543,7 @@ fun DriveScreen(
     val folderEmptiness by state.folderEmptiness.collectAsStateWithLifecycle()
     val vaultedFolders by state.vaultedFolders.collectAsStateWithLifecycle()
     val highlightedFileIds = state.highlightedFileIds
+    val highlightedRowIds = state.highlightedRowIds
     // 每一项都要问一次「是否选中」，SnapshotStateList 的 contains 是线性查找
     val selectedIdSet by remember { derivedStateOf { state.selectedFileIds.toSet() } }
     LaunchedEffect(activeFolderId) { commandFile = null; locatedFileId = null }
@@ -559,17 +560,16 @@ fun DriveScreen(
     LaunchedEffect(highlightedFileIds, state.highlightRevision) {
         if (highlightedFileIds.isEmpty()) return@LaunchedEffect
         withTimeoutOrNull(HighlightAppearTimeoutMs) {
-            snapshotFlow { state.isDisplayStructureReady && state.displayedFiles.any { it.id in highlightedFileIds } }.first { it }
+            snapshotFlow { state.isDisplayStructureReady && state.highlightedRowIds.isNotEmpty() }.first { it }
         }
         delay(8000)
         state.clearHighlight()
     }
     LaunchedEffect(highlightedFileIds, state.highlightRevision) {
         if (highlightedFileIds.isEmpty()) return@LaunchedEffect
-        val target = snapshotFlow {
-            if (state.isDisplayStructureReady) state.displayedFiles.firstOrNull { it.id in highlightedFileIds } else null
+        locatedFileId = snapshotFlow {
+            if (state.isDisplayStructureReady) state.highlightedRowIds.firstOrNull() else null
         }.first { it != null }
-        locatedFileId = target?.id
     }
 
     val platform = LocalPikoPlatform.current
@@ -1759,7 +1759,7 @@ fun DriveScreen(
                                         gridState = gridState,
                                         isSelectionMode = state.isSelectionMode,
                                         selectedIds = selectedIdSet,
-                                        highlightedIds = highlightedFileIds,
+                                        highlightedIds = highlightedRowIds,
                                         highlightRevision = state.highlightRevision,
                                         structureReady = state.isDisplayStructureReady,
                                         locatedItemId = locatedFileId,

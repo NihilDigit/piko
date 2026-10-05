@@ -304,6 +304,18 @@ class DriveScreenState(
         (shown + attachments).distinctBy { it.id }.filterNot(::isHiddenByThumbnails)
     }
 
+    /**
+     * 列表里替 [highlightedFileIds] 亮起的行。同一内容的其他版本不单独占一行，挂在最大的那个版本的行上，
+     * 要标出它们只能标那一行；只找它们自己的行，滚动与描边都会落空（信息流、传输页定位到这种版本时）。
+     */
+    val highlightedRowIds: Set<String> by derivedStateOf {
+        val ids = highlightedFileIds
+        if (ids.isEmpty()) return@derivedStateOf emptySet()
+        val rows = displayItems.mapNotNullTo(HashSet()) { (it as? DriveListItem.File)?.file?.id }
+        val hosts = currentAnalysis?.attachedTo.orEmpty()
+        ids.mapNotNullTo(HashSet()) { id -> id.takeIf { it in rows } ?: hosts[id]?.takeIf { it in rows } }
+    }
+
     /** 列表项里的分区标题及其下标。顶栏副标题按首个可见项反查，分区菜单据此跳转。 */
     val sectionHeaders: List<IndexedValue<DriveListItem.SectionHeader>> by derivedStateOf {
         displayItems.withIndex().mapNotNull { (index, item) -> (item as? DriveListItem.SectionHeader)?.let { IndexedValue(index, it) } }

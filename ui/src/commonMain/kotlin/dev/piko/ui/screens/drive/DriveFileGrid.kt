@@ -238,16 +238,25 @@ internal fun DriveFileGrid(
     // 整行项在网格视图里已有页边距，列表视图里自己缩进
     val rowInset = if (viewMode.isGrid) 0.dp else 16.dp
 
+    // 定位的描边等滚动停下再亮：它亮起时闪两下引开视线，赶上内容刚换、列表还在滚的那一刻就白闪了。
+    // 从信息流跳过去时新目录要列一两秒，内容一到，滚动与闪烁同时开始（2026-10-06 桌面端日志）
+    var highlightSettled by remember { mutableStateOf(true) }
+
     Box(modifier = modifier.fillMaxSize()) {
         // 有条目要定位时滚到它（刚秒传的、从别处「在网盘中显示」的）。视图模式是异步读出来的偏好，首帧拿到的还是默认值，
         // 所以它也要进 key，否则真值到达前的滚动会停在错误的位置。
         LaunchedEffect(highlightRevision, highlightedIds, viewMode) {
             if (highlightedIds.isEmpty()) return@LaunchedEffect
-            val index = snapshotFlow {
-                if (!latestStructureReady) -1 else latestItems.indexOfFirst { it is DriveListItem.File && it.file.id in highlightedIds }
-                    .takeIf { it >= 0 }?.let { latestLeadingItemCount + it } ?: -1
-            }.first { it >= 0 }
-            gridState.animateScrollToItem(index)
+            highlightSettled = false
+            try {
+                val index = snapshotFlow {
+                    if (!latestStructureReady) -1 else latestItems.indexOfFirst { it is DriveListItem.File && it.file.id in highlightedIds }
+                        .takeIf { it >= 0 }?.let { latestLeadingItemCount + it } ?: -1
+                }.first { it >= 0 }
+                gridState.animateScrollToItem(index)
+            } finally {
+                highlightSettled = true
+            }
         }
 
         val fileKeys = remember(items) { items.mapNotNullTo(HashSet()) { (it as? DriveListItem.File)?.key } }
@@ -325,7 +334,7 @@ internal fun DriveFileGrid(
                             viewMode = viewMode,
                             isSelectionMode = isSelectionMode,
                             isSelected = file.id in selectedIds,
-                            isHighlighted = file.id in highlightedIds || file.id == locatedItemId,
+                            isHighlighted = highlightSettled && (file.id in highlightedIds || file.id == locatedItemId),
                             isBlurred = isBlurred(file),
                             locationLabel = hitLocations[file.id],
                             callbacks = callbacks,
