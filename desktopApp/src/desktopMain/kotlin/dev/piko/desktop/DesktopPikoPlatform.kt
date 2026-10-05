@@ -23,7 +23,10 @@ import dev.piko.desktop.winrt.WinRTSupport
 import dev.piko.desktop.winrt.WindowsExternalPlayer
 import dev.piko.desktop.winrt.WindowsLinkAssociation
 import dev.piko.shared.media.player.PlaybackBackend
+import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.platform.DownloadLocationPicker
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 import dev.piko.ui.platform.ExternalVideoPlayer
 import dev.piko.ui.platform.LinkAssociation
 import dev.piko.ui.platform.LocalFileActions
@@ -238,8 +241,11 @@ class DesktopPikoPlatform(
         override fun rememberPreviewBackend(keyframeStart: Boolean): PreviewBackend {
             val scope = rememberCoroutineScope()
             val player = rememberMediampPlayer()
+            val preferences = LocalPikoServices.current.preferences
             val backend = remember(player) {
-                MediampPreviewBackend(MediampPlaybackBackend(player, scope, preview = true, keyframeStart = keyframeStart))
+                // 偏好是 StateFlow，first() 当场返回
+                val hardwareDecoding = runBlocking { preferences.hardwareDecodingFlow.first() }
+                MediampPreviewBackend(MediampPlaybackBackend(player, scope, preview = true, keyframeStart = keyframeStart, hardwareDecoding = hardwareDecoding))
             }
             DisposableEffect(player) { onDispose { player.close() } }
             return backend

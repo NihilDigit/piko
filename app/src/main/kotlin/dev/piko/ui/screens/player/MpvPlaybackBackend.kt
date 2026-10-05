@@ -50,6 +50,8 @@ internal class MpvPlaybackBackend(
     private val preview: Boolean = false,
     private val keyframeStart: Boolean = false,
     private val headless: Boolean = false,
+    /** 设置里的「硬件解码」，见 PikoUserPreferences.hardwareDecodingFlow。 */
+    private val hardwareDecoding: Boolean = true,
 ) : PlaybackBackend, MPVLib.EventObserver, MPVLib.LogObserver {
 
     private val mpv: MPVLib = MPVLib.create(context) ?: error("libmpv 初始化失败")
@@ -135,7 +137,7 @@ internal class MpvPlaybackBackend(
         mpv.setOptionString("opengl-es", "yes")
         // 零拷贝的 mediacodec 走 AImageReader 与 vo=gpu 互通；不支持的编码（wmv3、rv40 等）
         // 自动落回软解，这正是换 mpv 的目的
-        mpv.setOptionString("hwdec", "mediacodec,mediacodec-copy")
+        mpv.setOptionString("hwdec", if (hardwareDecoding) "mediacodec,mediacodec-copy" else "no")
         mpv.setOptionString("hwdec-codecs", "h264,hevc,mpeg4,mpeg2video,vp8,vp9,av1")
         mpv.setOptionString("ao", "audiotrack,opensles")
         mpv.setOptionString("idle", "yes")

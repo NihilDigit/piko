@@ -8,6 +8,7 @@ import androidx.compose.runtime.setValue
 import dev.piko.desktop.LinuxDesktop
 import dev.piko.desktop.isLinux
 import dev.piko.desktop.isMacOs
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.media.player.ExternalSubtitle
 import dev.piko.shared.media.player.MPV_SUBTITLE_LANGUAGES
 import dev.piko.shared.media.player.MediaTrack
@@ -56,6 +57,8 @@ internal class MediampPlaybackBackend(
     preview: Boolean = false,
     // 见 VideoPreviewSupport.rememberPreviewBackend
     keyframeStart: Boolean = false,
+    /** 设置里的「硬件解码」，见 PikoUserPreferences.hardwareDecodingFlow。 */
+    hardwareDecoding: Boolean = true,
 ) : PlaybackBackend {
     private val bufferingFeature = player.features[Buffering.Key]
     private val speedFeature = player.features[PlaybackSpeed.Key]
@@ -131,6 +134,9 @@ internal class MediampPlaybackBackend(
             mpv?.setPropertyString("demuxer-lavf-analyzeduration", "$PREVIEW_ANALYZE_SECONDS")
         }
         if (keyframeStart) mpv?.setPropertyString("hr-seek", "no")
+        // MediaMP 写死 hwdec=auto。这里在打开文件之前改属性就够了，不必经它的 configureOptions：mpv 的 hwdec 运行时可改，
+        // 下一次建解码器时生效。只关解码，画面照旧经 D3D11 交给 Skia
+        if (!hardwareDecoding) mpv?.setPropertyString("hwdec", "no")
         scope.launch { player.currentPositionMillis.collect { positionMillis = it } }
         metadataFeature?.let { feature ->
             // MediaMP 自己读的轨道丢了音轨语言与外挂标志，只拿它的变化当通知，列表从 mpv 重读
@@ -158,6 +164,8 @@ internal class MediampPlaybackBackend(
                 if (awaitingReady && state.isMediaLoaded && !state.isLoadingOrBuffering) {
                     awaitingReady = false
                     attachPendingSubtitles()
+                    // 显卡出事的反馈要靠它判断当时是不是硬解。预览每翻一段开一次，不记
+                    if (!preview) mpv?.let { PikoLog.i("Player", "解码：${it.getPropertyString("hwdec-current").orEmpty().ifEmpty { "no" }}") }
                     _events.emit(PlaybackBackendEvent.Ready)
                 }
             }

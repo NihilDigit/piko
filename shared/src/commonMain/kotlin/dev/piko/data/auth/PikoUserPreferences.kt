@@ -178,6 +178,14 @@ interface PikoUserPreferences {
     suspend fun setReduceMotion(enabled: Boolean)
 
     /**
+     * 播放时用显卡解码视频，默认开。关掉改用处理器解码，给显卡驱动出问题的机器一条退路
+     * （有用户在 Windows 上播 4K 时整机卡死）。每台设备各自的，不同步：好不好用看的是这台的显卡。
+     * 播放器打开时读一次，开着的播放器不跟着换。
+     */
+    val hardwareDecodingFlow: Flow<Boolean>
+    suspend fun setHardwareDecoding(enabled: Boolean)
+
+    /**
      * 网盘页的目录图（FolderMap）面板开着，默认关。打开后一直开着、跳转也不收，面板上的 × 关掉。
      * 每台设备各自的，不同步：手机上目录图是底部面板，用完即收；桌面上开着它的人未必在平板上也想开着。
      */

@@ -36,6 +36,8 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun setAutoCheckUpdates(enabled: Boolean) = Unit
     override val reduceMotionFlow: Flow<Boolean> = MutableStateFlow(false)
     override suspend fun setReduceMotion(enabled: Boolean) = Unit
+    override val hardwareDecodingFlow: Flow<Boolean> = MutableStateFlow(true)
+    override suspend fun setHardwareDecoding(enabled: Boolean) = Unit
     override val folderMapOpenFlow: Flow<Boolean> = MutableStateFlow(false)
     override suspend fun setFolderMapOpen(open: Boolean) = Unit
     override val heuristicFilterFlow: Flow<Boolean> = MutableStateFlow(false)

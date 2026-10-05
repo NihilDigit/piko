@@ -36,7 +36,10 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.documentfile.provider.DocumentFile
 import dev.piko.BuildConfig
 import dev.piko.shared.media.player.PlaybackBackend
+import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.platform.DownloadLocationPicker
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 import dev.piko.ui.platform.ExternalVideoPlayer
 import dev.piko.ui.platform.LinkAssociation
 import dev.piko.ui.platform.LocalFileActions
@@ -368,8 +371,14 @@ class AndroidPikoPlatform(
     /** 片段预览用段落模式的 libmpv：缓存小；画面走 TextureView，能随面板圆角裁切。 */
     private inner class MpvPreviewSupport : VideoPreviewSupport {
         @Composable
-        override fun rememberPreviewBackend(keyframeStart: Boolean): PreviewBackend =
-            remember { MpvPreviewBackend(MpvPlaybackBackend(context, preview = true, keyframeStart = keyframeStart)) }
+        override fun rememberPreviewBackend(keyframeStart: Boolean): PreviewBackend {
+            val preferences = LocalPikoServices.current.preferences
+            return remember {
+                // 启动时已读过偏好，DataStore 有缓存，first() 不等磁盘
+                val hardwareDecoding = runBlocking { preferences.hardwareDecodingFlow.first() }
+                MpvPreviewBackend(MpvPlaybackBackend(context, preview = true, keyframeStart = keyframeStart, hardwareDecoding = hardwareDecoding))
+            }
+        }
 
         @Composable
         override fun Surface(backend: PreviewBackend, modifier: Modifier) {

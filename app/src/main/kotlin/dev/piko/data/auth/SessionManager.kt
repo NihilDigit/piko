@@ -114,6 +114,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val SPOILER_BLUR_ENABLED = booleanPreferencesKey("spoiler_blur_enabled")
         val AUTO_CHECK_UPDATES = booleanPreferencesKey("auto_check_updates")
         val REDUCE_MOTION = booleanPreferencesKey("reduce_motion")
+        val HARDWARE_DECODING = booleanPreferencesKey("hardware_decoding")
         val FOLDER_MAP_OPEN = booleanPreferencesKey("folder_map_open")
         val HEURISTIC_FILTER_ENABLED = booleanPreferencesKey("heuristic_filter_enabled")
         val BUNDLE_SUBTITLES_ENABLED = booleanPreferencesKey("bundle_subtitles_enabled")
@@ -206,6 +207,14 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun setReduceMotion(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.REDUCE_MOTION] = enabled
+        }
+    }
+
+    override val hardwareDecodingFlow: Flow<Boolean> = preference { it[PreferencesKeys.HARDWARE_DECODING] ?: true }
+
+    override suspend fun setHardwareDecoding(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.HARDWARE_DECODING] = enabled
         }
     }
 

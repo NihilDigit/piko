@@ -38,6 +38,7 @@ import androidx.compose.material.icons.outlined.Animation
 import androidx.compose.material.icons.outlined.AutoFixHigh
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.CleaningServices
+import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
@@ -177,6 +178,7 @@ fun SettingsScreen(
     val isNameParsingEnabled by sessionManager.nameParsingFlow.collectAsStateWithLifecycle(initialValue = true)
     val isBundleSubtitlesEnabled by sessionManager.bundleSubtitlesFlow.collectAsStateWithLifecycle(initialValue = true)
     val isAutoCleanNamesEnabled by sessionManager.autoCleanNamesFlow.collectAsStateWithLifecycle(initialValue = false)
+    val isHardwareDecodingEnabled by sessionManager.hardwareDecodingFlow.collectAsStateWithLifecycle(initialValue = true)
     val isSyncPlayHistoryEnabled by sessionManager.syncPlayHistoryFlow.collectAsStateWithLifecycle(initialValue = true)
     val isSettingsSyncEnabled by sessionManager.settingsSyncFlow.collectAsStateWithLifecycle(initialValue = true)
     val settingsSync = LocalPikoServices.current.settingsSync
@@ -350,7 +352,8 @@ fun SettingsScreen(
                     }
 
                     SettingsSectionBlock(SettingsSection.Drive, paged, onPositioned(SettingsSection.Drive)) {
-                    SettingsGroup(soleTitle(SettingsSection.Drive)) {
+                    // 下面还有「播放」一组，有目录时这一组也要有标题才分得开；一整列往下滚时组标题兼作类标题
+                    SettingsGroup(if (paged) "文件" else SettingsSection.Drive.title) {
                         // 启发式折叠只在解析开着时有意义，关掉解析就收起这一项，不留一行灰掉的开关；收起与出现要看得见。
                         // 不缩进表示从属：行背景是整条分段，只缩内容读起来像错位
                         val driveCount = if (isNameParsingEnabled) 5 else 4
@@ -395,6 +398,16 @@ fun SettingsScreen(
                             supporting = if (archivePasswords.isEmpty()) "尚无保存的密码" else "已保存 ${archivePasswords.size} 个",
                             onClick = { showArchivePasswords = true },
                             trailingIcon = null,
+                        )
+                    }
+                    SettingsGroup("播放") {
+                        SettingsSwitchRow(
+                            index = 0, count = 1,
+                            icon = Icons.Outlined.Memory,
+                            title = "硬件解码",
+                            supporting = "用显卡解码视频。播放时花屏、卡死可关闭，改由处理器解码",
+                            checked = isHardwareDecodingEnabled,
+                            onCheckedChange = { scope.launch { sessionManager.setHardwareDecoding(it) } },
                         )
                     }
                     }

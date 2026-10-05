@@ -66,6 +66,8 @@ import io.github.nihildigit.pikpak.FileStat
 import androidx.compose.ui.awt.ComposeWindow
 import dev.piko.shared.log.PikoLog
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 import java.awt.KeyboardFocusManager
 import java.awt.Point
 import java.awt.Toolkit
@@ -220,7 +222,9 @@ private fun VideoPlayerContent(
 ) {
     val scope = rememberCoroutineScope()
     val player = rememberMediampPlayer()
-    val backend = remember(player) { MediampPlaybackBackend(player, scope) }
+    // 偏好是 StateFlow，first() 当场返回
+    val hardwareDecoding = remember { runBlocking { services.preferences.hardwareDecodingFlow.first() } }
+    val backend = remember(player) { MediampPlaybackBackend(player, scope, hardwareDecoding = hardwareDecoding) }
     val downloads = services.downloadManager
     // 主界面给的同目录视频；从传输页打开时为空，进来后再按父目录取
     var siblingVideos by remember(request) { mutableStateOf(request.playlist) }

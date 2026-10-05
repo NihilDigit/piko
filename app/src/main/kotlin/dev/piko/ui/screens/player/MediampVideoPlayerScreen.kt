@@ -9,7 +9,10 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import dev.piko.shared.media.player.isPlayerSubtitleName
+import dev.piko.ui.LocalPikoServices
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -67,7 +70,12 @@ fun MediampVideoPlayerScreen(
 
     var siblingVideos by remember(initialFileId) { mutableStateOf<List<FileStat>>(emptyList()) }
 
-    val backend = remember { MpvPlaybackBackend(context.applicationContext) }
+    val preferences = LocalPikoServices.current.preferences
+    val backend = remember {
+        // 启动时已读过偏好，DataStore 有缓存，first() 不等磁盘
+        val hardwareDecoding = runBlocking { preferences.hardwareDecodingFlow.first() }
+        MpvPlaybackBackend(context.applicationContext, hardwareDecoding = hardwareDecoding)
+    }
     val state = remember(initialFileId) {
         PlayerScreenState(
             repository = app.mediampMediaRepository,
