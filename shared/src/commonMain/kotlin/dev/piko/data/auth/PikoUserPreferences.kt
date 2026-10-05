@@ -119,15 +119,23 @@ interface PikoUserPreferences {
     suspend fun loadDownloadTasks(): String
     suspend fun saveDownloadTasks(serialized: String)
 
-    /** 上传任务表的 JSON，见 PikoUploadCoordinator。含 12 小时有效的 OSS 凭据，与会话同等看待。空串表示从未保存。 */
+    /** 上传任务表的 JSON，见 PikoUploadCoordinator。会话里的 OSS 凭据已抹去，另存在 [loadUploadCredentials]。空串表示从未保存。 */
     suspend fun loadUploadTasks(): String
     suspend fun saveUploadTasks(serialized: String)
+
+    /**
+     * 一个上传任务的 OSS 凭据（12 小时有效），JSON，按任务 ID 存，见 PikoUploadCoordinator。与登录会话同等看待，
+     * 由平台加密存放。没有或解不开时为 null，调用方当作凭据已过期。
+     */
+    suspend fun loadUploadCredentials(taskId: String): String?
+    suspend fun saveUploadCredentials(taskId: String, serialized: String)
+    suspend fun clearUploadCredentials(taskId: String)
 
     /** 整包离线任务的跟踪记录，JSON，见 OfflinePackTracker。空串表示从未保存。 */
     suspend fun loadOfflinePacks(): String
     suspend fun saveOfflinePacks(serialized: String)
 
-    /** 解压成功过的压缩包密码，JSON，见 ArchivePasswordVault。空串表示从未保存。 */
+    /** 解压成功过的压缩包密码，JSON，见 ArchivePasswordVault。由平台加密存放，不同步。空串表示从未保存。 */
     val archivePasswordsFlow: Flow<String>
     suspend fun saveArchivePasswords(serialized: String)
 

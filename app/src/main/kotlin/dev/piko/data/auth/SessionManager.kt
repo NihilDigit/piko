@@ -13,6 +13,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.net.ProxySetting
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -24,7 +25,32 @@ import kotlinx.coroutines.flow.map
 val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
     name = "piko_preferences",
     corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+    produceMigrations = { listOf(ArchivePasswordEncryption) },
 )
+
+/** 解压用过的密码，经 [CredentialCipher] 加密后存。 */
+private val ARCHIVE_PASSWORDS = stringPreferencesKey("archive_passwords")
+
+/**
+ * 1.1.0 把解压密码明文存在主偏好文件里，就地换成密文。密钥库不可用时原样留着，下次启动再试：
+ * 丢掉它们换不来什么，明文已经在那里了。
+ */
+private object ArchivePasswordEncryption : DataMigration<Preferences> {
+    override suspend fun shouldMigrate(currentData: Preferences): Boolean =
+        currentData[ARCHIVE_PASSWORDS]?.let { !CredentialCipher.isEncrypted(it) } == true
+
+    override suspend fun migrate(currentData: Preferences): Preferences {
+        val plain = currentData[ARCHIVE_PASSWORDS] ?: return currentData
+        val sealed = runCatching { CredentialCipher.encrypt(plain) }
+            .onFailure { PikoLog.w(TAG, "解压密码加密失败，暂留明文", it) }
+            .getOrNull() ?: return currentData
+        return currentData.toMutablePreferences().apply { this[ARCHIVE_PASSWORDS] = sealed }.toPreferences()
+    }
+
+    override suspend fun cleanUp() = Unit
+}
+
+private const val TAG = "Preferences"
 
 /**
  * 续播进度单独一个文件。Preferences DataStore 每次写入都整份重写文件，而进度是每个看过的
@@ -45,6 +71,8 @@ private val Context.downloadsDataStore: DataStore<Preferences> by preferencesDat
 private val DOWNLOAD_TASKS = stringPreferencesKey("download_tasks")
 private val UPLOAD_TASKS = stringPreferencesKey("upload_tasks")
 private val OFFLINE_PACKS = stringPreferencesKey("offline_packs")
+
+private fun uploadCredentialsKey(taskId: String) = stringPreferencesKey("upload_credentials_$taskId")
 
 private const val PLAYBACK_KEY_PREFIX = "playback_pos_"
 
@@ -109,7 +137,6 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val LAST_FOLDER_ID = stringPreferencesKey("last_folder_id")
         val LAST_FOLDER_NAME = stringPreferencesKey("last_folder_name")
         val LAST_FOLDER_STACK_SERIALIZED = stringPreferencesKey("last_folder_stack")
-        val ARCHIVE_PASSWORDS = stringPreferencesKey("archive_passwords")
         val RECENT_MOVE_TARGETS = stringPreferencesKey("recent_move_targets")
         val PINNED_FOLDERS = stringPreferencesKey("pinned_folders")
         val BATCH_RENAME = stringPreferencesKey("batch_rename")
@@ -394,6 +421,23 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
+    override suspend fun loadUploadCredentials(taskId: String): String? =
+        context.downloadsDataStore.data.first()[uploadCredentialsKey(taskId)]?.let(CredentialCipher::decrypt)
+
+    // 密钥库不可用时加密抛出、不存明文，由调用方记下；这个会话重启后按凭据过期处理，只是重传
+    override suspend fun saveUploadCredentials(taskId: String, serialized: String) {
+        val sealed = CredentialCipher.encrypt(serialized)
+        context.downloadsDataStore.edit { preferences ->
+            preferences[uploadCredentialsKey(taskId)] = sealed
+        }
+    }
+
+    override suspend fun clearUploadCredentials(taskId: String) {
+        context.downloadsDataStore.edit { preferences ->
+            preferences.remove(uploadCredentialsKey(taskId))
+        }
+    }
+
     override suspend fun loadOfflinePacks(): String =
         context.downloadsDataStore.data.first()[OFFLINE_PACKS].orEmpty()
 
@@ -403,11 +447,23 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
-    override val archivePasswordsFlow: Flow<String> = preference { it[PreferencesKeys.ARCHIVE_PASSWORDS].orEmpty() }
+    // 先对密文去重再解密：主偏好文件的任何一次写入都会让 data 重新发射，不该每次都过一遍密钥库
+    override val archivePasswordsFlow: Flow<String> = preference { it[ARCHIVE_PASSWORDS] }.map { stored ->
+        when {
+            stored == null -> ""
+            CredentialCipher.isEncrypted(stored) -> CredentialCipher.decrypt(stored).orEmpty()
+            // 迁移因密钥库不可用没做成，仍是明文
+            else -> stored
+        }
+    }
 
+    // 密钥库不可用时不存，保留原来那份，与登录密码同一取舍：宁可少记一个，也不落明文
     override suspend fun saveArchivePasswords(serialized: String) {
+        val sealed = runCatching { CredentialCipher.encrypt(serialized) }
+            .onFailure { PikoLog.w(TAG, "解压密码加密失败，未保存", it) }
+            .getOrNull() ?: return
         context.dataStore.edit { preferences ->
-            preferences[PreferencesKeys.ARCHIVE_PASSWORDS] = serialized
+            preferences[ARCHIVE_PASSWORDS] = sealed
         }
     }
 

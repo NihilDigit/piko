@@ -121,7 +121,7 @@ fun main(args: Array<String>) {
     useBundledMpvRuntime()
 
     val settings = DesktopSettingsStore()
-    val preferences = DesktopPikoPreferences(settings)
+    val preferences = DesktopPikoPreferences(settings, ::desktopPreferenceSecrets)
     // 赶在任何 OkHttpClient 建出来之前，理由见 PikoProxySelector
     PikoProxySelector.install(runBlocking { preferences.proxySettingFlow.first() })
     CoroutineScope(Dispatchers.Default).launch { preferences.proxySettingFlow.collect(PikoProxySelector::apply) }

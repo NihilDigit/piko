@@ -58,12 +58,19 @@ val SyncedSettings: List<SyncedSetting> = listOf(
     SyncedSetting("themeMode", { prefs -> prefs.themeModeFlow.map { it.orEmpty() } }, { prefs, value -> if (value.isNotEmpty()) prefs.setThemeMode(value) }),
     SyncedSetting("themeSeed", { prefs -> prefs.themeSeedFlow.map { it.orEmpty() } }, { prefs, value -> prefs.setThemeSeed(value.ifEmpty { null }) }),
     SyncedSetting("driveViewMode", { it.driveViewModeFlow }, { prefs, value -> prefs.setDriveViewMode(value) }),
-    // 解压成功过的密码与最近移动到的目录：换一台设备也用得上
-    SyncedSetting("archivePasswords", { it.archivePasswordsFlow }, { prefs, value -> prefs.saveArchivePasswords(value) }),
+    // 最近移动到的目录：换一台设备也用得上
     SyncedSetting("recentMoveTargets", { it.recentMoveTargetsFlow }, { prefs, value -> prefs.saveRecentMoveTargets(value) }),
     // 快速访问是 Piko 自己的，PikPak 没有这一项，只能靠这里带到别的设备
     SyncedSetting("pinnedFolders", { it.pinnedFoldersFlow }, { prefs, value -> prefs.savePinnedFolders(value) }),
 )
+
+/**
+ * 不再同步、要从网盘上的同步文件里抹掉的项。别的未知项照旧原样带着：那是更新的版本加的，不能被旧版本删掉。
+ *
+ * archivePasswords：1.1.0 把解压密码明文同步进网盘，之后只存本机的机密存储。客户端加密后再同步需要
+ * 一把各设备共有、又不放进网盘的密钥，Piko 没有，所以不同步。
+ */
+private val RetiredSettingKeys = setOf("archivePasswords")
 
 /**
  * 把 [SyncedSettings] 同步到网盘根目录下的 `.piko` 文件夹（[DriveSettingsStore]），换一台设备登录同一个账号，设置跟着过来。
@@ -153,7 +160,8 @@ class PikoSettingsSync(
         val remoteText = remote.read(account)
         val remoteValues = remoteText?.let { json.decodeFromString(Document.serializer(), it).values }.orEmpty()
 
-        val merged = (mine.keys + remoteValues.keys).associateWith { key ->
+        // 远端带着已停用的项时，合并结果与远端不同，下面随即写一份不含它的新文件，旧文件随之删掉
+        val merged = (mine.keys + remoteValues.keys - RetiredSettingKeys).associateWith { key ->
             val a = mine[key]
             val b = remoteValues[key]
             when {

@@ -9,6 +9,7 @@ import dev.piko.desktop.DesktopSettingsStore
 import dev.piko.download.DownloadBatch
 import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
+import dev.piko.shared.auth.PlainFileVault
 import dev.piko.shared.data.FilePikoCacheStore
 import dev.piko.shared.data.PikoClientManager
 import dev.piko.shared.data.VaultEntry
@@ -123,7 +124,7 @@ class ShotEnv(viewMode: String? = null, extraSeed: FakePikPak.() -> Unit = {}) :
         set("download.tasks", seededDownloads(downloads))
         if (viewMode != null) set("ui.driveViewMode", viewMode)
     }
-    val preferences = DesktopPikoPreferences(settings)
+    val preferences = DesktopPikoPreferences(settings) { PlainFileVault(dir.toPath().resolve("secrets")) }
     val platform = DesktopPikoPlatform(settings)
     val services: PikoServices
 

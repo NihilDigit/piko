@@ -5,6 +5,7 @@ import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.runSuspendCatching
 import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFailure
 import dev.piko.shared.log.logFile
 import dev.piko.shared.update.isNetworkFailure
 import io.github.nihildigit.pikpak.BandwidthLimiter
@@ -44,6 +45,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.io.buffered
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlin.random.Random
@@ -60,6 +62,7 @@ import kotlin.time.TimeSource
  * gcid 不能省也不能随便填：服务端不校验它，填错的内容会进秒传索引（SDK 的 upload 注释有实测）。
  *
  * 真传的 OSS 会话随任务一起存盘，暂停、失败或进程被杀后都从 OSS 已收下的分片之后接着传。
+ * 其中的凭据按任务另存进平台的机密存储，任务表里只留抹去凭据的会话。
  * 会话凭据 12 小时后失效，那时只能放弃已传的分片，从头再开一个会话。
  */
 class PikoUploadCoordinator(
@@ -110,6 +113,9 @@ class PikoUploadCoordinator(
 
     /** 正在跑的那个任务。暂停与删除要取消的是它的协程，不是整条队列。 */
     private val running = MutableStateFlow<Pair<String, Job>?>(null)
+
+    /** 机密存储里眼下存着的凭据，按任务 ID。只在 [restore] 与保存任务表的那个协程里改。 */
+    private var storedCredentials = mapOf<String, OssCredentials>()
 
     init {
         scope.launch {
@@ -249,8 +255,15 @@ class PikoUploadCoordinator(
             json.decodeFromString(taskListSerializer, preferences.loadUploadTasks())
         }.getOrDefault(emptyList())
         if (saved.isEmpty()) return
+        // 1.1.0 把凭据随任务表明文存着，读到的照原样用，随后第一次保存就把它们搬进机密存储、从任务表里抹掉
+        val withCredentials = saved.map { task ->
+            val session = task.session ?: return@map task
+            if (session.credentials != null) return@map task
+            val credentials = loadCredentials(task.taskId)?.also { storedCredentials += task.taskId to it }
+            task.copy(session = session.withCredentials(credentials))
+        }
         // 存下的进度只在状态变化时写，比实际落后，续传时 OSS 会给出准数，这之前不显示
-        val restored = saved.map { task ->
+        val restored = withCredentials.map { task ->
             when {
                 task.status == UploadStatus.COMPLETED -> task.copy(speedBytesPerSec = 0L)
                 task.status.isActive -> task.copy(status = UploadStatus.PAUSED, processedBytes = 0L, speedBytesPerSec = 0L)
@@ -263,15 +276,43 @@ class PikoUploadCoordinator(
     /**
      * 状态、gcid 或会话变化时保存整张表。后两者不等状态变化：会话一建好就要落盘，
      * 否则进程这时被杀，网盘里留下一个上传中的文件，谁也接不上它。
+     *
+     * 凭据先存、任务表后存：进程死在两步之间时，任务表里的会话不会缺凭据。
      */
     private suspend fun persistOnStructuralChange() {
         _tasks
             .distinctUntilChangedBy { tasks -> tasks.mapValues { Triple(it.value.status, it.value.gcid, it.value.session?.uploadId) } }
             .collect { tasks ->
-                val serialized = json.encodeToString(taskListSerializer, tasks.values.toList())
+                saveCredentials(tasks)
+                val withoutCredentials = tasks.values.map { task -> task.copy(session = task.session?.withCredentials(null)) }
+                val serialized = json.encodeToString(taskListSerializer, withoutCredentials)
                 runSuspendCatching { preferences.saveUploadTasks(serialized) }
             }
     }
+
+    /**
+     * 让机密存储里的凭据与任务表一致：有会话的任务各存一份，完成、移除或换了会话的随之清掉或覆盖。
+     * 存不下的下次保存再试；一直存不下，进程重启后这个会话按凭据过期处理，放弃已传的分片重新开始。
+     */
+    private suspend fun saveCredentials(tasks: Map<String, UploadTask>) {
+        val current = tasks.mapNotNull { (taskId, task) -> task.session?.credentials?.let { taskId to it } }.toMap()
+        for ((taskId, credentials) in current) {
+            if (storedCredentials[taskId] == credentials) continue
+            runSuspendCatching { preferences.saveUploadCredentials(taskId, json.encodeToString(OssCredentials.serializer(), credentials)) }
+                .onSuccess { storedCredentials += taskId to credentials }
+                .logFailure(TAG, "上传凭据未能保存")
+        }
+        for (taskId in storedCredentials.keys - current.keys) {
+            runSuspendCatching { preferences.clearUploadCredentials(taskId) }
+                .onSuccess { storedCredentials -= taskId }
+                .logFailure(TAG, "上传凭据未能清除")
+        }
+    }
+
+    private suspend fun loadCredentials(taskId: String): OssCredentials? =
+        runSuspendCatching { preferences.loadUploadCredentials(taskId)?.let { json.decodeFromString(OssCredentials.serializer(), it) } }
+            .logFailure(TAG, "上传凭据未能读取")
+            .getOrNull()
 
     /**
      * 队列：当前账号最早排进来的任务先传，传完或停下再取下一个。换号或退出登录时
@@ -340,8 +381,8 @@ class PikoUploadCoordinator(
             computeGcid(client, task, progress).also { gcid -> update(taskId) { it.copy(gcid = gcid) } }
         }
 
-        // 凭据过期的会话只剩放弃一条路；OSS 以 403 拒绝时同理，再开一个会话重传一次
-        var session = task.session?.takeUnless { it.isExpired() } ?: run {
+        // 凭据过期或没能从机密存储读回的会话只剩放弃一条路；OSS 以 403 拒绝时同理，再开一个会话重传一次
+        var session = task.session?.takeIf { it.canContinue() } ?: run {
             task.session?.let { abandon(client, it) }
             startSession(client, taskId, task, gcid) ?: return
         }
@@ -468,9 +509,10 @@ class PikoUploadCoordinator(
         return _tasks.value[taskId] ?: throw CancellationException("任务已移除")
     }
 
-    private fun UploadSession.isExpired(): Boolean {
-        val expiresAt = runCatching { Instant.parse(expiration) }.getOrNull() ?: return false
-        return Clock.System.now() > expiresAt - EXPIRY_MARGIN
+    private fun UploadSession.canContinue(): Boolean {
+        if (credentials == null) return false
+        val expiresAt = runCatching { Instant.parse(expiration) }.getOrNull() ?: return true
+        return Clock.System.now() <= expiresAt - EXPIRY_MARGIN
     }
 
     private fun newTaskId(): String = "${nowMs()}-${Random.nextInt(0, Int.MAX_VALUE)}"
@@ -478,6 +520,20 @@ class PikoUploadCoordinator(
     private fun nowMs(): Long = Clock.System.now().toEpochMilliseconds()
 
     private class SourceUnavailableException : Exception()
+
+    /** 会话里的机密部分。其余字段（文件、分片、OSS 地址、到期时刻）不是机密，随任务表存。 */
+    @Serializable
+    private data class OssCredentials(val accessKeyId: String, val accessKeySecret: String, val securityToken: String)
+
+    /** 抹去过凭据的会话（任务表里存的，或凭据没能读回）为 null。 */
+    private val UploadSession.credentials: OssCredentials?
+        get() = OssCredentials(accessKeyId, accessKeySecret, securityToken).takeIf { accessKeySecret.isNotEmpty() }
+
+    private fun UploadSession.withCredentials(credentials: OssCredentials?): UploadSession = copy(
+        accessKeyId = credentials?.accessKeyId.orEmpty(),
+        accessKeySecret = credentials?.accessKeySecret.orEmpty(),
+        securityToken = credentials?.securityToken.orEmpty(),
+    )
 
     /**
      * 按蜗牛模式的额度读源文件。SDK 边读边往 OSS 写，读慢了请求体就跟着慢。

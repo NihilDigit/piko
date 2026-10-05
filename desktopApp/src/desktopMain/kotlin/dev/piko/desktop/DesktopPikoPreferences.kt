@@ -3,18 +3,31 @@ package dev.piko.desktop
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.auth.SidePanelPrefs
 import dev.piko.data.auth.SnailMode
+import dev.piko.shared.auth.SecretVault
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.net.ProxySetting
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /**
- * PikoUserPreferences 的桌面实现：全部写穿到 ~/.piko/settings.properties。
- * 以前是纯内存实现，重启丢会话、丢播放进度、丢上次目录——与 Android（DataStore）
- * 的持久化语义对齐后补上。注意 tokens 明文落盘，与 Android DataStore 同级，
- * 后续如需 DPAPI 加密再升级存储后端，接口不用动。
+ * PikoUserPreferences 的桌面实现：写穿到 ~/.piko/settings.properties。
+ * 其中的机密（解压密码、上传凭据）不进这个明文文件，交给 [openSecrets] 给出的保管处，见 desktopPreferenceSecrets。
+ * 保管处在第一次用到时才在 IO 线程上打开：Linux 上要先经 D-Bus 试探，macOS 每次存取都起一个 security 进程，不能压在启动路径上。
  */
-class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoUserPreferences {
+class DesktopPikoPreferences(
+    private val settings: DesktopSettingsStore,
+    openSecrets: () -> SecretVault,
+) : PikoUserPreferences {
+    private val secrets by lazy(openSecrets)
+    private val secretsLock = Mutex()
+
     private val spoiler = MutableStateFlow(settings.get(KEY_SPOILER, "true").toBoolean())
     private val autoCheckUpdates = MutableStateFlow(settings.get(KEY_AUTO_CHECK_UPDATES, "true").toBoolean())
     private val reduceMotion = MutableStateFlow(settings.get(KEY_REDUCE_MOTION) == "true")
@@ -55,7 +68,8 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
     )
     private val acceleration = MutableStateFlow(settings.get(KEY_ACCELERATION, "true").toBoolean())
     private val connections = MutableStateFlow(settings.get(KEY_CONNECTIONS, "8").toIntOrNull() ?: 8)
-    private val archivePasswords = MutableStateFlow(settings.get(KEY_ARCHIVE_PASSWORDS))
+    /** null 是还没从保管处读出来。 */
+    private val archivePasswords = MutableStateFlow<String?>(null)
     private val recentMoveTargets = MutableStateFlow(settings.get(KEY_RECENT_MOVE_TARGETS))
     private val pinnedFolders = MutableStateFlow(settings.get(KEY_PINNED_FOLDERS))
     private val batchRename = MutableStateFlow(settings.get(KEY_BATCH_RENAME))
@@ -240,17 +254,58 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
         settings.set(KEY_UPLOAD_TASKS, serialized)
     }
 
+    override suspend fun loadUploadCredentials(taskId: String): String? =
+        withSecrets { secrets.read(uploadCredentialsKey(taskId))?.decodeToString() }
+
+    override suspend fun saveUploadCredentials(taskId: String, serialized: String) =
+        withSecrets { secrets.write(uploadCredentialsKey(taskId), serialized.encodeToByteArray()) }
+
+    override suspend fun clearUploadCredentials(taskId: String) =
+        withSecrets { secrets.delete(uploadCredentialsKey(taskId)) }
+
     override suspend fun loadOfflinePacks(): String = settings.get(KEY_OFFLINE_PACKS)
 
     override suspend fun saveOfflinePacks(serialized: String) {
         settings.set(KEY_OFFLINE_PACKS, serialized)
     }
 
-    override val archivePasswordsFlow: Flow<String> = archivePasswords.asStateFlow()
+    override val archivePasswordsFlow: Flow<String> =
+        archivePasswords.onStart { if (archivePasswords.value == null) loadArchivePasswords() }.filterNotNull()
+
     override suspend fun saveArchivePasswords(serialized: String) {
-        settings.set(KEY_ARCHIVE_PASSWORDS, serialized)
+        withSecrets { secrets.write(SECRET_ARCHIVE_PASSWORDS, serialized.encodeToByteArray()) }
         archivePasswords.value = serialized
     }
+
+    /**
+     * 读不出来（钥匙串锁着、拒绝授权）时先当作空表，本进程内不再重试：这份数据只供挑选，不值得反复弹解锁框。
+     * 此时再存会写进兜底文件，下次启动时它比保管处里的新，照 LayeredVault 的规则胜出。
+     */
+    private suspend fun loadArchivePasswords() = withSecrets {
+        if (archivePasswords.value != null) return@withSecrets
+        archivePasswords.value = runCatching { readArchivePasswords() }
+            .onFailure { PikoLog.w(TAG, "解压密码未能从系统保管处读出", it) }
+            .getOrElse { settings.get(KEY_ARCHIVE_PASSWORDS) }
+    }
+
+    /**
+     * 1.1.0 把解压密码明文存在 settings.properties。读到旧值就搬进保管处，读回一致才从原处删掉；
+     * 保管处里已经有的话是上次搬过、没删成，以保管处为准。
+     */
+    private fun readArchivePasswords(): String {
+        val stored = secrets.read(SECRET_ARCHIVE_PASSWORDS)?.decodeToString()
+        val legacy = settings.get(KEY_ARCHIVE_PASSWORDS)
+        if (legacy.isEmpty()) return stored.orEmpty()
+        if (stored == null) {
+            secrets.write(SECRET_ARCHIVE_PASSWORDS, legacy.encodeToByteArray())
+            check(secrets.read(SECRET_ARCHIVE_PASSWORDS)?.decodeToString() == legacy) { "读回的解压密码与写入的不一致" }
+        }
+        settings.remove(KEY_ARCHIVE_PASSWORDS)
+        return stored ?: legacy
+    }
+
+    private suspend fun <T> withSecrets(block: () -> T): T =
+        secretsLock.withLock { withContext(Dispatchers.IO) { block() } }
 
     override val recentMoveTargetsFlow: Flow<String> = recentMoveTargets.asStateFlow()
     override suspend fun saveRecentMoveTargets(serialized: String) {
@@ -295,10 +350,16 @@ class DesktopPikoPreferences(private val settings: DesktopSettingsStore) : PikoU
     }
 
     private companion object {
+        const val TAG = "credentials"
+        const val SECRET_ARCHIVE_PASSWORDS = "archive-passwords"
+
+        fun uploadCredentialsKey(taskId: String) = "upload-$taskId"
+
         const val MAX_PLAYBACK_ENTRIES = 500
         const val KEY_DOWNLOAD_TASKS = "download.tasks"
         const val KEY_OFFLINE_PACKS = "download.offlinePacks"
         const val KEY_UPLOAD_TASKS = "upload.tasks"
+        /** 1.1.0 存明文的位置，只在迁移时读。 */
         const val KEY_ARCHIVE_PASSWORDS = "drive.archivePasswords"
         const val KEY_RECENT_MOVE_TARGETS = "drive.recentMoveTargets"
         const val KEY_PINNED_FOLDERS = "drive.pinnedFolders"

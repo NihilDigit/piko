@@ -45,7 +45,7 @@ data class UploadTask(
     val status: UploadStatus = UploadStatus.QUEUED,
     /** 算好后记下，暂停后继续不必再读一遍整个文件。 */
     val gcid: String? = null,
-    /** 真传时的 OSS 会话，带着 12 小时有效的凭据。完成或放弃后清掉。 */
+    /** 真传时的 OSS 会话，带着 12 小时有效的凭据。完成或放弃后清掉。存盘时凭据另存进机密存储，见 PikoUploadCoordinator。 */
     val session: UploadSession? = null,
     /** 已校验或已上传的字节数，视 [status] 而定。 */
     val processedBytes: Long = 0L,

@@ -87,6 +87,14 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun saveUploadTasks(serialized: String) {
         uploadTasks = serialized
     }
+    val uploadCredentials = java.util.concurrent.ConcurrentHashMap<String, String>()
+    override suspend fun loadUploadCredentials(taskId: String): String? = uploadCredentials[taskId]
+    override suspend fun saveUploadCredentials(taskId: String, serialized: String) {
+        uploadCredentials[taskId] = serialized
+    }
+    override suspend fun clearUploadCredentials(taskId: String) {
+        uploadCredentials.remove(taskId)
+    }
     @Volatile var offlinePacks: String = ""
     override suspend fun loadOfflinePacks(): String = offlinePacks
     override suspend fun saveOfflinePacks(serialized: String) {

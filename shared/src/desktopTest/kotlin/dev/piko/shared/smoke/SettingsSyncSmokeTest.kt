@@ -65,4 +65,23 @@ class SettingsSyncSmokeTest {
         assertEquals("LIGHT" to "false", a.theme.value to a.blur.value)
         assertEquals("LIGHT" to "false", b.theme.value to b.blur.value)
     }
+
+    @Test
+    fun `archive passwords synced by older versions are stripped from the remote while unknown keys survive`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val remote = MemoryRemote()
+        // 1.1.0 写下的文件：明文的解压密码，外加一项本版本不认识、由更新版本加的
+        remote.text = """{"version":1,"values":{
+            "theme":{"value":"DARK","updatedAt":5},
+            "archivePasswords":{"value":"[\"hunter2\"]","updatedAt":5},
+            "futureSetting":{"value":"x","updatedAt":5}}}"""
+        var time = 1_000L
+        val device = Device(remote, server, scope) { time++ }
+
+        assertTrue(device.sync.syncNow())
+        val pushed = remote.text!!
+        assertTrue("archivePasswords" !in pushed && "hunter2" !in pushed, pushed)
+        assertTrue("futureSetting" in pushed, pushed)
+        assertEquals("DARK", device.theme.value)
+    }
 }

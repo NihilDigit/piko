@@ -994,7 +994,7 @@ private fun SettingsSyncRow(
             }
         },
         supportingContent = {
-            Text(if (enabled) status else "外观、网盘与播放的设置和解压成功过的密码存在网盘的 .piko 文件夹，换设备登录时带过去")
+            Text(if (enabled) status else "外观、网盘与播放的设置存在网盘的 .piko 文件夹，换设备登录时带过去")
         },
         content = { Text("同步设置") },
     )
