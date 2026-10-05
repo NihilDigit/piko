@@ -493,6 +493,7 @@ private fun installLog() {
         "App",
         "启动 ${System.getProperty("jpackage.app-version") ?: "开发版"}，${System.getProperty("os.name")} ${System.getProperty("os.version")} ${System.getProperty("os.arch")}",
     )
+    HardwareReport.logInBackground()
 }
 
 private fun showSystemNotification(title: String, message: String): Boolean = when {
