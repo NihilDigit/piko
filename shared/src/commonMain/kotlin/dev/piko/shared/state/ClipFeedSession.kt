@@ -118,6 +118,31 @@ class ClipFeedSession(
     /** [folderId] 的名字；还没遍历到的为 null。 */
     fun folderName(folderId: String): String? = folderNames[folderId]
 
+    // 打开时网盘页的整条路径，栈顶是 [root]
+    private var rootPath: List<PikoPathBreadcrumb> = emptyList()
+
+    // 遍历到的文件夹的上级，随队列存盘。「在网盘中显示」据此当场拼出路径：服务端只能沿 parent_id
+    // 逐级查，每级一次请求，慢的时候要好几秒，这期间人还停在原处，跳转晚到会盖掉他刚做的事
+    private val folderParents = HashMap<String, String>()
+
+    /**
+     * [folderId] 的完整路径栈，从打开信息流时的那条路径往下接。不在遍历过的范围里（存盘恢复的
+     * 段所在的目录这一轮还没列到，且旧存盘没有上级）时为 null，由调用方向服务端查。
+     */
+    fun pathTo(folderId: String): List<PikoPathBreadcrumb>? {
+        val rootId = root?.id ?: return null
+        val chain = ArrayDeque<PikoPathBreadcrumb>()
+        var id = folderId
+        while (id != rootId) {
+            val name = folderNames[id] ?: return null
+            chain.addFirst(PikoPathBreadcrumb(id, name))
+            id = folderParents[id] ?: return null
+            // 文件夹在两次遍历之间被移进自己的子文件夹时，存盘里的上级会成环
+            if (chain.size > folderParents.size) return null
+        }
+        return rootPath + chain
+    }
+
     // 还在查挑中的视频有没有转码
     private var isFilling by mutableStateOf(false)
 
@@ -148,8 +173,12 @@ class ClipFeedSession(
      * 每个文件夹各存一份，最近用过的 [KEPT_FOLDERS] 个：队列从上次看到的地方接着，
      * 遍历到的视频、查过有没有转码的也一并存着，打开就能挑，不必等把目录重新走一遍、把详情重新查一遍。
      * 遍历照样在后台再走一遍，找新加进来的视频。
+     *
+     * [path] 是网盘页眼前的整条路径栈，刷的是它的栈顶。
      */
-    suspend fun open(folder: PikoPathBreadcrumb) {
+    suspend fun open(path: List<PikoPathBreadcrumb>) {
+        val folder = path.lastOrNull() ?: return
+        rootPath = path
         if (root?.id == folder.id && (clips.isNotEmpty() || upcoming.isNotEmpty() || isCollecting)) return
         collectJob?.cancel()
         fillJob?.cancel()
@@ -165,10 +194,12 @@ class ClipFeedSession(
         untranscoded.clear()
         listedFiles.clear()
         folderNames.clear()
+        folderParents.clear()
         root = folder
         folderNames[folder.id] = folder.name
         val saved = load(folder.id)
         saved?.folders?.forEach { (id, name) -> folderNames.getOrPut(id) { name } }
+        saved?.parents?.let(folderParents::putAll)
         PikoLog.d(TAG, "打开随机片段：存下的队列 ${saved?.clips?.size ?: 0} 段，候选 ${saved?.pool?.size ?: 0} 个")
         val now = Clock.System.now().toEpochMilliseconds()
         saved?.rejected?.forEach { (id, at) -> if (now - at < REJECT_TTL_MS) rejected[id] = at }
@@ -279,7 +310,10 @@ class ClipFeedSession(
                     if (listed++ == 0) PikoLog.d(TAG, "列出第一个目录：${files.size} 项，${started.elapsedNow().inWholeMilliseconds} ms")
                     val folders = files.filter { it.isFolder }
                     next += folders.map { it.id }
-                    folders.forEach { folderNames[it.id] = it.name }
+                    folders.forEach {
+                        folderNames[it.id] = it.name
+                        folderParents[it.id] = folderId
+                    }
                     // 解析整目录的文件名要花些时间，不放在主线程上。解析出错只少折叠这一个目录，不能让整个信息流崩掉
                     val folded = withContext(Dispatchers.Default) {
                         runCatching { analyzeDriveFolder(files).foldedIds }
@@ -440,8 +474,12 @@ class ClipFeedSession(
         val from = (currentIndex - KEPT_AROUND).coerceAtLeast(0).coerceAtMost(clips.size)
         // 候补接在后面一起存，读回来时上次正看的那段起都回到候补，见 open
         val window = clips.subList(from, clips.size) + upcoming
-        // 只存段与候选所在的目录，遍历过的其余目录用不上
-        val usedFolders = (window.map { it.parentId } + pool.map { it.parentId }).toSet()
+        // 只存段与候选所在的目录及其各级上级，遍历过的其余目录用不上
+        val usedFolders = HashSet<String>()
+        for (folderId in window.map { it.parentId } + pool.map { it.parentId }) {
+            var id: String? = folderId
+            while (id != null && usedFolders.add(id)) id = folderParents[id]
+        }
         return SavedFeed(
             clips = window,
             current = currentIndex - from,
@@ -451,6 +489,7 @@ class ClipFeedSession(
             rejected = rejected.toMap(),
             untranscoded = untranscoded.toMap(),
             folders = folderNames.filterKeys { it in usedFolders },
+            parents = folderParents.filterKeys { it in usedFolders },
         )
     }
 
@@ -479,6 +518,7 @@ class ClipFeedSession(
         val folders: Map<String, String> = emptyMap(),
         val untranscoded: Map<String, Long> = emptyMap(),
         val selectionCounts: Map<String, Int> = emptyMap(),
+        val parents: Map<String, String> = emptyMap(),
     )
 
     /** 候选池里的一个视频，只存挑段要用的几项：时长定随机起点，名字与所在目录带进段里。 */

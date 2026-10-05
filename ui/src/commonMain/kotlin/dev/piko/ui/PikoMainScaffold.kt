@@ -182,7 +182,13 @@ import androidx.compose.material3.Surface
 import dev.piko.ui.theme.frame
 import androidx.compose.ui.draw.clip
 import androidx.compose.material3.MaterialTheme
+import dev.piko.ui.workbench.LocatingOverlay
 import io.github.nihildigit.pikpak.FileStat
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -365,19 +371,35 @@ fun PikoMainScaffold(
         }
     }
 
-    // 信息流里的条目：跳到网盘里它所在的位置并高亮它。文件夹则直接进入
-    fun locateInDrive(file: FileStat) {
-        val driveRepo = services.driveRepository
-        coroutineScope.launch {
-            driveRepo.locateFolder(file.id).onSuccess { parents ->
-                val stack = if (file.isFolder) parents + PikoPathBreadcrumb(file.id, file.name) else parents
-                // 先设好栈再切页：网盘页重新组合时直接加载栈顶目录
-                driveRepo.updateFolderStack(stack)
-                if (!file.isFolder) driveRepo.requestHighlight(setOf(file.id))
-                resetToHome()
-                currentTab = MainTab.FILES
-            }
+    // 正在向服务端查路径，见 lookUpPath。不为 null 时整个窗口盖着 LocatingOverlay
+    var pathLookup by remember { mutableStateOf<Deferred<Result<List<PikoPathBreadcrumb>>>?>(null) }
+
+    /**
+     * 向服务端查 [fileId] 所在目录的路径栈。服务端只能沿 parent_id 逐级查，慢的时候要好几秒，
+     * 这期间整个窗口盖一层等待、不接输入，否则人在原处做的事会被随后落下的跳转盖掉。
+     * 用户取消时返回 null。
+     */
+    suspend fun lookUpPath(fileId: String): Result<List<PikoPathBreadcrumb>>? {
+        val lookup = coroutineScope.async { services.driveRepository.locateFolder(fileId) }
+        pathLookup = lookup
+        return try {
+            lookup.await()
+        } catch (e: CancellationException) {
+            // 调用方自己被取消时照常抛出，只有查询被取消（遮罩上的取消）才算用户放弃
+            currentCoroutineContext().ensureActive()
+            null
+        } finally {
+            lookup.cancel()
+            if (pathLookup === lookup) pathLookup = null
         }
+    }
+
+    // 先设好栈再切页：网盘页重新组合时直接加载栈顶目录
+    fun showInDrive(stack: List<PikoPathBreadcrumb>, fileId: String) {
+        services.driveRepository.updateFolderStack(stack)
+        services.driveRepository.requestHighlight(setOf(fileId))
+        resetToHome()
+        currentTab = MainTab.FILES
     }
 
     /**
@@ -398,19 +420,12 @@ fun PikoMainScaffold(
 
     /**
      * 在网盘里打开条目所在的文件夹并标出它，文件夹也是在上级里标出。传输与我的分享用：手上只有 ID。
-     * 找不到（已删除、在回收站里）返回 false，由调用方提示。
+     * 找不到（已删除、在回收站里）返回 false，由调用方提示；用户取消了不算找不到。
      */
     suspend fun revealInDrive(fileId: String): Boolean {
-        val driveRepo = services.driveRepository
-        return driveRepo.locateFolder(fileId)
-            .onSuccess { stack ->
-                // 先设好栈再切页：网盘页重新组合时直接加载栈顶目录
-                driveRepo.updateFolderStack(stack)
-                driveRepo.requestHighlight(setOf(fileId))
-                resetToHome()
-                currentTab = MainTab.FILES
-            }
-            .isSuccess
+        val stack = (lookUpPath(fileId) ?: return true).getOrElse { return false }
+        showInDrive(stack, fileId)
+        return true
     }
 
     fun playLocal(fileId: String, fileName: String, localPath: String?) {
@@ -506,7 +521,7 @@ fun PikoMainScaffold(
     // 只在打开的那一刻取文件夹：开着时进子文件夹不换掉正在刷的这一批
     LaunchedEffect(feedShown) {
         if (!feedShown) return@LaunchedEffect
-        clipFeedSession.open(folderStack.lastOrNull() ?: PikoDriveRepository.ROOT_BREADCRUMB)
+        clipFeedSession.open(folderStack.ifEmpty { listOf(PikoDriveRepository.ROOT_BREADCRUMB) })
         feedOpened = true
     }
     // 信息流所在的那块地方里，人最后停在哪：离开时挂起，「继续刷」回到这里
@@ -540,10 +555,19 @@ fun PikoMainScaffold(
      * 刷到一段想细看，跳去网盘里它所在的地方：信息流挂起，左边成了一段临时浏览，爱怎么走怎么走。
      * 出发点只记头一回的：挂起期间从独立窗口再定位一次，继续刷回的仍是最初刷的地方。
      * 独立窗口不挂起，它本来就在旁边，不挡网盘。
+     *
+     * 路径由信息流遍历时记下的上级当场拼出，不问服务端；拼不出（存盘恢复的段还没重新列到）才去查。
      */
     fun locateFromFeed(file: FileStat) {
-        suspendFeed(services.driveRepository.currentLocation())
-        locateInDrive(file)
+        val driveRepo = services.driveRepository
+        val origin = driveRepo.currentLocation()
+        coroutineScope.launch {
+            val stack = clipFeedSession.pathTo(file.parentId)
+                ?: lookUpPath(file.id)?.getOrNull()
+                ?: return@launch
+            suspendFeed(origin)
+            showInDrive(stack, file.id)
+        }
     }
 
     fun popOutFeed() {
@@ -1073,6 +1097,7 @@ fun PikoMainScaffold(
                     onDismiss = { paletteOpen = false },
                 )
             }
+            pathLookup?.let { lookup -> LocatingOverlay(onCancel = { lookup.cancel() }) }
         }
     }
 }
