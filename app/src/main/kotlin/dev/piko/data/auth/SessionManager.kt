@@ -114,6 +114,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val SPOILER_BLUR_ENABLED = booleanPreferencesKey("spoiler_blur_enabled")
         val AUTO_CHECK_UPDATES = booleanPreferencesKey("auto_check_updates")
         val REDUCE_MOTION = booleanPreferencesKey("reduce_motion")
+        val FOLDER_MAP_OPEN = booleanPreferencesKey("folder_map_open")
         val HEURISTIC_FILTER_ENABLED = booleanPreferencesKey("heuristic_filter_enabled")
         val BUNDLE_SUBTITLES_ENABLED = booleanPreferencesKey("bundle_subtitles_enabled")
         val AUTO_CLEAN_NAMES_ENABLED = booleanPreferencesKey("auto_clean_names_enabled")
@@ -205,6 +206,14 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun setReduceMotion(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.REDUCE_MOTION] = enabled
+        }
+    }
+
+    override val folderMapOpenFlow: Flow<Boolean> = preference { it[PreferencesKeys.FOLDER_MAP_OPEN] ?: false }
+
+    override suspend fun setFolderMapOpen(open: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.FOLDER_MAP_OPEN] = open
         }
     }
 

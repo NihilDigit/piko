@@ -232,6 +232,7 @@ open class PikoDriveRepository(
         _tabsFlow.value = _tabs.value
         _clipboard.value = null
         listingCache.value = emptyMap()
+        recentListings.value = emptyMap()
         scrollAnchors.value = emptyMap()
         subfolderCache.value = emptyMap()
         folderMeaninglessCacheFlow.value = emptyMap()
@@ -478,13 +479,16 @@ open class PikoDriveRepository(
     }
 
     /**
-     * 目录图（见 FolderMap）里的一层：文件夹，以及能当文件夹打开的压缩包，文件夹在前、各自按名字自然排序。
+     * 目录图（见 FolderMap）里的一层：文件夹与文件，文件夹在前、各自按名字自然排序。
      * 路径栈上的目录直接用列表缓存。不进 [subfolders] 的表：那张表只记文件夹，补全也在用。
      */
     suspend fun folderMapLevel(folderId: String): Result<List<FileStat>> = withContext(Dispatchers.Default) {
         runSuspendCatching {
-            val files = listingCache.value[folderId] ?: client.listFiles(folderId)
-            files.filter { !it.trashed && !isPikoInternalFolder(it, folderId) && (it.isFolder || (it.isExtractableArchive && it.hash.isNotEmpty())) }
+            // 与网盘页共用缓存：路径栈上的由网盘页一直在刷新，拿来就用；最近列过的不超过 RECENT_LISTING_FRESH 也直接用。
+            // 再展开、换位置后重新展开到眼前的文件夹时，各层因此是当场出来的，不再每层一个请求
+            val recent = recentListings.value[folderId]?.takeIf { it.listedAt.elapsedNow() < RECENT_LISTING_FRESH }?.files
+            val files = listingCache.value[folderId] ?: recent ?: listAllFiles(folderId).getOrThrow()
+            files.filter { !it.trashed && !isPikoInternalFolder(it, folderId) && !VaultStore.looksLikeManifest(it) }
                 .sortedWith(compareBy<FileStat> { !it.isFolder }.thenBy(NaturalOrder) { it.name })
         }
     }
@@ -495,9 +499,11 @@ open class PikoDriveRepository(
         .map { PikoPathBreadcrumb(it.id, it.name) }
         .toList()
 
-    // 建、改名、移走或删掉文件夹之后，记下的哪一层变了说不清，整张表丢掉，下次补全重列
+    // 建、改名、移走或删掉文件夹之后，记下的哪一层变了说不清，整张表丢掉，下次补全重列。
+    // 最近列过的目录同理，目录图不然会照旧显示改动前的结构
     private fun forgetSubfolders() {
         subfolderCache.value = emptyMap()
+        recentListings.value = emptyMap()
     }
 
     /** 从最近去过的文件夹里删掉一条，地址栏的历史用。 */
@@ -512,9 +518,27 @@ open class PikoDriveRepository(
     private val listingCache = MutableStateFlow<Map<String, List<FileStat>>>(emptyMap())
     private val scrollAnchors = MutableStateFlow<Map<String, ScrollAnchor>>(emptyMap())
 
-    /** 路径栈里某一级的缓存列表，按 [sortOrder] 排好。不在栈里或尚未取过时为 null。 */
+    private class RecentListing(val files: List<FileStat>, val listedAt: TimeSource.Monotonic.ValueTimeMark)
+
+    /**
+     * 不在路径栈上、但最近列过的目录，按最近列出的先后至多留 [RECENT_LISTINGS] 个，不跨进程。目录图展开的各层、
+     * 目录选择器列过的、刚出栈的都在这里：网盘页进到这样的目录时先显示它再刷新，与返回上级一样快；
+     * 目录图再展开时不重取。[listingCache] 照旧只管路径栈，两张表分开是因为那张还要随出栈丢弃、以深度为界。
+     */
+    private val recentListings = MutableStateFlow<Map<String, RecentListing>>(emptyMap())
+
+    private fun rememberListing(folderId: String, files: List<FileStat>) {
+        recentListings.update { cache ->
+            val next = (cache - folderId) + (folderId to RecentListing(files, TimeSource.Monotonic.markNow()))
+            if (next.size <= RECENT_LISTINGS) next else next.entries.drop(next.size - RECENT_LISTINGS).associate { it.toPair() }
+        }
+    }
+
+    private fun cachedListing(folderId: String): List<FileStat>? = listingCache.value[folderId] ?: recentListings.value[folderId]?.files
+
+    /** 某个目录的缓存列表，按 [sortOrder] 排好：路径栈上的，或最近列过的。没有时为 null。 */
     fun cachedFiles(folderId: String, sortOrder: PikoFileSortOrder): List<FileStat>? =
-        listingCache.value[folderId]?.let { sortFiles(it, sortOrder, folderId) }
+        cachedListing(folderId)?.let { sortFiles(it, sortOrder, folderId) }
 
     /** 各目录的归档清单，见 [VaultStore]。 */
     open val vault = VaultStore(this)
@@ -533,7 +557,7 @@ open class PikoDriveRepository(
 
     /** [cachedFiles] 的 [listBrowsable] 版本。清单还没读过时先不列归档条目，等随后的刷新补上。 */
     fun cachedBrowsable(folderId: String, sortOrder: PikoFileSortOrder): List<FileStat>? =
-        listingCache.value[folderId]?.let { listing ->
+        cachedListing(folderId)?.let { listing ->
             withVaulted(folderId, listing, vault.cached(folderId, listing).orEmpty(), sortOrder)
         }
 
@@ -756,6 +780,7 @@ open class PikoDriveRepository(
             val files = client.listFiles(parentId)
             // 只缓存路径栈上的目录。目录选择器等其他调用方也走这里，它们的目录不该留在缓存里
             if (folderStackFlow.value.any { it.id == parentId }) listingCache.update { it + (parentId to files) }
+            rememberListing(parentId, files)
             rememberChildContents(parentId, files)
             sortFiles(files, sortOrder, parentId)
         }
@@ -1128,6 +1153,12 @@ open class PikoDriveRepository(
         private const val CHILD_NAME_CONCURRENCY = 2
         private const val MAX_REMEMBERED_CHILD_NAMES = 200
         private const val SUBFOLDER_CACHE_SIZE = 32
+
+        // 目录图一次展开十几层、每层几十个文件夹，再加网盘页走过的，一百多个够覆盖一次浏览
+        private const val RECENT_LISTINGS = 128
+
+        // 目录图直接用最近列过的而不重取的期限。网盘页不看它：网盘页总是先显示缓存、随即刷新
+        private val RECENT_LISTING_FRESH = 60.seconds
         private val SUBFOLDER_TTL = 60.seconds
 
         private const val MY_PACKS_FOLDER_NAME = "My Packs"

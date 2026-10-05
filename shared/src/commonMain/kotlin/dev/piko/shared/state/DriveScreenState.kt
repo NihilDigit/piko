@@ -4,6 +4,7 @@ import dev.piko.shared.data.isPikoInternalFolder
 import dev.piko.shared.data.ArchiveEntryId
 import dev.piko.shared.data.ArchiveLocation
 import dev.piko.shared.data.isDriveFolderId
+import dev.piko.shared.data.isExtractableArchive
 import dev.piko.shared.data.outsideArchives
 import io.github.nihildigit.pikpak.ArchivePasswordException
 import io.github.nihildigit.pikpak.FileKind
@@ -937,17 +938,29 @@ class DriveScreenState(
     private fun addressBase(): List<PikoPathBreadcrumb> =
         driveRepo.folderStackFlow.value.outsideArchives().takeIf { it.library == null } ?: listOf(PikoDriveRepository.ROOT_BREADCRUMB)
 
+    /** 某一级下的全部文件夹，地址栏里路径段后面的 › 点开用。压缩包里的一层列包里的文件夹，与目录图同一份。 */
+    suspend fun subfoldersOf(folderId: String): Result<List<PikoPathBreadcrumb>> {
+        if (ArchiveLocation.of(folderId) == null) return driveRepo.subfolders(folderId)
+        return when (val level = folderMapLevel(folderId)) {
+            is FolderMapLevel.Loaded -> Result.success(level.nodes.filter { it.expandable }.map { it.crumb })
+            FolderMapLevel.NeedsPassword -> Result.failure(IllegalStateException("需要密码"))
+            is FolderMapLevel.Failed -> Result.failure(IllegalStateException(level.message))
+        }
+    }
+
     /**
-     * 目录图里一个节点下的一层（见 [FolderMapLevel]）。网盘里的文件夹列出子文件夹与压缩包；压缩包与包里的文件夹
-     * 列出包里的文件夹，密码先逐个试存过的（见 [ArchiveBrowser.list]），都不对时交给界面，点了进到包里再输。
-     * 库不是文件夹层级，下面是空的。
+     * 目录图里一个节点下的一层（见 [FolderMapLevel]），文件夹与文件都列。网盘里能当文件夹打开的压缩包是可展开的节点；
+     * 压缩包与包里的文件夹列出包里的内容，密码先逐个试存过的（见 [ArchiveBrowser.list]），都不对时交给界面，
+     * 点了进到包里再输。库不是文件夹层级，下面是空的。
      */
     suspend fun folderMapLevel(id: String): FolderMapLevel {
         ArchiveLocation.of(id)?.let { location ->
             val browser = archives ?: return FolderMapLevel.Loaded(emptyList())
             return browser.list(location).fold(
                 onSuccess = { entries ->
-                    FolderMapLevel.Loaded(entries.filter { it.isFolder }.map { FolderMapNode(PikoPathBreadcrumb(it.id, it.name), isArchive = false) })
+                    FolderMapLevel.Loaded(entries.map { entry ->
+                        FolderMapNode(PikoPathBreadcrumb(entry.id, entry.name), isArchive = false, file = entry.takeUnless { it.isFolder })
+                    })
                 },
                 onFailure = { error -> if (error is ArchivePasswordException) FolderMapLevel.NeedsPassword else FolderMapLevel.Failed(archiveFailure(error)) },
             )
@@ -956,10 +969,11 @@ class DriveScreenState(
         return driveRepo.folderMapLevel(id).fold(
             onSuccess = { files ->
                 FolderMapLevel.Loaded(files.map { file ->
-                    if (file.isFolder) {
-                        FolderMapNode(PikoPathBreadcrumb(file.id, file.name), isArchive = false)
-                    } else {
-                        FolderMapNode(PikoPathBreadcrumb(ArchiveLocation(file.id, file.hash, "").id, file.name), isArchive = true)
+                    when {
+                        file.isFolder -> FolderMapNode(PikoPathBreadcrumb(file.id, file.name), isArchive = false)
+                        archives != null && file.isExtractableArchive && file.hash.isNotEmpty() ->
+                            FolderMapNode(PikoPathBreadcrumb(ArchiveLocation(file.id, file.hash, "").id, file.name), isArchive = true)
+                        else -> FolderMapNode(PikoPathBreadcrumb(file.id, file.name), isArchive = false, file = file)
                     }
                 })
             },
@@ -1420,8 +1434,13 @@ class DriveScreenState(
     }
 }
 
-/** 目录图里的一个节点：网盘里的文件夹、压缩包或包里的文件夹。[crumb] 的 ID 就是路径栈上那一级的 ID，点了即可压栈。 */
-class FolderMapNode(val crumb: PikoPathBreadcrumb, val isArchive: Boolean)
+/**
+ * 目录图里的一个节点。能展开的（网盘里的文件夹、能当文件夹打开的压缩包、包里的文件夹）[crumb] 的 ID 就是路径栈上
+ * 那一级的 ID，点了即可压栈；其余是文件，[file] 是它在列表里的那一行，点了在它所在的文件夹里打开。
+ */
+class FolderMapNode(val crumb: PikoPathBreadcrumb, val isArchive: Boolean, val file: FileStat? = null) {
+    val expandable: Boolean get() = file == null
+}
 
 /** 目录图里一个节点下的一层，见 [DriveScreenState.folderMapLevel]。 */
 sealed interface FolderMapLevel {

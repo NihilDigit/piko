@@ -19,6 +19,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
+import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.ArrowUpward
@@ -129,6 +130,8 @@ internal fun ExplorerNavBar(
     onUp: () -> Unit,
     address: @Composable () -> Unit,
     search: @Composable () -> Unit,
+    /** 目录图关着时打开它的按钮，放在搜索旁；开着时为 null，关掉它的 × 在面板上。 */
+    showFolderMap: (() -> Unit)? = null,
 ) {
     val mac = shortcuts == ShortcutModifier.Command
     val caption = rememberCaptionSlot()
@@ -141,6 +144,9 @@ internal fun ExplorerNavBar(
         if (canGoForward) TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowForward, "前进", onForward, shortcut = if (mac) "⌘]" else "Alt+→")
         TooltipIconButton(Icons.Outlined.ArrowUpward, "上一级", onUp, shortcut = if (mac) "⌘↑" else "Alt+↑", enabled = canGoUp)
         Box(Modifier.weight(1f).padding(horizontal = 8.dp)) { address() }
+        if (showFolderMap != null) {
+            TooltipIconButton(Icons.Outlined.AccountTree, "目录图", showFolderMap, shortcut = if (mac) "⌘⇧E" else "Ctrl+Shift+E")
+        }
         // 搜索收起时只是一个图标，地址栏占走让出的宽度
         Box(Modifier.widthIn(max = SearchFieldWidth).animateContentSize()) { search() }
         caption.buttons?.invoke()

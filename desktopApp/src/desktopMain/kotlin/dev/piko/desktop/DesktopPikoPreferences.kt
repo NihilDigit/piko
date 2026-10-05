@@ -31,6 +31,7 @@ class DesktopPikoPreferences(
     private val spoiler = MutableStateFlow(settings.get(KEY_SPOILER, "true").toBoolean())
     private val autoCheckUpdates = MutableStateFlow(settings.get(KEY_AUTO_CHECK_UPDATES, "true").toBoolean())
     private val reduceMotion = MutableStateFlow(settings.get(KEY_REDUCE_MOTION) == "true")
+    private val folderMapOpen = MutableStateFlow(settings.get(KEY_FOLDER_MAP_OPEN) == "true")
     private val heuristic = MutableStateFlow(settings.get(KEY_HEURISTIC, "true").toBoolean())
     private val nameParsing = MutableStateFlow(settings.get(KEY_NAME_PARSING, "true").toBoolean())
     private val bundleSubtitles = MutableStateFlow(settings.get(KEY_BUNDLE_SUBTITLES, "true").toBoolean())
@@ -122,6 +123,12 @@ class DesktopPikoPreferences(
     override suspend fun setReduceMotion(enabled: Boolean) {
         settings.set(KEY_REDUCE_MOTION, enabled.toString())
         reduceMotion.value = enabled
+    }
+
+    override val folderMapOpenFlow: Flow<Boolean> = folderMapOpen.asStateFlow()
+    override suspend fun setFolderMapOpen(open: Boolean) {
+        settings.set(KEY_FOLDER_MAP_OPEN, open.toString())
+        folderMapOpen.value = open
     }
 
     override val heuristicFilterFlow: Flow<Boolean> = heuristic.asStateFlow()
@@ -371,6 +378,7 @@ class DesktopPikoPreferences(
         const val KEY_SPOILER = "ui.spoilerBlur"
         const val KEY_AUTO_CHECK_UPDATES = "update.autoCheck"
         const val KEY_REDUCE_MOTION = "ui.reduceMotion"
+        const val KEY_FOLDER_MAP_OPEN = "ui.folderMapOpen"
         const val KEY_HEURISTIC = "ui.heuristicFilter"
         const val KEY_BUNDLE_SUBTITLES = "ui.bundleSubtitles"
         const val KEY_AUTO_CLEAN_NAMES = "drive.autoCleanNames"

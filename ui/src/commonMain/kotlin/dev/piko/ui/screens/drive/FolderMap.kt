@@ -1,18 +1,26 @@
 package dev.piko.ui.screens.drive
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.DpOffset
+import androidx.compose.ui.unit.DpSize
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -20,27 +28,34 @@ import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.UnfoldLess
+import androidx.compose.material.icons.outlined.UnfoldMore
 import androidx.compose.material.icons.outlined.FolderZip
 import androidx.compose.material.icons.outlined.Key
-import androidx.compose.material.icons.outlined.OpenInFull
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TooltipAnchorPosition
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,44 +63,48 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.DpOffset
-import androidx.compose.ui.unit.DpSize
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.ui.components.typeIcon
+import io.github.nihildigit.pikpak.FileStat
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.state.FolderMapLevel
 import dev.piko.shared.state.FolderMapNode
 import dev.piko.ui.components.InlineLoadingIndicator
-import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.fileDropTarget
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
-import kotlin.math.roundToInt
 
 /**
- * 目录图：照 VS Code 的 minimap，按需召出、浮着的一棵文件夹树，用来在层层嵌套的目录间快速跳转（issue #18）。
- * 不常驻占一栏：侧边栏旁边再并排一栏导航是 ui/CLAUDE.md 否决过的，侧边栏的 240dp 也放不下五六层缩进。
+ * 目录图：一棵浮在网盘页上的文件夹树，用来在层层嵌套的目录间快速跳转（issue #18），只在宽窗口里有（[FolderMapPanel]）。
+ * 文件夹与文件都列：只列文件夹时要展开到底才看得出内容在哪一层。展开到哪一层才列哪一层。
+ * 浮着而不让出位置：让出的话网格随开合与拖宽反复重排；也不进侧边栏或右侧那一栏：侧边栏 240dp 放不下五六层缩进，
+ * 右侧那一栏只放详情或信息流。窄窗口不做：手机上面包屑与返回已够用，层层点进去的麻烦主要在桌面的大目录里。
+ * 撤回过的入口：地址栏 › 召出以那一段为根的弹出版，藏在分隔符里没人找得到。
  *
- * 宽窗口从地址栏每一段后面的 › 召出，以那一段为根；钉住后成为浮在列表左上方的卡片，跳转后不关。
- * 窄窗口从顶栏召出，是底部面板。只列文件夹与能当文件夹打开的压缩包，展开到哪一层才列哪一层。
- *
- * 状态挂在网盘页上，弹出版与钉住的卡片共用：列过的层与展开的节点在两者之间、多次召出之间都还在，
- * 再展开时先显示上次的、后台重列。
+ * 状态挂在网盘页上：列过的层与展开的节点都还在，再展开时先显示上次的、后台重列。
  */
 @Stable
 internal class FolderMapState(
@@ -95,8 +114,25 @@ internal class FolderMapState(
     val levels = mutableStateMapOf<String, FolderMapLevel>()
     private val expandedIds = mutableStateMapOf<String, Boolean>()
 
-    /** 钉住的卡片以哪一级为根，没钉住时为 null。 */
-    var pinnedRoot by mutableStateOf<List<PikoPathBreadcrumb>?>(null)
+    /** 拖过的面板左上角，在列表这一块里；没拖过为 null，停在右上角。随网盘页存续，与开着的位置、大小一起。 */
+    var panelPosition by mutableStateOf<DpOffset?>(null)
+    var panelWidth by mutableStateOf(PanelWidth)
+
+    /** 拖过上下边之后的高度，没拖过为 null，随内容长短。 */
+    var panelHeight by mutableStateOf<Dp?>(null)
+
+    // 点过「还有 N 个文件」的文件夹，文件全部列出
+    private val allFilesIds = mutableStateMapOf<String, Boolean>()
+
+    fun showsAllFiles(id: String): Boolean = allFilesIds[id] == true
+
+    fun showAllFiles(id: String) {
+        allFilesIds[id] = true
+    }
+
+    fun foldFiles(id: String) {
+        allFilesIds.remove(id)
+    }
 
     fun isExpanded(id: String): Boolean = expandedIds[id] == true
 
@@ -122,7 +158,10 @@ internal class FolderMapState(
     }
 }
 
-/** 树里的一行。[node] 为 null 的是提示行：在列、列不出、要密码。 */
+/**
+ * 树里的一行。[node] 为 null 的是提示行：在列、列不出、要密码、还有几个文件没列。
+ * [guides] 是各级上级的竖线要不要穿过这一行（那一级后面还有兄弟），[last] 是它是不是这一层的最后一项，画引导线用。
+ */
 private class MapRow(
     val key: String,
     val stack: List<PikoPathBreadcrumb>,
@@ -130,28 +169,60 @@ private class MapRow(
     val node: FolderMapNode? = null,
     val note: String? = null,
     val loading: Boolean = false,
-    /** 提示行点了做什么：要密码的压缩包是进到包里输。 */
+    /** 提示行点了做什么：要密码的压缩包是进到包里输，省略的文件是全部列出。 */
     val onNoteClick: (() -> Unit)? = null,
+    val noteIcon: ImageVector? = null,
+    val guides: List<Boolean> = emptyList(),
+    val last: Boolean = true,
 )
 
+/**
+ * 树按眼下的展开情形摊成一行一行。最内层的文件夹（没有子文件夹）文件超过 [FilesShown] 个时只列前几个，
+ * 第四行是「还有 N 个文件」，点了才全列：一集一个文件的番剧文件夹全列出来，
+ * 几十行把上下的文件夹挤得看不到，树就不成其为导航了。有子文件夹的一层照全列，规则只此一条，好猜。
+ */
 private fun flatten(
     state: FolderMapState,
     parent: List<PikoPathBreadcrumb>,
     depth: Int,
     onOpen: (List<PikoPathBreadcrumb>) -> Unit,
     out: MutableList<MapRow>,
+    guides: List<Boolean> = emptyList(),
 ) {
     val parentId = parent.last().id
     when (val level = state.levels[parentId]) {
-        null -> out += MapRow("loading:$parentId", parent, depth, loading = true)
-        is FolderMapLevel.Failed -> out += MapRow("failed:$parentId", parent, depth, note = level.message)
-        FolderMapLevel.NeedsPassword -> out += MapRow("password:$parentId", parent, depth, note = "需要密码，点此进入后输入", onNoteClick = { onOpen(parent) })
+        null -> out += MapRow("loading:$parentId", parent, depth, loading = true, guides = guides)
+        is FolderMapLevel.Failed -> out += MapRow("failed:$parentId", parent, depth, note = level.message, guides = guides)
+        FolderMapLevel.NeedsPassword -> out += MapRow(
+            "password:$parentId", parent, depth, note = "需要密码，点此进入后输入", onNoteClick = { onOpen(parent) },
+            noteIcon = Icons.Outlined.Key, guides = guides,
+        )
         is FolderMapLevel.Loaded -> {
-            if (level.nodes.isEmpty() && depth == 0) out += MapRow("empty:$parentId", parent, depth, note = "没有子文件夹")
-            level.nodes.forEach { node ->
+            if (level.nodes.isEmpty()) {
+                out += MapRow("empty:$parentId", parent, depth, note = "空文件夹", guides = guides)
+                return
+            }
+            val (expandable, files) = level.nodes.partition { it.expandable }
+            val foldable = expandable.isEmpty() && files.size > FilesShown
+            val hidden = if (foldable && !state.showsAllFiles(parentId)) files.size - FilesShown else 0
+            val shown = expandable + files.dropLast(hidden)
+            // 能省略的一层末尾总有一行开合：收着时是「还有 N 个文件」，全列出来后是「收起」，不然展开了就收不回去
+            shown.forEachIndexed { index, node ->
+                val last = index == shown.lastIndex && !foldable
                 val stack = parent + node.crumb
-                out += MapRow("node:${node.crumb.id}", stack, depth, node = node)
-                if (state.isExpanded(node.crumb.id)) flatten(state, stack, depth + 1, onOpen, out)
+                out += MapRow("node:${node.crumb.id}", stack, depth, node = node, guides = guides, last = last)
+                if (node.expandable && state.isExpanded(node.crumb.id)) flatten(state, stack, depth + 1, onOpen, out, guides + !last)
+            }
+            if (hidden > 0) {
+                out += MapRow(
+                    "more:$parentId", parent, depth, note = "还有 $hidden 个文件", onNoteClick = { state.showAllFiles(parentId) },
+                    noteIcon = Icons.Outlined.UnfoldMore, guides = guides,
+                )
+            } else if (foldable) {
+                out += MapRow(
+                    "less:$parentId", parent, depth, note = "收起", onNoteClick = { state.foldFiles(parentId) },
+                    noteIcon = Icons.Outlined.UnfoldLess, guides = guides,
+                )
             }
         }
     }
@@ -172,9 +243,17 @@ private fun filtered(state: FolderMapState, root: List<PikoPathBreadcrumb>, quer
     return out
 }
 
+/** 点了树里的一行：能展开的跳过去，文件在它所在的文件夹（[MapRow.stack] 去掉末级）里打开。 */
+private fun MapRow.activate(onOpen: (List<PikoPathBreadcrumb>) -> Unit, onOpenFile: (List<PikoPathBreadcrumb>, FileStat) -> Unit) {
+    onNoteClick?.invoke()
+    val node = node ?: return
+    val file = node.file
+    if (file != null) onOpenFile(stack.dropLast(1), file) else onOpen(stack)
+}
+
 /**
- * 树本身，弹出版、钉住的卡片与底部面板共用。顶上一行过滤，打字即就地过滤已列过的各层；
- * ↑↓ 在行间走，→ 展开或进到第一个子项，← 收起或回到上级，回车跳过去，Esc 交给 [onDismiss]。
+ * 树本身，细轨旁的浮层与底部面板共用。顶上一行过滤，打字即就地过滤已列过的各层；
+ * ↑↓ 在行间走，→ 展开或进到第一个子项，← 收起或回到上级，回车跳过去或打开文件，Esc 交给 [onDismiss]。
  */
 @Composable
 internal fun FolderMapTree(
@@ -182,12 +261,16 @@ internal fun FolderMapTree(
     root: List<PikoPathBreadcrumb>,
     current: List<PikoPathBreadcrumb>,
     onOpen: (List<PikoPathBreadcrumb>) -> Unit,
+    onOpenFile: (List<PikoPathBreadcrumb>, FileStat) -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
     focusFilter: Boolean = true,
+    /** 过滤框显不显示。细轨旁的树收在标题栏的放大镜后面，点了才出来。 */
+    filterShown: Boolean = true,
 ) {
     val colors = MaterialTheme.colorScheme
     var query by remember { mutableStateOf("") }
+    LaunchedEffect(filterShown) { if (!filterShown) query = "" }
     val rows = if (query.isBlank()) {
         buildList { flatten(state, root, 0, onOpen, this) }
     } else {
@@ -203,7 +286,7 @@ internal fun FolderMapTree(
         }
     }
     val focus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { if (focusFilter) runCatching { focus.requestFocus() } }
+    LaunchedEffect(filterShown) { if (focusFilter && filterShown) runCatching { focus.requestFocus() } }
 
     fun move(step: Int) {
         if (selectable.isEmpty()) return
@@ -212,10 +295,7 @@ internal fun FolderMapTree(
         highlighted = rows[selectable[next]].key
     }
 
-    fun activate(row: MapRow) {
-        row.onNoteClick?.invoke()
-        if (row.node != null) onOpen(row.stack)
-    }
+    fun activate(row: MapRow) = row.activate(onOpen, onOpenFile)
 
     Column(
         modifier = modifier.onPreviewKeyEvent { event ->
@@ -225,12 +305,12 @@ internal fun FolderMapTree(
                 Key.DirectionDown -> move(1)
                 Key.DirectionUp -> move(-1)
                 Key.DirectionRight -> {
-                    val id = row?.node?.crumb?.id ?: return@onPreviewKeyEvent false
+                    val id = row?.node?.takeIf { it.expandable }?.crumb?.id ?: return@onPreviewKeyEvent false
                     if (!state.isExpanded(id)) state.expand(id) else move(1)
                 }
                 Key.DirectionLeft -> {
                     val id = row?.node?.crumb?.id ?: return@onPreviewKeyEvent false
-                    if (state.isExpanded(id)) {
+                    if (row.node.expandable && state.isExpanded(id)) {
                         state.collapse(id)
                     } else {
                         val parentId = row.stack.getOrNull(row.stack.size - 2)?.id
@@ -244,7 +324,7 @@ internal fun FolderMapTree(
             true
         },
     ) {
-        Row(
+        if (filterShown) Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 8.dp)
@@ -256,7 +336,7 @@ internal fun FolderMapTree(
         ) {
             Icon(Icons.Outlined.Search, contentDescription = null, tint = colors.onSurfaceVariant, modifier = Modifier.size(18.dp))
             Box(Modifier.weight(1f)) {
-                if (query.isEmpty()) Text("过滤已展开的文件夹", style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+                if (query.isEmpty()) Text("过滤已展开的内容", style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
                 BasicTextField(
                     value = query,
                     onValueChange = { query = it },
@@ -268,11 +348,17 @@ internal fun FolderMapTree(
             }
         }
         Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(bottom = 8.dp)) {
-            if (rows.isEmpty() && query.isNotBlank()) MapNote("已展开的文件夹里没有「${query.trim()}」", depth = 0)
+            if (rows.isEmpty() && query.isNotBlank()) MapNote("已展开的内容里没有「${query.trim()}」", row = null)
             rows.forEach { row ->
                 when {
-                    row.loading -> Box(Modifier.padding(start = indent(row.depth) + 16.dp, top = 8.dp, bottom = 8.dp)) { InlineLoadingIndicator() }
-                    row.node == null -> MapNote(row.note.orEmpty(), row.depth, highlighted = row.key == highlighted, onClick = row.onNoteClick)
+                    row.loading -> Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 4.dp)
+                            .treeGuides(row, colors.outlineVariant, childrenBelow = false)
+                            .padding(start = indent(row.depth) + 28.dp, top = 8.dp, bottom = 8.dp),
+                    ) { InlineLoadingIndicator() }
+                    row.node == null -> MapNote(row.note.orEmpty(), row, highlighted = row.key == highlighted, onClick = row.onNoteClick, icon = row.noteIcon)
                     else -> MapNodeRow(
                         row = row,
                         state = state,
@@ -305,7 +391,8 @@ private fun MapNodeRow(
     val here = current.lastOrNull()?.id == id
     val onPath = !here && current.any { it.id == id }
     val loaded = state.levels[id] as? FolderMapLevel.Loaded
-    val leaf = loaded != null && loaded.nodes.isEmpty()
+    // 列出来是空的、又收着的才算叶子，不画展开钮。展开着的照画：点开时还不知道是空的，展开之后要能收回去
+    val leaf = !node.expandable || (loaded != null && loaded.nodes.isEmpty() && !state.isExpanded(id))
     val bring = remember { BringIntoViewRequester() }
     LaunchedEffect(highlighted) { if (highlighted) bring.bringIntoView() }
     Row(
@@ -314,9 +401,10 @@ private fun MapNodeRow(
             .bringIntoViewRequester(bring)
             .padding(horizontal = 4.dp)
             // 拖到树上的文件夹里就是移进去，与地址栏、侧边栏相同；压缩包与库的位置接不住，由 fileDropTarget 自己判断
-            .fileDropTarget("map:$id", node.crumb)
+            .then(if (node.expandable) Modifier.fileDropTarget("map:$id", node.crumb) else Modifier)
             .clip(MaterialTheme.shapes.medium)
             .background(if (highlighted) colors.secondaryContainer else Color.Transparent)
+            .treeGuides(row, colors.outlineVariant, childrenBelow = node.expandable && !leaf && state.isExpanded(id))
             .clickable(onClick = onClick)
             .heightIn(min = 36.dp)
             .padding(start = indent(row.depth), end = 12.dp),
@@ -340,7 +428,7 @@ private fun MapNodeRow(
             }
         }
         Icon(
-            if (node.isArchive) Icons.Outlined.FolderZip else Icons.Outlined.Folder,
+            node.file?.typeIcon() ?: if (node.isArchive) Icons.Outlined.FolderZip else Icons.Outlined.Folder,
             contentDescription = null,
             tint = if (here) colors.primary else colors.onSurfaceVariant,
             modifier = Modifier.size(18.dp),
@@ -369,21 +457,23 @@ private fun MapNodeRow(
 }
 
 @Composable
-private fun MapNote(text: String, depth: Int, highlighted: Boolean = false, onClick: (() -> Unit)? = null) {
+private fun MapNote(text: String, row: MapRow?, highlighted: Boolean = false, onClick: (() -> Unit)? = null, icon: ImageVector? = null) {
     val colors = MaterialTheme.colorScheme
+    val depth = row?.depth ?: 0
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 4.dp)
             .clip(MaterialTheme.shapes.medium)
             .background(if (highlighted) colors.secondaryContainer else Color.Transparent)
+            .then(if (row != null) Modifier.treeGuides(row, colors.outlineVariant, childrenBelow = false) else Modifier)
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
             .heightIn(min = 36.dp)
             .padding(start = indent(depth) + 28.dp, end = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        if (onClick != null) Icon(Icons.Outlined.Key, contentDescription = null, tint = colors.onSurfaceVariant, modifier = Modifier.size(16.dp))
+        if (icon != null) Icon(icon, contentDescription = null, tint = colors.onSurfaceVariant, modifier = Modifier.size(16.dp))
         Text(text, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
     }
 }
@@ -391,135 +481,204 @@ private fun MapNote(text: String, depth: Int, highlighted: Boolean = false, onCl
 private fun indent(depth: Int): Dp = TreeIndent * depth
 
 /**
- * 地址栏 › 召出的目录图：以那一段为根。点名字跳过去并收起；右上角的图钉钉成卡片（[onPin]），之后跳转不收。
+ * 树的引导线，照文件管理器：每一层的子项挂在上级展开钮正下方的竖线上，中间的是 ├，最后一个是 └，
+ * 上级后面还有兄弟时，那一级的竖线穿过整段子树。[childrenBelow] 是这一行自己展开着、下面接着它的子项，
+ * 从展开钮下方起补一段竖线接上。坐标以展开钮（宽 28dp）的中线为准。
+ */
+private fun Modifier.treeGuides(row: MapRow, color: Color, childrenBelow: Boolean): Modifier = drawBehind {
+    val stroke = 1.dp.toPx()
+    fun x(level: Int) = (TreeIndent * level + 14.dp).toPx()
+    val depth = row.depth
+    // guides[k] 是第 k 级的那位上级后面还有没有兄弟，它挂在第 k-1 级的竖线上
+    for (k in 1 until depth) {
+        if (row.guides.getOrElse(k) { false }) drawLine(color, Offset(x(k - 1), 0f), Offset(x(k - 1), size.height), stroke)
+    }
+    val centerY = size.height / 2
+    if (depth > 0) {
+        val lineX = x(depth - 1)
+        drawLine(color, Offset(lineX, 0f), Offset(lineX, if (row.last) centerY else size.height), stroke)
+        drawLine(color, Offset(lineX, centerY), Offset((TreeIndent * depth + 8.dp).toPx(), centerY), stroke)
+    }
+    if (childrenBelow) drawLine(color, Offset(x(depth), centerY + 9.dp.toPx()), Offset(x(depth), size.height), stroke)
+}
+
+/**
+ * 宽窗口网盘页的目录图：一块浮在列表上的面板。导航栏搜索旁的树形按钮打开，打开后一直开着、跳转也不收，
+ * 面板上的 × 关掉（[onClose]），关着时导航栏上才有那个按钮。按住标题行拖到哪都行，四条边拖着改大小，都夹在列表这一块里。
+ * 由调用方铺满列表这一块。树的根总是网盘根目录，进来与换了位置时都展开到眼前的文件夹。
+ *
+ * 否决过的形态：贴在右沿的缩略图细轨（悬停展开、与树同一个容器形变、拖到任意位置），碰到的东西当场变形、
+ * 拖的与停下的不是同一个东西，补了延时、方向冻结、吸附鼠标仍旧别扭；缩略图上放按钮又难看。也试过钉住开关，
+ * 面板能随便拖、打开就一直开着之后用不着了。不用 Popup：不抢焦点的 Popup 收不到键盘，树的方向键与过滤框都用不了。
  */
 @Composable
-internal fun FolderMapMenu(
-    expanded: Boolean,
+internal fun FolderMapPanel(
     state: FolderMapState,
-    root: List<PikoPathBreadcrumb>,
     current: List<PikoPathBreadcrumb>,
+    onClose: () -> Unit,
     onOpen: (List<PikoPathBreadcrumb>) -> Unit,
-    onPin: (() -> Unit)?,
-    onDismiss: () -> Unit,
+    onOpenFile: (List<PikoPathBreadcrumb>, FileStat) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    LaunchedEffect(expanded, root.last().id) { if (expanded) state.reveal(root, current) }
-    dev.piko.ui.components.PikoDropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
-        Column(Modifier.width(FolderMapWidth).heightIn(max = FolderMapMaxHeight)) {
-            MapHeader(title = root.last().name, pinned = false, onPin = onPin, onClose = null)
-            FolderMapTree(
-                state = state,
-                root = root,
-                current = current,
-                onOpen = { stack ->
-                    onDismiss()
-                    onOpen(stack)
-                },
-                onDismiss = onDismiss,
-            )
+    val root = remember { listOf(PikoDriveRepository.ROOT_BREADCRUMB) }
+    LaunchedEffect(current.lastOrNull()?.id) { state.reveal(root, current) }
+    val colors = MaterialTheme.colorScheme
+    val density = LocalDensity.current
+    var area by remember { mutableStateOf(DpSize.Zero) }
+    var size by remember { mutableStateOf(DpSize.Zero) }
+
+    // 四边各留 EdgeClearance；没拖过时在右上角
+    fun clamp(position: DpOffset, panel: DpSize) = DpOffset(
+        position.x.coerceIn(EdgeClearance, (area.width - panel.width - EdgeClearance).coerceAtLeast(EdgeClearance)),
+        position.y.coerceIn(EdgeClearance, (area.height - panel.height - EdgeClearance).coerceAtLeast(EdgeClearance)),
+    )
+    fun position(panel: DpSize) = clamp(state.panelPosition ?: DpOffset(area.width - panel.width - PanelEndMargin, PanelTopMargin), panel)
+    fun moveBy(dx: Dp, dy: Dp) {
+        val from = position(size)
+        state.panelPosition = clamp(DpOffset(from.x + dx, from.y + dy), size)
+    }
+
+    // 普通 Layout 而不是 BoxWithConstraints：里面有提示气泡这类弹层，测量时组合的布局在桌面端会撞上弹层销毁的崩溃（desktopApp/CLAUDE.md）
+    Layout(
+        modifier = modifier.fillMaxSize().onSizeChanged { area = with(density) { DpSize(it.width.toDp(), it.height.toDp()) } },
+        content = {
+            Surface(
+                modifier = Modifier.onSizeChanged { size = with(density) { DpSize(it.width.toDp(), it.height.toDp()) } },
+                shape = MaterialTheme.shapes.large,
+                color = colors.surfaceContainerLow,
+                border = BorderStroke(1.dp, colors.outlineVariant),
+                shadowElevation = 3.dp,
+            ) {
+                PanelContent(
+                    state = state,
+                    root = root,
+                    current = current,
+                    onClose = onClose,
+                    onOpen = onOpen,
+                    onOpenFile = onOpenFile,
+                    onMove = ::moveBy,
+                )
+            }
+        },
+    ) { measurables, constraints ->
+        val placeable = measurables.first().measure(constraints.copy(minWidth = 0, minHeight = 0))
+        layout(constraints.maxWidth, constraints.maxHeight) {
+            val at = position(DpSize(placeable.width.toDp(), placeable.height.toDp()))
+            placeable.place(at.x.roundToPx(), at.y.roundToPx())
         }
     }
 }
 
 /**
- * 钉住的目录图：浮在列表左上方的卡片，按住标题行拖动，拖右下角改大小。跳转后不收，取消钉住或关掉才收。
- * 不放进右侧那一栏：那一栏只放详情或信息流，见 ui/CLAUDE.md。
+ * 面板里的东西：标题行（按住拖动挪位置，右端是过滤与关闭两个小按钮）与树，四条边拖着改大小。
+ * 往外拖是变大，被拖的那条边跟着手走：拖左边、上边改大小的同时把面板挪过去，对边不动。
  */
 @Composable
-internal fun PinnedFolderMap(
+private fun PanelContent(
     state: FolderMapState,
+    root: List<PikoPathBreadcrumb>,
     current: List<PikoPathBreadcrumb>,
+    onClose: () -> Unit,
     onOpen: (List<PikoPathBreadcrumb>) -> Unit,
-    modifier: Modifier = Modifier,
+    onOpenFile: (List<PikoPathBreadcrumb>, FileStat) -> Unit,
+    onMove: (Dp, Dp) -> Unit,
 ) {
-    val root = state.pinnedRoot ?: return
-    LaunchedEffect(root.last().id) { state.reveal(root, current) }
-    // 眼前的位置变了，树跟着展开到那里，才看得到自己在哪
-    LaunchedEffect(current.lastOrNull()?.id) { state.reveal(root, current) }
+    val colors = MaterialTheme.colorScheme
     val density = LocalDensity.current
-    var offset by remember { mutableStateOf(DpOffset(12.dp, 12.dp)) }
-    var size by remember { mutableStateOf(DpSize(FolderMapWidth, 420.dp)) }
-    Surface(
-        modifier = modifier
-            .offset { with(density) { IntOffset(offset.x.roundToPx(), offset.y.roundToPx()) } }
-            .size(size),
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        tonalElevation = 3.dp,
-        shadowElevation = 6.dp,
-    ) {
-        Box {
-            Column(Modifier.fillMaxSize()) {
-                MapHeader(
-                    title = root.last().name,
-                    pinned = true,
-                    onPin = { state.pinnedRoot = null },
-                    onClose = { state.pinnedRoot = null },
-                    modifier = Modifier.pointerInput(Unit) {
-                        detectDragGestures { change, drag ->
-                            change.consume()
-                            offset = with(density) {
-                                DpOffset((offset.x + drag.x.toDp()).coerceAtLeast(0.dp), (offset.y + drag.y.toDp()).coerceAtLeast(0.dp))
-                            }
-                        }
-                    },
-                )
-                FolderMapTree(
-                    state = state,
-                    root = root,
-                    current = current,
-                    onOpen = onOpen,
-                    onDismiss = { state.pinnedRoot = null },
-                    focusFilter = false,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            Icon(
-                Icons.Outlined.OpenInFull,
-                contentDescription = "调整大小",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+    val width = state.panelWidth
+    val height = state.panelHeight
+    var filterShown by remember { mutableStateOf(false) }
+    var measuredHeight by remember { mutableStateOf(0.dp) }
+    val sized = if (height != null) Modifier.height(height) else Modifier.heightIn(max = FolderMapMaxHeight)
+    Box(Modifier.width(width).then(sized).onSizeChanged { measuredHeight = with(density) { it.height.toDp() } }) {
+        Column(if (height != null) Modifier.fillMaxSize() else Modifier) {
+            Row(
                 modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(4.dp)
-                    .size(16.dp)
-                    .rotate(90f)
+                    .fillMaxWidth()
+                    .height(44.dp)
                     .pointerInput(Unit) {
-                        detectDragGestures { change, drag ->
+                        detectDragGestures { change, delta ->
                             change.consume()
-                            size = with(density) {
-                                DpSize(
-                                    (size.width + drag.x.toDp()).coerceIn(FolderMapMinSize, 720.dp),
-                                    (size.height + drag.y.toDp()).coerceIn(FolderMapMinSize, 1200.dp),
-                                )
-                            }
+                            onMove(delta.x.toDp(), delta.y.toDp())
                         }
-                    },
+                    }
+                    .padding(start = 16.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("目录图", style = MaterialTheme.typography.titleSmall, color = colors.onSurfaceVariant, modifier = Modifier.weight(1f))
+                SmallToggle(Icons.Outlined.Search, Icons.Filled.Search, "过滤", checked = filterShown) { filterShown = !filterShown }
+                SmallToggle(Icons.Outlined.Close, Icons.Outlined.Close, "关闭目录图", checked = false, onClick = onClose)
+            }
+            FolderMapTree(
+                state = state,
+                root = root,
+                current = current,
+                onOpen = onOpen,
+                onOpenFile = onOpenFile,
+                onDismiss = onClose,
+                filterShown = filterShown,
+                focusFilter = false,
+                modifier = Modifier.weight(1f, fill = height != null),
             )
+        }
+        // 放在铺满自己的一层里：直接 fillMaxHeight 会把随内容长短的树撑到最高
+        Box(Modifier.matchParentSize()) {
+            fun widthBy(dx: Float): Dp {
+                val next = (state.panelWidth + with(density) { dx.toDp() }).coerceIn(PanelMinWidth, PanelMaxWidth)
+                val grown = next - state.panelWidth
+                state.panelWidth = next
+                return grown
+            }
+            fun heightBy(dy: Float): Dp {
+                val before = state.panelHeight ?: measuredHeight
+                val next = (before + with(density) { dy.toDp() }).coerceIn(PanelMinHeight, PanelMaxHeight)
+                state.panelHeight = next
+                return next - before
+            }
+            EdgeHandle(Modifier.align(Alignment.CenterStart).width(EdgeGrab).fillMaxHeight(), grip = true) { onMove(-widthBy(-it.x), 0.dp) }
+            EdgeHandle(Modifier.align(Alignment.CenterEnd).width(EdgeGrab).fillMaxHeight()) { widthBy(it.x) }
+            EdgeHandle(Modifier.align(Alignment.TopCenter).height(EdgeGrab).fillMaxWidth()) { onMove(0.dp, -heightBy(-it.y)) }
+            EdgeHandle(Modifier.align(Alignment.BottomCenter).height(EdgeGrab).fillMaxWidth()) { heightBy(it.y) }
         }
     }
 }
 
+/** 树的一条边上看不见的拖动区，[onDrag] 收到每一下的位移。左沿另画一道把手，看得出能拖。 */
 @Composable
-private fun MapHeader(title: String, pinned: Boolean, onPin: (() -> Unit)?, onClose: (() -> Unit)?, modifier: Modifier = Modifier) {
-    Row(
-        modifier = modifier.fillMaxWidth().height(44.dp).padding(start = 16.dp, end = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
+private fun EdgeHandle(modifier: Modifier, grip: Boolean = false, onDrag: (Offset) -> Unit) {
+    // 手势协程只起一次，拿最新的回调：回调里读的宽高每拖一下都在变
+    val latest by rememberUpdatedState(onDrag)
+    Box(
+        modifier = modifier.pointerInput(Unit) {
+            detectDragGestures { change, delta ->
+                change.consume()
+                latest(delta)
+            }
+        },
+        contentAlignment = Alignment.Center,
     ) {
-        Text(
-            title,
-            style = MaterialTheme.typography.titleSmall,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
-        if (onPin != null) {
-            TooltipIconButton(
-                icon = if (pinned) Icons.Filled.PushPin else Icons.Outlined.PushPin,
-                label = if (pinned) "取消钉住" else "钉在列表上",
-                onClick = onPin,
+        if (grip) Box(Modifier.size(width = 3.dp, height = 24.dp).clip(CircleShape).background(MaterialTheme.colorScheme.outlineVariant))
+    }
+}
+
+@Composable
+private fun SmallToggle(icon: ImageVector, checkedIcon: ImageVector, label: String, checked: Boolean, onClick: () -> Unit) {
+    TooltipBox(
+        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
+        tooltip = { PlainTooltip { Text(label) } },
+        state = rememberTooltipState(),
+    ) {
+        Box(
+            modifier = Modifier.size(36.dp).clip(CircleShape).clickable(onClickLabel = label, onClick = onClick),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                if (checked) checkedIcon else icon,
+                contentDescription = label,
+                tint = if (checked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
             )
         }
-        if (onClose != null) TooltipIconButton(Icons.Outlined.Close, "关闭", onClose)
     }
 }
 
@@ -527,6 +686,23 @@ private fun MapHeader(title: String, pinned: Boolean, onPin: (() -> Unit)?, onCl
 private val TreeKeys = setOf(Key.DirectionDown, Key.DirectionUp, Key.DirectionLeft, Key.DirectionRight, Key.Escape, Key.Enter)
 
 private val TreeIndent = 16.dp
-internal val FolderMapWidth = 360.dp
-private val FolderMapMaxHeight = 480.dp
-private val FolderMapMinSize = 200.dp
+
+// 每层列出的文件数，多出的收成一行「还有 N 个文件」。三个够看出是什么，又不把上下的文件夹挤走
+private const val FilesShown = 3
+private val FolderMapMaxHeight = 560.dp
+
+// 没拖过时离列表右沿与顶上的距离：贴着右沿时与网格最右一栏的滚动条、条目右上角的标签挤在一起
+private val PanelEndMargin = 24.dp
+private val PanelTopMargin = 12.dp
+
+// 面板离列表四边至少留的距离
+private val EdgeClearance = 12.dp
+
+private val PanelWidth = 360.dp
+private val PanelMinWidth = 220.dp
+private val PanelMaxWidth = 720.dp
+private val PanelMinHeight = 160.dp
+private val PanelMaxHeight = 1200.dp
+
+// 树边上拖动区的厚度
+private val EdgeGrab = 6.dp

@@ -174,6 +174,13 @@ interface PikoUserPreferences {
     val reduceMotionFlow: Flow<Boolean>
     suspend fun setReduceMotion(enabled: Boolean)
 
+    /**
+     * 网盘页的目录图（FolderMap）面板开着，默认关。打开后一直开着、跳转也不收，面板上的 × 关掉。
+     * 每台设备各自的，不同步：手机上目录图是底部面板，用完即收；桌面上开着它的人未必在平板上也想开着。
+     */
+    val folderMapOpenFlow: Flow<Boolean>
+    suspend fun setFolderMapOpen(open: Boolean)
+
     /** 开屏提示里点了「忽略此版本」的版本号。只比相等，更新的版本出来照常提示。 */
     suspend fun getIgnoredUpdateVersion(): String?
     suspend fun setIgnoredUpdateVersion(version: String)
