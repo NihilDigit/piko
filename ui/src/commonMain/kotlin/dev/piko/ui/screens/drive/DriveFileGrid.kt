@@ -2,6 +2,8 @@ package dev.piko.ui.screens.drive
 
 import androidx.compose.ui.input.pointer.isTertiaryPressed
 import dev.piko.ui.components.LocalFileDrag
+import dev.piko.ui.components.AdaptiveBar
+import dev.piko.ui.components.BarItem
 import dev.piko.ui.components.connectedToggleShapes
 import dev.piko.ui.components.ItemColumnMinWidth
 import androidx.compose.ui.draw.alpha
@@ -673,23 +675,55 @@ internal fun DriveListHeader(
             if (summary != null) Spacer(Modifier.height(8.dp))
             return@Column
         }
-        // 排序靠左、视图切换靠右，读作列表自身的控件；原先两者都靠右，像是顶栏放不下挤下来的第二排
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 48.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            SortButton(sortOrder, onSortChange)
-            TypeFilterButton(typeFilter, availableTypes, onTypeFilterChange)
-            Spacer(modifier = Modifier.weight(1f))
-            ViewModeToggle(
-                viewMode = viewMode,
-                onViewModeChange = onViewModeChange,
-            )
-        }
+        // 排序靠左、视图切换靠右，读作列表自身的控件；原先两者都靠右，像是顶栏放不下挤下来的第二排。
+        // 窄到放不下时先把视图切换、再把类型筛选收进「更多」：排序按钮写着当前的排法，最后收
+        val showFilter = typeFilter != null || availableTypes.size > 1
+        AdaptiveBar(
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            leading = listOfNotNull(
+                BarItem("sort", 30, sortOverflowActions(sortOrder, onSortChange, group = 1)) { SortButton(sortOrder, onSortChange) },
+                BarItem("filter", 20, typeFilterOverflowActions(typeFilter, availableTypes, onTypeFilterChange, group = 2)) {
+                    TypeFilterButton(typeFilter, availableTypes, onTypeFilterChange)
+                }.takeIf { showFilter },
+            ),
+            trailing = listOf(
+                BarItem("view", 10, viewModeOverflowActions(viewMode, onViewModeChange, group = 3)) {
+                    ViewModeToggle(viewMode = viewMode, onViewModeChange = onViewModeChange)
+                },
+            ),
+        )
     }
 }
+
+/** 排序收进「更多」时摊成几项，当前的一项打勾并写出方向，再点它是翻转，与排序按钮的菜单相同。 */
+internal fun sortOverflowActions(sortOrder: FileSortOrder, onSortChange: (FileSortOrder) -> Unit, group: Int): List<SheetAction> =
+    PikoSortField.entries.map { field ->
+        val current = field.owns(sortOrder)
+        val direction = if (sortOrder.isAscending) "升序" else "降序"
+        SheetAction(
+            Icons.AutoMirrored.Outlined.Sort,
+            if (current) "按${field.label}（$direction）" else "按${field.label}",
+            { onSortChange(field.selectFrom(sortOrder)) },
+            group = group,
+            checked = current,
+        )
+    }
+
+internal fun typeFilterOverflowActions(
+    typeFilter: FileCategory?,
+    availableTypes: List<Pair<FileCategory, Int>>,
+    onTypeFilterChange: (FileCategory?) -> Unit,
+    group: Int,
+): List<SheetAction> =
+    listOf(SheetAction(Icons.Outlined.FilterList, "全部类型", { onTypeFilterChange(null) }, group = group, checked = typeFilter == null)) +
+        availableTypes.map { (category, count) ->
+            SheetAction(category.icon(), "${category.label}（$count）", { onTypeFilterChange(category) }, group = group, checked = category == typeFilter)
+        }
+
+internal fun viewModeOverflowActions(viewMode: DriveViewMode, onViewModeChange: (DriveViewMode) -> Unit, group: Int): List<SheetAction> =
+    DriveViewMode.entries.map { mode ->
+        SheetAction(mode.icon(selected = mode == viewMode), mode.label, { onViewModeChange(mode) }, group = group, checked = mode == viewMode)
+    }
 
 /**
  * 排序按钮，写出当前字段与方向。菜单里再点当前字段即切换升降序，点其他字段则按该字段的起始方向排，

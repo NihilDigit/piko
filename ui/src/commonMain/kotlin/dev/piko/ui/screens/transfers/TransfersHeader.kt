@@ -52,6 +52,9 @@ import dev.piko.ui.components.SnailModeToggle
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.components.verticalWheelScrollsRow
+import dev.piko.ui.platform.LocalWindowCaption
+import dev.piko.ui.components.iconBarItem
+import dev.piko.ui.components.AdaptiveBar
 import dev.piko.ui.platform.rememberCaptionSlot
 import dev.piko.ui.platform.windowDragArea
 import dev.piko.ui.components.IslandTab
@@ -64,24 +67,13 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.selection.selectableGroup
 
 /**
- * 传输页的页头。速度与蜗牛模式在底栏（TransfersFooter）。
- *
- * compact 是手机的样子：标题「传输」、类型筛选与「全部继续」「清除已完成」图标按钮同在一行，见 [CompactTransfersHeader]；
- * 有选中项时顶栏换成上下文顶栏（关闭、「已选择 N 项」与批量操作），与网盘页的多选顶栏同一形状。
- *
- * 更宽时只有一行：左边是类型筛选，右边是操作，有选中项时换成「已选 N 项」与批量操作。宽窗口是带字的按钮，
- * medium 放不下，换成图标按钮，名字在悬停提示里。整行铺满窗口宽、内容按 [sidePadding] 缩进：
- * 这一行就是贴着窗口右上角的那一行，标题栏并进内容时窗口按钮画在它末尾，中间的空白也是拖动区。
- *
- * 操作做不了时不出现（没有暂停的就没有「全部继续」），不摆灰按钮。
+ * 没有外框时（手机与 medium）传输页的页头，见 [CompactTransfersHeader]。有外框时是 [TransfersTabRow] 加 [TransfersActionBar]。
+ * 速度与蜗牛模式在底栏（TransfersFooter）。操作做不了时不出现（没有暂停的就没有「全部继续」），不摆灰按钮。
  */
 @Composable
 internal fun TransfersHeader(
     state: TransfersState,
     selectedCount: Int,
-    compact: Boolean,
-    wide: Boolean,
-    sidePadding: Dp,
     /** 一项传输也没有时不给筛选：四个 0 只是占地方。 */
     showFilter: Boolean,
     onPauseSelected: (() -> Unit)?,
@@ -89,54 +81,9 @@ internal fun TransfersHeader(
     onDeleteSelected: () -> Unit,
     /** 下拉刷新用不了（鼠标）或多半用不上（宽窗口）时给的刷新按钮，见 showsRefreshButton。 */
     onRefresh: (() -> Unit)? = null,
-    /** 列表已离开顶端。compact 的页头据此换成 surfaceContainer，与内容分开（M3 top app bar 的 on scroll 状态）。 */
+    /** 列表已离开顶端。页头据此换成 surfaceContainer，与内容分开（M3 top app bar 的 on scroll 状态）。 */
     scrolled: Boolean = false,
-) {
-    if (compact) {
-        CompactTransfersHeader(state, selectedCount, showFilter, scrolled, onPauseSelected, onResumeSelected, onDeleteSelected, onRefresh)
-        return
-    }
-    val caption = rememberCaptionSlot()
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .then(caption.modifier)
-            // 手机与平板是 edge-to-edge，这一行不是 TopAppBar，状态栏要自己让开；桌面端这份内边距为零。
-            // 挂在 caption.modifier 之后：它按这一行的上沿是否贴着窗口顶判断要不要画窗口按钮
-            .windowInsetsPadding(TopAppBarDefaults.windowInsets)
-            .heightIn(min = 56.dp)
-            .padding(start = sidePadding + 12.dp, end = if (caption.buttons != null) 8.dp else sidePadding + 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        // 筛选不带权重：与后面的拖动空白各带一份权重时两者平分剩余宽度，筛选用不完的那一半空在行尾，
-        // 把右边的按钮连同窗口按钮一起推离窗口右上角（实测）
-        if (showFilter) {
-            KindFilter(
-                current = state.filter,
-                counts = state.counts,
-                onChange = state::changeFilter,
-            )
-        }
-        Spacer(Modifier.weight(1f).height(40.dp).windowDragArea())
-        if (selectedCount > 0) {
-            Text(
-                "已选 $selectedCount 项",
-                style = MaterialTheme.typography.labelLarge,
-                modifier = Modifier.padding(horizontal = 8.dp),
-            )
-            onPauseSelected?.let { HeaderAction(Icons.Outlined.Pause, "暂停", wide, it) }
-            onResumeSelected?.let { HeaderAction(Icons.Outlined.PlayArrow, "继续", wide, it) }
-            HeaderAction(Icons.Outlined.Delete, "删除", wide, onDeleteSelected, destructive = true, shortcut = "Delete")
-            TooltipIconButton(Icons.Outlined.Close, "取消选择", state::clearSelection, shortcut = "Esc")
-        } else {
-            if (state.canResumeAll) HeaderAction(Icons.Outlined.PlayArrow, "全部继续", wide, state::resumeAll)
-            if (state.canClearCompleted) HeaderAction(Icons.Outlined.ClearAll, "清除已完成", wide, state::clearCompleted)
-            onRefresh?.let { TooltipIconButton(Icons.Outlined.Refresh, "刷新", it) }
-        }
-        caption.buttons?.invoke()
-    }
-}
+) = CompactTransfersHeader(state, selectedCount, showFilter, scrolled, onPauseSelected, onResumeSelected, onDeleteSelected, onRefresh)
 
 /**
  * 有外框时传输页顶上那一行：类别是一排标签，与网盘页的位置标签同一种（[IslandTab]），活动的那个接着下面的岛。
@@ -256,6 +203,9 @@ private val TransferKind.icon: ImageVector
 
 private val KindTabMinWidth = 96.dp
 
+/** 手机上标题与四个筛选按钮同一行时，这一段至少要的宽度：「传输」加四个「下载 12」。 */
+private val InlineFilterMinWidth = 260.dp
+
 /**
  * 手机上的页头只有一行：标题「传输」、类型筛选、操作。筛选原来另起一行，页头连状态栏占去一百多 dp，
  * 手机上一屏本就放不下几项传输。筛选夹在中间，四个按钮等宽铺满标题与操作之间的宽度。
@@ -283,72 +233,76 @@ private fun CompactTransfersHeader(
         PikoTopBar(
             title = "已选择 $selectedCount 项",
             navigationIcon = { TooltipIconButton(Icons.Outlined.Close, "取消选择", state::clearSelection, shortcut = "Esc") },
-            actions = {
-                onPauseSelected?.let { HeaderAction(Icons.Outlined.Pause, "暂停", wide = false, it) }
-                onResumeSelected?.let { HeaderAction(Icons.Outlined.PlayArrow, "继续", wide = false, it) }
-                HeaderAction(Icons.Outlined.Delete, "删除", wide = false, onDeleteSelected, destructive = true, shortcut = "Delete")
-            },
+            actions = listOfNotNull(
+                onPauseSelected?.let { iconBarItem(Icons.Outlined.Pause, "暂停", it, priority = 20) },
+                onResumeSelected?.let { iconBarItem(Icons.Outlined.PlayArrow, "继续", it, priority = 20) },
+                iconBarItem(Icons.Outlined.Delete, "删除", onDeleteSelected, priority = 30, shortcut = "Delete", destructive = true),
+            ),
             colors = TopAppBarDefaults.topAppBarColors(containerColor = container, titleContentColor = colors.onSurface),
         )
         return
     }
     val caption = rememberCaptionSlot()
-    Row(
-        modifier = Modifier
+    // 桌面的窄窗口里窗口按钮画在这一行末尾，占去一百多 dp，筛选挤得连「全部」都显示不全。这时筛选另起一行、铺满全宽，
+    // 即 M3 把 filter chips 放在顶栏下方的样子；手机上没有窗口按钮，仍是一行，不多占纵向空间。
+    // 看标题栏是否并进内容，不看 caption.buttons：后者按每帧量到的边界算，拖动改尺寸时会短暂为 null，页头跟着跳回挤着的一行
+    val filterBelow = showFilter && LocalWindowCaption.current != null
+    val filter: @Composable (Modifier, PaddingValues) -> Unit = { modifier, padding ->
+        // 四类按钮等宽铺满：各按内容定宽时挤在左边、宽窄不一，右边空出一截，连体按钮看着像没摆完
+        KindFilter(
+            current = state.filter,
+            counts = state.counts,
+            onChange = state::changeFilter,
+            modifier = modifier,
+            contentPadding = padding,
+            itemPadding = 8.dp,
+            fillWidth = true,
+        )
+    }
+    Column(
+        Modifier
             .fillMaxWidth()
             .background(container)
             .then(caption.modifier)
-            .windowInsetsPadding(TopAppBarDefaults.windowInsets)
-            .heightIn(min = 64.dp)
-            .padding(start = 16.dp, end = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .windowInsetsPadding(TopAppBarDefaults.windowInsets),
     ) {
-        Text(
-            text = "传输",
-            style = MaterialTheme.typography.titleLargeEmphasized,
-            maxLines = 1,
-            modifier = if (caption.atTop) Modifier.windowDragArea() else Modifier,
+        val filterInline = showFilter && !filterBelow
+        // 标题（与同一行的筛选）、操作与窗口按钮交给 AdaptiveBar 排：操作放不下时收进「更多」，不挤标题与筛选
+        AdaptiveBar(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(64.dp)
+                .padding(start = 16.dp, end = 4.dp),
+            trailing = listOfNotNull(
+                iconBarItem(Icons.Outlined.PlayArrow, "全部继续", state::resumeAll, priority = 20).takeIf { state.canResumeAll },
+                iconBarItem(Icons.Outlined.ClearAll, "清除已完成", state::clearCompleted, priority = 10).takeIf { state.canClearCompleted },
+                onRefresh?.let { iconBarItem(Icons.Outlined.Refresh, "刷新", it, priority = 30) },
+            ),
+            middle = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "传输",
+                        style = MaterialTheme.typography.titleLargeEmphasized,
+                        maxLines = 1,
+                        modifier = if (caption.atTop) Modifier.windowDragArea() else Modifier,
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    if (filterInline) {
+                        filter(Modifier.weight(1f), PaddingValues(end = 8.dp))
+                    } else {
+                        // 标题与操作之间的空白，标题栏并进内容时是拖动区
+                        Spacer(Modifier.weight(1f).height(40.dp).then(if (caption.atTop) Modifier.windowDragArea() else Modifier))
+                    }
+                }
+            },
+            // 筛选在同一行时四个按钮要放得下名字与数目，操作先让位
+            middleMinWidth = if (filterInline) InlineFilterMinWidth else 96.dp,
+            reserveMiddle = true,
+            fillMiddle = true,
+            end = caption.buttons,
+            dragWindow = caption.atTop,
         )
-        Spacer(Modifier.width(12.dp))
-        Box(modifier = Modifier.weight(1f)) {
-            // 四类按钮等宽铺满标题与操作之间的这一段：手机宽度正好放得下，不必滚动；各按内容定宽时
-            // 挤在左边、宽窄不一，右边空出一截，连体按钮看着像没摆完
-            if (showFilter) {
-                KindFilter(
-                    current = state.filter,
-                    counts = state.counts,
-                    onChange = state::changeFilter,
-                    contentPadding = PaddingValues(end = 8.dp),
-                    itemPadding = 8.dp,
-                    fillWidth = true,
-                )
-            }
-        }
-        if (state.canResumeAll) HeaderAction(Icons.Outlined.PlayArrow, "全部继续", wide = false, state::resumeAll)
-        if (state.canClearCompleted) HeaderAction(Icons.Outlined.ClearAll, "清除已完成", wide = false, state::clearCompleted)
-        onRefresh?.let { TooltipIconButton(Icons.Outlined.Refresh, "刷新", it) }
-        caption.buttons?.invoke()
-    }
-}
-
-@Composable
-private fun HeaderAction(
-    icon: ImageVector,
-    label: String,
-    wide: Boolean,
-    onClick: () -> Unit,
-    destructive: Boolean = false,
-    shortcut: String? = null,
-) {
-    val color = if (destructive) MaterialTheme.colorScheme.error else Color.Unspecified
-    if (wide) {
-        TextButton(onClick = onClick, contentPadding = PaddingValues(horizontal = 12.dp)) {
-            Icon(icon, contentDescription = null, tint = if (destructive) color else MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(6.dp))
-            Text(label, color = if (destructive) color else Color.Unspecified)
-        }
-    } else {
-        TooltipIconButton(icon, label, onClick, shortcut = shortcut, tint = color)
+        if (filterBelow) filter(Modifier, PaddingValues(start = 16.dp, end = 16.dp, bottom = 8.dp))
     }
 }
 

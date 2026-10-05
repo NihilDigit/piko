@@ -551,9 +551,6 @@ fun TransfersScreen(
                 TransfersHeader(
                     state = state,
                     selectedCount = selected.size,
-                    compact = compact,
-                    wide = wide,
-                    sidePadding = SidePadding,
                     showFilter = showTabs,
                     onPauseSelected = pauseSelected,
                     onResumeSelected = resumeSelected,

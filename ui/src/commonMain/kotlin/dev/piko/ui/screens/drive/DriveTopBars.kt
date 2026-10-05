@@ -87,6 +87,9 @@ import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.menuItemShape
 import dev.piko.ui.components.TooltipIconButton
+import dev.piko.ui.components.iconBarItem
+import dev.piko.ui.components.AdaptiveBar
+import dev.piko.ui.components.BarItem
 import dev.piko.ui.components.verticalWheelScrollsRow
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.rememberCaptionSlot
@@ -116,25 +119,20 @@ internal fun DriveSelectionTopBar(
         navigationIcon = {
             TooltipIconButton(Icons.Outlined.Close, "退出多选", onExit, shortcut = "Esc")
         },
-        actions = {
+        // 放不下时先收全选（另有快捷键）、解压与批量重命名，移动、复制与移入回收站最后收
+        actions = buildList {
             val shortcutModifier = LocalPikoPlatform.current.shortcutModifier
-            if (onSelectAll != null) TooltipIconButton(Icons.Outlined.SelectAll, "全选", onSelectAll, shortcut = shortcutModifier.label("A"))
-            if (onExtract != null) TooltipIconButton(Icons.Outlined.Unarchive, "解压所选压缩包", onExtract)
-            if (onShare != null) TooltipIconButton(Icons.Outlined.Share, "分享所选", onShare)
+            if (onSelectAll != null) add(iconBarItem(Icons.Outlined.SelectAll, "全选", onSelectAll, priority = 10, shortcut = shortcutModifier.label("A")))
+            if (onExtract != null) add(iconBarItem(Icons.Outlined.Unarchive, "解压所选压缩包", onExtract, priority = 30))
+            if (onShare != null) add(iconBarItem(Icons.Outlined.Share, "分享所选", onShare, priority = 40))
             // 只选一项时没有共同前后缀可言，单项改名走条目菜单
             if (onBatchRename != null && selectedCount >= 2) {
-                TooltipIconButton(Icons.Outlined.DriveFileRenameOutline, "批量重命名", onBatchRename, shortcut = "F2")
+                add(iconBarItem(Icons.Outlined.DriveFileRenameOutline, "批量重命名", onBatchRename, priority = 20, shortcut = "F2"))
             }
-            if (onMove != null) TooltipIconButton(Icons.Outlined.DriveFileMove, "移动所选", onMove)
-            if (onCopy != null) TooltipIconButton(Icons.Outlined.ContentCopy, "复制所选", onCopy)
+            if (onMove != null) add(iconBarItem(Icons.Outlined.DriveFileMove, "移动所选", onMove, priority = 60))
+            if (onCopy != null) add(iconBarItem(Icons.Outlined.ContentCopy, "复制所选", onCopy, priority = 50))
             if (onTrash != null) {
-                TooltipIconButton(
-                    icon = Icons.Outlined.Delete,
-                    label = "将所选移入回收站",
-                    onClick = onTrash,
-                    shortcut = shortcutModifier.trashLabel,
-                    tint = MaterialTheme.colorScheme.error,
-                )
+                add(iconBarItem(Icons.Outlined.Delete, "将所选移入回收站", onTrash, priority = 70, shortcut = shortcutModifier.trashLabel, destructive = true))
             }
         },
     )
@@ -248,31 +246,37 @@ internal fun DriveBrowseTopBar(
     sections: List<String>,
     onSectionSelected: (Int) -> Unit,
     navigationIcon: (@Composable () -> Unit)?,
-    actions: @Composable RowScope.() -> Unit,
+    /** 放不下时按优先级收进「更多」，见 AdaptiveBar。 */
+    actions: List<BarItem>,
 ) {
     val caption = rememberCaptionSlot()
     TopAppBar(
         modifier = caption.modifier,
         title = {
-            // 标题后面的空白是拖动区。不把整格登记上去：副标题是能点的分区菜单，落在拖动区里就点不到了
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column {
-                    Text(
-                        text = title,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.titleLargeEmphasized,
-                    )
-                    SectionJumper(currentSection, sections, onSectionSelected)
-                }
-                if (caption.atTop) Spacer(Modifier.weight(1f).height(TopAppBarDefaults.TopAppBarExpandedHeight).windowDragArea())
-            }
+            // 标题、动作与窗口按钮一起交给 AdaptiveBar 排，不用 TopAppBar 的 actions：它先量动作、标题拿剩下的，
+            // 窄窗口加上窗口按钮后目录名被挤没。标题后面的空白是拖动区（AdaptiveBar 自带）；
+            // 不把标题这一格登记上去：副标题是能点的分区菜单，落在拖动区里就点不到了
+            AdaptiveBar(
+                modifier = Modifier.height(TopAppBarDefaults.TopAppBarExpandedHeight),
+                trailing = actions,
+                middle = {
+                    Column {
+                        Text(
+                            text = title,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.titleLargeEmphasized,
+                        )
+                        SectionJumper(currentSection, sections, onSectionSelected)
+                    }
+                },
+                middleMinWidth = BrowseTitleMinWidth,
+                reserveMiddle = true,
+                end = caption.buttons,
+                dragWindow = caption.atTop,
+            )
         },
         navigationIcon = { navigationIcon?.invoke() },
-        actions = {
-            actions()
-            caption.buttons?.invoke()
-        },
         colors = TopAppBarDefaults.topAppBarColors(
             containerColor = MaterialTheme.colorScheme.surface,
             scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
@@ -281,6 +285,9 @@ internal fun DriveBrowseTopBar(
         scrollBehavior = scrollBehavior,
     )
 }
+
+/** 目录名至少留这么宽，动作先收进「更多」。 */
+private val BrowseTitleMinWidth = 96.dp
 
 /**
  * 信息流的开关，放在网盘页顶栏上、搜索之前，图标带字。原先是视图切换里第四个只有图标的按钮，

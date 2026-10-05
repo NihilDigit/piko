@@ -82,6 +82,8 @@ import dev.piko.ui.components.ItemDetailsSheet
 import dev.piko.ui.components.MetaRow
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoTopBar
+import dev.piko.ui.components.PinnedPriority
+import dev.piko.ui.components.iconBarItem
 import dev.piko.ui.components.rememberListScrollTint
 import dev.piko.ui.components.RefreshBox
 import dev.piko.ui.components.SheetAction
@@ -216,23 +218,13 @@ fun MySharesScreen(
                         }
                     }
                 },
-                actions = {
+                actions = listOf(
                     if (selecting) {
-                        TooltipIconButton(
-                            icon = Icons.Outlined.LinkOff,
-                            label = "取消所选分享",
-                            onClick = { confirmCancelSelected = true },
-                            tint = MaterialTheme.colorScheme.error,
-                        )
+                        iconBarItem(Icons.Outlined.LinkOff, "取消所选分享", { confirmCancelSelected = true }, priority = PinnedPriority, destructive = true)
                     } else {
-                        TooltipIconButton(
-                            icon = Icons.Outlined.Refresh,
-                            label = "刷新",
-                            onClick = { state.load(refresh = true) },
-                            enabled = !state.isRefreshing,
-                        )
-                    }
-                },
+                        iconBarItem(Icons.Outlined.Refresh, "刷新", { state.load(refresh = true) }, priority = PinnedPriority, enabled = !state.isRefreshing)
+                    },
+                ),
             )
         },
     ) { innerPadding ->

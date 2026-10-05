@@ -22,6 +22,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.vector.ImageVector
 import dev.piko.shared.data.DriveLibrary
 import dev.piko.ui.components.PikoTopBar
+import dev.piko.ui.components.iconBarItem
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.platform.LocalPikoPlatform
@@ -158,16 +159,13 @@ internal fun TrashSelectionTopBar(
         scrollBehavior = scrollBehavior,
         title = "已选择 $selectedCount 项",
         navigationIcon = { TooltipIconButton(Icons.Outlined.Close, "退出多选", onExit, shortcut = "Esc") },
-        actions = {
+        actions = run {
             val shortcutModifier = LocalPikoPlatform.current.shortcutModifier
-            TooltipIconButton(Icons.Outlined.SelectAll, "全选", onSelectAll, shortcut = shortcutModifier.label("A"))
-            TooltipIconButton(Icons.Outlined.RestoreFromTrash, "恢复所选", onRestore, enabled = enabled && selectedCount > 0)
-            TooltipIconButton(
-                icon = Icons.Outlined.DeleteForever,
-                label = "彻底删除所选",
-                onClick = onDelete,
-                enabled = enabled && selectedCount > 0,
-                tint = if (enabled && selectedCount > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+            val canAct = enabled && selectedCount > 0
+            listOf(
+                iconBarItem(Icons.Outlined.SelectAll, "全选", onSelectAll, priority = 10, shortcut = shortcutModifier.label("A")),
+                iconBarItem(Icons.Outlined.RestoreFromTrash, "恢复所选", onRestore, priority = 30, enabled = canAct),
+                iconBarItem(Icons.Outlined.DeleteForever, "彻底删除所选", onDelete, priority = 20, destructive = true, enabled = canAct),
             )
         },
     )

@@ -41,6 +41,10 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.TonalToggleButton
 import dev.piko.ui.components.connectedToggleShapes
+import dev.piko.ui.components.AdaptiveBar
+import dev.piko.ui.components.BarItem
+import dev.piko.ui.components.OverflowMenu
+import dev.piko.ui.components.PinnedPriority
 import dev.piko.ui.components.CloudCapacityRow
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.theme.FrameBottomRowHeight
@@ -286,10 +290,10 @@ internal fun ExplorerCommandBar(
     val mac = shortcuts == ShortcutModifier.Command
     // 收起的先后见 BarItem.priority。收进「更多」的各带一个组号，菜单里组与组之间一道细线
     val leading = buildList {
-        if (commands.home) add(BarItem("home", FixedPriority) { TooltipIconButton(Icons.Outlined.Home, "网盘根目录", onHome) })
+        if (commands.home) add(BarItem("home", PinnedPriority) { TooltipIconButton(Icons.Outlined.Home, "网盘根目录", onHome) })
         if (selectedCount > 0) {
-            add(BarItem("exit", FixedPriority) { TooltipIconButton(Icons.Outlined.Close, "退出多选", onExitSelection, shortcut = "Esc") })
-            add(BarItem("selected", FixedPriority) { Text("已选 $selectedCount 项", style = MaterialTheme.typography.labelLarge, maxLines = 1) })
+            add(BarItem("exit", PinnedPriority) { TooltipIconButton(Icons.Outlined.Close, "退出多选", onExitSelection, shortcut = "Esc") })
+            add(BarItem("selected", PinnedPriority) { Text("已选 $selectedCount 项", style = MaterialTheme.typography.labelLarge, maxLines = 1) })
             // 合计大小只是说明，放不下就不写，不进「更多」
             if (selectedBytes > 0) {
                 add(BarItem("selectedBytes", 10) {
@@ -302,9 +306,9 @@ internal fun ExplorerCommandBar(
                 })
             }
         } else if (commands.create) {
-            add(BarItem("new", FixedPriority) { MenuTextButton(Icons.Outlined.Add, "新建", newActions) })
+            add(BarItem("new", PinnedPriority) { MenuTextButton(Icons.Outlined.Add, "新建", newActions) })
         }
-        add(BarItem.divider("itemsDivider"))
+        add(barDivider("itemsDivider"))
         if (commands.restoreOrDelete) {
             restoreActions.forEach { action ->
                 add(BarItem("restore:${action.label}", 85, listOf(action)) {
@@ -352,28 +356,14 @@ internal fun ExplorerCommandBar(
                 )
             })
         }
-        add(BarItem.divider("viewDivider"))
+        add(barDivider("viewDivider"))
         if (commands.sort) {
-            // 收进「更多」时摊成几项，当前的一项打勾并写出方向，再点它是翻转，与排序按钮的菜单相同
-            val sortActions = PikoSortField.entries.map { field ->
-                val current = field.owns(sortOrder)
-                val direction = if (sortOrder.isAscending) "升序" else "降序"
-                SheetAction(
-                    Icons.AutoMirrored.Outlined.Sort,
-                    if (current) "按${field.label}（$direction）" else "按${field.label}",
-                    { onSortChange(field.selectFrom(sortOrder)) },
-                    group = 2,
-                    checked = current,
-                )
-            }
-            add(BarItem("sort", 40, sortActions) { SortButton(sortOrder, onSortChange) })
+            add(BarItem("sort", 40, sortOverflowActions(sortOrder, onSortChange, group = 2)) { SortButton(sortOrder, onSortChange) })
         }
         if (commands.filter) {
-            val filterActions = listOf(SheetAction(Icons.Outlined.FilterList, "全部类型", { onTypeFilterChange(null) }, group = 3, checked = typeFilter == null)) +
-                availableTypes.map { (category, count) ->
-                    SheetAction(category.icon(), "${category.label}（$count）", { onTypeFilterChange(category) }, group = 3, checked = category == typeFilter)
-                }
-            add(BarItem("filter", 35, filterActions) { TypeFilterButton(typeFilter, availableTypes, onTypeFilterChange) })
+            add(BarItem("filter", 35, typeFilterOverflowActions(typeFilter, availableTypes, onTypeFilterChange, group = 3)) {
+                TypeFilterButton(typeFilter, availableTypes, onTypeFilterChange)
+            })
         }
         if (commands.selectAll) {
             add(BarItem("selectAll", 30, listOf(SheetAction(Icons.Outlined.SelectAll, "全选", onSelectAll, group = 4))) {
@@ -393,7 +383,7 @@ internal fun ExplorerCommandBar(
         })
         // 详情栏的开关不放在这里：它看的是某一项，入口在条目上悬停出现的详情按钮；关闭在详情栏自己的顶上，
         // 主修饰键+I 照旧开关
-        add(BarItem("view", FixedPriority) { viewSwitcher() })
+        add(BarItem("view", PinnedPriority) { viewSwitcher() })
         if (primaryAction != null) {
             // 常驻在右端，不收在菜单里；窗口窄到连它也放不下时才进「更多」
             add(BarItem("primary", 90, listOf(primaryAction)) {
@@ -403,160 +393,25 @@ internal fun ExplorerCommandBar(
     }
     // 没有自己的底色：与导航栏同在页眉那一块外框色里（theme/Frame.kt），下面的列表是卡片。
     // 两行各带底色、或中间再画一条线，底色叠了三层，看着重复
-    CommandBarLayout(
+    // 优先级的取值：添加链接、移入回收站、剪切复制粘贴、重命名、分享这些条目操作最后收；刷新、排序、筛选、全选、查重
+    // 在别处都另有入口（快捷键、列表页眉、命令面板），先收。左端的新建与已选、视图一直摆着
+    AdaptiveBar(
+        modifier = Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 8.dp),
         leading = leading,
         trailing = trailing,
-        moreMenu = commands.moreMenu,
-        moreActions = moreActions,
-        sectionJumper = sectionJumper,
-        modifier = Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 8.dp),
+        middle = { Box(Modifier.padding(horizontal = 8.dp)) { sectionJumper() } },
+        middleMinWidth = SectionJumperMinWidth,
+        middleMaxWidth = SectionJumperMaxWidth,
+        moreAfterLeading = true,
+        alwaysMore = commands.moreMenu,
+        moreActions = if (commands.moreMenu) moreActions else emptyList(),
+        moreIcon = Icons.Outlined.MoreHoriz,
+        gap = BarItemGap,
+        dragWindow = true,
     )
 }
 
-/**
- * 命令栏上的一样东西。[priority] 越大越晚收起，[FixedPriority] 的一直摆着（左端的新建与已选、视图、收着的面板）。
- * 取值的先后：添加链接、移入回收站、剪切复制粘贴、重命名、分享这些条目操作最后收；刷新、排序、筛选、全选、查重
- * 在别处都另有入口（快捷键、列表页眉、命令面板），先收。
- */
-private class BarItem(
-    val key: String,
-    val priority: Int,
-    /** 收起后在「更多」里的样子；为空的收起即不显示。 */
-    val overflow: List<SheetAction> = emptyList(),
-    val isDivider: Boolean = false,
-    val content: @Composable () -> Unit,
-) {
-    companion object {
-        fun divider(key: String) = BarItem(key, FixedPriority, isDivider = true) { BarDivider() }
-    }
-}
-
-private const val FixedPriority = Int.MAX_VALUE
-
-/** 布局时算出的「更多」里的内容。菜单打开时才读，不必经过状态：读它的那次重组总在布局之后。 */
-private class OverflowHolder {
-    var actions: List<SheetAction> = emptyList()
-}
-
-/**
- * 命令栏的排布：[leading] 从左往右，「更多」跟在后面；[trailing] 贴右；中间是分区跳转与拖动窗口的空白。
- *
- * 放不下时照 M3 toolbars 的 Container 与 Adaptive design 两节：容器要整个露在屏幕上，放不下的操作收进末端的
- * overflow 菜单，窗口变宽再放出来。按 [BarItem.priority] 从低往高收，同级的先收靠后的；收起的进「更多」，
- * 排在它原有的几项前面。收哪几项只由宽度决定，与上一次的结果无关，拖动窗口边缘时不会来回跳。
- * 用自定义的 Layout 而不是 Row：要先量出各项的宽度，才知道「更多」里放什么、要不要摆出来。
- */
-@Composable
-private fun CommandBarLayout(
-    leading: List<BarItem>,
-    trailing: List<BarItem>,
-    moreMenu: Boolean,
-    moreActions: List<SheetAction>,
-    sectionJumper: @Composable () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val overflow = remember { OverflowHolder() }
-    val items = leading + trailing
-    // 各项、「更多」、分区跳转与拖动空白都在正常的组合里，测量时只量不组合，放不下的不摆。
-    // 不用 SubcomposeLayout：它在测量时才组合各项，里面的菜单、提示若恰在那时离开组合，
-    // 就是在测量途中销毁一层弹层，桌面端整个窗口抛 RootNodeOwner is already disposed（见 desktopApp 的 PikoWindow）
-    Layout(
-        modifier = modifier,
-        content = {
-            items.forEach { item -> key(item.key) { Box(contentAlignment = Alignment.Center) { item.content() } } }
-            MoreButton { overflow.actions }
-            Box(Modifier.widthIn(max = SectionJumperMaxWidth).padding(horizontal = 8.dp)) { sectionJumper() }
-            // 命令栏中间这段空白也能拖动窗口（标题栏并进内容时）。一直摆着，没有空白时宽度为 0，登记的拖动区随之为空
-            Spacer(Modifier.fillMaxSize().windowDragArea())
-        },
-    ) { measurables, constraints ->
-        val height = constraints.maxHeight
-        val gap = BarItemGap.roundToPx()
-        val loose = Constraints(maxHeight = height)
-        val placeables = measurables.subList(0, items.size).map { it.measure(loose) }
-        val more = measurables[items.size].measure(loose)
-        val jumperMeasurable = measurables[items.size + 1]
-        val dragMeasurable = measurables[items.size + 2]
-
-        val shown = BooleanArray(items.size) { true }
-        fun needsMore() = moreMenu || items.indices.any { !shown[it] && items[it].overflow.isNotEmpty() }
-        // 分隔线只画在两边都有东西时；左段最后一道的右边是「更多」
-        fun dividerShown(index: Int): Boolean {
-            if (index >= leading.size || (0 until index).none { !items[it].isDivider && shown[it] }) return false
-            var next = index + 1
-            while (next < leading.size && !items[next].isDivider) {
-                if (shown[next]) return true
-                next++
-            }
-            return next == leading.size && needsMore()
-        }
-        fun visible(index: Int) = if (items[index].isDivider) dividerShown(index) else shown[index]
-        fun totalWidth(): Int {
-            var width = 0
-            var count = 0
-            for (index in items.indices) {
-                if (!visible(index)) continue
-                width += placeables[index].width
-                count++
-            }
-            if (needsMore()) {
-                width += more.width
-                count++
-            }
-            return width + gap * (count - 1).coerceAtLeast(0)
-        }
-        while (totalWidth() > constraints.maxWidth) {
-            val victim = items.indices
-                .filter { shown[it] && !items[it].isDivider && items[it].priority != FixedPriority }
-                .minWithOrNull(compareBy<Int>({ items[it].priority }, { -it }))
-                ?: break
-            shown[victim] = false
-        }
-        val showMore = needsMore()
-        overflow.actions = items.indices.filter { !shown[it] }.flatMap { items[it].overflow } +
-            if (moreMenu) moreActions else emptyList()
-
-        val leadingIndices = leading.indices.filter(::visible)
-        val trailingIndices = (leading.size until items.size).filter(::visible)
-        val leadingEnd = leadingIndices.sumOf { placeables[it].width + gap } + if (showMore) more.width + gap else 0
-        val trailingWidth = trailingIndices.sumOf { placeables[it].width } + gap * (trailingIndices.size - 1).coerceAtLeast(0)
-        val trailingStart = (constraints.maxWidth - trailingWidth).coerceAtLeast(leadingEnd)
-        // 分区跳转占剩下的宽度，最多 SectionJumperMaxWidth；窄到放不下一个名字就不摆
-        val room = trailingStart - leadingEnd
-        val jumper = if (room >= SectionJumperMinWidth.roundToPx()) {
-            jumperMeasurable.measure(Constraints(maxWidth = room, maxHeight = height))
-        } else {
-            null
-        }
-        val dragStart = leadingEnd + (jumper?.width ?: 0)
-        val dragArea = dragMeasurable.measure(Constraints.fixed((trailingStart - dragStart).coerceAtLeast(0), height))
-        layout(constraints.maxWidth, height) {
-            fun Placeable.placeAt(x: Int) = place(x, (height - this.height) / 2)
-            var x = 0
-            for (index in leadingIndices) {
-                placeables[index].placeAt(x)
-                x += placeables[index].width + gap
-            }
-            if (showMore) more.placeAt(x)
-            jumper?.placeAt(leadingEnd)
-            dragArea.place(dragStart, 0)
-            x = trailingStart
-            for (index in trailingIndices) {
-                placeables[index].placeAt(x)
-                x += placeables[index].width + gap
-            }
-        }
-    }
-}
-
-@Composable
-private fun MoreButton(actions: () -> List<SheetAction>) {
-    var expanded by remember { mutableStateOf(false) }
-    Box {
-        TooltipIconButton(Icons.Outlined.MoreHoriz, "更多", { expanded = true })
-        ActionMenu(expanded, { expanded = false }, if (expanded) actions() else emptyList())
-    }
-}
+private fun barDivider(key: String) = BarItem(key, PinnedPriority, isDivider = true) { BarDivider() }
 
 private val BarItemGap = 2.dp
 private val SectionJumperMinWidth = 72.dp
@@ -660,41 +515,7 @@ private fun MenuTextButton(icon: androidx.compose.ui.graphics.vector.ImageVector
             Text(text)
             Icon(Icons.Outlined.ArrowDropDown, contentDescription = null, modifier = Modifier.size(18.dp))
         }
-        ActionMenu(expanded, { expanded = false }, actions)
-    }
-}
-
-/** 组号变了画一道细线，收进「更多」的几组与它原有的几项由此分开；几选一的当前项打勾。 */
-@Composable
-private fun ActionMenu(expanded: Boolean, onDismiss: () -> Unit, actions: List<SheetAction>) = MenuMotion {
-    PikoDropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
-        actions.forEachIndexed { index, action ->
-            if (index > 0 && actions[index - 1].group != action.group) {
-                HorizontalDivider(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                    color = MaterialTheme.colorScheme.outlineVariant,
-                )
-            }
-            val tint = when {
-                action.destructive -> MaterialTheme.colorScheme.error
-                action.checked == true -> MaterialTheme.colorScheme.primary
-                else -> Color.Unspecified
-            }
-            DropdownMenuItem(
-                text = { Text(action.label, color = tint) },
-                leadingIcon = { Icon(action.icon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp)) },
-                trailingIcon = if (action.checked == true) {
-                    { Icon(Icons.Outlined.Check, contentDescription = "当前", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp)) }
-                } else {
-                    null
-                },
-                shape = menuItemShape(index, actions.size),
-                onClick = {
-                    onDismiss()
-                    action.onClick()
-                },
-            )
-        }
+        OverflowMenu(expanded, { expanded = false }, actions)
     }
 }
 

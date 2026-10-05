@@ -10,12 +10,20 @@
 
 布局只看窗口宽度，不看设备：`ui/.../adaptive/WindowWidth.kt` 按 M3 断点给出 compact、medium、
 expanded。桌面窗口缩放与平板分屏走同一套判断，桌面体验以 Android 平板为准。
+界面的骨架只分两套：expanded 是侧边栏、外框与岛、地址栏与命令栏、浮动卡片；medium 是大号手机，与 compact 同一套
+（底部导航栏、无外框无岛、顶栏标题加面包屑、FAB）。新写的判断要分骨架时写 `== WidthClass.Expanded`，
+不要写 `!= WidthClass.Compact`。medium 只在内容尺寸上与 compact 不同（对话框宽度、网格栏宽）。
+
+横排的东西（顶栏、工具栏、命令栏、列表页眉）一律经 `components/AdaptiveBar` 排：每项带优先级与收起后的菜单项，
+放不下时从低往高收进「更多」，标题与窗口按钮不收，整行不会溢出。不要再用 Row 加 TopAppBar 的 actions 摆一排按钮：
+TopAppBar 先量动作、标题拿剩下的，桌面窄窗口加上窗口按钮后标题与导航按钮被挤没（多选栏实测）。
+`PikoTopBar` 的 actions 已是 `List<BarItem>`，图标按钮用 `iconBarItem`。窄窗口带窗口按钮的样子用 `:shots` 的 `--caption` 看。
 另看高度一项：`isHeightCompact()`（不到 480dp，几乎就是横握的手机）。这时侧边栏只有窄轨、不能展开，不开详情栏与标签，
 网盘页顶栏按窄屏的样子，信息流全屏并收起系统栏（`PikoPlatform.HideSystemBars`，不锁方向），目录选择器与批量重命名全屏，
 面板在 medium 宽度下也用侧边形态。横握的手机不是缩小的桌面：它仍是触屏，三百多 dp 的高度放不下第二栏。
 按宽度开第二栏或展开侧边栏的新代码要同时看它。
 - 导航只有两套：compact 下是 `NavigationSuiteScaffold` 的底部导航栏（写死 `ShortNavigationBarCompact`，不交给库按窗口挑：
-  库还看高度，横握的手机会得到一条横向底栏），比 compact 宽（`SidebarMinWindowWidth`，600dp）一律是一整条侧边栏
+  库还看高度，横握的手机会得到一条横向底栏，medium 也用它），expanded 起（`SidebarMinWindowWidth`，840dp）一律是一整条侧边栏
   （`MainSidebar`），连同外框与并进内容的标题栏。窗口不到 `SidebarPushMinWindowWidth`（1000dp）时侧边栏只占窄轨，
   展开的那一份带遮罩浮在内容上（照模态抽屉，点遮罩、返回或去了别处就收回，不改存下的收起状态）；更宽时展开是推开内容。
   侧边栏上面是去处，下面是快速访问（`QuickAccessSection` / `QuickAccessState`），

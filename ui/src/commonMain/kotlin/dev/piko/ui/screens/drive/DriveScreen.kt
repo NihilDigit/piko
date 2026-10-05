@@ -184,6 +184,8 @@ import dev.piko.ui.components.showsRefreshButton
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.SegmentDownloadSheet
 import dev.piko.ui.components.TooltipIconButton
+import dev.piko.ui.components.BarItem
+import dev.piko.ui.components.iconBarItem
 import dev.piko.ui.components.UnsupportedNameDialog
 import dev.piko.ui.components.driveNameHint
 import dev.piko.ui.components.isUnfixableDriveName
@@ -1465,16 +1467,21 @@ fun DriveScreen(
                                     }
                                     else -> null
                                 },
-                                actions = {
-                                    // 顶栏只留信息流与搜索：M3 顶栏放一到两个动作，新建与秒传同属「往网盘里添东西」，
-                                    // 一起收进 FAB 菜单；排序与视图切换作用于列表，放在列表页眉。
+                                // 顶栏只留信息流与搜索：M3 顶栏放一到两个动作，新建与秒传同属「往网盘里添东西」，
+                                // 一起收进 FAB 菜单；排序与视图切换作用于列表，放在列表页眉。放不下时先收刷新
+                                actions = buildList {
                                     if (commands.feed && onFeedShownChange != null) {
                                         // 标题栏并进内容时这一行还要画三个窗口按钮，信息流收成图标，目录名才露得出来
-                                        FeedToggle(shown = feedShown, onShownChange = onFeedShownChange, iconOnly = LocalWindowCaption.current != null)
+                                        val iconOnly = LocalWindowCaption.current != null
+                                        add(BarItem(
+                                            key = "feed",
+                                            priority = 20,
+                                            overflow = listOf(SheetAction(Icons.Outlined.SwipeVertical, if (feedShown) "关闭信息流" else "信息流", { onFeedShownChange(!feedShown) })),
+                                        ) { FeedToggle(shown = feedShown, onShownChange = onFeedShownChange, iconOnly = iconOnly) })
                                     }
-                                    TooltipIconButton(Icons.Outlined.Search, "搜索", { isSearchOpen = true }, shortcut = platform.shortcutModifier.label("F"))
+                                    add(iconBarItem(Icons.Outlined.Search, "搜索", { isSearchOpen = true }, priority = 30, shortcut = platform.shortcutModifier.label("F")))
                                     if (showsRefreshButton()) {
-                                        TooltipIconButton(Icons.Outlined.Refresh, "刷新", { state.load(refresh = true) }, shortcut = "F5")
+                                        add(iconBarItem(Icons.Outlined.Refresh, "刷新", { state.load(refresh = true) }, priority = 10, shortcut = "F5"))
                                     }
                                 },
                             )

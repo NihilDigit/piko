@@ -327,16 +327,17 @@ private fun FolderPickerContent(
                 } else {
                     null
                 },
-                actions = {
-                    TooltipIconButton(
+                actions = listOf(
+                    iconBarItem(
                         icon = Icons.Outlined.CreateNewFolder,
                         label = "新建文件夹",
                         onClick = {
                             newFolderName = ""
                             showNewFolderDialog = true
                         },
-                    )
-                },
+                        priority = PinnedPriority,
+                    ),
+                ),
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
             )
         },

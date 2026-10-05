@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.ui.Alignment
 import dev.piko.ui.platform.windowDragArea
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.add
 import androidx.compose.material.icons.Icons
@@ -64,7 +63,8 @@ fun PikoTopBar(
     modifier: Modifier = Modifier,
     navigationIcon: (@Composable () -> Unit)? = null,
     onBackClick: (() -> Unit)? = null,
-    actions: @Composable RowScope.() -> Unit = {},
+    /** 放不下时按优先级收进「更多」，见 [AdaptiveBar]。 */
+    actions: List<BarItem> = emptyList(),
     scrollBehavior: TopAppBarScrollBehavior? = null,
     colors: TopAppBarColors = TopAppBarDefaults.topAppBarColors(
         containerColor = MaterialTheme.colorScheme.surface,
@@ -93,7 +93,7 @@ private fun PikoTopBarContent(
     modifier: Modifier,
     navigationIcon: (@Composable () -> Unit)?,
     onBackClick: (() -> Unit)?,
-    actions: @Composable RowScope.() -> Unit,
+    actions: List<BarItem>,
     scrollBehavior: TopAppBarScrollBehavior?,
     colors: TopAppBarColors,
     sideInset: Dp,
@@ -114,20 +114,32 @@ private fun PikoTopBarContent(
     val barHeight = if (LocalFramed.current) FrameTopRowHeight else TopAppBarDefaults.TopAppBarExpandedHeight
     TopAppBar(
         title = {
-            // 在窗口顶上时标题这一格铺满返回与动作之间的空白，整块是拖动区：原来只有窗口按钮前那一截能拖，
-            // 设置这类只有标题的页，顶上一大片空白按住不动。高度写死为顶栏高：标题格的高度不设上限，
-            // fillMaxHeight 会把整条顶栏撑到窗口那么高（实测）
-            Box(
-                modifier = if (caption.atTop) Modifier.fillMaxWidth().height(barHeight).windowDragArea() else Modifier,
-                contentAlignment = Alignment.CenterStart,
-            ) {
-                Text(
-                    text = title,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.titleLargeEmphasized,
-                )
-            }
+            // 标题、动作与窗口按钮一起交给 AdaptiveBar 排，TopAppBar 自己的 actions 不用：它先量动作、标题拿剩下的，
+            // 动作一多标题就被挤没。动作放不下时收进「更多」，标题至少留 TitleMinWidth
+            AdaptiveBar(
+                trailing = actions,
+                middle = {
+                    // 在窗口顶上时标题这一格铺满返回与动作之间的空白，整块是拖动区：原来只有窗口按钮前那一截能拖，
+                    // 设置这类只有标题的页，顶上一大片空白按住不动。高度写死为顶栏高：标题格的高度不设上限，
+                    // fillMaxHeight 会把整条顶栏撑到窗口那么高（实测）
+                    Box(
+                        modifier = if (caption.atTop) Modifier.fillMaxWidth().height(barHeight).windowDragArea() else Modifier,
+                        contentAlignment = Alignment.CenterStart,
+                    ) {
+                        Text(
+                            text = title,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.titleLargeEmphasized,
+                        )
+                    }
+                },
+                middleMinWidth = TitleMinWidth,
+                reserveMiddle = true,
+                fillMiddle = true,
+                end = caption.buttons,
+                dragWindow = caption.atTop,
+            )
         },
         modifier = modifier.then(caption.modifier),
         navigationIcon = {
@@ -142,10 +154,6 @@ private fun PikoTopBarContent(
                 }
             }
         },
-        actions = {
-            actions()
-            caption.buttons?.invoke()
-        },
         windowInsets = TopAppBarDefaults.windowInsets.add(WindowInsets(left = sideInset, right = sideInset)),
         colors = barColors,
         // 外框里与网盘页地址栏那一行、侧边栏的图标行同高（56dp），换页时卡片的上沿不跳；M3 默认的 64dp 会低出一截
@@ -153,3 +161,6 @@ private fun PikoTopBarContent(
         scrollBehavior = scrollBehavior,
     )
 }
+
+/** 标题至少留这么宽，动作先收进「更多」：多选栏的「已选择 12 项」要读得出来。 */
+private val TitleMinWidth = 112.dp
