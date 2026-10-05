@@ -14,6 +14,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import dev.piko.EXTRA_OPEN_TRANSFERS
 import dev.piko.MainActivity
 import dev.piko.PikoApplication
 import dev.piko.shared.state.DuplicateFinderState
@@ -184,12 +185,16 @@ class PikoDownloadService : Service() {
         totalBytes: Long = 0L,
         uploadOnly: Boolean = false,
     ): Notification {
+        // 下载、上传、解压与归档的进度都在传输页，点通知直接去那里
         val openIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_OPEN_TRANSFERS, true)
         }
+        // 请求码不能与结局通知的 0 相同：PendingIntent 比较 Intent 时不看 extras，同码就是同一个，
+        // 后建的那个以 FLAG_UPDATE_CURRENT 把这里的 extras 覆盖掉
         val pendingIntent = PendingIntent.getActivity(
             this,
-            0,
+            OPEN_TRANSFERS_REQUEST_CODE,
             openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -242,6 +247,7 @@ class PikoDownloadService : Service() {
 
     companion object {
         private const val NOTIFICATION_ID = 9527
+        private const val OPEN_TRANSFERS_REQUEST_CODE = 1
         private const val NOTIFICATION_INTERVAL_MS = 1_000L
         private const val CHANNEL_ID = "piko_download_channel"
 

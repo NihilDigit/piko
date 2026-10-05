@@ -437,7 +437,7 @@ fun DriveScreen(
     LaunchedEffect(duplicateState) {
         val finder = duplicateState ?: return@LaunchedEffect
         snapshotFlow { finder.phase }.first { it == DuplicateFinderState.Phase.DONE || it == DuplicateFinderState.Phase.FAILED }
-        if (state.libraryView == DriveLibrary.DUPLICATES || pathInTopBar) return@LaunchedEffect
+        if (state.libraryView == DriveLibrary.DUPLICATES || twoPane) return@LaunchedEffect
         val message = if (finder.phase == DuplicateFinderState.Phase.FAILED) "查找重复失败" else "查找重复完成"
         val result = snackbarHostState.showSnackbar(message, actionLabel = "查看", withDismissAction = true)
         if (result == SnackbarResult.ActionPerformed) openDuplicates(finder.root)
@@ -475,6 +475,25 @@ fun DriveScreen(
                 }
                 is InstantSaveOutcome.OfflineTaskCreated -> openTransfers()
             }
+        }
+    }
+
+    // 没有浮动卡片的窗口里，解压与归档的进度只在传输页。开始时提示一次并给出去处；不像离线那样直接跳过去：
+    // 解压多在几秒内完成，跳走反而打断人手上的事
+    LaunchedEffect(twoPane) {
+        if (twoPane) return@LaunchedEffect
+        fun announce(message: String) = launch {
+            val result = snackbarHostState.showSnackbar(message, actionLabel = "查看", withDismissAction = true)
+            if (result == SnackbarResult.ActionPerformed) openTransfers()
+        }
+        // 只认从无到有：进页时已经在跑的之前提示过，队列里追加压缩包也不再提示
+        var wasExtracting = archiveSession.jobs.isNotEmpty()
+        var wasVaulting = vaultSession.isRunning
+        snapshotFlow { archiveSession.jobs.isNotEmpty() to vaultSession.isRunning }.collect { (extracting, vaulting) ->
+            if (extracting && !wasExtracting) announce("已开始解压")
+            if (vaulting && !wasVaulting) announce(if (vaultSession.restoreProgress != null) "已开始取消归档" else "已开始归档")
+            wasExtracting = extracting
+            wasVaulting = vaulting
         }
     }
 
@@ -1326,18 +1345,19 @@ fun DriveScreen(
                 snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
                 bottomBar = {
                     Column {
-                        // 没有后台工作时不占位。宽窗口里它们是主界面右下角的浮动卡片（FloatingTasks）
-                        if (!pathInTopBar) BackgroundActivityStrip(archiveSession, vaultSession, duplicateState, Modifier.fillMaxWidth())
-                        // 收起后的把手只在窄窗口：宽窗口的命令栏上「添加链接」「查找重复」点了就是放回收起的会话，
-                        // 底部再挂一条是同一件事的第二个入口
-                        if (instantState != null && !instantSession.isSheetOpen && !pathInTopBar) {
+                        // 宽窗口里这几样是主界面右下角的浮动卡片（FloatingTasks），条件同 twoPane；
+                        // 更窄时在这里。解压与归档不在这里，进度在传输页
+                        if (!twoPane) {
+                            duplicateState?.takeIf { it.isScanning }?.let { DuplicateScanStatus(it, Modifier.fillMaxWidth()) }
+                        }
+                        if (instantState != null && !instantSession.isSheetOpen && !twoPane) {
                             InstantSheetHandle(
                                 state = instantState,
                                 onExpand = instantSession::reopen,
                                 onClose = instantSession::end,
                             )
                         }
-                        if (duplicateState != null && !inDuplicates && !pathInTopBar && !duplicateState.isScanning) {
+                        if (duplicateState != null && !inDuplicates && !twoPane && !duplicateState.isScanning) {
                             DuplicatesHandle(
                                 finder = duplicateState,
                                 onOpen = { openDuplicates(duplicateState.root) },

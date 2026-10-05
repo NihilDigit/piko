@@ -97,6 +97,23 @@ sealed interface TransferItem {
         override val key: String get() = "instant:${record.id}"
         override val createdAtMs: Long get() = record.createdAtMs
     }
+
+    /**
+     * 排队或进行中的服务端解压，来自进程级的 [ArchiveExtractSession]。结束即从会话中移除，结局经 Snackbar 与通知提示，
+     * 所以只出现在「进行中」与「需要处理」（待输密码）。
+     */
+    data class Extract(val job: ArchiveJob) : TransferItem {
+        override val key: String get() = "extract:${job.id}"
+
+        // 会话不记入队时刻。它们都是眼下正在跑的，排在各段最前，不按时间与别的任务混排
+        override val createdAtMs: Long get() = Long.MAX_VALUE
+    }
+
+    /** 进行中的归档或取消归档，来自 [FolderVaultSession]，同一时刻至多一项。结束后同样只留提示。 */
+    data class Vault(val folderName: String, val restoring: Boolean) : TransferItem {
+        override val key: String get() = "vault"
+        override val createdAtMs: Long get() = Long.MAX_VALUE
+    }
 }
 
 /** 某一类传输按「进行中」「需要处理」「已完成」「文件已删除」分成的四段。 */
@@ -112,7 +129,8 @@ class TransferSections(
 
 /**
  * 传输页的类型筛选。秒传记录归「云端」：它与离线任务出自同一个「添加链接」，东西落在网盘里；
- * 从本机传上去却命中秒传的仍是一项上传，归「上传」。
+ * 从本机传上去却命中秒传的仍是一项上传，归「上传」。解压与归档也归「云端」：都是网盘里的文件在变，
+ * 另设一类的话手机上的类别标签多一个，而它们多数时候是空的。
  */
 enum class TransferKind(val label: String) {
     ALL("全部"),
@@ -125,7 +143,8 @@ enum class TransferKind(val label: String) {
         ALL -> true
         DOWNLOAD -> item is TransferItem.Local || item is TransferItem.LocalBatch
         UPLOAD -> item is TransferItem.Upload
-        CLOUD -> item is TransferItem.Cloud || item is TransferItem.Pack || item is TransferItem.Instant
+        CLOUD -> item is TransferItem.Cloud || item is TransferItem.Pack || item is TransferItem.Instant ||
+            item is TransferItem.Extract || item is TransferItem.Vault
     }
 }
 
@@ -148,6 +167,9 @@ class TransfersState(
     private val instantSaves: InstantSaveRecords,
     /** 上传任务与秒传记录按账号记，只列当前账号的。 */
     private val account: String,
+    // 两者都是进程级会话，换账号时已各自清空，这里不再按账号过滤
+    private val extracts: ArchiveExtractSession,
+    private val vault: FolderVaultSession,
 ) {
     private val cloud = OfflineTasksState(taskRepo, scope)
 
@@ -169,6 +191,10 @@ class TransfersState(
     private var packJobs by mutableStateOf(packTracker.jobs.value)
 
     private var instantRecords by mutableStateOf(instantSaves.records.value.filter { it.account == account })
+
+    private val vaultItem: TransferItem.Vault?
+        get() = vault.progress?.let { TransferItem.Vault(it.folderName, restoring = false) }
+            ?: vault.restoreProgress?.let { TransferItem.Vault(it.folderName, restoring = true) }
 
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
 
@@ -198,6 +224,8 @@ class TransfersState(
             uploadFilter = { it.status.isActive || it.status == UploadStatus.PAUSED },
             cloudFilter = { it.phase == TaskPhase.PENDING || it.phase == TaskPhase.RUNNING },
             packFilter = { it.isActive },
+            extractFilter = { it.status !is ArchiveJobStatus.NeedsPassword },
+            includeVault = true,
         )
     }
 
@@ -208,6 +236,7 @@ class TransfersState(
             uploadFilter = { it.status == UploadStatus.FAILED },
             cloudFilter = { it.phase == TaskPhase.ERROR && !it.isOutputDeleted },
             packFilter = { it.stage == OfflinePackStage.FAILED },
+            extractFilter = { it.status is ArchiveJobStatus.NeedsPassword },
         )
     }
 
@@ -315,7 +344,8 @@ class TransfersState(
                 is TransferItem.Upload -> removeUpload(item.task.taskId)
                 is TransferItem.Instant -> removeInstant(item.record.id)
                 is TransferItem.Pack -> discardPack(item.job.taskId)
-                is TransferItem.Local, is TransferItem.LocalBatch, is TransferItem.Cloud -> Unit
+                is TransferItem.Local, is TransferItem.LocalBatch, is TransferItem.Cloud,
+                is TransferItem.Extract, is TransferItem.Vault -> Unit
             }
         }
     }
@@ -431,6 +461,9 @@ class TransfersState(
             is TransferItem.Cloud -> deleteCloud(item.task.id)
             is TransferItem.Pack -> discardPack(item.job.taskId)
             is TransferItem.Instant -> removeInstant(item.record.id)
+            // 提交后的解压在服务端取消不了，只能放弃还在等密码的；归档只能停止，没有删除可言
+            is TransferItem.Extract -> skipExtract(item.job.id)
+            is TransferItem.Vault -> Unit
         }
     }
 
@@ -455,7 +488,8 @@ class TransfersState(
             when (item) {
                 is TransferItem.Cloud -> item.task.fileId
                 is TransferItem.Pack -> item.job.outputId
-                is TransferItem.Local, is TransferItem.LocalBatch, is TransferItem.Upload, is TransferItem.Instant -> null
+                is TransferItem.Local, is TransferItem.LocalBatch, is TransferItem.Upload, is TransferItem.Instant,
+                is TransferItem.Extract, is TransferItem.Vault -> null
             }?.takeIf { it.isNotEmpty() }
         }
     }
@@ -570,6 +604,14 @@ class TransfersState(
         }
     }
 
+    /** 放弃一个待输密码的压缩包；已提交的不受影响。 */
+    fun skipExtract(jobId: String) = extracts.skip(jobId)
+
+    /** 停止归档或取消归档。进行中的文件夹处理完才停，期间 [isVaultStopping] 为真。 */
+    fun stopVault() = vault.stop()
+
+    val isVaultStopping: Boolean get() = vault.stopping
+
     /** 清理失败的重做清理，下载失败的以原链接重新离线。 */
     fun retryPack(taskId: String) {
         scope.launch {
@@ -584,6 +626,8 @@ class TransfersState(
         cloudFilter: (DriveTask) -> Boolean,
         packFilter: (OfflinePackJob) -> Boolean,
         instantFilter: (InstantSaveRecord) -> Boolean = { false },
+        extractFilter: (ArchiveJob) -> Boolean = { false },
+        includeVault: Boolean = false,
     ): List<TransferItem> {
         // 文件夹下载里的文件只在它那一组里，按整组的状态归段
         val localItems = localTasks.filter { it.batch == null && localFilter(it) }.map { TransferItem.Local(it) } +
@@ -595,7 +639,10 @@ class TransfersState(
         val tasksById = cloud.tasks.associateBy { it.id }
         val packItems = packJobs.filter(packFilter).map { TransferItem.Pack(it, tasksById[it.taskId]) }
         val instantItems = instantRecords.filter(instantFilter).map { TransferItem.Instant(it) }
-        return (localItems + cloudItems + packItems + instantItems).sortedByDescending { it.createdAtMs }
+        val serverItems = extracts.jobs.filter(extractFilter).map { TransferItem.Extract(it) } +
+            listOfNotNull(vaultItem.takeIf { includeVault })
+        // sortedByDescending 是稳定排序：排在最前的解压仍按会话里的先后
+        return (serverItems + localItems + cloudItems + packItems + instantItems).sortedByDescending { it.createdAtMs }
     }
 
     private fun nowMs(): Long = Clock.System.now().toEpochMilliseconds()

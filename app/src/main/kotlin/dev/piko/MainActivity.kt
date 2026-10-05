@@ -110,6 +110,10 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIntent(intent: Intent?) {
         if (intent == null) return
+        if (intent.getBooleanExtra(EXTRA_OPEN_TRANSFERS, false)) {
+            PikoApplication.instance.services.requestOpenTransfers()
+            return
+        }
         intent.dataString?.let(PikPakAppLink::parse)?.let { target ->
             when (target) {
                 PikPakAppLink.Target.Drive -> PikoApplication.instance.driveRepository.requestOpenDrive()
@@ -226,6 +230,9 @@ private fun AskForNotificationsOnFirstWork(services: PikoServices) {
 }
 
 private const val TORRENT_MIME_TYPE = "application/x-bittorrent"
+
+/** 进行中的常驻通知点进来时带上，打开传输页看各项进度。 */
+internal const val EXTRA_OPEN_TRANSFERS = "dev.piko.extra.OPEN_TRANSFERS"
 
 // 与 androidx.activity 的 DefaultLightScrim、DefaultDarkScrim 相同，那两个是 internal
 private val NavBarLightScrim = Color.argb(0xe6, 0xFF, 0xFF, 0xFF)

@@ -32,6 +32,9 @@ import dev.piko.shared.net.PikPakDomainSelector
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -132,6 +135,19 @@ class PikoServices(
     // 主线程且与进程同寿：离开网盘页后归档仍要继续
     val folderVaultSession: FolderVaultSession by lazy {
         FolderVaultSession(driveRepository, CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate))
+    }
+
+    // 点进行中的系统通知要看传输页。应用可能正冷启动、还没登录，所以是待办而不是事件，由主界面组合时取走，
+    // 同 driveRepository.openDriveRequested
+    private val _openTransfersRequested = MutableStateFlow(false)
+    val openTransfersRequested: StateFlow<Boolean> = _openTransfersRequested.asStateFlow()
+
+    fun requestOpenTransfers() {
+        _openTransfersRequested.value = true
+    }
+
+    fun consumeOpenTransfersRequest() {
+        _openTransfersRequested.value = false
     }
 
     // 主线程且与进程同寿：打开完整播放器时随机片段页可能被销毁，队列要留着回来接着看

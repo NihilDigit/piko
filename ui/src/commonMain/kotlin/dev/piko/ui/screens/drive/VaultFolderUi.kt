@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Warning
 import dev.piko.ui.components.PikoDialog
 import dev.piko.ui.components.PikoDialogConfirm
@@ -21,7 +20,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -45,7 +43,6 @@ import androidx.compose.ui.unit.dp
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.state.FolderVaultSession
 import dev.piko.ui.components.InlineLoadingIndicator
-import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.toReadableSize
 
 /**
@@ -235,77 +232,9 @@ private fun VaultCheckboxOption(
     }
 }
 
-/** 归档进行中的状态条，与解压的状态条同处。没有在归档时不占位。 */
-@Composable
-internal fun VaultFolderStatus(session: FolderVaultSession, modifier: Modifier = Modifier) {
-    val progress = session.progress ?: return
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            InlineLoadingIndicator()
-            Spacer(modifier = Modifier.width(16.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = progress.folderName,
-                    style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    text = vaultArchiveStatus(session).orEmpty(),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (progress.total > 0) {
-                    LinearProgressIndicator(
-                        progress = { (progress.prepared.toFloat() + progress.done) / (progress.total.toFloat() * 2) },
-                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                    )
-                }
-            }
-            VaultStopButton(session)
-        }
-    }
-}
-
-/** 取消归档的扫描与恢复进度。 */
-@Composable
-internal fun VaultRestoreStatus(session: FolderVaultSession, modifier: Modifier = Modifier) {
-    val progress = session.restoreProgress ?: return
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-    ) {
-        Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            InlineLoadingIndicator()
-            Spacer(Modifier.width(16.dp))
-            Column(Modifier.weight(1f)) {
-                Text(progress.folderName, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(
-                    vaultRestoreStatus(session).orEmpty(),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                val total = progress.total
-                if (total != null && total > 0) {
-                    LinearProgressIndicator(progress = { progress.done.toFloat() / total }, modifier = Modifier.fillMaxWidth().padding(top = 6.dp))
-                }
-            }
-            VaultStopButton(session)
-        }
-    }
-}
-
 private const val STOPPING_TEXT = "正在停止，进行中的文件夹处理完即停"
 
-/** 归档进度的一行状态，底部状态条与浮动任务卡片共用。没有在归档时为 null。 */
+/** 归档进度的一行状态，传输页与浮动任务卡片共用。没有在归档时为 null。 */
 internal fun vaultArchiveStatus(session: FolderVaultSession): String? {
     val progress = session.progress ?: return null
     return when {
@@ -323,14 +252,4 @@ internal fun vaultRestoreStatus(session: FolderVaultSession): String? {
         progress.total == null -> "${progress.stage}，已扫描 ${progress.scannedFolders} 个文件夹"
         else -> "${progress.stage} ${progress.done} / ${progress.total}"
     }
-}
-
-@Composable
-private fun VaultStopButton(session: FolderVaultSession) {
-    TooltipIconButton(
-        icon = Icons.Outlined.Close,
-        label = "停止",
-        onClick = session::stop,
-        enabled = !session.stopping,
-    )
 }

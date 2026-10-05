@@ -146,8 +146,11 @@ fun TransfersScreen(
             services.uploadManager,
             services.instantSaveRecords,
             account,
+            services.archiveExtractSession,
+            services.folderVaultSession,
         )
     }
+    val vaultSession = services.folderVaultSession
     val snackbarHostState = remember { SnackbarHostState() }
     // 找不到文件的提示走本页的 Snackbar，不用系统 Toast：Toast 不跟随 M3 主题与配色
     val openCloudFileById = { fileId: String, fileName: String ->
@@ -253,6 +256,12 @@ fun TransfersScreen(
             onOpen = { openCloudFileById(item.record.locateId, item.record.name) },
             onRemove = { state.removeInstant(item.record.id) },
         )
+        is TransferItem.Extract -> extractTransferActions(
+            item = item,
+            onShowInDrive = { openCloudFileById(item.job.file.id, item.job.file.name) },
+            onSkip = { state.skipExtract(item.job.id) },
+        )
+        is TransferItem.Vault -> vaultTransferActions(state.isVaultStopping, state::stopVault)
     }
 
     // 点按一项做的事，轻点与鼠标双击共用
@@ -278,6 +287,9 @@ fun TransfersScreen(
             onRetry = { state.retryPack(item.job.taskId) },
         )
         is TransferItem.Instant -> { { openCloudFileById(item.record.locateId, item.record.name) } }
+        is TransferItem.Extract -> { { openCloudFileById(item.job.file.id, item.job.file.name) } }
+        // 归档的文件夹只记着名字，没有可跳的位置；点按看详情
+        is TransferItem.Vault -> { { detailsKey = item.key } }
     }
 
     // 眼前列出的先后，连选与全选按它。收起的「文件已删除」组不在其中，展开的文件夹下载连同其中的文件
@@ -355,13 +367,26 @@ fun TransfersScreen(
                 onMoreClick = { detailsKey = item.key },
                 selection = selection,
             )
+            is TransferItem.Extract -> ExtractTransferRow(
+                item = item,
+                onShowInDrive = { openCloudFileById(item.job.file.id, item.job.file.name) },
+                onMoreClick = { detailsKey = item.key },
+                selection = selection,
+            )
+            is TransferItem.Vault -> VaultTransferRow(
+                item = item,
+                session = vaultSession,
+                onMoreClick = { detailsKey = item.key },
+                selection = selection,
+            )
         }
     }
 
     // 页头是顶栏还是一行、按钮带不带字、底栏排什么，按窗口宽度定；行本身不分宽窄
     val widthClass = currentWidthClass()
-    val compact = widthClass == WidthClass.Compact
     val wide = widthClass == WidthClass.Expanded
+    // medium 按大号手机，与 compact 同一套
+    val compact = !wide
 
     // 右键弹出与详情面板相同的操作。animateItem 这类条目修饰挂在外层，菜单锚点才跟着条目走
     val selectedTint = MaterialTheme.colorScheme.secondaryContainer
@@ -601,6 +626,8 @@ fun TransfersScreen(
         is TransferItem.Cloud -> CloudTransferSheet(detailsItem.task, actionsFor(detailsItem), closeDetails)
         is TransferItem.Pack -> PackTransferSheet(detailsItem, actionsFor(detailsItem), closeDetails)
         is TransferItem.Instant -> InstantTransferSheet(detailsItem.record, actionsFor(detailsItem), closeDetails)
+        is TransferItem.Extract -> ExtractTransferSheet(detailsItem, actionsFor(detailsItem), closeDetails)
+        is TransferItem.Vault -> VaultTransferSheet(detailsItem, vaultSession, actionsFor(detailsItem), closeDetails)
     }
 }
 

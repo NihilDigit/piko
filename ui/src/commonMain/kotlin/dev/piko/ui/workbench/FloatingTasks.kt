@@ -20,7 +20,6 @@ import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
-import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
@@ -42,23 +41,19 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.state.ArchiveExtractSession
 import dev.piko.shared.state.ArchiveJobStatus
-import dev.piko.shared.state.DuplicateFinderState
-import dev.piko.shared.state.DuplicateFinderState.Phase
-import dev.piko.shared.state.DuplicateKind
-import dev.piko.shared.state.DuplicateSession
 import dev.piko.shared.state.FolderVaultSession
 import dev.piko.shared.state.InstantSession
 import dev.piko.shared.state.InstantSheetState
 import dev.piko.ui.screens.instant.summary
 import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.TooltipIconButton
-import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.screens.drive.vaultArchiveStatus
 import dev.piko.ui.screens.drive.vaultRestoreStatus
 
 /**
- * 浮在窗口右下角的一摞任务卡片：解压、归档、取消归档、查找重复。每样一张，收起时一行，展开就地长成一块面板，
+ * 浮在窗口右下角的一摞任务卡片：解压、归档、取消归档、收起的添加链接。每样一张，收起时一行，展开就地长成一块面板，
  * 同一时刻只展开一张，其余照旧一行。整摞可以收成角落里的一颗胶囊。挂在主界面这一层，切到哪一页都在。
+ * 只在宽窗口：查重在那里开在网盘页自己的标签里，不在这里。
  *
  * 原来这些叠在网盘页底部的一条里，查重扫完又挪到命令栏右端的菜单。放在页面里的一栏（底部条、右侧栏、bottom sheet）
  * 一次只容得下一样，东西多了就得在栏里导航；浮动卡片相当于在一个窗口里开几个小窗口，互不挤占。
@@ -71,11 +66,6 @@ internal fun FloatingTasks(
     vault: FolderVaultSession,
     /** 收起的添加链接面板：一张卡片，点「继续」展开回面板，× 放弃。 */
     instant: InstantSession,
-    /** 为 null 时不显示查重：有标签栏的窗口里查重开在自己的标签里，进度与结果都在标签上。 */
-    duplicates: DuplicateSession?,
-    /** 正停在查重结果里：那张卡片的结果就在眼前，扫完后不再显示。 */
-    viewingDuplicates: Boolean,
-    onOpenDuplicates: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val tasks = buildList {
@@ -84,9 +74,6 @@ internal fun FloatingTasks(
         if (vault.restoreProgress != null) add(restoreTask(vault))
         val instantState = instant.state
         if (instantState != null && !instant.isSheetOpen) add(instantTask(instantState, instant))
-        duplicates?.state?.let { finder ->
-            if (!(viewingDuplicates && !finder.isScanning)) add(duplicateTask(finder, onOpenDuplicates, duplicates::end))
-        }
     }
     if (tasks.isEmpty()) return
     var minimized by rememberSaveable { mutableStateOf(false) }
@@ -128,7 +115,6 @@ private class FloatingTask(
     val title: String,
     val status: String,
     val progress: Float? = null,
-    val statusIsError: Boolean = false,
     val action: Pair<String, () -> Unit>? = null,
     val actionEnabled: Boolean = true,
     /** 丢掉这张卡片代表的东西，标签说清丢掉的是什么。在跑的不给，只给停止。 */
@@ -154,7 +140,7 @@ private fun TaskCard(task: FloatingTask, expanded: Boolean, onToggle: () -> Unit
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) {
-                    if (task.running) InlineLoadingIndicator() else Icon(task.icon, contentDescription = null, tint = if (task.statusIsError) colors.error else colors.onSurfaceVariant)
+                    if (task.running) InlineLoadingIndicator() else Icon(task.icon, contentDescription = null, tint = colors.onSurfaceVariant)
                 }
                 Spacer(Modifier.width(16.dp))
                 Column(Modifier.weight(1f)) {
@@ -162,7 +148,7 @@ private fun TaskCard(task: FloatingTask, expanded: Boolean, onToggle: () -> Unit
                     Text(
                         task.status,
                         style = MaterialTheme.typography.bodySmall,
-                        color = if (task.statusIsError) colors.error else colors.onSurfaceVariant,
+                        color = colors.onSurfaceVariant,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -267,60 +253,5 @@ private fun instantTask(state: InstantSheetState, session: InstantSession): Floa
     )
 }
 
-private fun duplicateTask(finder: DuplicateFinderState, onOpen: () -> Unit, onEnd: () -> Unit): FloatingTask {
-    val title = "查找重复「${finder.root.name}」"
-    val dismiss = "结束查找重复" to onEnd
-    return when (finder.phase) {
-        Phase.SCANNING -> FloatingTask(
-            key = "duplicates",
-            icon = Icons.Outlined.FileCopy,
-            running = true,
-            title = title,
-            status = "已扫描 ${finder.scannedFolders} 个文件夹，${finder.scannedFiles} 个文件",
-            // 停止不丢弃已扫描的部分，照常比对
-            action = "停止" to finder::stopScan,
-        )
-        Phase.ANALYZING -> FloatingTask(key = "duplicates", icon = Icons.Outlined.FileCopy, running = true, title = title, status = "正在比对")
-        Phase.FAILED -> FloatingTask(
-            key = "duplicates",
-            icon = Icons.Outlined.ErrorOutline,
-            running = false,
-            title = title,
-            status = finder.errorMessage ?: "扫描失败",
-            statusIsError = true,
-            action = "重试" to finder::rescan,
-            dismiss = dismiss,
-        )
-        Phase.DONE -> {
-            val report = finder.report
-            val groups = report.identical + report.versions
-            val reclaimable = report.identical.sumOf { it.reclaimableBytes }
-            FloatingTask(
-                key = "duplicates",
-                icon = Icons.Outlined.FileCopy,
-                running = false,
-                title = title,
-                status = when {
-                    groups.isEmpty() -> "没有重复文件"
-                    reclaimable > 0 -> "找到 ${groups.size} 组，可腾出 ${reclaimable.toReadableSize()}"
-                    else -> "找到 ${groups.size} 组"
-                },
-                action = if (groups.isEmpty()) "重新扫描" to finder::rescan else "查看" to onOpen,
-                dismiss = dismiss,
-                detail = if (groups.isEmpty()) null else ({
-                    groups.take(DetailGroupLimit).forEach { group ->
-                        val count = if (group.kind == DuplicateKind.IDENTICAL) "${group.rows.size} 份相同" else "${group.rows.size} 个版本"
-                        DetailLine(group.title, "$count，共 ${group.totalBytes.toReadableSize()}")
-                    }
-                    if (groups.size > DetailGroupLimit) {
-                        Text("另有 ${groups.size - DetailGroupLimit} 组", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }),
-            )
-        }
-    }
-}
-
 private val CardWidth = 380.dp
 private val DetailMaxHeight = 320.dp
-private const val DetailGroupLimit = 8

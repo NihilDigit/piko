@@ -75,6 +75,7 @@ import androidx.compose.material.icons.filled.SyncAlt
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.SyncAlt
+import androidx.compose.material3.Badge
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.adaptive.ExperimentalMaterial3AdaptiveApi
@@ -341,6 +342,14 @@ fun PikoMainScaffold(
     // 而且要等任务真的排进队列，所选文件读不出来时只该有一条失败提示
     LaunchedEffect(services.uploadManager) {
         services.uploadManager.enqueued.collect { openTransfers() }
+    }
+
+    val openTransfersRequested by services.openTransfersRequested.collectAsStateWithLifecycle()
+    LaunchedEffect(openTransfersRequested) {
+        if (openTransfersRequested) {
+            openTransfers()
+            services.consumeOpenTransfersRequest()
+        }
     }
 
     // 已下完的本地副本优先：省流量，也不受网络波动影响
@@ -751,8 +760,13 @@ fun PikoMainScaffold(
             val navigationSuiteType = if (sidebar) NavigationSuiteType.None else NavigationSuiteType.ShortNavigationBarCompact
             NavigationSuiteScaffold(
                 navigationItems = {
+                    // 侧边栏的「传输」按钮上写速度或项数；底部导航栏放不下，只挂一个项数的徽标。
+                    // 解压与归档的进度只在传输页，徽标就是从别处找过去的线索
+                    val activity = if (sidebar) null else rememberTransferActivity(pollCloud = false)
                     MainTab.entries.forEach { tab ->
                         val selected = currentTab == tab
+                        // 照 M3：进了这一页就不再挂徽标
+                        val badgeCount = activity?.count?.takeIf { tab == MainTab.TRANSFERS && !selected && it > 0 }
                         NavigationSuiteItem(
                             selected = selected,
                             onClick = { onTabClick(tab) },
@@ -761,6 +775,7 @@ fun PikoMainScaffold(
                             icon = { Icon(imageVector = tab.icon(selected), contentDescription = null) },
                             // M3 要求选中项的标签加粗，而导航项的样式只有一档字重，不分选中态
                             label = { Text(tab.title, fontWeight = if (selected) FontWeight.Bold else null) },
+                            badge = badgeCount?.let { count -> { Badge { Text(if (count > 99) "99+" else "$count") } } },
                         )
                     }
                 },
@@ -1025,16 +1040,13 @@ fun PikoMainScaffold(
                         }
                     }
                 }
-                // 后台任务的浮动卡片。只在有侧边栏、高度够的窗口里：手机仍是网盘页底部的状态条与把手，以后再统一
-                if (sidebarMode && !heightCompact) {
+                // 后台任务的浮动卡片，条件与网盘页的标签栏相同（twoPane）。更窄的窗口按手机处理：解压与归档的进度在传输页，
+                // 查重与收起的添加链接是网盘页底部的状态条与把手。medium 虽有侧边栏，380dp 宽的卡片在那里要盖住大半个列表
+                if (widthClass == WidthClass.Expanded && !heightCompact) {
                     FloatingTasks(
                         archive = services.archiveExtractSession,
                         vault = services.folderVaultSession,
                         instant = services.instantSession,
-                        // 与网盘页的标签栏同一个条件（twoPane）：有标签时查重开在自己的标签里
-                        duplicates = services.duplicateSession.takeIf { widthClass != WidthClass.Expanded },
-                        viewingDuplicates = onHome && currentTab == MainTab.FILES && folderStack.firstOrNull()?.id == DriveLibrary.DUPLICATES.id,
-                        onOpenDuplicates = { openLibrary(DriveLibrary.DUPLICATES) },
                         modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
                     )
                 }

@@ -31,28 +31,31 @@ internal class TransferActivity(val downloadSpeed: Long, val uploadSpeed: Long, 
 }
 
 /**
- * 眼下进行中的传输：本机的下载与上传，加上云端的离线任务。离线任务不像下载那样有进程级的状态，
- * 这里每 [CLOUD_POLL_MS] 取一次第一页；侧边栏在时才取。暂停与失败的不算进行中。
+ * 眼下进行中的传输：本机的下载与上传、解压与归档，加上云端的离线任务。离线任务不像下载那样有进程级的状态，
+ * 要每 [CLOUD_POLL_MS] 取一次第一页，[pollCloud] 为假时不取、不计：手机上只为导航栏的一个数字常驻轮询不值得。
+ * 暂停与失败的不算进行中。
  */
 @Composable
-internal fun rememberTransferActivity(): TransferActivity {
+internal fun rememberTransferActivity(pollCloud: Boolean = true): TransferActivity {
     val services = LocalPikoServices.current
     val downloads by services.downloadManager.tasks.collectAsStateWithLifecycle()
     val uploads by services.uploadManager.tasks.collectAsStateWithLifecycle()
-    val cloud by produceState(services.taskRepository.cachedTasks().orEmpty(), services) {
-        while (true) {
+    val cloud by produceState(services.taskRepository.cachedTasks().orEmpty(), services, pollCloud) {
+        while (pollCloud) {
             services.taskRepository.getTasks().onSuccess { value = it.tasks }
             delay(CLOUD_POLL_MS)
         }
     }
     val activeDownloads = downloads.values.filter { it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.PENDING }
     val activeUploads = uploads.values.filter { it.status.isActive }
-    val activeCloud = cloud.count { it.phase == TaskPhase.RUNNING || it.phase == TaskPhase.PENDING }
+    val activeCloud = if (pollCloud) cloud.count { it.phase == TaskPhase.RUNNING || it.phase == TaskPhase.PENDING } else 0
+    // 待输密码的压缩包也算：它停着等人，正该引人去看
+    val serverWork = services.archiveExtractSession.jobs.size + (if (services.folderVaultSession.isRunning) 1 else 0)
     return TransferActivity(
         downloadSpeed = activeDownloads.sumOf { it.speedBytesPerSec },
         uploadSpeed = activeUploads.sumOf { it.speedBytesPerSec },
         // 文件夹下载一批算一项，与传输页一致；按文件数的话一个文件夹就是上千项
-        count = activeDownloads.distinctBy { it.batch?.id ?: it.taskId }.size + activeUploads.size + activeCloud,
+        count = activeDownloads.distinctBy { it.batch?.id ?: it.taskId }.size + activeUploads.size + activeCloud + serverWork,
     )
 }
 
