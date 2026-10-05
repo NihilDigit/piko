@@ -136,6 +136,8 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 要跨设备同步的，再在 `shared/.../shared/sync/PikoSettingsSync.kt` 的 `SyncedSettings` 里加一行；窗口大小、下载目录、
 代理这类每台设备各自的不要加。同步文件在网盘根目录的 `.piko/settings-<时间戳>.json`（`DriveSettingsStore`），
 按项带修改时刻合并，这台设备从没同步过的项算最旧；`.piko` 不在网盘页里列出。
+机密不放进设置同步（1.1.0 明文同步过压缩包密码，已停用并清理）。压缩包密码以账号密码派生的密钥加密，单独存一份
+`.piko/archive-passwords-<时间戳>.json`（`ArchivePasswordSync`），要同步别的机密照它做。
 
 ### 日志
 

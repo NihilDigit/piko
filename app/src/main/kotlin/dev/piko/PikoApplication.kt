@@ -17,6 +17,7 @@ import dev.piko.download.WorkResultNotifier
 import dev.piko.platform.AndroidPikoPlatform
 import dev.piko.platform.followSystemAnimatorScale
 import dev.piko.shared.data.FilePikoCacheStore
+import dev.piko.shared.sync.JvmSyncCipher
 import dev.piko.shared.data.InstantMagnetRepository
 import dev.piko.shared.data.PikoClientManager
 import java.io.File
@@ -97,6 +98,7 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
             uploadSources = AndroidPikoUploadSources(this),
             onUploadStarted = { PikoDownloadService.start(this) },
             cacheStore = FilePikoCacheStore(File(cacheDir, "piko").path),
+            syncCipher = JvmSyncCipher(),
         )
         val motionScale = PikoMotionScale().apply { followSystemAnimatorScale(this@PikoApplication) }
         appScope.launch { sessionManager.reduceMotionFlow.collect { motionScale.appReduced = it } }

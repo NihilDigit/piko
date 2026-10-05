@@ -304,6 +304,9 @@ class PikoClientManager(
      * 会话本身还有效就照常进去；会话也读不出时 SDK 的 login 同样失败，按网络错误处理，后台重连时再读。
      * 不能把这种失败当成已退出，否则钥匙串一时锁着就把人踢回登录页。
      */
+    /** [account] 保存的登录密码，读不出时为 null。压缩包密码的同步拿它派生密钥，见 ArchivePasswordSync。 */
+    suspend fun savedPassword(account: String): String? = credentialsOf(account)?.password
+
     private suspend fun credentialsOf(account: String): PikoCredentials? =
         runSuspendCatching { sessionStore.loadCredentials(account) }
             .onFailure { PikoLog.w(TAG, "读取保存的密码失败，本次按没有密码处理", it) }

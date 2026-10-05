@@ -1,6 +1,8 @@
 package dev.piko.ui
 
+import dev.piko.shared.sync.ArchivePasswordSync
 import dev.piko.shared.sync.PikoSettingsSync
+import dev.piko.shared.sync.SyncCipher
 import dev.piko.shared.sync.VaultTreeSync
 import dev.piko.ui.components.SegmentSession
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -56,6 +58,8 @@ class PikoServices(
     onUploadStarted: (() -> Unit)? = null,
     /** 记下的文件夹内容跨进程保留在这里，见 FolderContentMemory。 */
     cacheStore: PikoCacheStore? = null,
+    /** 压缩包密码同步进网盘前的加密，两端都传 JvmSyncCipher；为 null 时不同步它们（截图环境）。 */
+    syncCipher: SyncCipher? = null,
 ) {
     // 不随任何界面结束的后台工作：离线任务的跟踪与 Piko-Temp 的清理
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -87,6 +91,9 @@ class PikoServices(
         .also { it.start() }
     private val vaultTreeSync = VaultTreeSync(clientManager, driveRepository, backgroundScope, preferences.settingsSyncFlow)
         .also { it.start() }
+    private val archivePasswordSync = syncCipher?.let {
+        ArchivePasswordSync(clientManager, driveRepository, preferences, it, backgroundScope, preferences.settingsSyncFlow).also { sync -> sync.start() }
+    }
 
     /** API 走哪个根域名：用户固定的，或登录后测速自动挑的，见 PikPakDomainSelector。 */
     val domainSelector = PikPakDomainSelector(clientManager, preferences, backgroundScope).also { it.start() }

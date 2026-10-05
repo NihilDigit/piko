@@ -67,8 +67,8 @@ val SyncedSettings: List<SyncedSetting> = listOf(
 /**
  * 不再同步、要从网盘上的同步文件里抹掉的项。别的未知项照旧原样带着：那是更新的版本加的，不能被旧版本删掉。
  *
- * archivePasswords：1.1.0 把解压密码明文同步进网盘，之后只存本机的机密存储。客户端加密后再同步需要
- * 一把各设备共有、又不放进网盘的密钥，Piko 没有，所以不同步。
+ * archivePasswords：1.1.0 把解压密码明文同步进网盘。之后本机存进机密存储，跨设备改由 ArchivePasswordSync
+ * 以账号密码派生的密钥加密后单独存一份。
  */
 private val RetiredSettingKeys = setOf("archivePasswords")
 

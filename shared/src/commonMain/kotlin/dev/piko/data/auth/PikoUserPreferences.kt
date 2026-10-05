@@ -135,7 +135,10 @@ interface PikoUserPreferences {
     suspend fun loadOfflinePacks(): String
     suspend fun saveOfflinePacks(serialized: String)
 
-    /** 解压成功过的压缩包密码，JSON，见 ArchivePasswordVault。由平台加密存放，不同步。空串表示从未保存。 */
+    /**
+     * 解压成功过的压缩包密码，JSON，格式见 ArchivePasswordVault，平台只原样存取。由平台加密存放；
+     * 不走设置同步，跨设备由 ArchivePasswordSync 加密后单独同步。空串表示从未保存。
+     */
     val archivePasswordsFlow: Flow<String>
     suspend fun saveArchivePasswords(serialized: String)
 
