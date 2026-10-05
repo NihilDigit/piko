@@ -937,8 +937,35 @@ class DriveScreenState(
     private fun addressBase(): List<PikoPathBreadcrumb> =
         driveRepo.folderStackFlow.value.outsideArchives().takeIf { it.library == null } ?: listOf(PikoDriveRepository.ROOT_BREADCRUMB)
 
-    /** 某一级下的全部文件夹，地址栏里路径段后面的 › 点开用。 */
-    suspend fun subfoldersOf(folderId: String): Result<List<PikoPathBreadcrumb>> = driveRepo.subfolders(folderId)
+    /**
+     * 目录图里一个节点下的一层（见 [FolderMapLevel]）。网盘里的文件夹列出子文件夹与压缩包；压缩包与包里的文件夹
+     * 列出包里的文件夹，密码先逐个试存过的（见 [ArchiveBrowser.list]），都不对时交给界面，点了进到包里再输。
+     * 库不是文件夹层级，下面是空的。
+     */
+    suspend fun folderMapLevel(id: String): FolderMapLevel {
+        ArchiveLocation.of(id)?.let { location ->
+            val browser = archives ?: return FolderMapLevel.Loaded(emptyList())
+            return browser.list(location).fold(
+                onSuccess = { entries ->
+                    FolderMapLevel.Loaded(entries.filter { it.isFolder }.map { FolderMapNode(PikoPathBreadcrumb(it.id, it.name), isArchive = false) })
+                },
+                onFailure = { error -> if (error is ArchivePasswordException) FolderMapLevel.NeedsPassword else FolderMapLevel.Failed(archiveFailure(error)) },
+            )
+        }
+        if (DriveLibrary.of(id) != null) return FolderMapLevel.Loaded(emptyList())
+        return driveRepo.folderMapLevel(id).fold(
+            onSuccess = { files ->
+                FolderMapLevel.Loaded(files.map { file ->
+                    if (file.isFolder) {
+                        FolderMapNode(PikoPathBreadcrumb(file.id, file.name), isArchive = false)
+                    } else {
+                        FolderMapNode(PikoPathBreadcrumb(ArchiveLocation(file.id, file.hash, "").id, file.name), isArchive = true)
+                    }
+                })
+            },
+            onFailure = { FolderMapLevel.Failed("列不出这个文件夹，请检查网络") },
+        )
+    }
 
     /** 地址栏历史里的快速访问项：只存 ID 与名字，上级逐层查出来再跳，与侧边栏的快速访问相同。 */
     fun openPinned(folder: PikoPathBreadcrumb) {
@@ -1391,6 +1418,19 @@ class DriveScreenState(
                 .reportFailure(TAG, "重命名") { _messages.tryEmit(it) }
         }
     }
+}
+
+/** 目录图里的一个节点：网盘里的文件夹、压缩包或包里的文件夹。[crumb] 的 ID 就是路径栈上那一级的 ID，点了即可压栈。 */
+class FolderMapNode(val crumb: PikoPathBreadcrumb, val isArchive: Boolean)
+
+/** 目录图里一个节点下的一层，见 [DriveScreenState.folderMapLevel]。 */
+sealed interface FolderMapLevel {
+    class Loaded(val nodes: List<FolderMapNode>) : FolderMapLevel
+
+    /** 加密的压缩包，存过的密码都不对。 */
+    data object NeedsPassword : FolderMapLevel
+
+    class Failed(val message: String) : FolderMapLevel
 }
 
 /**

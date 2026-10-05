@@ -10,6 +10,7 @@ import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.material.icons.outlined.Tab
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.Add
 import dev.piko.ui.components.PaletteItem
 import dev.piko.ui.components.ContributePaletteItems
@@ -282,6 +283,9 @@ fun DriveScreen(
 
     val archiveBrowser = LocalPikoServices.current.archiveBrowser
     val state = remember { DriveScreenState(driveRepo, sessionManager, scope, duplicateSession, archiveBrowser) }
+    // 目录图：宽窗口里地址栏召出、可钉成卡片，窄窗口里是底部面板（folderMapSheet），见 FolderMap
+    val folderMap = remember(state) { FolderMapState(state::folderMapLevel, scope) }
+    var folderMapSheet by remember { mutableStateOf(false) }
 
     LaunchedEffect(state) {
         state.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
@@ -396,6 +400,15 @@ fun DriveScreen(
     val pathInTopBar = currentWidthClass() == WidthClass.Expanded && !heightCompact
     // 右侧的详情栏与标签栏：只在宽、又不矮的窗口里开，高度 compact 时双栏不现实
     val twoPane = currentWidthClass() == WidthClass.Expanded && !heightCompact
+    // 快捷键、命令面板与窄窗口顶栏的目录图：根是网盘根目录。宽窗口里钉出或收起卡片（地址栏的 › 另能从任一段召出），
+    // 窄窗口里开底部面板
+    fun toggleFolderMap() {
+        if (pathInTopBar) {
+            folderMap.pinnedRoot = if (folderMap.pinnedRoot == null) listOf(PikoDriveRepository.ROOT_BREADCRUMB) else null
+        } else {
+            folderMapSheet = true
+        }
+    }
     // 地址栏进入输入的请求，快捷键加一，见 DrivePathTitle
     var addressEditRequests by remember { mutableIntStateOf(0) }
     // 输入框从原名开始改；只设目标的话，框里留着上一次改名时输入的字
@@ -1034,6 +1047,8 @@ fun DriveScreen(
             (!isMac && event.key == Key.F4 && !event.isAltPressed)
         when {
             addressKey && pathInTopBar -> addressEditRequests++
+            // 照 VS Code 的资源管理器（Ctrl+Shift+E）
+            primary && event.isShiftPressed && event.key == Key.E -> toggleFolderMap()
             // 宽窗口的搜索框常驻，取得焦点即可；窄屏点开搜索栏
             primary && event.key == Key.F -> if (pathInTopBar) searchFocusRequests++ else isSearchOpen = true
             // 剪切、复制、粘贴，照资源管理器：换个目录粘贴，剪切的即移过去
@@ -1162,7 +1177,7 @@ fun DriveScreen(
                         onOpenStack = driveRepo::updateFolderStack,
                         onSubmitPath = state::goToPath,
                         completions = state::addressCompletions,
-                        subfoldersOf = state::subfoldersOf,
+                        folderMap = folderMap,
                         recent = recentFolders,
                         pinned = pinnedFolders,
                         onOpenPinned = state::openPinned,
@@ -1289,6 +1304,7 @@ fun DriveScreen(
                 add(PaletteItem("上传文件", Icons.Outlined.UploadFile, "网盘", keywords = "upload") { pickFiles() })
                 add(PaletteItem("上传文件夹", Icons.Outlined.DriveFolderUpload, "网盘", keywords = "upload folder") { pickFolder() })
             }
+            add(PaletteItem("目录图", Icons.Outlined.AccountTree, "网盘", detail = if (platform.shortcutModifier == ShortcutModifier.Command) "⌘⇧E" else "Ctrl+Shift+E", keywords = "folder tree map minimap 树") { toggleFolderMap() })
             add(PaletteItem("搜索文件", Icons.Outlined.Search, "网盘", detail = label("F"), keywords = "search find") {
                 if (pathInTopBar) searchFocusRequests++ else isSearchOpen = true
             })
@@ -1369,6 +1385,9 @@ fun DriveScreen(
                     main = list,
                     panel = { inspectorPanel() },
                 )
+            }
+            if (pathInTopBar) {
+                PinnedFolderMap(folderMap, current = folderStack, onOpen = driveRepo::updateFolderStack, modifier = Modifier.align(Alignment.TopStart))
             }
         }
     }
@@ -1535,6 +1554,8 @@ fun DriveScreen(
                                         ) { FeedToggle(shown = feedShown, onShownChange = onFeedShownChange, iconOnly = iconOnly) })
                                     }
                                     add(iconBarItem(Icons.Outlined.Search, "搜索", { isSearchOpen = true }, priority = 30, shortcut = platform.shortcutModifier.label("F")))
+                                    // 窄屏的上级只是一行面包屑，嵌套深的目录要逐层点进去；目录图一眼看到整棵树
+                                    add(iconBarItem(Icons.Outlined.AccountTree, "目录图", ::toggleFolderMap, priority = 5))
                                     if (showsRefreshButton()) {
                                         add(iconBarItem(Icons.Outlined.Refresh, "刷新", { state.load(refresh = true) }, priority = 10, shortcut = "F5"))
                                     }
@@ -1800,6 +1821,23 @@ fun DriveScreen(
         )
     }
 
+    if (folderMapSheet) {
+        val root = listOf(PikoDriveRepository.ROOT_BREADCRUMB)
+        LaunchedEffect(Unit) { folderMap.reveal(root, folderStack) }
+        PikoSheet(onDismissRequest = { folderMapSheet = false }, sideSheetTitle = "目录图") {
+            FolderMapTree(
+                state = folderMap,
+                root = root,
+                current = folderStack,
+                onOpen = { stack -> hideThen { driveRepo.updateFolderStack(stack) } },
+                onDismiss = { folderMapSheet = false },
+                // 触屏上一弹出就聚焦过滤框会顶起键盘，盖住半棵树
+                focusFilter = false,
+                modifier = Modifier.heightIn(max = FolderMapSheetMaxHeight),
+            )
+        }
+    }
+
     state.archivePasswordRequest?.let { request ->
         ArchiveBrowsePasswordDialog(
             archiveName = request.archiveName,
@@ -1994,6 +2032,7 @@ private val DriveListHeaderHeight = 48.dp
 // 列表末尾为 Extended FAB 留出的空间：56dp 高度加 16dp 外边距，再留一段让最后一项
 // 能完整滚出 FAB 的遮挡。
 private val FabClearance = 88.dp
+private val FolderMapSheetMaxHeight = 560.dp
 
 /**
  * 页眉左侧的说明，只在搜索时出现：全盘搜索是逐层遍历，需要告诉用户仍在进行、已找到多少。

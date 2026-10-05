@@ -110,7 +110,8 @@ internal class AddressBarModel(
     /** 回车时没挑下拉里的项，按输入的路径走；找到了返回 true。 */
     val onSubmitPath: suspend (String) -> Boolean,
     val completions: suspend (String) -> AddressCompletion,
-    val subfoldersOf: suspend (folderId: String) -> Result<List<PikoPathBreadcrumb>>,
+    /** 路径段后面的 › 召出的目录图，见 FolderMap。 */
+    val folderMap: FolderMapState,
     val recent: List<List<PikoPathBreadcrumb>>,
     val pinned: List<PikoPathBreadcrumb>,
     /** 快速访问只存 ID 与名字，上级要现查。 */
@@ -126,7 +127,7 @@ internal class AddressBarModel(
 
 /**
  * 宽窗口顶栏上的地址栏，照资源管理器：一条底框里是「☁ 网盘 › 动画 › Frieren」，每一段都能点，
- * 每个 › 点开是这一级下的全部文件夹，直接跳到同级。点路径后面的空白处、右端的 ˅，或 [editRequests] 加一
+ * 每个 › 点开是以这一级为根的目录图（FolderMap），直接跳到同级或更深处。点路径后面的空白处、右端的 ˅，或 [editRequests] 加一
  * （快捷键走这条）换成输入框，里面是完整路径并全选，下面接一个下拉：
  * 还没动过输入时是最近去过的与快速访问；输入时是逐层补全，Tab 补上当前一段并接着输下一段，↑↓ 挑、回车前往；
  * 粘进磁力或分享链接时给「添加链接」；输入的不是现有路径时给搜索；输入页面名时给前往那一页。
@@ -405,8 +406,8 @@ private fun SuggestionRow(item: Suggestion, highlighted: Boolean, onClick: () ->
 }
 
 /**
- * 不在输入时的路径：每一段能点、能接住拖来的条目；段后的 › 点开是这一级下的文件夹，照资源管理器。
- * 最后一段后面也有一个，列当前文件夹里的子文件夹。放不下时横向滚动并停在末尾，鼠标竖滚轮也滚得动。
+ * 不在输入时的路径：每一段能点、能接住拖来的条目；段后的 › 点开是以这一级为根的目录图。
+ * 最后一段后面也有一个，根是当前文件夹。放不下时横向滚动并停在末尾，鼠标竖滚轮也滚得动。
  */
 @Composable
 private fun PathCrumbs(model: AddressBarModel) {
@@ -436,10 +437,10 @@ private fun PathCrumbs(model: AddressBarModel) {
                 }
                 CrumbName(crumb.name, current = index == stack.lastIndex)
             }
-            SiblingChevron(
+            FolderMapChevron(
                 level = stack.take(index + 1),
-                next = stack.getOrNull(index + 1),
-                subfoldersOf = model.subfoldersOf,
+                current = stack,
+                state = model.folderMap,
                 onOpenStack = model.onOpenStack,
             )
         }
@@ -473,19 +474,19 @@ private fun CrumbName(name: String, current: Boolean) {
 private val CrumbMaxWidth = 200.dp
 private val CurrentCrumbMaxWidth = 360.dp
 
-/** 路径段后面的 ›：点开列出 [level] 末级下的全部文件夹，路径上的下一级标亮。 */
+/**
+ * 路径段后面的 ›：召出以 [level] 末级为根的目录图，展开到眼前的位置。原来是只列一层子文件夹的下拉菜单，
+ * 目录图第一层就是那一份，另能往下展开、过滤与钉住，见 FolderMap。
+ */
 @Composable
-private fun SiblingChevron(
+private fun FolderMapChevron(
     level: List<PikoPathBreadcrumb>,
-    next: PikoPathBreadcrumb?,
-    subfoldersOf: suspend (String) -> Result<List<PikoPathBreadcrumb>>,
+    current: List<PikoPathBreadcrumb>,
+    state: FolderMapState,
     onOpenStack: (List<PikoPathBreadcrumb>) -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
     var expanded by remember { mutableStateOf(false) }
-    // null 是还在列，空表是没有子文件夹
-    var folders by remember(level.last().id) { mutableStateOf<Result<List<PikoPathBreadcrumb>>?>(null) }
-    LaunchedEffect(expanded, level.last().id) { if (expanded) folders = subfoldersOf(level.last().id) }
     Box {
         Icon(
             imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
@@ -497,48 +498,19 @@ private fun SiblingChevron(
                 .padding(vertical = 4.dp)
                 .size(18.dp),
         )
-        PikoDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, modifier = Modifier.heightIn(max = SuggestionsMaxHeight)) {
-            val loaded = folders
-            when {
-                loaded == null -> Box(Modifier.padding(horizontal = 24.dp, vertical = 12.dp)) { InlineLoadingIndicator() }
-                loaded.isFailure -> MenuNote("列不出这个文件夹，请检查网络")
-                loaded.getOrThrow().isEmpty() -> MenuNote("没有子文件夹")
-                else -> {
-                    val list = loaded.getOrThrow()
-                    list.forEachIndexed { index, folder ->
-                        val onPath = folder.id == next?.id
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    folder.name,
-                                    fontWeight = if (onPath) FontWeight.SemiBold else null,
-                                    color = if (onPath) colors.primary else Color.Unspecified,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            },
-                            leadingIcon = { Icon(Icons.Outlined.Folder, contentDescription = null, modifier = Modifier.size(20.dp)) },
-                            shape = menuItemShape(index, list.size),
-                            onClick = {
-                                expanded = false
-                                onOpenStack(level + folder)
-                            },
-                        )
-                    }
-                }
-            }
-        }
+        FolderMapMenu(
+            expanded = expanded,
+            state = state,
+            root = level,
+            current = current,
+            onOpen = onOpenStack,
+            onPin = {
+                expanded = false
+                state.pinnedRoot = level
+            },
+            onDismiss = { expanded = false },
+        )
     }
-}
-
-@Composable
-private fun MenuNote(text: String) {
-    Text(
-        text,
-        style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-    )
 }
 
 /** 输入框里的写法，与 goToPath 认的一致：「网盘/动画/Frieren」。 */

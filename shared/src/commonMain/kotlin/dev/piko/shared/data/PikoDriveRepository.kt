@@ -477,6 +477,18 @@ open class PikoDriveRepository(
         }
     }
 
+    /**
+     * 目录图（见 FolderMap）里的一层：文件夹，以及能当文件夹打开的压缩包，文件夹在前、各自按名字自然排序。
+     * 路径栈上的目录直接用列表缓存。不进 [subfolders] 的表：那张表只记文件夹，补全也在用。
+     */
+    suspend fun folderMapLevel(folderId: String): Result<List<FileStat>> = withContext(Dispatchers.Default) {
+        runSuspendCatching {
+            val files = listingCache.value[folderId] ?: client.listFiles(folderId)
+            files.filter { !it.trashed && !isPikoInternalFolder(it, folderId) && (it.isFolder || (it.isExtractableArchive && it.hash.isNotEmpty())) }
+                .sortedWith(compareBy<FileStat> { !it.isFolder }.thenBy(NaturalOrder) { it.name })
+        }
+    }
+
     private fun foldersIn(parentId: String, files: List<FileStat>) = files.asSequence()
         .filter { it.isFolder && !it.trashed && !isPikoInternalFolder(it, parentId) }
         .sortedWith(compareBy(NaturalOrder) { it.name })

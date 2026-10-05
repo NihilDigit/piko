@@ -44,6 +44,7 @@ internal fun ShortcutsDialog(modifier: ShortcutModifier, onDismiss: () -> Unit) 
             (if (mac) "⌘L" else "Ctrl+L、Alt+D 或 F4") to "在地址栏输入路径",
             "Tab" to "地址栏中补全当前一段",
             "Delete" to "地址栏中删除所选的最近记录",
+            (if (mac) "⌘⇧E" else "Ctrl+Shift+E") to "钉出或收起目录图",
             "${primary}F" to "搜索",
             "F5" to "刷新",
             "${primary}A" to "全选",
