@@ -26,10 +26,17 @@
 }
 
 # 触摸桥（compose-windows-touch）经反射取 Compose Desktop 的内部入口，注入 WM_POINTER 的触摸。
-# 取不到时静默退回鼠标路径，release 里看不出来，所以这些成员要显式保留
--keepclassmembers class androidx.compose.ui.awt.** {
+# 取不到时静默退回鼠标路径，release 里看不出来，所以这些成员要显式保留。
+# 桥对每一层取的是 getClass() 上声明的成员，这几个类都是 final，类名照 CMP 1.12.0 的 ui-desktop 写准：
+# ComposeWindow.composePanel → ComposeWindowPanel._composeContainer → ComposeContainer 的 mediator 与内容组件
+# → ComposeSceneMediator 里的 scene 与场景范围。升级 CMP 后用 javap 核对这些成员是否还在原来的类上
+-keepclassmembers class androidx.compose.ui.awt.ComposeWindow {
     *** composePanel;
+}
+-keepclassmembers class androidx.compose.ui.awt.ComposeWindowPanel {
     *** _composeContainer;
+}
+-keepclassmembers class androidx.compose.ui.scene.ComposeContainer {
     *** mediator;
     *** getContentComponent();
 }
@@ -37,6 +44,14 @@
     *** scene$delegate;
     *** getSceneBoundsInPx();
     static *** access$getScene(androidx.compose.ui.scene.ComposeSceneMediator);
+}
+# 注入走 sendPointerEvent 的多指针重载（参数带 List）。Compose 自己的 AWT 路径只调单指针那个，
+# 不写这两条的话接口与实现上的这个重载都被裁掉，release 里触摸一直退回鼠标路径。名字里的后缀是值类参数的改名摘要，随 CMP 版本变
+-keepclassmembers class androidx.compose.ui.scene.ComposeScene {
+    *** sendPointerEvent-UGFwazM(...);
+}
+-keepclassmembers class androidx.compose.ui.scene.BaseComposeScene {
+    *** sendPointerEvent-UGFwazM(...);
 }
 
 # ServiceLoader 装载的实现类。ProGuard 不像 R8 那样自动保留 META-INF/services 里列出的类

@@ -60,7 +60,9 @@ Windows、macOS 与 Linux 的入口、平台实现与播放器窗口。应用内
   - 不碰 WM_NCPOINTER*：落在标题栏与边框的触摸由系统合成鼠标消息，窗口移动与标题栏按钮才照旧。
   - 对 Compose 的反射在第一条指针消息到来时才建立，取不到就一直走 AWT 的鼠标路径。它读 `composePanel`、
     `_composeContainer`、`mediator` 与 `sendPointerEvent-` 的 10 参重载，**升级 CMP 时先看这里**；
-    release 的 ProGuard 要显式保留这些成员（`proguard-rules.pro`），否则只在 release 里悄悄退回鼠标。
+    release 的 ProGuard 要按准确类名显式保留这些成员（`proguard-rules.pro`），否则只在 release 里悄悄退回鼠标：
+    多指针重载 Compose 自己不调，不写 keep 就被裁掉。升级 CMP 后用 javap 对新版
+    `ui-desktop` 的 jar 核对这些成员仍在原来的类上、重载名的摘要后缀没变，再打一次 release 确认它们留在了产物里。
   - 堆积的 MOVE 在事件分发线程前合并，较早的采样留作 `HistoricalChange`，并要自己设
     `originalEventPosition`，否则速度跟踪器从原点起算，fling 快得离谱。
   - 触摸阈值：Compose Desktop 写死 18dp，`ProvideTouchViewConfiguration` 换成 Android 的 8dp。鼠标阈值是它的固定
