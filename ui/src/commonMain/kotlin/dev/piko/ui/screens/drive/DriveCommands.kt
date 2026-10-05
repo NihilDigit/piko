@@ -11,7 +11,7 @@ import io.github.nihildigit.pikpak.FileStat
  * 规则只写在这里，命令栏照 [DriveCommands] 画，不再在各处零散地判断。
  *
  * 眼下的状态由四样东西决定，全在 [CommandInputs] 里：
- * - 在哪（[CommandPlace]）：网盘根目录、文件夹、搜索结果、星标这类库、最近添加与播放历史、回收站。
+ * - 在哪（[CommandPlace]）：网盘根目录、文件夹、搜索结果、星标这类库、最近添加与播放历史、回收站、压缩包里。
  * - 作用于哪几项：选中的几项；没有选中时是焦点所在（鼠标点过）的一项；都没有时为空，这时只剩作用于整个位置的操作。
  * - 右侧那一栏里是什么（[PanelContent]）：空着、详情或信息流，同一时刻只放一样；
  *   详情栏开着时，条目的操作已经整列摆在那里。
@@ -37,6 +37,9 @@ internal enum class CommandPlace {
 
     /** 回收站：只能恢复与彻底删除。 */
     TRASH,
+
+    /** 压缩包里（见 ArchiveLocation）：条目不在网盘里，只能打开、下载文件与解压选中的几项。 */
+    ARCHIVE,
 }
 
 /** 右侧那一栏眼下放着什么。 */
@@ -96,10 +99,11 @@ internal class DriveCommands(
 internal fun driveCommands(input: CommandInputs): DriveCommands = with(input) {
     val folder = place == CommandPlace.ROOT || place == CommandPlace.FOLDER
     val inTrash = place == CommandPlace.TRASH
+    val inArchive = place == CommandPlace.ARCHIVE
     val eventLog = place == CommandPlace.RECENT || place == CommandPlace.HISTORY
     val hasTargets = targets.isNotEmpty()
-    // 上传中的文件改名、移动、分享都会失败，作用对象里有它就不给这几样；归档条目在网盘里没有文件，同理
-    val settled = hasTargets && targets.none { it.isUploading || it.isVaulted }
+    // 上传中的文件改名、移动、分享都会失败，作用对象里有它就不给这几样；归档条目与压缩包里的条目在网盘里没有文件，同理
+    val settled = hasTargets && !inArchive && targets.none { it.isUploading || it.isVaulted }
     // 详情栏开着时它已整列摆出这几项的全部操作，命令栏不再重复一遍；剪切、复制、粘贴除外：
     // 它们是键盘上的习惯动作，详情栏里也没有
     val itemActionsHere = hasTargets && panel != PanelContent.DETAILS
@@ -111,12 +115,13 @@ internal fun driveCommands(input: CommandInputs): DriveCommands = with(input) {
         paste = clipboardFull && folder,
         rename = itemActionsHere && settled && !inTrash,
         share = itemActionsHere && settled && !inTrash,
-        moveToTrash = itemActionsHere && !inTrash,
+        moveToTrash = itemActionsHere && !inTrash && !inArchive,
         restoreOrDelete = itemActionsHere && inTrash,
         moveCopyTo = itemActionsHere && settled && !inTrash,
-        // 文件夹整个下载，见 PikoDownloadCoordinator.enqueueFolders
-        download = itemActionsHere && !inTrash && targets.any { !it.isUploading },
-        extract = itemActionsHere && !inTrash && targets.any { it.isExtractableArchive || it.isArchiveVolume },
+        // 文件夹整个下载，见 PikoDownloadCoordinator.enqueueFolders；压缩包里的文件夹不在网盘里，列不出内容，只下文件
+        download = itemActionsHere && !inTrash && targets.any { !it.isUploading && !(inArchive && it.isFolder) },
+        // 压缩包里解压的是选中的几项本身，不是选中项里的压缩包
+        extract = itemActionsHere && !inTrash && (inArchive || targets.any { it.isExtractableArchive || it.isArchiveVolume }),
         removeRecord = itemActionsHere && eventLog,
         // 清空只在有东西可清时。与 libraryPageActions 对应：只有回收站与播放历史有清空
         emptyPlace = (inTrash || place == CommandPlace.HISTORY) && itemCount > 0,

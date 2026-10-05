@@ -5,7 +5,7 @@ import dev.piko.data.repository.FileNameSanitizer
 import dev.piko.download.DownloadBatch
 import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
-import dev.piko.shared.data.VaultEntry
+import dev.piko.shared.data.LeasedFile
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
@@ -556,7 +556,7 @@ class PikoDownloadCoordinator(
         try {
             val concurrency = preferences.concurrentConnectionsFlow.first().coerceIn(1, 8)
             lease = fileCachePool.acquire(client, task.fileId, task.gcid, task.totalBytes, task.fileName,
-                parentId = task.parentId, leased = task.leasedSource || VaultEntry.isVaulted(task.fileId),
+                parentId = task.parentId, leased = task.leasedSource || LeasedFile.isLeased(task.fileId),
                 retained = true, concurrency = concurrency, savedPath = task.cachePath, owner = taskId)
             val entry = lease.entry
             update(taskId) { it.copy(account = client.account, cachePath = entry.store.path, downloadedBytes = entry.store.heldBytes.value,

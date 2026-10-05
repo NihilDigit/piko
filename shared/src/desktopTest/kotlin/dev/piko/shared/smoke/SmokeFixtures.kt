@@ -100,8 +100,10 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun saveOfflinePacks(serialized: String) {
         offlinePacks = serialized
     }
-    override val archivePasswordsFlow: Flow<String> = MutableStateFlow("")
-    override suspend fun saveArchivePasswords(serialized: String) = Unit
+    override val archivePasswordsFlow = MutableStateFlow("")
+    override suspend fun saveArchivePasswords(serialized: String) {
+        archivePasswordsFlow.value = serialized
+    }
     override val recentMoveTargetsFlow: Flow<String> = MutableStateFlow("")
     override suspend fun saveRecentMoveTargets(serialized: String) = Unit
     override val pinnedFoldersFlow: Flow<String> = MutableStateFlow("")

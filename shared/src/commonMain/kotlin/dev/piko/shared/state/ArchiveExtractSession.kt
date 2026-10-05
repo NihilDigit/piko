@@ -47,6 +47,8 @@ data class ArchiveJob(
     val status: ArchiveJobStatus = ArchiveJobStatus.Waiting,
     /** 用户输入的密码。空串表示不带密码提交，普通压缩包会忽略它。 */
     val password: String = "",
+    /** 只解压包里的这几项（包内路径），在压缩包里多选后解压时用；为空是全部。 */
+    val paths: List<String> = emptyList(),
 ) {
     val id: String get() = file.id
 }
@@ -116,6 +118,19 @@ class ArchiveExtractSession(
         ensureWorker()
     }
 
+    /**
+     * 解压压缩包里的几项，在包里浏览时用。[password] 是浏览时已经验证过的，为空是不要密码的包。
+     * 同一个包已在队列里时不再加：任务按压缩包排队，同一个包的两批会互相顶掉。
+     */
+    fun extractEntries(archive: FileStat, paths: List<String>, password: String) {
+        if (jobs.any { it.id == archive.id }) {
+            _messages.tryEmit("这个压缩包已在解压中")
+            return
+        }
+        jobs = jobs + ArchiveJob(archive, password = password, paths = paths)
+        ensureWorker()
+    }
+
     fun submitPassword(jobId: String, password: String) {
         val job = jobs.firstOrNull { it.id == jobId } ?: return
         // 排到队首：用户正等着看这个密码对不对
@@ -151,7 +166,7 @@ class ArchiveExtractSession(
 
     private suspend fun process(job: ArchiveJob) {
         update(job.id) { it.copy(status = ArchiveJobStatus.Submitting) }
-        val task = repository.start(job.file, job.password).getOrElse { err ->
+        val task = repository.start(job.file, job.password, job.paths).getOrElse { err ->
             PikoLog.w(TAG, "提交解压失败：${logFile(job.file.id, job.file.name)}", err)
             if (err is ArchivePasswordException) {
                 // 没带密码时服务端报的是「缺少」；带了还被拒才算输错

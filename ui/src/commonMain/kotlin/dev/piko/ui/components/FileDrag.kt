@@ -58,7 +58,7 @@ import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.data.PikoPathBreadcrumb
-import dev.piko.shared.data.DriveLibrary
+import dev.piko.shared.data.isDriveFolderId
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.ShortcutModifier
 import kotlinx.coroutines.coroutineScope
@@ -284,8 +284,8 @@ private fun LayoutCoordinates?.rootOf(local: Offset): Offset =
  */
 @Composable
 fun Modifier.fileDropTarget(key: Any, folder: PikoPathBreadcrumb): Modifier {
-    // 地址栏与标签上的库（星标、回收站）不是文件夹，放不进东西
-    if (DriveLibrary.of(folder.id) != null) return this
+    // 地址栏与标签上的库（星标、回收站）与压缩包都不是网盘里的文件夹，放不进东西
+    if (!isDriveFolderId(folder.id)) return this
     val drag = LocalFileDrag.current ?: return this
     val currentFolder by rememberUpdatedState(folder)
     DisposableEffect(drag, key) { onDispose { drag.unregister(key) } }

@@ -31,6 +31,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.data.FolderUsage
+import dev.piko.shared.data.isDriveFolderId
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.components.FileTypeIcon
 import dev.piko.ui.components.MediaTagRow
@@ -130,7 +131,7 @@ private fun SingleDetails(target: InspectorTarget.Single, primaryAction: SheetAc
         buildList {
             add("类型" to (if (file.isFolder) "文件夹" else file.name.substringAfterLast('.', "").uppercase().ifEmpty { "文件" }))
             if (file.isFolder) {
-                add("内容" to usage)
+                if (usage.isNotEmpty()) add("内容" to usage)
             } else {
                 add("大小" to file.sizeBytes.toReadableSize())
             }
@@ -212,10 +213,10 @@ private fun ActionGroup(actions: List<SheetAction>) {
     }
 }
 
-/** 文件夹的递归统计，逐步长上去；与操作面板用的是同一个统计，换了文件夹就重新数。 */
+/** 文件夹的递归统计，逐步长上去；与操作面板用的是同一个统计，换了文件夹就重新数。库与压缩包里的文件夹数不了，为空。 */
 @Composable
 private fun folderUsage(file: FileStat): String {
-    if (!file.isFolder) return ""
+    if (!file.isFolder || !isDriveFolderId(file.id)) return ""
     val driveRepo = LocalPikoServices.current.driveRepository
     val flow = remember(file.id) { driveRepo.folderUsage(file.id) }
     val usage by produceState<FolderUsage?>(null, flow) {

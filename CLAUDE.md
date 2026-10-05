@@ -112,7 +112,7 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 `DriveScreenState`、`InstantSheetState`（秒传与磁力解析，多条链接时由 `InstantBatchState` 为每条各建一个）、
 `OfflineTasksState`（云端离线任务，轮询由调用方的协程控制启停）、`LoginState`、
 `FolderPickerState`（自带路径栈）、`DuplicateFinderState`（查重）、`ArchiveExtractSession`（服务端解压，
-进程级，挂在 `PikoServices` 上，离开网盘页照常进行）。
+进程级，挂在 `PikoServices` 上，离开网盘页照常进行）、`ArchiveBrowser`（把压缩包当文件夹看，同样进程级）。
 播放器的准备策略是 `shared/.../shared/media/player/PlayerScreenState`，见「播放器」一节。
 
 ### 平台差异用接口，不用 expect/actual

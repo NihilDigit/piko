@@ -49,7 +49,7 @@ import dev.piko.ui.components.PikoDialogConfirm
 import dev.piko.ui.components.TooltipIconButton
 
 /**
- * 加密压缩包的密码框：输入框下列出解压成功过的密码，点一个填进输入框，由用户确认后才提交。
+ * 解压时的密码框：输入框下列出解压成功过的密码，点一个填进输入框，由用户确认后才提交。
  * 不自动逐个尝试，这是明确的取舍，见 ArchivePasswordVault。
  *
  * 返回键与 Esc 等同「跳过」。点对话框外不关闭：没有别的入口能重新打开它，误触就得重新发起解压。
@@ -60,19 +60,63 @@ internal fun ArchivePasswordDialog(
     savedPasswords: List<String>,
     onSubmit: (String) -> Unit,
     onSkip: () -> Unit,
+) = ArchivePasswordDialog(
+    key = job.id,
+    archiveName = job.file.name,
+    incorrect = (job.status as? ArchiveJobStatus.NeedsPassword)?.incorrect == true,
+    initialPassword = job.password,
+    savedPasswords = savedPasswords,
+    confirmLabel = "解压",
+    dismissLabel = "跳过",
+    onSubmit = onSubmit,
+    onDismiss = onSkip,
+)
+
+/**
+ * 进压缩包浏览时的密码框。存过的密码已经逐个试过（列目录只是一次查询，不像解压那样每试一次是一个任务），
+ * 这里不再列出。不输就退出这个压缩包。
+ */
+@Composable
+internal fun ArchiveBrowsePasswordDialog(
+    archiveName: String,
+    incorrect: Boolean,
+    onSubmit: (String) -> Unit,
+    onDismiss: () -> Unit,
+) = ArchivePasswordDialog(
+    key = archiveName,
+    archiveName = archiveName,
+    incorrect = incorrect,
+    initialPassword = "",
+    savedPasswords = emptyList(),
+    confirmLabel = "打开",
+    dismissLabel = "取消",
+    onSubmit = onSubmit,
+    onDismiss = onDismiss,
+)
+
+@Composable
+private fun ArchivePasswordDialog(
+    key: Any,
+    archiveName: String,
+    incorrect: Boolean,
+    initialPassword: String,
+    savedPasswords: List<String>,
+    confirmLabel: String,
+    dismissLabel: String,
+    onSubmit: (String) -> Unit,
+    onDismiss: () -> Unit,
 ) {
     // 输错后重新弹出时保留上次的输入，方便改错字
-    var password by remember(job.id) { mutableStateOf(job.password) }
-    var visible by remember(job.id) { mutableStateOf(false) }
-    val incorrect = (job.status as? ArchiveJobStatus.NeedsPassword)?.incorrect == true
+    var password by remember(key) { mutableStateOf(initialPassword) }
+    var visible by remember(key) { mutableStateOf(false) }
     val focus = remember { FocusRequester() }
     // 有存过的密码时不自动聚焦：多半是点选其一，而弹出的键盘在横屏时会盖住底部按钮
     // （对话框窗口遇键盘只平移到输入框可见，不缩放）。手输时键盘上的完成键照样提交
-    LaunchedEffect(job.id) { if (savedPasswords.isEmpty() || incorrect) focus.requestFocus() }
+    LaunchedEffect(key) { if (savedPasswords.isEmpty() || incorrect) focus.requestFocus() }
     val submit = { if (password.isNotEmpty()) onSubmit(password) }
 
     PikoDialog(
-        onDismissRequest = onSkip,
+        onDismissRequest = onDismiss,
         properties = DialogProperties(dismissOnClickOutside = false),
         icon = { Icon(Icons.Outlined.Key, contentDescription = null) },
         title = { Text(if (incorrect) "密码错误" else "需要密码") },
@@ -84,7 +128,7 @@ internal fun ArchivePasswordDialog(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
             ) {
                 Text(
-                    text = job.file.name,
+                    text = archiveName,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 2,
@@ -133,10 +177,10 @@ internal fun ArchivePasswordDialog(
             }
         },
         confirmButton = {
-            PikoDialogConfirm("解压", onClick = submit, enabled = password.isNotEmpty())
+            PikoDialogConfirm(confirmLabel, onClick = submit, enabled = password.isNotEmpty())
         },
         dismissButton = {
-            TextButton(onClick = onSkip) { Text("跳过") }
+            TextButton(onClick = onDismiss) { Text(dismissLabel) }
         },
     )
 }

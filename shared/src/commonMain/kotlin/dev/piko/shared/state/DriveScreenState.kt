@@ -1,6 +1,13 @@
 package dev.piko.shared.state
 
 import dev.piko.shared.data.isPikoInternalFolder
+import dev.piko.shared.data.ArchiveEntryId
+import dev.piko.shared.data.ArchiveLocation
+import dev.piko.shared.data.isDriveFolderId
+import dev.piko.shared.data.outsideArchives
+import io.github.nihildigit.pikpak.ArchivePasswordException
+import io.github.nihildigit.pikpak.FileKind
+import io.github.nihildigit.pikpak.PikPakException
 import dev.piko.shared.data.VaultEdits
 import dev.piko.shared.data.VaultEntry
 import dev.piko.shared.data.DriveChangeJournal
@@ -98,6 +105,8 @@ class DriveScreenState(
     private val scope: CoroutineScope,
     /** 「查找重复」这个位置列的内容，见 [DriveLibrary.DUPLICATES]。为 null 时那里是空的。 */
     private val duplicates: DuplicateSession? = null,
+    /** 把压缩包当文件夹看，见 [ArchiveLocation]。为 null 时进不了压缩包。 */
+    private val archives: ArchiveBrowser? = null,
     initialSortOrder: PikoFileSortOrder = PikoFileSortOrder.TIME_DESC,
 ) {
     var files by mutableStateOf<List<FileStat>>(emptyList())
@@ -167,6 +176,15 @@ class DriveScreenState(
      */
     val libraryView: DriveLibrary? by derivedStateOf { DriveLibrary.of(activeFolderId) }
 
+    /** 眼前列的是压缩包里的哪一层，不在压缩包里时为 null。 */
+    val archiveView: ArchiveLocation? by derivedStateOf { ArchiveLocation.of(activeFolderId) }
+
+    /**
+     * 眼前不是网盘里的文件夹：库或压缩包。这里平铺不解析、不折叠，也不能新建、上传、粘贴或接住拖放。
+     * 各库、压缩包各自多出或少掉的操作，看 [libraryView] 与 [archiveView]。
+     */
+    val isVirtualPlace: Boolean by derivedStateOf { libraryView != null || archiveView != null }
+
     /**
      * 最近添加与播放历史里每个文件对应的那条记录，按文件 ID。列表的副文本（何时添加、看到哪里）
      * 与「从列表中移除」都要它。
@@ -182,7 +200,7 @@ class DriveScreenState(
     private var analysis by mutableStateOf<DriveStructure?>(null)
 
     private val currentAnalysis: DriveStructure? by derivedStateOf { analysis?.takeIf { analyzedFiles === files } }
-    val isDisplayStructureReady: Boolean by derivedStateOf { isSearching || libraryView != null || currentAnalysis != null }
+    val isDisplayStructureReady: Boolean by derivedStateOf { isSearching || isVirtualPlace || currentAnalysis != null }
 
     /** 列过的文件夹空不空，见 PikoDriveRepository.folderEmptiness。 */
     val folderEmptiness get() = driveRepo.folderEmptiness
@@ -198,7 +216,7 @@ class DriveScreenState(
     // 整层都是次要项时不折叠（原盘的 CLIPINF/ 全是结构文件）：折光了列表为空，连折叠横幅也没处放
     private val isFoldingActive: Boolean by derivedStateOf {
         val folded = currentAnalysis?.foldedIds ?: return@derivedStateOf false
-        isHeuristicFilterEnabled && isNameParsing && libraryView == null && folded.size < files.size && isFoldingScope(files)
+        isHeuristicFilterEnabled && isNameParsing && !isVirtualPlace && folded.size < files.size && isFoldingScope(files)
     }
 
     val potentialHiddenCount: Int by derivedStateOf {
@@ -258,8 +276,9 @@ class DriveScreenState(
             filter != null -> searchedFiles.filter { !it.isFolder && it.fileCategory() == filter }.map { DriveListItem.File(it, null) }
             isGlobalSearchActive || searchQuery.isNotBlank() -> searchedFiles.map { DriveListItem.File(it, null) }
             libraryView == DriveLibrary.DUPLICATES -> duplicateItems
-            // 库里的条目散在全盘各处，按作品与分区归拢的是一个目录里的东西，这里照原来的先后平铺
-            structure == null || libraryView != null -> files.map { DriveListItem.File(it, null) }
+            // 库里的条目散在全盘各处，按作品与分区归拢的是一个目录里的东西，这里照原来的先后平铺；
+            // 压缩包里的也平铺、不折叠：在包里多半是挑要解压的几项，折起来的次要文件正是要挑的一部分
+            structure == null || isVirtualPlace -> files.map { DriveListItem.File(it, null) }
             !isNameParsing || structure.blocks.isEmpty() ->
                 filterDriveFiles(files, structure.foldedIds, enabled = hideFolded, revealAll = false).map { DriveListItem.File(it, null) }
             else -> buildDriveItems(files, structure, hideFolded) { block -> isBlockExpanded(block) }
@@ -272,7 +291,7 @@ class DriveScreenState(
      */
     val displayedFiles: List<FileStat> by derivedStateOf {
         val structure = currentAnalysis
-        if (isSearching || libraryView != null || structure == null || !isNameParsing || structure.blocks.isEmpty()) {
+        if (isSearching || isVirtualPlace || structure == null || !isNameParsing || structure.blocks.isEmpty()) {
             // 查找重复里同一个文件可能在两组各占一行，全选与翻页只算一次
             return@derivedStateOf displayItems.mapNotNull { (it as? DriveListItem.File)?.file }.distinctBy { it.id }
         }
@@ -438,6 +457,10 @@ class DriveScreenState(
             loadLibrary(library, useCache, showRefreshing)
             return
         }
+        ArchiveLocation.of(folderId)?.let { location ->
+            loadArchive(location, useCache, showRefreshing)
+            return
+        }
         val cached = if (useCache) driveRepo.cachedBrowsable(folderId, sortOrder) else null
         when {
             cached != null -> {
@@ -517,6 +540,137 @@ class DriveScreenState(
             isRefreshing = false
         }
     }
+
+    // region 压缩包
+
+    /** 这个压缩包要密码，界面弹密码框；输了交给 [submitArchivePassword]，不输就 [dismissArchivePassword]。 */
+    class ArchivePasswordRequest(val archiveName: String, val incorrect: Boolean)
+
+    var archivePasswordRequest by mutableStateOf<ArchivePasswordRequest?>(null)
+        private set
+
+    /** 正在为打开而准备的包内文件（见 [prepareArchiveEntry]），界面在那一行上转圈。 */
+    var preparingEntryId by mutableStateOf<String?>(null)
+        private set
+
+    /** 把压缩包当文件夹打开。gcid 还没算出来的（刚传完）列不了目录，与解压同一句提示。 */
+    fun openArchive(file: FileStat) {
+        if (archives == null) return
+        if (file.hash.isEmpty()) {
+            _messages.tryEmit("文件尚未完成校验，稍后再试")
+            return
+        }
+        openFolder(ArchiveLocation(file.id, file.hash, "").id, file.name)
+    }
+
+    private fun loadArchive(location: ArchiveLocation, useCache: Boolean, showRefreshing: Boolean, password: String? = null) {
+        val browser = archives ?: return
+        archivePasswordRequest = null
+        val cached = if (useCache) browser.cached(location) else null
+        when {
+            cached != null -> {
+                files = cached
+                loadedFolderId = location.id
+                isLoading = false
+            }
+            showRefreshing -> isRefreshing = true
+            else -> isLoading = true
+        }
+        loadJob?.cancel()
+        loadJob = scope.launch {
+            browser.list(location, password)
+                .onSuccess {
+                    files = it
+                    loadedFolderId = location.id
+                    loadError = null
+                }
+                .onFailure { error ->
+                    if (error is ArchivePasswordException) {
+                        // 列表留空：这一层还没列出来过，没有旧内容可显示
+                        files = emptyList()
+                        loadedFolderId = location.id
+                        archivePasswordRequest = ArchivePasswordRequest(archiveName(), incorrect = password != null)
+                    } else {
+                        PikoLog.w(TAG, "读取压缩包失败", error)
+                        // 没列出来过的一层，眼前还是上一个目录的内容，不能当成包里的
+                        if (cached == null) {
+                            files = emptyList()
+                            loadedFolderId = location.id
+                        }
+                        loadError = archiveFailure(error)
+                        _messages.tryEmit(loadError!!)
+                    }
+                }
+            isLoading = false
+            isRefreshing = false
+        }
+    }
+
+    fun submitArchivePassword(password: String) {
+        val location = archiveView ?: return
+        loadArchive(location, useCache = false, showRefreshing = false, password = password)
+    }
+
+    /** 不输密码就退出这个压缩包，回到它所在的文件夹。 */
+    fun dismissArchivePassword() {
+        archivePasswordRequest = null
+        val stack = driveRepo.folderStackFlow.value
+        val outside = stack.outsideArchives()
+        if (outside.isNotEmpty() && outside.size < stack.size) driveRepo.popToBreadcrumb(outside.size - 1)
+    }
+
+    /**
+     * 包里的文件交给播放器、预览或下载之前先变成借得出来的样子，见 [ArchiveBrowser.prepare]。
+     * 从没解压过的包第一次要等几秒，失败时提示并返回 null。不在压缩包里的文件原样返回。
+     */
+    suspend fun prepareArchiveEntry(file: FileStat): FileStat? {
+        if (!ArchiveEntryId.isEntry(file.id)) return file
+        val browser = archives ?: return null
+        if (preparingEntryId != null) return null
+        preparingEntryId = file.id
+        try {
+            val location = archiveView
+            return browser.prepare(file, files)
+                .onSuccess {
+                    // 引导解压之后这一层重列过，各项都有了 gcid，换上新的一份，播放列表里的下一集也借得出来
+                    if (location != null && archiveView == location) browser.cached(location)?.let { files = it }
+                }
+                .logFailure(TAG, "准备压缩包里的文件失败")
+                .onFailure { _messages.tryEmit("无法打开：${archiveFailure(it)}") }
+                .getOrNull()
+        } finally {
+            preparingEntryId = null
+        }
+    }
+
+    /**
+     * 眼前所在的压缩包，解压选中的几项时交给解压会话。名字取路径栈上压缩包那一级：
+     * 解压出来的文件夹以它命名，提示里也写它。
+     */
+    fun currentArchive(): Pair<FileStat, String>? {
+        val location = archiveView ?: return null
+        val file = FileStat(kind = FileKind.FILE, id = location.archiveId, name = archiveName(), hash = location.gcid)
+        return file to archives?.password(location.archiveId).orEmpty()
+    }
+
+    /** 包里这几项的包内路径，解压选中的几项用。文件夹取它那一层的路径，连同里面的一起解压。 */
+    fun archivePaths(items: List<FileStat>): List<String> = items.mapNotNull { item ->
+        ArchiveLocation.of(item.id)?.path ?: ArchiveEntryId.pathOf(item.id)?.second
+    }
+
+    private fun archiveName(): String {
+        val stack = driveRepo.folderStackFlow.value
+        return stack.getOrNull(stack.outsideArchives().size)?.name ?: "压缩包"
+    }
+
+    private fun archiveFailure(error: Throwable): String = when {
+        error is PikPakException && error.errorMessage == "INVALID_FILE_FORMAT" -> "格式无法识别，压缩包可能已损坏或是分卷"
+        error is PikPakException -> error.errorDescription?.takeIf { it.isNotBlank() } ?: error.errorMessage
+        error is IllegalStateException -> error.message ?: "未知错误"
+        else -> "网络异常"
+    }
+
+    // endregion
 
     private fun showLibrary(library: DriveLibrary, listing: LibraryListing) {
         files = listing.files
@@ -778,9 +932,10 @@ class DriveScreenState(
         return AddressCompletion(partial, parentFound = true, matches = matches)
     }
 
-    // 相对路径与补全以眼前的位置为起点；人在库里时那不是网盘里的一条路径，改从根起
+    // 相对路径与补全以眼前的位置为起点；人在库里时那不是网盘里的一条路径，改从根起。
+    // 在压缩包里时从包所在的文件夹起：地址栏解析的是网盘里的路径，进不了包里
     private fun addressBase(): List<PikoPathBreadcrumb> =
-        driveRepo.folderStackFlow.value.takeIf { it.library == null } ?: listOf(PikoDriveRepository.ROOT_BREADCRUMB)
+        driveRepo.folderStackFlow.value.outsideArchives().takeIf { it.library == null } ?: listOf(PikoDriveRepository.ROOT_BREADCRUMB)
 
     /** 某一级下的全部文件夹，地址栏里路径段后面的 › 点开用。 */
     suspend fun subfoldersOf(folderId: String): Result<List<PikoPathBreadcrumb>> = driveRepo.subfolders(folderId)
@@ -880,7 +1035,8 @@ class DriveScreenState(
      * 搜索结果散在各处，不预取。
      */
     suspend fun onFolderVisible(folder: FileStat) {
-        if (!isNameParsing || isSearching) return
+        // 压缩包里的文件夹不是网盘里的，列不了
+        if (!isNameParsing || isSearching || !isDriveFolderId(folder.id)) return
         driveRepo.knownChildContents(folder.id)?.let { known ->
             // 记下的是空表时分不清真空还是只有子文件夹，海报墙要据此画空文件夹，探一下
             if (known.isEmpty()) {
@@ -1011,7 +1167,7 @@ class DriveScreenState(
     }
 
     fun createFolder(name: String) {
-        if (name.isBlank() || libraryView != null) return
+        if (name.isBlank() || isVirtualPlace) return
         val trimmed = name.trim()
         scope.launch {
             driveRepo.createFolder(activeFolder.id, trimmed)
@@ -1024,8 +1180,18 @@ class DriveScreenState(
         }
     }
 
+    /**
+     * 压缩包里的条目不在网盘里，改名、移动、删除、星标都无从做起。在这几个入口拦而不是只在按钮上：
+     * Delete、F2、剪切这些键位也走到这里。
+     */
+    private fun refusedInArchive(ids: Collection<String>): Boolean {
+        if (ids.none { ArchiveEntryId.isEntry(it) || ArchiveLocation.of(it) != null }) return false
+        _messages.tryEmit("压缩包里的文件只能打开或解压")
+        return true
+    }
+
     fun rename(fileId: String, newName: String) {
-        if (newName.isBlank()) return
+        if (newName.isBlank() || refusedInArchive(listOf(fileId))) return
         val trimmed = newName.trim()
         if (VaultEntry.isVaulted(fileId)) {
             renameInVault(fileId, trimmed)
@@ -1051,6 +1217,7 @@ class DriveScreenState(
 
     /** 加或去星标。星标只体现在列表条目的 tags 里，完成后重新列一次，这一项的状态才跟着变。 */
     fun setStarred(file: FileStat, starred: Boolean) {
+        if (refusedInArchive(listOf(file.id))) return
         if (file.isVaulted) {
             _messages.tryEmit(VAULTED_NEEDS_RESTORE)
             return
@@ -1068,6 +1235,7 @@ class DriveScreenState(
 
     /** 归档条目没有文件可进回收站，删它就是从清单里移除，见 [removeFromVault]。 */
     fun moveToTrash(ids: List<String>) {
+        if (refusedInArchive(ids)) return
         val (vaulted, real) = ids.partition(VaultEntry::isVaulted)
         removeFromVault(vaulted)
         if (real.isEmpty()) return
@@ -1131,7 +1299,7 @@ class DriveScreenState(
     /** 粘贴到眼前的文件夹：剪切的移过来（剪贴板随即清空，与资源管理器相同），复制的复制一份过来。 */
     fun paste() {
         val clip = driveRepo.clipboardFlow.value ?: return
-        val target = driveRepo.folderStackFlow.value.lastOrNull()?.takeIf { DriveLibrary.of(it.id) == null } ?: return
+        val target = driveRepo.folderStackFlow.value.lastOrNull()?.takeIf { isDriveFolderId(it.id) } ?: return
         val ids = clip.sources.keys.toList()
         if (clip.cut) {
             driveRepo.setClipboard(null)
@@ -1162,6 +1330,7 @@ class DriveScreenState(
      * 在这里拦而不是在各个按钮上：键盘、拖放与命令栏都走到这几个入口。
      */
     private fun withoutVaulted(ids: List<String>): List<String> {
+        if (refusedInArchive(ids)) return emptyList()
         val real = ids.filterNot(VaultEntry::isVaulted)
         if (real.size < ids.size) _messages.tryEmit(VAULTED_NEEDS_RESTORE)
         return real

@@ -18,6 +18,7 @@ import dev.piko.shared.data.PreviewTempFolder
 import dev.piko.shared.data.TaskRepository
 import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.media.PikoMediaRepository
+import dev.piko.shared.state.ArchiveBrowser
 import dev.piko.shared.state.ArchiveExtractSession
 import dev.piko.shared.state.FolderVaultSession
 import dev.piko.shared.state.ClipFeedSession
@@ -132,6 +133,11 @@ class PikoServices(
         )
     }
 
+    // 网盘页重建后，进过的压缩包的密码与列过的层还在，见 ArchiveBrowser
+    val archiveBrowser: ArchiveBrowser by lazy {
+        ArchiveBrowser(clientManager, preferences, scratchFolder = { previewTempFolder.folderId() })
+    }
+
     // 主线程且与进程同寿：离开网盘页后归档仍要继续
     val folderVaultSession: FolderVaultSession by lazy {
         FolderVaultSession(driveRepository, CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate))
@@ -166,6 +172,7 @@ class PikoServices(
                         instantSession.end()
                         duplicateSession.end()
                         archiveExtractSession.clear()
+                        archiveBrowser.clear()
                         clipFeedSession.close()
                         folderVaultSession.cancel()
                     }

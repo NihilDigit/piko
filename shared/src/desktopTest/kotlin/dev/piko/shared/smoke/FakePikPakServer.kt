@@ -61,8 +61,24 @@ class FakePikPakServer {
         @Volatile var fileName: String = ""
     }
 
+    /**
+     * 网盘里的一个压缩包：包内路径到内容，文件夹由路径推出。[password] 不为空时列目录与解压都要它。
+     * 与线上一致，包没解压过时列目录不给各项的 gcid，详情里也没有包内文件树；解压一次之后才有。
+     */
+    class Archive(val node: Node, val entries: Map<String, ByteArray>, val password: String?) {
+        @Volatile var primed = false
+
+        /** 还有几次解压完成后不出树。线上第一次解压常常不出，见 ArchiveRepository.prime。 */
+        @Volatile var missedPrimes = 0
+    }
+
     private val lock = Any()
     private val nodes = LinkedHashMap<String, Node>()
+    private val archives = java.util.concurrent.ConcurrentHashMap<String, Archive>()
+    private val decompressOutputs = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /** 收到的解压请求数，列目录不算。 */
+    val decompressCalls = AtomicInteger(0)
     private val cdnContent = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
     private val tasks = CopyOnWriteArrayList<Task>()
     private val magnetResources = HashMap<String, String>()
@@ -109,6 +125,23 @@ class FakePikPakServer {
         hash: String = "",
         trashed: Boolean = false,
     ): Node = add(Node(newId(), parentId, name, isFolder = false, trashed = trashed, hash = hash, content = content))
+
+    fun addArchive(
+        name: String,
+        entries: Map<String, ByteArray>,
+        parentId: String = "",
+        password: String? = null,
+        missedPrimes: Int = 0,
+    ): Archive {
+        val node = addFile(name, parentId, content = ByteArray(16), hash = "ARCHIVE-$name")
+        return Archive(node, entries, password).also {
+            it.missedPrimes = missedPrimes
+            archives[node.id] = it
+        }
+    }
+
+    /** 包内文件的 gcid。秒传这个 gcid 得到的是这一项的内容，与线上一致：没解压出来过的也借得出来。 */
+    fun entryGcid(path: String): String = path.encodeToByteArray().joinToString("") { "%02X".format(it) }
 
     fun addTask(name: String, phase: String) {
         tasks += Task(newId(), name, phase, parentId = "", url = "")
@@ -205,6 +238,12 @@ class FakePikPakServer {
                 }.toString())
             }
             request.url.host == CDN_HOST -> cdn(request, path.removePrefix("/"))
+            path.endsWith("/decompress/v1/list") -> archiveList(request)
+            path.endsWith("/decompress/v1/decompress") -> archiveDecompress(request)
+            path.endsWith("/decompress/v1/progress") -> {
+                val output = decompressOutputs[request.url.parameters["task_id"].orEmpty()].orEmpty()
+                json("""{"progress":100,"phase":"PHASE_TYPE_COMPLETE","file_id":"$output","expires_in":999}""")
+            }
             path.endsWith("/drive/v1/resource/list") -> resolveMagnet(request)
             path.endsWith("/drive/v1/about") -> about()
             path.endsWith("/drive/v1/tasks") && request.method == HttpMethod.Delete -> deleteTasks(request)
@@ -222,6 +261,70 @@ class FakePikPakServer {
             path.contains("/drive/v1/files/") -> fileDetail(path.substringAfterLast('/'))
             else -> json("""{"error":"not_found"}""", HttpStatusCode.NotFound)
         }
+    }
+
+    // 解压服务拒绝时照样回 200，原因写在 status 里
+    private fun MockRequestHandleScope.archiveRefusal(archive: Archive?, password: String): HttpResponseData? = when {
+        archive == null -> json("""{"status":"INVALID_FILE_FORMAT"}""")
+        archive.password == null -> null
+        password.isEmpty() -> json("""{"status":"PASS_WORD_EMPTY"}""")
+        password != archive.password -> json("""{"status":"PASS_WORD_ERROR"}""")
+        else -> null
+    }
+
+    private suspend fun MockRequestHandleScope.archiveList(request: HttpRequestData): HttpResponseData {
+        val body = Json.parseToJsonElement(request.body.text()).jsonObject
+        val archive = archives[body["file_id"]?.jsonPrimitive?.content.orEmpty()]
+        archiveRefusal(archive, body["password"]?.jsonPrimitive?.content.orEmpty())?.let { return it }
+        val level = body["path"]?.jsonPrimitive?.content.orEmpty()
+        val (folders, files) = archive!!.entries.keys.filter { it.startsWith(level) }
+            .map { it.removePrefix(level) }
+            .partition { '/' in it }
+        val listed = buildJsonArray {
+            folders.map { level + it.substringBefore('/') + "/" }.distinct().forEach { folder ->
+                add(buildJsonObject {
+                    put("filename", folder.trimEnd('/').substringAfterLast('/'))
+                    put("filesize", "0")
+                    put("kind", "drive#folder")
+                    put("path", folder)
+                })
+            }
+            files.forEach { name ->
+                val entryPath = level + name
+                add(buildJsonObject {
+                    put("filename", name)
+                    put("filesize", archive.entries.getValue(entryPath).size.toString())
+                    put("kind", "drive#file")
+                    put("gcid", if (archive.primed) entryGcid(entryPath) else "")
+                    put("path", entryPath)
+                })
+            }
+        }
+        return json(buildJsonObject {
+            put("status", "OK")
+            put("title", archive.node.name)
+            put("current_path", level)
+            put("files", listed)
+        }.toString())
+    }
+
+    private suspend fun MockRequestHandleScope.archiveDecompress(request: HttpRequestData): HttpResponseData {
+        decompressCalls.incrementAndGet()
+        val body = Json.parseToJsonElement(request.body.text()).jsonObject
+        val archive = archives[body["file_id"]?.jsonPrimitive?.content.orEmpty()]
+        archiveRefusal(archive, body["password"]?.jsonPrimitive?.content.orEmpty())?.let { return it }
+        archive!!
+        val beside = body["default_parent"]?.jsonPrimitive?.content == "true"
+        val parentId = if (beside) archive.node.parentId else body["parent_id"]!!.jsonPrimitive.content
+        val selected = body["files"]?.jsonArray?.map { it.jsonObject["path"]!!.jsonPrimitive.content }.orEmpty()
+        val paths = archive.entries.keys.filter { path -> selected.isEmpty() || selected.any { it == path || (it.endsWith('/') && path.startsWith(it)) } }
+        // 不建包里的子目录，平铺进去：测试只看解压了哪些项、产出删没删
+        val output = addFolder(archive.node.name.substringBeforeLast('.'), parentId)
+        paths.forEach { addFile(it.substringAfterLast('/'), output.id, archive.entries.getValue(it), hash = entryGcid(it)) }
+        if (archive.missedPrimes > 0) archive.missedPrimes-- else archive.primed = true
+        val taskId = newId()
+        decompressOutputs[taskId] = output.id
+        return json("""{"status":"OK","task_id":"$taskId","files_num":${paths.size}}""")
     }
 
     private fun MockRequestHandleScope.restoreShare(request: HttpRequestData): HttpResponseData {
@@ -339,7 +442,9 @@ class FakePikPakServer {
             else -> {
                 val hash = body["hash"]?.jsonPrimitive?.content.orEmpty()
                 instantCreates.incrementAndGet()
-                val held = synchronized(lock) { nodes.values.firstOrNull { !it.isFolder && it.hash == hash }?.content } ?: ByteArray(0)
+                val held = synchronized(lock) { nodes.values.firstOrNull { !it.isFolder && it.hash == hash }?.content }
+                    ?: archives.values.firstNotNullOfOrNull { archive -> archive.entries.entries.firstOrNull { entryGcid(it.key) == hash }?.value }
+                    ?: ByteArray(0)
                 val size = body["size"]?.jsonPrimitive?.content?.toLongOrNull() ?: held.size.toLong()
                 val file = add(Node(newId(), parentId, name, false, hash = hash, content = held, size = size))
                 json(buildJsonObject {
@@ -425,6 +530,12 @@ class FakePikPakServer {
         put("phase", if (!node.isFolder && node.hash in unheldHashes) "PHASE_TYPE_PENDING" else "PHASE_TYPE_COMPLETE")
         put("trashed", node.trashed)
         put("modified_time", "2026-09-01T00:00:00.000+08:00")
+        if (archives[node.id]?.primed == true) {
+            put("params", buildJsonObject {
+                put("global_file_root", "ROOT-${node.id}")
+                put("global_file_token", "TOKEN-${node.id}")
+            })
+        }
     }
 
     private fun MockRequestHandleScope.json(body: String, status: HttpStatusCode = HttpStatusCode.OK) = respond(

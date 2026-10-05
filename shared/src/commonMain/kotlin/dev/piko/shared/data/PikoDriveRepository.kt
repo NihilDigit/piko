@@ -174,7 +174,7 @@ open class PikoDriveRepository(
         val account = clientManager.currentClient.value?.account ?: return
         val tabs = _tabsFlow.value
         val saved = SavedTabs(
-            tabs = tabs.map { tab -> tab.stack.map { SavedCrumb(it.id, it.name) } },
+            tabs = tabs.map { tab -> tab.stack.outsideArchives().map { SavedCrumb(it.id, it.name) } },
             active = tabs.indexOfFirst { it.id == _activeTabId.value }.coerceAtLeast(0),
         )
         tabsSave?.cancel()
@@ -663,7 +663,7 @@ open class PikoDriveRepository(
 
     private fun stackChanged() {
         // 库不是文件夹，不进「最近去过」；库里的子文件夹的路径以库开头，从命令面板再打开时也回不到真实的上级
-        if (_folderStackFlow.value.library == null) recentFolders.visited(_folderStackFlow.value)
+        if (_folderStackFlow.value.library == null && _folderStackFlow.value.archive == null) recentFolders.visited(_folderStackFlow.value)
         forgetFoldersOutsideStack()
         publishTabs()
     }

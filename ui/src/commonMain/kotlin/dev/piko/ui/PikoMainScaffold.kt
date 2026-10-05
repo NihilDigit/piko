@@ -14,6 +14,7 @@ import dev.piko.ui.screens.drive.SectionLabel
 import dev.piko.shared.data.isPikoInternalFolder
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.DriveLibrary
+import dev.piko.shared.data.isDriveFolderId
 import dev.piko.shared.data.library
 import dev.piko.shared.data.PikoFileSortOrder
 import dev.piko.ui.theme.ThemeMode
@@ -848,8 +849,8 @@ fun PikoMainScaffold(
         if (feedSuspended) {
             add(PaletteItem("继续刷信息流", Icons.Outlined.SwipeVertical, "操作", keywords = "feed clips resume") { resumeFeed() })
         }
-        // 信息流刷的是一个文件夹，库不是文件夹
-        if (feedShown || DriveLibrary.of(folderStack.lastOrNull()?.id.orEmpty()) == null) {
+        // 信息流刷的是网盘里的一个文件夹，库与压缩包都不是
+        if (feedShown || isDriveFolderId(folderStack.lastOrNull()?.id.orEmpty())) {
             add(PaletteItem(if (feedShown) "关闭信息流" else "打开信息流", Icons.Outlined.SwipeVertical, "操作", keywords = "feed clips") {
                 currentTab = MainTab.FILES
                 resetToHome()

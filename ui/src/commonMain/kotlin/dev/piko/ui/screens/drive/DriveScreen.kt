@@ -171,8 +171,11 @@ import dev.piko.ui.platform.LocalWindowCaption
 import dev.piko.ui.screens.share.ShareDialog
 import dev.piko.ui.screens.rename.BatchRenameDialog
 import dev.piko.ui.LocalPikoServices
+import dev.piko.shared.data.ArchiveEntryId
 import dev.piko.shared.data.isArchiveVolume
+import dev.piko.shared.data.isDriveFolderId
 import dev.piko.shared.data.isExtractableArchive
+import dev.piko.ui.screens.archive.ArchiveBrowsePasswordDialog
 import dev.piko.ui.components.BreadcrumbBar
 import dev.piko.ui.components.FileNameField
 import dev.piko.ui.components.FolderPickerDialog
@@ -204,6 +207,9 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 /** 高亮的条目最多等这么久露面，之后照常开始渐隐。略长于 DriveScreenState 重列的总退避。 */
 private const val HighlightAppearTimeoutMs = 4000L
+
+// 在压缩包里解压选中的几项。不写「到当前位置」：当前位置是包里，解压出来的落在压缩包所在的文件夹
+private const val ExtractEntriesLabel = "解压到压缩包旁"
 
 /**
  * 网盘主界面：目录导航、列表与海报墙两种视图、防窥遮蔽、秒传入口与批量操作。
@@ -274,7 +280,8 @@ fun DriveScreen(
     val sessionManager = LocalPikoServices.current.preferences
     val isSpoilerBlurEnabled by sessionManager.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = true)
 
-    val state = remember { DriveScreenState(driveRepo, sessionManager, scope, duplicateSession) }
+    val archiveBrowser = LocalPikoServices.current.archiveBrowser
+    val state = remember { DriveScreenState(driveRepo, sessionManager, scope, duplicateSession, archiveBrowser) }
 
     LaunchedEffect(state) {
         state.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
@@ -580,7 +587,7 @@ fun DriveScreen(
         uploadManager.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
     }
     fun upload(selection: UploadSelection) {
-        if (libraryView != null) return
+        if (state.isVirtualPlace) return
         uploadManager.enqueue(selection, activeFolderId, activeFolder.name)
     }
     val pickFiles = platform.uploadPicker.rememberFilesLauncher { upload(UploadSelection(files = it)) }
@@ -588,6 +595,15 @@ fun DriveScreen(
 
     // 下载的成品只在传输页里看得到，与上传、离线一样提交后切过去。文件夹各成一批，在后台列出其中的文件
     fun download(files: List<FileStat>) {
+        // 压缩包里的文件先变成借得出来的样子；包里的文件夹不在网盘里，列不出内容，不下
+        if (state.archiveView != null) {
+            scope.launch {
+                val ready = files.filter { !it.isFolder }.mapNotNull { state.prepareArchiveEntry(it) }
+                downloadManager.enqueueFiles(ready)
+                if (ready.isNotEmpty()) openTransfers()
+            }
+            return
+        }
         val singles = files.filter { !it.isFolder && !it.isUploading }
         downloadManager.enqueueFiles(singles)
         val batches = downloadManager.enqueueFolders(files.filter { it.isFolder }, DriveDownloadFolderSource(driveRepo))
@@ -595,6 +611,13 @@ fun DriveScreen(
     }
 
     fun enqueueDownload(file: FileStat) = download(listOf(file))
+
+    // 在压缩包里解压：[items] 为空是整个包。解压到压缩包旁边，与在网盘里解压同一处，任务照旧进解压会话
+    fun extractFromArchive(items: List<FileStat>) {
+        val (archive, password) = state.currentArchive() ?: return
+        archiveSession.extractEntries(archive, state.archivePaths(items), password)
+        state.exitSelection()
+    }
 
     // 回调对象只建一次，列表项拿到的引用不变；外部传入的导航回调经 rememberUpdatedState 取最新值
     val navigateToPlayer by rememberUpdatedState(onNavigateToVideoPlayer)
@@ -631,8 +654,15 @@ fun DriveScreen(
     val latestTogglePin by rememberUpdatedState(togglePin)
     val latestPinnedFolders by rememberUpdatedState(pinnedFolders)
 
+    // 压缩包里的条目不在网盘里：能做的只有下载文件与解压出来，打开就是单击
+    fun archiveEntryActions(files: List<FileStat>): List<SheetAction> = buildList {
+        if (files.any { !it.isFolder }) add(SheetAction(Icons.Outlined.Download, "下载到本地", { download(files) }))
+        add(SheetAction(Icons.Outlined.Unarchive, ExtractEntriesLabel, { extractFromArchive(files) }))
+    }
+
     // 选中的几项一起的操作，详情栏的多选与右键菜单共用
     fun selectionActions(files: List<FileStat>): List<SheetAction> {
+        if (state.archiveView != null) return archiveEntryActions(files)
         val library = state.libraryView
         if (library == DriveLibrary.TRASH) {
             val ids = files.map { it.id }
@@ -695,6 +725,7 @@ fun DriveScreen(
             )
         }
         if (file.isVaulted) return vaultActions(file)
+        if (state.archiveView != null) return archiveEntryActions(listOf(file))
         val extras = library?.let {
             libraryExtraActions(it, onReveal = { state.revealInDrive(file) }, onRemove = { state.removeFromLibrary(listOf(file.id)) })
         }.orEmpty()
@@ -741,6 +772,20 @@ fun DriveScreen(
         }
     }
 
+    // 从没解压过的包第一次打开要等几秒。准备完 key 一变，这里的协程取消，提示随之收起；快的不提示
+    LaunchedEffect(state.preparingEntryId) {
+        if (state.preparingEntryId == null) return@LaunchedEffect
+        delay(400)
+        snackbarHostState.showSnackbar("正在读取压缩包里的文件…", duration = SnackbarDuration.Indefinite)
+    }
+    val openFile: (FileStat) -> Unit = { file ->
+        when {
+            file.isPlayableVideo() -> navigateToPlayer(file, state.displayedFiles.filter { it.isPlayableVideo() })
+            file.isPreviewableImage() && file.thumbnailLink.isNotBlank() -> previewImage = file
+            // 其余类型没有应用内的打开方式，单击等同于下载
+            else -> enqueueDownload(file)
+        }
+    }
     val callbacks = remember(state) {
         DriveItemCallbacks(
             onOpen = { file ->
@@ -749,10 +794,11 @@ fun DriveScreen(
                     state.libraryView == DriveLibrary.TRASH -> actionTargetFile = file
                     file.isFolder -> state.openFolder(file.id, file.name)
                     file.isUploading -> scope.launch { snackbarHostState.showSnackbar("文件仍在上传", withDismissAction = true) }
-                    file.isPlayableVideo() -> navigateToPlayer(file, state.displayedFiles.filter { it.isPlayableVideo() })
-                    file.isPreviewableImage() && file.thumbnailLink.isNotBlank() -> previewImage = file
-                    // 其余类型没有应用内的打开方式，单击等同于下载
-                    else -> enqueueDownload(file)
+                    // 压缩包当文件夹进去看，见 ArchiveLocation。分卷读不了、归档条目不在网盘里，照旧往下走
+                    file.isExtractableArchive && !file.isVaulted && !ArchiveEntryId.isEntry(file.id) -> state.openArchive(file)
+                    // 包里的文件先借得出来才能打开，从没解压过的包第一次要等几秒
+                    ArchiveEntryId.isEntry(file.id) -> scope.launch { state.prepareArchiveEntry(file)?.let(openFile) }
+                    else -> openFile(file)
                 }
             },
             onRename = { file -> if (!file.isUploading && state.libraryView != DriveLibrary.TRASH) startRename(file) },
@@ -766,7 +812,8 @@ fun DriveScreen(
             // 拖选中的一项时拖走全部选中的，否则只拖这一项，与文件管理器相同。回收站里的拖不出去：移走即是恢复，
             // 恢复有自己的按钮，拖放的「移到这里」在这里说不通
             dragPayload = dragPayload@{ file ->
-                if (state.libraryView == DriveLibrary.TRASH) return@dragPayload null
+                // 压缩包里的条目不在网盘里，移不走；要拿出来是解压
+                if (state.libraryView == DriveLibrary.TRASH || state.archiveView != null) return@dragPayload null
                 val batch = if (state.isSelectionMode && file.id in state.selectedFileIds) {
                     state.displayedFiles.filter { it.id in state.selectedFileIds }
                 } else {
@@ -913,7 +960,7 @@ fun DriveScreen(
             ),
         )
         add(SheetAction(Icons.Outlined.Refresh, "刷新", { state.load(refresh = true) }, group = 1))
-        if (libraryView == null) {
+        if (!state.isVirtualPlace) {
             if (clipboard != null) add(SheetAction(Icons.Outlined.ContentPaste, "粘贴", { state.paste() }, group = 1))
             add(SheetAction(Icons.Outlined.CreateNewFolder, "新建文件夹", {
                 newFolderName = ""
@@ -994,7 +1041,7 @@ fun DriveScreen(
                 state.putOnClipboard(commandTargets.map { it.id }, cut = true)
             primary && event.key == Key.C && commandTargets.isNotEmpty() && !inTrash ->
                 state.putOnClipboard(commandTargets.map { it.id }, cut = false)
-            primary && event.key == Key.V && clipboard != null && libraryView == null -> state.paste()
+            primary && event.key == Key.V && clipboard != null && !state.isVirtualPlace -> state.paste()
             // 标签：新建停在眼前的位置，关掉活动的那个，Ctrl+Tab 与 Ctrl+PageDown/PageUp 前后切换，与浏览器相同
             tabsAvailable && primary && event.key == Key.T -> driveRepo.openTab(folderStack)
             tabsAvailable && primary && event.key == Key.W && tabs.size > 1 -> closeTab(activeTabId)
@@ -1053,6 +1100,7 @@ fun DriveScreen(
     val commands = driveCommands(
         CommandInputs(
             place = when {
+                state.archiveView != null -> CommandPlace.ARCHIVE
                 libraryView == DriveLibrary.TRASH -> CommandPlace.TRASH
                 libraryView == DriveLibrary.HISTORY -> CommandPlace.HISTORY
                 libraryView == DriveLibrary.RECENT -> CommandPlace.RECENT
@@ -1086,6 +1134,8 @@ fun DriveScreen(
         inDuplicates -> duplicateState?.suggestedIds?.size?.takeIf { it > 0 }?.let { count ->
             SheetAction(Icons.Outlined.Checklist, "选中建议移走的 $count 项", state::selectSuggestedDuplicates)
         }
+        state.archiveView != null && displayedFiles.isNotEmpty() ->
+            SheetAction(Icons.Outlined.Unarchive, "全部解压", { extractFromArchive(emptyList()) })
         commands.emptyPlace -> libraryPageActions(libraryView, state.files.isEmpty(), { libraryConfirm = it }, { state.files.map { it.id } }).firstOrNull()
         else -> null
     }
@@ -1203,7 +1253,10 @@ fun DriveScreen(
                     val targets = movable
                     add(SheetAction(Icons.Outlined.Download, "下载到本地", { download(targets) }))
                 }
-                if (commands.extract) {
+                if (commands.extract && state.archiveView != null) {
+                    val items = commandTargets
+                    add(SheetAction(Icons.Outlined.Unarchive, ExtractEntriesLabel, { extractFromArchive(items) }))
+                } else if (commands.extract) {
                     val archives = movable.filter { it.isExtractableArchive || it.isArchiveVolume }
                     add(SheetAction(Icons.Outlined.Unarchive, "解压到当前位置", {
                         archiveSession.extract(archives)
@@ -1231,7 +1284,7 @@ fun DriveScreen(
     ContributePaletteItems("drive") {
         val label = platform.shortcutModifier::label
         buildList {
-            if (libraryView == null) {
+            if (!state.isVirtualPlace) {
                 add(PaletteItem("新建文件夹", Icons.Outlined.CreateNewFolder, "网盘", keywords = "new folder mkdir") { showNewFolderDialog = true })
                 add(PaletteItem("上传文件", Icons.Outlined.UploadFile, "网盘", keywords = "upload") { pickFiles() })
                 add(PaletteItem("上传文件夹", Icons.Outlined.DriveFolderUpload, "网盘", keywords = "upload folder") { pickFolder() })
@@ -1261,7 +1314,7 @@ fun DriveScreen(
                     }
                 }
             }
-            if (libraryView == null) {
+            if (!state.isVirtualPlace) {
                 add(PaletteItem("在当前文件夹查找重复", Icons.Outlined.FileCopy, "网盘", keywords = "duplicate dedupe") { findDuplicates(activeFolder) })
             }
         }
@@ -1420,7 +1473,9 @@ fun DriveScreen(
                                 onMove = { moveTargetIds = state.selectedFileIds.toSet() }.takeIf { commands.moveCopyTo },
                                 onCopy = { copyTargetIds = state.selectedFileIds.toSet() }.takeIf { commands.moveCopyTo },
                                 onTrash = { state.moveToTrash(state.selectedFileIds.toList()) }.takeIf { commands.moveToTrash },
-                                onExtract = selectedArchives.takeIf { commands.extract && it.isNotEmpty() }?.let { archives ->
+                                onExtract = if (state.archiveView != null) {
+                                    { extractFromArchive(state.displayedFiles.filter { it.id in state.selectedFileIds }) }
+                                } else selectedArchives.takeIf { commands.extract && it.isNotEmpty() }?.let { archives ->
                                     {
                                         archiveSession.extract(archives)
                                         state.exitSelection()
@@ -1710,8 +1765,8 @@ fun DriveScreen(
         FileActionsSheet(
             file = target,
             locationLabel = rowNotes[target.id],
-            // 回收站里的条目查不了详情，文件夹也统计不了
-            actionsOverride = if (inTrash || target.isVaulted) itemActions(target) else null,
+            // 回收站里的条目查不了详情，文件夹也统计不了；压缩包里的只能下载与解压
+            actionsOverride = if (inTrash || target.isVaulted || state.archiveView != null) itemActions(target) else null,
             leadingActions = libraryView?.takeIf { !inTrash }?.let { library ->
                 libraryExtraActions(library, onReveal = { state.revealInDrive(target) }, onRemove = { state.removeFromLibrary(listOf(target.id)) })
             }.orEmpty(),
@@ -1721,7 +1776,7 @@ fun DriveScreen(
                 null
             },
             // remember 住同一个 flow：每次重组新建的话，produceState 会把统计从头再跑一遍
-            folderUsage = remember(target.id, inTrash) { if (target.isFolder && !inTrash) driveRepo.folderUsage(target.id) else null },
+            folderUsage = remember(target.id, inTrash) { if (target.isFolder && !inTrash && isDriveFolderId(target.id)) driveRepo.folderUsage(target.id) else null },
             onTogglePreview = { state.toggleSpoiler(target.id) },
             onToggleStar = { state.setStarred(target, starred = !target.isStarred) },
             onDismiss = { actionTargetFile = null },
@@ -1740,8 +1795,17 @@ fun DriveScreen(
             onOpenInNewTab = openInNewTab?.let { { it(target) } },
             onTogglePin = togglePin?.let { { it(target) } },
             isPinned = pinnedFolders.any { it.id == target.id },
-            onVault = if (libraryView == null) ({ vaultTarget = target }) else null,
-            onRestoreVault = if (libraryView == null) ({ restoreVaultTarget = target }) else null,
+            onVault = if (!state.isVirtualPlace) ({ vaultTarget = target }) else null,
+            onRestoreVault = if (!state.isVirtualPlace) ({ restoreVaultTarget = target }) else null,
+        )
+    }
+
+    state.archivePasswordRequest?.let { request ->
+        ArchiveBrowsePasswordDialog(
+            archiveName = request.archiveName,
+            incorrect = request.incorrect,
+            onSubmit = state::submitArchivePassword,
+            onDismiss = state::dismissArchivePassword,
         )
     }
 
@@ -2024,6 +2088,14 @@ private fun DriveEmptyState(state: DriveScreenState, modifier: Modifier = Modifi
                 } else if (state.libraryView != null) {
                     val empty = state.libraryView!!.empty
                     PikoEmptyState(title = empty.title, description = empty.description, icon = empty.icon)
+                } else if (state.archiveView != null) {
+                    // 要密码时密码框盖在上面，取消就退出了，这里只管读不出来与真的空着两种
+                    val error = state.loadError
+                    PikoEmptyState(
+                        title = if (error != null) "无法读取压缩包" else "此文件夹为空",
+                        description = error ?: "压缩包里的这一层没有内容",
+                        icon = if (error != null) Icons.Outlined.ErrorOutline else Icons.Outlined.FolderOpen,
+                    )
                 } else {
                     PikoEmptyState(
                         title = "此文件夹为空",
