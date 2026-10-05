@@ -7,7 +7,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.repository.FileCategory
-import dev.piko.data.repository.FileNameSanitizer
 import dev.piko.data.repository.fileCategory
 import dev.piko.shared.data.InstantFileItem
 import dev.piko.shared.data.runSuspendCatching
@@ -577,7 +576,7 @@ class InstantSheetState private constructor(
         target: PikoPathBreadcrumb,
         toSave: List<InstantFileItem>,
     ): Result<InstantSaveOutcome.InstantSaved> {
-        val name = FileNameSanitizer.sanitize(folderName)
+        val name = driveFolderName(folderName)
         val folderId = driveRepo.createFolder(target.id, name).getOrElse { err ->
             PikoLog.w(TAG, "新建保存目录失败", err)
             errorMessage = "新建文件夹失败：${err.message}"
@@ -797,7 +796,7 @@ class InstantSheetState private constructor(
         return packTracker.submit(
             url = submittedUrl(),
             targetId = target.id,
-            folderName = FileNameSanitizer.sanitize(folderName),
+            folderName = driveFolderName(folderName),
             keep = toSave.map { it.file.path }.toSet(),
             totalFiles = allItems.size,
             totalBytes = packBytes,

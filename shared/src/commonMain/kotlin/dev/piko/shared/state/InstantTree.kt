@@ -1,6 +1,6 @@
 package dev.piko.shared.state
 
-import dev.piko.data.repository.FileNameSanitizer
+import dev.piko.shared.data.DriveNames
 import dev.piko.data.repository.NaturalOrder
 import dev.piko.shared.naming.AttachmentKind
 import dev.piko.shared.naming.EntryFile
@@ -70,6 +70,12 @@ data class InstantTreeRow(val key: String, val depth: Int, val node: InstantNode
  * 换成解析出的作品名，发布组、画质这些信息就从网盘里的真实名字上永久丢了，而网盘列表
  * 自会把这个文件夹显示成作品名加标签。
  */
+/**
+ * 秒传与整包离线在网盘里新建的文件夹名。按网盘的规则只删服务端不收的字符，不用 FileNameSanitizer：
+ * 那是给本机文件系统的，会把「CON」这类 Windows 保留名改成「_CON」，网盘本来收这些名字。
+ */
+internal fun driveFolderName(raw: String): String = DriveNames.clean(raw).ifEmpty { "新建文件夹" }
+
 class InstantTree(
     val roots: List<InstantNode>,
     val defaultSelection: Set<Int>,
@@ -129,7 +135,7 @@ fun buildRawInstantTree(files: List<MediaFileInput>, resourceName: String): Inst
             bytes = files[index].size,
         )
     }
-    return InstantTree(rows, files.indices.toSet(), FileNameSanitizer.sanitize(resourceName))
+    return InstantTree(rows, files.indices.toSet(), driveFolderName(resourceName))
 }
 
 private class InstantTreeBuilder(private val files: List<MediaFileInput>, private val batch: MediaBatch) {
@@ -159,7 +165,7 @@ private class InstantTreeBuilder(private val files: List<MediaFileInput>, privat
         secondaryNode()?.let { roots += it }
 
         val selection = (batch.defaultSelection() - versionIndices).ifEmpty { files.indices.toSet() }
-        return InstantTree(roots, selection, FileNameSanitizer.sanitize(resourceName))
+        return InstantTree(roots, selection, driveFolderName(resourceName))
     }
 
     private val MediaWork.isSingleEntry: Boolean

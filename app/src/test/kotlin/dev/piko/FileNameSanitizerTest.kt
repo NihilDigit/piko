@@ -51,6 +51,34 @@ class FileNameSanitizerTest {
     }
 
     @Test
+    fun windowsDeviceNamesGetPrefixed() {
+        assertEquals("_CON", FileNameSanitizer.sanitize("CON"))
+        assertEquals("_NUL.txt", FileNameSanitizer.sanitize("NUL.txt"))
+        assertEquals("_con.mkv", FileNameSanitizer.sanitize("con.mkv"))
+        assertEquals("_nul.tar.gz", FileNameSanitizer.sanitize("nul.tar.gz"))
+        assertEquals("_COM¹.log", FileNameSanitizer.sanitize("COM¹.log"))
+        assertEquals("_LPT9.mp4", FileNameSanitizer.sanitize("LPT9", "mp4"))
+        assertEquals("_CON.txt", FileNameSanitizer.sanitize("CON .txt"))
+        assertEquals("_AUX", FileNameSanitizer.sanitizeFolderName("AUX"))
+        assertEquals("_NUL.mp4", FileNameSanitizer.sanitize("NUL", forceExtension = "mp4"))
+    }
+
+    @Test
+    fun deviceNameExposedByTrimmingIsCaught() {
+        // 末尾的点与空格去掉之后才露出保留名
+        assertEquals("_CON", FileNameSanitizer.sanitizeFolderName("CON. . "))
+        assertEquals("_PRN.mp4", FileNameSanitizer.sanitize("PRN. ", "mp4"))
+    }
+
+    @Test
+    fun namesThatOnlyStartWithDeviceNamesAreKept() {
+        assertEquals("CONSOLE.txt", FileNameSanitizer.sanitize("CONSOLE.txt"))
+        assertEquals("COM10.txt", FileNameSanitizer.sanitize("COM10.txt"))
+        assertEquals("NULL", FileNameSanitizer.sanitizeFolderName("NULL"))
+        assertEquals("con-tent.mkv", FileNameSanitizer.sanitize("con-tent.mkv"))
+    }
+
+    @Test
     fun testVideoDetection() {
         assertTrue(FileNameSanitizer.isVideoFileName("movie.mp4"))
         assertTrue(FileNameSanitizer.isVideoFileName("movie.mkv"))
