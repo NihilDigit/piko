@@ -381,10 +381,10 @@ fun DriveScreen(
     val focusManager = LocalFocusManager.current
     var renameNewName by remember { mutableStateOf("") }
     // 宽窗口的顶栏是地址栏加后退、前进与上一级，照资源管理器；窄屏仍是目录名作标题、上级另成一行面包屑。
-    // 横握的手机（高度 compact）也按窄屏：地址栏加命令栏两行在三百多 dp 里太高，而且它仍是触屏，
-    // FAB、底部把手与长按多选比资源管理器那一套顺手
+    // medium 按大号手机，同窄屏。横握的手机（高度 compact）也按窄屏：地址栏加命令栏两行在三百多 dp 里太高，
+    // 而且它仍是触屏，FAB、底部把手与长按多选比资源管理器那一套顺手
     val heightCompact = isHeightCompact()
-    val pathInTopBar = currentWidthClass() != WidthClass.Compact && !heightCompact
+    val pathInTopBar = currentWidthClass() == WidthClass.Expanded && !heightCompact
     // 右侧的详情栏与标签栏：只在宽、又不矮的窗口里开，高度 compact 时双栏不现实
     val twoPane = currentWidthClass() == WidthClass.Expanded && !heightCompact
     // 地址栏进入输入的请求，快捷键加一，见 DrivePathTitle
@@ -613,9 +613,9 @@ fun DriveScreen(
     }
     // 记住的回调里读它的最新值：窗口从宽变窄时不该还能开标签
     val latestOpenInNewTab by rememberUpdatedState(openInNewTab)
-    // 快速访问列在侧边栏与命令面板里：有侧边栏（比手机宽）才给固定的入口，手机上固定了也看不到
+    // 快速访问列在侧边栏与命令面板里：有侧边栏（expanded）才给固定的入口，手机上固定了也看不到
     val pinnedFolders by driveRepo.pinnedFoldersFlow.collectAsStateWithLifecycle(emptyList())
-    val togglePin: ((FileStat) -> Unit)? = if (currentWidthClass() != WidthClass.Compact) {
+    val togglePin: ((FileStat) -> Unit)? = if (currentWidthClass() == WidthClass.Expanded) {
         { folder ->
             if (pinnedFolders.any { it.id == folder.id }) {
                 driveRepo.unpinFolder(folder.id)

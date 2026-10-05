@@ -152,4 +152,4 @@ fun RefreshBox(
  */
 @Composable
 fun showsRefreshButton(): Boolean =
-    !LocalPointerSource.current.isTouchLike || currentWidthClass() != WidthClass.Compact
+    !LocalPointerSource.current.isTouchLike || currentWidthClass() == WidthClass.Expanded

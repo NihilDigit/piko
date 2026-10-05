@@ -605,7 +605,7 @@ fun PikoMainScaffold(
                     Box(Modifier.weight(1f).fillMaxWidth()) { drive() }
                     FeedResumeBar(
                         // 有命令栏的宽窗口里，挂起的信息流由命令栏「信息流」按钮上的小圆点提示，点它继续，不再另挂一条
-                        visible = feedSuspended && widthClass == WidthClass.Compact,
+                        visible = feedSuspended && widthClass != WidthClass.Expanded,
                         folderName = clipFeedSession.root?.name,
                         onResume = ::resumeFeed,
                         onClose = { setFeedShown(false) },
