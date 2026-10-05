@@ -23,6 +23,7 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.SwipeVertical
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.Icon
@@ -84,6 +85,8 @@ internal fun DriveTabBar(
     newTabShortcut: String,
     /** 查重标签上显示它的进度与结果。 */
     duplicates: DuplicateFinderState?,
+    /** 从信息流跳出来浏览的那个标签，见 PikoMainScaffold 的 feedDetourTab。 */
+    feedTabId: Long?,
     modifier: Modifier = Modifier,
 ) {
     val scroll = rememberScrollState()
@@ -119,6 +122,7 @@ internal fun DriveTabBar(
                     TabChip(
                         tab,
                         duplicates = duplicates.takeIf { tab.isDuplicates },
+                        fromFeed = tab.id == feedTabId,
                         active = index == activeIndex,
                         first = index == 0,
                         // 两个非活动标签之间画一道分隔，挨着活动标签的不画：活动标签自己的轮廓已经分开了
@@ -171,6 +175,7 @@ private class TabBarDragArea(private val caption: WindowCaption?) {
 private fun TabChip(
     tab: DriveTab,
     duplicates: DuplicateFinderState?,
+    fromFeed: Boolean,
     active: Boolean,
     first: Boolean,
     divider: Boolean,
@@ -185,6 +190,7 @@ private fun TabChip(
     val target = tab.stack.lastOrNull()?.takeIf { !tab.isDuplicates }
     val title = if (duplicates != null) "查重：${duplicates.root.name}" else tab.title
     val tooltip = when {
+        fromFeed -> "从信息流打开：" + tab.stack.joinToString(" › ") { it.name }
         duplicates == null -> tab.stack.joinToString(" › ") { it.name }
         duplicates.isScanning -> "正在查找重复，已扫描 ${duplicates.scannedFolders} 个文件夹。关闭标签页即结束查找"
         else -> "找到 ${duplicates.report.identical.size + duplicates.report.versions.size} 组。关闭标签页即结束查找"
@@ -217,10 +223,19 @@ private fun TabChip(
             if (duplicates?.isScanning == true) {
                 CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
             } else {
+                // 信息流的标签换成信息流的图标，用第三色：它停着的是普通文件夹，标题与别的标签没有分别
                 Icon(
-                    if (tab.isDuplicates) Icons.Outlined.FileCopy else Icons.Outlined.Folder,
+                    when {
+                        tab.isDuplicates -> Icons.Outlined.FileCopy
+                        fromFeed -> Icons.Outlined.SwipeVertical
+                        else -> Icons.Outlined.Folder
+                    },
                     contentDescription = null,
-                    tint = if (active) colors.primary else colors.onSurfaceVariant,
+                    tint = when {
+                        fromFeed -> colors.tertiary
+                        active -> colors.primary
+                        else -> colors.onSurfaceVariant
+                    },
                     modifier = Modifier.size(16.dp),
                 )
             }

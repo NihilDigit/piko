@@ -20,6 +20,8 @@ fun FilesScreen(
     onFeedYield: () -> Unit = {},
     /** 见 DriveScreen 的同名参数。 */
     feedStashed: Boolean = false,
+    /** 见 DriveScreen 的同名参数。 */
+    feedTabId: Long? = null,
     /** 把网盘页的列表区（页眉下面）包进去的外框，宽窗口里由它在右侧放信息流侧栏。 */
     feedFrame: @Composable (content: @Composable () -> Unit) -> Unit = { it() },
     /** 见 DriveScreen 的同名参数。 */
@@ -40,6 +42,7 @@ fun FilesScreen(
         onFeedShownChange = onFeedShownChange,
         onFeedYield = onFeedYield,
         feedStashed = feedStashed,
+        feedTabId = feedTabId,
         modifier = modifier,
     )
 }

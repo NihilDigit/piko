@@ -492,6 +492,9 @@ fun PikoMainScaffold(
     // 网盘里留一个「继续刷」；这期间的浏览是临时的，继续刷就整段丢掉、回到这里，见 resumeFeed
     var feedDetour by remember { mutableStateOf<PikoDriveRepository.DriveLocation?>(null) }
     val feedSuspended = feedShown && feedDetour != null
+    // 有标签栏时，从信息流跳出来的浏览开在单独的一个标签里，见 locateFromFeed。「继续刷」只切回原来的标签，
+    // 不关它：原来的标签没被碰过，关掉它还原不了什么，只会把刚才在看的丢掉；下次跳出来仍用它，始终只有这一个
+    var feedDetourTab by remember { mutableStateOf<Long?>(null) }
     // 头一次 open 完成前会话里是空的，此时组合 ClipFeedScreen 会闪一下「没有可播放的视频」
     var feedOpened by remember { mutableStateOf(false) }
     // 关掉信息流连同它的窗口一起关：开关是它唯一的总开关，不管它此刻在哪一处。
@@ -501,6 +504,8 @@ fun PikoMainScaffold(
         if (!shown) {
             if (feedPoppedOut) detachedHost?.closeClipFeed?.invoke()
             feedDetour = null
+            // 标签留下，成了寻常的标签
+            feedDetourTab = null
             feedOpened = false
             clipFeedSession.close()
         }
@@ -557,6 +562,7 @@ fun PikoMainScaffold(
      * 独立窗口不挂起，它本来就在旁边，不挡网盘。
      *
      * 路径由信息流遍历时记下的上级当场拼出，不问服务端；拼不出（存盘恢复的段还没重新列到）才去查。
+     * 有标签栏时临时浏览开在新标签里（[feedDetourTab]），挂起期间再定位就在那个标签里换位置。
      */
     fun locateFromFeed(file: FileStat) {
         val driveRepo = services.driveRepository
@@ -566,6 +572,11 @@ fun PikoMainScaffold(
                 ?: lookUpPath(file.id)?.getOrNull()
                 ?: return@launch
             suspendFeed(origin)
+            val detourTab = feedDetourTab?.takeIf { id -> driveRepo.tabsFlow.value.any { it.id == id } }
+            when {
+                detourTab != null -> driveRepo.switchTab(detourTab)
+                feedDetour != null && widthClass == WidthClass.Expanded && !heightCompact -> feedDetourTab = driveRepo.openTab(stack)
+            }
             showInDrive(stack, file.id)
         }
     }
@@ -744,6 +755,7 @@ fun PikoMainScaffold(
                             onFeedShownChange = { shown -> if (shown && feedSuspended) resumeFeed() else setFeedShown(shown) },
                             onFeedYield = { suspendFeed(services.driveRepository.currentLocation()) },
                             feedStashed = feedSuspended,
+                            feedTabId = feedDetourTab,
                             feedFrame = feedFrame,
                             // 「文件」就是网盘页自己，地址栏里不列
                             addressDestinations = tabDestinations().drop(1) + pageDestinations(),

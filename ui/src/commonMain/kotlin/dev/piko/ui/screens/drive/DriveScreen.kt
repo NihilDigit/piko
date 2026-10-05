@@ -257,6 +257,8 @@ fun DriveScreen(
     onFeedYield: () -> Unit = {},
     /** 信息流挂起着（队列还在、应用内不画），宽窗口命令栏的「信息流」按钮据此点一个小圆点。 */
     feedStashed: Boolean = false,
+    /** 从信息流跳出来浏览的那个标签，标签栏上与别的分开画。没有时为 null。 */
+    feedTabId: Long? = null,
     /**
      * 地址栏里输入页面名（回收站、星标、传输、设置）时给出的前往项。与命令面板的「前往」「页面」两组是同一份，
      * 由主界面传进来：怎么打开这些页只有主界面知道。
@@ -1484,6 +1486,7 @@ fun DriveScreen(
                                 onSelect = driveRepo::switchTab,
                                 onClose = ::closeTab,
                                 duplicates = duplicateState,
+                                feedTabId = feedTabId,
                                 onNewTab = { driveRepo.openTab(folderStack) },
                                 newTabShortcut = platform.shortcutModifier.label("T"),
                             )
