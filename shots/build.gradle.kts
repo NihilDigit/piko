@@ -40,8 +40,6 @@ dependencies {
     implementation(libs.cmp.material.icons.extended)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.ktor.client.okhttp)
-    // 应用内更新的差分解码器随 DesktopPikoPlatform 加载；desktopApp 只带宿主那一份原生库，Linux 上没有
-    runtimeOnly("com.github.luben:zstd-jni:${libs.versions.zstdJni.get()}")
 }
 
 // Gradle 跑在 JDK 21 上时 run 默认也用它，加载 25 编出的类即失败；理由同 desktopApp 的 run

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 应用内差分更新的附件：新版本 M.m.p 为已公开的 M.(m-1).x 与 M.m.x 各出一份
 # piko-windows-<架构>-<新版本>-from-<旧版本>.zip，里面是补丁包每个文件以旧版对应文件为前缀字典的
-# zstd 差分（--patch-from），客户端的还原见 UpdateManifest.kt 的 applyDelta。
+# zstd 差分（--patch-from），客户端的还原见 UpdateManifest.kt 的 applyDelta 与 ZstdPatch.kt。
 #
 # 对应文件默认是同一路径。jar 名里的哈希取自 jar 的内容，改过的模块 jar 每次构建都换名，
 # 同一路径找不到时按去掉哈希的名字在旧版里找唯一的一个，另写一个 <路径>.base 告诉客户端拿哪个
@@ -69,8 +69,9 @@ delta() {
         mkdir -p "$(dirname "$dir/out/$file")"
         local from
         from=$(base_of "$file" "$dir/old")
-        # 窗口固定 2^27：zstd-jni 解压时不能调大窗口上限，默认就是 2^27。
-        # 文件超过 128 MB 时 CLI 会自行加大窗口，客户端解不开，退回完整补丁包
+        # --long 开长距离匹配，旧文件里隔得很远的相同段也能引用。文件超过 128 MB 时 CLI 自行加大窗口；
+        # 客户端用 ZSTD_decompressDCtx 一次性解码，不受流式解码的窗口上限约束。
+        # 1.1.0 及更早的客户端用 zstd-jni，窗口上限 2^27，超出的文件解不开，退回完整补丁包
         if [ -n "$from" ]; then
             zstd -19 --long=27 -q --patch-from="$dir/old/$from" "$new/$file" -o "$dir/out/$file.zst"
             [ "$from" = "$file" ] || printf '%s' "$from" > "$dir/out/$file.base"

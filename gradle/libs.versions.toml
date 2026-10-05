@@ -52,6 +52,7 @@ androidxTestCore = "1.6.1"
 androidxTestRules = "1.6.1"
 androidxTestExtJunit = "1.2.1"
 mp4parser = "1.1.22"
+# 只取它按平台 jar 里的 libzstd 原生库捆进 Windows 安装包，解码经 FFM 直调 C API（desktopApp 的 update/ZstdPatch.kt）
 zstdJni = "1.5.7-20"
 
 [libraries]

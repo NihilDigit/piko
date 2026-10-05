@@ -1,9 +1,6 @@
 package dev.piko.desktop.update
 
-import com.github.luben.zstd.ZstdDecompressCtx
-import com.github.luben.zstd.ZstdException
 import dev.piko.shared.PikoHome
-import dev.piko.shared.log.PikoLog
 import dev.piko.shared.update.ChecksumMismatchException
 import java.io.File
 import java.io.InputStream
@@ -135,7 +132,7 @@ internal fun stagedFiles(target: File): List<String> {
  * 本机文件不是差分所基于的那一版时，还原要么被 zstd 的帧校验拦下，要么摘要对不上，
  * 两者都抛 [ChecksumMismatchException]，由调用方改下完整的补丁包。
  */
-internal fun applyDelta(zip: File, manifest: UpdateManifest, installDir: File, target: File) {
+internal fun applyDelta(zip: File, manifest: UpdateManifest, installDir: File, target: File, zstd: ZstdPatch) {
     val root = target.canonicalFile
     val installRoot = installDir.canonicalFile
     ZipFile(zip).use { archive ->
@@ -156,12 +153,9 @@ internal fun applyDelta(zip: File, manifest: UpdateManifest, installDir: File, t
             if (renamedFrom != null && !baseFile.isFile) throw ChecksumMismatchException("本机缺少差分的基准：$basePath")
             val base = baseFile.takeIf { it.isFile }?.readBytes()
             val restored = try {
-                ZstdDecompressCtx().use { ctx ->
-                    // 旧版没有对应文件时，CI 按普通 zstd 压缩，不需要字典
-                    if (base != null) ctx.loadDict(base)
-                    ctx.decompress(archive.getInputStream(entry).use { it.readBytes() }, Math.toIntExact(spec.size))
-                }
-            } catch (e: ZstdException) {
+                // 旧版没有对应文件时，CI 按普通 zstd 压缩，base 为 null，不需要字典
+                zstd.decode(base, archive.getInputStream(entry).use { it.readBytes() }, Math.toIntExact(spec.size))
+            } catch (e: ZstdPatchException) {
                 throw ChecksumMismatchException("${spec.path}: ${e.message}")
             }
             val actual = MessageDigest.getInstance("SHA-256").digest(restored).toHex()
@@ -173,19 +167,6 @@ internal fun applyDelta(zip: File, manifest: UpdateManifest, installDir: File, t
             out.setLastModified(spec.mtime)
         }
     }
-}
-
-/**
- * zstd 的解码能不能用。用不了时差分更新不可用，改下完整补丁包，原因记进日志。
- *
- * 探的是差分实际要用的解码上下文，不只是加载原生库：Windows ARM64 上 zstd-jni 1.5.7-20 的 DLL 能加载，
- * 却缺了 ZstdDecompressCtx.init 这个 JNI 方法（CI 上实测 UnsatisfiedLinkError）。UnsatisfiedLinkError 是 Error
- * 不是 Exception，不先探一下的话，更新会在还原差分时直接崩掉，接不住。
- */
-internal val zstdAvailable: Boolean by lazy {
-    runCatching { ZstdDecompressCtx().close() }
-        .onFailure { PikoLog.w("Update", "zstd 原生库加载失败，差分更新不可用，改下完整补丁包", it) }
-        .isSuccess
 }
 
 internal fun sha256Hex(input: InputStream, onChunk: (ByteArray, Int) -> Unit = { _, _ -> }): String {

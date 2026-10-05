@@ -1,6 +1,5 @@
 package dev.piko.desktop.update
 
-import com.github.luben.zstd.util.ZstdVersion
 import dev.piko.desktop.LinuxDesktop
 import dev.piko.desktop.isLinux
 import dev.piko.desktop.isMacOs
@@ -51,9 +50,9 @@ sealed interface DesktopUpdatePlan {
 
     /**
      * 换的文件与 [Patch] 相同，但只下以本机版本为基准的差分，约是完整补丁包的五分之一。
-     * 本机文件对不上时退回 [fallback]。
+     * 本机文件对不上时退回 [fallback]。只在本机载得了 libzstd 时选它，[zstd] 即那一份。
      */
-    data class Delta(val delta: ReleaseAsset, val fallback: Patch) : DesktopUpdatePlan
+    data class Delta(val delta: ReleaseAsset, val fallback: Patch, val zstd: ZstdPatch) : DesktopUpdatePlan
 
     /** 整包重装。MSI 的升级是先卸后装，要等 Piko 退出后再跑，否则弹文件占用的对话框。 */
     data class Installer(val msi: ReleaseAsset) : DesktopUpdatePlan
@@ -146,8 +145,9 @@ class DesktopAppUpdater private constructor(
             when {
                 canPatch(installation.dir, manifest) -> {
                     val patch = DesktopUpdatePlan.Patch(zip, manifest)
-                    val delta = release.asset("$prefix-from-$currentVersion.zip")?.takeIf { zstdAvailable }
-                    update(delta?.let { DesktopUpdatePlan.Delta(it, patch) } ?: patch)
+                    val delta = release.asset("$prefix-from-$currentVersion.zip")
+                    val zstd = ZstdPatch.bundled
+                    update(if (delta != null && zstd != null) DesktopUpdatePlan.Delta(delta, patch, zstd) else patch)
                 }
                 isMsiInstall(installation.dir) -> update(DesktopUpdatePlan.Installer(msi))
                 else -> release.asset("$prefix.zip")
@@ -239,12 +239,9 @@ class DesktopAppUpdater private constructor(
                 val zip = download(plan.delta, staging.resolve(plan.delta.name), update)
                 val installDir = checkNotNull(installation).dir
                 try {
-                    applyDelta(zip, plan.fallback.manifest, installDir, staging.resolve(PATCH_DIR))
-                } catch (e: Throwable) {
-                    // 本机的 jar 或 AOT 缓存被改动过、不是差分所基于的那一版，或者 zstd 的原生库半路出了错
-                    // （LinkageError 是 Error，按 Exception 接不住）。都退回完整补丁包；取消照旧往上抛
-                    if (e is CancellationException) throw e
-                    if (e !is ChecksumMismatchException && e !is LinkageError) throw e
+                    applyDelta(zip, plan.fallback.manifest, installDir, staging.resolve(PATCH_DIR), plan.zstd)
+                } catch (e: ChecksumMismatchException) {
+                    // 本机的 jar 或 AOT 缓存被改动过、不是差分所基于的那一版，或者 zstd 解不开，退回完整补丁包
                     log("差分还原失败，改下完整补丁包", e)
                     staging.resolve(PATCH_DIR).deleteRecursively()
                     stagePatch(plan.fallback, staging, update)
@@ -589,16 +586,6 @@ class DesktopAppUpdater private constructor(
         private val ARCH = if (System.getProperty("os.arch") == "aarch64") "arm64" else "x64"
 
         /**
-         * 安装包把 zstd-jni 的 DLL 放在资源目录的 zstd 子目录里。zstd-jni 默认把它从 jar 解压到
-         * %TEMP%，进程占着删不掉，每次更新留一份。资源目录里没有时（gradle run、测试）沿用默认行为。
-         */
-        private fun useBundledZstd() {
-            val dir = System.getProperty("compose.application.resources.dir") ?: return
-            val dll = File(dir, "zstd/${System.mapLibraryName("libzstd-jni-${ZstdVersion.VERSION}")}")
-            if (dll.isFile) System.setProperty("ZstdNativePath", dll.absolutePath)
-        }
-
-        /**
          * 清掉上一次增量更新没删成的 .old 与 .new。1.0.0 的更新脚本只等 JVM 退出，不等启动器，
          * 换 exe 时启动器还占着旧的那份，改了名删不掉，一直留在安装目录里。现在的脚本不会再留，
          * 这里收拾的是老版本更新过来时留下的。
@@ -642,7 +629,6 @@ class DesktopAppUpdater private constructor(
         /** Flatpak 里返回 null：更新由 flatpak 负责，应用自己也写不进 /app。 */
         fun create(): DesktopAppUpdater? {
             if (isLinux && LinuxDesktop.isFlatpak) return null
-            useBundledZstd()
             // jpackage 启动器写进这两个属性；gradle run 时都没有
             val version = System.getProperty("jpackage.app-version")
             // Linux 上要换的是 AppImage 文件本身，不是挂载目录里的启动器；解开的 app-image 没有 APPIMAGE，只给下载页

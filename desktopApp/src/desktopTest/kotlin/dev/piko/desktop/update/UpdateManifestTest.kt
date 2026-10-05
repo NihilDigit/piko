@@ -23,13 +23,13 @@ class UpdateManifestTest {
     }
 
     /**
-     * 差分要 zstd 的解码。Windows ARM64 上 zstd-jni 的 DLL 缺 JNI 方法，应用在那里会退回完整补丁包（见 zstdAvailable），
-     * 这几条就测不了，跳过而不是失败，并把原因打进日志，查的时候看得到。
+     * 安装包里捆的那份 libzstd，由 build.gradle.kts 经 piko.test.zstd 指过来。只有 Windows 捆它，
+     * 别的系统上跳过；Windows 上载不了就是失败，x64 与 arm64 都应载得了。
      */
-    private fun requireZstd() {
-        val error = runCatching { com.github.luben.zstd.ZstdDecompressCtx().close() }.exceptionOrNull()
-        if (error != null) System.err.println("zstd 原生库加载失败，跳过差分用例：$error")
-        org.junit.Assume.assumeTrue("zstd 原生库加载失败：$error", error == null)
+    private fun zstd(): ZstdPatch {
+        val directory = System.getProperty("piko.test.zstd")
+        org.junit.Assume.assumeTrue("只在 Windows 上捆 libzstd", directory != null)
+        return ZstdPatch.open(File(directory!!))
     }
 
     private fun entry(path: String, content: String, patch: Boolean = false) = ManifestFile(
@@ -144,14 +144,14 @@ class UpdateManifestTest {
         }
     }
 
-    // 夹具由 zstd CLI 的 --patch-from 生成，参数与 delta-updates.sh 相同；验证的是 CLI 压出的差分 zstd-jni 能否还原
+    // 夹具由 zstd CLI 的 --patch-from 生成，参数与 delta-updates.sh 相同；验证的是 CLI 压出的差分 ZstdPatch 能否还原
     @Test
     fun deltaFromCliRestoresAgainstInstalledBase() {
-        requireZstd()
+        val zstd = zstd()
         install.resolve("app").mkdirs()
         install.resolve("app/desktopApp-desktop.jar").writeBytes(fixture("delta-base.bin"))
         val staged = root.resolve("staged")
-        applyDelta(deltaZip(), deltaManifest, install, staged)
+        applyDelta(deltaZip(), deltaManifest, install, staged, zstd)
         val jar = staged.resolve("app/desktopApp-desktop.jar")
         assertTrue(jar.readBytes().contentEquals(deltaTarget))
         assertEquals(1_700_000_000_000L, jar.lastModified())
@@ -160,25 +160,25 @@ class UpdateManifestTest {
     // 模块 jar 每次构建换名，字典是 .base 指向的旧文件，不是新路径上的（本机没有）
     @Test
     fun renamedJarRestoresAgainstNamedBase() {
-        requireZstd()
+        val zstd = zstd()
         install.resolve("app").mkdirs()
         install.resolve("app/desktopApp-desktop-aa.jar").writeBytes(fixture("delta-base.bin"))
         val staged = root.resolve("staged")
-        applyDelta(deltaZip(base = "app/desktopApp-desktop-aa.jar"), deltaManifest, install, staged)
+        applyDelta(deltaZip(base = "app/desktopApp-desktop-aa.jar"), deltaManifest, install, staged, zstd)
         assertTrue(staged.resolve("app/desktopApp-desktop.jar").readBytes().contentEquals(deltaTarget))
     }
 
     // 调用方据这个异常退回完整补丁包，换成别的异常就成了更新失败
     @Test
     fun deltaAgainstWrongBaseFailsAsChecksumMismatch() {
-        requireZstd()
+        val zstd = zstd()
         install.resolve("app").mkdirs()
         install.resolve("app/desktopApp-desktop.jar").writeBytes(fixture("delta-target.bin"))
         assertFailsWith<ChecksumMismatchException> {
-            applyDelta(deltaZip(), deltaManifest, install, root.resolve("a"))
+            applyDelta(deltaZip(), deltaManifest, install, root.resolve("a"), zstd)
         }
         assertFailsWith<ChecksumMismatchException> {
-            applyDelta(deltaZip(base = "app/desktopApp-desktop-gone.jar"), deltaManifest, install, root.resolve("b"))
+            applyDelta(deltaZip(base = "app/desktopApp-desktop-gone.jar"), deltaManifest, install, root.resolve("b"), zstd)
         }
     }
 

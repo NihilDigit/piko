@@ -14,10 +14,6 @@
 -keep class org.openani.mediamp.** { *; }
 -dontwarn org.openani.mediamp.**
 
-# zstd-jni 的原生代码按字段名读写 nativePtr 等字段，这些字段在 Java 侧没有读者
--keep class com.github.luben.zstd.** { *; }
--dontwarn com.github.luben.zstd.**
-
 # 自绘标题栏的窗口过程按名字经 MethodHandles.findVirtual 取出、交给 FFM 做 upcall，
 # 代码里没有直接调用，不保留就被当作无用方法裁掉，release 包退回系统标题栏
 -keepclassmembers class dev.piko.desktop.winrt.WindowsCaption {

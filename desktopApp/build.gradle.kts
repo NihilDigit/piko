@@ -38,15 +38,10 @@ val hostPlatform = "$hostOs-$hostArch"
 val hostMpvRuntime = "org.openani.mediamp:mediamp-mpv-runtime-$hostPlatform:${libs.versions.mediamp.get()}"
 // 等同 compose.desktop.currentOs，但版本跟界面库走，而不是跟打包插件走（两者版本不同，见 libs.versions.toml）
 val composeDesktopRuntime = "org.jetbrains.compose.desktop:desktop-jvm-$hostPlatform:${libs.versions.composeMultiplatform.get()}"
-// 应用内差分更新的解码器。不带 classifier 的 jar 捆了二十个平台的原生库，按平台的只捆一个，类是同一套。
-// Linux 的差分走 zsync，用不上它，只为 UpdateManifest 的类能加载
-val hostZstdClassifier = when (hostPlatform) {
-    "windows-x64" -> "win_amd64"
-    "windows-arm64" -> "win_aarch64"
-    "linux-x64" -> "linux_amd64"
-    "linux-arm64" -> "linux_aarch64"
-    else -> "darwin_aarch64"
-}
+// 应用内差分更新要的 libzstd。只取 zstd-jni 按平台的 jar 里那个原生库捆进资源目录，解码经 FFM 直调它的
+// C API（update/ZstdPatch.kt），运行时不依赖 zstd-jni 的类。只有 Windows 的更新用 zstd 差分，
+// Linux 走 zsync，macOS 整包替换
+val hostZstdClassifier = if (hostArch == "arm64") "win_aarch64" else "win_amd64"
 // Linux 的应用 ID：.desktop、AppStream、图标与 WM_CLASS 都用它，Flathub 以它为包名。域名 nihildigit.dev 归作者，
 // Flathub 据此验证。上线之后改名代价很大，定了不再改
 val linuxAppId = "dev.nihildigit.Piko"
@@ -81,7 +76,6 @@ kotlin {
                 implementation(libs.mp4parser.isobox)
                 // PikoUploadSources.open 返回 RawSource，shared 只以 implementation 引入
                 implementation(libs.kotlinx.io.core)
-                implementation(hostZstdJni)
             }
         }
         val desktopTest by getting {
@@ -147,8 +141,8 @@ configurations.named("desktopRuntimeClasspath") {
 val hostMpvRuntimeJar = configurations.detachedConfiguration(dependencies.create(hostMpvRuntime)).apply {
     isTransitive = false
 }
-// zstd-jni 同样默认解压到临时目录，改由 DesktopAppUpdater 经 ZstdNativePath 指过来。
-// 这个 DLL 也是 CI 判断旧版客户端会不会用差分的依据，见 release.yml
+// libzstd 放在资源目录的 zstd 子目录里，由 ZstdPatch 载入。
+// 这个 DLL 也是 CI 判断旧版客户端会不会用差分的依据，见 .github/scripts/delta-updates.sh
 val hostZstdJniJar = configurations.detachedConfiguration(dependencies.create(hostZstdJni)).apply {
     isTransitive = false
 }
@@ -348,6 +342,11 @@ tasks.withType<Test> {
     jvmArgs(linuxJvmArgs)
     // 播放冒烟读仓库里的样片，路径由这里给出，不依赖测试进程的工作目录
     systemProperty("piko.testdata", rootProject.file("testdata/media").absolutePath)
+    // 差分还原的用例载入与安装包同一份 libzstd：release.yml 在 arm64 的打包机上也跑这些测试，验的就是那一份
+    if (isWindowsHost) {
+        dependsOn(bundledAppResources)
+        systemProperty("piko.test.zstd", bundledAppResources.get().destinationDir.resolve("zstd").absolutePath)
+    }
 }
 tasks.withType<JavaExec> {
     jvmArgs("--enable-native-access=ALL-UNNAMED")

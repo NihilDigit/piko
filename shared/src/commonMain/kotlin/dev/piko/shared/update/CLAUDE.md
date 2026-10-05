@@ -5,8 +5,12 @@
 由 `apply-update.ps1`（`desktopApp/src/desktopMain/resources/update/`）在应用退出后执行，它要等 JVM 与启动器两个进程都退出
 （jpackage 的启动器另起同名子进程跑 JVM）。
 脚本里的相对路径逐级比对目录名得出，不按前缀截取：`%TEMP%` 可能是 8.3 短路径（`MARVIN~1`），与展开后的长路径
-前缀对不上，CI 上出过换完文件又重启、无限循环。增量补丁（zstd）在解码器加载不了的机器上（Windows ARM64）跳过，
-退回换整个文件；macOS 整个 .app 换成新 DMG 里的（`apply-update-mac.sh`），不逐个换文件，那会破坏签名封印。
+前缀对不上，CI 上出过换完文件又重启、无限循环。增量补丁（zstd 差分，`piko-windows-<架构>-<版本>-from-<旧版本>.zip`）
+经 FFM 直调安装包资源目录 `zstd/` 里的 libzstd（`desktopApp/.../update/ZstdPatch.kt`），x64 与 arm64 同一条路：
+zstd-jni 的 win_aarch64 库只导出 C 函数、没有 JNI 方法，它的 Java 类在 ARM64 上用不了，所以运行时不依赖 zstd-jni，
+构建时只从它的按平台 jar 里取出原生库。载不了 libzstd 或还原对不上时退回换整个文件；1.1.0 及更早的 arm64 客户端
+仍用 zstd-jni 的类，在那里一直是退回整个文件。`:desktopApp:desktopTest` 的差分用例载入的是与安装包同一份库，
+release.yml 在 arm64 打包机上也跑它们。macOS 整个 .app 换成新 DMG 里的（`apply-update-mac.sh`），不逐个换文件，那会破坏签名封印。
 Linux 只认 AppImage，按 .zsync 差分更新，见 `desktopApp/CLAUDE.md`。
 
 检查更新依次取 GitHub API、`releases/latest/download/release.json`（API 匿名限流，走代理的用户常被 403）。
