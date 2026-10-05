@@ -31,6 +31,7 @@ private sealed interface Step {
     /** [topmost] 只在最上层（最后打开的对话框、菜单）里找，底下的页面有同名节点时用。 */
     data class Click(val text: String, val button: PointerButton = PointerButton.Primary, val topmost: Boolean = false) : Step
     data class Hover(val text: String) : Step
+    data class LongPress(val text: String) : Step
     data class Drag(val from: Offset, val to: Offset) : Step
     data object Release : Step
     data class Key(val chord: String) : Step
@@ -52,6 +53,8 @@ private class Shot(
     val showPlayer: Boolean = false,
     val initialLink: String? = null,
     val highlightName: String? = null,
+    /** 照桌面端标题栏并进内容的样子，在贴着右上角的那一行末尾画窗口按钮，见 AppScene 的 ShotWindowCaption。 */
+    val caption: Boolean = false,
 )
 
 /** 进番剧目录，框选几集后按 F2 打开批量重命名。框从 SPs 那一行右侧的空白处拖起，起点落在空白处才是框选。 */
@@ -303,7 +306,7 @@ private fun printTexts(shot: Shot) = run(shot) { app -> app.texts().forEach(::pr
 
 private fun run(shot: Shot, finish: (AppScene) -> Unit) {
     ShotEnv(shot.viewMode, shot.extraSeed).use { env ->
-        AppScene.open(env, shot.width, shot.height, shot.mode, shot.showPlayer).use { app ->
+        AppScene.open(env, shot.width, shot.height, shot.mode, shot.showPlayer, shot.caption).use { app ->
             shot.highlightName?.let { name ->
                 val file = kotlinx.coroutines.runBlocking { env.services.driveRepository.listBrowsable("", dev.piko.shared.data.PikoFileSortOrder.TIME_DESC).getOrThrow().first { it.name == name } }
                 edt { env.services.driveRepository.requestHighlight(setOf(file.id)) }
@@ -314,6 +317,7 @@ private fun run(shot: Shot, finish: (AppScene) -> Unit) {
                 when (step) {
                     is Step.Click -> app.click(step.text, step.button, step.topmost)
                     is Step.Hover -> app.hover(step.text)
+                    is Step.LongPress -> app.longPress(step.text)
                     is Step.Drag -> {
                         app.drag(step.from, step.to)
                         lastDragEnd = step.to
@@ -337,6 +341,7 @@ private fun parseShot(name: String, args: List<String>): Shot {
     var width = 1440
     var height = 900
     var mode = ThemeMode.LIGHT
+    var caption = false
     val steps = mutableListOf<Step>()
     var i = 0
     fun value(): String = args.getOrNull(++i) ?: fail("${args[i - 1]} 缺少参数")
@@ -348,9 +353,11 @@ private fun parseShot(name: String, args: List<String>): Shot {
                 height = h
             }
             "--dark" -> mode = ThemeMode.DARK
+            "--caption" -> caption = true
             "--click" -> steps += Step.Click(value())
             "--right-click" -> steps += Step.Click(value(), PointerButton.Secondary)
             "--hover" -> steps += Step.Hover(value())
+            "--long-press" -> steps += Step.LongPress(value())
             "--drag" -> {
                 val (from, to) = value().split(':').map { point ->
                     val (x, y) = point.split(',').map { it.toFloatOrNull() ?: fail("--drag 写成 1300,700:900,300") }
@@ -368,7 +375,7 @@ private fun parseShot(name: String, args: List<String>): Shot {
         }
         i++
     }
-    return Shot(name, width, height, mode, steps)
+    return Shot(name, width, height, mode, steps, caption = caption)
 }
 
 private fun option(args: List<String>, name: String): String? = args.indexOf(name).takeIf { it >= 0 }?.let { args.getOrNull(it + 1) }

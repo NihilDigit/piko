@@ -13,7 +13,21 @@ import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.unit.Density
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.unit.dp
 import dev.piko.ui.PikoApp
+import dev.piko.ui.platform.LocalWindowCaption
+import dev.piko.ui.platform.WindowCaption
 import dev.piko.ui.VideoPlayerHost
 import dev.piko.ui.theme.Appearance
 import dev.piko.ui.theme.ThemeMode
@@ -88,6 +102,18 @@ class AppScene private constructor(private val scene: ImageComposeScene) : AutoC
         if (find(text, topmost) == null) pumpUntil(5_000) { find(text, topmost) != null }
         val node = find(text, topmost) ?: error("找不到「$text」。界面上现有的文本：${texts().take(60)}")
         click(node.boundsInRoot.center, button)
+    }
+
+    /** 按住不放再松开，触屏上进多选的那一下。 */
+    fun longPress(text: String) {
+        if (find(text, topmost = false) == null) pumpUntil(5_000) { find(text, topmost = false) != null }
+        val at = (find(text, topmost = false) ?: error("找不到「$text」。界面上现有的文本：${texts().take(60)}")).boundsInRoot.center
+        edt { scene.sendPointerEvent(PointerEventType.Move, at) }
+        pump(30)
+        edt { scene.sendPointerEvent(PointerEventType.Press, at) }
+        pump(800)
+        edt { scene.sendPointerEvent(PointerEventType.Release, at) }
+        pump(50)
     }
 
     fun click(at: Offset, button: PointerButton = PointerButton.Primary) {
@@ -182,7 +208,7 @@ class AppScene private constructor(private val scene: ImageComposeScene) : AutoC
 
     companion object {
         /** 开一个 [width]×[height]（dp，密度 1）的窗口，等根目录列出来再交给调用方。 */
-        fun open(env: ShotEnv, width: Int, height: Int, mode: ThemeMode, showPlayer: Boolean = false): AppScene {
+        fun open(env: ShotEnv, width: Int, height: Int, mode: ThemeMode, showPlayer: Boolean = false, caption: Boolean = false): AppScene {
             // 信息流的独立窗口不画，只记开没开着：应用内据此收起侧栏，弹出后的样子也能截
             val feedWindow = mutableStateOf(false)
             val player = VideoPlayerHost.Detached(
@@ -196,8 +222,13 @@ class AppScene private constructor(private val scene: ImageComposeScene) : AutoC
             // 「performMeasureAndLayout called during measure layout」
             val scene = edt {
                 ImageComposeScene(width, height, Density(1f), coroutineContext = Dispatchers.Main) {
-                    if (showPlayer) PlayerPreview(env, mode)
-                    else PikoApp(env.services, env.platform, Appearance(mode = mode), player)
+                    if (showPlayer) {
+                        PlayerPreview(env, mode)
+                    } else {
+                        CompositionLocalProvider(LocalWindowCaption provides if (caption) ShotWindowCaption else null) {
+                            PikoApp(env.services, env.platform, Appearance(mode = mode), player)
+                        }
+                    }
                 }
             }
             val app = AppScene(scene)
@@ -256,4 +287,26 @@ fun <T> edt(block: () -> T): T {
     var result: Result<T>? = null
     SwingUtilities.invokeAndWait { result = runCatching(block) }
     return result!!.getOrThrow()
+}
+
+/**
+ * 截图里的窗口按钮：尺寸与间距照 desktopApp 的 WindowFrame（三个 40dp 圆钮、间隔 2dp），只画三个字形，不接窗口过程。
+ * 桌面端窄窗口里各页顶栏放不放得下，看的就是这一截宽度；场景本身没有窗口外框，不加它看不出来。
+ */
+private object ShotWindowCaption : WindowCaption {
+    @Composable
+    override fun Host() = Unit
+
+    @Composable
+    override fun Buttons() {
+        Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+            for (glyph in listOf("—", "☐", "✕")) {
+                Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+                    Text(glyph, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    }
+
+    override fun setDragArea(key: Any, bounds: Rect?) = Unit
 }

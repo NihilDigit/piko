@@ -12,12 +12,13 @@
 ./gradlew :shots:run --args="texts --click 传输"          # 打印界面上的文本，找 --click 的目标用
 ```
 
-- 步骤有 `--click`、`--right-click`、`--hover`、`--key`、`--type`（往有焦点的输入框打字，中文也行）、`--drag`（按住左键拖，
+- `--caption` 在贴着右上角的那一行末尾画三个窗口按钮（尺寸照桌面端，只画字形），桌面窄窗口里顶栏放不放得下要带上它看。
+- 步骤有 `--click`、`--long-press`（按住 800ms，触屏进多选）、`--right-click`、`--hover`、`--key`、`--type`（往有焦点的输入框打字，中文也行）、`--drag`（按住左键拖，
   坐标按 dp）、`--release`、`--wait`、`--pump`，按写的顺序执行；点击按文本或内容描述找节点，
   弹层里的也算。`all` 的清单在 `shots/.../Main.kt` 的 `standardSet`，改了哪类界面就往里加一张。
 - 数据在 `ShotEnv.kt` 的 `FakePikPak.seed()`：一部 12 集的番剧、一个子目录、电影与文档、回收站、星标、
   离线任务与四个本地下载。假服务端（`FakePikPak`）经 OkHttp 拦截器作答，SDK 的请求与解析仍走真实代码；
   只答界面读得到的接口，其余回 404，新页面要什么就补什么。与冒烟测试的 `FakePikPakServer` 是两份，那份要 MockEngine。
-- 没有窗口外框：自绘标题栏与拖放层不在画面里。Linux 上没有微软雅黑，中文落到别的字体，字宽与 Windows 略有出入。
+- 没有窗口外框：拖放层不在画面里，窗口按钮要 `--caption` 才画。Linux 上没有微软雅黑，中文落到别的字体，字宽与 Windows 略有出入。
 - 网络缩略图与海报不画，播放历史与我的分享是空的。
 - 参数里有中文时，Linux 上要 UTF-8 的 locale（`LC_ALL=C.UTF-8`），否则 Gradle 传给进程时变成问号，按文本找不到节点。
