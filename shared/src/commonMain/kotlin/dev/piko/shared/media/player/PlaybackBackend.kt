@@ -90,6 +90,12 @@ interface PlaybackBackend {
      */
     fun setRotation(degrees: Int) = Unit
 
+    /**
+     * 读一个 mpv 属性的字符串值，播放详细信息面板用，见 readPlaybackStats。两端都是 libmpv，属性名通用；
+     * 读不到（还没加载、后端不是 mpv、已释放）时为 null。
+     */
+    fun mpvProperty(name: String): String? = null
+
     fun stop()
 
     fun play()

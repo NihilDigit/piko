@@ -464,6 +464,9 @@ internal class MpvPlaybackBackend(
 
     fun readIntProperty(name: String): Int? = if (released) null else mpv.getPropertyInt(name)
 
+    // 属性在当前文件上不存在时（例如没有音轨）当作读不到，不让面板因一项读失败整个出错
+    override fun mpvProperty(name: String): String? = runCatching { readStringProperty(name) }.getOrNull()
+
     private fun issueLoad(command: Array<String>) {
         supersededLoads = issuedLoads
         issuedLoads += 1

@@ -393,6 +393,15 @@ class PlayerScreenState(
 
     fun setAspectRatio(mode: PlayerAspectRatio) = backend.setAspectRatio(mode)
 
+    /** 播放详细信息面板的内容：从哪里读、哪一档，再加 mpv 读得到的编码与缓冲。面板开着时每秒取一次。 */
+    fun stats(): List<PlaybackStatsSection> {
+        // 走不走本机代理是实现细节，看的人只关心是不是在用流量
+        val source = if (isLocalPlayback) "本机" else "网盘"
+        val quality = if (isLocalPlayback) null else activeQuality ?: "原画"
+        val playback = PlaybackStatsSection("播放", listOfNotNull("来源" to source, quality?.let { "画质" to it }))
+        return listOf(playback) + readPlaybackStats(backend::mpvProperty)
+    }
+
     fun selectQuality(quality: String) {
         pendingStartMillis = currentPosition()
         requestedQuality = quality

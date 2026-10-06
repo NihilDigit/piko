@@ -312,6 +312,9 @@ internal class MediampPlaybackBackend(
         mpv?.setPropertyString("cache-secs", "$seconds")
     }
 
+    // 读不到时 MPVHandle 可能抛错而不是返回 null（属性在当前文件上不存在），统一当作读不到
+    override fun mpvProperty(name: String): String? = mpv?.let { handle -> runCatching { handle.getPropertyString(name) }.getOrNull() }
+
     fun bufferReport(): String? = mpv?.let { handle ->
         "cache-secs=${handle.getPropertyString("cache-secs")}，缓存 ${handle.getPropertyString("demuxer-cache-duration")} 秒"
     }

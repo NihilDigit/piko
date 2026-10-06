@@ -99,10 +99,14 @@ import dev.piko.ui.components.wheelStaysInSheet
 import kotlin.math.abs
 import dev.piko.data.auth.PlayerGestureDefaults
 import dev.piko.ui.components.SheetAction
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberUpdatedState
+import kotlinx.coroutines.delay
+import dev.piko.shared.media.player.PlaybackStatsSection
 import androidx.compose.foundation.text.selection.SelectionContainer
 import kotlin.math.roundToInt
 
-internal enum class PlayerSheet { Episodes, Settings, Tracks, DriveSubtitles }
+internal enum class PlayerSheet { Episodes, Settings, Tracks, DriveSubtitles, Stats }
 
 /**
  * 播放器的面板容器：横屏是贴右侧的浮动 side sheet，竖屏是 bottom sheet。
@@ -154,7 +158,62 @@ private val PlayerSheet.title: String
         PlayerSheet.Settings -> "播放设置"
         PlayerSheet.Tracks -> "音轨与字幕"
         PlayerSheet.DriveSubtitles -> "从网盘选择字幕"
+        PlayerSheet.Stats -> "详细信息"
     }
+
+/**
+ * 播放详细信息：来源、画质，以及 mpv 报的编码、分辨率、解码方式、码率、丢帧与缓冲。开着时每秒重读一次，
+ * 码率与缓冲随播放在变。可以选中复制，反馈问题时贴出来。
+ */
+@Composable
+internal fun PlaybackStatsPanel(read: () -> List<PlaybackStatsSection>, modifier: Modifier = Modifier) {
+    val latestRead by rememberUpdatedState(read)
+    var sections by remember { mutableStateOf(read()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(STATS_REFRESH_MILLIS)
+            sections = latestRead()
+        }
+    }
+    SelectionContainer {
+        Column(
+            modifier = modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(start = 24.dp, end = 24.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
+        ) {
+            sections.forEach { section ->
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = section.title,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    section.rows.forEach { (label, value) ->
+                        Row {
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.width(STATS_LABEL_WIDTH),
+                            )
+                            Text(
+                                text = value,
+                                style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private const val STATS_REFRESH_MILLIS = 1_000L
+private val STATS_LABEL_WIDTH = 80.dp
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable

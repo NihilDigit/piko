@@ -70,7 +70,9 @@ import dev.piko.shared.media.player.PlaylistEntry
 import dev.piko.ui.components.LocalPointerSource
 import dev.piko.ui.components.SheetAction
 import androidx.compose.material.icons.outlined.Subtitles
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.filled.Close
+import dev.piko.shared.media.player.PlaybackStatsSection
 import io.github.nihildigit.pikpak.FileStat
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
@@ -164,6 +166,8 @@ fun MobilePlayerControls(
     onSeekStepChange: ((Int) -> Unit)? = null,
     longPressSpeed: Float = PlayerGestureDefaults.BOOST_SPEED,
     onLongPressSpeedChange: ((Float) -> Unit)? = null,
+    // 播放详细信息，见 PlayerScreenState.stats；为 null 时不给入口
+    playbackStats: (() -> List<PlaybackStatsSection>)? = null,
 ) {
     val windowSize = LocalWindowInfo.current.containerSize
     // 窄到 M3 的 compact（600dp 以下，竖着的手机）时底栏只留常用的：换集有选集面板，旋转有 R 键，
@@ -880,6 +884,8 @@ fun MobilePlayerControls(
                         actions = listOfNotNull(
                             SheetAction(Icons.Outlined.Subtitles, "音轨与字幕", { openSheet = PlayerSheet.Tracks })
                                 .takeIf { hasTracksEntry },
+                            SheetAction(Icons.Outlined.Info, "详细信息", { openSheet = PlayerSheet.Stats })
+                                .takeIf { playbackStats != null },
                         ) + fileActions.map { action ->
                             SheetAction(action.icon, action.label, {
                                 openSheet = null
@@ -921,6 +927,7 @@ fun MobilePlayerControls(
                         },
                         modifier = Modifier.weight(1f),
                     )
+                    PlayerSheet.Stats -> playbackStats?.let { PlaybackStatsPanel(read = it) }
                 }
             }
         }

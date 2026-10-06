@@ -252,6 +252,7 @@ fun MediampVideoPlayerScreen(
                 onSeekStepChange = { scope.launch { preferences.setPlayerSeekStepSeconds(it) } },
                 longPressSpeed = longPressSpeed,
                 onLongPressSpeedChange = { scope.launch { preferences.setPlayerBoostSpeed(it) } },
+                playbackStats = state::stats,
                 audioTracks = state.audioTracks,
                 selectedAudioTrackId = state.selectedAudioTrackId,
                 onSelectAudioTrack = state::selectAudioTrack,
