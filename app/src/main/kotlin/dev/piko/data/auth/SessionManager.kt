@@ -115,6 +115,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val AUTO_CHECK_UPDATES = booleanPreferencesKey("auto_check_updates")
         val REDUCE_MOTION = booleanPreferencesKey("reduce_motion")
         val HARDWARE_DECODING = booleanPreferencesKey("hardware_decoding")
+        val PLAYBACK_MAX_HEIGHT = intPreferencesKey("playback_max_height")
         val PLAYER_SEEK_STEP_SECONDS = intPreferencesKey("player_seek_step_seconds")
         val PLAYER_BOOST_SPEED = floatPreferencesKey("player_boost_speed")
         val FOLDER_MAP_OPEN = booleanPreferencesKey("folder_map_open")
@@ -217,6 +218,14 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun setHardwareDecoding(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.HARDWARE_DECODING] = enabled
+        }
+    }
+
+    override val playbackMaxHeightFlow: Flow<Int> = preference { it[PreferencesKeys.PLAYBACK_MAX_HEIGHT] ?: 0 }
+
+    override suspend fun setPlaybackMaxHeight(height: Int) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.PLAYBACK_MAX_HEIGHT] = height
         }
     }
 

@@ -68,11 +68,23 @@ data class PlayableMediaInfo(
  * 可读的转码流里画面最大的那个。空表示这个文件没有能用的转码——
  * medias 里既有还在转的（video 为空），也有转完却没给链接的。
  */
-fun PlayableMediaInfo.bestTranscodeName(): String? = availableVariants
-    .filter { !it.isOrigin && it.video != null && it.link.url.isNotBlank() }
+fun PlayableMediaInfo.bestTranscodeName(): String? = availableVariants.transcodeNameAtMost(Int.MAX_VALUE)
+
+/** 眼下放的这一档的名字，原画为 null。与 [PlayableMediaInfo.availableVariants] 里的名字对得上，界面据此标出当前档。 */
+val PlayableMediaInfo.transcodeName: String?
+    get() = if (isOrigin) null else availableVariants.firstOrNull { it.mediaId == mediaId }?.qualityName
+
+/**
+ * 画面高度不超过 [maxHeight] 的可读转码里最大的一档。没有返回 null，调用方退回原画：
+ * 上限是为了省流量，挑一档更高的转码违背本意，原画至少是用户本来就会看到的。
+ */
+fun List<MediaVariant>.transcodeNameAtMost(maxHeight: Int): String? = this
+    .filter { !it.isOrigin && it.video != null && it.link.url.isNotBlank() && (it.video?.height ?: 0) <= maxHeight }
     .maxByOrNull { it.video?.height ?: 0 }
-    ?.let { it.mediaName.ifBlank { it.resolutionName } }
-    ?.takeIf { it.isNotBlank() }
+    ?.qualityName
+
+private val MediaVariant.qualityName: String?
+    get() = mediaName.ifBlank { resolutionName }.takeIf { it.isNotBlank() }
 
 /**
  * 一次播放准备的结果。关闭它即释放代理会话、reader 与 handle。
@@ -143,13 +155,19 @@ class PikoMediaRepository(
      * 只调一次 getFile：元数据、直链与 handle 都出自同一份详情，失败回退用的直链
      * 与代理读的字节同源。
      */
+    /**
+     * [preferredResolution] 是用户在播放器里点选的档位；为 null 时按 [defaultMaxHeight] 挑，见 [transcodeNameAtMost]，
+     * 0 表示原画。
+     */
     suspend fun preparePlayback(
         fileId: String,
         preferredResolution: String? = null,
+        defaultMaxHeight: Int = 0,
     ): Result<PreparedPlayback> =
         withContext(Dispatchers.Default) {
             runSuspendCatching {
                 val client = client
+                // 本机下了一部分的原画不费流量，照样先用，画质上限是为了省流量
                 if (preferredResolution.isNullOrBlank() || preferredResolution == ORIGINAL_QUALITY) {
                     partialSource(client, fileId)?.let { (task, source) ->
                         val info = PlayableMediaInfo(fileId, task.displayName.substringAfterLast('/'), task.gcid,
@@ -161,7 +179,9 @@ class PikoMediaRepository(
                     }
                 }
                 val detail = detailOf(client, fileId)
-                val resolved = detail.resolveVariant(preferenceFor(preferredResolution))
+                val resolution = preferredResolution
+                    ?: defaultMaxHeight.takeIf { it > 0 }?.let { detail.medias.transcodeNameAtMost(it) }
+                val resolved = detail.resolveVariant(preferenceFor(resolution))
                 val info = playableMediaInfo(detail, resolved, fileId)
                 val leased = LeasedFile.isLeased(fileId)
                 val stream = if (info.kind == PlayableMediaKind.Video) openProxyStream(client, detail, resolved, leased = leased) else null

@@ -14,6 +14,7 @@ import dev.piko.shared.media.PlayableMediaInfo
 import dev.piko.shared.media.PlayableMediaKind
 import dev.piko.shared.media.PreparedPlayback
 import dev.piko.shared.media.bestTranscodeName
+import dev.piko.shared.media.transcodeName
 import dev.piko.shared.media.proxy.ProxyStream
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -55,6 +56,11 @@ class PlayerScreenState(
      * 分段下载的片段不算完整副本，由平台自己排除。
      */
     private val resolveLocalPath: suspend (fileId: String, hint: String?) -> String? = { _, hint -> hint },
+    /**
+     * 设置里的播放画质上限（画面高度），0 是原画。每次准备时读，播放器开着时改了设置，下一集起生效。
+     * 挂起取值而不是收集成 State：头一集准备时收集多半还没拿到第一个值，会按原画开。
+     */
+    private val defaultMaxHeight: suspend () -> Int = { 0 },
 ) {
     var fileId by mutableStateOf(initialFileId)
         private set
@@ -508,12 +514,13 @@ class PlayerScreenState(
                 backend.open(PlaybackTarget.LocalFile(localPath), startPosition(), subtitles = openSubtitles())
             } else {
                 isLocalPlayback = false
-                val playback = repository.preparePlayback(fileId, requestedQuality).getOrThrow()
+                val playback = repository.preparePlayback(fileId, requestedQuality, defaultMaxHeight()).getOrThrow()
                 // 出第一帧前就有人在等；之后由 init 里按缓冲状态接管
                 playback.urgent = true
                 prepared = playback
                 mediaInfo = playback.info
-                activeQuality = requestedQuality?.takeUnless { it == ORIGINAL_QUALITY }
+                // 按实际打开的那一档标：没点选过时由设置的上限挑，点选的档位没有时 SDK 退回原画
+                activeQuality = playback.info.transcodeName
                 when (playback.info.kind) {
                     PlayableMediaKind.Image -> Unit
                     PlayableMediaKind.UnsupportedImage -> failure = "GIF 暂不支持预览"

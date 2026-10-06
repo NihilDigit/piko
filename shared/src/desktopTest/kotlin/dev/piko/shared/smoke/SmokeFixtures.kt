@@ -38,6 +38,8 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun setReduceMotion(enabled: Boolean) = Unit
     override val hardwareDecodingFlow: Flow<Boolean> = MutableStateFlow(true)
     override suspend fun setHardwareDecoding(enabled: Boolean) = Unit
+    override val playbackMaxHeightFlow: Flow<Int> = MutableStateFlow(0)
+    override suspend fun setPlaybackMaxHeight(height: Int) = Unit
     override val playerSeekStepSecondsFlow: Flow<Int> = MutableStateFlow(10)
     override suspend fun setPlayerSeekStepSeconds(seconds: Int) = Unit
     override val playerBoostSpeedFlow: Flow<Float> = MutableStateFlow(2f)

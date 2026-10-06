@@ -39,6 +39,7 @@ import androidx.compose.material.icons.outlined.AutoFixHigh
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.CleaningServices
 import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material.icons.outlined.HighQuality
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
@@ -191,6 +192,8 @@ fun SettingsScreen(
     val archivePasswordVault = remember(sessionManager) { ArchivePasswordVault(sessionManager) }
     val archivePasswords by archivePasswordVault.passwords.collectAsStateWithLifecycle(initialValue = emptyList())
     var showArchivePasswords by remember { mutableStateOf(false) }
+    var showPlaybackQuality by remember { mutableStateOf(false) }
+    val playbackMaxHeight by sessionManager.playbackMaxHeightFlow.collectAsStateWithLifecycle(initialValue = 0)
 
     var showDownloadDirDialog by remember { mutableStateOf(false) }
     val proxySetting by sessionManager.proxySettingFlow.collectAsStateWithLifecycle(initialValue = ProxySetting())
@@ -401,8 +404,16 @@ fun SettingsScreen(
                         )
                     }
                     SettingsGroup("播放") {
+                        SettingsNavigationRow(
+                            index = 0, count = 2,
+                            icon = Icons.Outlined.HighQuality,
+                            title = "播放画质",
+                            supporting = playbackQualitySummary(playbackMaxHeight),
+                            onClick = { showPlaybackQuality = true },
+                            trailingIcon = null,
+                        )
                         SettingsSwitchRow(
-                            index = 0, count = 1,
+                            index = 1, count = 2,
                             icon = Icons.Outlined.Memory,
                             title = "硬件解码",
                             supporting = "用显卡解码视频。播放时花屏、卡死可关闭，改由处理器解码",
@@ -534,6 +545,14 @@ fun SettingsScreen(
                 scope.launch { sessionManager.setSnailMode(mode) }
             },
             onDismiss = { showSnailDialog = false },
+        )
+    }
+
+    if (showPlaybackQuality) {
+        PlaybackQualityDialog(
+            maxHeight = playbackMaxHeight,
+            onSelect = { scope.launch { sessionManager.setPlaybackMaxHeight(it) } },
+            onDismiss = { showPlaybackQuality = false },
         )
     }
 

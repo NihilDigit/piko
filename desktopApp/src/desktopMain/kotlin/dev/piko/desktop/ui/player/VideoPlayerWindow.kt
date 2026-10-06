@@ -245,6 +245,7 @@ private fun VideoPlayerContent(
                         ?.let { downloads.findCompletedLocalPath(it) }
                         ?.takeIf { File(it).exists() }
             },
+            defaultMaxHeight = { services.preferences.playbackMaxHeightFlow.first() },
         )
     }
     val volume = remember(backend) { backend.volume?.let { BackendVolume(backend) } }

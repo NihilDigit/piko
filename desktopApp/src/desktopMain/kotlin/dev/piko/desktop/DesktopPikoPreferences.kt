@@ -33,6 +33,7 @@ class DesktopPikoPreferences(
     private val autoCheckUpdates = MutableStateFlow(settings.get(KEY_AUTO_CHECK_UPDATES, "true").toBoolean())
     private val reduceMotion = MutableStateFlow(settings.get(KEY_REDUCE_MOTION) == "true")
     private val hardwareDecoding = MutableStateFlow(settings.get(KEY_HARDWARE_DECODING, "true").toBoolean())
+    private val playbackMaxHeight = MutableStateFlow(settings.get(KEY_PLAYBACK_MAX_HEIGHT).toIntOrNull() ?: 0)
     private val playerSeekStepSeconds = MutableStateFlow(
         settings.get(KEY_PLAYER_SEEK_STEP_SECONDS).toIntOrNull() ?: PlayerGestureDefaults.SEEK_STEP_SECONDS,
     )
@@ -137,6 +138,12 @@ class DesktopPikoPreferences(
     override suspend fun setHardwareDecoding(enabled: Boolean) {
         settings.set(KEY_HARDWARE_DECODING, enabled.toString())
         hardwareDecoding.value = enabled
+    }
+
+    override val playbackMaxHeightFlow: Flow<Int> = playbackMaxHeight.asStateFlow()
+    override suspend fun setPlaybackMaxHeight(height: Int) {
+        settings.set(KEY_PLAYBACK_MAX_HEIGHT, height.toString())
+        playbackMaxHeight.value = height
     }
 
     override val playerSeekStepSecondsFlow: Flow<Int> = playerSeekStepSeconds.asStateFlow()
@@ -405,6 +412,7 @@ class DesktopPikoPreferences(
         const val KEY_AUTO_CHECK_UPDATES = "update.autoCheck"
         const val KEY_REDUCE_MOTION = "ui.reduceMotion"
         const val KEY_HARDWARE_DECODING = "player.hardwareDecoding"
+        const val KEY_PLAYBACK_MAX_HEIGHT = "player.maxHeight"
         const val KEY_PLAYER_SEEK_STEP_SECONDS = "player.seekStepSeconds"
         const val KEY_PLAYER_BOOST_SPEED = "player.boostSpeed"
         const val KEY_FOLDER_MAP_OPEN = "ui.folderMapOpen"

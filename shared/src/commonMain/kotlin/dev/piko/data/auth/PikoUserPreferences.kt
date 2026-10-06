@@ -30,6 +30,9 @@ object PlayerGestureDefaults {
     val SeekStepChoices = listOf(1, 2, 5, 10, 15, 30)
     const val BOOST_SPEED = 2f
     val BoostSpeedChoices = listOf(2f, 3f)
+
+    /** 播放画质上限的档位，画面高度，0 是原画。PikPak 的转码一般是这三档 */
+    val MaxHeightChoices = listOf(0, 1080, 720, 480)
 }
 
 interface PikoUserPreferences {
@@ -192,6 +195,13 @@ interface PikoUserPreferences {
      */
     val hardwareDecodingFlow: Flow<Boolean>
     suspend fun setHardwareDecoding(enabled: Boolean)
+
+    /**
+     * 播放画质上限：画面高度，0 是原画（默认）。播放时挑不高于它的最大一档转码，没有就放原画，见 transcodeNameAtMost。
+     * 每台设备各自的，不同步：手机走流量想要 720P，电脑上要原画。
+     */
+    val playbackMaxHeightFlow: Flow<Int>
+    suspend fun setPlaybackMaxHeight(height: Int)
 
     /** 播放器双击、方向键进退一步的秒数，默认 10。在播放设置里改，跟着设置同步：这是看片的习惯，不看设备。 */
     val playerSeekStepSecondsFlow: Flow<Int>

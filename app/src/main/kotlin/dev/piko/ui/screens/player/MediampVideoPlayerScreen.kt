@@ -92,6 +92,7 @@ fun MediampVideoPlayerScreen(
                     ?: completedDownloadPath(fileId)
                     ?: siblingVideos.find { it.id == fileId }?.let { app.downloadManager.findCompletedLocalPath(it) }
             },
+            defaultMaxHeight = { preferences.playbackMaxHeightFlow.first() },
         )
     }
     DisposableEffect(state) {
