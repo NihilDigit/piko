@@ -90,6 +90,7 @@ import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.windowDragArea
 import dev.piko.ui.platform.rememberCaptionSlot
 import dev.piko.ui.screens.player.PlayerSeekBar
+import dev.piko.ui.screens.player.formatSpeedPreset
 import dev.piko.ui.screens.player.handCursor
 import kotlin.math.roundToInt
 
@@ -424,7 +425,7 @@ internal fun PausedMark(compact: Boolean, modifier: Modifier = Modifier) {
 
 /** 长按期间顶部的倍速提示。 */
 @Composable
-internal fun BoostPill(modifier: Modifier = Modifier) {
+internal fun BoostPill(speed: Float, modifier: Modifier = Modifier) {
     Surface(shape = CircleShape, color = chromeContainer(), contentColor = Color.White, modifier = modifier) {
         Row(
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
@@ -432,7 +433,7 @@ internal fun BoostPill(modifier: Modifier = Modifier) {
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Icon(Icons.Filled.FastForward, contentDescription = null, modifier = Modifier.size(18.dp))
-            Text("2 倍速", style = MaterialTheme.typography.labelLarge)
+            Text("${formatSpeedPreset(speed)} 倍速", style = MaterialTheme.typography.labelLarge)
         }
     }
 }

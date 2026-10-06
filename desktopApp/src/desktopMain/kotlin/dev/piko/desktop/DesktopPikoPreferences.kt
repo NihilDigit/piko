@@ -1,6 +1,7 @@
 package dev.piko.desktop
 
 import dev.piko.data.auth.PikoUserPreferences
+import dev.piko.data.auth.PlayerGestureDefaults
 import dev.piko.data.auth.SidePanelPrefs
 import dev.piko.data.auth.SnailMode
 import dev.piko.shared.auth.SecretVault
@@ -32,6 +33,12 @@ class DesktopPikoPreferences(
     private val autoCheckUpdates = MutableStateFlow(settings.get(KEY_AUTO_CHECK_UPDATES, "true").toBoolean())
     private val reduceMotion = MutableStateFlow(settings.get(KEY_REDUCE_MOTION) == "true")
     private val hardwareDecoding = MutableStateFlow(settings.get(KEY_HARDWARE_DECODING, "true").toBoolean())
+    private val playerSeekStepSeconds = MutableStateFlow(
+        settings.get(KEY_PLAYER_SEEK_STEP_SECONDS).toIntOrNull() ?: PlayerGestureDefaults.SEEK_STEP_SECONDS,
+    )
+    private val playerBoostSpeed = MutableStateFlow(
+        settings.get(KEY_PLAYER_BOOST_SPEED).toFloatOrNull() ?: PlayerGestureDefaults.BOOST_SPEED,
+    )
     private val folderMapOpen = MutableStateFlow(settings.get(KEY_FOLDER_MAP_OPEN) == "true")
     private val heuristic = MutableStateFlow(settings.get(KEY_HEURISTIC, "true").toBoolean())
     private val nameParsing = MutableStateFlow(settings.get(KEY_NAME_PARSING, "true").toBoolean())
@@ -130,6 +137,18 @@ class DesktopPikoPreferences(
     override suspend fun setHardwareDecoding(enabled: Boolean) {
         settings.set(KEY_HARDWARE_DECODING, enabled.toString())
         hardwareDecoding.value = enabled
+    }
+
+    override val playerSeekStepSecondsFlow: Flow<Int> = playerSeekStepSeconds.asStateFlow()
+    override suspend fun setPlayerSeekStepSeconds(seconds: Int) {
+        settings.set(KEY_PLAYER_SEEK_STEP_SECONDS, seconds.toString())
+        playerSeekStepSeconds.value = seconds
+    }
+
+    override val playerBoostSpeedFlow: Flow<Float> = playerBoostSpeed.asStateFlow()
+    override suspend fun setPlayerBoostSpeed(speed: Float) {
+        settings.set(KEY_PLAYER_BOOST_SPEED, speed.toString())
+        playerBoostSpeed.value = speed
     }
 
     override val folderMapOpenFlow: Flow<Boolean> = folderMapOpen.asStateFlow()
@@ -386,6 +405,8 @@ class DesktopPikoPreferences(
         const val KEY_AUTO_CHECK_UPDATES = "update.autoCheck"
         const val KEY_REDUCE_MOTION = "ui.reduceMotion"
         const val KEY_HARDWARE_DECODING = "player.hardwareDecoding"
+        const val KEY_PLAYER_SEEK_STEP_SECONDS = "player.seekStepSeconds"
+        const val KEY_PLAYER_BOOST_SPEED = "player.boostSpeed"
         const val KEY_FOLDER_MAP_OPEN = "ui.folderMapOpen"
         const val KEY_HEURISTIC = "ui.heuristicFilter"
         const val KEY_BUNDLE_SUBTITLES = "ui.bundleSubtitles"

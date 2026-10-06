@@ -24,6 +24,14 @@ data class SnailMode(
     }
 }
 
+/** 播放器进退步长与长按倍速的默认值与可选档位。存储两端与播放设置面板共用这一份。 */
+object PlayerGestureDefaults {
+    const val SEEK_STEP_SECONDS = 10
+    val SeekStepChoices = listOf(1, 2, 5, 10, 15, 30)
+    const val BOOST_SPEED = 2f
+    val BoostSpeedChoices = listOf(2f, 3f)
+}
+
 interface PikoUserPreferences {
     suspend fun savePlaybackPosition(fileId: String, positionMs: Long)
     suspend fun getPlaybackPosition(fileId: String): Long
@@ -184,6 +192,14 @@ interface PikoUserPreferences {
      */
     val hardwareDecodingFlow: Flow<Boolean>
     suspend fun setHardwareDecoding(enabled: Boolean)
+
+    /** 播放器双击、方向键进退一步的秒数，默认 10。在播放设置里改，跟着设置同步：这是看片的习惯，不看设备。 */
+    val playerSeekStepSecondsFlow: Flow<Int>
+    suspend fun setPlayerSeekStepSeconds(seconds: Int)
+
+    /** 长按画面临时加速到的倍速，默认 2。同上，在播放设置里改、跟着设置同步。 */
+    val playerBoostSpeedFlow: Flow<Float>
+    suspend fun setPlayerBoostSpeed(speed: Float)
 
     /**
      * 网盘页的目录图（FolderMap）面板开着，默认关。打开后一直开着、跳转也不收，面板上的 × 关掉。

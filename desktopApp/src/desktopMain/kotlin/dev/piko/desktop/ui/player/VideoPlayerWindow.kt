@@ -14,6 +14,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import dev.piko.data.auth.PlayerGestureDefaults
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -248,6 +249,9 @@ private fun VideoPlayerContent(
     }
     val volume = remember(backend) { backend.volume?.let { BackendVolume(backend) } }
     val isSpoilerBlurEnabled by services.preferences.spoilerBlurFlow.collectAsState(initial = true)
+    val seekStepSeconds by services.preferences.playerSeekStepSecondsFlow
+        .collectAsState(initial = PlayerGestureDefaults.SEEK_STEP_SECONDS)
+    val longPressSpeed by services.preferences.playerBoostSpeedFlow.collectAsState(initial = PlayerGestureDefaults.BOOST_SPEED)
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(request) {
@@ -352,6 +356,10 @@ private fun VideoPlayerContent(
                 onNext = state::playNext,
                 onSelectEntry = state::playEntry,
                 hideEpisodeThumbnails = isSpoilerBlurEnabled,
+                seekStepSeconds = seekStepSeconds,
+                onSeekStepChange = { scope.launch { services.preferences.setPlayerSeekStepSeconds(it) } },
+                longPressSpeed = longPressSpeed,
+                onLongPressSpeedChange = { scope.launch { services.preferences.setPlayerBoostSpeed(it) } },
                 audioTracks = state.audioTracks,
                 selectedAudioTrackId = state.selectedAudioTrackId,
                 onSelectAudioTrack = state::selectAudioTrack,

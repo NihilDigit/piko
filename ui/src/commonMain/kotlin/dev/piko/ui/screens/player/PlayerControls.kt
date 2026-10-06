@@ -57,11 +57,7 @@ import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
-import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.PushPin
-import androidx.compose.ui.platform.LocalWindowInfo
-import dev.piko.ui.components.ActionDropdownMenu
-import androidx.compose.material.icons.outlined.Subtitles
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material3.ButtonDefaults
@@ -84,7 +80,6 @@ import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -108,6 +103,11 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.layout.wrapContentWidth
+import dev.piko.ui.components.MorphContainer
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.animation.core.spring
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
@@ -134,17 +134,18 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import dev.piko.ui.platform.LocalFramelessWindow
-import dev.piko.ui.components.SheetAction
 import dev.piko.ui.platform.windowDragArea
 import kotlinx.coroutines.delay
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.util.Locale
 import kotlin.math.abs
+import dev.piko.data.auth.PlayerGestureDefaults
 import kotlin.math.roundToInt
 
 /**
- * 播放器顶栏：返回、标题与副标题、播放设置。
+ * 播放器顶栏：返回、标题与副标题、播放设置；桌面的独立窗口另有置顶与关闭。
+ * 音轨与字幕、分享、下载都在播放设置面板里：原先一字排在这里，竖屏时把标题挤没，收进菜单后又多点一层。
  *
  * 标题区单独包一层带 weight 的 Box：TooltipBox 不把 weight 的 parent data 交给 Row，
  * 直接给它 weight 时标题按内容宽度摆放，右侧按钮会紧跟在标题后面，而不是贴到右边。
@@ -162,25 +163,9 @@ fun PlayerTopBar(
     onBackClick: () -> Unit,
     modifier: Modifier = Modifier,
     onSettingsClick: (() -> Unit)? = null,
-    /** 音轨与字幕。没有字幕、音轨也只有一条时为 null，不给入口。 */
-    onTracksClick: (() -> Unit)? = null,
-    /** 作用于正在播的这个文件的操作（分享、下载），排在播放设置之前。 */
-    fileActions: List<SheetAction> = emptyList(),
-    onMenuVisibilityChange: (Boolean) -> Unit = {},
 ) {
     // 桌面端独立的播放窗口没有标题栏：关窗按钮放在右上角，与其他按钮同款，左边的返回键与它重复，不再显示
     val framelessWindow = LocalFramelessWindow.current
-    val compactActions = framelessWindow == null && with(LocalDensity.current) {
-        LocalWindowInfo.current.containerSize.width.toDp() < 600.dp
-    }
-    var moreOpen by remember { mutableStateOf(false) }
-    fun setMoreOpen(open: Boolean) { moreOpen = open; onMenuVisibilityChange(open) }
-    LaunchedEffect(compactActions) { if (!compactActions && moreOpen) setMoreOpen(false) }
-    DisposableEffect(Unit) { onDispose { onMenuVisibilityChange(false) } }
-    val actions = fileActions + listOfNotNull(
-        onTracksClick?.let { SheetAction(Icons.Outlined.Subtitles, "音轨与字幕", it) },
-        onSettingsClick?.let { SheetAction(Icons.Outlined.Tune, "播放设置", it) },
-    )
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -237,31 +222,13 @@ fun PlayerTopBar(
                 }
             }
         }
-        if (compactActions && actions.isNotEmpty()) {
-            Box {
-                PlayerIconButton(Icons.Outlined.MoreVert, "更多操作", { setMoreOpen(true) }, tooltipBelow = true)
-                ActionDropdownMenu(moreOpen, actions) { setMoreOpen(false) }
-            }
-        } else {
-            fileActions.forEach { action ->
-                PlayerIconButton(icon = action.icon, label = action.label, onClick = action.onClick, tooltipBelow = true)
-            }
-            if (onTracksClick != null) {
-                PlayerIconButton(
-                    icon = Icons.Outlined.Subtitles,
-                    label = "音轨与字幕",
-                    onClick = onTracksClick,
-                    tooltipBelow = true,
-                )
-            }
-            if (onSettingsClick != null) {
-                PlayerIconButton(
-                    icon = Icons.Outlined.Tune,
-                    label = "播放设置",
-                    onClick = onSettingsClick,
-                    tooltipBelow = true,
-                )
-            }
+        if (onSettingsClick != null) {
+            PlayerIconButton(
+                icon = Icons.Outlined.Tune,
+                label = "播放设置",
+                onClick = onSettingsClick,
+                tooltipBelow = true,
+            )
         }
         if (framelessWindow != null) {
             val onTop = framelessWindow.isAlwaysOnTop
@@ -300,9 +267,11 @@ private fun LocalPlaybackBadge() {
  * 画面中央只有播放键。原先两侧还有快进快退与换集：进退触屏靠双击两侧、鼠标与键盘靠方向键和进度条，
  * 按钮与手势重复，又把画面中央占掉一大片；换集挪进了底栏。
  * 播放键一直在这里，控件收起时它若还在（加载中、有读数）就独自承载加载指示或读数。
+ * 显隐由它自己编排（[visible]），不套 AnimatedVisibility，见 PlayPauseButton。
  */
 @Composable
 internal fun PlayerCenterControls(
+    visible: Boolean,
     isPlaying: Boolean,
     isLoading: Boolean,
     indicator: CenterIndicator?,
@@ -310,6 +279,7 @@ internal fun PlayerCenterControls(
     modifier: Modifier = Modifier,
 ) {
     PlayPauseButton(
+        visible = visible,
         isPlaying = isPlaying,
         isLoading = isLoading,
         indicator = indicator,
@@ -326,13 +296,22 @@ internal fun PlayerCenterControls(
  * 播放键上临时显示的读数：倍速、旋转、音量、亮度、进退这类「正在改什么、刚改了什么」的反馈。
  * 播放键这时变形成横向的胶囊把它托住，过一会儿再变回去。[description] 给读屏用。
  * [progress] 不为 null 时胶囊里多一条进度，音量、亮度与拖动进度用它。
+ * [detail] 是跟在读数后面、字号小一级的补充，例如拖动进度时这一滑的偏移。
+ * [textTemplate]、[detailTemplate] 是这一种读数最宽时的样子（音量是「100」），胶囊按它定宽、数字在里面靠右，
+ * 拖动时宽度不随位数伸缩。
  */
 internal data class CenterIndicator(
     val icon: ImageVector,
     val text: String,
     val description: String,
     val progress: Float? = null,
+    val detail: String? = null,
+    val textTemplate: String? = null,
+    val detailTemplate: String? = null,
 )
+
+/** 把数字都换成 0：等宽数字下，同样格式里位数最多的那一个就是最宽的。 */
+internal fun widestDigits(text: String): String = text.map { if (it in '0'..'9') '0' else it }.joinToString("")
 
 // 播放键里放的是哪一种内容
 private sealed interface CenterFace {
@@ -359,6 +338,14 @@ private val CenterFace.contentKey: Any
  *
  * 读数优先于加载：长按倍速时恰好卡了一下，手指还按着，该看到的仍是倍速。
  *
+ * 显隐、变形与换内容由这里一处编排，排成先后，不交给 AnimatedVisibility、AnimatedContent 与各自的尺寸动画分头做。
+ * 分头做时三者互不知道对方走到哪一步：内容换好了容器还没张开、容器开始收了内容还没撤，都会露出读数被裁掉的中间一截，
+ * 补了一处另一处又冒出来。现在的规则：
+ * - 从无到有：没有可以变形的起点，直接摆成目标的形状与颜色，整体淡入。
+ * - 显示中换一种内容：旧内容先淡出，空着的容器变形到新尺寸，接近到位才淡入新内容。
+ * - 同一种读数换数值（拖动、调音量）：内容就地更新，宽度跟着走。
+ * - 退场：整体淡出，期间不换内容、不变形，保持退场那一刻的样子。
+ *
  * 不用 FilledIconToggleButton：它的形状只在 checked 与 pressed 间切换，接不进另外两种形态，
  * 容器宽度也不能动画。不用 androidx.graphics.shapes 的 Morph：几种形态都是圆角矩形，只差宽度与圆角，
  * RoundedCornerShape 的尺寸插值就够了，也不必为此加依赖。加载中仍可点击，缓冲时暂停是合理操作。
@@ -366,6 +353,7 @@ private val CenterFace.contentKey: Any
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun PlayPauseButton(
+    visible: Boolean,
     isPlaying: Boolean,
     isLoading: Boolean,
     indicator: CenterIndicator?,
@@ -380,50 +368,47 @@ private fun PlayPauseButton(
     val colors = MaterialTheme.colorScheme
     val interactionSource = remember { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
-    val face = when {
+    val target = when {
         indicator != null -> CenterFace.Readout(indicator)
         isLoading -> CenterFace.Loading
         else -> CenterFace.Icon
     }
-
-    val roundCorner = size.height / 2
-    val corner by animateDpAsState(
-        targetValue = when {
-            face != CenterFace.Icon -> roundCorner
-            pressed -> pressedCorner
-            isPlaying -> squareCorner
-            else -> roundCorner
-        },
-        animationSpec = motion.fastSpatialSpec(),
-    )
     // 读数形态的宽度照内容量出来，胶囊恰好托住它：固定宽度的话「90°」两边空一大截，「01:23:45」又放不下
     val readoutStyle = MaterialTheme.typography.titleMediumEmphasized.copy(fontFeatureSettings = "tnum")
+    val detailStyle = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum")
     val textMeasurer = rememberTextMeasurer()
     val density = LocalDensity.current
-    val readoutWidth = (face as? CenterFace.Readout)?.indicator?.let { shown ->
-        val textWidth = with(density) { textMeasurer.measure(shown.text, readoutStyle).size.width.toDp() }
+    // 文字占的宽度：有模板时取模板与眼前文字中宽的一个
+    fun slotWidth(text: String, template: String?, style: TextStyle): Dp = with(density) {
+        val measured = textMeasurer.measure(text, style).size.width
+        val reserved = template?.let { textMeasurer.measure(it, style).size.width } ?: 0
+        maxOf(measured, reserved).toDp()
+    }
+    fun readoutWidth(shown: CenterIndicator): Dp {
         val bar = if (shown.progress != null) READOUT_BAR_WIDTH + READOUT_GAP else 0.dp
-        READOUT_PADDING * 2 + READOUT_ICON_SIZE + READOUT_GAP + bar + textWidth
+        val detail = shown.detail?.let { READOUT_GAP + slotWidth(it, shown.detailTemplate, detailStyle) } ?: 0.dp
+        return READOUT_PADDING * 2 + READOUT_ICON_SIZE + READOUT_GAP + bar + slotWidth(shown.text, shown.textTemplate, readoutStyle) + detail
     }
     // 圆形态（暂停、加载）收成正圆，不是两头圆的胶囊；方角形态（播放中）才展开到 [size] 的宽度，
     // 读数形态再照内容伸长。按下只收紧圆角不动宽度，否则按一下左右抖
-    val width by animateDpAsState(
-        targetValue = when {
-            readoutWidth != null -> maxOf(size.width, readoutWidth)
-            face == CenterFace.Loading || !isPlaying -> size.height
-            else -> size.width
-        },
-        animationSpec = motion.defaultSpatialSpec(),
-    )
-    val containerColor by animateColorAsState(
-        targetValue = when (face) {
-            is CenterFace.Readout -> colors.tertiary
-            CenterFace.Loading -> colors.primaryContainer
-            CenterFace.Icon -> colors.primary
-        },
-        animationSpec = motion.defaultEffectsSpec(),
-    )
-    val contentColor = when (face) {
+    fun widthOf(face: CenterFace): Dp = when (face) {
+        is CenterFace.Readout -> maxOf(size.width, readoutWidth(face.indicator))
+        CenterFace.Loading -> size.height
+        CenterFace.Icon -> if (isPlaying) size.width else size.height
+    }
+    val roundCorner = size.height / 2
+    fun cornerOf(face: CenterFace): Dp = when {
+        face != CenterFace.Icon -> roundCorner
+        pressed -> pressedCorner
+        isPlaying -> squareCorner
+        else -> roundCorner
+    }
+    fun containerColorOf(face: CenterFace): Color = when (face) {
+        is CenterFace.Readout -> colors.tertiary
+        CenterFace.Loading -> colors.primaryContainer
+        CenterFace.Icon -> colors.primary
+    }
+    fun contentColorOf(face: CenterFace): Color = when (face) {
         is CenterFace.Readout -> colors.onTertiary
         CenterFace.Loading -> colors.onPrimaryContainer
         CenterFace.Icon -> colors.onPrimary
@@ -447,62 +432,69 @@ private fun PlayPauseButton(
                     indicator?.let { contentDescription = it.description }
                 },
         )
-        Surface(
+        MorphContainer(
+            targetState = target,
+            visible = visible,
+            contentKey = { it.contentKey },
+            width = ::widthOf,
+            corner = ::cornerOf,
+            containerColor = ::containerColorOf,
+            contentColor = ::contentColorOf,
+            anchorSize = size,
             onClick = onClick,
-            // 弹簧会冲过头。圆角从胶囊收回方角时只会冲到略小于 12dp，离 0 还远，仍兜一道：
-            // 负的圆角让 CornerBasedShape 当场抛异常，见 ConnectedShapes.kt
-            shape = RoundedCornerShape(corner.coerceAtLeast(0.dp)),
-            color = containerColor,
-            contentColor = contentColor,
             interactionSource = interactionSource,
-            modifier = Modifier
-                .requiredSize(width.coerceAtLeast(0.dp), size.height)
+            containerModifier = Modifier
                 .handCursor()
                 .semantics { contentDescription = actionLabel },
-        ) {
-            AnimatedContent(
-                targetState = face,
-                transitionSpec = {
-                    (fadeIn(motion.defaultEffectsSpec()) + scaleIn(motion.defaultSpatialSpec(), initialScale = 0.5f))
-                        .togetherWith(fadeOut(motion.fastEffectsSpec()) + scaleOut(motion.fastSpatialSpec(), targetScale = 0.5f))
-                },
-                contentAlignment = Alignment.Center,
-                contentKey = { it.contentKey },
-                label = "playFace",
-            ) { shown ->
-                Box(contentAlignment = Alignment.Center) {
-                    when (shown) {
-                        CenterFace.Loading -> LoadingIndicator(
-                            color = contentColor,
-                            modifier = Modifier.size(size.height * LOADING_INDICATOR_FRACTION),
+        ) { shown ->
+            when (shown) {
+                CenterFace.Loading -> LoadingIndicator(
+                    color = contentColorOf(shown),
+                    modifier = Modifier.size(size.height * LOADING_INDICATOR_FRACTION),
+                )
+                CenterFace.Icon -> Icon(
+                    imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    contentDescription = null,
+                    modifier = Modifier.size(iconSize),
+                )
+                is CenterFace.Readout -> {
+                    val readout = shown.indicator
+                    val contentColor = contentColorOf(shown)
+                    // 读数按自己的宽度排，不受容器眼下的宽度约束：变形途中它是淡出的，不会露出被裁的一截
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(READOUT_GAP),
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.wrapContentWidth(unbounded = true),
+                    ) {
+                        Icon(readout.icon, contentDescription = null, modifier = Modifier.size(READOUT_ICON_SIZE))
+                        readout.progress?.let { progress ->
+                            LinearProgressIndicator(
+                                progress = { progress.coerceIn(0f, 1f) },
+                                color = contentColor,
+                                trackColor = contentColor.copy(alpha = 0.3f),
+                                gapSize = 0.dp,
+                                drawStopIndicator = {},
+                                modifier = Modifier.width(READOUT_BAR_WIDTH),
+                            )
+                        }
+                        Text(
+                            text = readout.text,
+                            style = readoutStyle,
+                            textAlign = TextAlign.End,
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.width(slotWidth(readout.text, readout.textTemplate, readoutStyle)),
                         )
-                        CenterFace.Icon -> Icon(
-                            imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                            contentDescription = null,
-                            modifier = Modifier.size(iconSize),
-                        )
-                        is CenterFace.Readout -> {
-                            // contentKey 不看文字，同一种读数换了数值时 shown 仍是旧的一份，数值取眼前的
-                            val live = (face as? CenterFace.Readout)?.indicator
-                                ?.takeIf { CenterFace.Readout(it).contentKey == shown.contentKey }
-                                ?: shown.indicator
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(READOUT_GAP),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Icon(live.icon, contentDescription = null, modifier = Modifier.size(READOUT_ICON_SIZE))
-                                live.progress?.let { progress ->
-                                    LinearProgressIndicator(
-                                        progress = { progress.coerceIn(0f, 1f) },
-                                        color = contentColor,
-                                        trackColor = contentColor.copy(alpha = 0.3f),
-                                        gapSize = 0.dp,
-                                        drawStopIndicator = {},
-                                        modifier = Modifier.width(READOUT_BAR_WIDTH),
-                                    )
-                                }
-                                Text(text = live.text, style = readoutStyle, maxLines = 1, softWrap = false)
-                            }
+                        readout.detail?.let { detail ->
+                            Text(
+                                text = detail,
+                                style = detailStyle,
+                                color = contentColor.copy(alpha = READOUT_DETAIL_ALPHA),
+                                textAlign = TextAlign.End,
+                                maxLines = 1,
+                                softWrap = false,
+                                modifier = Modifier.width(slotWidth(detail, readout.detailTemplate, detailStyle)),
+                            )
                         }
                     }
                 }
@@ -516,6 +508,7 @@ private val READOUT_PADDING = 20.dp
 private val READOUT_ICON_SIZE = 20.dp
 private val READOUT_GAP = 8.dp
 private val READOUT_BAR_WIDTH = 120.dp
+private const val READOUT_DETAIL_ALPHA = 0.75f
 
 // Medium 的 56 高，宽度取标准 56 与宽版 72 之间：方形显得局促，宽版又抢过了两侧。方角与按压圆角取自
 // icon button 规格的 16 与 12
@@ -1079,11 +1072,11 @@ private const val DISABLED_CONTENT_ALPHA = 0.38f
 private const val SEEK_SETTLE_TOLERANCE_MILLIS = 1_500L
 private const val SEEK_SETTLE_TIMEOUT_MILLIS = 1_500L
 
-// 公开给 app 模块里的控件测试用
-const val SEEK_STEP_MILLIS = 10_000L
+// 公开给 app 模块里的控件测试用。播放器里的实际值来自设置，这是信息流与测试用的默认值
+const val SEEK_STEP_MILLIS = PlayerGestureDefaults.SEEK_STEP_SECONDS * 1000L
 internal const val MIN_SPEED = 0.5f
 internal const val MAX_SPEED = 3.5f
-const val LONG_PRESS_BOOST_SPEED = 2.0f
+const val LONG_PRESS_BOOST_SPEED = PlayerGestureDefaults.BOOST_SPEED
 
 internal fun formatSpeed(speed: Float): String = formatSpeedPreset(speed) + "x"
 
@@ -1093,6 +1086,20 @@ internal fun formatSpeedMultiplier(speed: Float): String = formatSpeedPreset(spe
 // 按两位小数取整后去掉末尾的 0：1.00 显示为 1，1.50 显示为 1.5
 internal fun formatSpeedPreset(speed: Float): String =
     BigDecimal(speed.toDouble()).setScale(2, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString()
+
+// 带符号的进退量，不补前导零：「+1:20」「−0:05」。减号用 U+2212，与「−10 秒」一致
+internal fun formatSeekOffset(millis: Long): String {
+    val sign = if (millis < 0) "−" else "+"
+    val totalSeconds = abs(millis) / 1000
+    val seconds = totalSeconds % 60
+    val minutes = (totalSeconds / 60) % 60
+    val hours = totalSeconds / 3600
+    return if (hours > 0) {
+        String.format(Locale.US, "%s%d:%02d:%02d", sign, hours, minutes, seconds)
+    } else {
+        String.format(Locale.US, "%s%d:%02d", sign, minutes, seconds)
+    }
+}
 
 internal fun formatTime(millis: Long): String {
     val totalSeconds = (millis / 1000).coerceAtLeast(0)

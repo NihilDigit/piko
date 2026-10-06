@@ -115,6 +115,8 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val AUTO_CHECK_UPDATES = booleanPreferencesKey("auto_check_updates")
         val REDUCE_MOTION = booleanPreferencesKey("reduce_motion")
         val HARDWARE_DECODING = booleanPreferencesKey("hardware_decoding")
+        val PLAYER_SEEK_STEP_SECONDS = intPreferencesKey("player_seek_step_seconds")
+        val PLAYER_BOOST_SPEED = floatPreferencesKey("player_boost_speed")
         val FOLDER_MAP_OPEN = booleanPreferencesKey("folder_map_open")
         val HEURISTIC_FILTER_ENABLED = booleanPreferencesKey("heuristic_filter_enabled")
         val BUNDLE_SUBTITLES_ENABLED = booleanPreferencesKey("bundle_subtitles_enabled")
@@ -215,6 +217,24 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun setHardwareDecoding(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.HARDWARE_DECODING] = enabled
+        }
+    }
+
+    override val playerSeekStepSecondsFlow: Flow<Int> =
+        preference { it[PreferencesKeys.PLAYER_SEEK_STEP_SECONDS] ?: PlayerGestureDefaults.SEEK_STEP_SECONDS }
+
+    override suspend fun setPlayerSeekStepSeconds(seconds: Int) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.PLAYER_SEEK_STEP_SECONDS] = seconds
+        }
+    }
+
+    override val playerBoostSpeedFlow: Flow<Float> =
+        preference { it[PreferencesKeys.PLAYER_BOOST_SPEED] ?: PlayerGestureDefaults.BOOST_SPEED }
+
+    override suspend fun setPlayerBoostSpeed(speed: Float) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.PLAYER_BOOST_SPEED] = speed
         }
     }
 

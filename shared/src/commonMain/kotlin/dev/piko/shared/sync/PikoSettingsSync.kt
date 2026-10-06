@@ -62,6 +62,16 @@ val SyncedSettings: List<SyncedSetting> = listOf(
     SyncedSetting("recentMoveTargets", { it.recentMoveTargetsFlow }, { prefs, value -> prefs.saveRecentMoveTargets(value) }),
     // 快速访问是 Piko 自己的，PikPak 没有这一项，只能靠这里带到别的设备
     SyncedSetting("pinnedFolders", { it.pinnedFoldersFlow }, { prefs, value -> prefs.savePinnedFolders(value) }),
+    SyncedSetting(
+        "playerSeekStepSeconds",
+        { prefs -> prefs.playerSeekStepSecondsFlow.map(Int::toString) },
+        { prefs, value -> value.toIntOrNull()?.let { prefs.setPlayerSeekStepSeconds(it) } },
+    ),
+    SyncedSetting(
+        "playerBoostSpeed",
+        { prefs -> prefs.playerBoostSpeedFlow.map(Float::toString) },
+        { prefs, value -> value.toFloatOrNull()?.let { prefs.setPlayerBoostSpeed(it) } },
+    ),
 )
 
 /**

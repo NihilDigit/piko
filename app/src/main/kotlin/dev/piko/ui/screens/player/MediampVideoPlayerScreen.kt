@@ -27,6 +27,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import dev.piko.data.auth.PlayerGestureDefaults
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -121,6 +122,10 @@ fun MediampVideoPlayerScreen(
     val mediaVolume = rememberMediaVolume()
     val snackbarHostState = remember { SnackbarHostState() }
     val isSpoilerBlurEnabled by app.sessionManager.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = true)
+    val seekStepSeconds by preferences.playerSeekStepSecondsFlow
+        .collectAsStateWithLifecycle(initialValue = PlayerGestureDefaults.SEEK_STEP_SECONDS)
+    val longPressSpeed by preferences.playerBoostSpeedFlow
+        .collectAsStateWithLifecycle(initialValue = PlayerGestureDefaults.BOOST_SPEED)
 
     LaunchedEffect(initialFileId) {
         val siblings = driveRepo.siblingMedia(initialFileId)
@@ -242,6 +247,10 @@ fun MediampVideoPlayerScreen(
                 onNext = state::playNext,
                 onSelectEntry = state::playEntry,
                 hideEpisodeThumbnails = isSpoilerBlurEnabled,
+                seekStepSeconds = seekStepSeconds,
+                onSeekStepChange = { scope.launch { preferences.setPlayerSeekStepSeconds(it) } },
+                longPressSpeed = longPressSpeed,
+                onLongPressSpeedChange = { scope.launch { preferences.setPlayerBoostSpeed(it) } },
                 audioTracks = state.audioTracks,
                 selectedAudioTrackId = state.selectedAudioTrackId,
                 onSelectAudioTrack = state::selectAudioTrack,

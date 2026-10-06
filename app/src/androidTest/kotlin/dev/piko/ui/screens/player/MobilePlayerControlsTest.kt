@@ -74,6 +74,18 @@ class MobilePlayerControlsTest {
     }
 
     @Test
+    fun singleTapAfterDoubleTapKeepsSeeking() {
+        setControls()
+        rule.onRoot().performTouchInput { doubleClick(Offset(width * 0.9f, height * GESTURE_Y_FRACTION)) }
+        rule.onRoot().performTouchInput { click(Offset(width * 0.9f, height * GESTURE_Y_FRACTION)) }
+        rule.waitForIdle()
+
+        assertEquals(listOf(START_MILLIS + SEEK_STEP_MILLIS, START_MILLIS + 2 * SEEK_STEP_MILLIS), seeks)
+        // 接着点的这一下是进退，不是单击：控件不该被收起
+        rule.onNodeWithContentDescription("返回").assertExists()
+    }
+
+    @Test
     fun horizontalDragPreviewsAndCommitsOnlyOnRelease() {
         setControls()
         rule.onRoot().performTouchInput {

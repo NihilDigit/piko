@@ -38,6 +38,10 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun setReduceMotion(enabled: Boolean) = Unit
     override val hardwareDecodingFlow: Flow<Boolean> = MutableStateFlow(true)
     override suspend fun setHardwareDecoding(enabled: Boolean) = Unit
+    override val playerSeekStepSecondsFlow: Flow<Int> = MutableStateFlow(10)
+    override suspend fun setPlayerSeekStepSeconds(seconds: Int) = Unit
+    override val playerBoostSpeedFlow: Flow<Float> = MutableStateFlow(2f)
+    override suspend fun setPlayerBoostSpeed(speed: Float) = Unit
     override val folderMapOpenFlow: Flow<Boolean> = MutableStateFlow(false)
     override suspend fun setFolderMapOpen(open: Boolean) = Unit
     override val heuristicFilterFlow: Flow<Boolean> = MutableStateFlow(false)

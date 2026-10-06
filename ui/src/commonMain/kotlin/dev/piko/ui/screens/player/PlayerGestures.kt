@@ -1,7 +1,10 @@
 package dev.piko.ui.screens.player
 
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -17,7 +20,6 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
 import kotlin.math.abs
-import dev.piko.shared.media.player.playerSeekDragDelta
 
 /**
  * 竖滑手势与上下方向键调节的一路电平，取值 0 到 1。由平台实现：Android 的亮度是窗口属性、
@@ -53,7 +55,7 @@ internal sealed interface PlayerGesture {
 /**
  * 覆盖整个播放区域的手势层。
  *
- * 单击显隐控件，双击两侧快退/快进、中间播放暂停，长按加速，横滑 seek，
+ * 单击显隐控件，双击两侧快退/快进（之后读数还在时单点即可接着进退）、中间播放暂停，长按加速，横滑 seek，
  * 左右半屏竖滑调亮度/音量；平台没有亮度时整个宽度都调音量，两样都没有时竖滑不起作用。
  * 锁定时只保留单击，其余手势一律不识别。鼠标的点击与拖动也走这里，不另写一套。
  *
@@ -74,6 +76,8 @@ internal fun PlayerGestureLayer(
     onDoubleTap: (zone: DoubleTapZone) -> Unit,
     onSpeedBoost: (active: Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    // 为 true 时两侧的单点也交给 onDoubleTap，不等第二下：双击进退之后，读数还在就接着点
+    seekTapActive: () -> Boolean = { false },
 ) {
     val haptic = LocalHapticFeedback.current
     // pointerInput 只以 isLocked 为 key，其余入参走 rememberUpdatedState，
@@ -85,6 +89,7 @@ internal fun PlayerGestureLayer(
     val seekTo by rememberUpdatedState(onSeekTo)
     val doubleTap by rememberUpdatedState(onDoubleTap)
     val speedBoost by rememberUpdatedState(onSpeedBoost)
+    val seekTapActive by rememberUpdatedState(seekTapActive)
     val brightnessControl by rememberUpdatedState(brightness)
     val volumeControl by rememberUpdatedState(volume)
 
@@ -107,48 +112,77 @@ internal fun PlayerGestureLayer(
                     detectTapGestures(onTap = { toggleControls() })
                     return@pointerInput
                 }
-                detectTapGestures(
-                    onTap = { toggleControls() },
-                    onDoubleTap = { offset ->
-                        haptic.performHapticFeedback(HapticFeedbackType.ContextClick)
-                        doubleTap(
-                            when {
-                                offset.x < size.width * SIDE_ZONE_FRACTION -> DoubleTapZone.Rewind
-                                offset.x > size.width * (1f - SIDE_ZONE_FRACTION) -> DoubleTapZone.Forward
-                                else -> DoubleTapZone.PlayPause
-                            },
-                        )
-                    },
-                    onLongPress = {
+                // 不用 detectTapGestures：它只分单击与双击，进退中连点三下会拆成一次双击加一次单击，
+                // 多出的单击把控件唤出来，想连进几步只能两下两下地点
+                fun zoneAt(x: Float) = when {
+                    x < size.width * SIDE_ZONE_FRACTION -> DoubleTapZone.Rewind
+                    x > size.width * (1f - SIDE_ZONE_FRACTION) -> DoubleTapZone.Forward
+                    else -> DoubleTapZone.PlayPause
+                }
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    down.consume()
+                    val zone = zoneAt(down.position.x)
+                    // 在按下时就判定：等抬起时读数可能刚好收起，这一下就变成了等双击
+                    val continuesSeek = zone != DoubleTapZone.PlayPause && seekTapActive()
+
+                    // 拖动层越过 slop 后消费事件，这里随之得到 null，这一下不算点按
+                    var cancelled = false
+                    val up = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                        waitForUpOrCancellation().also { if (it == null) cancelled = true }
+                    }
+                    if (cancelled) return@awaitEachGesture
+                    if (up == null) {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         boosting = true
                         speedBoost(true)
-                    },
-                    onPress = {
                         // finally：按着时锁定画面，pointerInput 以 isLocked 为 key 重启，这个协程被取消，
                         // 等不到松开，不收尾的话临时倍速留着，拖动手势也一直被当成长按里的挪动而忽略
                         try {
-                            tryAwaitRelease()
+                            do {
+                                val event = awaitPointerEvent()
+                                event.changes.forEach { it.consume() }
+                            } while (event.changes.any { it.pressed })
                         } finally {
                             if (boosting) {
                                 boosting = false
                                 speedBoost(false)
                             }
                         }
-                    },
-                )
+                        return@awaitEachGesture
+                    }
+                    up.consume()
+
+                    if (continuesSeek) {
+                        haptic.performHapticFeedback(HapticFeedbackType.ContextClick)
+                        doubleTap(zone)
+                        return@awaitEachGesture
+                    }
+                    val secondDown = withTimeoutOrNull(viewConfiguration.doubleTapTimeoutMillis) { awaitFirstDown() }
+                    if (secondDown == null) {
+                        toggleControls()
+                        return@awaitEachGesture
+                    }
+                    secondDown.consume()
+                    val secondUp = waitForUpOrCancellation()
+                    if (secondUp == null) {
+                        toggleControls()
+                    } else {
+                        secondUp.consume()
+                        haptic.performHapticFeedback(HapticFeedbackType.ContextClick)
+                        doubleTap(zoneAt(secondUp.position.x))
+                    }
+                }
             }
             .pointerInput(isLocked) {
                 if (isLocked) return@pointerInput
                 // 方向只判一次；竖滑而平台没有对应电平时，这次拖动整个忽略
                 var directionDecided = false
-                var previousEventTime = 0L
                 detectDragGestures(
                     onDragStart = { offset ->
                         dragOrigin = offset
                         dragTotal = Offset.Zero
                         directionDecided = false
-                        previousEventTime = 0L
                         publish(null)
                     },
                     onDragEnd = {
@@ -185,10 +219,11 @@ internal fun PlayerGestureLayer(
                         }
 
                         when (val active = gesture) {
+                            // 与进度条同比例，划过整个宽度即是整部片长，从一头拖到另一头就能到开头或结尾。
+                            // 原先按片长缩放量程、再按滑动速度加速，同样一寸走多远随片子与手速变，估不准落点
                             is PlayerGesture.Seek -> {
-                                val elapsed = if (previousEventTime == 0L) 0L else change.uptimeMillis - previousEventTime
-                                val delta = playerSeekDragDelta(duration, size.width.toFloat(), dragAmount.x, elapsed)
-                                publish(active.copy(deltaMillis = active.deltaMillis + delta))
+                                val delta = (dragTotal.x / size.width.coerceAtLeast(1) * duration).toLong()
+                                publish(active.copy(deltaMillis = delta))
                             }
 
                             is PlayerGesture.Adjust -> {
@@ -204,7 +239,6 @@ internal fun PlayerGestureLayer(
 
                             null -> Unit
                         }
-                        previousEventTime = change.uptimeMillis
                     },
                 )
             },

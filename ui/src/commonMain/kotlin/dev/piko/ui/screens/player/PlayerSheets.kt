@@ -97,6 +97,8 @@ import dev.piko.ui.components.SpoilerThumbnail
 import dev.piko.ui.components.verticalWheelScrollsRow
 import dev.piko.ui.components.wheelStaysInSheet
 import kotlin.math.abs
+import dev.piko.data.auth.PlayerGestureDefaults
+import dev.piko.ui.components.SheetAction
 import kotlin.math.roundToInt
 
 internal enum class PlayerSheet { Episodes, Settings, Tracks, DriveSubtitles }
@@ -602,8 +604,9 @@ internal fun SpeedSlider(playbackSpeed: Float, onSpeedChange: (Float) -> Unit) {
 }
 
 /**
- * 完整的播放设置：倍速、清晰度、画面比例。旋转在底栏，一次转 90 度。都是单选，用连接式按钮组；倍速另有铺满的滑块，
- * 当前值写在小节标题的右端，不占滑块的宽度。
+ * 完整的播放设置：倍速、清晰度、画面比例，以及手势的进退步长与长按倍速。旋转在底栏，一次转 90 度。
+ * 都是单选，用连接式按钮组；倍速另有铺满的滑块，当前值写在小节标题的右端，不占滑块的宽度。
+ * 步长与长按倍速放在这里而不是应用的设置页：要调它的时候人正在看片、刚觉得一步太大。
  */
 @Composable
 internal fun PlayerSettingsPanel(
@@ -615,6 +618,11 @@ internal fun PlayerSettingsPanel(
     aspectRatio: PlayerAspectRatio?,
     onAspectRatioChange: (PlayerAspectRatio) -> Unit,
     modifier: Modifier = Modifier,
+    actions: List<SheetAction> = emptyList(),
+    seekStepSeconds: Int = PlayerGestureDefaults.SEEK_STEP_SECONDS,
+    onSeekStepChange: ((Int) -> Unit)? = null,
+    longPressSpeed: Float = PlayerGestureDefaults.BOOST_SPEED,
+    onLongPressSpeedChange: ((Float) -> Unit)? = null,
 ) {
     Column(
         modifier = modifier
@@ -623,6 +631,7 @@ internal fun PlayerSettingsPanel(
             .padding(start = 24.dp, end = 24.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(24.dp),
     ) {
+        if (actions.isNotEmpty()) QuickActionRow(actions)
         if (playbackSpeed != null) {
             SettingsSection("倍速", trailing = formatSpeed(playbackSpeed)) {
                 ConnectedChoiceRow(
@@ -654,6 +663,54 @@ internal fun PlayerSettingsPanel(
                     optionLabel = { it.label },
                     onSelect = onAspectRatioChange,
                 )
+            }
+        }
+        if (onSeekStepChange != null) {
+            SettingsSection("进退步长", trailing = "$seekStepSeconds 秒") {
+                ConnectedChoiceRow(
+                    options = PlayerGestureDefaults.SeekStepChoices,
+                    isSelected = { it == seekStepSeconds },
+                    optionLabel = Int::toString,
+                    onSelect = onSeekStepChange,
+                )
+            }
+        }
+        // 后端不能变速时长按本来就不加速，这一项也不给
+        if (playbackSpeed != null && onLongPressSpeedChange != null) {
+            SettingsSection("长按倍速", trailing = formatSpeed(longPressSpeed)) {
+                ConnectedChoiceRow(
+                    options = PlayerGestureDefaults.BoostSpeedChoices,
+                    isSelected = { abs(longPressSpeed - it) < SPEED_MATCH_TOLERANCE },
+                    optionLabel = ::formatSpeedPreset,
+                    onSelect = onLongPressSpeedChange,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 面板顶上一排操作：音轨与字幕、分享、下载。图标在上、名字在下，等分整行，
+ * 三四项在 360dp 宽的竖屏里也排得下，比一项一行省地方。
+ */
+@Composable
+private fun QuickActionRow(actions: List<SheetAction>) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        actions.forEach { action ->
+            Surface(
+                onClick = action.onClick,
+                shape = MaterialTheme.shapes.large,
+                color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                modifier = Modifier.weight(1f),
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.padding(vertical = 12.dp, horizontal = 4.dp),
+                ) {
+                    Icon(action.icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Text(action.label, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                }
             }
         }
     }

@@ -76,7 +76,7 @@ internal fun ShortcutsDialog(modifier: ShortcutModifier, onDismiss: () -> Unit) 
         ),
         "播放器" to listOf(
             "空格 / K" to "播放、暂停",
-            "← / → 或 J / L" to "后退、快进 10 秒",
+            "← / → 或 J / L" to "后退、快进一步",
             "按住 ← / →" to "快退、快进",
             "Shift+← / →" to "后退、快进 1 分钟",
             "0 至 9" to "跳到全片的对应成数处",

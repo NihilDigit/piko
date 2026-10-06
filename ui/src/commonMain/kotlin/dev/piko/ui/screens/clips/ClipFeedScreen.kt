@@ -33,6 +33,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -78,9 +79,8 @@ import dev.piko.ui.components.pageFocusTarget
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.PreviewBackend
-import dev.piko.ui.screens.player.LONG_PRESS_BOOST_SPEED
 import dev.piko.ui.screens.player.PlayerTheme
-import dev.piko.ui.screens.player.SEEK_STEP_MILLIS
+import dev.piko.data.auth.PlayerGestureDefaults
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.StreamRole
 import kotlinx.coroutines.CancellationException
@@ -252,6 +252,11 @@ private fun ClipPager(
 ) {
     val videoPreview = LocalPikoPlatform.current.videoPreview ?: return
     val scope = rememberCoroutineScope()
+    // 与播放器共用播放设置里的长按倍速与进退步长
+    val preferences = LocalPikoServices.current.preferences
+    val boostSpeed by preferences.playerBoostSpeedFlow.collectAsState(initial = PlayerGestureDefaults.BOOST_SPEED)
+    val seekStepSeconds by preferences.playerSeekStepSecondsFlow.collectAsState(initial = PlayerGestureDefaults.SEEK_STEP_SECONDS)
+    val seekStepMillis = seekStepSeconds * 1000L
     // 末尾多一页等待页：下一段还没取好时翻得过去看它转圈，再往后翻不动；候补一取好，这一页就原地变成那一段
     val pageCount = clips.size + if (upcoming.isNotEmpty()) 1 else 0
     val pagerState = rememberPagerState(initialPage = session.currentIndex) { pageCount }
@@ -617,11 +622,11 @@ private fun ClipPager(
         if (paused) currentPlayer.pause() else currentPlayer.play()
     }
 
-    /** 长按起两倍速，松手恢复。暂停中长按不起作用：两倍速地停着没有意义。 */
+    /** 长按起速，松手恢复。暂停中长按不起作用：加速地停着没有意义。 */
     fun startBoost() {
         if (paused || !currentPlayer.supportsSpeed) return
         boosting = true
-        currentPlayer.setSpeed(LONG_PRESS_BOOST_SPEED)
+        currentPlayer.setSpeed(boostSpeed)
     }
 
     // 定位只在当前段的范围里：段首是播放器时钟上的 startOnPlayer，见 PreparedClip
@@ -659,8 +664,8 @@ private fun ClipPager(
                 when (event.key) {
                     Key.DirectionDown, Key.PageDown -> go(1)
                     Key.DirectionUp, Key.PageUp -> go(-1)
-                    Key.DirectionLeft -> seekClipBy(-SEEK_STEP_MILLIS)
-                    Key.DirectionRight -> seekClipBy(SEEK_STEP_MILLIS)
+                    Key.DirectionLeft -> seekClipBy(-seekStepMillis)
+                    Key.DirectionRight -> seekClipBy(seekStepMillis)
                     Key.Spacebar -> if (!repeat) togglePause()
                     Key.M -> if (!repeat) session.muted = !session.muted
                     else -> return@onPreviewKeyEvent false
@@ -870,7 +875,7 @@ private fun ClipPager(
                 .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
                 .padding(top = if (compact) 52.dp else 68.dp),
         ) {
-            BoostPill()
+            BoostPill(boostSpeed)
         }
     }
 }
