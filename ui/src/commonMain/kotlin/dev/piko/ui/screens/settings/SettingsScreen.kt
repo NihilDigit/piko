@@ -50,6 +50,7 @@ import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.Lan
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.AccountCircle
@@ -162,6 +163,7 @@ import kotlinx.datetime.toLocalDateTime
 @Composable
 fun SettingsScreen(
     onBackClick: (() -> Unit)?,
+    onOpenWebDav: () -> Unit,
     modifier: Modifier = Modifier,
     /**
      * 账号一类的内容（账号卡片与退出登录）。有整条侧边栏的宽窗口里没有「我的」页，账号放在设置里，排在最前；
@@ -187,6 +189,7 @@ fun SettingsScreen(
     val lastSynced by settingsSync.lastSynced.collectAsStateWithLifecycle()
     val isConcurrentAccelerationEnabled by sessionManager.concurrentAccelerationFlow.collectAsStateWithLifecycle(initialValue = true)
     val downloadDirPath by sessionManager.downloadDirPathFlow.collectAsStateWithLifecycle(initialValue = "")
+    val isFreeAccount by services.driveRepository.isFreeAccountFlow.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
 
     val archivePasswordVault = remember(sessionManager) { ArchivePasswordVault(sessionManager) }
@@ -311,6 +314,17 @@ fun SettingsScreen(
                                 supporting = "与 PikPak 官方客户端共用播放历史与续播进度",
                                 checked = isSyncPlayHistoryEnabled,
                                 onCheckedChange = { scope.launch { sessionManager.setSyncPlayHistoryEnabled(it) } },
+                            )
+                        }
+                        // 开关与凭据都挂在账号上、随账号切换，不放进「传输与网络」：那里是这台设备自己的连接设置。
+                        // WebDAV 仅限会员，免费账号与等级未取到时整组不出现
+                        if (isFreeAccount == false) SettingsGroup("外部访问") {
+                            SettingsNavigationRow(
+                                index = 0, count = 1,
+                                icon = Icons.Outlined.Lan,
+                                title = "WebDAV",
+                                supporting = "供播放器、文件管理器等应用读取网盘",
+                                onClick = onOpenWebDav,
                             )
                         }
                     }
@@ -730,7 +744,7 @@ private fun SettingsSectionBlock(
 }
 
 @Composable
-private fun SettingsGroup(title: String?, modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+internal fun SettingsGroup(title: String?, modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
     Column(modifier = modifier) {
         if (title != null) {
             Text(
@@ -1050,7 +1064,7 @@ private fun ColumnScope.DependentRow(visible: Boolean, content: @Composable () -
  * 与连体按钮是同一个崩溃（见 connectedToggleShapes）；选中态换形状也会让开着的开关行与关着的长得不一样。
  */
 @Composable
-private fun stableSegmentedShapes(index: Int, count: Int) =
+internal fun stableSegmentedShapes(index: Int, count: Int) =
     ListItemDefaults.segmentedShapes(index = index, count = count).let {
         it.copy(selectedShape = it.shape, pressedShape = it.shape, focusedShape = it.shape, hoveredShape = it.shape, draggedShape = it.shape)
     }

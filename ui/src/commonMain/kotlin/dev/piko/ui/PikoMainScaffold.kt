@@ -151,6 +151,7 @@ import dev.piko.ui.screens.clips.ClipFeedScreen
 import dev.piko.ui.screens.clips.FeedResumeBar
 import androidx.compose.ui.Alignment
 import dev.piko.ui.screens.share.MySharesScreen
+import dev.piko.ui.screens.settings.WebDavScreen
 import dev.piko.ui.screens.transfers.TransfersScreen
 import dev.piko.ui.theme.LocalPikoMotion
 import dev.piko.ui.components.PikoBrand
@@ -249,6 +250,7 @@ private val NavKeyConfiguration = SavedStateConfiguration {
             subclass(Screen.Profile::class)
             subclass(Screen.MyShares::class)
             subclass(Screen.Settings::class)
+            subclass(Screen.WebDav::class)
             subclass(Screen.VideoPlayer::class)
         }
     }
@@ -286,7 +288,7 @@ fun PikoMainScaffold(
     // 侧边栏在返回栈外面，打开「我的」里的星标、回收站这些页时不被盖住；应用内的播放器这类整窗的页照旧盖住
     val windowWidth = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.width.toDp() }
     val sidebarWindow = windowWidth >= SidebarMinWindowWidth
-    val sidebarMode = sidebarWindow && (onHome || topScreen == Screen.Profile || topScreen in ProfilePanes)
+    val sidebarMode = sidebarWindow && (onHome || topScreen == Screen.Profile || topScreen in ProfilePanes || topScreen in SettingsSubpages)
     // 横握的手机（高度 compact）只要窄轨，不能展开：展开的侧边栏连同快速访问与库，在三百多 dp 的高度里放不下几行
     val heightCompact = isHeightCompact()
     // 窄的侧边栏窗口里只留窄轨的位置，展开时浮在内容上，见 SidebarPushMinWindowWidth
@@ -305,7 +307,7 @@ fun PikoMainScaffold(
     }
 
     fun closeProfile() {
-        while (backStack.size > 1 && (backStack.lastOrNull() in ProfilePanes || backStack.lastOrNull() == Screen.Profile)) {
+        while (backStack.size > 1 && (backStack.lastOrNull() in ProfilePanes || backStack.lastOrNull() in SettingsSubpages || backStack.lastOrNull() == Screen.Profile)) {
             backStack.removeLastOrNull()
         }
     }
@@ -314,6 +316,8 @@ fun PikoMainScaffold(
     // 读栈的当下，不读组合时的 topScreen：openPage 先 resetToHome 再调这里，topScreen 还是清栈前的那一页，
     // 照它弹栈弹掉的是栈底的 Home，此后「文件」再也回不去（2026-09-28）
     fun openProfilePane(screen: Screen) {
+        // 设置的下一级随设置一起换走，否则新开的详情页叠在它上面，返回时又回到这一级
+        while (backStack.size > 1 && backStack.lastOrNull() in SettingsSubpages) backStack.removeLastOrNull()
         val top = backStack.lastOrNull()
         if (top == screen) return
         if (top in ProfilePanes && backStack.size > 1) backStack.removeLastOrNull()
@@ -840,7 +844,7 @@ fun PikoMainScaffold(
 
     // 侧边栏在时详情页不给返回：出口就是侧边栏
     val paneBack: (() -> Unit)? = if (sidebarWindow) null else ::popBack
-    val selectedPane = topScreen?.takeIf { it in ProfilePanes }
+    val selectedPane = if (topScreen in SettingsSubpages) Screen.Settings else topScreen?.takeIf { it in ProfilePanes }
 
     fun openFolderStack(stack: List<PikoPathBreadcrumb>) {
         resetToHome()
@@ -1033,11 +1037,14 @@ fun PikoMainScaffold(
                                 entry<Screen.Settings> {
                                     SettingsScreen(
                                         onBackClick = paneBack,
+                                        onOpenWebDav = { backStack.add(Screen.WebDav) },
                                         // 有侧边栏时没有「我的」页，账号、退出登录与关于放在设置里
                                         account = if (sidebarWindow) ({ AccountSettings(onLogout) }) else null,
                                         showAbout = sidebarWindow,
                                     )
                                 }
+                                // 有侧边栏时也给返回：详情页的出口是侧边栏，这一页的出口是它下面的设置
+                                entry<Screen.WebDav> { WebDavScreen(onBackClick = ::popBack) }
                                 entry<Screen.VideoPlayer> { screen ->
                                     (videoPlayer as? VideoPlayerHost.InApp)?.content?.invoke(screen, ::popBack)
                                 }
@@ -1122,6 +1129,9 @@ private val ClipPanelDefaultWidth = 420.dp
 
 /** 「我的」的详情页。它们互相替换，不叠在一起。 */
 private val ProfilePanes = setOf<NavKey?>(Screen.MyShares, Screen.Settings)
+
+/** 设置的下一级，压在设置上面。侧边栏照旧在，亮着的仍是设置。 */
+private val SettingsSubpages = setOf<NavKey?>(Screen.WebDav)
 
 
 private fun MainTab.icon(selected: Boolean) = when (this) {

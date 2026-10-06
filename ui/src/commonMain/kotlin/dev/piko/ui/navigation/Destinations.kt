@@ -35,6 +35,10 @@ sealed interface Screen : NavKey {
     @Serializable
     data object Settings : Screen
 
+    /** 设置的下一级，压在设置上面。 */
+    @Serializable
+    data object WebDav : Screen
+
     // 最近添加、星标、播放历史与回收站不是单独的页，是网盘页里的位置，见 DriveLibrary
     @Serializable
     data object MyShares : Screen
