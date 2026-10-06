@@ -296,8 +296,7 @@ internal fun PlayerCenterControls(
  * 播放键上临时显示的读数：倍速、旋转、音量、亮度、进退这类「正在改什么、刚改了什么」的反馈。
  * 播放键这时变形成横向的胶囊把它托住，过一会儿再变回去。[description] 给读屏用。
  * [progress] 不为 null 时胶囊里多一条进度，音量、亮度与拖动进度用它。
- * [detail] 是跟在读数后面、字号小一级的补充，例如拖动进度时这一滑的偏移。
- * [textTemplate]、[detailTemplate] 是这一种读数最宽时的样子（音量是「100」），胶囊按它定宽、数字在里面靠右，
+ * [textTemplate] 是这一种读数最宽时的样子（音量是「100」），胶囊按它定宽、数字在里面靠右，
  * 拖动时宽度不随位数伸缩。
  */
 internal data class CenterIndicator(
@@ -305,9 +304,7 @@ internal data class CenterIndicator(
     val text: String,
     val description: String,
     val progress: Float? = null,
-    val detail: String? = null,
     val textTemplate: String? = null,
-    val detailTemplate: String? = null,
 )
 
 /** 把数字都换成 0：等宽数字下，同样格式里位数最多的那一个就是最宽的。 */
@@ -375,7 +372,6 @@ private fun PlayPauseButton(
     }
     // 读数形态的宽度照内容量出来，胶囊恰好托住它：固定宽度的话「90°」两边空一大截，「01:23:45」又放不下
     val readoutStyle = MaterialTheme.typography.titleMediumEmphasized.copy(fontFeatureSettings = "tnum")
-    val detailStyle = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum")
     val textMeasurer = rememberTextMeasurer()
     val density = LocalDensity.current
     // 文字占的宽度：有模板时取模板与眼前文字中宽的一个
@@ -386,8 +382,7 @@ private fun PlayPauseButton(
     }
     fun readoutWidth(shown: CenterIndicator): Dp {
         val bar = if (shown.progress != null) READOUT_BAR_WIDTH + READOUT_GAP else 0.dp
-        val detail = shown.detail?.let { READOUT_GAP + slotWidth(it, shown.detailTemplate, detailStyle) } ?: 0.dp
-        return READOUT_PADDING * 2 + READOUT_ICON_SIZE + READOUT_GAP + bar + slotWidth(shown.text, shown.textTemplate, readoutStyle) + detail
+        return READOUT_PADDING * 2 + READOUT_ICON_SIZE + READOUT_GAP + bar + slotWidth(shown.text, shown.textTemplate, readoutStyle)
     }
     // 圆形态（暂停、加载）收成正圆，不是两头圆的胶囊；方角形态（播放中）才展开到 [size] 的宽度，
     // 读数形态再照内容伸长。按下只收紧圆角不动宽度，否则按一下左右抖
@@ -485,17 +480,6 @@ private fun PlayPauseButton(
                             softWrap = false,
                             modifier = Modifier.width(slotWidth(readout.text, readout.textTemplate, readoutStyle)),
                         )
-                        readout.detail?.let { detail ->
-                            Text(
-                                text = detail,
-                                style = detailStyle,
-                                color = contentColor.copy(alpha = READOUT_DETAIL_ALPHA),
-                                textAlign = TextAlign.End,
-                                maxLines = 1,
-                                softWrap = false,
-                                modifier = Modifier.width(slotWidth(detail, readout.detailTemplate, detailStyle)),
-                            )
-                        }
                     }
                 }
             }
@@ -508,7 +492,6 @@ private val READOUT_PADDING = 20.dp
 private val READOUT_ICON_SIZE = 20.dp
 private val READOUT_GAP = 8.dp
 private val READOUT_BAR_WIDTH = 120.dp
-private const val READOUT_DETAIL_ALPHA = 0.75f
 
 // Medium 的 56 高，宽度取标准 56 与宽版 72 之间：方形显得局促，宽版又抢过了两侧。方角与按压圆角取自
 // icon button 规格的 16 与 12
@@ -527,6 +510,8 @@ internal fun PlayerBottomBar(
     isFullscreen: Boolean,
     thumbOnHoverOnly: Boolean,
     positionMillis: Long,
+    /** 画面上拖动进度的目标处，不为 null 时进度条与时间停在这里，见 PlayerSeekBar 的 previewMillis。 */
+    previewPositionMillis: Long?,
     durationMillis: Long,
     bufferedPositionMillis: Long,
     playbackSpeed: Float?,
@@ -551,7 +536,7 @@ internal fun PlayerBottomBar(
     onScrubbingChange: (Boolean) -> Unit = {},
 ) {
     var scrubPositionMillis by remember { mutableStateOf<Long?>(null) }
-    val shownPosition = scrubPositionMillis ?: positionMillis
+    val shownPosition = scrubPositionMillis ?: previewPositionMillis ?: positionMillis
 
     Column(
         modifier = modifier
@@ -564,6 +549,7 @@ internal fun PlayerBottomBar(
     ) {
         PlayerSeekBar(
             positionMillis = positionMillis,
+            previewMillis = previewPositionMillis,
             durationMillis = durationMillis,
             bufferedPositionMillis = bufferedPositionMillis,
             onSeek = onSeek,
@@ -758,6 +744,8 @@ internal fun PlayerSeekBar(
     modifier: Modifier = Modifier,
     thumbOnHoverOnly: Boolean = false,
     onScrub: (Long?) -> Unit = {},
+    // 在别处拖动进度（播放器画面上的横滑）时的目标处：手柄与时间气泡照拖动进度条本身的样子显示在这里
+    previewMillis: Long? = null,
 ) {
     var dragFraction by remember { mutableStateOf<Float?>(null) }
     var hoverFraction by remember { mutableStateOf<Float?>(null) }
@@ -778,11 +766,13 @@ internal fun PlayerSeekBar(
     fun fractionOf(millis: Long): Float =
         if (enabled) (millis.toFloat() / durationMillis).coerceIn(0f, 1f) else 0f
 
-    val fraction = dragFraction ?: fractionOf(pendingSeekMillis ?: positionMillis)
+    // 正在拖向的位置：拖进度条本身，或在画面上横滑
+    val scrubFraction = dragFraction ?: previewMillis?.let(::fractionOf)
+    val fraction = scrubFraction ?: fractionOf(pendingSeekMillis ?: positionMillis)
     val bufferedFraction = fractionOf(bufferedPositionMillis)
     val focusInteraction = remember { MutableInteractionSource() }
     val isFocused by focusInteraction.collectIsFocusedAsState()
-    val isEngaged = dragFraction != null || hoverFraction != null || isFocused
+    val isEngaged = scrubFraction != null || hoverFraction != null || isFocused
     val scheme = MaterialTheme.colorScheme
     val trackColors = SeekTrackColors(
         active = scheme.primary,
@@ -793,7 +783,7 @@ internal fun PlayerSeekBar(
     val thickness by animateDpAsState(if (isEngaged) SeekTrackEngagedThickness else SeekTrackThickness, motion.fastSpatialSpec())
     val thumbRadius by animateDpAsState(
         when {
-            dragFraction != null -> SeekThumbDraggingRadius
+            scrubFraction != null -> SeekThumbDraggingRadius
             // 键盘停在进度条上时手柄要露出来，否则看不出焦点在这里、方向键会动它
             thumbOnHoverOnly && hoverFraction == null && !isFocused -> 0.dp
             else -> SeekThumbRadius
@@ -906,13 +896,13 @@ internal fun PlayerSeekBar(
         )
 
         // 拖动或悬停时的时间气泡，贴在该处正上方；零尺寸布局，不挤占进度条的高度
-        (dragFraction ?: hoverFraction)?.let { shown ->
+        (scrubFraction ?: hoverFraction)?.let { shown ->
             val density = LocalDensity.current
             val inset = with(density) { SeekThumbDraggingRadius.toPx() }
             val trackWidthPx = constraints.maxWidth - 2 * inset
             val anchorPx = inset + shown * trackWidthPx
             val gapPx = with(density) { 2.dp.roundToPx() }
-            val dragging = dragFraction != null
+            val dragging = scrubFraction != null
             Surface(
                 shape = MaterialTheme.shapes.small,
                 // 拖动时是要跳过去的位置，用主题色强调；悬停只是看看，用中性的反色
@@ -1086,20 +1076,6 @@ internal fun formatSpeedMultiplier(speed: Float): String = formatSpeedPreset(spe
 // 按两位小数取整后去掉末尾的 0：1.00 显示为 1，1.50 显示为 1.5
 internal fun formatSpeedPreset(speed: Float): String =
     BigDecimal(speed.toDouble()).setScale(2, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString()
-
-// 带符号的进退量，不补前导零：「+1:20」「−0:05」。减号用 U+2212，与「−10 秒」一致
-internal fun formatSeekOffset(millis: Long): String {
-    val sign = if (millis < 0) "−" else "+"
-    val totalSeconds = abs(millis) / 1000
-    val seconds = totalSeconds % 60
-    val minutes = (totalSeconds / 60) % 60
-    val hours = totalSeconds / 3600
-    return if (hours > 0) {
-        String.format(Locale.US, "%s%d:%02d:%02d", sign, hours, minutes, seconds)
-    } else {
-        String.format(Locale.US, "%s%d:%02d", sign, minutes, seconds)
-    }
-}
 
 internal fun formatTime(millis: Long): String {
     val totalSeconds = (millis / 1000).coerceAtLeast(0)

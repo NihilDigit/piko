@@ -29,7 +29,7 @@ object PlayerGestureDefaults {
     const val SEEK_STEP_SECONDS = 10
     val SeekStepChoices = listOf(1, 2, 5, 10, 15, 30)
     const val BOOST_SPEED = 2f
-    val BoostSpeedChoices = listOf(2f, 3f)
+    val BoostSpeedChoices = listOf(1.5f, 2f, 2.5f, 3f)
 
     /** 播放画质上限的档位，画面高度，0 是原画。PikPak 的转码一般是这三档 */
     val MaxHeightChoices = listOf(0, 1080, 720, 480)

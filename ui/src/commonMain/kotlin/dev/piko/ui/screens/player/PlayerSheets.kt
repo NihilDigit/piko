@@ -99,6 +99,7 @@ import dev.piko.ui.components.wheelStaysInSheet
 import kotlin.math.abs
 import dev.piko.data.auth.PlayerGestureDefaults
 import dev.piko.ui.components.SheetAction
+import androidx.compose.foundation.text.selection.SelectionContainer
 import kotlin.math.roundToInt
 
 internal enum class PlayerSheet { Episodes, Settings, Tracks, DriveSubtitles }
@@ -618,6 +619,8 @@ internal fun PlayerSettingsPanel(
     aspectRatio: PlayerAspectRatio?,
     onAspectRatioChange: (PlayerAspectRatio) -> Unit,
     modifier: Modifier = Modifier,
+    // 完整文件名。顶栏的标题单行、中间省略，长文件名在播放时只能到这里看全
+    title: String? = null,
     actions: List<SheetAction> = emptyList(),
     seekStepSeconds: Int = PlayerGestureDefaults.SEEK_STEP_SECONDS,
     onSeekStepChange: ((Int) -> Unit)? = null,
@@ -631,6 +634,16 @@ internal fun PlayerSettingsPanel(
             .padding(start = 24.dp, end = 24.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(24.dp),
     ) {
+        if (title != null) {
+            // 可选中：文件名常要拿去搜字幕、查资料
+            SelectionContainer {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
         if (actions.isNotEmpty()) QuickActionRow(actions)
         if (playbackSpeed != null) {
             SettingsSection("倍速", trailing = formatSpeed(playbackSpeed)) {
@@ -692,6 +705,7 @@ internal fun PlayerSettingsPanel(
 /**
  * 面板顶上一排操作：音轨与字幕、分享、下载。图标在上、名字在下，等分整行，
  * 三四项在 360dp 宽的竖屏里也排得下，比一项一行省地方。
+ * 不垫底色、图标用次要色：它们是去处，面板的主体是下面的设置，垫了色块的三格比设置还抢眼。
  */
 @Composable
 private fun QuickActionRow(actions: List<SheetAction>) {
@@ -700,15 +714,16 @@ private fun QuickActionRow(actions: List<SheetAction>) {
             Surface(
                 onClick = action.onClick,
                 shape = MaterialTheme.shapes.large,
-                color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                color = Color.Transparent,
+                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.weight(1f),
             ) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.padding(vertical = 12.dp, horizontal = 4.dp),
+                    modifier = Modifier.padding(vertical = 10.dp, horizontal = 4.dp),
                 ) {
-                    Icon(action.icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Icon(action.icon, contentDescription = null)
                     Text(action.label, style = MaterialTheme.typography.labelMedium, maxLines = 1)
                 }
             }

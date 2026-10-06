@@ -70,19 +70,18 @@ import dev.piko.shared.media.player.PlaylistEntry
 import dev.piko.ui.components.LocalPointerSource
 import dev.piko.ui.components.SheetAction
 import androidx.compose.material.icons.outlined.Subtitles
+import androidx.compose.material.icons.filled.Close
 import io.github.nihildigit.pikpak.FileStat
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.BrightnessMedium
 import androidx.compose.material.icons.filled.FastRewind
 import kotlin.math.roundToInt
+import kotlin.math.abs
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.ui.graphics.graphicsLayer
 import dev.piko.data.auth.PlayerGestureDefaults
 /**
  * 播放器的完整控件层，叠在视频画面之上。Android 与桌面共用，名字沿用只有 Android 时的叫法。
@@ -213,18 +212,14 @@ fun MobilePlayerControls(
         flashCount += 1
     }
 
-    // 只给目标时间的话看不出这一滑走了多远：同样一寸，长片里是几分钟，短片里是几秒
-    fun seekReadout(gesture: PlayerGesture.Seek): CenterIndicator {
-        val target = gesture.targetMillis(durationMillis)
-        return CenterIndicator(
-            icon = if (target >= gesture.startPositionMillis) Icons.Filled.FastForward else Icons.Filled.FastRewind,
-            text = formatTime(target),
-            description = "跳到 ${formatTime(target)}",
-            progress = if (durationMillis > 0) target.toFloat() / durationMillis else null,
-            detail = formatSeekOffset(target - gesture.startPositionMillis),
-            textTemplate = widestDigits(formatTime(durationMillis)),
-            detailTemplate = widestDigits(formatSeekOffset(durationMillis)),
-        )
+    // 拖动进度松手后底栏再停一会儿，进度条停在松手的位置，见 seekPreviewMillis
+    var settledSeekMillis by remember { mutableStateOf<Long?>(null) }
+    var settledSeekCount by remember { mutableIntStateOf(0) }
+    LaunchedEffect(settledSeekCount) {
+        if (settledSeekMillis != null) {
+            delay(SEEK_PEEK_MILLIS)
+            settledSeekMillis = null
+        }
     }
     val currentRotation by rememberUpdatedState(rotationDegrees)
 
@@ -269,10 +264,8 @@ fun MobilePlayerControls(
     // 按住期间临时换倍速，松开回到原值：触屏长按画面与桌面按住方向键共用
     var activeBoostSpeed by remember { mutableFloatStateOf(longPressSpeed) }
     val currentLongPressSpeed by rememberUpdatedState(longPressSpeed)
-    // 按住期间播放键上托着的倍速读数。松手后留着这一份，退场淡出时据此认出它、保持变淡的样子
+    // 按住期间上方读数里的倍速
     var boostReadout by remember { mutableStateOf<CenterIndicator?>(null) }
-    // 起速时读数照常亮一下，之后变淡，按住多久都留在原处，只是不抢画面
-    var boostDimmed by remember { mutableStateOf(false) }
 
     fun startBoost() {
         val current = currentSpeed ?: return
@@ -292,15 +285,6 @@ fun MobilePlayerControls(
         isBoosting = false
         skipSpeedFlash = speedBeforeBoost != activeBoostSpeed
         onSpeedChange(speedBeforeBoost)
-    }
-
-    // 只在起速时复位：松手后读数还在淡出，这时变回不透明会闪一下
-    LaunchedEffect(isBoosting) {
-        if (isBoosting) {
-            boostDimmed = false
-            delay(INDICATOR_FLASH_MILLIS)
-            boostDimmed = true
-        }
     }
 
     // 左右方向键：轻按是进退，按住超过 HOLD_ARROW_MILLIS 变成快进（→ 临时倍速，松开复原）或快退（←）。
@@ -527,11 +511,11 @@ fun MobilePlayerControls(
         if (previous == null || previous == degrees) return@LaunchedEffect
         flash(CenterIndicator(Icons.Outlined.Rotate90DegreesCw, "$degrees°", "画面旋转 $degrees 度"))
     }
-    // 所有读数都由播放键变形托住，不另叠浮层：原先音量亮度是屏幕正中的一块面板、双击进退是贴边的半圆，
-    // 各有各的样子，与播放键的读数叠在一起时互相遮挡。先后按「手上正在做的」排：拖动手势、按住倍速、
-    // 刚调的音量、累计的进退，最后是闪一下的倍速与旋转
+    // 读数分两处：连续变化的音量、亮度、横滑走了多少、累计的进退与长按加速放在画面上方半透明的一枚（PlayerHud），
+    // 看得清又不挡画面中央，横滑时另露出底栏，落到哪里看进度条；倍速、旋转、暂停这类一下子的状态由播放键变形托住。
+    // 原先全由播放键托住，拖动进度时胶囊里塞着进度条与时间，手机竖屏上撑满一整行
     val gesture = activeGesture ?: keyVolume?.let { PlayerGesture.Adjust(VerticalAdjust.Volume, it) }
-    val centerIndicator = when {
+    val hudIndicator = when {
         gesture is PlayerGesture.Adjust -> {
             val percent = (gesture.fraction * 100).roundToInt()
             val brightnessGesture = gesture.kind == VerticalAdjust.Brightness
@@ -547,34 +531,43 @@ fun MobilePlayerControls(
                 progress = gesture.fraction,
             )
         }
-        gesture is PlayerGesture.Seek -> seekReadout(gesture)
-        isBoosting -> boostReadout
+        gesture is PlayerGesture.Seek && gesture.cancelled ->
+            CenterIndicator(Icons.Filled.Close, "松开取消", "松开取消跳转")
+        // 照 Animeko：方向看图标，文字是这一滑走了多少；落到哪里看底栏的进度条
+        gesture is PlayerGesture.Seek -> {
+            val target = gesture.targetMillis(durationMillis)
+            val forward = target >= gesture.startPositionMillis
+            CenterIndicator(
+                icon = if (forward) Icons.Filled.FastForward else Icons.Filled.FastRewind,
+                text = formatTime(abs(target - gesture.startPositionMillis)),
+                description = "跳到 ${formatTime(target)}",
+                // 一次横滑至多一屏的几分钟，到不了小时位
+                textTemplate = "00:00",
+            )
+        }
         doubleTapVisible -> {
             val sign = if (doubleTapForward) "+" else "−"
-            // 一步只有一两秒时累计的秒数不够定位，另带上落到哪里
             CenterIndicator(
                 icon = if (doubleTapForward) Icons.Filled.FastForward else Icons.Filled.FastRewind,
                 text = "$sign$doubleTapSeconds 秒",
                 description = if (doubleTapForward) "快进 $doubleTapSeconds 秒" else "快退 $doubleTapSeconds 秒",
-                detail = formatTime(doubleTapTargetMillis),
                 // 累计的秒数到不了片长以上，按片长秒数的位数留宽
                 textTemplate = "+${widestDigits((durationMillis / 1000).coerceAtLeast(doubleTapSeconds.toLong()).toString())} 秒",
-                detailTemplate = widestDigits(formatTime(durationMillis)),
             )
         }
-        else -> flashIndicator
+        // 按住多久就留多久：上方的读数半透明、不挡画面，常驻也不碍眼
+        isBoosting -> boostReadout
+        else -> null
     }
+    val centerIndicator = flashIndicator
+
+    // 拖动进度时与松手后一小会儿，底栏单独露出来，进度条停在目标处。松手那一刻位置回报还没跟上，
+    // 不停在目标处的话手柄先跳回原处再过去
+    val seekPreviewMillis = (activeGesture as? PlayerGesture.Seek)?.targetMillis(durationMillis) ?: settledSeekMillis
 
     val chromeVisible = controlsVisible && !isLocked
+    val bottomBarVisible = chromeVisible || seekPreviewMillis != null
     val centerVisible = ((chromeVisible && !isBoosting) || isLoading || centerIndicator != null) && errorMessage == null
-    // 按住期间变淡；松手后播放键退场，退场期间形变容器保持原样，透明度也留在变淡的样子，不亮回来再消失
-    LaunchedEffect(centerVisible) {
-        if (centerVisible && !isBoosting) boostDimmed = false
-    }
-    val centerAlpha by animateFloatAsState(
-        targetValue = if (boostDimmed && (isBoosting || !centerVisible)) BOOST_DIMMED_ALPHA else 1f,
-        animationSpec = tween(BOOST_DIM_MILLIS),
-    )
     // 面板的 BackHandler 在它之后组合，面板开着时先关面板
     BackHandler(enabled = isFullscreen, onBack = onToggleFullscreen)
 
@@ -656,10 +649,9 @@ fun MobilePlayerControls(
                         onPlayPause()
                     }
                 },
-                // 松手后读数照闪一下的样子再留一会儿：随手势一起撤的话，短短一拖时播放键变成胶囊的弹簧
-                // 还没走完就往回收，看到的只是一截被裁掉的进度条
                 onSeekTo = { target ->
-                    (activeGesture as? PlayerGesture.Seek)?.let { flash(seekReadout(it)) }
+                    settledSeekMillis = target
+                    settledSeekCount += 1
                     onSeek(target)
                 },
                 onDoubleTap = { zone ->
@@ -742,12 +734,23 @@ fun MobilePlayerControls(
                                 exit = slideOutVertically(motion.fastSpatialSpec()) { -it / 2 },
                             ),
                     )
+                }
+            }
 
+            // 底栏单独显隐：拖动进度时只露出它，顶栏与播放键不出来
+            AnimatedVisibility(
+                visible = bottomBarVisible,
+                enter = fadeIn(motion.defaultEffectsSpec()),
+                exit = fadeOut(motion.fastEffectsSpec()),
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                Box(Modifier.fillMaxSize()) {
                     PlayerBottomBar(
                         isLandscape = isLandscape,
                         isFullscreen = isFullscreen,
                         thumbOnHoverOnly = seekThumbOnHoverOnly,
                         positionMillis = positionMillis,
+                        previewPositionMillis = seekPreviewMillis,
                         durationMillis = durationMillis,
                         bufferedPositionMillis = bufferedPositionMillis,
                         playbackSpeed = playbackSpeed,
@@ -801,6 +804,14 @@ fun MobilePlayerControls(
                 }
             }
 
+            PlayerHud(
+                indicator = hudIndicator,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
+                    .padding(top = HUD_TOP_PADDING),
+            )
+
             // 播放键不在控件栏的淡入淡出里：加载时与有读数时，它要单独留在画面中央，
             // 变形后承载加载指示或读数，不再另叠一层。显隐由它自己编排，见 MorphContainer
             PlayerCenterControls(
@@ -808,9 +819,7 @@ fun MobilePlayerControls(
                 isPlaying = isPlaying,
                 isLoading = isLoading,
                 indicator = centerIndicator,
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .graphicsLayer { alpha = centerAlpha },
+                modifier = Modifier.align(Alignment.Center),
                 onPlayPause = {
                     // 控件收起时只剩这个按钮在转，点它先唤出控件，与点画面其他地方一致
                     if (chromeVisible) {
@@ -866,6 +875,7 @@ fun MobilePlayerControls(
                         },
                     )
                     PlayerSheet.Settings -> PlayerSettingsPanel(
+                        title = title,
                         // 音轨与字幕换到它自己的面板；分享、下载这类先收起面板再做，免得面板挡着随后弹出的东西
                         actions = listOfNotNull(
                             SheetAction(Icons.Outlined.Subtitles, "音轨与字幕", { openSheet = PlayerSheet.Tracks })
@@ -923,14 +933,15 @@ private const val CONTROLS_HIDE_DELAY_MILLIS = 4_500L
 private const val CURSOR_HIDE_DELAY_MILLIS = CONTROLS_HIDE_DELAY_MILLIS
 private const val RESUME_TIP_DURATION_MILLIS = 5_000L
 private const val DOUBLE_TAP_FEEDBACK_MILLIS = 700L
+// 拖动进度松手后底栏停留的时长：够看清落在哪，又不至于像是唤出了控件
+private const val SEEK_PEEK_MILLIS = 900L
+// 上方读数离顶边的距离：让开顶栏，又在画面中央之上
+private val HUD_TOP_PADDING = 88.dp
 private const val KEY_VOLUME_HUD_MILLIS = 800L
 // 比音量 HUD 久一点：读数在胶囊里还要等变形走完才看得清
 private const val INDICATOR_FLASH_MILLIS = 1_200L
 private const val VOLUME_KEY_STEP = 0.05f
 
-// 按住加速时倍速读数亮过一下后的透明度。原先另在顶部常挂一个写着倍速的胶囊，一场长按下来始终压在画面上
-private const val BOOST_DIMMED_ALPHA = 0.4f
-private const val BOOST_DIM_MILLIS = 300
 
 private val COMPACT_WIDTH = 600.dp
 

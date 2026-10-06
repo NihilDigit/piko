@@ -4,7 +4,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.doubleClick
-import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onRoot
@@ -95,15 +94,12 @@ class MobilePlayerControlsTest {
         rule.waitForIdle()
         assertTrue("拖动中不应 seek", seeks.isEmpty())
 
-        // 拖动中的读数由播放键托住，读屏经播放键旁单独的 live region 节点念「跳到 mm:ss」，写的是目标位置；
-        // 播放键自己的标签始终是「暂停」或「播放」
-        val readout = rule.onNode(hasContentDescription("跳到", substring = true))
+        // 拖动中底栏的进度条停在目标处，它的状态描述是「mm:ss / mm:ss」，前一半是目标位置
+        val readout = rule.onNodeWithContentDescription("播放进度")
             .fetchSemanticsNode()
-            .config[SemanticsProperties.ContentDescription]
-            .joinToString("")
-        val previewSeconds = readout.substringAfter("跳到").trim().split(':').fold(0L) { total, part -> total * 60 + part.toLong() }
+            .config[SemanticsProperties.StateDescription]
+        val previewSeconds = readout.substringBefore('/').trim().split(':').fold(0L) { total, part -> total * 60 + part.toLong() }
         assertTrue("预览应在起点之后", previewSeconds * 1000 > START_MILLIS)
-        rule.onNodeWithContentDescription("暂停").assertExists()
 
         rule.onRoot().performTouchInput { up() }
         rule.waitForIdle()
