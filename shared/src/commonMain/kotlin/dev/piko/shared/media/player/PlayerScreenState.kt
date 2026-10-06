@@ -201,6 +201,11 @@ class PlayerScreenState(
     private var resumeTipJob: Job? = null
 
     private var requestedQuality: String? = null
+
+    // 这次打开播放器期间在播放器里选过的清晰度（画面高度，0 是原画）与倍速，连播换集时带着走，关掉播放器即忘。
+    // 倍速不交给后端自己保留：桌面经 MediaMP 换片时会不会复位没有保证，每次打开后照这里设回去
+    private var sessionMaxHeight: Int? = null
+    private var sessionSpeed: Float? = null
     private var pendingStartMillis: Long? = initialStartMillis
 
     /** 本轮 open 用的起点，还没出第一帧就换源时从这里重来。 */
@@ -381,13 +386,22 @@ class PlayerScreenState(
 
     fun seekBy(deltaMillis: Long) = seekTo(backend.positionMillis + deltaMillis)
 
-    fun setSpeed(speed: Float) = backend.setSpeed(speed)
+    fun setSpeed(speed: Float) {
+        sessionSpeed = speed
+        backend.setSpeed(speed)
+    }
 
     fun setAspectRatio(mode: PlayerAspectRatio) = backend.setAspectRatio(mode)
 
     fun selectQuality(quality: String) {
         pendingStartMillis = currentPosition()
         requestedQuality = quality
+        // 之后几集按这一档的画面高度挑，不照名字找：别的集未必有同名的一档，照名字找不到会退回原画
+        sessionMaxHeight = if (quality == ORIGINAL_QUALITY) {
+            0
+        } else {
+            mediaInfo?.availableVariants?.firstOrNull { it.mediaName == quality || it.resolutionName == quality }?.video?.height
+        }
         // 切清晰度是用户动作，不是故障：退避次数与换源进度都给新流重新算
         resetRecovery()
         reload()
@@ -512,9 +526,10 @@ class PlayerScreenState(
                 activeQuality = null
                 PikoLog.i(TAG, "打开本地副本：${logFile(fileId, title)}")
                 backend.open(PlaybackTarget.LocalFile(localPath), startPosition(), subtitles = openSubtitles())
+                sessionSpeed?.let(backend::setSpeed)
             } else {
                 isLocalPlayback = false
-                val playback = repository.preparePlayback(fileId, requestedQuality, defaultMaxHeight()).getOrThrow()
+                val playback = repository.preparePlayback(fileId, requestedQuality, sessionMaxHeight ?: defaultMaxHeight()).getOrThrow()
                 // 出第一帧前就有人在等；之后由 init 里按缓冲状态接管
                 playback.urgent = true
                 prepared = playback
@@ -534,6 +549,7 @@ class PlayerScreenState(
                                 "${info.width}x${info.height}，${info.sizeBytes} B",
                         )
                         backend.open(PlaybackTarget.Url(proxyUrl ?: playback.info.currentUrl), startPosition(), subtitles = openSubtitles())
+                        sessionSpeed?.let(backend::setSpeed)
                     }
                 }
             }
