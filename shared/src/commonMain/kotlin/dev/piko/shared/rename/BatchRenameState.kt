@@ -8,10 +8,12 @@ import androidx.compose.runtime.setValue
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.log.logFile
 import io.github.nihildigit.pikpak.FileStat
 import kotlin.random.Random
+import kotlin.time.TimeSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -324,7 +326,7 @@ class BatchRenameState(
             val names = mutableMapOf<String, Set<String>>()
             for (parentId in sources.map { it.parentId }.distinct()) {
                 val listing = driveRepo.listAllFiles(parentId)
-                    .logFailure(TAG, "列出同目录名称失败")
+                    .logFailure(TAG, "列出同目录名称失败：文件夹 $parentId")
                     .getOrElse {
                         siblingsFailed = true
                         return@launch
@@ -352,6 +354,9 @@ class BatchRenameState(
         renamed.clear()
         wasStopped = false
         phase = Phase.RUNNING
+        val started = TimeSource.Monotonic.markNow()
+        PikoLog.i(TAG, "开始批量重命名：${plan.changeCount} 项，${plan.steps.size} 步（含经临时名称的 ${plan.steps.size - plan.changeCount} 步），" +
+            "${sources.map { it.parentId }.distinct().size} 个目录，${if (textMode) "正则文本" else "积木"}模式")
         job = scope.launch {
             try {
                 val failedIds = mutableSetOf<String>()
@@ -369,6 +374,7 @@ class BatchRenameState(
                     if (!succeeded || isFinal) processed++
                 }
             } finally {
+                PikoLog.i(TAG, "批量重命名结束：${summary()}，成功 ${renamed.size} 步，历时 ${started.elapsedNow().inWholeMilliseconds} ms")
                 phase = Phase.DONE
                 driveRepo.requestRefresh()
                 // 改成了的记进改动记录，提示带「撤销」；一项也没改成的只报结果

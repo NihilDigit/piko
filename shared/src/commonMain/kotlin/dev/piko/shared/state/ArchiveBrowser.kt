@@ -9,6 +9,7 @@ import dev.piko.shared.data.ArchivePasswordVault
 import dev.piko.shared.data.ArchiveRepository
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.runSuspendCatching
+import dev.piko.shared.log.PikoLog
 import io.github.nihildigit.pikpak.ArchiveEntry
 import io.github.nihildigit.pikpak.ArchiveListing
 import io.github.nihildigit.pikpak.ArchivePasswordException
@@ -79,11 +80,20 @@ class ArchiveBrowser(
         val plain = repository.list(location, "")
         val missing = plain.exceptionOrNull() as? ArchivePasswordException ?: return plain.map { "" to it }
         if (missing.incorrect) return plain.map { "" to it }
-        for (saved in savedPasswords.first().take(MAX_SAVED_TRIES)) {
+        val candidates = savedPasswords.first().take(MAX_SAVED_TRIES)
+        // 只记第几个存过的密码对上，密码本身不记
+        for ((index, saved) in candidates.withIndex()) {
             val attempt = repository.list(location, saved)
-            if (attempt.isSuccess) return attempt.map { saved to it }
-            if (attempt.exceptionOrNull() !is ArchivePasswordException) return attempt.map { saved to it }
+            if (attempt.isSuccess) {
+                PikoLog.d(TAG, "压缩包 ${location.archiveId} 要密码，存过的第 ${index + 1} 个对上")
+                return attempt.map { saved to it }
+            }
+            if (attempt.exceptionOrNull() !is ArchivePasswordException) {
+                PikoLog.w(TAG, "压缩包 ${location.archiveId} 试存过的密码时出错，停止尝试", attempt.exceptionOrNull())
+                return attempt.map { saved to it }
+            }
         }
+        PikoLog.d(TAG, "压缩包 ${location.archiveId} 要密码，存过的 ${candidates.size} 个都不对，等用户输入")
         return plain.map { "" to it }
     }
 
@@ -129,6 +139,8 @@ class ArchiveBrowser(
     }
 
     private companion object {
+        const val TAG = "Archive"
+
         // 密码表最近用过的在前，存得多的人试到后面也多半是旧包的，不值得一直试下去
         const val MAX_SAVED_TRIES = 10
     }

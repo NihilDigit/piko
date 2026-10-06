@@ -3,6 +3,7 @@ package dev.piko.update
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.update.ChecksumMismatchException
 import dev.piko.shared.update.GithubReleaseClient
 import dev.piko.shared.update.LatestRelease
@@ -111,13 +112,16 @@ abstract class GithubUpdateService<U : AvailableUpdate>(
         val result = try {
             when (val check = releases.check(currentVersion)) {
                 is ReleaseCheck.Newer -> try {
-                    resolve(check.release)?.let { UpdateStatus.Available(it) } ?: UpdateStatus.UpToDate
+                    val update = resolve(check.release)
+                    PikoLog.i(TAG, "检查更新：$currentVersion → ${check.release.version}" +
+                        (update?.let { "，附件 ${it.downloadSize} 字节${if (it.canInstallInApp) "" else "，不能应用内安装"}" } ?: "，本平台附件尚未上传"))
+                    update?.let { UpdateStatus.Available(it) } ?: UpdateStatus.UpToDate
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     failure(e)
                 }
-                ReleaseCheck.UpToDate -> UpdateStatus.UpToDate
+                ReleaseCheck.UpToDate -> UpdateStatus.UpToDate.also { PikoLog.d(TAG, "检查更新：$currentVersion 已是最新${if (silent) "（开屏）" else ""}") }
                 is ReleaseCheck.Failed -> failure(check.cause)
             }
         } catch (e: CancellationException) {
@@ -183,4 +187,8 @@ abstract class GithubUpdateService<U : AvailableUpdate>(
 
     @Suppress("UNCHECKED_CAST")
     protected fun AvailableUpdate.own(): U = this as U
+
+    private companion object {
+        const val TAG = "Update"
+    }
 }

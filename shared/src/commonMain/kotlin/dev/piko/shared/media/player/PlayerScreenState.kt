@@ -524,6 +524,7 @@ class PlayerScreenState(
                 if (pending != null) return pending.also { attemptStartMillis = it }
                 val cloud = withTimeoutOrNull(CLOUD_RESUME_WAIT_MILLIS) { cloudPosition?.await() }
                 saved = (cloud ?: repository.getPlaybackPosition(positionKey)).takeIf { it > RESUME_THRESHOLD_MILLIS }
+                saved?.let { PikoLog.d(TAG, "续播自 $it ms，取自${if (cloud != null) "云端播放历史" else "本机记录"}") }
                 return (saved ?: 0L).also { attemptStartMillis = it }
             }
 
@@ -538,7 +539,9 @@ class PlayerScreenState(
                 sessionSpeed?.let(backend::setSpeed)
             } else {
                 isLocalPlayback = false
+                val prepareStarted = TimeSource.Monotonic.markNow()
                 val playback = repository.preparePlayback(fileId, requestedQuality, sessionMaxHeight ?: defaultMaxHeight()).getOrThrow()
+                val prepareMillis = prepareStarted.elapsedNow().inWholeMilliseconds
                 // 出第一帧前就有人在等；之后由 init 里按缓冲状态接管
                 playback.urgent = true
                 prepared = playback
@@ -555,7 +558,8 @@ class PlayerScreenState(
                         PikoLog.i(
                             TAG,
                             "打开：${logFile(fileId, title)}，${if (usingProxy) "经代理" else "直链"}，${if (info.isOrigin) "原画" else info.currentResolution + "p 转码"}，" +
-                                "${info.width}x${info.height}，${info.sizeBytes} B",
+                                "${info.width}x${info.height}，${info.sizeBytes} B，取流 $prepareMillis ms" +
+                                (requestedQuality?.let { "，指定档位 $it" } ?: "") + (if (retryAttempt > 0) "，第 $retryAttempt 次重连" else ""),
                         )
                         backend.open(PlaybackTarget.Url(proxyUrl ?: playback.info.currentUrl), startPosition(), subtitles = openSubtitles())
                         sessionSpeed?.let(backend::setSpeed)
@@ -623,6 +627,7 @@ class PlayerScreenState(
             if (usingProxy && !directLinkTried) {
                 // 代理与直链读的是同一份字节，先排除代理本身的问题。只试一次：
                 // 直链也失败就说明坏的不是代理，换到转码流后不必再绕一遍直链
+                PikoLog.i(TAG, "首帧前失败，换直链重试一次")
                 directLinkTried = true
                 preferDirectLink = true
                 isRecovering = true
@@ -631,6 +636,7 @@ class PlayerScreenState(
             }
             val transcode = mediaInfo?.bestTranscodeName()
             if (activeQuality == null && transcode != null) {
+                PikoLog.i(TAG, "原画首帧前失败，换 $transcode 转码")
                 preferDirectLink = false
                 requestedQuality = transcode
                 isRecovering = true
@@ -638,6 +644,7 @@ class PlayerScreenState(
                 reload()
                 return
             }
+            PikoLog.w(TAG, "首帧前失败，来源已试尽（直链${if (directLinkTried) "已试" else "未试"}，档位 ${activeQuality ?: "原画"}），放弃")
             pendingStartMillis = null
             isRecovering = false
             failure = message
@@ -645,6 +652,7 @@ class PlayerScreenState(
         }
 
         if (retryAttempt >= RECOVERY_DELAYS_MILLIS.size) {
+            PikoLog.w(TAG, "播放中断，${RECOVERY_DELAYS_MILLIS.size} 次重连都未恢复，放弃")
             isRecovering = false
             failure = message
             return
@@ -757,8 +765,9 @@ class PlayerScreenState(
             block()
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             // 持久化失败不能掐掉播放
+            PikoLog.w(TAG, "保存或上报播放进度失败", e)
         }
     }
 

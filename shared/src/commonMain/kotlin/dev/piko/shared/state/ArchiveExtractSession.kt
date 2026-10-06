@@ -109,6 +109,9 @@ class ArchiveExtractSession(
         val queued = jobs.map { it.id }.toSet()
         val archives = files.filter { it.isExtractableArchive && it.id !in queued }.distinctBy { it.id }
         val volumes = files.count { it.isArchiveVolume }
+        if (volumes > 0 || archives.isEmpty()) {
+            PikoLog.i(TAG, "解压：选了 ${files.size} 个，入队 ${archives.size} 个，分卷跳过 $volumes 个，已在队列 ${files.count { it.id in queued }} 个")
+        }
         if (volumes > 0) _messages.tryEmit(if (volumes == files.size) VOLUME_UNSUPPORTED else "已跳过 $volumes 个分卷：$VOLUME_UNSUPPORTED")
         if (archives.isEmpty()) {
             if (volumes == 0 && files.none { it.isExtractableArchive }) _messages.tryEmit("所选文件中没有可解压的压缩包")
@@ -169,6 +172,7 @@ class ArchiveExtractSession(
         val task = repository.start(job.file, job.password, job.paths).getOrElse { err ->
             PikoLog.w(TAG, "提交解压失败：${logFile(job.file.id, job.file.name)}", err)
             if (err is ArchivePasswordException) {
+                PikoLog.i(TAG, "解压要密码：${logFile(job.file.id, job.file.name)}，${if (job.password.isEmpty()) "未带密码" else "所带密码被拒"}")
                 // 没带密码时服务端报的是「缺少」；带了还被拒才算输错
                 update(job.id) { it.copy(status = ArchiveJobStatus.NeedsPassword(incorrect = job.password.isNotEmpty())) }
             } else {
@@ -176,6 +180,8 @@ class ArchiveExtractSession(
             }
             return
         }
+        PikoLog.i(TAG, "已提交解压：${logFile(job.file.id, job.file.name)}，任务 ${task.taskId}，${job.file.sizeBytes} 字节，" +
+            "${if (job.paths.isEmpty()) "整包" else "选 ${job.paths.size} 项"}，${if (job.password.isEmpty()) "无密码" else "带密码"}，队列还有 ${jobs.size - 1} 个")
         // 服务端收下即说明密码正确，此时就存，不等解压完：下一个待输密码的包马上能选到它
         if (job.password.isNotEmpty()) vault.remember(job.password)
         update(job.id) { it.copy(status = ArchiveJobStatus.Extracting(0)) }
@@ -206,6 +212,7 @@ class ArchiveExtractSession(
                     // 数据加密而文件名未加密的包，列目录不要密码，要到解压时才失败
                     val cause = repository.failureCause(taskId)
                     if (cause == ArchiveRepository.INVALID_PASSWORD) {
+                        PikoLog.i(TAG, "解压任务 $taskId 因密码失败，等用户输入：${logFile(job.file.id, job.file.name)}")
                         update(job.id) { it.copy(status = ArchiveJobStatus.NeedsPassword(incorrect = job.password.isNotEmpty())) }
                     } else if (cause == ArchiveRepository.INVALID_FORMAT) {
                         finish(job, "${job.file.name} 解压失败：$INVALID_FORMAT_REASON")

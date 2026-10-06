@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageInstaller
 import android.os.Build
 import dev.piko.PikoApplication
+import dev.piko.shared.log.PikoLog
 
 /**
  * PackageInstaller 会话的结果回调。
@@ -15,7 +16,10 @@ import dev.piko.PikoApplication
  */
 class UpdateInstallReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        when (intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)) {
+        val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
+        // 失败的原因只在系统给的状态码与说明里，界面上只有一句「安装失败」
+        PikoLog.i("Update", "安装会话回调：状态 $status${intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)?.let { "，$it" } ?: ""}")
+        when (status) {
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
                 val confirm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)

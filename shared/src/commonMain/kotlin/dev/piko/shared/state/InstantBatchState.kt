@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.failureText
 import dev.piko.shared.log.logFailure
 import kotlinx.coroutines.CoroutineScope
@@ -13,6 +14,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+
+private const val TAG = "Instant"
 
 enum class InstantBatchRowStatus {
     /** 等待或正在解析。 */
@@ -171,8 +174,14 @@ class InstantBatchState internal constructor(
             try {
                 // 解析时查到的余量与次数可能已经过时，而离线一旦提交就是整包落盘
                 val remaining = refreshRemainingBytes()
-                if (remaining != null && needed > remaining) return@launch
-                if (lacksOfflineCount) return@launch
+                if (remaining != null && needed > remaining) {
+                    PikoLog.i(TAG, "批量保存：空间不足，需要 $needed 字节，剩余 $remaining 字节")
+                    return@launch
+                }
+                if (lacksOfflineCount) {
+                    PikoLog.i(TAG, "批量保存：今日离线次数不够")
+                    return@launch
+                }
                 val createdIds = mutableListOf<String>()
                 var allInstant = true
                 val succeeded = mutableListOf<InstantBatchRow>()
@@ -186,6 +195,7 @@ class InstantBatchState internal constructor(
                         // 行里的保存已经记过日志，这里只换成给列表看的一句
                         .onFailure { saveErrors[row.key] = failureText("保存", it) }
                 }
+                PikoLog.i(TAG, "批量保存：${toSubmit.size} 条链接，成功 ${succeeded.size} 条（秒传出 ${createdIds.size} 个文件），失败 ${saveErrors.size} 条")
                 if (saveErrors.isEmpty()) {
                     emitOutcome(
                         if (allInstant) {

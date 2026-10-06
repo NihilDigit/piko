@@ -1,6 +1,7 @@
 package dev.piko.shared.state
 
 import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFailure
 import dev.piko.shared.log.logFile
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.media.PreparedClip
@@ -61,7 +62,8 @@ class ClipStreams internal constructor(
             val role = if (clip in foreground || urgent) StreamRole.FOREGROUND else StreamRole.BACKGROUND
             scope.async {
                 val started = TimeSource.Monotonic.markNow()
-                suspend fun prepare() = repository.prepareClip(clip.fileId, clip.startMs, clip.videoDurationMs, role).getOrNull()
+                suspend fun prepare() = repository.prepareClip(clip.fileId, clip.startMs, clip.videoDurationMs, role)
+                    .logFailure(TAG, "备会话失败 ${logFile(clip.fileId, clip.name)}，${started.elapsedNow().inWholeMilliseconds} ms").getOrNull()
                 val prepared = (if (forPlayer) prepare() else preparing.withPermit { prepare() }) ?: return@async null
                 prepared.holdReadAhead()
                 PikoLog.d(
@@ -111,6 +113,7 @@ class ClipStreams internal constructor(
             false
         }
         if (fetched) PikoLog.d(TAG, "取好 ${logFile(clip.fileId, clip.name)}：预取 ${started.elapsedNow().inWholeMilliseconds} ms")
+        else PikoLog.d(TAG, "预取 ${logFile(clip.fileId, clip.name)} 未完成：${started.elapsedNow().inWholeMilliseconds} ms，上限 ${RIPEN_TIMEOUT}")
         return fetched
     }
 

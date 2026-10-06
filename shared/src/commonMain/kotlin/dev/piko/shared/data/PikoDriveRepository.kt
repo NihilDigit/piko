@@ -76,6 +76,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -88,6 +89,7 @@ import kotlinx.coroutines.withContext
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 
 enum class PikoFileSortOrder { NAME_ASC, NAME_DESC, TIME_DESC, TIME_ASC, SIZE_DESC, SIZE_ASC }
@@ -613,8 +615,9 @@ open class PikoDriveRepository(
                 // 所有账号打开归档条目都受剩余空间约束，同时借出的总量不能超过剩余，
                 // 否则信息流一批并行核对时后面的秒传直接失败。留一成余量给清单这类小文件
                 if (client != null && client.leaseBudget == null) {
-                    getQuota().getOrNull()?.quota?.takeIf { it.limitBytes > 0 }?.let { quota ->
+                    getQuota().logFailure(TAG, "取剩余空间失败，借出归档条目暂不设上限").getOrNull()?.quota?.takeIf { it.limitBytes > 0 }?.let { quota ->
                         client.leaseBudget = LeaseBudget(quota.remainingBytes.coerceAtLeast(0) * 9 / 10)
+                        PikoLog.d(TAG, "借出额度：剩余 ${quota.remainingBytes} 字节的九成")
                     }
                 }
             }
@@ -935,26 +938,30 @@ open class PikoDriveRepository(
     }
 
     suspend fun trash(ids: List<String>): Result<Unit> = withContext(Dispatchers.Default) {
+        val started = TimeSource.Monotonic.markNow()
         runSuspendCatching { client.batchTrash(ids) }.onSuccess {
             ids.forEach(recentFolders::forget)
             forgetSubfolders()
-        }
+        }.logOperation("移入回收站", ids, started)
     }
 
     suspend fun restore(ids: List<String>): Result<Unit> = withContext(Dispatchers.Default) {
-        runSuspendCatching { client.batchUntrash(ids) }
+        val started = TimeSource.Monotonic.markNow()
+        runSuspendCatching { client.batchUntrash(ids) }.logOperation("从回收站恢复", ids, started)
     }
 
     suspend fun delete(ids: List<String>): Result<Unit> = withContext(Dispatchers.Default) {
-        runSuspendCatching { client.batchDelete(ids) }
+        val started = TimeSource.Monotonic.markNow()
+        runSuspendCatching { client.batchDelete(ids) }.logOperation("彻底删除", ids, started)
     }
 
     suspend fun move(ids: List<String>, parentId: String): Result<Unit> = withContext(Dispatchers.Default) {
+        val started = TimeSource.Monotonic.markNow()
         runSuspendCatching { client.batchMove(ids, parentId) }.onSuccess {
             ids.forEach(recentFolders::forget)
             forgetSubfolders()
             forgetEmptiness(parentId)
-        }
+        }.logOperation("移动到 ${parentId.ifEmpty { "根目录" }}", ids, started)
     }
 
     /**
@@ -962,7 +969,24 @@ open class PikoDriveRepository(
      * 复制到自身或自己的子目录里会被拒绝（file_move_or_copy_to_cur）。SDK 已按 id 上限分批。
      */
     suspend fun copy(ids: List<String>, parentId: String): Result<Unit> = withContext(Dispatchers.Default) {
+        val started = TimeSource.Monotonic.markNow()
         runSuspendCatching { client.batchCopy(ids, parentId); Unit }.onSuccess { forgetEmptiness(parentId) }
+            .logOperation("复制到 ${parentId.ifEmpty { "根目录" }}", ids, started)
+    }
+
+    /**
+     * 批量改动各记一行：几项、前几个 ID、多久。失败只记错误名，堆栈由给用户提示的调用方记，
+     * 那边的一行不带 ID，这一行补上是哪几项。逐项调用的（重命名、建文件夹）不在这里记，批量时会刷屏。
+     */
+    private fun <T> Result<T>.logOperation(action: String, ids: List<String>, started: TimeMark): Result<T> {
+        val shown = ids.take(LOGGED_IDS).joinToString(",") + if (ids.size > LOGGED_IDS) " 等" else ""
+        val elapsed = started.elapsedNow().inWholeMilliseconds
+        onSuccess { PikoLog.i(TAG, "$action：${ids.size} 项（$shown），$elapsed ms") }
+        onFailure { error ->
+            val reason = (error as? PikPakException)?.let { "${it.errorCode} ${it.errorMessage}" } ?: error::class.simpleName
+            PikoLog.w(TAG, "${action}失败：${ids.size} 项（$shown），$elapsed ms，$reason")
+        }
+        return this
     }
 
     suspend fun search(query: String): Result<List<FileStat>> = withContext(Dispatchers.Default) {
@@ -1145,6 +1169,9 @@ open class PikoDriveRepository(
     companion object {
         val ROOT_BREADCRUMB = PikoPathBreadcrumb("", "网盘")
         private const val TAG = "DriveRepository"
+
+        // 批量操作的日志里列出的 ID 个数：够在网盘里对上是哪几项，几百项的移动不至于占满一屏
+        private const val LOGGED_IDS = 5
         private val LINK_RETRY_DELAYS = listOf(500.milliseconds, 1.seconds, 2.seconds)
         private const val FIRST_TAB_ID = 1L
         private const val TABS_SAVE_DELAY_MS = 1_000L

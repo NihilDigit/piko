@@ -32,6 +32,7 @@ import dev.piko.shared.log.PikoLog
 import io.github.nihildigit.pikpak.DriveEvent
 import io.github.nihildigit.pikpak.EventPage
 import dev.piko.shared.log.logFailure
+import dev.piko.shared.log.logFile
 import dev.piko.shared.log.reportFailure
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoFileSortOrder
@@ -51,6 +52,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.time.TimeSource
 
 /**
  * 乐观移除失败后，把 [removedIds] 这几项按它们在 [snapshot] 里的位置放回 [current]。
@@ -486,12 +488,16 @@ class DriveScreenState(
         }
         loadJob?.cancel()
         loadJob = scope.launch {
+            val started = TimeSource.Monotonic.markNow()
             val listing = driveRepo.listBrowsable(parentId = folderId, sortOrder = sortOrder)
+            val elapsed = started.elapsedNow().inWholeMilliseconds
+            listing.onSuccess { PikoLog.d(TAG, "列出文件夹 ${folderId.ifEmpty { "根目录" }}：${it.size} 项，$elapsed ms${if (cached != null) "，先显示了缓存" else ""}") }
             // 空列表可能是目录已经不在了：上次退出时停在的目录后来被删，或在别的客户端进了回收站。
             // 这时退回上一级，而不是把一个不存在的目录画成「此文件夹为空」。上一级也不在的话，
             // 它的加载会再退一级。只在列表为空时才多查一次详情，平常的目录不多花请求
             val empty = listing.getOrNull()?.isEmpty() == true
             if (empty && folderId.isNotEmpty() && driveRepo.isFolderGone(folderId)) {
+                PikoLog.i(TAG, "文件夹 $folderId 已不存在，返回上一级")
                 isLoading = false
                 isRefreshing = false
                 if (navigateUp()) _messages.tryEmit("文件夹已不存在，已返回上一级")
@@ -503,7 +509,7 @@ class DriveScreenState(
                     loadedFolderId = folderId
                     loadError = null
                 }
-                .logFailure(TAG, "读取目录失败")
+                .logFailure(TAG, "读取目录失败：文件夹 ${folderId.ifEmpty { "根目录" }}，$elapsed ms，${if (files.isEmpty()) "无旧内容" else "保留旧内容 ${files.size} 项"}")
                 .onFailure {
                     // 消息是一次性的，弹完就没了；而列表此刻显示的是上一次的内容，
                     // 界面需要一个持续的标记才能说明「这是陈旧数据」
@@ -1228,7 +1234,7 @@ class DriveScreenState(
                     load()
                     _messages.tryEmit("已新建文件夹")
                 }
-                .logFailure(TAG, "新建文件夹失败")
+                .logFailure(TAG, "新建文件夹失败：在 ${activeFolder.id.ifEmpty { "根目录" }} 下")
                 .onFailure { _messages.tryEmit("新建文件夹失败") }
         }
     }
@@ -1263,7 +1269,7 @@ class DriveScreenState(
                         _messages.tryEmit("已重命名")
                     }
                 }
-                .logFailure(TAG, "重命名失败")
+                .logFailure(TAG, "重命名失败：${logFile(fileId, oldName ?: trimmed)}，新名 ${trimmed.encodeToByteArray().size} 字节")
                 .onFailure { _messages.tryEmit("重命名失败") }
         }
     }
@@ -1281,7 +1287,7 @@ class DriveScreenState(
                     load()
                     _messages.tryEmit(if (starred) "已添加星标" else "已取消星标")
                 }
-                .logFailure(TAG, "修改星标失败")
+                .logFailure(TAG, "修改星标失败：${logFile(file.id, file.name)}")
                 .onFailure { _messages.tryEmit(if (starred) "添加星标失败" else "取消星标失败") }
         }
     }
@@ -1412,6 +1418,7 @@ class DriveScreenState(
             }
             // 部分文件夹已经改成功也要记：撤销时把已移除的那些写回去
             val count = removed.values.sumOf { it.size }
+            PikoLog.i(TAG, "从归档移除：${byFolder.values.sumOf { it.size }} 项，${byFolder.size} 个文件夹，已移除 $count 项")
             if (count > 0) {
                 exitSelection()
                 load()

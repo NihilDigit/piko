@@ -75,11 +75,12 @@ class OfflineTasksState(
         scope.launch {
             taskRepo.resubmitTask(task)
                 .onSuccess {
+                    PikoLog.i(TAG, "已重新提交离线任务 ${task.id}（原阶段 ${task.phase}）")
                     tasks = tasks.filterNot { it.id == task.id }
                     launchFetch(notifyFailure = false)
                 }
                 .onFailure { err ->
-                    PikoLog.w(TAG, "重新提交离线任务失败", err)
+                    PikoLog.w(TAG, "重新提交离线任务 ${task.id} 失败", err)
                     _messages.tryEmit("重新提交失败")
                 }
         }
@@ -94,7 +95,7 @@ class OfflineTasksState(
                     launchFetch(notifyFailure = false)
                 }
                 .onFailure { err ->
-                    PikoLog.w(TAG, "删除离线任务失败", err)
+                    PikoLog.w(TAG, "删除离线任务 $taskId 失败", err)
                     _messages.tryEmit("删除任务失败")
                 }
         }
@@ -110,7 +111,7 @@ class OfflineTasksState(
                     _messages.tryEmit("已清除 $cleared 条记录")
                     launchFetch(notifyFailure = false)
                 }
-                .logFailure(TAG, "清除离线记录失败")
+                .logFailure(TAG, "清除离线记录失败：阶段 $phases，$cleared 条")
                 .onFailure { _messages.tryEmit("清除记录失败") }
         }
     }
@@ -125,11 +126,15 @@ class OfflineTasksState(
         try {
             taskRepo.getTasks()
                 .onSuccess { response ->
+                    logTransitions(tasks, response.tasks)
+                    if (failedPolls > 0) PikoLog.i(TAG, "离线任务恢复拉取，此前连续失败 $failedPolls 次")
+                    failedPolls = 0
                     tasks = response.tasks
                     loadError = null
                 }
                 .onFailure { err ->
-                    PikoLog.w(TAG, "加载离线任务失败", err)
+                    // 轮询每几秒一次，断网时只记第一次的堆栈，之后的并进恢复时的那一行
+                    if (failedPolls++ == 0) PikoLog.w(TAG, "加载离线任务失败", err)
                     val reason = err.message ?: "网络错误"
                     loadError = reason
                     if (notifyFailure) _messages.tryEmit("加载离线任务失败")
@@ -137,6 +142,23 @@ class OfflineTasksState(
         } finally {
             isLoading = false
             isRefreshing = false
+        }
+    }
+
+    private var failedPolls = 0
+
+    /**
+     * 两次拉取之间结束了的任务各记一行：离线卡住、失败的原因只在服务端的 message 里，用户反馈时任务记录
+     * 可能已被清掉。任务名是磁力或文件的名字，不记。头一次拉取没有可比的，不记。
+     */
+    private fun logTransitions(before: List<DriveTask>, after: List<DriveTask>) {
+        if (before.isEmpty()) return
+        val previous = before.associate { it.id to it.phase }
+        for (task in after) {
+            val was = previous[task.id] ?: continue
+            if (was == task.phase || (task.phase != TaskPhase.COMPLETE && task.phase != TaskPhase.ERROR)) continue
+            PikoLog.i(TAG, "离线任务 ${task.id} $was → ${task.phase}，进度 ${task.progress}%，${task.fileSize} 字节，" +
+                "产出 ${task.fileId.ifEmpty { "无" }}${task.message.takeIf { it.isNotBlank() }?.let { "，服务端说明：${it.take(80)}" } ?: ""}")
         }
     }
 

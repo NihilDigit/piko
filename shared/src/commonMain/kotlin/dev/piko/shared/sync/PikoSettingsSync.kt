@@ -183,20 +183,27 @@ class PikoSettingsSync(
             }
         }
         // 远端更新的写进本机
+        val pulled = mutableListOf<String>()
         for (setting in settings) {
             val entry = merged[setting.key] ?: continue
-            if (entry.value != local[setting.key]) setting.write(preferences, entry.value)
+            if (entry.value != local[setting.key]) {
+                setting.write(preferences, entry.value)
+                pulled += setting.key
+            }
         }
         saveState(account, merged.filterKeys { key -> settings.any { it.key == key } })
-        if (merged != remoteValues) {
-            remote.write(account, json.encodeToString(Document.serializer(), Document(VERSION, merged)), stamp)
-            PikoLog.d(TAG, "已推送设置，${merged.size} 项")
-        }
+        val pushed = merged != remoteValues
+        if (pushed) remote.write(account, json.encodeToString(Document.serializer(), Document(VERSION, merged)), stamp)
+        // 只记项名，不记值：值里有快速访问的文件夹 ID 与主题这类无关排查的内容
+        PikoLog.i(TAG, "设置同步：远端${if (remoteText == null) "无文件" else " ${remoteValues.size} 项"}，" +
+            "本机改过 ${mine.count { it.value.updatedAt == stamp }} 项，写入本机 ${pulled.size} 项${if (pulled.isEmpty()) "" else " $pulled"}，" +
+            "${if (pushed) "已推送 ${merged.size} 项" else "无需推送"}，历时 ${now() - stamp} ms")
     }
 
     private suspend fun loadState(account: String): Map<String, Entry> {
         val text = cacheStore?.read(stateKey(account)) ?: return emptyMap()
-        return runCatching { json.decodeFromString(StateSerializer, text) }.getOrDefault(emptyMap())
+        return runCatching { json.decodeFromString(StateSerializer, text) }
+            .logFailure(TAG, "读不出本机的同步记录，按从未同步处理").getOrDefault(emptyMap())
     }
 
     private suspend fun saveState(account: String, state: Map<String, Entry>) {
@@ -260,20 +267,22 @@ class DriveSettingsStore(
         val name = "$filePrefix$stamp$FILE_SUFFIX"
         driveRepo.uploadBytes(folder, name, text.encodeToByteArray()).getOrThrow()
         // 只删比这一份旧的：另一台设备同时在同步时，它更新的那份（可能还在上传）留给它自己收拾
-        val stale = driveRepo.listAllFiles(folder).getOrNull().orEmpty().filter { it.isSettingsFile() && it.stamp() < stamp }
-        if (stale.isNotEmpty()) driveRepo.delete(stale.map { it.id }).logFailure(TAG, "删除旧的设置文件失败")
+        val stale = driveRepo.listAllFiles(folder).logFailure(TAG, "写入后列出 .piko 失败，旧的 $filePrefix 文件留到下次清理")
+            .getOrNull().orEmpty().filter { it.isSettingsFile() && it.stamp() < stamp }
+        if (stale.isNotEmpty()) driveRepo.delete(stale.map { it.id }).logFailure(TAG, "删除旧的 $filePrefix 文件失败（${stale.size} 个）")
     }
 
     // 记着的文件夹可能已被删掉或移走：列不出来就忘掉它，重新找一次。找与建在全部实例共用的锁里：
     // 设置与归档树两份同步在登录后同时开始，各自没找到就各建一个 .piko
     private suspend fun folderOf(account: String): String = folderLock.withLock {
         folderIds[account]?.let { known ->
-            if (driveRepo.listAllFiles(known).isSuccess) return@withLock known
+            if (driveRepo.listAllFiles(known).logFailure(TAG, "列不出记着的 .piko 文件夹 $known，重新查找").isSuccess) return@withLock known
             folderIds.remove(account)
         }
         val root = driveRepo.listAllFiles("").getOrThrow()
         val id = root.firstOrNull { it.isFolder && it.name == PikoSettingsSync.FOLDER_NAME && !it.trashed }?.id
             ?: driveRepo.createFolder("", PikoSettingsSync.FOLDER_NAME).getOrThrow()
+                .also { PikoLog.i(TAG, "网盘根目录没有 .piko，已新建：$it") }
         folderIds[account] = id
         id
     }

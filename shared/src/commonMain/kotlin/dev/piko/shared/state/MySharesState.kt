@@ -6,6 +6,7 @@ import io.github.nihildigit.pikpak.FileStat
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import io.github.nihildigit.pikpak.ShareSummary
 import kotlinx.coroutines.CoroutineScope
@@ -167,10 +168,11 @@ class MySharesState(
         cancellingIds += ids
         shares = shares.filterNot { it.shareId in ids }
         scope.launch {
-            val result = driveRepo.cancelShares(ids.toList()).logFailure(TAG, logMessage)
+            val result = driveRepo.cancelShares(ids.toList()).logFailure(TAG, "$logMessage（${ids.size} 个）")
             cancellingIds -= ids
             result
                 .onSuccess {
+                    PikoLog.i(TAG, "已取消 ${ids.size} 个分享")
                     cancelledIds += ids
                     _messages.tryEmit(done)
                 }

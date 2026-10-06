@@ -1,5 +1,7 @@
 package dev.piko.shared.data
 
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFailure
 import dev.piko.shared.upload.isUploading
 import io.github.nihildigit.pikpak.ArchiveListing
 import io.github.nihildigit.pikpak.DecompressProgress
@@ -18,6 +20,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.TimeSource
 
 /** 服务端解压。压缩包的解析与写入都在 PikPak 那边完成，本机不下载任何内容。 */
 class ArchiveRepository(private val clientManager: PikoClientProvider) {
@@ -54,18 +57,26 @@ class ArchiveRepository(private val clientManager: PikoClientProvider) {
      */
     suspend fun prime(location: ArchiveLocation, entryPath: String, password: String, scratchId: String): Result<Unit> =
         withContext(Dispatchers.Default) {
+            val started = TimeSource.Monotonic.markNow()
             runSuspendCatching {
-                repeat(PRIME_ATTEMPTS) {
+                repeat(PRIME_ATTEMPTS) { attempt ->
                     val task = client.decompressArchive(location.archiveId, location.gcid, toParentId = scratchId, password = password, paths = listOf(entryPath))
                     val output = awaitDecompress(task.taskId)
                     try {
-                        if (awaitTree(location.archiveId)) return@runSuspendCatching
+                        if (awaitTree(location.archiveId)) {
+                            PikoLog.i(TAG, "压缩包 ${location.archiveId} 已建出包内文件树：第 ${attempt + 1} 次解压，历时 ${started.elapsedNow().inWholeMilliseconds} ms")
+                            return@runSuspendCatching
+                        }
+                        PikoLog.d(TAG, "压缩包 ${location.archiveId} 第 ${attempt + 1} 次解压后仍无文件树")
                     } finally {
-                        withContext(NonCancellable) { runSuspendCatching { client.batchDelete(listOf(output)) } }
+                        withContext(NonCancellable) {
+                            runSuspendCatching { client.batchDelete(listOf(output)) }
+                                .logFailure(TAG, "删除建树用的解压副本 $output 失败，留在 Piko-Temp 里")
+                        }
                     }
                 }
                 error("服务端未能读取压缩包内的文件")
-            }
+            }.logFailure(TAG, "为压缩包 ${location.archiveId} 建包内文件树失败，历时 ${started.elapsedNow().inWholeMilliseconds} ms")
         }
 
     private suspend fun awaitDecompress(taskId: String): String {
@@ -98,10 +109,14 @@ class ArchiveRepository(private val clientManager: PikoClientProvider) {
      * params 里（media_center_result）。密码错误是 [INVALID_PASSWORD]；查不到时为 null。
      */
     suspend fun failureCause(taskId: String): String? = withContext(Dispatchers.Default) {
-        runSuspendCatching { client.getTask(taskId).params["media_center_result"] }.getOrNull()?.takeIf { it.isNotEmpty() }
+        runSuspendCatching { client.getTask(taskId).params["media_center_result"] }
+            .onSuccess { PikoLog.d(TAG, "解压任务 $taskId 的失败原因：${it ?: "无"}") }
+            .logFailure(TAG, "查询解压任务 $taskId 的失败原因失败")
+            .getOrNull()?.takeIf { it.isNotEmpty() }
     }
 
     companion object {
+        private const val TAG = "Archive"
         const val INVALID_PASSWORD = "E_INVALID_PASSWORD"
 
         /** 列得出目录、解压时才发现读不了：zip span 的最后一卷就是这样。 */

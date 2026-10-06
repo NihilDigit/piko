@@ -1,6 +1,8 @@
 package dev.piko.shared.data
 
 import dev.piko.data.auth.PikoUserPreferences
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFailure
 import io.github.nihildigit.pikpak.CreateUrlResult
 import io.github.nihildigit.pikpak.DriveTask
 import io.github.nihildigit.pikpak.PikPakException
@@ -135,7 +137,11 @@ class OfflinePackTracker(
     ): Result<OfflinePackJob?> {
         val owner = lock.withLock { account } ?: return Result.failure(IllegalStateException("未登录"))
         val created = instantRepo.enqueueOfflineTask(url, targetId).getOrElse { return Result.failure(it) }
-        val task = (created as? CreateUrlResult.Queued)?.task ?: return Result.success(null)
+        val task = (created as? CreateUrlResult.Queued)?.task ?: run {
+            PikoLog.i(TAG, "整包离线提交即完成，无从清理未选文件")
+            return Result.success(null)
+        }
+        PikoLog.i(TAG, "整包离线：任务 ${task.id}，保留 ${keep.size}/$totalFiles 个文件，$keptBytes/$totalBytes 字节")
         val job = OfflinePackJob(
             account = owner,
             taskId = task.id,
@@ -161,7 +167,8 @@ class OfflinePackTracker(
      * 占位文件由服务端一并清掉，已完成任务的文件保留。
      */
     suspend fun discard(taskId: String): Result<Unit> =
-        instantRepo.deleteOfflineTask(taskId).onSuccess {
+        instantRepo.deleteOfflineTask(taskId).logFailure(TAG, "删除整包离线任务 $taskId 失败").onSuccess {
+            PikoLog.i(TAG, "已删除整包离线任务 $taskId")
             lock.withLock {
                 all = all.orEmpty().filterNot { it.taskId == taskId }
                 persist()
@@ -173,6 +180,7 @@ class OfflinePackTracker(
         val job = lock.withLock { all.orEmpty().firstOrNull { it.taskId == taskId } }
             ?: return Result.success(Unit)
         if (job.stage != OfflinePackStage.FAILED) return Result.success(Unit)
+        PikoLog.i(TAG, "重试整包离线任务 $taskId：${if (job.cleanupFailed) "只重做清理" else "按原链接重新提交"}")
         val trackedId = if (job.cleanupFailed) {
             update(taskId, persist = true) {
                 it.copy(stage = OfflinePackStage.PRUNING, cleanupFailed = false, message = "")
@@ -183,7 +191,8 @@ class OfflinePackTracker(
             val task = (created as? CreateUrlResult.Queued)?.task
                 ?: return Result.failure(IllegalStateException("服务端未返回任务"))
             // 旧记录删不掉只是在传输页多留一条失败项，不影响新任务
-            instantRepo.deleteOfflineTask(taskId)
+            instantRepo.deleteOfflineTask(taskId).logFailure(TAG, "重试后删除旧任务 $taskId 失败")
+            PikoLog.i(TAG, "整包离线任务 $taskId 重新提交为 ${task.id}")
             update(taskId, persist = true) {
                 it.copy(
                     taskId = task.id,
@@ -233,15 +242,20 @@ class OfflinePackTracker(
         serverFailures.remove(job.taskId)
         when (task.phase) {
             TaskPhase.PENDING -> update(job.taskId) { it.copy(stage = OfflinePackStage.QUEUED) }
-            TaskPhase.RUNNING -> update(job.taskId) {
-                it.copy(stage = OfflinePackStage.DOWNLOADING, progress = task.progress)
+            TaskPhase.RUNNING -> {
+                if (job.stage == OfflinePackStage.QUEUED) PikoLog.d(TAG, "整包离线任务 ${job.taskId} 开始下载，排队 ${(now() - job.createdAtMs) / 1000} 秒")
+                update(job.taskId) { it.copy(stage = OfflinePackStage.DOWNLOADING, progress = task.progress) }
             }
-            TaskPhase.ERROR -> update(job.taskId, persist = true) {
-                it.copy(
-                    stage = OfflinePackStage.FAILED,
-                    message = task.message.ifEmpty { "离线下载失败" },
-                    finishedAtMs = now(),
-                )
+            TaskPhase.ERROR -> {
+                PikoLog.w(TAG, "整包离线任务 ${job.taskId} 服务端报失败，进度 ${task.progress}%，历时 ${(now() - job.createdAtMs) / 1000} 秒，" +
+                    "说明：${task.message.take(80)}")
+                update(job.taskId, persist = true) {
+                    it.copy(
+                        stage = OfflinePackStage.FAILED,
+                        message = task.message.ifEmpty { "离线下载失败" },
+                        finishedAtMs = now(),
+                    )
+                }
             }
             TaskPhase.COMPLETE -> finish(job, task)
         }
@@ -264,10 +278,13 @@ class OfflinePackTracker(
         }
         // 单文件的种子产出就是文件本身，不改名。走到整包离线的至少两个文件
         val renameNote = if (job.totalFiles > 1 && job.folderName.isNotBlank() && task.fileName != job.folderName) {
-            driveRepo.rename(task.fileId, job.folderName).fold({ "" }, { "未能改名为 ${job.folderName}" })
+            driveRepo.rename(task.fileId, job.folderName).logFailure(TAG, "整包离线产出 ${task.fileId} 改名失败")
+                .fold({ "" }, { "未能改名为 ${job.folderName}" })
         } else {
             ""
         }
+        PikoLog.i(TAG, "整包离线任务 ${job.taskId} 完成：产出 ${task.fileId}，清理 ${job.prunedCount} 个未选文件，" +
+            "历时 ${(now() - job.createdAtMs) / 1000} 秒${if (renameNote.isEmpty()) "" else "，改名失败"}")
         update(job.taskId, persist = true) {
             it.copy(
                 stage = OfflinePackStage.DONE,
@@ -280,9 +297,14 @@ class OfflinePackTracker(
     }
 
     private suspend fun recordFailure(job: OfflinePackJob, err: Throwable) {
-        if (err !is PikPakException) return
+        if (err !is PikPakException) {
+            PikoLog.d(TAG, "整包离线任务 ${job.taskId} 查询失败（${err::class.simpleName}），等网络恢复")
+            return
+        }
         val count = (serverFailures[job.taskId] ?: 0) + 1
         serverFailures[job.taskId] = count
+        PikoLog.w(TAG, "整包离线任务 ${job.taskId} ${if (job.stage == OfflinePackStage.PRUNING) "清理" else "查询"}被服务端拒绝，" +
+            "第 $count/$MAX_SERVER_FAILURES 次", err.takeIf { count == 1 })
         if (count >= MAX_SERVER_FAILURES) {
             serverFailures.remove(job.taskId)
             fail(job, err.message ?: "服务端报错", cleanup = job.stage == OfflinePackStage.PRUNING)
@@ -290,6 +312,7 @@ class OfflinePackTracker(
     }
 
     private suspend fun fail(job: OfflinePackJob, reason: String, cleanup: Boolean) {
+        PikoLog.w(TAG, "整包离线任务 ${job.taskId} 记为失败${if (cleanup) "（清理阶段）" else ""}")
         update(job.taskId, persist = true) {
             it.copy(
                 stage = OfflinePackStage.FAILED,
@@ -319,6 +342,8 @@ class OfflinePackTracker(
     }
 
     companion object {
+        private const val TAG = "OfflinePack"
+
         /** 服务端连续这么多次明确报错才算失败，例如任务已在别处被删。 */
         const val MAX_SERVER_FAILURES = 5
 
@@ -336,7 +361,10 @@ private val serializer = ListSerializer(OfflinePackJob.serializer())
  */
 fun restoreOfflinePacks(serialized: String, nowMs: Long): List<OfflinePackJob> {
     if (serialized.isBlank()) return emptyList()
-    val jobs = runCatching { json.decodeFromString(serializer, serialized) }.getOrElse { return emptyList() }
+    val jobs = runCatching { json.decodeFromString(serializer, serialized) }.getOrElse {
+        PikoLog.w("OfflinePack", "读不出整包离线记录，从空表开始", it)
+        return emptyList()
+    }
     val cutoff = nowMs - OfflinePackTracker.DONE_RETENTION.inWholeMilliseconds
     return jobs.filterNot { it.stage == OfflinePackStage.DONE && it.finishedAtMs < cutoff }
 }

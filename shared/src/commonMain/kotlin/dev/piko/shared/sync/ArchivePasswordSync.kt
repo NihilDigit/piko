@@ -93,7 +93,9 @@ class ArchivePasswordSync(
             return
         }
         val local = vault.current()
-        val envelope = remote.read(account)?.let { text -> runCatching { json.decodeFromString(Envelope.serializer(), text) }.getOrNull() }
+        val envelope = remote.read(account)?.let { text ->
+            runCatching { json.decodeFromString(Envelope.serializer(), text) }.logFailure(TAG, "网盘上的压缩包密码文件格式不对，按没有处理").getOrNull()
+        }
         if (envelope != null && envelope.version > VERSION) {
             // 更新的版本写的，读不懂也不能拿旧格式盖掉它
             PikoLog.i(TAG, "网盘上的压缩包密码是更新的版本写的（${envelope.version}），这一轮不同步")
@@ -103,6 +105,9 @@ class ArchivePasswordSync(
         if (envelope != null && remoteEntries == null) PikoLog.i(TAG, "网盘上的压缩包密码解不开（账号密码改过？），以本机的记录重写")
         val merged = mergeArchivePasswords(local, remoteEntries.orEmpty())
         if (merged != local) vault.replace(merged)
+        // 只记条数，密码与它对应的压缩包都不进日志
+        PikoLog.d(TAG, "压缩包密码合并：本机 ${local.size} 条，远端 ${remoteEntries?.size?.toString() ?: if (envelope == null) "无文件" else "解不开"}，" +
+            "合并后 ${merged.size} 条（其中已删 ${merged.count { it.value.removed }}），本机${if (merged != local) "已更新" else "未变"}")
         if (merged != remoteEntries && (envelope != null || merged.isNotEmpty())) {
             // 解得开就沿用原来的 salt，省一次派生；解不开的换新的
             val salt = envelope?.takeIf { remoteEntries != null }?.salt?.let(Base64::decode) ?: cipher.newSalt()
@@ -115,15 +120,20 @@ class ArchivePasswordSync(
     }
 
     private suspend fun open(envelope: Envelope, secret: String): Map<String, ArchivePasswordEntry>? {
-        val salt = runCatching { Base64.decode(envelope.salt) }.getOrNull() ?: return null
-        val sealed = runCatching { Base64.decode(envelope.data) }.getOrNull() ?: return null
-        val plain = cipher.open(keyFor(secret, salt, envelope.iterations), sealed) ?: return null
+        val salt = runCatching { Base64.decode(envelope.salt) }.logFailure(TAG, "压缩包密码文件的 salt 不是 Base64").getOrNull() ?: return null
+        val sealed = runCatching { Base64.decode(envelope.data) }.logFailure(TAG, "压缩包密码文件的密文不是 Base64").getOrNull() ?: return null
+        val plain = cipher.open(keyFor(secret, salt, envelope.iterations), sealed) ?: run {
+            PikoLog.d(TAG, "压缩包密码文件解密失败（密钥不符或内容损坏），迭代 ${envelope.iterations} 次")
+            return null
+        }
         return decodeArchivePasswords(plain.decodeToString())
     }
 
     private suspend fun keyFor(secret: String, salt: ByteArray, iterations: Int): ByteArray {
         cachedKey?.takeIf { it.secret == secret && it.salt.contentEquals(salt) && it.iterations == iterations }?.let { return it.key }
+        val started = kotlin.time.TimeSource.Monotonic.markNow()
         val key = withContext(Dispatchers.Default) { cipher.deriveKey(secret, salt, iterations) }
+        PikoLog.d(TAG, "派生同步密钥：$iterations 次迭代，历时 ${started.elapsedNow().inWholeMilliseconds} ms")
         cachedKey = CachedKey(secret, salt, iterations, key)
         return key
     }

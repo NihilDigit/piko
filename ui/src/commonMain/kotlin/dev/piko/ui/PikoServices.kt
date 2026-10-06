@@ -32,6 +32,8 @@ import dev.piko.shared.state.InstantSheetState
 import dev.piko.shared.upload.PikoUploadCoordinator
 import dev.piko.shared.upload.PikoUploadSources
 import dev.piko.shared.net.PikPakDomainSelector
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFailure
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -175,6 +177,7 @@ class PikoServices(
             var previous: String? = null
             clientManager.currentClient.map { it?.account }.distinctUntilChanged().collect { account ->
                 if (previous != null && account != previous) {
+                    PikoLog.i(TAG, "${if (account == null) "退出登录" else "换号"}：结束上一账号的添加链接、查重、解压、信息流与归档会话")
                     withContext(Dispatchers.Main) {
                         instantSession.end()
                         duplicateSession.end()
@@ -193,13 +196,15 @@ class PikoServices(
                 if (client == null) return@collectLatest
                 // 上次进程被杀时面板来不及清 Piko-Temp，登录后补上。每个账号只清一次：断线重连
                 // 也会换一个新的 client，那时面板可能正开着，预览的文件还要用
-                if (cleanedAccounts.add(client.account)) previewTempFolder.clear()
+                if (cleanedAccounts.add(client.account)) previewTempFolder.clear().logFailure(TAG, "登录后清理 Piko-Temp 失败")
                 // 换号或退出登录时 collectLatest 取消它，换成新账号的记录重来
                 offlinePacks.run(client.account)
             }
         }
     }
 }
+
+private const val TAG = "Services"
 
 val LocalPikoServices = staticCompositionLocalOf<PikoServices> {
     error("PikoServices 未提供，入口要用 PikoApp 包一层")

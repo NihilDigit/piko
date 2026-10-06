@@ -65,13 +65,15 @@ class VaultTreeSync(
     }
 
     private suspend fun sync(account: String) {
-        val remoteTrees = remote.read(account)?.let(VaultTrees::decode).orEmpty()
+        val remoteText = remote.read(account)
+        val remoteTrees = remoteText?.let(VaultTrees::decode).orEmpty()
+        val before = trees.flow.value.size
         trees.merge(remoteTrees)
         val merged = trees.flow.value
-        if (merged != remoteTrees) {
-            remote.write(account, VaultTrees.encode(merged), now())
-            PikoLog.d(TAG, "已推送归档树，${merged.size} 个文件夹")
-        }
+        val pushed = merged != remoteTrees
+        if (pushed) remote.write(account, VaultTrees.encode(merged), now())
+        PikoLog.d(TAG, "归档树同步：本机 $before 个，远端${if (remoteText == null) "无文件" else " ${remoteTrees.size} 个"}，" +
+            "合并后 ${merged.size} 个，${if (pushed) "已推送" else "无需推送"}")
     }
 
     private companion object {

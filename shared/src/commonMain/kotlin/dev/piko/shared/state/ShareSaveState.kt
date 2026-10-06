@@ -13,6 +13,9 @@ import io.github.nihildigit.pikpak.ShareUnavailableException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFailure
+import kotlin.time.TimeSource
 
 /**
  * 转存一个 PikPak 分享：逐层浏览，勾选当前这一层的条目，转存到目标目录。
@@ -71,10 +74,13 @@ class ShareSaveState(
                 }
                 .onFailure { error ->
                     val unavailable = error as? ShareUnavailableException
+                    // 分享 ID 与提取码合起来就能打开分享，都不进日志
                     if (unavailable?.needsPassCode == true) {
+                        PikoLog.i(TAG, "打开分享：${if (passCode.isBlank()) "需要提取码" else "提取码错误"}")
                         needsPassCode = true
                         errorMessage = if (passCode.isBlank()) null else "提取码错误"
                     } else {
+                        PikoLog.w(TAG, "打开分享失败${if (unavailable != null) "：分享已失效" else ""}", error)
                         // 服务端的 statusText 可能是英文，不直接显示；能回 200 却读不了的，是取消或过期了
                         errorMessage = if (unavailable != null) "分享已失效" else "无法读取分享"
                     }
@@ -90,6 +96,7 @@ class ShareSaveState(
                     path += PikoPathBreadcrumb(folder.id, folder.name)
                     entries = it
                 }
+                .logFailure(TAG, "列出分享里的文件夹失败：${folder.id}")
                 .onFailure { errorMessage = "无法打开文件夹" }
         }
     }
@@ -112,6 +119,7 @@ class ShareSaveState(
                     while (path.size > depth) path.removeAt(path.lastIndex)
                     entries = it
                 }
+                .logFailure(TAG, "列出分享里的文件夹失败：${folder.id}")
                 .onFailure { errorMessage = "无法打开文件夹" }
         }
     }
@@ -133,9 +141,13 @@ class ShareSaveState(
         if (ids.isEmpty() || isSaving) return
         isSaving = true
         errorMessage = null
+        val bytes = selectedBytes
+        val started = TimeSource.Monotonic.markNow()
         scope.launch {
             driveRepo.restoreFromShare(shareId, token, ids, target.id, ancestorIds = path.map { it.id })
+                .logFailure(TAG, "转存分享失败：${ids.size} 项，$bytes 字节，到文件夹 ${target.id}，分享内第 ${path.size} 层")
                 .onSuccess {
+                    PikoLog.i(TAG, "已转存分享：${ids.size} 项，$bytes 字节，到文件夹 ${target.id}，历时 ${started.elapsedNow().inWholeMilliseconds} ms")
                     selectedIds.clear()
                     driveRepo.requestRefresh()
                     doneMessage = "已转存 ${ids.size} 项到 ${target.name}"
@@ -143,6 +155,10 @@ class ShareSaveState(
                 .onFailure { errorMessage = "转存失败：${it.message}" }
             isSaving = false
         }
+    }
+
+    private companion object {
+        const val TAG = "ShareSave"
     }
 
     private fun load(block: suspend () -> Unit) {

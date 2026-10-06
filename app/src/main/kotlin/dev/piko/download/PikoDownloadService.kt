@@ -17,6 +17,7 @@ import androidx.core.content.ContextCompat
 import dev.piko.EXTRA_OPEN_TRANSFERS
 import dev.piko.MainActivity
 import dev.piko.PikoApplication
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.ui.PikoServices
 import dev.piko.ui.components.toReadableSize
@@ -67,6 +68,7 @@ class PikoDownloadService : Service() {
             // Android 12 起应用在后台时不能进入前台服务（ForegroundServiceStartNotAllowedException），
             // Android 15 起 dataSync 用满当日时长后也会被拒。下载协程本身不依赖服务，
             // 应用回到前台后下一次启动下载会重新拉起服务
+            PikoLog.w(TAG, "进入前台服务被拒，传输在无通知的情况下继续", e)
             stopSelf()
             return START_NOT_STICKY
         }
@@ -81,6 +83,7 @@ class PikoDownloadService : Service() {
      * 用户回到应用可以原地继续。
      */
     override fun onTimeout(startId: Int, fgsType: Int) {
+        PikoLog.w(TAG, "前台服务到达系统时长上限，暂停全部传输")
         PikoApplication.instance.downloadManager.pauseAll()
         PikoApplication.instance.uploadManager.pauseAll()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
@@ -246,6 +249,7 @@ class PikoDownloadService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
+        private const val TAG = "DownloadService"
         private const val NOTIFICATION_ID = 9527
         private const val OPEN_TRANSFERS_REQUEST_CODE = 1
         private const val NOTIFICATION_INTERVAL_MS = 1_000L
@@ -257,6 +261,7 @@ class PikoDownloadService : Service() {
                 ContextCompat.startForegroundService(context, intent)
             } catch (e: Exception) {
                 // 处理后台启动限制回退
+                PikoLog.w(TAG, "启动传输服务被拒", e)
             }
         }
 

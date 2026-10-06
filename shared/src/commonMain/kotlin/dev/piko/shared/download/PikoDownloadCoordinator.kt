@@ -150,6 +150,8 @@ class PikoDownloadCoordinator(
         // 换号时别的账号的任务转为暂停：它们手里的 client 随即关闭，放着不管会以失败告终
         scope.launch {
             clientProvider.currentClient.map { it?.account }.distinctUntilChanged().collect {
+                val running = _tasks.value.values.count { task -> task.taskId in jobs.value && !belongsToCurrent(task) }
+                if (running > 0) PikoLog.i(TAG, "换号：暂停另一账号进行中的 $running 个任务")
                 // 文件夹下载的任务先整批停下：逐个暂停时，每停一个就会补上同一批里排着的下一个
                 _tasks.value.values.mapNotNull { task -> task.batch?.id?.takeIf { !belongsToCurrent(task) } }
                     .distinct().forEach(::pauseBatch)
@@ -173,9 +175,11 @@ class PikoDownloadCoordinator(
     private suspend fun restore() {
         val saved = runSuspendCatching {
             json.decodeFromString(taskListSerializer, preferences.loadDownloadTasks())
-        }.getOrDefault(emptyList())
+        }.logFailure(TAG, "读回下载任务表失败，按空表处理").getOrDefault(emptyList())
         if (saved.isEmpty()) return
         val restored = withContext(Dispatchers.IO) { saved.mapNotNull { restoreTask(it) } }
+        PikoLog.i(TAG, "恢复下载任务：保存 ${saved.size} 个，恢复 ${restored.size} 个，" +
+            "其中未完成 ${restored.count { it.status != DownloadStatus.COMPLETED }} 个；本机文件缺失或不完整丢弃 ${saved.size - restored.size} 个")
         // 恢复期间用户可能已经加了新任务，同一任务以内存里的为准
         _tasks.update { current -> restored.associateBy { it.taskId } + current }
     }
@@ -223,7 +227,7 @@ class PikoDownloadCoordinator(
             .collect { tasks ->
                 val serialized = json.encodeToString(taskListSerializer, tasks.values.toList())
                 // 写盘失败只影响下次启动能否恢复，不能让收集协程带着异常退出
-                runSuspendCatching { preferences.saveDownloadTasks(serialized) }
+                runSuspendCatching { preferences.saveDownloadTasks(serialized) }.logFailure(TAG, "保存下载任务表失败")
                 delay(PERSIST_INTERVAL_MS)
             }
     }
@@ -273,6 +277,7 @@ class PikoDownloadCoordinator(
                 val now = Clock.System.now().toEpochMilliseconds()
                 val batch = if (accepted.size > 1) DownloadBatch("files@$now-${++batchSequence}", "批量下载", isFolder = false) else null
                 val taken = _tasks.value.values.mapTo(mutableSetOf()) { it.fileName.lowercase() }
+                val reused = accepted.count { existingTask(it, account) != null }
                 val added = accepted.map { file ->
                     val existing = existingTask(file, account)
                     if (existing != null) {
@@ -293,6 +298,8 @@ class PikoDownloadCoordinator(
                     }
                 }
                 _tasks.update { current -> current + added.filter { jobs.value[it.taskId]?.isActive != true }.associateBy { it.taskId } }
+                PikoLog.i(TAG, "入队 ${accepted.size} 个文件${if (leasedSource) "（解析内容，借出取流）" else ""}：" +
+                    "复用已有任务 $reused 个，本机已完整 ${added.count { it.status == DownloadStatus.COMPLETED }} 个，共 ${accepted.sumOf { it.sizeBytes }} 字节")
             }
             pumpQueue()
         }
@@ -338,7 +345,10 @@ class PikoDownloadCoordinator(
     fun confirmListing(batchId: String) {
         val work = listingWork.value[batchId] ?: return
         if (_listings.value[batchId]?.account != currentAccount()) return
-        if (work.planned.isNotEmpty()) addBatch(batchId, work.planned)
+        if (work.planned.isNotEmpty()) {
+            PikoLog.i(TAG, "超出今日下载额度仍下载：文件夹 ${work.folder.id}，${work.planned.size} 个文件")
+            addBatch(batchId, work.planned)
+        }
     }
 
     /** 不下载了：停下列出，或丢掉等确认的那一批。 */
@@ -367,6 +377,7 @@ class PikoDownloadCoordinator(
                 return@launch
             }
             if (planned.isEmpty()) {
+                PikoLog.d(TAG, "列出文件夹：${logFile(work.folder.id, work.folder.name)}，没有可下载的文件")
                 updateListing(batchId) { it.copy(error = "文件夹里没有可下载的文件") }
                 return@launch
             }
@@ -421,6 +432,8 @@ class PikoDownloadCoordinator(
         }
         listingWork.update { it - batchId }
         _listings.update { it - batchId }
+        PikoLog.i(TAG, "文件夹下载入队：${tasks.size} 个文件，本机已完整 ${tasks.count { it.status == DownloadStatus.COMPLETED }} 个，" +
+            "共 ${tasks.sumOf { it.totalBytes }} 字节")
         onDownloadStarted?.invoke()
         pumpBatch(batchId)
     }
@@ -490,12 +503,15 @@ class PikoDownloadCoordinator(
         dismissListing(batchId)
         val tasks = _tasks.value.values.filter { it.batch?.id == batchId }
         val folder = tasks.firstOrNull()?.batch?.folderName ?: return
+        PikoLog.i(TAG, "取消整批：${tasks.size} 个任务，其中已完成 ${tasks.count { it.status == DownloadStatus.COMPLETED }} 个，一并删除本机文件")
         // 先整批转为暂停，免得逐个取消时补上同一批里排着的
         pauseBatch(batchId)
         val removals = tasks.mapNotNull { cancelDownload(it.taskId) }
         scope.launch(Dispatchers.IO) {
             removals.joinAll()
-            if (tasks.firstOrNull()?.batch?.isFolder == true) runSuspendCatching { storage.pruneEmptyFolders(folder) }
+            if (tasks.firstOrNull()?.batch?.isFolder == true) {
+                runSuspendCatching { storage.pruneEmptyFolders(folder) }.logFailure(TAG, "取消整批后清理空文件夹失败")
+            }
         }
     }
 
@@ -540,7 +556,8 @@ class PikoDownloadCoordinator(
             return
         }
         onDownloadStarted?.invoke()
-        PikoLog.d(TAG, "开始：${logFile(task.fileId, task.fileName)}，${task.downloadedBytes}/${task.totalBytes}${if (task.isSegment) "，片段" else ""}")
+        // 整文件下载的开始在取得缓存之后记，那时才知道续传点
+        if (task.isSegment) PikoLog.d(TAG, "开始片段：${logFile(task.fileId, task.fileName)}，${task.startMs}–${task.endMs} ms")
         // 片段任务要重新抽取，不能走整文件下载：它的 totalBytes 是 0，gcid 属于整个源文件
         if (task.isSegment) startSegment(task) else launchTracked(taskId) { runDownload(task) }
     }
@@ -549,10 +566,12 @@ class PikoDownloadCoordinator(
     private suspend fun runDownload(task: DownloadTask) {
         val taskId = task.taskId
         val client = clientProvider.currentClient.value ?: run {
+            PikoLog.w(TAG, "下载失败：未登录，${logFile(task.fileId, task.fileName)}")
             update(taskId) { it.copy(status = DownloadStatus.FAILED, errorMessage = "未登录") }
             return
         }
         var lease: PikoFileCachePool.Lease? = null
+        val started = TimeSource.Monotonic.markNow()
         try {
             val concurrency = preferences.concurrentConnectionsFlow.first().coerceIn(1, 8)
             lease = fileCachePool.acquire(client, task.fileId, task.gcid, task.totalBytes, task.fileName,
@@ -562,6 +581,12 @@ class PikoDownloadCoordinator(
             update(taskId) { it.copy(account = client.account, cachePath = entry.store.path, downloadedBytes = entry.store.heldBytes.value,
                 status = DownloadStatus.DOWNLOADING, errorMessage = null) }
             if (task.cachePath == null) entry.store.importPrefix(storage.downloadTarget(task.fileName))
+            val heldAtStart = entry.store.heldBytes.value
+            // 文件夹下载里的小文件成百上千，逐个记会把日志刷满，它们只进整批完成的那一行；失败照样逐个记
+            val logEach = task.batch == null || task.totalBytes >= BATCH_LOG_MIN_BYTES
+            if (logEach) PikoLog.d(TAG, "开始：${logFile(task.fileId, task.fileName)}，已有 $heldAtStart/${task.totalBytes} 字节，$concurrency 条连接" +
+                (if (task.leasedSource || LeasedFile.isLeased(task.fileId)) "，借出取流" else "") +
+                (limiter.bytesPerSecond?.let { "，限速 ${it / 1024} KiB/s" } ?: ""))
             coroutineScope {
                 // 分批提交范围，在占用连接之前等限速额度；播放读取不经过限速器。
                 for (range in downloadOrder(task.totalBytes)) {
@@ -589,15 +614,25 @@ class PikoDownloadCoordinator(
                 copyCachedFile(entry.store.path, target)
                 val destination = storage.commit(task.fileName, target)
                 fileCachePool.complete(lease, taskId)
+                val elapsed = started.elapsedNow().inWholeMilliseconds
+                if (logEach) PikoLog.i(TAG, "完成：${logFile(task.fileId, task.fileName)}，${task.totalBytes} 字节，本次下载 ${task.totalBytes - heldAtStart} 字节，" +
+                    "历时 $elapsed ms（${(task.totalBytes - heldAtStart) * 1000 / elapsed.coerceAtLeast(1) / 1024} KiB/s）")
                 update(taskId) { it.copy(status = DownloadStatus.COMPLETED, downloadedBytes = task.totalBytes,
                     speedBytesPerSec = 0L, destinationPath = destination, cachePath = null) }
+                task.batch?.let { batch ->
+                    val members = _tasks.value.values.filter { it.batch?.id == batch.id }
+                    if (members.all { it.status == DownloadStatus.COMPLETED }) {
+                        PikoLog.i(TAG, "整批完成：${members.size} 个文件，共 ${members.sumOf { it.totalBytes }} 字节")
+                    }
+                }
             }
         } catch (e: CancellationException) {
             update(taskId) { it.copy(status = if (it.status == DownloadStatus.PENDING) it.status else DownloadStatus.PAUSED,
                 downloadedBytes = lease?.entry?.store?.heldBytes?.value ?: it.downloadedBytes, speedBytesPerSec = 0L) }
             throw e
         } catch (e: Throwable) {
-            PikoLog.w(TAG, "下载失败：${logFile(task.fileId, task.fileName)}", e)
+            PikoLog.w(TAG, "下载失败：${logFile(task.fileId, task.fileName)}，已有 ${lease?.entry?.store?.heldBytes?.value ?: "?"}/${task.totalBytes} 字节，" +
+                "历时 ${started.elapsedNow().inWholeMilliseconds} ms${if (lease == null) "，未取得缓存" else ""}", e)
             update(taskId) { it.copy(status = if (belongsToCurrent(it)) DownloadStatus.FAILED else DownloadStatus.PAUSED, speedBytesPerSec = 0L,
                 downloadedBytes = lease?.entry?.store?.heldBytes?.value ?: it.downloadedBytes, errorMessage = e.message) }
         } finally {
@@ -659,6 +694,7 @@ class PikoDownloadCoordinator(
 
     private fun startSegment(task: DownloadTask) {
         val extractor = segmentDownloader ?: run {
+            PikoLog.w(TAG, "片段抽取失败：本平台没有抽取器")
             update(task.taskId) { it.copy(status = DownloadStatus.FAILED, errorMessage = "当前平台不支持分段抽取") }
             return
         }
@@ -690,6 +726,8 @@ class PikoDownloadCoordinator(
                 }.onSuccess { path ->
                     // 片段入队时不知道产物大小，totalBytes 一直是 0，列表会显示 0 B，完成后按实际文件补上
                     val size = runSuspendCatching { storage.existingLength(task.fileName) }.getOrDefault(0L)
+                    PikoLog.i(TAG, "片段抽取完成：${logFile(task.fileId, task.fileName)}，${task.startMs}–${task.endMs} ms，$size 字节" +
+                        "，读源${if (prepared == null) "用入队时的直链" else if (prepared.proxyUrl != null) "经本机代理" else "用新取的直链"}")
                     update(task.taskId) {
                         it.copy(
                             status = DownloadStatus.COMPLETED,
@@ -710,6 +748,8 @@ class PikoDownloadCoordinator(
     }
 
     fun pauseDownload(taskId: String) {
+        // 任务 ID 在多账号时带着账号名，日志里只写文件 ID
+        _tasks.value[taskId]?.let { PikoLog.d(TAG, "暂停：${logFile(it.fileId, it.fileName)}，${it.downloadedBytes}/${it.totalBytes} 字节") }
         jobs.value[taskId]?.cancel()
         update(taskId) { it.copy(status = DownloadStatus.PAUSED, speedBytesPerSec = 0L) }
     }
@@ -717,6 +757,7 @@ class PikoDownloadCoordinator(
     /** 把所有进行中的任务转为暂停。前台服务被系统叫停时用，之后可以逐个继续。 */
     fun pauseAll() {
         val ids = _tasks.value.values.filter { it.status == DownloadStatus.PENDING || it.status == DownloadStatus.DOWNLOADING }.map { it.taskId }
+        if (ids.isNotEmpty()) PikoLog.i(TAG, "全部暂停：${ids.size} 个任务")
         _tasks.update { tasks -> tasks + ids.mapNotNull { id -> tasks[id]?.let { id to it.copy(status = DownloadStatus.PAUSED, speedBytesPerSec = 0L) } } }
         ids.forEach { jobs.value[it]?.cancel() }
     }
@@ -799,6 +840,7 @@ class PikoDownloadCoordinator(
          * 只下一个又太慢：字幕、图片这类小文件的耗时几乎全在取直链上。
          */
         const val BATCH_PARALLEL = 3
+        const val BATCH_LOG_MIN_BYTES = 64L * 1024 * 1024
         private const val DOWNLOAD_WINDOW_BYTES = 4L * 1024 * 1024
         val json = Json { ignoreUnknownKeys = true }
         val taskListSerializer = ListSerializer(DownloadTask.serializer())

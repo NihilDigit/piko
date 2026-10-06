@@ -1,5 +1,6 @@
 package dev.piko.shared.data
 
+import dev.piko.shared.log.logFailure
 import io.github.nihildigit.pikpak.DriveTask
 import io.github.nihildigit.pikpak.TaskListResponse
 import io.github.nihildigit.pikpak.TaskPhase
@@ -57,6 +58,7 @@ class TaskRepository(
         }.onSuccess {
             // 新任务已经提交，旧记录删不掉只是多留一条，用户可以手动删，不算重新提交失败
             runSuspendCatching { client.deleteOfflineTasks(listOf(task.id), deleteFiles = false) }
+                .logFailure(TAG, "重新提交后删除旧离线任务 ${task.id} 失败")
         }
     }
 
@@ -67,7 +69,7 @@ class TaskRepository(
      */
     private suspend fun resubmitTarget(task: DriveTask): String =
         task.params["parent_folder_id"]?.takeIf { it.isNotEmpty() }
-            ?: driveRepository.getOrCreateMyPacksFolder().getOrNull()?.id.orEmpty()
+            ?: driveRepository.getOrCreateMyPacksFolder().logFailure(TAG, "取 My Packs 失败，重新提交到根目录").getOrNull()?.id.orEmpty()
 
     /** 只删任务记录。已完成任务的文件留在网盘里，未完成任务的占位文件由服务端一并清掉。 */
     suspend fun deleteTasks(taskIds: List<String>): Result<Unit> = withContext(Dispatchers.Default) {
@@ -80,6 +82,7 @@ class TaskRepository(
     }
 
     private companion object {
+        const val TAG = "Offline"
         val ALL_PHASES = listOf(TaskPhase.PENDING, TaskPhase.RUNNING, TaskPhase.COMPLETE, TaskPhase.ERROR)
             .joinToString(",")
     }

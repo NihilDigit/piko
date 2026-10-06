@@ -69,7 +69,8 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
         if (!context.packageManager.canRequestPackageInstalls()) {
             val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}"))
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            runCatching { context.startActivity(intent) }
+            PikoLog.i(TAG, "未授予安装未知应用，先去授权")
+            runCatching { context.startActivity(intent) }.onFailure { PikoLog.w(TAG, "打不开安装未知应用的授权页", it) }
             return
         }
         status = UpdateStatus.Downloading(update, 0f)
@@ -82,9 +83,13 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
             status = downloadFailed(e, update)
             return
         }
+        PikoLog.i(TAG, "更新包已下载并校验：${own.apk.name}，${file.length()} 字节")
         runCatching { install(file) }
             .onSuccess { status = UpdateStatus.Installing(update) }
-            .onFailure { status = UpdateStatus.Failed("无法启动安装", update) }
+            .onFailure {
+                PikoLog.w(TAG, "提交安装会话失败", it)
+                status = UpdateStatus.Failed("无法启动安装", update)
+            }
     }
 
     private suspend fun download(update: AndroidUpdate): File = withContext(Dispatchers.IO) {
@@ -131,6 +136,7 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
     }
 
     internal fun onInstallFailed(message: String) {
+        PikoLog.w(TAG, "系统安装未完成：$message")
         val update = (status as? UpdateStatus.Installing)?.update
         status = UpdateStatus.Failed("安装未完成", update)
         mutableMessages.tryEmit(message)
@@ -141,6 +147,7 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
             ?: release.asset("piko-${release.version}-universal.apk")
 
     private companion object {
+        const val TAG = "Update"
         const val UPDATE_DIR = "updates"
     }
 }

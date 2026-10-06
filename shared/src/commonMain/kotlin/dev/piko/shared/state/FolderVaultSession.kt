@@ -13,6 +13,7 @@ import dev.piko.shared.data.VaultStore
 import dev.piko.shared.data.VaultWrite
 import dev.piko.shared.data.isVaulted
 import dev.piko.shared.data.runSuspendCatching
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.log.reportFailure
 import io.github.nihildigit.pikpak.FileStat
@@ -37,6 +38,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import kotlin.time.Clock
+import kotlin.time.TimeSource
 
 private const val LARGE_FILE_MIN_BYTES = 50L * 1024 * 1024
 
@@ -143,6 +145,9 @@ class FolderVaultSession internal constructor(
             val trashed = mutableListOf<String>()
             val deleted = mutableMapOf<String, List<VaultEntry>>()
             val parents = mutableMapOf<String, String>()
+            val started = TimeSource.Monotonic.markNow()
+            // CID 取样失败或超时的文件数，条目照样写，只是少一份体检资料
+            var noCid = 0
             val result = runSuspendCatching {
                 val delete = !moveToTrash
                 val levels = walk(folder.id, until = { stopping }, parents = parents).map { (folderId, files) ->
@@ -151,6 +156,8 @@ class FolderVaultSession internal constructor(
                     }
                 }.filter { it.second.isNotEmpty() }
                 val total = levels.sumOf { it.second.size }
+                PikoLog.i(TAG, "开始归档：文件夹 ${folder.id}，${levels.size} 个文件夹里 $total 个文件，${levels.sumOf { l -> l.second.sumOf { it.sizeBytes } }} 字节，" +
+                    "${if (includeUnsourced) "含" else "不含"}无来源的${if (onlyLargeFiles) "，只归档大文件" else ""}，原文件${if (delete) "直接删除" else "移入回收站"}")
                 var done = 0
                 var prepared = 0
                 val progressLock = Mutex()
@@ -168,6 +175,7 @@ class FolderVaultSession internal constructor(
                                     prepared++
                                     progress = Progress(folder.name, done, total, prepared)
                                 }
+                                if (cid == null) progressLock.withLock { noCid++ }
                                 VaultEntry.create(file.name, file.sizeBytes, file.hash, file.sourceUrl, addedAt, cid)
                             } }.awaitAll()
                             operations.write(folderId, entries)
@@ -189,6 +197,9 @@ class FolderVaultSession internal constructor(
             }
             progress = null
             val stopped = stopping
+            PikoLog.i(TAG, "归档${if (result.isFailure) "中途失败" else if (stopped) "已停止" else "完成"}：文件夹 ${folder.id}，" +
+                "写成清单 ${reverts.size + deleted.size} 个文件夹，归档 ${result.getOrNull() ?: "?"} 个文件，CID 未取到 $noCid 个，" +
+                "历时 ${started.elapsedNow().inWholeMilliseconds} ms")
             operations.rememberTree(vaultTree(folder.id, reverts.keys + deleted.keys, parents))
             // 做完的几层记成一条改动，哪怕后面失败了：撤销得回已经归档的那些
             if (reverts.isNotEmpty() || deleted.isNotEmpty()) {
@@ -330,10 +341,13 @@ class FolderVaultSession internal constructor(
         restoreProgress = restoreProgress?.copy(stage = "正在检查恢复空间", total = total)
         val plan = planRestore(byFolder)
         val originals = plan.originals
+        PikoLog.i(TAG, "恢复归档：${byFolder.size} 个文件夹 $total 项，回收站里有原文件 ${originals.size} 项，" +
+            "需秒传 ${plan.neededBytes} 字节，剩余空间 ${plan.remainingBytes ?: "不限或未知"}")
         if (plan.remainingBytes != null && plan.neededBytes > plan.remainingBytes) {
             _messages.tryEmit("网盘空间不足，放不下这 $total 项")
             return
         }
+        val started = TimeSource.Monotonic.markNow()
         restoreProgress = restoreProgress?.copy(stage = "正在恢复到网盘")
         val lock = Mutex()
         var missing = 0
@@ -385,6 +399,8 @@ class FolderVaultSession internal constructor(
             } }.awaitAll()
         }
         val failed = total - created.size
+        PikoLog.i(TAG, "恢复归档${if (stopping) "已停止" else "结束"}：恢复 ${created.size}/$total 项，云端已无内容 $missing 项，" +
+            "其他失败 ${failed - missing} 项，改写清单 ${reverts.size}/${byFolder.size} 个文件夹，历时 ${started.elapsedNow().inWholeMilliseconds} ms")
         val summary = when {
             stopping -> if (created.isEmpty()) "已停止恢复" else "已停止，已恢复 ${created.size} 项"
             failed == 0 -> if (total == 1) "已恢复到网盘" else "已恢复 $total 项"
@@ -532,7 +548,8 @@ private class DriveFolderVaultOperations(private val drive: PikoDriveRepository)
         return ArchivedLevel(subfolders, entries)
     }
     override suspend fun trash() = drive.trashFiles().getOrThrow()
-    override suspend fun remainingBytes() = drive.getQuota().getOrNull()?.quota?.takeIf { it.limitBytes > 0 }?.remainingBytes
+    override suspend fun remainingBytes() =
+        drive.getQuota().logFailure("Vault", "查询剩余空间失败，按不限处理").getOrNull()?.quota?.takeIf { it.limitBytes > 0 }?.remainingBytes
     override suspend fun untrash(ids: List<String>) = drive.restore(ids).getOrThrow()
     override suspend fun rename(id: String, name: String) = drive.rename(id, name).getOrThrow()
     override suspend fun recreate(entry: VaultEntry, folderId: String) =

@@ -466,7 +466,7 @@ class ClipFeedSession(
             runCatching {
                 store.write(keyOf(folder.id), json.encodeToString(SavedFeed.serializer(), saved))
                 rememberFolder(store, folder)
-            }
+            }.onFailure { if (it !is CancellationException) PikoLog.w(TAG, "保存信息流队列失败", it) }
         }
     }
 
@@ -503,7 +503,7 @@ class ClipFeedSession(
 
     private suspend fun load(folderId: String): SavedFeed? = runCatching {
         cacheStore?.read(keyOf(folderId))?.let { json.decodeFromString(SavedFeed.serializer(), it) }
-    }.getOrNull()
+    }.onFailure { if (it !is CancellationException) PikoLog.w(TAG, "读不出存下的信息流队列，从头开始", it) }.getOrNull()
 
     // 根目录的 ID 是空串
     private fun keyOf(folderId: String) = "clip-feed-${folderId.ifEmpty { "root" }}"

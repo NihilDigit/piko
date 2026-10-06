@@ -1,5 +1,7 @@
 package dev.piko.shared.data
 
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFailure
 import io.github.nihildigit.pikpak.ResolvedFile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -45,12 +47,15 @@ class PreviewTempFolder(
         folderId = null
         val ids = findFolders().getOrElse { return Result.failure(it) }
         if (ids.isEmpty()) return Result.success(Unit)
-        driveRepo.delete(ids).onSuccess { driveRepo.requestRefresh() }
+        driveRepo.delete(ids).onSuccess {
+            PikoLog.d(TAG, "已清理 Piko-Temp（${ids.size} 个同名目录）")
+            driveRepo.requestRefresh()
+        }
     }
 
     /** 调用方的作用域结束之后仍要跑完的清理，例如面板关闭时。 */
     fun clearInBackground() {
-        scope.launch { clear() }
+        scope.launch { clear().logFailure(TAG, "清理 Piko-Temp 失败，留到下次登录时再清") }
     }
 
     // 按名字找而不是记住 id：上次运行建的目录 id 不在内存里。同名目录有多个时一并算上
@@ -60,6 +65,7 @@ class PreviewTempFolder(
         }
 
     companion object {
+        private const val TAG = "PikoTemp"
         const val FOLDER_NAME = "Piko-Temp"
     }
 }

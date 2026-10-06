@@ -9,6 +9,7 @@ import dev.piko.download.DownloadBatch
 import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
 import dev.piko.shared.download.FolderListing
+import dev.piko.shared.log.logFailure
 import dev.piko.shared.data.OfflinePackJob
 import dev.piko.shared.data.OfflinePackStage
 import dev.piko.shared.data.OfflinePackTracker
@@ -615,7 +616,7 @@ class TransfersState(
     /** 清理失败的重做清理，下载失败的以原链接重新离线。 */
     fun retryPack(taskId: String) {
         scope.launch {
-            packTracker.retry(taskId).onFailure { _messages.tryEmit("重试失败：${it.message}") }
+            packTracker.retry(taskId).logFailure("OfflinePack", "重试整包离线任务 $taskId 失败").onFailure { _messages.tryEmit("重试失败：${it.message}") }
         }
     }
 

@@ -1,5 +1,7 @@
 package dev.piko.shared.data
 
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFailure
 import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.ResolvedFile
@@ -236,7 +238,7 @@ class VaultStore(
     private suspend fun write(folderId: String, edit: VaultEdit): Result<VaultWrite> =
         lockOf(folderId).withLock {
             runSuspendCatching {
-                repeat(MAX_ATTEMPTS) {
+                repeat(MAX_ATTEMPTS) { attempt ->
                     val listing = io.list(folderId)
                     val base = winner(listing)
                     val before = base?.let { entriesOf(it.file) }.orEmpty()
@@ -258,12 +260,15 @@ class VaultStore(
                             looksLikeManifest(file) && file.id != id && (versionOf(file)?.let { it.first < version } ?: true)
                         }
                         if (stale.isNotEmpty()) io.delete(stale.map { it.id })
+                        PikoLog.i(TAG, "写成归档清单：文件夹 $folderId，v$version，条目 ${before.size} → ${after.size}，" +
+                            "第 ${attempt + 1} 次尝试，清掉旧清单 ${stale.size} 份")
                         return@runSuspendCatching VaultWrite(before, after)
                     }
+                    PikoLog.w(TAG, "归档清单写入冲突：文件夹 $folderId，v$version 输给同版本的另一份，第 ${attempt + 1}/$MAX_ATTEMPTS 次，重读重写")
                     io.delete(listOf(id))
                 }
                 error("清单写入冲突，重试 $MAX_ATTEMPTS 次仍未写成")
-            }
+            }.logFailure(TAG, "写归档清单失败：文件夹 $folderId")
         }
 
     /** 可读文件与来源链接先落盘，原文件之后才能处置。每个来源只保存一份链接。 */
@@ -309,6 +314,7 @@ class VaultStore(
     private class Candidate(val file: FileStat, val version: Int, val token: String)
 
     companion object {
+        private const val TAG = "Vault"
         private const val PREFIX = ".piko-vault-"
         private const val SUFFIX = ".json"
         private const val MAX_ATTEMPTS = 5

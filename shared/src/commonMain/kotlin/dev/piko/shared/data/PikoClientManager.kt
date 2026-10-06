@@ -343,7 +343,7 @@ class PikoClientManager(
 
     /** 登录前本地凭据的样子，不含令牌本身：会话在不在、还剩多久，有没有刷新令牌与保存的密码。 */
     private suspend fun credentialState(account: String, hasPassword: Boolean): String {
-        val session = runSuspendCatching { sessionStore.load(account) }.getOrNull()
+        val session = runSuspendCatching { sessionStore.load(account) }.logFailure(TAG, "读取本地会话失败").getOrNull()
         val sessionText = if (session == null) {
             "无本地会话"
         } else {

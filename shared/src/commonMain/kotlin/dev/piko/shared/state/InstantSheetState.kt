@@ -535,8 +535,14 @@ class InstantSheetState private constructor(
                         // 提交前再查一次：解析时查到的余量可能已经过时，而离线一旦提交就是整包落盘。
                         // 放不下时 savePlan 随 remainingBytes 变为 lacksSpace，保存栏换成空间不足的说明
                         val remaining = refreshRemainingBytes()
-                        if (remaining != null && plan.packBytes > remaining) return@launch
-                        if (shared.account.value.offlineLeft == 0) return@launch
+                        if (remaining != null && plan.packBytes > remaining) {
+                            PikoLog.i(TAG, "空间不足，不提交整包离线：需要 ${plan.packBytes} 字节，剩余 $remaining 字节")
+                            return@launch
+                        }
+                        if (shared.account.value.offlineLeft == 0) {
+                            PikoLog.i(TAG, "今日离线次数已用完，不提交整包离线")
+                            return@launch
+                        }
                         packSave(targetBread, toSave)
                             .onSuccess { _outcomes.emit(InstantSaveOutcome.OfflineTaskCreated(targetBread)) }
                     }
@@ -560,6 +566,7 @@ class InstantSheetState private constructor(
                 val targetBread = target ?: resolveTarget()
                 val remaining = refreshRemainingBytes()
                 if (remaining != null && toSave.sumOf { it.file.size } > remaining) {
+                    PikoLog.i(TAG, "空间不足，不秒传：需要 ${toSave.sumOf { it.file.size }} 字节，剩余 $remaining 字节")
                     errorMessage = "网盘空间不足，无法保存所选文件"
                     return@launch
                 }
@@ -696,7 +703,7 @@ class InstantSheetState private constructor(
         driveRepo.getQuota().onSuccess { response ->
             remainingBytes = response.quota.takeIf { it.limitBytes > 0 }?.remainingBytes
             shared.updateAccount(driveRepo.isFreeAccount(), response)
-        }
+        }.logFailure(TAG, "查询网盘余量失败，沿用上次的 $remainingBytes 字节")
         return remainingBytes
     }
 
@@ -734,8 +741,10 @@ class InstantSheetState private constructor(
             targetNotice = null
             return folder
         }
+        PikoLog.i(TAG, "保存目标 ${folder.id} 已不存在，改存 My Packs")
         targetNotice = "当前目录已不存在，改存 My Packs"
-        return driveRepo.getOrCreateMyPacksFolder().getOrDefault(PikoPathBreadcrumb("", "My Packs"))
+        return driveRepo.getOrCreateMyPacksFolder().logFailure(TAG, "取 My Packs 失败，改存根目录")
+            .getOrDefault(PikoPathBreadcrumb("", "My Packs"))
     }
 
     private suspend fun instantSave(

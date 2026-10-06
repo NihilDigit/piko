@@ -5,6 +5,8 @@ import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.data.LeasedFile
 import dev.piko.shared.data.VaultEntry
+import dev.piko.shared.log.logFailure
+import dev.piko.shared.log.logFile
 import dev.piko.shared.log.logRangeAttempt
 import io.github.nihildigit.pikpak.leaseDetail
 import dev.piko.shared.media.proxy.PikPakByteSource
@@ -170,6 +172,7 @@ class PikoMediaRepository(
                 // 本机下了一部分的原画不费流量，照样先用，画质上限是为了省流量
                 if (preferredResolution.isNullOrBlank() || preferredResolution == ORIGINAL_QUALITY) {
                     partialSource(client, fileId)?.let { (task, source) ->
+                        PikoLog.d(TAG, "取流用本机未下完的下载缓存：${logFile(fileId, task.fileName)}，已有 ${task.downloadedBytes}/${task.totalBytes} 字节")
                         val info = PlayableMediaInfo(fileId, task.displayName.substringAfterLast('/'), task.gcid,
                             currentUrl = "", durationSeconds = 0, availableVariants = emptyList(),
                             currentResolution = ORIGINAL_QUALITY, sizeBytes = task.totalBytes)
@@ -301,7 +304,8 @@ class PikoMediaRepository(
                     hasTranscode = detail.medias.any { !it.isOrigin && it.mediaName == CLIP_RESOLUTION && it.url != null },
                     durationMs = detail.params["duration"]?.toDoubleOrNull()?.let { (it * 1000).toLong() },
                 )
-            }.getOrDefault(ClipProbe(hasTranscode = false, durationMs = null))
+            }.onFailure { PikoLog.d(TAG, "信息流查详情失败，按无转码处理：${logFile(fileId, "")}，${it::class.simpleName}：${it.message}") }
+                .getOrDefault(ClipProbe(hasTranscode = false, durationMs = null))
         }
 
     /**
@@ -335,6 +339,7 @@ class PikoMediaRepository(
         val source = openByteSource(client, detail, transcode, blockStore = store, leased = leased) ?: return null
         // 长度是 188 的整数倍是 TS 的样子；不是 TS 截出来就放不了，退回原画
         if (source.size % TS_PACKET_BYTES != 0L) {
+            PikoLog.d(TAG, "转码流不是 TS（${source.size} 字节），片段退回原画：${logFile(detail.id, detail.name)}")
             source.close()
             return null
         }
@@ -437,7 +442,7 @@ class PikoMediaRepository(
                 val detail = detailOf(client, fileId)
                 val resolved = detail.resolveVariant(VariantPreference.Original)
                 openProxyStream(client, detail, resolved, leased = LeasedFile.isLeased(fileId))
-            }.getOrNull()
+            }.logFailure(TAG, "外挂字幕取流失败：${logFile(fileId, "")}").getOrNull()
         }
 
     private suspend fun isPlayHistorySynced(): Boolean = preferences?.syncPlayHistoryFlow?.first() ?: false
@@ -452,7 +457,7 @@ class PikoMediaRepository(
         withContext(Dispatchers.Default) {
             runSuspendCatching {
                 if (isPlayHistorySynced()) client.reportPlay(fileId, positionMillis / 1000, durationMillis / 1000)
-            }
+            }.logFailure(TAG, "上报播放历史失败：${logFile(fileId, "")}")
         }
     }
 
@@ -470,7 +475,7 @@ class PikoMediaRepository(
                 val seconds = event.playSeconds ?: return@runSuspendCatching null
                 val duration = event.playDuration
                 if (duration != null && duration > 0 && seconds * 1000 >= duration * 1000 - CLOUD_NEAR_END_MILLIS) null else seconds * 1000
-            }.getOrNull()
+            }.logFailure(TAG, "读取云端播放历史失败，退回本机续播记录").getOrNull()
         }
     }
 

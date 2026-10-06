@@ -3,6 +3,7 @@ package dev.piko.shared.data
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.ResolvedFile
@@ -154,7 +155,8 @@ class DriveChangeJournal internal constructor(
                 if (change.trashOnRevert.isNotEmpty()) driveRepo.trash(change.trashOnRevert).getOrThrow()
             }
         }
-        result.logFailure(TAG, "撤销失败")
+        val kind = change::class.simpleName
+        result.onSuccess { PikoLog.i(TAG, "已撤销：$kind") }.logFailure(TAG, "撤销失败：$kind")
         driveRepo.requestRefresh()
         _events.emit(
             if (result.isSuccess) Event("已撤销", null, undone = change) else Event("撤销失败，可能已被别处改动", null),

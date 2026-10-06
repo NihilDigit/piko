@@ -1,5 +1,6 @@
 package dev.piko.shared.update
 
+import dev.piko.shared.log.PikoLog
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -30,6 +31,7 @@ data class ReleaseAsset(
         get() = listOf(url) + listOfNotNull(url.takeIf { it.startsWith(GITHUB_PREFIX) }?.let { GHFAST_PREFIX + it })
 }
 
+private const val TAG = "Update"
 private const val GITHUB_PREFIX = "https://github.com/"
 private const val GHFAST_PREFIX = "https://ghfast.top/"
 
@@ -83,12 +85,13 @@ class GithubReleaseClient(
     /** 逐个来源地取，都失败时抛最后一个的异常，前面的挂在 suppressed 上，日志里看得到每一处为什么失败。 */
     private suspend fun fetchLatest(): LatestRelease? {
         var failure: Throwable? = null
-        for (url in latestReleaseUrls) {
+        for ((index, url) in latestReleaseUrls.withIndex()) {
             try {
-                return fetchLatest(url)
+                return fetchLatest(url).also { if (index > 0) PikoLog.i(TAG, "取最新版本：前 $index 个来源失败，第 ${index + 1} 个取到") }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
+                PikoLog.d(TAG, "取最新版本：第 ${index + 1} 个来源失败，${e::class.simpleName}：${e.message}")
                 failure = e.also { current -> failure?.let(current::addSuppressed) }
             }
         }
@@ -135,8 +138,9 @@ class GithubReleaseClient(
         onProgress: (Float) -> Unit,
     ) {
         var failure: Throwable? = null
-        for (url in asset.urls) {
+        for ((index, url) in asset.urls.withIndex()) {
             var written = 0L
+            if (index > 0) PikoLog.i(TAG, "下载更新：第 $index 个地址未取到，换第 ${index + 1} 个")
             try {
                 http.prepareGet(url) { header("User-Agent", userAgent) }.execute { response ->
                     check(response.status.isSuccess()) { "HTTP ${response.status.value} ($url)" }

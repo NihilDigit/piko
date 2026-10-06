@@ -5,6 +5,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import io.github.nihildigit.pikpak.CreatedShare
 import io.github.nihildigit.pikpak.FileStat
@@ -66,9 +67,15 @@ class ShareCreateState(
             SharePassCodeMode.Custom -> customPassCode
         }
         scope.launch {
+            // 分享 ID 就是链接的一部分，公开分享凭它即可打开，不进日志
+            val summary = "${files.size} 项（文件夹 ${files.count { it.isFolder }} 个），提取码${passCodeMode.label}，" +
+                "有效期 ${if (expirationDays < 0) "永久" else "$expirationDays 天"}"
             driveRepo.createShare(files.map { it.id }, passCode, expirationDays)
-                .logFailure(TAG, "创建分享失败")
-                .onSuccess { created = it }
+                .logFailure(TAG, "创建分享失败：$summary，首项 ${files.first().id}")
+                .onSuccess {
+                    PikoLog.i(TAG, "已创建分享：$summary")
+                    created = it
+                }
                 .onFailure { error = "创建失败，请重试" }
             isCreating = false
         }
