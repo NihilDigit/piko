@@ -11,6 +11,7 @@ import androidx.compose.ui.unit.dp
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.data.FolderUsage
 import dev.piko.shared.state.DriveItemName
+import dev.piko.ui.components.ActionTier
 import dev.piko.ui.components.FileTypeIcon
 import dev.piko.ui.components.ItemDetailsSheet
 import dev.piko.ui.components.SheetAction
@@ -95,6 +96,11 @@ internal class FileActionHandlers(
     /** 没有可切换的预览（防窥关闭或没有缩略图）时为 null。 */
     val previewHidden: Boolean?,
     val togglePreview: () -> Unit,
+    /**
+     * 放进应用内剪贴板，参数为 true 是剪切。移动端为 null：没有粘贴的入口，见 [DriveActions.quickRow]。
+     * 不为 null 即按桌面排图标行。
+     */
+    val putOnClipboard: ((cut: Boolean) -> Unit)?,
 )
 
 /**
@@ -103,14 +109,25 @@ internal class FileActionHandlers(
  */
 internal fun fileActions(file: FileStat, commands: ItemCommands, on: FileActionHandlers): List<SheetAction> = buildList {
     val video = !file.isFolder && file.isPlayableVideo()
-    // 文件夹连同子文件夹整个下载；单个视频点了先选画质，各档大小提前查
-    if (commands.download) add(DriveActions.download(onPrepare = on.prepareQualities.takeIf { video }, onClick = on.download))
-    if (commands.share) add(DriveActions.share(on.share))
-    add(DriveActions.star(file.isStarred, on.toggleStar))
-    if (commands.rename) add(DriveActions.rename(on.rename))
+    val desktop = on.putOnClipboard != null
+    val putOnClipboard = on.putOnClipboard?.takeIf { commands.cutCopy }
+    addAll(
+        DriveActions.quickRow(
+            desktop = desktop,
+            cut = putOnClipboard?.let { put -> DriveActions.cut { put(true) } },
+            copy = putOnClipboard?.let { put -> DriveActions.copy { put(false) } },
+            // 文件夹连同子文件夹整个下载；单个视频点了先选画质，各档大小提前查
+            download = DriveActions.download(onPrepare = on.prepareQualities.takeIf { video }, onClick = on.download).takeIf { commands.download },
+            share = DriveActions.share(on.share).takeIf { commands.share },
+            rename = DriveActions.rename(on.rename).takeIf { commands.rename },
+            star = DriveActions.star(file.isStarred, on.toggleStar),
+        ),
+    )
     if (file.isFolder) on.openInNewTab?.let { add(DriveActions.openInNewTab(it)) }
     if (video) on.openInExternalPlayer?.let { add(DriveActions.openInExternalPlayer(it)) }
     if (commands.extract) add(DriveActions.extract(on.extract))
+    // 桌面的星标在列表里，排在打开方式之后：放在它们之前的话整理组先出现，整组挪到打开方式之上
+    if (desktop) add(DriveActions.star(file.isStarred, on.toggleStar, tier = ActionTier.Standard))
     if (commands.moveCopyTo) {
         add(DriveActions.moveTo(on.move))
         add(DriveActions.copyTo(on.copy))

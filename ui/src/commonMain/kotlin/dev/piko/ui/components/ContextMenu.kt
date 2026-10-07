@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.foundation.layout.height
@@ -238,7 +240,7 @@ private fun placeAlong(pointer: Int, size: Int, window: Int): Int = when {
  */
 @Composable
 private fun ActionMenu(actions: List<SheetAction>, positionProvider: DropdownMenuPopupPositionProvider, onDismiss: () -> Unit) {
-    val layout = layoutActions(actions, foldMore = false)
+    val layout = layoutActions(actions, foldMore = false, quickLimit = MenuQuickLimit)
     val firstItem = remember { FocusRequester() }
     DropdownMenuPopup(
         expanded = true,
@@ -302,26 +304,32 @@ private fun MenuRows(layout: ActionLayout, firstItem: FocusRequester, onDismiss:
     }
 }
 
-/** 顶上一排纯图标，名字在悬停提示里，照 HIG 菜单顶部的小号图标行（四项、只有图标）。 */
+/**
+ * 顶上一排纯图标，名字在悬停提示里，照 Win11 资源管理器与 HIG 菜单顶部的小号图标行。
+ * 按钮看上去是 40dp，最小触控区却按 48dp 占位，五个要 240dp，排不进 224dp 的菜单，末一个被挤成 24dp（ContextMenuTest 量过）。
+ * 这里取消 48dp 的占位，按钮与下面 40dp 高的菜单项同一尺度；不加宽菜单，各处菜单的宽度才一致。
+ */
 @Composable
 private fun MenuIconRow(actions: List<SheetAction>, firstItem: FocusRequester?, onDismiss: () -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
         horizontalArrangement = Arrangement.SpaceEvenly,
     ) {
-        actions.forEachIndexed { index, action ->
-            TooltipIconButton(
-                icon = action.icon,
-                label = action.label,
-                onClick = {
-                    onDismiss()
-                    action.onClick()
-                },
-                modifier = Modifier
-                    .prepareOnPointer(action)
-                    .then(if (index == 0 && firstItem != null) Modifier.focusRequester(firstItem) else Modifier),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+        CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp.Unspecified) {
+            actions.forEachIndexed { index, action ->
+                TooltipIconButton(
+                    icon = action.icon,
+                    label = action.label,
+                    onClick = {
+                        onDismiss()
+                        action.onClick()
+                    },
+                    modifier = Modifier
+                        .prepareOnPointer(action)
+                        .then(if (index == 0 && firstItem != null) Modifier.focusRequester(firstItem) else Modifier),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }

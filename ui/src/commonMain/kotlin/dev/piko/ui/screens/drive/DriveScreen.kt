@@ -892,14 +892,27 @@ fun DriveScreen(
         add(DriveActions.extractEntries { extractFromArchive(files) })
     }
 
+    // 剪切、复制与 Ctrl+X、Ctrl+C 走同一处。只有桌面给：移动端没有粘贴的入口（命令栏与空白处的右键菜单）
+    fun clipboardActions(files: List<FileStat>): ((Boolean) -> Unit)? =
+        if (desktop) ({ cut -> state.putOnClipboard(files.map { it.id }, cut) }) else null
+
     // 选中的几项一起的操作
     fun selectionActions(files: List<FileStat>, commands: ItemCommands): List<SheetAction> = buildList {
         val ids = files.map { it.id }
         val settled = files.filterNot { it.isUploading || it.isVaulted }
-        if (commands.download) add(DriveActions.download { download(files.filterNot { it.isUploading }) })
-        // 按列表顺序：服务端取第一项的名字作分享标题
-        if (commands.share) add(DriveActions.share { shareTargets = settled })
-        if (commands.rename) add(DriveActions.batchRename { batchRenameTargets = settled })
+        val putOnClipboard = clipboardActions(files)?.takeIf { commands.cutCopy }
+        addAll(
+            DriveActions.quickRow(
+                desktop = desktop,
+                cut = putOnClipboard?.let { put -> DriveActions.cut { put(true) } },
+                copy = putOnClipboard?.let { put -> DriveActions.copy { put(false) } },
+                download = DriveActions.download { download(files.filterNot { it.isUploading }) }.takeIf { commands.download },
+                // 按列表顺序：服务端取第一项的名字作分享标题
+                share = DriveActions.share { shareTargets = settled }.takeIf { commands.share },
+                rename = DriveActions.batchRename { batchRenameTargets = settled }.takeIf { commands.rename },
+                star = null,
+            ),
+        )
         if (commands.rename && settled.any { !it.isFolder && hasAvCode(it.name) }) add(DriveActions.canonicalName { avNamingTargets = settled })
         files.filter { it.isVaulted }.takeIf { it.isNotEmpty() }?.let { vaulted ->
             add(DriveActions.restoreFromVault {
@@ -975,6 +988,7 @@ fun DriveScreen(
             unvault = if (library == null && file.id in vaultedFolders) ({ restoreVaultTarget = file }) else null,
             previewHidden = if (isSpoilerBlurEnabled && file.thumbnailLink.isNotEmpty()) file.id !in state.revealedFileIds else null,
             togglePreview = { state.toggleSpoiler(file.id) },
+            putOnClipboard = clipboardActions(listOf(file)),
         )
         val canonicalName = listOfNotNull(
             // 文件夹整理的是它的子树，要在网盘里它所在的地方做，库里不给
@@ -1248,9 +1262,10 @@ fun DriveScreen(
             // 宽窗口的搜索框常驻，取得焦点即可；窄屏点开搜索栏
             primary && event.key == Key.F -> if (pathInTopBar) searchFocusRequests++ else isSearchOpen = true
             // 剪切、复制、粘贴，照资源管理器：换个目录粘贴，剪切的即移过去
-            primary && event.key == Key.X && commandTargets.isNotEmpty() && !inTrash ->
+            // 与右键菜单的剪切、复制同一条规则（itemCommands 的 cutCopy）：压缩包里与上传中的条目不在网盘里，粘贴不了
+            primary && event.key == Key.X && itemCommands(commandPlace(), commandTargets).cutCopy ->
                 state.putOnClipboard(commandTargets.map { it.id }, cut = true)
-            primary && event.key == Key.C && commandTargets.isNotEmpty() && !inTrash ->
+            primary && event.key == Key.C && itemCommands(commandPlace(), commandTargets).cutCopy ->
                 state.putOnClipboard(commandTargets.map { it.id }, cut = false)
             primary && event.key == Key.V && clipboard != null && !state.isVirtualPlace -> state.paste()
             // 标签：新建停在眼前的位置，关掉活动的那个，Ctrl+Tab 与 Ctrl+PageDown/PageUp 前后切换，与浏览器相同

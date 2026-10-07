@@ -13,6 +13,7 @@ import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material.icons.outlined.FileCopy
+import androidx.compose.material.icons.outlined.FolderCopy
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Inventory2
@@ -24,6 +25,7 @@ import androidx.compose.material.icons.outlined.RestoreFromTrash
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material.icons.outlined.Tab
+import androidx.compose.material.icons.outlined.Timelapse
 import androidx.compose.material.icons.outlined.Unarchive
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
@@ -40,8 +42,7 @@ import dev.piko.ui.components.SheetAction
  * 只是确认、就地改名或直接执行的不加。「下载」不加：只有文件时直接下，有视频时弹出的画质对话框已选好默认的一档，
  * 一次确认即下，还可以设成不再弹；同一项的名字也不该随选中的是不是视频而变。
  *
- * 分档见 [ActionTier]：图标行是下载、分享、星标、重命名，按这个先后；常驻的是移动、复制与各类条目自己的
- * 打开方式；其余收进「更多」。
+ * 分档见 [ActionTier]：图标行按平台排，见 [quickRow]；常驻的是移动、复制与各类条目自己的打开方式；其余收进「更多」。
  */
 internal object DriveActions {
     /** 点了经 DownloadLauncher 定画质，见那里。[onPrepare] 给单个视频提前查各档大小。 */
@@ -59,13 +60,36 @@ internal object DriveActions {
         SheetAction(Icons.Outlined.Share, "分享", onClick, group = ActionGroup.Open, tier = ActionTier.Quick)
 
     // 图标画的是现状，与信息流的星标按钮一致：已加星标时实心，未加时描边
-    fun star(starred: Boolean, onClick: () -> Unit) = SheetAction(
+    fun star(starred: Boolean, onClick: () -> Unit, tier: ActionTier = ActionTier.Quick) = SheetAction(
         icon = if (starred) Icons.Filled.Star else Icons.Outlined.StarOutline,
         label = if (starred) "取消星标" else "添加星标",
         onClick = onClick,
         group = ActionGroup.Organize,
-        tier = ActionTier.Quick,
+        tier = tier,
     )
+
+    // 剪切与复制只放进应用内剪贴板，粘贴在命令栏与空白处的右键菜单里，与 Ctrl+X、Ctrl+C 同一处（DriveScreenState.putOnClipboard）
+    fun cut(onClick: () -> Unit) =
+        SheetAction(Icons.Outlined.ContentCut, "剪切", onClick, group = ActionGroup.Organize, tier = ActionTier.Quick)
+
+    fun copy(onClick: () -> Unit) =
+        SheetAction(Icons.Outlined.ContentCopy, "复制", onClick, group = ActionGroup.Organize, tier = ActionTier.Quick)
+
+    /**
+     * 图标行的几样，按平台排，为 null 的不给。桌面照 Win11 资源管理器右键菜单顶上那一排：剪切、复制、重命名、分享、下载；
+     * 星标不在其中，由调用方放进整理组的列表：它是开关，列表里写得出「添加星标」「取消星标」，菜单的图标行只有图标。
+     * 移动端是下载、分享、星标、重命名，没有剪切与复制：粘贴只在命令栏与空白处的右键菜单里，移动端没有这两处。
+     */
+    fun quickRow(
+        desktop: Boolean,
+        cut: SheetAction?,
+        copy: SheetAction?,
+        download: SheetAction?,
+        share: SheetAction?,
+        rename: SheetAction?,
+        star: SheetAction?,
+    ): List<SheetAction> =
+        if (desktop) listOfNotNull(cut, copy, rename, share, download) else listOfNotNull(download, share, star, rename)
 
     fun rename(onClick: () -> Unit) =
         SheetAction(Icons.Outlined.DriveFileRenameOutline, "重命名", onClick, group = ActionGroup.Organize, tier = ActionTier.Quick)
@@ -79,7 +103,8 @@ internal object DriveActions {
 
     fun moveTo(onClick: () -> Unit) = SheetAction(Icons.Outlined.DriveFileMove, "移动到…", onClick, group = ActionGroup.Organize)
 
-    fun copyTo(onClick: () -> Unit) = SheetAction(Icons.Outlined.ContentCopy, "复制到…", onClick, group = ActionGroup.Organize)
+    // 叠放的文件夹，与「移动到…」的文件夹箭头成对；ContentCopy 留给放进剪贴板的「复制」，同在一个菜单里只看图标分不清
+    fun copyTo(onClick: () -> Unit) = SheetAction(Icons.Outlined.FolderCopy, "复制到…", onClick, group = ActionGroup.Organize)
 
     // 开着的样子用实心图钉，与侧边栏里固定的文件夹一致
     fun pin(pinned: Boolean, onClick: () -> Unit) = SheetAction(
@@ -103,8 +128,9 @@ internal object DriveActions {
 
     fun revealInDrive(onClick: () -> Unit) = SheetAction(Icons.Outlined.FolderOpen, "在网盘中显示", onClick, group = ActionGroup.Open)
 
+    // 圆盘里的一角，取「时间轴上的一段」。原用 ContentCut，与桌面菜单图标行的「剪切」同形
     fun downloadSegment(onClick: () -> Unit, onPrepare: (() -> Unit)?) = SheetAction(
-        Icons.Outlined.ContentCut,
+        Icons.Outlined.Timelapse,
         "下载指定段落…",
         onClick,
         group = ActionGroup.Open,

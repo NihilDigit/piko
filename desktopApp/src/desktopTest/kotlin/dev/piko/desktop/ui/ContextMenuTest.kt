@@ -39,7 +39,9 @@ import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.theme.PikoTheme
 import java.io.File
 import kotlin.test.Test
+import kotlin.math.abs
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * 鼠标点选的两条约定：右键只弹菜单、不同时点开条目；按住主修饰键或 Shift 点选只选中、不点开。
@@ -155,6 +157,34 @@ class ContextMenuTest {
         waitForIdle()
         assertEquals(1, selects)
         onNodeWithText("下载").assertDoesNotExist()
+    }
+
+    /**
+     * 网盘的菜单图标行有五个（剪切、复制、重命名、分享、下载）。菜单定宽，Row 放不下时末尾的按钮被挤窄或挤出边，
+     * 不报错，只在这里看得出：五个按钮要一样宽、互不重叠，且都在菜单列表项的左右边界之内。
+     */
+    @Test
+    fun `five icons fit the menu width`() = runComposeUiTest {
+        val labels = listOf("剪切", "复制", "重命名", "分享", "下载")
+        setContent {
+            CompositionLocalProvider(LocalPikoPlatform provides platform) { PikoTheme {
+                ContextMenuArea(actions = {
+                    labels.map { SheetAction(Icons.Outlined.Download, it, {}, tier = ActionTier.Quick) } +
+                        listOf("移动到", "复制到", "属性").map { SheetAction(Icons.Outlined.Download, it, {}) }
+                }) {
+                    FileListItem(headline = "a.mkv", leading = { Icon(Icons.Outlined.Folder, null) }, onClick = {}, onMoreClick = {}, modifier = Modifier)
+                }
+            } }
+        }
+        onNodeWithText("a.mkv").performMouseInput { rightClick(center) }
+        waitForIdle()
+        // 合并后的节点是整个按钮，量的是按钮而不是里面 24dp 的图标
+        val row = onNodeWithText("移动到").fetchSemanticsNode().boundsInWindow
+        val icons = labels.map { onNodeWithContentDescription(it).fetchSemanticsNode().boundsInWindow }
+        val widths = icons.map { it.width }
+        assertTrue(widths.all { abs(it - widths.first()) < 0.5f }, "图标宽度不一：$widths")
+        icons.zipWithNext().forEach { (a, b) -> assertTrue(a.right <= b.left, "图标重叠：$a $b") }
+        assertTrue(icons.first().left >= row.left && icons.last().right <= row.right, "超出菜单：$icons 列表项 $row")
     }
 
     private val sevenAndMore = listOf(

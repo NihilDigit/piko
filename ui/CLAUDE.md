@@ -123,8 +123,8 @@ TopAppBar 先量动作、标题拿剩下的，桌面窄窗口加上窗口按钮�
 列表一律用按行对齐的 `LazyVerticalGrid`（`PikoItemGrid`），不用瀑布流：瀑布流按最矮的一栏放，顺序会在各栏间跳。每页把一项的操作写成一个
 `actionsFor`，面板与菜单都读它（网盘页是 `DriveScreen` 的 `itemActions`）；新列表照做。
 面板与菜单怎么摆由 `components/ActionLayout.kt` 的 `layoutActions` 统一定，两端一套：危险项（`destructive`）垫底、错误色，「属性」
-（`ActionGroup.Properties`）在它之前，各自成组；其余按 `SheetAction.tier` 分三档，顶上一排图标（至多 4 个；面板是图标加
-`shortLabel`，菜单是纯图标、名字在悬停提示里）、常驻列表、「更多」，列表按 `group` 一组一道分隔。非危险项连同属性不超过 6 项时
+（`ActionGroup.Properties`）在它之前，各自成组；其余按 `SheetAction.tier` 分三档，顶上一排图标（面板是图标加
+`shortLabel`、至多 4 个，菜单是纯图标、名字在悬停提示里、至多 5 个，见 `layoutActions` 的 `quickLimit`）、常驻列表、「更多」，列表按 `group` 一组一道分隔。非危险项连同属性不超过 6 项时
 不分档、全部平铺，「更多」里只有一项时就地放进列表。「更多」只在面板里有，是列表末尾一行、点开就地展开；右键菜单不收
 （`layoutActions(foldMore = false)`），这些项按各自的组并进列表。两者不同在空间：菜单只在桌面上，窗口放得下一整列，
 收起来只是多点一下；面板在手机上一屏放不下，收起用得少的才不用滚。菜单长过窗口时在菜单里滚动。原先菜单的「更多」是原地换上的一页，
