@@ -168,15 +168,6 @@ class InstantSheetState private constructor(
     var input by mutableStateOf(initialMagnet)
         private set
 
-    /**
-     * 输入框是否展开。外部分享进来的磁力链已经在用户手上，输入框只是让他把同一件事
-     * 再确认一遍，所以先收起；手动粘贴的链解析成功后同样收起，把高度让给文件列表。
-     * 解析失败时再放出来，否则他既看不到那串链接，也没法改、没法重试。
-     * 成功后不给重新展开的入口：换一条链关掉面板重开即可。
-     */
-    var isInputVisible by mutableStateOf(initialMagnet.isBlank())
-        private set
-
     var isResolving by mutableStateOf(false)
         private set
 
@@ -190,6 +181,16 @@ class InstantSheetState private constructor(
         private set
     var selectedIndices by mutableStateOf<Set<Int>>(emptySet())
         private set
+
+    // 解析后的默认勾选之外，人自己勾过或取消过。换一次解析结果就清掉
+    private var selectionPicked by mutableStateOf(false)
+
+    /**
+     * 人亲手挑过、还勾着要保存的文件，批量时看各行。解析后的默认勾选不算：同一条链再粘一次就是同样的勾选，
+     * 丢了不可惜；挑过的丢了要重新挑。全部取消了的也不算，没有要保存的东西。
+     */
+    val hasPickedFiles: Boolean
+        get() = (selectionPicked && selectedIndices.isNotEmpty()) || batch?.rows?.any { it.state.hasPickedFiles } == true
 
     /** 解析或保存失败的原因，下一次解析开始时清空。 */
     var errorMessage by mutableStateOf<String?>(null)
@@ -490,9 +491,8 @@ class InstantSheetState private constructor(
         scope.launch { fetchTitles() }
         if (initialMagnet.isNotBlank() && !startBatchIfMany()) {
             if (normalizeMagnet(initialMagnet) == null) {
-                // 外部唤起的链不合法时自动解析不会发生，而输入框又是收起的，不兜住就是一个空面板
+                // 外部唤起的链不合法时自动解析不会发生，说明一句它只能整条离线
                 errorMessage = "非磁力链接，可离线下载"
-                isInputVisible = true
             } else {
                 scheduleResolve()
             }
@@ -508,7 +508,7 @@ class InstantSheetState private constructor(
 
     /**
      * 输入里有两条以上链接就换成批量列表，返回是否换了。分享链接仍走转存，不进列表。
-     * 输入框随之收起，与单条解析成功后一致：要换一批链接就关掉面板重开。
+     * 批量列表里没有输入框：要换一批链接就点 × 结束这一次，或把列表里的行删光回到空的输入框。
      */
     private fun startBatchIfMany(): Boolean {
         if (!isRoot || findShareLink(input) != null) return false
@@ -526,7 +526,6 @@ class InstantSheetState private constructor(
             emitMessage = { _messages.emit(it) },
             onEmpty = ::leaveBatch,
         )
-        isInputVisible = false
         return true
     }
 
@@ -538,7 +537,6 @@ class InstantSheetState private constructor(
     private fun leaveBatch() {
         batch = null
         input = ""
-        isInputVisible = true
     }
 
     /** 对同一条链再解析一次。自动解析只在链接变化时触发，失败后的重试走这里。 */
@@ -564,10 +562,12 @@ class InstantSheetState private constructor(
     private fun setItemsSelected(indices: Collection<Int>, selected: Boolean) {
         val affected = indices.flatMap { index -> tree?.rowOf(index)?.indices ?: listOf(index) }.toSet()
         selectedIndices = if (selected) selectedIndices + affected else selectedIndices - affected
+        selectionPicked = true
     }
 
     fun toggleSelectAll() {
         selectedIndices = if (isAllSelected) emptySet() else items.indices.toSet()
+        selectionPicked = true
     }
 
     fun updateFolderName(value: String) {
@@ -772,6 +772,7 @@ class InstantSheetState private constructor(
         canonical = null
         titles = emptyMap()
         selectedIndices = emptySet()
+        selectionPicked = false
         errorMessage = null
         isUnindexed = false
         contentMissing = false
@@ -786,7 +787,6 @@ class InstantSheetState private constructor(
                     .onFailure { err ->
                         PikoLog.w(TAG, "解析链接失败", err)
                         errorMessage = "解析失败：${err.message}"
-                        isInputVisible = true
                     }
             } finally {
                 // 换链取消上一次解析时也要走到这里，否则指示器会一直转
@@ -800,7 +800,6 @@ class InstantSheetState private constructor(
         if (data == null) {
             isUnindexed = true
             errorMessage = "云端未收录，可离线下载"
-            isInputVisible = true
             return
         }
         isAnalyzing = true
@@ -819,9 +818,9 @@ class InstantSheetState private constructor(
         resolution = data
         expandedGroups.clear()
         showsOnlyUnindexed = false
-        isInputVisible = false
         folderName = built.folderName
         selectedIndices = built.defaultSelection
+        selectionPicked = false
         // 批量时余量由列表按合计查，逐行查只是多发请求
         if (isRoot) scope.launch { refreshRemainingBytes() }
     }

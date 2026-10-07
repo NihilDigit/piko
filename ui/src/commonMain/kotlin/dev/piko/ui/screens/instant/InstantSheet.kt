@@ -63,6 +63,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -316,26 +317,29 @@ private fun ColumnScope.InstantBody(
         )
     }
 
-    if (state.isInputVisible) {
-        OutlinedTextField(
-            value = state.input,
-            onValueChange = state::updateInput,
-            label = { Text("磁力链接、下载地址或分享链接") },
-            placeholder = { Text("magnet:?xt=urn:btih:…") },
-            modifier = Modifier.fillMaxWidth(),
-            shape = MaterialTheme.shapes.largeIncreased,
-            maxLines = 3,
-            enabled = !state.isSaving,
-            trailingIcon = {
-                IconButton(onClick = {
-                    val clip = platform.readClipboardText()
-                    if (!clip.isNullOrBlank()) state.updateInput(clip.trim())
-                }) {
-                    Icon(Icons.Outlined.ContentPaste, contentDescription = "从剪贴板粘贴")
-                }
-            },
-        )
-    }
+    // 输入框一直在，外部带链接打开的也是：换链接就是在这里改或粘贴，同一个会话重新解析，不另设按钮。
+    // 解析出结果后缩成一行把高度让给文件列表，点进去编辑时放回三行
+    var inputFocused by remember { mutableStateOf(false) }
+    val inputCompact = result != null && !inputFocused
+    OutlinedTextField(
+        value = state.input,
+        onValueChange = state::updateInput,
+        label = { Text("磁力链接、下载地址或分享链接") },
+        placeholder = { Text("magnet:?xt=urn:btih:…") },
+        modifier = Modifier.fillMaxWidth().onFocusChanged { inputFocused = it.isFocused },
+        shape = MaterialTheme.shapes.largeIncreased,
+        singleLine = inputCompact,
+        maxLines = if (inputCompact) 1 else 3,
+        enabled = !state.isSaving,
+        trailingIcon = {
+            IconButton(onClick = {
+                val clip = platform.readClipboardText()
+                if (!clip.isNullOrBlank()) state.updateInput(clip.trim())
+            }) {
+                Icon(Icons.Outlined.ContentPaste, contentDescription = "从剪贴板粘贴")
+            }
+        },
+    )
 
     if (shareState != null) {
         ShareSaveSection(
@@ -370,7 +374,8 @@ private fun ColumnScope.InstantBody(
         ResolutionSection(
             state = state,
             resourceName = result.resource.name,
-            showCopyLink = !state.isInputVisible,
+            // 链接就在上面的输入框里
+            showCopyLink = false,
             onDownloaded = { onReceipt(QUEUED_RECEIPT) },
         )
     }
@@ -603,7 +608,7 @@ internal fun ColumnScope.ResolutionSection(
     /** 文件行上的「下载」把文件加进了本机下载队列，面板据此给回执。 */
     onDownloaded: () -> Unit,
 ) {
-    // 输入框收起后链接就看不到了，标题右侧留一个复制入口，好转发或换设备打开
+    // 批量列表里点开的一行没有输入框，链接看不到，标题右侧留一个复制入口，好转发或换设备打开
     Row(verticalAlignment = Alignment.Top) {
         Box(modifier = Modifier.weight(1f)) {
             if (state.willCreateFolder) {

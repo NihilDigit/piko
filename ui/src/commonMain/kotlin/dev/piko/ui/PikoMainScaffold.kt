@@ -111,8 +111,11 @@ import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import dev.piko.ui.screens.instant.CollapseAddLinkLabel
+import dev.piko.ui.screens.instant.DiscardAddLinkButton
 import dev.piko.ui.screens.instant.DockedAddLink
 import dev.piko.ui.screens.instant.FloatingAddLinkSheet
+import dev.piko.ui.screens.instant.rememberDiscardAddLink
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -729,13 +732,19 @@ fun PikoMainScaffold(
 
     val feedFrame: @Composable (@Composable () -> Unit) -> Unit = { drive ->
         val addLink = columnShows == SideColumnContent.AddLink
+        val discardAddLink = rememberDiscardAddLink(instantSession)
         SidePanelLayout(
             open = columnContent != null,
             // 两者共用一个宽度：同一栏，拖宽一次两样都生效
             savedWidthDp = panelPrefs.widthDp,
             title = if (addLink) "添加链接" else "信息流",
-            closeDescription = if (addLink) "收起添加链接" else "关闭信息流",
+            closeDescription = if (addLink) CollapseAddLinkLabel else "关闭信息流",
             onClose = { if (addLink) instantSession.collapse() else setFeedShown(false) },
+            endActions = {
+                // 收起的动画期间会话可能已经结束，那时不再画 ×
+                val addLinkState = instantSession.state
+                if (addLink && addLinkState != null) DiscardAddLinkButton(addLinkState, discardAddLink)
+            },
             onWidthChange = { coroutineScope.launch { preferences.setClipPanelWidth(it) } },
             defaultWidth = ClipPanelDefaultWidth,
             minWidth = ClipPanelMinWidth,

@@ -34,7 +34,7 @@ fun PrimaryActionButton(action: SheetAction, modifier: Modifier = Modifier) {
         contentPadding = PaddingValues(start = 12.dp, end = 16.dp),
         modifier = modifier.heightIn(min = 40.dp),
     ) {
-        Icon(action.icon, contentDescription = null, modifier = Modifier.size(18.dp))
+        PendingBadge(shown = action.pending) { Icon(action.icon, contentDescription = null, modifier = Modifier.size(18.dp)) }
         Spacer(Modifier.width(6.dp))
         Text(action.label)
     }
@@ -46,7 +46,7 @@ fun PrimaryActionFab(action: SheetAction, modifier: Modifier = Modifier) {
     val colors = MaterialTheme.colorScheme
     ExtendedFloatingActionButton(
         onClick = action.onClick,
-        icon = { Icon(action.icon, contentDescription = null) },
+        icon = { PendingBadge(shown = action.pending) { Icon(action.icon, contentDescription = null) } },
         text = { Text(action.label) },
         containerColor = if (action.destructive) colors.errorContainer else colors.primaryContainer,
         contentColor = if (action.destructive) colors.onErrorContainer else colors.onPrimaryContainer,

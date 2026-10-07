@@ -44,6 +44,7 @@ import dev.piko.shared.state.ArchiveJobStatus
 import dev.piko.shared.state.FolderVaultSession
 import dev.piko.shared.state.InstantSession
 import dev.piko.shared.state.InstantSheetState
+import dev.piko.ui.screens.instant.rememberDiscardAddLink
 import dev.piko.ui.screens.instant.summary
 import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.TooltipIconButton
@@ -68,12 +69,13 @@ internal fun FloatingTasks(
     instant: InstantSession,
     modifier: Modifier = Modifier,
 ) {
+    val discardInstant = rememberDiscardAddLink(instant)
     val tasks = buildList {
         if (archive.jobs.isNotEmpty()) add(extractTask(archive))
         if (vault.progress != null) add(archiveTask(vault))
         if (vault.restoreProgress != null) add(restoreTask(vault))
         val instantState = instant.state
-        if (instantState != null && !instant.isSheetOpen) add(instantTask(instantState, instant))
+        if (instantState != null && !instant.isSheetOpen) add(instantTask(instantState, instant, discardInstant))
     }
     if (tasks.isEmpty()) return
     var minimized by rememberSaveable { mutableStateOf(false) }
@@ -240,7 +242,7 @@ private fun restoreTask(vault: FolderVaultSession): FloatingTask {
 }
 
 // 不是后台任务，是关了但没做完的面板：解析、挑文件都在面板里，卡片只负责找回与放弃
-private fun instantTask(state: InstantSheetState, session: InstantSession): FloatingTask {
+private fun instantTask(state: InstantSheetState, session: InstantSession, discard: () -> Unit): FloatingTask {
     val summary = state.summary()
     return FloatingTask(
         key = "instant",
@@ -249,7 +251,7 @@ private fun instantTask(state: InstantSheetState, session: InstantSession): Floa
         title = summary.title,
         status = summary.status ?: "添加链接",
         action = "继续" to session::reopen,
-        dismiss = ("放弃这次添加" to session::end).takeIf { !summary.busy },
+        dismiss = ("放弃这次添加" to discard).takeIf { !summary.busy },
     )
 }
 

@@ -14,6 +14,7 @@ import androidx.compose.material.icons.outlined.Unarchive
 import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.ui.zIndex
 import dev.piko.ui.components.PrimaryActionFab
+import dev.piko.ui.components.PendingBadge
 import dev.piko.ui.components.ActionGroup
 import dev.piko.ui.components.SheetAction
 import dev.piko.shared.state.DriveListItem
@@ -194,7 +195,9 @@ import dev.piko.ui.components.UnsupportedNameDialog
 import dev.piko.ui.components.driveNameHint
 import dev.piko.ui.components.isUnfixableDriveName
 import dev.piko.ui.components.submitDriveName
+import dev.piko.ui.screens.instant.DiscardAddLinkLabel
 import dev.piko.ui.screens.instant.InstantSheetContent
+import dev.piko.ui.screens.instant.rememberDiscardAddLink
 import dev.piko.ui.screens.instant.summary
 import io.github.nihildigit.pikpak.FileStat
 import dev.piko.ui.platform.LocalPikoPlatform
@@ -1458,7 +1461,11 @@ fun DriveScreen(
                     feedBlockedReason = feedBlockedReason,
                 )
             },
-            primaryAction = placePrimaryAction ?: if (commands.addLink) SheetAction(Icons.Outlined.Bolt, "添加链接", ::openAddLink, group = ActionGroup.Refresh) else null,
+            primaryAction = placePrimaryAction ?: if (commands.addLink) {
+                SheetAction(Icons.Outlined.Bolt, "添加链接", ::openAddLink, group = ActionGroup.Refresh, pending = instantSession.hasCollapsedWork)
+            } else {
+                null
+            },
         )
     }
 
@@ -1606,6 +1613,7 @@ fun DriveScreen(
 
     // 窄窗口底部那一块 sheet：添加链接、查找重复或按番号规范命名，同一时刻只有一件（TaskSlot 管着入口）。
     // 宽窗口不用它：添加链接由主界面放进右栏或侧边面板、收起后是右下角的浮动卡片，查重与规范命名是会话标签
+    val discardAddLink = rememberDiscardAddLink(instantSession)
     val taskSheet: TaskSheetModel? = when {
         twoPane -> null
         instantState != null -> TaskSheetModel(
@@ -1615,7 +1623,7 @@ fun DriveScreen(
             onExpandedChange = { expand -> if (expand) instantSession.reopen() else instantSession.collapse() },
             header = {
                 val summary = instantState.summary()
-                TaskSheetHeader(summary.title, summary.status, "放弃添加", instantSession::end, closeEnabled = !summary.busy)
+                TaskSheetHeader(summary.title, summary.status, DiscardAddLinkLabel, discardAddLink, closeEnabled = !summary.busy)
             },
             body = {
                 InstantSheetContent(
@@ -1845,7 +1853,9 @@ fun DriveScreen(
                                         isFabMenuExpanded = false
                                         openAddLink()
                                     },
-                                    icon = { Icon(Icons.Outlined.Bolt, contentDescription = null) },
+                                    // 小圆点挂在这一项上而不是「+」上：M3 的 badge 锚在通往那件事的入口图标上，
+                                    // 「+」只是展开菜单；收着的会话在底部 sheet 的那一截上本来就看得见
+                                    icon = { PendingBadge(shown = instantSession.hasCollapsedWork) { Icon(Icons.Outlined.Bolt, contentDescription = null) } },
                                     // 会话收起着时是回到它，名字照实说
                                     text = { Text(if (instantState != null) "继续添加链接" else "添加链接") },
                                 )

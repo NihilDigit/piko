@@ -79,6 +79,7 @@ import dev.piko.ui.theme.frame
  * @param ready 开关已经判得出来。头一次组合时 AnimatedVisibility 不播进场动画，值到了再组合：
  *   开着的人看到它直接在那儿，关掉过的人不会看到它弹一下。
  * @param headerActions 栏名与关闭按钮之间的其他按钮。
+ * @param endActions 关闭（收起）按钮右边、栏头末端的按钮，放结束这件事的 ×（添加链接的「放弃添加」）。
  * @param bottomMargin 侧栏下沿离这块区域底边的距离。并进外框时默认与主区卡片离窗口底边的外框色同宽，下沿对齐；
  *   外面已经让出那一截的传 0，否则两份叠在一起，侧栏比卡片短一截。
  * @param showHeader 为 false 时不画栏名那一行，整张卡交给 [panel]，关闭与其他按钮由内容自己放：
@@ -97,6 +98,7 @@ fun SidePanelLayout(
     modifier: Modifier = Modifier,
     ready: Boolean = true,
     headerActions: @Composable RowScope.() -> Unit = {},
+    endActions: @Composable RowScope.() -> Unit = {},
     showHeader: Boolean = true,
     bottomMargin: Dp = defaultPanelBottomMargin(),
     main: @Composable () -> Unit,
@@ -174,6 +176,7 @@ fun SidePanelLayout(
                                     onClose,
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
+                                endActions()
                             }
                             Box(modifier = Modifier.weight(1f)) { panel() }
                         }

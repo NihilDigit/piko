@@ -26,6 +26,8 @@ class SheetAction(
     val tier: ActionTier = ActionTier.Standard,
     /** 图标行里写在图标下的字。面板的图标行一格只有四分之一宽，长标签放不下，例如「下载到本地」写「下载」。 */
     val shortLabel: String = label,
+    /** 图标上挂小圆点（[PendingBadge]）：这一项收着没做完的东西。眼下只有主操作的按钮与 FAB 画它。 */
+    val pending: Boolean = false,
 )
 
 /** 一项操作摆在哪一档。只在项数多到要分档时起作用，见 [layoutActions]。 */

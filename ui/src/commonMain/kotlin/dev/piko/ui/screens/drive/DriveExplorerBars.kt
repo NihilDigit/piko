@@ -85,8 +85,7 @@ import dev.piko.data.repository.FileSortOrder
 import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.MenuMotion
 import dev.piko.ui.components.PikoDropdownMenu
-import androidx.compose.material3.Badge
-import androidx.compose.material3.BadgedBox
+import dev.piko.ui.components.PendingBadge
 import dev.piko.ui.components.PrimaryActionButton
 import dev.piko.ui.components.ActionGroup
 import dev.piko.ui.components.SheetAction
@@ -452,7 +451,7 @@ internal fun ViewSwitcher(
                 ) {
                     // 挂起的信息流（离开了它的文件夹、队列还在）在图标上点一个小圆点，点开就是接着刷。
                     // 原来另在命令栏右端的「收着的东西」里放一项「继续刷信息流」，与这个按钮是同一件事的两个入口
-                    BadgedBox(badge = { if (feedSuspended) Badge() }) {
+                    PendingBadge(shown = feedSuspended) {
                         Icon(
                             imageVector = if (feedShown) Icons.Filled.SwipeVertical else Icons.Outlined.SwipeVertical,
                             contentDescription = if (feedSuspended) "信息流已暂停" else null,

@@ -11,6 +11,7 @@ import dev.piko.shared.data.PreviewTempFolder
 import dev.piko.shared.state.InstantBatchRowStatus
 import dev.piko.shared.state.InstantSaveOutcome
 import dev.piko.shared.state.InstantSaveRecords
+import dev.piko.shared.state.InstantSession
 import dev.piko.shared.state.InstantSheetState
 import dev.piko.shared.state.SaveRoute
 import kotlinx.coroutines.CoroutineScope
@@ -355,22 +356,74 @@ class InstantFlowSmokeTest {
         assertNull(state.errorMessage, "改走离线成功了，不该再报保存失败")
     }
 
-    /** 防的是外部分享进来的链接云端没收录时面板卡死：输入框收起、没有可点的出口。 */
+    /** 防的是外部分享进来的链接云端没收录时面板卡死：没有可点的出口。 */
     @Test
-    fun `an unindexed magnet reopens the input and can still be submitted offline`() = smoke { scope ->
+    fun `an unindexed magnet can still be submitted offline`() = smoke { scope ->
         val server = FakePikPakServer()
         val rig = Rig(server, MemoryPreferences(), scope)
         val state = rig.sheet(scope, magnet)
         val outcome = scope.async(start = CoroutineStart.UNDISPATCHED) { state.outcomes.first() }
-        assertTrue(!state.isInputVisible, "外部唤起时输入框先收起")
 
         awaitUntil("解析结束并给出说明") { !state.isResolving && state.errorMessage != null && state.target != null }
-        assertTrue(state.isInputVisible)
         assertNull(state.resolution)
 
         state.submitOfflineTask()
         assertIs<InstantSaveOutcome.OfflineTaskCreated>(outcome.await())
         assertEquals(magnet, server.tasksSnapshot().single().url)
+    }
+
+    /**
+     * 防的是外部带链接打开的会话换不了链接：输入框里填着那条链接，改成另一条就在同一个会话里重新解析，
+     * 旧的解析结果与勾选不留在新链接上。
+     */
+    @Test
+    fun `editing the link of an externally opened session resolves the new one in place`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val other = "magnet:?xt=urn:btih:" + "b".repeat(40)
+        server.indexMagnet(magnet, resourceListBody("Show S01", season))
+        server.indexMagnet(other, resourceListBody("Movie", listOf(Triple("Movie.mkv", 2L shl 30, "GCIDMOVIE"))))
+        val rig = Rig(server, MemoryPreferences(), scope)
+        val session = InstantSession({ CoroutineScope(SupervisorJob() + Dispatchers.Default) }) { sessionScope, link -> rig.sheet(sessionScope, link) }
+        session.start(magnet)
+        val state = assertNotNull(session.state)
+        assertEquals(magnet, state.input, "外部打开的链接填在输入框里")
+
+        awaitUntil("第一条解析完成") { state.resolution?.resource?.name == "Show S01" }
+        state.toggleItem(state.selectedIndices.first())
+        state.updateInput(other)
+        awaitUntil("换成第二条并解析完成") { state.resolution?.resource?.name == "Movie" }
+        assertEquals(listOf("Movie.mkv"), state.selectedItems.map { it.file.name })
+        assertTrue(!session.endNeedsConfirm, "换了链接，上一条挑过的勾选不再算数")
+        assertTrue(session.state === state, "换链接不另开会话")
+        session.end()
+    }
+
+    /**
+     * × 先确认的条件：人亲手挑过、还勾着要保存的文件。只粘了链接、解析后的默认勾选、全部取消了的都直接结束，
+     * 否则 × 几乎每次都要问，确认就成了点过就忘的一步。
+     */
+    @Test
+    fun `discarding asks only when the user has picked files to save`() = smoke { scope ->
+        val server = FakePikPakServer()
+        server.indexMagnet(magnet, resourceListBody("Show S01", season))
+        val rig = Rig(server, MemoryPreferences(), scope)
+        val session = InstantSession({ CoroutineScope(SupervisorJob() + Dispatchers.Default) }) { sessionScope, link -> rig.sheet(sessionScope, link) }
+
+        session.start(magnet)
+        val state = assertNotNull(session.state)
+        assertTrue(!session.endNeedsConfirm, "只粘了链接")
+        awaitUntil("解析完成") { state.resolution != null }
+        assertTrue(state.selectedIndices.isNotEmpty())
+        assertTrue(!session.endNeedsConfirm, "默认勾选不算挑过")
+
+        state.toggleItem(state.items.indexOfFirst { it.file.name == "info.nfo" })
+        assertTrue(session.endNeedsConfirm, "勾了一项，还没保存")
+        state.toggleSelectAll()
+        state.toggleSelectAll()
+        assertTrue(state.selectedIndices.isEmpty())
+        assertTrue(!session.endNeedsConfirm, "全部取消后没有要保存的")
+        session.end()
+        assertTrue(!session.endNeedsConfirm)
     }
 
     /**

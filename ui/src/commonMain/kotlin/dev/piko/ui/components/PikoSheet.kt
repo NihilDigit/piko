@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.material3.Text
 import androidx.compose.foundation.layout.safeDrawing
@@ -88,13 +89,18 @@ fun PikoSheet(
     bottomSheetInsets: @Composable () -> WindowInsets = { BottomSheetDefaults.windowInsets },
     /** 侧边面板顶上与关闭按钮同一行的标题（side-sheets.md 的 headline）。底部 sheet 形态不画，内容自带标题。 */
     sideSheetTitle: String? = null,
+    /**
+     * 侧边面板顶上那一行标题右边的按钮，取代默认的一个关闭按钮；[dismiss] 是划出去再关的那一下。
+     * 桌面的添加链接要收起与放弃两个按钮，关闭只是收起，用 × 就与放弃撞了。
+     */
+    sideSheetButtons: (@Composable RowScope.(dismiss: () -> Unit) -> Unit)? = null,
     content: @Composable PikoSheetScope.() -> Unit,
 ) {
     // 桌面一律是侧边面板：底部 sheet 配鼠标不顺手，见上。横握的手机宽度多在 medium，但只有三百多 dp 高：
     // 底部 sheet 只露几行，侧边面板能用满整个高度
     val widthClass = currentWidthClass()
     if (isDesktopLayout() || widthClass == WidthClass.Expanded || (widthClass == WidthClass.Medium && isHeightCompact())) {
-        ModalSideSheet(onDismissRequest, sideSheetTitle, content)
+        ModalSideSheet(onDismissRequest, sideSheetTitle, sideSheetButtons, content)
         return
     }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -119,7 +125,12 @@ fun PikoSheet(
 }
 
 @Composable
-private fun ModalSideSheet(onDismissRequest: () -> Unit, title: String?, content: @Composable PikoSheetScope.() -> Unit) {
+private fun ModalSideSheet(
+    onDismissRequest: () -> Unit,
+    title: String?,
+    buttons: (@Composable RowScope.(dismiss: () -> Unit) -> Unit)?,
+    content: @Composable PikoSheetScope.() -> Unit,
+) {
     val visibility = remember { MutableTransitionState(false).apply { targetState = true } }
     val latestDismiss by rememberUpdatedState(onDismissRequest)
     val dismiss = { visibility.targetState = false }
@@ -163,7 +174,7 @@ private fun ModalSideSheet(onDismissRequest: () -> Unit, title: String?, content
                             } else {
                                 Spacer(Modifier.weight(1f))
                             }
-                            TooltipIconButton(Icons.Outlined.Close, "关闭", dismiss, shortcut = "Esc")
+                            if (buttons != null) buttons(dismiss) else TooltipIconButton(Icons.Outlined.Close, "关闭", dismiss, shortcut = "Esc")
                         }
                         val sheetScope = remember(this) {
                             SheetScopeImpl(this, isSideSheet = true) { action ->
