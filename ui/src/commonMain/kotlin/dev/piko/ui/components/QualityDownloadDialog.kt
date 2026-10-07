@@ -6,12 +6,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.HighQuality
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
@@ -84,7 +85,7 @@ fun QualityDownloadDialog(
             Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 when {
                     choices.failed -> Text("无法查询这个视频的画质，请稍后重试。", style = MaterialTheme.typography.bodyMedium)
-                    options == null -> LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    options == null -> QualityListSkeleton()
                     else -> {
                         Text(
                             if (options.size > 1) "转码档下载后存为 MP4。" else "这个视频没有转码档，只能下载原画。",
@@ -121,6 +122,34 @@ fun QualityDownloadDialog(
         },
     )
 }
+
+/**
+ * 列出档位之前的骨架：说明一行与几行 [QualityRow]。行的尺寸照抄那一行：最小高 48dp，单选钮 20dp、
+ * 自带 2dp 内边距、两侧各 12dp，档名一行 bodyLarge，大小一行 bodyMedium、右侧 12dp。
+ * 档数事先不知道，取常见的原画加两档转码；对话框按内容定高，猜得接近才少跳一下。
+ */
+@Composable
+private fun QualityListSkeleton(rows: Int = 3) {
+    SkeletonGroup {
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            SkeletonText(MaterialTheme.typography.bodyMedium, 0.5f)
+            Column {
+                repeat(rows) { index ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        SkeletonBlock(Modifier.padding(horizontal = 14.dp).size(20.dp), CircleShape)
+                        SkeletonText(MaterialTheme.typography.bodyLarge, QualityNameWidths[index % QualityNameWidths.size], Modifier.weight(1f))
+                        SkeletonBlock(Modifier.padding(end = 12.dp).size(width = 56.dp, height = 12.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+private val QualityNameWidths = listOf(0.3f, 0.4f, 0.35f)
 
 /**
  * 读不出的档留在原位、停用，而不是从列表里拿掉：M3 的列表项与单选钮都有停用态，表示「在、但不能操作」；

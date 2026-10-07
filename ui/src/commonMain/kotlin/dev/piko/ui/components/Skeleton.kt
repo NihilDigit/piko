@@ -30,7 +30,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
@@ -90,6 +92,20 @@ fun SkeletonTextLine(widthFraction: Float, modifier: Modifier = Modifier, height
 }
 
 /**
+ * 占一行 [style] 文字的位置：外框取该样式的行高，色块取字号的八成五居中。
+ * 按 sp 换算，系统放大字体时与真实文字一同变高；写死 dp 的话放大后占位比真实的一行矮。
+ */
+@Composable
+fun SkeletonText(style: TextStyle, widthFraction: Float, modifier: Modifier = Modifier) {
+    val density = LocalDensity.current
+    val lineHeight = with(density) { style.lineHeight.toDp() }
+    val glyphHeight = with(density) { style.fontSize.toDp() } * 0.85f
+    Box(modifier.fillMaxWidth().height(lineHeight), contentAlignment = Alignment.CenterStart) {
+        SkeletonTextLine(widthFraction, height = glyphHeight)
+    }
+}
+
+/**
  * [FileListItem] 那一行的骨架：56dp 前导图像、一行标题、一行元信息，外边距与最小行高照抄那一行。
  * 网盘列表、传输、星标、播放历史、回收站的行都是它的变体，共用这一份。
  */
@@ -127,6 +143,6 @@ fun FileListSkeleton(modifier: Modifier = Modifier, rows: Int = 10) {
     }
 }
 
-private val SkeletonTitleWidths = listOf(0.62f, 0.45f, 0.74f, 0.52f, 0.68f, 0.4f)
+internal val SkeletonTitleWidths = listOf(0.62f, 0.45f, 0.74f, 0.52f, 0.68f, 0.4f)
 
 private const val SKELETON_PULSE_MS = 900

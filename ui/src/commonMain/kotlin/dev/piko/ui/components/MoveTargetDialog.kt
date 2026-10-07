@@ -62,6 +62,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.backhandler.BackHandler
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -270,7 +271,7 @@ private fun FolderPickerContent(
 
     LaunchedEffect(current.id, reloadTrigger) {
         loadPage(reset = true)
-        // 回到顶部必须排在加载之后：加载期间显示的是全屏指示器，LazyColumn
+        // 回到顶部必须排在加载之后：加载期间显示的是骨架，LazyColumn
         // 没有被组合，scrollToItem 会一直挂起等一个不会到来的布局，把加载也堵死。
         if (folders.isNotEmpty()) listState.scrollToItem(0)
     }
@@ -372,7 +373,7 @@ private fun FolderPickerContent(
                 label = "folder_picker_loading",
             ) { loading ->
                 if (loading) {
-                    FullScreenLoading()
+                    FolderPickerSkeleton()
                 } else if (folders.isEmpty()) {
                     Box(
                         modifier = Modifier.fillMaxSize(),
@@ -617,4 +618,26 @@ private fun FolderPickerRow(
         },
         content = { Text(name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
     )
+}
+
+/**
+ * 列目录时的骨架：一列 [FolderPickerRow]，边距、行距与分段圆角照抄上面的 LazyColumn。
+ * 单行的列表项高 56dp（图标与一行正文加上下内边距不到这个数，由列表项的最小高度撑着）。
+ * 整行画成一块色块，不在里面再画图标与文字的占位：浮着的对话框里行的底色就是骨架色，里面的占位会看不见。
+ */
+@Composable
+private fun FolderPickerSkeleton(rows: Int = 8) {
+    SkeletonGroup(Modifier.fillMaxSize().clipToBounds()) {
+        Column(
+            modifier = Modifier.padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap),
+        ) {
+            repeat(rows) { index ->
+                SkeletonBlock(
+                    modifier = Modifier.fillMaxWidth().height(56.dp),
+                    shape = ListItemDefaults.segmentedShapes(index = index, count = rows).shape,
+                )
+            }
+        }
+    }
 }

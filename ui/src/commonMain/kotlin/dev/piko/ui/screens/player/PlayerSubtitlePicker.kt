@@ -1,11 +1,15 @@
 package dev.piko.ui.screens.player
 
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -26,7 +30,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.media.player.SubtitleBrowserState
 import dev.piko.ui.LocalPikoServices
-import dev.piko.ui.components.PikoLoadingIndicator
+import dev.piko.ui.components.SkeletonBlock
+import dev.piko.ui.components.SkeletonGroup
+import dev.piko.ui.components.SkeletonText
+import dev.piko.ui.components.SkeletonTitleWidths
 import io.github.nihildigit.pikpak.FileStat
 
 /**
@@ -72,9 +79,7 @@ internal fun DriveSubtitlePanel(
             }
             val error = state.loadError
             when {
-                state.isLoading -> item(key = "loading") {
-                    Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { PikoLoadingIndicator() }
-                }
+                state.isLoading -> item(key = "loading") { PickerRowsSkeleton() }
                 error != null -> item(key = "error") {
                     Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                         Text("读取目录失败：$error", textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -88,6 +93,28 @@ internal fun DriveSubtitlePanel(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.fillMaxWidth().padding(24.dp),
                     )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 列目录时的骨架：几行 [PickerRow]，尺寸照抄那一行（最小高 48dp、左右内边距 12dp、20dp 图标、间隔 12dp、一行 bodyLarge）。
+ * 「上一级」在加载时照常列在上面，骨架接在它后面，正是文件夹与字幕将出现的位置。
+ */
+@Composable
+private fun PickerRowsSkeleton(rows: Int = 6) {
+    SkeletonGroup {
+        Column {
+            repeat(rows) { index ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    SkeletonBlock(Modifier.size(20.dp), MaterialTheme.shapes.extraSmall)
+                    Spacer(Modifier.width(12.dp))
+                    SkeletonText(MaterialTheme.typography.bodyLarge, SkeletonTitleWidths[index % SkeletonTitleWidths.size])
                 }
             }
         }

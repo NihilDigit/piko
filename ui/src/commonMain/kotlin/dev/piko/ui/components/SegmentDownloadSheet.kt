@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Download
@@ -231,17 +232,12 @@ fun SegmentDownloadSheet(
                 )
             }
 
+            val videoPreview = LocalPikoPlatform.current.videoPreview
             if (isLoading) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(16f / 9f),
-                    contentAlignment = Alignment.Center,
-                ) { if (rememberLoadingVisible()) PikoLoadingIndicator() }
+                SegmentSheetSkeleton(showPreview = videoPreview != null)
                 return@Column
             }
 
-            val videoPreview = LocalPikoPlatform.current.videoPreview
             if (videoPreview != null) {
                 SegmentPreview(
                     videoPreview = videoPreview,
@@ -375,6 +371,42 @@ fun SegmentDownloadSheet(
                 Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(20.dp))
                 Text("下载片段", modifier = Modifier.padding(start = 8.dp))
             }
+        }
+    }
+}
+
+/**
+ * 取到时长之前的骨架，自上而下照抄加载后的各段：预览、起点终点那一行、区间滑块与其下的时间、时长与说明、下载按钮。
+ * 底部 sheet 按内容定高，没有骨架时内容一换上来整张 sheet 往上长一截。
+ * 按钮与滑块可见的高度是 40dp 与 44dp，所在那一行却按最小触摸尺寸占 48dp，这里照占位的算。
+ * 画质那一行另行异步取，加载后也可能还没有，不画；两组按钮的宽度按两字标签估算。
+ */
+@Composable
+private fun SegmentSheetSkeleton(showPreview: Boolean) {
+    SkeletonGroup {
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            if (showPreview) {
+                SkeletonBlock(Modifier.fillMaxWidth().aspectRatio(16f / 9f), MaterialTheme.shapes.large)
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                SkeletonBlock(Modifier.size(width = 122.dp, height = 40.dp), CircleShape)
+                SkeletonText(MaterialTheme.typography.titleLarge, 0.6f, Modifier.weight(1f).padding(horizontal = 12.dp))
+                SkeletonBlock(Modifier.size(width = 118.dp, height = 40.dp), CircleShape)
+            }
+            Column {
+                Box(Modifier.fillMaxWidth().height(48.dp), contentAlignment = Alignment.Center) {
+                    SkeletonBlock(Modifier.fillMaxWidth().height(16.dp), CircleShape)
+                }
+                SkeletonText(MaterialTheme.typography.labelMedium, 0.4f)
+            }
+            Column {
+                SkeletonText(MaterialTheme.typography.bodyMedium, 0.35f)
+                SkeletonText(MaterialTheme.typography.bodySmall, 0.3f)
+            }
+            SkeletonBlock(Modifier.fillMaxWidth().height(56.dp), CircleShape)
         }
     }
 }
