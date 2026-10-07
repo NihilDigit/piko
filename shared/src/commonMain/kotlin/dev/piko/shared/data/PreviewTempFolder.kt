@@ -18,12 +18,17 @@ import kotlinx.coroutines.sync.withLock
  * 可能挨得很近，锁先来先得，清理排在前面就不会删掉新放进去的文件。
  */
 class PreviewTempFolder(
+    private val clients: PikoClientProvider,
     private val driveRepo: PikoDriveRepository,
     private val instantRepo: InstantMagnetRepository,
     private val scope: CoroutineScope,
 ) {
     private val lock = Mutex()
-    private var folderId: String? = null
+
+    // 按账号记：只记一个时，换到登录过的账号不会再清一次，借对象、预览拿到的仍是上一个账号的 Piko-Temp
+    private val folderIds = HashMap<String, String>()
+
+    private fun account(): String? = clients.currentClient.value?.account
 
     /** 秒传到 Piko-Temp，目录不存在就先建。返回新文件的 id。 */
     suspend fun put(file: ResolvedFile): Result<String> = lock.withLock {
@@ -35,16 +40,19 @@ class PreviewTempFolder(
     suspend fun folderId(): Result<String> = lock.withLock { ensureFolder() }
 
     private suspend fun ensureFolder(): Result<String> {
-        folderId?.let { return Result.success(it) }
+        val account = account() ?: return Result.failure(IllegalStateException("Not logged in"))
+        folderIds[account]?.let { return Result.success(it) }
         val found = findFolders().getOrElse { return Result.failure(it) }.firstOrNull()
             ?: driveRepo.createFolder("", FOLDER_NAME).getOrElse { return Result.failure(it) }
-        folderId = found
+        // 查找途中换了号，找到的是新账号的，不能记在旧账号名下
+        if (account() != account) return Result.failure(IllegalStateException("查找 Piko-Temp 途中换了账号"))
+        folderIds[account] = found
         return Result.success(found)
     }
 
     /** 永久删除 Piko-Temp，找不到就什么也不做。 */
     suspend fun clear(): Result<Unit> = lock.withLock {
-        folderId = null
+        account()?.let(folderIds::remove)
         val ids = findFolders().getOrElse { return Result.failure(it) }
         if (ids.isEmpty()) return Result.success(Unit)
         driveRepo.delete(ids).onSuccess { PikoLog.d(TAG, "已清理 Piko-Temp（${ids.size} 个同名目录）") }

@@ -46,7 +46,7 @@ class VaultTrees internal constructor(
 
     fun switchAccount(newAccount: String?) {
         if (newAccount == account) return
-        pendingSave?.cancel()
+        flushPendingSave()
         account = newAccount
         trees.value = emptyMap()
         val cacheStore = store ?: return
@@ -64,8 +64,22 @@ class VaultTrees internal constructor(
         if (pendingSave?.isActive == true) return
         pendingSave = scope.launch {
             delay(saveDelayMillis)
-            cacheStore.write(keyOf(owner), encode(trees.value))
+            // 先取内容再核对账号，理由同 SourceLedger
+            val snapshot = trees.value
+            if (account == owner) cacheStore.write(keyOf(owner), encode(snapshot))
         }
+    }
+
+    /** 换号前还没写下的当场写给原来的账号，理由同 SourceLedger。 */
+    private fun flushPendingSave() {
+        val pending = pendingSave ?: return
+        pendingSave = null
+        if (!pending.isActive) return
+        pending.cancel()
+        val cacheStore = store ?: return
+        val owner = account ?: return
+        val snapshot = trees.value
+        scope.launch { cacheStore.write(keyOf(owner), encode(snapshot)) }
     }
 
     private fun keyOf(account: String) = "vault-trees-" + account.replace(UNSAFE_KEY_CHARS, "_") + ".json"

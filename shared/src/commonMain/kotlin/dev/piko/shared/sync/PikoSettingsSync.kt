@@ -109,7 +109,7 @@ class PikoSettingsSync(
         cacheStore: PikoCacheStore?,
         scope: CoroutineScope,
         enabled: Flow<Boolean>,
-    ) : this(clients, DriveSettingsStore(driveRepo), preferences, cacheStore, scope, enabled)
+    ) : this(clients, DriveSettingsStore(clients, driveRepo), preferences, cacheStore, scope, enabled)
 
     enum class Status { IDLE, SYNCING, SYNCED, FAILED }
 
@@ -253,6 +253,7 @@ interface RemoteSettingsStore {
  * 所以每次写一个新文件、再删掉旧的；读的时候取时间戳最大的一个。删旧文件失败也无妨，下次读的仍是最新的那个。
  */
 class DriveSettingsStore(
+    private val clients: PikoClientProvider,
     private val driveRepo: PikoDriveRepository,
     private val filePrefix: String = "settings-",
 ) : RemoteSettingsStore {
@@ -261,12 +262,16 @@ class DriveSettingsStore(
 
     override suspend fun read(account: String): String? {
         val file = latestFile(folderOf(account)) ?: return null
-        return driveRepo.readBytes(file.id).getOrThrow().decodeToString()
+        val text = driveRepo.readBytes(file.id).getOrThrow().decodeToString()
+        // 读回来的要并进本机的那一份，那时本机已换成别的账号的，就并错了地方
+        requireCurrent(account)
+        return text
     }
 
     override suspend fun write(account: String, text: String, stamp: Long) {
         val folder = folderOf(account)
         val name = "$filePrefix$stamp$FILE_SUFFIX"
+        requireCurrent(account)
         driveRepo.uploadBytes(folder, name, text.encodeToByteArray()).getOrThrow()
         // 只删比这一份旧的：另一台设备同时在同步时，它更新的那份（可能还在上传）留给它自己收拾
         val stale = driveRepo.listAllFiles(folder).logFailure(TAG, "写入后列出 .piko 失败，旧的 $filePrefix 文件留到下次清理")
@@ -277,16 +282,27 @@ class DriveSettingsStore(
     // 记着的文件夹可能已被删掉或移走：列不出来就忘掉它，重新找一次。找与建在全部实例共用的锁里：
     // 设置与归档树两份同步在登录后同时开始，各自没找到就各建一个 .piko
     private suspend fun folderOf(account: String): String = folderLock.withLock {
+        requireCurrent(account)
         folderIds[account]?.let { known ->
             if (driveRepo.listAllFiles(known).logFailure(TAG, "列不出记着的 .piko 文件夹 $known，重新查找").isSuccess) return@withLock known
             folderIds.remove(account)
         }
         val root = driveRepo.listAllFiles("").getOrThrow()
+        requireCurrent(account)
         val id = root.firstOrNull { it.isFolder && it.name == PikoSettingsSync.FOLDER_NAME && !it.trashed }?.id
             ?: driveRepo.createFolder("", PikoSettingsSync.FOLDER_NAME).getOrThrow()
                 .also { PikoLog.i(TAG, "网盘根目录没有 .piko，已新建：$it") }
         folderIds[account] = id
         id
+    }
+
+    /**
+     * 网盘读写走的是仓库眼前的账号，不是 [account]：同步做到一半换了号，接下来的请求就落在新账号的网盘里，
+     * 记着的 .piko 列不出来，于是在新账号的根目录找到它的 .piko、记成旧账号的，把旧账号的设置、来源账本推进去。
+     * 每一步之前核对一次，换了号就放弃这一轮，由新账号的同步接着做。
+     */
+    private fun requireCurrent(account: String) {
+        check(clients.currentClient.value?.account == account) { "同步途中换了账号，放弃这一轮" }
     }
 
     // 上传是先建文件、再传内容，进程死在两步之间就留下一份 PENDING 的空壳，没有下载链接。

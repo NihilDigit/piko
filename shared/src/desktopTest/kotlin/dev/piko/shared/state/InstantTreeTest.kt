@@ -49,7 +49,7 @@ class InstantTreeTest {
         val prefs = MemoryPreferences()
         val driveRepo = PikoDriveRepository(provider, prefs)
         val state = InstantSheetState(
-            instantRepo, driveRepo, prefs, PreviewTempFolder(driveRepo, instantRepo, scope),
+            instantRepo, driveRepo, prefs, PreviewTempFolder(provider, driveRepo, instantRepo, scope),
             OfflinePackTracker(instantRepo, driveRepo, prefs), InstantSaveRecords(provider, null, scope), scope, magnet,
         )
         awaitUntil("解析与整理完成") { state.resolution != null }

@@ -38,7 +38,7 @@ class SourceLedgerSync(
         driveRepo: PikoDriveRepository,
         scope: CoroutineScope,
         enabled: Flow<Boolean>,
-    ) : this(clients, DriveSettingsStore(driveRepo, FILE_PREFIX), driveRepo.sourceLedger, scope, enabled)
+    ) : this(clients, DriveSettingsStore(clients, driveRepo, FILE_PREFIX), driveRepo.sourceLedger, scope, enabled)
 
     private val lock = Mutex()
 

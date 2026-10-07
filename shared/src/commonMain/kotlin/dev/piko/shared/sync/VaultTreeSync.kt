@@ -38,7 +38,7 @@ class VaultTreeSync(
         driveRepo: PikoDriveRepository,
         scope: CoroutineScope,
         enabled: Flow<Boolean>,
-    ) : this(clients, DriveSettingsStore(driveRepo, FILE_PREFIX), driveRepo.vaultTrees, scope, enabled)
+    ) : this(clients, DriveSettingsStore(clients, driveRepo, FILE_PREFIX), driveRepo.vaultTrees, scope, enabled)
 
     private val lock = Mutex()
 

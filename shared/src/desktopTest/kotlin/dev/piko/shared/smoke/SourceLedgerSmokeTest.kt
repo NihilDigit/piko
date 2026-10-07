@@ -51,7 +51,7 @@ class SourceLedgerSmokeTest {
             instantRepo,
             driveRepo,
             prefs,
-            PreviewTempFolder(driveRepo, instantRepo, scope),
+            PreviewTempFolder(provider, driveRepo, instantRepo, scope),
             OfflinePackTracker(instantRepo, driveRepo, prefs),
             InstantSaveRecords(provider, null, scope),
             scope,

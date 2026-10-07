@@ -79,7 +79,7 @@ class SourceLedger internal constructor(
 
     fun switchAccount(newAccount: String?) {
         if (newAccount == account) return
-        pendingSave?.cancel()
+        flushPendingSave()
         account = newAccount
         records.value = emptyMap()
         val cacheStore = store ?: return
@@ -106,8 +106,25 @@ class SourceLedger internal constructor(
         if (pendingSave?.isActive == true) return
         pendingSave = scope.launch {
             delay(saveDelayMillis)
-            if (account == owner) cacheStore.write(keyOf(owner), encode(records.value))
+            // 先取内容再核对账号：换号先改账号、再清内容，核对通过时取到的必是 owner 的
+            val snapshot = records.value
+            if (account == owner) cacheStore.write(keyOf(owner), encode(snapshot))
         }
+    }
+
+    /**
+     * 换号前还没写下的当场写给原来的账号。只取消的话，换号前两秒内记下的来源就丢了，
+     * 网盘那边没同步上的，切回来再也找不回。
+     */
+    private fun flushPendingSave() {
+        val pending = pendingSave ?: return
+        pendingSave = null
+        if (!pending.isActive) return
+        pending.cancel()
+        val cacheStore = store ?: return
+        val owner = account ?: return
+        val snapshot = records.value
+        scope.launch { cacheStore.write(keyOf(owner), encode(snapshot)) }
     }
 
     private fun keyOf(account: String) = "sources-" + account.replace(UNSAFE_KEY_CHARS, "_") + ".json"

@@ -71,7 +71,7 @@ class InstantFlowSmokeTest {
         val instantRepo = InstantMagnetRepository(provider)
         val driveRepo = PikoDriveRepository(provider, prefs)
         val tracker = OfflinePackTracker(instantRepo, driveRepo, prefs)
-        val previewFolder = PreviewTempFolder(driveRepo, instantRepo, backgroundScope)
+        val previewFolder = PreviewTempFolder(provider, driveRepo, instantRepo, backgroundScope)
         val saveRecords = InstantSaveRecords(provider, null, backgroundScope)
 
         fun sheet(scope: CoroutineScope, magnet: String) =

@@ -58,7 +58,7 @@ class ArchivePasswordSync(
         cipher: SyncCipher,
         scope: CoroutineScope,
         enabled: Flow<Boolean>,
-    ) : this(clients, DriveSettingsStore(driveRepo, FILE_PREFIX), ArchivePasswordVault(preferences), clients::savedPassword, cipher, scope, enabled)
+    ) : this(clients, DriveSettingsStore(clients, driveRepo, FILE_PREFIX), ArchivePasswordVault(preferences), clients::savedPassword, cipher, scope, enabled)
 
     private val lock = Mutex()
 
