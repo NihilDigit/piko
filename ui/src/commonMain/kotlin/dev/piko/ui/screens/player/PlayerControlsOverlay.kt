@@ -85,6 +85,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.rememberCoroutineScope
 import dev.piko.data.auth.PlayerGestureDefaults
+import dev.piko.ui.adaptive.isDesktopLayout
 /**
  * 播放器的完整控件层，叠在视频画面之上。Android 与桌面共用，名字沿用只有 Android 时的叫法。
  *
@@ -96,6 +97,7 @@ import dev.piko.data.auth.PlayerGestureDefaults
  * 那一套（侧边面板、大号中央按钮）。
  *
  * 平台附加项：[brightness] 与 [volume] 是竖滑手势与上下方向键调节的对象，平台没有就传 null；
+ * 桌面上 [volume] 另有底栏的静音键与音量滑块。
  * 全屏由 [onToggleFullscreen] 交给调用方（Android 切横竖屏，桌面切窗口全屏），[isFullscreen]
  * 只决定全屏键的图标；[isLandscapeVideo] 决定竖屏时是否给出全屏入口。
  * 触屏与鼠标的点击、双击、拖动都走同一个手势层。鼠标悬停不产生点击，所以另外监听鼠标移动来
@@ -184,6 +186,7 @@ fun MobilePlayerControls(
     var isLocked by remember { mutableStateOf(false) }
     var activeGesture by remember { mutableStateOf<PlayerGesture?>(null) }
     var isScrubbing by remember { mutableStateOf(false) }
+    var isDraggingVolume by remember { mutableStateOf(false) }
     var openSheet by remember { mutableStateOf<PlayerSheet?>(null) }
     var isSpeedPopupOpen by remember { mutableStateOf(false) }
     var mouseMoveCount by remember { mutableIntStateOf(0) }
@@ -259,9 +262,20 @@ fun MobilePlayerControls(
         onSeek(target)
     }
 
+    // 静音前的音量，再按一次 M 或点静音键回到这里。不在静音时为 null
+    var volumeBeforeMute by remember { mutableStateOf<Float?>(null) }
+
+    // 调到非零即视为不再静音：之后再静音、取消静音，回到的是新调的值
+    fun setVolume(fraction: Float): Float? {
+        val control = volume ?: return null
+        val applied = control.set(fraction.coerceIn(0f, 1f))
+        if (applied > 0f) volumeBeforeMute = null
+        return applied
+    }
+
     fun stepVolume(delta: Float) {
         val control = volume ?: return
-        keyVolume = control.set((control.current() + delta).coerceIn(0f, 1f))
+        keyVolume = setVolume(control.current() + delta)
         keyVolumeCount += 1
     }
 
@@ -351,20 +365,22 @@ fun MobilePlayerControls(
         }
     }
 
-    // 静音前的音量，再按一次 M 回到这里。不在静音时为 null
-    var volumeBeforeMute by remember { mutableStateOf<Float?>(null) }
-
-    fun toggleMute() {
+    // 静音就是音量为 0，不另设静音标志：滚轮、方向键、滑块与静音键读写的是同一个值，不会出现
+    // 「显示静音、实际有声」。音量已是 0（拖到底、按到底）时一律取消静音，没有记下的值就回到一半，
+    // 否则点了静音键没有任何变化
+    // [showHud]：按 M 时借上方读数显示结果；点底栏的静音键时图标与滑块已经变了，不再弹读数
+    fun toggleMute(showHud: Boolean = true) {
         val control = volume ?: return
-        val restore = volumeBeforeMute
-        keyVolume = if (restore != null && control.current() == 0f) {
-            control.set(restore)
+        val current = control.current()
+        val applied = if (current > 0f) {
+            control.set(0f).also { volumeBeforeMute = current }
         } else {
-            volumeBeforeMute = control.current().takeIf { it > 0f } ?: VOLUME_KEY_STEP
-            control.set(0f)
+            setVolume(volumeBeforeMute ?: UNMUTE_FALLBACK_VOLUME) ?: return
         }
-        if (keyVolume != 0f) volumeBeforeMute = null
-        keyVolumeCount += 1
+        if (showHud) {
+            keyVolume = applied
+            keyVolumeCount += 1
+        }
     }
 
     // 倍速按预设一档一档地换；当前值不在预设里时，往那个方向取最近的一档
@@ -445,7 +461,7 @@ fun MobilePlayerControls(
     val controlsHover = remember { MutableInteractionSource() }
     val isHoveringControls by controlsHover.collectIsHoveredAsState()
     // 倍速浮层挂在底栏上，底栏一收起它就跟着消失，开着时同样不收
-    val holdControls = !isPlaying || isScrubbing || openSheet != null || isSpeedPopupOpen || errorMessage != null ||
+    val holdControls = !isPlaying || isScrubbing || isDraggingVolume || openSheet != null || isSpeedPopupOpen || errorMessage != null ||
         isHoveringControls
     val currentHoldControls by rememberUpdatedState(holdControls)
     // 鼠标与手指对点按的解释不同，见 [PointerSource]。鼠标沿用桌面播放器的通行约定：单击播放或暂停，
@@ -590,6 +606,10 @@ fun MobilePlayerControls(
         ?.label
         // 纯数字集号写成「第 24 集」；「25(SP)」「23 Beta」这类照原样，套上「第…集」反而别扭
         ?.let { if (it.matches(PLAIN_EPISODE)) "第 $it 集" else it }
+
+    // 底栏的音量键与滑块只在桌面给：鼠标没有调音量的手势，滚轮与方向键又无从发现。
+    // 移动端有系统音量键与竖滑手势。读 current() 时依赖桌面实现背后的 Compose State 才随之重组
+    val volumeLevel = volume?.takeIf { isDesktopLayout() }?.current()
 
     // 控件收起且鼠标一段时间没动才藏指针。只看控件时，单击画面收起控件指针也立刻消失，手还在鼠标上
     // 就找不到它；只看鼠标时，控件还显示着指针却没了
@@ -797,6 +817,16 @@ fun MobilePlayerControls(
                             onToggleFullscreen()
                         },
                         onScrubbingChange = { isScrubbing = it },
+                        volume = volumeLevel,
+                        onVolumeChange = {
+                            interacted()
+                            setVolume(it)
+                        },
+                        onToggleMute = {
+                            interacted()
+                            toggleMute(showHud = false)
+                        },
+                        onVolumeDraggingChange = { isDraggingVolume = it },
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .hoverable(controlsHover)
@@ -948,7 +978,9 @@ private val HUD_TOP_PADDING = 88.dp
 private const val KEY_VOLUME_HUD_MILLIS = 800L
 // 比音量 HUD 久一点：读数在胶囊里还要等变形走完才看得清
 private const val INDICATOR_FLASH_MILLIS = 1_200L
-private const val VOLUME_KEY_STEP = 0.05f
+// 方向键、滚轮调音量的一步，底栏音量滑块上的滚轮同用
+internal const val VOLUME_KEY_STEP = 0.05f
+private const val UNMUTE_FALLBACK_VOLUME = 0.5f
 
 
 private val COMPACT_WIDTH = 600.dp

@@ -68,6 +68,11 @@ import androidx.compose.ui.awt.ComposeWindow
 import dev.piko.shared.log.PikoLog
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.filterNotNull
+import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.runBlocking
 import java.awt.KeyboardFocusManager
 import java.awt.Point
@@ -145,6 +150,7 @@ fun VideoPlayerWindow(
                     VideoPlayerContent(
                         request = request,
                         services = services,
+                        settings = settings,
                         window = window,
                         isFullscreen = inFullscreen,
                         onToggleFullscreen = {
@@ -209,10 +215,11 @@ private fun turnWindow(window: Window, windowState: WindowState): Boolean {
 private val PlayerTitleBarColors = TitleBarColors(container = Color.Black, content = Color.White)
 
 @Composable
-@OptIn(ExperimentalMediampApi::class)
+@OptIn(ExperimentalMediampApi::class, FlowPreview::class)
 private fun VideoPlayerContent(
     request: VideoPlayerRequest,
     services: PikoServices,
+    settings: DesktopSettingsStore,
     window: ComposeWindow,
     isFullscreen: Boolean,
     onToggleFullscreen: () -> Unit,
@@ -225,7 +232,21 @@ private fun VideoPlayerContent(
     val player = rememberMediampPlayer()
     // 偏好是 StateFlow，first() 当场返回
     val hardwareDecoding = remember { runBlocking { services.preferences.hardwareDecodingFlow.first() } }
-    val backend = remember(player) { MediampPlaybackBackend(player, scope, hardwareDecoding = hardwareDecoding) }
+    val backend = remember(player) {
+        MediampPlaybackBackend(player, scope, hardwareDecoding = hardwareDecoding).also { created ->
+            // mpv 的音量在换文件时保留，只需在开窗时设一次
+            settings.get(KEY_PLAYER_VOLUME).toFloatOrNull()?.let(created::setVolume)
+        }
+    }
+    // 音量按本机记住，下一个窗口、下次启动照旧。不进设置同步：各台设备的音箱与系统音量不同。
+    // 静音（音量为 0）不记：下次打开一片寂静，像是坏了
+    LaunchedEffect(backend) {
+        snapshotFlow { backend.volume }
+            .filterNotNull()
+            .filter { it > 0f }
+            .debounce(VOLUME_SAVE_DEBOUNCE_MILLIS)
+            .collect { settings.set(KEY_PLAYER_VOLUME, it.toString()) }
+    }
     val downloads = services.downloadManager
     // 主界面给的同目录视频；从传输页打开时为空，进来后再按父目录取
     var siblingVideos by remember(request) { mutableStateOf(request.playlist) }
@@ -412,7 +433,12 @@ private suspend fun chooseSubtitleFile(owner: Window?): File? = AwtDialogs.choos
     filter = ::isPlayerSubtitleName,
 ).firstOrNull()
 
-/** 桌面没有系统媒体音量可借，音量手势与方向键调的是 mpv 自身的音量。 */
+// settings.properties 里的键，与 DesktopPikoPreferences 的 player.* 同一命名空间，只是不经偏好接口：Android 用系统音量，用不上
+private const val KEY_PLAYER_VOLUME = "player.volume"
+// 拖滑块、滚滚轮时连续在变，停下来再写盘
+private const val VOLUME_SAVE_DEBOUNCE_MILLIS = 500L
+
+/** 桌面没有系统媒体音量可借，音量手势、方向键与底栏滑块调的是 mpv 自身的音量。 */
 private class BackendVolume(private val backend: PlaybackBackend) : PlayerLevelControl {
     override fun current(): Float = backend.volume ?: 1f
 

@@ -47,6 +47,11 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.VolumeDown
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Fullscreen
@@ -101,6 +106,7 @@ import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.graphics.graphicsLayer
@@ -534,6 +540,11 @@ internal fun PlayerBottomBar(
     onToggleFullscreen: () -> Unit,
     modifier: Modifier = Modifier,
     onScrubbingChange: (Boolean) -> Unit = {},
+    /** 当前音量，0 即静音；为 null 时不给音量键与滑块（移动端，或平台没有可调的音量）。 */
+    volume: Float? = null,
+    onVolumeChange: (Float) -> Unit = {},
+    onToggleMute: () -> Unit = {},
+    onVolumeDraggingChange: (Boolean) -> Unit = {},
 ) {
     var scrubPositionMillis by remember { mutableStateOf<Long?>(null) }
     val shownPosition = scrubPositionMillis ?: previewPositionMillis ?: positionMillis
@@ -574,6 +585,18 @@ internal fun PlayerBottomBar(
                 if (showEpisodeSkip) {
                     PlayerIconButton(icon = Icons.Filled.SkipPrevious, label = "上一集", onClick = onPrevious, enabled = hasPrevious)
                     PlayerIconButton(icon = Icons.Filled.SkipNext, label = "下一集", onClick = onNext, enabled = hasNext)
+                    Spacer(Modifier.width(8.dp))
+                }
+                // 照 YouTube 放在换集之后、时间之前，右边一组的位置不变
+                if (volume != null) {
+                    PlayerVolumeControl(
+                        volume = volume,
+                        // 窄窗口只留静音键，滚轮在键上照样能调
+                        showSlider = !compactWidth,
+                        onVolumeChange = onVolumeChange,
+                        onToggleMute = onToggleMute,
+                        onDraggingChange = onVolumeDraggingChange,
+                    )
                     Spacer(Modifier.width(8.dp))
                 }
                 Text(
@@ -628,6 +651,173 @@ internal fun PlayerBottomBar(
         }
     }
 }
+
+/**
+ * 桌面底栏的音量：静音键加一条常驻的横向滑块，键与滑块上的滚轮都调音量。
+ *
+ * 不学 YouTube 悬停才展开：桌面端也有触屏（Windows 的触摸与笔经 compose-windows-touch 接入），手指没有悬停，
+ * 点键只会静音，滑块永远出不来；键盘 Tab 过去也要先展开。也不学 Windows 媒体播放器点键弹出浮层：
+ * 那样点键就不能是静音。常驻滑块照 IINA、VLC，只占约 90dp，横屏底栏放得下。
+ */
+@Composable
+private fun PlayerVolumeControl(
+    volume: Float,
+    showSlider: Boolean,
+    onVolumeChange: (Float) -> Unit,
+    onToggleMute: () -> Unit,
+    onDraggingChange: (Boolean) -> Unit,
+) {
+    val currentVolume by rememberUpdatedState(volume)
+    val currentOnVolumeChange by rememberUpdatedState(onVolumeChange)
+    val muted = volume <= 0f
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        // 底栏盖在手势层上面，画面上的滚轮调音量到不了这里，要自己接；消费掉，免得冒泡给别的滚动容器
+        modifier = Modifier.pointerInput(Unit) {
+            awaitPointerEventScope {
+                while (true) {
+                    val event = awaitPointerEvent()
+                    if (event.type != PointerEventType.Scroll) continue
+                    val change = event.changes.firstOrNull() ?: continue
+                    val dy = change.scrollDelta.y
+                    if (dy == 0f) continue
+                    val step = if (dy < 0f) VOLUME_KEY_STEP else -VOLUME_KEY_STEP
+                    currentOnVolumeChange((currentVolume + step).coerceIn(0f, 1f))
+                    change.consume()
+                }
+            }
+        },
+    ) {
+        PlayerIconButton(
+            icon = when {
+                muted -> Icons.AutoMirrored.Filled.VolumeOff
+                volume < VOLUME_LOW_THRESHOLD -> Icons.AutoMirrored.Filled.VolumeDown
+                else -> Icons.AutoMirrored.Filled.VolumeUp
+            },
+            label = if (muted) "取消静音" else "静音",
+            onClick = onToggleMute,
+            shortcut = "M",
+        )
+        if (showSlider) {
+            Spacer(Modifier.width(4.dp))
+            PlayerVolumeSlider(volume = volume, onVolumeChange = onVolumeChange, onDraggingChange = onDraggingChange)
+        }
+    }
+}
+
+/**
+ * 音量滑块，外观同进度条（细轨道、靠近变粗），理由见 [PlayerSeekBar]。与进度条不同，拖动途中即时生效：
+ * 改音量没有重开请求的代价，要边拖边听。悬停或拖动时在手柄上方显示百分比。
+ *
+ * 键盘：Tab 可停在这里；上下方向键由播放器根节点接住、调的就是这个音量，左右方向键照旧是进退，
+ * 与进度条同样让上级的快捷键赢。
+ */
+@Composable
+private fun PlayerVolumeSlider(
+    volume: Float,
+    onVolumeChange: (Float) -> Unit,
+    onDraggingChange: (Boolean) -> Unit,
+) {
+    var dragging by remember { mutableStateOf(false) }
+    val hoverInteraction = remember { MutableInteractionSource() }
+    val hovered by hoverInteraction.collectIsHoveredAsState()
+    val focusInteraction = remember { MutableInteractionSource() }
+    val focused by focusInteraction.collectIsFocusedAsState()
+    val scheme = MaterialTheme.colorScheme
+    val inactive = scheme.onSurface.copy(alpha = INACTIVE_TRACK_ALPHA)
+    val trackColors = SeekTrackColors(active = scheme.primary, inactive = inactive, buffered = inactive)
+    val motion = MaterialTheme.motionScheme
+    val engaged = dragging || hovered || focused
+    val thickness by animateDpAsState(if (engaged) SeekTrackEngagedThickness else SeekTrackThickness, motion.fastSpatialSpec())
+    val thumbRadius by animateDpAsState(if (dragging) SeekThumbDraggingRadius else SeekThumbRadius, motion.fastSpatialSpec())
+    val focusRingColor = scheme.secondary
+    val currentOnVolumeChange by rememberUpdatedState(onVolumeChange)
+    val currentOnDraggingChange by rememberUpdatedState(onDraggingChange)
+    val percent = (volume * 100).roundToInt()
+
+    Box(
+        Modifier
+            .width(VolumeSliderWidth)
+            .height(SeekTouchHeight)
+            .handCursor()
+            .hoverable(hoverInteraction)
+            .pointerInput(Unit) {
+                val inset = SeekThumbDraggingRadius.toPx()
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    down.consume()
+                    dragging = true
+                    currentOnDraggingChange(true)
+                    try {
+                        currentOnVolumeChange(seekFractionAt(down.position.x, size.width.toFloat(), inset))
+                        while (true) {
+                            val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
+                            if (!change.pressed) break
+                            currentOnVolumeChange(seekFractionAt(change.position.x, size.width.toFloat(), inset))
+                            change.consume()
+                        }
+                    } finally {
+                        dragging = false
+                        currentOnDraggingChange(false)
+                    }
+                }
+            }
+            .drawBehind {
+                drawSeekTrack(
+                    fraction = volume,
+                    bufferedFraction = 0f,
+                    colors = trackColors,
+                    thickness = thickness.toPx(),
+                    thumbRadius = thumbRadius.toPx(),
+                    inset = SeekThumbDraggingRadius.toPx(),
+                    focusRing = if (focused) focusRingColor else null,
+                )
+            }
+            .focusable(interactionSource = focusInteraction)
+            .semantics {
+                contentDescription = "音量"
+                stateDescription = "$percent%"
+                progressBarRangeInfo = ProgressBarRangeInfo(volume, 0f..1f)
+                setProgress { target ->
+                    currentOnVolumeChange(target.coerceIn(0f, 1f))
+                    true
+                }
+            },
+    ) {
+        if (dragging || hovered) {
+            val density = LocalDensity.current
+            Surface(
+                shape = MaterialTheme.shapes.small,
+                color = if (dragging) scheme.primary else scheme.inverseSurface,
+                contentColor = if (dragging) scheme.onPrimary else scheme.inverseOnSurface,
+                // 零尺寸、贴在手柄正上方，可以宽出滑块：滑块只有九十来 dp，按它收边的话气泡对不上手柄
+                modifier = Modifier.layout { measurable, constraints ->
+                    val placeable = measurable.measure(Constraints())
+                    val inset = with(density) { SeekThumbDraggingRadius.toPx() }
+                    val anchor = inset + volume * (constraints.maxWidth - 2 * inset)
+                    val drop = with(density) { VolumeBubbleDrop.roundToPx() }
+                    layout(0, 0) { placeable.place((anchor - placeable.width / 2f).roundToInt(), -placeable.height + drop) }
+                },
+            ) {
+                Text(
+                    // 悬停时顺带写出快捷键：音量能用方向键调，原先只有快捷键一览里写着
+                    text = if (dragging) "$percent%" else "音量 $percent% (↑ / ↓)",
+                    style = TimeTextStyle(),
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                )
+            }
+        }
+    }
+}
+
+private val VolumeSliderWidth = 88.dp
+// 气泡下沿压进滑块上沿的距离：滑块的布局高度是 48dp 的触控区、轨道在正中，贴着上沿放就离轨道太远，
+// 往上又压住进度条。12dp 时气泡下沿离轨道 12dp，让得开拖动时放大的手柄
+private val VolumeBubbleDrop = 12.dp
+// 低于这个音量换成小喇叭图标
+private const val VOLUME_LOW_THRESHOLD = 0.5f
 
 /**
  * 倍速的浮动滑块：贴在「1x」按钮正上方，只有当前值与一条滑块，点数值回到 1x。
@@ -1000,12 +1190,14 @@ internal fun PlayerIconButton(
     iconSize: Dp = 24.dp,
     shapes: IconButtonShapes = IconButtonDefaults.shapes(),
     tooltipBelow: Boolean = false,
+    // 只写进提示，不进 contentDescription，与 TooltipIconButton 相同
+    shortcut: String? = null,
 ) {
     TooltipBox(
         positionProvider = TooltipDefaults.rememberTooltipPositionProvider(
             if (tooltipBelow) TooltipAnchorPosition.Below else TooltipAnchorPosition.Above,
         ),
-        tooltip = { PlainTooltip { Text(label) } },
+        tooltip = { PlainTooltip { Text(if (shortcut != null) "$label ($shortcut)" else label) } },
         state = rememberTooltipState(),
         modifier = modifier,
     ) {
