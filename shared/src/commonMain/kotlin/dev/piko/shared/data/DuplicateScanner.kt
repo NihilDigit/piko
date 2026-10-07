@@ -28,17 +28,20 @@ sealed interface DuplicateScanEvent {
     /**
      * [stop] 为 null 表示完整走完。[failedFolders] 是列不出来而跳过的目录数：
      * 几千个目录里偶有一个超时，不值得让整轮扫描作废。
+     * [subfolders] 是起点之下列出过内容的文件夹，没来得及列或列失败的不在里面：按番号规范命名据此看文件夹里有什么，
+     * 内容不明的文件夹不能拿来判断。
      */
     data class Finished(
         val files: List<ScannedFile>,
         val folders: Int,
         val failedFolders: Int,
         val stop: ScanStop?,
+        val subfolders: List<ScannedFile> = emptyList(),
     ) : DuplicateScanEvent
 }
 
 /**
- * 递归列出一个目录下的全部文件，供查找重复用。
+ * 递归列出一个目录下的全部文件与文件夹，供查找重复与按番号规范命名用。
  *
  * PikPak 没有按哈希查询的接口，只能逐个目录列出来在本地比对，一个目录一次请求（SDK 负责翻页）。
  * 按层遍历、每批并发 [concurrency] 个目录，与仓库层的 folderUsage 相同。
@@ -73,6 +76,7 @@ class DuplicateScanner(
     fun scan(rootId: String): Flow<DuplicateScanEvent> = flow {
         val deadline = TimeSource.Monotonic.markNow() + timeout
         val files = mutableListOf<ScannedFile>()
+        val subfolders = mutableListOf<ScannedFile>()
         var listed = 0
         var failed = 0
         var stop: ScanStop? = null
@@ -105,11 +109,12 @@ class DuplicateScanner(
                         failed++
                         return@forEach
                     }
+                    folder.entry?.let { subfolders += it }
                     for (entry in entries) {
                         // Piko-Temp 里是秒传预览的临时副本，本就与原文件相同，且会被自动清理，列出来只是噪声
                         when {
                             entry.isFolder -> if (!(isRoot && rootId.isEmpty() && entry.name == PreviewTempFolder.FOLDER_NAME)) {
-                                next += ScanFolder(entry.id, folder.childPath(entry.name))
+                                next += ScanFolder(entry.id, folder.childPath(entry.name), ScannedFile(entry, folder.path))
                             }
                             entry.isFile && !entry.trashed -> files += ScannedFile(entry, folder.path)
                         }
@@ -120,10 +125,11 @@ class DuplicateScanner(
             isRoot = false
             level = next
         }
-        emit(DuplicateScanEvent.Finished(files.toList(), listed, failed, stop))
+        emit(DuplicateScanEvent.Finished(files.toList(), listed, failed, stop, subfolders.toList()))
     }.flowOn(Dispatchers.Default)
 
-    private class ScanFolder(val id: String, val path: String) {
+    /** [entry] 是这个目录在上一层里的那一项，起点为 null。 */
+    private class ScanFolder(val id: String, val path: String, val entry: ScannedFile? = null) {
         fun childPath(name: String) = if (path.isEmpty()) name else "$path/$name"
     }
 }

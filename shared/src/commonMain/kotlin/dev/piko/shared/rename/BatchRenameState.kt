@@ -2,7 +2,6 @@ package dev.piko.shared.rename
 
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.piko.data.auth.PikoUserPreferences
@@ -10,7 +9,6 @@ import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
-import dev.piko.shared.log.logFile
 import dev.piko.shared.naming.av.hasAvCode
 import dev.piko.shared.naming.av.matchAvFolder
 import dev.piko.shared.naming.parseMediaName
@@ -378,17 +376,14 @@ class BatchRenameState(
     var phase by mutableStateOf(Phase.EDITING)
         private set
 
-    /** 执行时要改名的项数，与已处理的项数（含失败）。 */
-    var total by mutableStateOf(0)
-        private set
-    var processed by mutableStateOf(0)
-        private set
+    private val run = RenameRun(driveRepo, TAG)
 
-    // 成功的每一步，按执行顺序，撤销时倒着改回去。临时名称的那一步也在里面，撤销时同样倒着经过它
-    private val renamed = mutableListOf<DriveChangeJournal.Renamed>()
+    /** 执行时要改名的项数，与已处理的项数（含失败）。 */
+    val total: Int get() = run.total
+    val processed: Int get() = run.processed
 
     /** 改名失败的项，成功的不回滚。 */
-    val failures = mutableStateListOf<RenameRow>()
+    val failures: List<RenameRow> get() = run.failures
 
     var wasStopped by mutableStateOf(false)
         private set
@@ -427,21 +422,11 @@ class BatchRenameState(
         }
     }
 
-    /**
-     * 按 [RenamePlan.steps] 逐个改名。一次一个：顺序本身就是为了避开 A 改成 B、B 改成 C 的中间冲突，
-     * 并发会打乱它；改名请求也只是一次元数据修改，逐个执行的耗时可以接受。
-     *
-     * 一项失败后它余下的步骤跳过。停在临时名称上的项试着改回原名，改不回就留着临时名称，撤销时照样能改回。
-     */
+    /** 按 [RenamePlan.steps] 逐个改名，见 [RenameRun]。 */
     fun rename() {
         if (!canRename) return
         val plan = plan
-        val targets = plan.rows.associate { it.source.id to it }
         scope.launch { BatchRenameMemory.save(preferences, memory.remember(effectiveOptions)) }
-        total = plan.changeCount
-        processed = 0
-        failures.clear()
-        renamed.clear()
         wasStopped = false
         phase = Phase.RUNNING
         val started = TimeSource.Monotonic.markNow()
@@ -449,38 +434,19 @@ class BatchRenameState(
             "${sources.map { it.parentId }.distinct().size} 个目录，${if (textMode) "正则文本" else "积木"}模式${if (avNaming) "，按番号规范命名" else ""}")
         job = scope.launch {
             try {
-                val failedIds = mutableSetOf<String>()
-                for (step in plan.steps) {
-                    val id = step.source.id
-                    if (id in failedIds) continue
-                    val row = targets.getValue(id)
-                    val isFinal = step.to == row.newName
-                    val succeeded = renameStep(id, step.from, step.to)
-                    if (!succeeded) {
-                        failedIds += id
-                        failures += row
-                        if (step.from != step.source.name) renameStep(id, step.from, step.source.name)
-                    }
-                    if (!succeeded || isFinal) processed++
-                }
+                run.execute(plan)
             } finally {
-                PikoLog.i(TAG, "批量重命名结束：${summary()}，成功 ${renamed.size} 步，历时 ${started.elapsedNow().inWholeMilliseconds} ms")
+                PikoLog.i(TAG, "批量重命名结束：${summary()}，成功 ${run.renamed.size} 步，历时 ${started.elapsedNow().inWholeMilliseconds} ms")
                 phase = Phase.DONE
                 // 改成了的记进改动记录，提示带「撤销」；一项也没改成的只报结果
-                if (renamed.isNotEmpty()) {
-                    driveRepo.changes.record(DriveChangeJournal.Change.Rename(renamed.toList(), summary()))
+                if (run.renamed.isNotEmpty()) {
+                    driveRepo.changes.record(DriveChangeJournal.Change.Rename(run.renamed.toList(), summary()))
                 } else {
                     _messages.tryEmit(summary())
                 }
             }
         }
     }
-
-    private suspend fun renameStep(id: String, from: String, to: String): Boolean =
-        driveRepo.rename(id, to)
-            .logFailure(TAG, "批量重命名失败：${logFile(id, from)}")
-            .onSuccess { renamed += DriveChangeJournal.Renamed(id, from, to) }
-            .isSuccess
 
     /** 停在当前这一项之后。正在发出的请求可能已在服务端生效，以刷新后的列表为准。 */
     fun stop() {

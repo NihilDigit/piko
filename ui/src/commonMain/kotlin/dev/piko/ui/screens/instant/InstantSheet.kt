@@ -177,7 +177,7 @@ fun InstantSheetContent(
     val saveByShortcut: (() -> Unit)? = when {
         batch != null -> if (batch.openedRow == null && batch.canSaveAll) batch::saveAll else null
         shareState != null -> state.target?.takeIf { shareState.selectedIds.isNotEmpty() && !shareState.isSaving }
-            ?.let { target -> { shareState.save(PikoPathBreadcrumb(target.id, target.name)) } }
+            ?.let { target -> { shareState.save(PikoPathBreadcrumb(target.id, target.name), canonicalNames = state.useCanonicalNames) } }
         action != null && action.enabled && !state.isSaving && state.savePlan?.blocked != true -> saveMagnet
         else -> null
     }
@@ -235,7 +235,7 @@ fun InstantSheetContent(
         }
 
         if (shareState != null) {
-            ShareSaveFooter(state = shareState, target = state.target, onPickTarget = { showTargetPicker = true })
+            ShareSaveFooter(state = shareState, target = state.target, canonicalNames = state.useCanonicalNames, onPickTarget = { showTargetPicker = true })
         } else if (action != null) {
             TargetRow(
                 target = state.target,
@@ -340,6 +340,8 @@ private fun ColumnScope.InstantBody(
     if (shareState != null) {
         ShareSaveSection(
             state = shareState,
+            canonicalNames = state.useCanonicalNames,
+            onCanonicalNamesChange = state::updateUseCanonicalNames,
             onPreview = state::previewSharedFile,
             previewingId = state.previewingSharedId,
             onDownload = { file ->
@@ -643,7 +645,7 @@ internal fun ColumnScope.ResolutionSection(
     // 列表占去面板剩下的高度，不再定死 320dp：长资源的上半部分有文件夹名、计数与芯片，
     // 定高时列表里只看得到两三行。fill = false 让短列表照常收缩
     UnindexedBanner(state)
-    CanonicalNamesToggle(state)
+    if (state.offersCanonicalNames) CanonicalNamesToggle(state.useCanonicalNames, enabled = !state.isSaving, onChange = state::updateUseCanonicalNames)
 
     // 列表连同它的页眉占去剩下的高度，短列表照常收缩
     Column(modifier = Modifier.weight(1f, fill = false)) {
@@ -675,20 +677,19 @@ private fun UnindexedBanner(state: InstantSheetState) {
 }
 
 /**
- * 保存时按番号规范命名。资源里有会改名的番号文件才出现，默认关；开着时列表行直接显示存进去的名字，
- * 新建文件夹名同样换成规范名，看着就是保存后的样子。
+ * 保存时按番号规范命名。资源里有会改名的番号文件才出现，初值取设置里的同名项；开着时列表行直接显示存进去的名字，
+ * 新建文件夹名同样换成规范名，看着就是保存后的样子。磁力与分享转存共用这一行。
  */
 @Composable
-private fun CanonicalNamesToggle(state: InstantSheetState) {
-    if (state.canonicalNameList == null) return
+internal fun CanonicalNamesToggle(checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp)
-            .toggleable(value = state.useCanonicalNames, enabled = !state.isSaving, role = Role.Checkbox, onValueChange = state::updateUseCanonicalNames),
+            .toggleable(value = checked, enabled = enabled, role = Role.Checkbox, onValueChange = onChange),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Checkbox(checked = state.useCanonicalNames, onCheckedChange = null, enabled = !state.isSaving, modifier = Modifier.minimumInteractiveComponentSize())
+        Checkbox(checked = checked, onCheckedChange = null, enabled = enabled, modifier = Modifier.minimumInteractiveComponentSize())
         Text("按番号规范命名", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
     }
 }

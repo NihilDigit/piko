@@ -51,6 +51,9 @@ import kotlinx.coroutines.delay
 @Composable
 internal fun ColumnScope.ShareSaveSection(
     state: ShareSaveState,
+    /** 转存后按番号规范命名，与磁力共用面板的开关，见 [CanonicalNamesToggle]。 */
+    canonicalNames: Boolean,
+    onCanonicalNamesChange: (Boolean) -> Unit,
     onPreview: (FileStat) -> Unit,
     previewingId: String?,
     onDownload: (FileStat) -> Unit,
@@ -79,8 +82,9 @@ internal fun ColumnScope.ShareSaveSection(
                     )
                 }
             }
+            if (state.offersCanonicalNames) CanonicalNamesToggle(canonicalNames, enabled = !state.isSaving, onChange = onCanonicalNamesChange)
             // 与磁力的文件列表一样占去剩下的高度，不定死：长分享在面板里自己滚动，短的照常收缩
-            ShareBrowser(state, onPreview, previewingId, onDownload, modifier = Modifier.weight(1f, fill = false))
+            ShareBrowser(state, canonicalNames, onPreview, previewingId, onDownload, modifier = Modifier.weight(1f, fill = false))
         }
     }
 
@@ -90,7 +94,7 @@ internal fun ColumnScope.ShareSaveSection(
 
 /** 保存位置与转存按钮。与磁力的保存栏同处：侧边面板里钉在底部。 */
 @Composable
-internal fun ShareSaveFooter(state: ShareSaveState, target: PathBreadcrumb?, onPickTarget: () -> Unit) {
+internal fun ShareSaveFooter(state: ShareSaveState, target: PathBreadcrumb?, canonicalNames: Boolean, onPickTarget: () -> Unit) {
     val info = state.info
     state.doneMessage?.let { message ->
         SaveCaption(message)
@@ -107,7 +111,7 @@ internal fun ShareSaveFooter(state: ShareSaveState, target: PathBreadcrumb?, onP
             label = if (state.selectedIds.isEmpty()) "勾选要转存的内容" else "转存 ${state.selectedIds.size} 项$size",
             enabled = target != null && state.selectedIds.isNotEmpty(),
             isSaving = state.isSaving,
-            onClick = { target?.let { state.save(PikoPathBreadcrumb(it.id, it.name)) } },
+            onClick = { target?.let { state.save(PikoPathBreadcrumb(it.id, it.name), canonicalNames) } },
         )
     }
 }
@@ -130,7 +134,14 @@ private fun PassCodeRow(state: ShareSaveState) {
 
 /** 当前层的列表。上方一行是所在位置，可退回上一层。 */
 @Composable
-private fun ShareBrowser(state: ShareSaveState, onPreview: (FileStat) -> Unit, previewingId: String?, onDownload: (FileStat) -> Unit, modifier: Modifier = Modifier) {
+private fun ShareBrowser(
+    state: ShareSaveState,
+    canonicalNames: Boolean,
+    onPreview: (FileStat) -> Unit,
+    previewingId: String?,
+    onDownload: (FileStat) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainerHigh, modifier = modifier) {
         Column {
             Row(
@@ -162,6 +173,7 @@ private fun ShareBrowser(state: ShareSaveState, onPreview: (FileStat) -> Unit, p
                 items(state.entries, key = { it.id }) { file ->
                     ShareEntryRow(
                         file = file,
+                        renamed = if (canonicalNames) state.canonicalPreview(file) else null,
                         checked = file.id in state.selectedIds,
                         onToggle = { state.toggle(file) },
                         onOpen = { state.enter(file) },
@@ -176,7 +188,17 @@ private fun ShareBrowser(state: ShareSaveState, onPreview: (FileStat) -> Unit, p
 }
 
 @Composable
-private fun ShareEntryRow(file: FileStat, checked: Boolean, onToggle: () -> Unit, onOpen: () -> Unit, onPreview: (() -> Unit)?, isPreviewing: Boolean, onDownload: (() -> Unit)?) {
+private fun ShareEntryRow(
+    file: FileStat,
+    /** 开着规范命名时转存后的名字，不改时为 null。 */
+    renamed: String?,
+    checked: Boolean,
+    onToggle: () -> Unit,
+    onOpen: () -> Unit,
+    onPreview: (() -> Unit)?,
+    isPreviewing: Boolean,
+    onDownload: (() -> Unit)?,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -189,7 +211,8 @@ private fun ShareEntryRow(file: FileStat, checked: Boolean, onToggle: () -> Unit
         FileTypeIcon(file = file, iconSize = 20.dp, modifier = Modifier.size(24.dp))
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f).padding(vertical = 8.dp)) {
-            Text(file.name, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            // 与磁力的文件树相同：开着规范命名时行上就是存进去的名字
+            Text(renamed ?: file.name, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
             if (!file.isFolder) {
                 Text(
                     file.sizeBytes.toReadableSize(),

@@ -54,6 +54,10 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun setNameParsingEnabled(enabled: Boolean) = Unit
     override val bundleSubtitlesFlow: Flow<Boolean> = MutableStateFlow(false)
     override suspend fun setBundleSubtitlesEnabled(enabled: Boolean) = Unit
+    override val autoCanonicalNamesFlow = MutableStateFlow(false)
+    override suspend fun setAutoCanonicalNames(enabled: Boolean) {
+        autoCanonicalNamesFlow.value = enabled
+    }
     override val autoCleanNamesFlow: Flow<Boolean> = MutableStateFlow(false)
     override suspend fun setAutoCleanNamesEnabled(enabled: Boolean) = Unit
     override val settingsSyncFlow: Flow<Boolean> = MutableStateFlow(false)

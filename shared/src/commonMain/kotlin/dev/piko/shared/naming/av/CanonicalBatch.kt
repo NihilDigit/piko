@@ -15,24 +15,29 @@ data class AvNamingItem(val name: String, val group: String, val isFolder: Boole
  * - 跟不上任何视频、自己带番号的字幕（「ABC-123-zh.srt」）单独取规范名，片名与同番号同分段的视频一致。
  * - 文件夹名只含一个番号的，改成「番号 片名」。
  * - 同目录里两个视频得到同一个名字时，各加分辨率标签区分；分辨率也相同就留着撞名，交给冲突检查标出来。
+ * - [titled] 为假的（目录，番号）不写片名：所在的文件夹已以这个番号加片名命名，里面的文件只写番号，见 [canonicalAvTree]。
  */
-fun canonicalAvNames(items: List<AvNamingItem>, titles: Map<String, String> = emptyMap()): List<String> {
+fun canonicalAvNames(
+    items: List<AvNamingItem>,
+    titles: Map<String, String> = emptyMap(),
+    titled: (group: String, code: String) -> Boolean = { _, _ -> true },
+): List<String> {
     val parsed = items.map { if (it.isFolder) null else parseMediaName(it.name) }
     val infos = arrayOfNulls<AvInfo>(items.size)
     items.indices.groupBy { items[it].group }.values.forEach { indices ->
         resolveLetteredParts(indices.map { parsed[it]?.av }).forEachIndexed { at, info -> infos[indices[at]] = info }
     }
     val result = items.map { it.name }.toMutableList()
-    fun titleOf(info: AvInfo) = titles[info.code] ?: info.title
+    fun titleOf(index: Int, info: AvInfo) = if (titled(items[index].group, info.code)) titles[info.code] ?: info.title else null
 
     val videos = items.indices.filter { parsed[it]?.fileKind?.isAvContent == true && infos[it] != null }
-    val proposed = videos.associateWith { canonicalAvName(items[it].name, infos[it]!!, titleOf(infos[it]!!)) }.toMutableMap()
+    val proposed = videos.associateWith { canonicalAvName(items[it].name, infos[it]!!, titleOf(it, infos[it]!!)) }.toMutableMap()
     // 撞名的加分辨率标签
     videos.groupBy { items[it].group to proposed.getValue(it) }.values.filter { it.size > 1 }.forEach { clashing ->
         val tags = clashing.associateWith { index -> parsed[index]!!.tags.firstOrNull { it.kind == TagKind.RESOLUTION }?.text }
         if (tags.values.distinct().size < clashing.size) return@forEach
         clashing.forEach { index ->
-            proposed[index] = canonicalAvName(items[index].name, infos[index]!!, titleOf(infos[index]!!), versionTag = tags.getValue(index))
+            proposed[index] = canonicalAvName(items[index].name, infos[index]!!, titleOf(index, infos[index]!!), versionTag = tags.getValue(index))
         }
     }
     proposed.forEach { (index, name) -> result[index] = name }
@@ -58,7 +63,7 @@ fun canonicalAvNames(items: List<AvNamingItem>, titles: Map<String, String> = em
                     // 封面图常是「abc00123pl.jpg」，没有通行的规范写法，跟不上视频的就不动
                     info != null && name.fileKind == FileKind.SUBTITLE -> {
                         val video = videoInfos[item.group to info.code + "|" + info.part] ?: info
-                        result[index] = canonicalAvName(item.name, video, titleOf(video), languageCode = name.languageCode)
+                        result[index] = canonicalAvName(item.name, video, titleOf(index, video), languageCode = name.languageCode)
                     }
                 }
             }

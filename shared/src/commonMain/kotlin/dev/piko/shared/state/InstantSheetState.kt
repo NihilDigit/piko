@@ -22,10 +22,13 @@ import dev.piko.shared.data.PreviewTempFolder
 import dev.piko.shared.data.isDriveFolderId
 import dev.piko.shared.naming.FileKind
 import dev.piko.shared.naming.MediaFileInput
+import androidx.compose.runtime.snapshotFlow
+import dev.piko.shared.naming.av.AvInfo
 import dev.piko.shared.naming.av.AvNamingItem
-import dev.piko.shared.naming.av.canonicalAvName
 import dev.piko.shared.naming.av.canonicalAvNames
+import dev.piko.shared.naming.av.canonicalResourceName
 import dev.piko.shared.naming.parseMediaName
+import dev.piko.shared.scrape.MetaTubeService
 import io.github.nihildigit.pikpak.InstantContentUnavailableException
 import io.github.nihildigit.pikpak.QuotaResponse
 import kotlinx.coroutines.CoroutineScope
@@ -100,7 +103,7 @@ internal class InstantSharedContext {
     /** 各条链接按同一个账号定路线，随网盘余量一起查。 */
     val account = mutableStateOf(SaveAccount())
 
-    /** 保存时按番号规范命名，对这次会话的全部链接生效。默认关，也不记进偏好：改名要人看着预览决定。 */
+    /** 保存时按番号规范命名，对这次会话的全部链接生效。初值取设置（默认关），面板里改了不写回设置。 */
     val canonicalNames = mutableStateOf(false)
 
     /** 从一次余量查询里取账号约束。账号类型登录时已取，这里不另发请求。 */
@@ -144,6 +147,8 @@ class InstantSheetState private constructor(
     private val shared: InstantSharedContext,
     /** 面板直接持有的那个实例；批量列表里各行的子实例为 false。 */
     private val isRoot: Boolean,
+    /** 规范命名时取片名；为 null 或没配地址时用原名里的片名。 */
+    private val metaTube: MetaTubeService?,
 ) {
     constructor(
         instantRepo: InstantMagnetRepository,
@@ -154,9 +159,10 @@ class InstantSheetState private constructor(
         saveRecords: InstantSaveRecords,
         scope: CoroutineScope,
         initialMagnet: String = "",
+        metaTube: MetaTubeService? = null,
     ) : this(
         instantRepo, driveRepo, preferences, previewFolder, packTracker, saveRecords, scope, initialMagnet,
-        InstantSharedContext(), isRoot = true,
+        InstantSharedContext(), isRoot = true, metaTube,
     )
 
     var input by mutableStateOf(initialMagnet)
@@ -219,20 +225,43 @@ class InstantSheetState private constructor(
         useCanonicalNames = enabled
     }
 
-    /** 各文件的规范名，与 [items] 一一对应；资源里没有番号时为 null，面板不给这个开关。解析成功时在后台一并算好。 */
-    var canonicalNameList by mutableStateOf<List<String>?>(null)
-        private set
+    /**
+     * 各文件的两种规范名，与 [items] 一一对应：[titled] 带片名，[bare] 只有番号、旗标与分段，存进以这个番号命名的
+     * 新建文件夹时用。[codes] 是各文件归入的番号，[videos] 是视频的番号信息，文件夹名据此取。
+     */
+    private class CanonicalNames(val titled: List<String>, val bare: List<String>, val codes: List<String?>, val videos: List<AvInfo?>)
 
-    /** 只含一个番号时新建文件夹的规范名，见 [folderNameToSave]。 */
-    private var canonicalFolderName by mutableStateOf<String?>(null)
+    // 资源里没有会改名的番号文件时为 null，面板不给这个开关。解析成功时在后台一并算好，查到片名后重算
+    private var canonical by mutableStateOf<CanonicalNames?>(null)
+
+    /** 资源里有会改名的番号文件，面板据此给出「按番号规范命名」。 */
+    val offersCanonicalNames: Boolean get() = canonical != null
+
+    /** 从 MetaTube 查到的片名，番号到片名。没配 MetaTube 或还没查时为空。 */
+    private var titles by mutableStateOf(emptyMap<String, String>())
 
     // 用户改过文件夹名就以他写的为准，开关不再替换
     private var folderNameEdited by mutableStateOf(false)
 
-    /** 存进网盘时的文件名。 */
+    private val selectedVideos: List<AvInfo> by derivedStateOf {
+        val videos = canonical?.videos ?: return@derivedStateOf emptyList()
+        selectedIndices.sorted().mapNotNull { videos.getOrNull(it) }
+    }
+
+    /** 新建的文件夹以哪个番号命名：所选视频只有一个番号时是它，几个番号时文件夹照原名，里面的文件各自带片名。 */
+    private val folderCode: String? by derivedStateOf {
+        selectedVideos.map { it.code }.distinct().singleOrNull().takeIf { willCreateFolder }
+    }
+
+    /**
+     * 存进网盘时的文件名。存进以这个番号命名的新建文件夹时只写番号、旗标与分段（ABC-123-CD1.mp4），
+     * 片名已在文件夹名上；单个文件直接存进目标目录时带片名。
+     */
     fun nameToSave(index: Int): String {
         val original = items[index].file.name
-        return if (useCanonicalNames) canonicalNameList?.getOrNull(index) ?: original else original
+        val names = canonical?.takeIf { useCanonicalNames } ?: return original
+        val inNamedFolder = names.codes.getOrNull(index)?.let { it == folderCode } == true
+        return (if (inNamedFolder) names.bare else names.titled).getOrNull(index) ?: original
     }
 
     /** 面板行上改显示的名字：开着规范命名、且这一行确实会改名时才有，否则为 null，照常显示解析出的标签。 */
@@ -249,9 +278,17 @@ class InstantSheetState private constructor(
         }.toMap()
     }
 
-    /** 新建文件夹的名字：开着规范命名、用户没改过时换成规范名。输入框显示的也是它。 */
+    /**
+     * 新建文件夹的名字：开着规范命名、用户没改过、所选视频只有一个番号时换成规范名（ABC-123 片名），
+     * 不带分段与压制标记。输入框显示的也是它。整包离线完成后产出的文件夹同样改成它，里面的文件离线任务改不了名。
+     */
     val folderNameToSave: String by derivedStateOf {
-        canonicalFolderName?.takeIf { useCanonicalNames && !folderNameEdited } ?: folderName
+        val canonicalFolder = if (useCanonicalNames && !folderNameEdited && folderCode != null) {
+            canonicalResourceName(folderName, selectedVideos, titles)
+        } else {
+            null
+        }
+        canonicalFolder ?: folderName
     }
 
     // endregion
@@ -446,8 +483,11 @@ class InstantSheetState private constructor(
             scope.launch { followDriveFolder() }
             // 账号约束要在解析之前就位：整条交给离线的链接不解析，免费账号也要先确认
             scope.launch { refreshRemainingBytes() }
+            // 开关的初值取设置，面板里改了只管这一次
+            scope.launch { useCanonicalNames = preferences.autoCanonicalNamesFlow.first() }
         }
         scope.launch { preferences.bundleSubtitlesFlow.collect { saveAttachedSubtitles = it } }
+        scope.launch { fetchTitles() }
         if (initialMagnet.isNotBlank() && !startBatchIfMany()) {
             if (normalizeMagnet(initialMagnet) == null) {
                 // 外部唤起的链不合法时自动解析不会发生，而输入框又是收起的，不兜住就是一个空面板
@@ -491,7 +531,7 @@ class InstantSheetState private constructor(
     }
 
     private fun newBatchRow(link: PastedLink, rowScope: CoroutineScope) = InstantSheetState(
-        instantRepo, driveRepo, preferences, previewFolder, packTracker, saveRecords, rowScope, link.uri, shared, isRoot = false,
+        instantRepo, driveRepo, preferences, previewFolder, packTracker, saveRecords, rowScope, link.uri, shared, isRoot = false, metaTube,
     )
 
     /** 列表里的行删光了，回到空的输入框。 */
@@ -729,8 +769,8 @@ class InstantSheetState private constructor(
         resolveJob?.cancel()
         resolution = null
         tree = null
-        canonicalNameList = null
-        canonicalFolderName = null
+        canonical = null
+        titles = emptyMap()
         selectedIndices = emptySet()
         errorMessage = null
         isUnindexed = false
@@ -771,11 +811,10 @@ class InstantSheetState private constructor(
             if (parse) buildInstantTree(inputs, data.resource.name) else buildRawInstantTree(inputs, data.resource.name)
         }
         // 解析关着时连番号也不认，规范命名的开关一并不给
-        val canonical = if (parse) withContext(Dispatchers.Default) { canonicalNamesOf(data) } else null
+        val names = if (parse) withContext(Dispatchers.Default) { canonicalNamesOf(data, titles = emptyMap()) } else null
         // 树与解析结果一起就位，面板不会先闪一个没有分组的列表
         tree = built
-        canonicalNameList = canonical?.first
-        canonicalFolderName = canonical?.second
+        canonical = names
         folderNameEdited = false
         resolution = data
         expandedGroups.clear()
@@ -788,17 +827,36 @@ class InstantSheetState private constructor(
     }
 
     /**
-     * 各文件的规范名，与只含一个番号时新建文件夹的规范名。没有一个文件会改名时为 null。
+     * 各文件的规范名。没有一个文件会改名时为 null。
      * 按种子里的目录分组，与网盘里同目录的规则一致：撞名、字幕跟随只在同一层里看。
      */
-    private fun canonicalNamesOf(data: MagnetResolutionResult): Pair<List<String>, String?>? {
+    private fun canonicalNamesOf(data: MagnetResolutionResult, titles: Map<String, String>): CanonicalNames? {
         val files = data.items.map { it.file }
-        val names = canonicalAvNames(files.map { AvNamingItem(it.name, group = it.path.substringBeforeLast('/', "")) })
-        if (names.indices.none { names[it] != files[it].name }) return null
-        val codes = files.mapNotNull { file -> parseMediaName(file.name).takeIf { it.fileKind == FileKind.VIDEO }?.av }
-            .distinctBy { it.code }
-        val folder = codes.singleOrNull()?.let { info -> canonicalAvName("", info, isFolder = true) }
-        return names to folder
+        val inputs = files.map { AvNamingItem(it.name, group = it.path.substringBeforeLast('/', "")) }
+        val titled = canonicalAvNames(inputs, titles)
+        if (titled.indices.none { titled[it] != files[it].name }) return null
+        val bare = canonicalAvNames(inputs, titles) { _, _ -> false }
+        val codes = titled.map { parseMediaName(it).av?.code }
+        val videos = files.map { file -> parseMediaName(file.name).takeIf { it.fileKind == FileKind.VIDEO }?.av }
+        return CanonicalNames(titled, bare, codes, videos)
+    }
+
+    /**
+     * 开着规范命名、配了 MetaTube 时查片名，查到后重算规范名。每个解析结果只查一次；查不到或出错的沿用原名里的片名，
+     * 保存不等它：查询要等外部站点，几秒到十几秒。
+     */
+    private suspend fun fetchTitles() {
+        val service = metaTube ?: return
+        snapshotFlow { Triple(useCanonicalNames, canonical, resolution) }.collectLatest { (enabled, names, data) ->
+            if (!enabled || names == null || data == null || titles.isNotEmpty()) return@collectLatest
+            if (!service.enabled.first()) return@collectLatest
+            val found = service.titles(names.videos.filterNotNull()).titles
+            if (found.isEmpty() || resolution !== data) return@collectLatest
+            val renamed = withContext(Dispatchers.Default) { canonicalNamesOf(data, found) }
+            if (resolution !== data) return@collectLatest
+            titles = found
+            canonical = renamed
+        }
     }
 
     /** 查一次网盘余量与今天剩下的离线次数。limit 为 0 的账号当作不限；查询失败保留上一次的数。 */

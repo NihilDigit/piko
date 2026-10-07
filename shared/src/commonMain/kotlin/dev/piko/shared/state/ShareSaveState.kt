@@ -5,8 +5,20 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import dev.piko.shared.data.DriveChangeJournal
+import dev.piko.shared.data.DuplicateScanEvent
+import dev.piko.shared.data.DuplicateScanner
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoPathBreadcrumb
+import dev.piko.shared.data.runSuspendCatching
+import dev.piko.shared.naming.av.AvTreeItem
+import dev.piko.shared.naming.av.canonicalAvName
+import dev.piko.shared.naming.av.canonicalAvNameOf
+import dev.piko.shared.naming.av.matchAvFolder
+import dev.piko.shared.rename.RenameRun
+import dev.piko.shared.rename.planCanonicalTree
+import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.first
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.ShareInfo
 import io.github.nihildigit.pikpak.ShareUnavailableException
@@ -135,7 +147,61 @@ class ShareSaveState(
         }
     }
 
-    fun save(target: PikoPathBreadcrumb) {
+    // region 按番号规范命名
+
+    /**
+     * 转存后这一项会改成的名字，不改时为 null，列表行据此预览。文件夹只看名字里的番号：里面有什么要转存后才列得出，
+     * 实际以转存后按 [canonicalAvTree] 算出的为准。
+     */
+    fun canonicalPreview(file: FileStat): String? {
+        val name = if (file.isFolder) {
+            matchAvFolder(file.name)?.let { canonicalAvName(file.name, it, isFolder = true) }
+        } else {
+            canonicalAvNameOf(file.name)
+        }
+        return name?.takeIf { it != file.name }
+    }
+
+    /** 眼前这一层里有会改名的，面板据此给出「按番号规范命名」。 */
+    val offersCanonicalNames: Boolean by derivedStateOf { entries.any { canonicalPreview(it) != null } }
+
+    /**
+     * 转存来的条目按番号规范命名。转存接口没有名称参数，也不返回新条目的 ID（见 PikoDriveRepository.restoreFromShare），
+     * 只能比对转存前后目标目录的列表找出新来的，再改名。转存来的文件夹当作资源：名字里没有番号也照其中的番号命名。
+     * 改成了的记一条可撤销的改动，返回改成的项数。
+     */
+    private suspend fun nameRestored(target: PikoPathBreadcrumb, before: Set<String>): Int {
+        val after = driveRepo.listAllFiles(target.id).logFailure(TAG, "转存后列出目标目录失败，不改名").getOrElse { return 0 }
+        val restored = after.filter { it.id !in before }
+        if (restored.isEmpty()) return 0
+        val items = restored.map { AvTreeItem(it.id, target.id, it.name, it.isFolder) }.toMutableList()
+        for (folder in restored.filter { it.isFolder }) {
+            val scanner = DuplicateScanner(listFolder = { id -> driveRepo.listAllFiles(id).getOrThrow() })
+            val finished = runSuspendCatching { scanner.scan(folder.id).filterIsInstance<DuplicateScanEvent.Finished>().first() }
+                .logFailure(TAG, "列出转存来的文件夹失败，不改其中的名字").getOrNull() ?: continue
+            (finished.subfolders + finished.files).forEach { entry ->
+                items += AvTreeItem(entry.file.id, entry.file.parentId, entry.file.name, entry.file.isFolder)
+            }
+        }
+        val siblings = mapOf(target.id to after.filter { it.id in before }.map { it.name }.toSet())
+        val plan = planCanonicalTree(items, siblings, resources = restored.filter { it.isFolder }.map { it.id }.toSet())
+        if (plan.steps.isEmpty()) return 0
+        val run = RenameRun(driveRepo, TAG)
+        try {
+            run.execute(plan)
+        } finally {
+            if (run.renamed.isNotEmpty()) {
+                driveRepo.changes.record(DriveChangeJournal.Change.Rename(run.renamed.toList(), "已按番号规范命名 ${run.succeeded} 项"))
+            }
+        }
+        PikoLog.i(TAG, "转存后按番号规范命名：${run.succeeded} 项，${plan.problemCount} 项有冲突未改，${run.failures.size} 项失败")
+        return run.succeeded
+    }
+
+    // endregion
+
+    /** [canonicalNames] 为真时转存后按番号规范命名，见 [nameRestored]。 */
+    fun save(target: PikoPathBreadcrumb, canonicalNames: Boolean = false) {
         val token = info?.passCodeToken ?: return
         val ids = selectedIds.toList()
         if (ids.isEmpty() || isSaving) return
@@ -144,12 +210,19 @@ class ShareSaveState(
         val bytes = selectedBytes
         val started = TimeSource.Monotonic.markNow()
         scope.launch {
+            // 转存前的列表，转存后据此认出新来的。列不出来就照原名存，不为改名挡住转存
+            val before = if (canonicalNames) {
+                driveRepo.listAllFiles(target.id).logFailure(TAG, "转存前列出目标目录失败，不改名").getOrNull()?.map { it.id }?.toSet()
+            } else {
+                null
+            }
             driveRepo.restoreFromShare(shareId, token, ids, target.id, ancestorIds = path.map { it.id })
                 .logFailure(TAG, "转存分享失败：${ids.size} 项，$bytes 字节，到文件夹 ${target.id}，分享内第 ${path.size} 层")
                 .onSuccess {
                     PikoLog.i(TAG, "已转存分享：${ids.size} 项，$bytes 字节，到文件夹 ${target.id}，历时 ${started.elapsedNow().inWholeMilliseconds} ms")
                     selectedIds.clear()
-                    doneMessage = "已转存 ${ids.size} 项到 ${target.name}"
+                    val renamed = before?.let { nameRestored(target, it) } ?: 0
+                    doneMessage = "已转存 ${ids.size} 项到 ${target.name}" + if (renamed > 0) "，按番号规范命名 $renamed 项" else ""
                 }
                 .onFailure { errorMessage = "转存失败：${it.message}" }
             isSaving = false

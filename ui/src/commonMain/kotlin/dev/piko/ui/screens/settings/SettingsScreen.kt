@@ -41,6 +41,7 @@ import androidx.compose.material.icons.outlined.CleaningServices
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.HighQuality
 import androidx.compose.material.icons.outlined.DarkMode
+import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -181,6 +182,7 @@ fun SettingsScreen(
     val isHeuristicFilterEnabled by sessionManager.heuristicFilterFlow.collectAsStateWithLifecycle(initialValue = true)
     val isNameParsingEnabled by sessionManager.nameParsingFlow.collectAsStateWithLifecycle(initialValue = true)
     val isBundleSubtitlesEnabled by sessionManager.bundleSubtitlesFlow.collectAsStateWithLifecycle(initialValue = true)
+    val isAutoCanonicalNamesEnabled by sessionManager.autoCanonicalNamesFlow.collectAsStateWithLifecycle(initialValue = false)
     val isAutoCleanNamesEnabled by sessionManager.autoCleanNamesFlow.collectAsStateWithLifecycle(initialValue = false)
     val isHardwareDecodingEnabled by sessionManager.hardwareDecodingFlow.collectAsStateWithLifecycle(initialValue = true)
     val isSyncPlayHistoryEnabled by sessionManager.syncPlayHistoryFlow.collectAsStateWithLifecycle(initialValue = true)
@@ -380,7 +382,7 @@ fun SettingsScreen(
                     SettingsGroup(if (paged) "文件" else SettingsSection.Drive.title) {
                         // 启发式折叠只在解析开着时有意义，关掉解析就收起这一项，不留一行灰掉的开关；收起与出现要看得见。
                         // 不缩进表示从属：行背景是整条分段，只缩内容读起来像错位
-                        val driveCount = if (isNameParsingEnabled) 5 else 4
+                        val driveCount = if (isNameParsingEnabled) 6 else 4
                         SettingsSwitchRow(
                             index = 0, count = driveCount,
                             icon = Icons.Outlined.TextFields,
@@ -397,6 +399,17 @@ fun SettingsScreen(
                                 supporting = "收起广告、样片、说明文件等次要项",
                                 checked = isHeuristicFilterEnabled,
                                 onCheckedChange = { scope.launch { sessionManager.setHeuristicFilterEnabled(it) } },
+                            )
+                        }
+                        // 番号靠文件名解析认出，与启发式折叠一样随解析收起
+                        DependentRow(visible = isNameParsingEnabled) {
+                            SettingsSwitchRow(
+                                index = 2, count = driveCount,
+                                icon = Icons.Outlined.DriveFileRenameOutline,
+                                title = "保存时按番号规范命名",
+                                supporting = "添加链接与转存分享时，带番号的文件与文件夹存成规范名",
+                                checked = isAutoCanonicalNamesEnabled,
+                                onCheckedChange = { scope.launch { sessionManager.setAutoCanonicalNames(it) } },
                             )
                         }
                         SettingsSwitchRow(

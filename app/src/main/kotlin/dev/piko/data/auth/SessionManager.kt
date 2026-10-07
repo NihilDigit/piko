@@ -122,6 +122,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val FOLDER_MAP_OPEN = booleanPreferencesKey("folder_map_open")
         val HEURISTIC_FILTER_ENABLED = booleanPreferencesKey("heuristic_filter_enabled")
         val BUNDLE_SUBTITLES_ENABLED = booleanPreferencesKey("bundle_subtitles_enabled")
+        val AUTO_CANONICAL_NAMES = booleanPreferencesKey("auto_canonical_names")
         val AUTO_CLEAN_NAMES_ENABLED = booleanPreferencesKey("auto_clean_names_enabled")
         val SETTINGS_SYNC_ENABLED = booleanPreferencesKey("settings_sync_enabled")
         val SYNC_PLAY_HISTORY_ENABLED = booleanPreferencesKey("sync_play_history_enabled")
@@ -292,6 +293,16 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun setBundleSubtitlesEnabled(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.BUNDLE_SUBTITLES_ENABLED] = enabled
+        }
+    }
+
+    override val autoCanonicalNamesFlow: Flow<Boolean> = preference { preferences ->
+        preferences[PreferencesKeys.AUTO_CANONICAL_NAMES] ?: false
+    }
+
+    override suspend fun setAutoCanonicalNames(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.AUTO_CANONICAL_NAMES] = enabled
         }
     }
 

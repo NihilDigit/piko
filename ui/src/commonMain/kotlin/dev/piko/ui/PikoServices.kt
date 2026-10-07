@@ -120,6 +120,7 @@ class PikoServices(
                     instantSaveRecords,
                     scope,
                     magnet,
+                    metaTube,
                 )
             },
         )

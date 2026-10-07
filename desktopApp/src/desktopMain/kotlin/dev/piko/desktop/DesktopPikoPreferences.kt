@@ -45,6 +45,7 @@ class DesktopPikoPreferences(
     private val heuristic = MutableStateFlow(settings.get(KEY_HEURISTIC, "true").toBoolean())
     private val nameParsing = MutableStateFlow(settings.get(KEY_NAME_PARSING, "true").toBoolean())
     private val bundleSubtitles = MutableStateFlow(settings.get(KEY_BUNDLE_SUBTITLES, "true").toBoolean())
+    private val autoCanonicalNames = MutableStateFlow(settings.get(KEY_AUTO_CANONICAL_NAMES, "false").toBoolean())
     private val autoCleanNames = MutableStateFlow(settings.get(KEY_AUTO_CLEAN_NAMES, "false").toBoolean())
     private val settingsSync = MutableStateFlow(settings.get(KEY_SETTINGS_SYNC, "true").toBoolean())
     private val syncPlayHistory = MutableStateFlow(settings.get(KEY_SYNC_PLAY_HISTORY, "true").toBoolean())
@@ -181,6 +182,11 @@ class DesktopPikoPreferences(
     override suspend fun setBundleSubtitlesEnabled(enabled: Boolean) {
         settings.set(KEY_BUNDLE_SUBTITLES, enabled.toString())
         bundleSubtitles.value = enabled
+    }
+    override val autoCanonicalNamesFlow: Flow<Boolean> = autoCanonicalNames.asStateFlow()
+    override suspend fun setAutoCanonicalNames(enabled: Boolean) {
+        settings.set(KEY_AUTO_CANONICAL_NAMES, enabled.toString())
+        autoCanonicalNames.value = enabled
     }
 
     override val autoCleanNamesFlow: Flow<Boolean> = autoCleanNames.asStateFlow()
@@ -448,6 +454,7 @@ class DesktopPikoPreferences(
         const val KEY_FOLDER_MAP_OPEN = "ui.folderMapOpen"
         const val KEY_HEURISTIC = "ui.heuristicFilter"
         const val KEY_BUNDLE_SUBTITLES = "ui.bundleSubtitles"
+        const val KEY_AUTO_CANONICAL_NAMES = "ui.autoCanonicalNames"
         const val KEY_AUTO_CLEAN_NAMES = "drive.autoCleanNames"
         const val KEY_SETTINGS_SYNC = "sync.settings"
         const val KEY_SYNC_PLAY_HISTORY = "player.syncPlayHistory"

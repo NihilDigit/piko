@@ -58,6 +58,13 @@ interface PikoUserPreferences {
     suspend fun setBundleSubtitlesEnabled(enabled: Boolean)
 
     /**
+     * 添加链接与转存分享时按番号规范命名，默认关。面板里的同名开关以它为初值，单次改动不写回。
+     * 规则见 docs/development/av-naming.md。
+     */
+    val autoCanonicalNamesFlow: Flow<Boolean>
+    suspend fun setAutoCanonicalNames(enabled: Boolean)
+
+    /**
      * 新建文件夹与重命名时，名称含 PikPak 不支持的内容就直接去掉，不再询问，默认关。
      * 规则见 [dev.piko.shared.data.DriveNames]。
      */
