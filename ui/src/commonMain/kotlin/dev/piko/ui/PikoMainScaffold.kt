@@ -765,9 +765,8 @@ fun PikoMainScaffold(
                             DockedAddLink(state, onPreview = { fileId, fileName -> playVideo(FileStat(id = fileId, name = fileName), emptyList()) })
                         }
                     }
-                    SideColumnContent.Feed -> EscClosesWhenFocused(onClose = { setFeedShown(false) }) {
-                        FeedContent(compact = true, visible = feedInPanel)
-                    }
+                    // 信息流不拦 Esc：它一打开就取得焦点，拦下的话 Esc 关掉信息流、清空刷了半天的队列，人本想回上一级
+                    SideColumnContent.Feed -> FeedContent(compact = true, visible = feedInPanel)
                 }
             },
         )
@@ -1265,7 +1264,7 @@ fun PikoMainScaffold(
 private enum class SideColumnContent { Feed, AddLink }
 
 /**
- * 焦点在右栏里时 Esc 关掉右栏里的东西。只看焦点：焦点在列表里时 Esc 照旧归网盘页（退出多选、关属性卡片、回上一级），
+ * 焦点在右栏的添加链接里时 Esc 把它收起。只看焦点：焦点在列表里时 Esc 照旧归网盘页（退出多选、关属性卡片、回上一级），
  * 目录图与浮动卡片各管各的。
  *
  * BackHandler 写在内容之前：后登记的先收到，添加链接里展开的一行（InstantBatchSection）有自己的返回，要先于这里。
