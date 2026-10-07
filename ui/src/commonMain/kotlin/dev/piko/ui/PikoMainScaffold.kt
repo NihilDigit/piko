@@ -507,8 +507,12 @@ fun PikoMainScaffold(
     // null 是还没量出内容区宽度。上次开着侧栏退出的，只在这回仍放得下侧栏时照样打开；
     // 放不下就是全屏形态，窄窗口一启动就开始播不是谁想要的
     var feedShownState by rememberSaveable { mutableStateOf<Boolean?>(null) }
+    // 换号后重建时不照开关打开：开关不分账号，见 ClipFeedSession.reopensFor
     LaunchedEffect(contentWidth != null) {
-        if (feedShownState == null && contentWidth != null) feedShownState = initialPanelPrefs.open && panelFits
+        if (feedShownState == null && contentWidth != null) {
+            feedShownState = initialPanelPrefs.open && panelFits &&
+                clipFeedSession.reopensFor(services.clientManager.currentClient.value?.account)
+        }
     }
     val feedShown = feedShownState == true
     val detachedHost = videoPlayer as? VideoPlayerHost.Detached
@@ -671,18 +675,21 @@ fun PikoMainScaffold(
     // 在仓库换栈之前拦下，见 TaskSlot.allowsLeaving。切到别的底部标签不改路径栈，不算离开
     DisposableEffect(taskSlot) {
         val driveRepo = services.driveRepository
-        driveRepo.leaveGuard = PikoDriveRepository.LeaveGuard(taskSlot::allowsLeaving)
+        val guard = PikoDriveRepository.LeaveGuard(taskSlot::allowsLeaving)
+        driveRepo.leaveGuard = guard
         // 有标签栏时会话标签由会话占着，往别处走另开标签，见 PikoDriveRepository.sessionTabHeld
-        driveRepo.sessionTabHeld = { place ->
+        val held: (DriveLibrary) -> Boolean = { place ->
             !taskSlot.exclusive && when (place) {
                 DriveLibrary.DUPLICATES -> services.duplicateSession.state != null
                 DriveLibrary.CANONICAL_NAMES -> services.canonicalNamingSession.state != null
                 else -> false
             }
         }
+        driveRepo.sessionTabHeld = held
         onDispose {
-            driveRepo.leaveGuard = null
-            driveRepo.sessionTabHeld = { false }
+            // 只撤自己装的：换号时新主界面先建起、装上它的，淡出完的旧主界面才离开组合
+            if (driveRepo.leaveGuard === guard) driveRepo.leaveGuard = null
+            if (driveRepo.sessionTabHeld === held) driveRepo.sessionTabHeld = { false }
         }
     }
     // 不经守卫的换栈（换账号、切标签、信息流的继续刷）离开了那棵树，静默结束。放在这里而不是网盘页：

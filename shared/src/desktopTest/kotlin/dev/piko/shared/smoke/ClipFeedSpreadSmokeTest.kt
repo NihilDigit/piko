@@ -58,7 +58,7 @@ class ClipFeedSpreadSmokeTest {
                         val folders = tree(server)
                         server.apiDelayMs = apiDelayMs
                         val provider = server.provider()
-                        val session = ClipFeedSession(PikoDriveRepository(provider, MemoryPreferences()), PikoMediaRepository(provider), null, scope)
+                        val session = ClipFeedSession(provider, PikoDriveRepository(provider, MemoryPreferences()), PikoMediaRepository(provider), null, scope)
                         session.open(listOf(PikoDriveRepository.ROOT_BREADCRUMB))
                         repeat(count) {
                             while (session.upcoming.isEmpty()) delay(5)

@@ -42,7 +42,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * （目录树、回收站、离线任务、秒传索引、CDN 分段读取），不去断言请求的具体写法。
  * 响应体的字段取自 SDK 自带的 MockTest，那些是线上响应的裁剪版。
  */
-class FakePikPakServer {
+class FakePikPakServer(
+    /** 条目 ID 的前缀。两个账号各用一个服务端时给不同的前缀，线上不同账号的文件 ID 也不会重合。 */
+    private val idPrefix: String = "N",
+) {
     class Node(
         val id: String,
         @Volatile var parentId: String,
@@ -203,8 +206,8 @@ class FakePikPakServer {
     fun count(prefix: String): Int = calls.count { it.startsWith(prefix) }
 
     /** 直接构造的客户端：不限流，会话放内存里，已登录。 */
-    fun client(sessionStore: SessionStore = InMemorySessionStore()): PikPakClient = PikPakClient(
-        account = "smoke@piko.dev",
+    fun client(sessionStore: SessionStore = InMemorySessionStore(), account: String = "smoke@piko.dev"): PikPakClient = PikPakClient(
+        account = account,
         password = "pw",
         sessionStore = sessionStore,
         rateLimiter = RateLimiter(capacity = 1000, refillPerSecond = 1000.0),
@@ -223,7 +226,7 @@ class FakePikPakServer {
         node
     }
 
-    private fun newId(): String = "N${nextId.getAndIncrement()}"
+    private fun newId(): String = "$idPrefix${nextId.getAndIncrement()}"
 
     private suspend fun MockRequestHandleScope.handle(request: HttpRequestData): HttpResponseData {
         val path = request.url.encodedPath

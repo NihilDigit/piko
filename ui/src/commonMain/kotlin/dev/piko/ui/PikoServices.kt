@@ -32,6 +32,7 @@ import dev.piko.shared.state.FolderTaskSession
 import dev.piko.shared.state.InstantSaveRecords
 import dev.piko.shared.state.InstantSession
 import dev.piko.shared.state.InstantSheetState
+import dev.piko.shared.state.launchOnAccountLeave
 import dev.piko.shared.upload.PikoUploadCoordinator
 import dev.piko.shared.upload.PikoUploadSources
 import dev.piko.shared.net.PikPakDomainSelector
@@ -45,9 +46,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 
 /**
@@ -81,7 +79,7 @@ class PikoServices(
     val instantMagnetRepository: InstantMagnetRepository = InstantMagnetRepository(clientManager)
     val taskRepository: TaskRepository = TaskRepository(clientManager, driveRepository)
 
-    val previewTempFolder = PreviewTempFolder(driveRepository, instantMagnetRepository, backgroundScope)
+    val previewTempFolder = PreviewTempFolder(clientManager, driveRepository, instantMagnetRepository, backgroundScope)
 
     init {
         // 打开归档条目时借的对象放进 Piko-Temp：取到直链就删，偶有删不掉的也随 Piko-Temp 一起清走
@@ -184,29 +182,22 @@ class PikoServices(
 
     // 主线程且与进程同寿：打开完整播放器时随机片段页可能被销毁，队列要留着回来接着看
     val clipFeedSession: ClipFeedSession by lazy {
-        ClipFeedSession(driveRepository, mediaRepository, cacheStore, CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate))
+        ClipFeedSession(clientManager, driveRepository, mediaRepository, cacheStore, CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate))
     }
 
     init {
-        // 未完成的添加链接、查重、规范命名、解压、信息流与归档都属于上一个账号：保存目标、文件 ID 都是那边的。
-        // 退出到登录页也算，同一账号登回来不算
-        backgroundScope.launch {
-            var previous: String? = null
-            clientManager.currentClient.map { it?.account }.distinctUntilChanged().collect { account ->
-                if (previous != null && account != previous) {
-                    PikoLog.i(TAG, "${if (account == null) "退出登录" else "换号"}：结束上一账号的添加链接、查重、规范命名、解压、信息流与归档会话")
-                    withContext(Dispatchers.Main) {
-                        instantSession.end()
-                        duplicateSession.end()
-                        canonicalNamingSession.end()
-                        archiveExtractSession.clear()
-                        archiveBrowser.clear()
-                        clipFeedSession.close()
-                        folderVaultSession.cancel()
-                    }
-                }
-                if (account != null) previous = account
-            }
+        // 未完成的添加链接、查重、规范命名、解压、片段下载、信息流与归档都属于上一个账号：保存目标、文件 ID 都是那边的。
+        // 主线程上当场结束，会话的状态只在主线程上改
+        CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).launchOnAccountLeave(clientManager) { left ->
+            PikoLog.i(TAG, "${if (clientManager.currentClient.value == null) "退出登录" else "换号"}：结束上一账号的进程级会话")
+            instantSession.end()
+            duplicateSession.end()
+            canonicalNamingSession.end()
+            archiveExtractSession.clear()
+            archiveBrowser.clear()
+            segmentSession.end()
+            clipFeedSession.endAccount(left)
+            folderVaultSession.cancel()
         }
         backgroundScope.launch {
             val cleanedAccounts = mutableSetOf<String>()

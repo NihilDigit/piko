@@ -7,6 +7,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.data.PikoCacheStore
+import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoFileSortOrder
 import dev.piko.shared.data.isVaulted
@@ -55,7 +56,7 @@ const val CLIP_LENGTH_MS = 30_000L
  * 范围只由打开时所在的文件夹决定，界面在离开这个文件夹（及其子文件夹）时收起信息流，见 PikoMainScaffold。
  *
  * 与进程同寿，挂在 PikoServices 上：看到喜欢的一段会打开完整播放器，Android 上它压在信息流之上，
- * 底下的页可能被销毁，队列不能随页面走。队列按文件夹另外存盘，只存当前前后各 [KEPT_AROUND] 段：
+ * 底下的页可能被销毁，队列不能随页面走。队列按账号与文件夹另外存盘，只存当前前后各 [KEPT_AROUND] 段：
  * 存下的段开头多半已在磁盘上（ClipCache），回到同一个文件夹时不必现取，见 [open]。
  * 内存里的历史不截：翻页按下标定位，截掉前面的，正在看的那一页会跳走，而一次会话的历史本来也不大。
  *
@@ -65,12 +66,21 @@ const val CLIP_LENGTH_MS = 30_000L
  * 挑段的先后见 [selectFeedCandidates]：连着的几段尽量出自不同的文件夹、不同的作品。
  */
 class ClipFeedSession(
+    private val clients: PikoClientProvider,
     private val driveRepo: PikoDriveRepository,
     private val media: PikoMediaRepository,
     private val cacheStore: PikoCacheStore?,
     private val scope: CoroutineScope,
 ) {
     var root by mutableStateOf<PikoPathBreadcrumb?>(null)
+        private set
+
+    /**
+     * 队列属于哪个账号，[open] 时取定，存盘也按它分开。只有文件夹 ID 不够：各账号的根目录都是空串，
+     * 曾经共用一份存盘，换号后在根目录打开信息流，接着放的是上一个账号的队列。
+     * 关掉之后仍记着，见 [reopensFor]。
+     */
+    var account by mutableStateOf<String?>(null)
         private set
 
     /**
@@ -197,8 +207,9 @@ class ClipFeedSession(
      */
     suspend fun open(path: List<PikoPathBreadcrumb>) {
         val folder = path.lastOrNull() ?: return
+        val owner = clients.currentClient.value?.account ?: return
         rootPath = path
-        if (root?.id == folder.id && (clips.isNotEmpty() || upcoming.isNotEmpty() || isCollecting)) return
+        if (account == owner && root?.id == folder.id && (clips.isNotEmpty() || upcoming.isNotEmpty() || isCollecting)) return
         collectJob?.cancel()
         fillJob?.cancel()
         saveJob?.cancel()
@@ -214,8 +225,9 @@ class ClipFeedSession(
         verified.clear()
         untranscoded.clear()
         listedFiles.clear()
+        account = owner
         root = folder
-        val saved = load(folder.id)
+        val saved = load(owner, folder.id)
         // 存下的目录与上级只补索引的空缺，这一轮遍历列到的会盖掉它们
         if (saved != null) driveRepo.seedFolders(saved.folders, saved.parents)
         PikoLog.d(TAG, "打开随机片段：存下的队列 ${saved?.clips?.size ?: 0} 段，候选 ${saved?.pool?.size ?: 0} 个")
@@ -266,6 +278,21 @@ class ClipFeedSession(
         immersive = false
         landscape = false
     }
+
+    /**
+     * 换号或退出登录：[left] 的信息流随之结束，与其他进程级会话同一条路径（PikoServices）。
+     * 已是别的账号开着的不动：结束晚于新账号打开时，关掉的会是新账号的。
+     */
+    fun endAccount(left: String) {
+        if (account == left && root != null) close()
+    }
+
+    /**
+     * 主界面建起时要不要照存下的开关重新打开信息流：进程里头一次建（启动、登录）照开；
+     * 之后再建是换了号，或者加账号又取消，只在信息流还开着、仍是这个账号的时候接着开。
+     * 设备上的开关不分账号，不这样分开的话，在甲开着信息流时换到乙，乙一进来就自动打开信息流。
+     */
+    fun reopensFor(current: String?): Boolean = account == null || (root != null && account == current)
 
     private fun addToPool(file: FileStat) {
         if (poolIds.add(file.id)) pool += file
@@ -492,6 +519,7 @@ class ClipFeedSession(
     private fun save(immediately: Boolean = false) {
         val store = cacheStore ?: return
         val folder = root ?: return
+        val owner = account ?: return
         saveJob?.cancel()
         val taken = if (immediately) snapshot() else null
         saveJob = scope.launch {
@@ -500,8 +528,8 @@ class ClipFeedSession(
                 snapshot()
             }
             runCatching {
-                store.write(keyOf(folder.id), json.encodeToString(SavedFeed.serializer(), saved))
-                rememberFolder(store, folder)
+                store.write(keyOf(owner, folder.id), json.encodeToString(SavedFeed.serializer(), saved))
+                rememberFolder(store, owner, folder)
             }.onFailure { if (it !is CancellationException) PikoLog.w(TAG, "保存信息流队列失败", it) }
         }
     }
@@ -532,20 +560,26 @@ class ClipFeedSession(
         )
     }
 
-    /** 把 [folder] 记为最近用过的；挤出 [KEPT_FOLDERS] 之外的连存盘一起删。 */
-    private suspend fun rememberFolder(store: PikoCacheStore, folder: PikoPathBreadcrumb) {
-        val recent = runCatching { store.read(INDEX_KEY)?.let { json.decodeFromString<List<String>>(it) } }.getOrNull().orEmpty()
+    /** 把 [folder] 记为 [owner] 最近用过的；挤出 [KEPT_FOLDERS] 之外的连存盘一起删。每个账号各留这么多个。 */
+    private suspend fun rememberFolder(store: PikoCacheStore, owner: String, folder: PikoPathBreadcrumb) {
+        val indexKey = indexKeyOf(owner)
+        val recent = runCatching { store.read(indexKey)?.let { json.decodeFromString<List<String>>(it) } }.getOrNull().orEmpty()
         val updated = listOf(folder.id) + (recent - folder.id)
-        updated.drop(KEPT_FOLDERS).forEach { store.delete(keyOf(it)) }
-        store.write(INDEX_KEY, json.encodeToString(updated.take(KEPT_FOLDERS)))
+        updated.drop(KEPT_FOLDERS).forEach { store.delete(keyOf(owner, it)) }
+        store.write(indexKey, json.encodeToString(updated.take(KEPT_FOLDERS)))
     }
 
-    private suspend fun load(folderId: String): SavedFeed? = runCatching {
-        cacheStore?.read(keyOf(folderId))?.let { json.decodeFromString(SavedFeed.serializer(), it) }
+    private suspend fun load(owner: String, folderId: String): SavedFeed? = runCatching {
+        cacheStore?.read(keyOf(owner, folderId))?.let { json.decodeFromString(SavedFeed.serializer(), it) }
     }.onFailure { if (it !is CancellationException) PikoLog.w(TAG, "读不出存下的信息流队列，从头开始", it) }.getOrNull()
 
-    // 根目录的 ID 是空串
-    private fun keyOf(folderId: String) = "clip-feed-${folderId.ifEmpty { "root" }}"
+    // 根目录的 ID 是空串。1.1.0 及更早的存盘不带账号（clip-feed-<文件夹>），不再读：分不出是哪个账号的，
+    // 丢掉只是重开时从头遍历
+    private fun keyOf(owner: String, folderId: String) = "clip-feed-${safeKey(owner)}-${folderId.ifEmpty { "root" }}"
+
+    private fun indexKeyOf(owner: String) = "clip-feeds-${safeKey(owner)}"
+
+    private fun safeKey(account: String) = account.replace(UNSAFE_KEY_CHARS, "_")
 
     @Serializable
     private class SavedFeed(
@@ -579,7 +613,7 @@ class ClipFeedSession(
 
     private companion object {
         const val TAG = "Clips"
-        const val INDEX_KEY = "clip-feeds"
+        val UNSAFE_KEY_CHARS = Regex("""[^A-Za-z0-9._@-]""")
         const val KEPT_FOLDERS = 8
         const val KEPT_AROUND = 25
         // 查详情是 API 请求，不占 CDN 的连接；4 个一批约一秒，大半没有转码的文件夹里挑得太慢

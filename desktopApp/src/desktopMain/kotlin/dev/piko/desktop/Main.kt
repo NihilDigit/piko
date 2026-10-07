@@ -44,6 +44,7 @@ import io.ktor.client.engine.okhttp.OkHttp
 import dev.piko.shared.data.PikoClientManager
 import dev.piko.shared.state.InstantSheetState
 import dev.piko.shared.state.TorrentMagnet
+import dev.piko.shared.state.launchOnAccountLeave
 import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.log.LogLevel
 import dev.piko.shared.log.PikoLog
@@ -211,6 +212,14 @@ fun main(args: Array<String>) {
                 isClipFeedOpen = { clipFeed != null },
                 closeClipFeed = { clipFeed = null },
             )
+        }
+        // 播放器与信息流的窗口在主界面之外，换号时主界面重建、它们不会跟着走：放的是上一个账号的文件，
+        // 信息流窗口的回调还指着上一个账号的主界面。随进程级会话一起关掉
+        LaunchedEffect(Unit) {
+            launchOnAccountLeave(services.clientManager) {
+                players.clear()
+                clipFeed = null
+            }
         }
         val downloads by services.downloadManager.tasks.collectAsState()
         val uploads by services.uploadManager.tasks.collectAsState()
