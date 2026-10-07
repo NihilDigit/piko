@@ -115,7 +115,7 @@ class PikoServices(
 
     val instantSaveRecords = InstantSaveRecords(clientManager, cacheStore, backgroundScope)
 
-    // 添加链接保存后查到 MetaTube 片名再补改，会话结束后仍要做完，见 InstantTitleFill
+    // 添加链接保存后查到 MetaTube 片名再补改，会话结束后仍要做完，见 InstantTitleFill。目前未交给面板，见下文
     private val instantTitleFill = InstantTitleFill(clientManager, driveRepository, metaTube, backgroundScope)
 
     val instantSession: InstantSession by lazy {
@@ -131,8 +131,9 @@ class PikoServices(
                     instantSaveRecords,
                     scope,
                     magnet,
-                    // 添加链接面板里的 MetaTube 暂停用：面板查片名与保存后补名实测都不生效，片名改由批量重命名取
-                    // （见 docs/development/av-naming.md）。恢复时把下一行放回来，面板与先存后补随之接上
+                    // 面板里的片名查询与保存后补名尚未上线：实测不生效，故未接线，片名由批量重命名取。
+                    // 接回下一行即启用；接回前须先查明 InstantTitleFillSmokeTest 通过而实机不生效的原因，
+                    // 见 docs/development/av-naming.md 末节
                     // instantTitleFill,
                 )
             },

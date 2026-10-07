@@ -50,8 +50,6 @@ val SyncedSettings: List<SyncedSetting> = listOf(
     bool("heuristicFilter", { it.heuristicFilterFlow }) { setHeuristicFilterEnabled(it) },
     bool("nameParsing", { it.nameParsingFlow }) { setNameParsingEnabled(it) },
     bool("bundleSubtitles", { it.bundleSubtitlesFlow }) { setBundleSubtitlesEnabled(it) },
-    // 存成什么名字是整理习惯，与设备无关
-    bool("autoCanonicalNames", { it.autoCanonicalNamesFlow }) { setAutoCanonicalNames(it) },
     bool("autoCleanNames", { it.autoCleanNamesFlow }) { setAutoCleanNamesEnabled(it) },
     bool("syncPlayHistory", { it.syncPlayHistoryFlow }) { setSyncPlayHistoryEnabled(it) },
     // 批量重命名用积木还是写正则，看的是这个人的水平，不是这台设备

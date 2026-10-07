@@ -149,7 +149,6 @@ fun SettingsScreen(
     val isHeuristicFilterEnabled by sessionManager.heuristicFilterFlow.collectAsStateWithLifecycle(initialValue = true)
     val isNameParsingEnabled by sessionManager.nameParsingFlow.collectAsStateWithLifecycle(initialValue = true)
     val isBundleSubtitlesEnabled by sessionManager.bundleSubtitlesFlow.collectAsStateWithLifecycle(initialValue = true)
-    val isAutoCanonicalNamesEnabled by sessionManager.autoCanonicalNamesFlow.collectAsStateWithLifecycle(initialValue = false)
     val isAutoCleanNamesEnabled by sessionManager.autoCleanNamesFlow.collectAsStateWithLifecycle(initialValue = false)
     val isHardwareDecodingEnabled by sessionManager.hardwareDecodingFlow.collectAsStateWithLifecycle(initialValue = true)
     val isSyncPlayHistoryEnabled by sessionManager.syncPlayHistoryFlow.collectAsStateWithLifecycle(initialValue = true)
@@ -391,21 +390,13 @@ fun SettingsScreen(
                                     onFailure = { message -> scope.launch { snackbarHostState.showSnackbar(message, withDismissAction = true) } },
                                 )
                             }
-                            // 这两项靠文件名解析认出字幕与番号。解析在另一类，关掉时留着并写明原因，收起的话人找不到它去了哪
+                            // 这一项靠文件名解析认出字幕。解析在另一类，关掉时留着并写明原因，收起的话人找不到它去了哪
                             SettingsSwitchRow(
                                 icon = Icons.Outlined.Subtitles,
                                 title = "保存配套字幕",
                                 supporting = if (isNameParsingEnabled) "保存视频时一并保存外挂字幕" else "需先开启文件名解析",
                                 checked = isBundleSubtitlesEnabled,
                                 onCheckedChange = { scope.launch { sessionManager.setBundleSubtitlesEnabled(it) } },
-                                enabled = isNameParsingEnabled,
-                            )
-                            SettingsSwitchRow(
-                                icon = Icons.Outlined.DriveFileRenameOutline,
-                                title = "保存时按番号规范命名",
-                                supporting = if (isNameParsingEnabled) "添加链接与转存时，带番号的项目存为规范名" else "需先开启文件名解析",
-                                checked = isAutoCanonicalNamesEnabled,
-                                onCheckedChange = { scope.launch { sessionManager.setAutoCanonicalNames(it) } },
                                 enabled = isNameParsingEnabled,
                             )
                             SettingsSwitchRow(
@@ -548,12 +539,8 @@ fun SettingsScreen(
                 onSave = { url, newToken ->
                     showMetaTubeDialog = false
                     scope.launch {
-                        // 第一次配上 MetaTube 时顺带打开「保存时按番号规范命名」：配它就是为了存成带片名的名字，
-                        // 不打开的话片名只在手动改名时用得上。只在从无到有时开一次，之后用户关掉就不再动它
-                        val firstConfigured = metaTubeUrl.isBlank() && url.isNotBlank()
                         sessionManager.setMetaTubeUrl(url)
                         sessionManager.setMetaTubeToken(newToken)
-                        if (firstConfigured) sessionManager.setAutoCanonicalNames(true)
                     }
                 },
                 onDismiss = { showMetaTubeDialog = false },

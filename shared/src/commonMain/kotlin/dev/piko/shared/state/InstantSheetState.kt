@@ -104,7 +104,7 @@ internal class InstantSharedContext {
     /** 各条链接按同一个账号定路线，随网盘余量一起查。 */
     val account = mutableStateOf(SaveAccount())
 
-    /** 保存时按番号规范命名，对这次会话的全部链接生效。初值取设置（默认关），面板里改了不写回设置。 */
+    /** 保存时按番号规范命名，对这次会话的全部链接与转存生效。每次打开面板都是关的。 */
     val canonicalNames = mutableStateOf(false)
 
     /** 从一次余量查询里取账号约束。账号类型登录时已取，这里不另发请求。 */
@@ -148,7 +148,10 @@ class InstantSheetState private constructor(
     private val shared: InstantSharedContext,
     /** 面板直接持有的那个实例；批量列表里各行的子实例为 false。 */
     private val isRoot: Boolean,
-    /** 规范命名时取 MetaTube 片名、保存后补名；为 null 或没配地址时用原名里的片名。 */
+    /**
+     * 规范命名时取 MetaTube 片名、保存后补名；为 null 或没配地址时用原名里的片名。
+     * 目前未接线：PikoServices 不传它，面板只用原名里的片名，原因见 docs/development/av-naming.md 末节。
+     */
     private val titleFill: InstantTitleFill?,
 ) {
     constructor(
@@ -239,7 +242,7 @@ class InstantSheetState private constructor(
     /** 资源里有会改名的番号文件，面板据此给出「按番号规范命名」。 */
     val offersCanonicalNames: Boolean get() = canonical != null
 
-    /** 从 MetaTube 查到的片名，番号到片名。没配 MetaTube 或还没查时为空。 */
+    /** 从 MetaTube 查到的片名，番号到片名。没配 MetaTube、还没查或 [titleFill] 未接线时为空。 */
     private var titles by mutableStateOf(emptyMap<String, String>())
 
     // 这个解析结果的片名查询，挂在进程级的 InstantTitleFill 上。保存时交给它补名（adopted），此后不随面板取消
@@ -501,8 +504,6 @@ class InstantSheetState private constructor(
             scope.launch { followDriveFolder() }
             // 账号约束要在解析之前就位：整条交给离线的链接不解析，免费账号也要先确认
             scope.launch { refreshRemainingBytes() }
-            // 开关的初值取设置，面板里改了只管这一次
-            scope.launch { useCanonicalNames = preferences.autoCanonicalNamesFlow.first() }
         }
         scope.launch { preferences.bundleSubtitlesFlow.collect { saveAttachedSubtitles = it } }
         scope.launch { fetchTitles() }
@@ -859,6 +860,7 @@ class InstantSheetState private constructor(
     /**
      * 开着规范命名、配了 MetaTube 时查片名，查到后重算规范名。每个解析结果只查一次；查不到或出错的沿用原名里的片名。
      * 保存不等它：查询要等外部站点，几秒到十几秒，查到时已保存的由 InstantTitleFill 补改，见 [titleFillRequest]。
+     * [titleFill] 目前未接线，这里当场返回。
      */
     private suspend fun fetchTitles() {
         val fill = titleFill ?: return

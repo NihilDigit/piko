@@ -253,11 +253,11 @@ class InstantFlowSmokeTest {
     }
 
     /**
-     * 防的是设置开着时面板仍按关着处理，以及多文件时片名在文件夹与文件上各写一遍：新建的文件夹取「番号 片名」，
-     * 里面的文件只写番号与分段；所选里有两个番号时文件夹照原名，文件各自带片名。整包离线完成后产出文件夹改成同一个名字。
+     * 防的是多文件时片名在文件夹与文件上各写一遍：新建的文件夹取「番号 片名」，里面的文件只写番号与分段；
+     * 所选里有两个番号时文件夹照原名，文件各自带片名。整包离线完成后产出文件夹改成同一个名字。
      */
     @Test
-    fun `with the setting on a pack is saved as a code-named folder of bare code files`() = smoke { scope ->
+    fun `with canonical names on a pack is saved as a code-named folder of bare code files`() = smoke { scope ->
         val server = FakePikPakServer()
         val files = listOf(
             Triple("[site.net] ABC-123 某片名/abc00123hhb1.mp4", 900L shl 20, "GCIDA1"),
@@ -266,11 +266,11 @@ class InstantFlowSmokeTest {
             Triple("[site.net] ABC-123 某片名/xyz-456 另一部.mp4", 800L shl 20, "GCIDX"),
         )
         server.indexMagnet(magnet, resourceListBody("[site.net] ABC-123 某片名", files))
-        val rig = Rig(server, MemoryPreferences().apply { autoCanonicalNamesFlow.value = true }, scope)
+        val rig = Rig(server, MemoryPreferences(), scope)
         scope.launch { rig.tracker.run("smoke@piko.dev") }
         val state = rig.sheet(scope, magnet)
         awaitUntil("解析完成、目标与余量确定") { state.resolution != null && state.target != null && state.remainingBytes != null }
-        assertTrue(state.useCanonicalNames, "开关的初值取设置")
+        state.updateUseCanonicalNames(true)
         fun index(name: String) = state.items.indexOfFirst { it.file.path.endsWith(name) }
 
         state.items.indices.forEach { state.setItemSelected(it, true) }

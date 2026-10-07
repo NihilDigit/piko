@@ -43,6 +43,9 @@ import kotlin.test.assertTrue
 /**
  * 添加链接按番号规范命名时先存后补：保存不等 MetaTube，片名随后查到再把这次存下的改成带片名的规范名，记一条可撤销的改动。
  * MetaTube 由 MockEngine 顶替，搜索在 [gate] 打开前一直挂着，模拟外部站点慢。
+ *
+ * 这条功能尚未接线（应用里 PikoServices 不把 InstantTitleFill 交给面板），这里直接交给面板测。
+ * 本测试通过而实机不生效，见 docs/development/av-naming.md 末节。
  */
 class InstantTitleFillSmokeTest {
     private val magnet = "magnet:?xt=urn:btih:" + "a".repeat(40)
@@ -73,7 +76,7 @@ class InstantTitleFillSmokeTest {
         metaTube: MetaTubeService,
         scope: CoroutineScope,
     ) {
-        val prefs = MemoryPreferences().apply { autoCanonicalNamesFlow.value = true }
+        val prefs = MemoryPreferences()
         val instantRepo = InstantMagnetRepository(provider)
         val driveRepo = PikoDriveRepository(provider, prefs)
         val fill = InstantTitleFill(provider, driveRepo, metaTube, scope)
@@ -91,8 +94,10 @@ class InstantTitleFillSmokeTest {
             }
         }
 
+        /** 打开规范命名的面板。开关对整个会话生效，批量时各行同样开着。 */
         fun sheet(scope: CoroutineScope, input: String) =
             InstantSheetState(instantRepo, driveRepo, prefs, previewFolder, tracker, saveRecords, scope, input, fill)
+                .apply { updateUseCanonicalNames(true) }
 
         /** 存下一条单文件的链接，存完会话随即结束，与面板保存成功后一样。返回目标目录。 */
         suspend fun saveAndEnd(scope: CoroutineScope, input: String): String {

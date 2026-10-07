@@ -36,6 +36,9 @@ import kotlin.time.Duration.Companion.minutes
  * 进程级：保存成功会话即结束，面板与网盘页也可能已不在，补名不能挂在它们上面。片名查询也从这里发起
  * （[lookUp]），面板只是等它的结果，所以面板关了查询照样进行，保存后接着等同一次查询，不再另查。
  * 换号时 [endAccount] 取消全部补名与查询，上一个账号的文件 ID 不能拿到下一个账号上改。
+ *
+ * 尚未上线：PikoServices 建了实例，但没有交给 InstantSheetState，面板里既不查片名也不补名。
+ * InstantTitleFillSmokeTest 通过，实机却不生效，原因未查明；接线前要做的事见 docs/development/av-naming.md 末节。
  */
 class InstantTitleFill(
     private val clients: PikoClientProvider,
