@@ -16,6 +16,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import kotlin.concurrent.Volatile
@@ -84,6 +85,22 @@ internal class FolderContentMemory(
         scheduleSave()
     }
 
+    private val covers = MutableStateFlow<Map<String, String>>(emptyMap())
+
+    /**
+     * 直接放着归档条目的文件夹 → 替它当封面的视频条目的 gcid；读过清单而其中没有视频的记空串，免得反复去读。
+     *
+     * 文件夹的封面是服务端按其中的真实文件给的 thumbnail_link，内容归档、原文件删掉或移出回收站后就没了，
+     * 归档条目又不是服务端的文件，所以由清单补上。跨进程保留：没进过的文件夹要读一次清单才知道，读过的不再读。
+     */
+    val vaultCovers: StateFlow<Map<String, String>> = covers.asStateFlow()
+
+    fun rememberCover(folderId: String, gcid: String) {
+        if (covers.value[folderId] == gcid) return
+        covers.update { it + (folderId to gcid) }
+        scheduleSave()
+    }
+
     /** 列过、记下了内容的文件夹。归档树里的内层文件夹没列过时，外层按「还有条目」算，见 VaultTrees.marked。 */
     val listedFolders: Flow<Set<String>> = contents.map { it.keys }
 
@@ -94,14 +111,17 @@ internal class FolderContentMemory(
         account = newAccount
         contents.value = emptyMap()
         vaulted.value = emptySet()
+        covers.value = emptyMap()
         val cacheStore = store ?: return
         if (newAccount == null) return
         scope.launch {
             val stored = cacheStore.read(keyOf(newAccount))?.let { text -> runCatching { json.decodeFromString(serializer, text) }.getOrNull() }
             val storedVaulted = cacheStore.read(vaultKeyOf(newAccount))?.let { text -> runCatching { json.decodeFromString(vaultSerializer, text) }.getOrNull() }
+            val storedCovers = cacheStore.read(coverKeyOf(newAccount))?.let { text -> runCatching { json.decodeFromString(coverSerializer, text) }.getOrNull() }
             if (account != newAccount) return@launch
             // 载入期间本会话记下的更新，留着它们。本会话里去掉的标记会被磁盘上的旧值加回来，下次列到那个目录再去掉
             if (storedVaulted != null) vaulted.update { current -> current + storedVaulted }
+            if (storedCovers != null) covers.update { current -> storedCovers + current }
             if (stored == null) return@launch
             val loaded = stored.associate { folder -> folder.id to folder.files.map { ChildFile(it.name, it.category) } }
             contents.update { current -> loaded - current.keys + current }
@@ -120,12 +140,15 @@ internal class FolderContentMemory(
             }
             cacheStore.write(keyOf(owner), json.encodeToString(serializer, snapshot))
             cacheStore.write(vaultKeyOf(owner), json.encodeToString(vaultSerializer, vaulted.value.toList()))
+            cacheStore.write(coverKeyOf(owner), json.encodeToString(coverSerializer, covers.value))
         }
     }
 
     private fun keyOf(account: String) = "folder-contents-" + account.replace(UNSAFE_KEY_CHARS, "_") + ".json"
 
     private fun vaultKeyOf(account: String) = "vault-folders-" + account.replace(UNSAFE_KEY_CHARS, "_") + ".json"
+
+    private fun coverKeyOf(account: String) = "vault-covers-" + account.replace(UNSAFE_KEY_CHARS, "_") + ".json"
 
     @Serializable
     private class StoredFolder(val id: String, val files: List<StoredFile>)
@@ -141,5 +164,6 @@ internal class FolderContentMemory(
         val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
         val serializer = ListSerializer(StoredFolder.serializer())
         val vaultSerializer = ListSerializer(String.serializer())
+        val coverSerializer = MapSerializer(String.serializer(), String.serializer())
     }
 }

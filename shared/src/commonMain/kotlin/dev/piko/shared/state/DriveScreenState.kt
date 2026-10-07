@@ -463,6 +463,13 @@ class DriveScreenState(
             combine(snapshotFlow { files }, driveRepo.childContentLoads) { list, _ -> list }
                 .collectLatest { list -> describeFolders(list.filter(FileStat::isFolder)) }
         }
+        // 文件夹的归档封面在列表画出之后才读到（可见时补读、清单写成、从磁盘载入），读到就补进眼前的列表，不重列
+        scope.launch {
+            driveRepo.vaultCoverChanges.collect {
+                val patched = driveRepo.withVaultCovers(files)
+                if (patched !== files) files = patched
+            }
+        }
         // 网盘里的改动（这一页自己做的与界面外的上传、解压、撤销都算）由仓库层广播过来，订阅放在这里，
         // 免得每个平台的视图各订阅一遍；各个改动入口因此也不必自己重列
         scope.launch {
@@ -1118,21 +1125,26 @@ class DriveScreenState(
      * 不预取的话文件夹要点进去一次才认得出作品名。记下的内容跨进程保留（FolderContentMemory），
      * 所以同一个文件夹只取一次。停留不到 [PREFETCH_DWELL_MILLIS] 的不取：快速滑过的一屏文件夹不该各发一个请求。
      * 搜索结果散在各处，不预取。
+     *
+     * 服务端没给封面的文件夹另读一次归档清单补封面（PikoDriveRepository.fetchVaultCover），解析关着时也读：
+     * 内容归档后的文件夹服务端不再给封面。没进过的文件夹先取一页，才知道里面有没有清单。
      */
     suspend fun onFolderVisible(folder: FileStat) {
         // 压缩包里的文件夹不是网盘里的，列不了
-        if (!isNameParsing || isSearching || !isDriveFolderId(folder.id)) return
-        driveRepo.knownChildContents(folder.id)?.let { known ->
-            // 记下的是空表时分不清真空还是只有子文件夹，海报墙要据此画空文件夹，探一下
-            if (known.isEmpty()) {
-                delay(PREFETCH_DWELL_MILLIS)
-                driveRepo.probeFolderEmptiness(folder.id)
-            }
-            return
-        }
+        if (isSearching || !isDriveFolderId(folder.id)) return
+        val known = driveRepo.knownChildContents(folder.id)
+        val wantsCover = folder.thumbnailLink.isEmpty()
+        // 记下的是空表时分不清真空还是只有子文件夹，海报墙要据此画空文件夹，探一下
+        val wantsEmptiness = isNameParsing && known?.isEmpty() == true
+        val wantsContent = known == null && (isNameParsing || wantsCover)
+        if (!wantsContent && !wantsEmptiness && !wantsCover) return
         delay(PREFETCH_DWELL_MILLIS)
-        val content = driveRepo.fetchChildContents(folder.id) ?: return
-        folderViews[folder.id] = folderView(folder, content)
+        if (wantsEmptiness) driveRepo.probeFolderEmptiness(folder.id)
+        if (wantsContent) {
+            val content = driveRepo.fetchChildContents(folder.id)
+            if (content != null && isNameParsing) folderViews[folder.id] = folderView(folder, content)
+        }
+        if (wantsCover) driveRepo.fetchVaultCover(folder.id)
     }
 
     fun toggleSpoiler(fileId: String) {

@@ -57,6 +57,7 @@ import io.github.nihildigit.pikpak.searchFiles
 import io.github.nihildigit.pikpak.searchFilesRecursive
 import io.github.nihildigit.pikpak.starFiles
 import io.github.nihildigit.pikpak.unstarFiles
+import io.github.nihildigit.pikpak.thumbnailUrlOf
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
@@ -726,12 +727,53 @@ open class PikoDriveRepository(
         entries: List<VaultEntry>,
         sortOrder: PikoFileSortOrder,
     ): List<FileStat> {
-        val visible = listing.filterNot { isPikoInternalFolder(it, folderId) }
+        val visible = withVaultCovers(listing.filterNot { isPikoInternalFolder(it, folderId) })
         if (entries.isEmpty() && visible.none(VaultStore::looksLikeManifest)) return sortFiles(visible, sortOrder, folderId)
         val real = visible.filterNot(VaultStore::looksLikeManifest)
         val restoredMetadata = entries.filterNot { it.isArchived }
         val enriched = real.map { file -> restoredMetadata.firstOrNull { it.matches(file) }?.enrich(file) ?: file }
         return sortFiles(enriched + entries.filter { it.isArchived }.map { it.toFileStat(folderId) }, sortOrder, folderId)
+    }
+
+    /**
+     * 服务端没给封面的文件夹，用其中归档条目的封面补上，见 FolderContentMemory.vaultCovers。
+     * 归档时选的那一层往往只有子文件夹，取 [VaultTrees] 里其下文件夹的。没有可补的时原样返回同一个列表。
+     */
+    fun withVaultCovers(files: List<FileStat>): List<FileStat> {
+        if (files.none { it.isFolder && it.thumbnailLink.isEmpty() && vaultCoverOf(it.id) != null }) return files
+        return files.map { file ->
+            if (!file.isFolder || file.thumbnailLink.isNotEmpty()) return@map file
+            vaultCoverOf(file.id)?.let { file.copy(thumbnailLink = thumbnailUrlOf(it)) } ?: file
+        }
+    }
+
+    /** 归档封面有变：读到了清单、写成了清单或从磁盘载入。网盘页据此给眼前的文件夹补封面。 */
+    val vaultCoverChanges: Flow<Unit> get() = combine(childContents.vaultCovers, vaultTrees.flow) { _, _ -> }
+
+    private fun vaultCoverOf(folderId: String): String? {
+        val covers = childContents.vaultCovers.value
+        return covers[folderId]?.ifEmpty { null }
+            ?: vaultTrees.flow.value[folderId]?.sorted()?.firstNotNullOfOrNull { covers[it]?.ifEmpty { null } }
+    }
+
+    /**
+     * 文件夹在可见区域里、服务端没给封面时调用：直接放着归档条目的读一次清单，归档时选的外层读其下至多
+     * [COVER_PROBE_MEMBERS] 个文件夹的清单，读到为止。不借出任何对象，封面只靠 gcid，会员与免费账号一样。
+     * 读过的记进 FolderContentMemory，同一个文件夹以后不再读。
+     */
+    suspend fun fetchVaultCover(folderId: String) = withContext(Dispatchers.Default) {
+        if (vaultCoverOf(folderId) != null) return@withContext
+        val known = childContents.vaultCovers.value
+        val direct = folderId.takeIf { it in childContents.vaultedFolders.value && it !in known }
+        val members = vaultTrees.flow.value[folderId].orEmpty().sorted().filter { it != folderId && it !in known }
+        for (candidate in listOfNotNull(direct) + members.take(COVER_PROBE_MEMBERS)) {
+            childNameFetches.withPermit {
+                if (candidate in childContents.vaultCovers.value) return@withPermit
+                val listing = listAllFiles(candidate).getOrNull() ?: return@withPermit
+                vault.read(candidate, listing).logFailure(TAG, "读取归档清单失败（补封面）").onSuccess { vaultEntriesKnown(candidate, it) }
+            }
+            if (vaultCoverOf(folderId) != null) return@withContext
+        }
     }
 
     /**
@@ -819,6 +861,7 @@ open class PikoDriveRepository(
     /** 清单读到或写成之后，按其中还有没有条目更新文件夹的标记。 */
     internal fun vaultEntriesKnown(folderId: String, entries: List<VaultEntry>) {
         childContents.markVaulted(folderId, entries.any { it.isArchived })
+        childContents.rememberCover(folderId, entries.coverGcid().orEmpty())
     }
 
     /*
@@ -1352,6 +1395,9 @@ open class PikoDriveRepository(
         private const val CHILD_NAME_PAGE = 20
         private const val CHILD_NAME_CONCURRENCY = 2
         private const val MAX_REMEMBERED_CHILD_NAMES = 200
+
+        // 外层文件夹的封面只要一张，其下文件夹多半都有视频，读几个就够；读不到的不必为一张封面列遍整棵树
+        private const val COVER_PROBE_MEMBERS = 3
 
         // 目录图一次展开十几层、每层几十个文件夹，再加网盘页走过的，一百多个够覆盖一次浏览
         private const val RECENT_LISTINGS = 128

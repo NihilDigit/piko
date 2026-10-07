@@ -120,6 +120,13 @@ data class VaultEntry(
 val FileStat.isVaulted: Boolean get() = VaultEntry.isVaulted(id)
 
 /**
+ * 替文件夹当封面的条目：按名字排在最前的、仍在归档中的视频，与条目行的缩略图同出一处（按 gcid 拼出）。
+ * 只用 gcid，不需要清单另记缩略图，所以任何版本写下的清单都能补出封面。
+ */
+internal fun List<VaultEntry>.coverGcid(): String? =
+    filter { it.isArchived }.sortedBy { it.name }.firstOrNull { it.toFileStat("").thumbnailLink.isNotEmpty() }?.gcid
+
+/**
  * 对一个文件夹里归档条目的改动。都是纯函数，不存进清单：写入输了要重做时，原样套到赢家的状态上再算一次。
  * 作用在已经不在的条目上什么也不做，所以重做不会出错，重复的改动也在套用时自然消失。
  */
