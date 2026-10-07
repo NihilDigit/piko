@@ -175,6 +175,37 @@ class DesktopSessionStoreTest {
         assertTrue(root.resolve("accounts").listDirectoryEntries().isEmpty())
     }
 
+    /** 本目录里的加密文件，加密一律失败：模拟 Windows 上 DPAPI 出错。 */
+    private class FailingFileVault(directory: Path) : FileSecretVault(directory, "bin") {
+        override fun seal(data: ByteArray): ByteArray = throw VaultUnavailableException("CryptProtectData 失败")
+        override fun unseal(data: ByteArray): ByteArray = data
+    }
+
+    private fun plainFiles(): List<String> =
+        Files.walk(root).use { paths -> paths.map { it.fileName.toString() }.filter { it.endsWith(".plain") }.toList() }
+
+    @Test
+    fun fileBackedPrimaryFailureIsReportedNotStoredInPlain() = runBlocking {
+        val store = DesktopSessionStore(root) { FailingFileVault(it) }
+
+        assertFailsWith<VaultUnavailableException> { store.saveCredentials("a", "pw") }
+        assertEquals(emptyList(), plainFiles())
+        assertTrue(store.encryptedAtRest("a"))
+    }
+
+    // 旧明文原样留着、本次照样能登录，但不能把它们挪成另一份明文后删掉
+    @Test
+    fun fileBackedPrimaryFailureKeepsLegacyFilesWithoutPlainCopy() = runBlocking {
+        writeLegacyFiles()
+        val store = DesktopSessionStore(root) { FailingFileVault(it) }
+
+        assertEquals("user@example.com", store.loadAccounts().current)
+        assertEquals(session, store.load("user@example.com"))
+        assertEquals("hunter2", store.loadCredentials("user@example.com")?.password)
+        legacyFileNames.forEach { assertTrue(root.resolve(it).exists(), it) }
+        assertEquals(emptyList(), plainFiles())
+    }
+
     @Test
     fun clearingSessionKeepsPasswordAndClearingBothRemovesEntry() = runBlocking {
         val primary = FakeVault()

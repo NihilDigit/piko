@@ -22,7 +22,7 @@ import kotlinx.serialization.json.Json
  * 桌面端与 CLI 共用的登录态存储，都在 [root]（默认 ~/.piko）下：
  * - `accounts.json`：账号列表与当前账号，不含机密，明文。
  * - 每个账号的会话与密码合成一份 JSON，交给系统保管处（Windows 的 DPAPI、macOS 的钥匙串）；
- *   写不进时落在 `accounts/<key>.plain`，见 [LayeredVault]。
+ *   钥匙串写不进时落在 `accounts/<key>.plain`，见 [layeredSecretVault]。
  *
  * 读过的机密缓存在内存里：SDK 每次刷新令牌都要读改写一遍，钥匙串中途锁上也不影响已登录的账号。
  * 同一进程内的读改写经一把锁串行；CLI 与桌面端同时开着时的竞争不处理。
@@ -36,7 +36,7 @@ class DesktopSessionStore(
 ) : PikoSessionStore {
     // 推迟到第一次存取、在 IO 线程上建：Linux 上要先经 D-Bus 试探 Secret Service 在不在，不该压在启动的主线程上
     private val vault by lazy {
-        root.resolve("accounts").let { directory -> LayeredVault(primaryVault(directory), PlainFileVault(directory)) }
+        root.resolve("accounts").let { directory -> layeredSecretVault(directory, primaryVault(directory)) }
     }
     private val accountsFile = root.resolve("accounts.json")
     private val mutex = Mutex()
@@ -67,11 +67,9 @@ class DesktopSessionStore(
     }
 
     /**
-     * 机密眼下是否由系统加密存放。[account] 为 null 时问的是本机有没有系统保管处，登录之前据此决定提示语；
+     * 机密眼下是否由系统加密存放。[account] 为 null 时问的是本机有没有系统保管处；
      * 给了账号则看它的那份：系统保管处写入失败时它落在明文兜底里，此时为假。
      */
-    override suspend fun encryptsAtRest(): Boolean = encryptedAtRest()
-
     suspend fun encryptedAtRest(account: String? = null): Boolean = locked {
         when {
             !vault.hasPrimary -> false

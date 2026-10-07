@@ -5,13 +5,14 @@ import java.nio.file.Path
 import java.util.Base64
 
 /**
- * 经 Windows PowerShell 调 DPAPI（ProtectedData，当前用户范围，不带附加熵），密文存 `<key>.bin`。
+ * 经 Windows PowerShell 调 DPAPI（ProtectedData，当前用户范围，不带附加熵），密文存 `<key>.<账户标记>.bin`，
+ * 文件名的规则与 DpapiSecretVault 相同。
  *
  * 桌面端用 FFM 直调 crypt32，这一份给命令行工具：shared 与 CLI 按 JDK 21 编译，java.lang.foreign 在 21 上
  * 还是预览 API。两者的密文互通：ProtectedData 底下就是 CryptProtectData，描述串不参与解密，
  * CLI 刷新令牌后写回的正是桌面端读的那个文件。每次调用要起一个 powershell 进程，约几百毫秒。
  */
-class PowerShellDpapiVault(directory: Path) : FileSecretVault(directory, "bin") {
+class PowerShellDpapiVault(directory: Path) : FileSecretVault(directory, "${windowsUserTag()}.bin") {
     override fun seal(data: ByteArray): ByteArray {
         val result = run("Protect", data)
         if (result.exitCode != 0) throw VaultUnavailableException("DPAPI 加密失败：powershell 退出码 ${result.exitCode}")

@@ -5,9 +5,8 @@ import dev.piko.desktop.secrets.SecretServiceVault
 import dev.piko.desktop.winrt.WinRTSupport
 import dev.piko.shared.PikoHome
 import dev.piko.shared.auth.DesktopSessionStore
-import dev.piko.shared.auth.LayeredVault
-import dev.piko.shared.auth.PlainFileVault
 import dev.piko.shared.auth.SecretVault
+import dev.piko.shared.auth.layeredSecretVault
 import dev.piko.shared.auth.platformSecretVault
 import java.nio.file.Path
 
@@ -21,7 +20,7 @@ private fun primarySecretVault(directory: Path): SecretVault? = when {
     else -> SecretServiceVault.open()
 }
 
-internal fun desktopSessionStore(): DesktopSessionStore = DesktopSessionStore(primaryVault = ::primarySecretVault)
+internal fun desktopSessionStore(root: Path = PikoHome.root): DesktopSessionStore = DesktopSessionStore(root, ::primarySecretVault)
 
 /**
  * 不属于某个账号会话的机密（解压密码、上传凭据），与登录态用同一处系统保管处，兜底文件放在 `secrets` 目录。
@@ -29,5 +28,5 @@ internal fun desktopSessionStore(): DesktopSessionStore = DesktopSessionStore(pr
  */
 internal fun desktopPreferenceSecrets(): SecretVault {
     val directory = PikoHome.root.resolve("secrets")
-    return LayeredVault(primarySecretVault(directory), PlainFileVault(directory))
+    return layeredSecretVault(directory, primarySecretVault(directory))
 }

@@ -2,6 +2,8 @@ package dev.piko.desktop.secrets
 
 import dev.piko.shared.auth.FileSecretVault
 import dev.piko.shared.auth.VaultUnavailableException
+import dev.piko.shared.auth.windowsUserName
+import dev.piko.shared.auth.windowsUserTag
 import dev.piko.shared.log.PikoLog
 import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
@@ -16,12 +18,16 @@ import java.lang.invoke.MethodHandle
 import java.nio.file.Path
 
 /**
- * 以 DPAPI（CryptProtectData，当前用户范围）加密的凭据文件 `<key>.bin`，经 FFM 直调 crypt32。
+ * 以 DPAPI（CryptProtectData，当前用户范围）加密的凭据文件 `<key>.<账户标记>.bin`，经 FFM 直调 crypt32。
  *
  * 不用凭据管理器：它的 blob 上限 2560 字节，会话里的 access token 加上 refresh token 已逼近。
  * 不带附加熵、描述串为空，与 CLI 那边经 PowerShell 的 ProtectedData 互通（PowerShellDpapiVault）。
+ *
+ * 文件名带 Windows 账户的标记（[windowsUserTag]）：便携目录会先后被几个账户用，密文只有加密的那个账户解得开，
+ * 文件又只许它访问，别的账户既读不了也覆盖不了。各存各的，换了账户等于没有保存的密码，登录后存自己那份。
  */
-internal class DpapiSecretVault(directory: Path) : FileSecretVault(directory, "bin") {
+internal class DpapiSecretVault(directory: Path, user: String = windowsUserName()) :
+    FileSecretVault(directory, "${windowsUserTag(user)}.bin") {
     override fun seal(data: ByteArray): ByteArray = try {
         Dpapi.protect(data)
     } catch (e: DpapiException) {

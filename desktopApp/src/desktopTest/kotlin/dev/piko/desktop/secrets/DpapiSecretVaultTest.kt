@@ -2,6 +2,7 @@ package dev.piko.desktop.secrets
 
 import dev.piko.desktop.winrt.WinRTSupport
 import dev.piko.shared.auth.PowerShellDpapiVault
+import dev.piko.shared.auth.windowsUserTag
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.createTempDirectory
@@ -35,7 +36,7 @@ class DpapiSecretVaultTest {
         vault.write("k", secret)
 
         assertContentEquals(secret, vault.read("k"))
-        val stored = Files.readAllBytes(directory.resolve("k.bin"))
+        val stored = Files.readAllBytes(directory.resolve("k.${windowsUserTag()}.bin"))
         assertFalse(String(stored, Charsets.ISO_8859_1).contains("hunter2"))
     }
 
@@ -43,7 +44,7 @@ class DpapiSecretVaultTest {
     fun tamperedCiphertextReadsAsAbsent() {
         val vault = DpapiSecretVault(directory)
         vault.write("k", secret)
-        val file = directory.resolve("k.bin")
+        val file = directory.resolve("k.${windowsUserTag()}.bin")
         val stored = Files.readAllBytes(file)
         stored[stored.size - 1] = (stored.last().toInt() xor 0x5A).toByte()
         Files.write(file, stored)
