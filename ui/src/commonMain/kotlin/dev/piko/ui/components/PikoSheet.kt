@@ -28,6 +28,7 @@ import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ShortNavigationBarDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -100,6 +101,8 @@ fun PikoSheet(
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,
         sheetState = sheetState,
+        // 与底部导航栏同色：sheet 从导航栏的位置升起，两者连成一片，而不是另一块颜色压在上面
+        containerColor = ShortNavigationBarDefaults.containerColor,
         contentWindowInsets = bottomSheetInsets,
     ) {
         Column(Modifier.wheelStaysInSheet()) {

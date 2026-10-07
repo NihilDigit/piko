@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.BottomSheetScaffold
+import androidx.compose.material3.ShortNavigationBarDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SheetValue
@@ -137,6 +138,8 @@ internal fun TaskSheetScaffold(model: TaskSheetModel?, content: @Composable () -
         sheetPeekHeight = peekHeight,
         sheetDragHandle = if (model != null) ({ BottomSheetDefaults.DragHandle() }) else null,
         sheetSwipeEnabled = model != null,
+        // 与底部导航栏同色，收起时露出的那一截与导航栏连成一片，见 PikoSheet
+        sheetContainerColor = ShortNavigationBarDefaults.containerColor,
         containerColor = Color.Transparent,
     ) { padding ->
         // 网盘页让出露着的那一截：列表末尾、FAB 与 Snackbar 都在它上面
