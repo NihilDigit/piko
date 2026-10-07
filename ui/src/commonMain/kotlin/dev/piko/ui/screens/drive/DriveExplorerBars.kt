@@ -24,8 +24,6 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.ContentCopy
-import androidx.compose.material.icons.outlined.ContentCut
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.SelectAll
@@ -137,7 +135,7 @@ internal fun ExplorerNavBar(
         modifier = Modifier.fillMaxWidth().then(caption.modifier).height(56.dp).padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // 后退与前进走不了时不摆出来，与命令栏的条目操作同一个规矩；地址栏随之左移
+        // 后退与前进走不了时不摆出来，与命令栏同一个规矩；地址栏随之左移
         if (canGoBack) TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, "后退", onBack, shortcut = if (mac) "⌘[" else "Alt+←")
         if (canGoForward) TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowForward, "前进", onForward, shortcut = if (mac) "⌘]" else "Alt+→")
         TooltipIconButton(Icons.Outlined.ArrowUpward, "上一级", onUp, shortcut = if (mac) "⌘↑" else "Alt+↑", enabled = canGoUp)
@@ -250,31 +248,22 @@ internal fun ExplorerSearchField(
 }
 
 /**
- * 宽窗口网盘页的第二行，照资源管理器的命令栏：新建；剪切、复制、粘贴、重命名、分享、删除；排序、筛选、全选、查重；
- * 其余收进「⋯」。右端是刷新、视图与信息流（[viewSwitcher]）、添加链接。每一样显不显示由 [commands] 定，
- * 规则见 DriveCommands.kt；这里只管摆不摆得下，见 [CommandBarLayout]。
+ * 宽窗口网盘页的第二行：新建；粘贴；排序、筛选、全选、查找重复。右端是刷新、视图与信息流（[viewSwitcher]）、
+ * 这一页的主操作。只放作用于当前位置的命令，条目操作在右键菜单里，理由见 DriveCommands.kt。
+ * 每一样显不显示由 [commands] 定；这里只管摆不摆得下：放不下时按 [BarItem.priority] 从低往高收进「⋯」。
  *
- * 条目操作作用于选中的几项，没有选中时作用于焦点所在的一项，与资源管理器相同，所以多选时不再另换一条顶栏：
- * 多选时左端的「新建」换成「已选 N 项」与退出。几组之间的分隔线只画在两边都有东西时，不留孤零零的一道。
+ * 多选时左端的「新建」换成退出与「已选 N 项」。几组之间的分隔线只画在两边都有东西时，不留孤零零的一道。
  */
 @Composable
 internal fun ExplorerCommandBar(
     shortcuts: ShortcutModifier,
     commands: DriveCommands,
     newActions: List<SheetAction>,
-    targetCount: Int,
     selectedCount: Int,
     /** 选中的文件合计多大，写在「已选 N 项」后面；选中的全是文件夹时为 0，不写。 */
     selectedBytes: Long,
     onExitSelection: () -> Unit,
-    onCut: () -> Unit,
-    onCopy: () -> Unit,
     onPaste: () -> Unit,
-    onRename: () -> Unit,
-    onShare: () -> Unit,
-    onTrash: () -> Unit,
-    /** 回收站的恢复与彻底删除，[DriveCommands.restoreOrDelete] 时取代剪切到删除那一组。 */
-    restoreActions: List<SheetAction>,
     sortOrder: FileSortOrder,
     onSortChange: (FileSortOrder) -> Unit,
     typeFilter: FileCategory?,
@@ -283,7 +272,6 @@ internal fun ExplorerCommandBar(
     onSelectAll: () -> Unit,
     onFindDuplicates: () -> Unit,
     sectionJumper: @Composable () -> Unit,
-    moreActions: List<SheetAction>,
     onRefresh: () -> Unit,
     onHome: () -> Unit,
     viewSwitcher: @Composable () -> Unit,
@@ -312,44 +300,12 @@ internal fun ExplorerCommandBar(
         } else if (commands.create) {
             add(BarItem("new", PinnedPriority) { MenuTextButton(Icons.Outlined.Add, "新建", newActions) })
         }
-        add(barDivider("itemsDivider"))
-        if (commands.restoreOrDelete) {
-            restoreActions.forEach { action ->
-                add(BarItem("restore:${action.label}", 85, listOf(action)) {
-                    TooltipIconButton(
-                        action.icon,
-                        action.label,
-                        action.onClick,
-                        tint = if (action.destructive) MaterialTheme.colorScheme.error else Color.Unspecified,
-                    )
-                })
-            }
-        }
-        // 收进「更多」时这一组同在 Edit 一组；重命名、分享、移入回收站的名字与图标取自 DriveActions，与右键菜单一致
-        fun asEdit(action: SheetAction) = listOf(SheetAction(action.icon, action.label, action.onClick, destructive = action.destructive, group = ActionGroup.Edit))
-        fun itemButton(key: String, priority: Int, action: SheetAction, shortcut: String? = null) =
-            BarItem(key, priority, asEdit(action)) {
-                TooltipIconButton(
-                    action.icon,
-                    action.label,
-                    action.onClick,
-                    shortcut = shortcut,
-                    tint = if (action.destructive) MaterialTheme.colorScheme.error else Color.Unspecified,
-                )
-            }
-        if (commands.cutCopy) {
-            add(itemButton("cut", 80, SheetAction(Icons.Outlined.ContentCut, "剪切", onCut), shortcut = label("X")))
-            add(itemButton("copy", 80, SheetAction(Icons.Outlined.ContentCopy, "复制", onCopy), shortcut = label("C")))
-        }
+        add(barDivider("pasteDivider"))
         if (commands.paste) {
-            add(itemButton("paste", 80, SheetAction(Icons.Outlined.ContentPaste, "粘贴", onPaste), shortcut = label("V")))
+            add(BarItem("paste", 80, listOf(SheetAction(Icons.Outlined.ContentPaste, "粘贴", onPaste, group = ActionGroup.Edit))) {
+                TooltipIconButton(Icons.Outlined.ContentPaste, "粘贴", onPaste, shortcut = label("V"))
+            })
         }
-        if (commands.rename) {
-            val rename = if (targetCount > 1) DriveActions.batchRename(onRename) else DriveActions.rename(onRename)
-            add(itemButton("rename", 70, rename, shortcut = if (mac) "↩" else "F2"))
-        }
-        if (commands.share) add(itemButton("share", 60, DriveActions.share(onShare)))
-        if (commands.moveToTrash) add(itemButton("trash", 85, DriveActions.moveToTrash(onTrash), shortcut = shortcuts.trashLabel))
         add(barDivider("viewDivider"))
         if (commands.sort) {
             add(BarItem("sort", 40, sortOverflowActions(sortOrder, onSortChange)) { SortButton(sortOrder, onSortChange) })
@@ -365,8 +321,14 @@ internal fun ExplorerCommandBar(
             })
         }
         if (commands.findDuplicates) {
+            // 带文字：FileCopy 与「复制」的 ContentCopy 都是叠放的两张纸，只有图标时会被认成复制。图标不换，
+            // 查重的标签、库与右下角的卡片都用它
             add(BarItem("findDuplicates", 20, listOf(SheetAction(Icons.Outlined.FileCopy, "查找重复", onFindDuplicates, group = ActionGroup.Select))) {
-                TooltipIconButton(Icons.Outlined.FileCopy, "查找重复", onFindDuplicates)
+                TextButton(onClick = onFindDuplicates) {
+                    Icon(Icons.Outlined.FileCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("查找重复")
+                }
             })
         }
     }
@@ -386,8 +348,8 @@ internal fun ExplorerCommandBar(
     }
     // 没有自己的底色：与导航栏同在页眉那一块外框色里（theme/Frame.kt），下面的列表是卡片。
     // 两行各带底色、或中间再画一条线，底色叠了三层，看着重复
-    // 优先级的取值：添加链接、移入回收站、剪切复制粘贴、重命名、分享这些条目操作最后收；刷新、排序、筛选、全选、查重
-    // 在别处都另有入口（快捷键、列表页眉、命令面板），先收。左端的新建与已选、视图一直摆着
+    // 优先级的取值：主操作与粘贴最后收；刷新、排序、筛选、全选、查找重复在别处都另有入口（快捷键、列表页眉、
+    // 命令面板、空白处右键），先收。左端的新建与已选、视图一直摆着
     AdaptiveBar(
         modifier = Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 8.dp),
         leading = leading,
@@ -396,8 +358,6 @@ internal fun ExplorerCommandBar(
         middleMinWidth = SectionJumperMinWidth,
         middleMaxWidth = SectionJumperMaxWidth,
         moreAfterLeading = true,
-        alwaysMore = commands.moreMenu,
-        moreActions = if (commands.moreMenu) moreActions else emptyList(),
         moreIcon = Icons.Outlined.MoreHoriz,
         gap = BarItemGap,
         dragWindow = true,

@@ -907,6 +907,14 @@ fun DriveScreen(
                 vaultSession.restore(vaulted)
             })
         }
+        // 宽窗口里一次解压几个压缩包只有这一个入口（命令栏不摆条目操作）
+        if (commands.extract) {
+            val archives = files.filter { !it.isUploading && (it.isExtractableArchive || it.isArchiveVolume) }
+            add(DriveActions.extract {
+                archiveSession.extract(archives)
+                state.exitSelection()
+            })
+        }
         if (commands.moveCopyTo) {
             add(DriveActions.moveTo { moveTargetIds = ids.toSet() })
             add(DriveActions.copyTo { copyTargetIds = ids.toSet() })
@@ -1305,12 +1313,13 @@ fun DriveScreen(
         }
     }
 
-    // 各入口上摆哪些操作：宽窗口的命令栏、窄窗口的 FAB 菜单与多选顶栏共用这一份规则，见 DriveCommands.kt
+    // 各入口上摆哪些操作：宽窗口的命令栏与窄窗口的 FAB 菜单照位置命令，窄窗口的多选顶栏照条目操作，规则见 DriveCommands.kt
+    val currentPlace = commandPlace(folderStack.size)
+    val targetCommands = itemCommands(currentPlace, commandTargets)
     val commands = driveCommands(
         CommandInputs(
-            place = commandPlace(folderStack.size),
+            place = currentPlace,
             atRoot = folderStack.size == 1 && activeFolderId.isEmpty(),
-            targets = commandTargets,
             selecting = state.isSelectionMode && selectedIdSet.isNotEmpty(),
             clipboardFull = clipboard != null,
             itemCount = displayedFiles.size,
@@ -1330,7 +1339,8 @@ fun DriveScreen(
                 state.exitSelection()
             }
         }
-        state.isSelectionMode -> null
+        // 窄窗口多选时 FAB 让给多选顶栏。宽窗口的命令栏不摆批量操作，没有要让的，主操作照旧
+        state.isSelectionMode && !pathInTopBar -> null
         inDuplicates -> duplicateState?.suggestedIds?.takeIf { it.isNotEmpty() }?.let { suggested ->
             SheetAction(Icons.Outlined.Checklist, "选中建议移走的 ${suggested.size} 项", { state.selectOnly(suggested) })
         }
@@ -1341,10 +1351,8 @@ fun DriveScreen(
     }
 
     // 宽窗口的两行栏，照资源管理器：导航栏（后退、前进、上一级、刷新、地址栏、搜索框）与命令栏。
-    // 多选时不换顶栏，命令栏的条目操作本就作用于选中的几项；新建与排序、视图也从 FAB 与列表页眉搬到这里
+    // 多选时不换顶栏，条目操作在右键菜单里；新建与排序、视图也从 FAB 与列表页眉搬到这里
     val explorerBars: @Composable () -> Unit = {
-        val targetIds = commandTargets.map { it.id }
-        val movable = commandTargets.filterNot { it.isUploading }
         ExplorerNavBar(
             shortcuts = platform.shortcutModifier,
             canGoBack = history.canGoBack,
@@ -1404,27 +1412,11 @@ fun DriveScreen(
                 SheetAction(Icons.Outlined.UploadFile, "上传文件", { pickFiles() }),
                 SheetAction(Icons.Outlined.DriveFolderUpload, "上传文件夹", { pickFolder() }),
             ),
-            targetCount = commandTargets.size,
             selectedCount = if (state.isSelectionMode) state.selectedFileIds.size else 0,
             // 文件夹的大小列表接口不给，只合计文件
             selectedBytes = if (state.isSelectionMode) displayedFiles.filter { it.id in selectedIdSet && !it.isFolder }.sumOf { it.sizeBytes } else 0L,
             onExitSelection = { state.exitSelection() },
-            onCut = { state.putOnClipboard(targetIds, cut = true) },
-            onCopy = { state.putOnClipboard(targetIds, cut = false) },
             onPaste = { state.paste() },
-            onRename = {
-                when {
-                    movable.size == 1 -> startRename(movable.single())
-                    movable.size > 1 -> batchRenameTargets = movable
-                }
-            },
-            // 按列表顺序：服务端取第一项的名字作分享标题
-            onShare = { shareTargets = movable },
-            onTrash = { state.moveToTrash(targetIds) },
-            restoreActions = trashActions(
-                onRestore = { state.restoreFromTrash(targetIds) },
-                onDelete = { libraryConfirm = LibraryConfirm.DeleteForever(targetIds, emptying = false) },
-            ),
             onSelectAll = { state.toggleSelectAll() },
             onFindDuplicates = { findDuplicates(activeFolder) },
             sortOrder = state.sortOrder,
@@ -1438,29 +1430,6 @@ fun DriveScreen(
                     sections = state.sectionHeaders.map { it.value.menuLabel },
                     onSectionSelected = ::jumpToSection,
                 )
-            },
-            // 显不显示由 commands 定，这里只管每一项做什么
-            moreActions = buildList {
-                if (commands.moveCopyTo) {
-                    add(DriveActions.moveTo { moveTargetIds = movable.map { it.id }.toSet() })
-                    add(DriveActions.copyTo { copyTargetIds = movable.map { it.id }.toSet() })
-                }
-                if (commands.download) {
-                    val targets = movable
-                    add(DriveActions.download { download(targets) })
-                }
-                if (commands.extract && state.archiveView != null) {
-                    val items = commandTargets
-                    add(DriveActions.extractEntries { extractFromArchive(items) })
-                } else if (commands.extract) {
-                    val archives = movable.filter { it.isExtractableArchive || it.isArchiveVolume }
-                    add(DriveActions.extract {
-                        archiveSession.extract(archives)
-                        state.exitSelection()
-                    })
-                }
-                // 找不回来的垫底，与右键菜单一致
-                if (commands.removeRecord) add(DriveActions.removeRecord { state.removeFromLibrary(targetIds) })
             },
             onRefresh = { state.load(refresh = true) },
             onHome = ::goHome,
@@ -1538,7 +1507,7 @@ fun DriveScreen(
             // 选中了就作用于选中的（一个文件是对话框，几项是批量重命名，一个文件夹是整理它的子树）；没选中时整理当前文件夹
             val nameTargets = commandTargets.filterNot { it.isUploading }
             when {
-                nameTargets.isNotEmpty() -> if (commands.rename && nameTargets.any { it.isFolder || hasAvCode(it.name) }) {
+                nameTargets.isNotEmpty() -> if (targetCommands.rename && nameTargets.any { it.isFolder || hasAvCode(it.name) }) {
                     add(PaletteItem("按番号规范命名", Icons.Outlined.DriveFileRenameOutline, "网盘", keywords = "rename av code 番号 重命名") { nameByCode(nameTargets) })
                 }
                 !state.isVirtualPlace -> add(
@@ -1739,19 +1708,19 @@ fun DriveScreen(
                                 onDelete = { libraryConfirm = LibraryConfirm.DeleteForever(state.selectedFileIds.toList(), emptying = false) },
                             )
 
-                            // 摆哪些与命令栏同一份规则（commands），做不了的不摆
+                            // 摆哪些与右键菜单同一份规则（itemCommands），做不了的不摆
                             state.isSelectionMode -> DriveSelectionTopBar(
                                 scrollBehavior = topBarScrollBehavior,
                                 selectedCount = state.selectedFileIds.size,
                                 onExit = { state.exitSelection() },
                                 onSelectAll = { state.toggleSelectAll() }.takeIf { commands.selectAll },
-                                download = DriveActions.download { download(commandTargets.filterNot { it.isUploading }) }.takeIf { commands.download },
-                                moveTo = DriveActions.moveTo { moveTargetIds = state.selectedFileIds.toSet() }.takeIf { commands.moveCopyTo },
-                                copyTo = DriveActions.copyTo { copyTargetIds = state.selectedFileIds.toSet() }.takeIf { commands.moveCopyTo },
-                                trash = DriveActions.moveToTrash { state.moveToTrash(state.selectedFileIds.toList()) }.takeIf { commands.moveToTrash },
+                                download = DriveActions.download { download(commandTargets.filterNot { it.isUploading }) }.takeIf { targetCommands.download },
+                                moveTo = DriveActions.moveTo { moveTargetIds = state.selectedFileIds.toSet() }.takeIf { targetCommands.moveCopyTo },
+                                copyTo = DriveActions.copyTo { copyTargetIds = state.selectedFileIds.toSet() }.takeIf { targetCommands.moveCopyTo },
+                                trash = DriveActions.moveToTrash { state.moveToTrash(state.selectedFileIds.toList()) }.takeIf { targetCommands.moveToTrash },
                                 extract = if (state.archiveView != null) {
                                     DriveActions.extractEntries { extractFromArchive(state.displayedFiles.filter { it.id in state.selectedFileIds }) }
-                                } else selectedArchives.takeIf { commands.extract && it.isNotEmpty() }?.let { archives ->
+                                } else selectedArchives.takeIf { targetCommands.extract && it.isNotEmpty() }?.let { archives ->
                                     DriveActions.extract {
                                         archiveSession.extract(archives)
                                         state.exitSelection()
@@ -1760,10 +1729,10 @@ fun DriveScreen(
                                 share = DriveActions.share {
                                     // 按列表顺序：服务端取第一项的名字作分享标题
                                     shareTargets = state.displayedFiles.filter { it.id in state.selectedFileIds && !it.isUploading }
-                                }.takeIf { commands.share },
+                                }.takeIf { targetCommands.share },
                                 batchRename = DriveActions.batchRename {
                                     batchRenameTargets = state.displayedFiles.filter { it.id in state.selectedFileIds && !it.isUploading }
-                                }.takeIf { commands.rename },
+                                }.takeIf { targetCommands.rename },
                             )
 
                             isSearchOpen -> DriveSearchTopBar(

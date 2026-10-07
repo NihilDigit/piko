@@ -57,5 +57,11 @@ kotlin {
             implementation(libs.androidx.navigation3.ui)
             implementation(libs.androidx.adaptive.navigation3)
         }
+        // 只测纯函数的规则（命令栏显隐这类 internal 的），界面行为的测试在 desktopApp
+        val desktopTest by getting {
+            dependencies {
+                implementation(kotlin("test"))
+            }
+        }
     }
 }

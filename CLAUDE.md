@@ -27,6 +27,7 @@ Piko 是 PikPak 的第三方跨平台客户端。Android、Windows、macOS 与 L
 ./gradlew :desktopApp:run                  # 跑桌面端
 ./gradlew :shared:desktopTest              # shared 的单测与冒烟（文件名解析、日志、代理、更新说明等）
 ./gradlew :shared:desktopTest --tests '*ReleaseNotesTest*'           # 跑单个测试
+./gradlew :ui:desktopTest                  # ui 里 internal 的纯函数规则（命令栏显隐等）
 ./gradlew :desktopApp:desktopTest          # 桌面端测试，含 WinRT 与窗口过程，只能在 Windows 上跑
 ./gradlew :app:testDebugUnitTest           # Android 单测
 ./gradlew :desktopApp:createReleaseDistributable  # release 包（ProGuard + AOT），keep 规则一类问题只在这里暴露
@@ -277,7 +278,7 @@ Android 分发包里 jdtech 的 FFmpeg 以 `--enable-gpl --enable-version3` 构�
 
 ## 冒烟测试
 
-都在 `.github/workflows/test.yml`，业务逻辑放 JVM 上测，原生行为在真机器上冒烟：Linux 上的 `:shared:desktopTest`，
+都在 `.github/workflows/test.yml`，业务逻辑放 JVM 上测，原生行为在真机器上冒烟：Linux 上的 `:shared:desktopTest` 与 `:ui:desktopTest`，
 Windows 上的 `:desktopApp:desktopTest`，Android 单测，x86_64 模拟器（API 34）上的 `:app:connectedDebugAndroidTest`，
 以及 Windows、macOS、Linux 上对安装包的冒烟（`windows-package`、`macos-package`、`linux-package`，推送时不跑）：安装、应用内更新，
 再验默认打开方式、在资源管理器中显示这类依赖系统真实行为的，包里的入口是 `SelfTest.kt`。冒烟走真实 libmpv、

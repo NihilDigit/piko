@@ -75,14 +75,16 @@ jobs:
       - uses: gradle/actions/setup-gradle@v5
 
       - name: Shared smoke tests
-        run: ./gradlew :shared:desktopTest --no-daemon --stacktrace
+        run: ./gradlew :shared:desktopTest :ui:desktopTest --no-daemon --stacktrace
 
       - name: Upload test reports
         if: failure()
         uses: actions/upload-artifact@v6
         with:
           name: jvm-smoke-reports
-          path: shared/build/reports/tests/
+          path: |
+            shared/build/reports/tests/
+            ui/build/reports/tests/
           if-no-files-found: ignore
 
   # WinRT、窗口过程、更新清单与 Windows 原生库的用例只能在 Windows 上跑
