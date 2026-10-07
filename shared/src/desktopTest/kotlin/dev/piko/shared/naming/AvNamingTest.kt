@@ -27,13 +27,13 @@ class AvNamingTest {
         // fc 后面紧跟的数字整体是编号，打头的 2 不是 FC2 的 2
         assertEquals("FC2-PPV-2765224", code("fc2765224_1.mp4"))
         assertEquals("FC2-PPV-980638", code("FC980638_01.mp4"))
-        assertEquals("1", part("FC980638_01.mp4"))
+        assertEquals("CD1", part("FC980638_01.mp4"))
         listOf("hey4017_244-fhd1.wmv", "heydouga 4017-244_1.wmv", "HeyDouga-4017-244.mp4", "しろハメ Heydouga 4017-244.wmv")
             .forEach { assertEquals("HEYDOUGA-4017-244", code(it), it) }
-        assertEquals("1", part("hey4017_244-fhd1.wmv"))
+        assertEquals("CD1", part("hey4017_244-fhd1.wmv"))
         listOf("021014-540-carib-high_1.mp4", "Caribbean-021014-540.mp4", "加勒比 021014-540 片名.mp4")
             .forEach { assertEquals("CARIB-021014-540", code(it), it) }
-        assertEquals("1", part("021014-540-carib-high_1.mp4"))
+        assertEquals("CD1", part("021014-540-carib-high_1.mp4"))
         assertEquals("1PON-092415_001", code("1pon-092415_001-fhd1_(new).mp4"))
         assertEquals("N0421", code("n0421_name_surname_ta1.mp4"))
         assertEquals("N0397", code("[NoDRM]-n0397_name_ei1_n.wmv"))
@@ -46,20 +46,75 @@ class AvNamingTest {
         assertEquals("ABCD-S94", code("ABCD-S94 片名.mkv"))
         assertNull(code("Show-S01.mkv"), "首字母大写的是季号写法")
         assertEquals("XYZ-057", code("xyz0057_02.wmv"))
-        assertEquals("B", part("FC2-PPV-1166282B.mp4"))
+        assertEquals("CD2", part("FC2-PPV-1166282B.mp4"))
         assertEquals("104DANDAN-015", code("104dandan-015-C 片名.mp4"))
         assertEquals("300MIUM-123", code("300MIUM-123.mp4"))
         assertTrue(parseMediaName("SSIS-123C.mp4").av!!.chineseSubtitles, "粘着的 C 仍是中字")
     }
 
     @Test
-    fun `digits keep their original width except for dmm padding`() {
+    fun `ordinary codes drop leading zeros down to three digits while label codes keep theirs`() {
         assertEquals("HEYZO-0123", normalizeAvCode("HEYZO_0123"))
         assertEquals("HEYZO-0123", normalizeAvCode("heyzo_hd_0123_full"))
         assertEquals("ABC-012", normalizeAvCode("ABC-012"))
         assertEquals("ABCD-12345", normalizeAvCode("abcd-12345"))
-        // DMM 的五位补零写法还原
-        assertEquals("SSIS-123", normalizeAvCode("ssis00123"))
+        // 分隔与连写同一条规则：都是 ABC-123
+        listOf("ssis00123", "SSIS-0123", "ssis_00123", "SSIS-123").forEach { assertEquals("SSIS-123", normalizeAvCode(it), it) }
+        assertEquals("3DSVR-0123", normalizeAvCode("3DSVR-0123"))
+    }
+
+    @Test
+    fun `names that used to slip through`() {
+        fun av(name: String) = parseMediaName(name).av
+        with(av("[xxx.com]abc00123hhb.mp4")!!) {
+            assertEquals("ABC-123", code)
+            assertNull(title, "hhb 是压制标记，不是片名")
+        }
+        assertEquals("CD1", av("abc00123hhb1.mp4")?.part)
+        with(av("kcf9.com-ABC-123.mp4")!!) {
+            assertEquals("ABC-123", code)
+            assertEquals("kcf9.com", site)
+        }
+        assertEquals("ABC-123", av("HD-ABC-123.mp4")?.code)
+        assertEquals("ABC-123", av("FHD-ABC-123.mp4")?.code)
+        assertNull(av("HD-1080.mp4"), "剥掉画质前缀后认不出番号的不剥")
+        with(av("abc123c.mp4")!!) {
+            assertEquals("ABC-123", code)
+            assertTrue(chineseSubtitles)
+        }
+        assertEquals("10MU-010120_01", av("10musume 010120_01.mp4")?.code)
+        assertEquals("10MU-010120_01", av("010120_01-10mu.mp4")?.code)
+        assertEquals("PACO-010120_123", av("paco-010120_123.mp4")?.code)
+        assertEquals("PACO-010120_123", av("010120_123-paco.mp4")?.code)
+        assertEquals("MURA-010120_123", av("mura-010120_123.mp4")?.code)
+        assertEquals("CARIBPR-010120_001", av("caribbeancompr-010120_001.mp4")?.code)
+        assertEquals("CARIB-021014-540", av("caribbeancom-021014-540.mp4")?.code)
+        assertEquals("3DSVR-0123", av("3DSVR-0123.mp4")?.code)
+        // 空格之后的单个字母是片名的一部分，不是中字
+        with(av("SSIS-123 C Model.mp4")!!) {
+            assertEquals(false, chineseSubtitles)
+            assertEquals("C Model", title)
+        }
+        // chs、cht 是简体、繁体中文字幕，对番号都是中字；sub 不说是哪种语言
+        assertTrue(av("SSIS-123-chs.mp4")!!.chineseSubtitles)
+        assertTrue(av("SSIS-123_cht.mp4")!!.chineseSubtitles)
+        assertEquals(false, av("SSIS-123-sub.mp4")!!.chineseSubtitles)
+    }
+
+    @Test
+    fun `a lettered set makes c a part instead of chinese subtitles`() {
+        val batch = analyzeMediaBatch(
+            listOf(
+                MediaFileInput("ABC-123-A.mp4", 2_000_000_000),
+                MediaFileInput("ABC-123-B.mp4", 2_000_000_000),
+                MediaFileInput("ABC-123-C.mp4", 2_000_000_000),
+                MediaFileInput("XYZ-456-C.mp4", 2_000_000_000),
+            ),
+        )
+        val parts = batch.works.single { it.title == "ABC-123" }.sections.single().entries
+        assertEquals(listOf("ABC-123 CD1", "ABC-123 CD2", "ABC-123 CD3"), parts.map { it.label })
+        assertTrue(parts.last().primary.tags.none { it.text == MediaTag.CHINESE_SUBTITLES })
+        assertTrue(batch.parsed[3].av!!.chineseSubtitles, "没有成套的 C 仍是中字")
     }
 
     @Test
@@ -86,7 +141,7 @@ class AvNamingTest {
 
         assertEquals("CD1", av("SSIS-123-cd1.mp4").part)
         assertEquals("CD2", av("SSIS-123 CD2.mp4").part)
-        assertEquals("A", av("SSIS-123-A.mp4").part)
+        assertEquals("CD1", av("SSIS-123-A.mp4").part)
         assertEquals("CD1", av("SSIS-123.part1.mp4").part)
         assertEquals(listOf("AI"), av("SSIS-123-AI.mp4").marks)
         // 空格隔开的是片名描述，不是后缀
@@ -221,7 +276,7 @@ class AvNamingTest {
         }
         // 没写片名时番号就是标题，不再重复一个芯片
         with(av("site.com@FC2-PPV-1234567_1.mp4")) {
-            assertEquals("FC2-PPV-1234567 1", displayTitle())
+            assertEquals("FC2-PPV-1234567 CD1", displayTitle())
             assertNull(chip)
         }
     }

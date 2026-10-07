@@ -1,5 +1,6 @@
 package dev.piko.shared.naming
 
+import dev.piko.shared.naming.av.AvInfo
 import dev.piko.shared.naming.av.matchAv
 
 /**
@@ -21,7 +22,7 @@ fun parseMediaName(fileName: String, knownKind: FileKind? = null): ParsedName {
             return ParsedName(
                 fileName = fileName, fileKind = kind, kind = NameKind.AV, confidence = Confidence.HIGH,
                 title = match.info.code, group = null, episode = null, episodeTitle = null, section = null,
-                marker = null, label = listOfNotNull(match.info.code, match.info.part).joinToString(" "),
+                marker = null, label = avLabel(match.info),
                 av = match.info, tags = match.tags, language = language, languageCode = languageCode,
             )
         }
@@ -56,6 +57,18 @@ fun parseMediaName(fileName: String, knownKind: FileKind? = null): ParsedName {
         section = series.section, marker = series.marker, label = series.label, av = null,
         tags = series.tags, language = language, languageCode = languageCode,
     )
+}
+
+private fun avLabel(info: AvInfo): String = listOfNotNull(info.code, info.part).joinToString(" ")
+
+/**
+ * 换上兄弟文件定下的番号信息（分段号、成套的 C），行标题跟着变。中字被改成分段时连同标签一起去掉，
+ * 否则这一行还挂着「中字」。
+ */
+internal fun ParsedName.withAv(info: AvInfo): ParsedName {
+    val dropChinese = av?.chineseSubtitles == true && !info.chineseSubtitles
+    val newTags = if (dropChinese) tags.filterNot { it.kind == TagKind.SUBTITLES && it.text == MediaTag.CHINESE_SUBTITLES } else tags
+    return copy(av = info, label = avLabel(info), tags = newTags)
 }
 
 private class SceneRelease(val site: String, val label: String, val tags: List<MediaTag>)

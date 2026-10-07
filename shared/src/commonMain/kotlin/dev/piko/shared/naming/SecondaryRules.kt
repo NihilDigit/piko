@@ -14,7 +14,6 @@ private val AD_KEYWORDS = listOf(
 )
 
 private val LEADING_1024 = Regex("""^[\s_(（]*1024""")
-private val DOMAIN_STEM = Regex("""(?i)^(?:www\.)?[a-z0-9-]+\.(?:com|net|org|me|tv|cc|xyz|top|vip|club|fun|app|live|info|io|co|site|online|pw|ru|la|tw)(?:$|[-\s_])""")
 private val SAMPLE_WORD = Regex("""(?i)(^|[^a-z])sample([^a-z]|$)""")
 
 internal fun isAdName(name: String): Boolean {
@@ -22,7 +21,7 @@ internal fun isAdName(name: String): Boolean {
     if (AD_KEYWORDS.any { it in lower }) return true
     val stem = name.substringBeforeLast('.').ifEmpty { name }
     if (LEADING_1024.containsMatchIn(stem)) return true
-    if (DOMAIN_STEM.containsMatchIn(stem) && '@' !in stem) return true
+    if (startsWithDomain(stem) && '@' !in stem) return true
     return isSpacedOut(stem)
 }
 

@@ -1,6 +1,7 @@
 package dev.piko.shared.naming
 
 import dev.piko.data.repository.NaturalOrder
+import dev.piko.shared.naming.av.resolveLetteredParts
 
 /**
  * 一批文件的整体分析：磁链解析出的文件树，或网盘里一个目录下的文件。
@@ -62,6 +63,7 @@ private class BatchAnalyzer(inputs: List<MediaFileInput>) {
 
     fun run(): MediaBatch {
         markDiscs()
+        applyLetteredParts()
         applyDirectories()
         markExplicitSecondary()
         markAdVideos()
@@ -94,6 +96,16 @@ private class BatchAnalyzer(inputs: List<MediaFileInput>) {
 
     // endregion
 
+    /** 同目录里成套的「-A」「-B」「-C」，C 是第三段而不是中字，见 [resolveLetteredParts]。 */
+    private fun applyLetteredParts() {
+        items.groupBy { it.folder }.values.forEach { folderItems ->
+            val resolved = resolveLetteredParts(folderItems.map { it.parsed.av })
+            folderItems.zip(resolved).forEach { (item, av) ->
+                if (av != null && av != item.parsed.av) item.parsed = item.parsed.withAv(av)
+            }
+        }
+    }
+
     private fun applyDirectories() {
         items.forEach { item ->
             for (depth in item.dirs.indices.reversed()) {
@@ -113,7 +125,8 @@ private class BatchAnalyzer(inputs: List<MediaFileInput>) {
             if (item.discRoot != null || item.secondary != null) return@forEach
             item.secondary = when {
                 item.kind == FileKind.LINK || item.kind == FileKind.PROGRAM -> SecondaryReason.AD
-                isAdName(item.name) -> SecondaryReason.AD
+                // 带番号的是正片：「kcf9.com-ABC-123.mp4」以网址开头，却不是宣传文件
+                isAdName(item.name) && item.parsed.av == null -> SecondaryReason.AD
                 item.kind == FileKind.FONT -> SecondaryReason.FONTS
                 item.kind == FileKind.ARCHIVE && isFontArchive(item.name) -> SecondaryReason.FONTS
                 isSampleName(item.name) -> SecondaryReason.SAMPLE
@@ -383,8 +396,8 @@ private class BatchAnalyzer(inputs: List<MediaFileInput>) {
         // 已有的分段能把成员分开，说明后缀扫描认对了，不动
         if (members.map { it.parsed.av!!.part }.distinct().size == members.size) return
         members.forEachIndexed { index, item ->
-            val av = item.parsed.av!!.copy(part = sequence[index].trimStart('0').ifEmpty { "0" })
-            item.parsed = item.parsed.copy(av = av, label = "${av.code} ${av.part}")
+            val av = item.parsed.av!!.copy(part = "CD" + sequence[index].trimStart('0').ifEmpty { "0" })
+            item.parsed = item.parsed.withAv(av)
         }
     }
 

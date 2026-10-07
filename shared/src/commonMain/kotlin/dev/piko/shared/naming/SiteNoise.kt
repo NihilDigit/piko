@@ -7,9 +7,13 @@ package dev.piko.shared.naming
  * scene 名「BlackedRaw.19.05.17.Lena…」「CzechAV.SiteRip…」用点连接，形似网址而不是，所以只认
  * 已知顶级域名之后紧跟 @、-、_、空格或名字结尾的写法。不带 @ 的写法只认不会是普通单词的后缀：
  * 「Sword.Art.Online - 01」的 online 是作品名。
+ *
+ * 顶级域名只在这里列一份，番号识别（av/AvMatcher）与广告判断（SecondaryRules）都从这里取。
  */
-private const val ANY_TLD = "com|net|org|la|cc|vip|xyz|top|club|cn|biz|ws|ru|jp|tw|me|tv|co|io|info|us|pw|site|online|live|fun|app|one"
+// 不会是普通英文单词的后缀，网址前后不带 @ 时也认
 private const val STRONG_TLD = "com|net|org|la|cc|vip|xyz|top|club|cn|biz|ws|ru|jp|tw"
+// 其余几个也是常见单词（me、in、one、live），只在 @ 之前、方括号里或整段就是一个网址时才认
+private const val ANY_TLD = "$STRONG_TLD|me|tv|co|io|info|us|pw|site|online|live|fun|app|one|in"
 
 private fun host(tlds: String) = """(?:www\.)?[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.(?:$tlds)"""
 
@@ -18,9 +22,10 @@ private fun host(tlds: String) = """(?:www\.)?[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)
 private val AT_PREFIX = Regex("""^(?:[^@\s\[\]【】()]{0,8}?${host(ANY_TLD)}[^@\s]{0,12}@\s*)+""", RegexOption.IGNORE_CASE)
 // 「域名@」出现在任何位置都是论坛标记：「某人 [PornhubFans 1080p] www.98T.la@标题」
 private val ANYWHERE_AT = Regex("""${host(ANY_TLD)}@\s*""", RegexOption.IGNORE_CASE)
-private val LEADING = Regex("""^${host(STRONG_TLD)}(?=[-_\s])[-_\s]*""", RegexOption.IGNORE_CASE)
+private val LEADING = Regex("""^(${host(STRONG_TLD)})[-_\s]+""", RegexOption.IGNORE_CASE)
 private val TRAILING = Regex("""[\s\-_]*${host(STRONG_TLD)}$""", RegexOption.IGNORE_CASE)
 private val BRACKETED = Regex("""[\[【(]\s*(${host(ANY_TLD)})\s*[\]】)]""", RegexOption.IGNORE_CASE)
+private val WHOLE_DOMAIN = Regex("""^${host(ANY_TLD)}$""", RegexOption.IGNORE_CASE)
 
 // 频道推广：「更多视频请在Telegram收藏夹发送@xxx丨」「TG频道@xxx」。前面的招揽语只收汉字与字母，
 // 不收数字与空格，「129507 TG频道@xxx」前面的编号留下。
@@ -30,6 +35,16 @@ private val CHANNEL_AD = Regex("""[\p{script=Han}A-Za-z]{0,12}(?:Telegram|TG|电
 
 // 论坛与分享站：短域名后缀，或名字里带数字（98t.la、2048.cc、hhd800.com）。出品方多是完整单词加 .com
 private val FORUM_LIKE = Regex("""(?i)\.(?:la|cc|vip|xyz|top|club|cn)$|[0-9]""")
+
+/** [text] 整段是一个网址，如方括号里的「site.net」。 */
+internal fun isDomainName(text: String): Boolean = WHOLE_DOMAIN.matches(text)
+
+/** 开头不带 @ 的网址前缀「kcf9.com-」：返回网址本身与前缀的长度，没有时为 null。 */
+internal fun leadingDomain(stem: String): Pair<String, Int>? =
+    LEADING.find(stem)?.let { it.groupValues[1] to it.range.last + 1 }
+
+/** 主干以网址开头（「example.com_xxx」）或整个就是网址（「example.fun」）：多是宣传文件。 */
+internal fun startsWithDomain(stem: String): Boolean = LEADING.containsMatchIn(stem) || WHOLE_DOMAIN.matches(stem)
 
 internal fun stripSiteNoise(stem: String): String {
     var s = stem.replace(CHANNEL_AD, "").replace(AT_PREFIX, "").replace(ANYWHERE_AT, "")
