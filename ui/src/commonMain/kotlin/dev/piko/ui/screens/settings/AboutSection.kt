@@ -117,13 +117,13 @@ internal fun AboutSection(snackbarHostState: SnackbarHostState, modifier: Modifi
             onClick = { scope.launch { exportLogs(platform) } },
             trailingIcon = null,
         )
-        // 日志只留两天，这里给的是复现之前手动清一次：导出的就只有这一次的经过
+        // 日志只留七天，这里给的是复现之前手动清一次：导出的就只有这一次的经过
         SettingsNavigationRow(
             index = aboutOffset + 1,
             count = aboutCount,
             icon = Icons.Outlined.History,
             title = "清除日志",
-            supporting = "自动保留最近两天。复现问题之前清除一次，导出的内容更清楚",
+            supporting = "自动保留最近七天。复现问题之前清除一次，导出的内容更清楚",
             onClick = {
                 scope.launch {
                     PikoLog.clear()

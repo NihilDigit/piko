@@ -30,12 +30,12 @@ enum class LogLevel(val letter: Char) { DEBUG('D'), INFO('I'), WARN('W'), ERROR(
  * DEBUG 起全部落盘：日志只在用户反馈时才被读到，那时缺的那一条补不回来，而几 MB 的上限足够装下
  * 出问题前后的经过。不要写入密码、令牌与完整的直链（签名参数即凭据）。
  *
- * 打日志的线程只把一行投进无界 channel，由一个协程串行写文件，不在调用方做 IO，也不用锁；
+ * 打日志的线程只把一行投进无界 channel，由一个协程串行写文件（[LogWriter]），不在调用方做 IO，也不用锁；
  * [install] 之前打的日志留在 channel 里，装上后照常写入。
  */
 object PikoLog {
     private sealed interface Request {
-        class Line(val epochMillis: Long, val level: LogLevel, val tag: String, val message: String, val error: Throwable?) : Request
+        class Line(val line: LogLine) : Request
         class Flush(val done: CompletableDeferred<Unit>) : Request
         class Export(val result: CompletableDeferred<String>) : Request
         class Clear(val done: CompletableDeferred<Unit>) : Request
@@ -57,22 +57,21 @@ object PikoLog {
         if (installed) return
         installed = true
         this.echo = echo
-        val files = RollingLogFiles(Path(directory))
+        val writer = LogWriter(Path(directory), TimeZone.currentSystemDefault())
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
-            val zone = TimeZone.currentSystemDefault()
             // 过期的记录在写入第一行之前删：此时还没打开文件，改写不会与追加相撞
-            files.dropBefore(timestamp(Clock.System.now().toEpochMilliseconds() - RETENTION_MILLIS, zone))
+            writer.dropExpired(Clock.System.now().toEpochMilliseconds())
             fun handle(request: Request) = when (request) {
-                is Request.Line -> files.append(format(request, zone))
-                is Request.Flush -> request.done.complete(files.flush()).let {}
-                is Request.Export -> request.result.complete(files.readAll()).let {}
-                is Request.Clear -> request.done.complete(files.clear()).let {}
+                is Request.Line -> writer.write(request.line)
+                is Request.Flush -> request.done.complete(writer.settle()).let {}
+                is Request.Export -> request.result.complete(writer.export()).let {}
+                is Request.Clear -> request.done.complete(writer.clear()).let {}
             }
             while (true) {
                 handle(requests.receive())
                 // 攒着的一批写完再落盘：连续打日志时不必每行一次系统调用，停下来时文件已是完整的
                 while (true) handle(requests.tryReceive().getOrNull() ?: break)
-                files.flush()
+                writer.flush()
             }
         }
     }
@@ -91,33 +90,15 @@ object PikoLog {
      */
     fun log(level: LogLevel, tag: String, message: String, error: Throwable?) {
         echo?.invoke(level, tag, message, error)
-        requests.trySend(Request.Line(Clock.System.now().toEpochMilliseconds(), level, tag, message, error))
+        requests.trySend(Request.Line(LogLine(Clock.System.now().toEpochMilliseconds(), level, tag, message, error)))
     }
-
-    private fun format(line: Request.Line, zone: TimeZone): String = buildString {
-        append(timestamp(line.epochMillis, zone))
-        append(' ').append(line.level.letter).append(' ').append(line.tag).append(": ").append(redact(line.message)).append('\n')
-        if (line.error != null) append(redact(line.error.stackTraceToString().trimEnd())).append('\n')
-    }
-
-    /** 每行开头的时间，定宽且按年月日时分秒排列，按字符串比较即按时间先后，过期清理靠这一点。 */
-    private fun timestamp(epochMillis: Long, zone: TimeZone): String {
-        val time = kotlin.time.Instant.fromEpochMilliseconds(epochMillis).toLocalDateTime(zone)
-        return "${time.date} ${time.hour.pad(2)}:${time.minute.pad(2)}:${time.second.pad(2)}.${(time.nanosecond / 1_000_000).pad(3)}"
-    }
-
-    /**
-     * 只留最近两天。按大小滚动的文件在用得少的机器上能存好几个月，导出时旧版本的崩溃与早已删掉的
-     * 调试输出混在里面，读的人分不清哪些与这次的问题有关。
-     */
-    private const val RETENTION_MILLIS = 2L * 24 * 60 * 60 * 1000
 
     /**
      * 写进文件之前的兜底脱敏。打日志的地方已经不写账号与文件名，可异常信息与堆栈不归我们措辞：
      * 读写失败的异常带着本机路径（含用户名与文件名），服务端的错误说明偶尔带着邮箱。
      * 路径只留扩展名，播放与解压走哪条路要看它。
      */
-    private fun redact(text: String): String =
+    internal fun redact(text: String): String =
         text.replace(REMOTE_URL) { "${it.groupValues[1]}/<略>" }
             .replace(EMAIL, "<邮箱>")
             .replace(PHONE, "<手机号>")
@@ -148,7 +129,7 @@ object PikoLog {
         done.await()
     }
 
-    /** 全部日志文件按时间先后接成一段文本。在写入协程里读，读的时候不会正好赶上换文件。 */
+    /** 警告与错误的另存一份在前，全部日志按时间先后接在后面。在写入协程里读，读的时候不会正好赶上换文件。 */
     suspend fun export(): String {
         if (!installed) return ""
         val result = CompletableDeferred<String>()
@@ -163,8 +144,119 @@ object PikoLog {
         requests.send(Request.Clear(done))
         done.await()
     }
+}
+
+internal class LogLine(val epochMillis: Long, val level: LogLevel, val tag: String, val message: String, val error: Throwable?) {
+    /** 连续重复按此判等。异常对象每次都是新建的，只比类型与信息，堆栈里的行号对同一处抛出的总是一样。 */
+    fun sameAs(other: LogLine): Boolean =
+        level == other.level && tag == other.tag && message == other.message &&
+            error?.let { it::class to it.message } == other.error?.let { it::class to it.message }
+}
+
+/**
+ * 写入协程持有的全部状态：主日志、警告与错误的侧文件，以及正在合并的重复行。只在那一个协程里用，不加锁。
+ *
+ * 警告与错误另存一份，是因为主日志按大小滚动，信息流一类的 DEBUG 刷上几小时就把出错那一刻挤出去了；
+ * 侧文件只收这两级，量小，可以留得久。主日志照样全写，读的人在那里看前后经过。
+ */
+internal class LogWriter(directory: Path, private val zone: TimeZone) {
+    private val all = RollingLogFiles(directory, "piko", maxFileBytes = 1L shl 20, keptFiles = 3)
+    private val problems = RollingLogFiles(directory, "piko-errors", maxFileBytes = 128L shl 10, keptFiles = 1)
+
+    /** 最近写出的一条，以及它之后被合并掉的相同条数与最后一次的时间。 */
+    private var last: LogLine? = null
+    private var repeats = 0
+    private var lastRepeatMillis = 0L
+
+    fun dropExpired(nowMillis: Long) {
+        all.dropBefore(timestamp(nowMillis - RETENTION_DAYS * DAY_MILLIS))
+        problems.dropBefore(timestamp(nowMillis - PROBLEM_RETENTION_DAYS * DAY_MILLIS))
+    }
+
+    /**
+     * 与上一条相同的只计数，等被别的内容打断或 [settle] 时补一行次数。重复的一行在循环里打，
+     * 照写会以每秒几十行的速度把主日志滚掉。
+     */
+    fun write(line: LogLine) {
+        val previous = last
+        if (previous != null && previous.sameAs(line)) {
+            repeats++
+            lastRepeatMillis = line.epochMillis
+            return
+        }
+        endRepeats()
+        last = line
+        emit(line)
+    }
+
+    /** 只把缓冲写进文件，攒着的重复数不动：每批之后都调，在这里结算的话，隔几秒来一次的重复永远合并不了。 */
+    fun flush() {
+        all.flush()
+        problems.flush()
+    }
+
+    /** 结算重复数再落盘，供崩溃前与导出用：之后进程可能就没了，或者读的人要看到完整的次数。 */
+    fun settle() {
+        endRepeats()
+        flush()
+    }
+
+    fun export(): String {
+        settle()
+        return buildString {
+            append("==== 警告与错误（另存，保留 $PROBLEM_RETENTION_DAYS 天，与下文全部日志有重叠）====\n")
+            append(problems.readAll())
+            append("\n==== 全部日志（保留 $RETENTION_DAYS 天）====\n")
+            append(all.readAll())
+        }
+    }
+
+    fun clear() {
+        last = null
+        repeats = 0
+        all.clear()
+        problems.clear()
+    }
+
+    /** 补上攒着的次数。之后同样的一行再来时完整写一遍，免得「上一条」指的是这句汇总。 */
+    private fun endRepeats() {
+        val previous = last ?: return
+        last = null
+        if (repeats == 0) return
+        emit(LogLine(lastRepeatMillis, previous.level, previous.tag, "上一条又重复 $repeats 次", null))
+        repeats = 0
+    }
+
+    private fun emit(line: LogLine) {
+        val text = format(line)
+        all.append(text)
+        if (line.level >= LogLevel.WARN) problems.append(text)
+    }
+
+    private fun format(line: LogLine): String = buildString {
+        append(timestamp(line.epochMillis))
+        append(' ').append(line.level.letter).append(' ').append(line.tag).append(": ").append(PikoLog.redact(line.message)).append('\n')
+        if (line.error != null) append(PikoLog.redact(line.error.stackTraceToString().trimEnd())).append('\n')
+    }
+
+    /** 每行开头的时间，定宽且按年月日时分秒排列，按字符串比较即按时间先后，过期清理靠这一点。 */
+    private fun timestamp(epochMillis: Long): String {
+        val time = kotlin.time.Instant.fromEpochMilliseconds(epochMillis).toLocalDateTime(zone)
+        return "${time.date} ${time.hour.pad(2)}:${time.minute.pad(2)}:${time.second.pad(2)}.${(time.nanosecond / 1_000_000).pad(3)}"
+    }
 
     private fun Int.pad(width: Int) = toString().padStart(width, '0')
+
+    private companion object {
+        const val DAY_MILLIS = 24L * 60 * 60 * 1000
+
+        /**
+         * 按时间只留一周。按大小滚动的文件在用得少的机器上能存好几个月，导出时旧版本的崩溃与早已删掉的
+         * 调试输出混在里面，读的人分不清哪些与这次的问题有关。两天太短：用户隔几天才来反馈，出事那天已被删掉。
+         */
+        const val RETENTION_DAYS = 7L
+        const val PROBLEM_RETENTION_DAYS = 30L
+    }
 }
 
 /**
@@ -199,10 +291,15 @@ fun <T> Result<T>.reportFailure(tag: String, action: String, show: (String) -> U
 }
 
 /**
- * piko.log 写满 [MAX_FILE_BYTES] 就改名为 piko.1.log，旧的依次后移，最多留 [KEPT_FILES] 份旧文件。
+ * `<baseName>.log` 写满 [maxFileBytes] 就改名为 `<baseName>.1.log`，旧的依次后移，最多留 [keptFiles] 份旧文件。
  * 写失败一律忽略：日志本身出错时无处可报，也不能因此影响应用。
  */
-private class RollingLogFiles(private val directory: Path) {
+private class RollingLogFiles(
+    private val directory: Path,
+    private val baseName: String,
+    private val maxFileBytes: Long,
+    private val keptFiles: Int,
+) {
     private var sink: Sink? = null
     private var size = 0L
 
@@ -213,7 +310,7 @@ private class RollingLogFiles(private val directory: Path) {
     fun append(text: String) {
         runCatching {
             val bytes = text.encodeToByteArray()
-            if (size > 0 && size + bytes.size > MAX_FILE_BYTES) rotate()
+            if (size > 0 && size + bytes.size > maxFileBytes) rotate()
             val out = sink ?: open()
             out.write(bytes)
             size += bytes.size
@@ -222,7 +319,7 @@ private class RollingLogFiles(private val directory: Path) {
 
     fun readAll(): String = buildString {
         flush()
-        for (index in KEPT_FILES downTo 0) {
+        for (index in keptFiles downTo 0) {
             val file = fileAt(index)
             runCatching {
                 if (SystemFileSystem.exists(file)) append(SystemFileSystem.source(file).buffered().use { it.readString() })
@@ -234,7 +331,7 @@ private class RollingLogFiles(private val directory: Path) {
         runCatching { sink?.close() }
         sink = null
         size = 0
-        for (index in 0..KEPT_FILES) runCatching { SystemFileSystem.delete(fileAt(index), mustExist = false) }
+        for (index in 0..keptFiles) runCatching { SystemFileSystem.delete(fileAt(index), mustExist = false) }
     }
 
     /**
@@ -243,7 +340,7 @@ private class RollingLogFiles(private val directory: Path) {
      * 所以每个文件只需找到第一条不早于 [cutoff] 的记录，之前的整段丢掉，一条都不剩的整个删掉。
      */
     fun dropBefore(cutoff: String) {
-        for (index in 0..KEPT_FILES) {
+        for (index in 0..keptFiles) {
             val file = fileAt(index)
             runCatching {
                 if (!SystemFileSystem.exists(file)) return@runCatching
@@ -268,20 +365,15 @@ private class RollingLogFiles(private val directory: Path) {
         sink?.close()
         sink = null
         size = 0
-        val oldest = fileAt(KEPT_FILES)
+        val oldest = fileAt(keptFiles)
         if (SystemFileSystem.exists(oldest)) SystemFileSystem.delete(oldest)
-        for (index in KEPT_FILES - 1 downTo 0) {
+        for (index in keptFiles - 1 downTo 0) {
             val file = fileAt(index)
             if (SystemFileSystem.exists(file)) SystemFileSystem.atomicMove(file, fileAt(index + 1))
         }
     }
 
-    private fun fileAt(index: Int) = Path(directory, if (index == 0) "piko.log" else "piko.$index.log")
-
-    private companion object {
-        const val MAX_FILE_BYTES = 1L shl 20
-        const val KEPT_FILES = 3
-    }
+    private fun fileAt(index: Int) = Path(directory, if (index == 0) "$baseName.log" else "$baseName.$index.log")
 }
 
 /** 一条记录的开头：行首的时间戳，取到时间戳本身为止。 */

@@ -141,7 +141,8 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 
 ### 日志
 
-`shared/.../shared/log/PikoLog` 是全局日志，从 debug 起全部写进滚动文件（四份各 1 MiB），用户在设置里导出后随
+`shared/.../shared/log/PikoLog` 是全局日志，从 debug 起全部写进滚动文件（四份各 1 MiB，只留 7 天；警告与错误另存一份
+`piko-errors.log`，留 30 天；连续重复的行折成一行计数），用户在设置里导出后随
 反馈交回。调用方只取时钟、投递一条，格式化与 IO 在单独的协程里做；即便如此也不要打在逐帧、逐块读写的热路径上，
 几 MB 的上限会被刷掉。
 
