@@ -5,7 +5,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.LocalContentColor
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -257,7 +262,9 @@ private fun MoreMenuPage(sections: List<List<SheetAction>>, firstItem: FocusRequ
     DropdownMenuItem(
         text = { Text("返回") },
         shape = menuItemShape(0, rowCount),
-        leadingIcon = { Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = null) },
+        modifier = Modifier.height(MenuItemHeight),
+        contentPadding = MenuItemPadding,
+        leadingIcon = { MenuItemIcon(Icons.AutoMirrored.Outlined.ArrowBack) },
         onClick = onBack,
     )
     var row = 1
@@ -281,7 +288,7 @@ private fun MoreMenuItem(shape: Shape, modifier: Modifier, onOpen: () -> Unit) {
     DropdownMenuItem(
         text = { Text("更多") },
         shape = shape,
-        modifier = modifier.onPreviewKeyEvent { event ->
+        modifier = modifier.height(MenuItemHeight).onPreviewKeyEvent { event ->
             if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionRight) {
                 onOpen()
                 true
@@ -289,8 +296,9 @@ private fun MoreMenuItem(shape: Shape, modifier: Modifier, onOpen: () -> Unit) {
                 false
             }
         },
-        leadingIcon = { Icon(Icons.Outlined.MoreHoriz, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
-        trailingIcon = { Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, contentDescription = null) },
+        contentPadding = MenuItemPadding,
+        leadingIcon = { MenuItemIcon(Icons.Outlined.MoreHoriz, MaterialTheme.colorScheme.onSurfaceVariant) },
+        trailingIcon = { MenuItemIcon(Icons.AutoMirrored.Outlined.KeyboardArrowRight) },
         onClick = onOpen,
     )
 }
@@ -325,14 +333,26 @@ private fun MenuDivider() {
     Spacer(Modifier.height(MenuGroupGap))
 }
 
-private val MenuGroupGap = 8.dp
+private val MenuGroupGap = 6.dp
+
+private val MenuItemHeight = 40.dp
+
+// 行高压到 40dp 后，条目默认的上下内边距会把图标挤小，只留左右的
+private val MenuItemPadding = PaddingValues(horizontal = 12.dp)
+
+private val MenuIconSize = 20.dp
+
+@Composable
+private fun MenuItemIcon(icon: ImageVector, tint: Color = LocalContentColor.current) {
+    Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(MenuIconSize))
+}
 
 // 放得下最长的条目（「从快速访问取消固定」）与图标行的四个按钮
-private val ActionMenuWidth = 248.dp
+private val ActionMenuWidth = 224.dp
 
 /**
- * 行高、图标与字号用组件库的默认值，即 M3 menus 的 Measurements：条目 48dp 高，目标区不小于 48dp。
- * 原先照桌面菜单压到 36dp、图标 20dp，但 M3 的密度调节只给 Web，低视力用户与平板上接鼠标的也要点得中。
+ * 行高 40dp（[MenuItemHeight]），图标与字号用组件库的默认值。M3 menus 的 48dp 是按手指定的，整份菜单十来行时
+ * 在桌面上显得臃肿；36dp 一档试过，低视力用户与平板上接鼠标的点不准，取两者之间。
  */
 @Composable
 private fun ActionMenuItem(action: SheetAction, shape: Shape, onDismiss: () -> Unit, modifier: Modifier = Modifier) {
@@ -345,10 +365,11 @@ private fun ActionMenuItem(action: SheetAction, shape: Shape, onDismiss: () -> U
     DropdownMenuItem(
         text = { Text(action.label) },
         shape = shape,
-        modifier = modifier.prepareOnPointer(action),
-        leadingIcon = { Icon(action.icon, contentDescription = null, tint = tint) },
+        modifier = modifier.height(MenuItemHeight).prepareOnPointer(action),
+        contentPadding = MenuItemPadding,
+        leadingIcon = { MenuItemIcon(action.icon, tint) },
         trailingIcon = if (action.checked == true) {
-            { Icon(Icons.Outlined.Check, contentDescription = "当前", tint = colors.primary) }
+            { Icon(Icons.Outlined.Check, contentDescription = "当前", tint = colors.primary, modifier = Modifier.size(MenuIconSize)) }
         } else {
             null
         },
