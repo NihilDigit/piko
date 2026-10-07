@@ -247,7 +247,7 @@ internal fun ExplorerSearchField(
 }
 
 /**
- * 宽窗口网盘页的第二行：新建；粘贴；排序、筛选、全选、查找重复。右端是刷新、视图与信息流（[viewSwitcher]）、
+ * 宽窗口网盘页的第二行：新建；粘贴；排序、筛选；查找重复，多选时再加全选。右端是刷新、视图与信息流（[viewSwitcher]）、
  * 这一页的主操作。只放作用于当前位置的命令，条目操作在右键菜单里，理由见 DriveCommands.kt。
  * 每一样显不显示由 [commands] 定；这里只管摆不摆得下：放不下时按 [BarItem.priority] 从低往高收进「⋯」。
  *
@@ -299,10 +299,12 @@ internal fun ExplorerCommandBar(
         } else if (commands.create) {
             add(BarItem("new", PinnedPriority) { MenuTextButton(Icons.Outlined.Add, "新建", newActions) })
         }
+        // 左段一律是图标加文字的文字按钮：原先图标按钮与文字按钮混排，两种按钮的内边距不同，字形之间的空隙忽大忽小。
+        // 同组之间只隔 BarItemGap，组与组之间多一段 GroupGap
         add(barDivider("pasteDivider"))
         if (commands.paste) {
             add(BarItem("paste", 80, listOf(SheetAction(Icons.Outlined.ContentPaste, "粘贴", onPaste, group = ActionGroup.Edit))) {
-                TooltipIconButton(Icons.Outlined.ContentPaste, "粘贴", onPaste, shortcut = label("V"))
+                BarTextButton(Icons.Outlined.ContentPaste, "粘贴", onPaste, shortcut = label("V"))
             })
         }
         add(barDivider("viewDivider"))
@@ -314,20 +316,18 @@ internal fun ExplorerCommandBar(
                 TypeFilterButton(typeFilter, availableTypes, onTypeFilterChange)
             })
         }
-        if (commands.selectAll) {
-            add(BarItem("selectAll", 30, listOf(SheetAction(Icons.Outlined.SelectAll, "全选", onSelectAll, group = ActionGroup.Select))) {
-                TooltipIconButton(Icons.Outlined.SelectAll, "全选", onSelectAll, shortcut = label("A"))
-            })
-        }
+        add(barDivider("selectDivider"))
         if (commands.findDuplicates) {
-            // 带文字：FileCopy 与「复制」的 ContentCopy 都是叠放的两张纸，只有图标时会被认成复制。图标不换，
+            // FileCopy 与「复制」的 ContentCopy 都是叠放的两张纸，带上文字才不会被认成复制。图标不换，
             // 查重的标签、库与右下角的卡片都用它
             add(BarItem("findDuplicates", 20, listOf(SheetAction(Icons.Outlined.FileCopy, "查找重复", onFindDuplicates, group = ActionGroup.Select))) {
-                TextButton(onClick = onFindDuplicates) {
-                    Icon(Icons.Outlined.FileCopy, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("查找重复")
-                }
+                BarTextButton(Icons.Outlined.FileCopy, "查找重复", onFindDuplicates)
+            })
+        }
+        // 只在多选里出现（见 DriveCommands），排在查找重复之后：它是对眼前选择的补充，不是平时要摆着的命令
+        if (commands.selectAll) {
+            add(BarItem("selectAll", 30, listOf(SheetAction(Icons.Outlined.SelectAll, "全选", onSelectAll, group = ActionGroup.Select))) {
+                BarTextButton(Icons.Outlined.SelectAll, "全选", onSelectAll, shortcut = label("A"))
             })
         }
     }
@@ -365,7 +365,28 @@ internal fun ExplorerCommandBar(
 
 private fun barDivider(key: String) = BarItem(key, PinnedPriority, isDivider = true) { BarDivider() }
 
-private val BarItemGap = 2.dp
+/** 命令栏左段的一项：图标加文字，与新建、排序、筛选同一种按钮，快捷键写在悬停提示里。 */
+@Composable
+private fun BarTextButton(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String, onClick: () -> Unit, shortcut: String? = null) {
+    val button = @Composable {
+        TextButton(onClick = onClick) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(text)
+        }
+    }
+    if (shortcut == null) {
+        button()
+    } else {
+        TooltipBox(
+            positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
+            tooltip = { PlainTooltip { Text("$text ($shortcut)") } },
+            state = rememberTooltipState(),
+        ) { button() }
+    }
+}
+
+private val BarItemGap = 4.dp
 private val SectionJumperMinWidth = 72.dp
 
 

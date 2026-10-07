@@ -133,7 +133,8 @@ internal fun driveCommands(input: CommandInputs): DriveCommands = with(input) {
         paste = clipboardFull && folder,
         // 清空只在有东西可清时。与 libraryPageActions 对应：只有回收站与播放历史有清空
         emptyPlace = (inTrash || place == CommandPlace.HISTORY) && itemCount > 0,
-        selectAll = itemCount > 0 && !allSelected,
+        // 只在多选里：没进多选时它是一个随时摆着、用不上的按钮；平时全选靠主修饰键+A 与空白处右键
+        selectAll = selecting && itemCount > 0 && !allSelected,
         // 查重的范围是眼前这个目录，搜索结果与库都不是目录
         findDuplicates = folder && itemCount > 0,
         // 范围同查重；关了文件名解析就认不出番号，扫出来必然是空的

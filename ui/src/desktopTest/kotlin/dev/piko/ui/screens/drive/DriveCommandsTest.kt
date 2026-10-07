@@ -37,11 +37,12 @@ class DriveCommandsTest {
     }
 
     @Test
-    fun `selection changes nothing on the bar but the create menu`() {
+    fun `selection swaps the create menu for select all and changes nothing else`() {
         for (place in CommandPlace.entries) {
             val idle = driveCommands(inputs(place, selecting = false))
             val selecting = driveCommands(inputs(place, selecting = true))
-            assertEquals(idle.copy(create = false), selecting, "$place")
+            assertEquals(false, idle.selectAll, "$place")
+            assertEquals(idle.copy(create = false, selectAll = selecting.selectAll), selecting, "$place")
         }
     }
 }
