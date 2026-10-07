@@ -102,8 +102,8 @@ internal object DriveActions {
         group = ActionGroup.Open,
         tier = ActionTier.More,
         onPrepare = onPrepare,
-        // 播放器设置面板的图标行里用
-        shortLabel = "选择画质",
+        // 播放器设置面板的图标行里用，与同排各项一律两个字，竖屏手机上一格放不下四个字
+        shortLabel = "画质",
     )
 
     fun downloadSegment(onClick: () -> Unit, onPrepare: (() -> Unit)?) = SheetAction(
