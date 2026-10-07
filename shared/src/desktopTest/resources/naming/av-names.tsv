@@ -1,0 +1,49 @@
+# 番号规范命名的样例：原名<TAB>期望的规范名。全部是手写的合成名字，覆盖 docs/development/av-naming.md 列的写法。
+# 每行单独成一批；成套的 A、B、C 与字幕跟随在 AvCanonicalNameTest 里另测。
+[xxx.com]abc00123hhb.mp4	ABC-123.mp4
+abc00123hhb1.mp4	ABC-123-CD1.mp4
+kcf9.com-ABC-123.mp4	ABC-123.mp4
+HD-ABC-123.mp4	ABC-123.mp4
+FHD-ABC-123.mp4	ABC-123.mp4
+abc123c.mp4	ABC-123-C.mp4
+abc0123.mp4	ABC-123.mp4
+ABC-0123.mp4	ABC-123.mp4
+ABC-123-A.mp4	ABC-123-CD1.mp4
+ABC-123-C.mp4	ABC-123-C.mp4
+ABC-123C.mp4	ABC-123-C.mp4
+ABC-123-UC.mp4	ABC-123-UC.mp4
+ABC-123-U.mp4	ABC-123-U.mp4
+ABC-123_CH.mp4	ABC-123-C.mp4
+ABC-123-chs.mp4	ABC-123-C.mp4
+www.98T.la@ABC-123.mp4	ABC-123.mp4
+某论坛新片@SITE01@SSIS-123-U.mp4	SSIS-123-U.mp4
+abc-123.mp4	ABC-123.mp4
+SSIS-123-cd1.mp4	SSIS-123-CD1.mp4
+SSIS-123.part2.mp4	SSIS-123-CD2.mp4
+SSIS-123-4K.mp4	SSIS-123.mp4
+SSIS-123_FHD.mp4	SSIS-123.mp4
+SSIS-123_60FPS_FHD_CH.mp4	SSIS-123-C.mp4
+SSIS-123 无码破解.mp4	SSIS-123-U.mp4
+fc2-ppv-1234567-1.mp4	FC2-PPV-1234567-CD1.mp4
+fc2ppv1234567.mp4	FC2-PPV-1234567.mp4
+FC2-PPV-1166282B.mp4	FC2-PPV-1166282-CD2.mp4
+FC2-PPV-1234567 【無】片名正文　※特典高画質.mp4	FC2-PPV-1234567 片名正文.mp4
+heyzo_hd_0123_full.mp4	HEYZO-0123.mp4
+hey4017_244-fhd1.wmv	HEYDOUGA-4017-244-CD1.wmv
+1pon-092415_001.mp4	1PON-092415_001.mp4
+021014-540-carib-high_1.mp4	CARIB-021014-540-CD1.mp4
+10musume 010120_01.mp4	10MU-010120_01.mp4
+paco-010120_123.mp4	PACO-010120_123.mp4
+mura-010120_123.mp4	MURA-010120_123.mp4
+caribbeancompr-010120_001.mp4	CARIBPR-010120_001.mp4
+3DSVR-0123.mp4	3DSVR-0123.mp4
+259LUXU-1234.mp4	259LUXU-1234.mp4
+300mium-123.mp4	300MIUM-123.mp4
+n0421 某片名.wmv	N0421 某片名.wmv
+ABC-123 某部片名 演员.mp4	ABC-123 某部片名 演员.mp4
+abc00123 某部片名 1080p HEVC.mp4	ABC-123 某部片名.mp4
+ABC-123-C 某部片名 CD2.mp4	ABC-123-C 某部片名-CD2.mp4
+ABC-123 C Model.mp4	ABC-123 C Model.mp4
+ABC-123-C 某部片名-CD1.mp4	ABC-123-C 某部片名-CD1.mp4
+ABC-123-zh.srt	ABC-123.zh.srt
+abc123.mp4	abc123.mp4

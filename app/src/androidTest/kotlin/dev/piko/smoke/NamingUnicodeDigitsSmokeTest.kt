@@ -10,6 +10,8 @@ import dev.piko.shared.media.player.buildRawPlaylist
 import dev.piko.shared.naming.MediaFileInput
 import dev.piko.shared.naming.analyzeMediaBatch
 import dev.piko.shared.naming.describeFolder
+import dev.piko.shared.naming.av.AvNamingItem
+import dev.piko.shared.naming.av.canonicalAvNames
 import dev.piko.shared.naming.av.normalizeAvCode
 import dev.piko.shared.naming.parseMediaName
 import dev.piko.shared.naming.workKeyOf
@@ -100,6 +102,7 @@ class NamingUnicodeDigitsSmokeTest {
         buildPlaylist(playlist)
         buildRawPlaylist(playlist)
         extractLinks(names.joinToString("\n") { "magnet:?xt=urn:btih:${"0".repeat(40)}&dn=$it" })
+        canonicalAvNames(names.map { AvNamingItem(it, group = "root", isFolder = '.' !in it) })
     }
 
     private companion object {
