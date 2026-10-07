@@ -116,7 +116,12 @@ class FolderVaultSession internal constructor(
      * 一次归档或恢复的结局，给不在眼前的用户发系统通知（见 ui 的 workNotices）。[messages] 只有网盘页收，
      * 用户切到别处或应用退到后台时没人看见；归档动辄几分钟，正是会走开的时候。
      */
-    class Outcome(val title: String, val message: String)
+    class Outcome(
+        val title: String,
+        val message: String,
+        /** 同一结局已记进改动日志，由主界面带「撤销」提示过；页内的结局提示据此略过，免得说两遍。 */
+        val undoable: Boolean = false,
+    )
 
     private val _outcomes = MutableSharedFlow<Outcome>(extraBufferCapacity = 8)
     val outcomes: SharedFlow<Outcome> = _outcomes.asSharedFlow()
@@ -233,8 +238,10 @@ class FolderVaultSession internal constructor(
             // 做完的几层记成一条改动，哪怕后面失败了：撤销得回已经归档的那些
             if (reverts.isNotEmpty() || deleted.isNotEmpty()) {
                 val count = result.getOrNull()?.let { if (stopped) "已停止，已归档 $it 个文件" else "已归档 $it 个文件" }
-                val summary = if (count == null) "部分归档记录已写入，原文件处理未全部完成"
+                val report = if (count == null) "部分归档记录已写入，原文件处理未全部完成"
                     else if (deleted.isNotEmpty()) "$count，原文件已删除" else "$count，原文件已移入回收站"
+                // 带上名字：这条提示常在别的页、几分钟后才弹出，不写明是哪个文件夹就认不出
+                val summary = "「${target.name}」：$report"
                 operations.record(
                     DriveChangeJournal.Change.Vault(reverts, summary, untrashOnRevert = trashed, recreateOnRevert = deleted),
                 )
@@ -243,7 +250,7 @@ class FolderVaultSession internal constructor(
                     stopped -> "归档已停止"
                     else -> "归档完成"
                 }
-                _outcomes.tryEmit(Outcome(title, "「${target.name}」：$summary"))
+                _outcomes.tryEmit(Outcome(title, summary, undoable = true))
             } else if (result.getOrNull() == 0) {
                 _messages.tryEmit(if (stopped) "已停止归档" else "无可归档的文件")
             }
@@ -436,8 +443,10 @@ class FolderVaultSession internal constructor(
             missing == failed -> "已恢复 ${created.size} 项，$missing 项云端已无内容"
             else -> "已恢复 ${created.size} 项，$failed 项失败"
         }
-        if (created.isNotEmpty()) {
-            operations.record(DriveChangeJournal.Change.Vault(reverts, summary, trashOnRevert = created))
+        val named = "「${restoreProgress?.folderName.orEmpty()}」：$summary"
+        val undoable = created.isNotEmpty()
+        if (undoable) {
+            operations.record(DriveChangeJournal.Change.Vault(reverts, named, trashOnRevert = created))
         } else {
             _messages.tryEmit(summary)
         }
@@ -447,7 +456,7 @@ class FolderVaultSession internal constructor(
             created.isEmpty() -> "恢复失败"
             else -> "恢复未全部完成"
         }
-        _outcomes.tryEmit(Outcome(title, "「${restoreProgress?.folderName.orEmpty()}」：$summary"))
+        _outcomes.tryEmit(Outcome(title, named, undoable))
         operations.refresh()
     }
 

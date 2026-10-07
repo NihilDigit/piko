@@ -9,7 +9,10 @@ import dev.piko.shared.smoke.smoke
 import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.TaskPhase
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.delay
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
@@ -43,6 +46,7 @@ class FolderVaultSessionTest {
         drive.directories["Dramas"] = (0..31).map { folder("dir-$it") }
         (0..31).forEach { drive.directories["dir-$it"] = listOf(file("file-$it")) }
         val session = FolderVaultSession(drive, scope)
+        val outcome = scope.async(start = CoroutineStart.UNDISPATCHED) { session.outcomes.first() }
         session.archive(PikoPathBreadcrumb("Dramas", "Dramas"), true)
         awaitUntil("开始写清单") { drive.writes.get() > 0 }
         session.stop()
@@ -51,7 +55,9 @@ class FolderVaultSessionTest {
         // 写成清单的目录都处置完原文件，不留下条目与原文件并存
         assertEquals(drive.manifests.keys.map { it.removePrefix("dir-") }.toSet(), drive.removed.flatten().map { it.removePrefix("file-") }.toSet())
         assertEquals(drive.manifests.size, drive.changes.single().untrashOnRevert.size)
-        assertTrue(drive.changes.single().summary.startsWith("已停止"))
+        assertTrue(drive.changes.single().summary.startsWith("「Dramas」：已停止"))
+        // 记进了改动日志的结局，传输页据此不再另弹一条不带撤销的
+        assertTrue(outcome.await().undoable)
         assertNull(session.progress)
     }
 

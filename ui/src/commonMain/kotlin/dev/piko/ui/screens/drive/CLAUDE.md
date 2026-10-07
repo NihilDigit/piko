@@ -184,7 +184,9 @@ Shift 点选是连选（`selectionClicks`，状态在 `DriveScreenState.toggleSe
 （`FileDragState`，根上一份，落点经 `fileDropTarget` 登记范围），不走平台拖放；拖出去的一批自带落下后做什么，
 落点只提供文件夹。
 移动、移入回收站与重命名做完都记进 `DriveChangeJournal`（`driveRepository.changes`），提示带「撤销」，
-Ctrl+Z 撤销最近一次；以后的批量改动（自动重命名、按刮削结果整理）也记一条，撤销即反向再做一次。
+Ctrl+Z 撤销最近一次。这条提示不由网盘页弹，由主界面一层（`ChangeNotices.kt` 的 `showChangeNotices`）弹在根页面共用的
+Snackbar 队列（`LocalRootSnackbar`）上：日志的事件不重放，归档、规范命名「应用所选」这类几分钟后才做完的改动，
+手机上做完时人多半在传输页，网盘页已离开组合。网盘页不要再订阅一份；以后的批量改动（自动重命名、按刮削结果整理）也记一条，撤销即反向再做一次。
 
 键盘：方向键在条目间走（焦点所在的一项由 `focusIndication` 描边，键盘导航时描边、鼠标点的盖底色，
 输入方式由根上的 `trackInputModality` 记），菜单键或 Shift+F10 打开操作面板，

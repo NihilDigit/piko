@@ -87,6 +87,7 @@ import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.SyncAlt
 import androidx.compose.material3.Badge
 import androidx.compose.material3.Icon
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.adaptive.ExperimentalMaterial3AdaptiveApi
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
@@ -134,6 +135,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation3.runtime.NavKey
 import androidx.navigation3.runtime.entryProvider
@@ -1061,7 +1064,19 @@ fun PikoMainScaffold(
     val palette = remember { PaletteRegistry() }
     var paletteOpen by remember { mutableStateOf(false) }
     val focusFallback = remember { FocusFallback(shortcutFocus) }
+    val rootSnackbar = remember { SnackbarHostState() }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(services.driveRepository, lifecycle) {
+        val changes = services.driveRepository.changes
+        showChangeNotices(
+            changes.events,
+            rootSnackbar,
+            awaitVisible = { lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) } },
+            undo = changes::undo,
+        )
+    }
     CompositionLocalProvider(
+        LocalRootSnackbar provides rootSnackbar,
         LocalFileDrag provides fileDrag,
         LocalPaletteRegistry provides palette,
         LocalFocusFallback provides focusFallback,

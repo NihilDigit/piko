@@ -15,6 +15,7 @@ import dev.piko.shared.upload.UploadStatus
 import dev.piko.shared.upload.UploadTask
 import dev.piko.ui.components.toReadableSize
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
@@ -38,10 +39,13 @@ fun PikoServices.workNotices(): Flow<WorkNotice> = merge(
     canonicalNamingNotices(canonicalNamingSession),
 )
 
-/** 服务端解压与归档、取消归档的结局。移动端传输页列着它们，做完时在页内另说一遍，见 TransfersScreen。 */
-fun PikoServices.serverWorkNotices(): Flow<WorkNotice> = merge(
+/**
+ * 服务端解压与归档、取消归档的结局。移动端传输页列着它们，做完时在页内另说一遍，见 TransfersScreen。
+ * [withUndoable] 为假时略去已记进改动日志的归档结局：它们由主界面带「撤销」提示过（showChangeNotices）。
+ */
+fun PikoServices.serverWorkNotices(withUndoable: Boolean = true): Flow<WorkNotice> = merge(
     archiveExtractSession.outcomes.map { WorkNotice(if (it.succeeded) "解压完成" else "解压失败", it.message) },
-    folderVaultSession.outcomes.map { WorkNotice(it.title, it.message) },
+    folderVaultSession.outcomes.filter { withUndoable || !it.undoable }.map { WorkNotice(it.title, it.message) },
 )
 
 private fun downloadNotices(downloads: PikoDownloadCoordinator): Flow<WorkNotice> = flow {

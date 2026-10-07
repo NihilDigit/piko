@@ -60,7 +60,6 @@ import dev.piko.ui.components.IslandTitle
 import dev.piko.ui.components.IslandHeaderSpace
 import dev.piko.ui.platform.rememberCaptionSlot
 import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -86,6 +85,7 @@ import dev.piko.shared.data.DriveLibrary
 import dev.piko.ui.screens.drive.icon
 import dev.piko.ui.screens.drive.selectedIcon
 import dev.piko.ui.LocalPikoServices
+import dev.piko.ui.LocalRootSnackbar
 import dev.piko.ui.adaptive.readableSidePadding
 import dev.piko.ui.adaptive.readableWidth
 import dev.piko.ui.components.toReadableSize
@@ -121,7 +121,7 @@ fun ProfileScreen(
 ) {
     val account = rememberAccountSummary()
     val saved = account.saved
-    val snackbarHostState = remember { SnackbarHostState() }
+    val snackbarHostState = LocalRootSnackbar.current
 
     // 顶栏写的是账号名而不是「我的」：写「我的」只是把导航栏标签抄一遍，账号名才是这一页在讲的
     // 东西。展开时用 headline 字号立起全应用唯一的标题锚点，滚上去收成一行，让出的高度归下面的

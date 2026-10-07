@@ -1370,11 +1370,6 @@ class DriveScreenState(
     /** 撤销最近一次移动、移入回收站或重命名，见 [DriveChangeJournal]。 */
     fun undoLast(): Boolean = driveRepo.changes.undoLast()
 
-    fun undo(change: DriveChangeJournal.Change) = driveRepo.changes.undo(change)
-
-    /** 做完一次可撤销的改动或撤销之后的提示，界面把可撤销的配上「撤销」按钮。 */
-    val changeEvents get() = driveRepo.changes.events
-
     // 眼前列表里的那一项：全盘搜索的结果不在当前目录的列表里，两处都找
     private fun knownFile(id: String): FileStat? = displayedFiles.firstOrNull { it.id == id } ?: files.firstOrNull { it.id == id }
 

@@ -43,7 +43,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -101,6 +100,7 @@ import dev.piko.shared.state.TransfersState
 import dev.piko.shared.upload.UploadStatus
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.serverWorkNotices
+import dev.piko.ui.LocalRootSnackbar
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.adaptive.isDesktopLayout
@@ -155,7 +155,7 @@ fun TransfersScreen(
         )
     }
     val vaultSession = services.folderVaultSession
-    val snackbarHostState = remember { SnackbarHostState() }
+    val snackbarHostState = LocalRootSnackbar.current
     // 找不到文件的提示走本页的 Snackbar，不用系统 Toast：Toast 不跟随 M3 主题与配色
     val openCloudFileById = { fileId: String, fileName: String ->
         scope.launch {
@@ -187,11 +187,11 @@ fun TransfersScreen(
         state.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
     }
     // 解压与归档做完，这一行随即消失，在这里说明结局。只在本页可见时收：退到后台由系统通知说，
-    // 回来不再补一遍。桌面不列这两种，结局另由网盘页与通知说明
+    // 回来不再补一遍。桌面不列这两种，结局另由网盘页与通知说明。记进改动日志的那些由主界面带「撤销」提示，这里不再说一遍
     if (!desktop) {
         LaunchedEffect(services, lifecycleOwner) {
             lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                services.serverWorkNotices().collect { snackbarHostState.showSnackbar("${it.title}\n${it.message}", withDismissAction = true) }
+                services.serverWorkNotices(withUndoable = false).collect { snackbarHostState.showSnackbar("${it.title}\n${it.message}", withDismissAction = true) }
             }
         }
     }

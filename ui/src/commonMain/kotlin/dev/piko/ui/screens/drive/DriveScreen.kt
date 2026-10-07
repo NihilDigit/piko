@@ -81,7 +81,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarResult
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -173,6 +172,7 @@ import dev.piko.ui.screens.share.ShareDialog
 import dev.piko.ui.screens.rename.BatchRenameDialog
 import dev.piko.ui.screens.rename.MetaTubeTitleRow
 import dev.piko.ui.LocalPikoServices
+import dev.piko.ui.LocalRootSnackbar
 import dev.piko.shared.data.ArchiveEntryId
 import dev.piko.shared.data.isArchiveVolume
 import dev.piko.shared.data.isDriveFolderId
@@ -284,7 +284,7 @@ fun DriveScreen(
     val metaTube = LocalPikoServices.current.metaTube
     val metaTubeEnabled by remember(metaTube) { metaTube?.enabled ?: flowOf(false) }.collectAsStateWithLifecycle(initialValue = false)
     val scope = rememberCoroutineScope()
-    val snackbarHostState = remember { SnackbarHostState() }
+    val snackbarHostState = LocalRootSnackbar.current
 
     // 防窥遮蔽开关是渲染选择，不进共享状态
     val sessionManager = LocalPikoServices.current.preferences
@@ -312,25 +312,12 @@ fun DriveScreen(
     LaunchedEffect(state) {
         state.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
     }
-    // 做完一次可撤销的改动，提示上带「撤销」，停留长一些好来得及点
-    LaunchedEffect(state) {
-        state.changeEvents.collect { event ->
-            val change = event.change
-            val result = snackbarHostState.showSnackbar(
-                message = event.message,
-                actionLabel = if (change != null) "撤销" else null,
-                withDismissAction = true,
-                duration = if (change != null) SnackbarDuration.Long else SnackbarDuration.Short,
-            )
-            if (change != null && result == SnackbarResult.ActionPerformed) state.undo(change)
-        }
-    }
 
     val archiveSession = LocalPikoServices.current.archiveExtractSession
     LaunchedEffect(archiveSession) {
         archiveSession.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
     }
-    // 归档文件夹：成功经改动日志带「撤销」提示，失败与没有可归档的在这里提示
+    // 归档文件夹：成功经改动日志由主界面带「撤销」提示（showChangeNotices），失败与没有可归档的在这里提示
     val vaultSession = LocalPikoServices.current.folderVaultSession
     LaunchedEffect(vaultSession) {
         vaultSession.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
