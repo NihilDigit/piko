@@ -237,10 +237,10 @@ internal fun localBatchActions(item: TransferItem.LocalBatch, expanded: Boolean,
         DownloadStatus.FAILED -> add(SheetAction(Icons.Outlined.Refresh, "重试失败的文件", intents.onResume))
         DownloadStatus.COMPLETED -> Unit
     }
-    // 有一个文件落了盘，文件夹就在了
+    // 有一个文件落了盘，文件夹就在了。一组本身就是文件夹，「所在文件夹」说不清是它还是它的上级，后者写成在上级里显示
     if (item.completedCount > 0) {
         add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "打开文件夹", intents.onOpenFolder))
-        add(SheetAction(Icons.Outlined.FolderOpen, "打开所在文件夹", intents.onRevealFolder))
+        add(SheetAction(Icons.Outlined.FolderOpen, "在上级文件夹中显示", intents.onRevealFolder))
     }
     val removeLabel = if (status == DownloadStatus.COMPLETED) "删除本地文件" else "取消并删除"
     add(SheetAction(Icons.Outlined.Delete, removeLabel, intents.onRemove, destructive = true))
