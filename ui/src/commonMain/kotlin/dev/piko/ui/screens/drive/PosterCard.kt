@@ -37,12 +37,9 @@ import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material3.FilledTonalIconButton
-import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.material3.Checkbox
@@ -109,7 +106,7 @@ internal fun Modifier.cardInteraction(
  * 海报墙里的一张卡：16:9 封面加两行标题，文件与文件夹共用。
  *
  * 多数视频就是 16:9，封面统一这个比例，整面墙排成齐整的网格；原先按位置轮换的高矮两档并不反映画面，
- * 只是看上去像瀑布流。标题固定占两行高，同一排卡片底边对齐；日期、大小不上卡片，在详情面板里看。
+ * 只是看上去像瀑布流。标题固定占两行高，同一排卡片底边对齐；日期、大小不上卡片，在属性里看。
  *
  * 被定位时封面外圈加一道描边（[locateHighlight]）。叠在封面上的：右上角至多两个标签（调用方已按优先级排好，无码、中字在前），
  * 左下角番号芯片，有封面的文件夹在它前面加文件夹标记，右下角清晰度。清晰度单独放一角，
@@ -126,9 +123,9 @@ internal fun PosterCard(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     onSelectToggle: (Boolean) -> Unit,
-    onDetailsClick: () -> Unit,
-    /** 详情按钮只在鼠标悬停时出现，见 ItemDetailsButton。 */
-    detailsOnHover: Boolean,
+    onMoreClick: () -> Unit,
+    /** 画不画打开操作面板的更多按钮。宽窗口不画，那里有右键菜单。 */
+    moreButton: Boolean,
     /** 列过、确实是空的文件夹：封面里不画纸。不知道空不空时为 false，照常画。 */
     isEmptyFolder: Boolean = false,
     modifier: Modifier = Modifier,
@@ -142,12 +139,9 @@ internal fun PosterCard(
     folderHasVault: Boolean = false,
 ) {
     val coverShape = MaterialTheme.shapes.medium
-    val hover = remember { MutableInteractionSource() }
-    val hovered by hover.collectIsHoveredAsState()
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .hoverable(hover)
             .focusIndication(coverShape)
             .clip(coverShape)
             .cardInteraction(isSelectionMode, isSelected, onClick, onLongClick, onSelectToggle),
@@ -220,15 +214,13 @@ internal fun PosterCard(
             }
         }
 
-        // 右端的勾选框或详情按钮浮在标题上，不另占一栏：原来的三点按钮占着 48dp 的一栏，
-        // 又往右上偏移出卡片，被卡片的圆角裁掉一半，偏出去的部分也点不到。
-        // 一直显示时（多选、触屏）给标题让出位置；悬停才出现时盖住标题的末尾，标题不跟着挤
-        val trailingShown = isSelectionMode || !detailsOnHover || hovered
-        val reserveTrailing = isSelectionMode || !detailsOnHover
+        // 右端的勾选框或更多按钮浮在标题上，不另占一栏：原来的三点按钮占着 48dp 的一栏，
+        // 又往右上偏移出卡片，被卡片的圆角裁掉一半，偏出去的部分也点不到。显示时给标题让出位置
+        val trailingShown = isSelectionMode || moreButton
         // 下面留 4dp：叠在一行标题上的 28dp 按钮上下各探出 4dp，卡片裁了圆角，不留就被切掉
         Box(modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 4.dp)) {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(end = if (reserveTrailing) CARD_TRAILING_SIZE else 0.dp),
+                modifier = Modifier.fillMaxWidth().padding(end = if (trailingShown) CARD_TRAILING_SIZE else 0.dp),
                 verticalAlignment = Alignment.Top,
             ) {
                 // 星标与归档标记放在标题前而不上封面，封面的角已经给了标签与番号；对齐首行（bodyMedium 行高 20，图标 16）
@@ -252,7 +244,7 @@ internal fun PosterCard(
                     CardTrailing(
                         isSelectionMode = isSelectionMode,
                         isSelected = isSelected,
-                        onDetailsClick = onDetailsClick,
+                        onMoreClick = onMoreClick,
                     )
                 }
             }
@@ -261,7 +253,7 @@ internal fun PosterCard(
 }
 
 /**
- * [PosterCard] 的骨架：同样的 16:9 封面，标题区同高，即两行字的 40dp。右端让出详情按钮的宽度，
+ * [PosterCard] 的骨架：同样的 16:9 封面，标题区同高，即两行字的 40dp。右端让出更多按钮的宽度，
  * 与按钮一直显示时（触屏）文字止于同一处。
  */
 @Composable
@@ -286,15 +278,15 @@ internal fun PosterCardSkeleton(titleFraction: Float, modifier: Modifier = Modif
 private fun CardTrailing(
     isSelectionMode: Boolean,
     isSelected: Boolean,
-    onDetailsClick: () -> Unit,
+    onMoreClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     if (isSelectionMode) {
         Checkbox(checked = isSelected, onCheckedChange = null, modifier = modifier)
     } else {
         // 盖在标题上时要有底色，否则图标压在字上读不清
-        FilledTonalIconButton(onClick = onDetailsClick, modifier = modifier.size(28.dp).ownsClicks()) {
-            Icon(Icons.Outlined.Info, contentDescription = "详情", modifier = Modifier.size(18.dp))
+        FilledTonalIconButton(onClick = onMoreClick, modifier = modifier.size(28.dp).ownsClicks()) {
+            Icon(Icons.Outlined.MoreVert, contentDescription = "更多操作", modifier = Modifier.size(18.dp))
         }
     }
 }

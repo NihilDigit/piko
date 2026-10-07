@@ -1,18 +1,10 @@
 package dev.piko.ui.screens.drive
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.ui.layout.Layout
-import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.unit.DpOffset
-import androidx.compose.ui.unit.DpSize
+import androidx.compose.ui.unit.DpRect
 import kotlinx.coroutines.delay
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,7 +27,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.UnfoldLess
 import androidx.compose.material.icons.outlined.UnfoldMore
@@ -45,13 +36,7 @@ import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.PlainTooltip
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TooltipAnchorPosition
-import androidx.compose.material3.TooltipBox
-import androidx.compose.material3.TooltipDefaults
-import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
@@ -80,8 +65,6 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -101,7 +84,7 @@ import kotlinx.coroutines.launch
  * 目录图：一棵浮在网盘页上的文件夹树，用来在层层嵌套的目录间快速跳转（issue #18），只在宽窗口里有（[FolderMapPanel]）。
  * 文件夹与文件都列：只列文件夹时要展开到底才看得出内容在哪一层。展开到哪一层才列哪一层。
  * 浮着而不让出位置：让出的话网格随开合与拖宽反复重排；也不进侧边栏或右侧那一栏：侧边栏 240dp 放不下五六层缩进，
- * 右侧那一栏只放详情或信息流。窄窗口不做：手机上面包屑与返回已够用，层层点进去的麻烦主要在桌面的大目录里。
+ * 右侧那一栏只放信息流。窄窗口不做：手机上面包屑与返回已够用，层层点进去的麻烦主要在桌面的大目录里。
  * 撤回过的入口：地址栏 › 召出以那一段为根的弹出版，藏在分隔符里没人找得到。
  *
  * 状态挂在网盘页上：列过的层与展开的节点都还在，再展开时先显示上次的、后台重列。
@@ -114,12 +97,8 @@ internal class FolderMapState(
     val levels = mutableStateMapOf<String, FolderMapLevel>()
     private val expandedIds = mutableStateMapOf<String, Boolean>()
 
-    /** 拖过的面板左上角，在列表这一块里；没拖过为 null，停在右上角。随网盘页存续，与开着的位置、大小一起。 */
-    var panelPosition by mutableStateOf<DpOffset?>(null)
-    var panelWidth by mutableStateOf(PanelWidth)
-
-    /** 拖过上下边之后的高度，没拖过为 null，随内容长短。 */
-    var panelHeight by mutableStateOf<Dp?>(null)
+    /** 面板拖到的位置与大小，随网盘页存续。 */
+    val panel = FloatingPanelState(PanelWidth)
 
     // 点过「还有 N 个文件」的文件夹，文件全部列出
     private val allFilesIds = mutableStateMapOf<String, Boolean>()
@@ -504,12 +483,12 @@ private fun Modifier.treeGuides(row: MapRow, color: Color, childrenBelow: Boolea
 
 /**
  * 宽窗口网盘页的目录图：一块浮在列表上的面板。导航栏搜索旁的树形按钮打开，打开后一直开着、跳转也不收，
- * 面板上的 × 关掉（[onClose]），关着时导航栏上才有那个按钮。按住标题行拖到哪都行，四条边拖着改大小，都夹在列表这一块里。
+ * 面板上的 × 关掉（[onClose]），关着时导航栏上才有那个按钮。拖动、改大小与层叠见 [FloatingPanel]，[avoid] 等参数照传。
  * 由调用方铺满列表这一块。树的根总是网盘根目录，进来与换了位置时都展开到眼前的文件夹。
  *
  * 否决过的形态：贴在右沿的缩略图细轨（悬停展开、与树同一个容器形变、拖到任意位置），碰到的东西当场变形、
  * 拖的与停下的不是同一个东西，补了延时、方向冻结、吸附鼠标仍旧别扭；缩略图上放按钮又难看。也试过钉住开关，
- * 面板能随便拖、打开就一直开着之后用不着了。不用 Popup：不抢焦点的 Popup 收不到键盘，树的方向键与过滤框都用不了。
+ * 面板能随便拖、打开就一直开着之后用不着了。
  */
 @Composable
 internal fun FolderMapPanel(
@@ -519,166 +498,38 @@ internal fun FolderMapPanel(
     onOpen: (List<PikoPathBreadcrumb>) -> Unit,
     onOpenFile: (List<PikoPathBreadcrumb>, FileStat) -> Unit,
     modifier: Modifier = Modifier,
+    avoid: () -> DpRect? = { null },
+    onActivate: () -> Unit = {},
 ) {
     val root = remember { listOf(PikoDriveRepository.ROOT_BREADCRUMB) }
     LaunchedEffect(current.lastOrNull()?.id) { state.reveal(root, current) }
-    val colors = MaterialTheme.colorScheme
-    val density = LocalDensity.current
-    var area by remember { mutableStateOf(DpSize.Zero) }
-    var size by remember { mutableStateOf(DpSize.Zero) }
-
-    // 四边各留 EdgeClearance；没拖过时在右上角
-    fun clamp(position: DpOffset, panel: DpSize) = DpOffset(
-        position.x.coerceIn(EdgeClearance, (area.width - panel.width - EdgeClearance).coerceAtLeast(EdgeClearance)),
-        position.y.coerceIn(EdgeClearance, (area.height - panel.height - EdgeClearance).coerceAtLeast(EdgeClearance)),
-    )
-    fun position(panel: DpSize) = clamp(state.panelPosition ?: DpOffset(area.width - panel.width - PanelEndMargin, PanelTopMargin), panel)
-    fun moveBy(dx: Dp, dy: Dp) {
-        val from = position(size)
-        state.panelPosition = clamp(DpOffset(from.x + dx, from.y + dy), size)
-    }
-
-    // 普通 Layout 而不是 BoxWithConstraints：里面有提示气泡这类弹层，测量时组合的布局在桌面端会撞上弹层销毁的崩溃（desktopApp/CLAUDE.md）
-    Layout(
-        modifier = modifier.fillMaxSize().onSizeChanged { area = with(density) { DpSize(it.width.toDp(), it.height.toDp()) } },
-        content = {
-            Surface(
-                modifier = Modifier.onSizeChanged { size = with(density) { DpSize(it.width.toDp(), it.height.toDp()) } },
-                shape = MaterialTheme.shapes.large,
-                color = colors.surfaceContainerLow,
-                border = BorderStroke(1.dp, colors.outlineVariant),
-                shadowElevation = 3.dp,
-            ) {
-                PanelContent(
-                    state = state,
-                    root = root,
-                    current = current,
-                    onClose = onClose,
-                    onOpen = onOpen,
-                    onOpenFile = onOpenFile,
-                    onMove = ::moveBy,
-                )
-            }
-        },
-    ) { measurables, constraints ->
-        val placeable = measurables.first().measure(constraints.copy(minWidth = 0, minHeight = 0))
-        layout(constraints.maxWidth, constraints.maxHeight) {
-            val at = position(DpSize(placeable.width.toDp(), placeable.height.toDp()))
-            placeable.place(at.x.roundToPx(), at.y.roundToPx())
-        }
-    }
-}
-
-/**
- * 面板里的东西：标题行（按住拖动挪位置，右端是过滤与关闭两个小按钮）与树，四条边拖着改大小。
- * 往外拖是变大，被拖的那条边跟着手走：拖左边、上边改大小的同时把面板挪过去，对边不动。
- */
-@Composable
-private fun PanelContent(
-    state: FolderMapState,
-    root: List<PikoPathBreadcrumb>,
-    current: List<PikoPathBreadcrumb>,
-    onClose: () -> Unit,
-    onOpen: (List<PikoPathBreadcrumb>) -> Unit,
-    onOpenFile: (List<PikoPathBreadcrumb>, FileStat) -> Unit,
-    onMove: (Dp, Dp) -> Unit,
-) {
-    val colors = MaterialTheme.colorScheme
-    val density = LocalDensity.current
-    val width = state.panelWidth
-    val height = state.panelHeight
     var filterShown by remember { mutableStateOf(false) }
-    var measuredHeight by remember { mutableStateOf(0.dp) }
-    val sized = if (height != null) Modifier.height(height) else Modifier.heightIn(max = FolderMapMaxHeight)
-    Box(Modifier.width(width).then(sized).onSizeChanged { measuredHeight = with(density) { it.height.toDp() } }) {
-        Column(if (height != null) Modifier.fillMaxSize() else Modifier) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(44.dp)
-                    .pointerInput(Unit) {
-                        detectDragGestures { change, delta ->
-                            change.consume()
-                            onMove(delta.x.toDp(), delta.y.toDp())
-                        }
-                    }
-                    .padding(start = 16.dp, end = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("目录图", style = MaterialTheme.typography.titleSmall, color = colors.onSurfaceVariant, modifier = Modifier.weight(1f))
-                SmallToggle(Icons.Outlined.Search, Icons.Filled.Search, "过滤", checked = filterShown) { filterShown = !filterShown }
-                SmallToggle(Icons.Outlined.Close, Icons.Outlined.Close, "关闭目录图", checked = false, onClick = onClose)
-            }
-            FolderMapTree(
-                state = state,
-                root = root,
-                current = current,
-                onOpen = onOpen,
-                onOpenFile = onOpenFile,
-                onDismiss = onClose,
-                filterShown = filterShown,
-                focusFilter = false,
-                modifier = Modifier.weight(1f, fill = height != null),
-            )
-        }
-        // 放在铺满自己的一层里：直接 fillMaxHeight 会把随内容长短的树撑到最高
-        Box(Modifier.matchParentSize()) {
-            fun widthBy(dx: Float): Dp {
-                val next = (state.panelWidth + with(density) { dx.toDp() }).coerceIn(PanelMinWidth, PanelMaxWidth)
-                val grown = next - state.panelWidth
-                state.panelWidth = next
-                return grown
-            }
-            fun heightBy(dy: Float): Dp {
-                val before = state.panelHeight ?: measuredHeight
-                val next = (before + with(density) { dy.toDp() }).coerceIn(PanelMinHeight, PanelMaxHeight)
-                state.panelHeight = next
-                return next - before
-            }
-            EdgeHandle(Modifier.align(Alignment.CenterStart).width(EdgeGrab).fillMaxHeight(), grip = true) { onMove(-widthBy(-it.x), 0.dp) }
-            EdgeHandle(Modifier.align(Alignment.CenterEnd).width(EdgeGrab).fillMaxHeight()) { widthBy(it.x) }
-            EdgeHandle(Modifier.align(Alignment.TopCenter).height(EdgeGrab).fillMaxWidth()) { onMove(0.dp, -heightBy(-it.y)) }
-            EdgeHandle(Modifier.align(Alignment.BottomCenter).height(EdgeGrab).fillMaxWidth()) { heightBy(it.y) }
-        }
-    }
-}
-
-/** 树的一条边上看不见的拖动区，[onDrag] 收到每一下的位移。左沿另画一道把手，看得出能拖。 */
-@Composable
-private fun EdgeHandle(modifier: Modifier, grip: Boolean = false, onDrag: (Offset) -> Unit) {
-    // 手势协程只起一次，拿最新的回调：回调里读的宽高每拖一下都在变
-    val latest by rememberUpdatedState(onDrag)
-    Box(
-        modifier = modifier.pointerInput(Unit) {
-            detectDragGestures { change, delta ->
-                change.consume()
-                latest(delta)
-            }
+    FloatingPanel(
+        state = state.panel,
+        title = "目录图",
+        closeLabel = "关闭目录图",
+        onClose = onClose,
+        minWidth = PanelMinWidth,
+        maxWidth = PanelMaxWidth,
+        autoMaxHeight = FolderMapMaxHeight,
+        modifier = modifier,
+        avoid = avoid,
+        onActivate = onActivate,
+        headerActions = {
+            PanelHeaderToggle(Icons.Outlined.Search, Icons.Filled.Search, "过滤", checked = filterShown) { filterShown = !filterShown }
         },
-        contentAlignment = Alignment.Center,
     ) {
-        if (grip) Box(Modifier.size(width = 3.dp, height = 24.dp).clip(CircleShape).background(MaterialTheme.colorScheme.outlineVariant))
-    }
-}
-
-@Composable
-private fun SmallToggle(icon: ImageVector, checkedIcon: ImageVector, label: String, checked: Boolean, onClick: () -> Unit) {
-    TooltipBox(
-        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
-        tooltip = { PlainTooltip { Text(label) } },
-        state = rememberTooltipState(),
-    ) {
-        Box(
-            modifier = Modifier.size(36.dp).clip(CircleShape).clickable(onClickLabel = label, onClick = onClick),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                if (checked) checkedIcon else icon,
-                contentDescription = label,
-                tint = if (checked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(20.dp),
-            )
-        }
+        FolderMapTree(
+            state = state,
+            root = root,
+            current = current,
+            onOpen = onOpen,
+            onOpenFile = onOpenFile,
+            onDismiss = onClose,
+            filterShown = filterShown,
+            focusFilter = false,
+            modifier = Modifier.weight(1f, fill = state.panel.height != null),
+        )
     }
 }
 
@@ -691,18 +542,6 @@ private val TreeIndent = 16.dp
 private const val FilesShown = 3
 private val FolderMapMaxHeight = 560.dp
 
-// 没拖过时离列表右沿与顶上的距离：贴着右沿时与网格最右一栏的滚动条、条目右上角的标签挤在一起
-private val PanelEndMargin = 24.dp
-private val PanelTopMargin = 12.dp
-
-// 面板离列表四边至少留的距离
-private val EdgeClearance = 12.dp
-
 private val PanelWidth = 360.dp
 private val PanelMinWidth = 220.dp
 private val PanelMaxWidth = 720.dp
-private val PanelMinHeight = 160.dp
-private val PanelMaxHeight = 1200.dp
-
-// 树边上拖动区的厚度
-private val EdgeGrab = 6.dp

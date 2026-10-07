@@ -52,7 +52,7 @@ val FrameTopRowHeight = 56.dp
 val FrameBottomRowHeight = 56.dp
 
 /**
- * 眼前是否画着外框，由 PikoMainScaffold 在有侧边栏时提供。右侧的详情栏、信息流栏据此并进外框，
+ * 眼前是否画着外框，由 PikoMainScaffold 在有侧边栏时提供。右侧的信息流栏据此并进外框，
  * 与左边的侧边栏一样直接落在外框色上，不再各自是一张卡：外框里再浮一张卡，就又多了一层底色。
  */
 val LocalFramed = compositionLocalOf { false }

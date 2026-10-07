@@ -51,7 +51,7 @@ internal fun ShortcutsDialog(modifier: ShortcutModifier, onDismiss: () -> Unit) 
             (if (mac) "⌘⌫" else "Delete") to "将所选条目移入回收站",
             (if (mac) "回车 或 F2" else "F2") to "重命名，选了几项时批量重命名",
             "${primary}Z" to "撤销上一次移动、删除、重命名或归档改动",
-            "${primary}I" to "详情栏",
+            (if (mac) "⌘I" else "Alt+Enter 或 Ctrl+I") to "属性",
             "菜单键 或 Shift+F10" to "操作菜单",
         ),
         "传输" to listOf(

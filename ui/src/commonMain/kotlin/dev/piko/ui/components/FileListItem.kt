@@ -3,12 +3,6 @@ package dev.piko.ui.components
 import dev.piko.shared.data.isVaulted
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.foundation.background
-import androidx.compose.foundation.hoverable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsHoveredAsState
-import androidx.compose.material.icons.outlined.Info
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -210,22 +204,6 @@ fun ListMoreButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
 }
 
 /**
- * 网盘条目的详情按钮，取代原来的三点。[onHoverOnly] 时（有详情栏的宽窗口）平时不画，鼠标移到条目上才出现：
- * 每一项都挂着一个按钮，一屏下来满是一样的图标，而鼠标用户要的只是指着的那一项；右键菜单照样有全部操作。
- * 没有悬停可言的触屏上一直显示，否则那里就没有打开操作面板的地方。不显示时仍占着位置，出现时标题不跟着挤。
- */
-@Composable
-fun ItemDetailsButton(visible: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    if (visible) {
-        TooltipIconButton(Icons.Outlined.Info, "详情", onClick, modifier = modifier.ownsClicks())
-    } else {
-        Spacer(modifier.size(ItemDetailsButtonSize))
-    }
-}
-
-private val ItemDetailsButtonSize = 48.dp
-
-/**
  * 网盘文件的一行。名字最多两行，扩展名移到副标题单列，所以截断发生时丢掉的是名字中段
  * 而不是类型。
  *
@@ -240,9 +218,9 @@ fun FileListItem(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     onSelectToggle: (Boolean) -> Unit,
-    onDetailsClick: () -> Unit,
-    /** 详情按钮只在鼠标悬停时出现，见 [ItemDetailsButton]。 */
-    detailsOnHover: Boolean,
+    onMoreClick: () -> Unit,
+    /** 行尾画不画打开操作面板的更多按钮。宽窗口不画：鼠标有右键菜单，每一行挂一个按钮只是满屏一样的图标。 */
+    moreButton: Boolean,
     modifier: Modifier = Modifier,
     isHighlighted: Boolean = false,
     isSpoilerBlurred: Boolean = false,
@@ -255,17 +233,15 @@ fun FileListItem(
     /** 文件夹里直接放着归档条目，见 [itemMarks]。 */
     folderHasVault: Boolean = false,
 ) {
-    val hover = remember { MutableInteractionSource() }
-    val hovered by hover.collectIsHoveredAsState()
     FileListItem(
         headline = title ?: file.displayTitle(),
         headlineMaxLines = if (title != null) 1 else 2,
         headlineFontWeight = if (file.isFolder) FontWeight.Medium else null,
         leading = { FileLeadingVisual(file = file, isSpoilerBlurred = isSpoilerBlurred) },
         onClick = onClick,
-        onMoreClick = onDetailsClick,
-        trailing = { ItemDetailsButton(visible = !detailsOnHover || hovered, onClick = onDetailsClick) },
-        modifier = modifier.hoverable(hover),
+        onMoreClick = onMoreClick,
+        trailing = { if (moreButton) ListMoreButton(onClick = onMoreClick, modifier = Modifier.ownsClicks()) },
+        modifier = modifier,
         badge = itemMarks(file, folderHasVault),
         supporting = {
             Column {

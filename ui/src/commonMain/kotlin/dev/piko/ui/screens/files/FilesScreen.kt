@@ -17,8 +17,6 @@ fun FilesScreen(
     feedShown: Boolean = false,
     onFeedShownChange: ((Boolean) -> Unit)? = null,
     /** 见 DriveScreen 的同名参数。 */
-    onFeedYield: () -> Unit = {},
-    /** 见 DriveScreen 的同名参数。 */
     feedStashed: Boolean = false,
     /** 见 DriveScreen 的同名参数。 */
     feedTabId: Long? = null,
@@ -40,7 +38,6 @@ fun FilesScreen(
         onOpenTransfers = onOpenTransfers,
         feedShown = feedShown,
         onFeedShownChange = onFeedShownChange,
-        onFeedYield = onFeedYield,
         feedStashed = feedStashed,
         feedTabId = feedTabId,
         modifier = modifier,

@@ -80,7 +80,7 @@ import dev.piko.ui.theme.frame
  *   开着的人看到它直接在那儿，关掉过的人不会看到它弹一下。
  * @param headerActions 栏名与关闭按钮之间的其他按钮。
  * @param bottomMargin 侧栏下沿离这块区域底边的距离。并进外框时默认与主区卡片离窗口底边的外框色同宽，下沿对齐；
- *   外面已经让出那一截的（网盘页的详情栏）传 0，否则两份叠在一起，侧栏比卡片短一截。
+ *   外面已经让出那一截的传 0，否则两份叠在一起，侧栏比卡片短一截。
  * @param showHeader 为 false 时不画栏名那一行，整张卡交给 [panel]，关闭与其他按钮由内容自己放：
  *   信息流是一整块黑底的竖屏画面，上面再压一条浅色栏名就成了两层顶栏。
  */
@@ -197,6 +197,15 @@ fun sidePanelFits(availableWidth: Dp, panelMinWidth: Dp): Boolean =
  * 触屏没有悬停，接鼠标的平板也有拖动手柄本身的形状可认。
  */
 val LocalHorizontalResizeCursor = staticCompositionLocalOf<PointerIcon?> { null }
+
+/** 上下调整大小的光标，同 [LocalHorizontalResizeCursor] 由桌面入口提供。浮动面板的上下两条边用。 */
+val LocalVerticalResizeCursor = staticCompositionLocalOf<PointerIcon?> { null }
+
+/** 沿左上到右下调整大小的光标，浮动面板的左上角与右下角用。 */
+val LocalDiagonalResizeCursor = staticCompositionLocalOf<PointerIcon?> { null }
+
+/** 沿右上到左下调整大小的光标，浮动面板的右上角与左下角用。 */
+val LocalAntiDiagonalResizeCursor = staticCompositionLocalOf<PointerIcon?> { null }
 
 /** 侧栏那一整张卡。取 surfaceContainerLow，比窗口底色高一档，与主区分得开。 */
 @Composable

@@ -81,7 +81,9 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
@@ -111,6 +113,7 @@ import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.ShortcutModifier
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
@@ -165,8 +168,12 @@ internal class DriveItemCallbacks(
     val onOpen: (FileStat) -> Unit,
     /** mac 上焦点在这一项时按回车，照 Finder 是改名。 */
     val onRename: (FileStat) -> Unit,
-    /** 条目上的详情按钮与菜单键：宽窗口打开详情栏看这一项，其余打开操作面板。 */
+    /** 条目上的更多按钮与菜单键：打开操作面板。 */
     val onMore: (FileStat) -> Unit,
+    /** 焦点在这一项时按 Alt+Enter：打开它的属性。由条目自己接住，否则条目的单击先把回车当成打开。 */
+    val onProperties: (FileStat) -> Unit,
+    /** 条目排好位置时交出它的布局坐标，属性卡片据此贴在它旁边。只存不重组，见 PropertiesAnchors。 */
+    val onPlaced: (FileStat, LayoutCoordinates) -> Unit,
     val onLongPress: (FileStat) -> Unit,
     val onSelect: (FileStat, Boolean) -> Unit,
     /** Ctrl（⌘）点选，见 [selectionClicks]。 */
@@ -210,8 +217,8 @@ internal fun DriveFileGrid(
     folderView: (FileStat) -> DriveFolderView?,
     callbacks: DriveItemCallbacks,
     bottomPadding: Dp,
-    /** 条目上的详情按钮只在鼠标悬停时出现，见 ItemDetailsButton。 */
-    detailsOnHover: Boolean,
+    /** 条目上画不画打开操作面板的更多按钮，见 DriveScreen 的 itemMoreButton。 */
+    moreButton: Boolean,
     /** 网格空白处的右键菜单。 */
     backgroundActions: () -> List<SheetAction>,
     /** 连同右侧侧栏在内的宽度，栏数按它定，见 [StableColumns]；null 时按网格自己的宽度。 */
@@ -338,7 +345,7 @@ internal fun DriveFileGrid(
                             isBlurred = isBlurred(file),
                             locationLabel = hitLocations[file.id],
                             callbacks = callbacks,
-                            detailsOnHover = detailsOnHover,
+                            moreButton = moreButton,
                             isEmptyFolder = file.isFolder && emptyFolders[file.id] == true,
                             folderHasVault = file.isFolder && file.id in vaultedFolders,
                             requestFocus = file.id == keyboardFocusTarget,
@@ -366,7 +373,7 @@ private fun gridCells(viewMode: DriveViewMode, referenceWidth: Dp? = null): Grid
 }
 
 /**
- * 按 [referenceWidth]（列表连同右侧详情栏、信息流栏的总宽度）定栏数，网格自己的宽度只决定每栏多宽。
+ * 按 [referenceWidth]（列表连同右侧信息流栏的总宽度）定栏数，网格自己的宽度只决定每栏多宽。
  * 按网格自己的宽度定的话，侧栏滑出的动画里网格每一帧都在变窄，五栏掉到四栏再到三栏，每掉一栏整屏条目换行重排，
  * 还带着位移动画满屏乱飞。现在侧栏是从每一栏借宽度，卡片一起收窄，谁也不换行。
  * 借得太多、一栏窄过下限的 [MIN_FRACTION] 时才少排一栏，免得卡片挤成一条。
@@ -512,7 +519,7 @@ private fun DriveCell(
     isBlurred: Boolean,
     locationLabel: String?,
     callbacks: DriveItemCallbacks,
-    detailsOnHover: Boolean,
+    moreButton: Boolean,
     isEmptyFolder: Boolean,
     folderHasVault: Boolean,
     requestFocus: Boolean,
@@ -530,7 +537,7 @@ private fun DriveCell(
     // 正被拖着的条目淡下去，看得出拖走的是哪几项
     val drag = LocalFileDrag.current
     val beingDragged = drag?.payload?.ids?.contains(file.id) == true
-    // 条目里的详情按钮登记在这里，单击选中的那一层不截它的点击
+    // 条目里的更多按钮登记在这里，单击选中的那一层不截它的点击
     val ownClicks = remember { OwnClicks() }
     CompositionLocalProvider(LocalOwnClicks provides ownClicks) {
     ContextMenuArea(
@@ -539,6 +546,7 @@ private fun DriveCell(
             .alpha(if (beingDragged) DraggedAlpha else 1f)
             .focusRequester(focusRequester)
             .onFocusChanged { callbacks.onFocusChanged(file, it.hasFocus) }
+            .onPlaced { callbacks.onPlaced(file, it) }
             // 鼠标点到哪一项，键盘就从哪一项接着走，与文件管理器相同。条目自己的单击不取焦点；
             // 触屏不取，否则点过的项留着一层焦点底色
             .pointerInput(Unit) {
@@ -561,6 +569,11 @@ private fun DriveCell(
             // Finder 里回车是改名；资源管理器里回车是打开，交给条目自己的单击
             .onPreviewKeyEvent { event ->
                 val isReturn = event.key == Key.Enter || event.key == Key.NumPadEnter
+                // 资源管理器的 Alt+Enter 是属性
+                if (isReturn && !isMac && event.isAltPressed) {
+                    if (event.type == KeyEventType.KeyDown) callbacks.onProperties(file)
+                    return@onPreviewKeyEvent true
+                }
                 if (!isReturn || !isMac || isSelectionMode) return@onPreviewKeyEvent false
                 // 按下与松开都吃掉：只吃按下的话，条目的单击在松开时照样触发
                 if (event.type == KeyEventType.KeyDown) callbacks.onRename(file)
@@ -599,8 +612,8 @@ private fun DriveCell(
                 onClick = { callbacks.onOpen(file) },
                 onLongClick = { callbacks.onLongPress(file) },
                 onSelectToggle = { callbacks.onSelect(file, it) },
-                onDetailsClick = { callbacks.onMore(file) },
-                detailsOnHover = detailsOnHover,
+                onMoreClick = { callbacks.onMore(file) },
+                moreButton = moreButton,
                 isEmptyFolder = isEmptyFolder,
                 title = text.title,
                 tags = text.tags,
@@ -619,8 +632,8 @@ private fun DriveCell(
                 onClick = { callbacks.onOpen(file) },
                 onLongClick = { callbacks.onLongPress(file) },
                 onSelectToggle = { callbacks.onSelect(file, it) },
-                onDetailsClick = { callbacks.onMore(file) },
-                detailsOnHover = detailsOnHover,
+                onMoreClick = { callbacks.onMore(file) },
+                moreButton = moreButton,
                 title = text.title,
                 tags = text.tags,
                 code = text.code,

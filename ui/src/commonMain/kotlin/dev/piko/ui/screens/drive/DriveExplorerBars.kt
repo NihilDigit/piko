@@ -387,8 +387,7 @@ internal fun ExplorerCommandBar(
         add(BarItem("refresh", 50, listOf(SheetAction(Icons.Outlined.Refresh, "刷新", onRefresh, group = 5))) {
             TooltipIconButton(Icons.Outlined.Refresh, "刷新", onRefresh, shortcut = if (mac) "⌘R" else "F5")
         })
-        // 详情栏的开关不放在这里：它看的是某一项，入口在条目上悬停出现的详情按钮；关闭在详情栏自己的顶上，
-        // 主修饰键+I 照旧开关
+        // 属性不放在这里：它看的是某一项，入口在右键菜单与操作面板末尾，以及主修饰键+I、Alt+Enter
         add(BarItem("view", PinnedPriority) { viewSwitcher() })
         if (primaryAction != null) {
             // 常驻在右端，不收在菜单里；窗口窄到连它也放不下时才进「更多」
@@ -487,7 +486,7 @@ internal fun ViewSwitcher(
                 contentPadding = PaddingValues(start = 12.dp, end = 16.dp),
                 modifier = Modifier.heightIn(min = 40.dp),
             ) {
-                // 挂起的信息流（被详情栏挤掉、队列还在）在图标上点一个小圆点，点开就是接着刷。
+                // 挂起的信息流（离开了它的文件夹、队列还在）在图标上点一个小圆点，点开就是接着刷。
                 // 原来另在命令栏右端的「收着的东西」里放一项「继续刷信息流」，与这个按钮是同一件事的两个入口
                 BadgedBox(badge = { if (feedSuspended) Badge() }) {
                     Icon(
