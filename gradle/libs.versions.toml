@@ -51,7 +51,8 @@ androidxTestRunner = "1.6.2"
 androidxTestCore = "1.6.1"
 androidxTestRules = "1.6.1"
 androidxTestExtJunit = "1.2.1"
-# 只取它按平台 jar 里的 libzstd 原生库捆进 Windows 安装包，解码经 FFM 直调 C API（desktopApp 的 update/ZstdPatch.kt）
+# 只取它按平台 jar 里的 libzstd 原生库捆进 Windows 安装包，解码经 FFM 直调 C API（desktopApp 的 update/ZstdPatch.kt）。
+# 1.0.0 走不了补丁靠的就是这个库，升级换掉它后 1.0.0 可能重新对得上补丁，届时发版构建失败，见 desktopApp/build.gradle.kts 的 checkRetired
 zstdJni = "1.5.7-20"
 
 [libraries]

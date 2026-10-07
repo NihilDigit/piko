@@ -174,6 +174,8 @@ files.json 的字段：旧客户端用 `ignoreUnknownKeys`；当前清单仍是 
 - B. 在 `update-bases.sh` 中排除 1.0.0 的清单，使 1.0.0 的 `canPatch` 因缺 `app/resources/zstd/libzstd-jni-1.5.7-20.dll` 而必败：MSI 用户退回 msiexec 整包重装（1.0.0 到 1.1.0 时已被事实证明可用，不依赖相对路径），便携版给下载页。代价：违反 `shared/.../update/CLAUDE.md` 的「不要缩小范围」，1.0.0 便携版只能手动更新；MSI 用户下载约 100 MB。要不要这样做取决于短路径用户占比，需先实测（见摘要）。
 - 不要靠清单做「只对 1.0.0 失败」之外的区分：两版客户端的检查逻辑相同，无法按版本号分流。
 
+已定为 B：`update-bases.sh` 把 1.0.0 的清单移出对照、另交 `-PpikoUpdateRetired`，`UpdateArtifactsTask` 核对补丁包之外至少有一个文件是 1.0.0 没有的，否则构建失败；`legacy.ps1` 按新路径断言。
+
 ### 4. 旧 MSI 的卸载会删除安装目录内的用户文件（中）
 
 `transactional-upgrade.ps1` 的注释记载：jpackage 的 RemoveFolderEx 在卸载时递归删除整个安装目录，卸载 1.1.0 实测种子与压缩包都被删，整包升级卸旧版时同样触发；新 MSI 才改成只删 `app`、`runtime`，对已装的旧版不起作用。

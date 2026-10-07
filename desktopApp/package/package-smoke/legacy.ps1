@@ -1,23 +1,27 @@
-# 已发布的老版本（1.0.0、1.1.0）升级到这次构建的冒烟：真实的老版本便携 zip 与 MSI，升级到 Next，断言走的是补丁、
+# 已发布的老版本（1.0.0、1.1.0）升级到这次构建的冒烟：真实的老版本便携 zip 与 MSI，升级到 Next，断言各走预定的路、
 # 升级后能启动、版本号对、用户数据还在。
 #
-# 老客户端只认三个附件：-files.json、-app.zip、.msi。清单里 patch=false 的文件与本机逐字节相同才走补丁；否则 1.1.0 的
-# 便携版去找已不再发布的 .zip，1.0.0 直接给下载页。所以 Next 要用这两个版本的清单作对照打（-PpikoUpdateBases），
-# 与它们不同的文件都标成补丁、装进 app.zip（build.gradle.kts 的 UpdateArtifactsTask）。
+# 老客户端只认三个附件：-files.json、-app.zip、.msi。清单里 patch=false 的文件与本机逐字节相同才走补丁；否则 MSI 安装版
+# 跑 msiexec 整包重装，1.1.0 的便携版去找已不再发布的 .zip，1.0.0 的便携版直接给下载页。Next 要照 release.yml 打：
+# 1.1.0 的清单作对照（-PpikoUpdateBases），与它不同的文件都标成补丁、装进 app.zip；1.0.0 的清单只作核对
+# （-PpikoUpdateRetired），它必须走不了补丁（build.gradle.kts 的 UpdateArtifactsTask）。
 #
-# MSI 安装版升级后另做一次 Windows Installer 修复，补丁要原样留着、新版照常启动。
+# 1.1.0 带 piko.update.api 与 piko.update.auto，整个流程由它自己走：查到 Next、下载、退出、交给它自带的更新脚本，
+# 断言走的是补丁。带 -Delta 时另跑一轮 1.1.0 便携版，假 Release 多挂 -from-1.1.0.zip，断言它用差分还原、没有下完整的 app.zip。
 #
-# 1.1.0 带 piko.update.api 与 piko.update.auto，整个流程由它自己走：查到 Next、下载、退出、交给它自带的更新脚本。
-# 1.0.0 有 piko.update.api，没有自动安装，下载与暂存只能由这里照它的做法代劳：先按它的 canPatch 断言能走补丁，
-# 把 app.zip 的条目逐个核对后放进暂存目录，再跑 v1.0.0 原样的 apply-update.ps1，并重现它换 exe 时留下的 Piko.exe.old，
-# 断言新版首次启动时清掉它。它的检查与下载逻辑与 1.1.0 相同
-# （canPatch、extractPatch 未改过），由 1.1.0 那一轮真跑覆盖。
+# 1.0.0 的更新脚本在 8.3 临时目录下把补丁写错位置、仍报成功，所以不再给它补丁（理由见 shared/.../update/CLAUDE.md）。
+# 它有 piko.update.api，没有自动安装，这里照它的 resolve 判断：先断言它的 canPatch 对 Next 失败。便携版到此为止，
+# 它只给下载页；MSI 版照它的做法把 Next 的 MSI 放进暂存目录，再以 msi 模式跑 v1.0.0 原样的 apply-update.ps1。
+#
+# MSI 安装版升级后另做一次 Windows Installer 修复，新版照常启动。
 #
 # 老版本的数据在 ~/.piko（没有 PikoHome），本机跑时给 -UserHome 一个临时目录，经 -Duser.home 隔开真实的数据。
-# Next 必须以默认包名 Piko 打：补丁换的是 Piko.exe 与 app\Piko.cfg，包名不同就对不上老版本的文件。
+# Next 必须以默认包名 Piko 与正式的 UpgradeCode 打：补丁换的是 Piko.exe 与 app\Piko.cfg，包名不同就对不上老版本的文件；
+# UpgradeCode 不同，msiexec 就不升级老版本，而是另装一份。
 #
 # 用法（pwsh）：
-#   ./legacy.ps1 -Next <目录> -NextVersion 9.9.1 -Old <目录> -Work <临时目录> [-Kinds portable,msi] [-UserHome <目录>]
+#   ./legacy.ps1 -Next <目录> -NextVersion 9.9.1 -Old <目录> -Work <临时目录> [-Kinds portable,msi] [-UserHome <目录>] [-Delta]
+#   <Next> 里是 piko-windows-x64-<版本>-files.json / -app.zip / .msi，带 -Delta 时另有 -from-1.1.0.zip
 #   <Old> 里是老版本原样的附件：piko-windows-x64-<版本>.zip / .msi / -files.json
 param(
     [Parameter(Mandatory = $true)] [string] $Next,
@@ -29,7 +33,8 @@ param(
     [string] $UserHome = '',
     [string] $Arch = 'x64',
     [int] $Port = 8766,
-    [int] $UpdateTimeoutSeconds = 300
+    [int] $UpdateTimeoutSeconds = 300,
+    [switch] $Delta
 )
 
 $ErrorActionPreference = 'Stop'
@@ -87,13 +92,24 @@ function Msi-Products {
     @($installer.RelatedProducts($UpgradeCode) | ForEach-Object { $_ })
 }
 
-# 老版本的 canPatch：清单里 patch=false 的文件本机都有且逐字节相同
-function Assert-OldClientTakesPatch([string] $dir, $manifest, [string] $what) {
-    $differs = @(foreach ($entry in @($manifest.files | Where-Object { -not $_.patch })) {
+# 老版本的 canPatch：清单里 patch=false 的文件本机都有且逐字节相同。返回对不上的那些
+function Unpatchable-Files([string] $dir, $manifest) {
+    @(foreach ($entry in @($manifest.files | Where-Object { -not $_.patch })) {
         $path = Join-Path $dir ($entry.path.Replace('/', '\'))
         if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Sha256 $path) -ne $entry.sha256) { $entry.path }
     })
+}
+
+function Assert-OldClientTakesPatch([string] $dir, $manifest, [string] $what) {
+    $differs = @(Unpatchable-Files $dir $manifest)
     if ($differs.Count -gt 0) { Fail "$what would not take the patch; not covered by app.zip: $($differs -join ', ')" }
+}
+
+# 返回挡住补丁的文件，写进摘要
+function Assert-OldClientRejectsPatch([string] $dir, $manifest, [string] $what) {
+    $differs = @(Unpatchable-Files $dir $manifest)
+    if ($differs.Count -eq 0) { Fail "$what would take the patch, whose script fails under an 8.3 temp directory" }
+    return $differs
 }
 
 # 升级后应用目录里清单列的文件都对（点开头的是安装器的元数据，MSI 不装 .jpackage.xml）
@@ -136,77 +152,26 @@ function Start-Server {
     Fail 'fake release server did not start'
 }
 
-# 挂起的进程只映射了 exe 本身，还没载入任何 DLL。返回进程号：它的 ExecutablePath 读不出来，Stop-App 按路径找不到它
-function Start-Suspended([string] $exe, [string] $directory) {
-    if (-not ('LegacySmoke.Suspended' -as [type])) {
-        Add-Type -Namespace LegacySmoke -Name Suspended -MemberDefinition @'
-[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-public struct STARTUPINFO { public int cb; public string lpReserved, lpDesktop, lpTitle; public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags; public short wShowWindow, cbReserved2; public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError; }
-[StructLayout(LayoutKind.Sequential)]
-public struct PROCESS_INFORMATION { public IntPtr hProcess, hThread; public int dwProcessId, dwThreadId; }
-[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-public static extern bool CreateProcess(string app, string commandLine, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string dir, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
-'@
-    }
-    $si = New-Object LegacySmoke.Suspended+STARTUPINFO
-    $si.cb = [System.Runtime.InteropServices.Marshal]::SizeOf($si)
-    $pi = New-Object LegacySmoke.Suspended+PROCESS_INFORMATION
-    # 4 = CREATE_SUSPENDED
-    if (-not [LegacySmoke.Suspended]::CreateProcess($exe, "`"$exe`"", [IntPtr]::Zero, [IntPtr]::Zero, $false, 4, [IntPtr]::Zero, $directory, [ref] $si, [ref] $pi)) {
-        Fail "could not start $exe suspended: $([System.ComponentModel.Win32Exception]::new([System.Runtime.InteropServices.Marshal]::GetLastWin32Error()).Message)"
-    }
-    return $pi.dwProcessId
-}
-
-# 1.0.0 没有自动安装：照它的 extractPatch 把 app.zip 的条目核对后放进暂存目录，再跑它原样的更新脚本
-function Invoke-OldScript([string] $version, [string] $dir, $manifest) {
+# 1.0.0 没有自动安装：它的 MSI 版补丁对不上时下载新版 MSI，退出后以 msi 模式交给自带的更新脚本，
+# 脚本跑完 msiexec 再拉起 Piko.exe。这里把 MSI 放进暂存目录、跑它原样的脚本；拉起的新版经继承的 JAVA_TOOL_OPTIONS 指向假 Release
+function Invoke-OldInstaller([string] $version, [string] $dir) {
     $stage = Join-Path $Work "stage\$version"
     if (Test-Path -LiteralPath $stage) { Remove-Item -Recurse -Force -LiteralPath $stage }
-    $files = Join-Path $stage 'files'
-    New-Item -ItemType Directory -Force -Path $files | Out-Null
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $archive = [System.IO.Compression.ZipFile]::OpenRead((Asset $Next $NextVersion '-app.zip'))
-    try {
-        $expected = @{}
-        foreach ($entry in @($manifest.files | Where-Object { $_.patch })) { $expected[$entry.path] = $entry }
-        foreach ($item in $archive.Entries) {
-            if (-not $expected.ContainsKey($item.FullName)) { Fail "app.zip carries $($item.FullName), which $version's extractPatch rejects" }
-            $out = Join-Path $files ($item.FullName.Replace('/', '\'))
-            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $out) | Out-Null
-            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($item, $out)
-            if ((Get-Sha256 $out) -ne $expected[$item.FullName].sha256) { Fail "app.zip entry differs from the manifest: $($item.FullName)" }
-            (Get-Item -LiteralPath $out).LastWriteTimeUtc = [DateTimeOffset]::FromUnixTimeMilliseconds([long] $expected[$item.FullName].mtime).UtcDateTime
-            $expected.Remove($item.FullName)
-        }
-        if ($expected.Count -gt 0) { Fail "app.zip lacks $($expected.Keys -join ', '), which $version's extractPatch requires" }
-    } finally { $archive.Dispose() }
+    New-Item -ItemType Directory -Force -Path $stage | Out-Null
+    $msi = Join-Path $stage "piko-windows-$Arch-$NextVersion.msi"
+    Copy-Item -LiteralPath (Asset $Next $NextVersion '.msi') -Destination $msi
     $script = Join-Path $stage 'apply-update.ps1'
     git -C $PSScriptRoot show "v${version}:desktopApp/src/desktopMain/resources/update/apply-update.ps1" | Set-Content -LiteralPath $script -Encoding ascii
     if ($LASTEXITCODE -ne 0) { Fail "could not read v$version's apply-update.ps1 from git (fetch the tags)" }
 
-    # 1.0.0 的脚本只等 JVM、不等启动器：启动器还占着 Piko.exe 时，改名成 .old 能成、删不掉，.old 就留在安装目录里。
-    # 照这个情形，以挂起状态起一个旧版的 Piko.exe 占住 exe 再跑脚本。不用停在 JVM 启动处的旧版：那是已载入运行时的 JVM，
-    # 占着 runtime\lib\modules，补丁带着运行时文件时换不进去，而真实情形里 JVM 已经退出。脚本最后拉起的换成一个空的 .cmd：
-    # 占着 exe 的旧进程要先停掉，新版首次启动时 removeUpdateLeftovers 才删得掉 .old
-    $holder = Start-Suspended (Join-Path $dir 'Piko.exe') $dir
-    $noop = Join-Path $dir 'legacy-smoke-noop.cmd'
-    Set-Content -LiteralPath $noop -Value '@exit /b 0' -Encoding ascii
     $gone = Start-Process cmd.exe -ArgumentList '/c', 'exit' -PassThru -WindowStyle Hidden
     $gone.WaitForExit()
-    & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $script -ProcessId $gone.Id -InstallDir $dir `
-        -Mode patch -Source $files -Executable (Split-Path -Leaf $noop) -LogFile (Join-Path $stage 'update.log') | Out-Host
-    if ($LASTEXITCODE -ne 0) { Save-Logs "old-$version"; Fail "v$version's apply-update.ps1 exited $LASTEXITCODE" }
-    $leftover = Join-Path $dir 'Piko.exe.old'
-    if (-not (Test-Path -LiteralPath $leftover)) { Write-Host "::warning::v$version's script left no Piko.exe.old this time; the cleanup is not exercised" }
-    Stop-Process -Id $holder -Force
-    Wait-Process -Id $holder -Timeout 10 -ErrorAction SilentlyContinue
-    Stop-App $dir
-    Remove-Item -LiteralPath $noop -ErrorAction SilentlyContinue
-
     $env:JAVA_TOOL_OPTIONS = "-Dpiko.update.api=http://127.0.0.1:$Port/latest $homeOption"
-    try { Start-Process -FilePath (Join-Path $dir 'Piko.exe') -WorkingDirectory $dir }
-    finally { Remove-Item Env:JAVA_TOOL_OPTIONS }
-    return $leftover
+    try {
+        & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $script -ProcessId $gone.Id -InstallDir $dir `
+            -Mode msi -Source $msi -Executable 'Piko.exe' -LogFile (Join-Path $stage 'update.log') | Out-Host
+    } finally { Remove-Item Env:JAVA_TOOL_OPTIONS }
+    if ($LASTEXITCODE -ne 0) { Save-Logs "old-$version"; Fail "v$version's apply-update.ps1 exited $LASTEXITCODE" }
 }
 
 function Wait-Updated([string] $dir, [string] $name) {
@@ -229,81 +194,129 @@ $nextManifest = Get-Content -Raw -LiteralPath (Asset $Next $NextVersion '-files.
 $nextDir = Join-Path $releases $NextVersion
 New-Item -ItemType Directory -Force -Path $nextDir | Out-Null
 foreach ($suffix in @('-files.json', '-app.zip')) { Copy-Item -LiteralPath (Asset $Next $NextVersion $suffix) -Destination $nextDir }
-# 老客户端缺 .msi 附件就当作还没有新版；走补丁时不下载它，所以 Next 没打 MSI 时放一个占位
+# 老客户端缺 .msi 附件就当作还没有新版；走补丁时不下载它，所以 Next 没打 MSI 时放一个占位，只是 1.0.0 的 MSI 版那一轮跑不了
 $msi = Join-Path $Next "piko-windows-$Arch-$NextVersion.msi"
-if (Test-Path -LiteralPath $msi) { Copy-Item -LiteralPath $msi -Destination $nextDir }
+$hasMsi = Test-Path -LiteralPath $msi
+if ($hasMsi) { Copy-Item -LiteralPath $msi -Destination $nextDir }
 else { Set-Content -LiteralPath (Join-Path $nextDir "piko-windows-$Arch-$NextVersion.msi") -Value 'placeholder' -Encoding ascii }
 Set-Content -LiteralPath (Join-Path $releases 'latest.txt') -Value $NextVersion -Encoding utf8
 if ($Kinds -contains 'msi' -and (Msi-Products).Count -gt 0) { Fail 'Piko is already installed through its MSI; uninstall it first' }
+
+# 每一轮的老版本、安装方式与预期的路：patch 补丁，delta 差分，msiexec 整包重装，page 只给下载页
+$rounds = @(foreach ($oldVersion in $OldVersions) {
+    foreach ($kind in $Kinds) {
+        $route = if ($oldVersion -ne '1.0.0') { 'patch' } elseif ($kind -eq 'msi') { 'msiexec' } else { 'page' }
+        [pscustomobject]@{ Version = $oldVersion; Kind = $kind; Route = $route; Name = "$kind-$oldVersion" }
+    }
+})
+$deltaAsset = "piko-windows-$Arch-$NextVersion-from-1.1.0.zip"
+if ($Delta) {
+    if (-not (Test-Path -LiteralPath (Join-Path $Next $deltaAsset))) { Fail "missing $deltaAsset in $Next" }
+    $rounds += [pscustomobject]@{ Version = '1.1.0'; Kind = 'portable'; Route = 'delta'; Name = 'portable-1.1.0-delta' }
+}
+$bytesLog = Join-Path $releases 'bytes.log'
+
 Start-Server
 try {
-    foreach ($oldVersion in $OldVersions) {
-        foreach ($kind in $Kinds) {
-            $name = "$kind-$oldVersion"
-            Step "$oldVersion $kind -> $NextVersion"
-            $legacyStaging = Join-Path ([System.IO.Path]::GetTempPath()) 'piko-update'
-            if (Test-Path -LiteralPath $legacyStaging) { Remove-Item -Recurse -Force -LiteralPath $legacyStaging }
-            if ($kind -eq 'portable') {
-                $root = Join-Path $Work "portable-$oldVersion"
-                if (Test-Path -LiteralPath $root) { Remove-Item -Recurse -Force -LiteralPath $root }
-                Expand-Archive -LiteralPath (Asset $Old $oldVersion '.zip') -DestinationPath $root
-                $dir = Join-Path $root 'Piko'
-            } else {
-                $p = Start-Process msiexec.exe -ArgumentList @('/i', "`"$(Asset $Old $oldVersion '.msi')`"", '/qn', '/norestart', '/l*v', "`"$(Join-Path $logs "install-$name.log")`"") -Wait -PassThru
-                if ($p.ExitCode -ne 0) { Fail "msiexec /i $oldVersion exited $($p.ExitCode)" }
-                $dir = Join-Path $env:LOCALAPPDATA 'Piko'
-            }
-            if ((Installed-Version $dir) -ne $oldVersion) { Fail "$name is not $oldVersion" }
-            Assert-OldClientTakesPatch $dir $nextManifest $name
-            $sentinel = Join-Path $dataHome '.piko\legacy-smoke-sentinel.txt'
-            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $sentinel) | Out-Null
-            Set-Content -LiteralPath $sentinel -Value $name -Encoding ascii
-
-            $leftover = $null
-            if ($oldVersion -eq '1.0.0') {
-                $leftover = Invoke-OldScript $oldVersion $dir $nextManifest
-            } else {
-                $patchLines = Count-Log "自动安装 $([regex]::Escape($NextVersion))：(Patch|Delta)"
-                $env:JAVA_TOOL_OPTIONS = "-Dpiko.update.api=http://127.0.0.1:$Port/latest -Dpiko.update.auto=true $homeOption"
-                try { Start-Process -FilePath (Join-Path $dir 'Piko.exe') -WorkingDirectory $dir }
-                finally { Remove-Item Env:JAVA_TOOL_OPTIONS }
-            }
-            Wait-Updated $dir $name
-            if ($oldVersion -ne '1.0.0' -and (Count-Log "自动安装 $([regex]::Escape($NextVersion))：(Patch|Delta)") -le $patchLines) {
-                Save-Logs $name
-                Fail "$name did not take the patch (see its log)"
-            }
-            Start-Sleep -Seconds 15
-            if ((App-Processes $dir).Count -eq 0) { Save-Logs $name; Fail "$name : $NextVersion exited after the update" }
-            if ((Count-Log "启动 $([regex]::Escape($NextVersion))，") -eq 0) { Save-Logs $name; Fail "$name : $NextVersion never logged its start" }
-            if ($leftover -and (Test-Path -LiteralPath $leftover)) { Save-Logs $name; Fail "$name : $NextVersion did not remove the leftover $leftover on its first start" }
-            Stop-App $dir
-            Assert-Tree $dir $nextManifest
-            if (-not (Test-Path -LiteralPath $sentinel)) { Fail "$name lost the user data in ~/.piko" }
-            if ($kind -eq 'msi') {
-                # Windows Installer 修复（msiexec /f 默认的 omus）后补丁仍在、新版仍起得来。这一跳用的是老版本自带的脚本，
-                # 它不沿用原文件的创建时间，补丁文件靠 NTFS 文件名隧道继承；没继承到的被修复换回老版本，
-                # 运行时一旦新旧混杂（带版本号的 DLL 留新、lib\modules 退旧）就起不来
-                foreach ($code in (Msi-Products)) {
-                    $p = Start-Process msiexec.exe -ArgumentList @('/fomus', $code, '/qn', '/norestart', '/l*v', "`"$(Join-Path $logs "repair-$name.log")`"") -Wait -PassThru
-                    if ($p.ExitCode -ne 0) { Fail "msiexec /fomus after $name exited $($p.ExitCode)" }
-                }
-                Assert-Tree $dir $nextManifest
-                $started = Count-Log "启动 $([regex]::Escape($NextVersion))，"
-                $env:JAVA_TOOL_OPTIONS = "-Dpiko.update.api=http://127.0.0.1:$Port/latest $homeOption"
-                try { Start-Process -FilePath (Join-Path $dir 'Piko.exe') -WorkingDirectory $dir }
-                finally { Remove-Item Env:JAVA_TOOL_OPTIONS }
-                for ($i = 0; $i -lt 60 -and (Count-Log "启动 $([regex]::Escape($NextVersion))，") -le $started; $i++) { Start-Sleep -Seconds 1 }
-                if ((Count-Log "启动 $([regex]::Escape($NextVersion))，") -le $started) { Save-Logs $name; Fail "$name : $NextVersion did not start after a Windows Installer repair" }
-                Stop-App $dir
-                foreach ($code in (Msi-Products)) {
-                    $p = Start-Process msiexec.exe -ArgumentList @('/x', $code, '/qn', '/norestart', '/l*v', "`"$(Join-Path $logs "uninstall-$name.log")`"") -Wait -PassThru
-                    if ($p.ExitCode -ne 0) { Fail "msiexec /x after $name exited $($p.ExitCode)" }
-                }
-            }
-            Write-Summary "$oldVersion $kind took the patch to $NextVersion, started$(if ($kind -eq 'msi') { ', survived a repair' }), user data kept."
-            EndStep
+    foreach ($round in $rounds) {
+        $oldVersion = $round.Version
+        $kind = $round.Kind
+        $route = $round.Route
+        $name = $round.Name
+        Step "$oldVersion $kind -> $NextVersion ($route)"
+        $legacyStaging = Join-Path ([System.IO.Path]::GetTempPath()) 'piko-update'
+        if (Test-Path -LiteralPath $legacyStaging) { Remove-Item -Recurse -Force -LiteralPath $legacyStaging }
+        if ($kind -eq 'portable') {
+            $root = Join-Path $Work "portable-$oldVersion"
+            if (Test-Path -LiteralPath $root) { Remove-Item -Recurse -Force -LiteralPath $root }
+            Expand-Archive -LiteralPath (Asset $Old $oldVersion '.zip') -DestinationPath $root
+            $dir = Join-Path $root 'Piko'
+        } else {
+            $p = Start-Process msiexec.exe -ArgumentList @('/i', "`"$(Asset $Old $oldVersion '.msi')`"", '/qn', '/norestart', '/l*v', "`"$(Join-Path $logs "install-$name.log")`"") -Wait -PassThru
+            if ($p.ExitCode -ne 0) { Fail "msiexec /i $oldVersion exited $($p.ExitCode)" }
+            $dir = Join-Path $env:LOCALAPPDATA 'Piko'
         }
+        if ((Installed-Version $dir) -ne $oldVersion) { Fail "$name is not $oldVersion" }
+        if ($route -in @('patch', 'delta')) {
+            Assert-OldClientTakesPatch $dir $nextManifest $name
+        } else {
+            $blocking = Assert-OldClientRejectsPatch $dir $nextManifest $name
+        }
+        if ($route -eq 'page') {
+            # 1.0.0 的 resolve：补丁对不上、又不是 MSI 安装的，只给下载页，没有可跑的
+            Write-Summary "$oldVersion $kind does not take the patch to $NextVersion (lacks $($blocking -join ', ')); it offers the download page."
+            EndStep
+            continue
+        }
+        if ($route -eq 'msiexec' -and -not $hasMsi) { Fail "$name updates through msiexec; build $NextVersion's MSI" }
+        $sentinel = Join-Path $dataHome '.piko\legacy-smoke-sentinel.txt'
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $sentinel) | Out-Null
+        Set-Content -LiteralPath $sentinel -Value $name -Encoding ascii
+
+        $plan = if ($route -eq 'delta') { 'Delta' } else { 'Patch' }
+        $planPattern = "自动安装 $([regex]::Escape($NextVersion))：$plan"
+        $fallbackPattern = '差分还原失败'
+        if ($route -eq 'msiexec') {
+            Invoke-OldInstaller $oldVersion $dir
+        } else {
+            if ($route -eq 'delta') { Copy-Item -LiteralPath (Join-Path $Next $deltaAsset) -Destination $nextDir }
+            $planLines = Count-Log $planPattern
+            $fallbackLines = Count-Log $fallbackPattern
+            $bytesBefore = if (Test-Path -LiteralPath $bytesLog) { @(Get-Content -LiteralPath $bytesLog).Count } else { 0 }
+            $env:JAVA_TOOL_OPTIONS = "-Dpiko.update.api=http://127.0.0.1:$Port/latest -Dpiko.update.auto=true $homeOption"
+            try { Start-Process -FilePath (Join-Path $dir 'Piko.exe') -WorkingDirectory $dir }
+            finally { Remove-Item Env:JAVA_TOOL_OPTIONS }
+        }
+        Wait-Updated $dir $name
+        if ($route -ne 'msiexec' -and (Count-Log $planPattern) -le $planLines) {
+            Save-Logs $name
+            Fail "$name did not take the $plan plan (see its log)"
+        }
+        if ($route -eq 'delta') {
+            Remove-Item -LiteralPath (Join-Path $nextDir $deltaAsset)
+            # 差分还原失败时 1.1.0 改下完整的 app.zip，照样更新成功，只看结果分不出来
+            $fetched = @(Get-Content -LiteralPath $bytesLog | Select-Object -Skip $bytesBefore)
+            if ((Count-Log $fallbackPattern) -gt $fallbackLines -or ($fetched -match '-app\.zip ')) {
+                Save-Logs $name
+                Fail "$name fell back from the delta to the full app.zip (see its log)"
+            }
+            if (-not ($fetched -match [regex]::Escape("$deltaAsset "))) { Save-Logs $name; Fail "$name never downloaded $deltaAsset" }
+        }
+        Start-Sleep -Seconds 15
+        if ((App-Processes $dir).Count -eq 0) { Save-Logs $name; Fail "$name : $NextVersion exited after the update" }
+        if ((Count-Log "启动 $([regex]::Escape($NextVersion))，") -eq 0) { Save-Logs $name; Fail "$name : $NextVersion never logged its start" }
+        Stop-App $dir
+        Assert-Tree $dir $nextManifest
+        if (-not (Test-Path -LiteralPath $sentinel)) { Fail "$name lost the user data in ~/.piko" }
+        if ($kind -eq 'msi') {
+            if ($route -eq 'msiexec' -and (Msi-Products).Count -ne 1) { Fail "$name : Windows Installer lists $((Msi-Products).Count) Piko products after msiexec" }
+            # Windows Installer 修复（msiexec /f 默认的 omus）后补丁仍在、新版仍起得来。补丁那一跳用的是老版本自带的脚本，
+            # 它不沿用原文件的创建时间，补丁文件靠 NTFS 文件名隧道继承；没继承到的被修复换回老版本，
+            # 运行时一旦新旧混杂（带版本号的 DLL 留新、lib\modules 退旧）就起不来
+            foreach ($code in (Msi-Products)) {
+                $p = Start-Process msiexec.exe -ArgumentList @('/fomus', $code, '/qn', '/norestart', '/l*v', "`"$(Join-Path $logs "repair-$name.log")`"") -Wait -PassThru
+                if ($p.ExitCode -ne 0) { Fail "msiexec /fomus after $name exited $($p.ExitCode)" }
+            }
+            Assert-Tree $dir $nextManifest
+            $started = Count-Log "启动 $([regex]::Escape($NextVersion))，"
+            $env:JAVA_TOOL_OPTIONS = "-Dpiko.update.api=http://127.0.0.1:$Port/latest $homeOption"
+            try { Start-Process -FilePath (Join-Path $dir 'Piko.exe') -WorkingDirectory $dir }
+            finally { Remove-Item Env:JAVA_TOOL_OPTIONS }
+            for ($i = 0; $i -lt 60 -and (Count-Log "启动 $([regex]::Escape($NextVersion))，") -le $started; $i++) { Start-Sleep -Seconds 1 }
+            if ((Count-Log "启动 $([regex]::Escape($NextVersion))，") -le $started) { Save-Logs $name; Fail "$name : $NextVersion did not start after a Windows Installer repair" }
+            Stop-App $dir
+            foreach ($code in (Msi-Products)) {
+                $p = Start-Process msiexec.exe -ArgumentList @('/x', $code, '/qn', '/norestart', '/l*v', "`"$(Join-Path $logs "uninstall-$name.log")`"") -Wait -PassThru
+                if ($p.ExitCode -ne 0) { Fail "msiexec /x after $name exited $($p.ExitCode)" }
+            }
+        }
+        $how = switch ($route) {
+            'msiexec' { "does not take the patch (lacks $($blocking -join ', ')), reinstalled $NextVersion through msiexec" }
+            'delta' { "restored $NextVersion from $deltaAsset" }
+            default { "took the patch to $NextVersion" }
+        }
+        Write-Summary "$oldVersion $kind $how, started$(if ($kind -eq 'msi') { ', survived a repair' }), user data kept."
+        EndStep
     }
     Write-Host 'legacy smoke passed'
 } finally {

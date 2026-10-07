@@ -185,15 +185,16 @@ jobs:
 
       # MSI 与应用内更新的两个附件在同一次调用里生成，取自同一份应用目录。MSI 未签名，
       # 安装时 SmartScreen 会提示；安装包元数据只能用 ASCII，见 build.gradle.kts 的 description
-      # 近几个旧版的文件清单：运行时、mpv 与它们不同时，补丁包把这些文件也带上，便携版不必下整包
+      # 近几个旧版的文件清单：运行时、mpv 与它们不同时，补丁包把这些文件也带上，便携版不必下整包。
+      # 不再给补丁的旧版（1.0.0）的清单另放，构建时核对它们确实走不了补丁，理由见 update-bases.sh
       - name: Update bases
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash .github/scripts/update-bases.sh "$VERSION" "${{ matrix.arch }}" "$RUNNER_TEMP/update-bases"
+        run: bash .github/scripts/update-bases.sh "$VERSION" "${{ matrix.arch }}" "$RUNNER_TEMP/update-bases" "$RUNNER_TEMP/update-retired"
 
       - name: Build
-        run: .\gradlew.bat :desktopApp:packageReleaseMsi :desktopApp:packageReleaseUpdate --no-daemon --stacktrace "-PpikoUpdateBases=$env:RUNNER_TEMP/update-bases"
+        run: .\gradlew.bat :desktopApp:packageReleaseMsi :desktopApp:packageReleaseUpdate --no-daemon --stacktrace "-PpikoUpdateBases=$env:RUNNER_TEMP/update-bases" "-PpikoUpdateRetired=$env:RUNNER_TEMP/update-retired"
 
       # 打包出的类逐个让 JVM 校验。ProGuard 改写过的字节码可能校验不过，而那只在装上之后
       # 进到某一页才崩，gradle run 与单测都走不到（见 desktopApp/package/VerifyClasses.java）

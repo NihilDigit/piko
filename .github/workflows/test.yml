@@ -366,12 +366,14 @@ jobs:
   # 补丁对不上时干净地退回下载页；系统 tar.exe 能不能解便携包 .7z 记进 job 摘要（只关系到用户手动解压）。
   # 包取自 windows-package，不再打一遍；那边的冒烟失败不挡这里。
   # 另验已发布的 1.0.0、1.1.0（便携 zip 与 MSI）升级到这次构建：见 package-smoke/legacy.ps1。为此以正式的包名与
-  # UpgradeCode 另打一个 9.9.1，用这两个版本的清单作对照（-PpikoUpdateBases），与 release.yml 经 update-bases.sh 的打法相同
+  # UpgradeCode 另打一个 9.9.1（含 MSI），与 release.yml 经 update-bases.sh 的打法相同：1.1.0 的清单作对照
+  # （-PpikoUpdateBases），1.0.0 的只作核对（-PpikoUpdateRetired）。1.1.0 走补丁，另用 delta-updates.sh 出一份
+  # -from-1.1.0.zip 验 1.1.0 的差分；1.0.0 的 MSI 版走 msiexec，便携版只给下载页
   windows-package-legacy:
     if: inputs.desktop == true && !cancelled()
     needs: windows-package
     runs-on: windows-2022
-    timeout-minutes: 75
+    timeout-minutes: 90
     env:
       SMOKE_UPGRADE_CODE: 5f3c2b1e-7a4d-4c9e-9b8a-2d6e0f1a3c55
       SMOKE_PACKAGE: PikoSmoke
@@ -405,26 +407,54 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Force -Path old-releases, old-bases | Out-Null
+          New-Item -ItemType Directory -Force -Path old-releases, old-bases, old-retired | Out-Null
           foreach ($version in @('1.0.0', '1.1.0')) {
             gh release download "v$version" --repo $env:GITHUB_REPOSITORY --dir old-releases `
               -p "piko-windows-x64-$version.zip" -p "piko-windows-x64-$version.msi" -p "piko-windows-x64-$version-files.json"
             if ($LASTEXITCODE -ne 0) { throw "download v$version failed" }
-            Copy-Item "old-releases/piko-windows-x64-$version-files.json" old-bases/
+            # 照 update-bases.sh 分开：1.0.0 不作对照，只核对它走不了补丁
+            $target = if ($version -eq '1.0.0') { 'old-retired' } else { 'old-bases' }
+            Copy-Item "old-releases/piko-windows-x64-$version-files.json" "$target/"
           }
 
+      - name: Install WiX Toolset
+        continue-on-error: true
+        run: choco install wixtoolset -y --no-progress
+
+      # 1.0.0 的 MSI 版走 msiexec，要真的 MSI
       - name: Build 9.9.1 against the old releases
         shell: pwsh
         run: |
-          .\gradlew.bat :desktopApp:packageReleaseUpdate --no-daemon --stacktrace "-PpikoDesktopVersion=9.9.1" "-PpikoUpdateBases=old-bases"
+          $ErrorActionPreference = 'Stop'
+          .\gradlew.bat :desktopApp:packageReleaseMsi :desktopApp:packageReleaseUpdate --no-daemon --stacktrace `
+            "-PpikoDesktopVersion=9.9.1" "-PpikoUpdateBases=old-bases" "-PpikoUpdateRetired=old-retired"
           if ($LASTEXITCODE -ne 0) { throw 'build failed' }
+          $binaries = 'desktopApp/build/compose/binaries/main-release'
+          New-Item -ItemType Directory -Force -Path legacy-next | Out-Null
+          Copy-Item "$binaries/update/*" legacy-next/
+          Copy-Item "$binaries/msi/Piko-9.9.1.msi" legacy-next/piko-windows-x64-9.9.1.msi
+
+      # 与 release.yml 同一个脚本，只出 x64。runner 与 Git Bash 都没有 zip，换成 zip_stored.py
+      - name: Delta from 1.1.0
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          command -v zstd || choco install zstandard -y --no-progress
+          shim=$(cygpath -u "$RUNNER_TEMP")/zip-shim
+          mkdir -p "$shim"
+          printf '#!/bin/sh\nexec python "%s" "$@"\n' "$PWD/desktopApp/package/package-smoke/zip_stored.py" > "$shim/zip"
+          chmod +x "$shim/zip"
+          PATH="$shim:$PATH" RUNNER_TEMP=$(cygpath -u "$RUNNER_TEMP") bash .github/scripts/delta-updates.sh 9.9.1 legacy-next x64
+          test -f legacy-next/piko-windows-x64-9.9.1-from-1.1.0.zip
 
       - name: Old releases update to this build
         shell: pwsh
         run: >
           ./desktopApp/package/package-smoke/legacy.ps1
-          -Next desktopApp/build/compose/binaries/main-release/update -NextVersion 9.9.1
-          -Old old-releases -Work "$env:RUNNER_TEMP/legacy-smoke"
+          -Next legacy-next -NextVersion 9.9.1
+          -Old old-releases -Work "$env:RUNNER_TEMP/legacy-smoke" -Delta
 
       - uses: actions/download-artifact@v7
         with:

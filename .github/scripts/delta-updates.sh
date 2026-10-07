@@ -9,11 +9,14 @@
 #
 # 旧版清单里没有 zstd 的 DLL，说明它的客户端还不会用差分，跳过。跨度更大的升级走完整的 app.zip。
 #
-# 用法：delta-updates.sh <新版本> <dist 目录>。dist 里要已有两个架构的 -app.zip；需要 GH_TOKEN。
+# 用法：delta-updates.sh <新版本> <dist 目录> [架构...]。dist 里要已有这些架构的 -app.zip，不写架构时是 x64 与 arm64；
+# 需要 GH_TOKEN。test.yml 的 windows-package-legacy 只给 x64 出差分，验 1.1.0 客户端真能用它
 set -euo pipefail
 
 version=$1
 dist=$(cd "$2" && pwd)
+shift 2
+arches=${*:-x64 arm64}
 work="${RUNNER_TEMP:-/tmp}/piko-delta"
 rm -rf "$work"
 mkdir -p "$work"
@@ -30,7 +33,7 @@ bases=$( {
     head -n 3 <<< "$published"
 } | awk 'NF && !seen[$0]++')
 
-for arch in x64 arm64; do
+for arch in $arches; do
     mkdir -p "$work/new-$arch"
     unzip -q "$dist/piko-windows-$arch-$version-app.zip" -d "$work/new-$arch"
 done
@@ -95,7 +98,7 @@ export version dist work
 
 # 每份差分里 AOT 缓存那一个文件就要压约一分钟，按核数并行
 for base in $bases; do
-    for arch in x64 arm64; do
+    for arch in $arches; do
         echo "$arch $base"
     done
 done | xargs -r -P "$(nproc)" -L 1 bash -c 'delta "$0" "$1"'

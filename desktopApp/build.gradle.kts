@@ -143,7 +143,8 @@ val hostMpvRuntimeJar = configurations.detachedConfiguration(dependencies.create
     isTransitive = false
 }
 // libzstd 放在资源目录的 zstd 子目录里，由 ZstdPatch 载入。
-// 这个 DLL 也是 CI 判断旧版客户端会不会用差分的依据，见 .github/scripts/delta-updates.sh
+// 这个 DLL 也是 CI 判断旧版客户端会不会用差分的依据，见 .github/scripts/delta-updates.sh；它原样留着，1.0.0 才走不了补丁，
+// 升级 zstd-jni 换了它时 packageReleaseUpdate 会失败，见 UpdateArtifactsTask.checkRetired
 val hostZstdJniJar = configurations.detachedConfiguration(dependencies.create(hostZstdJni)).apply {
     isTransitive = false
 }
@@ -467,6 +468,14 @@ abstract class UpdateArtifactsTask : DefaultTask() {
     @get:PathSensitive(PathSensitivity.NONE)
     abstract val baseManifests: ConfigurableFileCollection
 
+    /**
+     * 不再给补丁的已发布版本的 files.json（update-bases.sh 的 RETIRED，目前是 1.0.0）。只用来核对：
+     * 它们的客户端对本版的 canPatch 必须失败，见 [checkRetired]。
+     */
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val retiredManifests: ConfigurableFileCollection
+
     @get:Input
     abstract val version: Property<String>
 
@@ -484,16 +493,13 @@ abstract class UpdateArtifactsTask : DefaultTask() {
             .map { it.relativeTo(root).invariantSeparatorsPath to it }
             .sortedBy { it.first }
             .toList()
-        @Suppress("UNCHECKED_CAST")
-        val bases = baseManifests.files.map { manifest ->
-            ((JsonSlurper().parse(manifest) as Map<String, Any>)["files"] as List<Map<String, Any>>)
-                .associate { it["path"] as String to it["sha256"] as String }
-        }
+        val bases = baseManifests.files.map(::hashesOf)
         val hashes = files.associate { (path, file) -> path to sha256(file) }
         val patched = files.map { it.first }.filter { path ->
             isPatch(path) || bases.any { base -> base[path] != hashes.getValue(path) }
         }.toSet()
         (patched.filterNot(::isPatch)).forEach { logger.lifecycle("补丁包另带变了的文件：$it") }
+        checkRetired(hashes.filterKeys { it !in patched })
         val entries = files.map { (path, file) ->
             linkedMapOf(
                 "path" to path,
@@ -525,6 +531,31 @@ abstract class UpdateArtifactsTask : DefaultTask() {
             }
         }
     }
+
+    /**
+     * 退役版本的客户端（1.0.0）自带的 canPatch 只看清单里 patch=false 的文件：本机都有且摘要相同就走补丁，
+     * 否则安装版跑 msiexec、便携版给下载页。客户端已经发出去，改不了，所以把它挡在补丁之外只能靠清单：
+     * [kept] 里至少要有一个文件是它没有或与它不同的。只是不拿它作对照还不够，它与对照的版本在 app.zip 之外
+     * 恰好全同时，照样会走补丁。目前靠的是 1.1.0 起才有的 app/resources/zstd/ 下的 libzstd，zstd-jni
+     * 升级换了这个文件就没有了，这里让构建失败，而不是让 1.0.0 静默走回有缺陷的补丁路径。
+     */
+    private fun checkRetired(kept: Map<String, String>) {
+        retiredManifests.files.forEach { manifest ->
+            val retired = hashesOf(manifest)
+            val blocking = kept.filter { (path, hash) -> retired[path] != hash }.keys
+            check(blocking.isNotEmpty()) {
+                "${manifest.name} 的客户端对本版仍能走补丁：补丁包之外的文件它全有且相同。它的更新脚本在 8.3 临时目录下" +
+                    "静默失败、反复提示（见 shared/src/commonMain/kotlin/dev/piko/shared/update/CLAUDE.md），须让补丁包之外" +
+                    "留有它没有的文件"
+            }
+            logger.lifecycle("${manifest.name} 的客户端走不了补丁，它缺或不同的文件：${blocking.joinToString()}")
+        }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun hashesOf(manifest: File): Map<String, String> =
+        ((JsonSlurper().parse(manifest) as Map<String, Any>)["files"] as List<Map<String, Any>>)
+            .associate { it["path"] as String to it["sha256"] as String }
 
     /** 每次构建都会变的文件：根目录的启动器与 app 目录下的类路径 jar、AOT 缓存和启动配置。 */
     private fun isPatch(path: String): Boolean =
@@ -558,6 +589,9 @@ tasks.register<UpdateArtifactsTask>("packageReleaseUpdate") {
     providers.gradleProperty("pikoUpdateBases").orNull?.takeIf { it.isNotBlank() }?.let { dir ->
         baseManifests.from(rootProject.fileTree(dir) { include("*-files.json") })
         doFirst { check(!baseManifests.isEmpty) { "pikoUpdateBases=$dir 下没有 *-files.json" } }
+    }
+    providers.gradleProperty("pikoUpdateRetired").orNull?.takeIf { it.isNotBlank() }?.let { dir ->
+        retiredManifests.from(rootProject.fileTree(dir) { include("*-files.json") })
     }
 }
 // compose 的 run 任务在 afterEvaluate 里重写 jvmArgs，会盖掉上面的配置，
