@@ -17,7 +17,6 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performMouseInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.longClick
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isFocused
@@ -27,8 +26,6 @@ import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.performMultiModalInput
 import androidx.compose.ui.test.rightClick
-import androidx.navigationevent.NavigationEventInput
-import androidx.navigationevent.compose.LocalNavigationEventDispatcherOwner
 import androidx.compose.ui.test.runComposeUiTest
 import androidx.compose.ui.test.withKeyDown
 import dev.piko.desktop.DesktopPikoPlatform
@@ -81,46 +78,11 @@ class ContextMenuTest {
     }
 
     /**
-     * 「更多」原地换页，Esc 先回首页、再关掉菜单。Popup 自己也在返回事件上登记了关闭，
-     * 子页的处理器要排在它前面，第一下 Esc 才不会把整个菜单关掉。
+     * 键盘走一遍：打开时焦点在列表第一行（不在图标行，图标得了焦点会弹提示盖住下一行），下键一路走到
+     * 面板里收进「更多」的项，上键回到图标行。
      */
     @Test
-    fun `escape leaves the more page before it closes the menu`() = runComposeUiTest {
-        // 测试环境里按键不经窗口的返回输入，Esc 到不了返回处理器；照窗口的做法挂一个输入，直接发返回
-        val back = BackInput()
-        setContent {
-            val dispatcher = LocalNavigationEventDispatcherOwner.current!!.navigationEventDispatcher
-            DisposableEffect(dispatcher) {
-                dispatcher.addInput(back)
-                onDispose { dispatcher.removeInput(back) }
-            }
-            CompositionLocalProvider(LocalPikoPlatform provides platform) { PikoTheme {
-                ContextMenuArea(actions = { sevenAndMore }) {
-                    FileListItem(headline = "a.mkv", leading = { Icon(Icons.Outlined.Folder, null) }, onClick = {}, onMoreClick = {}, modifier = Modifier)
-                }
-            } }
-        }
-        onNodeWithText("a.mkv").performMouseInput { rightClick(center) }
-        waitForIdle()
-        onNodeWithText("归档").assertDoesNotExist()
-        onNodeWithText("更多").performClick()
-        waitForIdle()
-        onNodeWithText("归档").assertExists()
-        onNodeWithText("移动到").assertDoesNotExist()
-        runOnIdle { back.press() }
-        waitForIdle()
-        onNodeWithText("移动到").assertExists()
-        runOnIdle { back.press() }
-        waitForIdle()
-        onNodeWithText("移动到").assertDoesNotExist()
-    }
-
-    /**
-     * 键盘走一遍：打开时焦点在列表第一行（不在图标行，图标得了焦点会弹提示盖住下一行），上键回到图标行，
-     * 在「更多」上按右键进子页、焦点落在第一项操作上，左键回来、焦点回到「更多」。
-     */
-    @Test
-    fun `arrow keys walk the icon row, the list and the more page`() = runComposeUiTest {
+    fun `arrow keys walk the icon row and the whole list`() = runComposeUiTest {
         setContent {
             CompositionLocalProvider(LocalPikoPlatform provides platform) { PikoTheme {
                 ContextMenuArea(actions = { sevenAndMore }) {
@@ -136,13 +98,9 @@ class ContextMenuTest {
         onNodeWithText("a.mkv").performMouseInput { rightClick(center) }
         waitForIdle()
         onNodeWithText("移动到").assertIsFocused()
-        repeat(3) { press(Key.DirectionDown) }
-        onNodeWithText("更多").assertIsFocused()
-        press(Key.DirectionRight)
-        onNodeWithText("查找重复").assertIsFocused()
-        press(Key.DirectionLeft)
-        onNodeWithText("更多").assertIsFocused()
-        repeat(3) { press(Key.DirectionUp) }
+        repeat(5) { press(Key.DirectionDown) }
+        onNodeWithText("隐藏预览").assertIsFocused()
+        repeat(5) { press(Key.DirectionUp) }
         onNodeWithText("移动到").assertIsFocused()
         press(Key.DirectionUp)
         onNodeWithContentDescription("下载").assertIsFocused()
@@ -209,10 +167,6 @@ class ContextMenuTest {
         SheetAction(Icons.Outlined.Download, "隐藏预览", {}, tier = ActionTier.More),
         SheetAction(Icons.Outlined.Delete, "删除", {}, destructive = true),
     )
-
-    private class BackInput : NavigationEventInput() {
-        fun press() = dispatchOnBackCompleted()
-    }
 
     @Test
     fun `ctrl and shift clicks select without opening the item`() = runComposeUiTest {

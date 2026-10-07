@@ -36,7 +36,7 @@ enum class ActionTier {
     /** 常驻的列表。 */
     Standard,
 
-    /** 收进「更多」：面板里是一行可展开的项，右键菜单里是原地换上的一页。 */
+    /** 面板里收进末尾一行可展开的「更多」；右键菜单不收，按组并进列表。 */
     More,
 }
 
@@ -83,13 +83,16 @@ class ActionLayout(
  * 面板与右键菜单共用的排法。危险项垫底、「属性」在它之前，各自成组；其余按三条规则分档：
  * 非危险项（连同「属性」）不超过 [FlatLimit] 项时不分档，全部平铺，几项还要找图标行、再点「更多」只是添步骤；
  * 图标行至多 [QuickLimit] 个，多出的回到列表；「更多」里只有一项时就地放进列表，为一项多点一下不值得。
+ *
+ * [foldMore] 为 false 时没有「更多」，[ActionTier.More] 的项按各自的组并进列表。右键菜单这样排：它只在桌面上，
+ * 窗口放得下一整列，收起来只是多点一下；面板在手机上一屏放不下，仍然收。
  */
-fun layoutActions(actions: List<SheetAction>): ActionLayout {
+fun layoutActions(actions: List<SheetAction>, foldMore: Boolean = true): ActionLayout {
     val (danger, safe) = actions.partition { it.destructive }
     val (properties, rest) = safe.partition { it.group == ActionGroup.Properties }
     if (safe.size <= FlatLimit) return ActionLayout(emptyList(), sectionsOf(rest), emptyList(), properties, danger)
     val quick = rest.filter { it.tier == ActionTier.Quick }.take(QuickLimit)
-    val more = rest.filter { it.tier == ActionTier.More }.takeIf { it.size > 1 }.orEmpty()
+    val more = if (foldMore) rest.filter { it.tier == ActionTier.More }.takeIf { it.size > 1 }.orEmpty() else emptyList()
     val standard = rest.filter { it !in quick && it !in more }
     return ActionLayout(quick, sectionsOf(standard), sectionsOf(more), properties, danger)
 }

@@ -16,11 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Surface
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Check
-import androidx.compose.material.icons.outlined.MoreHoriz
-import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -226,9 +222,9 @@ private fun placeAlong(pointer: Int, size: Int, window: Int): Int = when {
 }
 
 /**
- * 按 [layoutActions] 排，与操作面板同一套：顶上一排纯图标（悬停出提示），下面的列表按组一道细线隔开，
- * 「更多」是列表末尾一行，点开是原地换上的一页（顶上一行「返回」），只有一层；然后是「属性」，危险项垫底。
- * 不用弹出式子菜单：Compose 的 material3 没有，自己做要处理悬停延时与斜穿，一层原地翻页两端一套就够。
+ * 按 [layoutActions] 排，与操作面板同一套，只是不收「更多」：顶上一排纯图标（悬停出提示），下面的列表按组留空隔开，
+ * 然后是「属性」，危险项垫底。「更多」做过原地换上的一页，菜单只在桌面上、窗口放得下一整列，收起来只多一步，已去掉；
+ * 弹出式子菜单也不做，material3 没有，自己做要处理悬停延时与斜穿。
  * 用 DropdownMenuPopup 自己摆，不走 [PikoDropdownMenu]，为的是菜单项形状与分组自己定。
  *
  * 菜单向上翻转（指针下方放不下）时次序不反过来。Apple HIG 的 context menus 建议按菜单出现在内容上方还是下方
@@ -237,21 +233,13 @@ private fun placeAlong(pointer: Int, size: Int, window: Int): Int = when {
  *
  * 桌面端 DropdownMenu 额外做的两件事 DropdownMenuPopup 没有，这里补上：超出窗口时滚动；方向键在菜单项间
  * 移动焦点。后者照 M3 menus 的 Keyboard navigation 一节：菜单一打开焦点就在第一项上，上下键逐项移动，
- * 左右键在图标行里移动，回车执行；在「更多」上按右键也进入那一页，那一页里按左键或 Esc 回来，再按 Esc 关掉。
+ * 左右键在图标行里移动，回车执行，Esc 关掉。
  * 焦点落进菜单之后，按键先经过这里的 onPreviewKeyEvent，Popup 本身不必暴露按键回调。
  */
 @Composable
 private fun ActionMenu(actions: List<SheetAction>, positionProvider: DropdownMenuPopupPositionProvider, onDismiss: () -> Unit) {
-    val layout = layoutActions(actions)
-    var onMorePage by remember { mutableStateOf(false) }
-    // 回到首页时焦点放回「更多」那一行，不从头走
-    var returnedFromMore by remember { mutableStateOf(false) }
+    val layout = layoutActions(actions, foldMore = false)
     val firstItem = remember { FocusRequester() }
-    val moreItem = remember { FocusRequester() }
-    fun backToMain() {
-        onMorePage = false
-        returnedFromMore = true
-    }
     DropdownMenuPopup(
         expanded = true,
         onDismissRequest = onDismiss,
@@ -260,15 +248,10 @@ private fun ActionMenu(actions: List<SheetAction>, positionProvider: DropdownMen
     ) {
         // 弹层是另一层，有自己的焦点。要在这里面取：在外面取到的是窗口主层的，方向键会去挪列表里的焦点
         val focusManager = LocalFocusManager.current
-        // 子页上 Esc 先回首页。要写在弹层里面：Popup 自己在返回事件上登记了关闭，后登记的先收到，
-        // 写在 DropdownMenuPopup 之前就比它早登记，Esc 直接关掉整个菜单
-        BackHandler(enabled = onMorePage, onBack = ::backToMain)
-        LaunchedEffect(onMorePage) {
-            runCatching { if (returnedFromMore && !onMorePage) moreItem.requestFocus() else firstItem.requestFocus() }
-        }
+        LaunchedEffect(Unit) { runCatching { firstItem.requestFocus() } }
         // 一个固定形状的容器，组与组之间只留空，不画线。各组各带容器、之间留缝（M3E 竖向菜单的分组）在四五组时像一摞碎块；
         // 也不用 DropdownMenuGroup：它的形状随悬停与焦点在两种圆角间变形，指针一动圆角就闪。
-        // 宽度固定，两页同宽：按内容定宽时不同条目的菜单宽窄不一，换页也跳
+        // 宽度固定：按内容定宽时不同条目的菜单宽窄不一
         Surface(
             // 取分组容器的圆角，只要它静止时的那一个：MenuDefaults.shape 是基线菜单的 4dp，与菜单项的大圆角对不上
             shape = MenuDefaults.groupShape(0, 1).shape,
@@ -280,108 +263,43 @@ private fun ActionMenu(actions: List<SheetAction>, positionProvider: DropdownMen
                 when (event.key) {
                     Key.DirectionDown -> focusManager.moveFocus(FocusDirection.Down)
                     Key.DirectionUp -> focusManager.moveFocus(FocusDirection.Up)
-                    Key.DirectionLeft -> if (onMorePage) {
-                        backToMain()
-                        true
-                    } else {
-                        focusManager.moveFocus(FocusDirection.Left)
-                    }
+                    Key.DirectionLeft -> focusManager.moveFocus(FocusDirection.Left)
                     Key.DirectionRight -> focusManager.moveFocus(FocusDirection.Right)
                     else -> false
                 }
             },
         ) {
             Column(Modifier.padding(vertical = MenuGroupGap / 2)) {
-                if (onMorePage) {
-                    MoreMenuPage(layout.more, firstItem, onBack = ::backToMain, onDismiss = onDismiss)
-                } else {
-                    MainMenuPage(layout, firstItem, moreItem, onOpenMore = { onMorePage = true }, onDismiss = onDismiss)
-                }
+                MenuRows(layout, firstItem, onDismiss)
             }
         }
     }
 }
 
 @Composable
-private fun MainMenuPage(
-    layout: ActionLayout,
-    firstItem: FocusRequester,
-    moreItem: FocusRequester,
-    onOpenMore: () -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val hasMore = layout.more.isNotEmpty()
-    // 「更多」接在列表最后一段的末尾、属性之前；列表为空时它自成一段
-    val sections = if (hasMore) layout.sections.ifEmpty { listOf(emptyList()) } else layout.sections
-    val blocks = sections + listOf(layout.properties, layout.danger).filter { it.isNotEmpty() }
-    // 图标行算一行、「更多」算一行，首末两行的选中底色才贴着容器的圆角
-    val rowCount = (if (layout.quick.isNotEmpty()) 1 else 0) + blocks.sumOf { it.size } + (if (hasMore) 1 else 0)
+private fun MenuRows(layout: ActionLayout, firstItem: FocusRequester, onDismiss: () -> Unit) {
+    val blocks = layout.sections + listOf(layout.properties, layout.danger).filter { it.isNotEmpty() }
+    // 图标行算一行，首末两行的选中底色才贴着容器的圆角
+    val firstListRow = if (layout.quick.isNotEmpty()) 1 else 0
+    val rowCount = firstListRow + blocks.sumOf { it.size }
     var row = 0
     // 打开时焦点落在列表的第一行，不在图标行：图标按钮得了焦点就弹出提示，盖住下面一行。按上键能回到图标行
-    var focusPlaced = blocks.isEmpty()
     if (layout.quick.isNotEmpty()) {
-        MenuIconRow(layout.quick, firstItem.takeIf { focusPlaced }, onDismiss)
+        MenuIconRow(layout.quick, firstItem.takeIf { blocks.isEmpty() }, onDismiss)
         row++
     }
-    fun focusIfFirst(): Modifier = if (!focusPlaced) Modifier.focusRequester(firstItem).also { focusPlaced = true } else Modifier
-    blocks.forEachIndexed { blockIndex, block ->
+    blocks.forEach { block ->
         if (row > 0) MenuDivider()
         block.forEach { action ->
-            ActionMenuItem(action = action, shape = menuItemShape(row, rowCount), onDismiss = onDismiss, modifier = focusIfFirst())
-            row++
-        }
-        if (hasMore && blockIndex == sections.lastIndex) {
-            MoreMenuItem(menuItemShape(row, rowCount), focusIfFirst().focusRequester(moreItem), onOpenMore)
-            row++
-        }
-    }
-}
-
-@Composable
-private fun MoreMenuPage(sections: List<List<SheetAction>>, firstItem: FocusRequester, onBack: () -> Unit, onDismiss: () -> Unit) {
-    val rowCount = 1 + sections.sumOf { it.size }
-    DropdownMenuItem(
-        text = { Text("返回") },
-        shape = menuItemShape(0, rowCount),
-        modifier = Modifier.height(MenuItemHeight),
-        contentPadding = MenuItemPadding,
-        leadingIcon = { MenuItemIcon(Icons.AutoMirrored.Outlined.ArrowBack) },
-        onClick = onBack,
-    )
-    var row = 1
-    sections.forEach { section ->
-        MenuDivider()
-        section.forEach { action ->
             ActionMenuItem(
                 action = action,
                 shape = menuItemShape(row, rowCount),
                 onDismiss = onDismiss,
-                // 焦点落在第一项操作上，不在「返回」上：要回去有左键与 Esc
-                modifier = if (row == 1) Modifier.focusRequester(firstItem) else Modifier,
+                modifier = if (row == firstListRow) Modifier.focusRequester(firstItem) else Modifier,
             )
             row++
         }
     }
-}
-
-@Composable
-private fun MoreMenuItem(shape: Shape, modifier: Modifier, onOpen: () -> Unit) {
-    DropdownMenuItem(
-        text = { Text("更多") },
-        shape = shape,
-        modifier = modifier.height(MenuItemHeight).onPreviewKeyEvent { event ->
-            if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionRight) {
-                onOpen()
-                true
-            } else {
-                false
-            }
-        },
-        contentPadding = MenuItemPadding,
-        leadingIcon = { MenuItemIcon(Icons.Outlined.MoreHoriz, MaterialTheme.colorScheme.onSurfaceVariant) },
-        trailingIcon = { MenuItemIcon(Icons.AutoMirrored.Outlined.KeyboardArrowRight) },
-        onClick = onOpen,
-    )
 }
 
 /** 顶上一排纯图标，名字在悬停提示里，照 HIG 菜单顶部的小号图标行（四项、只有图标）。 */
