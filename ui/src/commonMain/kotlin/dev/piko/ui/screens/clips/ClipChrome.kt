@@ -33,6 +33,9 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StayCurrentLandscape
+import androidx.compose.material.icons.filled.StayCurrentPortrait
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
@@ -47,6 +50,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.TooltipAnchorPosition
 import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
@@ -99,9 +103,11 @@ import kotlin.math.roundToInt
  * 不另压一条栏名：整张卡是一块黑底的竖屏画面。文件夹名只是标明范围，不能点：范围就是打开时网盘页所在的文件夹。
  *
  * [onPopOut] 弹出到独立窗口，[onDock] 从独立窗口收回主窗口，只在桌面端、各在它该出现的形态里给出。
+ * [onHideChrome] 进入沉浸，只在翻页器出来之后给出：此前藏起控件就没有可点的画面来叫回。
+ * [landscapeLocked] 为 null 时不给横屏按钮（平台转不了方向，或在侧栏里）。
  *
- * 桌面上片段窗口没有标题栏，文件夹名两侧的空白兼做拖动区。拖动区盖住按钮的话它们就点不动了，
- * 所以按钮两边各登记一块，不把整条顶栏报成一块。
+ * 桌面上片段窗口没有标题栏，文件夹名与按钮之间的空白兼做拖动区。拖动区盖住按钮的话它们就点不动了，
+ * 所以只登记这一段，不把整条顶栏报成一块。
  */
 @Composable
 internal fun ClipFeedTopBar(
@@ -113,6 +119,9 @@ internal fun ClipFeedTopBar(
     modifier: Modifier = Modifier,
     onPopOut: (() -> Unit)? = null,
     onDock: (() -> Unit)? = null,
+    onHideChrome: (() -> Unit)? = null,
+    landscapeLocked: Boolean? = null,
+    onToggleLandscape: () -> Unit = {},
 ) {
     val buttonSize = if (compact) 40.dp else 48.dp
     // 在主窗口里全屏或停在右侧一栏时，这一行贴着窗口右上角，窗口按钮接在关闭后面
@@ -126,21 +135,29 @@ internal fun ClipFeedTopBar(
             .padding(horizontal = if (compact) 4.dp else 8.dp, vertical = if (compact) 4.dp else 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // 侧栏里窄，文件夹名靠左、按钮靠右，才有位置写得下；全屏与独立窗口里照短视频应用居中，
-        // 左侧空白兼做窗口的拖动区
-        if (compact) {
-            Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) { ScopeTitle(title, compact) }
-        } else {
-            Spacer(Modifier.weight(1f).height(buttonSize).windowDragArea())
+        // 文件夹名靠左，按钮组靠右、按自身宽度排，不分摊剩余空间：放不下时只截断文件夹名，不压按钮。
+        // 原先全屏时文件夹名居中、两侧各占一半，手机上四个按钮挤不进右半边，关闭被压扁
+        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
             ScopeTitle(title, compact)
+            // 文件夹名后面的空白兼做窗口的拖动区；拖动区盖住按钮就点不动了，所以只登记这一段
+            Spacer(Modifier.weight(1f).height(buttonSize).windowDragArea())
         }
         Row(
-            modifier = if (compact) Modifier else Modifier.weight(1f),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // 文件夹名与按钮之间的空白也能拖窗口，与左边那段一起，整条顶栏除了按钮都是拖动区
-            if (!compact) Spacer(Modifier.weight(1f).height(buttonSize).windowDragArea())
+            if (landscapeLocked != null) {
+                ChromeIconButton(
+                    icon = if (landscapeLocked) Icons.Filled.StayCurrentPortrait else Icons.Filled.StayCurrentLandscape,
+                    label = if (landscapeLocked) "退出横屏" else "横屏",
+                    onClick = onToggleLandscape,
+                    size = buttonSize,
+                    tooltip = true,
+                )
+            }
+            if (onHideChrome != null) {
+                ChromeIconButton(Icons.Filled.VisibilityOff, "隐藏控件", onHideChrome, buttonSize, tooltip = true)
+            }
             ChromeIconButton(
                 icon = if (muted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
                 label = if (muted) "取消静音" else "静音",
@@ -152,10 +169,11 @@ internal fun ClipFeedTopBar(
             if (onDock != null) {
                 // 独立窗口与普通播放窗口一样，右上角只有一个 ×：关窗即是收回主窗口，信息流回到侧栏接着刷。
                 // 关掉信息流在主窗口里做，这里不再并排一个关闭与一个收回
-                ChromeIconButton(Icons.Filled.Close, "收回到主窗口", onDock, buttonSize, tooltip = true)
+                ChromeIconButton(Icons.Filled.Close, "收回到主窗口", onDock, buttonSize, tooltip = true, minTouchTarget = true)
             } else {
                 if (onPopOut != null) ChromeIconButton(Icons.AutoMirrored.Outlined.OpenInNew, "在独立窗口播放", onPopOut, buttonSize, tooltip = true)
-                if (onClose != null) ChromeIconButton(Icons.Filled.Close, "关闭信息流", onClose, buttonSize, tooltip = true)
+                // 侧栏里按钮画小一号，关闭仍占足最小触控尺寸
+                if (onClose != null) ChromeIconButton(Icons.Filled.Close, "关闭信息流", onClose, buttonSize, tooltip = true, minTouchTarget = true)
             }
             caption.buttons?.invoke()
         }
@@ -188,23 +206,73 @@ private fun ScopeTitle(title: String, compact: Boolean) {
 }
 
 /**
- * 右侧的操作栏，自上而下：收藏、看完整、在网盘中显示。图标在上、短标签在下，照短视频应用的样子常驻。
- * 分享与下载不在这里，在完整播放器的顶栏：刷的时候只管收藏与去看，真要留下或发给别人时多半已点进来看完整了。
+ * 底部的说明与操作，属于一段：控件层换段时整块淡出淡入。
+ *
+ * 竖屏时说明在左下、操作栏在右侧竖排，照短视频应用。[landscape] 时操作栏改为右下横排：横握的手机只有
+ * 三百多 dp 高，竖着的一列连同标签要占去一半多；说明限宽，不在宽画面上拉成一长行。
  */
 @Composable
-internal fun ClipActionRail(
+internal fun ClipControls(
+    clip: Clip,
+    startMs: Long,
+    folderName: String?,
     starred: Boolean,
     onToggleStar: () -> Unit,
     onPlayFull: () -> Unit,
     onLocate: () -> Unit,
     compact: Boolean,
+    landscape: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    Column(
-        modifier = modifier,
-        verticalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))
+            .padding(
+                start = if (compact) 12.dp else if (landscape) 24.dp else 16.dp,
+                end = if (compact) 6.dp else if (landscape) 16.dp else 10.dp,
+                bottom = if (compact) 18.dp else 24.dp,
+            ),
+        // 横屏时说明不铺满，余下的空白在说明与操作栏之间，操作栏贴右
+        horizontalArrangement = if (landscape) Arrangement.SpaceBetween else Arrangement.Start,
+        verticalAlignment = Alignment.Bottom,
     ) {
+        ClipCaption(
+            clip = clip,
+            startMs = startMs,
+            folderName = folderName,
+            compact = compact,
+            modifier = if (landscape) {
+                Modifier.weight(1f, fill = false).widthIn(max = LandscapeCaptionMaxWidth).padding(end = 24.dp)
+            } else {
+                Modifier.weight(1f).padding(end = 12.dp)
+            },
+        )
+        ClipActionRail(
+            starred = starred,
+            onToggleStar = onToggleStar,
+            onPlayFull = onPlayFull,
+            onLocate = onLocate,
+            compact = compact,
+            horizontal = landscape,
+        )
+    }
+}
+
+/**
+ * 操作栏：收藏、看完整、在网盘中显示。图标在上、短标签在下，照短视频应用的样子常驻；[horizontal] 时横排。
+ * 分享与下载不在这里，在完整播放器的顶栏：刷的时候只管收藏与去看，真要留下或发给别人时多半已点进来看完整了。
+ */
+@Composable
+private fun ClipActionRail(
+    starred: Boolean,
+    onToggleStar: () -> Unit,
+    onPlayFull: () -> Unit,
+    onLocate: () -> Unit,
+    compact: Boolean,
+    horizontal: Boolean,
+) {
+    val actions: @Composable () -> Unit = {
         RailAction(
             icon = if (starred) Icons.Filled.Star else Icons.Outlined.StarOutline,
             label = if (starred) "已收藏" else "收藏",
@@ -214,6 +282,14 @@ internal fun ClipActionRail(
         )
         RailAction(Icons.Outlined.OpenInFull, "看完整", onPlayFull, compact)
         RailAction(Icons.Outlined.FolderOpen, "在网盘中显示", onLocate, compact)
+    }
+    if (horizontal) {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Bottom) { actions() }
+    } else {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) { actions() }
     }
 }
 
@@ -254,6 +330,7 @@ private fun ChromeIconButton(
     tint: Color = Color.Unspecified,
     tooltip: Boolean = false,
     shortcut: String? = null,
+    minTouchTarget: Boolean = false,
 ) {
     if (tooltip) {
         TooltipBox(
@@ -261,7 +338,7 @@ private fun ChromeIconButton(
             tooltip = { PlainTooltip { Text(if (shortcut != null) "$label ($shortcut)" else label) } },
             state = rememberTooltipState(),
         ) {
-            ChromeIconButton(icon, label, onClick, size, iconSize, tint)
+            ChromeIconButton(icon, label, onClick, size, iconSize, tint, minTouchTarget = minTouchTarget)
         }
         return
     }
@@ -269,7 +346,8 @@ private fun ChromeIconButton(
         onClick = onClick,
         shapes = IconButtonDefaults.shapes(),
         colors = IconButtonDefaults.filledTonalIconButtonColors(containerColor = chromeContainer(), contentColor = Color.White),
-        modifier = Modifier.size(size).handCursor(),
+        // 占位放大到最小触控尺寸、画的仍是 size，触控范围随占位放大
+        modifier = (if (minTouchTarget) Modifier.minimumInteractiveComponentSize() else Modifier).size(size).handCursor(),
     ) {
         if (tint == Color.Unspecified) {
             Icon(icon, contentDescription = label, modifier = Modifier.size(iconSize))
@@ -504,6 +582,8 @@ internal val BottomScrim = listOf(
 
 /** 浮在画面上的按钮比播放器的更透一些：它们常驻，不能整块挡住画面。 */
 private const val CHROME_CONTAINER_ALPHA = 0.45f
+
+private val LandscapeCaptionMaxWidth = 560.dp
 
 private const val BACKDROP_DECODE_PX = 48
 private val BackdropBlur = 32.dp

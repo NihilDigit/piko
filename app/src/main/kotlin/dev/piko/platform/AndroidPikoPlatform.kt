@@ -1,6 +1,8 @@
 package dev.piko.platform
 
+import android.app.Activity
 import android.content.ClipData
+import android.content.pm.ActivityInfo
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
@@ -41,6 +43,7 @@ import dev.piko.ui.platform.DownloadLocationPicker
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import dev.piko.ui.platform.ExternalVideoPlayer
+import dev.piko.ui.platform.LandscapeLock
 import dev.piko.ui.platform.LinkAssociation
 import dev.piko.ui.platform.LocalFileActions
 import dev.piko.ui.platform.PikoPlatform
@@ -169,6 +172,29 @@ class AndroidPikoPlatform(
             controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             controller.hide(WindowInsetsCompat.Type.systemBars())
             onDispose { controller.show(WindowInsetsCompat.Type.systemBars()) }
+        }
+    }
+
+    @Composable
+    override fun rememberLandscapeLock(): LandscapeLock? {
+        val activity = LocalContext.current.findActivity() ?: return null
+        val lock = remember(activity) { ActivityLandscapeLock(activity) }
+        DisposableEffect(lock) { onDispose(lock::release) }
+        return lock
+    }
+
+    private class ActivityLandscapeLock(private val activity: Activity) : LandscapeLock {
+        private var before: Int? = null
+
+        override fun lock() {
+            if (before == null) before = activity.requestedOrientation
+            activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        }
+
+        override fun release() {
+            val original = before ?: return
+            before = null
+            activity.requestedOrientation = original
         }
     }
 

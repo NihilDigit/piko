@@ -15,14 +15,24 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.areStatusBarsVisible
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import dev.piko.ui.adaptive.isHeightCompact
+import dev.piko.ui.screens.player.findActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.download.DownloadStatus
 import dev.piko.shared.state.DuplicateFinderState
@@ -99,6 +109,7 @@ class MainActivity : ComponentActivity() {
                 videoPlayer = videoPlayer,
             )
             AskForNotificationsOnFirstWork(app.services)
+            if (isHeightCompact()) HideStatusBarWhileShort()
         }
     }
 
@@ -232,6 +243,35 @@ private fun AskForNotificationsOnFirstWork(services: PikoServices) {
 private const val TORRENT_MIME_TYPE = "application/x-bittorrent"
 
 /** 进行中的常驻通知点进来时带上，打开传输页看各项进度。 */
+/**
+ * 窗口高度 compact（横握的手机）时收起状态栏，下滑临时唤出；导航条不动。整个应用一个入口，按窗口高度生效。
+ *
+ * 信息流全屏（HideSystemBars）与播放器（ScreenOrientationController）各自收放整组系统栏，退出时一律放出来，
+ * 状态栏也跟着出来。这里不和它们排先后，而是看着状态栏：高度仍 compact 时它一冒出来就再收起。
+ * 下滑唤出的临时状态栏不改变插入区的可见性，不会被这里收回。
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun HideStatusBarWhileShort() {
+    val window = LocalContext.current.findActivity()?.window ?: return
+    val controller = remember(window) { WindowCompat.getInsetsController(window, window.decorView) }
+    val statusBarVisible = WindowInsets.areStatusBarsVisible
+    LaunchedEffect(controller, statusBarVisible) {
+        if (!statusBarVisible) return@LaunchedEffect
+        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller.hide(WindowInsetsCompat.Type.statusBars())
+    }
+    DisposableEffect(controller) {
+        onDispose {
+            // 导航条也收着，是播放器的全屏或信息流在用整块屏幕（转成竖着的全屏时高度就不 compact 了），
+            // 这时放出状态栏会压在它们的画面上
+            val insets = ViewCompat.getRootWindowInsets(window.decorView)
+            val othersImmersive = insets != null && !insets.isVisible(WindowInsetsCompat.Type.navigationBars())
+            if (!othersImmersive) controller.show(WindowInsetsCompat.Type.statusBars())
+        }
+    }
+}
+
 internal const val EXTRA_OPEN_TRANSFERS = "dev.piko.extra.OPEN_TRANSFERS"
 
 // 与 androidx.activity 的 DefaultLightScrim、DefaultDarkScrim 相同，那两个是 internal

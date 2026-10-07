@@ -36,7 +36,7 @@ import dev.piko.ui.components.TooltipIconButton
  * 信息流挂起时网盘页底部的一条：继续刷，或者就此关掉。挂起见 PikoMainScaffold 的 locateFromFeed。
  *
  * 不做成侧栏收起后贴边的一条窄条：窄窗口与手机上信息流是全屏形态，没有侧栏可收，
- * 放在底部正中两种形态都是同一个样子。正中而不在右下，是为了让开窄窗口网盘页的 FAB。
+ * 两种形态都浮在网盘页底部、FAB 的左边，位置由 PikoMainScaffold 安排。
  */
 @Composable
 internal fun FeedResumeBar(

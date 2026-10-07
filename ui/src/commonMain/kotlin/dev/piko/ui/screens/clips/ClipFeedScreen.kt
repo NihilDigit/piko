@@ -1,6 +1,7 @@
 package dev.piko.ui.screens.clips
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -14,7 +15,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -61,7 +61,9 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFile
@@ -118,9 +120,10 @@ import kotlin.time.TimeSource
  * 只用一个播放器时，翻页中相邻页没有画面，停稳后换源又要等首帧，两处都黑。
  * 翻页器里只有取好的段，还没取好的在候补里，见 [ClipStreams] 与 ClipFeedSession.upcoming。
  *
- * 样子照短视频应用：顶部只有在刷的文件夹与静音、关闭，右侧一列操作，左下是说明，底边一条细进度条，都常驻，
- * 只在拖进度条时让开。单击暂停或继续，双击收藏，长按两倍速，上下滑、滚轮或上下键翻页，
- * 左右键前进后退，空格暂停，M 静音。
+ * 样子照短视频应用：顶部只有在刷的文件夹与静音、沉浸、关闭，右侧一列操作，左下是说明，底边一条细进度条，都常驻，
+ * 只在拖进度条时让开。控件是翻页器之上的固定一层，只画当前段，不随页滑动。区域矮到竖排的操作栏放不下时
+ * （横握的手机）操作栏改为右下横排。单击暂停或继续，双击收藏，长按两倍速，上下滑、滚轮或上下键翻页，
+ * 左右键前进后退，空格暂停，M 静音。沉浸时控件连同顶栏全部藏起，单击只叫回控件。
  *
  * [compact] 是放在网盘页右侧的窄面板里：按钮与文字缩小，范围靠左。面板不画栏名，关闭也在这条顶栏上。
  * [onPopOut] 与 [onDock] 是桌面端在主窗口与独立窗口之间挪动它，平台没有独立窗口时为 null。
@@ -173,7 +176,21 @@ fun ClipFeedScreen(
     }
     LaunchedEffect(actions) { actions.loadStars() }
 
-    val topBar: @Composable BoxScope.() -> Unit = {
+    // 系统锁定了自动旋转时，横握手机也转不过来，由这里请求横屏；离开组合时平台恢复原来的方向
+    val landscapeLock = LocalPikoPlatform.current.rememberLandscapeLock()
+    if (landscapeLock != null) {
+        LaunchedEffect(landscapeLock, session.landscape) {
+            if (session.landscape) landscapeLock.lock() else landscapeLock.release()
+        }
+    }
+    val playFull: (FileStat, Long) -> Unit = { file, startMillis ->
+        // 先放开再压栈：播放器在组合时就记下当前方向，退出时恢复它，晚于这一步放开的话它记下的是横屏，
+        // 退出后一直锁着。回来时会话里的 landscape 还在，这里重新锁上
+        landscapeLock?.release()
+        onPlayFull(file, startMillis)
+    }
+
+    val topBar: @Composable BoxScope.(onHideChrome: (() -> Unit)?) -> Unit = { onHideChrome ->
         ClipFeedTopBar(
             title = session.root?.name ?: "信息流",
             muted = session.muted,
@@ -182,6 +199,9 @@ fun ClipFeedScreen(
             compact = compact,
             onPopOut = onPopOut,
             onDock = onDock,
+            onHideChrome = onHideChrome,
+            landscapeLocked = if (landscapeLock != null && !compact) session.landscape else null,
+            onToggleLandscape = { session.landscape = !session.landscape },
             modifier = Modifier.align(Alignment.TopCenter),
         )
     }
@@ -197,7 +217,7 @@ fun ClipFeedScreen(
                             MediaLoadingIndicator()
                             Text(if (session.upcoming.isEmpty()) "正在查找视频" else "正在缓存", color = Color.White, modifier = Modifier.padding(top = 16.dp))
                         }
-                        topBar()
+                        topBar(null)
                     }
                 }
                 clips.isEmpty() -> FeedMessage("这里没有可播放的视频", "只挑一分钟以上的正片，子文件夹里的也算", topBar)
@@ -211,7 +231,7 @@ fun ClipFeedScreen(
                         actions = actions,
                         snackbarHostState = snackbarHostState,
                         compact = compact,
-                        onPlayFull = onPlayFull,
+                        onPlayFull = playFull,
                         onLocate = onLocate,
                         onStarted = { started = true },
                         overlay = topBar,
@@ -228,10 +248,10 @@ fun ClipFeedScreen(
 }
 
 @Composable
-private fun FeedMessage(title: String, description: String?, topBar: @Composable BoxScope.() -> Unit) {
+private fun FeedMessage(title: String, description: String?, topBar: @Composable BoxScope.(onHideChrome: (() -> Unit)?) -> Unit) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         PikoEmptyState(title = title, description = description)
-        topBar()
+        topBar(null)
     }
 }
 
@@ -248,7 +268,8 @@ private fun ClipPager(
     onLocate: (FileStat) -> Unit,
     /** 头一段画面走起来了，冷开的限制可以放开。 */
     onStarted: () -> Unit,
-    overlay: @Composable BoxScope.() -> Unit,
+    /** 顶栏，传进去的是进入沉浸；沉浸时整条藏起。 */
+    overlay: @Composable BoxScope.(onHideChrome: (() -> Unit)?) -> Unit,
 ) {
     val videoPreview = LocalPikoPlatform.current.videoPreview ?: return
     val scope = rememberCoroutineScope()
@@ -283,6 +304,11 @@ private fun ClipPager(
     var boosting by remember { mutableStateOf(false) }
     // 拖进度条时说明与操作栏让开，看得到画面
     var scrubbing by remember { mutableStateOf(false) }
+    // 沉浸：控件连同顶栏全部藏起，点画面任一处叫回。记在会话上，看完整、弹出窗口回来照旧
+    var immersive by session::immersive
+    // 区域矮到右侧竖排的操作栏放不下时（几乎就是横握的手机）按横屏排控件，见 LandscapeBelowHeight
+    var areaHeight by remember { mutableStateOf(0) }
+    val landscape = areaHeight > 0 && with(LocalDensity.current) { areaHeight.toDp() } < LandscapeBelowHeight
     // 当前段已走起来、前后两段可以开始装的是哪一段，见 LaunchedEffect(current)
     var neighboursFor by remember { mutableStateOf<Clip?>(null) }
     // 定位之后、画面重新走起来之前。不单靠后端报的缓冲：拖到已缓存的地方不报，拖到没缓存的地方两端报得也不一致
@@ -673,12 +699,13 @@ private fun ClipPager(
                 true
             }
             // 焦点目标也挂在最外层：侧栏里与网盘页并排时，点顶栏或画面任一处，方向键都归信息流
-            .pageFocusTarget(focusRequester),
+            .pageFocusTarget(focusRequester)
+            .onSizeChanged { areaHeight = it.height },
     ) {
         // 画面层，在翻页器底下：每个播放器一个常驻的画面表面，按它装着的那一段所在的页跟着翻页平移。
         // 表面原先长在页里，播放器换一页负责，表面就在旧页销毁、在新页新建，mpv 跟着拆建一次视频输出：
         // 手机上每翻一页在主线程上等一两百毫秒，挪到 mpv 自己的线程上又因为新表面要等第一帧而闪一下（2026-09-28）。
-        // 翻页器的页是透明的，只画说明、操作栏与进度，就绪前的缩略图照旧画在页里、盖住画面
+        // 翻页器的页是透明的，只画属于这一段的东西：就绪前的缩略图（盖住画面）、暂停标记、转圈与双击的星
         BoxWithConstraints(Modifier.fillMaxSize().clipToBounds()) {
             // 画面表面的尺寸不跟着比例变，裁切与留边交给播放器：MediaMP 0.5.0 的 D3D11 表面在上一次改尺寸
             // 还没被界面线程确认时再改一次，渲染线程会握着锁空转，界面线程随之卡死（MpvSurfaceRing 的
@@ -710,8 +737,9 @@ private fun ClipPager(
                             val listed = session.listedFile(clip.fileId)
                             // 就绪之后以播放器报的为准，之前先用列目录带回的宽高，免得就绪那一下画面跳一次
                             val aspect = (if (ready) player.videoAspect else null) ?: listed?.let(::listedAspect)
-                            val fills = aspect == null || abs(ln(aspect / boxAspect)) < FILL_TOLERANCE
-                            // 比例相近就铺满，裁掉两边一点，照短视频应用；差得多才留边，垫上模糊的缩略图
+                            // 比例相近就铺满，裁掉两边一点，照短视频应用；差得多才留边，垫上模糊的缩略图。
+                            // 横屏排法下一律完整显示：横握手机约 2.2:1，16:9 的片子落在容差内，铺满会裁去上下近两成
+                            val fills = !landscape && (aspect == null || abs(ln(aspect / boxAspect)) < FILL_TOLERANCE)
                             if (ready && !fills) ClipBackdrop(listed?.thumbnailLink, Modifier.fillMaxSize())
                             LaunchedEffect(player, fills) { player.setAspectRatio(if (fills) PlayerAspectRatio.Crop else PlayerAspectRatio.Fit) }
                         }
@@ -726,7 +754,7 @@ private fun ClipPager(
             state = pagerState,
             // 按下标，不按段：等待页取好后原地变成一段，按段作键的话它的键跟着变，翻页器会跳去追那个键。
             // 翻页器里的段只在末尾追加，下标本来就稳
-            // 前后各多组合一页：翻页途中上下一段的说明与缩略图已经在那里
+            // 前后各多组合一页：翻页途中上下一段的缩略图已经在那里
             beyondViewportPageCount = 1,
             modifier = Modifier.fillMaxSize(),
         ) { page ->
@@ -741,14 +769,15 @@ private fun ClipPager(
             val active = page == settled
             val slot = slotOf(page)
             val player = players[slot]
-            val start = startOnPlayer[slot]
-            val videoStart = if (loaded[slot] == clip) clipStartMs[slot] else clip.startMs
             val ready = rendered[slot] == clip
             val listed = session.listedFile(clip.fileId)
             val bursts = remember { mutableStateListOf<StarBurst>() }
 
             // 手势在 pointerInput 里只装一次，处理时要读最新的组合
-            val onTap by rememberUpdatedState { if (active) togglePause() }
+            val onTap by rememberUpdatedState {
+                // 沉浸时控件都藏着，点一下只是叫回控件，不暂停
+                if (immersive) immersive = false else if (active) togglePause()
+            }
             val onDoubleTap by rememberUpdatedState { at: Offset ->
                 if (active) {
                     actions.setStarred(clip, true)
@@ -762,11 +791,12 @@ private fun ClipPager(
                 Modifier
                     .fillMaxSize()
                     .clipToBounds()
-                    // 单击要等过了双击的间隔才认，暂停因此慢一拍，与短视频应用一致
-                    .pointerInput(Unit) {
+                    // 单击要等过了双击的间隔才认，暂停因此慢一拍，与短视频应用一致。
+                    // 沉浸时不认双击，点一下当场叫回控件，不必等那一拍
+                    .pointerInput(immersive) {
                         detectTapGestures(
                             onTap = { onTap() },
-                            onDoubleTap = { onDoubleTap(it) },
+                            onDoubleTap = if (immersive) null else { at -> onDoubleTap(at) },
                             onLongPress = { onLongPress() },
                             onPress = {
                                 tryAwaitRelease()
@@ -807,54 +837,64 @@ private fun ClipPager(
                 }
 
                 StarBursts(bursts, onFinished = { bursts.remove(it) })
+            }
+        }
 
-                // 说明与操作栏随页一起滑动，翻页途中看得到下一段的名字；进度只有当前段有
+        // 控件层，在翻页器之上、不随页位移：只画当前这一段的说明、操作与进度，换段时就地淡出淡入。
+        // 原先长在页里，翻页途中两段的说明与操作栏连同底部遮罩一起滑过画面，看着乱。
+        // 这一层只有按钮与进度条接输入，其余空白处的点按与拖动落到底下的页上
+        AnimatedVisibility(
+            visible = !immersive,
+            enter = fadeIn(motion.defaultEffectsSpec()),
+            exit = fadeOut(motion.defaultEffectsSpec()),
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            Box(Modifier.fillMaxSize()) {
                 Box(
                     Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .fillMaxHeight(BOTTOM_SCRIM_FRACTION)
+                        .fillMaxHeight(if (landscape) LANDSCAPE_BOTTOM_SCRIM_FRACTION else BOTTOM_SCRIM_FRACTION)
                         .graphicsLayer { alpha = chromeAlpha }
                         .background(Brush.verticalGradient(BottomScrim)),
                 )
-                Row(
+                Crossfade(
+                    targetState = current,
+                    animationSpec = motion.defaultEffectsSpec(),
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))
-                        .padding(
-                            start = if (compact) 12.dp else 16.dp,
-                            end = if (compact) 6.dp else 10.dp,
-                            bottom = if (compact) 18.dp else 24.dp,
-                        )
                         .graphicsLayer { alpha = chromeAlpha },
-                    verticalAlignment = Alignment.Bottom,
-                ) {
-                    ClipCaption(
+                ) { clip ->
+                    // 淡出中的那一段照旧作用于它自己：按页码找回它的播放器与起点
+                    val page = clips.indexOf(clip)
+                    if (clip == null || page < 0) return@Crossfade
+                    val slot = slotOf(page)
+                    val player = players[slot]
+                    val videoStart = if (loaded[slot] == clip) clipStartMs[slot] else clip.startMs
+                    ClipControls(
                         clip = clip,
                         startMs = videoStart,
                         folderName = session.folderName(clip.parentId),
-                        compact = compact,
-                        modifier = Modifier.weight(1f).padding(end = 12.dp),
-                    )
-                    ClipActionRail(
                         starred = actions.isStarred(clip),
                         onToggleStar = { actions.setStarred(clip) },
                         onPlayFull = {
+                            val active = page == latestSettled
                             player.pause()
                             if (active) paused = true
-                            val watched = if (active) (player.positionMillis - start).coerceAtLeast(0) else 0L
+                            val watched = if (active) (player.positionMillis - startOnPlayer[slot]).coerceAtLeast(0) else 0L
                             onPlayFull(clip.file, videoStart + watched)
                         },
                         onLocate = { onLocate(clip.file) },
                         compact = compact,
+                        landscape = landscape,
                     )
                 }
-                if (active) {
+                if (current != null) {
                     ClipProgressBar(
-                        positionMillis = (player.positionMillis - start).coerceIn(0L, CLIP_LENGTH_MS),
+                        positionMillis = clipPosition(),
                         lengthMillis = CLIP_LENGTH_MS,
-                        bufferedPositionMillis = (player.bufferedPositionMillis - start).coerceIn(0L, CLIP_LENGTH_MS),
+                        bufferedPositionMillis = (currentPlayer.bufferedPositionMillis - currentStart).coerceIn(0L, CLIP_LENGTH_MS),
                         onSeek = ::seekClip,
                         onScrubbingChange = { scrubbing = it },
                         modifier = Modifier
@@ -865,7 +905,14 @@ private fun ClipPager(
             }
         }
 
-        overlay()
+        AnimatedVisibility(
+            visible = !immersive,
+            enter = fadeIn(motion.defaultEffectsSpec()),
+            exit = fadeOut(motion.defaultEffectsSpec()),
+            modifier = Modifier.align(Alignment.TopCenter),
+        ) {
+            Box(Modifier.fillMaxWidth()) { overlay { immersive = true } }
+        }
         AnimatedVisibility(
             visible = boosting,
             enter = fadeIn(motion.fastEffectsSpec()),
@@ -966,8 +1013,15 @@ private const val FILL_TOLERANCE = 0.3f
 /** 区域尺寸停稳这么久才交给画面表面，见 ClipFeedScreen 里设 surfaceSize 的地方。 */
 private const val SURFACE_RESIZE_SETTLE = 250L
 
-/** 底部遮罩占画面高度的比例，盖住说明与操作栏。 */
+/** 底部遮罩占画面高度的比例，盖住说明与操作栏。横屏时操作栏横排、说明较矮，遮罩跟着矮些。 */
 private const val BOTTOM_SCRIM_FRACTION = 0.45f
+private const val LANDSCAPE_BOTTOM_SCRIM_FRACTION = 0.35f
+
+/**
+ * 区域矮于这个高度时按横屏排控件。看高度不看宽高比：竖排的操作栏连同标签约 250dp，加上顶栏与说明，
+ * 不到这个高度就与顶栏挤在一起；桌面的独立窗口与侧栏够高，照竖屏排，与 isHeightCompact 同一条线。
+ */
+private val LandscapeBelowHeight = 480.dp
 
 /** 暂停图标进出时的缩放起点：从大收到原大，像是按下去的。 */
 private const val PAUSED_MARK_ENTER_SCALE = 1.3f

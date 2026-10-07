@@ -102,6 +102,12 @@ class ClipFeedSession(
     /** 静音。放在会话上而不是页面上：打开完整播放器或换到独立窗口时页面会重建，静音要跟着走。 */
     var muted by mutableStateOf(false)
 
+    /** 控件连同顶栏全部藏起。与 [muted] 同理放在会话上，关掉信息流时清零，不存盘。 */
+    var immersive by mutableStateOf(false)
+
+    /** 请求了横屏（Android）。看完整回来要重新锁上，所以同样放在会话上，关掉信息流时清零。 */
+    var landscape by mutableStateOf(false)
+
     /** 各段的代理会话与预取，同样不随页面走，见 [ClipStreams]。换文件夹或关掉信息流时清空。 */
     val streams = ClipStreams(media, onReady = ::promote, onDead = ::drop)
 
@@ -242,6 +248,8 @@ class ClipFeedSession(
         currentIndex = 0
         furthestIndex = 0
         isCollecting = false
+        immersive = false
+        landscape = false
     }
 
     private fun addToPool(file: FileStat) {
