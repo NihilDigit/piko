@@ -13,7 +13,7 @@ import androidx.window.core.layout.WindowSizeClass
 
 /**
  * 窗口宽度档位，按 M3 的断点：compact 小于 600dp，medium 到 840dp，expanded 及以上。
- * 桌面窗口缩放与平板分屏走同一套判断，布局只看窗口多宽，不看是什么设备。
+ * 只决定同一交互模型里的密度（导航是底栏还是 Rail、网格几栏、面板从哪边出来），交互模型按平台定，见 [FormFactor]。
  */
 enum class WidthClass { Compact, Medium, Expanded }
 
@@ -29,8 +29,7 @@ fun currentWidthClass(): WidthClass {
 
 /**
  * 窗口高度不到 480dp（M3 的 compact 高度），几乎就是横握的手机。window-size-classes.md：这时宽度多是 medium，
- * 「但高度是 compact，双栏不现实」。只看宽度的话，横握的手机会被当成小号的桌面：侧边栏、详情栏、停在右边的信息流
- * 都挤在三百多 dp 的高度里。凡是按宽度开第二栏或展开侧边栏的地方，都要同时看它。
+ * 「但高度是 compact，双栏不现实」。移动端据此让面板改从侧边出来、对话框全屏、信息流收起系统栏。
  */
 @Composable
 fun isHeightCompact(): Boolean =

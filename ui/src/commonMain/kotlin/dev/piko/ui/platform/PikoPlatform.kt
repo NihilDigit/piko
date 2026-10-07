@@ -8,6 +8,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import dev.piko.shared.media.player.PlaybackBackend
+import dev.piko.ui.adaptive.FormFactor
 import dev.piko.ui.theme.MotionStyle
 import dev.piko.ui.theme.PikoMotionScale
 import dev.piko.update.AppUpdateService
@@ -53,6 +54,9 @@ interface PikoPlatform {
      * 桌面端照做。桌面端开着它时密码框每打一个字的出帧耗时是普通输入框的两倍（实测帧间隔 21–32ms 对 10ms）。
      */
     val revealsLastTypedPassword: Boolean get() = false
+
+    /** 交互模型，见 [dev.piko.ui.adaptive.FormFactor]。 */
+    val formFactor: FormFactor
 
     /** 动效的风格与转场时长，见 [MotionStyle]。 */
     val motionStyle: MotionStyle

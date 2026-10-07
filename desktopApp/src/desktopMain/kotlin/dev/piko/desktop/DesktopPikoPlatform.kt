@@ -40,6 +40,7 @@ import dev.piko.ui.platform.PreviewBackend
 import dev.piko.ui.platform.ShortcutModifier
 import dev.piko.ui.platform.UploadPicker
 import dev.piko.ui.platform.VideoPreviewSupport
+import dev.piko.ui.adaptive.FormFactor
 import dev.piko.ui.theme.MotionStyle
 import dev.piko.ui.theme.PikoMotionScale
 import java.awt.Desktop
@@ -73,6 +74,7 @@ class DesktopPikoPlatform(
     /** 入口传进注入 Recomposer 的那一份（见 Main.kt）；截图与测试不注入，用一份不接系统的。 */
     override val motionScale: PikoMotionScale = PikoMotionScale(),
 ) : PikoPlatform {
+    override val formFactor: FormFactor = FormFactor.Desktop
     override val motionStyle: MotionStyle = MotionStyle.Standard
 
     // jpackage 启动器写进 -Djpackage.app-version；gradle run 时没有，显示为开发版

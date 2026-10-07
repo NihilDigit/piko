@@ -50,6 +50,7 @@ import dev.piko.ui.platform.PikoPlatform
 import dev.piko.ui.platform.PreviewBackend
 import dev.piko.ui.platform.UploadPicker
 import dev.piko.ui.platform.VideoPreviewSupport
+import dev.piko.ui.adaptive.FormFactor
 import dev.piko.ui.theme.MotionStyle
 import dev.piko.ui.theme.PikoMotionScale
 import dev.piko.ui.screens.player.MpvPlaybackBackend
@@ -74,6 +75,7 @@ class AndroidPikoPlatform(
 ) : PikoPlatform {
     override val appVersion: String = BuildConfig.VERSION_NAME
 
+    override val formFactor: FormFactor = FormFactor.Mobile
     override val motionStyle: MotionStyle = MotionStyle.Expressive
 
     override val revealsLastTypedPassword: Boolean = true

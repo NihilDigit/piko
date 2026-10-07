@@ -137,6 +137,7 @@ import dev.piko.download.DownloadStatus
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
+import dev.piko.ui.adaptive.isDesktopLayout
 import dev.piko.ui.adaptive.isHeightCompact
 import dev.piko.ui.components.SidePanelLayout
 import dev.piko.ui.components.sidePanelFits
@@ -188,7 +189,6 @@ import dev.piko.ui.theme.FrameCardShape
 import dev.piko.ui.theme.FrameContentShape
 import dev.piko.ui.theme.IslandGap
 import dev.piko.ui.theme.LocalFramed
-import dev.piko.ui.theme.SidebarMinWindowWidth
 import dev.piko.ui.theme.SidebarPushMinWindowWidth
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.clickable
@@ -299,15 +299,16 @@ fun PikoMainScaffold(
     val topScreen = backStack.lastOrNull() as? Screen
     val onHome = backStack.size <= 1
 
-    // 比手机宽就是一整条侧边栏：上面是去处，下面是网盘的快捷访问与库，照 Finder 的边栏与资源管理器的导航窗格。
-    // 只有两套：手机的底部导航栏与这条侧边栏，不再有导航套件的侧轨或横向底栏，见 SidebarMinWindowWidth。
-    // 侧边栏在返回栈外面，打开「我的」里的星标、回收站这些页时不被盖住；应用内的播放器这类整窗的页照旧盖住
+    // 桌面任何宽度都是一整条侧边栏：上面是去处，下面是网盘的快捷访问与库，照 Finder 的边栏与资源管理器的导航窗格。
+    // 移动端是底部导航栏，宽了换成 Rail，三项与底栏相同，见 FormFactor。
+    // 侧边栏在返回栈外面，打开设置、我的分享时不被盖住
+    val desktop = isDesktopLayout()
     val windowWidth = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.width.toDp() }
-    val sidebarWindow = windowWidth >= SidebarMinWindowWidth
-    // 横握的手机（高度 compact）只要窄轨，不能展开：展开的侧边栏连同快速访问与库，在三百多 dp 的高度里放不下几行
+    val sidebarWindow = desktop
+    // 只用于移动端横握时收起系统栏
     val heightCompact = isHeightCompact()
-    // 窄的侧边栏窗口里只留窄轨的位置，展开时浮在内容上，见 SidebarPushMinWindowWidth
-    val sidebarOverlays = windowWidth < SidebarPushMinWindowWidth || heightCompact
+    // 窄窗口里只留窄轨的位置，展开时浮在内容上，见 SidebarPushMinWindowWidth
+    val sidebarOverlays = windowWidth < SidebarPushMinWindowWidth
 
     fun resetToHome() {
         while (backStack.size > 1) backStack.removeLastOrNull()
@@ -493,9 +494,8 @@ fun PikoMainScaffold(
     val initialPanelPrefs = remember { runBlocking { preferences.clipPanelFlow.first() } }
     val panelPrefs by preferences.clipPanelFlow.collectAsStateWithLifecycle(initialPanelPrefs)
     val contentWidth = with(density) { contentSize.width.toDp() }.takeIf { contentSize != IntSize.Zero }
-    // 高度 compact 时不开右栏，信息流因此走全屏：横握手机正适合刷视频，不该挤在侧栏里
-    val panelFits = contentWidth != null && widthClass == WidthClass.Expanded && !heightCompact &&
-        sidePanelFits(contentWidth, ClipPanelMinWidth)
+    // 右栏只在桌面：移动端的信息流一律全屏，平板横握也是，与手机同一套
+    val panelFits = contentWidth != null && desktop && sidePanelFits(contentWidth, ClipPanelMinWidth)
     // null 是还没量出内容区宽度。上次开着侧栏退出的，只在这回仍放得下侧栏时照样打开；
     // 放不下就是全屏形态，窄窗口一启动就开始播不是谁想要的
     var feedShownState by rememberSaveable { mutableStateOf<Boolean?>(null) }
@@ -532,18 +532,14 @@ fun PikoMainScaffold(
     val feedOnFilesTab = feedShown && !feedSuspended && !feedPoppedOut && currentTab == MainTab.FILES
     val feedInPanel = feedOnFilesTab && panelFits
     val feedFullScreen = feedOnFilesTab && !panelFits
-    // 横握的手机全屏刷信息流时独占整个窗口，与竖握时一样不见导航。手机横过来宽度过了 SidebarMinWindowWidth，
-    // 照常会是侧边栏窗口，全屏的信息流只盖得住侧边栏右边的内容区，左边留着一条窄轨
-    val feedCoversWindow = feedFullScreen && heightCompact
-    val sidebarMode = sidebarWindow && !feedCoversWindow &&
+    val sidebarMode = sidebarWindow &&
         (onHome || topScreen == Screen.Profile || topScreen in ProfilePanes || topScreen in SettingsSubpages)
     // 窄窗口里浮起来的那一层展开的侧边栏。只记这一回：它是临时借一下地方，不改存下的收起状态
     var sidebarFloatRequested by remember { mutableStateOf(false) }
-    val sidebarFloating = sidebarFloatRequested && sidebarOverlays && sidebarMode && !heightCompact
-    // 去了别处就收回：点了浮层里的一项，或窗口拉宽到推得开、缩到没有侧边栏
+    val sidebarFloating = sidebarFloatRequested && sidebarOverlays && sidebarMode
+    // 去了别处就收回：点了浮层里的一项，或窗口拉宽到推得开
     LaunchedEffect(currentTab, topScreen, sidebarOverlays, sidebarMode) { sidebarFloatRequested = false }
     fun toggleSidebar() {
-        if (heightCompact) return
         if (sidebarOverlays) {
             sidebarFloatRequested = !sidebarFloating
         } else {
@@ -611,7 +607,7 @@ fun PikoMainScaffold(
             val detourTab = feedDetourTab?.takeIf { id -> driveRepo.tabsFlow.value.any { it.id == id } }
             when {
                 detourTab != null -> driveRepo.switchTab(detourTab)
-                feedDetour != null && widthClass == WidthClass.Expanded && !heightCompact -> feedDetourTab = driveRepo.openTab(stack)
+                feedDetour != null && desktop -> feedDetourTab = driveRepo.openTab(stack)
             }
             showInDrive(stack, file.id)
         }
@@ -640,7 +636,7 @@ fun PikoMainScaffold(
 
     val latestSetFeedShown by rememberUpdatedState(::setFeedShown)
     SideEffect {
-        taskSlot.exclusive = !(widthClass == WidthClass.Expanded && !heightCompact)
+        taskSlot.exclusive = !desktop
         taskSlot.occupants = listOf(
             TaskSlot.Occupant(TaskSlot.Task.DUPLICATES, "查找重复", "扫描结果不会保存。", { services.duplicateSession.state != null }, services.duplicateSession::end),
             TaskSlot.Occupant(TaskSlot.Task.ADD_LINK, "添加链接", "尚未保存的链接将被丢弃。", { services.instantSession.state != null }, services.instantSession::end),
@@ -706,8 +702,8 @@ fun PikoMainScaffold(
                 Box(Modifier.fillMaxSize()) {
                     drive()
                     FeedResumeBar(
-                        // 有命令栏的宽窗口里，挂起的信息流由命令栏「信息流」按钮上的小圆点提示，点它继续，不再另挂一条
-                        visible = feedSuspended && widthClass != WidthClass.Expanded,
+                        // 桌面上挂起的信息流由命令栏「信息流」按钮上的小圆点提示，点它继续，不再另挂一条
+                        visible = feedSuspended && !desktop,
                         folderName = clipFeedSession.root?.name,
                         onResume = ::resumeFeed,
                         onClose = { setFeedShown(false) },
@@ -744,19 +740,23 @@ fun PikoMainScaffold(
         if (currentTab != MainTab.FILES || !onHome) runCatching { shortcutFocus.requestFocus() }
     }
 
+    // 桌面没有「我的」这一页：设置与我的分享压在当前页上，出栈即回到原来那一页，侧边栏在打开期间只亮这一项。
+    // 移动端它们是「我的」的下一级，先切到「我的」，返回才回得去
     fun openPage(screen: Screen) {
-        currentTab = MainTab.SETTINGS
+        if (!desktop) currentTab = MainTab.SETTINGS
         resetToHome()
         openProfilePane(screen)
     }
+    // 旧版在宽窗口里也会停在「我的」，恢复出来的就回到文件
+    LaunchedEffect(desktop) { if (desktop && currentTab == MainTab.SETTINGS) currentTab = MainTab.FILES }
 
     // 应用里的各个去处。命令面板与网盘页的地址栏共用这一份：怎么打开它们（压不压一栏「我的」、切不切页）只有这里知道
     fun tabDestinations(): List<PaletteItem> {
         val label = shortcutModifier::label
-        return listOf(
+        return listOfNotNull(
             PaletteItem("文件", Icons.Outlined.Folder, "前往", detail = label("1"), keywords = "files drive") { currentTab = MainTab.FILES; resetToHome() },
             PaletteItem("传输", Icons.Outlined.SyncAlt, "前往", detail = label("2"), keywords = "transfers downloads uploads") { openTransfers() },
-            PaletteItem("我的", Icons.Outlined.Person, "前往", detail = label("3"), keywords = "profile me") { currentTab = MainTab.SETTINGS; resetToHome() },
+            if (desktop) null else PaletteItem("我的", Icons.Outlined.Person, "前往", detail = label("3"), keywords = "profile me") { currentTab = MainTab.SETTINGS; resetToHome() },
         )
     }
 
@@ -859,9 +859,13 @@ fun PikoMainScaffold(
                 currentTab = MainTab.FILES
             }
 
-            // 导航套件只剩手机的底部导航栏，64dp 的 ShortNavigationBar。写死而不交给库挑：库还看窗口高度，
-            // 横握的手机宽够了、高度不够，给的是一条占地方的横向底栏
-            val navigationSuiteType = if (sidebar) NavigationSuiteType.None else NavigationSuiteType.ShortNavigationBarCompact
+            // 移动端窄时是 64dp 的 ShortNavigationBar，宽了（横握的手机、平板）换成收起的 Rail，照 M3 的断点。
+            // 写死而不交给库挑：库还看窗口高度，横握的手机宽够了、高度不够，给的是一条占地方的横向底栏
+            val navigationSuiteType = when {
+                sidebar -> NavigationSuiteType.None
+                widthClass == WidthClass.Compact -> NavigationSuiteType.ShortNavigationBarCompact
+                else -> NavigationSuiteType.WideNavigationRailCollapsed
+            }
             NavigationSuiteScaffold(
                 navigationItems = {
                     // 侧边栏的「传输」按钮上写速度或项数；底部导航栏放不下，只挂一个项数的徽标。
@@ -899,7 +903,7 @@ fun PikoMainScaffold(
                 exit = motion.overlayExit(),
             ) {
                 // 横握手机刷信息流时收起状态栏与导航条，只按窗口形状决定，不锁方向：竖着刷照旧留着系统栏
-                if (heightCompact && feedFullScreen) LocalPikoPlatform.current.HideSystemBars()
+                if (!desktop && heightCompact && feedFullScreen) LocalPikoPlatform.current.HideSystemBars()
                 FeedContent(compact = false, visible = feedFullScreen)
             }
         }
@@ -1018,7 +1022,7 @@ fun PikoMainScaffold(
                     val tab = when (event.key) {
                         Key.One -> MainTab.FILES
                         Key.Two -> MainTab.TRANSFERS
-                        Key.Three -> MainTab.SETTINGS
+                        Key.Three -> if (desktop) return@onKeyEvent false else MainTab.SETTINGS
                         else -> return@onKeyEvent false
                     }
                     currentTab = tab
@@ -1054,7 +1058,7 @@ fun PikoMainScaffold(
                     onOpenPage = ::openPage,
                     onToggleLibrary = ::toggleLibrary,
                     collapsed = collapsed,
-                    onToggleCollapsed = if (heightCompact) null else ::toggleSidebar,
+                    onToggleCollapsed = ::toggleSidebar,
                 )
             }
             BackHandler(enabled = sidebarFloating) { sidebarFloatRequested = false }
@@ -1149,9 +1153,8 @@ fun PikoMainScaffold(
                         }
                     }
                 }
-                // 后台任务的浮动卡片，条件与网盘页的标签栏相同（twoPane）。更窄的窗口按手机处理：解压与归档的进度在传输页，
-                // 查重与添加链接在网盘页底部的 sheet 里，一次一件（TaskSlot）。medium 虽有侧边栏，380dp 宽的卡片在那里要盖住大半个列表
-                if (widthClass == WidthClass.Expanded && !heightCompact) {
+                // 后台任务的浮动卡片只在桌面。移动端解压与归档的进度在传输页，查重与添加链接在网盘页底部的 sheet 里，一次一件（TaskSlot）
+                if (desktop) {
                     FloatingTasks(
                         archive = services.archiveExtractSession,
                         vault = services.folderVaultSession,

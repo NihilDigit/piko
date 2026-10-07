@@ -162,9 +162,7 @@ import dev.piko.shared.state.InstantSaveOutcome
 import dev.piko.shared.upload.UploadSelection
 import dev.piko.shared.upload.isUploading
 import dev.piko.shared.download.DriveDownloadFolderSource
-import dev.piko.ui.adaptive.WidthClass
-import dev.piko.ui.adaptive.currentWidthClass
-import dev.piko.ui.adaptive.isHeightCompact
+import dev.piko.ui.adaptive.isDesktopLayout
 import dev.piko.ui.components.PikoSheet
 import dev.piko.ui.platform.ShortcutModifier
 import dev.piko.ui.platform.LocalWindowCaption
@@ -392,13 +390,12 @@ fun DriveScreen(
     var keyboardFocusTarget by remember { mutableStateOf<String?>(null) }
     val focusManager = LocalFocusManager.current
     var renameNewName by remember { mutableStateOf("") }
-    // 宽窗口的顶栏是地址栏加后退、前进与上一级，照资源管理器；窄屏仍是目录名作标题、上级另成一行面包屑。
-    // medium 按大号手机，同窄屏。横握的手机（高度 compact）也按窄屏：地址栏加命令栏两行在三百多 dp 里太高，
-    // 而且它仍是触屏，FAB、底部 sheet 与长按多选比资源管理器那一套顺手
-    val heightCompact = isHeightCompact()
-    val pathInTopBar = currentWidthClass() == WidthClass.Expanded && !heightCompact
-    // 标签栏与浮动的属性卡片：只在宽、又不矮的窗口里有，高度 compact 时放不下
-    val twoPane = currentWidthClass() == WidthClass.Expanded && !heightCompact
+    // 桌面的顶栏是地址栏加后退、前进与上一级，照资源管理器；移动端是目录名作标题、上级另成一行面包屑，平板也是。
+    // 按交互模型分而不按宽度，见 FormFactor
+    val desktop = isDesktopLayout()
+    val pathInTopBar = desktop
+    // 标签栏、命令栏、浮动的属性卡片与目录图、右键菜单代替条目上的更多按钮：桌面那一套
+    val twoPane = desktop
     // 目录图只在宽窗口里有：导航栏搜索旁的按钮、快捷键与命令面板打开，面板上的 × 关掉；开着与否存进偏好（每台设备各自的）
     val folderMapOpen by sessionManager.folderMapOpenFlow.collectAsStateWithLifecycle(initialValue = false)
     fun setFolderMapOpen(open: Boolean) {
@@ -721,9 +718,9 @@ fun DriveScreen(
     }
     // 记住的回调里读它的最新值：窗口从宽变窄时不该还能开标签
     val latestOpenInNewTab by rememberUpdatedState(openInNewTab)
-    // 快速访问列在侧边栏与命令面板里：有侧边栏（expanded）才给固定的入口，手机上固定了也看不到
+    // 快速访问列在侧边栏与命令面板里：有侧边栏（桌面）才给固定的入口，移动端固定了也看不到
     val pinnedFolders by driveRepo.pinnedFoldersFlow.collectAsStateWithLifecycle(emptyList())
-    val togglePin: ((FileStat) -> Unit)? = if (currentWidthClass() == WidthClass.Expanded) {
+    val togglePin: ((FileStat) -> Unit)? = if (desktop) {
         { folder ->
             if (pinnedFolders.any { it.id == folder.id }) {
                 driveRepo.unpinFolder(folder.id)
@@ -857,8 +854,9 @@ fun DriveScreen(
         return operationsOf(file, targets) + propertiesAction { latestShowProperties(targets, propertiesAnchors.fromMenu(file.id)) }
     }
 
-    // 只在触屏与窄窗口的条目上画打开操作面板的按钮：宽窗口里鼠标有右键菜单，每一项挂一个按钮只是满屏一样的图标
-    val itemMoreButton = !twoPane
+    // 只在移动端的条目上画打开操作面板的按钮：桌面有右键菜单，每一项挂一个按钮只是满屏一样的图标。
+    // 曾按宽度判断，平板横握没有右键也没有这个按钮，单项的操作整个不可达
+    val itemMoreButton = !desktop
 
     // 从没解压过的包第一次打开要等几秒。准备完 key 一变，这里的协程取消，提示随之收起；快的不提示
     LaunchedEffect(state.preparingEntryId) {

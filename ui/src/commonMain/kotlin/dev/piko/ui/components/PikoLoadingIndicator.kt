@@ -23,8 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import dev.piko.ui.adaptive.WidthClass
-import dev.piko.ui.adaptive.currentWidthClass
+import dev.piko.ui.adaptive.isDesktopLayout
 import kotlinx.coroutines.delay
 
 /*
@@ -148,8 +147,8 @@ fun RefreshBox(
 
 /**
  * 带 [RefreshBox] 的页面是否在顶栏另给刷新按钮。最近一次输入是鼠标时下拉已关掉，必须给；
- * 宽窗口上手指也能下拉，仍然给，因为宽窗口多半接着鼠标，只是还没动过。
+ * 桌面上手指也能下拉，仍然给，因为桌面多半接着鼠标，只是还没动过。
  */
 @Composable
 fun showsRefreshButton(): Boolean =
-    !LocalPointerSource.current.isTouchLike || currentWidthClass() == WidthClass.Expanded
+    !LocalPointerSource.current.isTouchLike || isDesktopLayout()

@@ -537,7 +537,7 @@ fun TransfersScreen(
 
     // 有外框时与网盘页同一套：顶上一排类别标签，下面一块岛，岛的上半段是速度、容量与操作，下面是列表。
     // 原来筛选与操作在外框色上的一行、速度与容量在窗口底部另一行，列表是夹在中间的一张卡片，与网盘页的岛对不上
-    val island = LocalFramed.current && !compact
+    val island = LocalFramed.current
     val showTabs = !state.isEmpty
     PikoScaffold(
         modifier = modifier.fillMaxSize(),

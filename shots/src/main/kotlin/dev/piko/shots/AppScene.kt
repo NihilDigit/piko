@@ -208,7 +208,8 @@ class AppScene private constructor(private val scene: ImageComposeScene) : AutoC
 
     companion object {
         /** 开一个 [width]×[height]（dp，密度 1）的窗口，等根目录列出来再交给调用方。 */
-        fun open(env: ShotEnv, width: Int, height: Int, mode: ThemeMode, showPlayer: Boolean = false, caption: Boolean = false): AppScene {
+        fun open(env: ShotEnv, width: Int, height: Int, mode: ThemeMode, showPlayer: Boolean = false, caption: Boolean = false, mobile: Boolean = false): AppScene {
+            val platform = if (mobile) MobileShotPlatform(env.platform) else env.platform
             // 信息流的独立窗口不画，只记开没开着：应用内据此收起侧栏，弹出后的样子也能截
             val feedWindow = mutableStateOf(false)
             val player = VideoPlayerHost.Detached(
@@ -226,7 +227,7 @@ class AppScene private constructor(private val scene: ImageComposeScene) : AutoC
                         PlayerPreview(env, mode)
                     } else {
                         CompositionLocalProvider(LocalWindowCaption provides if (caption) ShotWindowCaption else null) {
-                            PikoApp(env.services, env.platform, Appearance(mode = mode), player)
+                            PikoApp(env.services, platform, Appearance(mode = mode), player)
                         }
                     }
                 }

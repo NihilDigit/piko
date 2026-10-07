@@ -40,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
+import dev.piko.ui.adaptive.isDesktopLayout
 import dev.piko.ui.adaptive.isHeightCompact
 import dev.piko.ui.platform.LocalPikoPlatform
 
@@ -59,7 +60,7 @@ interface PikoSheetScope : ColumnScope {
 }
 
 /**
- * 模态面板。宽窗口（expanded）里是从末端边缘滑入的侧边面板，其余是只有展开一档的底部 sheet。
+ * 模态面板。桌面与移动端的宽窗口（expanded）里是从末端边缘滑入的侧边面板，其余是只有展开一档的底部 sheet。
  *
  * 面板承接的是临时任务（条目操作、传输详情、添加链接），一律浮在内容上，不停进外框右侧那一栏。
  * 曾经停进去过，图它不挡列表；但那一栏还放详情与信息流，三者轮流让位，返回键关的是哪一个说不清。
@@ -87,9 +88,10 @@ fun PikoSheet(
     sideSheetTitle: String? = null,
     content: @Composable PikoSheetScope.() -> Unit,
 ) {
-    // 横握的手机宽度多在 medium，但只有三百多 dp 高：底部 sheet 只露几行，侧边面板能用满整个高度
+    // 桌面一律是侧边面板：底部 sheet 配鼠标不顺手，见上。横握的手机宽度多在 medium，但只有三百多 dp 高：
+    // 底部 sheet 只露几行，侧边面板能用满整个高度
     val widthClass = currentWidthClass()
-    if (widthClass == WidthClass.Expanded || (widthClass == WidthClass.Medium && isHeightCompact())) {
+    if (isDesktopLayout() || widthClass == WidthClass.Expanded || (widthClass == WidthClass.Medium && isHeightCompact())) {
         ModalSideSheet(onDismissRequest, sideSheetTitle, content)
         return
     }

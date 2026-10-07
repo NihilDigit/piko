@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 Piko 是 PikPak 的第三方跨平台客户端。Android、Windows、macOS 与 Linux（后两者实验性）共用一套 Material 3 Expressive 界面，
-按窗口宽度自适应；业务逻辑与屏幕状态在 `shared`，界面在 `ui`，两端只剩入口与平台实现。
+桌面与移动各一套交互、按窗口宽度调整密度；业务逻辑与屏幕状态在 `shared`，界面在 `ui`，两端只剩入口与平台实现。
 
 本文件只写跨模块的约定。各模块的细节在所在目录的 CLAUDE.md，读到那里的文件时自动加载；只搜索、不读文件时要自己打开：
 
@@ -100,7 +100,7 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 `ui/src/commonMain` 是全部界面：主题、导航、网盘、传输、设置、登录与各组件，两端共用。
 入口是 `PikoApp`：`MainActivity` 与桌面的 `Main.kt` 各自拼好 `PikoServices`（进程级的仓库与调度器）
 与 `PikoPlatform`（平台能力），传进去即可。屏幕里经 `LocalPikoServices`、`LocalPikoPlatform` 取用，
-不要再引用 `PikoApplication.instance`。布局只看窗口宽度，不看设备，细节见 `ui/CLAUDE.md`。
+不要再引用 `PikoApplication.instance`。交互模型按平台（`PikoPlatform.formFactor`：桌面或移动），密度按窗口宽度，细节见 `ui/CLAUDE.md`。
 
 `shared/.../shared/state/DriveScreenState.kt` 仍是核心接缝：文件列表、加载态、排序、搜索、多选、
 启发式折叠、防窥揭示、目录导航与增删改动作都在这里。约定：

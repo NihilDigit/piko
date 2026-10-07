@@ -24,7 +24,8 @@ private const val USAGE = """用法：piko-shots <命令> [选项]
   texts [--size <宽>x<高>] [步骤…]
       不存图，打印界面上所有文本与内容描述，写 --click 时找名字用。
 
-窗口尺寸按 dp 计（密度 1），默认 1440x900。输出默认在 build/shots/<名字>.png，
+窗口尺寸按 dp 计（密度 1），默认 1440x900。窄于 840 按移动端拍，--mobile 与 --desktop 显式指定
+（平板横屏是 --size 1280x800 --mobile）。输出默认在 build/shots/<名字>.png，
 经 gradle run 时相对仓库根目录。数据来自 FakePikPak.seed()，每张图都从登录后的网盘根目录开始。"""
 
 private sealed interface Step {
@@ -55,6 +56,8 @@ private class Shot(
     val highlightName: String? = null,
     /** 照桌面端标题栏并进内容的样子，在贴着右上角的那一行末尾画窗口按钮，见 AppScene 的 ShotWindowCaption。 */
     val caption: Boolean = false,
+    /** 按移动端的交互模型拍，见 MobileShotPlatform。窄于 840dp 的默认是手机；要看窄的桌面窗口显式传 false。 */
+    val mobile: Boolean = width < 840,
 )
 
 /** 进番剧目录，框选几集后按 F2 打开批量重命名。框从 SPs 那一行右侧的空白处拖起，起点落在空白处才是框选。 */
@@ -106,6 +109,12 @@ private val standardSet = listOf(
     Shot("files-1100x800", 1100, 800),
     Shot("files-760x800", 760, 800),
     Shot("files-400x860", 400, 860),
+    // 平板横屏：移动端的交互，导航是 Rail；条目上有更多按钮，点开是操作面板
+    Shot("tablet-files-1280x800", 1280, 800, mobile = true),
+    Shot("tablet-details-1280x800", 1280, 800, mobile = true, steps = listOf(Step.Click("更多操作"), Step.Pump(800))),
+    Shot("tablet-transfers-1280x800", 1280, 800, mobile = true, steps = listOf(Step.Click("传输"), Step.Wait("Dandadan"))),
+    // 桌面窄窗口：仍是侧边栏的窄轨与命令栏
+    Shot("files-desktop-700x800", 700, 800, mobile = false, caption = true),
     Shot("files-1440x900-dark", mode = ThemeMode.DARK),
     Shot("files-subfolder-1440x900", steps = listOf(Step.Click("Frieren"), Step.Wait("SPs"))),
     // 浏览历史与快捷栏：进一个目录、后退、再进另一个，左侧「最近」记下两处，前进键亮着又被新的一步作废
@@ -204,10 +213,11 @@ private val standardSet = listOf(
     // 宽窗口的「传输」按钮有传输时写的是项数：暂停的一部电影与这一组
     Shot("transfers-batch-1440x900", steps = listOf(Step.Click("2 项"), Step.Wait("Frieren S01"), Step.Click("展开"), Step.Pump(800))),
     Shot("transfers-batch-400x860", 400, 860, steps = listOf(Step.Click("传输"), Step.Wait("Frieren S01"), Step.Click("展开"), Step.Pump(800))),
-    Shot("profile-1440x900", steps = listOf(Step.Click("我的"), Step.Pump(1_000))),
-    Shot("profile-starred-1440x900", steps = listOf(Step.Click("我的"), Step.Pump(1_000), Step.Click("已加星标的文件与文件夹"), Step.Wait("Dune"))),
-    Shot("profile-trash-1440x900", steps = listOf(Step.Click("我的"), Step.Pump(1_000), Step.Click("回收站"), Step.Wait("old-backup"))),
-    Shot("profile-settings-1440x900", steps = listOf(Step.Click("我的"), Step.Pump(1_000), Step.Click("设置"), Step.Pump(1_000))),
+    // 「我的」只在移动端；桌面的设置从侧边栏的账号行或主修饰键+逗号打开
+    Shot("profile-400x860", 400, 860, steps = listOf(Step.Click("我的"), Step.Pump(1_000))),
+    Shot("profile-starred-400x860", 400, 860, steps = listOf(Step.Click("我的"), Step.Pump(1_000), Step.Click("已加星标的文件与文件夹"), Step.Wait("Dune"))),
+    Shot("profile-trash-400x860", 400, 860, steps = listOf(Step.Click("我的"), Step.Pump(1_000), Step.Click("回收站"), Step.Wait("old-backup"))),
+    Shot("settings-1440x900", steps = listOf(Step.Pump(800), Step.Key("Ctrl+Comma"), Step.Pump(1_200))),
     Shot("profile-settings-760x800", 760, 800, steps = listOf(Step.Click("我的"), Step.Pump(1_000), Step.Click("设置"), Step.Pump(1_000))),
     // 对话框与面板：各在宽窗口与手机宽度下一张
     *dialogShots("dlg-share", menuSteps("文档", "分享")),
@@ -306,7 +316,7 @@ private fun printTexts(shot: Shot) = run(shot) { app -> app.texts().forEach(::pr
 
 private fun run(shot: Shot, finish: (AppScene) -> Unit) {
     ShotEnv(shot.viewMode, shot.extraSeed).use { env ->
-        AppScene.open(env, shot.width, shot.height, shot.mode, shot.showPlayer, shot.caption).use { app ->
+        AppScene.open(env, shot.width, shot.height, shot.mode, shot.showPlayer, shot.caption, shot.mobile).use { app ->
             shot.highlightName?.let { name ->
                 val file = kotlinx.coroutines.runBlocking { env.services.driveRepository.listBrowsable("", dev.piko.shared.data.PikoFileSortOrder.TIME_DESC).getOrThrow().first { it.name == name } }
                 edt { env.services.driveRepository.requestHighlight(setOf(file.id)) }
@@ -342,6 +352,7 @@ private fun parseShot(name: String, args: List<String>): Shot {
     var height = 900
     var mode = ThemeMode.LIGHT
     var caption = false
+    var mobile: Boolean? = null
     val steps = mutableListOf<Step>()
     var i = 0
     fun value(): String = args.getOrNull(++i) ?: fail("${args[i - 1]} 缺少参数")
@@ -354,6 +365,8 @@ private fun parseShot(name: String, args: List<String>): Shot {
             }
             "--dark" -> mode = ThemeMode.DARK
             "--caption" -> caption = true
+            "--mobile" -> mobile = true
+            "--desktop" -> mobile = false
             "--click" -> steps += Step.Click(value())
             "--right-click" -> steps += Step.Click(value(), PointerButton.Secondary)
             "--hover" -> steps += Step.Hover(value())
@@ -375,7 +388,7 @@ private fun parseShot(name: String, args: List<String>): Shot {
         }
         i++
     }
-    return Shot(name, width, height, mode, steps, caption = caption)
+    return Shot(name, width, height, mode, steps, caption = caption, mobile = mobile ?: (width < 840))
 }
 
 private fun option(args: List<String>, name: String): String? = args.indexOf(name).takeIf { it >= 0 }?.let { args.getOrNull(it + 1) }
