@@ -224,7 +224,10 @@ fun main(args: Array<String>) {
         val downloads by services.downloadManager.tasks.collectAsState()
         val uploads by services.uploadManager.tasks.collectAsState()
         val account = services.clientManager.currentClient.collectAsState().value?.account
-        val hasActiveTransfers = downloads.values.any { it.status.isActive } || uploads.values.anyActiveFor(account)
+        // 归档与取消归档也算：在写成清单与处置原文件之间退出，原文件与条目会同时留着（见 FolderVaultSession）。
+        // 解压在服务端跑，退出不影响它
+        val hasActiveTransfers = downloads.values.any { it.status.isActive } || uploads.values.anyActiveFor(account) ||
+            services.folderVaultSession.isRunning
         // 关窗时下载或上传还在跑，就藏进托盘传完再退出；传完之前随时可以从托盘叫回来或直接退出
         var isInBackground by remember { mutableStateOf(false) }
         var isMainWindowFocused by remember { mutableStateOf(true) }
