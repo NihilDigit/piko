@@ -1,7 +1,8 @@
 package dev.piko.ui.screens.settings
 
-import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.BugReport
@@ -36,11 +38,12 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.log.PikoLog
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.components.InlineLoadingIndicator
-import dev.piko.ui.components.PikoLogo
+import dev.piko.ui.components.PikoBrandIcons
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.PikoPlatform
 import dev.piko.update.AvailableUpdate
@@ -161,8 +164,12 @@ private fun AboutCard(
     SettingsCard {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                // 应用自己的彩色图标，与侧边栏左上角、桌面图标同一张：这里介绍的是 Piko 本身，不是某个设置项
-                Image(PikoLogo, contentDescription = null, modifier = Modifier.size(48.dp))
+                Box(
+                    modifier = Modifier.size(48.dp).clip(CircleShape).background(colors.primaryContainer),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(PikoBrandIcons.Glyph, contentDescription = null, tint = colors.onPrimaryContainer)
+                }
                 Spacer(modifier = Modifier.width(16.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text("Piko", style = MaterialTheme.typography.titleMedium)
