@@ -1,7 +1,6 @@
 package dev.piko.ui.screens.auth
 
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -31,7 +30,6 @@ import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalContentColor
@@ -46,7 +44,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -56,15 +53,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.autofill.ContentType
 import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.draw.clip
-import androidx.compose.foundation.background
 import dev.piko.ui.components.IslandTabBarHeight
 import dev.piko.ui.platform.LocalWindowCaption
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.rememberCaptionSlot
 import dev.piko.ui.platform.windowDragArea
-import dev.piko.ui.theme.FrameCardShape
-import dev.piko.ui.theme.IslandGap
-import dev.piko.ui.theme.frame
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -75,24 +68,22 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import dev.piko.shared.data.SavedAccount
 import dev.piko.shared.net.ProxySetting
 import dev.piko.shared.state.LoginState
 import dev.piko.ui.LocalPikoServices
-import dev.piko.ui.adaptive.WidthClass
-import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.PikoBrandIcons
 import dev.piko.ui.components.TooltipIconButton
-import dev.piko.ui.screens.settings.Avatar
 import dev.piko.ui.screens.settings.ProxySettingsDialog
 import kotlinx.coroutines.launch
 
 /**
- * 登录页。宽窗口左右分栏，左边是品牌，右边是表单；窄窗口只有表单，品牌缩成表单顶上的图标。
+ * 登录页。整页一块，表单居中限宽，品牌是表单顶上的图标。
  *
- * 本机保存着账号时，它们列在表单之前（「继续使用」）：点一下直接进，会话失效的填好账号名、光标落到密码框。
- * 登录着一个账号再加一个时（[onCancel] 不为 null）不列它们，标题换成「添加账号」，左上角可以关掉回去。
+ * 只是一张表单，不列本机保存的账号：多账号的切换与补登都在设置里。因某个账号失效才来到这里时
+ * （PikoClientManager.expiredPrefill），填好它的账号名、光标落到密码框。曾在表单前列过「继续使用」，
+ * 可来到登录页时那些账号都已登录失败，点了也只是再失败一次。
+ * 登录着一个账号再加一个时（[onCancel] 不为 null），标题换成「添加账号」，左上角可以关掉回去。
  */
 @Composable
 fun LoginScreen(
@@ -102,20 +93,19 @@ fun LoginScreen(
     val scope = rememberCoroutineScope()
     val clientManager = LocalPikoServices.current.clientManager
     val preferences = LocalPikoServices.current.preferences
-    val state = remember { LoginState(clientManager, scope, clientManager.addingPrefill.takeIf { onCancel != null }.orEmpty()) }
-    val savedAccounts by clientManager.accounts.collectAsState()
+    val state = remember {
+        LoginState(clientManager, scope, if (onCancel != null) clientManager.addingPrefill else clientManager.expiredPrefill)
+    }
     val proxySetting by preferences.proxySettingFlow.collectAsState(ProxySetting())
     var showProxyDialog by remember { mutableStateOf(false) }
     if (onCancel != null) BackHandler(onBack = onCancel)
 
-    val wide = currentWidthClass() == WidthClass.Expanded
-    // 标题栏并进内容，与主界面相同：顶上一行画窗口按钮，空白处能拖。宽窗口里左边的品牌区是外框色，
-    // 右边的表单是一块圆角的岛浮在上面（四角露出外框色），两块颜色相接处由浅的一方圆角压在深的一方上；
-    // 原来两块直接拼接，接缝是一条硬直线，标题栏还是系统的一条
+    // 标题栏并进内容，与主界面相同：顶上一行画窗口按钮，空白处能拖。各种宽度都是整页一块、表单居中：
+    // 宽窗口试过左右分栏（品牌区落在外框色上，或做成一块岛），左边那一块只有图标与一句话，撑不起半个窗口
     val windowCaption = LocalWindowCaption.current
     windowCaption?.Host()
     val caption = rememberCaptionSlot()
-    Surface(modifier = modifier.fillMaxSize(), color = if (wide) MaterialTheme.colorScheme.frame else MaterialTheme.colorScheme.surface) {
+    Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
         Column(Modifier.fillMaxSize()) {
             // 只在接管了标题栏的桌面窗口里有这一行；手机上顶上是状态栏，表单自己让开
             if (windowCaption != null) {
@@ -126,46 +116,23 @@ fun LoginScreen(
                     Spacer(Modifier.weight(1f).fillMaxHeight().windowDragArea())
                     caption.buttons?.invoke()
                 }
-            } else if (wide) {
-                // 平板上没有标题栏这一行，岛的上沿也离开边缘一截
-                Spacer(Modifier.height(IslandGap))
             }
-            Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                if (wide) BrandPane(Modifier.weight(1f).fillMaxHeight())
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .then(
-                            if (wide) {
-                                Modifier
-                                    .padding(end = IslandGap, bottom = IslandGap)
-                                    .clip(FrameCardShape)
-                                    .background(MaterialTheme.colorScheme.surface)
-                            } else {
-                                Modifier
-                            },
-                        )
-                        .safeDrawingPadding(),
-                ) {
-                    LoginForm(
-                        state = state,
-                        saved = if (onCancel == null) savedAccounts.accounts else emptyList(),
-                        adding = onCancel != null,
-                        showLogo = !wide,
-                        proxySummary = proxySetting.summary(),
-                        onOpenProxy = { showProxyDialog = true },
-                        modifier = Modifier.align(Alignment.Center),
+            Box(Modifier.weight(1f).fillMaxWidth().safeDrawingPadding()) {
+                LoginForm(
+                    state = state,
+                    adding = onCancel != null,
+                    proxySummary = proxySetting.summary(),
+                    onOpenProxy = { showProxyDialog = true },
+                    modifier = Modifier.align(Alignment.Center),
+                )
+                if (onCancel != null) {
+                    TooltipIconButton(
+                        Icons.Outlined.Close,
+                        "取消",
+                        onClick = onCancel,
+                        enabled = !state.isLoggingIn,
+                        modifier = Modifier.align(Alignment.TopStart).padding(8.dp),
                     )
-                    if (onCancel != null) {
-                        TooltipIconButton(
-                            Icons.Outlined.Close,
-                            "取消",
-                            onClick = onCancel,
-                            enabled = !state.isLoggingIn,
-                            modifier = Modifier.align(Alignment.TopStart).padding(8.dp),
-                        )
-                    }
                 }
             }
         }
@@ -183,41 +150,11 @@ fun LoginScreen(
     }
 }
 
-/** 宽窗口左边的品牌区：图标、名字与一句定位，直接落在外框色上，右边的表单是浮在上面的岛。 */
-@Composable
-private fun BrandPane(modifier: Modifier) {
-    Box(modifier = modifier) {
-        Column(
-            modifier = Modifier.fillMaxSize().padding(48.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
-        ) {
-            Icon(
-                imageVector = PikoBrandIcons.Logo,
-                contentDescription = null,
-                tint = Color.Unspecified,
-                modifier = Modifier.size(128.dp).clip(MaterialTheme.shapes.extraLarge),
-            )
-            Spacer(Modifier.height(28.dp))
-            Text("Piko", style = MaterialTheme.typography.displayMedium, color = MaterialTheme.colorScheme.onSurface)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "高性能、多平台的 PikPak 客户端",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-            )
-        }
-    }
-}
-
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun LoginForm(
     state: LoginState,
-    saved: List<SavedAccount>,
     adding: Boolean,
-    showLogo: Boolean,
     proxySummary: String,
     onOpenProxy: () -> Unit,
     modifier: Modifier = Modifier,
@@ -232,8 +169,8 @@ private fun LoginForm(
     }
     val isLoading = state.isLoggingIn
     val errorMessage = state.errorMessage
-    val clientManager = LocalPikoServices.current.clientManager
-    val credentialsEncrypted by produceState(false) { value = clientManager.credentialsEncrypted() }
+    // 带着失效的账号进来时账号名已填好，直接落到密码框
+    LaunchedEffect(Unit) { if (state.needsPasswordOnly) passwordFocus.requestFocus() }
 
     Column(
         modifier = modifier
@@ -244,16 +181,14 @@ private fun LoginForm(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         // 平板与横屏上表单不铺满：一行输入框拉到上千 dp 宽，眼睛要来回扫
-        Column(modifier = Modifier.widthIn(max = FormMaxWidth).fillMaxWidth()) {
-            if (showLogo) {
-                Icon(
-                    imageVector = PikoBrandIcons.Logo,
-                    contentDescription = null,
-                    tint = Color.Unspecified,
-                    modifier = Modifier.size(72.dp).clip(MaterialTheme.shapes.extraLarge),
-                )
-                Spacer(Modifier.height(24.dp))
-            }
+        Column(modifier = Modifier.widthIn(max = FormMaxWidth).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(
+                imageVector = PikoBrandIcons.Logo,
+                contentDescription = null,
+                tint = Color.Unspecified,
+                modifier = Modifier.size(72.dp).clip(MaterialTheme.shapes.extraLarge),
+            )
+            Spacer(Modifier.height(24.dp))
             Text(
                 text = if (adding) "添加账号" else "登录",
                 style = MaterialTheme.typography.headlineMedium,
@@ -264,26 +199,9 @@ private fun LoginForm(
                 text = if (adding) "当前账号保持登录，可随时切换" else "使用 PikPak 账号",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
             )
             Spacer(Modifier.height(28.dp))
-
-            if (saved.isNotEmpty()) {
-                SectionLabel("继续使用")
-                Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainer) {
-                    Column(modifier = Modifier.padding(vertical = 4.dp)) {
-                        saved.forEach { account ->
-                            SavedAccountRow(
-                                saved = account,
-                                busy = state.usingSaved == account.account,
-                                enabled = !isLoading,
-                                onClick = { state.useSaved(account.account) { passwordFocus.requestFocus() } },
-                            )
-                        }
-                    }
-                }
-                Spacer(Modifier.height(24.dp))
-                SectionLabel("其他账号")
-            }
 
             // contentType 让密码管理器认出这两个框，能自动填充，登录后也会提示保存
             OutlinedTextField(
@@ -340,7 +258,7 @@ private fun LoginForm(
                 contentPadding = ButtonDefaults.contentPaddingFor(ButtonDefaults.MediumContainerHeight),
                 shapes = ButtonDefaults.shapes(),
             ) {
-                if (isLoading && state.usingSaved == null) {
+                if (isLoading) {
                     InlineLoadingIndicator(color = LocalContentColor.current)
                     Spacer(Modifier.width(8.dp))
                     Text("正在登录")
@@ -350,62 +268,13 @@ private fun LoginForm(
             }
 
             Spacer(Modifier.height(24.dp))
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            Spacer(Modifier.height(8.dp))
             // 连不上 PikPak 的人往往卡在这一步，代理要在登录之前就能改
             TextButton(onClick = onOpenProxy, enabled = !isLoading) {
                 Icon(Icons.Outlined.Public, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
                 Text("网络代理：$proxySummary", maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            // 系统没有可用的凭据存储（Linux 上没有钥匙串服务）时凭据以明文文件存放，这句话就不成立，不写
-            if (credentialsEncrypted) {
-                Text(
-                    "登录凭据经系统加密后仅保存于本机。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 12.dp),
-                )
-            }
         }
-    }
-}
-
-@Composable
-private fun SectionLabel(text: String) {
-    Text(
-        text,
-        style = MaterialTheme.typography.labelLarge,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(start = 4.dp, bottom = 8.dp),
-    )
-}
-
-@Composable
-private fun SavedAccountRow(saved: SavedAccount, busy: Boolean, enabled: Boolean, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Avatar(saved.displayName, saved.avatarUrl, size = 40.dp)
-        Spacer(Modifier.width(16.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(saved.displayName, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            val secondary = saved.email.ifBlank { saved.account }
-            if (secondary != saved.displayName) {
-                Text(
-                    secondary,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-        if (busy) InlineLoadingIndicator()
     }
 }
 

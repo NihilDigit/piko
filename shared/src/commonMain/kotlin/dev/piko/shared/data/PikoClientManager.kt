@@ -14,6 +14,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -50,6 +51,25 @@ class PikoClientManager(
     /** 登录着一个账号、又打开登录页去加另一个。登录成功或取消时结束；这期间当前账号照常在后台工作。 */
     private val _addingAccount = MutableStateFlow(false)
     val addingAccount: StateFlow<Boolean> = _addingAccount.asStateFlow()
+
+    /**
+     * 本次运行里已知会话被服务端拒绝、要重新输入密码的账号。设置里的账号列表据此标出，不必点了才发现。
+     * 不存盘：下次启动时各自重新试过才知道。
+     */
+    private val _expiredAccounts = MutableStateFlow<Set<String>>(emptySet())
+    val expiredAccounts: StateFlow<Set<String>> = _expiredAccounts.asStateFlow()
+
+    /**
+     * 因为这个账号失效才回到登录页（启动恢复或断网重连时被拒）时是它，登录页预先填上、提示重新输入密码。
+     * 登录页只是一张表单，不列已保存的账号：多账号的切换与补登都在设置里。
+     */
+    var expiredPrefill: String = ""
+        private set
+
+    private fun markExpired(account: String, returnsToLogin: Boolean = false) {
+        _expiredAccounts.update { it + account }
+        if (returnsToLogin) expiredPrefill = account
+    }
 
     // 切换、登录与退出都在换 client，交错时后完成的会把先完成的换掉，而账号列表记的是先完成的那个
     private val switchLock = Mutex()
@@ -90,9 +110,10 @@ class PikoClientManager(
                     scheduleReconnect(client)
                 }
                 // 刷新令牌失效时 SDK 已在改用密码登录之前把会话从存储里清掉，这里不必再清。
-                // 账号留在列表里：登录页据此列出它，重新输入密码即可
+                // 账号留在列表里：登录页预先填上它，重新输入密码即可
                 is LoginFailure.Rejected -> {
                     client.close()
+                    markExpired(account, returnsToLogin = true)
                     editAccounts { it.copy(current = null) }
                 }
             }
@@ -157,6 +178,7 @@ class PikoClientManager(
             val failure = tryLogin(client, "切换账号")
             if (failure is LoginFailure.Rejected) {
                 client.close()
+                markExpired(account)
                 throw failure.error
             }
             adopt(client)
@@ -175,9 +197,6 @@ class PikoClientManager(
     /** 登录页打开时读一次，见 [beginAddingAccount]。 */
     var addingPrefill: String = ""
         private set
-
-    /** 见 [PikoSessionStore.encryptsAtRest]。 */
-    suspend fun credentialsEncrypted(): Boolean = runSuspendCatching { sessionStore.encryptsAtRest() }.getOrDefault(false)
 
     fun cancelAddingAccount() {
         _addingAccount.value = false
@@ -209,7 +228,10 @@ class PikoClientManager(
                 val credentials = credentialsOf(candidate.account)
                 val client = clientFor(candidate.account, credentials?.password)
                 when (val failure = tryLogin(client, "退出后切换账号")) {
-                    is LoginFailure.Rejected -> null.also { client.close() }
+                    is LoginFailure.Rejected -> null.also {
+                        client.close()
+                        markExpired(candidate.account)
+                    }
                     else -> client to failure
                 }
             }
@@ -238,6 +260,8 @@ class PikoClientManager(
             sessionStore.clearCredentials(account)
             sessionStore.clear(account)
         }.logFailure(TAG, "清除账号凭据失败")
+        _expiredAccounts.update { it - account }
+        if (expiredPrefill == account) expiredPrefill = ""
         editAccounts { it.without(account) }
     }
 
@@ -263,6 +287,8 @@ class PikoClientManager(
             saved.upsert(entry.copy(usedAt = now)).copy(current = client.account)
         }
         replaceClient(client)
+        _expiredAccounts.update { it - client.account }
+        if (expiredPrefill == client.account) expiredPrefill = ""
         _addingAccount.value = false
     }
 
@@ -289,6 +315,7 @@ class PikoClientManager(
                         PikoLog.w(TAG, "重连时会话被拒，回登录页")
                         if (_currentClient.compareAndSet(client, null)) {
                             client.close()
+                            markExpired(client.account, returnsToLogin = true)
                             editAccounts { it.copy(current = null) }
                         }
                         return@launch

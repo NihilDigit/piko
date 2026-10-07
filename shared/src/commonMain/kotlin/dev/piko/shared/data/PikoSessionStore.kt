@@ -14,9 +14,6 @@ interface PikoSessionStore : SessionStore {
     suspend fun loadCredentials(account: String): PikoCredentials?
     suspend fun saveCredentials(account: String, password: String)
     suspend fun clearCredentials(account: String)
-
-    /** 本机的机密是否由平台加密存放。没有可用的系统保管处、退回明文文件时为 false，登录页据此决定是否写「经系统加密」。 */
-    suspend fun encryptsAtRest(): Boolean = true
 }
 
 data class PikoCredentials(val account: String, val password: String)

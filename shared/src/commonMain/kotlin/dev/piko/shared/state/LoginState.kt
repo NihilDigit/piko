@@ -25,8 +25,12 @@ class LoginState(
         private set
     var isLoggingIn by mutableStateOf(false)
         private set
-    var errorMessage by mutableStateOf<String?>(null)
+    /** 带着失效的账号进来（[initialAccount] 非空）时一开始就说明为什么要登录。 */
+    var errorMessage by mutableStateOf(if (initialAccount.isNotBlank()) EXPIRED_MESSAGE else null)
         private set
+
+    /** 预先填好了账号，光标该落在密码框。 */
+    val needsPasswordOnly: Boolean = initialAccount.isNotBlank()
 
     val canSubmit: Boolean by derivedStateOf {
         !isLoggingIn && account.isNotBlank() && password.isNotEmpty()
@@ -44,32 +48,6 @@ class LoginState(
         errorMessage = null
     }
 
-    /**
-     * 登录页列出的已保存账号：会话还有效就直接进去；失效了又没存密码时填上账号名，等用户输密码。
-     */
-    fun useSaved(saved: String, onExpired: () -> Unit = {}) {
-        if (isLoggingIn) return
-        isLoggingIn = true
-        usingSaved = saved
-        errorMessage = null
-        scope.launch {
-            try {
-                clientManager.switchTo(saved).onFailure {
-                    account = saved
-                    errorMessage = "登录已失效，请输入密码"
-                    onExpired()
-                }
-            } finally {
-                isLoggingIn = false
-                usingSaved = null
-            }
-        }
-    }
-
-    /** 正在经 [useSaved] 进入的已保存账号，界面在那一行上转圈。 */
-    var usingSaved by mutableStateOf<String?>(null)
-        private set
-
     fun login() {
         if (!canSubmit) return
         isLoggingIn = true
@@ -83,5 +61,9 @@ class LoginState(
                 isLoggingIn = false
             }
         }
+    }
+
+    private companion object {
+        const val EXPIRED_MESSAGE = "登录已失效，请重新输入密码"
     }
 }

@@ -52,7 +52,7 @@ internal fun AccountSwitcher() {
     val others = otherAccounts()
     val scope = rememberCoroutineScope()
     var switching by remember { mutableStateOf<String?>(null) }
-    var expired by remember { mutableStateOf<String?>(null) }
+    val expired by clientManager.expiredAccounts.collectAsStateWithLifecycle()
     var forgetting by remember { mutableStateOf<SavedAccount?>(null) }
 
     Surface(
@@ -65,17 +65,18 @@ internal fun AccountSwitcher() {
                 AccountRow(
                     leading = { Avatar(saved.displayName, saved.avatarUrl, size = 36.dp) },
                     title = saved.displayName,
-                    supporting = if (expired == saved.account) "登录已失效，请重新登录" else accountLine(saved),
-                    supportingIsError = expired == saved.account,
+                    supporting = if (saved.account in expired) "需重新登录" else accountLine(saved),
+                    supportingIsError = saved.account in expired,
                     enabled = switching == null,
                     onClick = {
-                        if (expired == saved.account) {
+                        if (saved.account in expired) {
                             clientManager.beginAddingAccount(saved.account)
                             return@AccountRow
                         }
                         switching = saved.account
                         scope.launch {
-                            clientManager.switchTo(saved.account).onFailure { expired = saved.account }
+                            // 失败时 switchTo 已把它记进 expiredAccounts，这一行随之改成「需重新登录」
+                            clientManager.switchTo(saved.account)
                             switching = null
                         }
                     },
