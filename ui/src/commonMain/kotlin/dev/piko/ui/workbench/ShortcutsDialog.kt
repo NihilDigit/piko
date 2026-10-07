@@ -54,6 +54,10 @@ internal fun ShortcutsDialog(modifier: ShortcutModifier, onDismiss: () -> Unit) 
             (if (mac) "⌘I" else "Alt+Enter 或 Ctrl+I") to "属性",
             "菜单键 或 Shift+F10" to "操作菜单",
         ),
+        "添加链接" to listOf(
+            "${primary}Enter" to "保存",
+            "Esc" to "关闭面板，或从某条链接返回列表",
+        ),
         "传输" to listOf(
             "单击 / 双击" to "选中、执行这一项的主操作",
             "${primary.removeSuffix("+")} 点选 / Shift 点选" to "加选、连选",

@@ -18,7 +18,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material3.Icon
@@ -49,49 +48,56 @@ import dev.piko.ui.components.toReadableSize
 internal fun ColumnScope.BatchList(
     batch: InstantBatchState,
     state: InstantSheetState,
-    notice: String?,
+    notice: PanelNotice?,
     /** 侧栏形态的标题在面板顶上那一行，这里只留说明。 */
     showTitle: Boolean,
+    /** 侧边面板里列表部分占满中间，保存栏钉在底部，与单条时相同。 */
+    fillHeight: Boolean,
     onPickTarget: () -> Unit,
 ) {
-    Column {
-        if (showTitle) {
-            Text(
-                text = "添加链接",
-                style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-        }
-        Text(
-            text = "${batch.rows.size} 条链接，点开可勾选文件",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-
-    // 与单条时的文件列表一样占去剩下的高度，短列表照常收缩
-    Surface(
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        modifier = Modifier.weight(1f, fill = false),
+    Column(
+        modifier = Modifier.weight(1f, fill = fillHeight),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        LazyColumn(
-            modifier = Modifier.fillMaxWidth(),
-            contentPadding = PaddingValues(vertical = 4.dp),
-        ) {
-            items(batch.rows, key = { it.key }) { row ->
-                BatchRowItem(
-                    row = row,
-                    saveError = batch.saveErrors[row.key],
-                    enabled = !batch.isSaving,
-                    onOpen = { batch.open(row) },
-                    onRemove = { batch.remove(row) },
+        Column {
+            if (showTitle) {
+                Text(
+                    text = "添加链接",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
                 )
             }
+            Text(
+                text = "${batch.rows.size} 条链接，点开可勾选文件",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
-    }
 
-    notice?.let { ErrorBanner(message = it, onRetry = null) }
+        // 与单条时的文件列表一样占去剩下的高度，短列表照常收缩
+        Surface(
+            shape = MaterialTheme.shapes.large,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            modifier = Modifier.weight(1f, fill = false),
+        ) {
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth(),
+                contentPadding = PaddingValues(vertical = 4.dp),
+            ) {
+                items(batch.rows, key = { it.key }) { row ->
+                    BatchRowItem(
+                        row = row,
+                        saveError = batch.saveErrors[row.key],
+                        enabled = !batch.isSaving,
+                        onOpen = { batch.open(row) },
+                        onRemove = { batch.remove(row) },
+                    )
+                }
+            }
+        }
+
+        notice?.let { NoticeBanner(it) }
+    }
 
     if (batch.lacksSpace) {
         ErrorBanner(
@@ -172,13 +178,24 @@ private fun BatchRowItem(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                // 与点开后的横幅同一说法：列表里就看得出哪条链接里有慢的，不必逐条点开
+                val unindexed = sheet.unindexedEntryCount
+                if (unindexed > 0) {
+                    Text(
+                        text = "$unindexed 项$UNINDEXED_HINT",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.tertiary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             } else {
                 Text(
                     text = when (status) {
-                        InstantBatchRowStatus.RESOLVING -> if (sheet.isAnalyzing) "正在整理文件" else "正在查询云端索引"
+                        InstantBatchRowStatus.RESOLVING -> resolvingText(sheet)
                         InstantBatchRowStatus.NOTHING_SELECTED -> "未勾选文件，不保存"
                         InstantBatchRowStatus.WHOLE_OFFLINE ->
-                            if (row.link.isMagnet) "云端未收录，整条离线下载" else "整条离线下载"
+                            if (row.link.isMagnet) "未收录，整条离线下载" else "整条离线下载"
                         else -> ""
                     },
                     style = MaterialTheme.typography.bodySmall,
@@ -209,10 +226,11 @@ private fun BatchStatusIcon(status: InstantBatchRowStatus) {
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.error,
             )
+            // 整条离线同样慢，与文件行上未收录的标记同一图标
             InstantBatchRowStatus.WHOLE_OFFLINE -> Icon(
-                imageVector = Icons.Outlined.CloudDownload,
+                imageVector = UnindexedIcon,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.outline,
+                tint = MaterialTheme.colorScheme.tertiary,
             )
             InstantBatchRowStatus.READY, InstantBatchRowStatus.NOTHING_SELECTED -> Icon(
                 imageVector = Icons.Outlined.Link,
@@ -228,7 +246,7 @@ private fun BatchStatusIcon(status: InstantBatchRowStatus) {
  * 返回键与 Esc 先回列表，不直接收起面板。
  */
 @Composable
-internal fun ColumnScope.BatchRowDetail(batch: InstantBatchState, row: InstantBatchRow, notice: String?) {
+internal fun ColumnScope.BatchRowDetail(batch: InstantBatchState, row: InstantBatchRow, notice: PanelNotice?, onReceipt: (String) -> Unit) {
     BackHandler { batch.closeRow() }
     val sheet = row.state
     val position = batch.rows.indexOf(row) + 1
@@ -251,17 +269,22 @@ internal fun ColumnScope.BatchRowDetail(batch: InstantBatchState, row: InstantBa
     }
 
     if (sheet.isResolving) {
-        ResolvingRow(text = if (sheet.isAnalyzing) "正在整理文件" else "正在查询云端索引")
+        ResolvingRow(text = resolvingText(sheet))
     }
     sheet.errorMessage?.let { err ->
         val canRetry = sheet.normalizedMagnet != null && sheet.resolution == null && !sheet.isResolving
         ErrorBanner(message = err, onRetry = if (canRetry) sheet::retryResolve else null)
     }
-    notice?.let { ErrorBanner(message = it, onRetry = null) }
+    notice?.let { NoticeBanner(it) }
 
     val result = sheet.resolution
     if (result != null) {
-        ResolutionSection(state = sheet, resourceName = result.resource.name, showCopyLink = true)
+        ResolutionSection(
+            state = sheet,
+            resourceName = result.resource.name,
+            showCopyLink = true,
+            onDownloaded = { onReceipt(QUEUED_RECEIPT) },
+        )
     } else {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(

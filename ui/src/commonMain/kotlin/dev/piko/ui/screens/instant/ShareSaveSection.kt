@@ -51,8 +51,6 @@ import kotlinx.coroutines.delay
 @Composable
 internal fun ColumnScope.ShareSaveSection(
     state: ShareSaveState,
-    target: PathBreadcrumb?,
-    onPickTarget: () -> Unit,
     onPreview: (FileStat) -> Unit,
     previewingId: String?,
     onDownload: (FileStat) -> Unit,
@@ -62,13 +60,25 @@ internal fun ColumnScope.ShareSaveSection(
     when {
         state.needsPassCode -> PassCodeRow(state)
         info != null -> {
-            Text(
-                text = listOf(info.title, info.owner.nickname.takeIf { it.isNotBlank() }?.let { "分享者 $it" })
-                    .filterNotNull().joinToString("  "),
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
+            // 标题与分享者分两行：挤在同一行 titleMedium 里，分享者读起来像标题的一部分
+            Column {
+                Text(
+                    text = info.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                info.owner.nickname.takeIf { it.isNotBlank() }?.let { owner ->
+                    Text(
+                        text = "分享者 $owner",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
             // 与磁力的文件列表一样占去剩下的高度，不定死：长分享在面板里自己滚动，短的照常收缩
             ShareBrowser(state, onPreview, previewingId, onDownload, modifier = Modifier.weight(1f, fill = false))
         }
@@ -76,6 +86,12 @@ internal fun ColumnScope.ShareSaveSection(
 
     if (state.isLoading) ResolvingRow(text = "正在读取分享")
     state.errorMessage?.let { ErrorBanner(message = it, onRetry = null) }
+}
+
+/** 保存位置与转存按钮。与磁力的保存栏同处：侧边面板里钉在底部。 */
+@Composable
+internal fun ShareSaveFooter(state: ShareSaveState, target: PathBreadcrumb?, onPickTarget: () -> Unit) {
+    val info = state.info
     state.doneMessage?.let { message ->
         SaveCaption(message)
         LaunchedEffect(message) {
@@ -165,7 +181,8 @@ private fun ShareEntryRow(file: FileStat, checked: Boolean, onToggle: () -> Unit
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = if (file.isFolder) onOpen else onToggle)
-            .padding(end = 12.dp),
+            // 复选框的起点与磁力文件树的行对齐
+            .padding(start = 4.dp, end = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Checkbox(checked = checked, onCheckedChange = { onToggle() })

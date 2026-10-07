@@ -39,7 +39,8 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 
-data class NameGroupSummary(val selected: Int, val total: Int, val bytes: Long, val hasUnindexed: Boolean)
+/** [unindexed] 是组里含未收录文件的行数，与 [total] 一样按行计。 */
+data class NameGroupSummary(val selected: Int, val total: Int, val bytes: Long, val unindexed: Int)
 
 enum class InstantActionKind {
     /** 只选了一项且已收录，秒传。 */
@@ -306,14 +307,37 @@ class InstantSheetState private constructor(
         expandedGroups[group.key] = !isGroupExpanded(group)
     }
 
-    val treeRows: List<InstantTreeRow> by derivedStateOf { tree?.flatten(::isGroupExpanded).orEmpty() }
+    /** 这一行连同随它保存的字幕、音轨里有没有收录的。与文件行上的标记同一口径。 */
+    fun isUnindexed(row: InstantRow): Boolean = row.indices.any { !items[it].isInstantReady }
+
+    /** 含未收录文件的行数，与「已选 x / y」一样按行计。这些行保存时要离线下载，慢。 */
+    val unindexedEntryCount: Int by derivedStateOf { tree?.rows?.count(::isUnindexed) ?: 0 }
+
+    /**
+     * 只列出含未收录文件的行。它们多半散在默认收起的分区里，照常浏览找不到；
+     * 用筛选而不是替人展开那几个组：展开会改掉用户自己的展开状态，筛选关掉就原样回来。
+     */
+    var showsOnlyUnindexed by mutableStateOf(false)
+        private set
+
+    /** 筛选此刻是否生效。未收录的行被全部取消勾选不影响；换了解析结果、已没有未收录的行时自然失效。 */
+    val isUnindexedFilterActive: Boolean by derivedStateOf { showsOnlyUnindexed && unindexedEntryCount > 0 }
+
+    fun toggleOnlyUnindexed() {
+        showsOnlyUnindexed = !isUnindexedFilterActive
+    }
+
+    val treeRows: List<InstantTreeRow> by derivedStateOf {
+        val tree = tree ?: return@derivedStateOf emptyList()
+        if (isUnindexedFilterActive) tree.flattenMatching(::isUnindexed) else tree.flatten(::isGroupExpanded)
+    }
 
     /** 组行上显示的统计。条目数按行计，不含随视频的字幕。 */
     fun summaryOf(group: InstantGroup): NameGroupSummary = NameGroupSummary(
         selected = group.rows.count { it.index in selectedIndices },
         total = group.rows.size,
         bytes = group.indices.sumOf { items[it].file.size },
-        hasUnindexed = group.indices.any { !items[it].isInstantReady },
+        unindexed = group.rows.count(::isUnindexed),
     )
 
     /**
@@ -692,6 +716,7 @@ class InstantSheetState private constructor(
         tree = built
         resolution = data
         expandedGroups.clear()
+        showsOnlyUnindexed = false
         isInputVisible = false
         folderName = built.folderName
         selectedIndices = built.defaultSelection

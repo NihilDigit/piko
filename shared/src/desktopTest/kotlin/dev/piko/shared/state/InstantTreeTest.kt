@@ -79,7 +79,11 @@ class InstantTreeTest {
         assertFalse(state.isGroupExpanded(pv), "PV 默认收起")
         assertTrue(state.isGroupExpanded(sections.single { it.title == "正片" }))
         state.setGroupSelected(pv, true)
-        assertEquals(NameGroupSummary(selected = 2, total = 2, bytes = pv.indices.sumOf { state.items[it].file.size }, hasUnindexed = false), state.summaryOf(pv))
+        assertEquals(NameGroupSummary(selected = 2, total = 2, bytes = pv.indices.sumOf { state.items[it].file.size }, unindexed = 0), state.summaryOf(pv))
+        // 筛选只看某几行时，它们在收起的分区里也要列出，所在的各层组随之列出，别的分区不出现
+        val filtered = tree.flattenMatching { it in pv.rows }
+        assertEquals(pv.rows.map { it.key }, filtered.map { it.node }.filterIsInstance<InstantRow>().map { it.key })
+        assertEquals(listOf("Steins;Gate", "PV/CM"), filtered.map { it.node }.filterIsInstance<InstantGroup>().map { it.title })
         val moviePv = tree.group("Steins;Gate Fuka Ryouiki no Deja vu").children.filterIsInstance<InstantGroup>().single { it.title == "PV/CM" }
         assertEquals(0, state.summaryOf(moviePv).selected)
     }

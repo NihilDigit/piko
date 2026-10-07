@@ -18,12 +18,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.CloudDownload
+import androidx.compose.material.icons.outlined.HourglassTop
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.ExpandLess
@@ -62,9 +66,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -82,6 +95,7 @@ import dev.piko.shared.state.InstantRow
 import dev.piko.shared.state.InstantSheetState
 import dev.piko.shared.state.NameGroupSummary
 import dev.piko.shared.state.ShareSaveState
+import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.ui.LocalPikoServices
 import io.github.nihildigit.pikpak.shareIdFromUrl
 import dev.piko.ui.components.FileNameField
@@ -119,7 +133,6 @@ fun InstantSheetContent(
     onPreview: (fileId: String, fileName: String) -> Unit,
 ) {
     val platform = LocalPikoPlatform.current
-    val downloads = LocalPikoServices.current.downloadManager
     var showTargetPicker by remember { mutableStateOf(false) }
 
     val batch = state.batch
@@ -129,11 +142,13 @@ fun InstantSheetContent(
     LaunchedEffect(sheets) {
         sheets.map { it.previewRequests }.merge().collect { currentOnPreview(it.fileId, it.fileName) }
     }
-    // 面板盖在网盘页的 Snackbar 之上，一次性提示就地显示几秒
-    var notice by remember { mutableStateOf<String?>(null) }
+    // 面板盖在网盘页的 Snackbar 之上，一次性提示就地显示几秒。状态里发来的都是失败（预览失败、
+    // 批量里有几项没存上），面板自己发的是回执，两者颜色不同：回执画成红色会被当成出错
+    var notice by remember { mutableStateOf<PanelNotice?>(null) }
     LaunchedEffect(sheets) {
-        sheets.map { it.messages }.merge().collect { notice = it }
+        sheets.map { it.messages }.merge().collect { notice = PanelNotice(it, isError = true) }
     }
+    val showReceipt: (String) -> Unit = { notice = PanelNotice(it, isError = false) }
     LaunchedEffect(notice) {
         if (notice != null) {
             delay(4000)
@@ -141,8 +156,6 @@ fun InstantSheetContent(
         }
     }
 
-    val pendingMagnet = state.normalizedMagnet
-    val result = state.resolution
     // 分享链接走转存，与磁力的解析、秒传、离线互不相干，下面整段换成分享面板
     val shareId = remember(state.input) { InstantSheetState.findShareLink(state.input)?.let(::shareIdFromUrl) }
     val driveRepo = LocalPikoServices.current.driveRepository
@@ -153,12 +166,41 @@ fun InstantSheetContent(
         }
     }
 
+    val action = state.primaryAction
+    var askOffline by remember { mutableStateOf<OfflineConfirm?>(null) }
+    // 单条磁力的保存：免费账号要离线时先确认，按钮与快捷键走同一条路
+    val saveMagnet: () -> Unit = {
+        val confirm = action?.let { offlineConfirmOf(state, it) }
+        if (confirm != null) askOffline = confirm else state.performPrimaryAction()
+    }
+    // 主修饰键+Enter 保存。不用单独的 Enter：它在输入框里换行（多条链接一行一条），在文件行上是勾选
+    val saveByShortcut: (() -> Unit)? = when {
+        batch != null -> if (batch.openedRow == null && batch.canSaveAll) batch::saveAll else null
+        shareState != null -> state.target?.takeIf { shareState.selectedIds.isNotEmpty() && !shareState.isSaving }
+            ?.let { target -> { shareState.save(PikoPathBreadcrumb(target.id, target.name)) } }
+        action != null && action.enabled && !state.isSaving && state.savePlan?.blocked != true -> saveMagnet
+        else -> null
+    }
+    val shortcutModifier = platform.shortcutModifier
+
     val focusManager = LocalFocusManager.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            // 侧边面板是整窗高：占满它，保存栏才能钉在底部，文件树用满中间的高度。
+            // 底部 sheet 随内容定高，照旧收缩
+            .then(if (inSideSheet) Modifier.fillMaxHeight() else Modifier)
             // 点面板的空白处交出输入框的焦点。子项自己的点击先消费，走不到这里
             .pointerInput(Unit) { detectTapGestures { focusManager.clearFocus() } }
+            .onPreviewKeyEvent { event ->
+                val save = saveByShortcut
+                if (save != null && event.type == KeyEventType.KeyDown && event.key == Key.Enter && shortcutModifier.isPressed(event)) {
+                    save()
+                    true
+                } else {
+                    false
+                }
+            }
             .padding(horizontal = if (inSideSheet) 16.dp else 24.dp)
             .padding(bottom = if (inSideSheet) 16.dp else 24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -166,86 +208,59 @@ fun InstantSheetContent(
         val openedRow = batch?.openedRow
         if (batch != null) {
             if (openedRow != null) {
-                BatchRowDetail(batch, openedRow, notice)
+                BatchRowDetail(batch, openedRow, notice, onReceipt = showReceipt)
             } else {
-                BatchList(batch, state, notice, showTitle = !inSideSheet && !headerShown, onPickTarget = { showTargetPicker = true })
+                BatchList(
+                    batch, state, notice,
+                    showTitle = !inSideSheet && !headerShown,
+                    fillHeight = inSideSheet,
+                    onPickTarget = { showTargetPicker = true },
+                )
             }
             return@Column
         }
 
-        // 底部 sheet 有拖动条，下滑、点遮罩、返回都能关，标题行不再放关闭按钮
-        if (!inSideSheet && !headerShown) {
-            Text(
-                text = "添加链接",
-                style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-        }
-
-        if (state.isInputVisible) {
-            OutlinedTextField(
-                value = state.input,
-                onValueChange = state::updateInput,
-                label = { Text("磁力链接、下载地址或分享链接") },
-                placeholder = { Text("magnet:?xt=urn:btih:…") },
-                modifier = Modifier.fillMaxWidth(),
-                shape = MaterialTheme.shapes.largeIncreased,
-                maxLines = 3,
-                enabled = !state.isSaving,
-                trailingIcon = {
-                    IconButton(onClick = {
-                        val clip = platform.readClipboardText()
-                        if (!clip.isNullOrBlank()) state.updateInput(clip.trim())
-                    }) {
-                        Icon(Icons.Outlined.ContentPaste, contentDescription = "从剪贴板粘贴")
-                    }
-                },
+        // 内容与保存栏分开：侧边面板里内容占满中间，保存栏钉在底部，解析前后、勾多勾少，按钮都在同一处
+        Column(
+            modifier = Modifier.weight(1f, fill = inSideSheet),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            InstantBody(
+                state = state,
+                shareState = shareState,
+                showTitle = !inSideSheet && !headerShown,
+                notice = notice,
+                onReceipt = showReceipt,
             )
         }
 
         if (shareState != null) {
-            ShareSaveSection(
-                state = shareState,
-                target = state.target,
-                onPickTarget = { showTargetPicker = true },
-                onPreview = state::previewSharedFile,
-                previewingId = state.previewingSharedId,
-                onDownload = { file ->
-                    downloads.enqueueResolved(listOf(io.github.nihildigit.pikpak.ResolvedFile(file.name, file.sizeBytes, file.hash)), state.target?.id.orEmpty())
-                    notice = "已加入下载队列"
-                },
-            )
-        }
-
-        if (shareState == null && state.isResolving) {
-            ResolvingRow(text = if (state.isAnalyzing) "正在整理文件" else "正在查询云端索引")
-        }
-
-        if (shareState == null) state.errorMessage?.let { err ->
-            // 解析失败与未收录都给重试：未收录的资源过一阵可能就被索引了
-            val canRetry = pendingMagnet != null && result == null && !state.isResolving
-            ErrorBanner(
-                message = err,
-                onRetry = if (canRetry) state::retryResolve else null,
-            )
-        }
-
-        notice?.let { ErrorBanner(message = it, onRetry = null) }
-
-        if (shareState == null && result != null) {
-            ResolutionSection(state = state, resourceName = result.resource.name, showCopyLink = !state.isInputVisible)
-        }
-
-        val action = state.primaryAction
-        if (shareState == null && action != null) {
+            ShareSaveFooter(state = shareState, target = state.target, onPickTarget = { showTargetPicker = true })
+        } else if (action != null) {
             TargetRow(
                 target = state.target,
                 notice = state.targetNotice,
                 enabled = !state.isSaving,
                 onClick = { showTargetPicker = true },
             )
-            SaveBar(state = state, action = action)
+            SaveBar(state = state, action = action, onSave = saveMagnet)
         }
+    }
+
+    askOffline?.let { confirm ->
+        OfflineConfirmDialog(
+            confirm = confirm,
+            offlineLeft = state.offlineLeft,
+            onOffline = {
+                askOffline = null
+                state.performPrimaryAction()
+            },
+            onInstant = {
+                askOffline = null
+                state.saveSelectionInstantly()
+            },
+            onDismiss = { askOffline = null },
+        )
     }
 
     if (showTargetPicker) {
@@ -261,6 +276,122 @@ fun InstantSheetContent(
     }
 }
 
+/** 一次性提示。[isError] 为 false 的是回执（如已加入下载队列）。 */
+internal class PanelNotice(val text: String, val isError: Boolean)
+
+@Composable
+internal fun NoticeBanner(notice: PanelNotice) {
+    if (notice.isError) {
+        ErrorBanner(message = notice.text, onRetry = null)
+    } else {
+        StatusBanner(
+            message = notice.text,
+            icon = Icons.Outlined.CheckCircle,
+            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        )
+    }
+}
+
+/** 单条链接时保存栏以上的部分：标题、输入框、解析进度与出错说明、解析结果或分享内容。 */
+@Composable
+private fun ColumnScope.InstantBody(
+    state: InstantSheetState,
+    shareState: ShareSaveState?,
+    showTitle: Boolean,
+    notice: PanelNotice?,
+    onReceipt: (String) -> Unit,
+) {
+    val platform = LocalPikoPlatform.current
+    val downloads = LocalPikoServices.current.downloadManager
+    val pendingMagnet = state.normalizedMagnet
+    val result = state.resolution
+
+    // 底部 sheet 有拖动条，下滑、点遮罩、返回都能关，标题行不再放关闭按钮
+    if (showTitle) {
+        Text(
+            text = "添加链接",
+            style = MaterialTheme.typography.titleLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+    }
+
+    if (state.isInputVisible) {
+        OutlinedTextField(
+            value = state.input,
+            onValueChange = state::updateInput,
+            label = { Text("磁力链接、下载地址或分享链接") },
+            placeholder = { Text("magnet:?xt=urn:btih:…") },
+            modifier = Modifier.fillMaxWidth(),
+            shape = MaterialTheme.shapes.largeIncreased,
+            maxLines = 3,
+            enabled = !state.isSaving,
+            trailingIcon = {
+                IconButton(onClick = {
+                    val clip = platform.readClipboardText()
+                    if (!clip.isNullOrBlank()) state.updateInput(clip.trim())
+                }) {
+                    Icon(Icons.Outlined.ContentPaste, contentDescription = "从剪贴板粘贴")
+                }
+            },
+        )
+    }
+
+    if (shareState != null) {
+        ShareSaveSection(
+            state = shareState,
+            onPreview = state::previewSharedFile,
+            previewingId = state.previewingSharedId,
+            onDownload = { file ->
+                downloads.enqueueResolved(listOf(io.github.nihildigit.pikpak.ResolvedFile(file.name, file.sizeBytes, file.hash)), state.target?.id.orEmpty())
+                onReceipt(QUEUED_RECEIPT)
+            },
+        )
+    }
+
+    if (shareState == null && state.isResolving) {
+        ResolvingRow(text = resolvingText(state))
+    }
+
+    if (shareState == null) state.errorMessage?.let { err ->
+        // 解析失败与未收录都给重试：未收录的资源过一阵可能就被索引了
+        val canRetry = pendingMagnet != null && result == null && !state.isResolving
+        ErrorBanner(
+            message = err,
+            onRetry = if (canRetry) state::retryResolve else null,
+        )
+    }
+
+    notice?.let { NoticeBanner(it) }
+
+    if (shareState == null && result != null) {
+        ResolutionSection(
+            state = state,
+            resourceName = result.resource.name,
+            showCopyLink = !state.isInputVisible,
+            onDownloaded = { onReceipt(QUEUED_RECEIPT) },
+        )
+    }
+}
+
+internal const val QUEUED_RECEIPT = "已加入下载队列"
+
+/** 解析的两段：先等服务端列出文件，再在本机按文件名整理。用户只需知道还在进行，不提「索引」这类内部说法。 */
+internal fun resolvingText(state: InstantSheetState): String = if (state.isAnalyzing) "正在整理文件" else "正在解析链接"
+
+/** 免费账号这次保存要不要先确认离线；会员与秒传为 null。 */
+private fun offlineConfirmOf(state: InstantSheetState, action: InstantPrimaryAction): OfflineConfirm? {
+    val plan = state.savePlan.takeIf { state.resolution != null && !state.contentMissing }
+    val fallback = plan?.fallback
+    return when {
+        !state.confirmsOffline -> null
+        action.kind == InstantActionKind.SUBMIT_OFFLINE -> OfflineConfirm.WholeLink
+        plan == null || plan.blocked || plan.route != SaveRoute.OFFLINE_PACK -> null
+        fallback != null -> OfflineConfirm.PackOrInstant(plan, fallback)
+        else -> OfflineConfirm.Pack(plan)
+    }
+}
+
 /**
  * 保存栏只有一个「保存」。走秒传还是整包离线由 [planSave] 决定，用户不必知道，
  * 两条路各扣哪项额度也不预先说明：额度充裕时这些信息只是噪声。
@@ -269,17 +400,9 @@ fun InstantSheetContent(
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun SaveBar(state: InstantSheetState, action: InstantPrimaryAction) {
+private fun SaveBar(state: InstantSheetState, action: InstantPrimaryAction, onSave: () -> Unit) {
     val plan = state.savePlan.takeIf { state.resolution != null && !state.contentMissing }
     val fallback = plan?.fallback
-    val confirm = when {
-        !state.confirmsOffline -> null
-        action.kind == InstantActionKind.SUBMIT_OFFLINE -> OfflineConfirm.WholeLink
-        plan == null || plan.blocked || plan.route != SaveRoute.OFFLINE_PACK -> null
-        fallback != null -> OfflineConfirm.PackOrInstant(plan, fallback)
-        else -> OfflineConfirm.Pack(plan)
-    }
-    var askOffline by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (plan != null && plan.lacksSpace) {
             // 秒传没有退路按钮可给，只能少选几项；整包离线的退路在下面的按钮上
@@ -305,24 +428,9 @@ private fun SaveBar(state: InstantSheetState, action: InstantPrimaryAction) {
                 label = if (state.contentMissing) "离线下载" else "保存",
                 enabled = action.enabled,
                 isSaving = state.isSaving,
-                onClick = { if (confirm != null) askOffline = true else state.performPrimaryAction() },
+                onClick = onSave,
             )
         }
-    }
-    if (askOffline && confirm != null) {
-        OfflineConfirmDialog(
-            confirm = confirm,
-            offlineLeft = state.offlineLeft,
-            onOffline = {
-                askOffline = false
-                state.performPrimaryAction()
-            },
-            onInstant = {
-                askOffline = false
-                state.saveSelectionInstantly()
-            },
-            onDismiss = { askOffline = false },
-        )
     }
 }
 
@@ -426,10 +534,33 @@ internal fun ResolvingRow(text: String) {
 
 @Composable
 internal fun ErrorBanner(message: String, onRetry: (() -> Unit)?) {
+    StatusBanner(
+        message = message,
+        icon = Icons.Outlined.ErrorOutline,
+        containerColor = MaterialTheme.colorScheme.errorContainer,
+        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        actionLabel = "重试".takeIf { onRetry != null },
+        onAction = onRetry,
+    )
+}
+
+/**
+ * 面板里与内容同宽的一条说明：出错、回执、未收录提示都用它，只换颜色与图标。
+ * 正文 bodyMedium，不再用计数下面那种 labelMedium 小字：这些话要据此做决定，得读得清。
+ */
+@Composable
+internal fun StatusBanner(
+    message: String,
+    icon: ImageVector,
+    containerColor: Color,
+    contentColor: Color,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+) {
     Surface(
         shape = MaterialTheme.shapes.medium,
-        color = MaterialTheme.colorScheme.errorContainer,
-        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        color = containerColor,
+        contentColor = contentColor,
         modifier = Modifier.fillMaxWidth(),
     ) {
         Row(
@@ -438,7 +569,7 @@ internal fun ErrorBanner(message: String, onRetry: (() -> Unit)?) {
                 .heightIn(min = 48.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(Icons.Outlined.ErrorOutline, contentDescription = null, modifier = Modifier.size(20.dp))
+            Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
             Spacer(modifier = Modifier.width(12.dp))
             Text(
                 text = message,
@@ -447,13 +578,15 @@ internal fun ErrorBanner(message: String, onRetry: (() -> Unit)?) {
                     .weight(1f)
                     .padding(vertical = 12.dp),
             )
-            if (onRetry != null) {
+            if (actionLabel != null && onAction != null) {
                 TextButton(
-                    onClick = onRetry,
-                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onErrorContainer),
+                    onClick = onAction,
+                    colors = ButtonDefaults.textButtonColors(contentColor = contentColor),
                 ) {
-                    Text("重试")
+                    Text(actionLabel)
                 }
+            } else {
+                Spacer(modifier = Modifier.width(8.dp))
             }
         }
     }
@@ -461,7 +594,13 @@ internal fun ErrorBanner(message: String, onRetry: (() -> Unit)?) {
 
 /** 解析结果：资源名（多文件秒传时即新建目录名，可改）与文件勾选列表。 */
 @Composable
-internal fun ColumnScope.ResolutionSection(state: InstantSheetState, resourceName: String, showCopyLink: Boolean) {
+internal fun ColumnScope.ResolutionSection(
+    state: InstantSheetState,
+    resourceName: String,
+    showCopyLink: Boolean,
+    /** 文件行上的「下载」把文件加进了本机下载队列，面板据此给回执。 */
+    onDownloaded: () -> Unit,
+) {
     // 输入框收起后链接就看不到了，标题右侧留一个复制入口，好转发或换设备打开
     Row(verticalAlignment = Alignment.Top) {
         Box(modifier = Modifier.weight(1f)) {
@@ -503,62 +642,82 @@ internal fun ColumnScope.ResolutionSection(state: InstantSheetState, resourceNam
 
     // 列表占去面板剩下的高度，不再定死 320dp：长资源的上半部分有文件夹名、计数与芯片，
     // 定高时列表里只看得到两三行。fill = false 让短列表照常收缩
+    UnindexedBanner(state)
+
+    // 列表连同它的页眉占去剩下的高度，短列表照常收缩
     Column(modifier = Modifier.weight(1f, fill = false)) {
         SelectionHeader(state)
-        FileTreeList(state, modifier = Modifier.weight(1f, fill = false))
+        FileTreeList(state, onDownloaded = onDownloaded, modifier = Modifier.weight(1f, fill = false))
     }
 }
 
-/** 已选计数与收录情况。可秒传是常态，所以只在这里说一次，行里只标未收录的例外。 */
+/**
+ * 未收录的行要离线下载，保存慢；免费账号还要多占一次离线。全部已收录时不说话：怎么保存是程序的事。
+ *
+ * 放在列表上方、与列表同宽，正文 bodyMedium：原先是「已选」计数下面一行 labelMedium 小字，手机上读不清，
+ * 也说不出是哪几项。哪几项靠后面的按钮：只列出这些行。没有选替人展开组再滚过去，理由见
+ * [InstantSheetState.showsOnlyUnindexed]；未收录的散在几个组里时，滚到第一项也只找到一项。
+ */
+@Composable
+private fun UnindexedBanner(state: InstantSheetState) {
+    val count = state.unindexedEntryCount
+    if (count == 0) return
+    val filtering = state.isUnindexedFilterActive
+    StatusBanner(
+        message = "$count 项$UNINDEXED_HINT",
+        icon = UnindexedIcon,
+        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+        actionLabel = if (filtering) "显示全部" else "只看这些",
+        onAction = state::toggleOnlyUnindexed,
+    )
+}
+
+// 横幅、组行与文件行的标记同一种说法与图标。用沙漏而不是云下载：行上的「下载到本机」按钮就是云下载，
+// 两者挨着时分不清哪个能点
+internal const val UNINDEXED_HINT = "未收录，保存较慢"
+internal val UnindexedIcon = Icons.Outlined.HourglassTop
+
+/** 已选计数与全选。筛选只看未收录时不给全选：它作用于全部行，眼前却只列着几行，点了会动到看不见的勾选。 */
 @Composable
 private fun SelectionHeader(state: InstantSheetState) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = "已选 ${state.selectedEntryCount} / ${state.entryCount}",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            val unindexed = state.items.count { !it.isInstantReady }
-            // 全部已收录时不说话：怎么保存是程序的事。未收录的要从头下载，会慢，值得提一句
-            if (unindexed > 0) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Outlined.CloudDownload,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.outline,
-                        modifier = Modifier.size(14.dp),
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = "$unindexed 项缺少云端缓存，耗时较长",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+        Text(
+            text = "已选 ${state.selectedEntryCount} / ${state.entryCount}",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f),
+        )
+        if (!state.isUnindexedFilterActive) {
+            TextButton(onClick = state::toggleSelectAll) {
+                Text(if (state.isAllSelected) "全不选" else "全选")
             }
-        }
-        TextButton(onClick = state::toggleSelectAll) {
-            Text(if (state.isAllSelected) "全不选" else "全选")
         }
     }
 }
 
 /** 层级、展开状态与组统计都在 [InstantSheetState]，这里只按行渲染。 */
 @Composable
-private fun FileTreeList(state: InstantSheetState, modifier: Modifier = Modifier) {
+private fun FileTreeList(state: InstantSheetState, onDownloaded: () -> Unit, modifier: Modifier = Modifier) {
     val rows = state.treeRows
     val downloads = LocalPikoServices.current.downloadManager
+    val filtering = state.isUnindexedFilterActive
 
     Surface(
         shape = MaterialTheme.shapes.large,
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         modifier = modifier,
     ) {
+        // 切换筛选时回到顶上：两份列表长短不同，停在原来的位置可能整屏都是空的
+        val listState = rememberLazyListState()
+        LaunchedEffect(filtering) { listState.scrollToItem(0) }
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxWidth(),
             contentPadding = PaddingValues(vertical = 4.dp),
         ) {
@@ -568,9 +727,10 @@ private fun FileTreeList(state: InstantSheetState, modifier: Modifier = Modifier
                         GroupRow(
                             group = node,
                             depth = row.depth,
-                            isExpanded = state.isGroupExpanded(node),
+                            // 筛选时组只是给几行交代出处，一律摊开，不让收起
+                            isExpanded = filtering || state.isGroupExpanded(node),
                             summary = state.summaryOf(node),
-                            onToggleExpanded = { state.toggleGroupExpanded(node) },
+                            onToggleExpanded = if (filtering) null else ({ state.toggleGroupExpanded(node) }),
                             onSelectAll = { state.setGroupSelected(node, it) },
                         )
                     }
@@ -579,7 +739,7 @@ private fun FileTreeList(state: InstantSheetState, modifier: Modifier = Modifier
                             row = node,
                             fullName = state.items[node.index].file.name,
                             depth = row.depth,
-                            isInstantReady = node.indices.all { state.items[it].isInstantReady },
+                            isInstantReady = !state.isUnindexed(node),
                             checked = node.index in state.selectedIndices,
                             onCheckedChange = { state.setItemSelected(node.index, it) },
                             onPreview = if (state.canPreview(node.index)) {
@@ -590,6 +750,7 @@ private fun FileTreeList(state: InstantSheetState, modifier: Modifier = Modifier
                             isPreviewing = state.previewingIndex == node.index,
                             onDownload = if (state.items[node.index].isInstantReady) ({
                                 downloads.enqueueResolved(node.indices.map { state.items[it].file }, state.target?.id.orEmpty())
+                                onDownloaded()
                             }) else null,
                         )
                     }
@@ -614,7 +775,8 @@ private fun GroupRow(
     depth: Int,
     isExpanded: Boolean,
     summary: NameGroupSummary,
-    onToggleExpanded: () -> Unit,
+    /** 为 null 时不能收起，也不画展开箭头。 */
+    onToggleExpanded: (() -> Unit)?,
     onSelectAll: (Boolean) -> Unit,
 ) {
     val selectedCount = summary.selected
@@ -628,7 +790,13 @@ private fun GroupRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClickLabel = if (isExpanded) "收起" else "展开", onClick = onToggleExpanded)
+            .then(
+                if (onToggleExpanded != null) {
+                    Modifier.clickable(onClickLabel = if (isExpanded) "收起" else "展开", onClick = onToggleExpanded)
+                } else {
+                    Modifier
+                },
+            )
             .padding(start = 4.dp + TreeIndent * depth, end = 8.dp, top = 4.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -656,28 +824,51 @@ private fun GroupRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        if (summary.hasUnindexed) {
-            UnindexedMark()
+        // 收起的组里看不到行上的标记，组行上写明有几项，展开前就知道里面有慢的
+        if (summary.unindexed > 0) {
+            UnindexedMark(count = summary.unindexed)
         }
-        Icon(
-            imageVector = if (isExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 8.dp),
-        )
+        if (onToggleExpanded != null) {
+            Icon(
+                imageVector = if (isExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 8.dp),
+            )
+        }
     }
 }
 
+/**
+ * 未收录的标记：文件行上只有图标，组行上带组内的行数。原先是 outline 色的云下载图标，浅得像禁用，
+ * 又与旁边的下载按钮同形；改为沙漏、tertiary 色，悬停或长按给出与横幅相同的说法。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun UnindexedMark() {
-    Icon(
-        imageVector = Icons.Outlined.CloudDownload,
-        contentDescription = "未收录，需离线下载",
-        tint = MaterialTheme.colorScheme.outline,
-        modifier = Modifier
-            .padding(start = 12.dp)
-            .size(20.dp),
-    )
+private fun UnindexedMark(count: Int? = null) {
+    val description = if (count != null) "其中 $count 项$UNINDEXED_HINT" else UNINDEXED_HINT
+    val tint = MaterialTheme.colorScheme.tertiary
+    TooltipBox(
+        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
+        tooltip = { PlainTooltip { Text(description) } },
+        state = rememberTooltipState(),
+        modifier = Modifier.padding(start = 12.dp),
+    ) {
+        Row(
+            modifier = Modifier.semantics(mergeDescendants = true) { contentDescription = description },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(imageVector = UnindexedIcon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp))
+            if (count != null) {
+                Text(
+                    text = count.toString(),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = tint,
+                    modifier = Modifier.padding(start = 2.dp),
+                )
+            }
+        }
+    }
 }
 
 /**
@@ -912,7 +1103,9 @@ internal fun InstantSheetState.summary(): InstantSummary {
     val status = when {
         saving -> "正在保存"
         batch != null -> batch.blockedReason ?: "可保存 ${batch.submittableCount} 项"
-        isResolving -> "正在查询云端索引"
+        // 分享链接不走磁力解析，errorMessage 里那句「非磁力链接，可离线下载」说的不是它
+        InstantSheetState.findShareLink(input) != null -> "分享链接"
+        isResolving -> resolvingText(this)
         errorMessage != null -> errorMessage
         result != null -> "已选 $selectedEntryCount / $entryCount"
         else -> null

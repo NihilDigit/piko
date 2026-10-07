@@ -104,6 +104,28 @@ class InstantTree(
         }
         roots.forEach { visit(it, 0) }
     }
+
+    /**
+     * 只留 [matches] 的行，连同它们所在的各层组，不论组是否收起。用来把散在各处、多半在默认收起的
+     * 分区里的几行一次摆出来。行本身不符、只有某个版本符合时仍列出这一行，否则那个版本没有着落。
+     */
+    fun flattenMatching(matches: (InstantRow) -> Boolean): List<InstantTreeRow> = buildList {
+        fun InstantRow.anyMatch(): Boolean = matches(this) || versions.any(matches)
+
+        fun visit(node: InstantNode, depth: Int) {
+            when (node) {
+                is InstantGroup -> if (node.rows.any(matches)) {
+                    add(InstantTreeRow(node.key, depth, node))
+                    node.children.forEach { visit(it, depth + 1) }
+                }
+                is InstantRow -> if (node.anyMatch()) {
+                    add(InstantTreeRow(node.key, depth, node))
+                    node.versions.filter(matches).forEach { add(InstantTreeRow(it.key, depth + 1, it)) }
+                }
+            }
+        }
+        roots.forEach { visit(it, 0) }
+    }
 }
 
 /**
