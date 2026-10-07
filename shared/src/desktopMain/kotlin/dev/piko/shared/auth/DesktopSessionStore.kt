@@ -21,7 +21,7 @@ import kotlinx.serialization.json.Json
 /**
  * 桌面端与 CLI 共用的登录态存储，都在 [root]（默认 ~/.piko）下：
  * - `accounts.json`：账号列表与当前账号，不含机密，明文。
- * - 每个账号的会话与密码合成一份 JSON，交给系统保管处（Windows 的 DPAPI、macOS 的钥匙串）；
+ * - 每个账号的会话、密码与压缩包密码合成一份 JSON，交给系统保管处（Windows 的 DPAPI、macOS 的钥匙串）；
  *   钥匙串写不进时落在 `accounts/<key>.plain`，见 [layeredSecretVault]。
  *
  * 读过的机密缓存在内存里：SDK 每次刷新令牌都要读改写一遍，钥匙串中途锁上也不影响已登录的账号。
@@ -58,6 +58,11 @@ class DesktopSessionStore(
     override suspend fun saveCredentials(account: String, password: String) = update(account) { it.copy(password = password) }
 
     override suspend fun clearCredentials(account: String) = update(account) { it.copy(password = null) }
+
+    override suspend fun loadArchivePasswords(account: String): String = secrets(account).archivePasswords.orEmpty()
+
+    override suspend fun saveArchivePasswords(account: String, serialized: String) =
+        update(account) { it.copy(archivePasswords = serialized.ifEmpty { null }) }
 
     override suspend fun loadAccounts(): SavedAccounts = locked { readAccountsFile() ?: legacyAccounts ?: SavedAccounts() }
 
@@ -193,9 +198,14 @@ class DesktopSessionStore(
     }
 }
 
+/** 退出登录只清 [session] 与 [password]，[archivePasswords] 留着，这一份随之不为空、不删。 */
 @Serializable
-internal data class AccountSecrets(val session: Session? = null, val password: String? = null) {
-    val isEmpty: Boolean get() = session == null && password == null
+internal data class AccountSecrets(
+    val session: Session? = null,
+    val password: String? = null,
+    val archivePasswords: String? = null,
+) {
+    val isEmpty: Boolean get() = session == null && password == null && archivePasswords == null
 }
 
 /** 账号名可能是邮箱或手机号，不直接进文件名与钥匙串属性，取其摘要。 */

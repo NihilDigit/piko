@@ -123,7 +123,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import dev.piko.shared.data.ArchivePasswordVault
 import dev.piko.shared.net.ProxySetting
 import dev.piko.data.auth.SnailMode
 import androidx.compose.material.icons.outlined.SlowMotionVideo
@@ -195,7 +194,7 @@ fun SettingsScreen(
     val isFreeAccount by services.driveRepository.isFreeAccountFlow.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
 
-    val archivePasswordVault = remember(sessionManager) { ArchivePasswordVault(sessionManager) }
+    val archivePasswordVault = services.archivePasswords
     val archivePasswords by archivePasswordVault.passwords.collectAsStateWithLifecycle(initialValue = emptyList())
     var showArchivePasswords by remember { mutableStateOf(false) }
     var showPlaybackQuality by remember { mutableStateOf(false) }

@@ -1,6 +1,5 @@
 package dev.piko.shared.state
 
-import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.repository.NaturalOrder
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.data.ArchiveEntryId
@@ -32,12 +31,12 @@ import kotlinx.coroutines.sync.withLock
  */
 class ArchiveBrowser(
     clientProvider: PikoClientProvider,
-    preferences: PikoUserPreferences,
+    /** 当前账号存过的密码，进包时逐个试，输对的记进去。 */
+    private val vault: ArchivePasswordVault,
     /** 引导解压与借出对象放在哪个目录，即 Piko-Temp。 */
     private val scratchFolder: suspend () -> Result<String>,
 ) {
     private val repository = ArchiveRepository(clientProvider)
-    private val vault = ArchivePasswordVault(preferences)
 
     val savedPasswords: Flow<List<String>> = vault.passwords
 

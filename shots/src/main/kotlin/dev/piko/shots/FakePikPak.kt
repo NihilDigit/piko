@@ -509,6 +509,9 @@ class MemorySessionStore(account: String, private val seed: LoginSeed = LoginSee
         if (seed == LoginSeed.EXPIRED) null else PikoCredentials(account, "pw")
     override suspend fun saveCredentials(account: String, password: String) = Unit
     override suspend fun clearCredentials(account: String) = Unit
+    private val archivePasswords = ConcurrentHashMap<String, String>()
+    override suspend fun loadArchivePasswords(account: String): String = archivePasswords[account].orEmpty()
+    override suspend fun saveArchivePasswords(account: String, serialized: String) { archivePasswords[account] = serialized }
 }
 
 private const val SECOND_ACCOUNT = "backup@piko.dev"

@@ -75,8 +75,6 @@ class DesktopPikoPreferences(
     )
     private val acceleration = MutableStateFlow(settings.get(KEY_ACCELERATION, "true").toBoolean())
     private val connections = MutableStateFlow(settings.get(KEY_CONNECTIONS, "8").toIntOrNull() ?: 8)
-    /** null 是还没从保管处读出来。 */
-    private val archivePasswords = MutableStateFlow<String?>(null)
     private val recentMoveTargets = MutableStateFlow(settings.get(KEY_RECENT_MOVE_TARGETS))
     private val pinnedFolders = MutableStateFlow(settings.get(KEY_PINNED_FOLDERS))
     private val batchRename = MutableStateFlow(settings.get(KEY_BATCH_RENAME))
@@ -326,39 +324,10 @@ class DesktopPikoPreferences(
         settings.set(KEY_OFFLINE_PACKS, serialized)
     }
 
-    override val archivePasswordsFlow: Flow<String> =
-        archivePasswords.onStart { if (archivePasswords.value == null) loadArchivePasswords() }.filterNotNull()
+    override suspend fun loadLegacyArchivePasswords(): String = settings.get(KEY_ARCHIVE_PASSWORDS)
 
-    override suspend fun saveArchivePasswords(serialized: String) {
-        withSecrets { secrets.write(SECRET_ARCHIVE_PASSWORDS, serialized.encodeToByteArray()) }
-        archivePasswords.value = serialized
-    }
-
-    /**
-     * 读不出来（钥匙串锁着、拒绝授权）时先当作空表，本进程内不再重试：这份数据只供挑选，不值得反复弹解锁框。
-     * 此时再存会写进兜底文件，下次启动时它比保管处里的新，照 LayeredVault 的规则胜出。
-     */
-    private suspend fun loadArchivePasswords() = withSecrets {
-        if (archivePasswords.value != null) return@withSecrets
-        archivePasswords.value = runCatching { readArchivePasswords() }
-            .onFailure { PikoLog.w(TAG, "解压密码未能从系统保管处读出", it) }
-            .getOrElse { settings.get(KEY_ARCHIVE_PASSWORDS) }
-    }
-
-    /**
-     * 1.1.0 把解压密码明文存在 settings.properties。读到旧值就搬进保管处，读回一致才从原处删掉；
-     * 保管处里已经有的话是上次搬过、没删成，以保管处为准。
-     */
-    private fun readArchivePasswords(): String {
-        val stored = secrets.read(SECRET_ARCHIVE_PASSWORDS)?.decodeToString()
-        val legacy = settings.get(KEY_ARCHIVE_PASSWORDS)
-        if (legacy.isEmpty()) return stored.orEmpty()
-        if (stored == null) {
-            secrets.write(SECRET_ARCHIVE_PASSWORDS, legacy.encodeToByteArray())
-            check(secrets.read(SECRET_ARCHIVE_PASSWORDS)?.decodeToString() == legacy) { "读回的解压密码与写入的不一致" }
-        }
+    override suspend fun clearLegacyArchivePasswords() {
         settings.remove(KEY_ARCHIVE_PASSWORDS)
-        return stored ?: legacy
     }
 
     private suspend fun <T> withSecrets(block: () -> T): T =
@@ -431,7 +400,6 @@ class DesktopPikoPreferences(
 
     private companion object {
         const val TAG = "credentials"
-        const val SECRET_ARCHIVE_PASSWORDS = "archive-passwords"
         const val SECRET_METATUBE_TOKEN = "metatube-token"
         const val KEY_METATUBE_URL = "scrape.metaTubeUrl"
 
@@ -441,7 +409,7 @@ class DesktopPikoPreferences(
         const val KEY_DOWNLOAD_TASKS = "download.tasks"
         const val KEY_OFFLINE_PACKS = "download.offlinePacks"
         const val KEY_UPLOAD_TASKS = "upload.tasks"
-        /** 1.1.0 存明文的位置，只在迁移时读。 */
+        /** 1.1.0 全机一份明文存解压密码的位置，只在迁移时读。之后按账号存在 DesktopSessionStore。 */
         const val KEY_ARCHIVE_PASSWORDS = "drive.archivePasswords"
         const val KEY_RECENT_MOVE_TARGETS = "drive.recentMoveTargets"
         const val KEY_PINNED_FOLDERS = "drive.pinnedFolders"

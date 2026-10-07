@@ -187,7 +187,12 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 - 网盘页的位置、标签、历史、剪贴板、撤销记录与列表缓存：`PikoDriveRepository.enterAccount`，收集者与网盘页都调，谁先到谁做。
 - 进程级会话（添加链接、查重、规范命名、解压、片段下载、信息流、归档）与桌面端的播放器、信息流窗口，一律经
   `launchOnAccountLeave` 在主线程上当场结束（`PikoServices` 与桌面 `Main.kt` 各一处）；新加的进程级会话登记到这里，不另收集账号。
-  下载任务带 `account`，别的账号的暂停（传输页仍列出，标「需切换至所属账号后继续」）。
+  下载任务带 `account`，别的账号的暂停。传输页与「传输」按钮上的项数、速度只算当前账号的下载、上传与秒传
+  （`TransfersState`、`TransferActivity`），别的账号的任务原样留着，切回去照旧可见、可继续。
+- 压缩包密码按账号存，与会话、密码同在账号的机密里（`ArchivePasswordStore`，桌面并进 `DesktopSessionStore` 那一份，
+  Android 是 DataStore 里加密的一键），退出登录不清。读写只经进程里唯一的 `ArchivePasswordVault`（`PikoServices.archivePasswords`），
+  它只给当前账号看、只记进当前账号；同步只推当前账号的，拉下来的只并进它。1.1.0 全机一份的明文表由登录后头一个运行的
+  账号并进自己的那份，随即删掉：1.1.0 只能登录一个账号，升级时登着的就是它。只在开发期存在过的设备级密文不迁移。
 - 主界面按账号重建（`PikoApp` 的根状态），挂起的信息流、临时标签、目录图、属性卡片这类组合里的状态随之丢弃。
   只有设备级的开关会带过去：重建时要不要照开关打开信息流由 `ClipFeedSession.reopensFor` 定，换了号不开。
 - 缓存目录里按账号的存盘，键里都带账号：标签、列表缓存、最近去过、来源账本（`sources-`）、归档目录表（`vault-trees-`）、

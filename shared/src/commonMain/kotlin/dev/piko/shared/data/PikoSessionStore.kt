@@ -5,15 +5,25 @@ import io.github.nihildigit.pikpak.SessionStore
 import kotlinx.serialization.Serializable
 
 /**
- * 登录态的持久化，两端各有实现。会话（SDK 的 [SessionStore]）与密码是机密，按账号分开存、落盘前加密；
+ * 登录态的持久化，两端各有实现。会话（SDK 的 [SessionStore]）、密码与压缩包密码是机密，按账号分开存、落盘前加密；
  * 账号列表（[SavedAccounts]）只有账号名与资料，不含机密。
  */
-interface PikoSessionStore : SessionStore {
+interface PikoSessionStore : SessionStore, ArchivePasswordStore {
     suspend fun loadAccounts(): SavedAccounts
     suspend fun saveAccounts(accounts: SavedAccounts)
     suspend fun loadCredentials(account: String): PikoCredentials?
     suspend fun saveCredentials(account: String, password: String)
     suspend fun clearCredentials(account: String)
+}
+
+/**
+ * 一个账号存过的压缩包密码，整份 JSON（格式见 ArchivePasswordVault），平台只原样存取。与会话、密码同属这个账号的机密，
+ * 同样加密存放；退出登录不清它，再登回来仍在。空串表示没有。存储暂时不可用时抛出，不返回空串：
+ * 调用方会把空表当成真实内容写回，覆盖掉存着的那份。
+ */
+interface ArchivePasswordStore {
+    suspend fun loadArchivePasswords(account: String): String
+    suspend fun saveArchivePasswords(account: String, serialized: String)
 }
 
 data class PikoCredentials(val account: String, val password: String)

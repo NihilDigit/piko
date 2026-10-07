@@ -19,15 +19,17 @@ import kotlinx.coroutines.flow.first
  */
 class ArchiveBrowseSmokeTest {
 
-    private class Setup(val server: FakePikPakServer, val drive: DriveScreenState, val scratchId: String, val prefs: MemoryPreferences)
+    private class Setup(val server: FakePikPakServer, val drive: DriveScreenState, val scratchId: String, val vault: ArchivePasswordVault)
 
     private fun setup(scope: CoroutineScope, build: FakePikPakServer.() -> Unit): Setup {
         val server = FakePikPakServer().apply(build)
         val scratch = server.addFolder("Piko-Temp")
         val prefs = MemoryPreferences()
-        val browser = ArchiveBrowser(server.provider(), prefs, scratchFolder = { Result.success(scratch.id) })
-        val drive = DriveScreenState(PikoDriveRepository(server.provider(), prefs), prefs, scope, archives = browser)
-        return Setup(server, drive, scratch.id, prefs)
+        val provider = server.provider()
+        val vault = ArchivePasswordVault(provider, MemorySessionStore(), prefs)
+        val browser = ArchiveBrowser(provider, vault, scratchFolder = { Result.success(scratch.id) })
+        val drive = DriveScreenState(PikoDriveRepository(provider, prefs), prefs, scope, archives = browser)
+        return Setup(server, drive, scratch.id, vault)
     }
 
     @Test
@@ -96,7 +98,7 @@ class ArchiveBrowseSmokeTest {
 
         drive.submitArchivePassword("open-sesame")
         awaitUntil("列出了包里的文件") { drive.archivePasswordRequest == null && drive.files.map { it.name } == listOf("a.txt") }
-        assertEquals(listOf("open-sesame"), ArchivePasswordVault(setup.prefs).passwords.first())
+        assertEquals(listOf("open-sesame"), setup.vault.passwords.first())
     }
 
     @Test
@@ -106,8 +108,8 @@ class ArchiveBrowseSmokeTest {
             addArchive("other.zip", mapOf("b.txt" to ByteArray(3)), password = "unknown")
         }
         val drive = setup.drive
-        ArchivePasswordVault(setup.prefs).remember("pw1")
-        ArchivePasswordVault(setup.prefs).remember("pw2")
+        setup.vault.remember("pw1")
+        setup.vault.remember("pw2")
         drive.load()
         awaitUntil("根目录列出压缩包") { !drive.isLoading && drive.files.size == 2 }
 

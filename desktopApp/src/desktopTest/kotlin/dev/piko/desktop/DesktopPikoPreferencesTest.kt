@@ -18,20 +18,14 @@ class DesktopPikoPreferencesTest {
     private val secrets = PlainFileVault(secretsDir)
 
     @Test
-    fun archivePasswordsMoveFromSettingsFileIntoVault() = runBlocking {
+    fun legacyArchivePasswordsComeFromWhere110PutThem() = runBlocking {
         val file = tempFile()
-        val store = DesktopSettingsStore(file)
-        // 1.1.0 的明文位置
-        store.set("drive.archivePasswords", """["hunter2"]""")
+        // 1.1.0 的明文位置，键名写死在这里：改了它，升级上来的密码就再也读不到
+        DesktopSettingsStore(file).set("drive.archivePasswords", """["hunter2"]""")
 
-        val prefs = DesktopPikoPreferences(store) { secrets }
-        assertEquals("""["hunter2"]""", prefs.archivePasswordsFlow.first())
-        assertEquals("", store.get("drive.archivePasswords"))
-        assertEquals("""["hunter2"]""", secrets.read("archive-passwords")?.decodeToString())
-
-        prefs.saveArchivePasswords("""["a","hunter2"]""")
-        val reloaded = DesktopPikoPreferences(DesktopSettingsStore(file)) { secrets }
-        assertEquals("""["a","hunter2"]""", reloaded.archivePasswordsFlow.first())
+        val prefs = DesktopPikoPreferences(DesktopSettingsStore(file)) { secrets }
+        assertEquals("""["hunter2"]""", prefs.loadLegacyArchivePasswords())
+        prefs.clearLegacyArchivePasswords()
         assertFalse("hunter2" in file.readText())
     }
 

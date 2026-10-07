@@ -1,6 +1,6 @@
 # 桌面端机密存储
 
-机密（会话与密码）按账号合成一份交给平台保管：Windows 是 DPAPI（FFM 直调），macOS 经 `/usr/bin/security` 进登录钥匙串
+机密（会话、密码与压缩包密码）按账号合成一份交给平台保管：Windows 是 DPAPI（FFM 直调），macOS 经 `/usr/bin/security` 进登录钥匙串
 （不用 SecItem 直调：ad-hoc 签名每版都变，直调每次更新后都弹授权框），Linux 经 libsecret 进 Secret Service
 （Flatpak 里自动走 portal），都用不了时退回 0600 文件。分层读取先读兜底文件：留在那里的只可能是平台存储锁着时写下的，
 比平台里那份新。Windows 不设明文兜底：DPAPI 没有锁着的状态，加密失败照常报错。密文文件建时即带只许当前用户访问的 ACL，

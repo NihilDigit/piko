@@ -221,4 +221,22 @@ class DesktopSessionStoreTest {
         reopened.clearCredentials("a")
         assertTrue(primary.items.isEmpty())
     }
+
+    // 读不出时返回空串的话，记下一个新密码就会把锁着的那份整个盖掉
+    @Test
+    fun archivePasswordsOutliveLogoutAndALockedVaultThrows() = runBlocking {
+        val primary = FakeVault()
+        val store = DesktopSessionStore(root) { primary }
+        store.save("a", session)
+        store.saveCredentials("a", "pw")
+        store.saveArchivePasswords("a", """{"zip-pw":{"at":1}}""")
+        store.clear("a")
+        store.clearCredentials("a")
+
+        primary.available = false
+        assertFailsWith<VaultUnavailableException> { DesktopSessionStore(root) { primary }.loadArchivePasswords("a") }
+        primary.available = true
+        assertEquals("""{"zip-pw":{"at":1}}""", DesktopSessionStore(root) { primary }.loadArchivePasswords("a"))
+        assertEquals("", DesktopSessionStore(root) { primary }.loadArchivePasswords("b"))
+    }
 }

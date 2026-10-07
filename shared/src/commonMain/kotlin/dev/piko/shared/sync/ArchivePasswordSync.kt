@@ -1,6 +1,5 @@
 package dev.piko.shared.sync
 
-import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.data.ArchivePasswordEntry
 import dev.piko.shared.data.ArchivePasswordVault
 import dev.piko.shared.data.PikoClientManager
@@ -30,8 +29,8 @@ import kotlin.io.encoding.Base64
 import kotlin.time.Clock
 
 /**
- * 把解压用过的密码（[ArchivePasswordVault]）加密后存进网盘 `.piko` 下的 `archive-passwords-<时间戳>.json`，
- * 换一台设备登录同一个账号，输过的密码照样能挑。
+ * 把当前账号解压用过的密码（[ArchivePasswordVault]）加密后存进它网盘 `.piko` 下的 `archive-passwords-<时间戳>.json`，
+ * 换一台设备登录同一个账号，输过的密码照样能挑。只推这个账号的，拉下来的也只并进这个账号。
  *
  * 密钥由账号密码派生（PBKDF2，salt 随文件存）：每台登录过的设备都有账号密码，不必另设口令。防得住拿到这个文件
  * 却不知道账号密码的人（会话令牌泄露、文件被分享出去），防不住 PikPak 本身，它在登录时本来就看得到账号密码。
@@ -54,11 +53,11 @@ class ArchivePasswordSync(
     constructor(
         clients: PikoClientManager,
         driveRepo: PikoDriveRepository,
-        preferences: PikoUserPreferences,
+        vault: ArchivePasswordVault,
         cipher: SyncCipher,
         scope: CoroutineScope,
         enabled: Flow<Boolean>,
-    ) : this(clients, DriveSettingsStore(clients, driveRepo, FILE_PREFIX), ArchivePasswordVault(preferences), clients::savedPassword, cipher, scope, enabled)
+    ) : this(clients, DriveSettingsStore(clients, driveRepo, FILE_PREFIX), vault, clients::savedPassword, cipher, scope, enabled)
 
     private val lock = Mutex()
 
@@ -92,7 +91,7 @@ class ArchivePasswordSync(
             PikoLog.i(TAG, "读不出账号密码，这一轮不同步压缩包密码")
             return
         }
-        val local = vault.current()
+        val local = vault.current(account)
         val envelope = remote.read(account)?.let { text ->
             runCatching { json.decodeFromString(Envelope.serializer(), text) }.logFailure(TAG, "网盘上的压缩包密码文件格式不对，按没有处理").getOrNull()
         }
@@ -104,7 +103,7 @@ class ArchivePasswordSync(
         val remoteEntries = envelope?.let { open(it, secret) }
         if (envelope != null && remoteEntries == null) PikoLog.i(TAG, "网盘上的压缩包密码解不开（账号密码改过？），以本机的记录重写")
         val merged = mergeArchivePasswords(local, remoteEntries.orEmpty())
-        if (merged != local) vault.replace(merged)
+        if (merged != local) vault.merge(account, merged)
         // 只记条数，密码与它对应的压缩包都不进日志
         PikoLog.d(TAG, "压缩包密码合并：本机 ${local.size} 条，远端 ${remoteEntries?.size?.toString() ?: if (envelope == null) "无文件" else "解不开"}，" +
             "合并后 ${merged.size} 条（其中已删 ${merged.count { it.value.removed }}），本机${if (merged != local) "已更新" else "未变"}")

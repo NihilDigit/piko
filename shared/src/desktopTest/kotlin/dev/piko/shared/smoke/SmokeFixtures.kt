@@ -117,9 +117,11 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun saveOfflinePacks(serialized: String) {
         offlinePacks = serialized
     }
-    override val archivePasswordsFlow = MutableStateFlow("")
-    override suspend fun saveArchivePasswords(serialized: String) {
-        archivePasswordsFlow.value = serialized
+    /** 1.1.0 全机一份的压缩包密码，测迁移时预置。 */
+    @Volatile var legacyArchivePasswords = ""
+    override suspend fun loadLegacyArchivePasswords(): String = legacyArchivePasswords
+    override suspend fun clearLegacyArchivePasswords() {
+        legacyArchivePasswords = ""
     }
     override val recentMoveTargetsFlow: Flow<String> = MutableStateFlow("")
     override suspend fun saveRecentMoveTargets(serialized: String) = Unit
@@ -165,6 +167,11 @@ class MemorySessionStore : PikoSessionStore {
     }
     override suspend fun clearCredentials(account: String) {
         passwords.remove(account)
+    }
+    val archivePasswords = ConcurrentHashMap<String, String>()
+    override suspend fun loadArchivePasswords(account: String): String = archivePasswords[account].orEmpty()
+    override suspend fun saveArchivePasswords(account: String, serialized: String) {
+        archivePasswords[account] = serialized
     }
 }
 

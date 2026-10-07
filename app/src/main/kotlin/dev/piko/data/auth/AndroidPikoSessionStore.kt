@@ -16,7 +16,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.Json
 
 /**
- * 登录态存在 DataStore（应用私有目录，已关闭备份）。会话与密码按账号分键，落盘前经 [CredentialCipher]
+ * 登录态存在 DataStore（应用私有目录，已关闭备份）。会话、密码与压缩包密码按账号分键，落盘前经 [CredentialCipher]
  * 用 AndroidKeyStore 里不可导出的密钥加密；账号列表只有账号名与资料，不加密。
  */
 class AndroidPikoSessionStore(private val context: Context) : PikoSessionStore {
@@ -24,6 +24,7 @@ class AndroidPikoSessionStore(private val context: Context) : PikoSessionStore {
 
     private fun sessionKey(account: String) = stringPreferencesKey("pikpak_session_$account")
     private fun passwordKey(account: String) = stringPreferencesKey("pikpak_password_$account")
+    private fun archivePasswordsKey(account: String) = stringPreferencesKey("pikpak_archive_passwords_$account")
 
     override suspend fun load(account: String): Session? {
         val stored = context.dataStore.data.first()[sessionKey(account)] ?: return null
@@ -104,6 +105,18 @@ class AndroidPikoSessionStore(private val context: Context) : PikoSessionStore {
 
     override suspend fun clearCredentials(account: String) {
         context.dataStore.edit { it.remove(passwordKey(account)) }
+    }
+
+    // 解不开多半是密钥已不在（恢复了备份、清过密钥库），以后也解不开，当作没有，不让它挡住之后的记录
+    override suspend fun loadArchivePasswords(account: String): String {
+        val stored = context.dataStore.data.first()[archivePasswordsKey(account)] ?: return ""
+        return CredentialCipher.decrypt(stored) ?: "".also { PikoLog.w(TAG, "压缩包密码解密失败，按没有处理") }
+    }
+
+    // 密钥库不可用时加密抛出，不落明文，由调用方记下
+    override suspend fun saveArchivePasswords(account: String, serialized: String) {
+        val sealed = CredentialCipher.encrypt(serialized)
+        context.dataStore.edit { it[archivePasswordsKey(account)] = sealed }
     }
 
     private fun MutablePreferences.dropLegacyMirror() {

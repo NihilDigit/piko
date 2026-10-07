@@ -156,11 +156,11 @@ interface PikoUserPreferences {
     suspend fun saveOfflinePacks(serialized: String)
 
     /**
-     * 解压成功过的压缩包密码，JSON，格式见 ArchivePasswordVault，平台只原样存取。由平台加密存放；
-     * 不走设置同步，跨设备由 ArchivePasswordSync 加密后单独同步。空串表示从未保存。
+     * 1.1.0 全机一份、明文存着的压缩包密码（最近用过的在前的 JSON 列表），没有时为空串。之后按账号存在机密里
+     * （ArchivePasswordStore），这一份由 ArchivePasswordVault 并入头一个运行的账号后 [clearLegacyArchivePasswords]。
      */
-    val archivePasswordsFlow: Flow<String>
-    suspend fun saveArchivePasswords(serialized: String)
+    suspend fun loadLegacyArchivePasswords(): String
+    suspend fun clearLegacyArchivePasswords()
 
     /** 最近移动到过的目录路径，JSON，见 MoveHistory。空串表示从未保存。 */
     val recentMoveTargetsFlow: Flow<String>

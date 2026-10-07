@@ -1,5 +1,6 @@
 package dev.piko.shared.smoke
 
+import dev.piko.shared.data.ArchivePasswordVault
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.state.ArchiveBrowser
 import dev.piko.shared.state.DriveScreenState
@@ -21,7 +22,7 @@ class FolderMapSmokeTest {
         server.addArchive("pack.zip", mapOf("season 1/ep01.mkv" to ByteArray(4), "extras/a.txt" to ByteArray(1), "readme.txt" to ByteArray(1)))
         server.addArchive("locked.7z", mapOf("x/y.txt" to ByteArray(1)), password = "pw")
         val prefs = MemoryPreferences()
-        val browser = ArchiveBrowser(server.provider(), prefs, scratchFolder = { Result.success("") })
+        val browser = ArchiveBrowser(server.provider(), ArchivePasswordVault(server.provider(), MemorySessionStore(), prefs), scratchFolder = { Result.success("") })
         val drive = DriveScreenState(PikoDriveRepository(server.provider(), prefs), prefs, scope, archives = browser)
 
         val root = assertIs<FolderMapLevel.Loaded>(drive.folderMapLevel(""))

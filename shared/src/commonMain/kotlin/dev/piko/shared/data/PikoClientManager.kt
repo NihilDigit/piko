@@ -334,6 +334,9 @@ class PikoClientManager(
     /** [account] 保存的登录密码，读不出时为 null。压缩包密码的同步拿它派生密钥，见 ArchivePasswordSync。 */
     suspend fun savedPassword(account: String): String? = credentialsOf(account)?.password
 
+    /** 压缩包密码与会话、密码同在账号的机密里，只经 ArchivePasswordVault 读写。 */
+    val archivePasswordStore: ArchivePasswordStore get() = sessionStore
+
     private suspend fun credentialsOf(account: String): PikoCredentials? =
         runSuspendCatching { sessionStore.loadCredentials(account) }
             .onFailure { PikoLog.w(TAG, "读取保存的密码失败，本次按没有密码处理", it) }

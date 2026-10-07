@@ -3,6 +3,7 @@ package dev.piko.shared.sync
 import dev.piko.shared.data.ArchivePasswordVault
 import dev.piko.shared.smoke.FakePikPakServer
 import dev.piko.shared.smoke.MemoryPreferences
+import dev.piko.shared.smoke.MemorySessionStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -27,9 +28,10 @@ class ArchivePasswordSyncTest {
     private class Device(val vault: ArchivePasswordVault, val sync: ArchivePasswordSync)
 
     private fun device(remote: RemoteSettingsStore, scope: CoroutineScope, accountPassword: () -> String): Device {
-        val vault = ArchivePasswordVault(MemoryPreferences())
         // 同步只要一个当前账号，SDK 的请求走不到
-        val sync = ArchivePasswordSync(FakePikPakServer().provider(), remote, vault, { accountPassword() }, JvmSyncCipher(), scope, flowOf(true))
+        val provider = FakePikPakServer().provider()
+        val vault = ArchivePasswordVault(provider, MemorySessionStore(), MemoryPreferences())
+        val sync = ArchivePasswordSync(provider, remote, vault, { accountPassword() }, JvmSyncCipher(), scope, flowOf(true))
         return Device(vault, sync)
     }
 

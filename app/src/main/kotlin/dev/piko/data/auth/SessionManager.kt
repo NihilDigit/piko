@@ -25,30 +25,10 @@ import kotlinx.coroutines.flow.map
 val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
     name = "piko_preferences",
     corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
-    produceMigrations = { listOf(ArchivePasswordEncryption) },
 )
 
-/** 解压用过的密码，经 [CredentialCipher] 加密后存。 */
-private val ARCHIVE_PASSWORDS = stringPreferencesKey("archive_passwords")
-
-/**
- * 1.1.0 把解压密码明文存在主偏好文件里，就地换成密文。密钥库不可用时原样留着，下次启动再试：
- * 丢掉它们换不来什么，明文已经在那里了。
- */
-private object ArchivePasswordEncryption : DataMigration<Preferences> {
-    override suspend fun shouldMigrate(currentData: Preferences): Boolean =
-        currentData[ARCHIVE_PASSWORDS]?.let { !CredentialCipher.isEncrypted(it) } == true
-
-    override suspend fun migrate(currentData: Preferences): Preferences {
-        val plain = currentData[ARCHIVE_PASSWORDS] ?: return currentData
-        val sealed = runCatching { CredentialCipher.encrypt(plain) }
-            .onFailure { PikoLog.w(TAG, "解压密码加密失败，暂留明文", it) }
-            .getOrNull() ?: return currentData
-        return currentData.toMutablePreferences().apply { this[ARCHIVE_PASSWORDS] = sealed }.toPreferences()
-    }
-
-    override suspend fun cleanUp() = Unit
-}
+/** 1.1.0 全机一份的解压密码，明文。之后按账号存在 AndroidPikoSessionStore，这里只在迁移时读。 */
+private val LEGACY_ARCHIVE_PASSWORDS = stringPreferencesKey("archive_passwords")
 
 private const val TAG = "Preferences"
 
@@ -514,24 +494,11 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
-    // 先对密文去重再解密：主偏好文件的任何一次写入都会让 data 重新发射，不该每次都过一遍密钥库
-    override val archivePasswordsFlow: Flow<String> = preference { it[ARCHIVE_PASSWORDS] }.map { stored ->
-        when {
-            stored == null -> ""
-            CredentialCipher.isEncrypted(stored) -> CredentialCipher.decrypt(stored).orEmpty()
-            // 迁移因密钥库不可用没做成，仍是明文
-            else -> stored
-        }
-    }
+    override suspend fun loadLegacyArchivePasswords(): String =
+        context.dataStore.data.first()[LEGACY_ARCHIVE_PASSWORDS].orEmpty()
 
-    // 密钥库不可用时不存，保留原来那份，与登录密码同一取舍：宁可少记一个，也不落明文
-    override suspend fun saveArchivePasswords(serialized: String) {
-        val sealed = runCatching { CredentialCipher.encrypt(serialized) }
-            .onFailure { PikoLog.w(TAG, "解压密码加密失败，未保存", it) }
-            .getOrNull() ?: return
-        context.dataStore.edit { preferences ->
-            preferences[ARCHIVE_PASSWORDS] = sealed
-        }
+    override suspend fun clearLegacyArchivePasswords() {
+        context.dataStore.edit { it.remove(LEGACY_ARCHIVE_PASSWORDS) }
     }
 
     override val recentMoveTargetsFlow: Flow<String> = preference { it[PreferencesKeys.RECENT_MOVE_TARGETS].orEmpty() }

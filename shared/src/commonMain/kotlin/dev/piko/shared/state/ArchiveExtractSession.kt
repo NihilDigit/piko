@@ -4,7 +4,6 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.data.ArchivePasswordVault
 import dev.piko.shared.log.LogLevel
 import dev.piko.shared.log.PikoLog
@@ -72,11 +71,10 @@ class ArchiveOutcome(val fileName: String, val succeeded: Boolean, val message: 
 class ArchiveExtractSession(
     clientProvider: PikoClientProvider,
     private val driveRepository: PikoDriveRepository,
-    preferences: PikoUserPreferences,
+    private val vault: ArchivePasswordVault,
     private val scope: CoroutineScope,
 ) {
     private val repository = ArchiveRepository(clientProvider)
-    private val vault = ArchivePasswordVault(preferences)
 
     var jobs by mutableStateOf<List<ArchiveJob>>(emptyList())
         private set

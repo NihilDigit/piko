@@ -11,6 +11,7 @@ import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.repository.DriveRepository
 import dev.piko.shared.data.VaultStore
 import dev.piko.shared.data.AccountScopedPreferences
+import dev.piko.shared.data.ArchivePasswordVault
 import dev.piko.shared.data.InstantMagnetRepository
 import dev.piko.shared.data.MoveHistory
 import dev.piko.shared.data.OfflinePackTracker
@@ -100,8 +101,12 @@ class PikoServices(
         .also { it.start() }
     private val sourceLedgerSync = SourceLedgerSync(clientManager, driveRepository, backgroundScope, preferences.settingsSyncFlow)
         .also { it.start() }
+    /** 当前账号存过的压缩包密码，解压、浏览压缩包与设置页共用这一个，见 ArchivePasswordVault。 */
+    val archivePasswords = ArchivePasswordVault(clientManager, clientManager.archivePasswordStore, preferences)
+        .also { it.start(backgroundScope) }
+
     private val archivePasswordSync = syncCipher?.let {
-        ArchivePasswordSync(clientManager, driveRepository, preferences, it, backgroundScope, preferences.settingsSyncFlow).also { sync -> sync.start() }
+        ArchivePasswordSync(clientManager, driveRepository, archivePasswords, it, backgroundScope, preferences.settingsSyncFlow).also { sync -> sync.start() }
     }
 
     /** API 走哪个根域名：用户固定的，或登录后测速自动挑的，见 PikPakDomainSelector。 */
@@ -153,14 +158,14 @@ class PikoServices(
         ArchiveExtractSession(
             clientProvider = clientManager,
             driveRepository = driveRepository,
-            preferences = preferences,
+            vault = archivePasswords,
             scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
         )
     }
 
     // 网盘页重建后，进过的压缩包的密码与列过的层还在，见 ArchiveBrowser
     val archiveBrowser: ArchiveBrowser by lazy {
-        ArchiveBrowser(clientManager, preferences, scratchFolder = { previewTempFolder.folderId() })
+        ArchiveBrowser(clientManager, archivePasswords, scratchFolder = { previewTempFolder.folderId() })
     }
 
     // 主线程且与进程同寿：离开网盘页后归档仍要继续
