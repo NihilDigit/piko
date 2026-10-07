@@ -31,7 +31,7 @@ internal class TransferActivity(val downloadSpeed: Long, val uploadSpeed: Long, 
 }
 
 /**
- * 眼下进行中的传输：本机的下载与上传、解压与归档，加上云端的离线任务。离线任务不像下载那样有进程级的状态，
+ * 眼下当前账号进行中的传输：本机的下载与上传、解压与归档，加上云端的离线任务。离线任务不像下载那样有进程级的状态，
  * 要每 [CLOUD_POLL_MS] 取一次第一页，[pollCloud] 为假时不取、不计：手机上只为导航栏的一个数字常驻轮询不值得。
  * 暂停与失败的不算进行中。
  */
@@ -50,8 +50,13 @@ internal fun rememberTransferActivity(
             delay(CLOUD_POLL_MS)
         }
     }
-    val activeDownloads = downloads.values.filter { it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.PENDING }
-    val activeUploads = uploads.values.filter { it.status.isActive }
+    // 与传输页一致，只算当前账号的
+    val client by services.clientManager.currentClient.collectAsStateWithLifecycle()
+    val account = client?.account.orEmpty()
+    val activeDownloads = downloads.values.filter {
+        it.belongsTo(account) && (it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.PENDING)
+    }
+    val activeUploads = uploads.values.filter { it.account == account && it.status.isActive }
     val activeCloud = if (pollCloud) cloud.count { it.phase == TaskPhase.RUNNING || it.phase == TaskPhase.PENDING } else 0
     // 待输密码的压缩包也算：它停着等人，正该引人去看
     val serverWork = if (!countsServerWork) {

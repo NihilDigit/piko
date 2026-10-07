@@ -165,10 +165,10 @@ class PikoDownloadCoordinator(
                     .distinct().forEach(::pauseBatch)
                 _tasks.value.values.filter { task -> task.taskId in jobs.value && !belongsToCurrent(task) }
                     .forEach { task -> pauseDownload(task.taskId) }
-                // 列到一半的文件夹换了账号就列不下去，停下等切回来重试
+                // 列到一半的文件夹换了账号就列不下去，停下等切回来重试。这条只在切回所属账号后才看得见
                 _listings.value.values.filter { it.isListing && it.account != currentAccount() }.forEach { listing ->
                     listingWork.value[listing.batch.id]?.job?.cancel()
-                    updateListing(listing.batch.id) { it.copy(error = OTHER_ACCOUNT) }
+                    updateListing(listing.batch.id) { it.copy(error = LISTING_LEFT_ACCOUNT) }
                 }
             }
         }
@@ -591,13 +591,14 @@ class PikoDownloadCoordinator(
     /** 没给上限时取设置里的默认下载画质；没设过默认的，经对话框来的都已带上上限，其余入口下原画。 */
     private suspend fun defaultMaxHeight(): Int = preferences.downloadMaxHeightFlow.first() ?: 0
 
-    private fun belongsToCurrent(task: DownloadTask): Boolean = task.account.isEmpty() || task.account == currentAccount()
+    private fun belongsToCurrent(task: DownloadTask): Boolean = task.belongsTo(currentAccount())
 
     fun startDownload(taskId: String) {
         val task = _tasks.value[taskId] ?: return
         if (jobs.value[taskId]?.isActive == true) return
+        // 传输页只列当前账号的，这里只防换号与点击交错。不写原因：这条只在切回所属账号后才看得见，那时已不成立
         if (!belongsToCurrent(task)) {
-            update(taskId) { it.copy(status = DownloadStatus.PAUSED, errorMessage = OTHER_ACCOUNT) }
+            update(taskId) { it.copy(status = DownloadStatus.PAUSED, errorMessage = null) }
             return
         }
         update(taskId) { it.copy(status = DownloadStatus.PENDING, errorMessage = null) }
@@ -608,7 +609,7 @@ class PikoDownloadCoordinator(
         val task = _tasks.value[taskId] ?: return
         // 文件 ID 与直链只在源账号里有效，换到别的账号上取不到
         if (!belongsToCurrent(task)) {
-            update(taskId) { it.copy(status = DownloadStatus.PAUSED, errorMessage = OTHER_ACCOUNT) }
+            update(taskId) { it.copy(status = DownloadStatus.PAUSED, errorMessage = null) }
             return
         }
         // 整文件下载的开始在取得缓存之后记，那时才知道续传点
@@ -979,7 +980,7 @@ class PikoDownloadCoordinator(
 
     private companion object {
         const val TAG = "Download"
-        const val OTHER_ACCOUNT = "需切换至所属账号后继续"
+        const val LISTING_LEFT_ACCOUNT = "切换账号时中断"
         const val PROGRESS_INTERVAL_MS = 500L
         const val LOG_INTERVAL_MS = 10_000L
         const val SPEED_WINDOW_MS = 3_000L

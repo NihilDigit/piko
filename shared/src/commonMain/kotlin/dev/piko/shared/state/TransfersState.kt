@@ -166,7 +166,7 @@ class TransfersState(
     private val driveRepo: PikoDriveRepository,
     private val uploads: PikoUploadCoordinator,
     private val instantSaves: InstantSaveRecords,
-    /** 上传任务与秒传记录按账号记，只列当前账号的。 */
+    /** 下载、上传任务与秒传记录都按账号记，只列当前账号的；别的账号的切回去才看得到。 */
     private val account: String,
     // 两者都是进程级会话，换账号时已各自清空，这里不再按账号过滤
     private val extracts: ArchiveExtractSession,
@@ -179,9 +179,13 @@ class TransfersState(
 ) {
     private val cloud = OfflineTasksState(taskRepo, scope)
 
-    private var localTasks by mutableStateOf(coordinator.tasks.value.values.toList())
+    private fun isMine(task: DownloadTask): Boolean = task.belongsTo(account)
 
-    private var listings by mutableStateOf(coordinator.listings.value)
+    private fun isMine(listing: FolderListing): Boolean = listing.account.isEmpty() || listing.account == account
+
+    private var localTasks by mutableStateOf(coordinator.tasks.value.values.filter(::isMine))
+
+    private var listings by mutableStateOf(coordinator.listings.value.filterValues(::isMine))
 
     /** 文件夹下载，一批一项。还在列出的只有 listing，列完的只有任务。 */
     private val batches: List<TransferItem.LocalBatch> by derivedStateOf {
@@ -517,10 +521,10 @@ class TransfersState(
 
     init {
         scope.launch {
-            coordinator.tasks.collect { localTasks = it.values.toList() }
+            coordinator.tasks.collect { tasks -> localTasks = tasks.values.filter(::isMine) }
         }
         scope.launch {
-            coordinator.listings.collect { listings = it }
+            coordinator.listings.collect { all -> listings = all.filterValues(::isMine) }
         }
         scope.launch {
             packTracker.jobs.collect { packJobs = it }
