@@ -1,5 +1,6 @@
 package dev.piko.desktop
 
+import dev.piko.data.auth.FolderMapMode
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.auth.PlayerGestureDefaults
 import dev.piko.data.auth.SidePanelPrefs
@@ -41,7 +42,7 @@ class DesktopPikoPreferences(
     private val playerBoostSpeed = MutableStateFlow(
         settings.get(KEY_PLAYER_BOOST_SPEED).toFloatOrNull() ?: PlayerGestureDefaults.BOOST_SPEED,
     )
-    private val folderMapOpen = MutableStateFlow(settings.get(KEY_FOLDER_MAP_OPEN) == "true")
+    private val folderMapMode = MutableStateFlow(FolderMapMode.parse(settings.get(KEY_FOLDER_MAP_MODE)))
     private val heuristic = MutableStateFlow(settings.get(KEY_HEURISTIC, "true").toBoolean())
     private val nameParsing = MutableStateFlow(settings.get(KEY_NAME_PARSING, "true").toBoolean())
     private val bundleSubtitles = MutableStateFlow(settings.get(KEY_BUNDLE_SUBTITLES, "true").toBoolean())
@@ -160,10 +161,10 @@ class DesktopPikoPreferences(
         playerBoostSpeed.value = speed
     }
 
-    override val folderMapOpenFlow: Flow<Boolean> = folderMapOpen.asStateFlow()
-    override suspend fun setFolderMapOpen(open: Boolean) {
-        settings.set(KEY_FOLDER_MAP_OPEN, open.toString())
-        folderMapOpen.value = open
+    override val folderMapModeFlow: Flow<FolderMapMode> = folderMapMode.asStateFlow()
+    override suspend fun setFolderMapMode(mode: FolderMapMode) {
+        settings.set(KEY_FOLDER_MAP_MODE, mode.name)
+        folderMapMode.value = mode
     }
 
     override val heuristicFilterFlow: Flow<Boolean> = heuristic.asStateFlow()
@@ -451,7 +452,7 @@ class DesktopPikoPreferences(
         const val KEY_DOWNLOAD_MAX_HEIGHT = "download.maxHeight"
         const val KEY_PLAYER_SEEK_STEP_SECONDS = "player.seekStepSeconds"
         const val KEY_PLAYER_BOOST_SPEED = "player.boostSpeed"
-        const val KEY_FOLDER_MAP_OPEN = "ui.folderMapOpen"
+        const val KEY_FOLDER_MAP_MODE = "ui.folderMap"
         const val KEY_HEURISTIC = "ui.heuristicFilter"
         const val KEY_BUNDLE_SUBTITLES = "ui.bundleSubtitles"
         const val KEY_AUTO_CANONICAL_NAMES = "ui.autoCanonicalNames"
