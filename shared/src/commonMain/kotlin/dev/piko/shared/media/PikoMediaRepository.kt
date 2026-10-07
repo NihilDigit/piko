@@ -139,8 +139,14 @@ data class DownloadQuality(
     val isOriginal: Boolean get() = mediaId == null
 }
 
-/** 这一档转码在服务端读不出字节，见 [PikoMediaRepository.downloadQualities]。消息直接给用户看。 */
-class UnreadableTranscodeException(cause: Throwable? = null) : IllegalStateException("该画质的转码文件无法读取，请改选其他画质", cause)
+/**
+ * 这一档转码在服务端读不出字节，见 [PikoMediaRepository.downloadQualities]。消息直接给用户看，点明是 PikPak：
+ * 只写「无法读取」时用户会当成网络或 Piko 的毛病，反复重试。
+ */
+class UnreadableTranscodeException(cause: Throwable? = null) : IllegalStateException("PikPak 的转码文件暂不可读，请改选其他画质", cause)
+
+/** 选定的转码档在详情里已经没有了，给用户看的失败原因。 */
+const val TRANSCODE_GONE_MESSAGE = "PikPak 已不提供所选画质"
 
 class PikoMediaRepository(
     private val clientManager: PikoClientProvider,
@@ -735,7 +741,7 @@ class PikoMediaRepository(
      */
     private suspend fun probeTranscode(client: PikPakClient, media: MediaVariant): Long =
         client.streamRangeFromUrl(media.link.url, start = 0L, length = 1L) { stream ->
-            val size = stream.totalSize?.takeIf { it > 0 } ?: error("转码档没有给出长度")
+            val size = stream.totalSize?.takeIf { it > 0 } ?: error("PikPak 未给出转码文件的长度")
             // 正文提前断开在 Ktor 里是异常，不是读到 -1，两种都算读不出
             val read = runSuspendCatching { stream.channel.readAvailable(ByteArray(1), 0, 1) }
             if ((read.getOrNull() ?: -1) < 1) throw UnreadableTranscodeException(read.exceptionOrNull())
@@ -749,7 +755,7 @@ class PikoMediaRepository(
     private suspend fun transcodeSource(client: PikPakClient, fileId: String, mediaId: String, retainedBy: String?): PikPakByteSource {
         val detail = detailOf(client, fileId)
         if (detail.hash.isBlank()) error("文件缺少内容哈希，无法读取")
-        if (detail.medias.none { it.mediaId == mediaId && it.link.url.isNotBlank() }) error("所选画质已不可用")
+        if (detail.medias.none { it.mediaId == mediaId && it.link.url.isNotBlank() }) error(TRANSCODE_GONE_MESSAGE)
         val streamSize = streamSizeOf(client, detail, mediaId)
         val pool = fileCachePool ?: run {
             val handle = client.fileHandle(detail, mediaId = mediaId, streamSize = streamSize, onRangeAttempt = ::logRangeAttempt)

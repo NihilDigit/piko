@@ -135,7 +135,7 @@ private fun SingleVideoDialog(
                         QualityRow(
                             label = option.name ?: "原画",
                             detail = when {
-                                option.unreadable -> "无法读取"
+                                option.unreadable -> "PikPak 暂不可读"
                                 else -> option.sizeBytes?.toReadableSize() ?: if (choices.probing) "正在查询大小" else "大小未知"
                             },
                             selected = option.name == selected?.name,
@@ -145,7 +145,7 @@ private fun SingleVideoDialog(
                 }
                 if (pickedUnreadable) {
                     Text(
-                        "${pickedOption?.name} 的转码文件无法读取，请改选其他画质。",
+                        "PikPak 的 ${pickedOption?.name} 转码文件暂不可读，请改选其他画质。",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.error,
                     )

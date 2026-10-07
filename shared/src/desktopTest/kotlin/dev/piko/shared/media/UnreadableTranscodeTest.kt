@@ -6,6 +6,7 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 
 /**
  * 服务端坏掉的转码档：回 206、Content-Range 写着全长，正文为空。只看响应头的长度探测认不出它，
@@ -55,6 +56,7 @@ class UnreadableTranscodeTest {
     fun explicitlyChosenUnreadableTranscodeFailsWithReadableMessage() = runBlocking {
         val error = repository.downloadVariant("f1", name = "720P", maxHeight = 0).exceptionOrNull()
         assertIs<UnreadableTranscodeException>(error)
-        assertEquals("该画质的转码文件无法读取，请改选其他画质", error.message)
+        // 这句就是任务的失败原因，要点明是服务端的问题，否则用户以为网络或 Piko 坏了
+        assertTrue(error.message.orEmpty().startsWith("PikPak"), error.message)
     }
 }

@@ -647,7 +647,9 @@ class PlayerScreenState(
             PikoLog.w(TAG, "首帧前失败，来源已试尽（直链${if (directLinkTried) "已试" else "未试"}，档位 ${activeQuality ?: "原画"}），放弃")
             pendingStartMillis = null
             isRecovering = false
-            failure = message
+            // 转码流一帧都没放出来，多半是服务端那一档坏了（有的档回 206 却没有正文，见 PikoMediaRepository.probeTranscode），
+            // 播放器给的原因只是读不到数据，照抄会让人以为是网络或 Piko 的问题
+            failure = activeQuality?.let { "PikPak 的 $it 转码文件暂不可读，请改选其他画质" } ?: message
             return
         }
 

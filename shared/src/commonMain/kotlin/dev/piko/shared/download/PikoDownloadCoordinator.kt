@@ -14,6 +14,7 @@ import dev.piko.shared.log.logRangeAttempt
 import dev.piko.shared.media.DownloadQuality
 import dev.piko.shared.media.ORIGINAL_QUALITY
 import dev.piko.shared.media.PikoMediaRepository
+import dev.piko.shared.media.TRANSCODE_GONE_MESSAGE
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.data.runSuspendCatching
 import io.github.nihildigit.pikpak.BandwidthLimiter
@@ -717,7 +718,7 @@ class PikoDownloadCoordinator(
                 task.copy(qualityCap = 0, quality = variant.name, mediaId = variant.mediaId, totalBytes = variant.sizeBytes,
                     downloadedBytes = 0L, endMs = variant.durationMs, fileName = name, destinationPath = name)
             }
-            task.quality != null -> error("所选画质已不可用")
+            task.quality != null -> error(TRANSCODE_GONE_MESSAGE)
             else -> task.copy(qualityCap = 0)
         }
         PikoLog.i(TAG, "定下画质：${logFile(task.fileId, chosen.fileName)}，" +
@@ -735,7 +736,7 @@ class PikoDownloadCoordinator(
      */
     private suspend fun chooseSegmentQuality(task: DownloadTask): DownloadTask {
         val variant = mediaRepository?.downloadVariant(task.fileId, task.quality, task.qualityCap)?.getOrThrow()
-        if (variant == null && task.quality != null) error("所选画质已不可用")
+        if (variant == null && task.quality != null) error(TRANSCODE_GONE_MESSAGE)
         PikoLog.i(TAG, "片段定下画质：${logFile(task.fileId, task.fileName)}，${variant?.name ?: "上限 ${task.qualityCap}P，截原画"}")
         update(task.taskId) { it.copy(qualityCap = 0, quality = variant?.name, mediaId = variant?.mediaId) }
         return task.copy(qualityCap = 0, quality = variant?.name, mediaId = variant?.mediaId)

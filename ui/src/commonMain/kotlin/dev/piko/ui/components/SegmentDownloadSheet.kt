@@ -331,7 +331,7 @@ fun SegmentDownloadSheet(
                 }
                 if (pickedUnreadable) {
                     Text(
-                        "${pickedOption?.name} 的转码文件无法读取，请改选其他画质。",
+                        "PikPak 的 ${pickedOption?.name} 转码文件暂不可读，请改选其他画质。",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.error,
                     )
