@@ -55,6 +55,8 @@ MSI 安装版也就地打补丁，不改走整包重装：Windows Installer 修�
 或（`/fa` 强制全部重装）退回一个能运行、会再提示更新的旧版，不会装坏（实测；`windows.ps1` 与 `legacy.ps1` 打完补丁后各修复一次）。`apply-update.ps1` 换上文件后显式沿用
 原文件的创建时间；1.0.0、1.1.0 用的是它们自带的旧脚本，那一跳靠的是 NTFS 文件名隧道（同名文件 15 秒内重建时
 继承旧的创建时间），默认开着。补丁不改 Windows Installer 登记的版本，「应用」设置里显示的仍是装时的版本号。
+MSI 装上的类路径 jar 按安装机时区偏了修改时间，由应用启动时按启动配置里的 `piko.classpath-mtime` 改回（见 `desktopApp/CLAUDE.md`
+的 release 一条）；补丁换上的 jar 按清单还原时间，与那个属性是同一个值，二者在同一次构建里定下。
 
 更新弹窗的说明读 Release 正文，读到 `## 下载` 就截断（`GithubReleases.kt` 的 `updateNotesOf`），
 标题改动要与 `.github/release-notes.md` 一起改，`ReleaseNotesTest` 会报错。

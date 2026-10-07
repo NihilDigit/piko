@@ -19,8 +19,13 @@ Windows、macOS 与 Linux 的入口、平台实现与播放器窗口。应用内
   得到 `app.aot`。训练进程的数据目录是 build 下每次清空的 `aot-training-home`：它真的启动一次应用，
   带版本号的包启动配置里没有 `piko.home`，训练便读写打包机上真实的 `~/.piko`（本机打冒烟包时把当前账号登出过）。
   插件不给训练单独加参数，`build.gradle.kts` 在训练前往启动配置里加一行、训练后删掉。训练与运行都带 `-XX:-AOTAdapterCaching -XX:-AOTStubCaching`：JDK 25 会把训练机上生成的
-  调用适配代码存进缓存且不核对 CPU 特性，CI runner 有 AVX-512，缓存装到没有它的 CPU 上随机崩在 AdapterBlob。AOT 缓存按 jar 的修改时间校验，MSI 只存到偶数秒，训练前先把 jar 的时间取整，
-  否则安装后缓存作废（`msiexec /a` 解出安装包即可验证）。便携版因此发 .7z（`.github/scripts/pack-portable.ps1`）：
+  调用适配代码存进缓存且不核对 CPU 特性，CI runner 有 AVX-512，缓存装到没有它的 CPU 上随机崩在 AdapterBlob。AOT 缓存按类路径上 jar 的大小与修改时间（秒）校验，
+  对不上整份作废，JDK 25 没有放宽的选项（`aotClassLocation.cpp` 只对 lib/modules 不查时间）。MSI 只存到偶数秒，
+  训练前把类路径上的 jar 统一成同一个偶数秒的时间，并以 `-Dpiko.classpath-mtime` 记进启动配置。MSI 的 cab 存的又是
+  不带时区的本地时间，安装时按安装机的时区解释，CI 在 UTC 打的包装到东八区，jar 早 8 小时（`msiexec /a` 解出即可看到）；
+  这一点打包时无从避免，由应用启动时按那个属性改回（`ClasspathTimes.kt`），所以新装的 MSI 第二次启动起才用上缓存。
+  冒烟在东八区装 MSI，核对首次启动后 jar 的时间，再以 `-Xlog:class+path` 确认第二次启动通过了缓存的类路径校验
+  （「Opened AOT cache」在校验之前就打出，不能作数）。便携版换了格式避开它，发 .7z（`.github/scripts/pack-portable.ps1`）：
   zip 只存打包机的本地时间，CI 是 UTC，解到别的时区 jar 偏几个小时、缓存整份作废，资源管理器与 Expand-Archive
   也不读 zip 里 UTC 的扩展时间戳（实测）；7z 存的就是 UTC 时间。冒烟在东八区解包核对 jar 的时间。
   jlink、jpackage 与 ProGuard 用 Azul 的 JDK 25 工具链，与运行 Gradle 的 JDK 无关；Temurin 25 不带 jmods，ProGuard 会失败。

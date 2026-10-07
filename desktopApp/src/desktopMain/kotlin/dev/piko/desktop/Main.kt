@@ -102,6 +102,7 @@ fun main(args: Array<String>) {
     val singleInstance = if (isAotTraining) null else SingleInstance.acquireOrForward(absoluteTorrentPaths(args.toList())) ?: return
     // 拿到单实例锁之后才装：转交完参数就退出的后来者不该和主实例写同一个文件
     installLog()
+    restoreClasspathTimes()
     // 赶在建窗口之前，理由见 setWmClass
     if (isLinux) LinuxDesktop.setWmClass()
     if (WinRTSupport.isWindows) {

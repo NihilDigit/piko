@@ -373,17 +373,6 @@ tasks.withType<Test> {
 tasks.withType<JavaExec> {
     jvmArgs("--enable-native-access=ALL-UNNAMED")
 }
-// AOT 缓存按 jar 的修改时间校验，差一毫秒也整份作废。MSI 的 cab 与 zip 只存到偶数秒，
-// 安装后的 jar 时间被取整，缓存随之失效（实测 msiexec /a 解出的 jar 比训练时晚了两秒）。
-// 训练之前先把 jar 的时间取整到偶数秒，打包前后就是同一个值
-tasks.matching { it.name == "createReleaseAotArchive" }.configureEach {
-    doFirst {
-        layout.buildDirectory.dir("compose/binaries/main-release/app").get().asFile
-            .walkTopDown()
-            .filter { it.isFile && it.extension == "jar" }
-            .forEach { it.setLastModified(it.lastModified() / 2000 * 2000) }
-    }
-}
 // AOT 训练真的启动一次应用。带版本号打的包启动配置里没有 piko.home（装好后用 ~/.piko），训练进程就读写打包机上
 // 真实的 ~/.piko，本机打冒烟包时它把当前账号登出了。不带版本号的 ~/.piko-dev 同样是真实数据，所以一律换成
 // build 下每次清空的目录。插件不给训练单独加参数：它把启动配置备份一份、去掉运行时的 AOT 参数、追加训练参数、
@@ -406,14 +395,28 @@ fun rewriteLauncherConfig(edit: (List<String>) -> List<String>) {
     val lines = text.split(newline).dropLastWhile { it.isEmpty() }.filter { it != aotTrainingHomeOption }
     releaseLauncherConfig.writeText(edit(lines).joinToString(newline, postfix = newline))
 }
+// AOT 缓存按类路径上 jar 的修改时间校验（秒），对不上整份作废。训练前把这些 jar 统一成同一个偶数秒的时间：
+// MSI 的 cab 只存到偶数秒，不取整的话装上就差一秒。cab 存的还是不带时区的本地时间，装到与打包机不同时区的机器上
+// 整体偏几个小时，这一点打包时无从避免，所以把时间记进启动配置，由应用启动时改回（ClasspathTimes.kt）
+val classpathMtimeOptionPrefix = "java-options=-Dpiko.classpath-mtime="
+fun stampClasspathJars(): Long {
+    val jars = releaseLauncherConfig.parentFile.listFiles { f -> f.isFile && f.extension == "jar" }.orEmpty()
+    check(jars.isNotEmpty()) { "${releaseLauncherConfig.parent} 下没有 jar" }
+    val stamp = jars.maxOf { it.lastModified() } / 2000 * 2000
+    jars.forEach { check(it.setLastModified(stamp)) { "改不了 ${it.name} 的修改时间" } }
+    return stamp
+}
 tasks.matching { it.name == "createReleaseAotArchive" }.configureEach {
     doFirst {
         aotTrainingHome.deleteRecursively()
         aotTrainingHome.mkdirs()
-        rewriteLauncherConfig { lines ->
+        val classpathMtimeOption = classpathMtimeOptionPrefix + stampClasspathJars()
+        rewriteLauncherConfig { all ->
+            // 单独重跑训练时启动配置里已有上一次的时间
+            val lines = all.filterNot { it.startsWith(classpathMtimeOptionPrefix) }
             val lastOption = lines.indexOfLast { it.startsWith("java-options=") }
             check(lastOption >= 0) { "${releaseLauncherConfig.name} 里没有 java-options，jpackage 的格式可能变了" }
-            lines.take(lastOption + 1) + aotTrainingHomeOption + lines.drop(lastOption + 1)
+            lines.take(lastOption + 1) + classpathMtimeOption + aotTrainingHomeOption + lines.drop(lastOption + 1)
         }
     }
     doLast {
