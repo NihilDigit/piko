@@ -22,6 +22,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.data.repository.PathBreadcrumb
@@ -35,8 +36,9 @@ private val CrumbPadding = PaddingValues(horizontal = 8.dp)
  * 路径面包屑。整行 48dp，正好是触控目标下限，不再额外加上下内边距和底色带：
  * 它与顶栏、列表同为 surface 底，层级靠位置而不是色块表达。
  *
- * [endsWithCurrent] 为 false 时 [breadcrumbs] 只含上级目录，每一级都可点。网盘页如此：
- * 当前目录名已在顶栏标题上，面包屑再列一遍是重复。
+ * [breadcrumbs] 从栈底起，首段带 [firstIcon]，名字照栈底写：网盘页人在库里时栈底是库，写死「网盘」的话
+ * 显示与点了去的地方对不上。[onBreadcrumbClick] 给的是 [breadcrumbs] 里的下标。
+ * [endsWithCurrent] 为 false 时末段也是上级、可点。网盘页如此：当前目录名已在顶栏标题上，面包屑再列一遍是重复。
  */
 @Composable
 fun BreadcrumbBar(
@@ -44,6 +46,7 @@ fun BreadcrumbBar(
     onBreadcrumbClick: (Int) -> Unit,
     modifier: Modifier = Modifier,
     endsWithCurrent: Boolean = true,
+    firstIcon: ImageVector = Icons.Outlined.Home,
 ) {
     val scrollState = rememberScrollState()
 
@@ -59,6 +62,7 @@ fun BreadcrumbBar(
             .padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        val first = breadcrumbs.firstOrNull() ?: return@Row
         TextButton(
             onClick = { onBreadcrumbClick(0) },
             shape = MaterialTheme.shapes.small,
@@ -66,15 +70,16 @@ fun BreadcrumbBar(
             modifier = Modifier.heightIn(min = 48.dp),
         ) {
             Icon(
-                imageVector = Icons.Outlined.Home,
+                imageVector = firstIcon,
                 contentDescription = null,
                 modifier = Modifier.size(18.dp),
             )
             Spacer(modifier = Modifier.width(4.dp))
-            Text(text = "网盘", style = MaterialTheme.typography.labelLarge)
+            Text(text = first.name, style = MaterialTheme.typography.labelLarge)
         }
 
-        breadcrumbs.forEachIndexed { index, crumb ->
+        breadcrumbs.drop(1).forEachIndexed { offset, crumb ->
+            val index = offset + 1
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                 contentDescription = null,
@@ -83,7 +88,7 @@ fun BreadcrumbBar(
             )
             val isLast = endsWithCurrent && index == breadcrumbs.lastIndex
             TextButton(
-                onClick = { onBreadcrumbClick(index + 1) },
+                onClick = { onBreadcrumbClick(index) },
                 enabled = !isLast,
                 shape = MaterialTheme.shapes.small,
                 contentPadding = CrumbPadding,

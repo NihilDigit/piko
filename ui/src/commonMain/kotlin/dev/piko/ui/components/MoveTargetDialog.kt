@@ -363,7 +363,7 @@ private fun FolderPickerContent(
         ) {
             // 面包屑固定、下面的列表滚动，不画分隔线：文件夹行各有底色，滚到面包屑下沿就被裁掉，层次已经分开
             BreadcrumbBar(
-                breadcrumbs = path.drop(1),
+                breadcrumbs = path,
                 onBreadcrumbClick = { index -> path = path.take(index + 1) },
             )
 

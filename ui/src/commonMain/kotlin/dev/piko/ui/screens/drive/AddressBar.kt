@@ -80,6 +80,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.PopupProperties
+import dev.piko.shared.data.DriveLibrary
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.state.AddressCompletion
 import dev.piko.shared.state.InstantSheetState
@@ -432,16 +433,20 @@ private fun PathCrumbs(model: AddressBarModel) {
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 if (index == 0) {
-                    Icon(Icons.Outlined.Cloud, contentDescription = null, tint = colors.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                    val library = DriveLibrary.of(crumb.id)
+                    Icon(library?.icon ?: Icons.Outlined.Cloud, contentDescription = null, tint = colors.onSurfaceVariant, modifier = Modifier.size(18.dp))
                 }
                 CrumbName(crumb.name, current = index == stack.lastIndex)
             }
-            SiblingChevron(
-                level = stack.take(index + 1),
-                next = stack.getOrNull(index + 1),
-                subfoldersOf = model.subfoldersOf,
-                onOpenStack = model.onOpenStack,
-            )
+            // 库是从全盘挑出来的一批，不是有子文件夹的一层，库名后面不给 ›
+            if (DriveLibrary.of(crumb.id) == null) {
+                SiblingChevron(
+                    level = stack.take(index + 1),
+                    next = stack.getOrNull(index + 1),
+                    subfoldersOf = model.subfoldersOf,
+                    onOpenStack = model.onOpenStack,
+                )
+            }
         }
     }
 }

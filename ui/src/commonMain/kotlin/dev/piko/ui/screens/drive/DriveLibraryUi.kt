@@ -5,6 +5,7 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.DeleteForever
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.DeleteSweep
+import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.NewReleases
 import androidx.compose.material.icons.outlined.PlayCircle
@@ -73,6 +74,10 @@ private fun formatEventTime(rfc3339: String): String? = runCatching {
 }.getOrNull()
 
 internal class LibraryEmpty(val title: String, val description: String, val icon: ImageVector)
+
+/** 库作为路径首段时的图标（地址栏、面包屑），与空状态的图标同一套。 */
+internal val DriveLibrary.icon: ImageVector
+    get() = if (this == DriveLibrary.DUPLICATES) Icons.Outlined.FileCopy else empty.icon
 
 internal val DriveLibrary.empty: LibraryEmpty
     get() = when (this) {

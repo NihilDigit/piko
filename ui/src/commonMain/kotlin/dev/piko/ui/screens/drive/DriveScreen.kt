@@ -152,6 +152,8 @@ import dev.piko.data.repository.isPlayableVideo
 import dev.piko.data.repository.isPreviewableImage
 import dev.piko.shared.data.ScrollAnchor
 import dev.piko.shared.data.DriveLibrary
+import dev.piko.shared.data.library
+import androidx.compose.material.icons.outlined.Home
 import dev.piko.shared.data.LastFolderStack
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.log.logFailure
@@ -1152,14 +1154,15 @@ fun DriveScreen(
 
     val history by state.history.collectAsStateWithLifecycle()
 
-    // 当前目录名已在顶栏标题上，面包屑只列上级。一级目录的唯一上级是根，返回键已足够
-    val ancestorCrumbs = folderStack.drop(1).dropLast(1)
+    // 当前目录名已在顶栏标题上，面包屑只列上级。一级目录的唯一上级是栈底（根或库），返回键已足够
+    val ancestorCrumbs = folderStack.dropLast(1)
     val breadcrumbs: @Composable () -> Unit = {
-        if (ancestorCrumbs.isNotEmpty() && !pathInTopBar) {
+        if (ancestorCrumbs.size > 1 && !pathInTopBar) {
             BreadcrumbBar(
                 breadcrumbs = ancestorCrumbs,
                 endsWithCurrent = false,
-                // 回调给的是完整路径栈的下标（首页按钮传 0），与 ancestorCrumbs 的偏移已在组件里处理
+                // 栈底是库时首段写库名、画库的图标，点了回到库本身，与地址栏的首段一致
+                firstIcon = folderStack.library?.icon ?: Icons.Outlined.Home,
                 onBreadcrumbClick = { index -> state.navigateToBreadcrumb(index) },
             )
         }
