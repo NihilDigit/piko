@@ -7,7 +7,7 @@
 | Android，旧款 32 位设备 | [piko-{{version}}-armeabi-v7a.apk](https://github.com/NihilDigit/piko/releases/download/v{{version}}/piko-{{version}}-armeabi-v7a.apk) |
 | Android 模拟器、x86 设备 | [piko-{{version}}-x86_64.apk](https://github.com/NihilDigit/piko/releases/download/v{{version}}/piko-{{version}}-x86_64.apk) |
 | Windows 电脑（Intel、AMD 处理器） | [piko-windows-x64-{{version}}.msi](https://github.com/NihilDigit/piko/releases/download/v{{version}}/piko-windows-x64-{{version}}.msi) |
-| Windows on ARM（骁龙等 ARM 处理器） | [piko-windows-arm64-{{version}}.msi](https://github.com/NihilDigit/piko/releases/download/v{{version}}/piko-windows-arm64-{{version}}.msi) |
+| Windows on ARM（Windows 11，骁龙等 ARM 处理器） | [piko-windows-arm64-{{version}}.msi](https://github.com/NihilDigit/piko/releases/download/v{{version}}/piko-windows-arm64-{{version}}.msi) |
 | Windows 电脑，便携版 | [piko-windows-x64-{{version}}.7z](https://github.com/NihilDigit/piko/releases/download/v{{version}}/piko-windows-x64-{{version}}.7z) |
 | Windows on ARM，便携版 | [piko-windows-arm64-{{version}}.7z](https://github.com/NihilDigit/piko/releases/download/v{{version}}/piko-windows-arm64-{{version}}.7z) |
 | Mac（Apple 芯片，实验性） | [piko-macos-arm64-{{version}}.dmg](https://github.com/NihilDigit/piko/releases/download/v{{version}}/piko-macos-arm64-{{version}}.dmg) |
