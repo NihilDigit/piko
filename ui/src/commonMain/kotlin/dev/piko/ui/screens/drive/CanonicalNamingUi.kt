@@ -92,7 +92,8 @@ internal fun CanonicalNamingBanner(naming: CanonicalNamingState, onEnd: () -> Un
                 Text(
                     text = scanSummary(naming),
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (naming.scanStop != null || naming.failedFolders > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    // 没扫完不用错误色，同查找重复：结果照样能用，只是不全
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
@@ -128,7 +129,7 @@ internal fun CanonicalNamingEmptyState(naming: CanonicalNamingState?, onLeave: (
                 Text(status(naming), style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    text = "已扫描 ${naming.scannedFolders} 个文件夹，${naming.scannedFiles} 个文件" + if (canLeave) "。离开此页后扫描将继续" else "",
+                    text = "已扫描 ${naming.scannedFolders} 个文件夹、${naming.scannedFiles} 个文件" + if (canLeave) "，离开此页后继续" else "",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -182,7 +183,7 @@ internal fun canonicalNamingSheet(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             val note = when (naming.phase) {
-                Phase.SCANNING, Phase.TITLES -> "收起后扫描将继续。离开此文件夹将结束"
+                Phase.SCANNING, Phase.TITLES -> "收起后继续扫描，离开此文件夹则结束"
                 Phase.FAILED -> naming.errorMessage ?: "未知错误"
                 Phase.DONE -> scanSummary(naming)
             }
@@ -219,12 +220,12 @@ private fun status(naming: CanonicalNamingState): String = when (naming.phase) {
 }
 
 private fun scanSummary(naming: CanonicalNamingState): String = buildString {
-    append("已扫描「${naming.root.name}」中的 ${naming.scannedFolders} 个文件夹，${naming.scannedFiles} 个文件")
+    append("「${naming.root.name}」：已扫描 ${naming.scannedFolders} 个文件夹、${naming.scannedFiles} 个文件")
     when (naming.scanStop) {
-        ScanStop.CANCELLED -> append("。扫描已停止，结果可能不完整")
-        ScanStop.FOLDER_LIMIT, ScanStop.FILE_LIMIT -> append("。已达扫描上限，结果可能不完整，可按子文件夹分别整理")
-        ScanStop.TIMEOUT -> append("。扫描超时，结果可能不完整，可按子文件夹分别整理")
+        ScanStop.CANCELLED -> append("，扫描已停止")
+        ScanStop.FOLDER_LIMIT, ScanStop.FILE_LIMIT -> append("，已达扫描上限")
+        ScanStop.TIMEOUT -> append("，扫描超时")
         null -> Unit
     }
-    if (naming.failedFolders > 0) append("。${naming.failedFolders} 个文件夹读取失败")
+    if (naming.failedFolders > 0) append("，${naming.failedFolders} 个文件夹读取失败")
 }

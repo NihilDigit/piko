@@ -112,7 +112,7 @@ internal val DriveLibrary.empty: LibraryEmpty
         DriveLibrary.HISTORY -> LibraryEmpty("暂无播放记录", "包含 PikPak 各客户端的播放记录", icon)
         DriveLibrary.TRASH -> LibraryEmpty("回收站为空", "移入回收站的文件显示于此，可恢复或彻底删除", icon)
         // 实际画的是 DuplicatesEmptyState，要分扫描中、失败与已结束
-        DriveLibrary.DUPLICATES -> LibraryEmpty("未发现重复文件", "", Icons.Outlined.FolderOpen)
+        DriveLibrary.DUPLICATES -> LibraryEmpty("未发现重复文件", "",Icons.Outlined.FolderOpen)
         // 实际画的是 CanonicalNamingEmptyState
         DriveLibrary.CANONICAL_NAMES -> LibraryEmpty("没有需要改名的项", "", Icons.Outlined.FolderOpen)
     }

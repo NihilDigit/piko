@@ -617,7 +617,7 @@ fun DriveScreen(
                 DriveLibrary.DUPLICATES,
                 when {
                     phase == DuplicateFinderState.Phase.FAILED -> "查找重复失败"
-                    groups > 0 -> "找到 $groups 组重复文件"
+                    groups > 0 -> "发现 $groups 组重复文件"
                     else -> "未发现重复文件"
                 },
             )

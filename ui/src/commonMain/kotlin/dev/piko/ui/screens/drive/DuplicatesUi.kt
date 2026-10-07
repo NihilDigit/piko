@@ -49,15 +49,15 @@ internal fun duplicateLocations(finder: DuplicateFinderState?): Map<String, Stri
 internal fun duplicatesTab(finder: DuplicateFinderState): SessionTab {
     val groups = finder.report.identical.size + finder.report.versions.size
     val tooltip = when {
-        finder.isScanning -> "正在查找重复文件，已扫描 ${finder.scannedFolders} 个文件夹。关闭标签页将结束查找"
-        groups == 0 -> "未发现重复文件。关闭标签页将结束查找"
-        else -> "发现 $groups 组重复文件。关闭标签页将结束查找"
+        finder.isScanning -> "已扫描 ${finder.scannedFolders} 个文件夹"
+        groups == 0 -> "未发现重复文件"
+        else -> "$groups 组重复文件"
     }
     return SessionTab("查重：${finder.root.name}", tooltip, busy = finder.isScanning, icon = Icons.Outlined.FileCopy)
 }
 
 /**
- * 有结果时列表顶上的一行：查的是哪里、扫了多少、能腾出多少，结果不全时用错误色。
+ * 有结果时列表顶上的一行：几组、能腾出多少，下面一行是查的哪里、扫了多少、没扫完的原因。没扫完不用错误色，结果照样能用。
  * 「选中建议移走的」是这一页的主操作（命令栏右端或 FAB），勾选与移入回收站是网盘页的多选；这里只有重新扫描与结束。
  */
 @Composable
@@ -69,15 +69,16 @@ internal fun DuplicatesBanner(finder: DuplicateFinderState, onEnd: () -> Unit, m
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = buildString {
-                    append("「${finder.root.name}」中发现 $groups 组重复文件")
-                    if (reclaimable > 0) append("，移走建议项可释放 ${reclaimable.toReadableSize()}")
+                    append("$groups 组重复文件")
+                    if (reclaimable > 0) append("，可释放 ${reclaimable.toReadableSize()}")
                 },
                 style = MaterialTheme.typography.titleSmall,
             )
+            // 没扫完不用错误色：结果照样能用，只是不全，说明写在同一行里即可
             Text(
                 text = scanSummary(finder),
                 style = MaterialTheme.typography.bodySmall,
-                color = if (finder.scanStop != null || finder.failedFolders > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         TooltipIconButton(Icons.Outlined.Refresh, "重新扫描", finder::rescan)
@@ -100,7 +101,7 @@ internal fun DuplicatesEmptyState(finder: DuplicateFinderState?, onLeave: () -> 
             null -> {
                 PikoEmptyState(
                     title = "查找已结束",
-                    description = "扫描结果不会保存。如需重新查找，请在文件夹中选择「查找重复」",
+                    description = "扫描结果未保存",
                     icon = Icons.Outlined.TaskAlt,
                 )
                 TextButton(onClick = onLeave) { Text("返回网盘") }
@@ -116,7 +117,7 @@ internal fun DuplicatesEmptyState(finder: DuplicateFinderState?, onLeave: () -> 
                 Spacer(Modifier.height(4.dp))
                 Text(
                     // 窄窗口里离开即结束查找，见 TaskSlot
-                    text = "已扫描 ${finder.scannedFolders} 个文件夹，${finder.scannedFiles} 个文件" + if (canLeave) "。离开此页后扫描将继续" else "",
+                    text = "已扫描 ${finder.scannedFolders} 个文件夹、${finder.scannedFiles} 个文件" + if (canLeave) "，离开此页后继续" else "",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -155,10 +156,10 @@ internal fun duplicatesSheet(
             TaskSheetHeader(
                 title = "查找重复「${finder.root.name}」",
                 status = when (finder.phase) {
-                    Phase.SCANNING -> "已扫描 ${finder.scannedFolders} 个文件夹，${finder.scannedFiles} 个文件"
+                    Phase.SCANNING -> "${finder.scannedFolders} 个文件夹，${finder.scannedFiles} 个文件"
                     Phase.ANALYZING -> "正在比对"
                     Phase.FAILED -> "扫描失败"
-                    Phase.DONE -> if (groups == 0) "未发现重复文件" else "发现 $groups 组重复文件"
+                    Phase.DONE -> if (groups == 0) "未发现重复文件" else "$groups 组重复文件"
                 },
                 closeLabel = "结束查找重复",
                 onClose = onEnd,
@@ -173,7 +174,7 @@ internal fun duplicatesSheet(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 val note = when (finder.phase) {
-                    Phase.SCANNING, Phase.ANALYZING -> "收起后扫描将继续。离开此文件夹将结束查找"
+                    Phase.SCANNING, Phase.ANALYZING -> "收起后继续扫描，离开此文件夹则结束"
                     Phase.FAILED -> finder.errorMessage ?: "未知错误"
                     Phase.DONE -> scanSummary(finder)
                 }
@@ -198,12 +199,12 @@ internal fun duplicatesSheet(
 }
 
 private fun scanSummary(finder: DuplicateFinderState): String = buildString {
-    append("已扫描 ${finder.scannedFolders} 个文件夹，${finder.scannedFiles} 个文件")
+    append("「${finder.root.name}」：已扫描 ${finder.scannedFolders} 个文件夹、${finder.scannedFiles} 个文件")
     when (finder.scanStop) {
-        ScanStop.CANCELLED -> append("。扫描已停止，结果可能不完整")
-        ScanStop.FOLDER_LIMIT, ScanStop.FILE_LIMIT -> append("。已达扫描上限，结果可能不完整，可按子文件夹分别查找")
-        ScanStop.TIMEOUT -> append("。扫描超时，结果可能不完整，可按子文件夹分别查找")
+        ScanStop.CANCELLED -> append("，扫描已停止")
+        ScanStop.FOLDER_LIMIT, ScanStop.FILE_LIMIT -> append("，已达扫描上限")
+        ScanStop.TIMEOUT -> append("，扫描超时")
         null -> Unit
     }
-    if (finder.failedFolders > 0) append("。${finder.failedFolders} 个文件夹读取失败")
+    if (finder.failedFolders > 0) append("，${finder.failedFolders} 个文件夹读取失败")
 }

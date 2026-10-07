@@ -174,7 +174,7 @@ private fun duplicateSummary(finder: DuplicateFinderState): WorkNotice {
         "「${finder.root.name}」中未发现重复文件"
     } else {
         val reclaimable = report.identical.sumOf { it.reclaimableBytes }
-        "「${finder.root.name}」中发现 $groups 组重复文件" + if (reclaimable > 0) "，可释放 ${reclaimable.toReadableSize()}" else ""
+        "「${finder.root.name}」中有 $groups 组重复文件" +if (reclaimable > 0) "，可释放 ${reclaimable.toReadableSize()}" else ""
     }
     return WorkNotice("查找重复完成", message)
 }
