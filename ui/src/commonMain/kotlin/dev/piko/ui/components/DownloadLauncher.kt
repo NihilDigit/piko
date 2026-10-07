@@ -43,7 +43,7 @@ internal class DownloadRequest(
 /**
  * 「下载」的唯一入口，网盘页（面板、右键菜单、命令栏、多选栏）与播放器都经它，画质问不问、怎么问只在这里定。
  *
- * 有视频或文件夹（里面多半是视频）时先弹 [DownloadQualityDialog]，默认选中设置里的下载画质，一次确认即下；
+ * 有视频、或文件夹里有视频时先弹 [DownloadQualityDialog]，默认选中设置里的下载画质，一次确认即下；
  * 只有别的文件时直接下载。对话框里勾「以后按此画质直接下载」后不再弹，按设置的上限直接下，设置的「下载」里改回。
  * 归档条目与压缩包里的文件经借出的对象取流，只有原画，不弹。
  */
@@ -60,7 +60,8 @@ class DownloadLauncher internal constructor(
         if (files.isEmpty()) return
         scope.launch {
             val pending = DownloadRequest(files, folderSource, onQueued, preferences.downloadMaxHeightFlow.first())
-            val ask = files.any { it.hasDownloadQualities } && preferences.downloadQualityPromptFlow.first()
+            val ask = preferences.downloadQualityPromptFlow.first() &&
+                (files.any { !it.isFolder && it.hasDownloadQualities } || foldersHoldVideo(files.filter { it.isFolder }, folderSource))
             if (ask) request = pending else enqueue(pending, DownloadChoice.Cap(pending.defaultCap))
         }
     }
@@ -93,9 +94,29 @@ class DownloadLauncher internal constructor(
     }
 }
 
-/** 下载它时有没有画质可选：没借出的视频，或可能装着视频的文件夹。 */
+/** 下载它时有没有画质可选：没借出的视频。 */
 private val FileStat.hasDownloadQualities: Boolean
-    get() = isFolder || (isPlayableVideo() && !LeasedFile.isLeased(id))
+    get() = isPlayableVideo() && !LeasedFile.isLeased(id)
+
+/**
+ * 文件夹里（含子文件夹）有没有可选画质的视频，见到第一个就停。原先文件夹一律当作有，里面全是文档也弹画质框。
+ * 列目录走网盘页的列表缓存，随后的文件夹下载本来也要列这一遍。查到 [FolderProbeLimit] 个文件夹还没见到视频时
+ * 当作有：再往下查要等太久，宁可多问一次。列失败同样当作有，下载那一步会报出错。
+ */
+private suspend fun foldersHoldVideo(folders: List<FileStat>, source: DownloadFolderSource?): Boolean {
+    if (folders.isEmpty() || source == null) return false
+    val queue = ArrayDeque(folders.map { it.id })
+    var probed = 0
+    while (queue.isNotEmpty()) {
+        if (probed++ >= FolderProbeLimit) return true
+        val children = runCatching { source.list(queue.removeFirst()) }.getOrElse { return true }
+        if (children.any { !it.isFolder && it.hasDownloadQualities }) return true
+        children.filter { it.isFolder }.forEach { queue.addLast(it.id) }
+    }
+    return false
+}
+
+private const val FolderProbeLimit = 64
 
 /** 对话框画在调用处所在的窗口里：播放器在桌面上是单独的窗口。 */
 @Composable
