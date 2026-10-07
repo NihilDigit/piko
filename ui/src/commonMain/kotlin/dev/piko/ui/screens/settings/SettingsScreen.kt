@@ -548,8 +548,12 @@ fun SettingsScreen(
                 onSave = { url, newToken ->
                     showMetaTubeDialog = false
                     scope.launch {
+                        // 第一次配上 MetaTube 时顺带打开「保存时按番号规范命名」：配它就是为了存成带片名的名字，
+                        // 不打开的话片名只在手动改名时用得上。只在从无到有时开一次，之后用户关掉就不再动它
+                        val firstConfigured = metaTubeUrl.isBlank() && url.isNotBlank()
                         sessionManager.setMetaTubeUrl(url)
                         sessionManager.setMetaTubeToken(newToken)
+                        if (firstConfigured) sessionManager.setAutoCanonicalNames(true)
                     }
                 },
                 onDismiss = { showMetaTubeDialog = false },
