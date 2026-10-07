@@ -269,11 +269,25 @@ internal fun FolderMapTree(
     val selectable = rows.indices.filter { rows[it].node != null || rows[it].onNoteClick != null }
     val currentId = current.lastOrNull()?.id
     var highlighted by remember(root.last().id) { mutableStateOf<String?>(null) }
-    // 召出时高亮眼前所在的那一级，没有就是第一项
-    LaunchedEffect(rows.size, query) {
-        if (highlighted == null || rows.none { it.key == highlighted }) {
-            highlighted = (rows.firstOrNull { it.node?.crumb?.id == currentId } ?: selectable.firstOrNull()?.let(rows::get))?.key
+    // 高亮跟着眼前所在的那一级走，不只在召出时定一次：否则点了主页、在列表里换了文件夹，高亮还停在原先那一块。
+    // 根目录在树里没有那一行，回到根就不高亮；那一级还没展开出来时等列出来再定。定过一次之后只认人用方向键挪的，
+    // 展开、收起改了行数也不把高亮拽回来
+    var followedId by remember(root.last().id) { mutableStateOf<String?>(null) }
+    LaunchedEffect(currentId, rows.size, query) {
+        if (followedId != currentId) {
+            val here = rows.firstOrNull { it.node?.crumb?.id == currentId }
+            when {
+                here != null -> {
+                    highlighted = here.key
+                    followedId = currentId
+                }
+                currentId == null || currentId == root.last().id -> {
+                    highlighted = null
+                    followedId = currentId
+                }
+            }
         }
+        if (highlighted != null && rows.none { it.key == highlighted }) highlighted = null
     }
     val focus = remember { FocusRequester() }
     LaunchedEffect(filterShown) { if (focusFilter && filterShown) runCatching { focus.requestFocus() } }
