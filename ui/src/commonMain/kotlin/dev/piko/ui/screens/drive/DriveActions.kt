@@ -42,7 +42,10 @@ import dev.piko.ui.components.SheetAction
  * 只是确认、就地改名或直接执行的不加。「下载」不加：只有文件时直接下，有视频时弹出的画质对话框已选好默认的一档，
  * 一次确认即下，还可以设成不再弹；同一项的名字也不该随选中的是不是视频而变。
  *
- * 分档见 [ActionTier]：图标行按平台排，见 [quickRow]；常驻的是移动、复制与各类条目自己的打开方式；其余收进「更多」。
+ * 分档见 [ActionTier]：图标行按平台排，见 [quickRow]；其余都在列表里，按组排：
+ * 打开（各类条目自己的打开方式、下载指定段落），整理（移动、复制、规范命名），管理（预览遮蔽、归档）。
+ * 作用于一个位置而非这一项的（查找重复、文件夹的规范命名）与来源链接只进桌面的右键菜单，
+ * 移动端的面板没有「更多」可收，要一屏平铺放得下：位置命令在进文件夹后的页眉菜单里，来源在面板头部。
  */
 internal object DriveActions {
     /** 点了经 DownloadLauncher 定画质，见那里。[onPrepare] 给单个视频提前查各档大小。 */
@@ -97,9 +100,9 @@ internal object DriveActions {
     fun batchRename(onClick: () -> Unit) =
         SheetAction(Icons.Outlined.DriveFileRenameOutline, "批量重命名", onClick, group = ActionGroup.Organize, tier = ActionTier.Quick)
 
-    // 打开批量重命名并换上番号规则，见 docs/development/av-naming.md
+    // 几项是批量重命名换上番号规则，一个文件夹是整理它的子树；单个文件并进了重命名对话框，见 docs/development/av-naming.md
     fun canonicalName(onClick: () -> Unit) =
-        SheetAction(Icons.Outlined.DriveFileRenameOutline, "按番号规范命名", onClick, group = ActionGroup.Organize, tier = ActionTier.More)
+        SheetAction(Icons.Outlined.DriveFileRenameOutline, "按番号规范命名", onClick, group = ActionGroup.Organize)
 
     fun moveTo(onClick: () -> Unit) = SheetAction(Icons.Outlined.DriveFileMove, "移动到…", onClick, group = ActionGroup.Organize)
 
@@ -134,34 +137,31 @@ internal object DriveActions {
         "下载指定段落…",
         onClick,
         group = ActionGroup.Open,
-        tier = ActionTier.More,
         onPrepare = onPrepare,
     )
 
     fun findDuplicates(onClick: () -> Unit) =
-        SheetAction(Icons.Outlined.FileCopy, "查找重复", onClick, group = ActionGroup.Manage, tier = ActionTier.More)
+        SheetAction(Icons.Outlined.FileCopy, "查找重复", onClick, group = ActionGroup.Manage)
 
-    fun vault(onClick: () -> Unit) = SheetAction(Icons.Outlined.Inventory2, "归档", onClick, group = ActionGroup.Manage, tier = ActionTier.More)
+    fun vault(onClick: () -> Unit) = SheetAction(Icons.Outlined.Inventory2, "归档", onClick, group = ActionGroup.Manage)
 
-    fun unvault(onClick: () -> Unit) =
-        SheetAction(Icons.Outlined.Unarchive, "取消归档", onClick, group = ActionGroup.Manage, tier = ActionTier.More)
+    fun unvault(onClick: () -> Unit) = SheetAction(Icons.Outlined.Unarchive, "取消归档", onClick, group = ActionGroup.Manage)
 
     fun previewVisibility(hidden: Boolean, onClick: () -> Unit) = SheetAction(
         icon = if (hidden) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
         label = if (hidden) "显示预览" else "隐藏预览",
         onClick = onClick,
         group = ActionGroup.Manage,
-        tier = ActionTier.More,
     )
 
-    /** 离线下载与分享转存来的条目，复制或打开来源链接。 */
+    /** 离线下载与分享转存来的条目，复制或打开来源链接。只在桌面右键菜单里，操作面板的来源写在头部，见 FileActionsSheet。 */
     fun sourceActions(source: FileSource?, onCopy: () -> Unit, onOpen: () -> Unit): List<SheetAction> = when (source) {
         FileSource.Magnet -> listOf(
-            SheetAction(Icons.Outlined.Link, "复制磁力链接", onCopy, group = ActionGroup.Manage, tier = ActionTier.More),
+            SheetAction(Icons.Outlined.Link, "复制磁力链接", onCopy, group = ActionGroup.Manage),
         )
         FileSource.Share -> listOf(
-            SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "打开来源分享", onOpen, group = ActionGroup.Manage, tier = ActionTier.More),
-            SheetAction(Icons.Outlined.Link, "复制分享链接", onCopy, group = ActionGroup.Manage, tier = ActionTier.More),
+            SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "打开来源分享", onOpen, group = ActionGroup.Manage),
+            SheetAction(Icons.Outlined.Link, "复制分享链接", onCopy, group = ActionGroup.Manage),
         )
         null -> emptyList()
     }

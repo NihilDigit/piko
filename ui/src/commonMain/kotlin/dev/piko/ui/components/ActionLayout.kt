@@ -35,9 +35,6 @@ enum class ActionTier {
 
     /** 常驻的列表。 */
     Standard,
-
-    /** 面板里收进末尾一行可展开的「更多」；右键菜单不收，按组并进列表。 */
-    More,
 }
 
 /**
@@ -53,7 +50,7 @@ enum class ActionGroup {
     /** 改它在网盘里的样子与位置：星标、改名、移动、复制、固定。 */
     Organize,
 
-    /** 用得少的：查重、归档、预览遮蔽、来源链接。 */
+    /** 用得少的：预览遮蔽、归档，以及桌面右键菜单里的查重与来源链接。 */
     Manage,
     View,
 
@@ -74,28 +71,26 @@ enum class ActionGroup {
 class ActionLayout(
     val quick: List<SheetAction>,
     val sections: List<List<SheetAction>>,
-    val more: List<List<SheetAction>>,
     val properties: List<SheetAction>,
     val danger: List<SheetAction>,
 )
 
 /**
- * 面板与右键菜单共用的排法。危险项垫底、「属性」在它之前，各自成组；其余按三条规则分档：
- * 非危险项（连同「属性」）不超过 [FlatLimit] 项时不分档，全部平铺，几项还要找图标行、再点「更多」只是添步骤；
- * 图标行至多 [quickLimit] 个，多出的回到列表；「更多」里只有一项时就地放进列表，为一项多点一下不值得。
+ * 面板与右键菜单共用的排法。危险项垫底、「属性」在它之前，各自成组；其余分两档：
+ * 非危险项（连同「属性」）不超过 [FlatLimit] 项时不分档，全部平铺，几项还要找图标行只是添步骤；
+ * 否则 [ActionTier.Quick] 的进图标行，至多 [quickLimit] 个，多出的回到列表。
+ * 图标行的上限分开：面板一格是图标加短标签，手机上只够四格；菜单是纯图标，桌面网盘的一排照 Win11 有五个，见 [MenuQuickLimit]。
  *
- * [foldMore] 为 false 时没有「更多」，[ActionTier.More] 的项按各自的组并进列表。右键菜单这样排：它只在桌面上，
- * 窗口放得下一整列，收起来只是多点一下；面板在手机上一屏放不下，仍然收。
- * 图标行的上限也分开：面板一格是图标加短标签，手机上只够四格；菜单是纯图标，桌面网盘的一排照 Win11 有五个，见 [MenuQuickLimit]。
+ * 没有「更多」：面板曾把用得少的收进末尾一行，点开就地展开。去掉它靠的是把位置级的命令（查找重复、文件夹的规范命名）
+ * 移出移动端的面板，见 DriveActions，每类条目平铺后在手机竖屏上一屏放得下。
  */
-fun layoutActions(actions: List<SheetAction>, foldMore: Boolean = true, quickLimit: Int = QuickLimit): ActionLayout {
+fun layoutActions(actions: List<SheetAction>, quickLimit: Int = QuickLimit): ActionLayout {
     val (danger, safe) = actions.partition { it.destructive }
     val (properties, rest) = safe.partition { it.group == ActionGroup.Properties }
-    if (safe.size <= FlatLimit) return ActionLayout(emptyList(), sectionsOf(rest), emptyList(), properties, danger)
+    if (safe.size <= FlatLimit) return ActionLayout(emptyList(), sectionsOf(rest), properties, danger)
     val quick = rest.filter { it.tier == ActionTier.Quick }.take(quickLimit)
-    val more = if (foldMore) rest.filter { it.tier == ActionTier.More }.takeIf { it.size > 1 }.orEmpty() else emptyList()
-    val standard = rest.filter { it !in quick && it !in more }
-    return ActionLayout(quick, sectionsOf(standard), sectionsOf(more), properties, danger)
+    val standard = rest.filter { it !in quick }
+    return ActionLayout(quick, sectionsOf(standard), properties, danger)
 }
 
 private fun sectionsOf(actions: List<SheetAction>): List<List<SheetAction>> = actions.groupBy { it.group }.values.toList()

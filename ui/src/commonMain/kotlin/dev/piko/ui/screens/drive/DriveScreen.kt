@@ -942,7 +942,8 @@ fun DriveScreen(
         add(DriveActions.restoreFromVault { vaultSession.restore(listOf(file)) })
         add(DriveActions.download { enqueueDownload(file) })
         add(DriveActions.rename { startRename(file) })
-        addAll(DriveActions.sourceActions(file.source, onCopy = { copySource(file) }, onOpen = { file.sourceUrl?.let(platform::openUrl) }))
+        // 移动端的来源在面板头部，见 FileActionHandlers.copySource
+        if (desktop) addAll(DriveActions.sourceActions(file.source, onCopy = { copySource(file) }, onOpen = { file.sourceUrl?.let(platform::openUrl) }))
         add(DriveActions.removeFromVault { state.removeFromVault(listOf(file.id)) })
     }
 
@@ -970,14 +971,16 @@ fun DriveScreen(
             share = { shareTargets = listOf(file) },
             rename = { startRename(file) },
             move = { moveTargetIds = setOf(file.id) },
-            copy = { copyTargetIds = setOf(file.id) },
+            copy = if (desktop || library == null) ({ copyTargetIds = setOf(file.id) }) else null,
             trash = { state.moveToTrash(listOf(file.id)) },
             extract = { archiveSession.extract(listOf(file)) },
-            findDuplicates = { findDuplicates(PathBreadcrumb(file.id, file.name)) },
+            findDuplicates = if (desktop) ({ findDuplicates(PathBreadcrumb(file.id, file.name)) }) else null,
+            // 整理的是它的子树，要在网盘里它所在的地方做，库里不给
+            canonicalNameFolder = if (desktop && library == null) ({ nameByCode(listOf(file)) }) else null,
             downloadSegment = { segmentSession.open(file) },
             prepareQualities = { mediaRepository.prefetchDownloadQualities(file.id) },
-            copySource = { copySource(file) },
-            openSource = { file.sourceUrl?.let(platform::openUrl) },
+            copySource = if (desktop) ({ copySource(file) }) else null,
+            openSource = if (desktop) ({ file.sourceUrl?.let(platform::openUrl) }) else null,
             openInExternalPlayer = platform.externalPlayer?.let { { openInExternalPlayer(file) } },
             openInNewTab = latestOpenInNewTab?.let { { it(file) } },
             togglePin = latestTogglePin?.let { { it(file) } },
@@ -990,14 +993,8 @@ fun DriveScreen(
             togglePreview = { state.toggleSpoiler(file.id) },
             putOnClipboard = clipboardActions(listOf(file)),
         )
-        val canonicalName = listOfNotNull(
-            // 文件夹整理的是它的子树，要在网盘里它所在的地方做，库里不给
-            DriveActions.canonicalName { nameByCode(listOf(file)) }.takeIf {
-                commands.rename && if (file.isFolder) library == null else hasAvCode(file.name)
-            },
-        )
         // 移除记录排在移入回收站之前，两者同在末组
-        return reveal + removeRecord + fileActions(file, commands, handlers) + canonicalName
+        return reveal + removeRecord + fileActions(file, commands, handlers)
     }
 
     // 对着一项右键或按属性键时作用于哪几项：它在几项选中里时是全部选中的
@@ -1342,6 +1339,7 @@ fun DriveScreen(
             typeCount = state.availableTypes.size,
             filtering = state.typeFilter != null,
             feedSupported = platform.videoPreview != null && onFeedShownChange != null,
+            nameParsing = state.isNameParsing,
         ),
     )
 
@@ -1748,6 +1746,16 @@ fun DriveScreen(
                                 batchRename = DriveActions.batchRename {
                                     batchRenameTargets = state.displayedFiles.filter { it.id in state.selectedFileIds && !it.isUploading }
                                 }.takeIf { targetCommands.rename },
+                                // 以下两项与多选的右键菜单（selectionActions）同一套条件
+                                canonicalName = commandTargets.filterNot { it.isUploading || it.isVaulted }
+                                    .takeIf { settled -> targetCommands.rename && settled.any { !it.isFolder && hasAvCode(it.name) } }
+                                    ?.let { settled -> DriveActions.canonicalName { avNamingTargets = settled } },
+                                restoreFromVault = commandTargets.filter { it.isVaulted }.takeIf { it.isNotEmpty() }?.let { vaulted ->
+                                    DriveActions.restoreFromVault {
+                                        state.exitSelection()
+                                        vaultSession.restore(vaulted)
+                                    }
+                                },
                             )
 
                             isSearchOpen -> DriveSearchTopBar(
@@ -1808,9 +1816,10 @@ fun DriveScreen(
                     // （清空回收站、选中建议移走的）在时就是它，否则是「+」菜单。曾两样依次画在同一个槽位里，查重页上「+」压住了扩展 FAB
                     if (placePrimaryAction != null && !pathInTopBar) {
                         PrimaryActionFab(placePrimaryAction)
-                    } else if (!state.isSelectionMode && !pathInTopBar && (commands.addLink || commands.create || commands.findDuplicates)) {
+                    } else if (!state.isSelectionMode && !pathInTopBar && (commands.addLink || commands.create)) {
                         // 宽窗口的新建与上传在命令栏的「新建」里。菜单里摆什么与命令栏同一份规则（commands），
-                        // 一项也没有时整个按钮不出现
+                        // 一项也没有时整个按钮不出现。FAB 只管往这里加东西，查找重复这类整理位置的命令在列表页眉的菜单里：
+                        // FAB 菜单至多 6 项（M3），再有位置命令也不会挤进来
                         // FAB 菜单自带 16dp 的右边距与下边距，Scaffold 的 FAB 槽位又留了 16dp，
                         // 不抵消的话按钮离屏幕角是 32dp。偏移而不是挪出槽位，系统栏避让仍由 Scaffold 处理
                         FloatingActionButtonMenu(
@@ -1866,16 +1875,6 @@ fun DriveScreen(
                                     },
                                     icon = { Icon(Icons.Outlined.DriveFolderUpload, contentDescription = null) },
                                     text = { Text("上传文件夹") },
-                                )
-                            }
-                            if (commands.findDuplicates) {
-                                FloatingActionButtonMenuItem(
-                                    onClick = {
-                                        isFabMenuExpanded = false
-                                        findDuplicates(activeFolder)
-                                    },
-                                    icon = { Icon(Icons.Outlined.FileCopy, contentDescription = null) },
-                                    text = { Text("查找重复") },
                                 )
                             }
                         }
@@ -2025,6 +2024,10 @@ fun DriveScreen(
                                                         onTileSizeChange = ::selectTileSize,
                                                         // 宽窗口的排序、筛选与视图在命令栏上，页眉只剩搜索结果的说明
                                                         showControls = !pathInTopBar,
+                                                        placeActions = listOfNotNull(
+                                                            DriveActions.findDuplicates { findDuplicates(activeFolder) }.takeIf { commands.findDuplicates },
+                                                            DriveActions.canonicalName { findCanonical(activeFolder) }.takeIf { commands.canonicalNaming },
+                                                        ),
                                                     )
                                                 }
                                             }
@@ -2049,6 +2052,11 @@ fun DriveScreen(
             // 面板从这一项的更多按钮打开，只作用于它自己，不随多选扩到全部选中的
             actions = itemActions(target, listOf(target), fromMenu = false),
             onDismiss = { actionTargetFile = null },
+            // 复制后收起面板，与列表里的操作一样：「已复制」的提示在面板底下，不收起看不到
+            onCopySource = {
+                actionTargetFile = null
+                copySource(target)
+            },
         )
     }
 
@@ -2131,6 +2139,10 @@ fun DriveScreen(
     }
 
     renameTargetFile?.let { target ->
+        // 单个文件的按番号规范命名就在这里，不在条目菜单里另列一项：它本是名字预填为规范名的重命名。归档条目不改，见 av-naming.md
+        val canonicalName = remember(target.id, target.name) {
+            if (target.isFolder || target.isVaulted) null else canonicalAvNameOf(target.name)
+        }
         NameInputDialog(
             title = "重命名",
             label = "新名称",
@@ -2146,10 +2158,23 @@ fun DriveScreen(
                 renameTargetFile = null
                 state.rename(id, name)
             },
-            extra = if (canonicalRename && metaTubeEnabled && metaTube != null) {
-                { MetaTubeTitleRow(target.name, metaTube) { renameNewName = it } }
-            } else {
-                null
+            // 套用规范名后同一行换成取片名（配了 MetaTube 时），对话框高度不变。原名已是规范名时直接给取片名
+            extra = when {
+                canonicalName == null -> null
+                (canonicalRename || canonicalName == target.name) && metaTubeEnabled && metaTube != null -> {
+                    { MetaTubeTitleRow(target.name, metaTube) { renameNewName = it } }
+                }
+                else -> {
+                    {
+                        TextButton(
+                            enabled = renameNewName != canonicalName,
+                            onClick = {
+                                renameNewName = canonicalName
+                                canonicalRename = true
+                            },
+                        ) { Text("按番号规范命名") }
+                    }
+                }
             },
         )
     }

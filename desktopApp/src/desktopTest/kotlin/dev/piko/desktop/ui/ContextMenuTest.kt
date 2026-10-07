@@ -87,7 +87,7 @@ class ContextMenuTest {
     fun `arrow keys walk the icon row and the whole list`() = runComposeUiTest {
         setContent {
             CompositionLocalProvider(LocalPikoPlatform provides platform) { PikoTheme {
-                ContextMenuArea(actions = { sevenAndMore }) {
+                ContextMenuArea(actions = { sevenItems }) {
                     FileListItem(headline = "a.mkv", leading = { Icon(Icons.Outlined.Folder, null) }, onClick = {}, onMoreClick = {}, modifier = Modifier)
                 }
             } }
@@ -187,14 +187,14 @@ class ContextMenuTest {
         assertTrue(icons.first().left >= row.left && icons.last().right <= row.right, "超出菜单：$icons 列表项 $row")
     }
 
-    private val sevenAndMore = listOf(
+    private val sevenItems = listOf(
         SheetAction(Icons.Outlined.Download, "下载", {}, tier = ActionTier.Quick),
         SheetAction(Icons.Outlined.Download, "移动到", {}),
         SheetAction(Icons.Outlined.Download, "复制到", {}),
         SheetAction(Icons.Outlined.Download, "重命名", {}),
-        SheetAction(Icons.Outlined.Download, "查找重复", {}, tier = ActionTier.More),
-        SheetAction(Icons.Outlined.Download, "归档", {}, tier = ActionTier.More),
-        SheetAction(Icons.Outlined.Download, "隐藏预览", {}, tier = ActionTier.More),
+        SheetAction(Icons.Outlined.Download, "查找重复", {}),
+        SheetAction(Icons.Outlined.Download, "归档", {}),
+        SheetAction(Icons.Outlined.Download, "隐藏预览", {}),
         SheetAction(Icons.Outlined.Delete, "删除", {}, destructive = true),
     )
 

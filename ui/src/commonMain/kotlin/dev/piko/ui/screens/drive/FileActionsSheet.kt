@@ -1,11 +1,21 @@
 package dev.piko.ui.screens.drive
 
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.piko.data.repository.isPlayableVideo
@@ -27,7 +37,7 @@ import kotlinx.coroutines.flow.Flow
  * [actions] 与这一项的右键菜单是同一份（DriveScreen 的 itemActions），这里只管头部。
  * folderUsage 只对文件夹给出，面板打开期间收集，关闭即取消统计。
  * 标题与卡片上是同一个名字（集号前带上作品名），真实名称在它下面，都可选中复制，见 DriveItemName。
- * 离线下载与分享转存来的条目，头部注明来源。
+ * 离线下载与分享转存来的条目，头部注明来源，旁边是复制来源链接的按钮：链接是这一项的元数据，放在操作列表里要多占一行。
  */
 @Composable
 internal fun FileActionsSheet(
@@ -36,6 +46,7 @@ internal fun FileActionsSheet(
     folderUsage: Flow<FolderUsage>?,
     actions: List<SheetAction>,
     onDismiss: () -> Unit,
+    onCopySource: () -> Unit,
 ) {
     val file = name.file
     val usage by produceState<FolderUsageResult?>(null, folderUsage) {
@@ -61,9 +72,22 @@ internal fun FileActionsSheet(
             if (!locationLabel.isNullOrEmpty()) {
                 Text(text = locationLabel, color = MaterialTheme.colorScheme.primary)
             }
-            file.source?.let { Text(text = it.label, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            file.source?.let { SourceLine(it, onCopySource) }
         },
     )
+}
+
+@Composable
+private fun SourceLine(source: FileSource, onCopy: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(text = source.label, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f, fill = false))
+        Spacer(Modifier.width(4.dp))
+        TextButton(onClick = onCopy, contentPadding = PaddingValues(horizontal = 8.dp)) {
+            Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(source.copyLabel)
+        }
+    }
 }
 
 /** 网盘里一项的操作要做的事。为 null 的表示这里做不了，不给那一项。 */
@@ -73,15 +97,22 @@ internal class FileActionHandlers(
     val share: () -> Unit,
     val rename: () -> Unit,
     val move: () -> Unit,
-    val copy: () -> Unit,
+    /** 移动端库与查重结果这类列表里为 null：那里要做的是回到原处、下载、移走或删除，面板要一屏放得下。 */
+    val copy: (() -> Unit)?,
     val trash: () -> Unit,
     val extract: () -> Unit,
-    val findDuplicates: () -> Unit,
+    /**
+     * 文件夹的查找重复与按番号规范命名，作用于它的子树，是位置级的命令。移动端为 null：
+     * 进文件夹后从列表页眉的菜单发起，面板只放作用于这一项的。
+     */
+    val findDuplicates: (() -> Unit)?,
+    val canonicalNameFolder: (() -> Unit)?,
     val downloadSegment: () -> Unit,
     /** 视频的「下载」「下载指定段落」上按下或悬停时提前查各档，见 [SheetAction.onPrepare]。 */
     val prepareQualities: () -> Unit,
-    val copySource: () -> Unit,
-    val openSource: () -> Unit,
+    /** 移动端为 null：来源写在面板头部那一行，复制按钮挂在那里，见 [FileActionsSheet]；打开来源分享在手机上不给。 */
+    val copySource: (() -> Unit)?,
+    val openSource: (() -> Unit)?,
     /** 平台交不出去时为 null。 */
     val openInExternalPlayer: (() -> Unit)?,
     /** 没有标签栏（移动端）时为 null。 */
@@ -130,17 +161,18 @@ internal fun fileActions(file: FileStat, commands: ItemCommands, on: FileActionH
     if (desktop) add(DriveActions.star(file.isStarred, on.toggleStar, tier = ActionTier.Standard))
     if (commands.moveCopyTo) {
         add(DriveActions.moveTo(on.move))
-        add(DriveActions.copyTo(on.copy))
+        on.copy?.let { add(DriveActions.copyTo(it)) }
     }
     if (file.isFolder) on.togglePin?.let { add(DriveActions.pin(on.isPinned, it)) }
     if (video) add(DriveActions.downloadSegment(on.downloadSegment, on.prepareQualities))
     if (file.isFolder) {
-        add(DriveActions.findDuplicates(on.findDuplicates))
+        if (commands.rename) on.canonicalNameFolder?.let { add(DriveActions.canonicalName(it)) }
+        on.findDuplicates?.let { add(DriveActions.findDuplicates(it)) }
         on.vault?.let { add(DriveActions.vault(it)) }
         on.unvault?.let { add(DriveActions.unvault(it)) }
     }
     on.previewHidden?.let { add(DriveActions.previewVisibility(it, on.togglePreview)) }
-    addAll(DriveActions.sourceActions(file.source, on.copySource, on.openSource))
+    if (on.copySource != null && on.openSource != null) addAll(DriveActions.sourceActions(file.source, on.copySource, on.openSource))
     if (commands.moveToTrash) add(DriveActions.moveToTrash(on.trash))
 }
 
@@ -149,7 +181,10 @@ internal fun fileActions(file: FileStat, commands: ItemCommands, on: FileActionH
  * mypikpak.com/s/ 分享链接；自己上传或新建的没有。离线任务生成的顶层文件夹与其中的文件都带着。
  * Piko 从磁力秒传的文件由仓库按来源账本补上同一个字段（SourceLedger），所以磁力一类叫「磁力链接」，不叫「离线下载」。
  */
-internal enum class FileSource(val label: String) { Magnet("来源：磁力链接"), Share("来源：从分享转存") }
+internal enum class FileSource(val label: String, val copyLabel: String) {
+    Magnet("来源：磁力链接", "复制磁力链接"),
+    Share("来源：从分享转存", "复制分享链接"),
+}
 
 internal val FileStat.source: FileSource?
     get() {

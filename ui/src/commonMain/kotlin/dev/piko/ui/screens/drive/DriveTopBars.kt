@@ -109,6 +109,10 @@ internal fun DriveSelectionTopBar(
     extract: SheetAction?,
     share: SheetAction?,
     batchRename: SheetAction?,
+    /** 选中的有带番号的文件时：打开批量重命名并换上番号规则。用得少，一直在竖三点菜单里，不占顶栏的图标位。 */
+    canonicalName: SheetAction?,
+    /** 选中的有归档条目时，把它们恢复成网盘文件。 */
+    restoreFromVault: SheetAction?,
 ) {
     PikoTopBar(
         scrollBehavior = scrollBehavior,
@@ -125,10 +129,12 @@ internal fun DriveSelectionTopBar(
             share?.let { add(it.asBarItem(priority = 40)) }
             // 只选一项时没有共同前后缀可言，单项改名走条目菜单
             if (batchRename != null && selectedCount >= 2) add(batchRename.asBarItem(priority = 20, shortcut = "F2"))
+            restoreFromVault?.let { add(it.asBarItem(priority = 45)) }
             moveTo?.let { add(it.asBarItem(priority = 60)) }
             copyTo?.let { add(it.asBarItem(priority = 50)) }
             trash?.let { add(it.asBarItem(priority = 70, shortcut = shortcutModifier.trashLabel)) }
         },
+        moreActions = listOfNotNull(canonicalName),
     )
 }
 

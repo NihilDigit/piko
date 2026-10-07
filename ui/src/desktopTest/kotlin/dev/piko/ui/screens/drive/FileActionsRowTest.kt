@@ -19,7 +19,7 @@ class FileActionsRowTest {
 
     private fun handlers(desktop: Boolean) = FileActionHandlers(
         toggleStar = {}, download = {}, share = {}, rename = {}, move = {}, copy = {}, trash = {}, extract = {},
-        findDuplicates = {}, downloadSegment = {}, prepareQualities = {}, copySource = {}, openSource = {},
+        findDuplicates = {}, canonicalNameFolder = null, downloadSegment = {}, prepareQualities = {}, copySource = {}, openSource = {},
         openInExternalPlayer = null, openInNewTab = null, togglePin = null, isPinned = false, vault = null, unvault = null,
         previewHidden = null, togglePreview = {},
         putOnClipboard = if (desktop) ({ _ -> }) else null,
@@ -30,7 +30,7 @@ class FileActionsRowTest {
 
     @Test
     fun `the desktop menu row follows the windows 11 context menu and lists the star`() {
-        val layout = layoutActions(actions(desktop = true), foldMore = false, quickLimit = MenuQuickLimit)
+        val layout = layoutActions(actions(desktop = true), quickLimit = MenuQuickLimit)
         assertEquals(listOf("剪切", "复制", "重命名", "分享", "下载到本地"), layout.quick.map { it.label })
         val organize = layout.sections.single { section -> section.all { it.group == ActionGroup.Organize } }
         assertEquals("添加星标", organize.first().label)

@@ -716,6 +716,11 @@ internal fun DriveListHeader(
     onTileSizeChange: (TileSize) -> Unit,
     /** 为 false 时只留搜索结果的说明：宽窗口里这些控件在命令栏上。 */
     showControls: Boolean = true,
+    /**
+     * 作用于这个位置的命令（查找重复、按番号规范命名），常驻在末端的竖三点菜单里，排在收起的控件之后。
+     * 移动端只有这里摆它们：FAB 只管往这里加东西，条目的操作面板只放作用于那一项的。
+     */
+    placeActions: List<SheetAction> = emptyList(),
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         if (summary != null) {
@@ -753,6 +758,9 @@ internal fun DriveListHeader(
                     ViewModeToggle(viewMode = viewMode, onViewModeChange = onViewModeChange)
                 },
             ),
+            alwaysMore = placeActions.isNotEmpty(),
+            // 在菜单里同为一组，与收起的排序、视图之间才有一道分隔，彼此之间没有
+            moreActions = placeActions.map { SheetAction(it.icon, it.label, it.onClick, group = ActionGroup.Manage) },
         )
     }
 }

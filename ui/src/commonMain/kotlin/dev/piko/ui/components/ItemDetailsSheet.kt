@@ -1,6 +1,5 @@
 package dev.piko.ui.components
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,10 +14,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ExpandLess
-import androidx.compose.material.icons.outlined.ExpandMore
-import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItemDefaults
@@ -28,10 +23,6 @@ import androidx.compose.material3.SegmentedListItem
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -51,7 +42,7 @@ import androidx.compose.ui.unit.dp
  * [extraLines] 放在其下，默认是 bodyMedium，调用方自定颜色。
  *
  * 操作按 [layoutActions] 排，与右键菜单同一套：顶上一排图标加短标签，下面是 M3 Expressive 的分段列表，
- * 一组一段，「更多」是列表末尾一行、点开就地展开，然后是「属性」，危险项垫底。
+ * 一组一段，然后是「属性」，危险项垫底。没有「更多」，全部平铺，见 [layoutActions]。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -121,8 +112,6 @@ fun ItemDetailsSheet(
 
 @Composable
 private fun SheetActions(layout: ActionLayout, onAction: (() -> Unit) -> Unit) {
-    var moreExpanded by remember { mutableStateOf(false) }
-    val moreRow = MoreRow(moreExpanded, onToggle = { moreExpanded = !moreExpanded }).takeIf { layout.more.isNotEmpty() }
     Column(
         modifier = Modifier
             .padding(horizontal = 16.dp)
@@ -133,28 +122,17 @@ private fun SheetActions(layout: ActionLayout, onAction: (() -> Unit) -> Unit) {
             // 面板是 surfaceContainerLow，与下面的分段同取高两级
             ActionIconRow(layout.quick, onAction = { onAction(it.onClick) }, containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
         }
-        // 「更多」接在列表最后一段的末尾，不自成一段：单独一段的话，加上属性与危险项，面板里尽是一行一块的碎块
-        layout.sections.forEachIndexed { index, section ->
-            SheetActionGroup(section, onAction, more = moreRow.takeIf { index == layout.sections.lastIndex })
-        }
-        if (layout.sections.isEmpty() && moreRow != null) SheetActionGroup(emptyList(), onAction, more = moreRow)
-        AnimatedVisibility(visible = moreExpanded && moreRow != null) {
-            Column(verticalArrangement = Arrangement.spacedBy(SheetGroupGap)) {
-                layout.more.forEach { section -> SheetActionGroup(section, onAction) }
-            }
-        }
+        layout.sections.forEach { section -> SheetActionGroup(section, onAction) }
         if (layout.properties.isNotEmpty()) SheetActionGroup(layout.properties, onAction)
         if (layout.danger.isNotEmpty()) SheetActionGroup(layout.danger, onAction)
     }
 }
 
-private class MoreRow(val expanded: Boolean, val onToggle: () -> Unit)
-
 private val SheetGroupGap = 12.dp
 
 @Composable
-private fun SheetActionGroup(actions: List<SheetAction>, onAction: (() -> Unit) -> Unit, more: MoreRow? = null) {
-    val count = actions.size + if (more != null) 1 else 0
+private fun SheetActionGroup(actions: List<SheetAction>, onAction: (() -> Unit) -> Unit) {
+    val count = actions.size
     // 面板是 surfaceContainerLow，段取高两级才看得出分段
     val containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
     Column(verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
@@ -171,22 +149,6 @@ private fun SheetActionGroup(actions: List<SheetAction>, onAction: (() -> Unit) 
                 ),
                 leadingContent = { Icon(action.icon, contentDescription = null) },
                 content = { Text(action.label) },
-            )
-        }
-        if (more != null) {
-            SegmentedListItem(
-                onClick = more.onToggle,
-                shapes = ListItemDefaults.segmentedShapes(index = count - 1, count = count),
-                colors = ListItemDefaults.segmentedColors(
-                    containerColor = containerColor,
-                    leadingContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    trailingContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                ),
-                leadingContent = { Icon(Icons.Outlined.MoreHoriz, contentDescription = null) },
-                trailingContent = {
-                    Icon(if (more.expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, contentDescription = null)
-                },
-                content = { Text("更多") },
             )
         }
     }

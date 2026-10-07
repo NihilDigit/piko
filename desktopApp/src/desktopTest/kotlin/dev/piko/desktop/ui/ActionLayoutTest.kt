@@ -27,75 +27,33 @@ class ActionLayoutTest {
             action("下载", ActionTier.Quick),
             action("分享", ActionTier.Quick),
             action("移动到", group = ActionGroup.Organize),
-            action("查重", ActionTier.More),
-            action("归档", ActionTier.More),
+            action("隐藏预览"),
+            action("归档"),
             properties,
             trash,
         )
         val layout = layoutActions(actions)
         assertTrue(layout.quick.isEmpty())
-        assertTrue(layout.more.isEmpty())
-        assertEquals(listOf("下载", "分享", "查重", "归档", "移动到"), layout.sections.flatten().map { it.label })
+        assertEquals(listOf("下载", "分享", "隐藏预览", "归档", "移动到"), layout.sections.flatten().map { it.label })
         assertEquals(listOf(properties), layout.properties)
         assertEquals(listOf(trash), layout.danger)
     }
 
     @Test
-    fun `the seventh item brings the icon row and the more row`() {
+    fun `the seventh item brings the icon row`() {
         val actions = listOf(
             action("下载", ActionTier.Quick),
             action("分享", ActionTier.Quick),
             action("移动到"),
             action("复制到"),
-            action("查重", ActionTier.More),
-            action("归档", ActionTier.More),
+            action("隐藏预览"),
+            action("归档"),
             properties,
             trash,
         )
         val layout = layoutActions(actions)
         assertEquals(listOf("下载", "分享"), layout.quick.map { it.label })
-        assertEquals(listOf("移动到", "复制到"), layout.sections.flatten().map { it.label })
-        assertEquals(listOf("查重", "归档"), layout.more.flatten().map { it.label })
-    }
-
-    /** 右键菜单不收「更多」：图标行照旧，原本收起的项回到各自的组里，不在列表末尾另成一段。 */
-    @Test
-    fun `without folding the more items join their groups in the list`() {
-        val actions = listOf(
-            action("下载", ActionTier.Quick, ActionGroup.Open),
-            action("移动到", group = ActionGroup.Organize),
-            action("用外部播放器打开", group = ActionGroup.Open),
-            action("查重", ActionTier.More, ActionGroup.Manage),
-            action("按番号规范命名", ActionTier.More, ActionGroup.Organize),
-            action("复制来源链接", ActionTier.More, ActionGroup.Manage),
-            properties,
-            trash,
-        )
-        val layout = layoutActions(actions, foldMore = false)
-        assertEquals(listOf("下载"), layout.quick.map { it.label })
-        assertTrue(layout.more.isEmpty())
-        assertEquals(
-            listOf(listOf("移动到", "按番号规范命名"), listOf("用外部播放器打开"), listOf("查重", "复制来源链接")),
-            layout.sections.map { s -> s.map { it.label } },
-        )
-        assertEquals(listOf(properties), layout.properties)
-        assertEquals(listOf(trash), layout.danger)
-    }
-
-    @Test
-    fun `a lone more item is listed in place`() {
-        val actions = listOf(
-            action("下载", ActionTier.Quick),
-            action("分享", ActionTier.Quick),
-            action("移动到"),
-            action("复制到"),
-            action("在新标签页打开"),
-            action("查重", ActionTier.More, group = ActionGroup.Manage),
-            properties,
-        )
-        val layout = layoutActions(actions)
-        assertTrue(layout.more.isEmpty())
-        assertEquals(listOf("查重"), layout.sections.last().map { it.label })
+        assertEquals(listOf("移动到", "复制到", "隐藏预览", "归档"), layout.sections.flatten().map { it.label })
     }
 
     @Test

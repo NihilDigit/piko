@@ -224,7 +224,7 @@ private fun placeAlong(pointer: Int, size: Int, window: Int): Int = when {
 }
 
 /**
- * 按 [layoutActions] 排，与操作面板同一套，只是不收「更多」：顶上一排纯图标（悬停出提示），下面的列表按组留空隔开，
+ * 按 [layoutActions] 排，与操作面板同一套：顶上一排纯图标（悬停出提示），下面的列表按组留空隔开，
  * 然后是「属性」，危险项垫底。「更多」做过原地换上的一页，菜单只在桌面上、窗口放得下一整列，收起来只多一步，已去掉；
  * 弹出式子菜单也不做，material3 没有，自己做要处理悬停延时与斜穿。
  * 用 DropdownMenuPopup 自己摆，不走 [PikoDropdownMenu]，为的是菜单项形状与分组自己定。
@@ -240,7 +240,7 @@ private fun placeAlong(pointer: Int, size: Int, window: Int): Int = when {
  */
 @Composable
 private fun ActionMenu(actions: List<SheetAction>, positionProvider: DropdownMenuPopupPositionProvider, onDismiss: () -> Unit) {
-    val layout = layoutActions(actions, foldMore = false, quickLimit = MenuQuickLimit)
+    val layout = layoutActions(actions, quickLimit = MenuQuickLimit)
     val firstItem = remember { FocusRequester() }
     DropdownMenuPopup(
         expanded = true,

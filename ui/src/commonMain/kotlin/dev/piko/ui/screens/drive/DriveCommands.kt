@@ -59,9 +59,14 @@ internal class CommandInputs(
     val filtering: Boolean,
     /** 平台放得了信息流的片段。 */
     val feedSupported: Boolean,
+    /** 设置里的文件名解析总开关，番号识别跟着它。 */
+    val nameParsing: Boolean,
 )
 
-/** 命令栏上每一样东西显不显示。窄窗口的 FAB 菜单也照其中的新建、查重与添加链接。 */
+/**
+ * 命令栏上每一样东西显不显示。窄窗口的 FAB 菜单照其中的新建与添加链接，只管往这里加东西；
+ * 查找重复与按番号规范命名在列表页眉的菜单里。
+ */
 internal data class DriveCommands(
     val home: Boolean,
     /** 「新建」菜单：新建文件夹、上传。 */
@@ -71,6 +76,8 @@ internal data class DriveCommands(
     val emptyPlace: Boolean,
     val selectAll: Boolean,
     val findDuplicates: Boolean,
+    /** 按番号规范命名当前文件夹。桌面的命令栏不摆，经命令面板与文件夹的右键菜单。 */
+    val canonicalNaming: Boolean,
     val sort: Boolean,
     val filter: Boolean,
     val feed: Boolean,
@@ -129,6 +136,8 @@ internal fun driveCommands(input: CommandInputs): DriveCommands = with(input) {
         selectAll = itemCount > 0 && !allSelected,
         // 查重的范围是眼前这个目录，搜索结果与库都不是目录
         findDuplicates = folder && itemCount > 0,
+        // 范围同查重；关了文件名解析就认不出番号，扫出来必然是空的
+        canonicalNaming = folder && itemCount > 0 && nameParsing,
         // 库里按各自的先后（添加、播放的时间）排；一项以下没得排
         sort = (folder || place == CommandPlace.SEARCH) && itemCount >= 2,
         // 只有一类时筛了等于没筛；筛着的时候要留着，才撤得掉

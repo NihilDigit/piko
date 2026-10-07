@@ -76,13 +76,15 @@ fun PikoTopBar(
      * 与下面的内容对齐；底色仍铺满。否则宽窗口里标题贴在最左、内容在正中，两者对不上。
      */
     alignToReadableWidth: Boolean = false,
+    /** 不论宽窄都只在竖三点菜单里的项，排在收起的 [actions] 之后。非空时竖三点一直在。 */
+    moreActions: List<SheetAction> = emptyList(),
 ) {
     if (alignToReadableWidth) {
         BoxWithConstraints(modifier) {
-            PikoTopBarContent(title, Modifier, navigationIcon, onBackClick, actions, scrollBehavior, colors, readableSidePadding(maxWidth))
+            PikoTopBarContent(title, Modifier, navigationIcon, onBackClick, actions, moreActions, scrollBehavior, colors, readableSidePadding(maxWidth))
         }
     } else {
-        PikoTopBarContent(title, modifier, navigationIcon, onBackClick, actions, scrollBehavior, colors, 0.dp)
+        PikoTopBarContent(title, modifier, navigationIcon, onBackClick, actions, moreActions, scrollBehavior, colors, 0.dp)
     }
 }
 
@@ -94,6 +96,7 @@ private fun PikoTopBarContent(
     navigationIcon: (@Composable () -> Unit)?,
     onBackClick: (() -> Unit)?,
     actions: List<BarItem>,
+    moreActions: List<SheetAction>,
     scrollBehavior: TopAppBarScrollBehavior?,
     colors: TopAppBarColors,
     sideInset: Dp,
@@ -137,6 +140,8 @@ private fun PikoTopBarContent(
                 middleMinWidth = TitleMinWidth,
                 reserveMiddle = true,
                 fillMiddle = true,
+                alwaysMore = moreActions.isNotEmpty(),
+                moreActions = moreActions,
                 end = caption.buttons,
                 dragWindow = caption.atTop,
             )
