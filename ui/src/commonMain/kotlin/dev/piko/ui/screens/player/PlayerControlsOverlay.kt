@@ -912,7 +912,8 @@ fun MobilePlayerControls(
                         title = title,
                         // 音轨与字幕换到它自己的面板；分享、下载这类先收起面板再做，免得面板挡着随后弹出的东西
                         actions = listOfNotNull(
-                            SheetAction(Icons.Outlined.Subtitles, "音轨与字幕", { openSheet = PlayerSheet.Tracks })
+                            // 与分享、下载排在一排，竖屏的手机上一格只有 60dp 上下，五个字放不下
+                            SheetAction(Icons.Outlined.Subtitles, "音轨与字幕", { openSheet = PlayerSheet.Tracks }, shortLabel = "音轨字幕")
                                 .takeIf { hasTracksEntry },
                             SheetAction(Icons.Outlined.Info, "详细信息", { openSheet = PlayerSheet.Stats })
                                 .takeIf { playbackStats != null },

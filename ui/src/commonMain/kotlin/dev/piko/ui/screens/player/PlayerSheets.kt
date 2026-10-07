@@ -100,7 +100,6 @@ import kotlin.math.abs
 import dev.piko.data.auth.PlayerGestureDefaults
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.ActionIconRow
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberUpdatedState
 import kotlinx.coroutines.delay
@@ -684,7 +683,7 @@ internal fun PlayerSettingsPanel(
     title: String? = null,
     /** 去处：音轨与字幕、详细信息。 */
     actions: List<SheetAction> = emptyList(),
-    /** 对文件本身的操作：分享、下载。与文件名同为「文件」一组，排在播放设置之前、以分隔线隔开。 */
+    /** 对文件本身的操作：分享、下载。与文件名同为「文件」一组，与 [actions] 排在同一排，在前。 */
     fileActions: List<SheetAction> = emptyList(),
     seekStepSeconds: Int = PlayerGestureDefaults.SEEK_STEP_SECONDS,
     onSeekStepChange: ((Int) -> Unit)? = null,
@@ -698,7 +697,9 @@ internal fun PlayerSettingsPanel(
             .padding(start = 24.dp, end = 24.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(24.dp),
     ) {
-        if (title != null || fileActions.isNotEmpty()) {
+        // 文件操作与去处排成一排：分成两排加分隔线时，第二排只有两项，看着像另一组不相干的东西
+        val rowActions = fileActions + actions
+        if (title != null || rowActions.isNotEmpty()) {
             SettingsSection("文件") {
                 if (title != null) {
                     // 可选中：文件名常要拿去搜字幕、查资料
@@ -710,14 +711,12 @@ internal fun PlayerSettingsPanel(
                         )
                     }
                 }
-                if (fileActions.isNotEmpty()) {
+                if (rowActions.isNotEmpty()) {
                     if (title != null) Spacer(Modifier.height(8.dp))
-                    ActionIconRow(fileActions, onAction = { it.onClick() })
+                    ActionIconRow(rowActions, onAction = { it.onClick() })
                 }
             }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         }
-        if (actions.isNotEmpty()) ActionIconRow(actions, onAction = { it.onClick() })
         if (playbackSpeed != null) {
             SettingsSection("倍速", trailing = formatSpeed(playbackSpeed)) {
                 ConnectedChoiceRow(
