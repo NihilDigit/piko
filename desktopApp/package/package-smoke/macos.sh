@@ -109,6 +109,11 @@ wait_incoming torrent "$before" 'a .torrent file'
 stop_app
 echo '::endgroup::'
 
+echo '::group::1c. external player lookup'
+# 只查视频的默认应用，不打开播放器
+self_test external-player
+echo '::endgroup::'
+
 echo '::group::2. in-app update'
 publish "$next_version"
 # 用户自己留的同名备份：更新不能动它（旧脚本拿 .app.old 当临时名，会把它删掉）

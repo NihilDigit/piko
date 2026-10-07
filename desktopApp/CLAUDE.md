@@ -105,6 +105,8 @@ Windows、macOS 与 Linux 的入口、平台实现与播放器窗口。应用内
   写进去会破坏签名封印）；播放器全屏用 `WindowPlacement.Fullscreen`；magnet 链接、.torrent、Cmd+Q 与点 Dock 图标
   经 Apple 事件进来（回调在界面线程上，读种子挪到后台）；设为 magnet 与种子的默认打开方式经 LaunchServices 直接改
   （`MacLinkAssociation`，Windows 则是登记后跳系统设置，见 `WindowsLinkAssociation`），首次启动问一次，答过不再问；通知经 osascript（署名为脚本编辑器，自己署名要签过名的 bundle），防休眠经 caffeinate；
+  外部播放器按扩展名向 LaunchServices 查默认应用，再以 `open -a` 把回环地址交给它（`MacExternalPlayer`）；
+  objc_msgSend 的封装共用 `MacObjc`；
   快捷键的主修饰键由 `PikoPlatform.shortcutModifier` 给出，mac 上是 ⌘。平台胶水集中在 `MacOs.kt`。
   应用内更新整个换掉 .app（见 `shared/.../shared/update/CLAUDE.md`）：新包先拷到旁边，过了 `codesign --verify` 再去掉隔离属性、换进去；
   任何一步失败都留着旧包、重新打开它，下次启动时提示更新未完成（脚本写的 `failed` 标记）。

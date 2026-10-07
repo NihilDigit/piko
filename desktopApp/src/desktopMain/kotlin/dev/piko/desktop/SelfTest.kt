@@ -74,6 +74,13 @@ internal fun runSelfTest(name: String): Int {
                 holdMillis = (System.getenv("PIKO_SELFTEST_HOLD")?.toLongOrNull() ?: 0L) * 1000,
                 report = ::report,
             )
+            // 查视频的默认应用，不打开。全新的 macos-15 runner 上 .mp4 归 QuickTime Player，.mkv 没有默认应用、
+            // 应退到 .mp4 的那一个；两者都查得到才算过。主要验 objc_msgSend 的签名与 LaunchServices 的调用在真系统上不崩
+            "external-player" -> {
+                val players = listOf("a.mp4", "a.mkv", "a.ts").associateWith { MacExternalPlayer.playerFor(it) }
+                report(players.entries.joinToString(" ") { (name, app) -> "${name.substringAfter('.')}=$app" })
+                isMacOs && players.values.all { it != null }
+            }
             // 系统接没接下通知。Linux 上要有通知服务（org.freedesktop.Notifications）在跑
             "notify" -> {
                 val shown = when {
