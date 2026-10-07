@@ -31,6 +31,7 @@ import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.UnfoldLess
 import androidx.compose.material.icons.outlined.UnfoldMore
 import androidx.compose.material.icons.outlined.FolderZip
+import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Search
@@ -494,7 +495,9 @@ private fun Modifier.treeGuides(row: MapRow, color: Color, childrenBelow: Boolea
 /**
  * 宽窗口网盘页的目录图：一块浮在列表上的面板。导航栏搜索旁的树形按钮打开，打开后一直开着、跳转也不收，
  * 面板上的 × 关掉（[onClose]），关着时导航栏上才有那个按钮。拖动、改大小与层叠见 [FloatingPanel]，[avoid] 等参数照传。
- * 由调用方铺满列表这一块。树的根总是网盘根目录，进来与换了位置时都展开到眼前的文件夹。 *
+ * 由调用方铺满列表这一块。树的根总是网盘根目录，进来与换了位置时都展开到眼前的文件夹。
+ * 树里没有根目录那一行（从根的子项列起），回根目录靠标题行的 [onHome]，与导航栏的主页按钮同一个入口；已在根目录时为 null，不显示。
+ *
  * 否决过的形态：贴在右沿的缩略图细轨（悬停展开、与树同一个容器形变、拖到任意位置），碰到的东西当场变形、
  * 拖的与停下的不是同一个东西，补了延时、方向冻结、吸附鼠标仍旧别扭；缩略图上放按钮又难看。也试过钉住开关，
  * 面板能随便拖、打开就一直开着之后用不着了。
@@ -506,6 +509,7 @@ internal fun FolderMapPanel(
     onClose: () -> Unit,
     onOpen: (List<PikoPathBreadcrumb>) -> Unit,
     onOpenFile: (List<PikoPathBreadcrumb>, FileStat) -> Unit,
+    onHome: (() -> Unit)?,
     modifier: Modifier = Modifier,
     avoid: () -> DpRect? = { null },
     onActivate: () -> Unit = {},
@@ -526,6 +530,7 @@ internal fun FolderMapPanel(
         avoid = avoid,
         onActivate = onActivate,
         headerActions = {
+            if (onHome != null) PanelHeaderButton(Icons.Outlined.Home, "网盘根目录", onHome)
             PanelHeaderToggle(Icons.Outlined.Search, Icons.Filled.Search, "过滤", checked = filterShown) { filterShown = !filterShown }
         },
     ) {

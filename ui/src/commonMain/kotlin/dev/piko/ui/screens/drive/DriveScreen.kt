@@ -333,9 +333,11 @@ fun DriveScreen(
     val libraryView = state.libraryView
     val inTrash = libraryView == DriveLibrary.TRASH
     var libraryConfirm by remember { mutableStateOf<LibraryConfirm?>(null) }
+    // 回网盘根目录：整条栈换掉，不是退到第一级（库里的子文件夹栈底是库）。命令栏与目录图的主页按钮同用这一个
+    fun goHome() = driveRepo.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB))
     // 库是路径栈的第一级，没有上一级可回；退出库是回到打开它之前的地方，没有就回网盘根目录
     fun leaveLibrary() {
-        if (!state.goBack()) driveRepo.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB))
+        if (!state.goBack()) goHome()
         onLibraryLeft()
     }
 
@@ -1331,8 +1333,7 @@ fun DriveScreen(
                 }
             },
             onRefresh = { state.load(refresh = true) },
-            // 库里的子文件夹栈底是库而不是根，回主页要换掉整条栈
-            onHome = { driveRepo.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB)) },
+            onHome = ::goHome,
             viewSwitcher = {
                 ViewSwitcher(
                     viewMode = viewMode,
@@ -1428,6 +1429,8 @@ fun DriveScreen(
                             onClose = { setFolderMapOpen(false) },
                             onOpen = driveRepo::updateFolderStack,
                             onOpenFile = ::openFromMap,
+                            // 与命令栏的主页按钮同一条规则：已在根目录时不给
+                            onHome = if (commands.home) ::goHome else null,
                             modifier = Modifier.zIndex(if (propertiesOnTop) 0f else 1f),
                             avoid = { propertiesPanel.bounds },
                             onActivate = { propertiesOnTop = false },
@@ -1791,7 +1794,7 @@ fun DriveScreen(
                                     breadcrumbs()
                                     DuplicatesEmptyState(
                                         finder = duplicateState,
-                                        onLeave = { driveRepo.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB)) },
+                                        onLeave = ::goHome,
                                         canLeave = twoPane,
                                         modifier = Modifier.weight(1f),
                                     )

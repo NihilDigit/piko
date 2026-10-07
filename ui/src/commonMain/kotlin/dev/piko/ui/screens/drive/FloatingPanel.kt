@@ -41,6 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
@@ -409,9 +410,25 @@ private fun ResizeHandle(
     )
 }
 
-/** 标题行右端的小按钮，比标准图标按钮小一号，与 44dp 的标题行相称。 */
+/** 标题行右端的开关，选中时换实心并着强调色。大小见 [PanelHeaderButton]。 */
 @Composable
 internal fun PanelHeaderToggle(icon: ImageVector, checkedIcon: ImageVector, label: String, checked: Boolean, onClick: () -> Unit) {
+    PanelHeaderButton(
+        icon = if (checked) checkedIcon else icon,
+        label = label,
+        tint = if (checked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+        onClick = onClick,
+    )
+}
+
+/** 标题行右端的小按钮，比标准图标按钮小一号，与 44dp 的标题行相称。 */
+@Composable
+internal fun PanelHeaderButton(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    tint: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+) {
     TooltipBox(
         positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
         tooltip = { PlainTooltip { Text(label) } },
@@ -421,12 +438,7 @@ internal fun PanelHeaderToggle(icon: ImageVector, checkedIcon: ImageVector, labe
             modifier = Modifier.size(36.dp).clip(CircleShape).clickable(onClickLabel = label, onClick = onClick),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(
-                if (checked) checkedIcon else icon,
-                contentDescription = label,
-                tint = if (checked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(20.dp),
-            )
+            Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(20.dp))
         }
     }
 }
