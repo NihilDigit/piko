@@ -127,6 +127,10 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun saveProxySetting(setting: ProxySetting) = Unit
     override suspend fun getIgnoredUpdateVersion(): String? = null
     override suspend fun setIgnoredUpdateVersion(version: String) = Unit
+    override val metaTubeUrlFlow = MutableStateFlow("")
+    override suspend fun setMetaTubeUrl(url: String) { metaTubeUrlFlow.value = url }
+    override val metaTubeTokenFlow = MutableStateFlow("")
+    override suspend fun setMetaTubeToken(token: String) { metaTubeTokenFlow.value = token }
 }
 
 /** 内存会话存储，行为与两端的实现一致：会话、上次账号、密码三份各自独立。 */

@@ -148,6 +148,8 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val RENAME_REGEX_TEXT_MODE = booleanPreferencesKey("rename_regex_text_mode")
         val PROXY_SETTING = stringPreferencesKey("proxy_setting")
         val IGNORED_UPDATE_VERSION = stringPreferencesKey("ignored_update_version")
+        val METATUBE_URL = stringPreferencesKey("metatube_url")
+        val METATUBE_TOKEN = stringPreferencesKey("metatube_token")
     }
 
     /**
@@ -557,6 +559,33 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun setIgnoredUpdateVersion(version: String) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.IGNORED_UPDATE_VERSION] = version
+        }
+    }
+
+    override val metaTubeUrlFlow: Flow<String> = preference { it[PreferencesKeys.METATUBE_URL].orEmpty() }
+
+    override suspend fun setMetaTubeUrl(url: String) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.METATUBE_URL] = url
+        }
+    }
+
+    // 与解压密码同样加密存放；解不开（密钥库被清）当作没填
+    override val metaTubeTokenFlow: Flow<String> = preference { it[PreferencesKeys.METATUBE_TOKEN] }.map { stored ->
+        stored?.let(CredentialCipher::decrypt).orEmpty()
+    }
+
+    // 加密失败时不存，宁可让用户再填一次，也不落明文
+    override suspend fun setMetaTubeToken(token: String) {
+        val sealed = if (token.isEmpty()) {
+            ""
+        } else {
+            runCatching { CredentialCipher.encrypt(token) }
+                .onFailure { PikoLog.w(TAG, "MetaTube 令牌加密失败，未保存", it) }
+                .getOrNull() ?: return
+        }
+        context.dataStore.edit { preferences ->
+            if (sealed.isEmpty()) preferences.remove(PreferencesKeys.METATUBE_TOKEN) else preferences[PreferencesKeys.METATUBE_TOKEN] = sealed
         }
     }
 }

@@ -38,6 +38,9 @@ import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
 import dev.piko.shared.data.FilePikoCacheStore
 import dev.piko.shared.sync.JvmSyncCipher
+import dev.piko.shared.scrape.MetaTubeService
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.okhttp.OkHttp
 import dev.piko.shared.data.PikoClientManager
 import dev.piko.shared.state.InstantSheetState
 import dev.piko.shared.state.TorrentMagnet
@@ -466,6 +469,7 @@ private fun createServices(settings: DesktopSettingsStore, preferences: DesktopP
         uploadSources = DesktopPikoUploadSources(),
         cacheStore = FilePikoCacheStore(PikoHome.root.resolve("cache").toString()),
         syncCipher = JvmSyncCipher(),
+        metaTube = MetaTubeService(preferences) { HttpClient(OkHttp) },
     )
 }
 

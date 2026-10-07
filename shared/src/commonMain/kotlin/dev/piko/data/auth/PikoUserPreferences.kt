@@ -223,4 +223,15 @@ interface PikoUserPreferences {
     /** 开屏提示里点了「忽略此版本」的版本号。只比相等，更新的版本出来照常提示。 */
     suspend fun getIgnoredUpdateVersion(): String?
     suspend fun setIgnoredUpdateVersion(version: String)
+
+    /**
+     * 用户自己部署的 MetaTube 服务地址，如「http://192.168.1.2:8080」。空串表示不用刮削，界面上不出现任何刮削入口。
+     * 每台设备各自的，不进设置同步：局域网地址换一台设备未必连得上。
+     */
+    val metaTubeUrlFlow: Flow<String>
+    suspend fun setMetaTubeUrl(url: String)
+
+    /** MetaTube 的访问令牌（服务端的 TOKEN）。机密，由平台加密存放，不进设置同步。空串表示没填。 */
+    val metaTubeTokenFlow: Flow<String>
+    suspend fun setMetaTubeToken(token: String)
 }

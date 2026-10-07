@@ -165,6 +165,10 @@ internal fun BatchRenameOptions(
             // 开着时常驻，正则文本模式下也能从这里关掉
             if (state.avNaming) {
                 CheckboxRow("按番号规范命名", checked = true, enabled) { if (!it) state.stopAvNaming() }
+                // 只在用户配了 MetaTube 时出现
+                if (state.metaTubeAvailable) {
+                    CheckboxRow("片名取自 MetaTube", state.useMetaTubeTitles, enabled, onChange = state::updateUseMetaTubeTitles)
+                }
             }
             Row {
                 CheckboxRow("区分大小写", options.caseSensitive, enabled, Modifier.weight(1f)) { update { copy(caseSensitive = it) } }

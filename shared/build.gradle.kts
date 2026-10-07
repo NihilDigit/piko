@@ -51,6 +51,8 @@ kotlin {
             dependencies {
                 implementation(libs.ktor.client.mock)
                 implementation(libs.kotlinx.serialization.json)
+                // 只给本机手动跑的 MetaTube 联调（MetaTubeLiveProbe）用，与两端传入的引擎相同
+                implementation(libs.ktor.client.okhttp)
             }
         }
     }

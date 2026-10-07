@@ -12,6 +12,10 @@ import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.log.logFile
 import dev.piko.shared.naming.av.hasAvCode
+import dev.piko.shared.naming.av.matchAvFolder
+import dev.piko.shared.naming.parseMediaName
+import dev.piko.shared.scrape.MetaTubeService
+import kotlinx.coroutines.flow.first
 import io.github.nihildigit.pikpak.FileStat
 import kotlin.random.Random
 import kotlin.time.TimeSource
@@ -39,6 +43,8 @@ class BatchRenameState(
     private val memory: BatchRenameMemory,
     initialTextMode: Boolean = false,
     initialAvNaming: Boolean = false,
+    /** 用户配了 MetaTube 时可以从那里取片名；为 null 时没有这个选项。 */
+    private val metaTube: MetaTubeService? = null,
 ) {
     enum class Phase { EDITING, RUNNING, DONE }
 
@@ -76,6 +82,49 @@ class BatchRenameState(
 
     fun stopAvNaming() {
         avNaming = false
+    }
+
+    /** 配了 MetaTube（地址不为空）。没配时界面上不出现「片名取自 MetaTube」。 */
+    var metaTubeAvailable by mutableStateOf(false)
+        private set
+
+    /** 规范名的片名取自 MetaTube，查不到的用原名里的片名。 */
+    var useMetaTubeTitles by mutableStateOf(false)
+        private set
+
+    private var metaTubeTitles by mutableStateOf(emptyMap<String, String>())
+
+    /** 正在查片名时的进度（已完成，总数），不在查时为 null。查完之前不能执行，预览还会变。 */
+    var metaTubeProgress by mutableStateOf<Pair<Int, Int>?>(null)
+        private set
+
+    /** 上一次查询里因出错没查成的番号数，底栏据此说一句。 */
+    var metaTubeFailed by mutableStateOf(0)
+        private set
+
+    private var metaTubeJob: Job? = null
+
+    fun updateUseMetaTubeTitles(enabled: Boolean) {
+        useMetaTubeTitles = enabled
+        metaTubeJob?.cancel()
+        metaTubeProgress = null
+        metaTubeFailed = 0
+        val service = metaTube ?: return
+        if (!enabled) return
+        // 文件夹名里的番号也查：文件夹的规范名同样带片名
+        val infos = sources.mapNotNull { source ->
+            if (source.isFolder) matchAvFolder(source.name) else parseMediaName(source.name).av
+        }
+        metaTubeProgress = 0 to infos.distinctBy { it.code }.size
+        metaTubeJob = scope.launch {
+            try {
+                val result = service.titles(infos) { done, total -> metaTubeProgress = done to total }
+                metaTubeTitles = metaTubeTitles + result.titles
+                metaTubeFailed = result.failed
+            } finally {
+                metaTubeProgress = null
+            }
+        }
     }
 
     // endregion
@@ -311,7 +360,7 @@ class BatchRenameState(
         } catch (error: InvalidPatternException) {
             null to error.message.orEmpty()
         }
-        val base = if (avNaming) CanonicalAvRule() else null
+        val base = if (avNaming) CanonicalAvRule(if (useMetaTubeTitles) metaTubeTitles else emptyMap()) else null
         val result = runBatchRenamePipeline(included, findReplace, stripPrefix, stripSuffix, base)
         val newNameById = included.map { it.id }.zip(result.names).toMap()
         val newNames = sources.map { newNameById[it.id] ?: it.name }
@@ -345,7 +394,7 @@ class BatchRenameState(
         private set
 
     val canRename by derivedStateOf {
-        phase == Phase.EDITING && siblingNames != null && patternError == null &&
+        phase == Phase.EDITING && siblingNames != null && patternError == null && metaTubeProgress == null &&
             plan.problemCount == 0 && plan.steps.isNotEmpty()
     }
 
@@ -357,6 +406,7 @@ class BatchRenameState(
     init {
         loadSiblings()
         if (initialAvNaming && avNamingAvailable) startAvNaming()
+        metaTube?.let { service -> scope.launch { metaTubeAvailable = service.enabled.first() } }
     }
 
     fun loadSiblings() {

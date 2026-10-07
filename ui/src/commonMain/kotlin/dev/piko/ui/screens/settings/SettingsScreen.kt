@@ -128,6 +128,7 @@ import dev.piko.data.auth.SnailMode
 import androidx.compose.material.icons.outlined.SlowMotionVideo
 import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.outlined.TravelExplore
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.readableWidth
 import dev.piko.ui.components.TooltipIconButton
@@ -199,6 +200,10 @@ fun SettingsScreen(
     val playbackMaxHeight by sessionManager.playbackMaxHeightFlow.collectAsStateWithLifecycle(initialValue = 0)
     var showDownloadQuality by remember { mutableStateOf(false) }
     val downloadMaxHeight by sessionManager.downloadMaxHeightFlow.collectAsStateWithLifecycle(initialValue = 0)
+
+    val metaTube = services.metaTube
+    val metaTubeUrl by sessionManager.metaTubeUrlFlow.collectAsStateWithLifecycle(initialValue = "")
+    var showMetaTubeDialog by remember { mutableStateOf(false) }
 
     var showDownloadDirDialog by remember { mutableStateOf(false) }
     val proxySetting by sessionManager.proxySettingFlow.collectAsStateWithLifecycle(initialValue = ProxySetting())
@@ -437,6 +442,16 @@ fun SettingsScreen(
                             onCheckedChange = { scope.launch { sessionManager.setHardwareDecoding(it) } },
                         )
                     }
+                    if (metaTube != null) SettingsGroup("刮削") {
+                        SettingsNavigationRow(
+                            index = 0, count = 1,
+                            icon = Icons.Outlined.TravelExplore,
+                            title = "MetaTube",
+                            supporting = metaTubeUrl.ifBlank { "未设置" },
+                            onClick = { showMetaTubeDialog = true },
+                            trailingIcon = null,
+                        )
+                    }
                     }
 
                     SettingsSectionBlock(SettingsSection.Transfer, paged, onPositioned(SettingsSection.Transfer)) {
@@ -535,6 +550,26 @@ fun SettingsScreen(
                     }
                 }
             }
+        }
+    }
+
+    if (showMetaTubeDialog && metaTube != null) {
+        // 令牌在打开对话框时才读：桌面端从系统保管处取，不必在设置页一打开就碰钥匙串
+        val token by sessionManager.metaTubeTokenFlow.collectAsStateWithLifecycle(initialValue = null)
+        token?.let { current ->
+            MetaTubeSettingsDialog(
+                service = metaTube,
+                currentUrl = metaTubeUrl,
+                currentToken = current,
+                onSave = { url, newToken ->
+                    showMetaTubeDialog = false
+                    scope.launch {
+                        sessionManager.setMetaTubeUrl(url)
+                        sessionManager.setMetaTubeToken(newToken)
+                    }
+                },
+                onDismiss = { showMetaTubeDialog = false },
+            )
         }
     }
 

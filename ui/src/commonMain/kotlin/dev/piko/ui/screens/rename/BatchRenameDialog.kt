@@ -104,7 +104,9 @@ fun BatchRenameDialog(
     }
     val (memory, textMode) = remembered ?: return
     val scope = rememberCoroutineScope()
-    val state = remember(files) { BatchRenameState(services.driveRepository, services.preferences, scope, files, memory, textMode, startWithAvNaming) }
+    val state = remember(files) {
+        BatchRenameState(services.driveRepository, services.preferences, scope, files, memory, textMode, startWithAvNaming, services.metaTube)
+    }
     val latestOnFinished by rememberUpdatedState(onFinished)
     val latestOnDismiss by rememberUpdatedState(onDismiss)
     // 结果与关闭放在同一个协程里依次做：分成两个 effect 的话，对话框可能先关掉，结果就收不到了
@@ -379,10 +381,13 @@ private fun actionStatus(state: BatchRenameState): Pair<String, Boolean> {
         }
         Phase.EDITING -> when {
             state.patternError != null -> "正则表达式有误" to true
+            state.metaTubeProgress != null -> state.metaTubeProgress!!.let { (done, total) -> "正在从 MetaTube 查询片名 $done/$total" } to false
             state.isCheckingSiblings -> "正在检查同目录名称" to false
             state.siblingsFailed -> "无法检查同目录名称" to true
             plan.problemCount > 0 -> problemStatus(plan) to true
             plan.changeCount == 0 -> "无需改名" to false
+            // 查不成的用了原名里的片名，说一句，免得以为都查到了
+            state.useMetaTubeTitles && state.metaTubeFailed > 0 -> "${state.metaTubeFailed} 个番号查询失败，沿用原名中的片名" to false
             else -> "" to false
         }
     }

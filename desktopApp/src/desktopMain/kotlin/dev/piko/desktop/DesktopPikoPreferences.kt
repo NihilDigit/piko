@@ -381,9 +381,34 @@ class DesktopPikoPreferences(
         settings.set(KEY_IGNORED_UPDATE, version)
     }
 
+    private val metaTubeUrl = MutableStateFlow(settings.get(KEY_METATUBE_URL))
+    override val metaTubeUrlFlow: Flow<String> = metaTubeUrl.asStateFlow()
+    override suspend fun setMetaTubeUrl(url: String) {
+        settings.set(KEY_METATUBE_URL, url)
+        metaTubeUrl.value = url
+    }
+
+    /** null 是还没从保管处读出来。读不出来时当作没填，与解压密码同一取舍。 */
+    private val metaTubeToken = MutableStateFlow<String?>(null)
+    override val metaTubeTokenFlow: Flow<String> = metaTubeToken.onStart {
+        if (metaTubeToken.value == null) {
+            val stored = withSecrets { runCatching { secrets.read(SECRET_METATUBE_TOKEN)?.decodeToString() } }
+            metaTubeToken.compareAndSet(null, stored.onFailure { PikoLog.w(TAG, "MetaTube 令牌未能从系统保管处读出", it) }.getOrNull().orEmpty())
+        }
+    }.filterNotNull()
+
+    override suspend fun setMetaTubeToken(token: String) {
+        withSecrets {
+            if (token.isEmpty()) secrets.delete(SECRET_METATUBE_TOKEN) else secrets.write(SECRET_METATUBE_TOKEN, token.encodeToByteArray())
+        }
+        metaTubeToken.value = token
+    }
+
     private companion object {
         const val TAG = "credentials"
         const val SECRET_ARCHIVE_PASSWORDS = "archive-passwords"
+        const val SECRET_METATUBE_TOKEN = "metatube-token"
+        const val KEY_METATUBE_URL = "scrape.metaTubeUrl"
 
         fun uploadCredentialsKey(taskId: String) = "upload-$taskId"
 

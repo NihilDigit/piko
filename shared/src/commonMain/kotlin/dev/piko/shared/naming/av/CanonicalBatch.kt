@@ -69,7 +69,7 @@ fun canonicalAvNames(items: List<AvNamingItem>, titles: Map<String, String> = em
 
 /** 只含一个番号的文件夹名：「番号 片名」，不带分段。认不出番号时为 null。 */
 private fun canonicalFolderName(name: String, titles: Map<String, String>): String? {
-    val info = matchAv(name.trim(), allowLanguageSuffix = false)?.info ?: return null
+    val info = matchAvFolder(name) ?: return null
     return canonicalAvName(name, info, titles[info.code] ?: info.title, isFolder = true)
 }
 

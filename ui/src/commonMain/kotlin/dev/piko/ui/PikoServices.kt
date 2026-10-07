@@ -34,6 +34,7 @@ import dev.piko.shared.upload.PikoUploadSources
 import dev.piko.shared.net.PikPakDomainSelector
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
+import dev.piko.shared.scrape.MetaTubeService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -62,6 +63,8 @@ class PikoServices(
     cacheStore: PikoCacheStore? = null,
     /** 压缩包密码同步进网盘前的加密，两端都传 JvmSyncCipher；为 null 时不同步它们（截图环境）。 */
     syncCipher: SyncCipher? = null,
+    /** 用户自己部署的 MetaTube，两端传入；为 null 时设置里没有刮削一组（截图环境）。 */
+    val metaTube: MetaTubeService? = null,
 ) {
     // 不随任何界面结束的后台工作：离线任务的跟踪与 Piko-Temp 的清理
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
