@@ -48,13 +48,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.isSpecified
 import androidx.compose.material3.ToggleButtonDefaults
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
@@ -195,7 +193,8 @@ internal fun SettingsCard(modifier: Modifier = Modifier, content: @Composable ()
 
 /**
  * 设置的一行。所有设置项都用它（或下面几个包装），对齐规则只写在这一处：
- * - 前导图标与标题首行垂直居中：只有标题时整行居中，有说明时图标停在标题那一行，不随说明的行数下移；
+ * - 前导图标对标题与说明这一块垂直居中，与行尾控件同一条中线（照 Windows 设置卡片与 M3 列表项）；
+ *   曾对齐标题首行，有说明的行图标贴在左上角，与行尾控件一高一低；
  * - 行尾控件对标题与说明这一块居中，不对整行：下面挂着分段按钮或色块时，开关不悬到两者之间；
  * - 下方附加控件（[below]）左缘与标题文字左缘齐，右缘与行尾控件齐。
  *
@@ -232,9 +231,6 @@ internal fun SettingsRow(
     }
     val contentColor = if (selected) colors.onSecondaryContainer else colors.onSurface
     val dimmed = if (enabled) 1f else DisabledContentAlpha
-    val titleLine = with(LocalDensity.current) {
-        style.titleStyle.lineHeight.takeIf { it.isSpecified }?.toDp() ?: style.iconSize
-    }
     Surface(
         shape = style.itemShape,
         color = if (selected) colors.secondaryContainer else colors.surfaceContainer,
@@ -251,17 +247,15 @@ internal fun SettingsRow(
             ) {
                 Row(
                     modifier = Modifier.weight(1f),
-                    verticalAlignment = if (leading != null) Alignment.CenterVertically else Alignment.Top,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     if (icon != null) {
-                        Box(Modifier.size(width = style.iconSize, height = maxOf(titleLine, style.iconSize)), contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = icon,
-                                contentDescription = null,
-                                tint = (if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant).copy(alpha = dimmed),
-                                modifier = Modifier.size(style.iconSize),
-                            )
-                        }
+                        Icon(
+                            imageVector = icon,
+                            contentDescription = null,
+                            tint = (if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant).copy(alpha = dimmed),
+                            modifier = Modifier.size(style.iconSize),
+                        )
                         Spacer(Modifier.width(style.iconGap))
                     } else if (leading != null) {
                         leading()

@@ -139,7 +139,7 @@ TopAppBar 先量动作、标题拿剩下的，桌面窄窗口加上窗口按钮�
 - 行一律用 `SettingsRow` 或其包装 `SettingsSwitchRow`、`SettingsNavigationRow`，放进 `SettingsGroup`；不是标准行的一块
   （账号卡片、关于卡片、WebDAV 的应用）用 `SettingsCard`。不要再用 `SegmentedListItem` 或自己拼 Surface：外侧圆角由组裁出，
   行只画内侧小圆角，不逐行传位置，单项组与多项组的圆角因此一致（M14）。
-- 对齐：前导图标与标题首行垂直居中，有说明时不随说明下移；行尾控件对标题与说明整块居中；下方附加控件（分段按钮、色块）
+- 对齐：前导图标与行尾控件都对标题与说明整块垂直居中，同一条中线；下方附加控件（分段按钮、色块）
   左缘与标题文字齐。尺寸按交互模型取（`settingsStyle()`）：桌面照 Windows 设置页的卡片，每项一张 8dp 圆角的卡片、间距 4dp、
   20dp 图标配 14sp 标题、行高 64dp；移动端照 M3 分段列表，外侧 16dp、内侧 4dp、间距 2dp、24dp 图标配 16sp 标题、行高至少 56dp。
 - 行尾：开关；去下一页画箭头；弹对话框或当场执行的不画；动作用 `SettingsRowButton`（tonal 或描边），不用文字按钮，
