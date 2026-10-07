@@ -171,6 +171,11 @@ class TransfersState(
     // 两者都是进程级会话，换账号时已各自清空，这里不再按账号过滤
     private val extracts: ArchiveExtractSession,
     private val vault: FolderVaultSession,
+    /**
+     * 解压、归档与取消归档列不列进来。只有移动端列：桌面上它们在右下角的浮动卡片里，切到哪一页都在，
+     * 传输页再列一份就是同一件事两处显示（ui/CLAUDE.md「后台在跑的与关了没做完的」）。
+     */
+    private val listsServerWork: Boolean,
 ) {
     private val cloud = OfflineTasksState(taskRepo, scope)
 
@@ -650,8 +655,11 @@ class TransfersState(
         val tasksById = cloud.tasks.associateBy { it.id }
         val packItems = packJobs.filter(packFilter).map { TransferItem.Pack(it, tasksById[it.taskId]) }
         val instantItems = instantRecords.filter(instantFilter).map { TransferItem.Instant(it) }
-        val serverItems = extracts.jobs.filter(extractFilter).map { TransferItem.Extract(it) } +
-            listOfNotNull(vaultItem.takeIf { includeVault })
+        val serverItems = if (!listsServerWork) {
+            emptyList()
+        } else {
+            extracts.jobs.filter(extractFilter).map { TransferItem.Extract(it) } + listOfNotNull(vaultItem.takeIf { includeVault })
+        }
         // sortedByDescending 是稳定排序：排在最前的解压仍按会话里的先后
         return (serverItems + localItems + cloudItems + packItems + instantItems).sortedByDescending { it.createdAtMs }
     }

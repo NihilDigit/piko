@@ -1392,7 +1392,7 @@ private fun MainSidebar(
             MainTabSwitch(
                 currentTab = currentTab.takeIf { selectedPage == null },
                 onTabClick = onTabClick,
-                activity = rememberTransferActivity(),
+                activity = rememberTransferActivity(countsServerWork = false),
                 collapsed = collapsed,
             )
             QuickAccessSection(

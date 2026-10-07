@@ -339,12 +339,16 @@ fun ListLeadingMedia(
     }
 }
 
-/** 没有缩略图时的类型图标块，外观与网盘文件（非文件夹）的图标块一致。 */
+/**
+ * 没有缩略图时的类型图标块，外观与网盘文件（非文件夹）的图标块一致。自己定尺寸与圆角：原先铺满父布局，
+ * 直接放进 ListItem 的前导槽时把整行宽度吃掉，标题与进度被挤成零宽（传输页的解压、归档行整行空白）。
+ */
 @Composable
 fun ListLeadingIcon(icon: ImageVector, modifier: Modifier = Modifier) {
     Box(
         modifier = modifier
-            .fillMaxSize()
+            .size(ListLeadingSize)
+            .clip(MaterialTheme.shapes.small)
             .background(MaterialTheme.colorScheme.surfaceContainerHighest),
         contentAlignment = Alignment.Center,
     ) {

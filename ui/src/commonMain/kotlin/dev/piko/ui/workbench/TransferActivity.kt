@@ -36,7 +36,11 @@ internal class TransferActivity(val downloadSpeed: Long, val uploadSpeed: Long, 
  * 暂停与失败的不算进行中。
  */
 @Composable
-internal fun rememberTransferActivity(pollCloud: Boolean = true): TransferActivity {
+internal fun rememberTransferActivity(
+    pollCloud: Boolean = true,
+    /** 解压与归档算不算。桌面不算：它们在右下角的浮动卡片里，不列进传输页，按钮上的数也就不该含它们。 */
+    countsServerWork: Boolean = true,
+): TransferActivity {
     val services = LocalPikoServices.current
     val downloads by services.downloadManager.tasks.collectAsStateWithLifecycle()
     val uploads by services.uploadManager.tasks.collectAsStateWithLifecycle()
@@ -50,7 +54,11 @@ internal fun rememberTransferActivity(pollCloud: Boolean = true): TransferActivi
     val activeUploads = uploads.values.filter { it.status.isActive }
     val activeCloud = if (pollCloud) cloud.count { it.phase == TaskPhase.RUNNING || it.phase == TaskPhase.PENDING } else 0
     // 待输密码的压缩包也算：它停着等人，正该引人去看
-    val serverWork = services.archiveExtractSession.jobs.size + (if (services.folderVaultSession.isRunning) 1 else 0)
+    val serverWork = if (!countsServerWork) {
+        0
+    } else {
+        services.archiveExtractSession.jobs.size + (if (services.folderVaultSession.isRunning) 1 else 0)
+    }
     return TransferActivity(
         downloadSpeed = activeDownloads.sumOf { it.speedBytesPerSec },
         uploadSpeed = activeUploads.sumOf { it.speedBytesPerSec },

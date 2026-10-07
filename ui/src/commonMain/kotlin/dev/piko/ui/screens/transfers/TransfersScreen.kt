@@ -102,6 +102,7 @@ import dev.piko.shared.upload.UploadStatus
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
+import dev.piko.ui.adaptive.isDesktopLayout
 import dev.piko.ui.adaptive.readableSidePadding
 import dev.piko.ui.components.ContextMenuArea
 import dev.piko.ui.components.pageFocusTarget
@@ -136,7 +137,8 @@ fun TransfersScreen(
     val platform = LocalPikoPlatform.current
     val client by services.clientManager.currentClient.collectAsStateWithLifecycle()
     val account = client?.account.orEmpty()
-    val state = remember(account) {
+    val desktop = isDesktopLayout()
+    val state = remember(account, desktop) {
         TransfersState(
             services.downloadManager,
             services.taskRepository,
@@ -148,6 +150,7 @@ fun TransfersScreen(
             account,
             services.archiveExtractSession,
             services.folderVaultSession,
+            listsServerWork = !desktop,
         )
     }
     val vaultSession = services.folderVaultSession
