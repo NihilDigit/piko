@@ -391,8 +391,14 @@ tasks.matching { it.name == "createReleaseAotArchive" }.configureEach {
 // 换回之后再删掉，装进包里的启动配置不变
 val aotTrainingHome = layout.buildDirectory.dir("aot-training-home").get().asFile
 val aotTrainingHomeOption = "java-options=-Dpiko.home=" + aotTrainingHome.invariantSeparatorsPath
-val releaseLauncherConfig = layout.buildDirectory
-    .file("compose/binaries/main-release/app/$desktopPackageName/app/$desktopPackageName.cfg").get().asFile
+// jpackage 的应用目录按系统分布不同：Linux 把启动配置放在 lib/app 下，macOS 在 .app/Contents/app 下
+val releaseLauncherConfig = layout.buildDirectory.file(
+    "compose/binaries/main-release/app/" + when {
+        isLinuxHost -> "$desktopPackageName/lib/app"
+        isMacHost -> "$desktopPackageName.app/Contents/app"
+        else -> "$desktopPackageName/app"
+    } + "/$desktopPackageName.cfg",
+).get().asFile
 // 原样保留换行符：启动配置是增量更新的补丁文件，内容变了就与没加过这一行时的构建对不上
 fun rewriteLauncherConfig(edit: (List<String>) -> List<String>) {
     val text = releaseLauncherConfig.readText()
