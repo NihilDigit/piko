@@ -245,7 +245,6 @@ private fun ActionMenu(actions: List<SheetAction>, positionProvider: DropdownMen
     DropdownMenuPopup(
         expanded = true,
         onDismissRequest = onDismiss,
-        modifier = Modifier.verticalScroll(rememberScrollState()),
         popupPositionProvider = positionProvider,
     ) {
         // 弹层是另一层，有自己的焦点。要在这里面取：在外面取到的是窗口主层的，方向键会去挪列表里的焦点
@@ -271,7 +270,8 @@ private fun ActionMenu(actions: List<SheetAction>, positionProvider: DropdownMen
                 }
             },
         ) {
-            Column(Modifier.padding(vertical = MenuGroupGap / 2)) {
+            // 滚动放在容器里面：挂在弹层上时滚动区按矩形裁切，阴影只剩圆角外、矩形内那一小块，底下两个角各黑一团
+            Column(Modifier.verticalScroll(rememberScrollState()).padding(vertical = MenuGroupGap / 2)) {
                 MenuRows(layout, firstItem, onDismiss)
             }
         }
