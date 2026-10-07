@@ -33,9 +33,14 @@ class WorkNotice(val title: String, val message: String)
 fun PikoServices.workNotices(): Flow<WorkNotice> = merge(
     downloadNotices(downloadManager),
     uploadNotices(uploadManager, clientManager),
-    archiveExtractSession.outcomes.map { WorkNotice(if (it.succeeded) "解压完成" else "解压失败", it.message) },
+    serverWorkNotices(),
     duplicateNotices(duplicateSession),
     canonicalNamingNotices(canonicalNamingSession),
+)
+
+/** 服务端解压与归档、取消归档的结局。移动端传输页列着它们，做完时在页内另说一遍，见 TransfersScreen。 */
+fun PikoServices.serverWorkNotices(): Flow<WorkNotice> = merge(
+    archiveExtractSession.outcomes.map { WorkNotice(if (it.succeeded) "解压完成" else "解压失败", it.message) },
     folderVaultSession.outcomes.map { WorkNotice(it.title, it.message) },
 )
 

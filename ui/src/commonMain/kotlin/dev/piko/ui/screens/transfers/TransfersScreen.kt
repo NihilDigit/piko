@@ -100,6 +100,7 @@ import dev.piko.shared.state.TransferKind
 import dev.piko.shared.state.TransfersState
 import dev.piko.shared.upload.UploadStatus
 import dev.piko.ui.LocalPikoServices
+import dev.piko.ui.serverWorkNotices
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.adaptive.isDesktopLayout
@@ -184,6 +185,15 @@ fun TransfersScreen(
     }
     LaunchedEffect(state) {
         state.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
+    }
+    // 解压与归档做完，这一行随即消失，在这里说明结局。只在本页可见时收：退到后台由系统通知说，
+    // 回来不再补一遍。桌面不列这两种，结局另由网盘页与通知说明
+    if (!desktop) {
+        LaunchedEffect(services, lifecycleOwner) {
+            lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                services.serverWorkNotices().collect { snackbarHostState.showSnackbar("${it.title}\n${it.message}", withDismissAction = true) }
+            }
+        }
     }
 
     // 只记本次查看：这一组是低价值的历史，默认收起
@@ -373,6 +383,7 @@ fun TransfersScreen(
             is TransferItem.Extract -> ExtractTransferRow(
                 item = item,
                 onShowInDrive = { openCloudFileById(item.job.file.id, item.job.file.name) },
+                onSkip = { state.skipExtract(item.job.id) },
                 onMoreClick = { detailsKey = item.key },
                 selection = selection,
             )

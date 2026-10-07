@@ -40,16 +40,17 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.state.ArchiveExtractSession
-import dev.piko.shared.state.ArchiveJobStatus
 import dev.piko.shared.state.FolderVaultSession
 import dev.piko.shared.state.InstantSession
 import dev.piko.shared.state.InstantSheetState
+import dev.piko.ui.WorkMeter
+import dev.piko.ui.WorkProgress
+import dev.piko.ui.extractProgress
+import dev.piko.ui.workProgress
 import dev.piko.ui.screens.instant.rememberDiscardAddLink
 import dev.piko.ui.screens.instant.summary
 import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.TooltipIconButton
-import dev.piko.ui.screens.drive.vaultArchiveStatus
-import dev.piko.ui.screens.drive.vaultRestoreStatus
 
 /**
  * 浮在窗口右下角的一摞任务卡片：解压、归档、取消归档、收起的添加链接。每样一张，收起时一行，展开就地长成一块面板，
@@ -72,8 +73,7 @@ internal fun FloatingTasks(
     val discardInstant = rememberDiscardAddLink(instant)
     val tasks = buildList {
         if (archive.jobs.isNotEmpty()) add(extractTask(archive))
-        if (vault.progress != null) add(archiveTask(vault))
-        if (vault.restoreProgress != null) add(restoreTask(vault))
+        vault.workProgress()?.let { add(vaultTask(vault, it)) }
         val instantState = instant.state
         if (instantState != null && !instant.isSheetOpen) add(instantTask(instantState, instant, discardInstant))
     }
@@ -188,58 +188,38 @@ private fun DetailLine(title: String, supporting: String) {
     }
 }
 
-private fun ArchiveJobStatus.label(): String = when (this) {
-    ArchiveJobStatus.Waiting -> "排队中"
-    ArchiveJobStatus.Submitting -> "正在提交"
-    is ArchiveJobStatus.Extracting -> "正在解压 $progress%"
-    is ArchiveJobStatus.NeedsPassword -> "需要密码"
-}
+/** 卡片一行状态：主状态加次要说明，与传输页的行、Android 的通知同一份描述。 */
+private val WorkProgress.cardStatus: String get() = listOfNotNull(status, detail).joinToString("，")
+
+/** 卡片只画确定进度；不定的由行首转圈表示。 */
+private val WorkProgress.cardProgress: Float? get() = (meter as? WorkMeter.Determinate)?.fraction
 
 // 解压没有停止：服务端的任务提交后取消不了
 private fun extractTask(archive: ArchiveExtractSession): FloatingTask {
     val jobs = archive.jobs
-    val current = jobs.firstOrNull { it.status !is ArchiveJobStatus.NeedsPassword } ?: jobs.first()
-    val status = current.status
-    val waiting = status is ArchiveJobStatus.NeedsPassword
+    val work = jobs.extractProgress()!!
     return FloatingTask(
         key = "extract",
         icon = Icons.Outlined.Lock,
-        running = !waiting,
-        title = if (jobs.size == 1) current.file.name else "解压 ${jobs.size} 个压缩包",
-        status = if (jobs.size == 1) status.label() else "${current.file.name}：${status.label()}",
-        progress = (status as? ArchiveJobStatus.Extracting)?.progress?.div(100f),
-        detail = if (jobs.size > 1) ({ jobs.forEach { job -> DetailLine(job.file.name, job.status.label()) } }) else null,
+        running = work.meter != WorkMeter.None,
+        title = work.title,
+        status = work.cardStatus,
+        progress = work.cardProgress,
+        detail = if (jobs.size > 1) ({ jobs.forEach { job -> DetailLine(job.file.name, job.workProgress().status) } }) else null,
     )
 }
 
-private fun archiveTask(vault: FolderVaultSession): FloatingTask {
-    val progress = vault.progress!!
-    return FloatingTask(
-        key = "archive",
-        icon = Icons.Outlined.FileCopy,
-        running = true,
-        title = "归档「${progress.folderName}」",
-        status = vaultArchiveStatus(vault).orEmpty(),
-        progress = if (progress.total > 0) (progress.prepared.toFloat() + progress.done) / (progress.total.toFloat() * 2) else null,
-        action = "停止" to vault::stop,
-        actionEnabled = !vault.stopping,
-    )
-}
-
-private fun restoreTask(vault: FolderVaultSession): FloatingTask {
-    val progress = vault.restoreProgress!!
-    val total = progress.total
-    return FloatingTask(
-        key = "restore",
-        icon = Icons.Outlined.FileCopy,
-        running = true,
-        title = "取消归档「${progress.folderName}」",
-        status = vaultRestoreStatus(vault).orEmpty(),
-        progress = if (total != null && total > 0) progress.done.toFloat() / total else null,
-        action = "停止" to vault::stop,
-        actionEnabled = !vault.stopping,
-    )
-}
+// 归档与取消归档同一时刻只有一件，卡片的 key 仍按种类分开，换了一种时展开状态不沿用
+private fun vaultTask(vault: FolderVaultSession, work: WorkProgress): FloatingTask = FloatingTask(
+    key = if (vault.progress != null) "archive" else "restore",
+    icon = Icons.Outlined.FileCopy,
+    running = true,
+    title = work.title,
+    status = work.cardStatus,
+    progress = work.cardProgress,
+    action = "停止" to vault::stop,
+    actionEnabled = !vault.stopping,
+)
 
 // 不是后台任务，是关了但没做完的面板：解析、挑文件都在面板里，卡片只负责找回与放弃
 private fun instantTask(state: InstantSheetState, session: InstantSession, discard: () -> Unit): FloatingTask {
