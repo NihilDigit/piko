@@ -8,7 +8,7 @@ package dev.piko.shared.naming.av
 // caribbeancompr 的厂牌名。这里只取规则的思路，正则按本文件的约定重写。
 
 /** 规则表的版本。识别结果有变（番号字符串、分段写法、旗标）时加一。 */
-const val AV_RULES_VERSION = 2
+const val AV_RULES_VERSION = 3
 
 // 番号只在文件名开头找：站点前缀（xxx.com@、kcf9.com-、[site.net]、123456_site_）与标签方括号
 // （[中文字幕]、[HD]）剥掉之后，番号必须是第一个记号。在全文里找会把动画文件名里的

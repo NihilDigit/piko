@@ -33,6 +33,10 @@ chs、cht 在词表里是简体、繁体字幕，对番号片都是中字；sub 
 - 分段一律写作 CD1、CD2：-1、_1、-A、part1、fhd1、hhb1 都归到这里，A 是 CD1。同一目录里同一番号有第一、第二段时，
   单独的 -C 是第三段而不是中字。
 - 站点前缀（xxx.com@、kcf9.com-、[site.net]）、开头的 HD-、FHD- 与压制后缀（hhb、fhd、4K、H265、60fps）不进番号。
+  方括号里整段就是番号时（`[FC2-PPV-1234567] 片名`）只拆掉括号。
+- FC2 的各种写法都归到 `FC2-PPV-{编号}`：FC2PPV-、fc2_ppv_、FC2 PPV 、FC2-、FC2PPV 连写，编号 6 位、7 位照原样，
+  不补零。分段（-1、_1、-cd1、part1、A、B）与压制后缀同常规番号。规范名保留 PPV：MDC 照原样保留，
+  人手整理的目录也多这样写；MetaTube 的 number.Trim 会把它改成 `FC2-{编号}`，不影响刮削。
 
 番号字符串用作查重键、作品键与播放列表分组，三者都只在内存里，没有持久化的数据依赖它们。
 分段写法统一后，网盘列表与播放列表的行标题由「SSIS-123 1」变为「SSIS-123 CD1」。
@@ -77,6 +81,10 @@ chs、cht 在词表里是简体、繁体字幕，对番号片都是中字；sub 
 - 查片名调 `/v1/movies/search?q=<番号>`，请求带 `Authorization: Bearer <令牌>`；只采用编号与番号一致的结果，
   搜索结果没有片名时再取 `/v1/movies/{provider}/{id}`。无码厂牌的番号搜不到时去掉厂牌名再搜一次。
   服务端哪里都查不到时回 404「info not found」，按查不到处理。
+- FC2 搜 `FC2-{编号}`：服务端搜索前先经 number.Trim，这是它的不动点；FC2、FC2PPVDB 两个数据源再取纯数字当 ID，
+  fc2hub 的 ID 是「视频号-编号」两段，不能直接按编号取详情。2026-10-08 对一个公共实例实测：各种写法在全部数据源里
+  都回 404，指定数据源时 FC2 回 500「incomplete metadata」、FC2PPVDB 回 500，是数据源在那台服务器上取不到页面，
+  与查询写法无关。指定数据源时出错回 500，不指定时被汇总成 404，`MetaTubeLiveProbe` 的 `fc2 query forms` 可复查。
 - 结果按「地址|番号」缓存在进程里，查不到的也记下，出错的不记。并发 2 个，每次请求 15 秒超时；
   超时与错误照常返回失败，沿用原名中的片名，不阻塞改名。
 - HTTP 走两端传入的 OkHttp 引擎，建客户端时取进程默认的 ProxySelector，代理设置照样生效。
@@ -90,7 +98,8 @@ Piko 不内置任何成人站点网址，也不内置、不推荐任何 MetaTube
 - `InstantFlowSmokeTest`：添加链接开启规范命名后落盘的名字。
 - `MetaTubeServiceTest`：MockEngine 顶替服务端，覆盖令牌、匹配、缓存与超时。
 - `MetaTubeLiveProbe`：对真实服务端走一遍，只在本机手动跑：设 `METATUBE_PROBE_URL`（与 `METATUBE_PROBE_TOKEN`）后
-  `./gradlew :shared:desktopTest --tests '*MetaTubeLiveProbe*' -i`，没设时跳过。
+  `./gradlew :shared:desktopTest --tests '*MetaTubeLiveProbe*' -i`，没设时跳过。FC2 的几种查询写法另设
+  `METATUBE_PROBE_FC2`（纯数字编号）。
 - Android 的 ICU 冒烟 `NamingUnicodeDigitsSmokeTest` 已包含 `canonicalAvNames`。
 
 ## 待办

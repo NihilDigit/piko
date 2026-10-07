@@ -101,11 +101,17 @@ class MetaTubeService(
 
     /**
      * 先按规范番号搜。无码厂牌的番号（1PON-092415_001）在一些数据源里只记日期序号，搜不到再去掉厂牌名搜一次。
+     *
+     * FC2 搜「FC2-1234567」：服务端搜索前先经 number.Trim，FC2-PPV-1234567 也会被它改成这个写法，
+     * 直接发它省掉一层依赖；FC2、FC2PPVDB 两个数据源再从中取出纯数字当 ID。
      */
-    private fun queriesOf(info: AvInfo): List<String> = listOfNotNull(
-        info.code,
-        info.number.takeIf { info.kind == AvKind.UNCENSORED_LABEL && info.prefix.isNotEmpty() },
-    )
+    private fun queriesOf(info: AvInfo): List<String> = when (info.kind) {
+        AvKind.FC2 -> listOf("FC2-${info.number}")
+        else -> listOfNotNull(
+            info.code,
+            info.number.takeIf { info.kind == AvKind.UNCENSORED_LABEL && info.prefix.isNotEmpty() },
+        )
+    }
 
     private fun sameCode(number: String, info: AvInfo): Boolean {
         if (number.isBlank()) return false

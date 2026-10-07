@@ -35,6 +35,8 @@ class MetaTubeServiceTest {
                 )
                 "XYZ-456" -> respond("""{"data":[{"id":"z1","number":"XYZ-456","title":"","provider":"B"}]}""", headers = json)
                 "092415_001" -> respond("""{"data":[{"id":"p1","number":"092415_001","title":"一本道的片名","provider":"C"}]}""", headers = json)
+                // FC2 与 FC2PPVDB 两个数据源只认 number.Trim 之后的写法，回来的番号也是这样写的
+                "FC2-1234567" -> respond("""{"data":[{"id":"1234567","number":"FC2-1234567","title":"FC2 的片名","provider":"FC2"}]}""", headers = json)
                 // 真实服务端哪里都查不到时回 404，不是空表
                 else -> respond("""{"error":{"code":404,"message":"info not found"}}""", HttpStatusCode.NotFound, json)
             }
@@ -52,10 +54,12 @@ class MetaTubeServiceTest {
     @Test
     fun `titles come from results whose code matches and are cached per code`() = runBlocking<Unit> {
         val service = service()
-        val infos = listOf(av("abc00123.mp4"), av("XYZ-456.mp4"), av("1pon-092415_001.mp4"), av("NONE-001.mp4"), av("ABC-123-C.mp4"))
+        val infos = listOf(
+            av("abc00123.mp4"), av("XYZ-456.mp4"), av("1pon-092415_001.mp4"), av("NONE-001.mp4"), av("ABC-123-C.mp4"), av("fc2ppv_1234567_1.mp4"),
+        )
         val first = service.titles(infos)
         assertEquals(
-            mapOf("ABC-123" to "查到的片名", "XYZ-456" to "详情里的片名", "1PON-092415_001" to "一本道的片名"),
+            mapOf("ABC-123" to "查到的片名", "XYZ-456" to "详情里的片名", "1PON-092415_001" to "一本道的片名", "FC2-PPV-1234567" to "FC2 的片名"),
             first.titles,
         )
         assertEquals(0, first.failed)

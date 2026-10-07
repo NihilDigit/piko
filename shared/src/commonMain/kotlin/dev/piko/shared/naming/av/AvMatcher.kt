@@ -71,6 +71,12 @@ private fun stripSitePrefix(stem: String): Pair<String?, String> {
     while (true) {
         val match = LEADING_BRACKET.find(rest) ?: break
         val content = match.groupValues[1].trim()
+        // 「[FC2-PPV-1234567] 片名」：方括号里整段就是番号时拆掉括号，番号仍是第一个记号
+        if (matchCode(content, strict = true)?.end == content.length) {
+            val after = rest.substring(match.range.last + 1).trimStart()
+            rest = if (after.isEmpty()) content else "$content $after"
+            break
+        }
         val isSite = isDomainName(content) || content.lowercase() in SITE_WORDS
         val strippable = isSite || content.lowercase() in RELEASE_MARKS || scanTags(content).isTagText
         if (!strippable || matchCode(content, strict = true) != null) break

@@ -5,6 +5,7 @@ import dev.piko.shared.smoke.MemoryPreferences
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.request.get
+import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
 import kotlinx.coroutines.runBlocking
 import org.junit.Assume.assumeTrue
@@ -45,5 +46,30 @@ class MetaTubeLiveProbe {
         val titles = service.titles(names.map { parseMediaName(it).av!! }) { done, total -> println("进度 $done/$total") }
         println("片名：$titles")
         println("出错的请求：" + MetaTubeClient(http, url, token, timeoutMillis = 120_000).movie("NO_SUCH_PROVIDER", "x"))
+    }
+
+    /**
+     * FC2 的几种查询写法各发一次，看是写法的问题还是数据源取不到。编号经 METATUBE_PROBE_FC2 传入（纯数字），
+     * 数据源报错时服务端回 500，与「查不到」的 404 区分得开。
+     */
+    @Test
+    fun `fc2 query forms`() = runBlocking<Unit> {
+        val fc2 = System.getenv("METATUBE_PROBE_FC2").orEmpty()
+        assumeTrue("未设 METATUBE_PROBE_URL 或 METATUBE_PROBE_FC2，跳过", url.isNotBlank() && fc2.isNotBlank())
+        val http = HttpClient(OkHttp)
+        val base = url.trimEnd('/')
+        val paths = listOf(
+            "/v1/movies/search?q=FC2-PPV-$fc2",
+            "/v1/movies/search?q=FC2-$fc2",
+            "/v1/movies/search?q=$fc2",
+            "/v1/movies/search?q=FC2-$fc2&provider=FC2",
+            "/v1/movies/search?q=FC2-$fc2&provider=FC2PPVDB",
+            "/v1/movies/search?q=FC2-$fc2&provider=fc2hub",
+            "/v1/movies/FC2/$fc2",
+        )
+        paths.forEach { path ->
+            val body = http.get(base + path) { if (token.isNotBlank()) header("Authorization", "Bearer $token") }.bodyAsText()
+            println("$path → ${body.take(300)}")
+        }
     }
 }
