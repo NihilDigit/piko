@@ -105,12 +105,8 @@ internal class MpvPlaybackBackend(
     private var pendingLoad: Array<String>? = null
     private var released = false
     private var observing = false
-    private var surfaceWidth = 0
-    private var surfaceHeight = 0
-    private var resizedSinceRedraw = false
 
-    // 暂停时 mpv 不会因为换尺寸而重画，原地精确 seek 一次逼它按新尺寸再出一帧
-    private val redrawGate = SurfaceRedrawGate { onMpv { mpv.command(arrayOf("seek", "0", "relative+exact")) } }
+    private val redrawGate = SurfaceRedrawGate(dropCount = { voDropCount() }, arm = ::armRedrawGate)
 
     // mpv 每个 loadfile 恰好对应一个 END_FILE，且按提交顺序到达。换片或停止前记下
     // 已提交的数量，此前的 END_FILE 都是我们自己替换掉的；超出部分才是当前文件异常结束。
@@ -372,26 +368,33 @@ internal class MpvPlaybackBackend(
 
     fun setSurfaceSize(width: Int, height: Int) {
         if (released || !surfaceAttached) return
-        if (width != surfaceWidth || height != surfaceHeight) {
-            surfaceWidth = width
-            surfaceHeight = height
-            resizedSinceRedraw = true
-        }
         onMpv { mpv.setPropertyString("android-surface-size", "${width}x$height") }
     }
 
-    /**
-     * SurfaceView 要求重画时调用，[onDrawn] 在主线程上报「画完了」。只有尺寸真的变了才等 mpv 出新帧，
-     * 见 [SurfaceRedrawGate]；其余的重画请求（刚创建、系统要求刷新）画面没有变形，立即放行。
-     */
-    fun afterRedraw(onDrawn: () -> Unit) {
-        if (released || !surfaceAttached || !resizedSinceRedraw) {
-            onDrawn()
+    /** 在 [setSurfaceSize] 之后调用：等 mpv 按新尺寸交出一帧，再在主线程调用 [onShown]。见 [SurfaceRedrawGate]。 */
+    fun awaitFrameAtNewSize(onShown: () -> Unit) {
+        if (released || !surfaceAttached) {
+            onShown()
             return
         }
-        resizedSinceRedraw = false
-        redrawGate.await(paused = !isPlaying, onDrawn = onDrawn)
+        redrawGate.await(onShown)
     }
+
+    // 排在 setSurfaceSize 投递的设置之后：执行到这里时 vo 已经换成新尺寸，起点从这里取。
+    // 重设时状态没变就不动，免得慢帧率的片子永远数不满，或暂停时 seek 未完又发一次
+    private fun armRedrawGate(waiter: SurfaceRedrawGate.Waiter) = onMpv {
+        val paused = mpv.getPropertyBoolean("pause") == true
+        if (paused && !waiter.awaitingRestart) {
+            waiter.awaitRestart()
+            mpv.command(arrayOf("script-message", REDRAW_MARKER))
+            mpv.command(arrayOf("seek", "0", "relative+exact"))
+        } else if (!paused && !waiter.awaitingFrames) {
+            waiter.awaitFrames(mpv.getPropertyDouble("time-pos"), voDropCount())
+        }
+    }
+
+    // 属性在没有视频输出时不可用，当作没有丢帧
+    private fun voDropCount(): Long = runCatching { mpv.getPropertyInt("frame-drop-count") }.getOrNull()?.toLong() ?: 0L
 
     /**
      * 让 mpv 放开画面。[afterDetached] 为 null 时等它做完才返回：SurfaceView 的销毁回调一返回画面就没了，
@@ -501,7 +504,7 @@ internal class MpvPlaybackBackend(
     override fun eventProperty(property: String, value: Double) {
         when (property) {
             "time-pos" -> {
-                redrawGate.frameShown()
+                redrawGate.positionChanged(value)
                 val millis = (value * 1000).toLong().coerceAtLeast(0L)
                 // time-pos 每帧都报，控件只需要四分之一秒的精度，省掉多余的重组
                 if (abs(millis - positionMillis) >= POSITION_GRANULARITY_MILLIS) positionMillis = millis
@@ -531,6 +534,7 @@ internal class MpvPlaybackBackend(
     }
 
     override fun event(eventId: Int) {
+        redrawGate.eventReceived(eventId)
         when (eventId) {
             MpvEvent.MPV_EVENT_START_FILE -> isLoadingFile = true
             MpvEvent.MPV_EVENT_FILE_LOADED -> {
@@ -539,7 +543,6 @@ internal class MpvPlaybackBackend(
             }
             MpvEvent.MPV_EVENT_SEEK -> isSeeking = true
             MpvEvent.MPV_EVENT_PLAYBACK_RESTART -> {
-                redrawGate.frameShown()
                 isLoadingFile = false
                 isSeeking = false
                 if (!readySent) {
@@ -588,6 +591,10 @@ internal class MpvPlaybackBackend(
 
     private companion object {
         const val VIDEO_OUTPUT = "gpu"
+
+        // SurfaceRedrawGate 的顺序标记。事件只带编号不带内容，没有加载脚本，收到的 client-message 只会是它
+        const val REDRAW_MARKER = "piko-redraw"
+
         const val MIB = 1024 * 1024
         const val CALL_THREAD_IDLE_SECONDS = 5L
         const val PREVIEW_PROBE_BYTES = 1024 * 1024
