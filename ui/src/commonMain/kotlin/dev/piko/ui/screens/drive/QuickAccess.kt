@@ -58,7 +58,8 @@ import dev.piko.shared.state.QuickAccessState
 
 /**
  * 大窗口侧边栏里的快速访问，资源管理器导航窗格的同名一组：常驻的网盘根目录与 My Pack，其后是用户固定的文件夹
- * （文件夹右键「固定到快速访问」加进来）。点一下跳进网盘里的那个文件夹，[onOpened] 由调用方切到网盘页。
+ * （文件夹右键「固定到快速访问」加进来）。点一下跳进网盘里的那个文件夹：这里只给出路径，换栈与切到网盘页由 [onOpen] 一起做，
+ * 它可能先要问一声（窄窗口离开查找重复），取消时两样都不该发生。
  * 侧边栏只亮一处：人在其中某一项里时亮它，否则亮「文件」，见 [highlights]。
  */
 @Composable
@@ -67,7 +68,7 @@ internal fun ColumnScope.QuickAccessSection(
     pinned: List<PikoPathBreadcrumb>,
     currentStack: List<PikoPathBreadcrumb>,
     onFilesTab: Boolean,
-    onOpened: () -> Unit,
+    onOpen: (List<PikoPathBreadcrumb>) -> Unit,
 ) {
     LaunchedEffect(state) { state.watchMyPacks() }
     val currentId = currentStack.lastOrNull()?.id.takeIf { onFilesTab }
@@ -84,10 +85,7 @@ internal fun ColumnScope.QuickAccessSection(
             // 拖到这里就是移回根目录
             modifier = Modifier.fileDropTarget("quick:root", root),
             selected = atRoot,
-            onClick = {
-                state.openRoot()
-                onOpened()
-            },
+            onClick = { onOpen(listOf(root)) },
             onMiddleClick = { state.openRootInNewTab() },
         )
     }
@@ -99,10 +97,8 @@ internal fun ColumnScope.QuickAccessSection(
                 label = myPacks.name,
                 modifier = Modifier.fileDropTarget("quick:packs", myPacks),
                 selected = myPacks.id == currentId,
-                onClick = {
-                    state.openMyPacks(myPacks)
-                    onOpened()
-                },
+                // My Pack 就在根目录下，路径不必再查
+                onClick = { onOpen(listOf(root, myPacks)) },
                 onMiddleClick = { state.openMyPacksInNewTab(myPacks) },
             )
         }
@@ -122,10 +118,7 @@ internal fun ColumnScope.QuickAccessSection(
                 label = folder.name,
                 modifier = Modifier.fileDropTarget("pinned:${folder.id}", folder),
                 selected = folder.id == currentId,
-                onClick = {
-                    state.open(folder)
-                    onOpened()
-                },
+                onClick = { state.locate(folder, onOpen) },
                 onMiddleClick = { state.openInNewTab(folder) },
             )
         }

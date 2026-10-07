@@ -786,8 +786,11 @@ class DriveScreenState(
             driveRepo.locateFolder(file.id)
                 .logFailure(TAG, "定位条目失败")
                 .onSuccess { parents ->
-                    driveRepo.updateFolderStack(parents)
-                    highlight(setOf(file.id))
+                    // 被拦下问过之后，标出那一步要跟着换栈一起重走
+                    driveRepo.navigateThen(parents) {
+                        driveRepo.updateFolderStack(parents)
+                        highlight(setOf(file.id))
+                    }
                 }
                 .onFailure { _messages.tryEmit("找不到它所在的文件夹") }
         }

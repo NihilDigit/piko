@@ -1,5 +1,7 @@
 package dev.piko.shared.smoke
 
+import dev.piko.shared.data.ArchiveLocation
+import dev.piko.shared.data.DriveLibrary
 import dev.piko.shared.data.InstantMagnetRepository
 import dev.piko.shared.data.OfflinePackStage
 import dev.piko.shared.data.OfflinePackTracker
@@ -313,5 +315,35 @@ class InstantFlowSmokeTest {
         rig.openInDrive(shows)
         delay(300)
         assertEquals("", state.target?.id, "另选过之后不再跟随网盘页")
+    }
+
+    /** 库、查重与压缩包的 ID 是虚拟的，曾被当作已删除的目录，改存 My Packs 并提示「当前目录已不存在」。 */
+    @Test
+    fun `a virtual place saves into the nearest real folder without a notice`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val shows = server.addFolder("Shows")
+        val rig = Rig(server, MemoryPreferences(), scope)
+        val showsCrumb = PikoPathBreadcrumb(shows.id, shows.name)
+        val archiveTop = ArchiveLocation("ARCHIVE01", "GCIDA1", "")
+        val archiveSub = ArchiveLocation("ARCHIVE01", "GCIDA1", "Disc 1/")
+        val cases = listOf(
+            listOf(DriveLibrary.STARRED.crumb) to "",
+            listOf(DriveLibrary.DUPLICATES.crumb) to "",
+            listOf(
+                PikoDriveRepository.ROOT_BREADCRUMB,
+                showsCrumb,
+                PikoPathBreadcrumb(archiveTop.id, "pack.zip"),
+                PikoPathBreadcrumb(archiveSub.id, "Disc 1"),
+            ) to shows.id,
+        )
+        for ((stack, expected) in cases) {
+            rig.driveRepo.updateFolderStack(stack)
+            val sessionScope = CoroutineScope(scope.coroutineContext + SupervisorJob())
+            val state = rig.sheet(sessionScope, "")
+            awaitUntil("保存目标确定：${stack.last().name}") { state.target != null }
+            assertEquals(expected, state.target?.id, "停在「${stack.last().name}」时的保存目标")
+            assertNull(state.targetNotice, "停在「${stack.last().name}」时不该提示目录已不存在")
+            sessionScope.cancel()
+        }
     }
 }

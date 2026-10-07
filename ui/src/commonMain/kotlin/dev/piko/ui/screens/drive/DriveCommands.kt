@@ -10,11 +10,9 @@ import io.github.nihildigit.pikpak.FileStat
  * 宽窗口网盘页命令栏的显隐规则。命令栏上的每一样东西都要在眼下真有意义：做不了的不摆，别处已经摆着的不重复。
  * 规则只写在这里，命令栏照 [DriveCommands] 画，不再在各处零散地判断。
  *
- * 眼下的状态由四样东西决定，全在 [CommandInputs] 里：
+ * 眼下的状态由三样东西决定，全在 [CommandInputs] 里：
  * - 在哪（[CommandPlace]）：网盘根目录、文件夹、搜索结果、星标这类库、最近添加与播放历史、回收站、压缩包里。
  * - 作用于哪几项：选中的几项；没有选中时是焦点所在（鼠标点过）的一项；都没有时为空，这时只剩作用于整个位置的操作。
- * - 右侧那一栏里是什么（[PanelContent]）：空着、详情或信息流，同一时刻只放一样；
- *   详情栏开着时，条目的操作已经整列摆在那里。
  * - 剪贴板里有没有东西，眼前的列表有几项、有几类。
  */
 
@@ -42,9 +40,6 @@ internal enum class CommandPlace {
     ARCHIVE,
 }
 
-/** 右侧那一栏眼下放着什么。 */
-internal enum class PanelContent { NONE, DETAILS, FEED }
-
 internal class CommandInputs(
     val place: CommandPlace,
     /** 人在网盘根目录上（路径栈只有根）。 */
@@ -53,7 +48,6 @@ internal class CommandInputs(
     val targets: List<FileStat>,
     /** 在多选中（有选中的项）。 */
     val selecting: Boolean,
-    val panel: PanelContent,
     val clipboardFull: Boolean,
     /** 眼前列表里的条目数。 */
     val itemCount: Int,
@@ -104,25 +98,22 @@ internal fun driveCommands(input: CommandInputs): DriveCommands = with(input) {
     val hasTargets = targets.isNotEmpty()
     // 上传中的文件改名、移动、分享都会失败，作用对象里有它就不给这几样；归档条目与压缩包里的条目在网盘里没有文件，同理
     val settled = hasTargets && !inArchive && targets.none { it.isUploading || it.isVaulted }
-    // 详情栏开着时它已整列摆出这几项的全部操作，命令栏不再重复一遍；剪切、复制、粘贴除外：
-    // 它们是键盘上的习惯动作，详情栏里也没有
-    val itemActionsHere = hasTargets && panel != PanelContent.DETAILS
     DriveCommands(
         home = !atRoot,
         // 多选时左端换成「已选 N 项」；搜索结果不是目录
         create = folder && !selecting,
         cutCopy = settled && !inTrash,
         paste = clipboardFull && folder,
-        rename = itemActionsHere && settled && !inTrash,
-        share = itemActionsHere && settled && !inTrash,
-        moveToTrash = itemActionsHere && !inTrash && !inArchive,
-        restoreOrDelete = itemActionsHere && inTrash,
-        moveCopyTo = itemActionsHere && settled && !inTrash,
+        rename = hasTargets && settled && !inTrash,
+        share = hasTargets && settled && !inTrash,
+        moveToTrash = hasTargets && !inTrash && !inArchive,
+        restoreOrDelete = hasTargets && inTrash,
+        moveCopyTo = hasTargets && settled && !inTrash,
         // 文件夹整个下载，见 PikoDownloadCoordinator.enqueueFolders；压缩包里的文件夹不在网盘里，列不出内容，只下文件
-        download = itemActionsHere && !inTrash && targets.any { !it.isUploading && !(inArchive && it.isFolder) },
+        download = hasTargets && !inTrash && targets.any { !it.isUploading && !(inArchive && it.isFolder) },
         // 压缩包里解压的是选中的几项本身，不是选中项里的压缩包
-        extract = itemActionsHere && !inTrash && (inArchive || targets.any { it.isExtractableArchive || it.isArchiveVolume }),
-        removeRecord = itemActionsHere && eventLog,
+        extract = hasTargets && !inTrash && (inArchive || targets.any { it.isExtractableArchive || it.isArchiveVolume }),
+        removeRecord = hasTargets && eventLog,
         // 清空只在有东西可清时。与 libraryPageActions 对应：只有回收站与播放历史有清空
         emptyPlace = (inTrash || place == CommandPlace.HISTORY) && itemCount > 0,
         selectAll = itemCount > 0 && !allSelected,
@@ -134,7 +125,9 @@ internal fun driveCommands(input: CommandInputs): DriveCommands = with(input) {
         filter = typeCount >= 2 || filtering,
         // 信息流刷的是一个文件夹
         feed = feedSupported && folder,
-        // 存进哪里由添加链接自己选，与眼前在哪无关；只有回收站里放它说不通
-        addLink = !inTrash,
+        // 默认存进眼前的目录（InstantSheetState.followDriveFolder）。库、查重、压缩包的栈顶是 piko: 一类的虚拟 ID，
+        // 存不进去，会退到 My Packs 并提示「当前目录已不存在」。搜索时栈顶仍是搜索所在的目录，地址栏也还写着它，
+        // 照常给；否则一输入搜索词命令栏右端就跳
+        addLink = folder || place == CommandPlace.SEARCH,
     )
 }

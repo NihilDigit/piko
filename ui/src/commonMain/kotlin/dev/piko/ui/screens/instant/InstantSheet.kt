@@ -84,7 +84,6 @@ import dev.piko.shared.state.NameGroupSummary
 import dev.piko.shared.state.ShareSaveState
 import dev.piko.ui.LocalPikoServices
 import io.github.nihildigit.pikpak.shareIdFromUrl
-import dev.piko.ui.components.CollapsedSheetHandle
 import dev.piko.ui.components.FileNameField
 import dev.piko.ui.components.FolderPickerDialog
 import dev.piko.ui.components.MediaTagRow
@@ -114,6 +113,8 @@ fun InstantSheetContent(
      * 底部 sheet 没有那一行，标题照旧在内容里。
      */
     inSideSheet: Boolean = false,
+    /** 窄窗口的 sheet 顶上已有一行标题与状态（收起时露出的那一截），内容里不再画标题。 */
+    headerShown: Boolean = false,
     /** 预览的文件已秒传进 Piko-Temp，交给播放器打开。 */
     onPreview: (fileId: String, fileName: String) -> Unit,
 ) {
@@ -167,13 +168,13 @@ fun InstantSheetContent(
             if (openedRow != null) {
                 BatchRowDetail(batch, openedRow, notice)
             } else {
-                BatchList(batch, state, notice, showTitle = !inSideSheet, onPickTarget = { showTargetPicker = true })
+                BatchList(batch, state, notice, showTitle = !inSideSheet && !headerShown, onPickTarget = { showTargetPicker = true })
             }
             return@Column
         }
 
         // 底部 sheet 有拖动条，下滑、点遮罩、返回都能关，标题行不再放关闭按钮
-        if (!inSideSheet) {
+        if (!inSideSheet && !headerShown) {
             Text(
                 text = "添加链接",
                 style = MaterialTheme.typography.titleLarge,
@@ -897,27 +898,7 @@ internal fun TargetRow(
     }
 }
 
-/** 添加链接面板收起后的把手：标题是链接或资源名，状态是解析与勾选的进度。 */
-@Composable
-fun InstantSheetHandle(
-    state: InstantSheetState,
-    onExpand: () -> Unit,
-    onClose: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val summary = state.summary()
-    CollapsedSheetHandle(
-        title = summary.title,
-        status = summary.status,
-        closeLabel = "放弃这次添加",
-        onExpand = onExpand,
-        onClose = onClose,
-        modifier = modifier,
-        closeEnabled = !summary.busy,
-    )
-}
-
-/** 收起后的一行：标题是链接或资源名，状态是解析与勾选的进度。窄窗口的把手与宽窗口的浮动卡片共用。 */
+/** 收起后的一行：标题是链接或资源名，状态是解析与勾选的进度。窄窗口 sheet 收起时露出的那一截与宽窗口的浮动卡片共用。 */
 internal class InstantSummary(val title: String, val status: String?, val busy: Boolean, val resolving: Boolean)
 
 internal fun InstantSheetState.summary(): InstantSummary {

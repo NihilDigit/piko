@@ -152,10 +152,10 @@ private fun duplicateSummary(finder: DuplicateFinderState): WorkNotice {
     val report = finder.report
     val groups = report.identical.size + report.versions.size
     val message = if (groups == 0) {
-        "「${finder.root.name}」里没有重复文件"
+        "「${finder.root.name}」中未发现重复文件"
     } else {
         val reclaimable = report.identical.sumOf { it.reclaimableBytes }
-        "「${finder.root.name}」找到 $groups 组重复" + if (reclaimable > 0) "，可腾出 ${reclaimable.toReadableSize()}" else ""
+        "「${finder.root.name}」中发现 $groups 组重复文件" + if (reclaimable > 0) "，可释放 ${reclaimable.toReadableSize()}" else ""
     }
     return WorkNotice("查找重复完成", message)
 }

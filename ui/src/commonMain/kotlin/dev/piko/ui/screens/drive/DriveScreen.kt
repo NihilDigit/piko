@@ -4,8 +4,6 @@ import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.Link
 import dev.piko.shared.data.isVaulted
-import androidx.compose.material.icons.outlined.Image
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.material.icons.outlined.Tab
@@ -18,11 +16,10 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.Unarchive
 import androidx.compose.material.icons.outlined.SelectAll
-import dev.piko.ui.components.SidePanelLayout
+import androidx.compose.ui.zIndex
 import dev.piko.ui.components.PrimaryActionFab
 import dev.piko.ui.components.SheetAction
 import dev.piko.shared.state.DriveListItem
-import dev.piko.data.auth.SidePanelPrefs
 import androidx.compose.ui.graphics.Color
 import androidx.compose.runtime.produceState
 import androidx.compose.material.icons.outlined.Share
@@ -52,6 +49,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -66,7 +64,8 @@ import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.DriveFolderUpload
 import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.ContentCut
-import dev.piko.ui.components.CollapsedSheetHandle
+import dev.piko.ui.workbench.LocalTaskSlot
+import dev.piko.ui.workbench.TaskSlot
 import dev.piko.ui.components.formatTimeMs
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.FolderOpen
@@ -99,6 +98,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -119,7 +119,6 @@ import dev.piko.ui.components.islandTopStart
 import androidx.compose.foundation.shape.RoundedCornerShape
 import dev.piko.ui.components.LocalShowExtensions
 import dev.piko.ui.components.rememberListScrollTint
-import dev.piko.ui.components.defaultPanelBottomMargin
 import androidx.compose.material.icons.outlined.SwipeVertical
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
@@ -186,6 +185,7 @@ import dev.piko.ui.components.PikoErrorState
 import dev.piko.ui.components.RefreshBox
 import dev.piko.ui.components.showsRefreshButton
 import dev.piko.ui.components.PikoTopBar
+import dev.piko.ui.components.QualityDownloadDialog
 import dev.piko.ui.components.SegmentDownloadSheet
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.BarItem
@@ -195,7 +195,7 @@ import dev.piko.ui.components.driveNameHint
 import dev.piko.ui.components.isUnfixableDriveName
 import dev.piko.ui.components.submitDriveName
 import dev.piko.ui.screens.instant.InstantSheetContent
-import dev.piko.ui.screens.instant.InstantSheetHandle
+import dev.piko.ui.screens.instant.summary
 import io.github.nihildigit.pikpak.FileStat
 import dev.piko.ui.platform.LocalPikoPlatform
 import kotlinx.coroutines.delay
@@ -250,11 +250,6 @@ fun DriveScreen(
      */
     feedShown: Boolean = false,
     onFeedShownChange: ((Boolean) -> Unit)? = null,
-    /**
-     * 详情要占右侧那一栏，信息流让出来：挂起，不是关掉，队列留着，「继续刷」回来时详情关掉。
-     * 那一栏同一时刻只放详情或信息流中的一样。
-     */
-    onFeedYield: () -> Unit = {},
     /** 信息流挂起着（队列还在、应用内不画），宽窗口命令栏的「信息流」按钮据此点一个小圆点。 */
     feedStashed: Boolean = false,
     /** 从信息流跳出来浏览的那个标签，标签栏上与别的分开画。没有时为 null。 */
@@ -376,7 +371,7 @@ fun DriveScreen(
         isSearchOpen = false
     }
 
-    // 返回键（桌面上是 Esc）的优先级，后声明的 BackHandler 先收到：多选 > 详情栏
+    // 返回键（桌面上是 Esc）的优先级，后声明的 BackHandler 先收到：属性 > 多选
     // > 单击高亮 > 搜索 > 上一级目录。越临时、越晚出现的越先被吃掉；后三样声明在下面，挨着它们要看的状态
     BackHandler(enabled = folderStack.size > 1) { state.navigateUp() }
     BackHandler(enabled = folderStack.size == 1 && libraryView != null) { leaveLibrary() }
@@ -399,10 +394,10 @@ fun DriveScreen(
     var renameNewName by remember { mutableStateOf("") }
     // 宽窗口的顶栏是地址栏加后退、前进与上一级，照资源管理器；窄屏仍是目录名作标题、上级另成一行面包屑。
     // medium 按大号手机，同窄屏。横握的手机（高度 compact）也按窄屏：地址栏加命令栏两行在三百多 dp 里太高，
-    // 而且它仍是触屏，FAB、底部把手与长按多选比资源管理器那一套顺手
+    // 而且它仍是触屏，FAB、底部 sheet 与长按多选比资源管理器那一套顺手
     val heightCompact = isHeightCompact()
     val pathInTopBar = currentWidthClass() == WidthClass.Expanded && !heightCompact
-    // 右侧的详情栏与标签栏：只在宽、又不矮的窗口里开，高度 compact 时双栏不现实
+    // 标签栏与浮动的属性卡片：只在宽、又不矮的窗口里有，高度 compact 时放不下
     val twoPane = currentWidthClass() == WidthClass.Expanded && !heightCompact
     // 目录图只在宽窗口里有：导航栏搜索旁的按钮、快捷键与命令面板打开，面板上的 × 关掉；开着与否存进偏好（每台设备各自的）
     val folderMapOpen by sessionManager.folderMapOpenFlow.collectAsStateWithLifecycle(initialValue = false)
@@ -423,28 +418,90 @@ fun DriveScreen(
     var moveTargetIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     val duplicateState = duplicateSession.state
     val inDuplicates = state.libraryView == DriveLibrary.DUPLICATES
+    // 行下面那一栏：全盘搜索时是所在的目录，库里是何时添加、看到哪里、何时清除
+    val libraryEvents = state.libraryEvents
+    val libraryNotes = remember(libraryView, state.files, libraryEvents) {
+        if (libraryView == null) emptyMap()
+        else if (libraryView == DriveLibrary.DUPLICATES) duplicateLocations(duplicateState)
+        else state.files.mapNotNull { file -> libraryNote(libraryView, file, libraryEvents[file.id])?.let { file.id to it } }.toMap()
+    }
+    val rowNotes = if (libraryNotes.isEmpty()) state.hitLocations else state.hitLocations + libraryNotes
+
+    // 属性看的几项，打开那一刻取定，之后选中怎么变都不跟。一次只开一个，再对别的开就换掉内容
+    var properties by remember { mutableStateOf<PropertiesTarget?>(null) }
+    // 宽窗口里属性卡片放在触发它的地方旁边（anchor）；已经开着时只换内容，位置不动
+    val propertiesPanel = remember { FloatingPanelState(PropertiesMinWidth, followsEnd = false) }
+    val propertiesAnchors = remember { PropertiesAnchors() }
+    LaunchedEffect(activeFolderId) { propertiesAnchors.forgetItems() }
+    // 操作面板开了就不是右键菜单：之前那次右键按下的位置不再作数，面板里点「属性」时卡片贴着条目
+    LaunchedEffect(actionTargetFile) { if (actionTargetFile != null) propertiesAnchors.forgetPress() }
+    // 「位置」一行：搜索结果与库里取行下面那一栏，平常的目录里是眼前的路径
+    fun locationOf(file: FileStat): String = rowNotes[file.id] ?: folderStack.joinToString(" › ") { it.name }
+    fun showProperties(files: List<FileStat>, anchor: PanelAnchor) {
+        if (properties == null) propertiesPanel.placeAt(anchor)
+        val single = files.singleOrNull()
+        properties = if (single != null) {
+            val item = state.displayItems.firstOrNull { it is DriveListItem.File && it.file.id == single.id } as? DriveListItem.File
+            val text = item?.let { cellText(it, if (single.isFolder && state.isNameParsing) state.folderViews[single.id] else null) }
+            PropertiesTarget.Single(
+                file = single,
+                tags = listOfNotNull(text?.code) + text?.tags.orEmpty(),
+                location = locationOf(single),
+                isBlurred = isSpoilerBlurEnabled && single.id !in state.revealedFileIds,
+            )
+        } else {
+            PropertiesTarget.Selection(files, files.map(::locationOf).distinct().singleOrNull() ?: "多个位置")
+        }
+    }
+    // 当前目录不对着哪一项，卡片放在列表中央偏上
+    fun showFolderProperties() {
+        if (properties == null) propertiesPanel.placeAt(PanelAnchor.Centered)
+        val parent = folderStack.dropLast(1).joinToString(" › ") { it.name }
+        properties = PropertiesTarget.Folder(activeFolder.name, state.displayedFiles, parent.ifEmpty { null })
+    }
+    // 记住的回调（右键菜单）里取最新的一份：局部函数抓着的是头一次组合时的路径与防窥开关
+    val latestShowProperties by rememberUpdatedState<(List<FileStat>, PanelAnchor) -> Unit> { files, anchor -> showProperties(files, anchor) }
+
+    val taskSlot = LocalTaskSlot.current
 
     /** 去查重结果那一页。同一个起点的扫描还在就回到它，不重扫；换了起点就结束旧的、从头扫。 */
     fun openDuplicates(root: PathBreadcrumb) {
         duplicateSession.open(root)
-        if (!inDuplicates) driveRepo.updateFolderStack(listOf(DriveLibrary.DUPLICATES.crumb))
+        if (inDuplicates) return
+        // 窄窗口里结果页是压栈进去的一个位置，从此离开结果页即结束查找（主界面按这个锚点判断）
+        if (!twoPane) taskSlot.duplicatesAnchor = listOf(DriveLibrary.DUPLICATES.crumb)
+        driveRepo.updateFolderStack(listOf(DriveLibrary.DUPLICATES.crumb))
     }
 
     /**
      * 「查找重复」：人留在原处。原来点了就跳进结果页，扫描的几分钟里那一页只有转圈，人以为整个界面被占住了。
      * 有标签栏时在后台开一个查重标签，扫描进度与结果都在标签上，切过去就是结果，切回来网盘原样，关掉标签结束这次查重；
-     * 已有查重标签时沿用它，同一个起点已有结果就切过去。没有标签栏时进度在后台卡片或底部条里，扫完提示「查看」。
+     * 已有查重标签时沿用它，同一个起点已有结果就切过去。
+     * 没有标签栏时进度在底部的 sheet 里（TaskSheetScaffold），扫完有结果才进结果页；sheet 是独占的，别的事占着时先确认结束它。
      */
     fun findDuplicates(root: PathBreadcrumb) {
-        duplicateSession.open(root)
-        val done = duplicateSession.state?.isScanning == false
-        if (!twoPane) {
-            if (done) openDuplicates(root)
+        if (twoPane) {
+            duplicateSession.open(root)
+            val done = duplicateSession.state?.isScanning == false
+            val existing = driveRepo.tabsFlow.value.firstOrNull { it.isDuplicates }
+            val tabId = existing?.id ?: driveRepo.openTab(listOf(DriveLibrary.DUPLICATES.crumb), activate = false)
+            if (done) driveRepo.switchTab(tabId)
             return
         }
-        val existing = driveRepo.tabsFlow.value.firstOrNull { it.isDuplicates }
-        val tabId = existing?.id ?: driveRepo.openTab(listOf(DriveLibrary.DUPLICATES.crumb), activate = false)
-        if (done) driveRepo.switchTab(tabId)
+        val current = duplicateSession.state
+        taskSlot.claim(
+            action = "查找「${root.name}」中的重复文件",
+            confirmLabel = "查找重复",
+            task = TaskSlot.Task.DUPLICATES,
+            replacesSame = current != null && current.root.id != root.id,
+        ) {
+            val sameRoot = duplicateSession.state?.root?.id == root.id
+            if (!sameRoot) taskSlot.duplicatesAnchor = folderStack
+            duplicateSession.open(root)
+            taskSlot.duplicatesExpanded = true
+            val groups = duplicateSession.state?.report?.let { it.identical.size + it.versions.size } ?: 0
+            if (sameRoot && duplicateSession.state?.phase == DuplicateFinderState.Phase.DONE && groups > 0) openDuplicates(root)
+        }
     }
     // 查重结束了（结果页里点了结束、换号、重启后恢复出旧的查重标签），查重标签随之关掉：留着只剩一页「已结束」。
     // 只剩它一个标签时关不掉，留给那一页的「回到网盘」
@@ -455,29 +512,38 @@ fun DriveScreen(
                 tabs.filter { it.isDuplicates }.forEach { driveRepo.closeTab(it.id) }
             }
     }
-    // 人去了别处时扫描完成，提示一下；停在结果页时结果就在眼前。宽窗口里浮动卡片原地变成结果，不另提示
+    // 窄窗口里人看着展开的 sheet 等到扫完，有结果就直接进结果页；sheet 收着时不把人拽走，sheet 上有「查看」。
+    // 只认眼看着发生的那一下：切去别的页时扫完的，回来看到的是 sheet 上的结果，不是突然跳页
+    val latestTwoPane by rememberUpdatedState(twoPane)
     LaunchedEffect(duplicateState) {
         val finder = duplicateState ?: return@LaunchedEffect
-        snapshotFlow { finder.phase }.first { it == DuplicateFinderState.Phase.DONE || it == DuplicateFinderState.Phase.FAILED }
-        if (state.libraryView == DriveLibrary.DUPLICATES || twoPane) return@LaunchedEffect
-        val message = if (finder.phase == DuplicateFinderState.Phase.FAILED) "查找重复失败" else "查找重复完成"
-        val result = snackbarHostState.showSnackbar(message, actionLabel = "查看", withDismissAction = true)
-        if (result == SnackbarResult.ActionPerformed) openDuplicates(finder.root)
+        if (!finder.isScanning) return@LaunchedEffect
+        snapshotFlow { finder.phase }.first { it == DuplicateFinderState.Phase.DONE }
+        val groups = finder.report.identical.size + finder.report.versions.size
+        if (!latestTwoPane && taskSlot.duplicatesExpanded && groups > 0 && state.libraryView != DriveLibrary.DUPLICATES) openDuplicates(finder.root)
     }
     val selectedArchives by remember(state) {
         derivedStateOf { state.displayedFiles.filter { it.id in state.selectedFileIds && (it.isExtractableArchive || it.isArchiveVolume) } }
     }
     var copyTargetIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var shareTargets by remember { mutableStateOf<List<FileStat>>(emptyList()) }
+    var qualityTarget by remember { mutableStateOf<FileStat?>(null) }
     var batchRenameTargets by remember { mutableStateOf<List<FileStat>>(emptyList()) }
     var previewImage by remember { mutableStateOf<FileStat?>(null) }
-    // 外部打开的磁力链是一次明确的新请求：开新会话并就地取走，面板收起后不再靠它续命
+    // 外部打开的磁力链是一次明确的新请求：开新会话并就地取走，面板收起后不再靠它续命。
+    // 已有一次粘过东西的添加链接时不静默换掉它，与别的占着 sheet 的事一样先确认
     val pendingMagnet by instantRepo.pendingMagnetFlow.collectAsStateWithLifecycle()
     LaunchedEffect(pendingMagnet) {
         val magnet = pendingMagnet
         if (!magnet.isNullOrBlank()) {
-            instantSession.start(magnet)
             instantRepo.clearPendingMagnet()
+            val replacing = instantSession.state?.isBlank == false
+            taskSlot.claim(
+                action = if (replacing) "打开新链接" else "添加链接",
+                confirmLabel = if (replacing) "打开新链接" else "添加链接",
+                task = TaskSlot.Task.ADD_LINK,
+                replacesSame = replacing,
+            ) { instantSession.start(magnet) }
         }
     }
 
@@ -486,6 +552,10 @@ fun DriveScreen(
     // 批量里有秒传也有离线时按离线处理：秒传的那几项在传输页里另有记录，点开即可定位
     val openTransfers by rememberUpdatedState(onOpenTransfers)
     val instantState = instantSession.state
+    // 添加链接的会话收起着（面板关了、解析与勾选都还在）时点它是放回来，不另起一个
+    fun openAddLink() = taskSlot.claim("添加链接", "添加链接", TaskSlot.Task.ADD_LINK) {
+        if (instantSession.state != null) instantSession.reopen() else instantSession.start()
+    }
     LaunchedEffect(instantState) {
         instantState?.outcomes?.collect { outcome ->
             instantSession.end()
@@ -673,7 +743,7 @@ fun DriveScreen(
         add(SheetAction(Icons.Outlined.Unarchive, ExtractEntriesLabel, { extractFromArchive(files) }))
     }
 
-    // 选中的几项一起的操作，详情栏的多选与右键菜单共用
+    // 选中的几项一起的操作，右键菜单用
     fun selectionActions(files: List<FileStat>): List<SheetAction> {
         if (state.archiveView != null) return archiveEntryActions(files)
         val library = state.libraryView
@@ -724,12 +794,10 @@ fun DriveScreen(
         add(SheetAction(Icons.Outlined.Delete, "从归档移除", { state.removeFromVault(listOf(file.id)) }, destructive = true))
     }
 
-    // 一项的全部操作，右键菜单、详情栏与操作面板共用。库读 state 上的当下值：记住的回调里拿不到重组后的局部变量。
+    // 一项（或 targets 那几项）的全部操作，右键菜单与操作面板共用。库读 state 上的当下值：记住的回调里拿不到重组后的局部变量。
     // 点的那一项在几项选中里时，照资源管理器作用于全部选中的：只作用于这一项的话，多选后右键「移入回收站」只删掉一项
-    fun itemActions(file: FileStat): List<SheetAction> {
-        if (state.isSelectionMode && file.id in state.selectedFileIds && state.selectedFileIds.size > 1) {
-            return selectionActions(state.displayedFiles.filter { it.id in state.selectedFileIds })
-        }
+    fun operationsOf(file: FileStat, targets: List<FileStat>): List<SheetAction> {
+        if (targets.size > 1) return selectionActions(targets)
         val library = state.libraryView
         if (library == DriveLibrary.TRASH) {
             return trashActions(
@@ -752,6 +820,8 @@ fun DriveScreen(
             onTogglePreview = { state.toggleSpoiler(file.id) },
             onToggleStar = { state.setStarred(file, starred = !file.isStarred) },
             onDownload = { enqueueDownload(file) },
+            onDownloadQuality = { qualityTarget = file },
+            onPrepareQualities = { mediaRepository.prefetchDownloadQualities(file.id) },
             onDownloadSegment = { segmentSession.open(file) },
             onRename = { startRename(file) },
             onMove = { moveTargetIds = setOf(file.id) },
@@ -772,18 +842,23 @@ fun DriveScreen(
         )
     }
 
-    // 条目上的详情按钮：宽窗口里这一项取得焦点、打开详情栏看它，与信息流占同一个位置，开详情就收起信息流；
-    // 没有详情栏时打开操作面板。记住的回调里经 rememberUpdatedState 取窗口宽窄的最新值
-    val detailsInPanel = twoPane
-    val showDetails by rememberUpdatedState<(FileStat) -> Unit> { file ->
-        if (detailsInPanel) {
-            keyboardFocusTarget = file.id
-            scope.launch { sessionManager.setInspectorPanelOpen(true) }
-            if (feedShown) onFeedYield()
+    // 对着一项右键或按属性键时作用于哪几项：它在几项选中里时是全部选中的
+    fun targetsOf(file: FileStat): List<FileStat> =
+        if (state.isSelectionMode && file.id in state.selectedFileIds && state.selectedFileIds.size > 1) {
+            state.displayedFiles.filter { it.id in state.selectedFileIds }
         } else {
-            actionTargetFile = file
+            listOf(file)
         }
+
+    // 右键菜单的全部项：操作，末尾一组是「属性」
+    fun itemActions(file: FileStat): List<SheetAction> {
+        val targets = targetsOf(file)
+        // 多半是从右键菜单点的，卡片放在右键按下的地方；操作面板里点的没有那一点，贴着这一项
+        return operationsOf(file, targets) + propertiesAction { latestShowProperties(targets, propertiesAnchors.fromMenu(file.id)) }
     }
+
+    // 只在触屏与窄窗口的条目上画打开操作面板的按钮：宽窗口里鼠标有右键菜单，每一项挂一个按钮只是满屏一样的图标
+    val itemMoreButton = !twoPane
 
     // 从没解压过的包第一次打开要等几秒。准备完 key 一变，这里的协程取消，提示随之收起；快的不提示
     LaunchedEffect(state.preparingEntryId) {
@@ -808,14 +883,18 @@ fun DriveScreen(
                     file.isFolder -> state.openFolder(file.id, file.name)
                     file.isUploading -> scope.launch { snackbarHostState.showSnackbar("文件仍在上传", withDismissAction = true) }
                     // 压缩包当文件夹进去看，见 ArchiveLocation。分卷读不了、归档条目不在网盘里，照旧往下走
-                    file.isExtractableArchive && !file.isVaulted && !ArchiveEntryId.isEntry(file.id) -> state.openArchive(file)
+                    // 信息流的临时浏览里再压一层压缩包，继续刷就说不清回到哪，先确认结束信息流
+                    file.isExtractableArchive && !file.isVaulted && !ArchiveEntryId.isEntry(file.id) ->
+                        taskSlot.claim("打开压缩包", "打开压缩包", task = null, conflictsWith = setOf(TaskSlot.Task.FEED)) { state.openArchive(file) }
                     // 包里的文件先借得出来才能打开，从没解压过的包第一次要等几秒
                     ArchiveEntryId.isEntry(file.id) -> scope.launch { state.prepareArchiveEntry(file)?.let(openFile) }
                     else -> openFile(file)
                 }
             },
             onRename = { file -> if (!file.isUploading && state.libraryView != DriveLibrary.TRASH) startRename(file) },
-            onMore = { showDetails(it) },
+            onMore = { actionTargetFile = it },
+            onProperties = { latestShowProperties(targetsOf(it), propertiesAnchors.beside(it.id)) },
+            onPlaced = { file, coordinates -> propertiesAnchors.placed(file.id, coordinates) },
             onLongPress = { state.enterSelection(it.id) },
             onSelect = { file, selected -> state.setSelected(file.id, selected) },
             onToggleSelect = { state.toggleSelected(it.id) },
@@ -907,65 +986,19 @@ fun DriveScreen(
     // 换目录后再要一次：点进文件夹时焦点在被点的那一项上，它随旧列表一起没了，焦点落空，
     // 此后 Ctrl+F、Alt+← 这些快捷键都没有地方收
     LaunchedEffect(activeFolderId) { runCatching { shortcutFocus.requestFocus() } }
-    // 行下面那一栏：全盘搜索时是所在的目录，库里是何时添加、看到哪里、何时清除
-    val libraryEvents = state.libraryEvents
-    val libraryNotes = remember(libraryView, state.files, libraryEvents) {
-        if (libraryView == null) emptyMap()
-        else if (libraryView == DriveLibrary.DUPLICATES) duplicateLocations(duplicateState)
-        else state.files.mapNotNull { file -> libraryNote(libraryView, file, libraryEvents[file.id])?.let { file.id to it } }.toMap()
-    }
-    val rowNotes = if (libraryNotes.isEmpty()) state.hitLocations else state.hitLocations + libraryNotes
-    // 详情栏：宽窗口里网盘页右侧，看选中的、焦点所在的一项或当前目录，见 InspectorPane
-    val inspectorPrefs by produceState<SidePanelPrefs?>(null, sessionManager) {
-        sessionManager.inspectorPanelFlow.collect { value = it }
-    }
-    val inspectorAvailable = twoPane
-    val inspectorOpen = inspectorAvailable && inspectorPrefs?.open == true && !feedShown
 
-    // Esc 依次吃掉的三样，优先级见上面 BackHandler 那一段。
+    // Esc 依次吃掉的几样，优先级见上面 BackHandler 那一段。
     // 单击高亮：鼠标点过的那一项留着焦点底色，命令栏也作用于它；Esc 让它回到没点过的样子，焦点交回页面，快捷键照常
     BackHandler(enabled = commandFile != null && !state.isSelectionMode) {
         commandFile = null
         focusedFile = null
         runCatching { shortcutFocus.requestFocus() }
     }
-    // 详情栏：刚点详情按钮打开的，Esc 收起
-    BackHandler(enabled = inspectorOpen) {
-        scope.launch { sessionManager.setInspectorPanelOpen(false) }
-    }
     BackHandler(enabled = state.isSelectionMode) { state.exitSelection() }
-    val inspectorTarget: InspectorTarget = run {
-        val selected = if (state.isSelectionMode) state.displayedFiles.filter { it.id in state.selectedFileIds } else emptyList()
-        val single = selected.singleOrNull() ?: focusedFile?.takeIf { selected.isEmpty() }
-        when {
-            single != null -> {
-                val item = state.displayItems.firstOrNull { it is DriveListItem.File && it.file.id == single.id } as? DriveListItem.File
-                val text = item?.let { cellText(it, if (single.isFolder && state.isNameParsing) state.folderViews[single.id] else null) }
-                InspectorTarget.Single(
-                    file = single,
-                    tags = listOfNotNull(text?.code) + text?.tags.orEmpty(),
-                    location = rowNotes[single.id],
-                    isBlurred = isSpoilerBlurEnabled && single.id !in state.revealedFileIds,
-                )
-            }
-            selected.isNotEmpty() -> InspectorTarget.Selection(selected)
-            else -> InspectorTarget.Folder(activeFolder.name, state.displayedFiles)
-        }
-    }
-    val inspectorActions: List<SheetAction> = when (val target = inspectorTarget) {
-        is InspectorTarget.Single -> callbacks.contextActions(target.file)
-        is InspectorTarget.Selection -> selectionActions(target.files)
-        is InspectorTarget.Folder -> emptyList()
-    }
+    // 属性：最后声明，Esc 先关它。它是最晚打开、最临时的东西
+    BackHandler(enabled = properties != null) { properties = null }
 
-    fun toggleInspector() {
-        val open = !inspectorOpen
-        scope.launch { sessionManager.setInspectorPanelOpen(open) }
-        // 与信息流占同一个位置：开详情就收起信息流
-        if (open && feedShown) onFeedYield()
-    }
-
-    // 网格空白处的右键菜单，照资源管理器的顺序：怎么看、刷新、粘贴、往这里添东西、全选、详情。
+    // 网格空白处的右键菜单，照资源管理器的顺序：怎么看、刷新、粘贴、往这里添东西、全选、属性。
     // 排序不在这里：六种排法平铺出来太长，这套菜单没有二级菜单，命令栏的排序按钮就在上方
     val showExtensions = LocalShowExtensions.current
     fun backgroundActions(): List<SheetAction> = buildList {
@@ -1000,13 +1033,11 @@ fun DriveScreen(
             }, group = 2))
             add(SheetAction(Icons.Outlined.UploadFile, "上传文件", { pickFiles() }, group = 2))
             add(SheetAction(Icons.Outlined.DriveFolderUpload, "上传文件夹", { pickFolder() }, group = 2))
-            add(SheetAction(Icons.Outlined.Bolt, "添加链接", { instantSession.start() }, group = 2))
+            add(SheetAction(Icons.Outlined.Bolt, "添加链接", ::openAddLink, group = 2))
         }
         add(SheetAction(Icons.Outlined.SelectAll, "全选", { state.toggleSelectAll() }, group = 3))
-        if (inspectorAvailable) {
-            add(SheetAction(Icons.Outlined.Info, if (inspectorOpen) "收起详情栏" else "打开详情栏", ::toggleInspector, group = 3))
-        }
         addAll(libraryPageActions(libraryView, state.files.isEmpty(), { libraryConfirm = it }, { state.files.map { it.id } }))
+        add(propertiesAction(::showFolderProperties))
     }
 
 
@@ -1082,8 +1113,13 @@ fun DriveScreen(
             tabsAvailable && event.isCtrlPressed && event.key == Key.Tab -> driveRepo.cycleTab(if (event.isShiftPressed) -1 else 1)
             tabsAvailable && primary && event.key == Key.PageDown -> driveRepo.cycleTab(1)
             tabsAvailable && primary && event.key == Key.PageUp -> driveRepo.cycleTab(-1)
-            // 详情栏，照 Finder 的 ⌘I（显示简介）
-            primary && event.key == Key.I && inspectorAvailable -> toggleInspector()
+            // 属性：主修饰键+I 各平台都认，mac 上即 Finder 的 ⌘I（显示简介）；Alt+Enter 照资源管理器，mac 上不认。
+            // 焦点在条目上时 Alt+Enter 由条目先接住，见 DriveItemCallbacks.onProperties
+            // 卡片贴着焦点所在的那一项，多选时也以它为准；没指着哪一项时贴第一项
+            (primary && event.key == Key.I) || (!isMac && event.isAltPressed && event.key == Key.Enter) -> {
+                val near = (commandFile ?: commandTargets.firstOrNull())?.id
+                if (commandTargets.isNotEmpty() && near != null) showProperties(commandTargets, propertiesAnchors.beside(near)) else showFolderProperties()
+            }
             event.key == Key.F5 || (primary && event.key == Key.R) -> state.load(refresh = true)
             primary && event.key == Key.A -> state.toggleSelectAll()
             // 撤销最近一次移动、移入回收站或重命名；没有可撤销的就不吃掉这个键
@@ -1146,11 +1182,6 @@ fun DriveScreen(
             atRoot = folderStack.size == 1 && activeFolderId.isEmpty(),
             targets = commandTargets,
             selecting = state.isSelectionMode && selectedIdSet.isNotEmpty(),
-            panel = when {
-                inspectorOpen -> PanelContent.DETAILS
-                feedShown -> PanelContent.FEED
-                else -> PanelContent.NONE
-            },
             clipboardFull = clipboard != null,
             itemCount = displayedFiles.size,
             allSelected = displayedFiles.isNotEmpty() && displayedFiles.all { it.id in selectedIdSet },
@@ -1159,8 +1190,6 @@ fun DriveScreen(
             feedSupported = platform.videoPreview != null && onFeedShownChange != null,
         ),
     )
-    // 添加链接的会话收起着（面板关了、解析与勾选都还在）时点它是放回来，不另起一个
-    fun openAddLink() = if (instantState != null) instantSession.reopen() else instantSession.start()
 
     // 库与查重这类位置自己的主操作。窄窗口里是扩展 FAB，宽窗口里在命令栏右端，没有时那里是添加链接
     val placePrimaryAction: SheetAction? = when {
@@ -1333,9 +1362,9 @@ fun DriveScreen(
             add(PaletteItem("搜索文件", Icons.Outlined.Search, "网盘", detail = label("F"), keywords = "search find") {
                 if (pathInTopBar) searchFocusRequests++ else isSearchOpen = true
             })
-            if (inspectorAvailable) {
-                add(PaletteItem(if (inspectorOpen) "收起详情栏" else "打开详情栏", Icons.Outlined.Info, "网盘", detail = label("I"), keywords = "details inspector info") { toggleInspector() })
-            }
+            add(PaletteItem("属性", Icons.Outlined.Info, "网盘", detail = label("I"), keywords = "properties info details") {
+                if (commandTargets.isNotEmpty()) showProperties(commandTargets, PanelAnchor.Centered) else showFolderProperties()
+            })
             DriveViewMode.entries.filter { it != viewMode }.forEach { mode ->
                 add(PaletteItem("切换到${mode.paletteLabel}", mode.icon(), "网盘", keywords = "视图 view ${mode.name.lowercase()}") {
                     scope.launch { sessionManager.setDriveViewMode(mode.name) }
@@ -1361,23 +1390,15 @@ fun DriveScreen(
         }
     }
 
-    val inspectorPanel: @Composable () -> Unit = {
-        val single = (inspectorTarget as? InspectorTarget.Single)?.file
-        val primary = single?.takeIf { !it.isUploading }?.let { file ->
-            val (icon, label) = when {
-                file.isFolder -> Icons.AutoMirrored.Outlined.OpenInNew to "打开"
-                file.isPlayableVideo() -> Icons.Filled.PlayArrow to "播放"
-                file.isPreviewableImage() && file.thumbnailLink.isNotBlank() -> Icons.Outlined.Image to "查看"
-                else -> Icons.Outlined.Download to "下载到本地"
-            }
-            SheetAction(icon, label, { callbacks.onOpen(file) })
-        }
-        InspectorPane(inspectorTarget, inspectorActions, primaryAction = primary)
-    }
+    // 宽窗口里属性是浮在列表上的卡片，不挡着继续操作列表；窄窗口是面板，见下面 PikoSheet 那一处
+    val propertiesFloating = twoPane
+    // 目录图与属性同浮在列表这一块里，最近碰过或打开的那块在上面；对别的项再开属性也算打开
+    var propertiesOnTop by remember { mutableStateOf(true) }
+    LaunchedEffect(properties) { if (properties != null) propertiesOnTop = true }
+    LaunchedEffect(folderMapOpen) { if (folderMapOpen) propertiesOnTop = false }
 
-    // 页眉下面的一块：列表与右侧的详情栏、信息流侧栏并排。侧栏只在这一块里，不往上伸到页眉：
-    // 地址栏与命令栏始终横贯整个宽度，窗口按钮也就始终在地址栏那一行，不随侧栏开合换位置。
-    // 详情栏与信息流占同一个位置，同时只开一个
+    // 页眉下面的一块：列表，上面浮着目录图与属性。都只在这一块里，不往上伸到页眉：
+    // 地址栏与命令栏始终横贯整个宽度，窗口按钮也就始终在地址栏那一行
     val density = LocalDensity.current
     var listAreaWidth by remember { mutableStateOf<Dp?>(null) }
     val listArea: @Composable (PaddingValues, @Composable () -> Unit) -> Unit = { innerPadding, list ->
@@ -1391,41 +1412,82 @@ fun DriveScreen(
                     bottom = if (pathInTopBar) maxOf(innerPadding.calculateBottomPadding(), FrameCardBottomMargin) else 0.dp,
                 )
                 .consumeWindowInsets(innerPadding)
-                // 连同侧栏在内的宽度，网格按它定栏数，侧栏开合时条目不换行，见 StableColumns
+                // 网格按这一块的宽度定栏数，见 StableColumns
                 .onSizeChanged { listAreaWidth = with(density) { it.width.toDp() } },
         ) {
             contentFrame {
-                SidePanelLayout(
-                    open = inspectorOpen,
-                    savedWidthDp = inspectorPrefs?.widthDp,
-                    title = "详情",
-                    closeDescription = "收起侧栏",
-                    onClose = { scope.launch { sessionManager.setInspectorPanelOpen(false) } },
-                    onWidthChange = { scope.launch { sessionManager.setInspectorPanelWidth(it) } },
-                    defaultWidth = InspectorDefaultWidth,
-                    minWidth = InspectorMinWidth,
-                    ready = inspectorPrefs != null,
-                    // 这一块外面已让出离窗口底边的那截外框色，侧栏不再另留，下沿与列表卡片齐平
-                    bottomMargin = if (pathInTopBar) 0.dp else defaultPanelBottomMargin(),
-                    main = {
-                        // 目录图浮在列表这一块里而不是整块上：开着详情栏时拖不到详情栏上，也不进右侧那一栏
-                        Box(Modifier.fillMaxSize()) {
-                            list()
-                            if (pathInTopBar && folderMapOpen) {
-                                FolderMapPanel(
-                                    state = folderMap,
-                                    current = folderStack,
-                                    onClose = { setFolderMapOpen(false) },
-                                    onOpen = driveRepo::updateFolderStack,
-                                    onOpenFile = ::openFromMap,
-                                )
-                            }
+                // 属性卡片的锚点在这一块的坐标里：右键按下的点、条目的范围都换算到这里
+                Box(Modifier.fillMaxSize().propertiesAnchorArea(propertiesAnchors)) {
+                    list()
+                    if (pathInTopBar && folderMapOpen) {
+                        FolderMapPanel(
+                            state = folderMap,
+                            current = folderStack,
+                            onClose = { setFolderMapOpen(false) },
+                            onOpen = driveRepo::updateFolderStack,
+                            onOpenFile = ::openFromMap,
+                            modifier = Modifier.zIndex(if (propertiesOnTop) 0f else 1f),
+                            avoid = { propertiesPanel.bounds },
+                            onActivate = { propertiesOnTop = false },
+                        )
+                    }
+                    val shown = properties
+                    if (propertiesFloating && shown != null) {
+                        FloatingPanel(
+                            state = propertiesPanel,
+                            title = "属性",
+                            closeLabel = "关闭属性",
+                            onClose = { properties = null },
+                            minWidth = PropertiesMinWidth,
+                            maxWidth = PropertiesMaxWidth,
+                            // 随内容长短，最高到列表这一块的底，再长就在卡片里滚
+                            autoMaxHeight = Dp.Unspecified,
+                            modifier = Modifier.zIndex(if (propertiesOnTop) 1f else 0f),
+                            resizable = false,
+                            onActivate = { propertiesOnTop = true },
+                        ) {
+                            // 换了一项从头看起，不停在上一项滚到的地方
+                            key(shown) { PropertiesPane(shown, Modifier.weight(1f, fill = false).widthIn(min = PropertiesMinWidth)) }
                         }
-                    },
-                    panel = { inspectorPanel() },
-                )
+                    }
+                }
             }
         }
+    }
+
+    // 窄窗口底部那一块 sheet：添加链接或查找重复，同一时刻只有一件（TaskSlot 管着入口）。
+    // 宽窗口是侧边面板、右下角的浮动卡片与查重标签，不用它
+    val taskSheet: TaskSheetModel? = when {
+        twoPane -> null
+        instantState != null -> TaskSheetModel(
+            key = instantState,
+            expanded = instantSession.isSheetOpen,
+            // 收起时什么都没粘过的直接结束，见 InstantSession.collapse
+            onExpandedChange = { expand -> if (expand) instantSession.reopen() else instantSession.collapse() },
+            header = {
+                val summary = instantState.summary()
+                TaskSheetHeader(summary.title, summary.status, "放弃添加", instantSession::end, closeEnabled = !summary.busy)
+            },
+            body = {
+                InstantSheetContent(
+                    state = instantState,
+                    headerShown = true,
+                    // 先收起：播放器压栈进来时网盘页还看得见那一截，回来接着挑
+                    onPreview = { fileId, fileName ->
+                        instantSession.collapse()
+                        navigateToPlayer(FileStat(id = fileId, name = fileName), emptyList())
+                    },
+                )
+            },
+        )
+        duplicateState != null && !inDuplicates -> duplicatesSheet(
+            finder = duplicateState,
+            expanded = taskSlot.duplicatesExpanded,
+            onExpandedChange = { taskSlot.duplicatesExpanded = it },
+            onOpenResults = { openDuplicates(duplicateState.root) },
+            onEnd = duplicateSession::end,
+        )
+        else -> null
     }
 
     // 焦点与按键挂在最外层：挂在侧栏的子组合里的话，比外面的 LaunchedEffect 晚挂上，首帧要焦点时找不到它
@@ -1447,35 +1509,12 @@ fun DriveScreen(
                     }
                 }
             },
-    ) {
+    ) { TaskSheetScaffold(taskSheet) {
             Scaffold(
                 modifier = Modifier.fillMaxSize(),
                 // 宽窗口的两行栏与标签栏落在页眉的底色上，内容区自己铺页面本色
                 containerColor = if (pathInTopBar) MaterialTheme.colorScheme.frame else MaterialTheme.colorScheme.background,
                 snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
-                bottomBar = {
-                    Column {
-                        // 宽窗口里这几样是主界面右下角的浮动卡片（FloatingTasks），条件同 twoPane；
-                        // 更窄时在这里。解压与归档不在这里，进度在传输页
-                        if (!twoPane) {
-                            duplicateState?.takeIf { it.isScanning }?.let { DuplicateScanStatus(it, Modifier.fillMaxWidth()) }
-                        }
-                        if (instantState != null && !instantSession.isSheetOpen && !twoPane) {
-                            InstantSheetHandle(
-                                state = instantState,
-                                onExpand = instantSession::reopen,
-                                onClose = instantSession::end,
-                            )
-                        }
-                        if (duplicateState != null && !inDuplicates && !twoPane && !duplicateState.isScanning) {
-                            DuplicatesHandle(
-                                finder = duplicateState,
-                                onOpen = { openDuplicates(duplicateState.root) },
-                                onEnd = duplicateSession::end,
-                            )
-                        }
-                    }
-                },
                 topBar = {
                     Column {
                         // 宽窗口一直有标签栏，只开一个标签时也是：开第二个时页面不跳，窗口按钮也一直在这一行
@@ -1600,10 +1639,13 @@ fun DriveScreen(
                     }
                 },
                 floatingActionButton = {
-                    if (placePrimaryAction != null && !pathInTopBar) PrimaryActionFab(placePrimaryAction)
-                    // 宽窗口的新建与上传在命令栏的「新建」里。菜单里摆什么与命令栏同一份规则（commands），
-                    // 一项也没有时整个按钮不出现
-                    if (!state.isSelectionMode && !pathInTopBar && (commands.addLink || commands.create || commands.findDuplicates)) {
+                    // 一个槽位只放一个主操作（M3：一屏只有一个 FAB，FAB 菜单不与扩展 FAB 同屏）：这个位置自己的主操作
+                    // （清空回收站、选中建议移走的）在时就是它，否则是「+」菜单。曾两样依次画在同一个槽位里，查重页上「+」压住了扩展 FAB
+                    if (placePrimaryAction != null && !pathInTopBar) {
+                        PrimaryActionFab(placePrimaryAction)
+                    } else if (!state.isSelectionMode && !pathInTopBar && (commands.addLink || commands.create || commands.findDuplicates)) {
+                        // 宽窗口的新建与上传在命令栏的「新建」里。菜单里摆什么与命令栏同一份规则（commands），
+                        // 一项也没有时整个按钮不出现
                         // FAB 菜单自带 16dp 的右边距与下边距，Scaffold 的 FAB 槽位又留了 16dp，
                         // 不抵消的话按钮离屏幕角是 32dp。偏移而不是挪出槽位，系统栏避让仍由 Scaffold 处理
                         FloatingActionButtonMenu(
@@ -1748,6 +1790,7 @@ fun DriveScreen(
                                     DuplicatesEmptyState(
                                         finder = duplicateState,
                                         onLeave = { driveRepo.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB)) },
+                                        canLeave = twoPane,
                                         modifier = Modifier.weight(1f),
                                     )
                                 } else if (state.displayItems.isEmpty() && state.typeFilter == null && !state.thumbnailsOnly) {
@@ -1770,7 +1813,7 @@ fun DriveScreen(
                                         hitLocations = rowNotes,
                                         callbacks = callbacks,
                                         bottomPadding = bottomPadding,
-                                        detailsOnHover = detailsInPanel,
+                                        moreButton = itemMoreButton,
                                         backgroundActions = ::backgroundActions,
                                         columnReferenceWidth = listAreaWidth,
                                         activeItemId = commandFile?.id,
@@ -1815,7 +1858,7 @@ fun DriveScreen(
                     }
                 }
             } }
-    }
+    } }
 
     actionTargetFile?.let { target ->
         FileActionsSheet(
@@ -1837,6 +1880,7 @@ fun DriveScreen(
             onToggleStar = { state.setStarred(target, starred = !target.isStarred) },
             onDismiss = { actionTargetFile = null },
             onDownload = { enqueueDownload(target) },
+            onDownloadQuality = { qualityTarget = target },
             onDownloadSegment = { segmentSession.open(target) },
             onRename = { startRename(target) },
             onMove = { moveTargetIds = setOf(target.id) },
@@ -1853,7 +1897,15 @@ fun DriveScreen(
             isPinned = pinnedFolders.any { it.id == target.id },
             onVault = if (!state.isVirtualPlace) ({ vaultTarget = target }) else null,
             onRestoreVault = if (!state.isVirtualPlace) ({ restoreVaultTarget = target }) else null,
+            onProperties = { showProperties(listOf(target), propertiesAnchors.beside(target.id)) },
         )
+    }
+
+    // 窄窗口里属性是面板：放不下浮在列表上的卡片，触屏上也拖不动它
+    properties?.takeIf { !propertiesFloating }?.let { shown ->
+        PikoSheet(onDismissRequest = { properties = null }, sideSheetTitle = "属性") {
+            PropertiesPane(shown, Modifier.fillMaxWidth())
+        }
     }
 
     state.archivePasswordRequest?.let { request ->
@@ -1887,6 +1939,17 @@ fun DriveScreen(
         )
     }
 
+    qualityTarget?.let { file ->
+        QualityDownloadDialog(
+            file = file,
+            onDownload = { quality ->
+                downloadManager.enqueueQuality(file, quality)
+                openTransfers()
+            },
+            onDismiss = { qualityTarget = null },
+        )
+    }
+
     if (shareTargets.isNotEmpty()) {
         ShareDialog(
             files = shareTargets,
@@ -1910,8 +1973,8 @@ fun DriveScreen(
     }
 
 
-    // 秒传面板。划走只是收起，会话还在，底部留把手，见 InstantSession
-    if (instantState != null && instantSession.isSheetOpen) {
+    // 宽窗口的秒传面板。关掉只是收起，会话还在，右下角留一张浮动卡片，见 InstantSession；窄窗口在底部的 sheet 里（taskSheet）
+    if (twoPane && instantState != null && instantSession.isSheetOpen) {
         // 侧栏形态的顶上已有标题与关闭那一行，标题交给它，内容里不再画第二个
         PikoSheet(onDismissRequest = instantSession::collapse, sideSheetTitle = "添加链接") {
             val sideSheet = isSideSheet
@@ -1999,7 +2062,7 @@ fun DriveScreen(
     if (segmentTarget != null) {
         SegmentDownloadSheet(
             session = segmentSession,
-            onConfirmDownload = { startByte, lengthBytes, timeLabel, startMs, endMs, streamUrl ->
+            onConfirmDownload = { startByte, lengthBytes, timeLabel, startMs, endMs, streamUrl, quality ->
                 downloadManager.enqueueSegment(
                     file = segmentTarget,
                     startMs = startMs,
@@ -2008,6 +2071,7 @@ fun DriveScreen(
                     streamUrl = streamUrl,
                     startByte = startByte,
                     lengthBytes = lengthBytes,
+                    quality = quality,
                 )
                 segmentSession.end()
                 openTransfers()

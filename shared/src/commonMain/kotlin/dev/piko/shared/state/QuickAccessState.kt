@@ -46,11 +46,6 @@ class QuickAccessState(
         }
     }
 
-    fun openRoot() = driveRepo.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB))
-
-    /** My Pack 就在根目录下，路径不必再查。 */
-    fun openMyPacks(folder: PikoPathBreadcrumb) = driveRepo.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB, folder))
-
     fun openMyPacksInNewTab(folder: PikoPathBreadcrumb) {
         driveRepo.openTab(listOf(PikoDriveRepository.ROOT_BREADCRUMB, folder), activate = false)
     }
@@ -59,15 +54,16 @@ class QuickAccessState(
         driveRepo.openTab(listOf(PikoDriveRepository.ROOT_BREADCRUMB), activate = false)
     }
 
-    /** 固定的只带着自己，上级要逐层查出来才能摆出完整的路径；文件夹被移走过也照样找得到。 */
-    fun open(folder: PikoPathBreadcrumb) = withStack(folder) { driveRepo.updateFolderStack(it) }
-
     /** 在后台的新标签里打开，与中键点文件夹相同。 */
-    fun openInNewTab(folder: PikoPathBreadcrumb) = withStack(folder) { driveRepo.openTab(it, activate = false) }
+    fun openInNewTab(folder: PikoPathBreadcrumb) = locate(folder) { driveRepo.openTab(it, activate = false) }
 
     fun unpin(folder: PikoPathBreadcrumb) = driveRepo.unpinFolder(folder.id)
 
-    private fun withStack(folder: PikoPathBreadcrumb, open: (List<PikoPathBreadcrumb>) -> Unit) {
+    /**
+     * 固定的只带着自己，上级要逐层查出来才能摆出完整的路径；文件夹被移走过也照样找得到。
+     * 查出来交给 [open]，不在这里换栈：跳过去之前调用方可能要先问一声（窄窗口离开查找重复），问过再连同切页一起做。
+     */
+    fun locate(folder: PikoPathBreadcrumb, open: (List<PikoPathBreadcrumb>) -> Unit) {
         scope.launch {
             driveRepo.locateFolder(folder.id)
                 .logFailure(TAG, "快速访问定位文件夹失败")

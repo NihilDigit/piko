@@ -192,8 +192,11 @@ private fun TabChip(
     val tooltip = when {
         fromFeed -> "从信息流打开：" + tab.stack.joinToString(" › ") { it.name }
         duplicates == null -> tab.stack.joinToString(" › ") { it.name }
-        duplicates.isScanning -> "正在查找重复，已扫描 ${duplicates.scannedFolders} 个文件夹。关闭标签页即结束查找"
-        else -> "找到 ${duplicates.report.identical.size + duplicates.report.versions.size} 组。关闭标签页即结束查找"
+        duplicates.isScanning -> "正在查找重复文件，已扫描 ${duplicates.scannedFolders} 个文件夹。关闭标签页将结束查找"
+        else -> {
+            val groups = duplicates.report.identical.size + duplicates.report.versions.size
+            (if (groups == 0) "未发现重复文件" else "发现 $groups 组重复文件") + "。关闭标签页将结束查找"
+        }
     }
     TooltipBox(
         positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),

@@ -19,6 +19,7 @@ import dev.piko.shared.data.OfflinePackTracker
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.PreviewTempFolder
+import dev.piko.shared.data.isDriveFolderId
 import dev.piko.shared.naming.MediaFileInput
 import io.github.nihildigit.pikpak.InstantContentUnavailableException
 import io.github.nihildigit.pikpak.QuotaResponse
@@ -720,7 +721,7 @@ class InstantSheetState private constructor(
      */
     private suspend fun followDriveFolder() {
         driveRepo.folderStackFlow
-            .map { it.lastOrNull() ?: PikoDriveRepository.ROOT_BREADCRUMB }
+            .map(::saveFolderIn)
             .distinctUntilChanged()
             .collectLatest { folder ->
                 if (shared.targetChosen) return@collectLatest
@@ -729,8 +730,15 @@ class InstantSheetState private constructor(
             }
     }
 
-    private suspend fun resolveTarget(): PikoPathBreadcrumb =
-        targetFor(driveRepo.folderStackFlow.value.lastOrNull() ?: PikoDriveRepository.ROOT_BREADCRUMB)
+    private suspend fun resolveTarget(): PikoPathBreadcrumb = targetFor(saveFolderIn(driveRepo.folderStackFlow.value))
+
+    /**
+     * 栈里最后一个真实目录。库、查重与压缩包的 ID 是虚拟的（piko:、piko-archive:），交给 [targetFor] 去验
+     * 会被当成「已不存在」，改存 My Packs 并提示，而那个位置本来就不是目录；压缩包里取它所在的文件夹，
+     * 库与查重的栈底就是虚拟 ID，取根目录。
+     */
+    private fun saveFolderIn(stack: List<PikoPathBreadcrumb>): PikoPathBreadcrumb =
+        stack.lastOrNull { isDriveFolderId(it.id) } ?: PikoDriveRepository.ROOT_BREADCRUMB
 
     /**
      * 目录栈是持久化的，停着的目录可能已在别的客户端被删或进了回收站。不验的话要等保存时才暴露，

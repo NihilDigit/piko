@@ -336,18 +336,43 @@ open class PikoDriveRepository(
     /** 做过的改动，能撤销的记在这里，见 [DriveChangeJournal]。 */
     val changes = DriveChangeJournal(this, backgroundScope)
 
+    /**
+     * 人在网盘里往别处走（进出文件夹、面包屑、后退前进、从别处跳进来）之前问一声，返回 false 即拦下、栈不动；
+     * 拦下的一方问过人之后调 retry 把同一步再走一遍。用在窄窗口离开查找重复所在的位置（ui 的 TaskSlot）。
+     * 在换栈之前拦，而不是换了再跳回去：那样历史里多出一步，画面也闪一下。
+     * 换账号、启动时恢复、切标签与信息流的继续刷不经它：那不是人在这个位置里往外走。
+     */
+    fun interface LeaveGuard {
+        fun allows(next: List<PikoPathBreadcrumb>, retry: () -> Unit): Boolean
+    }
+
+    var leaveGuard: LeaveGuard? = null
+
+    private fun leaveAllowed(next: List<PikoPathBreadcrumb>, retry: () -> Unit): Boolean = leaveGuard?.allows(next, retry) ?: true
+
+    /**
+     * 换栈之外还有别的步骤的导航（先切到网盘页、跳过去后标出某一项）：按要去的 [next] 先问 [leaveGuard]，问的是整个 [action]。
+     * 拦下后取消就什么都没发生，确认后重走的是整个动作；只靠换栈时的那一问，切页已经发生、标出那一步也丢了。
+     */
+    fun navigateThen(next: List<PikoPathBreadcrumb>, action: () -> Unit) {
+        if (leaveAllowed(next, action)) action()
+    }
+
     /** 把栈换成 [next]，换了才把原来的位置记进后退、清掉前进。 */
     private fun moveTo(next: List<PikoPathBreadcrumb>) {
         val previous = _folderStackFlow.value
         if (next == previous) return
+        if (!leaveAllowed(next) { moveTo(next) }) return
         _folderStackFlow.value = next
         _historyFlow.update { it.visited(previous) }
         stackChanged()
     }
 
+    /** 后退了返回 true。被 [leaveGuard] 拦下也返回 true：这一下已经有人接着处理，调用方不要再退到别处。 */
     fun goBack(): Boolean {
         val history = _historyFlow.value
         val target = history.back.lastOrNull() ?: return false
+        if (!leaveAllowed(target) { goBack() }) return true
         _historyFlow.value = FolderHistory(back = history.back.dropLast(1), forward = history.forward + listOf(_folderStackFlow.value))
         _folderStackFlow.value = target
         stackChanged()
@@ -357,6 +382,7 @@ open class PikoDriveRepository(
     fun goForward(): Boolean {
         val history = _historyFlow.value
         val target = history.forward.lastOrNull() ?: return false
+        if (!leaveAllowed(target) { goForward() }) return true
         _historyFlow.value = FolderHistory(back = history.back + listOf(_folderStackFlow.value), forward = history.forward.dropLast(1))
         _folderStackFlow.value = target
         stackChanged()
