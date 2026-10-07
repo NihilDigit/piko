@@ -277,14 +277,14 @@ Android 分发包里 jdtech 的 FFmpeg 以 `--enable-gpl --enable-version3` 构�
 
 ## 截图与界面审查
 
-`:shots` 是界面的回归基础设施：`standardSet` 覆盖 `docs/development/ui-states.md` 里的每个可达状态，桌面、手机、平板各出一张。
-用法见 `shots/CLAUDE.md`。
+`:shots` 的 `standardSet` 覆盖 `docs/development/ui-states.md` 里的每个可达状态，桌面、手机、平板各出一张，用法见 `shots/CLAUDE.md`。
+它的目标是界面的回归基础设施，但还没成熟：整套要跑几十分钟，也还不能按改动只重出受影响的图。后续工作见
+`docs/development/shots-roadmap.md`。
 
-- **新界面与新状态必须进截图清单**：加了页面、面板、对话框或一种新状态（空、加载、失败、多选等），同时在 `standardSet`
-  对应的节里加一行，并补进 `ui-states.md`。截图环境到不了的状态（真实视频、系统栏）在 `ui-states.md` 里注明。
-- **界面改动收尾时审一轮**：重跑受影响的截图，对照上一版只看变了的图，按 M3、Fluent、Apple HIG 与 GNOME HIG 的本地镜像审查
-  （做法与上一轮的结论见 `docs/development/ux-review/`），确认无误再交给我手测。
-- 截图不替代手测：假数据放不了视频、没有窗口外框，时机与手感只能在真机上看。审完照旧编译、重启桌面开发版或装到真机交给我。
+**在那之前，界面改动不要求同时补截图步骤与假服务端，也不要求收尾时出图审查。** 只在我明确要求时才跑 `:shots`；
+平常改完界面直接编译、重启桌面开发版（或装到 Android 真机）交给我手测。基础设施成熟后，再改回「新界面与新状态必须进截图清单、
+收尾时只看变了的图按 M3、Fluent、Apple HIG 与 GNOME HIG 的本地镜像审一轮」（上一轮审查的做法与结论见 `docs/development/ux-review/`）。
+截图不替代手测：假数据放不了视频、没有窗口外框，时机与手感只能在真机上看。
 
 ## 冒烟测试
 
