@@ -9,6 +9,7 @@
 #
 # 场景，依次：
 #   1. 全新安装 MSI，启动后存活，没有新版时不动
+#      MSI installed outside UTC: the first launch sets the jar times back, the second uses the AOT cache
 #   1b. 设为 magnet 与 .torrent 的默认打开方式：系统真把磁力链接与种子交给 Piko（拉起与转交各一次），再取消关联
 #   1c. 「打开所在文件夹」：资源管理器开在文件所在的文件夹并选中它，文件名带空格与方括号
 #   2. MSI 安装版增量更新（换补丁文件）：目录与新版清单逐文件一致，jar 的修改时间原样（AOT 缓存认它），
@@ -101,13 +102,11 @@ function Assert-Tree([string] $dir, $manifest, [switch] $AllowExtra) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { Fail "missing $($entry.path)" }
         $actual = Get-Sha256 $path
         if ($actual -ne $entry.sha256) { Fail "content differs: $($entry.path)" }
-        # 只核对 jar 的修改时间：AOT 缓存按 jar 的时间校验，差一点就整份作废。jar 在训练前已取整到偶数秒，
-        # MSI 装上去也是原样；exe 等其余文件经 MSI 会被取整，但没有东西依赖它们的时间
-        if ($entry.path.EndsWith('.jar')) {
-            $mtime = [DateTimeOffset]::new((Get-Item -LiteralPath $path).LastWriteTimeUtc).ToUnixTimeMilliseconds()
-            if ($mtime -ne [long] $entry.mtime) { Fail "mtime differs: $($entry.path) $mtime != $($entry.mtime)" }
-        }
     }
+    # Only class path jars carry a time anything depends on (see Get-SkewedJars). The app sets them back
+    # on launch when an MSI installed them off by the time zone difference.
+    $wrong = @(Get-SkewedJars $dir $manifest)
+    if ($wrong.Count -gt 0) { Fail "jar times differ: $($wrong -join '; ')" }
     foreach ($folder in @(if (-not $AllowExtra) { 'app', 'runtime' })) {
         foreach ($file in @(Get-ChildItem -LiteralPath (Join-Path $dir $folder) -Recurse -File -Force | Where-Object { -not $_.Name.StartsWith('.') })) {
             if (-not $expected.ContainsKey($file.FullName.ToLowerInvariant())) { Fail "stale file left: $($file.FullName)" }
@@ -161,9 +160,10 @@ function Stop-App([string] $dir) {
 # 启动器会另起一个同名子进程跑 JVM；环境变量随之传下去，更新脚本也继承它，所以更新后重新拉起的版本同样指向假 Release
 #
 # -ViaShortPath 经 8.3 短路径启动：启动器把它原样写进 jpackage.app-path，应用以它作安装目录交给更新脚本
-function Start-App([string] $dir, [switch] $AutoInstall, [switch] $ViaShortPath) {
+function Start-App([string] $dir, [switch] $AutoInstall, [switch] $ViaShortPath, [string] $JvmOptions = '') {
     $options = "-Dpiko.update.api=http://127.0.0.1:$Port/latest"
     if ($AutoInstall) { $options += ' -Dpiko.update.auto=true' }
+    if ($JvmOptions) { $options += " $JvmOptions" }
     if ($dir -eq $installDir) { $options += " $homeOption" }
     $launchDir = $dir
     if ($ViaShortPath) {
@@ -308,15 +308,53 @@ function Assert-StagingCleaned([string] $staging) {
     if ($left.Count -gt 0) { Fail "staging not cleaned after the update: $($left.FullName -join ', ')" }
 }
 
+# Runs the block in a time zone other than UTC, then switches back. Runners are UTC, and packing and
+# unpacking in one zone hides formats that store local time (zip, the MSI cab). A machine already
+# outside UTC is left as it is.
+function Invoke-OutsideUtc([scriptblock] $action) {
+    $original = (Get-TimeZone).Id
+    $switch = (Get-TimeZone).BaseUtcOffset -eq [TimeSpan]::Zero
+    if ($switch) { Set-TimeZone -Id 'China Standard Time' }
+    try { & $action } finally { if ($switch) { Set-TimeZone -Id $original } }
+}
+
+# Class path jars (app\*.jar) whose mtime differs from the manifest, as "<path> off by <n> s". The AOT
+# cache checks these and drops itself whole if one is off. jrt-fs.jar under runtime is not on the class
+# path and not checked; an MSI installed outside the build's time zone leaves it off for good.
+function Get-SkewedJars([string] $dir, $manifest) {
+    foreach ($entry in @($manifest.files | Where-Object { $_.path -match '^app/[^/]+\.jar$' })) {
+        $path = Join-Path $dir ($entry.path.Replace('/', '\'))
+        $mtime = [DateTimeOffset]::new((Get-Item -LiteralPath $path).LastWriteTimeUtc).ToUnixTimeMilliseconds()
+        if ($mtime -ne [long] $entry.mtime) { "$($entry.path) off by $(($mtime - [long] $entry.mtime) / 1000) s" }
+    }
+}
+
+# The AOT cache is used, not just opened: "Opened AOT cache" is logged before the class path check
+# that rejects it, so wait for the outcome of that check.
+function Assert-AotCacheUsed([string] $dir, [string] $name) {
+    $log = Join-Path $logs "aot-$name.log"
+    if (Test-Path -LiteralPath $log) { Remove-Item -LiteralPath $log }
+    # The pass is logged under class+path, the rejection as an aot warning
+    Start-App $dir -JvmOptions "-Xlog:aot=warning,class+path=info:file=$($log.Replace('\', '/'))"
+    $passed = 'Archived app classpath validation: passed'
+    $rejected = 'not the one used while building'
+    $outcome = $null
+    for ($i = 0; $i -lt 60 -and -not $outcome; $i++) {
+        Start-Sleep -Seconds 1
+        if (Test-Path -LiteralPath $log) { $outcome = Select-String -LiteralPath $log -Pattern $passed, $rejected -SimpleMatch | Select-Object -First 1 }
+    }
+    Stop-App $dir
+    if (-not $outcome) { Fail "$name : no AOT class path check in $log within 60 s" }
+    if ($outcome.Line -notlike "*$passed*") { Fail "$name : the AOT cache was rejected: $($outcome.Line)" }
+    Write-Host "AOT cache used ($name)"
+}
+
 # 解开便携包（.7z）：先用系统自带的 tar.exe，它解不了（旧系统的 libarchive）再用 7-Zip，哪个解的记进摘要。
 # 应用内更新不解这个包，tar.exe 能不能解只关系到用户手动解压。解出的 jar 修改时间要与清单相同：AOT 缓存按它校验，
 # 差一点整份作废。CI runner 是 UTC，打包与解压同在 UTC 看不出时区问题（zip 只存本地时间时就是这样漏过去的），
 # 所以换到东八区解，测完换回；本机已不是 UTC 就不换
 function Expand-Portable([string] $archive, [string] $destination, $manifest) {
-    $original = (Get-TimeZone).Id
-    $switch = (Get-TimeZone).BaseUtcOffset -eq [TimeSpan]::Zero
-    if ($switch) { Set-TimeZone -Id 'China Standard Time' }
-    try {
+    Invoke-OutsideUtc {
         Write-Host "extracting the portable package in $((Get-TimeZone).Id)"
         New-Item -ItemType Directory -Force -Path $destination | Out-Null
         $tar = "$env:SystemRoot\System32\tar.exe"
@@ -330,14 +368,8 @@ function Expand-Portable([string] $archive, [string] $destination, $manifest) {
             & 7z x $archive "-o$destination" -y | Out-Null
             if ($LASTEXITCODE -ne 0) { Fail "7z x exited $LASTEXITCODE" }
         }
-    } finally {
-        if ($switch) { Set-TimeZone -Id $original }
     }
-    $wrong = @(foreach ($entry in @($manifest.files | Where-Object { $_.path.EndsWith('.jar') })) {
-        $path = Join-Path $destination (Join-Path $PackageName ($entry.path.Replace('/', '\')))
-        $mtime = [DateTimeOffset]::new((Get-Item -LiteralPath $path).LastWriteTimeUtc).ToUnixTimeMilliseconds()
-        if ($mtime -ne [long] $entry.mtime) { "$($entry.path) off by $(($mtime - [long] $entry.mtime) / 1000) s" }
-    })
+    $wrong = @(Get-SkewedJars (Join-Path $destination $PackageName) $manifest)
     if ($wrong.Count -gt 0) { Fail "jar times differ after extracting the portable package: $($wrong -join '; ')" }
     # 没有标记的便携版把数据写进 ~/.piko，与装在本机的 Piko 混在一起
     if (-not (Test-Path -LiteralPath (Join-Path $destination "$PackageName\portable") -PathType Leaf)) { Fail 'the portable package has no portable marker' }
@@ -446,12 +478,30 @@ try {
         Step '1. fresh MSI install'
         Reset-Staging
         Publish $BaseVersion
-        Install-Msi $baseMsi (Join-Path $logs 'install-base.log')
+        # The MSI cab stores local time without a zone and the installer reads it in its own zone, so
+        # installed outside UTC the jars come out hours off the UTC build. The first launch sets them
+        # back (ClasspathTimes.kt) and the next one uses the AOT cache.
+        Invoke-OutsideUtc {
+            Write-Host "installing in $((Get-TimeZone).Id)"
+            Install-Msi $baseMsi (Join-Path $logs 'install-base.log')
+        }
         if ((Installed-Version $installDir) -ne $BaseVersion) { Fail 'fresh install has the wrong version' }
+        $skewed = @(Get-SkewedJars $installDir $baseManifest)
+        if ($skewed.Count -gt 0) {
+            Write-Host "installed jars before the first launch: $($skewed -join '; ')"
+        } elseif ($env:GITHUB_ACTIONS) {
+            # Built in UTC, installed in another zone: no skew means the switch did not reach the installer
+            Fail 'jars installed outside UTC carry the build time; nothing left for the first launch to fix'
+        } else {
+            Write-Host '::warning::built in this time zone; installed jars carry the build time, the fix is not exercised'
+        }
         Start-App $installDir -AutoInstall
         Assert-Alive $installDir 25
         if ((Installed-Version $installDir) -ne $BaseVersion) { Fail 'app changed itself without a newer release' }
         Stop-App $installDir
+        $skewed = @(Get-SkewedJars $installDir $baseManifest)
+        if ($skewed.Count -gt 0) { Fail "the first launch did not set the jar times back: $($skewed -join '; ')" }
+        Assert-AotCacheUsed $installDir 'msi-fresh'
         EndStep
 
         Step '1b. magnet and torrent association'
