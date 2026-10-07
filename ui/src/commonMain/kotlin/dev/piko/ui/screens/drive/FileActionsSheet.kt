@@ -129,9 +129,10 @@ internal fun fileActions(file: FileStat, commands: ItemCommands, on: FileActionH
 
 /**
  * 条目从哪来。列目录接口的 params.url 记着来源：离线下载的是原始磁力链接，从分享转存的是
- * mypikpak.com/s/ 分享链接；自己上传或新建的没有。离线任务生成的顶层文件夹与其中的文件都带着
+ * mypikpak.com/s/ 分享链接；自己上传或新建的没有。离线任务生成的顶层文件夹与其中的文件都带着。
+ * Piko 从磁力秒传的文件由仓库按来源账本补上同一个字段（SourceLedger），所以磁力一类叫「磁力链接」，不叫「离线下载」。
  */
-internal enum class FileSource(val label: String) { Magnet("来源：离线下载"), Share("来源：从分享转存") }
+internal enum class FileSource(val label: String) { Magnet("来源：磁力链接"), Share("来源：从分享转存") }
 
 internal val FileStat.source: FileSource?
     get() {
