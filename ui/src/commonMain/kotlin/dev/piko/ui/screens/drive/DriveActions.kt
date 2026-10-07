@@ -65,6 +65,10 @@ internal object DriveActions {
     fun batchRename(onClick: () -> Unit) =
         SheetAction(Icons.Outlined.DriveFileRenameOutline, "批量重命名", onClick, group = ActionGroup.Organize, tier = ActionTier.Quick)
 
+    // 打开批量重命名并换上番号规则，见 docs/development/av-naming.md
+    fun canonicalName(onClick: () -> Unit) =
+        SheetAction(Icons.Outlined.DriveFileRenameOutline, "按番号规范命名", onClick, group = ActionGroup.Organize, tier = ActionTier.More)
+
     fun moveTo(onClick: () -> Unit) = SheetAction(Icons.Outlined.DriveFileMove, "移动到…", onClick, group = ActionGroup.Organize)
 
     fun copyTo(onClick: () -> Unit) = SheetAction(Icons.Outlined.ContentCopy, "复制到…", onClick, group = ActionGroup.Organize)

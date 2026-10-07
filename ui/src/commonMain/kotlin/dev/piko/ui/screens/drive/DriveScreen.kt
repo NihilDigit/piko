@@ -55,6 +55,7 @@ import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.DriveFolderUpload
+import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.ContentCut
 import dev.piko.ui.workbench.LocalTaskSlot
@@ -543,6 +544,8 @@ fun DriveScreen(
     var shareTargets by remember { mutableStateOf<List<FileStat>>(emptyList()) }
     var qualityTarget by remember { mutableStateOf<FileStat?>(null) }
     var batchRenameTargets by remember { mutableStateOf<List<FileStat>>(emptyList()) }
+    // 按番号规范命名：打开批量重命名并换上这条规则。从命令面板进来、没选中时作用于当前目录的全部文件
+    var avNamingTargets by remember { mutableStateOf<List<FileStat>>(emptyList()) }
     var previewImage by remember { mutableStateOf<FileStat?>(null) }
     // 外部打开的磁力链是一次明确的新请求：开新会话并就地取走，面板收起后不再靠它续命。
     // 已有一次粘过东西的添加链接时不静默换掉它，与别的占着 sheet 的事一样先确认
@@ -777,6 +780,7 @@ fun DriveScreen(
         // 按列表顺序：服务端取第一项的名字作分享标题
         if (commands.share) add(DriveActions.share { shareTargets = settled })
         if (commands.rename) add(DriveActions.batchRename { batchRenameTargets = settled })
+        if (commands.rename && settled.any { !it.isFolder && hasAvCode(it.name) }) add(DriveActions.canonicalName { avNamingTargets = settled })
         files.filter { it.isVaulted }.takeIf { it.isNotEmpty() }?.let { vaulted ->
             add(DriveActions.restoreFromVault {
                 state.exitSelection()
@@ -845,8 +849,11 @@ fun DriveScreen(
             previewHidden = if (isSpoilerBlurEnabled && file.thumbnailLink.isNotEmpty()) file.id !in state.revealedFileIds else null,
             togglePreview = { state.toggleSpoiler(file.id) },
         )
+        val canonicalName = listOfNotNull(
+            DriveActions.canonicalName { avNamingTargets = listOf(file) }.takeIf { commands.rename && !file.isFolder && hasAvCode(file.name) },
+        )
         // 移除记录排在移入回收站之前，两者同在末组
-        return reveal + removeRecord + fileActions(file, commands, handlers)
+        return reveal + removeRecord + fileActions(file, commands, handlers) + canonicalName
     }
 
     // 对着一项右键或按属性键时作用于哪几项：它在几项选中里时是全部选中的
@@ -1341,9 +1348,6 @@ fun DriveScreen(
         )
     }
 
-    // 按番号规范命名：打开批量重命名并换上这条规则。没选中时作用于当前目录的全部文件。
-    // 右键菜单与操作面板里的入口待它们改完再补
-    var avNamingTargets by remember { mutableStateOf<List<FileStat>>(emptyList()) }
     if (avNamingTargets.isNotEmpty()) {
         BatchRenameDialog(
             files = avNamingTargets,
@@ -1401,7 +1405,7 @@ fun DriveScreen(
                 add(PaletteItem("在当前文件夹查找重复", Icons.Outlined.FileCopy, "网盘", keywords = "duplicate dedupe") { findDuplicates(activeFolder) })
             }
             if (commands.rename && avNamingCandidates.any { !it.isFolder && hasAvCode(it.name) }) {
-                add(PaletteItem("按番号规范命名", Icons.Outlined.Edit, "网盘", keywords = "rename av code 番号 重命名") { avNamingTargets = avNamingCandidates })
+                add(PaletteItem("按番号规范命名", Icons.Outlined.DriveFileRenameOutline, "网盘", keywords = "rename av code 番号 重命名") { avNamingTargets = avNamingCandidates })
             }
         }
     }
