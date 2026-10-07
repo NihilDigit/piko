@@ -83,6 +83,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import dev.piko.data.auth.QuotaSnapshot
 import dev.piko.shared.data.DriveLibrary
+import dev.piko.ui.screens.drive.icon
+import dev.piko.ui.screens.drive.selectedIcon
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.readableSidePadding
 import dev.piko.ui.adaptive.readableWidth
@@ -190,26 +192,25 @@ fun ProfileScreen(
             Column(verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
                 SettingsNavigationRow(
                     index = 0, count = 3,
-                    icon = Icons.Outlined.NewReleases,
-                    selectedIcon = Icons.Filled.NewReleases,
-                    title = "最近添加",
+                    icon = DriveLibrary.RECENT.icon,
+                    selectedIcon = DriveLibrary.RECENT.selectedIcon,
+                    title = DriveLibrary.RECENT.title,
                     supporting = "最近上传与离线、秒传的文件",
                     onClick = { onOpenLibrary(DriveLibrary.RECENT) },
                 )
                 SettingsNavigationRow(
                     index = 1, count = 3,
-                    icon = Icons.Outlined.StarOutline,
-                    selectedIcon = Icons.Filled.Star,
-                    title = "星标",
+                    icon = DriveLibrary.STARRED.icon,
+                    selectedIcon = DriveLibrary.STARRED.selectedIcon,
+                    title = DriveLibrary.STARRED.title,
                     supporting = "已加星标的文件与文件夹",
                     onClick = { onOpenLibrary(DriveLibrary.STARRED) },
                 )
                 SettingsNavigationRow(
                     index = 2, count = 3,
-                    // History 的实心与描边同形，与侧边栏一样换成 PlayCircle
-                    icon = Icons.Outlined.PlayCircle,
-                    selectedIcon = Icons.Filled.PlayCircle,
-                    title = "播放历史",
+                    icon = DriveLibrary.HISTORY.icon,
+                    selectedIcon = DriveLibrary.HISTORY.selectedIcon,
+                    title = DriveLibrary.HISTORY.title,
                     supporting = "与 PikPak 官方客户端同步",
                     onClick = { onOpenLibrary(DriveLibrary.HISTORY) },
                 )
@@ -229,9 +230,9 @@ fun ProfileScreen(
                 )
                 SettingsNavigationRow(
                     index = 1, count = 3,
-                    icon = Icons.Outlined.Delete,
-                    selectedIcon = Icons.Filled.Delete,
-                    title = "回收站",
+                    icon = DriveLibrary.TRASH.icon,
+                    selectedIcon = DriveLibrary.TRASH.selectedIcon,
+                    title = DriveLibrary.TRASH.title,
                     supporting = "恢复或彻底删除已移入回收站的文件",
                     onClick = { onOpenLibrary(DriveLibrary.TRASH) },
                 )

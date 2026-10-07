@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.Spacer
 import dev.piko.ui.workbench.SidebarAccountRow
 import dev.piko.ui.workbench.AccountSettings
 import dev.piko.ui.screens.drive.SectionLabel
+import dev.piko.ui.screens.drive.icon
+import dev.piko.ui.screens.drive.selectedIcon
 import dev.piko.shared.data.isPikoInternalFolder
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.DriveLibrary
@@ -788,12 +790,15 @@ fun PikoMainScaffold(
         currentTab = MainTab.SETTINGS
     }
 
+    fun libraryDestination(library: DriveLibrary, keywords: String) =
+        PaletteItem(library.title, library.icon, "页面", keywords = keywords) { openLibrary(library) }
+
     fun pageDestinations(): List<PaletteItem> = listOf(
-        PaletteItem("星标", Icons.Outlined.StarOutline, "页面", keywords = "starred") { openLibrary(DriveLibrary.STARRED) },
-        PaletteItem("最近添加", Icons.Outlined.NewReleases, "页面", keywords = "recent added uploads 新增") { openLibrary(DriveLibrary.RECENT) },
-        PaletteItem("播放历史", Icons.Outlined.History, "页面", keywords = "history") { openLibrary(DriveLibrary.HISTORY) },
+        libraryDestination(DriveLibrary.STARRED, "starred"),
+        libraryDestination(DriveLibrary.RECENT, "recent added uploads 新增"),
+        libraryDestination(DriveLibrary.HISTORY, "history"),
         PaletteItem("我的分享", Icons.Outlined.Share, "页面", keywords = "shares") { openPage(Screen.MyShares) },
-        PaletteItem("回收站", Icons.Outlined.Delete, "页面", keywords = "trash bin") { openLibrary(DriveLibrary.TRASH) },
+        libraryDestination(DriveLibrary.TRASH, "trash bin"),
         PaletteItem("设置", Icons.Outlined.Settings, "页面", keywords = "settings preferences") { openPage(Screen.Settings) },
     )
 
@@ -1410,14 +1415,16 @@ private class LibraryEntry(
 
 /**
  * 侧边栏「库」一组：看内容的在前，管理的在后，与「我的」页的顺序一致。
- * 选中时换实心图标，所以每一项挑的都是实心与描边长得不一样的：History 与 Share 两种写法同形，
- * 分别换成 PlayCircle 与 FolderShared。
+ * 选中时换实心图标，所以每一项挑的都是实心与描边长得不一样的：Share 两种写法同形，换成 FolderShared；
+ * 库的图标见 DriveLibrary.icon。
  * 我的分享不并进网盘页：它列的是分享链接，不是文件，打开、预览、移动都无从谈起。
  */
 private val LibraryEntries = listOf(
-    LibraryEntry("最近添加", Icons.Outlined.NewReleases, Icons.Filled.NewReleases, library = DriveLibrary.RECENT),
-    LibraryEntry("星标", Icons.Outlined.StarOutline, Icons.Filled.Star, library = DriveLibrary.STARRED),
-    LibraryEntry("播放历史", Icons.Outlined.PlayCircle, Icons.Filled.PlayCircle, library = DriveLibrary.HISTORY),
+    LibraryEntry(DriveLibrary.RECENT),
+    LibraryEntry(DriveLibrary.STARRED),
+    LibraryEntry(DriveLibrary.HISTORY),
     LibraryEntry("我的分享", Icons.Outlined.FolderShared, Icons.Filled.FolderShared, screen = Screen.MyShares),
-    LibraryEntry("回收站", Icons.Outlined.Delete, Icons.Filled.Delete, library = DriveLibrary.TRASH),
+    LibraryEntry(DriveLibrary.TRASH),
 )
+
+private fun LibraryEntry(library: DriveLibrary) = LibraryEntry(library.title, library.icon, library.selectedIcon, library = library)

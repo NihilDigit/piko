@@ -1,7 +1,13 @@
 package dev.piko.ui.screens.drive
 
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FileCopy
+import androidx.compose.material.icons.filled.NewReleases
+import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DeleteForever
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.DeleteSweep
@@ -75,16 +81,34 @@ private fun formatEventTime(rfc3339: String): String? = runCatching {
 
 internal class LibraryEmpty(val title: String, val description: String, val icon: ImageVector)
 
-/** 库作为路径首段时的图标（地址栏、面包屑），与空状态的图标同一套。 */
+/**
+ * 库的图标，侧边栏、「我的」、命令面板、路径首段与空状态都用这一套，选中时换 [selectedIcon]。
+ * 挑的是实心与描边长得不一样的：History 两种写法同形，播放历史换成 PlayCircle。
+ */
 internal val DriveLibrary.icon: ImageVector
-    get() = if (this == DriveLibrary.DUPLICATES) Icons.Outlined.FileCopy else empty.icon
+    get() = when (this) {
+        DriveLibrary.RECENT -> Icons.Outlined.NewReleases
+        DriveLibrary.STARRED -> Icons.Outlined.StarOutline
+        DriveLibrary.HISTORY -> Icons.Outlined.PlayCircle
+        DriveLibrary.TRASH -> Icons.Outlined.Delete
+        DriveLibrary.DUPLICATES -> Icons.Outlined.FileCopy
+    }
+
+internal val DriveLibrary.selectedIcon: ImageVector
+    get() = when (this) {
+        DriveLibrary.RECENT -> Icons.Filled.NewReleases
+        DriveLibrary.STARRED -> Icons.Filled.Star
+        DriveLibrary.HISTORY -> Icons.Filled.PlayCircle
+        DriveLibrary.TRASH -> Icons.Filled.Delete
+        DriveLibrary.DUPLICATES -> Icons.Filled.FileCopy
+    }
 
 internal val DriveLibrary.empty: LibraryEmpty
     get() = when (this) {
-        DriveLibrary.RECENT -> LibraryEmpty("暂无最近添加", "上传、离线下载与秒传的文件显示于此", Icons.Outlined.NewReleases)
-        DriveLibrary.STARRED -> LibraryEmpty("暂无星标", "在文件菜单中添加星标后显示于此", Icons.Outlined.StarOutline)
-        DriveLibrary.HISTORY -> LibraryEmpty("暂无播放记录", "包含 PikPak 各客户端的播放记录", Icons.Outlined.PlayCircle)
-        DriveLibrary.TRASH -> LibraryEmpty("回收站为空", "移入回收站的文件显示于此，可恢复或彻底删除", Icons.Outlined.DeleteOutline)
+        DriveLibrary.RECENT -> LibraryEmpty("暂无最近添加", "上传、离线下载与秒传的文件显示于此", icon)
+        DriveLibrary.STARRED -> LibraryEmpty("暂无星标", "在文件菜单中添加星标后显示于此", icon)
+        DriveLibrary.HISTORY -> LibraryEmpty("暂无播放记录", "包含 PikPak 各客户端的播放记录", icon)
+        DriveLibrary.TRASH -> LibraryEmpty("回收站为空", "移入回收站的文件显示于此，可恢复或彻底删除", icon)
         // 实际画的是 DuplicatesEmptyState，要分扫描中、失败与已结束
         DriveLibrary.DUPLICATES -> LibraryEmpty("未发现重复文件", "", Icons.Outlined.FolderOpen)
     }
