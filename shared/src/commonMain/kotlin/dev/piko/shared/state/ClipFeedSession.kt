@@ -115,36 +115,42 @@ class ClipFeedSession(
     // 存盘恢复的候选没有这些，要等后台这一轮遍历重新列到
     private val listedFiles = mutableStateMapOf<String, FileStat>()
 
-    // 遍历到的目录名，界面据此标出一段出自哪个目录。随队列存盘，重开时不必等遍历
-    private val folderNames = mutableStateMapOf<String, String>()
-
     /** 列目录时拿到的 [fileId] 的完整条目；存盘恢复、还没重新列到的为 null。 */
     fun listedFile(fileId: String): FileStat? = listedFiles[fileId]
 
+    /*
+     * 遍历到的目录名与上级取自仓库的文件夹索引（遍历经 listBrowsable，列到的都记进去了），这里不另存一份：
+     * 另存的那份在网盘里改名、移动之后不会跟着变。界面据此标出一段出自哪个目录，「在网盘中显示」据此当场拼出路径。
+     * 这里只留一个可被组合观察的引用，界面读 folderName 时随索引更新而重组。
+     */
+    private var folders by mutableStateOf(driveRepo.folderIndex.flow.value)
+
+    init {
+        scope.launch { driveRepo.folderIndex.flow.collect { folders = it } }
+    }
+
     /** [folderId] 的名字；还没遍历到的为 null。 */
-    fun folderName(folderId: String): String? = folderNames[folderId]
+    fun folderName(folderId: String): String? = folders.nodes[folderId]?.name ?: root?.takeIf { it.id == folderId }?.name
 
     // 打开时网盘页的整条路径，栈顶是 [root]
     private var rootPath: List<PikoPathBreadcrumb> = emptyList()
 
-    // 遍历到的文件夹的上级，随队列存盘。「在网盘中显示」据此当场拼出路径：服务端只能沿 parent_id
-    // 逐级查，每级一次请求，慢的时候要好几秒，这期间人还停在原处，跳转晚到会盖掉他刚做的事
-    private val folderParents = HashMap<String, String>()
-
     /**
-     * [folderId] 的完整路径栈，从打开信息流时的那条路径往下接。不在遍历过的范围里（存盘恢复的
-     * 段所在的目录这一轮还没列到，且旧存盘没有上级）时为 null，由调用方向服务端查。
+     * [folderId] 的完整路径栈，从打开信息流时的那条路径往下接，不问服务端：服务端只能沿 parent_id 逐级查，
+     * 每级一次请求，慢的时候要好几秒，这期间人还停在原处，跳转晚到会盖掉他刚做的事。
+     * 存盘恢复的段所在的目录这一轮还没列到、旧存盘又没有上级时为 null，由调用方向服务端查。
      */
     fun pathTo(folderId: String): List<PikoPathBreadcrumb>? {
         val rootId = root?.id ?: return null
+        val nodes = folders.nodes
         val chain = ArrayDeque<PikoPathBreadcrumb>()
         var id = folderId
         while (id != rootId) {
-            val name = folderNames[id] ?: return null
-            chain.addFirst(PikoPathBreadcrumb(id, name))
-            id = folderParents[id] ?: return null
+            val node = nodes[id] ?: return null
+            chain.addFirst(PikoPathBreadcrumb(id, node.name))
+            id = node.parentId ?: return null
             // 文件夹在两次遍历之间被移进自己的子文件夹时，存盘里的上级会成环
-            if (chain.size > folderParents.size) return null
+            if (chain.size > nodes.size) return null
         }
         return rootPath + chain
     }
@@ -199,13 +205,10 @@ class ClipFeedSession(
         verified.clear()
         untranscoded.clear()
         listedFiles.clear()
-        folderNames.clear()
-        folderParents.clear()
         root = folder
-        folderNames[folder.id] = folder.name
         val saved = load(folder.id)
-        saved?.folders?.forEach { (id, name) -> folderNames.getOrPut(id) { name } }
-        saved?.parents?.let(folderParents::putAll)
+        // 存下的目录与上级只补索引的空缺，这一轮遍历列到的会盖掉它们
+        if (saved != null) driveRepo.seedFolders(saved.folders, saved.parents)
         PikoLog.d(TAG, "打开随机片段：存下的队列 ${saved?.clips?.size ?: 0} 段，候选 ${saved?.pool?.size ?: 0} 个")
         val now = Clock.System.now().toEpochMilliseconds()
         saved?.rejected?.forEach { (id, at) -> if (now - at < REJECT_TTL_MS) rejected[id] = at }
@@ -316,12 +319,7 @@ class ClipFeedSession(
                     val files = driveRepo.listBrowsable(folderId, PikoFileSortOrder.TIME_DESC)
                         .logFailure(TAG, "随机片段列目录失败，跳过").getOrNull() ?: continue
                     if (listed++ == 0) PikoLog.d(TAG, "列出第一个目录：${files.size} 项，${started.elapsedNow().inWholeMilliseconds} ms")
-                    val folders = files.filter { it.isFolder }
-                    next += folders.map { it.id }
-                    folders.forEach {
-                        folderNames[it.id] = it.name
-                        folderParents[it.id] = folderId
-                    }
+                    next += files.filter { it.isFolder }.map { it.id }
                     // 解析整目录的文件名要花些时间，不放在主线程上。解析出错只少折叠这一个目录，不能让整个信息流崩掉
                     val folded = withContext(Dispatchers.Default) {
                         runCatching { analyzeDriveFolder(files).foldedIds }
@@ -482,12 +480,15 @@ class ClipFeedSession(
         val from = (currentIndex - KEPT_AROUND).coerceAtLeast(0).coerceAtMost(clips.size)
         // 候补接在后面一起存，读回来时上次正看的那段起都回到候补，见 open
         val window = clips.subList(from, clips.size) + upcoming
-        // 只存段与候选所在的目录及其各级上级，遍历过的其余目录用不上
+        // 只存段与候选所在的目录及其各级上级，到信息流的根为止，遍历过的其余目录用不上
+        val nodes = folders.nodes
+        val rootId = root?.id
         val usedFolders = HashSet<String>()
         for (folderId in window.map { it.parentId } + pool.map { it.parentId }) {
             var id: String? = folderId
-            while (id != null && usedFolders.add(id)) id = folderParents[id]
+            while (id != null && id != rootId && usedFolders.add(id)) id = nodes[id]?.parentId
         }
+        val used = usedFolders.mapNotNull { id -> nodes[id]?.let { id to it } }
         return SavedFeed(
             clips = window,
             current = currentIndex - from,
@@ -496,8 +497,8 @@ class ClipFeedSession(
             verified = verified.toList(),
             rejected = rejected.toMap(),
             untranscoded = untranscoded.toMap(),
-            folders = folderNames.filterKeys { it in usedFolders },
-            parents = folderParents.filterKeys { it in usedFolders },
+            folders = used.associate { (id, node) -> id to node.name },
+            parents = used.mapNotNull { (id, node) -> node.parentId?.let { id to it } }.toMap(),
         )
     }
 

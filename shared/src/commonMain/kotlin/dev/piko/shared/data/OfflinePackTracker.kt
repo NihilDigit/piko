@@ -293,7 +293,8 @@ class OfflinePackTracker(
                 message = renameNote,
             )
         }
-        driveRepo.requestRefresh()
+        // 清理删的是产出里各层的文件，哪几层不逐一记，按说不清处理
+        driveRepo.applyChange(DriveChange.ContentsChanged(null))
     }
 
     private suspend fun recordFailure(job: OfflinePackJob, err: Throwable) {

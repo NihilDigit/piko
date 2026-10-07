@@ -3,6 +3,7 @@ package dev.piko.shared.state
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoPathBreadcrumb
@@ -536,7 +537,8 @@ private class DriveFolderVaultOperations(private val drive: PikoDriveRepository)
         if (permanently) drive.delete(ids).getOrThrow() else drive.trash(ids).getOrThrow()
     }
     override fun record(change: DriveChangeJournal.Change.Vault) = drive.changes.record(change)
-    override fun refresh() = drive.requestRefresh()
+    // 归档与恢复动的是整棵树里的各层，哪几层不逐一记，按说不清处理
+    override fun refresh() = drive.applyChange(DriveChange.ContentsChanged(null))
     override fun rememberTree(members: Map<String, Set<String>>) {
         drive.vaultTrees.merge(members)
     }

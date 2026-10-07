@@ -50,11 +50,8 @@ internal class ClipActions(
         starred[clip.fileId] = target
         scope.launch {
             driveRepo.setStarred(listOf(clip.fileId), target)
-                .onSuccess {
-                    // 网盘页可能就在旁边，列表里的星标跟着变
-                    driveRepo.requestRefresh()
-                    onMessage(if (target) "已添加星标" else "已取消星标")
-                }
+                // 网盘页可能就在旁边，列表里的星标由仓库通知它重列
+                .onSuccess { onMessage(if (target) "已添加星标" else "已取消星标") }
                 .logFailure(TAG, "信息流修改星标失败")
                 .onFailure {
                     starred[clip.fileId] = before

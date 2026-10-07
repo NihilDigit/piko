@@ -11,6 +11,7 @@ import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.PikPakException
 import dev.piko.shared.data.VaultEdits
 import dev.piko.shared.data.VaultEntry
+import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.data.isVaulted
 import dev.piko.shared.data.runSuspendCatching
@@ -44,6 +45,7 @@ import io.github.nihildigit.pikpak.SearchHit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -416,11 +418,24 @@ class DriveScreenState(
             combine(snapshotFlow { files }, driveRepo.childContentLoads) { list, _ -> list }
                 .collectLatest { list -> describeFolders(list.filter(FileStat::isFolder)) }
         }
-        // 回收站恢复这类界面外的改动由仓库层广播过来，订阅放在这里，
-        // 免得每个平台的视图各订阅一遍
+        // 网盘里的改动（这一页自己做的与界面外的上传、解压、撤销都算）由仓库层广播过来，订阅放在这里，
+        // 免得每个平台的视图各订阅一遍；各个改动入口因此也不必自己重列
         scope.launch {
-            driveRepo.refreshEvents.collect { load() }
+            // 连着来的改动（批量重命名一项一条）不各重列一次：正在重列时来的合成一次，等这次列完再列
+            val reloads = Channel<Unit>(Channel.CONFLATED)
+            launch { driveRepo.folderChanges.collect { change -> if (isAffectedBy(change)) reloads.trySend(Unit) } }
+            for (reload in reloads) {
+                load()
+                loadJob?.join()
+            }
         }
+    }
+
+    /** 眼前这一页受不受 [change] 影响。库是从全盘挑出来的，哪里改了都可能有它；查重与压缩包里的不经网络重列。 */
+    private fun isAffectedBy(change: DriveChange): Boolean = when {
+        libraryView == DriveLibrary.DUPLICATES || archiveView != null -> false
+        libraryView != null -> true
+        else -> change.affects(activeFolderId)
     }
 
     /** 恢复上次退出时开着的几个标签，见 [PikoDriveRepository.restoreTabs]。恢复了返回 true。 */
@@ -1233,10 +1248,7 @@ class DriveScreenState(
         val trimmed = name.trim()
         scope.launch {
             driveRepo.createFolder(activeFolder.id, trimmed)
-                .onSuccess {
-                    load()
-                    _messages.tryEmit("已新建文件夹")
-                }
+                .onSuccess { _messages.tryEmit("已新建文件夹") }
                 .logFailure(TAG, "新建文件夹失败：在 ${activeFolder.id.ifEmpty { "根目录" }} 下")
                 .onFailure { _messages.tryEmit("新建文件夹失败") }
         }
@@ -1265,7 +1277,6 @@ class DriveScreenState(
             val oldName = listedName ?: driveRepo.getFileDetail(fileId).getOrNull()?.name
             driveRepo.rename(fileId, trimmed)
                 .onSuccess {
-                    load()
                     if (oldName != null && oldName != trimmed) {
                         driveRepo.changes.record(DriveChangeJournal.Change.Rename(listOf(DriveChangeJournal.Renamed(fileId, oldName, trimmed)), "已重命名"))
                     } else {
@@ -1277,7 +1288,7 @@ class DriveScreenState(
         }
     }
 
-    /** 加或去星标。星标只体现在列表条目的 tags 里，完成后重新列一次，这一项的状态才跟着变。 */
+    /** 加或去星标。星标只体现在列表条目的 tags 里，这一项所在的那一层由仓库通知重列。 */
     fun setStarred(file: FileStat, starred: Boolean) {
         if (refusedInArchive(listOf(file.id))) return
         if (file.isVaulted) {
@@ -1286,10 +1297,7 @@ class DriveScreenState(
         }
         scope.launch {
             driveRepo.setStarred(listOf(file.id), starred)
-                .onSuccess {
-                    load()
-                    _messages.tryEmit(if (starred) "已添加星标" else "已取消星标")
-                }
+                .onSuccess { _messages.tryEmit(if (starred) "已添加星标" else "已取消星标") }
                 .logFailure(TAG, "修改星标失败：${logFile(file.id, file.name)}")
                 .onFailure { _messages.tryEmit(if (starred) "添加星标失败" else "取消星标失败") }
         }
@@ -1305,7 +1313,6 @@ class DriveScreenState(
             driveRepo.trash(real)
                 .onSuccess {
                     exitSelection()
-                    load()
                     driveRepo.changes.record(
                         DriveChangeJournal.Change.Trash(real, if (real.size == 1) "已移入回收站" else "已将 ${real.size} 项移入回收站"),
                     )
@@ -1329,7 +1336,6 @@ class DriveScreenState(
             driveRepo.move(moving, targetId)
                 .onSuccess {
                     exitSelection()
-                    load()
                     val summary = if (moving.size == 1) "已移至 $targetName" else "已将 ${moving.size} 项移至 $targetName"
                     driveRepo.changes.record(DriveChangeJournal.Change.Move(from, targetId, summary))
                 }
@@ -1378,8 +1384,6 @@ class DriveScreenState(
             driveRepo.copy(ids, targetId)
                 .onSuccess {
                     exitSelection()
-                    // 复制到当前目录时新副本就在眼前，要重新列一次
-                    if (targetId == activeFolderId) load()
                     _messages.tryEmit("已复制到 $targetName")
                 }
                 .logFailure(TAG, "复制失败")
@@ -1424,7 +1428,6 @@ class DriveScreenState(
             PikoLog.i(TAG, "从归档移除：${byFolder.values.sumOf { it.size }} 项，${byFolder.size} 个文件夹，已移除 $count 项")
             if (count > 0) {
                 exitSelection()
-                load()
                 driveRepo.changes.record(
                     DriveChangeJournal.Change.Vault(
                         removed.mapValues { (_, entries) -> VaultEdits.add(entries) },
@@ -1442,7 +1445,6 @@ class DriveScreenState(
         scope.launch {
             driveRepo.vault.update(folderId, VaultEdits.rename(entryId, newName))
                 .onSuccess { write ->
-                    load()
                     val oldName = write.before.firstOrNull { it.id == entryId }?.name
                     if (oldName != null && oldName != newName) {
                         val revert = mapOf(folderId to VaultEdits.rename(entryId, oldName))

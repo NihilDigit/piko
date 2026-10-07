@@ -69,7 +69,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.data.isDriveFolderId
 import dev.piko.ui.components.typeIcon
 import io.github.nihildigit.pikpak.FileStat
 import dev.piko.shared.data.PikoPathBreadcrumb
@@ -126,6 +128,14 @@ internal class FolderMapState(
 
     fun refresh(id: String) {
         scope.launch { levels[id] = load(id) }
+    }
+
+    /**
+     * 网盘里有改动（仓库的 folderChanges）：列过的层里受影响的重列。只看眼前位置变没变不够：
+     * 在列表里新建、改名、移走一个子文件夹，眼前的位置不变，树却已不对。压缩包里的层是只读的，不重列。
+     */
+    fun onChange(change: DriveChange) {
+        levels.keys.filter { isDriveFolderId(it) && change.affects(it) }.forEach(::refresh)
     }
 
     /** 召出时展开到当前位置：[root] 以下、[current] 末级以上的各级都展开，眼前的文件夹露在树里。 */
@@ -484,8 +494,7 @@ private fun Modifier.treeGuides(row: MapRow, color: Color, childrenBelow: Boolea
 /**
  * 宽窗口网盘页的目录图：一块浮在列表上的面板。导航栏搜索旁的树形按钮打开，打开后一直开着、跳转也不收，
  * 面板上的 × 关掉（[onClose]），关着时导航栏上才有那个按钮。拖动、改大小与层叠见 [FloatingPanel]，[avoid] 等参数照传。
- * 由调用方铺满列表这一块。树的根总是网盘根目录，进来与换了位置时都展开到眼前的文件夹。
- *
+ * 由调用方铺满列表这一块。树的根总是网盘根目录，进来与换了位置时都展开到眼前的文件夹。 *
  * 否决过的形态：贴在右沿的缩略图细轨（悬停展开、与树同一个容器形变、拖到任意位置），碰到的东西当场变形、
  * 拖的与停下的不是同一个东西，补了延时、方向冻结、吸附鼠标仍旧别扭；缩略图上放按钮又难看。也试过钉住开关，
  * 面板能随便拖、打开就一直开着之后用不着了。
@@ -502,6 +511,7 @@ internal fun FolderMapPanel(
     onActivate: () -> Unit = {},
 ) {
     val root = remember { listOf(PikoDriveRepository.ROOT_BREADCRUMB) }
+    // 换了位置时展开到眼前的文件夹；网盘里的改动另由 FolderMapState.onChange 重列受影响的层
     LaunchedEffect(current.lastOrNull()?.id) { state.reveal(root, current) }
     var filterShown by remember { mutableStateOf(false) }
     FloatingPanel(

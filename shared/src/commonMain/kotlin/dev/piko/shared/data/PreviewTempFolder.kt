@@ -47,10 +47,7 @@ class PreviewTempFolder(
         folderId = null
         val ids = findFolders().getOrElse { return Result.failure(it) }
         if (ids.isEmpty()) return Result.success(Unit)
-        driveRepo.delete(ids).onSuccess {
-            PikoLog.d(TAG, "已清理 Piko-Temp（${ids.size} 个同名目录）")
-            driveRepo.requestRefresh()
-        }
+        driveRepo.delete(ids).onSuccess { PikoLog.d(TAG, "已清理 Piko-Temp（${ids.size} 个同名目录）") }
     }
 
     /** 调用方的作用域结束之后仍要跑完的清理，例如面板关闭时。 */

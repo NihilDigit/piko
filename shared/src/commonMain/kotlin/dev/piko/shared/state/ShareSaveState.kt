@@ -149,7 +149,6 @@ class ShareSaveState(
                 .onSuccess {
                     PikoLog.i(TAG, "已转存分享：${ids.size} 项，$bytes 字节，到文件夹 ${target.id}，历时 ${started.elapsedNow().inWholeMilliseconds} ms")
                     selectedIds.clear()
-                    driveRepo.requestRefresh()
                     doneMessage = "已转存 ${ids.size} 项到 ${target.name}"
                 }
                 .onFailure { errorMessage = "转存失败：${it.message}" }

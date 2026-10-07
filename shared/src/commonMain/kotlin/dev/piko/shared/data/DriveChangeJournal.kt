@@ -156,8 +156,8 @@ class DriveChangeJournal internal constructor(
             }
         }
         val kind = change::class.simpleName
+        // 撤销是反向再做一次，做成的每一步各自经仓库的 applyChange 通知过了，半途失败的也只通知了做成的那些
         result.onSuccess { PikoLog.i(TAG, "已撤销：$kind") }.logFailure(TAG, "撤销失败：$kind")
-        driveRepo.requestRefresh()
         _events.emit(
             if (result.isSuccess) Event("已撤销", null, undone = change) else Event("撤销失败，可能已被别处改动", null),
         )

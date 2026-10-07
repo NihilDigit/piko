@@ -178,7 +178,7 @@ class VaultStore(
 ) {
     constructor(driveRepo: PikoDriveRepository) : this(
         DriveVaultIo(driveRepo),
-        onChanged = { driveRepo.requestRefresh() },
+        onChanged = { folderId -> driveRepo.applyChange(DriveChange.ContentsChanged(setOf(folderId))) },
         onWritten = driveRepo::vaultEntriesKnown,
     )
 

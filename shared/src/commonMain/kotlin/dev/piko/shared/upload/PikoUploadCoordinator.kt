@@ -1,6 +1,7 @@
 package dev.piko.shared.upload
 
 import dev.piko.data.auth.PikoUserPreferences
+import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.runSuspendCatching
@@ -167,8 +168,8 @@ class PikoUploadCoordinator(
                 runSuspendCatching { added += folderTasks(client, folder, parentId) }
                     .logFailure(TAG, "上传入队：在网盘文件夹 $parentId 下建立目录结构失败，本地 ${folder.files.size} 个文件")
                     .onFailure { _messages.tryEmit(failureText("建立文件夹", it)) }
-                // 目录建好后网盘页该看到它，不必等文件传完
-                driveRepository.requestRefresh()
+                // 目录建好后网盘页该看到它，不必等文件传完。里面各层是新建的，没人列过，只算上传到的那一层
+                driveRepository.applyChange(DriveChange.ContentsChanged(setOf(parentId)))
             }
             if (unreadable > 0) PikoLog.w(TAG, "上传入队：$unreadable 个所选文件读不出")
             if (added.isEmpty()) return@launch
@@ -219,7 +220,7 @@ class PikoUploadCoordinator(
                 return@launch
             }
             runSuspendCatching { client.cancelUpload(session) }.logFailure(TAG, "移除上传任务 ${task.taskId}：放弃上传会话失败，文件 ${session.fileId}")
-            driveRepository.requestRefresh()
+            driveRepository.applyChange(DriveChange.ContentsChanged(setOf(task.parentId)))
         }
     }
 
@@ -369,8 +370,10 @@ class PikoUploadCoordinator(
                 upload(client, taskId, progress)
                 reporter.cancel()
             }
-            _tasks.value[taskId]?.let { releaseIfUnused(it.sourceUri) }
-            driveRepository.requestRefresh()
+            _tasks.value[taskId]?.let { task ->
+                releaseIfUnused(task.sourceUri)
+                driveRepository.applyChange(DriveChange.ContentsChanged(setOf(task.parentId)))
+            }
         } catch (e: CancellationException) {
             update(taskId) { if (it.status.isActive) it.copy(status = UploadStatus.PAUSED, speedBytesPerSec = 0L) else it }
             throw e

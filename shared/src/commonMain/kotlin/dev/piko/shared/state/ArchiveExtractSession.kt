@@ -10,6 +10,7 @@ import dev.piko.shared.log.LogLevel
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFile
 import dev.piko.shared.data.ArchiveRepository
+import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.isArchiveVolume
@@ -205,7 +206,8 @@ class ArchiveExtractSession(
             when (progress.phase) {
                 TaskPhase.COMPLETE -> {
                     finish(job, "已解压 ${job.file.name}", succeeded = true)
-                    driveRepository.requestRefresh()
+                    // 解压出的文件夹落在压缩包旁边
+                    driveRepository.applyChange(DriveChange.ContentsChanged(setOf(job.file.parentId)))
                     return
                 }
                 TaskPhase.ERROR -> {

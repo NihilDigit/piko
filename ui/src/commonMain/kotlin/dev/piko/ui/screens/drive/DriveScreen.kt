@@ -283,6 +283,7 @@ fun DriveScreen(
     val state = remember { DriveScreenState(driveRepo, sessionManager, scope, duplicateSession, archiveBrowser) }
     // 目录图：宽窗口里浮在列表上的面板，见 FolderMap
     val folderMap = remember(state) { FolderMapState(state::folderMapLevel, scope) }
+    LaunchedEffect(folderMap) { driveRepo.folderChanges.collect(folderMap::onChange) }
 
     LaunchedEffect(state) {
         state.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }

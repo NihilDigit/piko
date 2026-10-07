@@ -50,16 +50,14 @@ internal class RecentFolders(private val store: PikoCacheStore?, private val sco
         save()
     }
 
-    /** 文件夹被删、被移走或改了名，从记录里拿掉，免得点过去扑空。 */
-    fun forget(folderId: String) {
-        folders.update { list -> list.filterNot { stack -> stack.any { it.id == folderId } } }
-        save()
+    /** 文件夹改了名、被移走或删掉之后按文件夹索引改正各条，见 PikoDriveRepository.normalizeLocations。 */
+    fun rewrite(change: (List<List<PikoPathBreadcrumb>>) -> List<List<PikoPathBreadcrumb>>) {
+        val before = folders.value
+        folders.update { list -> change(list).distinctBy { it.last().id } }
+        if (folders.value != before) save()
     }
 
-    /**
-     * 用户从地址栏的历史里删掉一条。只删以它结尾的那一条：[forget] 连经过它的子文件夹也一并拿掉，
-     * 那是文件夹没了的情形，这里文件夹还在，只是不想在历史里看到它。
-     */
+    /** 用户从地址栏的历史里删掉一条。只删以它结尾的那一条：经过它的子文件夹还在，只是不想在历史里看到它。 */
     fun remove(folderId: String) {
         folders.update { list -> list.filterNot { it.last().id == folderId } }
         save()

@@ -376,7 +376,6 @@ class BatchRenameState(
             } finally {
                 PikoLog.i(TAG, "批量重命名结束：${summary()}，成功 ${renamed.size} 步，历时 ${started.elapsedNow().inWholeMilliseconds} ms")
                 phase = Phase.DONE
-                driveRepo.requestRefresh()
                 // 改成了的记进改动记录，提示带「撤销」；一项也没改成的只报结果
                 if (renamed.isNotEmpty()) {
                     driveRepo.changes.record(DriveChangeJournal.Change.Rename(renamed.toList(), summary()))

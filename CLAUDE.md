@@ -163,8 +163,14 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 浏览历史（`historyFlow`，后退与前进）也在这里，每次换栈记一步；「上一级」与它无关。从别处跳进网盘（在网盘中显示、
 快捷栏）用 `updateFolderStack`，会记进历史；只有启动时恢复位置用 `restoreFolderStack`，不记。
 同处还记着最近去过的文件夹（`recentFoldersFlow`，按账号存进缓存目录，命令面板用）与快速访问（`pinnedFoldersFlow`）。
-仓库层还有 `refreshEvents`，供界面外的改动（如解压完成）通知列表刷新，`DriveScreenState`
-已在 `init` 里订阅，视图不要再订阅一遍。
+
+文件夹的名字与上级只有一份，在仓库的 `FolderIndex`：列目录、查详情与 Piko 自己的改动写进去，路径栈、标签、历史、
+最近去过随它改正（改名换名字，移走换上级，删掉的退到它之外），快速访问读出时换名字；存着的 `PikoPathBreadcrumb.name`
+只在索引里还没有那一项时回落，存盘格式没变。所以显示路径的地方直接读这几个流，不要自己拼或另存名字；按 ID 找路径用
+`locateFolder`（先查索引，缺口才问服务端）。库与压缩包里的一层不进索引（`isDriveFolderId`），压缩包那一级按它的文件 ID 记。
+目录的内容也只有一份：仓库的列表缓存，网盘页、目录图、地址栏的 › 与补全、命令面板都读它。网盘里的改动一律经
+`applyChange(DriveChange)` 收口（索引、缓存过期、广播 `folderChanges`），新加改动网盘的入口照此调一次，不要自己清缓存或通知界面；
+`DriveScreenState` 与目录图已订阅，只重列受影响的那几层，视图不要再订阅一遍。
 
 ### 账号与凭据
 
