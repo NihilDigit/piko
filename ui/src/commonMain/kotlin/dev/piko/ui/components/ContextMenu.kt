@@ -5,22 +5,20 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.Surface
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.MoreHoriz
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.backhandler.BackHandler
-import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.DropdownMenuGroup
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DropdownMenuPopup
 import androidx.compose.material3.Icon
@@ -164,8 +162,6 @@ private fun ActionMenu(actions: List<SheetAction>, positionProvider: DropdownMen
     var returnedFromMore by remember { mutableStateOf(false) }
     val firstItem = remember { FocusRequester() }
     val moreItem = remember { FocusRequester() }
-    // 子页往往比首页窄，换页时菜单宽度不跳：子页至少与首页一样宽
-    var mainWidth by remember { mutableIntStateOf(0) }
     fun backToMain() {
         onMorePage = false
         returnedFromMore = true
@@ -184,10 +180,16 @@ private fun ActionMenu(actions: List<SheetAction>, positionProvider: DropdownMen
         LaunchedEffect(onMorePage) {
             runCatching { if (returnedFromMore && !onMorePage) moreItem.requestFocus() else firstItem.requestFocus() }
         }
-        // 一个容器，组与组之间一道细线。各组各带容器、之间留缝（M3E 竖向菜单的分组）在四五组时像一摞碎块
-        DropdownMenuGroup(
-            shapes = MenuDefaults.groupShape(0, 1),
-            modifier = Modifier.onPreviewKeyEvent { event ->
+        // 一个固定形状的容器，组与组之间只留空，不画线。各组各带容器、之间留缝（M3E 竖向菜单的分组）在四五组时像一摞碎块；
+        // 也不用 DropdownMenuGroup：它的形状随悬停与焦点在两种圆角间变形，指针一动圆角就闪。
+        // 宽度固定，两页同宽：按内容定宽时不同条目的菜单宽窄不一，换页也跳
+        Surface(
+            // 取分组容器的圆角，只要它静止时的那一个：MenuDefaults.shape 是基线菜单的 4dp，与菜单项的大圆角对不上
+            shape = MenuDefaults.groupShape(0, 1).shape,
+            color = MenuDefaults.containerColor,
+            tonalElevation = MenuDefaults.TonalElevation,
+            shadowElevation = MenuDefaults.ShadowElevation,
+            modifier = Modifier.width(ActionMenuWidth).onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                 when (event.key) {
                     Key.DirectionDown -> focusManager.moveFocus(FocusDirection.Down)
@@ -203,12 +205,10 @@ private fun ActionMenu(actions: List<SheetAction>, positionProvider: DropdownMen
                 }
             },
         ) {
-            if (onMorePage) {
-                Column(Modifier.widthIn(min = with(LocalDensity.current) { mainWidth.toDp() })) {
+            Column(Modifier.padding(vertical = MenuGroupGap / 2)) {
+                if (onMorePage) {
                     MoreMenuPage(layout.more, firstItem, onBack = ::backToMain, onDismiss = onDismiss)
-                }
-            } else {
-                Column(Modifier.onSizeChanged { mainWidth = it.width }) {
+                } else {
                     MainMenuPage(layout, firstItem, moreItem, onOpenMore = { onMorePage = true }, onDismiss = onDismiss)
                 }
             }
@@ -319,13 +319,16 @@ private fun MenuIconRow(actions: List<SheetAction>, firstItem: FocusRequester?, 
     }
 }
 
+/** 组与组之间的空隙，代替分隔线。 */
 @Composable
 private fun MenuDivider() {
-    HorizontalDivider(
-        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-        color = MaterialTheme.colorScheme.outlineVariant,
-    )
+    Spacer(Modifier.height(MenuGroupGap))
 }
+
+private val MenuGroupGap = 8.dp
+
+// 放得下最长的条目（「从快速访问取消固定」）与图标行的四个按钮
+private val ActionMenuWidth = 248.dp
 
 /**
  * 行高、图标与字号用组件库的默认值，即 M3 menus 的 Measurements：条目 48dp 高，目标区不小于 48dp。
