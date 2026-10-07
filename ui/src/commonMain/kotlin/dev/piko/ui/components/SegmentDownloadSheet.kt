@@ -43,6 +43,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFile
+import dev.piko.shared.media.DownloadQuality
+import dev.piko.shared.media.ORIGINAL_QUALITY
 import dev.piko.shared.media.PlayableMediaInfo
 import dev.piko.shared.media.player.PlaybackTarget
 import dev.piko.ui.LocalPikoServices
@@ -50,7 +54,9 @@ import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.VideoPreviewSupport
 import io.github.nihildigit.pikpak.FileStat
 import java.util.Locale
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 
 fun formatTimeMs(ms: Long): String {
     val totalSec = (ms / 1000L).coerceAtLeast(0L)
@@ -96,6 +102,12 @@ class SegmentSession {
         internal set
     internal var editing by mutableStateOf(Handle.START)
 
+    /** 可截的各档，原画在前；取到之前为 null。转码档的大小随后补上。 */
+    internal var qualities by mutableStateOf<List<DownloadQuality>?>(null)
+
+    /** 用户点过的档名，原画为 [ORIGINAL_QUALITY]；没点过为 null，按设置里的下载画质预选。 */
+    internal var pickedQuality by mutableStateOf<String?>(null)
+
     /** [initialRange] 是信息流里「下载这一段」带过来的区间；为 null 时从头起一分钟。 */
     fun open(target: FileStat, initialRange: LongRange? = null) {
         if (file?.id != target.id || initialRange != null) {
@@ -115,6 +127,8 @@ class SegmentSession {
         startPosMs = 0L
         endPosMs = 0L
         editing = Handle.START
+        qualities = null
+        pickedQuality = null
     }
 }
 
@@ -129,10 +143,30 @@ class SegmentSession {
 @Composable
 fun SegmentDownloadSheet(
     session: SegmentSession,
-    onConfirmDownload: (startByte: Long, lengthBytes: Long, timeLabel: String, startMs: Long, endMs: Long, streamUrl: String?) -> Unit,
+    /** [quality] 是从哪一档截，原画的 name 为 null；档位还没列出来时为 null，由下载调度按设置挑。 */
+    onConfirmDownload: (startByte: Long, lengthBytes: Long, timeLabel: String, startMs: Long, endMs: Long, streamUrl: String?, quality: DownloadQuality?) -> Unit,
 ) {
     val file = session.file ?: return
-    val mediaRepo = LocalPikoServices.current.mediaRepository
+    val services = LocalPikoServices.current
+    val mediaRepo = services.mediaRepository
+
+    // 档位与大小单独取，取不到只是不给选，照样能按设置截。收起再打开时照样取：仓库留着上次的探测，
+    // 探完的立即回来，收起时还没探完的接着等，不会停在一半
+    LaunchedEffect(file.id) {
+        try {
+            mediaRepo.downloadQualities(file.id).collect { session.qualities = it }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            PikoLog.w("Download", "片段面板查询画质失败：${logFile(file.id, file.name)}", e)
+        }
+    }
+    val defaultCap by produceState(0) { value = services.preferences.downloadMaxHeightFlow.first() }
+    val qualities = session.qualities
+    val pickedOption = qualities?.let { all -> session.pickedQuality?.let { picked -> all.firstOrNull { (it.name ?: ORIGINAL_QUALITY) == picked } } }
+    // 点过的档随后探出读不出：不替用户换一档，清掉选中、停用下载按钮，并说明原因
+    val pickedUnreadable = pickedOption?.unreadable == true
+    val selectedQuality = if (pickedUnreadable) null else pickedOption ?: qualities?.let { defaultDownloadQuality(it, defaultCap) }
 
     // 收起再打开时已经取过就不再取：区间跟着会话留着，重取会把它按初始区间盖掉
     LaunchedEffect(file.id) {
@@ -283,12 +317,36 @@ fun SegmentDownloadSheet(
                 }
             }
 
+            // 只有原画时不给选；转码档截出来同样存为 MP4
+            if (qualities != null && qualities.size > 1) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("画质", style = MaterialTheme.typography.bodyMedium)
+                    // 读不出的档留在原位、停用，理由同画质对话框的 QualityRow
+                    ConnectedToggle(
+                        options = qualities,
+                        selected = selectedQuality?.let { chosen -> qualities.first { it.name == chosen.name } },
+                        label = { it.name ?: "原画" },
+                        enabled = { !it.unreadable },
+                        onSelect = { session.pickedQuality = it.name ?: ORIGINAL_QUALITY },
+                    )
+                }
+                if (pickedUnreadable) {
+                    Text(
+                        "${pickedOption?.name} 的转码文件无法读取，请改选其他画质。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+
             val clipDurationMs = (endPosMs - startPosMs).coerceAtLeast(0L)
             val ratio = if (totalDurationMs > 0) clipDurationMs.toDouble() / totalDurationMs else 0.0
-            val estimatedBytes = (file.sizeBytes * ratio).toLong().coerceIn(0L, file.sizeBytes)
+            // 按所选那一档的大小折算；转码档的大小还没探到时没法估
+            val sourceBytes = selectedQuality?.sizeBytes ?: file.sizeBytes.takeIf { selectedQuality?.mediaId == null }
+            val estimatedBytes = sourceBytes?.let { (it * ratio).toLong().coerceIn(0L, it) }
             Column {
                 MetaRow(
-                    parts = listOf("时长 ${formatTimeMs(clipDurationMs)}", "约 ${estimatedBytes.toReadableSize()}"),
+                    parts = listOfNotNull("时长 ${formatTimeMs(clipDurationMs)}", estimatedBytes?.let { "约 ${it.toReadableSize()}" }),
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Text(
@@ -306,9 +364,10 @@ fun SegmentDownloadSheet(
                     val endByte = (endRatio * file.sizeBytes).toLong().coerceIn(startByte, file.sizeBytes)
                     val lengthBytes = (endByte - startByte).coerceAtLeast(1024L)
                     val label = "${formatTimeMs(startPosMs)}_${formatTimeMs(endPosMs)}"
-                    onConfirmDownload(startByte, lengthBytes, label, startPosMs, endPosMs, mediaInfo?.currentUrl)
+                    onConfirmDownload(startByte, lengthBytes, label, startPosMs, endPosMs, mediaInfo?.currentUrl, selectedQuality)
                 },
-                enabled = totalDurationMs > 0,
+                // 选中的档读不出时没有可下的档：放行的话 null 会被当成「按设置挑」，悄悄换了画质
+                enabled = totalDurationMs > 0 && !pickedUnreadable,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(56.dp),
@@ -323,8 +382,10 @@ fun SegmentDownloadSheet(
 @Composable
 private fun <T> ConnectedToggle(
     options: List<T>,
-    selected: T,
+    /** null 时一项都不选中。 */
+    selected: T?,
     label: (T) -> String,
+    enabled: (T) -> Boolean = { true },
     onSelect: (T) -> Unit,
 ) {
     Row(horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)) {
@@ -332,6 +393,7 @@ private fun <T> ConnectedToggle(
             ToggleButton(
                 checked = option == selected,
                 onCheckedChange = { onSelect(option) },
+                enabled = enabled(option),
                 shapes = connectedToggleShapes(index, options.size),
             ) { Text(label(option)) }
         }

@@ -202,7 +202,7 @@ private fun ActionMenuItem(action: SheetAction, shape: Shape, onDismiss: () -> U
     DropdownMenuItem(
         text = { Text(action.label) },
         shape = shape,
-        modifier = modifier,
+        modifier = modifier.prepareOnPointer(action),
         leadingIcon = { Icon(action.icon, contentDescription = null, tint = tint) },
         trailingIcon = if (action.checked == true) {
             { Icon(Icons.Outlined.Check, contentDescription = "当前", tint = colors.primary) }

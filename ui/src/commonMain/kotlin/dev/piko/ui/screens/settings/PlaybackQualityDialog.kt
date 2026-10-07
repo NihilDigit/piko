@@ -31,20 +31,23 @@ internal fun playbackQualityLabel(maxHeight: Int): String = if (maxHeight <= 0) 
 internal fun playbackQualitySummary(maxHeight: Int): String =
     if (maxHeight <= 0) "原画" else "不高于 ${maxHeight}P"
 
+/** 画质上限的单选对话框，播放画质与下载画质共用，选项相同（[PlayerGestureDefaults.MaxHeightChoices]）。 */
 @Composable
 internal fun PlaybackQualityDialog(
     maxHeight: Int,
     onSelect: (Int) -> Unit,
     onDismiss: () -> Unit,
+    title: String = "播放画质",
+    description: String = "超过所选画质时改放较低的转码，没有合适的转码则放原画。播放时仍可临时切换。",
 ) {
     PikoDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Outlined.HighQuality, contentDescription = null) },
-        title = { Text("播放画质") },
+        title = { Text(title) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Text(
-                    "超过所选画质时改放较低的转码，没有合适的转码则放原画。播放时仍可临时切换。",
+                    description,
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Column(modifier = Modifier.selectableGroup()) {

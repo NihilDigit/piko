@@ -49,7 +49,8 @@ class DownloadResumeSmokeTest {
 
         coordinator.enqueue(file)
         awaitUntil("写入了一部分") {
-            coordinator.tasks.value[remote.id]?.cachePath?.let { File(it).length() > 0 } == true && !local.exists()
+            directory.resolve(".piko-cache").listFiles { it: File -> it.name.endsWith(".data") }.orEmpty().any { it.length() > 0 } &&
+                !local.exists()
         }
         coordinator.pauseDownload(remote.id)
         awaitUntil("任务进入暂停") {

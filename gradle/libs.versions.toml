@@ -51,7 +51,6 @@ androidxTestRunner = "1.6.2"
 androidxTestCore = "1.6.1"
 androidxTestRules = "1.6.1"
 androidxTestExtJunit = "1.2.1"
-mp4parser = "1.1.22"
 # 只取它按平台 jar 里的 libzstd 原生库捆进 Windows 安装包，解码经 FFM 直调 C API（desktopApp 的 update/ZstdPatch.kt）
 zstdJni = "1.5.7-20"
 
@@ -71,7 +70,6 @@ windows-touch = { module = "dev.nihildigit:compose-windows-touch", version.ref =
 mediamp-all = { module = "org.openani.mediamp:mediamp-all", version.ref = "mediamp" }
 libmpv-android = { module = "dev.jdtech.mpv:libmpv", version.ref = "libmpv" }
 mediamp-source-ktxio = { module = "org.openani.mediamp:mediamp-source-ktxio", version.ref = "mediamp" }
-mp4parser-isobox = { module = "com.googlecode.mp4parser:isoparser", version.ref = "mp4parser" }
 
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
 androidx-documentfile = { module = "androidx.documentfile:documentfile", version.ref = "documentFile" }

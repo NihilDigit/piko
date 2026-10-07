@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.MediaDataSource
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
+import dev.piko.shared.download.PikoRemuxRequest
 import dev.piko.shared.download.PikoSegmentDownloader
 import dev.piko.shared.download.PikoSegmentRequest
 import dev.piko.shared.media.RandomAccessMediaSource
@@ -58,6 +59,18 @@ class AndroidPikoSegmentDownloader(private val context: Context) : PikoSegmentDo
             stagingFile?.delete()
         }
     }
+
+    // 目标是 PikoDownloadStorage.downloadTarget 给的本机路径（SAF 目录下是私有目录里的暂存），交付由调用方做
+    override suspend fun remux(
+        request: PikoRemuxRequest,
+        onProgress: suspend (Float) -> Unit,
+    ): Result<String> = VideoSegmentExtractor.remux(
+        context = context,
+        sourcePath = request.sourcePath,
+        destinationFile = File(request.destinationPath),
+        durationHintMs = request.durationMillis,
+        onProgress = { progress -> runBlocking { onProgress(progress) } },
+    ).map { request.destinationPath }
 }
 
 /**

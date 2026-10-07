@@ -34,6 +34,7 @@ class DesktopPikoPreferences(
     private val reduceMotion = MutableStateFlow(settings.get(KEY_REDUCE_MOTION) == "true")
     private val hardwareDecoding = MutableStateFlow(settings.get(KEY_HARDWARE_DECODING, "true").toBoolean())
     private val playbackMaxHeight = MutableStateFlow(settings.get(KEY_PLAYBACK_MAX_HEIGHT).toIntOrNull() ?: 0)
+    private val downloadMaxHeight = MutableStateFlow(settings.get(KEY_DOWNLOAD_MAX_HEIGHT).toIntOrNull() ?: 0)
     private val playerSeekStepSeconds = MutableStateFlow(
         settings.get(KEY_PLAYER_SEEK_STEP_SECONDS).toIntOrNull() ?: PlayerGestureDefaults.SEEK_STEP_SECONDS,
     )
@@ -60,12 +61,6 @@ class DesktopPikoPreferences(
         SidePanelPrefs(
             open = settings.get(KEY_CLIP_PANEL_OPEN, "false").toBoolean(),
             widthDp = settings.get(KEY_CLIP_PANEL_WIDTH).toFloatOrNull(),
-        ),
-    )
-    private val inspectorPanel = MutableStateFlow(
-        SidePanelPrefs(
-            open = settings.get(KEY_INSPECTOR_PANEL_OPEN, "false").toBoolean(),
-            widthDp = settings.get(KEY_INSPECTOR_PANEL_WIDTH).toFloatOrNull(),
         ),
     )
     private val pikpakDomain = MutableStateFlow(settings.get(KEY_PIKPAK_DOMAIN))
@@ -144,6 +139,12 @@ class DesktopPikoPreferences(
     override suspend fun setPlaybackMaxHeight(height: Int) {
         settings.set(KEY_PLAYBACK_MAX_HEIGHT, height.toString())
         playbackMaxHeight.value = height
+    }
+
+    override val downloadMaxHeightFlow: Flow<Int> = downloadMaxHeight.asStateFlow()
+    override suspend fun setDownloadMaxHeight(height: Int) {
+        settings.set(KEY_DOWNLOAD_MAX_HEIGHT, height.toString())
+        downloadMaxHeight.value = height
     }
 
     override val playerSeekStepSecondsFlow: Flow<Int> = playerSeekStepSeconds.asStateFlow()
@@ -240,15 +241,6 @@ class DesktopPikoPreferences(
         clipPanel.value = clipPanel.value.copy(widthDp = widthDp)
     }
 
-    override val inspectorPanelFlow: Flow<SidePanelPrefs> = inspectorPanel.asStateFlow()
-    override suspend fun setInspectorPanelOpen(open: Boolean) {
-        settings.set(KEY_INSPECTOR_PANEL_OPEN, open.toString())
-        inspectorPanel.value = inspectorPanel.value.copy(open = open)
-    }
-    override suspend fun setInspectorPanelWidth(widthDp: Float) {
-        settings.set(KEY_INSPECTOR_PANEL_WIDTH, widthDp.toString())
-        inspectorPanel.value = inspectorPanel.value.copy(widthDp = widthDp)
-    }
 
     override val pikpakDomainFlow: Flow<String> = pikpakDomain.asStateFlow()
     override suspend fun setPikpakDomain(root: String) {
@@ -413,6 +405,7 @@ class DesktopPikoPreferences(
         const val KEY_REDUCE_MOTION = "ui.reduceMotion"
         const val KEY_HARDWARE_DECODING = "player.hardwareDecoding"
         const val KEY_PLAYBACK_MAX_HEIGHT = "player.maxHeight"
+        const val KEY_DOWNLOAD_MAX_HEIGHT = "download.maxHeight"
         const val KEY_PLAYER_SEEK_STEP_SECONDS = "player.seekStepSeconds"
         const val KEY_PLAYER_BOOST_SPEED = "player.boostSpeed"
         const val KEY_FOLDER_MAP_OPEN = "ui.folderMapOpen"
@@ -428,8 +421,6 @@ class DesktopPikoPreferences(
         const val KEY_CLIP_PANEL_WIDTH = "ui.clipPanel.width"
         const val KEY_SIDEBAR_COLLAPSED = "ui.sidebar.collapsed"
         const val KEY_SHOW_EXTENSIONS = "ui.drive.showExtensions"
-        const val KEY_INSPECTOR_PANEL_OPEN = "ui.inspectorPanel.open"
-        const val KEY_INSPECTOR_PANEL_WIDTH = "ui.inspectorPanel.width"
         const val KEY_PIKPAK_DOMAIN = "network.pikpakDomain"
         const val KEY_SNAIL_ENABLED = "transfer.snail.enabled"
         const val KEY_SNAIL_DOWNLOAD = "transfer.snail.downloadKiBps"

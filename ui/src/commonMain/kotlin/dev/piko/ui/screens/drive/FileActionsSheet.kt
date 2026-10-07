@@ -6,6 +6,7 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ContentCut
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.HighQuality
 import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.OndemandVideo
@@ -22,6 +23,7 @@ import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material.icons.outlined.Unarchive
 import androidx.compose.material.icons.outlined.PushPin
 import dev.piko.shared.data.isArchiveVolume
+import dev.piko.ui.LocalPikoServices
 import dev.piko.shared.data.isExtractableArchive
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
@@ -73,15 +75,19 @@ internal fun FileActionsSheet(
     onShare: () -> Unit,
     onOpenInExternalPlayer: (() -> Unit)?,
     onOpenInNewTab: (() -> Unit)? = null,
+    onDownloadQuality: (() -> Unit)? = null,
     onTogglePin: (() -> Unit)? = null,
     isPinned: Boolean = false,
     onVault: (() -> Unit)? = null,
     onRestoreVault: (() -> Unit)? = null,
     /** 库里多出的操作（在网盘中显示、移除记录），排在最前。 */
     leadingActions: List<SheetAction> = emptyList(),
-    /** 整个取代文件操作，回收站用：那里只能恢复与彻底删除。 */
+    /** 整个取代文件操作，回收站用：那里只能恢复与彻底删除。给了它时「属性」由它自己带上。 */
     actionsOverride: List<SheetAction>? = null,
+    /** 末尾的「属性」，见 [propertiesAction]。 */
+    onProperties: (() -> Unit)? = null,
 ) {
+    val mediaRepository = LocalPikoServices.current.mediaRepository
     val usage by produceState<FolderUsageResult?>(null, folderUsage) {
         folderUsage ?: return@produceState
         try {
@@ -99,6 +105,8 @@ internal fun FileActionsSheet(
         onTogglePreview = onTogglePreview,
         onToggleStar = onToggleStar,
         onDownload = onDownload,
+        onDownloadQuality = onDownloadQuality,
+        onPrepareQualities = { mediaRepository.prefetchDownloadQualities(file.id) },
         onDownloadSegment = onDownloadSegment,
         onRename = onRename,
         onMove = onMove,
@@ -115,7 +123,7 @@ internal fun FileActionsSheet(
         isPinned = isPinned,
         onVault = onVault,
         onRestoreVault = onRestoreVault,
-    )
+    ) + listOfNotNull(onProperties?.let(::propertiesAction))
 
     ItemDetailsSheet(
         title = file.name,
@@ -155,6 +163,10 @@ internal fun fileActions(
     onShare: () -> Unit,
     onOpenInExternalPlayer: (() -> Unit)?,
     onOpenInNewTab: (() -> Unit)? = null,
+    /** 视频的「选择画质下载」；为 null 时不给这一项。 */
+    onDownloadQuality: (() -> Unit)? = null,
+    /** 在「选择画质下载」「下载指定段落」上按下或悬停时提前查各档，见 [SheetAction.onPrepare]。 */
+    onPrepareQualities: (() -> Unit)? = null,
     /** 固定或取消固定到快速访问；为 null 时没有快速访问可去（窄窗口），不给这一项。 */
     onTogglePin: (() -> Unit)? = null,
     isPinned: Boolean = false,
@@ -187,12 +199,15 @@ internal fun fileActions(
     if (file.isExtractableArchive || file.isArchiveVolume) add(SheetAction(Icons.Outlined.Unarchive, "解压到当前位置", onExtract))
     // 文件夹连同子文件夹整个下载
     if (!file.isUploading) add(SheetAction(Icons.Outlined.Download, "下载到本地", onDownload))
+    if (!file.isFolder && !file.isUploading && file.isPlayableVideo() && onDownloadQuality != null) {
+        add(SheetAction(Icons.Outlined.HighQuality, "选择画质下载…", onDownloadQuality, onPrepare = onPrepareQualities))
+    }
     if (!file.isFolder) {
         if (file.isPlayableVideo()) {
             if (onOpenInExternalPlayer != null) {
                 add(SheetAction(Icons.Outlined.OndemandVideo, "用外部播放器打开", onOpenInExternalPlayer))
             }
-            add(SheetAction(Icons.Outlined.ContentCut, "下载指定段落", onDownloadSegment))
+            add(SheetAction(Icons.Outlined.ContentCut, "下载指定段落", onDownloadSegment, onPrepare = onPrepareQualities))
         }
     }
     when (file.source) {

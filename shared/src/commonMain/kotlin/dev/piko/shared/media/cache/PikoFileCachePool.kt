@@ -20,7 +20,12 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
-/** 同一账号的同一原文件共用句柄、缓存与稀疏存储；每个使用者单独释放引用。 */
+/**
+ * 同一账号的同一原文件共用句柄、缓存与稀疏存储；每个使用者单独释放引用。
+ *
+ * 暂存文件的位置每次都由内容身份经 [target] 推出，不从任务表里取：存下的绝对路径在便携目录挪位、
+ * 换盘符之后指向旧处，续传会在那里把目录重新建出来。
+ */
 class PikoFileCachePool(
     private val scope: CoroutineScope,
     private val target: suspend (name: String) -> String,
@@ -46,8 +51,11 @@ class PikoFileCachePool(
         }
     }
 
-    suspend fun remember(account: String, gcid: String, size: Long, path: String, owner: String) = lock.withLock {
-        val key = identity(account, gcid, size)
+    private suspend fun pathOf(key: String): String = target(fileCacheName(key))
+
+    suspend fun remember(account: String, gcid: String, size: Long, owner: String, mediaId: String? = null) = lock.withLock {
+        val key = identity(account, gcid, size, mediaId)
+        val path = pathOf(key)
         paths.update { it + (key to path) }
         owners.getOrPut(key) { mutableSetOf() }.add(owner)
         entries[key]?.retained = true
@@ -83,10 +91,13 @@ class PikoFileCachePool(
         detail: FileDetail? = null,
         retained: Boolean = false,
         concurrency: Int = client.connectionBudget,
-        savedPath: String? = null,
         owner: String = fileId,
+        /** 转码档的 media ID，原画为 null。转码档另占一份暂存，[size] 仍是原画的大小（重建文件对象时用）。 */
+        mediaId: String? = null,
+        /** 要读的那一档的长度，即暂存的大小。原画就是 [size]。 */
+        streamSize: Long = size,
     ): Lease {
-        val key = identity(client.account, gcid, size)
+        val key = identity(client.account, gcid, streamSize, mediaId)
         return lock.withLock {
             val old = entries[key]
             // 换号后的旧客户端不能用于新请求；旧读者会随账号切换结束。
@@ -94,16 +105,20 @@ class PikoFileCachePool(
                 check(old.references == 0) { "账号会话正在切换，请稍后重试" }
             }
             val entry = old ?: run {
-                val store = persistentFileStore(savedPath ?: paths.value[key] ?: target(fileCacheName(key)), key, size, scope)
-                val handle = if (detail != null) client.fileHandle(detail, leased = leased, onRangeAttempt = ::logRangeAttempt)
-                else PikPakFileHandle(
-                    client, gcid, size, name,
-                    initialFileId = fileId.takeUnless { leased }, parentId = parentId,
-                    leased = leased, connectionBudget = concurrency, onRangeAttempt = ::logRangeAttempt,
-                )
+                val store = persistentFileStore(pathOf(key), key, streamSize, scope)
+                val handle = if (detail != null) {
+                    client.fileHandle(detail, mediaId = mediaId, streamSize = streamSize, leased = leased, onRangeAttempt = ::logRangeAttempt)
+                } else {
+                    PikPakFileHandle(
+                        client, gcid, size, name,
+                        initialFileId = fileId.takeUnless { leased }, mediaId = mediaId, parentId = parentId,
+                        leased = leased, connectionBudget = concurrency, onRangeAttempt = ::logRangeAttempt,
+                        streamSize = streamSize,
+                    )
+                }
                 try {
                     Entry(key, client, handle, client.fileCache(
-                        source = handle, size = size, storeKey = handle.contentKey,
+                        source = handle, size = streamSize, storeKey = handle.contentKey,
                         blockStore = store, connectionBudget = concurrency, coroutineContext = scope.coroutineContext + Dispatchers.IO,
                     ), store).also { entries[key] = it }
                 } catch (e: Throwable) {
@@ -124,16 +139,17 @@ class PikoFileCachePool(
         }
     }
 
-    suspend fun progress(account: String, gcid: String, size: Long, path: String): Long {
-        val key = identity(account, gcid, size)
+    suspend fun progress(account: String, gcid: String, size: Long, mediaId: String? = null): Long {
+        val key = identity(account, gcid, size, mediaId)
         return lock.withLock { entries[key]?.store?.heldBytes?.value }
-            ?: persistedFileBytes(path, key, size)
+            ?: persistedFileBytes(pathOf(key), key, size)
     }
 
     data class Snapshot(val heldBytes: Long, val deliveredBytes: Long)
 
+    /** 按 [identity] 分组。 */
     suspend fun progressSnapshot(): Map<String, Snapshot> = lock.withLock {
-        entries.values.associate { it.store.path to Snapshot(it.store.heldBytes.value, it.cache.deliveredBytes) }
+        entries.values.associate { it.key to Snapshot(it.store.heldBytes.value, it.cache.deliveredBytes) }
     }
 
     suspend fun complete(lease: Lease, owner: String) = lock.withLock {
@@ -142,13 +158,13 @@ class PikoFileCachePool(
     }
 
     /** 正在播放的缓存延迟到最后一个读者释放再删。 */
-    suspend fun discard(account: String, gcid: String, size: Long, path: String, owner: String) {
-        val key = identity(account, gcid, size)
+    suspend fun discard(account: String, gcid: String, size: Long, owner: String, mediaId: String? = null) {
+        val key = identity(account, gcid, size, mediaId)
         lock.withLock {
             unpin(key, owner)
             if (owners[key]?.isNotEmpty() == true) return
             entries[key]?.let { it.retained = false; return }
-            val store = persistentFileStore(path, key, size, scope)
+            val store = persistentFileStore(pathOf(key), key, size, scope)
             store.delete()
         }
     }
@@ -183,6 +199,11 @@ class PikoFileCachePool(
     }
 
     companion object {
-        fun identity(account: String, gcid: String, size: Long): String = "$account\u0000${gcid.uppercase()}\u0000$size\u0000origin"
+        /**
+         * 暂存的身份，暂存文件名由它推出。[size] 是暂存里那一档的长度；[mediaId] 为 null 是原画，
+         * 末段写 origin，与没有转码档之前存下的暂存同名，旧的续传照常认。
+         */
+        fun identity(account: String, gcid: String, size: Long, mediaId: String? = null): String =
+            "$account\u0000${gcid.uppercase()}\u0000$size\u0000${mediaId ?: "origin"}"
     }
 }

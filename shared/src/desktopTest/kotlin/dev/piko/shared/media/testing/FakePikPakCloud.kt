@@ -38,6 +38,11 @@ internal class FakePikPakCloud(
     val fileName: String = "movie.mkv",
     private val gcid: String = "GCIDFAKE0001",
     private val durationSeconds: Long = 600,
+    /**
+     * 再列一档这个高度的转码，服务端是坏的：回 206、Content-Range 写着全长，正文为空（2026-10-07 真实账号上见过）。
+     * null 表示没有这一档。
+     */
+    private val unreadableTranscodeHeight: Int? = null,
 ) {
     val detailCalls = AtomicInteger()
     val cdnRequests = AtomicInteger()
@@ -92,6 +97,10 @@ internal class FakePikPakCloud(
             """,{"media_id":"m480","media_name":"480P","resolution_name":"480P","is_origin":false,
                 "video":{"width":854,"height":480,"duration":$durationSeconds,"video_type":"mpegts"},
                 "link":{"url":"https://$CDN_HOST/t480/g$gen","expire":""}}"""
+        } + unreadableTranscodeHeight.let { height ->
+            if (height == null) "" else """,{"media_id":"munreadable","media_name":"${height}P","resolution_name":"${height}P","is_origin":false,
+                "video":{"width":${height * 16 / 9},"height":$height,"duration":$durationSeconds,"video_type":"mpegts"},
+                "link":{"url":"https://$CDN_HOST/$UNREADABLE/g$gen","expire":""}}"""
         }
         return """{"kind":"drive#file","id":"f1","parent_id":"root","name":"$fileName","size":"${origin.size}",
             "phase":"PHASE_TYPE_COMPLETE","hash":"$gcid","mime_type":"video/x-matroska",
@@ -104,6 +113,18 @@ internal class FakePikPakCloud(
     private suspend fun MockRequestHandleScope.serveCdn(request: HttpRequestData): HttpResponseData {
         cdnRequests.incrementAndGet()
         val (resource, generationPart) = request.url.encodedPath.trim('/').split('/')
+        if (resource == UNREADABLE) {
+            val (start, endInclusive) = parseRange(request.headers[HttpHeaders.Range], UNREADABLE_SIZE)
+            return respond(
+                content = ByteReadChannel(ByteArray(0)),
+                status = HttpStatusCode.PartialContent,
+                headers = headersOf(
+                    HttpHeaders.ContentRange to listOf("bytes $start-$endInclusive/$UNREADABLE_SIZE"),
+                    HttpHeaders.ContentLength to listOf((endInclusive - start + 1).toString()),
+                    HttpHeaders.ContentType to listOf("application/octet-stream"),
+                ),
+            )
+        }
         val body = if (resource == "origin") origin else checkNotNull(transcode)
         val requestedGeneration = generationPart.removePrefix("g").toInt()
 
@@ -166,6 +187,8 @@ internal class FakePikPakCloud(
     companion object {
         const val CDN_HOST = "cdn.test"
         const val PER_URL_CONNECTION_CAP = 8
+        private const val UNREADABLE = "tunreadable"
+        private const val UNREADABLE_SIZE = 94_547_080L
 
         /** 每个字节都与位置相关的负载，错位一个字节就对不上。 */
         fun payload(size: Int) = ByteArray(size) { ((it * 31 + it / 251) % 256).toByte() }

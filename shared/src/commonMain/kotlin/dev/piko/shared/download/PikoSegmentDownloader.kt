@@ -15,9 +15,26 @@ data class PikoSegmentRequest(
     val openRandomAccess: (suspend () -> RandomAccessMediaSource)? = null,
 )
 
+/** 把本机一个完整的视频文件原样转封装成 MP4，不转码。用于转码档下载：PikPak 的转码只有 MPEG-TS。 */
+data class PikoRemuxRequest(
+    val sourcePath: String,
+    /** 本机路径，不是 SAF 的 content: URI：交付到下载目录由调用方经 PikoDownloadStorage.commit 做。 */
+    val destinationPath: String,
+    /** 源的时长，读不出时长的平台据此报进度；不知道时为 0。 */
+    val durationMillis: Long = 0L,
+)
+
+/** 片段截取与转封装的平台实现。两者都写目标旁的 .part，完成后替换目标，失败与取消不留下半截文件。 */
 interface PikoSegmentDownloader {
+    /** [onProgress] 报 0 到 1，按已复制到的时间相对片段长度。 */
     suspend fun extract(
         request: PikoSegmentRequest,
+        onProgress: suspend (Float) -> Unit,
+    ): Result<String>
+
+    /** [onProgress] 报 0 到 1。成功返回 [PikoRemuxRequest.destinationPath]。 */
+    suspend fun remux(
+        request: PikoRemuxRequest,
         onProgress: suspend (Float) -> Unit,
     ): Result<String>
 }

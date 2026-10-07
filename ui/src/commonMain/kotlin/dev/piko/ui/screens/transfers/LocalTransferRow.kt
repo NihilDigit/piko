@@ -65,7 +65,8 @@ private fun DownloadTask.typeIcon(): ImageVector = when {
 /** 状态词。下载中没有状态词：进度条与速度已经说明它在下载。 */
 private fun DownloadTask.statusLabel(): String? = when (status) {
     DownloadStatus.COMPLETED -> "已完成"
-    DownloadStatus.DOWNLOADING -> null
+    // 转码档下完后在本机转为 MP4，这一段不走网络，速度一栏是空的，要写明在做什么
+    DownloadStatus.DOWNLOADING -> if (converting) "转换中" else null
     DownloadStatus.PAUSED -> "已暂停"
     DownloadStatus.PENDING -> "等待中"
     DownloadStatus.FAILED -> "下载失败"
@@ -76,6 +77,7 @@ private fun DownloadTask.statusDetails(): List<String> {
     // 片段事先不知道产物大小，totalBytes 为 0，字节进度只会是「0 B / 0 B」，改报抽取比例。
     // 比例为 0 时抽取器还在从头逐簇扫到起点（系统 MKV 解析器用不上 Cues），这一段可能要几分钟
     val progress = when {
+        converting -> "${(this.progress * 100).toInt()}%"
         !isSegment -> "${downloadedBytes.toReadableSize()} / ${totalBytes.toReadableSize()}"
         this.progress <= 0f -> "正在定位起点"
         else -> "${(this.progress * 100).toInt()}%"
@@ -88,7 +90,7 @@ private fun DownloadTask.statusDetails(): List<String> {
             add(progress)
             if (speedBytesPerSec > 0) add("${speedBytesPerSec.toReadableSize()}/s")
             // 片段事先不知道产物大小，剩余时间无从算起
-            if (!isSegment) remainingTime(totalBytes - downloadedBytes, speedBytesPerSec)?.let { add("剩余 $it") }
+            if (!isSegment && !converting) remainingTime(totalBytes - downloadedBytes, speedBytesPerSec)?.let { add("剩余 $it") }
         }
         DownloadStatus.PAUSED -> listOf(progress)
         DownloadStatus.FAILED -> emptyList()
@@ -237,7 +239,8 @@ internal fun localTransferActions(
     val isMedia = task.isMedia()
     val intents = LocalFileIntents(files, task, isMedia)
     return buildList {
-        if (task.status != DownloadStatus.COMPLETED && !task.isSegment && isMedia && task.cachePath != null && task.downloadedBytes > 0) {
+        // 边下边播只认原画的暂存；转码档的暂存是转封装前的 TS，播放走不到它
+        if (task.status != DownloadStatus.COMPLETED && !task.isSegment && task.mediaId == null && isMedia && task.sparseCache && task.downloadedBytes > 0) {
             add(SheetAction(Icons.Outlined.PlayArrow, "播放", onPlay))
         }
         if (previewHidden != null) {

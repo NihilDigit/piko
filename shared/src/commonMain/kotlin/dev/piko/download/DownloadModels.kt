@@ -41,10 +41,27 @@ data class DownloadTask(
      * 单独下载的文件与旧版本存下的任务为 null。
      */
     val batch: DownloadBatch? = null,
-    /** 稀疏暂存文件的位置。有此字段时，续传与进度必须读取有效块记录。 */
-    val cachePath: String? = null,
+    /**
+     * 写在共享的稀疏暂存里，续传与进度读有效块记录。为假的未完成任务是 1.1.0 及更早的顺序下载，续传时把已写的前缀导入暂存。
+     * 只记有没有、不记位置：位置由内容身份推出，见 PikoFileCachePool。
+     */
+    val sparseCache: Boolean = false,
     /** 只有内容哈希、没有当前账号文件 ID 的来源，下载时由 SDK 临时借出文件对象。 */
     val leasedSource: Boolean = false,
+    /**
+     * 下的是哪一档转码（如 720P），原画为 null。转码档只有 MPEG-TS，下完在本机转封装成 MP4：下载时 [totalBytes]
+     * 是转码流的长度，完成后换成 MP4 的长度；[endMs] 是视频时长，转封装按它报进度。
+     */
+    val quality: String? = null,
+    /** 所下转码档的 media ID，稀疏暂存据此与原画分开。 */
+    val mediaId: String? = null,
+    /**
+     * 按设置里的下载画质上限挑档，画面高度。大于 0 表示还没挑：开始下载时才查这个视频有哪些转码，
+     * 挑定后写进 [quality] 并归零，没有合适的转码就下原画。
+     */
+    val qualityCap: Int = 0,
+    /** 转码档已经下完、正在本机转封装，进度在 [progressFraction]。 */
+    val converting: Boolean = false,
 ) {
     val progress: Float
         get() = progressFraction?.coerceIn(0f, 1f)

@@ -14,6 +14,7 @@ Piko 是 PikPak 的第三方跨平台客户端。Android、Windows、macOS 与 L
 | `ui/.../screens/clips/CLAUDE.md` | 信息流：范围、挂起与继续、挑段先后、取流调度 |
 | `desktopApp/CLAUDE.md` | 桌面端：界面库版本、release 与 AOT、原生库、显卡失效、弹层崩溃、标题栏、触摸、文件框、macOS、Linux |
 | `shared/.../shared/update/CLAUDE.md` | 应用内更新：检查、镜像、各平台安装、安装与更新冒烟 |
+| `shared/.../shared/download/CLAUDE.md` | 下载：稀疏暂存、画质与转封装、片段截取 |
 | `shared/src/desktopMain/.../auth/CLAUDE.md` | 桌面端机密存储 |
 | `cli/CLAUDE.md`、`shots/CLAUDE.md` | 开发用 CLI、截图工具 |
 
@@ -259,6 +260,7 @@ Windows 上的 `:desktopApp:desktopTest`，Android 单测，x86_64 模拟器（A
 再验默认打开方式、在资源管理器中显示这类依赖系统真实行为的，包里的入口是 `SelfTest.kt`。冒烟走真实 libmpv、
 真实代理，PikPak 服务端用 MockEngine 顶替，SDK 的请求、鉴权与解析仍走真实代码。本地不必跑，以 CI 结果为准；
 安装与更新冒烟的脚本本机也能跑，见 `shared/.../shared/update/CLAUDE.md`。
+`connectedDebugAndroidTest` 跑完会卸载 `dev.piko.debug`，连同登录与下载任务表；在日常联调的真机上跑之前先问，或改用模拟器。
 
 JVM 测试看不出 Android 与 HotSpot 的差异：Android 的正则是 ICU，不认 `\p{IsHan}` 这类 Java 专有写法，
 Android 8 上一编译就崩（1.0.0 出过）。`AndroidRegexGuardTest` 扫源码拦着，写脚本类用 `\p{script=Han}`。

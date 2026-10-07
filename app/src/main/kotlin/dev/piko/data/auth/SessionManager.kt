@@ -116,6 +116,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val REDUCE_MOTION = booleanPreferencesKey("reduce_motion")
         val HARDWARE_DECODING = booleanPreferencesKey("hardware_decoding")
         val PLAYBACK_MAX_HEIGHT = intPreferencesKey("playback_max_height")
+        val DOWNLOAD_MAX_HEIGHT = intPreferencesKey("download_max_height")
         val PLAYER_SEEK_STEP_SECONDS = intPreferencesKey("player_seek_step_seconds")
         val PLAYER_BOOST_SPEED = floatPreferencesKey("player_boost_speed")
         val FOLDER_MAP_OPEN = booleanPreferencesKey("folder_map_open")
@@ -131,8 +132,6 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val CLIP_PANEL_WIDTH = floatPreferencesKey("clip_panel_width")
         val SIDEBAR_COLLAPSED = booleanPreferencesKey("sidebar_collapsed")
         val SHOW_EXTENSIONS = booleanPreferencesKey("show_extensions")
-        val INSPECTOR_PANEL_OPEN = booleanPreferencesKey("inspector_panel_open")
-        val INSPECTOR_PANEL_WIDTH = floatPreferencesKey("inspector_panel_width")
         val PIKPAK_DOMAIN = stringPreferencesKey("pikpak_domain")
         val SNAIL_ENABLED = booleanPreferencesKey("snail_enabled")
         val SNAIL_DOWNLOAD_KIBPS = intPreferencesKey("snail_download_kibps")
@@ -226,6 +225,14 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun setPlaybackMaxHeight(height: Int) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.PLAYBACK_MAX_HEIGHT] = height
+        }
+    }
+
+    override val downloadMaxHeightFlow: Flow<Int> = preference { it[PreferencesKeys.DOWNLOAD_MAX_HEIGHT] ?: 0 }
+
+    override suspend fun setDownloadMaxHeight(height: Int) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.DOWNLOAD_MAX_HEIGHT] = height
         }
     }
 
@@ -375,25 +382,6 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun setClipPanelWidth(widthDp: Float) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.CLIP_PANEL_WIDTH] = widthDp
-        }
-    }
-
-    override val inspectorPanelFlow: Flow<SidePanelPrefs> = preference { preferences ->
-        SidePanelPrefs(
-            open = preferences[PreferencesKeys.INSPECTOR_PANEL_OPEN] ?: false,
-            widthDp = preferences[PreferencesKeys.INSPECTOR_PANEL_WIDTH],
-        )
-    }
-
-    override suspend fun setInspectorPanelOpen(open: Boolean) {
-        context.dataStore.edit { preferences ->
-            preferences[PreferencesKeys.INSPECTOR_PANEL_OPEN] = open
-        }
-    }
-
-    override suspend fun setInspectorPanelWidth(widthDp: Float) {
-        context.dataStore.edit { preferences ->
-            preferences[PreferencesKeys.INSPECTOR_PANEL_WIDTH] = widthDp
         }
     }
 

@@ -106,11 +106,6 @@ interface PikoUserPreferences {
     suspend fun setClipPanelOpen(open: Boolean)
     suspend fun setClipPanelWidth(widthDp: Float)
 
-    /** 宽窗口网盘页右侧的详情栏：上次是否开着、拖到的宽度。与信息流侧栏占同一个位置，二者只开一个。 */
-    val inspectorPanelFlow: Flow<SidePanelPrefs>
-    suspend fun setInspectorPanelOpen(open: Boolean)
-    suspend fun setInspectorPanelWidth(widthDp: Float)
-
     /** PikPak API 用哪个根域名（如 mypikpak.net），空串是自动测速挑选，见 PikPakDomainSelector。每台设备各自的网络，不同步。 */
     val pikpakDomainFlow: Flow<String>
     suspend fun setPikpakDomain(root: String)
@@ -202,6 +197,13 @@ interface PikoUserPreferences {
      */
     val playbackMaxHeightFlow: Flow<Int>
     suspend fun setPlaybackMaxHeight(height: Int)
+
+    /**
+     * 下载画质上限：画面高度，0 是原画（默认）。下载视频时挑不高于它的最大一档转码，转封装成 MP4 存下，没有就下原画。
+     * 单个视频可以另选一档；批量与文件夹下载按这一项。每台设备各自的，不同步，理由同 [playbackMaxHeightFlow]。
+     */
+    val downloadMaxHeightFlow: Flow<Int>
+    suspend fun setDownloadMaxHeight(height: Int)
 
     /** 播放器双击、方向键进退一步的秒数，默认 10。在播放设置里改，跟着设置同步：这是看片的习惯，不看设备。 */
     val playerSeekStepSecondsFlow: Flow<Int>

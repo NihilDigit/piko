@@ -26,6 +26,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 
 /** 详情面板里的一项操作。[destructive] 的操作单独成组排在最后，并用错误色。 */
@@ -38,7 +41,25 @@ class SheetAction(
     val group: Int = 0,
     /** 几选一里的一项（视图）：true 是眼下这一项，菜单里打勾；null 不是这类项。 */
     val checked: Boolean? = null,
+    /**
+     * 按下或指针移到这一项上时调用，点下去之前先做准备（例如提前查画质）。可能调用多次，要能重入。
+     * 面板里的操作要等面板收起才执行，按下到执行之间有三四百毫秒，菜单里还有悬停的时间。
+     */
+    val onPrepare: (() -> Unit)? = null,
 )
+
+/** 在 [action] 上按下或指针移入时调用 [SheetAction.onPrepare]。不消费事件，点击照常。 */
+internal fun Modifier.prepareOnPointer(action: SheetAction): Modifier {
+    val prepare = action.onPrepare ?: return this
+    return pointerInput(action) {
+        awaitPointerEventScope {
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                if (event.type == PointerEventType.Press || event.type == PointerEventType.Enter) prepare()
+            }
+        }
+    }
+}
 
 /**
  * 单个条目的详情与操作面板，网盘列表、海报墙与传输列表共用。
@@ -126,6 +147,7 @@ private fun SheetActionGroup(actions: List<SheetAction>, onAction: (() -> Unit) 
             val color = if (action.destructive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
             SegmentedListItem(
                 onClick = { onAction(action.onClick) },
+                modifier = Modifier.prepareOnPointer(action),
                 shapes = ListItemDefaults.segmentedShapes(index = index, count = actions.size),
                 // 面板是 surfaceContainerLow，段取高两级才看得出分段
                 colors = ListItemDefaults.segmentedColors(

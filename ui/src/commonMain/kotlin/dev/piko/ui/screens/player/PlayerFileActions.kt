@@ -2,6 +2,7 @@ package dev.piko.ui.screens.player
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.HighQuality
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -12,6 +13,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import dev.piko.shared.log.logFailure
 import dev.piko.ui.LocalPikoServices
+import dev.piko.ui.components.QualityDownloadDialog
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.screens.share.ShareDialog
 import io.github.nihildigit.pikpak.FileKind
@@ -32,6 +34,7 @@ fun rememberPlayerFileActions(fileId: String, isLocalPlayback: Boolean, onMessag
     val scope = rememberCoroutineScope()
     val message by rememberUpdatedState(onMessage)
     var sharing by remember { mutableStateOf<FileStat?>(null) }
+    var choosingQuality by remember { mutableStateOf<FileStat?>(null) }
 
     fun withFile(action: (FileStat) -> Unit) {
         scope.launch {
@@ -64,6 +67,17 @@ fun rememberPlayerFileActions(fileId: String, isLocalPlayback: Boolean, onMessag
         )
     }
 
+    choosingQuality?.let { file ->
+        QualityDownloadDialog(
+            file = file,
+            onDownload = { quality ->
+                services.downloadManager.enqueueQuality(file, quality)
+                message("已加入下载")
+            },
+            onDismiss = { choosingQuality = null },
+        )
+    }
+
     return buildList {
         add(SheetAction(Icons.Outlined.Share, "分享", { withFile { sharing = it } }))
         if (!isLocalPlayback) {
@@ -73,6 +87,7 @@ fun rememberPlayerFileActions(fileId: String, isLocalPlayback: Boolean, onMessag
                     message("已加入下载")
                 }
             }))
+            add(SheetAction(Icons.Outlined.HighQuality, "选择画质下载…", { withFile { choosingQuality = it } }))
         }
     }
 }

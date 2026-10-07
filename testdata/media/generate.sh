@@ -20,3 +20,16 @@ ffmpeg -y -v error "${video[@]}" "${audio[@]}" -c:v msmpeg4 -vtag DIV3 -b:v 150k
 # real_144 只接受 8 kHz 单声道
 ffmpeg -y -v error "${video[@]}" -f lavfi -i sine=frequency=440:sample_rate=8000:duration=4 -c:v rv20 -b:v 150k -c:a real_144 -ac 1 -ar 8000 rv20-ra144.rm
 ffmpeg -y -v error "${video[@]}" "${audio[@]}" -c:v mpeg4 -b:v 150k -c:a aac -b:a 64k -movflags +faststart control-mpeg4-aac.mp4
+
+# 以下两条给桌面端的转封装用（DesktopPikoSegmentDownloaderTest），关键帧固定每 2 秒一个，便于核对片段起点。
+# PikPak 转码档的样子：MPEG-TS 里的 HEVC（带 B 帧）与 ADTS 的 AAC，时间戳不从 0 起（mpegts 默认偏 1.4 秒）
+long_video=(-f lavfi -i testsrc2=size=176x144:rate=25:duration=10)
+long_audio=(-f lavfi -i sine=frequency=440:sample_rate=44100:duration=10)
+ffmpeg -y -v error "${long_video[@]}" "${long_audio[@]}" -c:v libx265 -preset fast \
+  -x265-params log-level=error:keyint=50:min-keyint=50:scenecut=0:bframes=3:repeat-headers=1 -b:v 80k \
+  -c:a aac -b:a 48k -f mpegts transcode-hevc-aac.ts
+# 原画常见的另一种容器：MKV 里的 H.264（带 B 帧）与 AAC，12 秒
+long_video[3]=testsrc2=size=176x144:rate=25:duration=12
+long_audio[3]=sine=frequency=440:sample_rate=44100:duration=12
+ffmpeg -y -v error "${long_video[@]}" "${long_audio[@]}" -c:v libx264 -preset fast -g 50 -keyint_min 50 -sc_threshold 0 -bf 2 \
+  -b:v 80k -c:a aac -b:a 48k keyframes-h264-aac.mkv

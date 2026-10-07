@@ -11,7 +11,10 @@ import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.log.logFile
 import dev.piko.shared.log.logRangeAttempt
+import dev.piko.shared.media.DownloadQuality
+import dev.piko.shared.media.ORIGINAL_QUALITY
 import dev.piko.shared.media.PikoMediaRepository
+import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.data.runSuspendCatching
 import io.github.nihildigit.pikpak.BandwidthLimiter
 import io.github.nihildigit.pikpak.FileStat
@@ -99,7 +102,7 @@ class PikoDownloadCoordinator(
         mediaRepository?.fileCachePool = fileCachePool
         mediaRepository?.partialDownload = { fileId ->
             _tasks.value.values.firstOrNull { it.fileId == fileId && belongsToCurrent(it) &&
-                !it.isSegment && it.status != DownloadStatus.COMPLETED && it.cachePath != null }
+                !it.isSegment && it.mediaId == null && it.status != DownloadStatus.COMPLETED && it.sparseCache }
         }
         // 播放也会补齐暂停的下载。进度与网络速度统一采样，同一缓存的网络字节只统计一次。
         scope.launch {
@@ -119,12 +122,15 @@ class PikoDownloadCoordinator(
                 samples.keys.retainAll(snapshots.keys)
                 previousTick = TimeSource.Monotonic.markNow()
                 _tasks.update { tasks ->
-                    val primary = tasks.values.filter { it.status == DownloadStatus.DOWNLOADING && it.cachePath != null }
-                        .groupBy { it.cachePath }.mapValues { it.value.minBy { task -> task.taskId }.taskId }
+                    // 片段也占着暂存，但它的进度按截到的时间算，字节数是整个源文件的，不往它身上记
+                    val primary = tasks.values.filter { it.status == DownloadStatus.DOWNLOADING && it.sparseCache && !it.isSegment }
+                        .groupBy { it.cacheIdentity }.mapValues { it.value.minBy { task -> task.taskId }.taskId }
                     val changed = tasks.values.mapNotNull { task ->
-                        val snapshot = snapshots[task.cachePath] ?: return@mapNotNull null
+                        if (!task.sparseCache || task.isSegment) return@mapNotNull null
+                        val identity = task.cacheIdentity
+                        val snapshot = snapshots[identity] ?: return@mapNotNull null
                         if (task.status == DownloadStatus.COMPLETED) return@mapNotNull null
-                        val speed = if (primary[task.cachePath] == task.taskId) speeds[task.cachePath] ?: 0L else 0L
+                        val speed = if (primary[identity] == task.taskId) speeds[identity] ?: 0L else 0L
                         if (snapshot.heldBytes == task.downloadedBytes && speed == task.speedBytesPerSec) null
                         else task.taskId to task.copy(downloadedBytes = snapshot.heldBytes, speedBytesPerSec = speed)
                     }
@@ -174,7 +180,9 @@ class PikoDownloadCoordinator(
      */
     private suspend fun restore() {
         val saved = runSuspendCatching {
-            json.decodeFromString(taskListSerializer, preferences.loadDownloadTasks())
+            val serialized = preferences.loadDownloadTasks()
+            // 空串是从未保存过（新装、新的数据目录），不是坏数据
+            if (serialized.isBlank()) emptyList() else json.decodeFromString(taskListSerializer, serialized)
         }.logFailure(TAG, "读回下载任务表失败，按空表处理").getOrDefault(emptyList())
         if (saved.isEmpty()) return
         val restored = withContext(Dispatchers.IO) { saved.mapNotNull { restoreTask(it) } }
@@ -187,8 +195,12 @@ class PikoDownloadCoordinator(
     // 片段任务的 destinationPath 与按 fileName 在下载目录里解析出的是同一个文件，存储层
     // 只提供按文件名查询，所以两类任务都按 fileName 核对
     private suspend fun restoreTask(task: DownloadTask): DownloadTask? {
-        task.cachePath?.takeIf { task.status != DownloadStatus.COMPLETED }?.let { fileCachePool.remember(task.account, task.gcid, task.totalBytes, it, task.taskId) }
-        val stopped = task.copy(speedBytesPerSec = 0L)
+        if (task.sparseCache && task.status != DownloadStatus.COMPLETED) {
+            fileCachePool.remember(task.account, task.gcid, task.cacheSize, task.taskId, task.cacheMediaId)
+        }
+        // 转封装做到一半退出的，下次从头再转：转码流还整个在暂存里，只是本机的活
+        val stopped = task.copy(speedBytesPerSec = 0L, converting = false,
+            progressFraction = task.progressFraction.takeUnless { task.converting })
         if (task.status == DownloadStatus.COMPLETED) {
             if (!storage.exists(task.fileName)) return null
             val length = storage.existingLength(task.fileName)
@@ -207,8 +219,8 @@ class PikoDownloadCoordinator(
         val downloaded = if (task.isSegment) {
             task.downloadedBytes
         } else {
-            task.cachePath?.let { fileCachePool.progress(task.account, task.gcid, task.totalBytes, it) }
-                ?: storage.existingLength(task.fileName).coerceAtMost(task.totalBytes)
+            if (task.sparseCache) fileCachePool.progress(task.account, task.gcid, task.cacheSize, task.cacheMediaId)
+            else storage.existingLength(task.fileName).coerceAtMost(task.totalBytes)
         }
         return stopped.copy(status = status, downloadedBytes = downloaded)
     }
@@ -222,7 +234,10 @@ class PikoDownloadCoordinator(
      */
     private suspend fun persistOnStructuralChange() {
         _tasks
-            .distinctUntilChangedBy { tasks -> tasks.mapValues { (_, task) -> Triple(task.status, task.cachePath, task.fileName) } }
+            // 暂存的身份（档位与长度）变了也要写：重启时按它登记暂存，记错了暂存会被当成没人要的删掉
+            .distinctUntilChangedBy { tasks ->
+                tasks.mapValues { (_, task) -> listOf(task.status, task.sparseCache, task.fileName, task.mediaId, task.fullFileSize) }
+            }
             .conflate()
             .collect { tasks ->
                 val serialized = json.encodeToString(taskListSerializer, tasks.values.toList())
@@ -253,9 +268,17 @@ class PikoDownloadCoordinator(
 
     fun enqueue(file: FileStat) = enqueueFiles(listOf(file))
 
-    /** 多选文件一次入队，共用全局并发上限；重复文件复用已有任务。 */
+    /** 多选文件一次入队，共用全局并发上限；重复文件复用已有任务。视频按设置里的下载画质挑档，见 [DownloadTask.qualityCap]。 */
     fun enqueueFiles(files: List<FileStat>) {
         enqueueFiles(files, leasedSource = false)
+    }
+
+    /**
+     * 单个视频按用户在「选择画质下载」里选的那一档下载，不看设置里的上限。[quality] 是原画（name 为 null）时下原画；
+     * 是转码档时下完转封装成 MP4，文件名里带上档位。
+     */
+    fun enqueueQuality(file: FileStat, quality: DownloadQuality) {
+        enqueueFiles(listOf(file), leasedSource = false, chosen = quality)
     }
 
     /** 分享或解析得到的内容直接下载，临时文件对象不随解析面板关闭。 */
@@ -267,7 +290,8 @@ class PikoDownloadCoordinator(
         }, leasedSource = true)
     }
 
-    private fun enqueueFiles(files: List<FileStat>, leasedSource: Boolean) {
+    /** [chosen] 为 null 时按设置里的下载画质上限挑档。 */
+    private fun enqueueFiles(files: List<FileStat>, leasedSource: Boolean, chosen: DownloadQuality? = null) {
         val account = currentAccount()
         val accepted = files.filter { !it.isFolder && !it.isUploading }.distinctBy { it.id }
         if (accepted.isEmpty()) return
@@ -275,13 +299,16 @@ class PikoDownloadCoordinator(
         scope.launch(Dispatchers.IO) {
             enqueueLock.withLock {
                 val now = Clock.System.now().toEpochMilliseconds()
+                val cap = if (chosen == null && !leasedSource) preferences.downloadMaxHeightFlow.first() else 0
                 val batch = if (accepted.size > 1) DownloadBatch("files@$now-${++batchSequence}", "批量下载", isFolder = false) else null
                 val taken = _tasks.value.values.mapTo(mutableSetOf()) { it.fileName.lowercase() }
-                val reused = accepted.count { existingTask(it, account) != null }
+                val reused = accepted.count { existingTask(it, account, chosen) != null }
                 val added = accepted.map { file ->
-                    val existing = existingTask(file, account)
+                    val existing = existingTask(file, account, chosen)
                     if (existing != null) {
                         existing.copy(status = if (existing.status == DownloadStatus.PAUSED || existing.status == DownloadStatus.FAILED) DownloadStatus.PENDING else existing.status)
+                    } else if (chosen?.name != null) {
+                        transcodeTask(file, chosen, account, now, taken)
                     } else {
                         var name = uniqueDownloadName(localNameOf(file), taken)
                         while (storage.exists(name)) name = uniqueDownloadName(localNameOf(file), taken)
@@ -294,16 +321,36 @@ class PikoDownloadCoordinator(
                             status = if (complete) DownloadStatus.COMPLETED else DownloadStatus.PENDING,
                             fullFileSize = file.sizeBytes, thumbnailLink = file.thumbnailLink, parentId = file.parentId,
                             createdAtMs = now, account = account, batch = batch, leasedSource = leasedSource,
+                            qualityCap = if (complete || leasedSource) 0 else qualityCapFor(file, name, cap),
                         )
                     }
                 }
                 _tasks.update { current -> current + added.filter { jobs.value[it.taskId]?.isActive != true }.associateBy { it.taskId } }
                 PikoLog.i(TAG, "入队 ${accepted.size} 个文件${if (leasedSource) "（解析内容，借出取流）" else ""}：" +
-                    "复用已有任务 $reused 个，本机已完整 ${added.count { it.status == DownloadStatus.COMPLETED }} 个，共 ${accepted.sumOf { it.sizeBytes }} 字节")
+                    "复用已有任务 $reused 个，本机已完整 ${added.count { it.status == DownloadStatus.COMPLETED }} 个，共 ${accepted.sumOf { it.sizeBytes }} 字节" +
+                    (chosen?.let { "，指定画质 ${it.name ?: ORIGINAL_QUALITY}" } ?: cap.takeIf { it > 0 }?.let { "，画质上限 ${it}P" } ?: ""))
             }
             pumpQueue()
         }
     }
+
+    /** 指定转码档的任务。文件名带上档位，与原画的下载分开；大小没探到时开始下载前再探。 */
+    private suspend fun transcodeTask(file: FileStat, quality: DownloadQuality, account: String, now: Long, taken: MutableSet<String>): DownloadTask {
+        val label = quality.name ?: error("原画不是转码档")
+        val wanted = transcodeFileName(localNameOf(file), label)
+        var name = uniqueDownloadName(wanted, taken)
+        while (storage.exists(name)) name = uniqueDownloadName(wanted, taken)
+        return DownloadTask(
+            taskId = availableTaskId("${file.id}_q_$label", account), fileId = file.id, fileName = name, gcid = file.hash,
+            totalBytes = quality.sizeBytes ?: 0L, destinationPath = name, fullFileSize = file.sizeBytes,
+            thumbnailLink = file.thumbnailLink, parentId = file.parentId, createdAtMs = now, account = account,
+            quality = label, mediaId = quality.mediaId, endMs = quality.durationMs,
+        )
+    }
+
+    // 只有视频挑档。归档条目经借出的对象取流（leaseDetail），转码档的下载没有接这条路，只下原画
+    private fun qualityCapFor(file: FileStat, localName: String, cap: Int): Int =
+        if (cap > 0 && localName.isPlayableVideo() && !LeasedFile.isLeased(file.id)) cap else 0
 
     /**
      * 下载几个文件夹，每个一批：在后台列出其中全部文件，落在下载目录下同名的文件夹里、保持子文件夹结构。
@@ -383,7 +430,8 @@ class PikoDownloadCoordinator(
             }
             // 已在本机的按长度认作完成，与单个文件的下载一样；上千个文件逐个查长度，放在 IO 线程上
             val lengths = storage.existingLengths(planned.map { it.path })
-            val tasks = withContext(Dispatchers.IO) { planned.map { plannedTask(it, listing, lengths[it.path] ?: 0L) } }
+            val cap = preferences.downloadMaxHeightFlow.first()
+            val tasks = withContext(Dispatchers.IO) { planned.map { plannedTask(it, listing, lengths[it.path] ?: 0L, cap) } }
             val needed = tasks.filter { it.status != DownloadStatus.COMPLETED }.sumOf { it.totalBytes - it.downloadedBytes }
             val remaining = runSuspendCatching { work.source.remainingDailyDownload() }.getOrNull()
             PikoLog.d(TAG, "列出文件夹：${logFile(work.folder.id, work.folder.name)}，${tasks.size} 个文件，待下载 $needed 字节，今日余量 $remaining")
@@ -398,7 +446,7 @@ class PikoDownloadCoordinator(
         job.start()
     }
 
-    private suspend fun plannedTask(planned: PlannedFile, listing: FolderListing, length: Long): DownloadTask {
+    private suspend fun plannedTask(planned: PlannedFile, listing: FolderListing, length: Long, cap: Int): DownloadTask {
         val file = planned.file
         existingTask(file, listing.account)?.takeIf {
             (it.status != DownloadStatus.COMPLETED || (it.fileName == planned.path && length == file.sizeBytes)) }?.let {
@@ -421,6 +469,7 @@ class PikoDownloadCoordinator(
             createdAtMs = listing.createdAtMs,
             account = listing.account,
             batch = listing.batch,
+            qualityCap = if (complete) 0 else qualityCapFor(file, planned.path, cap),
         )
     }
 
@@ -525,8 +574,10 @@ class PikoDownloadCoordinator(
         _listings.update { listings -> listings[batchId]?.let { listings + (batchId to transform(it)) } ?: listings }
     }
 
-    private fun existingTask(file: FileStat, account: String): DownloadTask? = _tasks.value.values.firstOrNull {
-        it.fileId == file.id && !it.isSegment && (it.account == account || it.account.isEmpty()) && it.gcid == file.hash
+    /** 同一个文件已有的整文件任务。指定了画质（[chosen]）时只认那一档的，原画不认还没挑档的任务。 */
+    private fun existingTask(file: FileStat, account: String, chosen: DownloadQuality? = null): DownloadTask? = _tasks.value.values.firstOrNull {
+        it.fileId == file.id && !it.isSegment && (it.account == account || it.account.isEmpty()) && it.gcid == file.hash &&
+            (chosen == null || (it.quality == chosen.name && it.qualityCap == 0))
     }
 
     private fun availableTaskId(fileId: String, account: String): String =
@@ -563,7 +614,8 @@ class PikoDownloadCoordinator(
     }
 
     /** 播放、预取与下载共用 SDK 缓存；续传只请求位图尚未持有的块。 */
-    private suspend fun runDownload(task: DownloadTask) {
+    private suspend fun runDownload(queued: DownloadTask) {
+        var task = queued
         val taskId = task.taskId
         val client = clientProvider.currentClient.value ?: run {
             PikoLog.w(TAG, "下载失败：未登录，${logFile(task.fileId, task.fileName)}")
@@ -573,14 +625,19 @@ class PikoDownloadCoordinator(
         var lease: PikoFileCachePool.Lease? = null
         val started = TimeSource.Monotonic.markNow()
         try {
+            if (task.qualityCap > 0 || task.quality != null) task = chooseQuality(task)
             val concurrency = preferences.concurrentConnectionsFlow.first().coerceIn(1, 8)
-            lease = fileCachePool.acquire(client, task.fileId, task.gcid, task.totalBytes, task.fileName,
+            // 转码档的 handle 要原画的大小（重建文件对象时用），暂存的大小是转码流的长度
+            lease = fileCachePool.acquire(client, task.fileId, task.gcid,
+                if (task.mediaId != null) task.fullFileSize else task.totalBytes, task.fileName,
                 parentId = task.parentId, leased = task.leasedSource || LeasedFile.isLeased(task.fileId),
-                retained = true, concurrency = concurrency, savedPath = task.cachePath, owner = taskId)
+                retained = true, concurrency = concurrency, owner = taskId,
+                mediaId = task.mediaId, streamSize = task.totalBytes)
             val entry = lease.entry
-            update(taskId) { it.copy(account = client.account, cachePath = entry.store.path, downloadedBytes = entry.store.heldBytes.value,
+            update(taskId) { it.copy(account = client.account, sparseCache = true, downloadedBytes = entry.store.heldBytes.value,
                 status = DownloadStatus.DOWNLOADING, errorMessage = null) }
-            if (task.cachePath == null) entry.store.importPrefix(storage.downloadTarget(task.fileName))
+            // 旧版本顺序下载的前缀只可能是原画；转码档的文件名指的是转封装的产物
+            if (!task.sparseCache && task.mediaId == null) entry.store.importPrefix(storage.downloadTarget(task.fileName))
             val heldAtStart = entry.store.heldBytes.value
             // 文件夹下载里的小文件成百上千，逐个记会把日志刷满，它们只进整批完成的那一行；失败照样逐个记
             val logEach = task.batch == null || task.totalBytes >= BATCH_LOG_MIN_BYTES
@@ -611,14 +668,17 @@ class PikoDownloadCoordinator(
                 check(entry.store.heldBytes.value == task.totalBytes) { "文件仍有未完成的块" }
                 entry.store.flush()
                 val target = storage.downloadTarget(task.fileName)
-                copyCachedFile(entry.store.path, target)
+                if (task.mediaId == null) copyCachedFile(entry.store.path, target) else convertTranscode(task, entry.store.path, target)
                 val destination = storage.commit(task.fileName, target)
+                // 转码档存下的是转封装出的 MP4，长度与转码流不同；完成的任务按文件长度核对，见 restoreTask
+                val savedBytes = if (task.mediaId == null) task.totalBytes else storage.existingLength(task.fileName)
                 fileCachePool.complete(lease, taskId)
                 val elapsed = started.elapsedNow().inWholeMilliseconds
                 if (logEach) PikoLog.i(TAG, "完成：${logFile(task.fileId, task.fileName)}，${task.totalBytes} 字节，本次下载 ${task.totalBytes - heldAtStart} 字节，" +
-                    "历时 $elapsed ms（${(task.totalBytes - heldAtStart) * 1000 / elapsed.coerceAtLeast(1) / 1024} KiB/s）")
-                update(taskId) { it.copy(status = DownloadStatus.COMPLETED, downloadedBytes = task.totalBytes,
-                    speedBytesPerSec = 0L, destinationPath = destination, cachePath = null) }
+                    "历时 $elapsed ms（${(task.totalBytes - heldAtStart) * 1000 / elapsed.coerceAtLeast(1) / 1024} KiB/s）" +
+                    (task.quality?.let { "，转码档 $it 转封装为 $savedBytes 字节" } ?: ""))
+                update(taskId) { it.copy(status = DownloadStatus.COMPLETED, totalBytes = savedBytes, downloadedBytes = savedBytes,
+                    speedBytesPerSec = 0L, destinationPath = destination, sparseCache = false, converting = false, progressFraction = null) }
                 task.batch?.let { batch ->
                     val members = _tasks.value.values.filter { it.batch?.id == batch.id }
                     if (members.all { it.status == DownloadStatus.COMPLETED }) {
@@ -628,16 +688,78 @@ class PikoDownloadCoordinator(
             }
         } catch (e: CancellationException) {
             update(taskId) { it.copy(status = if (it.status == DownloadStatus.PENDING) it.status else DownloadStatus.PAUSED,
-                downloadedBytes = lease?.entry?.store?.heldBytes?.value ?: it.downloadedBytes, speedBytesPerSec = 0L) }
+                downloadedBytes = lease?.entry?.store?.heldBytes?.value ?: it.downloadedBytes, speedBytesPerSec = 0L,
+                converting = false, progressFraction = null) }
             throw e
         } catch (e: Throwable) {
             PikoLog.w(TAG, "下载失败：${logFile(task.fileId, task.fileName)}，已有 ${lease?.entry?.store?.heldBytes?.value ?: "?"}/${task.totalBytes} 字节，" +
-                "历时 ${started.elapsedNow().inWholeMilliseconds} ms${if (lease == null) "，未取得缓存" else ""}", e)
+                "历时 ${started.elapsedNow().inWholeMilliseconds} ms${if (lease == null) "，未取得缓存" else ""}" +
+                (if (_tasks.value[taskId]?.converting == true) "，失败在转封装" else ""), e)
+            // 转封装失败时转码流仍完整留在暂存里，重试只重做转封装
             update(taskId) { it.copy(status = if (belongsToCurrent(it)) DownloadStatus.FAILED else DownloadStatus.PAUSED, speedBytesPerSec = 0L,
-                downloadedBytes = lease?.entry?.store?.heldBytes?.value ?: it.downloadedBytes, errorMessage = e.message) }
+                downloadedBytes = lease?.entry?.store?.heldBytes?.value ?: it.downloadedBytes, errorMessage = e.message,
+                converting = false, progressFraction = null) }
         } finally {
             lease?.release()
         }
+    }
+
+    /**
+     * 定下这个任务下哪一档：按设置的上限挑（[DownloadTask.qualityCap]），或补齐用户选的那一档的 media ID 与大小。
+     * 挑到转码档时文件名换成带档位的 .mp4；按上限挑不到就下原画。用户选的档已经没有了、或读不出字节则失败，
+     * 不悄悄换成原画。转码档的任务每次开始都经这里，读不出的档在开始时就以能看懂的提示失败，而不是下到第一个块才报错。
+     */
+    private suspend fun chooseQuality(task: DownloadTask): DownloadTask {
+        val variant = mediaRepository?.downloadVariant(task.fileId, task.quality, task.qualityCap)?.getOrThrow()
+        val chosen = when {
+            variant != null && variant.sizeBytes != null && variant.sizeBytes > 0 -> {
+                val name = if (task.quality == null) renamedForQuality(task, variant.name ?: ORIGINAL_QUALITY) else task.fileName
+                task.copy(qualityCap = 0, quality = variant.name, mediaId = variant.mediaId, totalBytes = variant.sizeBytes,
+                    downloadedBytes = 0L, endMs = variant.durationMs, fileName = name, destinationPath = name)
+            }
+            task.quality != null -> error("所选画质已不可用")
+            else -> task.copy(qualityCap = 0)
+        }
+        PikoLog.i(TAG, "定下画质：${logFile(task.fileId, chosen.fileName)}，" +
+            (chosen.quality?.let { "转码档 $it，${chosen.totalBytes} 字节" } ?: "没有不高于 ${task.qualityCap}P 的转码，下原画"))
+        update(task.taskId) {
+            it.copy(qualityCap = chosen.qualityCap, quality = chosen.quality, mediaId = chosen.mediaId, totalBytes = chosen.totalBytes,
+                downloadedBytes = chosen.downloadedBytes, endMs = chosen.endMs, fileName = chosen.fileName, destinationPath = chosen.destinationPath)
+        }
+        return chosen
+    }
+
+    /**
+     * 片段从哪一档截：按上限挑或补齐所选档的 media ID。按上限挑到的不改名（名字入队时就定了）；
+     * 转码流的长度在截取开始打开来源时记下。用户选的档已经没有了则失败。
+     */
+    private suspend fun chooseSegmentQuality(task: DownloadTask): DownloadTask {
+        val variant = mediaRepository?.downloadVariant(task.fileId, task.quality, task.qualityCap)?.getOrThrow()
+        if (variant == null && task.quality != null) error("所选画质已不可用")
+        PikoLog.i(TAG, "片段定下画质：${logFile(task.fileId, task.fileName)}，${variant?.name ?: "没有不高于 ${task.qualityCap}P 的转码，截原画"}")
+        update(task.taskId) { it.copy(qualityCap = 0, quality = variant?.name, mediaId = variant?.mediaId) }
+        return task.copy(qualityCap = 0, quality = variant?.name, mediaId = variant?.mediaId)
+    }
+
+    /** 按上限挑到转码档的任务改名：「名字 [720P].mp4」，在原来的文件夹里，与已有的文件与任务都不重名。 */
+    private suspend fun renamedForQuality(task: DownloadTask, label: String): String = enqueueLock.withLock {
+        val folder = task.fileName.substringBeforeLast('/', "")
+        val wanted = (if (folder.isEmpty()) "" else "$folder/") + transcodeFileName(task.fileName.substringAfterLast('/'), label)
+        val taken = _tasks.value.values.filter { it.taskId != task.taskId }.mapTo(mutableSetOf()) { it.fileName.lowercase() }
+        var name = uniqueDownloadName(wanted, taken)
+        while (storage.exists(name)) name = uniqueDownloadName(wanted, taken)
+        name
+    }
+
+    /** 把下完的转码流（MPEG-TS）在本机转封装成 MP4 写到 [target]，任务显示为「转换中」。 */
+    private suspend fun convertTranscode(task: DownloadTask, source: String, target: String) {
+        val converter = segmentDownloader ?: error("当前平台不支持转封装")
+        update(task.taskId) { it.copy(converting = true, progressFraction = 0f, speedBytesPerSec = 0L) }
+        val started = TimeSource.Monotonic.markNow()
+        converter.remux(PikoRemuxRequest(source, target, durationMillis = task.endMs)) { fraction ->
+            update(task.taskId) { it.copy(progressFraction = fraction) }
+        }.getOrThrow()
+        PikoLog.d(TAG, "转封装完成：${logFile(task.fileId, task.fileName)}，历时 ${started.elapsedNow().inWholeMilliseconds} ms")
     }
 
     private fun downloadOrder(size: Long): List<LongRange> {
@@ -652,34 +774,45 @@ class PikoDownloadCoordinator(
         endMillis: Long,
         timeRangeLabel: String,
         sourceUrl: String,
+        /** 从哪一档截，原画的 name 为 null；为 null 时按设置里的下载画质上限，开始截取时再挑。 */
+        quality: DownloadQuality? = null,
     ) {
         onDownloadStarted?.invoke()
-        val name = FileNameSanitizer.sanitize(
-            "${file.name.substringBeforeLast('.', file.name)}_[$timeRangeLabel].mp4",
-            fallbackExtension = "mp4",
-            forceExtension = "mp4",
-        )
-        val taskId = availableTaskId("${file.id}_seg_${startMillis}_$endMillis", currentAccount())
-        val task = DownloadTask(
-            taskId = taskId,
-            fileId = file.id,
-            fileName = name,
-            gcid = file.hash,
-            totalBytes = 0L,
-            destinationPath = storage.pathFor(name),
-            isSegment = true,
-            fullFileSize = file.sizeBytes,
-            timeRangeLabel = timeRangeLabel,
-            thumbnailLink = file.thumbnailLink,
-            startMs = startMillis,
-            endMs = endMillis,
-            streamUrl = sourceUrl,
-            parentId = file.parentId,
-            createdAtMs = Clock.System.now().toEpochMilliseconds(),
-            account = currentAccount(),
-        )
-        _tasks.update { it + (taskId to task) }
-        pumpQueue()
+        val account = currentAccount()
+        scope.launch {
+            val cap = if (quality == null) preferences.downloadMaxHeightFlow.first() else 0
+            // 选定了转码档时名字里带上档位；按上限挑的开始时才知道，名字不改
+            val label = quality?.name?.let { "_[$it]" }.orEmpty()
+            val name = FileNameSanitizer.sanitize(
+                "${file.name.substringBeforeLast('.', file.name)}_[$timeRangeLabel]$label.mp4",
+                fallbackExtension = "mp4",
+                forceExtension = "mp4",
+            )
+            val taskId = availableTaskId("${file.id}_seg_${startMillis}_$endMillis${quality?.name?.let { "_$it" }.orEmpty()}", account)
+            val task = DownloadTask(
+                taskId = taskId,
+                fileId = file.id,
+                fileName = name,
+                gcid = file.hash,
+                totalBytes = 0L,
+                destinationPath = storage.pathFor(name),
+                isSegment = true,
+                fullFileSize = file.sizeBytes,
+                timeRangeLabel = timeRangeLabel,
+                thumbnailLink = file.thumbnailLink,
+                startMs = startMillis,
+                endMs = endMillis,
+                streamUrl = sourceUrl,
+                parentId = file.parentId,
+                createdAtMs = Clock.System.now().toEpochMilliseconds(),
+                account = account,
+                quality = quality?.name,
+                mediaId = quality?.mediaId,
+                qualityCap = if (LeasedFile.isLeased(file.id)) 0 else cap,
+            )
+            _tasks.update { it + (taskId to task) }
+            pumpQueue()
+        }
     }
 
     fun enqueueSegment(
@@ -690,7 +823,8 @@ class PikoDownloadCoordinator(
         streamUrl: String?,
         startByte: Long,
         lengthBytes: Long,
-    ) = enqueueSegment(file, startMs, endMs, timeRangeLabel, streamUrl.orEmpty())
+        quality: DownloadQuality? = null,
+    ) = enqueueSegment(file, startMs, endMs, timeRangeLabel, streamUrl.orEmpty(), quality)
 
     private fun startSegment(task: DownloadTask) {
         val extractor = segmentDownloader ?: run {
@@ -699,50 +833,64 @@ class PikoDownloadCoordinator(
             return
         }
         launchTracked(task.taskId) {
-            update(task.taskId) { it.copy(status = DownloadStatus.DOWNLOADING, progressFraction = 0f) }
-            // 源地址在抽取开始时现取，经本机代理读，不用入队时存下的直链。直链绕过 SDK 的账号
-            // 连接预算，与代理、预览播放器抢连接，超出上限后 CDN 一律回 503（2026-09-23 实测），
-            // 抽取器只会不停重试；存下的直链还会过期，恢复出来的任务续做时必然失败。
-            val prepared = mediaRepository?.let { repo ->
-                repo.preparePlayback(task.fileId).getOrElse { error ->
-                    PikoLog.w(TAG, "片段抽取取源失败：${logFile(task.fileId, task.fileName)}", error)
-                    update(task.taskId) { it.copy(status = DownloadStatus.FAILED, errorMessage = error.message) }
-                    return@launchTracked
-                }
+            // 源经 SDK 的 handle 按偏移读（openRandomAccess），不用入队时存下的直链：直链绕过 SDK 的账号连接预算，
+            // 与代理、预览播放器抢连接，超出上限后 CDN 一律回 503（2026-09-23 实测）；存下的直链还会过期。
+            // 读过的块记在这个任务名下留在下载暂存里（sparseCache），暂停或失败后再来不必重下，完成或取消时放手
+            val repo = mediaRepository
+            update(task.taskId) { it.copy(status = DownloadStatus.DOWNLOADING, progressFraction = 0f, errorMessage = null) }
+            val chosen = try {
+                // 选定了转码档的也要经这里：读不出字节的档在开始时就以能看懂的提示失败
+                if (task.qualityCap > 0 || task.quality != null) chooseSegmentQuality(task) else task
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                PikoLog.w(TAG, "片段定画质失败：${logFile(task.fileId, task.fileName)}", e)
+                update(task.taskId) { it.copy(status = DownloadStatus.FAILED, errorMessage = e.message) }
+                return@launchTracked
             }
-            val sourceUrl = prepared?.let { it.proxyUrl ?: it.info.currentUrl } ?: task.streamUrl.orEmpty()
-            try {
-                extractor.extract(
-                    PikoSegmentRequest(
-                        sourceUrl = sourceUrl,
-                        destinationPath = task.destinationPath,
-                        fileName = task.fileName,
-                        startMillis = task.startMs,
-                        endMillis = task.endMs,
-                        openRandomAccess = mediaRepository?.let { repo -> { repo.openRandomAccess(task.fileId).getOrThrow() } },
-                    ),
-                ) { fraction ->
-                    update(task.taskId) { it.copy(progressFraction = fraction) }
-                }.onSuccess { path ->
-                    // 片段入队时不知道产物大小，totalBytes 一直是 0，列表会显示 0 B，完成后按实际文件补上
-                    val size = runSuspendCatching { storage.existingLength(task.fileName) }.getOrDefault(0L)
-                    PikoLog.i(TAG, "片段抽取完成：${logFile(task.fileId, task.fileName)}，${task.startMs}–${task.endMs} ms，$size 字节" +
-                        "，读源${if (prepared == null) "用入队时的直链" else if (prepared.proxyUrl != null) "经本机代理" else "用新取的直链"}")
-                    update(task.taskId) {
-                        it.copy(
-                            status = DownloadStatus.COMPLETED,
-                            destinationPath = path,
-                            progressFraction = 1f,
-                            totalBytes = size,
-                            downloadedBytes = size,
-                        )
-                    }
-                }.onFailure { error ->
-                    PikoLog.w(TAG, "片段抽取失败：${logFile(task.fileId, task.fileName)}，${task.startMs}–${task.endMs} ms", error)
-                    update(task.taskId) { it.copy(status = DownloadStatus.FAILED, errorMessage = error.message) }
+            update(task.taskId) { it.copy(sparseCache = it.sparseCache || repo != null) }
+            // 转码档的暂存按转码流的长度认，打开时才知道，记进 fullFileSize，放手与重启后登记都按它
+            var cacheSize = chosen.fullFileSize
+            val started = TimeSource.Monotonic.markNow()
+            extractor.extract(
+                PikoSegmentRequest(
+                    sourceUrl = task.streamUrl.orEmpty(),
+                    destinationPath = task.destinationPath,
+                    fileName = task.fileName,
+                    startMillis = task.startMs,
+                    endMillis = task.endMs,
+                    openRandomAccess = repo?.let {
+                        {
+                            it.openRandomAccess(task.fileId, retainedBy = task.taskId, mediaId = chosen.mediaId).getOrThrow().also { source ->
+                                if (chosen.mediaId != null && source.size != cacheSize) {
+                                    cacheSize = source.size
+                                    update(task.taskId) { current -> current.copy(fullFileSize = source.size) }
+                                }
+                            }
+                        }
+                    },
+                ),
+            ) { fraction ->
+                update(task.taskId) { it.copy(progressFraction = fraction) }
+            }.onSuccess { path ->
+                // 片段入队时不知道产物大小，totalBytes 一直是 0，列表会显示 0 B，完成后按实际文件补上
+                val size = runSuspendCatching { storage.existingLength(task.fileName) }.getOrDefault(0L)
+                PikoLog.i(TAG, "片段抽取完成：${logFile(task.fileId, task.fileName)}，${task.startMs}–${task.endMs} ms，" +
+                    "${chosen.quality ?: ORIGINAL_QUALITY}，$size 字节，历时 ${started.elapsedNow().inWholeMilliseconds} ms")
+                if (repo != null) fileCachePool.discard(task.account, task.gcid, cacheSize, task.taskId, chosen.mediaId)
+                update(task.taskId) {
+                    it.copy(
+                        status = DownloadStatus.COMPLETED,
+                        destinationPath = path,
+                        progressFraction = 1f,
+                        totalBytes = size,
+                        downloadedBytes = size,
+                        sparseCache = false,
+                    )
                 }
-            } finally {
-                prepared?.close()
+            }.onFailure { error ->
+                PikoLog.w(TAG, "片段抽取失败：${logFile(task.fileId, task.fileName)}，${task.startMs}–${task.endMs} ms", error)
+                update(task.taskId) { it.copy(status = DownloadStatus.FAILED, errorMessage = error.message) }
             }
         }
     }
@@ -775,8 +923,7 @@ class PikoDownloadCoordinator(
         // 抢先删掉的话它会把文件重新建出来
         return scope.launch(Dispatchers.IO) {
             job?.cancelAndJoin()
-            val path = _tasks.value[taskId]?.cachePath ?: task.cachePath
-            if (path != null) fileCachePool.discard(task.account, task.gcid, task.totalBytes, path, task.taskId)
+            if (task.sparseCache) fileCachePool.discard(task.account, task.gcid, task.cacheSize, task.taskId, task.cacheMediaId)
             if (task.status == DownloadStatus.COMPLETED || task.isSegment) {
                 if (task.destinationPath.isNotBlank()) storage.delete(task.destinationPath)
             } else {
@@ -856,6 +1003,23 @@ internal fun localFileNameOf(file: FileStat): String {
     val named = extension.isEmpty() || file.name.endsWith(".$extension", ignoreCase = true)
     return FileNameSanitizer.sanitize(if (named) file.name else "${file.name}.$extension")
 }
+
+/**
+ * 片段读的是它那一档的整条流，占的是那一档的暂存，长度记在 fullFileSize（转码档开始截取时换成转码流的长度）；
+ * 整文件任务的是它自己下的那一档，长度即 totalBytes。
+ */
+private val DownloadTask.cacheSize: Long get() = if (isSegment) fullFileSize else totalBytes
+
+private val DownloadTask.cacheMediaId: String? get() = mediaId
+
+private val DownloadTask.cacheIdentity: String get() = PikoFileCachePool.identity(account, gcid, cacheSize, cacheMediaId)
+
+/** 转码档存下来的名字：「名字 [720P].mp4」。[name] 是不带文件夹的文件名。 */
+internal fun transcodeFileName(name: String, quality: String): String = FileNameSanitizer.sanitize(
+    "${name.substringBeforeLast('.', name)} [$quality].mp4",
+    fallbackExtension = "mp4",
+    forceExtension = "mp4",
+)
 
 private fun uniqueDownloadName(name: String, taken: MutableSet<String>, extension: Boolean = true): String {
     if (taken.add(name.lowercase())) return name

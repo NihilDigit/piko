@@ -21,6 +21,12 @@
     long childProc(java.lang.foreign.MemorySegment, int, long, long);
 }
 
+# 转封装读源的 AVIO 回调，同样经 findVirtual 按名字取出交给 FFM，不保留的话 release 包里片段与转码档下载全部失败
+-keepclassmembers class dev.piko.desktop.media.AvioReader {
+    int read(java.lang.foreign.MemorySegment, java.lang.foreign.MemorySegment, int);
+    long seek(java.lang.foreign.MemorySegment, long, int);
+}
+
 # 触摸桥（compose-windows-touch）经反射取 Compose Desktop 的内部入口，注入 WM_POINTER 的触摸。
 # 取不到时静默退回鼠标路径，release 里看不出来，所以这些成员要显式保留。
 # 桥对每一层取的是 getClass() 上声明的成员，这几个类都是 final，类名照 CMP 1.12.0 的 ui-desktop 写准：
@@ -80,11 +86,3 @@
 -dontwarn javax.annotation.**
 -dontwarn com.google.errorprone.annotations.**
 -dontwarn org.jetbrains.annotations.**
-
-# isoparser 按类名反射创建 MP4 box 实现
--keep class com.coremedia.iso.** { *; }
--keep class com.googlecode.mp4parser.** { *; }
--keep class org.mp4parser.** { *; }
--dontwarn com.coremedia.iso.**
--dontwarn com.googlecode.mp4parser.**
--dontwarn org.aspectj.**

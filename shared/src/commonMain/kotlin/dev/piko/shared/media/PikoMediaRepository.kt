@@ -29,11 +29,21 @@ import io.github.nihildigit.pikpak.getFile
 import io.github.nihildigit.pikpak.listPlayHistory
 import io.github.nihildigit.pikpak.reportPlay
 import io.github.nihildigit.pikpak.resolveVariant
+import io.github.nihildigit.pikpak.streamRangeFromUrl
+import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.transformWhile
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -112,6 +122,23 @@ class PreparedPlayback internal constructor(
 
 /** [PikoMediaRepository.clipProbe] 的结果。时长取不到时为 null。 */
 class ClipProbe(val hasTranscode: Boolean, val durationMs: Long?)
+
+/**
+ * 下载时可选的一档。原画的 [name] 与 [mediaId] 为 null。[sizeBytes] 是要下的字节数，转码档还没探到时为 null；
+ * 转码档存下来是转封装后的 MP4，比这个数略小。[height] 是画面高度，不知道时为 0。
+ */
+data class DownloadQuality(
+    val name: String?,
+    val mediaId: String?,
+    val height: Int,
+    val sizeBytes: Long?,
+    val durationMs: Long,
+    /** 转码档探测时读不出字节（服务端坏了），不能选。 */
+    val unreadable: Boolean = false,
+)
+
+/** 这一档转码在服务端读不出字节，见 [PikoMediaRepository.downloadQualities]。消息直接给用户看。 */
+class UnreadableTranscodeException(cause: Throwable? = null) : IllegalStateException("该画质的转码文件无法读取，请改选其他画质", cause)
 
 class PikoMediaRepository(
     private val clientManager: PikoClientProvider,
@@ -513,30 +540,230 @@ class PikoMediaRepository(
     }
 
     /**
-     * 按偏移读取原画，不经本机代理。给 Android 的片段抽取用，原因见 [RandomAccessMediaSource]。
-     * 调用方负责关闭。
+     * 按偏移读取原画，不经本机代理。给片段截取用：Android 的原因见 [RandomAccessMediaSource]，桌面端的 FFmpeg
+     * 经 AVIO 回调读它。调用方负责关闭。
+     *
+     * 给了 [retainedBy] 时，读过的块在关闭后仍留在下载暂存里，记在这个所有者名下，直到它经
+     * PikoFileCachePool.discard 放手：片段截取中断后再来，已读的部分不必重下。
+     *
+     * [mediaId] 不为 null 时读那一档转码（MPEG-TS），同样经下载暂存，与原画的暂存分开；返回的来源长度是转码流的长度。
      */
-    suspend fun openRandomAccess(fileId: String): Result<RandomAccessMediaSource> =
+    suspend fun openRandomAccess(fileId: String, retainedBy: String? = null, mediaId: String? = null): Result<RandomAccessMediaSource> =
         withContext(Dispatchers.Default) {
             runSuspendCatching {
                 val client = client
-                partialSource(client, fileId)?.let { return@runSuspendCatching ReaderRandomAccessSource(it.second) }
+                if (mediaId != null) return@runSuspendCatching ReaderRandomAccessSource(transcodeSource(client, fileId, mediaId, retainedBy))
+                partialSource(client, fileId, retainedBy)?.let { return@runSuspendCatching ReaderRandomAccessSource(it.second) }
                 val detail = detailOf(client, fileId)
                 val resolved = detail.resolveVariant(VariantPreference.Original)
-                val source = openByteSource(client, detail, resolved, leased = LeasedFile.isLeased(fileId))
+                val source = openByteSource(client, detail, resolved, leased = LeasedFile.isLeased(fileId), retainedBy = retainedBy)
                     ?: error("文件缺少内容哈希，无法读取")
                 ReaderRandomAccessSource(source)
             }
         }
 
-    private suspend fun partialSource(client: PikPakClient, fileId: String): Pair<DownloadTask, PikPakByteSource>? {
+    private suspend fun partialSource(client: PikPakClient, fileId: String, retainedBy: String? = null): Pair<DownloadTask, PikPakByteSource>? {
         val task = partialDownload?.invoke(fileId) ?: return null
         val pool = fileCachePool ?: return null
-        if (task.totalBytes <= 0 || task.gcid.isBlank() || task.cachePath == null) return null
+        if (task.totalBytes <= 0 || task.gcid.isBlank() || !task.sparseCache) return null
         val lease = pool.acquire(client, task.fileId, task.gcid, task.totalBytes, task.fileName,
-            parentId = task.parentId, leased = task.leasedSource || LeasedFile.isLeased(fileId), savedPath = task.cachePath)
+            parentId = task.parentId, leased = task.leasedSource || LeasedFile.isLeased(fileId),
+            retained = retainedBy != null, owner = retainedBy ?: task.fileId)
         return task to PikPakByteSource(lease.entry.handle, lease.entry.cache, lease::close)
     }
+
+    /**
+     * 这个视频能下载的各档：原画在前，转码按画面从高到低。拿到详情先发一次，转码档的大小服务端不给，各档同时探测
+     * （[probeTranscode]），探到一档发一次更新；没探到的 [DownloadQuality.sizeBytes] 为 null，读不出字节的标上
+     * [DownloadQuality.unreadable]。探测全部结束时流结束，查不到详情时抛出。
+     * 归档条目与压缩包里的文件只有原画：它们的对象是借来的，转码档挂在借出的对象上，取完就删了。
+     *
+     * 同一个文件的探测在 [QUALITY_PROBE_FOR] 内只做一次，对话框、片段面板、[prefetchDownloadQualities] 与
+     * 下载开始时的 [downloadVariant] 共用，进行中的也一起等。
+     */
+    fun downloadQualities(fileId: String): Flow<List<DownloadQuality>> = flow {
+        emitAll(
+            qualityProbe(fileId).state.transformWhile { probe ->
+                probe.error?.let { throw it }
+                probe.options?.let { emit(it) }
+                !probe.finished
+            },
+        )
+    }
+
+    /**
+     * 提前开始 [downloadQualities] 的探测，结果留给随后打开的对话框与片段面板。在「选择画质下载」「下载指定段落」
+     * 上按下或指针移入时调用：这时多半就要点，不点也只白发一次详情与每档一个 1 字节的请求。
+     */
+    fun prefetchDownloadQualities(fileId: String) {
+        backgroundScope.launch { runSuspendCatching { qualityProbe(fileId) } }
+    }
+
+    private class QualityProbeState(
+        val options: List<DownloadQuality>? = null,
+        val finished: Boolean = false,
+        val error: Throwable? = null,
+    )
+
+    private class QualityProbe(val state: MutableStateFlow<QualityProbeState>, val started: TimeMark)
+
+    // 按账号与文件 ID；失败的不留，下次打开重查
+    private val qualityProbes = HashMap<String, QualityProbe>()
+    private val qualityProbesLock = Mutex()
+
+    private suspend fun qualityProbe(fileId: String): QualityProbe {
+        val client = client
+        val key = "${client.account}/$fileId"
+        return qualityProbesLock.withLock {
+            qualityProbes.values.removeAll { it.state.value.finished && it.started.elapsedNow() > QUALITY_PROBE_FOR }
+            qualityProbes.getOrPut(key) {
+                QualityProbe(MutableStateFlow(QualityProbeState()), TimeSource.Monotonic.markNow()).also { probe ->
+                    backgroundScope.launch {
+                        runSuspendCatching { probeQualities(client, fileId, probe.state) }.onFailure { error ->
+                            qualityProbesLock.withLock { if (qualityProbes[key] === probe) qualityProbes.remove(key) }
+                            probe.state.value = QualityProbeState(finished = true, error = error)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** 已经探完、还没过期的那一份，没有为 null。不发起探测。 */
+    private suspend fun finishedQualities(fileId: String): List<DownloadQuality>? {
+        val key = "${client.account}/$fileId"
+        return qualityProbesLock.withLock {
+            qualityProbes[key]?.takeIf { it.started.elapsedNow() <= QUALITY_PROBE_FOR }?.state?.value
+                ?.takeIf { it.finished && it.error == null }?.options
+        }
+    }
+
+    private suspend fun probeQualities(client: PikPakClient, fileId: String, state: MutableStateFlow<QualityProbeState>) {
+        val detail = detailOf(client, fileId)
+        val durationMs = durationMsOf(detail)
+        val original = DownloadQuality(null, null, detail.medias.firstOrNull { it.isOrigin }?.video?.height ?: 0, detail.sizeBytes, durationMs)
+        val transcodes = if (LeasedFile.isLeased(fileId)) emptyList() else detail.downloadableTranscodes().sortedByDescending { it.video?.height ?: 0 }
+        state.value = QualityProbeState(listOf(original) + transcodes.map { it.toDownloadQuality(durationMs) })
+        coroutineScope {
+            transcodes.forEach { media ->
+                launch {
+                    val probed = runSuspendCatching { probeTranscode(client, media) }
+                    val error = probed.exceptionOrNull()
+                    if (error is UnreadableTranscodeException) {
+                        PikoLog.w(TAG, "转码档 ${media.qualityName} 读不出字节：${logFile(fileId, "")}", error)
+                    } else if (error != null) {
+                        PikoLog.w(TAG, "探测转码档大小失败：${logFile(fileId, "")}", error)
+                        return@launch
+                    }
+                    state.update { current ->
+                        QualityProbeState(current.options?.map { option ->
+                            if (option.mediaId != media.mediaId) option
+                            else probed.fold(onSuccess = { option.copy(sizeBytes = it) }, onFailure = { option.copy(unreadable = true) })
+                        })
+                    }
+                }
+            }
+        }
+        state.update { QualityProbeState(it.options, finished = true) }
+    }
+
+    /**
+     * 下载时定下的那一档，连同它的大小。[name] 是用户选的档，读不出字节时以 [UnreadableTranscodeException] 失败，
+     * 不换成别的档。[name] 为 null 时按 [maxHeight] 挑不高于它、读得出的最高一档。没有可下的转码（或文件只能借出）
+     * 时为 null，调用方下原画：上限是为了省流量，挑一档更高的转码违背本意。
+     */
+    suspend fun downloadVariant(fileId: String, name: String?, maxHeight: Int): Result<DownloadQuality?> =
+        withContext(Dispatchers.Default) {
+            runSuspendCatching {
+                if (LeasedFile.isLeased(fileId)) return@runSuspendCatching null
+                // 刚在对话框或片段面板里列过各档，就按那次的探测结果定，不再查详情、不再探
+                finishedQualities(fileId)?.filter { it.mediaId != null }
+                    ?.takeIf { known -> known.all { it.unreadable || it.sizeBytes != null } }
+                    ?.let { known -> return@runSuspendCatching chooseVariant(known, name, maxHeight) }
+                val client = client
+                val detail = detailOf(client, fileId)
+                val durationMs = durationMsOf(detail)
+                val transcodes = detail.downloadableTranscodes()
+                if (name != null) {
+                    val media = transcodes.firstOrNull { it.qualityName == name } ?: return@runSuspendCatching null
+                    return@runSuspendCatching media.toDownloadQuality(durationMs, probeTranscode(client, media))
+                }
+                val candidates = transcodes.filter { (it.video?.height ?: 0) <= maxHeight }.sortedByDescending { it.video?.height ?: 0 }
+                for (media in candidates) {
+                    val probed = runSuspendCatching { probeTranscode(client, media) }
+                    val error = probed.exceptionOrNull()
+                    if (error is UnreadableTranscodeException) {
+                        PikoLog.w(TAG, "转码档 ${media.qualityName} 读不出字节，改挑下一档：${logFile(fileId, "")}", error)
+                        continue
+                    }
+                    return@runSuspendCatching media.toDownloadQuality(durationMs, probed.getOrThrow())
+                }
+                null
+            }
+        }
+
+    /** [downloadVariant] 的挑法，用在已探过的各档上。 */
+    private fun chooseVariant(transcodes: List<DownloadQuality>, name: String?, maxHeight: Int): DownloadQuality? {
+        if (name != null) {
+            val chosen = transcodes.firstOrNull { it.name == name } ?: return null
+            if (chosen.unreadable) throw UnreadableTranscodeException()
+            return chosen
+        }
+        return transcodes.filter { !it.unreadable && it.height <= maxHeight }.maxByOrNull { it.height }
+    }
+
+    private fun FileDetail.downloadableTranscodes(): List<MediaVariant> =
+        medias.filter { !it.isOrigin && it.video != null && it.link.url.isNotBlank() && it.qualityName != null }
+
+    private fun MediaVariant.toDownloadQuality(fallbackDurationMs: Long, sizeBytes: Long? = null) =
+        DownloadQuality(qualityName, mediaId, video?.height ?: 0, sizeBytes, video?.duration?.times(1000) ?: fallbackDurationMs)
+
+    /**
+     * 一档转码的长度，并确认它真能读出字节：一次 1 字节的 Range 请求，长度取 Content-Range。读不出时抛
+     * [UnreadableTranscodeException]，连不上、回错误状态码一类照原样抛出。
+     *
+     * 实测有的转码档服务端是坏的：回 206、Content-Range 写着全长，正文却是空的，换主机、隔几分钟都一样
+     * （2026-10-07，同一个视频的 1080P 正常，720P 与 480P 如此）。只看响应头的长度探测认不出，下载到第一个块才失败。
+     * 用详情里刚取的直链直接发，不经 handle：handle 读不出要换主机重试几轮才放弃，坏档要等几秒才能从列表里去掉。
+     */
+    private suspend fun probeTranscode(client: PikPakClient, media: MediaVariant): Long =
+        client.streamRangeFromUrl(media.link.url, start = 0L, length = 1L) { stream ->
+            val size = stream.totalSize?.takeIf { it > 0 } ?: error("转码档没有给出长度")
+            // 正文提前断开在 Ktor 里是异常，不是读到 -1，两种都算读不出
+            val read = runSuspendCatching { stream.channel.readAvailable(ByteArray(1), 0, 1) }
+            if ((read.getOrNull() ?: -1) < 1) throw UnreadableTranscodeException(read.exceptionOrNull())
+            size
+        }
+
+    /**
+     * 一档转码经下载暂存读。不走 [openByteSource]：那条路给播放用，转码只进内存缓存，
+     * 换成暂存的话边看边往盘上写整条 TS。
+     */
+    private suspend fun transcodeSource(client: PikPakClient, fileId: String, mediaId: String, retainedBy: String?): PikPakByteSource {
+        val detail = detailOf(client, fileId)
+        if (detail.hash.isBlank()) error("文件缺少内容哈希，无法读取")
+        if (detail.medias.none { it.mediaId == mediaId && it.link.url.isNotBlank() }) error("所选画质已不可用")
+        val streamSize = streamSizeOf(client, detail, mediaId)
+        val pool = fileCachePool ?: run {
+            val handle = client.fileHandle(detail, mediaId = mediaId, streamSize = streamSize, onRangeAttempt = ::logRangeAttempt)
+            return try {
+                PikPakByteSource(handle, handle.openCache(coroutineContext = proxy.readerContext))
+            } catch (e: Throwable) {
+                handle.close()
+                throw e
+            }
+        }
+        val lease = pool.acquire(client, detail.id, detail.hash, detail.sizeBytes, detail.name,
+            parentId = detail.parentId, leased = LeasedFile.isLeased(fileId), detail = detail,
+            retained = retainedBy != null, owner = retainedBy ?: detail.id, mediaId = mediaId, streamSize = streamSize)
+        return PikPakByteSource(lease.entry.handle, lease.entry.cache, lease::close)
+    }
+
+    private suspend fun streamSizeOf(client: PikPakClient, detail: FileDetail, mediaId: String): Long =
+        client.fileHandle(detail, mediaId = mediaId, onRangeAttempt = ::logRangeAttempt).use { it.streamSize() }
+
+    private fun durationMsOf(detail: FileDetail): Long =
+        detail.params["duration"]?.toDoubleOrNull()?.let { (it * 1000).toLong() } ?: 0L
 
     /**
      * 建 handle 与字节来源。handle 的内容哈希、文件对象与第一条直链都取自 [detail]，第一次读不必再查。
@@ -548,13 +775,16 @@ class PikoMediaRepository(
         resolved: ResolvedVariant,
         blockStore: BlockStore? = null,
         leased: Boolean = false,
+        /** 见 [openRandomAccess]。只对原画有效：只有原画经下载暂存。 */
+        retainedBy: String? = null,
     ): PikPakByteSource? {
         // handle 在直链被拒时按 gcid 重建文件对象，没有 gcid 就失去了它存在的意义
         if (detail.hash.isBlank()) return null
         if (resolved.isOrigin && blockStore == null) {
             fileCachePool?.let { pool ->
                 val lease = pool.acquire(client, detail.id, detail.hash, detail.sizeBytes, detail.name,
-                    parentId = detail.parentId, leased = leased, detail = detail)
+                    parentId = detail.parentId, leased = leased, detail = detail,
+                    retained = retainedBy != null, owner = retainedBy ?: detail.id)
                 return PikPakByteSource(lease.entry.handle, lease.entry.cache, lease::close)
             }
         }
@@ -630,6 +860,9 @@ private const val CLIP_SLICE_MS = 90_000L
 private const val SLICE_BITRATE_MARGIN = 2.0
 
 private val FRESH_DETAIL_FOR = 5.minutes
+
+// 各档的大小随内容而定，不会变；读不出的档有可能被服务端修好，所以也不留太久
+private val QUALITY_PROBE_FOR = 10.minutes
 
 /** 清晰度菜单里代表原画的那一项，也是 [PikoMediaRepository] 认的原画标识。 */
 const val ORIGINAL_QUALITY = "Original"

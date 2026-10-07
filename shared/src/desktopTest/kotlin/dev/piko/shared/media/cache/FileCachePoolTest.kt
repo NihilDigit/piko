@@ -16,7 +16,7 @@ class FileCachePoolTest {
         val client = cloud.provider.currentClient.value!!
         val pool = PikoFileCachePool(scope) { root.resolve("$it.data").path }
         val first = pool.acquire(client, "f1", "GCID", 262144, "one", retained = true, owner = "one")
-        pool.remember(client.account, "GCID", 262144, first.entry.store.path, "two")
+        pool.remember(client.account, "GCID", 262144, "two")
         first.entry.store.write("key", 0, ByteArray(262144))
         pool.complete(first, "one")
         val saved = File(first.entry.store.path)
@@ -28,8 +28,8 @@ class FileCachePoolTest {
         assertTrue(saved.exists())
         assertFalse(orphan.exists())
         assertTrue(unrelated.exists())
-        val playing = pool.acquire(client, "f1", "GCID", 262144, "one", savedPath = saved.path)
-        pool.discard(client.account, "GCID", 262144, saved.path, "two")
+        val playing = pool.acquire(client, "f1", "GCID", 262144, "one")
+        pool.discard(client.account, "GCID", 262144, "two")
         pool.prune()
         assertTrue(saved.exists(), "正在播放的文件不能被清理")
         playing.release()

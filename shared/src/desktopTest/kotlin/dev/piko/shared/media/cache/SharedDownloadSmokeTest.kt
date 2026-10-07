@@ -57,7 +57,8 @@ class SharedDownloadSmokeTest {
             coordinator.tasks.value["f1"]?.let { it.downloadedBytes > 0 && it.downloadedBytes < payload.size } == true
         }
         coordinator.pauseDownload("f1")
-        val path = coordinator.tasks.value.getValue("f1").cachePath!!
+        val task = coordinator.tasks.value.getValue("f1")
+        val path = root.resolve(".piko-cache/${fileCacheName(PikoFileCachePool.identity(task.account, task.gcid, task.totalBytes))}.data").path
         awaitUntil("暂停数据已持久化") { java.io.File("$path.blocks").exists() }
         val metadataCalls = cloud.detailCalls.get()
         repository.preparePlayback("f1").getOrThrow().use { playback ->
