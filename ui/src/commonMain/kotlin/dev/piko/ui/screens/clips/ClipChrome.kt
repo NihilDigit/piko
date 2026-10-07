@@ -32,6 +32,7 @@ import androidx.compose.material.icons.automirrored.outlined.ViewSidebar
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StayCurrentLandscape
 import androidx.compose.material.icons.filled.StayCurrentPortrait
@@ -40,6 +41,7 @@ import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.OpenInFull
+import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -90,6 +92,7 @@ import dev.piko.shared.naming.FileKind
 import dev.piko.shared.naming.parseMediaName
 import dev.piko.shared.state.Clip
 import dev.piko.ui.components.formatTimeMs
+import dev.piko.ui.platform.LocalFramelessWindow
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.windowDragArea
 import dev.piko.ui.platform.rememberCaptionSlot
@@ -167,6 +170,18 @@ internal fun ClipFeedTopBar(
                 shortcut = "M",
             )
             if (onDock != null) {
+                // 置顶与播放窗口同一个按钮：一边刷一边浏览网盘时，独立窗口一点主窗口就被盖到后面
+                val window = LocalFramelessWindow.current
+                if (window != null) {
+                    val onTop = window.isAlwaysOnTop
+                    ChromeIconButton(
+                        icon = if (onTop) Icons.Filled.PushPin else Icons.Outlined.PushPin,
+                        label = if (onTop) "取消置顶" else "置顶",
+                        onClick = { window.setAlwaysOnTop(!onTop) },
+                        size = buttonSize,
+                        tooltip = true,
+                    )
+                }
                 // 独立窗口与普通播放窗口一样，右上角只有一个 ×：关窗即是收回主窗口，信息流回到侧栏接着刷。
                 // 关掉信息流在主窗口里做，这里不再并排一个关闭与一个收回
                 ChromeIconButton(Icons.Filled.Close, "收回到主窗口", onDock, buttonSize, tooltip = true, minTouchTarget = true)
