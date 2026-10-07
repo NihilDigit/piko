@@ -176,16 +176,19 @@ internal class DriveItemCallbacks(
     val onPlaced: (FileStat, LayoutCoordinates) -> Unit,
     val onLongPress: (FileStat) -> Unit,
     val onSelect: (FileStat, Boolean) -> Unit,
-    /** Ctrl（⌘）点选，见 [selectionClicks]。 */
-    val onToggleSelect: (FileStat) -> Unit,
+    /**
+     * Ctrl（⌘）点选，见 [selectionClicks]。这两个与 [onBoxSelect] 交的是行的 key（DriveListItem.File.key），
+     * 不是文件 ID：查找重复里同一个文件占两行，连选从哪一行数起要分得清。
+     */
+    val onToggleSelect: (rowKey: String) -> Unit,
     /** Shift 点选。 */
-    val onExtendSelect: (FileStat) -> Unit,
+    val onExtendSelect: (rowKey: String) -> Unit,
     /** 按住这一项拖动时拖出去的那一批，见 [fileDragSource]。 */
     val dragPayload: (FileStat) -> FileDragPayload?,
     /** 鼠标中键点了这一项：文件夹在新标签页里打开。 */
     val onMiddleClick: (FileStat) -> Unit,
-    /** 框选，见 [marqueeSelection]。 */
-    val onBoxSelect: (base: Set<String>, boxed: Set<String>) -> Unit,
+    /** 框选，见 [marqueeSelection]。[base] 是文件 ID，[boxedRows] 是行的 key。 */
+    val onBoxSelect: (base: Set<String>, boxedRows: Set<String>) -> Unit,
     /** 鼠标单击了网格的空白处。 */
     val onBackgroundClick: () -> Unit,
     /** 焦点进出这一项（含它里面的更多按钮），键盘操作据此知道作用于哪一项。 */
@@ -229,7 +232,7 @@ internal fun DriveFileGrid(
     emptyFolders: Map<String, Boolean> = emptyMap(),
     /** 挂归档标记的文件夹，见 PikoDriveRepository.vaultedFolders。 */
     vaultedFolders: Set<String> = emptySet(),
-    /** 要把键盘焦点移到的那一项，移过去后回调 [onKeyboardFocusMoved]。 */
+    /** 要把键盘焦点移到的那一行（行的 key），移过去后回调 [onKeyboardFocusMoved]。 */
     keyboardFocusTarget: String?,
     onKeyboardFocusMoved: () -> Unit,
     header: @Composable () -> Unit,
@@ -266,7 +269,7 @@ internal fun DriveFileGrid(
             }
         }
 
-        val fileKeys = remember(items) { items.mapNotNullTo(HashSet()) { (it as? DriveListItem.File)?.key } }
+        val fileIdByRow = remember(items) { items.filterIsInstance<DriveListItem.File>().associate { it.key to it.file.id } }
         // 空白处的右键菜单：查看、排序、刷新、粘贴、新建这些作用于整个文件夹的操作，照资源管理器。
         // 命令栏上照样都有，这里是鼠标用户就近的捷径；条目自己的菜单在里层，先接住
         ContextMenuArea(actions = backgroundActions, modifier = Modifier.fillMaxSize()) {
@@ -279,11 +282,11 @@ internal fun DriveFileGrid(
                 .marqueeSelection(
                     gridState = gridState,
                     selectedIds = selectedIds,
-                    boxedKey = { key -> (key as? String)?.takeIf { it in fileKeys } },
+                    boxedKey = { key -> (key as? String)?.takeIf { it in fileIdByRow } },
                     onSelect = callbacks.onBoxSelect,
                     onBackgroundClick = callbacks.onBackgroundClick,
                     // 点过的那一项（取得焦点）与选中的一样，按住它拖是移动
-                    movable = { id -> id in selectedIds || id == activeItemId },
+                    movable = { row -> fileIdByRow[row]?.let { id -> id in selectedIds || id == activeItemId } == true },
                 ),
             contentPadding = PaddingValues(
                 start = horizontalPadding,
@@ -337,6 +340,7 @@ internal fun DriveFileGrid(
                         if (file.isFolder) LaunchedEffect(file.id) { callbacks.onFolderVisible(file) }
                         DriveCell(
                             file = file,
+                            rowKey = item.key,
                             text = cellText(item, if (file.isFolder) folderView(file) else null),
                             viewMode = viewMode,
                             isSelectionMode = isSelectionMode,
@@ -348,7 +352,7 @@ internal fun DriveFileGrid(
                             moreButton = moreButton,
                             isEmptyFolder = file.isFolder && emptyFolders[file.id] == true,
                             folderHasVault = file.isFolder && file.id in vaultedFolders,
-                            requestFocus = file.id == keyboardFocusTarget,
+                            requestFocus = item.key == keyboardFocusTarget,
                             onFocusRequested = onKeyboardFocusMoved,
                             modifier = Modifier.animateItem(),
                         )
@@ -511,6 +515,7 @@ private fun SectionHeaderRow(header: DriveListItem.SectionHeader, inset: Dp, onC
 @Composable
 private fun DriveCell(
     file: FileStat,
+    rowKey: String,
     text: CellText,
     viewMode: DriveViewMode,
     isSelectionMode: Boolean,
@@ -560,8 +565,8 @@ private fun DriveCell(
                 }
             }
             .selectionClicks(
-                onToggle = { callbacks.onToggleSelect(file) },
-                onExtend = { callbacks.onExtendSelect(file) },
+                onToggle = { callbacks.onToggleSelect(rowKey) },
+                onExtend = { callbacks.onExtendSelect(rowKey) },
                 // 多选时条目上画着勾选框，单击照旧是勾选或取消
                 onDoubleClick = if (isSelectionMode) null else ({ callbacks.onOpen(file) }),
                 ownClicks = ownClicks,

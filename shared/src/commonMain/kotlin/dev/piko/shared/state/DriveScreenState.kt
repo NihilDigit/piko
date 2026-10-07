@@ -280,7 +280,7 @@ class DriveScreenState(
         when {
             filter != null -> searchedFiles.filter { !it.isFolder && it.fileCategory() == filter }.map { DriveListItem.File(it, null) }
             isGlobalSearchActive || searchQuery.isNotBlank() -> searchedFiles.map { DriveListItem.File(it, null) }
-            libraryView == DriveLibrary.DUPLICATES -> duplicateItems
+            libraryView == DriveLibrary.DUPLICATES -> duplicateItems { blockId -> isDuplicateGroupExpanded(blockId) }
             // 库里的条目散在全盘各处，按作品与分区归拢的是一个目录里的东西，这里照原来的先后平铺；
             // 压缩包里的也平铺、不折叠：在包里多半是挑要解压的几项，折起来的次要文件正是要挑的一部分
             structure == null || isVirtualPlace -> files.map { DriveListItem.File(it, null) }
@@ -290,22 +290,42 @@ class DriveScreenState(
         }
     }
 
+    /** 眼前按作品与分区排：不在搜索、不在库或压缩包里、解析开着且认出了作品。 */
+    private val isStructured: Boolean by derivedStateOf {
+        val structure = currentAnalysis
+        !isSearching && !isVirtualPlace && isNameParsing && structure != null && structure.blocks.isNotEmpty()
+    }
+
+    /**
+     * 列表里文件的每一行，顺序与界面一致，收起的分区当作展开。Shift 连选按它数一段，框选与点选按它把行换成文件。
+     *
+     * 行与文件不总是一一对应：查找重复里同一个文件可能在两组各占一行，行的 key 带着组。选中的单位是文件，
+     * 界面交来的是行（[DriveListItem.File.key]），在这里换算；把行的 key 当文件 ID 存进选中集合，
+     * 计数对得上、勾选框却一个也不亮，删除时交给服务端的也不是文件 ID。
+     */
+    private val fileRows: List<DriveListItem.File> by derivedStateOf {
+        val structure = currentAnalysis
+        val rows = when {
+            isStructured && structure != null -> buildDriveItems(files, structure, isFoldingActive && !showAllFilesTemporarily) { true }
+            !isSearching && libraryView == DriveLibrary.DUPLICATES -> duplicateItems { true }
+            else -> displayItems
+        }
+        rows.filterIsInstance<DriveListItem.File>().filterNot { isHiddenByThumbnails(it.file) }
+    }
+
+    private val fileByRowKey: Map<String, FileStat> by derivedStateOf { fileRows.associate { it.key to it.file } }
+
     /**
      * 当前可见的文件，顺序与界面一致。收起的分区与挂在视频下的附件也算在内：它们只是没单独占一行，
      * 全选、播放列表与图片翻页都该包括它们。
      */
     val displayedFiles: List<FileStat> by derivedStateOf {
-        val structure = currentAnalysis
-        if (isSearching || isVirtualPlace || structure == null || !isNameParsing || structure.blocks.isEmpty()) {
-            // 查找重复里同一个文件可能在两组各占一行，全选与翻页只算一次
-            return@derivedStateOf displayItems.mapNotNull { (it as? DriveListItem.File)?.file }.distinctBy { it.id }
-        }
-        val hideFolded = isFoldingActive && !showAllFilesTemporarily
-        val shown = buildDriveItems(files, structure, hideFolded) { true }.mapNotNull { (it as? DriveListItem.File)?.file }
+        val shown = fileRows.map { it.file }
+        val hosts = if (isStructured) currentAnalysis?.attachedTo.orEmpty() else emptyMap()
         val shownIds = shown.mapTo(HashSet()) { it.id }
-        val attachments = files.filter { file -> structure.attachedTo[file.id]?.let { it in shownIds } == true }
-        // 字幕与音轨既挂在宿主下、又在自己那一栏里占一行，只算一次
-        (shown + attachments).distinctBy { it.id }.filterNot(::isHiddenByThumbnails)
+        val attachments = files.filter { file -> hosts[file.id]?.let { it in shownIds } == true && !isHiddenByThumbnails(file) }
+        // 一个文件可能占两行：字幕与音轨既挂在宿主下、又在自己那一栏里，查找重复里同一个文件在两组。全选与翻页只算一次
+        (shown + attachments).distinctBy { it.id }
     }
 
     /**
@@ -748,17 +768,19 @@ class DriveScreenState(
         selectedFileIds.addAll(suggested)
     }
 
+    private fun isDuplicateGroupExpanded(blockId: String): Boolean = DriveViewMemory.expanded[expandKey(blockId)] ?: true
+
     /**
      * 每组一个分区标题，下面是组里的各份。同一个文件可能既在完全相同的组里、又代表版本组里的一行，
-     * 列表项的 key 因此带上组；勾选仍按文件 ID，两处是同一个勾。
+     * 列表项的 key 因此带上组；选中仍按文件，两处是同一个勾，见 [fileRows]。
      */
-    private val duplicateItems: List<DriveListItem> by derivedStateOf {
-        val finder = duplicates?.state ?: return@derivedStateOf emptyList()
+    private fun duplicateItems(isExpanded: (blockId: String) -> Boolean): List<DriveListItem> {
+        val finder = duplicates?.state ?: return emptyList()
         val report = finder.report
-        buildList {
+        return buildList {
             for (group in report.identical + report.versions) {
                 val blockId = "dup:${group.kind}:${group.key}"
-                val expanded = DriveViewMemory.expanded[expandKey(blockId)] ?: true
+                val expanded = isExpanded(blockId)
                 add(DriveListItem.SectionHeader(blockId, blockId, duplicateLabel(group), group.title, expanded))
                 if (!expanded) continue
                 for (row in group.rows) {
@@ -1150,41 +1172,47 @@ class DriveScreenState(
         }
     }
 
-    /** Shift 点选的起点：最近一次单独点选的那一项。换目录、退出多选后作废。 */
+    /**
+     * Shift 点选的起点：最近一次单独点选的那一行。记行而不记文件：同一个文件占两行时，从哪一行数起结果不同。
+     * 换目录、退出多选后作废。
+     */
     private var selectionAnchor: String? = null
 
-    /** 桌面的 Ctrl（⌘）点选：切换这一项，不在多选时先进入多选。它成为 Shift 点选的起点。 */
-    fun toggleSelected(fileId: String) {
+    /**
+     * 桌面的 Ctrl（⌘）点选：切换 [rowKey] 那一行的文件，不在多选时先进入多选。这一行成为 Shift 点选的起点。
+     * 以下几个桌面的选择手势都交行的 key（[DriveListItem.File.key]），选中的是行上的文件，见 [fileRows]。
+     */
+    fun toggleSelected(rowKey: String) {
+        val fileId = fileByRowKey[rowKey]?.id ?: return
         isSelectionMode = true
         setSelected(fileId, fileId !in selectedFileIds)
-        selectionAnchor = fileId
+        selectionAnchor = rowKey
         if (selectedFileIds.isEmpty()) exitSelection()
     }
 
     /**
-     * 桌面的 Shift 点选：把起点到 [fileId] 之间（按眼前的顺序，含两端）全部选上，起点不动，
+     * 桌面的 Shift 点选：把起点到 [rowKey] 之间（按眼前各行的顺序，含两端）的文件全部选上，起点不动，
      * 连续 Shift 点选以同一个起点伸缩。没有起点时只选这一项，与文件管理器相同。
      */
-    fun selectRange(fileId: String) {
-        val order = displayedFiles.map { it.id }
-        val anchor = selectionAnchor?.takeIf { it in order }
+    fun selectRange(rowKey: String) {
+        val rows = fileRows
+        val to = rows.indexOfFirst { it.key == rowKey }.takeIf { it >= 0 } ?: return
+        val from = selectionAnchor?.let { anchor -> rows.indexOfFirst { it.key == anchor } }?.takeIf { it >= 0 }
         isSelectionMode = true
-        if (anchor == null) {
-            setSelected(fileId, true)
-            selectionAnchor = fileId
+        if (from == null) {
+            setSelected(rows[to].file.id, true)
+            selectionAnchor = rowKey
             return
         }
-        val from = order.indexOf(anchor)
-        val to = order.indexOf(fileId).takeIf { it >= 0 } ?: return
-        order.subList(minOf(from, to), maxOf(from, to) + 1).forEach { setSelected(it, true) }
+        rows.subList(minOf(from, to), maxOf(from, to) + 1).forEach { setSelected(it.file.id, true) }
     }
 
     /**
-     * 桌面的框选：选中的换成 [base] 加上框住的 [boxed]。拖动时每动一下调一次，[base] 是按下时已选的
+     * 桌面的框选：选中的换成 [base] 加上框住的各行 [boxedRows] 上的文件。拖动时每动一下调一次，[base] 是按下时已选的文件
      * （按着主修饰键开始框选时保留原来的选择，否则为空）。结果为空就退出多选。
      */
-    fun selectBoxed(base: Set<String>, boxed: Collection<String>) {
-        val next = LinkedHashSet(base).apply { addAll(boxed) }
+    fun selectBoxed(base: Set<String>, boxedRows: Collection<String>) {
+        val next = LinkedHashSet(base).apply { boxedRows.mapNotNullTo(this) { fileByRowKey[it]?.id } }
         if (next.isEmpty()) {
             exitSelection()
             return

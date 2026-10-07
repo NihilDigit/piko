@@ -49,7 +49,9 @@ import kotlin.math.min
  * - 空白处单击（没拖动、没按修饰键）调 [onBackgroundClick]，网盘页用它退出多选。
  * - 框选只认鼠标：触屏在空白处拖动是滚动。手指在空白处轻点同样调 [onBackgroundClick]。
  *
- * [boxedKey] 把条目的 key 换成可选中的 ID，整行项返回 null。
+ * [boxedKey] 把条目的 key 换成交给 [onSelect] 的 ID，整行项返回 null；[movable] 收到的也是它。
+ * 它不必与 [selectedIds] 是同一种 ID：网盘页的查找重复里同一个文件占两行，框住的按行交出去，选中的是文件，由调用方换算。
+ * 所以滚出视口的也按行记：同一个文件的另一行还在眼前，不等于框过的这一行还在框里。
  */
 @Composable
 fun Modifier.marqueeSelection(

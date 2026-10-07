@@ -384,7 +384,7 @@ fun DriveScreen(
     var showNewFolderDialog by remember { mutableStateOf(false) }
     var newFolderName by remember { mutableStateOf("") }
     var renameTargetFile by remember { mutableStateOf<FileStat?>(null) }
-    // 键盘焦点所在的那一项，方向键、菜单键、Delete 与 F2 作用于它；以及要把焦点移过去的那一项
+    // 键盘焦点所在的那一项，方向键、菜单键、Delete 与 F2 作用于它；以及要把焦点移过去的那一行（行的 key）
     var focusedFile by remember { mutableStateOf<FileStat?>(null) }
     // 宽窗口命令栏作用的那一项：最近取得焦点的一项，失焦后仍留着。点开命令栏的下拉菜单时焦点进了弹窗，
     // 按 focusedFile 算的话菜单里的操作就落空了。换目录、点空白处时清掉，与资源管理器的选中相同
@@ -921,8 +921,8 @@ fun DriveScreen(
             onPlaced = { file, coordinates -> propertiesAnchors.placed(file.id, coordinates) },
             onLongPress = { state.enterSelection(it.id) },
             onSelect = { file, selected -> state.setSelected(file.id, selected) },
-            onToggleSelect = { state.toggleSelected(it.id) },
-            onExtendSelect = { state.selectRange(it.id) },
+            onToggleSelect = state::toggleSelected,
+            onExtendSelect = state::selectRange,
             onBoxSelect = state::selectBoxed,
             onMiddleClick = { file -> if (file.isFolder && state.libraryView != DriveLibrary.TRASH) latestOpenInNewTab?.invoke(file) },
             // 拖选中的一项时拖走全部选中的，否则只拖这一项，与文件管理器相同。回收站里的拖不出去：移走即是恢复，
@@ -1082,8 +1082,9 @@ fun DriveScreen(
             if (focusedFile != null) {
                 focusManager.moveFocus(arrow)
             } else {
+                // 网格的 key 是行的 key，查找重复里不是文件 ID
                 val visible = gridState.layoutInfo.visibleItemsInfo.map { it.key }.toSet()
-                keyboardFocusTarget = displayedFiles.firstOrNull { it.id in visible }?.id ?: return false
+                keyboardFocusTarget = state.displayItems.firstOrNull { it is DriveListItem.File && it.key in visible }?.key ?: return false
             }
             return true
         }
