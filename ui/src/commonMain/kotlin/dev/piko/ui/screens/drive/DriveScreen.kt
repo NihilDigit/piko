@@ -910,7 +910,7 @@ fun DriveScreen(
             onMore = { actionTargetFile = it },
             onProperties = { latestShowProperties(targetsOf(it), propertiesAnchors.beside(it.id)) },
             onPlaced = { file, coordinates -> propertiesAnchors.placed(file.id, coordinates) },
-            onLongPress = { state.enterSelection(it.id) },
+            onStartSelection = { state.enterSelection(it.id) },
             onSelect = { file, selected -> state.setSelected(file.id, selected) },
             onToggleSelect = state::toggleSelected,
             onExtendSelect = state::selectRange,

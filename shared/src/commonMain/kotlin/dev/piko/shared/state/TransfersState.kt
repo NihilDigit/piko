@@ -386,6 +386,16 @@ class TransfersState(
         checkboxMode = selectedKeys.isNotEmpty()
     }
 
+    /**
+     * 进多选并选上这一项：移动端的长按，桌面右键菜单里的「选择」。不用 [toggleSelected]：鼠标点选过的那一项
+     * 已在选中集里，翻转会把它取消。
+     */
+    fun enterSelection(key: String) {
+        selectedKeys = selectedKeys + key
+        anchorKey = key
+        checkboxMode = true
+    }
+
     /** [order] 是眼前列表的先后，收起的「文件已删除」组不在其中，连选不会跨进去。 */
     fun selectRange(key: String, order: List<String>) {
         val anchor = anchorKey?.takeIf { it in order } ?: return selectOnly(key)

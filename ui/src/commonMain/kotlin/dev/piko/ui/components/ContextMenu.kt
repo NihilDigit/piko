@@ -58,12 +58,24 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.material.icons.outlined.CheckBox
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerId
+import androidx.compose.ui.input.pointer.PointerInputScope
+import androidx.compose.ui.input.pointer.PointerType
+import dev.piko.ui.adaptive.isDesktopLayout
 
 /**
  * 在指针处弹出的右键菜单，包住一个条目。菜单项与该条目的操作面板相同，只是换成桌面上
- * 更顺手的呈现：不必先点「更多」再在底部面板里找。触屏上没有副键，这一层不起作用。
+ * 更顺手的呈现：不必先点「更多」再在底部面板里找。
  *
- * 只认副键按下，只消费这一下：条目自己的单击、长按与悬停照常工作。
+ * 鼠标只认副键按下，只消费这一下：条目自己的单击与悬停照常工作。桌面上触屏与笔按住不放也弹这份菜单，
+ * 照 Windows 的惯例按住等于右键，见 [detectTouchHold]；移动端的长按是进多选，由条目自己处理（[longPressSelects]）。
  */
 @Composable
 fun ContextMenuArea(
@@ -71,9 +83,17 @@ fun ContextMenuArea(
     modifier: Modifier = Modifier,
     /** 为 false 时右键不弹菜单，例如多选时：那时的操作针对选中的全部条目，不是这一行。 */
     enabled: Boolean = true,
+    /**
+     * 不为 null 时菜单末尾加一项「选择」，进入多选并选中这一项。多选状态下传 null。
+     * 桌面上按住不再进多选，触屏用户要从这里进去；鼠标另有主修饰键、Shift 与框选。
+     */
+    onSelect: (() -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
     var menuAt by remember { mutableStateOf<Offset?>(null) }
+    val holdOpensMenu = enabled && isDesktopLayout()
+    val enclosing = LocalEnclosingHold.current
+    val hold = remember { HoldClaim() }
     Box(
         modifier = modifier
             .pointerInput(enabled) {
@@ -89,14 +109,75 @@ fun ContextMenuArea(
                         }
                     }
                 }
-            },
+            }
+            .then(
+                if (holdOpensMenu) {
+                    Modifier.pointerInput(hold, enclosing) { detectTouchHold(hold, enclosing) { menuAt = it } }
+                } else {
+                    Modifier
+                },
+            ),
     ) {
-        content()
+        CompositionLocalProvider(LocalEnclosingHold provides hold, content = content)
         val position = menuAt
         if (position != null) {
             val positionProvider = remember(position) { PointerMenuPositionProvider(position) }
-            MenuMotion { ActionMenu(actions = actions(), positionProvider = positionProvider, onDismiss = { menuAt = null }) }
+            MenuMotion {
+                ActionMenu(actions = withSelectAction(actions(), onSelect), positionProvider = positionProvider, onDismiss = { menuAt = null })
+            }
         }
+    }
+}
+
+/** 「选择」单独一组，排在属性与危险项之前，见 [layoutActions]。 */
+private fun withSelectAction(actions: List<SheetAction>, onSelect: (() -> Unit)?): List<SheetAction> =
+    if (onSelect == null) actions else actions + SheetAction(Icons.Outlined.CheckBox, "选择", onSelect, group = ActionGroup.Select)
+
+/**
+ * 长按是进多选还是弹菜单。移动端照 Android 进多选；桌面上按住不放等于右键，由 [ContextMenuArea] 弹菜单，
+ * 鼠标左键按住什么也不做，条目不要再挂长按。
+ */
+@Composable
+@ReadOnlyComposable
+fun longPressSelects(): Boolean = !isDesktopLayout()
+
+/**
+ * 嵌套的菜单区（网格空白处包着条目）里，一次按住只归最里面的那一层。Main 阶段由内向外传，里层先收到按下，
+ * 把指针 ID 记到外层的 [yielded] 上，外层随后收到同一个按下时就放手。不能靠消费来让：条目自己的点击已把按下消费掉，
+ * 这里本就不看消费与否。
+ */
+private class HoldClaim {
+    var yielded: PointerId? = null
+}
+
+private val LocalEnclosingHold = staticCompositionLocalOf<HoldClaim?> { null }
+
+/**
+ * 触屏与笔按住不放，抬起时在按下处弹菜单。照 Windows：按住到时不弹，抬起才弹，手指不会正好落在刚冒出来的菜单上，
+ * 弹层也不必接住一个在它出现之前就按下的指针。挪过了触摸阈值（滚动）、多指（捏合）或到时之前抬起都不算。
+ *
+ * 到时之后余下的事件在 Initial 阶段全部消费：条目自己的点击没有超时，不消费的话抬起时它照样打开条目。
+ */
+private suspend fun PointerInputScope.detectTouchHold(own: HoldClaim, enclosing: HoldClaim?, onHold: (Offset) -> Unit) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        if (down.type != PointerType.Touch && down.type != PointerType.Stylus) return@awaitEachGesture
+        if (own.yielded == down.id) return@awaitEachGesture
+        enclosing?.yielded = down.id
+        val endedEarly = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+            while (true) {
+                val event = awaitPointerEvent()
+                val change = event.changes.firstOrNull { it.id == down.id }
+                if (change == null || !change.pressed || event.changes.size > 1) break
+                if ((change.position - down.position).getDistance() > viewConfiguration.touchSlop) break
+            }
+        }
+        if (endedEarly != null) return@awaitEachGesture
+        do {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            event.changes.forEach { it.consume() }
+        } while (event.changes.any { it.pressed })
+        onHold(down.position)
     }
 }
 

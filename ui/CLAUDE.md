@@ -106,6 +106,10 @@ TopAppBar 先量动作、标题拿剩下的，桌面窄窗口加上窗口按钮�
 ## 鼠标与键盘
 
 条目右键弹出与操作面板相同的菜单（`ContextMenuArea`）；右键点在几项选中里的一项上时菜单作用于全部选中的，照资源管理器。
+长按按交互模型分（`longPressSelects`），输入方式看指针事件自带的类型，不看「最近一次输入」：移动端长按进多选；桌面上触屏与笔
+按住、抬起后在按下处弹同一份菜单（照 Windows，按住等于右键），鼠标左键按住什么也不做，多选照旧靠主修饰键、Shift 与框选。
+桌面触屏进多选的入口是菜单里的「选择」（`ContextMenuArea` 的 `onSelect`，多选时不给）。行组件（`FileListItem`、海报墙与图库的
+`cardInteraction`）在桌面上不挂长按，新列表照这两处做，不在页里各写判断。嵌套的菜单区（网格空白处包着条目）一次按住只归最里层。
 列表一律用按行对齐的 `LazyVerticalGrid`（`PikoItemGrid`），不用瀑布流：瀑布流按最矮的一栏放，顺序会在各栏间跳。每页把一项的操作写成一个
 `actionsFor`，面板与菜单都读它（网盘页是 `DriveScreen` 的 `itemActions`）；新列表照做。
 面板与菜单怎么摆由 `components/ActionLayout.kt` 的 `layoutActions` 统一定，两端一套：危险项（`destructive`）垫底、错误色，「属性」

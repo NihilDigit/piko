@@ -19,7 +19,9 @@ import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import dev.piko.data.repository.isPlayableVideo
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import dev.piko.ui.components.longPressSelects
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -75,7 +77,7 @@ import dev.piko.ui.components.placeholderColors
 import io.github.nihildigit.pikpak.FileStat
 
 /**
- * 卡片整体的点击语义。多选时整张卡是一个复选项；平时单击打开、长按进入多选。
+ * 卡片整体的点击语义。多选时整张卡是一个复选项；平时单击打开，移动端长按进入多选。
  * 与列表行的 ListItem 重载分工一致。图库方格共用。
  */
 @OptIn(ExperimentalFoundationApi::class)
@@ -88,10 +90,11 @@ internal fun Modifier.cardInteraction(
     onSelectToggle: (Boolean) -> Unit,
 ): Modifier {
     val haptic = LocalHapticFeedback.current
-    return if (isSelectionMode) {
-        toggleable(value = isSelected, role = Role.Checkbox, onValueChange = onSelectToggle)
-    } else {
-        combinedClickable(
+    return when {
+        isSelectionMode -> toggleable(value = isSelected, role = Role.Checkbox, onValueChange = onSelectToggle)
+        // 桌面上按住等于右键，由外面的 ContextMenuArea 弹菜单
+        !longPressSelects() -> clickable(onClick = onClick)
+        else -> combinedClickable(
             onLongClickLabel = "多选",
             onLongClick = {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)

@@ -267,7 +267,11 @@ fun MySharesScreen(
                             ),
                         ) {
                             items(items = state.shares, key = { it.shareId }) { share ->
-                                ContextMenuArea(actions = { actionsFor(share) }, modifier = Modifier.animateItem().padding(4.dp)) {
+                                ContextMenuArea(
+                                    actions = { actionsFor(share) },
+                                    onSelect = if (selecting) null else ({ state.toggleSelected(share.shareId) }),
+                                    modifier = Modifier.animateItem().padding(4.dp),
+                                ) {
                                     LaunchedEffect(share.shareId) { state.loadPreview(share) }
                                     val preview = state.previews[share.shareId]
                                     ShareCard(

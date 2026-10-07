@@ -175,7 +175,8 @@ internal class DriveItemCallbacks(
     val onProperties: (FileStat) -> Unit,
     /** 条目排好位置时交出它的布局坐标，属性卡片据此贴在它旁边。只存不重组，见 PropertiesAnchors。 */
     val onPlaced: (FileStat, LayoutCoordinates) -> Unit,
-    val onLongPress: (FileStat) -> Unit,
+    /** 进入多选并选中这一项：移动端是长按，桌面是右键菜单里的「选择」。 */
+    val onStartSelection: (FileStat) -> Unit,
     val onSelect: (FileStat, Boolean) -> Unit,
     /**
      * Ctrl（⌘）点选，见 [selectionClicks]。这两个与 [onBoxSelect] 交的是行的 key（DriveListItem.File.key），
@@ -548,6 +549,7 @@ private fun DriveCell(
     CompositionLocalProvider(LocalOwnClicks provides ownClicks) {
     ContextMenuArea(
         actions = { callbacks.contextActions(file) },
+        onSelect = if (isSelectionMode) null else ({ callbacks.onStartSelection(file) }),
         modifier = modifier
             .alpha(if (beingDragged) DraggedAlpha else 1f)
             .focusRequester(focusRequester)
@@ -605,7 +607,7 @@ private fun DriveCell(
                 isSpoilerBlurred = isBlurred,
                 isHighlighted = isHighlighted,
                 onClick = { callbacks.onOpen(file) },
-                onLongClick = { callbacks.onLongPress(file) },
+                onLongClick = { callbacks.onStartSelection(file) },
                 onSelectToggle = { callbacks.onSelect(file, it) },
                 folderHasVault = folderHasVault,
             )
@@ -616,7 +618,7 @@ private fun DriveCell(
                 isSpoilerBlurred = isBlurred,
                 isHighlighted = isHighlighted,
                 onClick = { callbacks.onOpen(file) },
-                onLongClick = { callbacks.onLongPress(file) },
+                onLongClick = { callbacks.onStartSelection(file) },
                 onSelectToggle = { callbacks.onSelect(file, it) },
                 onMoreClick = { callbacks.onMore(file) },
                 moreButton = moreButton,
@@ -636,7 +638,7 @@ private fun DriveCell(
                 isSpoilerBlurred = isBlurred && !file.isFolder,
                 locationLabel = locationLabel,
                 onClick = { callbacks.onOpen(file) },
-                onLongClick = { callbacks.onLongPress(file) },
+                onLongClick = { callbacks.onStartSelection(file) },
                 onSelectToggle = { callbacks.onSelect(file, it) },
                 onMoreClick = { callbacks.onMore(file) },
                 moreButton = moreButton,

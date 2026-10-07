@@ -86,6 +86,7 @@
 网格的空白处另有一层右键菜单（查看、刷新、粘贴、新建、全选、属性），条目的菜单在里层先接住。
 点击与键位照各自系统的文件管理器（Windows 照资源管理器，mac 照 Finder），不自创：
 鼠标单击是选中（条目取得焦点，`focusIndication` 盖一层底色），双击才打开；触屏轻点照旧打开。
+长按在移动端进多选，在桌面弹右键菜单（触屏与笔；鼠标按住不进多选），菜单里的「选择」进多选，见 `ui/CLAUDE.md`。
 多选时条目上画着勾选框，鼠标单击照旧是勾选。按住主修饰键点选是加选，
 Shift 点选是连选（`selectionClicks`，状态在 `DriveScreenState.toggleSelected` / `selectRange`）。
 这几个桌面手势与框选交给状态的是行的 key（`DriveListItem.File.key`），不是文件 ID，由 `DriveScreenState` 换成行上的文件；

@@ -15,6 +15,8 @@ import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performMouseInput
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.longClick
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.hasText
@@ -144,6 +146,57 @@ class ContextMenuTest {
         onNodeWithText("移动到").assertIsFocused()
         press(Key.DirectionUp)
         onNodeWithContentDescription("下载").assertIsFocused()
+    }
+
+    /**
+     * 桌面上按住的三条约定：鼠标左键按住不进多选；触屏按住、抬起后弹出与右键相同的菜单，条目不被点开；
+     * 嵌在网格空白处那一层里时只弹条目的菜单。菜单里的「选择」进多选。
+     */
+    @Test
+    fun `holding on the desktop opens the menu instead of selecting`() = runComposeUiTest {
+        var clicks by mutableIntStateOf(0)
+        var longClicks by mutableIntStateOf(0)
+        var selects by mutableIntStateOf(0)
+        setContent {
+            CompositionLocalProvider(LocalPikoPlatform provides platform) { PikoTheme {
+                ContextMenuArea(actions = { listOf(SheetAction(Icons.Outlined.Folder, "新建文件夹", {})) }) {
+                    ContextMenuArea(
+                        actions = { listOf(SheetAction(Icons.Outlined.Download, "下载", {})) },
+                        onSelect = { selects++ },
+                    ) {
+                        FileListItem(
+                            headline = "a.mkv",
+                            leading = { Icon(Icons.Outlined.Folder, null) },
+                            onClick = { clicks++ },
+                            onMoreClick = {},
+                            onLongClick = { longClicks++ },
+                        )
+                    }
+                }
+            } }
+        }
+        val item = onNodeWithText("a.mkv")
+        item.performMouseInput {
+            press()
+            advanceEventTime(2_000)
+            release()
+        }
+        waitForIdle()
+        assertEquals(0, longClicks)
+        onNodeWithText("下载").assertDoesNotExist()
+
+        val clicksBefore = clicks
+        item.performTouchInput { longClick(center) }
+        waitForIdle()
+        onNodeWithText("下载").assertExists()
+        onNodeWithText("新建文件夹").assertDoesNotExist()
+        assertEquals(0, longClicks)
+        assertEquals(clicksBefore, clicks)
+
+        onNodeWithText("选择").performClick()
+        waitForIdle()
+        assertEquals(1, selects)
+        onNodeWithText("下载").assertDoesNotExist()
     }
 
     private val sevenAndMore = listOf(

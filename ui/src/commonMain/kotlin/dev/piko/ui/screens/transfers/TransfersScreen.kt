@@ -309,7 +309,7 @@ fun TransfersScreen(
         onToggle = { state.toggleSelected(item.key) },
         onLongClick = {
             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-            state.toggleSelected(item.key)
+            state.enterSelection(item.key)
         },
     )
 
@@ -393,7 +393,11 @@ fun TransfersScreen(
     val renderItem: @Composable (TransferItem, Modifier) -> Unit = { item, itemModifier ->
         // 鼠标单选时不进多选、不画复选框，盖一层底色标出选中的是哪一项
         val singleSelected = !state.checkboxMode && item.key in state.selectedKeys
-        ContextMenuArea(actions = { actionsFor(item) }, modifier = itemModifier) {
+        ContextMenuArea(
+            actions = { actionsFor(item) },
+            onSelect = if (state.checkboxMode) null else ({ state.enterSelection(item.key) }),
+            modifier = itemModifier,
+        ) {
             Box(
                 Modifier
                     .then(if (singleSelected) Modifier.selectedOverlay(selectedTint) else Modifier)

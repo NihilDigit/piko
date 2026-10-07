@@ -81,7 +81,8 @@ private const val DIMMED_ALPHA = 0.38f
  * 长内容（如完整的错误信息）放进详情面板。副文本下还要放进度条的行，把
  * [headlineMaxLines] 设为 1，两行标题、一行副文本再加进度条会超出 88dp。
  *
- * [onLongClick] 为 null 时不提供长按（传输列表没有多选）。[dimmed] 把行内各槽位降到
+ * [onLongClick] 是长按进多选，只在移动端挂上；桌面上按住等于右键，由外面的 ContextMenuArea 弹菜单，
+ * 见 [longPressSelects]。[dimmed] 把行内各槽位降到
  * 禁用态的不透明度，行本身仍可点击。
  */
 @Composable
@@ -104,6 +105,7 @@ fun FileListItem(
     dimmed: Boolean = false,
 ) {
     val haptic = LocalHapticFeedback.current
+    val longClick = onLongClick.takeIf { longPressSelects() }
     val colors = if (isHighlighted) {
         ListItemDefaults.colors(
             containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
@@ -181,13 +183,13 @@ fun FileListItem(
             leadingContent = leadingSlot,
             trailingContent = { Box(slotModifier) { trailing() } },
             supportingContent = supportingSlot,
-            onLongClick = onLongClick?.let { longClick ->
+            onLongClick = longClick?.let { select ->
                 {
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    longClick()
+                    select()
                 }
             },
-            onLongClickLabel = if (onLongClick != null) "多选" else null,
+            onLongClickLabel = if (longClick != null) "多选" else null,
             colors = colors,
             shapes = shapes,
             contentPadding = RowContentPadding,
