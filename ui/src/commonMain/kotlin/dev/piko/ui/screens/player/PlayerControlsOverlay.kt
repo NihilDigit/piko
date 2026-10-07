@@ -886,11 +886,12 @@ fun MobilePlayerControls(
                                 .takeIf { hasTracksEntry },
                             SheetAction(Icons.Outlined.Info, "详细信息", { openSheet = PlayerSheet.Stats })
                                 .takeIf { playbackStats != null },
-                        ) + fileActions.map { action ->
+                        ),
+                        fileActions = fileActions.map { action ->
                             SheetAction(action.icon, action.label, {
                                 openSheet = null
                                 action.onClick()
-                            })
+                            }, shortLabel = action.shortLabel)
                         },
                         playbackSpeed = playbackSpeed,
                         onSpeedChange = onSpeedChange,

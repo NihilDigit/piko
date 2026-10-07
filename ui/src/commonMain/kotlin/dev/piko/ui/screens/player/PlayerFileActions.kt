@@ -1,9 +1,5 @@
 package dev.piko.ui.screens.player
 
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Download
-import androidx.compose.material.icons.outlined.HighQuality
-import androidx.compose.material.icons.outlined.Share
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -15,6 +11,7 @@ import dev.piko.shared.log.logFailure
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.components.QualityDownloadDialog
 import dev.piko.ui.components.SheetAction
+import dev.piko.ui.screens.drive.DriveActions
 import dev.piko.ui.screens.share.ShareDialog
 import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.FileStat
@@ -78,16 +75,17 @@ fun rememberPlayerFileActions(fileId: String, isLocalPlayback: Boolean, onMessag
         )
     }
 
+    // 名字与图标取自网盘的同名操作，两处叫法一致
     return buildList {
-        add(SheetAction(Icons.Outlined.Share, "分享", { withFile { sharing = it } }))
+        add(DriveActions.share { withFile { sharing = it } })
         if (!isLocalPlayback) {
-            add(SheetAction(Icons.Outlined.Download, "下载到本地", {
+            add(DriveActions.download {
                 withFile { file ->
                     services.downloadManager.enqueue(file)
                     message("已加入下载")
                 }
-            }))
-            add(SheetAction(Icons.Outlined.HighQuality, "选择画质下载…", { withFile { choosingQuality = it } }))
+            })
+            add(DriveActions.downloadQuality(onClick = { withFile { choosingQuality = it } }, onPrepare = null))
         }
     }
 }

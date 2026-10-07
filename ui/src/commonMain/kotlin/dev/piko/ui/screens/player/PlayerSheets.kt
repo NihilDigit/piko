@@ -99,6 +99,8 @@ import dev.piko.ui.components.wheelStaysInSheet
 import kotlin.math.abs
 import dev.piko.data.auth.PlayerGestureDefaults
 import dev.piko.ui.components.SheetAction
+import dev.piko.ui.components.ActionIconRow
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberUpdatedState
 import kotlinx.coroutines.delay
@@ -680,7 +682,10 @@ internal fun PlayerSettingsPanel(
     modifier: Modifier = Modifier,
     // 完整文件名。顶栏的标题单行、中间省略，长文件名在播放时只能到这里看全
     title: String? = null,
+    /** 去处：音轨与字幕、详细信息。 */
     actions: List<SheetAction> = emptyList(),
+    /** 对文件本身的操作：分享、下载。与文件名同为「文件」一组，排在播放设置之前、以分隔线隔开。 */
+    fileActions: List<SheetAction> = emptyList(),
     seekStepSeconds: Int = PlayerGestureDefaults.SEEK_STEP_SECONDS,
     onSeekStepChange: ((Int) -> Unit)? = null,
     longPressSpeed: Float = PlayerGestureDefaults.BOOST_SPEED,
@@ -693,17 +698,26 @@ internal fun PlayerSettingsPanel(
             .padding(start = 24.dp, end = 24.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(24.dp),
     ) {
-        if (title != null) {
-            // 可选中：文件名常要拿去搜字幕、查资料
-            SelectionContainer {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+        if (title != null || fileActions.isNotEmpty()) {
+            SettingsSection("文件") {
+                if (title != null) {
+                    // 可选中：文件名常要拿去搜字幕、查资料
+                    SelectionContainer {
+                        Text(
+                            text = title,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                if (fileActions.isNotEmpty()) {
+                    if (title != null) Spacer(Modifier.height(8.dp))
+                    ActionIconRow(fileActions, onAction = { it.onClick() })
+                }
             }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         }
-        if (actions.isNotEmpty()) QuickActionRow(actions)
+        if (actions.isNotEmpty()) ActionIconRow(actions, onAction = { it.onClick() })
         if (playbackSpeed != null) {
             SettingsSection("倍速", trailing = formatSpeed(playbackSpeed)) {
                 ConnectedChoiceRow(
@@ -756,35 +770,6 @@ internal fun PlayerSettingsPanel(
                     optionLabel = ::formatSpeedPreset,
                     onSelect = onLongPressSpeedChange,
                 )
-            }
-        }
-    }
-}
-
-/**
- * 面板顶上一排操作：音轨与字幕、分享、下载。图标在上、名字在下，等分整行，
- * 三四项在 360dp 宽的竖屏里也排得下，比一项一行省地方。
- * 不垫底色、图标用次要色：它们是去处，面板的主体是下面的设置，垫了色块的三格比设置还抢眼。
- */
-@Composable
-private fun QuickActionRow(actions: List<SheetAction>) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        actions.forEach { action ->
-            Surface(
-                onClick = action.onClick,
-                shape = MaterialTheme.shapes.large,
-                color = Color.Transparent,
-                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f),
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.padding(vertical = 10.dp, horizontal = 4.dp),
-                ) {
-                    Icon(action.icon, contentDescription = null)
-                    Text(action.label, style = MaterialTheme.typography.labelMedium, maxLines = 1)
-                }
             }
         }
     }
