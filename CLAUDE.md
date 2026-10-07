@@ -140,6 +140,11 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 机密不放进设置同步（1.1.0 明文同步过压缩包密码，已停用并清理）。压缩包密码以账号密码派生的密钥加密，单独存一份
 `.piko/archive-passwords-<时间戳>.json`（`ArchivePasswordSync`），要同步别的机密照它做。
 
+### 番号
+
+番号的识别规则在 `shared/.../shared/naming/av/`，规范命名、MetaTube 对接与待办见 `docs/development/av-naming.md`。
+不内置任何成人站点网址与 MetaTube 实例，地址与令牌只由用户在设置里填。
+
 ### 日志
 
 `shared/.../shared/log/PikoLog` 是全局日志，从 debug 起全部写进滚动文件（四份各 1 MiB，只留 7 天；警告与错误另存一份
