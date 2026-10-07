@@ -19,9 +19,14 @@ import kotlinx.serialization.json.Json
 
 private const val USAGE = """用法：piko-shots <命令> [选项]
 
-  all [--only <前缀>] [-o <目录>]
+  all [--only <前缀>] [--jobs <n>] [--keep-baseline] [-o <目录>]
       渲染一整套，按 docs/development/ui-states.md 的状态表逐项出图，每个状态桌面、手机、平板各一张。
-      --only 只渲染名字以它开头的几张，如 --only drive-trash。
+      渲染前把输出目录里的上一版挪到 <目录>-baseline，渲染完逐像素比对，清单写到 <目录>/changes.md，
+      变了的图在 <目录>/diff/ 下各有一张旧、新、差异并排的对照图。
+      --only 只渲染名字以它开头的几张，如 --only drive-trash；基线与清单也只管这几张。
+      --jobs 分给几个子进程并行渲染，默认按核数取；1 在本进程里逐张渲染。
+      --keep-baseline 不挪基线，继续和已有的基线比：改一处界面反复重跑时，始终对照改之前的那一版。
+      --shard <i>/<n> 只渲染第 i 片（共 n 片），不动基线、不写清单。--jobs 拉起的子进程用它。
   shot <名字> [--size <宽>x<高>] [--dark] [步骤…] [-o <目录>]
       渲染一张。步骤按写的顺序执行：
         --click <文本>        点击文本或内容描述为它的节点（先精确匹配，没有则包含匹配）
@@ -32,13 +37,14 @@ private const val USAGE = """用法：piko-shots <命令> [选项]
         --key <键>            按一次键：Down、Tab、Enter、Esc、F2、Menu、Ctrl+A、Shift+F10 等
         --type <文字>         往有焦点的输入框里打字
         --wait <文本>         等到界面上出现它
-        --pump <毫秒>         多等一会儿，让动画走完
+        --pump <毫秒>         多等一会儿：等到画面稳定，至多这么久
   texts [--size <宽>x<高>] [步骤…]
       不存图，打印界面上所有文本与内容描述，写 --click 时找名字用。
 
 窗口尺寸按 dp 计（密度 1），默认 1440x900。窄于 840 按移动端拍，--mobile 与 --desktop 显式指定
 （平板横屏是 --size 1280x800 --mobile）。移动端的左键按成触屏。输出默认在 build/shots/<名字>.png，
-经 gradle run 时相对仓库根目录。数据来自 FakePikPak.seed()，每张图都从登录后的网盘根目录开始。"""
+经 gradle run 时相对仓库根目录。数据来自 FakePikPak.seed()，每张图都从登录后的网盘根目录开始。
+动画一律当场跳到终点，存图前等画面稳定（连续 500ms 逐像素不变，至多 3 秒）。"""
 
 private sealed interface Step {
     /** [topmost] 只在最上层（最后打开的对话框、菜单）里找，底下的页面有同名节点时用。 */
@@ -48,6 +54,11 @@ private sealed interface Step {
     /** 点同名节点里最靠上的那个，页顶的类别标签用。 */
     data class ClickHighest(val text: String) : Step
     data class Hover(val text: String) : Step
+    /**
+     * 鼠标移到某处、不按键。点完按钮后指针还停在原处，界面在它底下变了（侧边栏收起）时会冒出提示框；
+     * 提示框晚几百毫秒才出，出不出在图上取决于判稳赶在它之前还是之后，移开才每次一样。
+     */
+    data class MoveTo(val at: Offset) : Step
     data class LongPress(val text: String) : Step
     /** 按坐标长按；[release] 为 false 时不松手，拍按住期间的样子。 */
     data class LongPressAt(val at: Offset, val release: Boolean = true) : Step
@@ -58,6 +69,7 @@ private sealed interface Step {
     data class Key(val chord: String) : Step
     data class Type(val text: String) : Step
     data class Wait(val text: String) : Step
+    /** 等画面稳定，至多 [ms]。 */
     data class Pump(val ms: Long) : Step
     /** 在步骤之间改假服务端或进程级状态，例如让下一次列目录失败。在 EDT 外执行，可以等网络。 */
     class Run(val action: ShotEnv.() -> Unit) : Step
@@ -86,13 +98,25 @@ private class Shot(
     val mobile: Boolean = width < 840,
     val login: LoginSeed = LoginSeed.SIGNED_IN,
     val localDownloads: Boolean = true,
-    val prefs: Map<String, String> = emptyMap(),
+    /**
+     * 只给这一张写的设置项，开始渲染这一张时才取：里面的时刻（上传任务的更新时间）要与本机下载任务的时刻同时算，
+     * 在建清单时就算好的话，两者先后随这一张排在进程里第几张而变，传输页的排序跟着变。
+     */
+    val prefs: () -> Map<String, String> = { emptyMap() },
     val update: UpdateSpec? = null,
     /** 开场等到它出现再走步骤；null 不等。 */
     val waitFor: String? = "Kusuriya",
-    /** 走完步骤后、存图前再推进的毫秒数，拍短动画的中途时调小。 */
-    val settleMs: Long = 800,
+    /**
+     * 动画按真实速度播，步骤里的等待按写的时长推满。只给要拍动画中途的几张：默认动画当场跳到终点、
+     * 等待改为等画面稳定，见 AppScene.settle。
+     */
+    val motion: Boolean = false,
+    /** 走完步骤后、存图前等画面稳定的上限（[motion] 时是推进的时长）；为 0 时立刻存图，拍转瞬即逝的提示用。 */
+    val settleMs: Long = if (motion) 800 else SETTLE_MAX_MS,
 )
+
+/** 收尾等稳定的上限。画面一直在变（无限动画没停住）时照这时的画面存图，并报出名字。 */
+private const val SETTLE_MAX_MS = 3_000L
 
 /** 状态表要求的三种形态：桌面、手机、平板横屏。名字后缀按它写。 */
 private enum class Form(val tag: String, val width: Int, val height: Int, val mobile: Boolean) {
@@ -118,18 +142,19 @@ private fun tri(
     highlightName: String? = null,
     login: LoginSeed = LoginSeed.SIGNED_IN,
     localDownloads: Boolean = true,
-    prefs: Map<String, String> = emptyMap(),
+    prefs: () -> Map<String, String> = { emptyMap() },
     update: UpdateSpec? = null,
     waitFor: String? = "Kusuriya",
     player: PlayerShot? = null,
-    settleMs: Long = 800,
+    motion: Boolean = false,
+    settleMs: Long = if (motion) 800 else SETTLE_MAX_MS,
     steps: (Form) -> List<Step>? = { emptyList() },
 ): List<Shot> = forms.mapNotNull { form ->
     val s = steps(form) ?: return@mapNotNull null
     Shot(
         "$name-${form.suffix}", form.width, form.height, steps = s, viewMode = viewMode, extraSeed = extraSeed,
         player = player, initialLink = initialLink, highlightName = highlightName, mobile = form.mobile, login = login,
-        localDownloads = localDownloads, prefs = prefs, update = update, waitFor = waitFor, settleMs = settleMs,
+        localDownloads = localDownloads, prefs = prefs, update = update, waitFor = waitFor, motion = motion, settleMs = settleMs,
     )
 }
 
@@ -172,12 +197,12 @@ private fun actionsOf(form: Form, target: String, search: String = target): List
 private fun action(form: Form, target: String, item: String, search: String = target): List<Step> =
     actionsOf(form, target, search) + listOf(Step.Click(item, topmost = true), Step.Pump(1_500))
 
-/** 收在「更多」里的操作（画质下载、片段、归档、查重）：右键菜单是一页子菜单，面板是展开的一段。 */
-private fun moreAction(form: Form, target: String, item: String, search: String = target): List<Step> =
-    actionsOf(form, target, search) + listOf(Step.Click("更多", topmost = true), Step.Pump(600), Step.Click(item, topmost = true), Step.Pump(1_500))
-
 /** 「下载到本地」在面板的图标行里只写「下载」。 */
 private fun downloadLabel(form: Form) = if (form.desktop) "下载到本地" else "下载"
+
+/** 下载文件夹或视频先弹画质对话框，点它的「下载」照默认画质下。 */
+private fun download(form: Form, target: String, search: String = target): List<Step> =
+    action(form, target, downloadLabel(form), search) + listOf(Step.Click("下载", topmost = true), Step.Pump(1_500))
 
 /** 在当前文件夹里搜 [text]：桌面 Ctrl+F 展开搜索框，移动端点顶栏的搜索图标。 */
 private fun searchFor(form: Form, text: String): List<Step> =
@@ -290,6 +315,9 @@ private fun transferPrefs(): Map<String, String> {
     )
 }
 
+/** 桌面的添加链接停在右栏，标题行的按钮把它收成浮动卡片。 */
+private val collapseAddLink = Step.Click("收起添加链接")
+
 /** 秒传记录在缓存里，账号登录后才能写，放在步骤开头。 */
 private val instantRecord = Step.Run {
     services.instantSaveRecords.add("[SweetSub] Frieren S01 合集", 13, 6L shl 30, "动画", server.node("动画").id)
@@ -305,7 +333,7 @@ private fun openFeed(): List<Step> = listOf(Step.Pump(600), Step.Click("信息�
 private val feedSeed: FakePikPak.() -> Unit = { giveVideosDuration() }
 
 /** 播放器的一种画面在三种形态加手机横屏下各一张。 */
-private fun playerShots(name: String, player: PlayerShot = PlayerShot(), settleMs: Long = 800, steps: (Form) -> List<Step> = { emptyList() }): List<Shot> =
+private fun playerShots(name: String, player: PlayerShot = PlayerShot(), settleMs: Long = SETTLE_MAX_MS, steps: (Form) -> List<Step> = { emptyList() }): List<Shot> =
     tri(name, player = player, waitFor = null, settleMs = settleMs, steps = steps) +
         Shot("$name-phone-landscape-860x400", 860, 400, steps = steps(Form.PHONE), player = player, mobile = true, waitFor = null, settleMs = settleMs)
 
@@ -337,24 +365,25 @@ private val standardSet: List<Shot> = buildList {
     // 导航：桌面展开的侧边栏、收成窄轨、窄窗口里浮出；移动端手机底栏、平板 Rail，「传输」挂项数徽标
     addAll(tri("shell-nav"))
     addAll(tri("shell-nav-dark", forms = listOf(Form.DESKTOP, Form.PHONE)).map { Shot(it.name, it.width, it.height, ThemeMode.DARK, mobile = it.mobile) })
-    add(Shot("shell-nav-collapsed-desktop-1440x900", steps = listOf(Step.Pump(600), Step.Click("收起侧边栏"), Step.Pump(800))))
+    // 收起后指针正落在「网盘」那一项上，移到标签栏的空白处，免得它的提示框时有时无
+    add(Shot("shell-nav-collapsed-desktop-1440x900", steps = listOf(Step.Pump(600), Step.Click("收起侧边栏"), Step.MoveTo(Offset(1000f, 22f)), Step.Pump(800))))
     add(Shot("shell-nav-narrow-desktop-700x800", 700, 800, mobile = false, caption = true))
     add(Shot("shell-nav-overlay-desktop-700x800", 700, 800, mobile = false, caption = true,
         steps = listOf(Step.Pump(600), Step.Click("展开侧边栏"), Step.Pump(800))))
     // 侧边栏内容：快速访问里固定一个文件夹，右键它；蜗牛模式；账号行的新版本红点
     add(Shot("shell-quickaccess-desktop-1440x900", steps = action(Form.DESKTOP, "Frieren", "固定到快速访问") +
         listOf(Step.Pump(800), Step.Click("动画", PointerButton.Secondary), Step.Pump(600))))
-    add(Shot("shell-snail-desktop-1440x900", steps = settingsRow(Form.DESKTOP, "蜗牛模式") + listOf(Step.Click("文件"), Step.Pump(1_000))))
+    add(Shot("shell-snail-desktop-1440x900", prefs = { mapOf("transfer.snail.enabled" to "true") }))
     add(Shot("shell-update-dot-desktop-1440x900", update = UpdateSpec(onStartup = false)))
     // 浮动卡片（仅桌面）：解压、收起的添加链接、整摞收成胶囊
     add(Shot("shell-cards-extract-desktop-1440x900", steps = listOf(Step.Run { services.archiveExtractSession.extract(listOf(rootFile("Project Sekai OST Vol.3.zip"))) }, Step.Pump(2_500))))
     add(Shot("shell-cards-addlink-desktop-1440x900", initialLink = "magnet:?xt=urn:btih:" + "a".repeat(40),
-        steps = listOf(Step.Pump(2_000), Step.Click("关闭", topmost = true), Step.Pump(1_000))))
+        steps = listOf(Step.Pump(2_000), collapseAddLink, Step.Pump(1_000))))
     add(Shot("shell-cards-stack-desktop-1440x900", initialLink = "magnet:?xt=urn:btih:" + "a".repeat(40),
-        steps = listOf(Step.Pump(2_000), Step.Click("关闭", topmost = true), Step.Pump(600),
+        steps = listOf(Step.Pump(2_000), collapseAddLink, Step.Pump(600),
             Step.Run { services.archiveExtractSession.extract(listOf(rootFile("Project Sekai OST Vol.3.zip"))) }, Step.Pump(2_500))))
     add(Shot("shell-cards-capsule-desktop-1440x900", initialLink = "magnet:?xt=urn:btih:" + "a".repeat(40),
-        steps = listOf(Step.Pump(2_000), Step.Click("关闭", topmost = true), Step.Pump(600),
+        steps = listOf(Step.Pump(2_000), collapseAddLink, Step.Pump(600),
             Step.Run { services.archiveExtractSession.extract(listOf(rootFile("Project Sekai OST Vol.3.zip"))) }, Step.Pump(2_000),
             Step.Click("收到角落"), Step.Pump(1_000))))
     // 命令面板与快捷键一览：移动端只在接键盘时可开，这里照样按键
@@ -419,9 +448,11 @@ private val standardSet: List<Shot> = buildList {
     add(Shot("drive-hover-desktop-1440x900", steps = listOf(Step.Pump(800), Step.Hover("Oppenheimer"))))
     add(Shot("drive-marquee-desktop-1440x900", steps = intoAnime(Form.DESKTOP) + listOf(Step.Drag(Offset(1350f, 720f), Offset(800f, 400f)))))
     add(Shot("drive-keyboard-desktop-1440x900", steps = listOf(Step.Pump(800), Step.Key("Down"), Step.Key("Down"), Step.Key("Right"), Step.Key("Down"))))
-    // 拖放移动：从 Oppenheimer 的卡片拖到「文档」上（坐标按 1440x900 的网格量出），松手前与松手后带「撤销」的提示
-    add(Shot("drive-drag-folder-desktop-1440x900", steps = listOf(Step.Pump(1_500), Step.Drag(Offset(1283f, 440f), Offset(990f, 245f)))))
-    add(Shot("drive-drag-dropped-desktop-1440x900", steps = listOf(Step.Pump(1_500), Step.Drag(Offset(1283f, 440f), Offset(990f, 245f)), Step.Release, Step.Pump(1_500))))
+    // 拖放移动：从 Oppenheimer 的卡片拖到「文档」上（坐标按 1440x900 的网格量出），松手前与松手后带「撤销」的提示。
+    // 先单击让它取得焦点：按在没选中、没有焦点的条目上拖是框选。单击后停一会儿，免得按下与单击连成双击
+    val dragToDocs = listOf(Step.Pump(1_500), Step.Click("Oppenheimer"), Step.Pump(600), Step.Drag(Offset(1283f, 440f), Offset(990f, 245f)))
+    add(Shot("drive-drag-folder-desktop-1440x900", steps = dragToDocs))
+    add(Shot("drive-drag-dropped-desktop-1440x900", steps = dragToDocs + listOf(Step.Release, Step.Pump(1_500))))
     // 归档标记：根目录里一个归档条目；「电影」里直接放着归档条目
     add(Shot("drive-vault-list-desktop-1440x900", viewMode = "LIST", steps = listOf(Step.Wait("Blade"), Step.Pump(1_500))))
     // 「电影」列过一次后，退回根目录，文件夹上挂着归档标记
@@ -455,13 +486,13 @@ private val standardSet: List<Shot> = buildList {
     addAll(tri("panel-picker-sub") { pickerSteps(it) + listOf(Step.Click("动画", topmost = true), Step.Pump(1_500)) })
     addAll(tri("panel-picker-newfolder") { pickerSteps(it) + listOf(Step.Click("新建文件夹", topmost = true), Step.Pump(800)) })
     // 下载片段：打开，改过区间后关闭时的确认
-    addAll(tri("panel-segment") { moreAction(it, "Oppenheimer", "下载指定段落") + listOf(Step.Pump(2_000)) })
+    addAll(tri("panel-segment") { action(it,"Oppenheimer", "下载指定段落") + listOf(Step.Pump(2_000)) })
     // 关闭：桌面与平板侧边面板点 ×，手机底部 sheet 点上方的遮罩
     addAll(tri("panel-segment-discard") { form ->
-        moreAction(form, "Oppenheimer", "下载指定段落") + listOf(Step.Pump(2_000), Step.Click("+1"), Step.Pump(300)) +
+        action(form, "Oppenheimer", "下载指定段落") + listOf(Step.Pump(2_000), Step.Click("+1"), Step.Pump(300)) +
             (if (form == Form.PHONE) listOf(Step.ClickAt(Offset(200f, 80f))) else listOf(Step.Click("关闭", topmost = true))) + listOf(Step.Pump(800))
     })
-    // 新建、重命名、分享、选择画质下载
+    // 新建、重命名、分享、下载画质（下载视频即弹出）
     addAll(tri("dlg-newfolder") { form ->
         if (form.desktop) listOf(Step.Pump(600), Step.Click("新建"), Step.Pump(500), Step.Click("新建文件夹", topmost = true), Step.Pump(800))
         else fab("新建文件夹")
@@ -471,7 +502,7 @@ private val standardSet: List<Shot> = buildList {
     addAll(tri("dlg-unsupported") { action(it, "文档", "重命名") + listOf(Step.Click("新名称", topmost = true), Step.Type("?"), Step.Click("确定", topmost = true), Step.Pump(800)) })
     addAll(tri("dlg-share") { action(it, "文档", "分享") })
     addAll(tri("dlg-share-custom") { action(it, "文档", "分享") + listOf(Step.Click("自定义", topmost = true), Step.Pump(600)) })
-    addAll(tri("dlg-quality") { moreAction(it, "Oppenheimer", "选择画质下载") + listOf(Step.Pump(1_500)) })
+    addAll(tri("dlg-quality") { action(it, "Oppenheimer", downloadLabel(it)) + listOf(Step.Pump(1_500)) })
     // 批量重命名：桌面左规则右预览，手机全屏单栏，平板同桌面
     addAll(tri("panel-rename") { renameOpen(it) })
     addAll(tri("panel-rename-guide") { renameOpen(it) + listOf(Step.Click("使用说明"), Step.Pump(800)) })
@@ -495,24 +526,24 @@ private val standardSet: List<Shot> = buildList {
             listOf(Step.Click("彻底删除", topmost = true), Step.Pump(800))
     })
     addAll(tri("dlg-history-clear") { toLibrary(it, "播放历史", "与 PikPak 官方客户端同步") + listOf(Step.Click("清空播放历史"), Step.Pump(800)) })
-    addAll(tri("dlg-vault") { moreAction(it, "文档", "归档") + listOf(Step.Pump(1_500)) })
-    addAll(tri("dlg-unvault") { moreAction(it, "电影", "取消归档") + listOf(Step.Pump(2_000)) })
+    addAll(tri("dlg-vault") { action(it, "文档", "归档") + listOf(Step.Pump(1_500)) })
+    addAll(tri("dlg-unvault") { action(it, "电影", "取消归档") + listOf(Step.Pump(2_000)) })
     // 图片查看器：桌面有翻页按钮，移动端靠手势
     addAll(tri("panel-image", extraSeed = { node("IMG_20260801_183012.jpg").thumbnail = shotImage() }) { searchFor(it, "IMG") + open(it, "IMG_20260801") + listOf(Step.Pump(1_500)) })
 
     // ===== 传输页 =====
     val richTransfers: FakePikPak.() -> Unit = { seedTransfers() }
-    addAll(tri("transfers", extraSeed = richTransfers, prefs = transferPrefs()) { listOf(instantRecord) + toTransfers(it) + listOf(Step.Pump(800)) })
-    add(Shot("transfers-dark-desktop-1440x900", mode = ThemeMode.DARK, extraSeed = richTransfers, prefs = transferPrefs(),
+    addAll(tri("transfers", extraSeed = richTransfers, prefs = ::transferPrefs) { listOf(instantRecord) + toTransfers(it) + listOf(Step.Pump(800)) })
+    add(Shot("transfers-dark-desktop-1440x900", mode = ThemeMode.DARK, extraSeed = richTransfers, prefs = ::transferPrefs,
         steps = listOf(instantRecord) + toTransfers(Form.DESKTOP) + listOf(Step.Pump(800))))
-    add(Shot("transfers-desktop-700x800", 700, 800, mobile = false, caption = true, extraSeed = richTransfers, prefs = transferPrefs(),
+    add(Shot("transfers-desktop-700x800", 700, 800, mobile = false, caption = true, extraSeed = richTransfers, prefs = ::transferPrefs,
         steps = listOf(instantRecord) + toTransfers(Form.DESKTOP) + listOf(Step.Pump(800))))
     addAll(tri("transfers-skeleton", localDownloads = false, extraSeed = { tasksDelayMs = 20_000 }) { toTransfers(it) })
     addAll(tri("transfers-empty", localDownloads = false, extraSeed = { clearTasks() }) { toTransfers(it) + listOf(Step.Pump(800)) })
     // 类别标签与行里的「云端」「上传」标注同名，点最靠上的那个
     addAll(tri("transfers-kind-empty") { toTransfers(it) + listOf(Step.ClickHighest("上传"), Step.Pump(800)) })
-    addAll(tri("transfers-cloud", extraSeed = richTransfers, prefs = transferPrefs()) { listOf(instantRecord) + toTransfers(it) + listOf(Step.ClickHighest("云端"), Step.Pump(800)) })
-    addAll(tri("transfers-uploads", extraSeed = richTransfers, prefs = transferPrefs()) { toTransfers(it) + listOf(Step.ClickHighest("上传"), Step.Pump(800)) })
+    addAll(tri("transfers-cloud", extraSeed = richTransfers, prefs = ::transferPrefs) { listOf(instantRecord) + toTransfers(it) + listOf(Step.ClickHighest("云端"), Step.Pump(800)) })
+    addAll(tri("transfers-uploads", extraSeed = richTransfers, prefs = ::transferPrefs) { toTransfers(it) + listOf(Step.ClickHighest("上传"), Step.Pump(800)) })
     // 「文件已删除」一段在最后，列表长了手机上组合不到它；只留这一类任务
     addAll(tri("transfers-deleted", localDownloads = false, extraSeed = {
         clearTasks()
@@ -535,10 +566,10 @@ private val standardSet: List<Shot> = buildList {
     // 文件夹下载的列出失败与超额待确认：从网盘页下载一个空文件夹与「动画」，后者超出今日额度
     // 各下一个文件夹：空的「文档」列出失败，「动画」超出今日额度（网格里显示成 Frieren，按原名搜）
     addAll(tri("transfers-folder-failed") { form ->
-        action(form, "文档", downloadLabel(form)) + listOf(Step.Pump(2_000)) + toTransfers(form) + listOf(Step.Pump(1_000))
+        download(form, "文档") + listOf(Step.Pump(2_000)) + toTransfers(form) + listOf(Step.Pump(1_000))
     })
     addAll(tri("transfers-folder-quota", extraSeed = { dailyDownloadUsed = (1L shl 40) - (1L shl 30) }) { form ->
-        action(form, "Frieren", downloadLabel(form), "动画") + listOf(Step.Pump(3_000)) + toTransfers(form) + listOf(Step.Pump(1_000))
+        download(form, "Frieren", "动画") + listOf(Step.Pump(3_000)) + toTransfers(form) + listOf(Step.Pump(1_000))
     })
     // 服务端解压：进行中一行
     addAll(tri("transfers-extract") {
@@ -565,7 +596,7 @@ private val standardSet: List<Shot> = buildList {
     addAll(tri("dlg-domain") { settingsRow(it,"服务器域名") })
     addAll(tri("dlg-speed") { settingsRow(it,"蜗牛模式") + listOf(Step.Click("速度上限"), Step.Pump(1_000)) })
     addAll(tri("dlg-quality-setting") { settingsRow(it,"播放画质") })
-    addAll(tri("dlg-archive-passwords", prefs = mapOf("drive.archivePasswords" to """["hunter2","p@ss-2026"]""")) { settingsRow(it,"解压密码") })
+    addAll(tri("dlg-archive-passwords", prefs = { mapOf("drive.archivePasswords" to """["hunter2","p@ss-2026"]""") }) { settingsRow(it,"解压密码") })
     addAll(tri("dlg-download-location") { settingsRow(it,"下载位置") })
     // 账号切换、移除账号、退出登录：桌面在设置的账号区，移动端在「我的」
     fun accountArea(form: Form) = if (form.desktop) toSettings(form) else listOf(Step.Click("我的"), Step.Pump(1_200))
@@ -594,9 +625,10 @@ private val standardSet: List<Shot> = buildList {
     add(Shot("feed-phone-landscape-860x400", 860, 400, mobile = true, extraSeed = feedSeed, steps = openFeed() + listOf(Step.Pump(3_000))))
     add(Shot("feed-popped-desktop-1440x900", extraSeed = feedSeed, steps = openFeed() + listOf(Step.Click("在独立窗口播放"), Step.Pump(800))))
     addAll(tri("feed-immersive", extraSeed = feedSeed) { openFeed() + listOf(Step.Pump(2_000), Step.Click("隐藏控件"), Step.Pump(800)) })
-    addAll(tri("feed-boost", extraSeed = feedSeed) { openFeed() + listOf(Step.Pump(2_000), Step.LongPressAt(feedCenter(it), release = false)) })
-    // 星爆约 450ms，收尾不再多等
-    addAll(tri("feed-star", extraSeed = feedSeed, settleMs = 0) { openFeed() + listOf(Step.Pump(2_000), Step.ClickAt(feedCenter(it), double = true), Step.Pump(120)) })
+    // 动画缩放为 0 时按住期间的「2 倍速」提示没有画出来（原因未查），按真实速度播才拍得到
+    addAll(tri("feed-boost", extraSeed = feedSeed, motion = true) { openFeed() + listOf(Step.Pump(2_000), Step.LongPressAt(feedCenter(it), release = false)) })
+    // 星爆约 450ms，要拍它的中途：动画按真实速度播，收尾不再多等
+    addAll(tri("feed-star", extraSeed = feedSeed, motion = true, settleMs = 0) { openFeed() + listOf(Step.Pump(2_000), Step.ClickAt(feedCenter(it), double = true), Step.Pump(120)) })
     addAll(tri("feed-landscape-lock", forms = listOf(Form.TABLET), extraSeed = feedSeed) { openFeed() + listOf(Step.Pump(1_000), Step.Click("横屏"), Step.Pump(600)) })
     // 挂起：「在网盘中显示」之后，桌面「信息流」按钮带点，移动端网盘页底部的「继续刷」
     addAll(tri("feed-suspended", extraSeed = feedSeed) { openFeed() + listOf(Step.Pump(2_000), Step.Click("在网盘中显示"), Step.Pump(2_000)) })
@@ -613,16 +645,16 @@ private val standardSet: List<Shot> = buildList {
     addAll(playerShots("player-fullscreen", PlayerShot(fullscreen = true)))
     addAll(playerShots("player-episodes", PlayerShot(playing = false)) { playerPanel("选集") })
     addAll(playerShots("player-settings", PlayerShot(playing = false)) { playerPanel("播放设置") })
-    addAll(playerShots("player-tracks", PlayerShot(playing = false)) { playerPanel("播放设置", "音轨与字幕") })
-    addAll(playerShots("player-drive-subtitles", PlayerShot(playing = false)) { playerPanel("播放设置", "音轨与字幕", "从网盘选择字幕") + listOf(Step.Pump(1_500)) })
-    addAll(playerShots("player-stats", PlayerShot(playing = false)) { playerPanel("播放设置", "详细信息") })
+    addAll(playerShots("player-tracks", PlayerShot(playing = false)) { playerPanel("播放设置", "字幕") })
+    addAll(playerShots("player-drive-subtitles", PlayerShot(playing = false)) { playerPanel("播放设置", "字幕", "从网盘选择字幕") + listOf(Step.Pump(1_500)) })
+    addAll(playerShots("player-stats", PlayerShot(playing = false)) { playerPanel("播放设置", "信息") })
     addAll(playerShots("player-speed", PlayerShot(playing = false)) { playerPanel("倍速") })
     addAll(playerShots("player-lock", PlayerShot(playing = false)) { playerPanel("锁定屏幕") })
     // HUD 只亮 800ms，按完键立刻存图
     addAll(playerShots("player-hud", PlayerShot(playing = false), settleMs = 0) { listOf(Step.Key("Up"), Step.Pump(100)) })
     addAll(playerShots("player-boost") { form -> listOf(Step.LongPressAt(Offset(if (form == Form.PHONE) 200f else form.width / 2f, 260f), release = false)) })
     addAll(playerShots("player-share", PlayerShot(playing = false)) { playerPanel("播放设置", "分享") + listOf(Step.Pump(1_000)) })
-    addAll(playerShots("player-quality", PlayerShot(playing = false)) { playerPanel("播放设置", "选择画质") + listOf(Step.Pump(1_500)) })
+    addAll(playerShots("player-quality", PlayerShot(playing = false)) { playerPanel("播放设置", "下载") + listOf(Step.Pump(1_500)) })
 
     // ===== 任务占用与叠加 =====
     // 移动端独占：添加链接开着时查找重复、查找重复结果页上添加链接、离开查重目录树
@@ -638,7 +670,7 @@ private val standardSet: List<Shot> = buildList {
     })
     // 桌面放行：添加链接卡片、查重标签与解压卡片同时在
     add(Shot("task-coexist-desktop-1440x900", initialLink = "magnet:?xt=urn:btih:" + "a".repeat(40), extraSeed = { seedDuplicates() },
-        steps = listOf(Step.Pump(2_000), Step.Click("关闭", topmost = true), Step.Pump(600),
+        steps = listOf(Step.Pump(2_000), collapseAddLink, Step.Pump(600),
             Step.Run { services.archiveExtractSession.extract(listOf(rootFile("Project Sekai OST Vol.3.zip"))) }, Step.Pump(800)) + startDuplicates(Form.DESKTOP)))
     // 根层浮层：定位遮罩、外部上传去向、解压密码
     // 已完成的云端任务「打开」即在网盘中定位，逐级查路径时盖遮罩；只留云端任务，手机上那一行才在首屏
@@ -663,7 +695,7 @@ private fun shotImage(): String {
     surface.canvas.clear(0xFF2B4C6F.toInt())
     surface.canvas.drawCircle(1100f, 380f, 220f, org.jetbrains.skia.Paint().apply { color = 0xFFF2C46D.toInt() })
     surface.canvas.drawRect(org.jetbrains.skia.Rect.makeXYWH(0f, 700f, 1600f, 300f), org.jetbrains.skia.Paint().apply { color = 0xFF1C3324.toInt() })
-    val file = File.createTempFile("piko-shot-image", ".png").apply { deleteOnExit() }
+    val file = File.createTempFile("piko-shot-image", ".png", ShotDirs.run)
     file.writeBytes(surface.makeImageSnapshot().encodeToData(org.jetbrains.skia.EncodedImageFormat.PNG)!!.bytes)
     return file.toURI().toString()
 }
@@ -675,58 +707,103 @@ fun main(args: Array<String>) {
     }
     val rest = args.drop(1)
     val outDir = File(option(rest, "-o") ?: "build/shots")
-    try {
+    ShotDirs.start()
+    val code = try {
         when (args[0]) {
-            "all" -> {
-                val only = option(rest, "--only").orEmpty()
-                val started = System.currentTimeMillis()
-                val shots = standardSet.filter { it.name.startsWith(only) }
-                check(standardSet.map { it.name }.toSet().size == standardSet.size) { "standardSet 里有重名的图" }
-                // 一张找不到要点的节点不拖累其余几张
-                shots.forEach { shot ->
-                    try {
-                        render(shot, outDir)
-                    } catch (e: Exception) {
-                        // 界面在组合里抛的异常也只算这一张失败
-                        System.err.println("[${shot.name}] ${e::class.simpleName}: ${e.message}")
-                    }
-                }
-                println("${shots.size} 张，用时 ${(System.currentTimeMillis() - started) / 1000} 秒")
-            }
+            "all" -> if (renderAll(rest, outDir)) 0 else 1
             "shot" -> {
                 val name = rest.firstOrNull()?.takeUnless { it.startsWith("-") } ?: fail("shot 要一个名字")
                 render(parseShot(name, rest.drop(1)), outDir)
+                0
             }
-            "texts" -> printTexts(parseShot("texts", rest))
+            "texts" -> {
+                printTexts(parseShot("texts", rest))
+                0
+            }
             else -> fail("未知命令：${args[0]}")
         }
     } catch (e: IllegalArgumentException) {
         System.err.println(e.message)
-        exitProcess(2)
+        2
     }
-    // Compose 与 OkHttp 留下的非守护线程会让进程挂着不退
-    exitProcess(0)
+    // Compose 与 OkHttp 留下的非守护线程会让进程挂着不退；临时目录由退出时的钩子删
+    exitProcess(code)
 }
 
-private fun render(shot: Shot, outDir: File) {
+/**
+ * `all`：带 `--shard` 时是子进程，只渲染自己那一片、逐张报给主进程；否则先把上一版挪作基线，
+ * 在本进程或 `--jobs` 个子进程里渲染，最后写差异清单。返回是否全部成功。
+ */
+private fun renderAll(rest: List<String>, outDir: File): Boolean {
+    check(standardSet.map { it.name }.toSet().size == standardSet.size) { "standardSet 里有重名的图" }
+    val only = option(rest, "--only").orEmpty()
+    val shots = standardSet.filter { it.name.startsWith(only) }
+    option(rest, "--shard")?.let { spec ->
+        renderBatch(Shard.parse(spec).pick(shots), outDir) { result -> println(result.toLine()) }
+        return true
+    }
+    val jobs = option(rest, "--jobs")?.let { it.toIntOrNull()?.takeIf { n -> n > 0 } ?: fail("--jobs 要一个正整数") } ?: defaultJobs()
+    val baseline = Baseline(outDir, only, keep = "--keep-baseline" in rest)
+    baseline.roll()
+    val names = shots.map { it.name }
+    val started = System.currentTimeMillis()
+    val results = if (jobs == 1 || shots.size <= 1) {
+        val progress = Progress(shots.size)
+        renderBatch(shots, outDir) { progress.report(it) }
+    } else {
+        renderInChildren(jobs, names, outDir, if (only.isEmpty()) emptyList() else listOf("--only", only))
+    }
+    val elapsedMs = System.currentTimeMillis() - started
+    val failed = results.filter { !it.ok }
+    println("${results.size} 张，失败 ${failed.size} 张，用时 ${elapsedMs / 1000} 秒")
+    failed.forEach { println("  失败 ${it.name}：${it.error}") }
+    val report = baseline.report(names, results, elapsedMs)
+    println("差异清单：${report.absolutePath}")
+    return failed.isEmpty()
+}
+
+/** 逐张渲染 [shots]，每张出完交给 [onResult]。一张找不到要点的节点不拖累其余几张。 */
+private fun renderBatch(shots: List<Shot>, outDir: File, onResult: (ShotResult) -> Unit): List<ShotResult> = shots.map { shot ->
+    val started = System.currentTimeMillis()
+    val result = try {
+        val settled = render(shot, outDir, quiet = true)
+        ShotResult(shot.name, ok = true, ms = System.currentTimeMillis() - started, settled = settled)
+    } catch (e: Exception) {
+        // 界面在组合里抛的异常也只算这一张失败
+        ShotResult(shot.name, ok = false, ms = System.currentTimeMillis() - started, error = "${e::class.simpleName}: ${e.message}")
+    }
+    onResult(result)
+    result
+}
+
+private fun render(shot: Shot, outDir: File, quiet: Boolean = false): Boolean {
     val file = File(outDir, "${shot.name}.png")
-    run(shot) { app -> app.save(file) }
-    println(file.absolutePath)
+    val settled = run(shot) { app -> app.save(file) }
+    if (!quiet) {
+        println(file.absolutePath)
+        if (!settled) System.err.println("${shot.settleMs}ms 内画面没有停下，照当前画面出图")
+    }
+    return settled
 }
 
-private fun printTexts(shot: Shot) = run(shot) { app -> app.texts().forEach(::println) }
+private fun printTexts(shot: Shot) {
+    run(shot) { app -> app.texts().forEach(::println) }
+}
 
-private fun run(shot: Shot, finish: (AppScene) -> Unit) {
-    ShotEnv(shot.viewMode, shot.extraSeed, shot.login, shot.localDownloads, shot.prefs).use { env ->
+/** 走完 [shot] 的步骤后交给 [finish]；返回收尾时画面是否停了下来。 */
+private fun run(shot: Shot, finish: (AppScene) -> Unit): Boolean {
+    var settled = true
+    ShotEnv(shot.name, shot.viewMode, shot.extraSeed, shot.login, shot.localDownloads, shot.prefs()).use { env ->
         val updater = shot.update?.let { spec -> ShotUpdater(ShotUpdate(spec.canInstall), spec.status, spec.onStartup) }
         val wrap: (dev.piko.ui.platform.PikoPlatform) -> dev.piko.ui.platform.PikoPlatform =
             { base -> if (updater != null) UpdateShotPlatform(base, updater) else base }
-        AppScene.open(env, shot.width, shot.height, shot.mode, shot.player, shot.caption, shot.mobile, wrap, shot.waitFor).use { app ->
+        AppScene.open(env, shot.width, shot.height, shot.mode, shot.player, shot.caption, shot.mobile, wrap, shot.waitFor, shot.motion).use { app ->
             shot.highlightName?.let { name ->
                 val file = env.rootFile(name)
                 edt { env.services.driveRepository.requestHighlight(setOf(file.id)) }
             }
             shot.initialLink?.let { link -> edt { env.services.instantSession.start(link) } }
+            app.changed()
             var lastDragEnd: Offset? = null
             for (step in shot.steps) {
                 when (step) {
@@ -734,6 +811,7 @@ private fun run(shot: Shot, finish: (AppScene) -> Unit) {
                     is Step.ClickAt -> if (step.double) app.doubleClick(step.at) else app.click(step.at)
                     is Step.ClickHighest -> app.clickHighest(step.text)
                     is Step.Hover -> app.hover(step.text)
+                    is Step.MoveTo -> app.moveTo(step.at)
                     is Step.LongPress -> app.longPress(step.text)
                     is Step.LongPressAt -> app.longPress(step.at, releaseAfter = step.release)
                     is Step.Drag -> {
@@ -747,15 +825,18 @@ private fun run(shot: Shot, finish: (AppScene) -> Unit) {
                     is Step.Wait -> if (!app.pumpUntil { app.hasText(step.text) }) {
                         System.err.println("[${shot.name}] 等不到「${step.text}」，照当前画面出图")
                     }
-                    is Step.Pump -> app.pump(step.ms)
-                    // rootFile 一类要等网络，放在 EDT 外跑；改状态的部分自己会切到主线程
-                    is Step.Run -> step.action(env)
+                    is Step.Pump -> app.idle(step.ms)                    // rootFile 一类要等网络，放在 EDT 外跑；改状态的部分自己会切到主线程
+                    is Step.Run -> {
+                        step.action(env)
+                        app.changed()
+                    }
                 }
             }
-            app.pump(shot.settleMs)
+            if (shot.settleMs > 0) settled = app.idle(shot.settleMs)
             finish(app)
         }
     }
+    return settled
 }
 
 private fun parseShot(name: String, args: List<String>): Shot {

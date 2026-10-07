@@ -61,3 +61,27 @@ configurations.runtimeClasspath {
 tasks.named<Sync>("installDist") {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }
+
+// 一条命令出整套：先 installDist，再用装出来的 jar 跑 all，--jobs 拉起的子进程沿用同一份类路径。
+// 不走 bin/ 下的启动脚本：它按 JAVA_HOME 找 java，本机 JAVA_HOME 常指着别的版本；脚本还分 sh 与 bat 两份。
+// 参数照 run 的写法：./gradlew :shots:renderAll --args="--only drive- --jobs 4"
+tasks.register<JavaExec>("renderAll") {
+    group = "application"
+    description = "用 installDist 的副本并行渲染整套截图，并与上一版比对"
+    val install = tasks.named<Sync>("installDist")
+    dependsOn(install)
+    // 顺序照启动脚本：本模块的 jar 在前，其后按运行时类路径的顺序，只是换成 lib/ 下的副本
+    val jar = tasks.named<Jar>("jar")
+    val runtime = configurations.runtimeClasspath
+    classpath = files(install.map { dist ->
+        val lib = dist.destinationDir.resolve("lib")
+        (listOf(jar.get().archiveFile.get().asFile) + runtime.get().files).map { lib.resolve(it.name) }.distinct()
+    })
+    mainClass = "dev.piko.shots.MainKt"
+    // Gradle 按 UTF-8 读进程输出，不设的话中文按控制台的代码页写出来，转发后成了乱码
+    jvmArgs = application.applicationDefaultJvmArgs.toList() + listOf("-Dstdout.encoding=UTF-8", "-Dstderr.encoding=UTF-8")
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(25) }
+    workingDir = rootProject.projectDir
+    // --args 在配置之后、执行之前才填进来，命令名要在执行时补到最前面
+    doFirst { setArgs(listOf("all") + args.orEmpty()) }
+}

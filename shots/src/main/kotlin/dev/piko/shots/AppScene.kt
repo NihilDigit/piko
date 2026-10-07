@@ -3,6 +3,7 @@ package dev.piko.shots
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.ImageComposeScene
 import androidx.compose.ui.InternalComposeUiApi
+import androidx.compose.ui.MotionDurationScale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEvent
@@ -10,6 +11,8 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.pointer.PointerButton
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.platform.LocalCursorBlinkEnabled
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
@@ -36,14 +39,21 @@ import dev.piko.ui.theme.ThemeMode
 import java.io.File
 import javax.swing.SwingUtilities
 import kotlinx.coroutines.Dispatchers
+import org.jetbrains.skia.Bitmap
 import org.jetbrains.skia.EncodedImageFormat
 import org.jetbrains.skia.Image
 
 /**
  * 在 [ShotEnv] 上无头运行整个应用（[PikoApp]，与桌面入口同一个），按真实时间推进帧，
  * 让假服务端的异步响应落进界面。窗口外框（自绘标题栏、拖放层）不在其中，页面从窗口顶端开始。
+ *
+ * 除非 [motion]，动画时长缩放为 0（见 [ShotMotionScale]），等待改为等画面稳定（[settle]）。
  */
-class AppScene private constructor(private val scene: ImageComposeScene, private val touch: Boolean) : AutoCloseable {
+class AppScene private constructor(
+    private val scene: ImageComposeScene,
+    private val touch: Boolean,
+    private val motion: Boolean,
+) : AutoCloseable {
     private val start = System.nanoTime()
     private var image: Image = edt { scene.render(0) }
 
@@ -53,14 +63,65 @@ class AppScene private constructor(private val scene: ImageComposeScene, private
         image = next
     }
 
+    /**
+     * 上次判稳之后推进过时间、收到过输入或被外面改过状态。为 false 时再判稳直接返回：
+     * 步骤里连着两次等待、最后一步的等待紧接着收尾时，不必再静止一遍 [QUIET_MS]。
+     */
+    private var dirty = true
+
+    /** 在场景之外改了状态（拨假服务端、调进程级会话），下一次判稳要重新等。 */
+    fun changed() {
+        dirty = true
+    }
+
     /** 推进 [ms] 毫秒的真实时间，约每 16ms 一帧。 */
     fun pump(ms: Long) {
+        dirty = true
         val until = System.currentTimeMillis() + ms
         while (System.currentTimeMillis() < until) {
             frame()
             Thread.sleep(16)
         }
         frame()
+    }
+
+    private fun pixels(): ByteArray = Bitmap.makeFromImage(image).use { it.readPixels()!! }
+
+    /**
+     * 推进到画面稳定：连续 [quietMs] 逐像素不变即返回 true；到 [maxMs] 仍在变则返回 false，画面停在当时。
+     * 按时长判而不按帧数：一帧的耗时随窗口与内容在几毫秒到几十毫秒间变化，几帧不变说明不了什么。
+     * [quietMs] 要长过界面里看不见的等待：加载指示器晚 200ms 出现、解析链接防抖 350ms、压缩包提示晚 400ms，
+     * 这些等待期间画面不变，窗口短了会在它们生效之前就截下。
+     */
+    fun settle(maxMs: Long, quietMs: Long = QUIET_MS): Boolean {
+        if (!dirty) return true
+        val began = System.currentTimeMillis()
+        frame()
+        var last = pixels()
+        var changedAt = System.currentTimeMillis()
+        while (true) {
+            Thread.sleep(16)
+            frame()
+            val now = System.currentTimeMillis()
+            val current = pixels()
+            if (!current.contentEquals(last)) {
+                last = current
+                changedAt = now
+            }
+            if (now - changedAt >= quietMs) {
+                dirty = false
+                return true
+            }
+            if (now - began >= maxMs) return false
+        }
+    }
+
+    /** 步骤之间的等待：按真实速度播动画的场景推满 [ms]，其余等到画面稳定，至多 [ms]。 */
+    fun idle(ms: Long): Boolean = if (motion) {
+        pump(ms)
+        true
+    } else {
+        settle(ms)
     }
 
     fun pumpUntil(timeoutMs: Long = 8_000, condition: () -> Boolean): Boolean {
@@ -110,7 +171,8 @@ class AppScene private constructor(private val scene: ImageComposeScene, private
     /** [topmost] 只在最上层的弹层里找：对话框底下的页面有同名节点时，默认先找到的是页面上的那个。 */
     fun click(text: String, button: PointerButton = PointerButton.Primary, topmost: Boolean = false) {
         // 目标可能还在路上（文件夹的解析名要等描述取回来），等一会儿再算找不到
-        if (find(text, topmost) == null) pumpUntil(5_000) { find(text, topmost) != null }
+        // 操作面板里的「归档」要等查过文件夹的归档清单才出现，八个进程并行时 5 秒等不到
+        if (find(text, topmost) == null) pumpUntil(10_000) { find(text, topmost) != null }
         val node = find(text, topmost) ?: error("找不到「$text」。界面上现有的文本：${texts().take(60)}")
         click(scrollIntoView(node, text, topmost), button)
     }
@@ -121,34 +183,27 @@ class AppScene private constructor(private val scene: ImageComposeScene, private
      */
     private fun scrollIntoView(node: SemanticsNode, text: String, topmost: Boolean): Offset {
         // 看的是可滚动容器自己的可见范围：底部导航栏、FAB 盖着的那一截也在窗口里，点下去落在它们上面。
-        // 用滚轮一格格滚、每格重新量：预取未摆放的项边界是零，按它算一次滚动距离会滚错方向
+        // 经容器的 ScrollBy 按算出的距离滚，不发滚轮事件：桌面的滚轮滚动按事件间隔算速度，同样几格每次滚到的位置不同，
+        // 两次出图对不上。每滚一次重新量：预取未摆放的项边界是零，只知道它在下方，先滚一屏再看
         var parent = node.parent
-        while (parent != null && parent.config.getOrNull(androidx.compose.ui.semantics.SemanticsActions.ScrollBy) == null) parent = parent.parent
-        val viewport = parent?.boundsInRoot ?: return node.boundsInRoot.center
+        while (parent != null && parent.config.getOrNull(SemanticsActions.ScrollBy) == null) parent = parent.parent
+        val scrollBy = parent?.config?.getOrNull(SemanticsActions.ScrollBy)?.action ?: return node.boundsInRoot.center
+        val viewport = parent.boundsInRoot
         val visible = (viewport.top + 24f)..(viewport.bottom - 96f)
         var bounds = node.boundsInRoot
         var center = bounds.center
-        var scrolled = false
-        repeat(60) {
-            // 懒加载列表预取出来、还没摆放的项边界是零，它在下方
+        repeat(20) {
             val placed = bounds.width > 0f || bounds.height > 0f
-            if (placed && center.y in visible) {
-                // 滚轮滚动带惯性动画，动画没停时按下去只会让它停住，不算点击
-                if (scrolled) {
-                    pump(800)
-                    center = find(text, topmost)?.boundsInRoot?.center ?: center
-                }
-                return center
-            }
-            scrolled = true
-            val down = !placed || center.y > visible.endInclusive
-            edt {
-                scene.sendPointerEvent(PointerEventType.Move, viewport.center)
-                scene.sendPointerEvent(PointerEventType.Scroll, viewport.center, scrollDelta = Offset(0f, if (down) 1f else -1f))
-            }
-            pump(60)
+            if (placed && center.y in visible) return center
+            val delta = if (placed) center.y - (visible.start + visible.endInclusive) / 2 else viewport.height * 0.8f
+            edt { scrollBy(0f, delta) }
+            changed()
+            idle(800)
+            val before = bounds
             bounds = find(text, topmost)?.boundsInRoot ?: return center
             center = bounds.center
+            // 已滚到头（节点贴着容器底边、底下没有更多内容）就不再滚，照原处点
+            if (placed && bounds == before) return center
         }
         return center
     }
@@ -282,6 +337,12 @@ class AppScene private constructor(private val scene: ImageComposeScene, private
         pump(200)
     }
 
+    /** 鼠标移到 [at]，不按键。 */
+    fun moveTo(at: Offset) {
+        edt { scene.sendPointerEvent(PointerEventType.Move, at) }
+        pump(30)
+    }
+
     /** 鼠标移到 [text] 上停着，看悬停态与提示。 */
     fun hover(text: String) {
         val node = find(text) ?: error("找不到「$text」")
@@ -315,42 +376,67 @@ class AppScene private constructor(private val scene: ImageComposeScene, private
             wrapPlatform: (PikoPlatform) -> PikoPlatform = { it },
             /** 等到界面上出现它再交给调用方；null 不等，登录页、加载中这类画面要的就是开头那一刻。 */
             waitFor: String? = "Kusuriya",
+            /** 动画按真实速度播，拍动画中途的样子时用；默认动画当场跳到终点。 */
+            motion: Boolean = false,
         ): AppScene {
             val base = wrapPlatform(env.platform)
             val platform = if (mobile) MobileShotPlatform(base) else base
             val showPlayer = player != null
-            // 信息流的独立窗口不画，只记开没开着：应用内据此收起侧栏，弹出后的样子也能截
-            val feedWindow = mutableStateOf(false)
-            val host = VideoPlayerHost.Detached(
-                open = {},
-                openClipFeed = { feedWindow.value = true },
-                isClipFeedOpen = { feedWindow.value },
-                closeClipFeed = { feedWindow.value = false },
-            )
+            val host = if (mobile) {
+                // Android 是应用内压栈的播放器，没有独立窗口；给移动端套桌面的宿主，信息流顶栏会多出「在独立窗口播放」
+                VideoPlayerHost.InApp { _, _ -> }
+            } else {
+                // 信息流的独立窗口不画，只记开没开着：应用内据此收起侧栏，弹出后的样子也能截
+                val feedWindow = mutableStateOf(false)
+                VideoPlayerHost.Detached(
+                    open = {},
+                    openClipFeed = { feedWindow.value = true },
+                    isClipFeedOpen = { feedWindow.value },
+                    closeClipFeed = { feedWindow.value = false },
+                )
+            }
             // 效果的协程放在 EDT 上，与桌面入口一样。场景默认用 Unconfined，挂起后在哪个线程恢复就在哪里接着跑，
             // 目录选择器进子文件夹后在后台线程上 scrollToItem，撞上界面线程正在测量，抛
-            // 「performMeasureAndLayout called during measure layout」
+            // 「performMeasureAndLayout called during measure layout」。
+            // 动画缩放另放一份，不用平台的 motionScale：那一份连着设置页「减少动画」的开关与说明，置 0 会改掉设置页的图
+            val context = Dispatchers.Main + ShotMotionScale(if (motion) 1f else 0f)
             val scene = edt {
-                ImageComposeScene(width, height, Density(1f), coroutineContext = Dispatchers.Main) {
-                    if (player != null) {
-                        PlayerPreview(env, mode, player, platform)
-                    } else {
-                        CompositionLocalProvider(LocalWindowCaption provides if (caption) ShotWindowCaption else null) {
-                            PikoApp(env.services, platform, Appearance(mode = mode), host)
+                ImageComposeScene(width, height, Density(1f), coroutineContext = context) {
+                    // 光标每 500ms 闪一次，不随动画缩放停下：有输入框聚焦的画面永远等不到稳定，出图时光标在不在也看运气
+                    CompositionLocalProvider(LocalCursorBlinkEnabled provides false) {
+                        if (player != null) {
+                            PlayerPreview(env, mode, player, platform)
+                        } else {
+                            CompositionLocalProvider(LocalWindowCaption provides if (caption) ShotWindowCaption else null) {
+                                PikoApp(env.services, platform, Appearance(mode = mode), host)
+                            }
                         }
                     }
                 }
             }
-            val app = AppScene(scene, touch = mobile)
+            val app = AppScene(scene, touch = mobile, motion = motion)
             // 默认以根目录里一部作品的名字为准：原名或解析后的名字都含这一段
             if (!showPlayer && waitFor != null && !app.pumpUntil { app.hasText(waitFor) }) {
                 System.err.println("根目录没有列出来，界面文本：${app.texts().take(40)}")
             }
-            app.pump(600)
+            if (motion) app.pump(600) else app.settle(OPEN_MAX_MS)
             return app
         }
     }
 }
+
+/** 判定稳定要的静止时长，理由见 [AppScene.settle]。 */
+const val QUIET_MS = 500L
+
+/** 开场等稳定的上限：列出根目录后还有文件夹描述、缩略图陆续回来。 */
+private const val OPEN_MAX_MS = 3_000L
+
+/**
+ * 截图场景的动画时长缩放，放进 Recomposer 的协程上下文，与桌面入口注入 PikoMotionScale 是同一个位置。
+ * 为 0 时转场、展开、滚动一类有终点的动画当场到终点，画面才会停下来；走 InfiniteTransition 的无限动画（骨架屏）
+ * 停在终点那一帧。M3 的 LoadingIndicator 也会停，但停在哪个形状每次不同，两次出图在它那一小块上对不上。
+ */
+private class ShotMotionScale(override val scaleFactor: Float) : MotionDurationScale
 
 private fun keyNamed(name: String): Key = when (name.lowercase()) {
     "up" -> Key.DirectionUp

@@ -18,8 +18,14 @@ import dev.piko.shared.log.PikoLog
 import dev.piko.shared.media.FileClipCache
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.ui.PikoServices
+import dev.piko.ui.platform.DiskSpace
+import dev.piko.ui.platform.DownloadLocationPicker
+import dev.piko.ui.platform.PikoPlatform
 import java.io.File
-import java.io.RandomAccessFile
+import java.nio.ByteBuffer
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.TimeUnit
+import java.nio.file.StandardOpenOption
 import java.nio.file.Files
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -135,7 +141,70 @@ private fun FakePikPak.addVaultManifest(parentId: String, vararg entries: VaultE
 
 /** 日志装到临时目录：不装时 PikoLog 把所有记录攒在内存里的 channel 中。 */
 private val logInstalled by lazy {
-    PikoLog.install(Files.createTempDirectory("piko-shots-log").toString())
+    PikoLog.install(File(ShotDirs.run, "log-${ProcessHandle.current().pid()}").path)
+}
+
+/**
+ * 截图的临时文件都在 `%TEMP%/piko-shots/<主进程 pid>/` 下：每张图一个子目录，日志与生成的图片也在这里。
+ * `--jobs` 拉起的子进程经 [RUN_PROPERTY] 用主进程的那一份，主进程等它们退出后整个删掉。
+ * 按 pid 分而不按图名：别的工作区可能同时在跑一套，图名相同的目录会互相删掉。
+ */
+object ShotDirs {
+    const val RUN_PROPERTY = "piko.shots.run"
+    private val tmp = File(System.getProperty("java.io.tmpdir"))
+    private val root = File(tmp, "piko-shots")
+
+    val run: File by lazy {
+        File(root, System.getProperty(RUN_PROPERTY) ?: ProcessHandle.current().pid().toString()).apply { mkdirs() }
+    }
+
+    /**
+     * 清掉以前的运行没删成的目录：被强行结束的、或删的时候文件还被占着（Windows 上删不掉打开着的文件）。
+     * 按 pid 命名的看那个进程还在不在；旧版按随机数命名的 `piko-shots-*` 与按图名命名的看修改时间，
+     * 一张图只活几秒，一小时没动过的不会还有人在用。
+     */
+    fun sweep() {
+        val stale = System.currentTimeMillis() - 3_600_000
+        root.listFiles().orEmpty().forEach { dir ->
+            val pid = dir.name.toLongOrNull()
+            val alive = if (pid != null) ProcessHandle.of(pid).map { it.isAlive }.orElse(false) else dir.lastModified() > stale
+            if (!alive) dir.deleteRecursively()
+        }
+        tmp.listFiles { f -> f.name.startsWith("piko-shots-") || f.name.startsWith("piko-shot-image") }.orEmpty()
+            .filter { it.lastModified() < stale }
+            .forEach { it.deleteRecursively() }
+    }
+
+    private val children = CopyOnWriteArrayList<Process>()
+
+    /** `--jobs` 拉起的子进程，主进程退出时先结束它们再删目录。 */
+    fun adopt(process: Process) {
+        children += process
+    }
+
+    /**
+     * 进程开头调用。子进程盯着主进程：主进程被强行结束（任务管理器、Gradle 被杀）时不跑退出钩子，
+     * 子进程不跟着退的话会在后台把自己那一片跑完，目录也没人删。
+     * 主进程先清以前的遗留，再挂退出钩子：正常退出、Ctrl+C 都先结束子进程、等它们放开文件，再删本次的目录。
+     */
+    fun start() {
+        val owner = System.getProperty(RUN_PROPERTY)?.toLongOrNull()
+        if (owner != null) {
+            val parent = ProcessHandle.of(owner).filter { it.isAlive }.orElse(null)
+            if (parent == null) {
+                Runtime.getRuntime().halt(3)
+                return
+            }
+            parent.onExit().thenRun { Runtime.getRuntime().halt(3) }
+            return
+        }
+        sweep()
+        Runtime.getRuntime().addShutdownHook(Thread {
+            children.forEach { it.destroyForcibly() }
+            children.forEach { it.waitFor(10, TimeUnit.SECONDS) }
+            run.deleteRecursively()
+        })
+    }
 }
 
 /**
@@ -143,6 +212,8 @@ private val logInstalled by lazy {
  * 已登录。每个截图各用一份，关掉时连同临时目录一起清掉。
  */
 class ShotEnv(
+    /** 截图的名字，临时目录按它取名。 */
+    name: String,
     viewMode: String? = null,
     extraSeed: FakePikPak.() -> Unit = {},
     login: LoginSeed = LoginSeed.SIGNED_IN,
@@ -151,7 +222,11 @@ class ShotEnv(
     /** 只给这一张写的设置项，键照 DesktopSettingsStore，如上传任务 upload.tasks。 */
     prefs: Map<String, String> = emptyMap(),
 ) : AutoCloseable {
-    val dir: File = Files.createTempDirectory("piko-shots-").toFile()
+    // 名字在一套里唯一，并行的各片也不撞
+    val dir: File = File(ShotDirs.run, name).apply {
+        deleteRecursively()
+        mkdirs()
+    }
     val server = FakePikPak().apply {
         seed()
         extraSeed()
@@ -165,7 +240,7 @@ class ShotEnv(
         if (viewMode != null) set("ui.driveViewMode", viewMode)
     }
     val preferences = DesktopPikoPreferences(settings) { PlainFileVault(dir.toPath().resolve("secrets")) }
-    val platform = DesktopPikoPlatform(settings)
+    val platform: PikoPlatform = FixedDiskPlatform(DesktopPikoPlatform(settings))
     val services: PikoServices
 
     init {
@@ -197,9 +272,21 @@ class ShotEnv(
     }
 }
 
+/**
+ * 磁盘空间与下载位置给定值：真实的剩余空间随本机在变，传输页底栏与下载位置对话框会跟着变；
+ * 下载目录在按进程号命名的临时目录里，原样显示的话设置页每次都不一样。
+ */
+private class FixedDiskPlatform(base: PikoPlatform) : PikoPlatform by base {
+    override val downloadLocation: DownloadLocationPicker = object : DownloadLocationPicker by base.downloadLocation {
+        override fun diskSpace(storedPath: String) = DiskSpace(freeBytes = 412 * GB, totalBytes = 1_000 * GB)
+        override fun displayName(storedPath: String) =
+            if (storedPath.isEmpty()) base.downloadLocation.displayName(storedPath) else "D:\\Downloads\\Piko"
+    }
+}
+
 /** 下载列表：两个已完成（磁盘上放稀疏文件，恢复时按长度核对）、一个暂停、一个失败。 */
 private fun seededDownloads(dir: File): String {
-    fun sparse(name: String, length: Long) = RandomAccessFile(File(dir, name), "rw").use { it.setLength(length) }
+    fun sparse(name: String, length: Long) = sparseFile(File(dir, name), length)
     val now = System.currentTimeMillis()
     val done1 = "Perfect.Days.2023.1080p.WEB-DL.mp4"
     val done2 = "Kotlin in Action, Second Edition.pdf"
@@ -229,6 +316,22 @@ private fun seededDownloads(dir: File): String {
     return Json.encodeToString(ListSerializer(DownloadTask.serializer()), tasks)
 }
 
+/**
+ * 只占名义大小的文件。RandomAccessFile.setLength 在 NTFS 上按长度实际分配（实测 2 GiB 占 2 GiB），
+ * 一张图预置的下载合计十几 GB 真的写到盘上；以 SPARSE 打开时 Windows 先把它标成稀疏文件，
+ * 再只写末尾一个字节（同样 2 GiB 占 64 KiB）。Linux 与 macOS 上 setLength 本来就是稀疏的，这样写也一样。
+ */
+private fun sparseFile(file: File, length: Long) {
+    if (length == 0L) {
+        file.createNewFile()
+        return
+    }
+    Files.newByteChannel(file.toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE, StandardOpenOption.SPARSE).use { channel ->
+        channel.position(length - 1)
+        channel.write(ByteBuffer.wrap(byteArrayOf(0)))
+    }
+}
+
 /** 一次文件夹下载：十二集加两个字幕，前四集已下完（同样放稀疏文件），第五集下到一半，其余未开始。 */
 private fun seededFolderBatch(dir: File, createdAtMs: Long, thumbnail: String): List<DownloadTask> {
     val batch = DownloadBatch("shots-batch", "Frieren S01")
@@ -237,7 +340,7 @@ private fun seededFolderBatch(dir: File, createdAtMs: Long, thumbnail: String): 
         val fileName = "${batch.folderName}/$path"
         if (downloaded > 0) {
             File(dir, fileName).parentFile.mkdirs()
-            RandomAccessFile(File(dir, fileName), "rw").use { it.setLength(downloaded) }
+            sparseFile(File(dir, fileName), downloaded)
         }
         return DownloadTask("b$index", "XB$index", fileName, "GB$index", size, downloaded, status = status,
             destinationPath = File(dir, fileName).path, createdAtMs = createdAtMs, batch = batch,
