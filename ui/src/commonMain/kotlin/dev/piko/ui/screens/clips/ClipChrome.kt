@@ -35,7 +35,6 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StayCurrentLandscape
-import androidx.compose.material.icons.filled.StayCurrentPortrait
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Folder
@@ -107,7 +106,8 @@ import kotlin.math.roundToInt
  *
  * [onPopOut] 弹出到独立窗口，[onDock] 从独立窗口收回主窗口，只在桌面端、各在它该出现的形态里给出。
  * [onHideChrome] 进入沉浸，只在翻页器出来之后给出：此前藏起控件就没有可点的画面来叫回。
- * [landscapeLocked] 为 null 时不给横屏按钮（平台转不了方向，或在侧栏里）。
+ * [landscapeLocked] 为 null 时不给横屏按钮（平台转不了方向，或在侧栏里）；为 true 时也不给，× 改作回到竖屏，
+ * 关闭信息流要先回到竖屏再按一次：横屏是看片的一种姿势，按 × 的人多半是想退出横屏，不是想丢掉整个队列。
  *
  * 桌面上片段窗口没有标题栏，文件夹名与按钮之间的空白兼做拖动区。拖动区盖住按钮的话它们就点不动了，
  * 所以只登记这一段，不把整条顶栏报成一块。
@@ -149,10 +149,11 @@ internal fun ClipFeedTopBar(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (landscapeLocked != null) {
+            // 横屏时不再并排一个「退出横屏」：× 就是回到竖屏，见下面的关闭
+            if (landscapeLocked == false) {
                 ChromeIconButton(
-                    icon = if (landscapeLocked) Icons.Filled.StayCurrentPortrait else Icons.Filled.StayCurrentLandscape,
-                    label = if (landscapeLocked) "退出横屏" else "横屏",
+                    icon = Icons.Filled.StayCurrentLandscape,
+                    label = "横屏",
                     onClick = onToggleLandscape,
                     size = buttonSize,
                     tooltip = true,
@@ -188,7 +189,10 @@ internal fun ClipFeedTopBar(
             } else {
                 if (onPopOut != null) ChromeIconButton(Icons.AutoMirrored.Outlined.OpenInNew, "在独立窗口播放", onPopOut, buttonSize, tooltip = true)
                 // 侧栏里按钮画小一号，关闭仍占足最小触控尺寸
-                if (onClose != null) ChromeIconButton(Icons.Filled.Close, "关闭信息流", onClose, buttonSize, tooltip = true, minTouchTarget = true)
+                if (onClose != null) {
+                    val label = if (landscapeLocked == true) "返回竖屏" else "关闭信息流"
+                    ChromeIconButton(Icons.Filled.Close, label, onClose, buttonSize, tooltip = true, minTouchTarget = true)
+                }
             }
             caption.buttons?.invoke()
         }

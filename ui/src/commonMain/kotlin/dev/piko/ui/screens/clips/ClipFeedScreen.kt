@@ -49,6 +49,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.geometry.Offset
@@ -190,12 +191,15 @@ fun ClipFeedScreen(
         onPlayFull(file, startMillis)
     }
 
+    // 横屏时 × 与返回都先回到竖屏，第二次才关掉信息流；后登记的先收到，压在外层的返回之上
+    val inLandscape = landscapeLock != null && session.landscape
+    BackHandler(enabled = inLandscape) { session.landscape = false }
     val topBar: @Composable BoxScope.(onHideChrome: (() -> Unit)?) -> Unit = { onHideChrome ->
         ClipFeedTopBar(
             title = session.root?.name ?: "信息流",
             muted = session.muted,
             onToggleMute = { session.muted = !session.muted },
-            onClose = onBackClick,
+            onClose = { if (inLandscape) session.landscape = false else onBackClick() },
             compact = compact,
             onPopOut = onPopOut,
             onDock = onDock,
