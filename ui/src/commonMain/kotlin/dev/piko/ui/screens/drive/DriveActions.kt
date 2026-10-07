@@ -14,7 +14,6 @@ import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.FolderOpen
-import androidx.compose.material.icons.outlined.HighQuality
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.outlined.Link
@@ -37,15 +36,24 @@ import dev.piko.ui.components.SheetAction
  * 命令栏、移动端多选顶栏都从这里取，同一个操作在各处的叫法与图标一致。做不做得了由 DriveCommands.kt 的
  * [itemCommands] 决定，不在这里判断。
  *
- * 省略号照 Windows 与 macOS 菜单的惯例：点了之后还要先挑目标或参数（目录、画质、段落）才执行的加，
- * 只是确认、就地改名或直接执行的不加。
+ * 省略号照 Windows 与 macOS 菜单的惯例：点了之后还要先挑目标或参数（目录、段落）才执行的加，
+ * 只是确认、就地改名或直接执行的不加。「下载」不加：只有文件时直接下，有视频时弹出的画质对话框已选好默认的一档，
+ * 一次确认即下，还可以设成不再弹；同一项的名字也不该随选中的是不是视频而变。
  *
  * 分档见 [ActionTier]：图标行是下载、分享、星标、重命名，按这个先后；常驻的是移动、复制与各类条目自己的
  * 打开方式；其余收进「更多」。
  */
 internal object DriveActions {
-    fun download(onClick: () -> Unit) =
-        SheetAction(Icons.Outlined.Download, "下载到本地", onClick, group = ActionGroup.Open, tier = ActionTier.Quick, shortLabel = "下载")
+    /** 点了经 DownloadLauncher 定画质，见那里。[onPrepare] 给单个视频提前查各档大小。 */
+    fun download(onPrepare: (() -> Unit)? = null, onClick: () -> Unit) = SheetAction(
+        Icons.Outlined.Download,
+        "下载到本地",
+        onClick,
+        group = ActionGroup.Open,
+        tier = ActionTier.Quick,
+        onPrepare = onPrepare,
+        shortLabel = "下载",
+    )
 
     fun share(onClick: () -> Unit) =
         SheetAction(Icons.Outlined.Share, "分享", onClick, group = ActionGroup.Open, tier = ActionTier.Quick)
@@ -94,17 +102,6 @@ internal object DriveActions {
     fun restoreFromVault(onClick: () -> Unit) = SheetAction(Icons.Outlined.CloudDownload, "恢复到网盘", onClick, group = ActionGroup.Open)
 
     fun revealInDrive(onClick: () -> Unit) = SheetAction(Icons.Outlined.FolderOpen, "在网盘中显示", onClick, group = ActionGroup.Open)
-
-    fun downloadQuality(onClick: () -> Unit, onPrepare: (() -> Unit)?) = SheetAction(
-        Icons.Outlined.HighQuality,
-        "选择画质下载…",
-        onClick,
-        group = ActionGroup.Open,
-        tier = ActionTier.More,
-        onPrepare = onPrepare,
-        // 播放器设置面板的图标行里用，与同排各项一律两个字，竖屏手机上一格放不下四个字
-        shortLabel = "画质",
-    )
 
     fun downloadSegment(onClick: () -> Unit, onPrepare: (() -> Unit)?) = SheetAction(
         Icons.Outlined.ContentCut,

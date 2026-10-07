@@ -32,16 +32,23 @@ class UnreadableTranscodeTest {
     fun listedProbeIsReusedWhenTheDownloadStarts() = runBlocking {
         repository.downloadQualities("f1").toList()
         val requests = cloud.cdnRequests.get() to cloud.detailCalls.get()
-        assertEquals("480P", repository.downloadVariant("f1", name = null, maxHeight = 1080).getOrThrow()?.name)
+        // 上限取 720：原画是 1080，上限 1080 时原画本身就不高于它
+        assertEquals("480P", repository.downloadVariant("f1", name = null, maxHeight = 720).getOrThrow()?.name)
         assertIs<UnreadableTranscodeException>(repository.downloadVariant("f1", name = "720P", maxHeight = 0).exceptionOrNull())
         assertEquals(requests, cloud.cdnRequests.get() to cloud.detailCalls.get())
     }
 
     @Test
     fun capSkipsToTheHighestReadableTranscode() = runBlocking {
-        val chosen = repository.downloadVariant("f1", name = null, maxHeight = 1080).getOrThrow()
+        val chosen = repository.downloadVariant("f1", name = null, maxHeight = 720).getOrThrow()
         assertEquals("480P", chosen?.name)
         assertEquals(32L * 1024, chosen?.sizeBytes)
+    }
+
+    @Test
+    fun originalWithinCapIsNotProbedAgainstTranscodes() = runBlocking {
+        assertEquals(null, repository.downloadVariant("f1", name = null, maxHeight = 1080).getOrThrow())
+        assertEquals(0, cloud.cdnRequests.get())
     }
 
     @Test

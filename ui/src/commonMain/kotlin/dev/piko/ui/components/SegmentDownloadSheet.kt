@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFile
 import dev.piko.shared.media.DownloadQuality
+import dev.piko.shared.media.chooseDownloadQuality
 import dev.piko.shared.media.ORIGINAL_QUALITY
 import dev.piko.shared.media.PlayableMediaInfo
 import dev.piko.shared.media.player.PlaybackTarget
@@ -169,7 +170,7 @@ fun SegmentDownloadSheet(
     val pickedOption = qualities?.let { all -> session.pickedQuality?.let { picked -> all.firstOrNull { (it.name ?: ORIGINAL_QUALITY) == picked } } }
     // 点过的档随后探出读不出：不替用户换一档，清掉选中、停用下载按钮，并说明原因
     val pickedUnreadable = pickedOption?.unreadable == true
-    val selectedQuality = if (pickedUnreadable) null else pickedOption ?: qualities?.let { defaultDownloadQuality(it, defaultCap) }
+    val selectedQuality = if (pickedUnreadable) null else pickedOption ?: qualities?.let { chooseDownloadQuality(it, defaultCap) ?: it.first() }
 
     // 收起再打开时已经取过就不再取：区间跟着会话留着，重取会把它按初始区间盖掉
     LaunchedEffect(file.id) {

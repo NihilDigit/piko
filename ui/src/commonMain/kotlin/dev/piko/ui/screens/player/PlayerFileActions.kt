@@ -9,8 +9,8 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import dev.piko.shared.log.logFailure
 import dev.piko.ui.LocalPikoServices
-import dev.piko.ui.components.QualityDownloadDialog
 import dev.piko.ui.components.SheetAction
+import dev.piko.ui.components.rememberDownloadLauncher
 import dev.piko.ui.screens.drive.DriveActions
 import dev.piko.ui.screens.share.ShareDialog
 import io.github.nihildigit.pikpak.FileKind
@@ -31,7 +31,7 @@ fun rememberPlayerFileActions(fileId: String, isLocalPlayback: Boolean, onMessag
     val scope = rememberCoroutineScope()
     val message by rememberUpdatedState(onMessage)
     var sharing by remember { mutableStateOf<FileStat?>(null) }
-    var choosingQuality by remember { mutableStateOf<FileStat?>(null) }
+    val downloads = rememberDownloadLauncher()
 
     fun withFile(action: (FileStat) -> Unit) {
         scope.launch {
@@ -64,28 +64,16 @@ fun rememberPlayerFileActions(fileId: String, isLocalPlayback: Boolean, onMessag
         )
     }
 
-    choosingQuality?.let { file ->
-        QualityDownloadDialog(
-            file = file,
-            onDownload = { quality ->
-                services.downloadManager.enqueueQuality(file, quality)
-                message("已加入下载")
-            },
-            onDismiss = { choosingQuality = null },
-        )
-    }
-
-    // 名字与图标取自网盘的同名操作，两处叫法一致
+    // 名字与图标取自网盘的同名操作，两处叫法一致；下载与网盘同一个入口，画质对话框画在播放器的窗口里
     return buildList {
         add(DriveActions.share { withFile { sharing = it } })
         if (!isLocalPlayback) {
-            add(DriveActions.download {
-                withFile { file ->
-                    services.downloadManager.enqueue(file)
-                    message("已加入下载")
-                }
-            })
-            add(DriveActions.downloadQuality(onClick = { withFile { choosingQuality = it } }, onPrepare = null))
+            add(
+                DriveActions.download(
+                    onClick = { withFile { file -> downloads.download(listOf(file)) { message("已加入下载") } } },
+                    onPrepare = { services.mediaRepository.prefetchDownloadQualities(fileId) },
+                ),
+            )
         }
     }
 }

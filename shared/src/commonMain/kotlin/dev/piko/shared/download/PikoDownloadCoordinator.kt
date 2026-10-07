@@ -84,9 +84,11 @@ class PikoDownloadCoordinator(
     // 列出中的文件夹下载的输入与协程，重试与放弃要用；列完等确认的还带着排好的任务
     private val listingWork = MutableStateFlow<Map<String, ListingWork>>(emptyMap())
 
-    private class ListingWork(
+    private data class ListingWork(
         val folder: FileStat,
         val source: DownloadFolderSource,
+        /** 下载时选的画质上限，null 取设置里的。重新列出时照旧用它。 */
+        val maxHeight: Int?,
         val job: Job? = null,
         val planned: List<DownloadTask> = emptyList(),
     )
@@ -268,13 +270,16 @@ class PikoDownloadCoordinator(
 
     fun enqueue(file: FileStat) = enqueueFiles(listOf(file))
 
-    /** 多选文件一次入队，共用全局并发上限；重复文件复用已有任务。视频按设置里的下载画质挑档，见 [DownloadTask.qualityCap]。 */
-    fun enqueueFiles(files: List<FileStat>) {
-        enqueueFiles(files, leasedSource = false)
+    /**
+     * 多选文件一次入队，共用全局并发上限；重复文件复用已有任务。视频按画质上限 [maxHeight] 挑档（0 是原画，
+     * null 取设置里的下载画质），开始下载时才挑，见 [DownloadTask.qualityCap]。
+     */
+    fun enqueueFiles(files: List<FileStat>, maxHeight: Int? = null) {
+        enqueueFiles(files, leasedSource = false, maxHeight = maxHeight)
     }
 
     /**
-     * 单个视频按用户在「选择画质下载」里选的那一档下载，不看设置里的上限。[quality] 是原画（name 为 null）时下原画；
+     * 单个视频按用户在下载对话框里选的那一档下载，不看上限。[quality] 是原画（name 为 null）时下原画；
      * 是转码档时下完转封装成 MP4，文件名里带上档位。
      */
     fun enqueueQuality(file: FileStat, quality: DownloadQuality) {
@@ -290,8 +295,8 @@ class PikoDownloadCoordinator(
         }, leasedSource = true)
     }
 
-    /** [chosen] 为 null 时按设置里的下载画质上限挑档。 */
-    private fun enqueueFiles(files: List<FileStat>, leasedSource: Boolean, chosen: DownloadQuality? = null) {
+    /** [chosen] 为 null 时按上限 [maxHeight] 挑档，它也为 null 时取设置里的下载画质。 */
+    private fun enqueueFiles(files: List<FileStat>, leasedSource: Boolean, chosen: DownloadQuality? = null, maxHeight: Int? = null) {
         val account = currentAccount()
         val accepted = files.filter { !it.isFolder && !it.isUploading }.distinctBy { it.id }
         if (accepted.isEmpty()) return
@@ -299,7 +304,7 @@ class PikoDownloadCoordinator(
         scope.launch(Dispatchers.IO) {
             enqueueLock.withLock {
                 val now = Clock.System.now().toEpochMilliseconds()
-                val cap = if (chosen == null && !leasedSource) preferences.downloadMaxHeightFlow.first() else 0
+                val cap = if (chosen == null && !leasedSource) maxHeight ?: preferences.downloadMaxHeightFlow.first() else 0
                 val batch = if (accepted.size > 1) DownloadBatch("files@$now-${++batchSequence}", "批量下载", isFolder = false) else null
                 val taken = _tasks.value.values.mapTo(mutableSetOf()) { it.fileName.lowercase() }
                 val reused = accepted.count { existingTask(it, account, chosen) != null }
@@ -356,8 +361,9 @@ class PikoDownloadCoordinator(
      * 下载几个文件夹，每个一批：在后台列出其中全部文件，落在下载目录下同名的文件夹里、保持子文件夹结构。
      * 列出期间与列完等确认时见 [listings]；列完即变成任务表里的一批任务（[DownloadTask.batch]），
      * 同一批同时只下 [BATCH_PARALLEL] 个，其余排着。返回开始列出的批数：Piko 自己的文件夹不下载，见 [isPikoFolder]。
+     * 其中的视频按上限 [maxHeight] 挑档，同 [enqueueFiles]。
      */
-    fun enqueueFolders(folders: List<FileStat>, source: DownloadFolderSource): Int {
+    fun enqueueFolders(folders: List<FileStat>, source: DownloadFolderSource, maxHeight: Int? = null): Int {
         val eligible = folders.filter { it.isFolder && !isPikoFolder(it) }.distinctBy { it.id }
         val accepted = eligible
             .filter { folder ->
@@ -374,7 +380,7 @@ class PikoDownloadCoordinator(
             }?.batch
             val batch = previous ?: DownloadBatch(id = "${folder.id}@$now", folderName = uniqueDownloadName(FileNameSanitizer.sanitizeFolderName(folder.name), taken, false), sourceFolderId = folder.id)
             _listings.update { it + (batch.id to FolderListing(batch, createdAtMs = now, account = currentAccount())) }
-            listingWork.update { it + (batch.id to ListingWork(folder, source)) }
+            listingWork.update { it + (batch.id to ListingWork(folder, source, maxHeight)) }
             startListing(batch.id)
         }
         return eligible.size
@@ -430,19 +436,19 @@ class PikoDownloadCoordinator(
             }
             // 已在本机的按长度认作完成，与单个文件的下载一样；上千个文件逐个查长度，放在 IO 线程上
             val lengths = storage.existingLengths(planned.map { it.path })
-            val cap = preferences.downloadMaxHeightFlow.first()
+            val cap = work.maxHeight ?: preferences.downloadMaxHeightFlow.first()
             val tasks = withContext(Dispatchers.IO) { planned.map { plannedTask(it, listing, lengths[it.path] ?: 0L, cap) } }
             val needed = tasks.filter { it.status != DownloadStatus.COMPLETED }.sumOf { it.totalBytes - it.downloadedBytes }
             val remaining = runSuspendCatching { work.source.remainingDailyDownload() }.getOrNull()
             PikoLog.d(TAG, "列出文件夹：${logFile(work.folder.id, work.folder.name)}，${tasks.size} 个文件，待下载 $needed 字节，今日余量 $remaining")
             if (remaining != null && needed > remaining) {
-                listingWork.update { current -> current[batchId]?.let { current + (batchId to ListingWork(it.folder, it.source, planned = tasks)) } ?: current }
+                listingWork.update { current -> current[batchId]?.let { current + (batchId to it.copy(job = null, planned = tasks)) } ?: current }
                 updateListing(batchId) { it.copy(quotaExcess = QuotaExcess(needed, remaining)) }
             } else {
                 addBatch(batchId, tasks)
             }
         }
-        listingWork.update { current -> current[batchId]?.let { current + (batchId to ListingWork(it.folder, it.source, job)) } ?: current }
+        listingWork.update { current -> current[batchId]?.let { current + (batchId to it.copy(job = job, planned = emptyList())) } ?: current }
         job.start()
     }
 
@@ -705,8 +711,8 @@ class PikoDownloadCoordinator(
     }
 
     /**
-     * 定下这个任务下哪一档：按设置的上限挑（[DownloadTask.qualityCap]），或补齐用户选的那一档的 media ID 与大小。
-     * 挑到转码档时文件名换成带档位的 .mp4；按上限挑不到就下原画。用户选的档已经没有了、或读不出字节则失败，
+     * 定下这个任务下哪一档：按上限挑（[DownloadTask.qualityCap]，规则见 downloadQualityOrder），或补齐用户选的那一档的
+     * media ID 与大小。挑到转码档时文件名换成带档位的 .mp4，挑到原画照旧。用户选的档已经没有了、或读不出字节则失败，
      * 不悄悄换成原画。转码档的任务每次开始都经这里，读不出的档在开始时就以能看懂的提示失败，而不是下到第一个块才报错。
      */
     private suspend fun chooseQuality(task: DownloadTask): DownloadTask {
@@ -721,7 +727,7 @@ class PikoDownloadCoordinator(
             else -> task.copy(qualityCap = 0)
         }
         PikoLog.i(TAG, "定下画质：${logFile(task.fileId, chosen.fileName)}，" +
-            (chosen.quality?.let { "转码档 $it，${chosen.totalBytes} 字节" } ?: "没有不高于 ${task.qualityCap}P 的转码，下原画"))
+            (chosen.quality?.let { "转码档 $it，${chosen.totalBytes} 字节" } ?: "上限 ${task.qualityCap}P，下原画"))
         update(task.taskId) {
             it.copy(qualityCap = chosen.qualityCap, quality = chosen.quality, mediaId = chosen.mediaId, totalBytes = chosen.totalBytes,
                 downloadedBytes = chosen.downloadedBytes, endMs = chosen.endMs, fileName = chosen.fileName, destinationPath = chosen.destinationPath)
@@ -736,7 +742,7 @@ class PikoDownloadCoordinator(
     private suspend fun chooseSegmentQuality(task: DownloadTask): DownloadTask {
         val variant = mediaRepository?.downloadVariant(task.fileId, task.quality, task.qualityCap)?.getOrThrow()
         if (variant == null && task.quality != null) error("所选画质已不可用")
-        PikoLog.i(TAG, "片段定下画质：${logFile(task.fileId, task.fileName)}，${variant?.name ?: "没有不高于 ${task.qualityCap}P 的转码，截原画"}")
+        PikoLog.i(TAG, "片段定下画质：${logFile(task.fileId, task.fileName)}，${variant?.name ?: "上限 ${task.qualityCap}P，截原画"}")
         update(task.taskId) { it.copy(qualityCap = 0, quality = variant?.name, mediaId = variant?.mediaId) }
         return task.copy(qualityCap = 0, quality = variant?.name, mediaId = variant?.mediaId)
     }

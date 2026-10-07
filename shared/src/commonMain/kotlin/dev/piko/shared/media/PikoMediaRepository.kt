@@ -135,7 +135,9 @@ data class DownloadQuality(
     val durationMs: Long,
     /** 转码档探测时读不出字节（服务端坏了），不能选。 */
     val unreadable: Boolean = false,
-)
+) {
+    val isOriginal: Boolean get() = mediaId == null
+}
 
 /** 这一档转码在服务端读不出字节，见 [PikoMediaRepository.downloadQualities]。消息直接给用户看。 */
 class UnreadableTranscodeException(cause: Throwable? = null) : IllegalStateException("该画质的转码文件无法读取，请改选其他画质", cause)
@@ -592,7 +594,7 @@ class PikoMediaRepository(
     }
 
     /**
-     * 提前开始 [downloadQualities] 的探测，结果留给随后打开的对话框与片段面板。在「选择画质下载」「下载指定段落」
+     * 提前开始 [downloadQualities] 的探测，结果留给随后打开的对话框与片段面板。在单个视频的「下载」与「下载指定段落」
      * 上按下或指针移入时调用：这时多半就要点，不点也只白发一次详情与每档一个 1 字节的请求。
      */
     fun prefetchDownloadQualities(fileId: String) {
@@ -641,7 +643,7 @@ class PikoMediaRepository(
     private suspend fun probeQualities(client: PikPakClient, fileId: String, state: MutableStateFlow<QualityProbeState>) {
         val detail = detailOf(client, fileId)
         val durationMs = durationMsOf(detail)
-        val original = DownloadQuality(null, null, detail.medias.firstOrNull { it.isOrigin }?.video?.height ?: 0, detail.sizeBytes, durationMs)
+        val original = originalQuality(detail, durationMs)
         val transcodes = if (LeasedFile.isLeased(fileId)) emptyList() else detail.downloadableTranscodes().sortedByDescending { it.video?.height ?: 0 }
         state.value = QualityProbeState(listOf(original) + transcodes.map { it.toDownloadQuality(durationMs) })
         coroutineScope {
@@ -668,17 +670,17 @@ class PikoMediaRepository(
     }
 
     /**
-     * 下载时定下的那一档，连同它的大小。[name] 是用户选的档，读不出字节时以 [UnreadableTranscodeException] 失败，
-     * 不换成别的档。[name] 为 null 时按 [maxHeight] 挑不高于它、读得出的最高一档。没有可下的转码（或文件只能借出）
-     * 时为 null，调用方下原画：上限是为了省流量，挑一档更高的转码违背本意。
+     * 下载时定下的那一档转码，连同它的大小；定为原画时为 null。[name] 是用户选的档，读不出字节时以
+     * [UnreadableTranscodeException] 失败，不换成别的档，已经没有了也是 null（调用方据此失败）。[name] 为 null 时
+     * 按 [maxHeight] 挑，规则见 [downloadQualityOrder]，探出读不出的跳到下一档。文件只能借出时一律原画。
      */
     suspend fun downloadVariant(fileId: String, name: String?, maxHeight: Int): Result<DownloadQuality?> =
         withContext(Dispatchers.Default) {
             runSuspendCatching {
                 if (LeasedFile.isLeased(fileId)) return@runSuspendCatching null
                 // 刚在对话框或片段面板里列过各档，就按那次的探测结果定，不再查详情、不再探
-                finishedQualities(fileId)?.filter { it.mediaId != null }
-                    ?.takeIf { known -> known.all { it.unreadable || it.sizeBytes != null } }
+                finishedQualities(fileId)
+                    ?.takeIf { known -> known.all { it.isOriginal || it.unreadable || it.sizeBytes != null } }
                     ?.let { known -> return@runSuspendCatching chooseVariant(known, name, maxHeight) }
                 val client = client
                 val detail = detailOf(client, fileId)
@@ -688,29 +690,34 @@ class PikoMediaRepository(
                     val media = transcodes.firstOrNull { it.qualityName == name } ?: return@runSuspendCatching null
                     return@runSuspendCatching media.toDownloadQuality(durationMs, probeTranscode(client, media))
                 }
-                val candidates = transcodes.filter { (it.video?.height ?: 0) <= maxHeight }.sortedByDescending { it.video?.height ?: 0 }
-                for (media in candidates) {
+                val options = listOf(originalQuality(detail, durationMs)) + transcodes.map { it.toDownloadQuality(durationMs) }
+                for (option in downloadQualityOrder(options, maxHeight)) {
+                    if (option.isOriginal) return@runSuspendCatching null
+                    val media = transcodes.first { it.mediaId == option.mediaId }
                     val probed = runSuspendCatching { probeTranscode(client, media) }
                     val error = probed.exceptionOrNull()
                     if (error is UnreadableTranscodeException) {
                         PikoLog.w(TAG, "转码档 ${media.qualityName} 读不出字节，改挑下一档：${logFile(fileId, "")}", error)
                         continue
                     }
-                    return@runSuspendCatching media.toDownloadQuality(durationMs, probed.getOrThrow())
+                    return@runSuspendCatching option.copy(sizeBytes = probed.getOrThrow())
                 }
                 null
             }
         }
 
-    /** [downloadVariant] 的挑法，用在已探过的各档上。 */
-    private fun chooseVariant(transcodes: List<DownloadQuality>, name: String?, maxHeight: Int): DownloadQuality? {
+    /** [downloadVariant] 的挑法，用在已探过的各档上（含原画）。 */
+    private fun chooseVariant(known: List<DownloadQuality>, name: String?, maxHeight: Int): DownloadQuality? {
         if (name != null) {
-            val chosen = transcodes.firstOrNull { it.name == name } ?: return null
+            val chosen = known.firstOrNull { !it.isOriginal && it.name == name } ?: return null
             if (chosen.unreadable) throw UnreadableTranscodeException()
             return chosen
         }
-        return transcodes.filter { !it.unreadable && it.height <= maxHeight }.maxByOrNull { it.height }
+        return chooseDownloadQuality(known, maxHeight)?.takeUnless { it.isOriginal }
     }
+
+    private fun originalQuality(detail: FileDetail, durationMs: Long) =
+        DownloadQuality(null, null, detail.medias.firstOrNull { it.isOrigin }?.video?.height ?: 0, detail.sizeBytes, durationMs)
 
     private fun FileDetail.downloadableTranscodes(): List<MediaVariant> =
         medias.filter { !it.isOrigin && it.video != null && it.link.url.isNotBlank() && it.qualityName != null }

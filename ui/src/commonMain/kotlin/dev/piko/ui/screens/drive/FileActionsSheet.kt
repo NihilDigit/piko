@@ -77,9 +77,7 @@ internal class FileActionHandlers(
     val extract: () -> Unit,
     val findDuplicates: () -> Unit,
     val downloadSegment: () -> Unit,
-    /** 视频的「选择画质下载」。 */
-    val downloadQuality: () -> Unit,
-    /** 在「选择画质下载」「下载指定段落」上按下或悬停时提前查各档，见 [SheetAction.onPrepare]。 */
+    /** 视频的「下载」「下载指定段落」上按下或悬停时提前查各档，见 [SheetAction.onPrepare]。 */
     val prepareQualities: () -> Unit,
     val copySource: () -> Unit,
     val openSource: () -> Unit,
@@ -105,8 +103,8 @@ internal class FileActionHandlers(
  */
 internal fun fileActions(file: FileStat, commands: ItemCommands, on: FileActionHandlers): List<SheetAction> = buildList {
     val video = !file.isFolder && file.isPlayableVideo()
-    // 文件夹连同子文件夹整个下载
-    if (commands.download) add(DriveActions.download(on.download))
+    // 文件夹连同子文件夹整个下载；单个视频点了先选画质，各档大小提前查
+    if (commands.download) add(DriveActions.download(onPrepare = on.prepareQualities.takeIf { video }, onClick = on.download))
     if (commands.share) add(DriveActions.share(on.share))
     add(DriveActions.star(file.isStarred, on.toggleStar))
     if (commands.rename) add(DriveActions.rename(on.rename))
@@ -118,7 +116,6 @@ internal fun fileActions(file: FileStat, commands: ItemCommands, on: FileActionH
         add(DriveActions.copyTo(on.copy))
     }
     if (file.isFolder) on.togglePin?.let { add(DriveActions.pin(on.isPinned, it)) }
-    if (video && commands.download) add(DriveActions.downloadQuality(on.downloadQuality, on.prepareQualities))
     if (video) add(DriveActions.downloadSegment(on.downloadSegment, on.prepareQualities))
     if (file.isFolder) {
         add(DriveActions.findDuplicates(on.findDuplicates))

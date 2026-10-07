@@ -14,12 +14,19 @@
 转码档（1080P、720P、480P）只有 MPEG-TS（HEVC 与 AAC），大小不在详情里，要探测（`PikoMediaRepository.downloadVariant`、
 `downloadQualities`，各发一次 1 字节的 Range 请求）。这一字节也要真读出来：有的档服务端回 206、Content-Range 写着全长，
 正文却是空的（2026-10-07 实测），读不出的档在对话框与片段面板里停用，按上限挑时跳过，用户选定的那一档读不出则以「该画质的转码文件无法读取」失败。
-探测按账号与文件留 10 分钟，对话框、片段面板与下载开始时共用；在菜单项上按下或悬停时就开始（`prefetchDownloadQualities`）。下载画质是每台设备各自的偏好 `downloadMaxHeightFlow`，不同步，
-选项与播放画质相同，按「不高于所选、没有就下原画」挑。
+探测按账号与文件留 10 分钟，对话框、片段面板与下载开始时共用；在菜单项上按下或悬停时就开始（`prefetchDownloadQualities`）。
+下载画质是每台设备各自的偏好 `downloadMaxHeightFlow`，不同步，选项与播放画质相同；点「下载」时是否先问画质是
+`downloadQualityPromptFlow`（默认问），问不问、怎么问在界面的 `DownloadLauncher`，见 `ui/.../screens/drive/CLAUDE.md`。
 
-- 普通下载、批量与文件夹下载：视频任务入队时只记上限（`qualityCap`），开始下载时才查详情、挑档。挑到转码档就把文件名改成
-  「名字 [720P].mp4」，挑不到照旧下原画。入队时不查：文件夹一批上千个文件，逐个查详情太慢。
-- 单个视频的「选择画质下载」：对话框列出各档与大小，选定的档直接写进任务（`quality`、`mediaId`、`totalBytes`）。
+按上限挑档的规则只有一处，纯函数 `media/DownloadQualityOrder.kt` 的 `downloadQualityOrder`（测试 `DownloadQualityOrderTest`），
+下载、片段、对话框的默认选中都用它：不高于上限的最高一档；一档都没有时取最低的一档，不退回原画（选低档是为了省流量与空间，
+剩下的里最低的离所选最近，原画最大）；上限 0 即原画。原画与转码一律按画面高度比，档名比不出高低；原画高度未知时当作最高，
+同高时原画在前。播放画质的 `transcodeNameAtMost` 是另一条规则（挑不到放原画），没有并过来。
+
+- 普通下载、批量与文件夹下载：视频任务入队时只记上限（`qualityCap`，几项一起时是对话框里选的级别，不问时是设置的），
+  开始下载时才查详情、挑档。挑到转码档就把文件名改成「名字 [720P].mp4」，挑到原画照旧。入队时不查：文件夹一批上千个文件，
+  逐个查详情太慢。文件夹的上限随列出的工作记着（`ListingWork.maxHeight`），重新列出照用；超出今日额度的确认仍按原画大小估算。
+- 单个视频：对话框列出各档与大小，选定的档直接写进任务（`quality`、`mediaId`、`totalBytes`）。
   这一档开始下载时已经没有了就失败，不悄悄换成原画。
 - 转码档先完整下到暂存（按 media ID 与原画分开），进度按字节；下完在本机转封装成 MP4（`PikoSegmentDownloader.remux`，
   流复制，不转码），任务显示「转换中」，进度在 `progressFraction`。完成后 `totalBytes` 换成 MP4 的长度，暂存放手删除。

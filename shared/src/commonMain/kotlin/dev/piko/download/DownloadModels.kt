@@ -56,8 +56,8 @@ data class DownloadTask(
     /** 所下转码档的 media ID，稀疏暂存据此与原画分开。 */
     val mediaId: String? = null,
     /**
-     * 按设置里的下载画质上限挑档，画面高度。大于 0 表示还没挑：开始下载时才查这个视频有哪些转码，
-     * 挑定后写进 [quality] 并归零，没有合适的转码就下原画。
+     * 按画质上限挑档（下载时选的级别，或设置里的下载画质），画面高度。大于 0 表示还没挑：开始下载时才查这个视频
+     * 有哪些档，按 downloadQualityOrder 挑定后写进 [quality] 并归零，挑到原画则 [quality] 仍为 null。
      */
     val qualityCap: Int = 0,
     /** 转码档已经下完、正在本机转封装，进度在 [progressFraction]。 */

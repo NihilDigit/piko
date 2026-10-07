@@ -117,6 +117,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val HARDWARE_DECODING = booleanPreferencesKey("hardware_decoding")
         val PLAYBACK_MAX_HEIGHT = intPreferencesKey("playback_max_height")
         val DOWNLOAD_MAX_HEIGHT = intPreferencesKey("download_max_height")
+        val DOWNLOAD_QUALITY_PROMPT = booleanPreferencesKey("download_quality_prompt")
         val PLAYER_SEEK_STEP_SECONDS = intPreferencesKey("player_seek_step_seconds")
         val PLAYER_BOOST_SPEED = floatPreferencesKey("player_boost_speed")
         val FOLDER_MAP_OPEN = booleanPreferencesKey("folder_map_open")
@@ -238,6 +239,14 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun setDownloadMaxHeight(height: Int) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.DOWNLOAD_MAX_HEIGHT] = height
+        }
+    }
+
+    override val downloadQualityPromptFlow: Flow<Boolean> = preference { it[PreferencesKeys.DOWNLOAD_QUALITY_PROMPT] ?: true }
+
+    override suspend fun setDownloadQualityPrompt(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.DOWNLOAD_QUALITY_PROMPT] = enabled
         }
     }
 

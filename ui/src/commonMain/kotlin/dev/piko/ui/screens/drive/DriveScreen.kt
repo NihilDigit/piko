@@ -185,7 +185,7 @@ import dev.piko.ui.components.PikoErrorState
 import dev.piko.ui.components.RefreshBox
 import dev.piko.ui.components.showsRefreshButton
 import dev.piko.ui.components.PikoTopBar
-import dev.piko.ui.components.QualityDownloadDialog
+import dev.piko.ui.components.rememberDownloadLauncher
 import dev.piko.ui.components.SegmentDownloadSheet
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.BarItem
@@ -273,6 +273,7 @@ fun DriveScreen(
     val duplicateSession = LocalPikoServices.current.duplicateSession
     val canonicalSession = LocalPikoServices.current.canonicalNamingSession
     val downloadManager = LocalPikoServices.current.downloadManager
+    val downloads = rememberDownloadLauncher()
     val metaTube = LocalPikoServices.current.metaTube
     val metaTubeEnabled by remember(metaTube) { metaTube?.enabled ?: flowOf(false) }.collectAsStateWithLifecycle(initialValue = false)
     val scope = rememberCoroutineScope()
@@ -648,7 +649,6 @@ fun DriveScreen(
     }
     var copyTargetIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var shareTargets by remember { mutableStateOf<List<FileStat>>(emptyList()) }
-    var qualityTarget by remember { mutableStateOf<FileStat?>(null) }
     var batchRenameTargets by remember { mutableStateOf<List<FileStat>>(emptyList()) }
     // 几项一起按番号规范命名：打开批量重命名并换上这条规则
     var avNamingTargets by remember { mutableStateOf<List<FileStat>>(emptyList()) }
@@ -808,9 +808,10 @@ fun DriveScreen(
     val pickFiles = platform.uploadPicker.rememberFilesLauncher { upload(UploadSelection(files = it)) }
     val pickFolder = platform.uploadPicker.rememberFolderLauncher { upload(UploadSelection(folders = listOf(it))) }
 
-    // 下载的成品只在传输页里看得到，与上传、离线一样提交后切过去。文件夹各成一批，在后台列出其中的文件
+    // 下载的成品只在传输页里看得到，与上传、离线一样提交后切过去。文件夹各成一批，在后台列出其中的文件。
+    // 画质问不问由 downloads 定，各入口都调这里
     fun download(files: List<FileStat>) {
-        // 压缩包里的文件先变成借得出来的样子；包里的文件夹不在网盘里，列不出内容，不下
+        // 压缩包里的文件先变成借得出来的样子；包里的文件夹不在网盘里，列不出内容，不下。借出的只有原画，不问画质
         if (state.archiveView != null) {
             scope.launch {
                 val ready = files.filter { !it.isFolder }.mapNotNull { state.prepareArchiveEntry(it) }
@@ -820,9 +821,7 @@ fun DriveScreen(
             return
         }
         val singles = files.filter { !it.isFolder && !it.isUploading }
-        downloadManager.enqueueFiles(singles)
-        val batches = downloadManager.enqueueFolders(files.filter { it.isFolder }, DriveDownloadFolderSource(driveRepo))
-        if (singles.isNotEmpty() || batches > 0) openTransfers()
+        downloads.download(singles + files.filter { it.isFolder }, DriveDownloadFolderSource(driveRepo), onQueued = { openTransfers() })
     }
 
     fun enqueueDownload(file: FileStat) = download(listOf(file))
@@ -953,7 +952,6 @@ fun DriveScreen(
             extract = { archiveSession.extract(listOf(file)) },
             findDuplicates = { findDuplicates(PathBreadcrumb(file.id, file.name)) },
             downloadSegment = { segmentSession.open(file) },
-            downloadQuality = { qualityTarget = file },
             prepareQualities = { mediaRepository.prefetchDownloadQualities(file.id) },
             copySource = { copySource(file) },
             openSource = { file.sourceUrl?.let(platform::openUrl) },
@@ -2103,17 +2101,6 @@ fun DriveScreen(
                 }
             },
             onDismiss = { libraryConfirm = null },
-        )
-    }
-
-    qualityTarget?.let { file ->
-        QualityDownloadDialog(
-            file = file,
-            onDownload = { quality ->
-                downloadManager.enqueueQuality(file, quality)
-                openTransfers()
-            },
-            onDismiss = { qualityTarget = null },
         )
     }
 

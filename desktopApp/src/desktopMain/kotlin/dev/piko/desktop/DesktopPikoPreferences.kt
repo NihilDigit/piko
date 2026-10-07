@@ -35,6 +35,7 @@ class DesktopPikoPreferences(
     private val hardwareDecoding = MutableStateFlow(settings.get(KEY_HARDWARE_DECODING, "true").toBoolean())
     private val playbackMaxHeight = MutableStateFlow(settings.get(KEY_PLAYBACK_MAX_HEIGHT).toIntOrNull() ?: 0)
     private val downloadMaxHeight = MutableStateFlow(settings.get(KEY_DOWNLOAD_MAX_HEIGHT).toIntOrNull() ?: 0)
+    private val downloadQualityPrompt = MutableStateFlow(settings.get(KEY_DOWNLOAD_QUALITY_PROMPT, "true").toBoolean())
     private val playerSeekStepSeconds = MutableStateFlow(
         settings.get(KEY_PLAYER_SEEK_STEP_SECONDS).toIntOrNull() ?: PlayerGestureDefaults.SEEK_STEP_SECONDS,
     )
@@ -147,6 +148,12 @@ class DesktopPikoPreferences(
     override suspend fun setDownloadMaxHeight(height: Int) {
         settings.set(KEY_DOWNLOAD_MAX_HEIGHT, height.toString())
         downloadMaxHeight.value = height
+    }
+
+    override val downloadQualityPromptFlow: Flow<Boolean> = downloadQualityPrompt.asStateFlow()
+    override suspend fun setDownloadQualityPrompt(enabled: Boolean) {
+        settings.set(KEY_DOWNLOAD_QUALITY_PROMPT, enabled.toString())
+        downloadQualityPrompt.value = enabled
     }
 
     override val playerSeekStepSecondsFlow: Flow<Int> = playerSeekStepSeconds.asStateFlow()
@@ -456,6 +463,7 @@ class DesktopPikoPreferences(
         const val KEY_HARDWARE_DECODING = "player.hardwareDecoding"
         const val KEY_PLAYBACK_MAX_HEIGHT = "player.maxHeight"
         const val KEY_DOWNLOAD_MAX_HEIGHT = "download.maxHeight"
+        const val KEY_DOWNLOAD_QUALITY_PROMPT = "download.qualityPrompt"
         const val KEY_PLAYER_SEEK_STEP_SECONDS = "player.seekStepSeconds"
         const val KEY_PLAYER_BOOST_SPEED = "player.boostSpeed"
         const val KEY_FOLDER_MAP_OPEN = "ui.folderMapOpen"
