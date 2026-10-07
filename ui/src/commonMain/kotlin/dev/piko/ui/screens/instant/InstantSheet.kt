@@ -605,9 +605,9 @@ internal fun ColumnScope.ResolutionSection(
     Row(verticalAlignment = Alignment.Top) {
         Box(modifier = Modifier.weight(1f)) {
             if (state.willCreateFolder) {
-                val isBlank = state.folderName.isBlank()
+                val isBlank = state.folderNameToSave.isBlank()
                 FileNameField(
-                    value = state.folderName,
+                    value = state.folderNameToSave,
                     onValueChange = state::updateFolderName,
                     label = "新建文件夹",
                     collapseWhenIdle = true,
@@ -643,6 +643,7 @@ internal fun ColumnScope.ResolutionSection(
     // 列表占去面板剩下的高度，不再定死 320dp：长资源的上半部分有文件夹名、计数与芯片，
     // 定高时列表里只看得到两三行。fill = false 让短列表照常收缩
     UnindexedBanner(state)
+    CanonicalNamesToggle(state)
 
     // 列表连同它的页眉占去剩下的高度，短列表照常收缩
     Column(modifier = Modifier.weight(1f, fill = false)) {
@@ -671,6 +672,25 @@ private fun UnindexedBanner(state: InstantSheetState) {
         actionLabel = if (filtering) "显示全部" else "只看这些",
         onAction = state::toggleOnlyUnindexed,
     )
+}
+
+/**
+ * 保存时按番号规范命名。资源里有会改名的番号文件才出现，默认关；开着时列表行直接显示存进去的名字，
+ * 新建文件夹名同样换成规范名，看着就是保存后的样子。
+ */
+@Composable
+private fun CanonicalNamesToggle(state: InstantSheetState) {
+    if (state.canonicalNameList == null) return
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .toggleable(value = state.useCanonicalNames, enabled = !state.isSaving, role = Role.Checkbox, onValueChange = state::updateUseCanonicalNames),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Checkbox(checked = state.useCanonicalNames, onCheckedChange = null, enabled = !state.isSaving, modifier = Modifier.minimumInteractiveComponentSize())
+        Text("按番号规范命名", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
+    }
 }
 
 // 横幅、组行与文件行的标记同一种说法与图标。用沙漏而不是云下载：行上的「下载到本机」按钮就是云下载，
@@ -735,8 +755,10 @@ private fun FileTreeList(state: InstantSheetState, onDownloaded: () -> Unit, mod
                         )
                     }
                     is InstantRow -> {
+                        // 开着规范命名时行上就是存进去的名字，番号已在名字里，不再挂芯片
+                        val renamed = state.renamedLabel(node)
                         InstantFileRow(
-                            row = node,
+                            row = if (renamed != null) node.copy(label = renamed, code = null) else node,
                             fullName = state.items[node.index].file.name,
                             depth = row.depth,
                             isInstantReady = !state.isUnindexed(node),

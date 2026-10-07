@@ -212,6 +212,45 @@ class InstantFlowSmokeTest {
     }
 
     /**
+     * 防的是开着按番号规范命名时只有面板上改了名：秒传要带规范名，移用的预览副本移过来后另改名，
+     * 字幕跟着视频换主干。开关默认关着，关着时原名照存。
+     */
+    @Test
+    fun `canonical code names are what lands in the drive`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val files = listOf(
+            Triple("[xxx.com]abc00123hhb.mp4", 900L shl 20, "GCIDAV"),
+            Triple("[xxx.com]abc00123hhb.zh.srt", 40L shl 10, "GCIDSUB"),
+        )
+        server.indexMagnet(magnet, resourceListBody("abc00123", files))
+        val rig = Rig(server, MemoryPreferences(), scope)
+        val sessionScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val state = rig.sheet(sessionScope, magnet)
+        awaitUntil("解析完成且保存目标确定") { state.resolution != null && state.target != null }
+        assertEquals(false, state.useCanonicalNames)
+        assertEquals(listOf("ABC-123.mp4", "ABC-123.zh.srt"), state.canonicalNameList)
+        val video = state.items.indexOfFirst { it.file.name.endsWith(".mp4") }
+        val row = assertNotNull(state.tree?.rowOf(video))
+        assertNull(state.renamedLabel(row))
+
+        state.updateUseCanonicalNames(true)
+        assertEquals("ABC-123.mp4", state.renamedLabel(row))
+        val request = scope.async(start = CoroutineStart.UNDISPATCHED) { state.previewRequests.first() }
+        state.preview(video)
+        val previewId = request.await().fileId
+        awaitUntil("预览状态复位") { state.previewingIndex == null }
+
+        val outcome = scope.async(start = CoroutineStart.UNDISPATCHED) { state.outcomes.first() }
+        state.saveSelection()
+        assertIs<InstantSaveOutcome.InstantSaved>(outcome.await())
+        val target = assertNotNull(state.target)
+        // 测试偏好里「保存配套字幕」关着，只存视频；字幕的规范名已在上面核对
+        assertEquals(listOf("ABC-123.mp4"), server.children(target.id).map { it.name }.filter { it != PreviewTempFolder.FOLDER_NAME })
+        assertEquals("ABC-123.mp4", server.node(previewId)?.name, "预览副本移过来后也要改名")
+        sessionScope.cancel()
+    }
+
+    /**
      * 防的是批量保存逐条查空间：两个整包各自放得下、合起来放不下时仍全部提交。
      * 也防未收录的链接被当成解析失败而挡住保存，以及移除的行照样被提交。
      */

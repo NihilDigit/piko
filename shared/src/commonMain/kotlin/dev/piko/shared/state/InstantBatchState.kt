@@ -54,7 +54,7 @@ class InstantBatchRow internal constructor(
             s.resolution == null && (s.isUnindexed || s.normalizedMagnet == null) -> InstantBatchRowStatus.WHOLE_OFFLINE
             s.resolution == null -> InstantBatchRowStatus.FAILED
             s.selectedItems.isEmpty() -> InstantBatchRowStatus.NOTHING_SELECTED
-            s.willCreateFolder && s.folderName.isBlank() -> InstantBatchRowStatus.NEEDS_NAME
+            s.willCreateFolder && s.folderNameToSave.isBlank() -> InstantBatchRowStatus.NEEDS_NAME
             else -> InstantBatchRowStatus.READY
         }
     }

@@ -20,7 +20,12 @@ import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.PreviewTempFolder
 import dev.piko.shared.data.isDriveFolderId
+import dev.piko.shared.naming.FileKind
 import dev.piko.shared.naming.MediaFileInput
+import dev.piko.shared.naming.av.AvNamingItem
+import dev.piko.shared.naming.av.canonicalAvName
+import dev.piko.shared.naming.av.canonicalAvNames
+import dev.piko.shared.naming.parseMediaName
 import io.github.nihildigit.pikpak.InstantContentUnavailableException
 import io.github.nihildigit.pikpak.QuotaResponse
 import kotlinx.coroutines.CoroutineScope
@@ -94,6 +99,9 @@ internal class InstantSharedContext {
 
     /** 各条链接按同一个账号定路线，随网盘余量一起查。 */
     val account = mutableStateOf(SaveAccount())
+
+    /** 保存时按番号规范命名，对这次会话的全部链接生效。默认关，也不记进偏好：改名要人看着预览决定。 */
+    val canonicalNames = mutableStateOf(false)
 
     /** 从一次余量查询里取账号约束。账号类型登录时已取，这里不另发请求。 */
     fun updateAccount(free: Boolean?, quota: QuotaResponse) {
@@ -201,6 +209,53 @@ class InstantSheetState private constructor(
     var folderName by mutableStateOf("")
         private set
 
+    // region 按番号规范命名
+
+    /** 保存时是否按番号规范命名，见 [InstantSharedContext.canonicalNames]。 */
+    var useCanonicalNames: Boolean by shared.canonicalNames
+        private set
+
+    fun updateUseCanonicalNames(enabled: Boolean) {
+        useCanonicalNames = enabled
+    }
+
+    /** 各文件的规范名，与 [items] 一一对应；资源里没有番号时为 null，面板不给这个开关。解析成功时在后台一并算好。 */
+    var canonicalNameList by mutableStateOf<List<String>?>(null)
+        private set
+
+    /** 只含一个番号时新建文件夹的规范名，见 [folderNameToSave]。 */
+    private var canonicalFolderName by mutableStateOf<String?>(null)
+
+    // 用户改过文件夹名就以他写的为准，开关不再替换
+    private var folderNameEdited by mutableStateOf(false)
+
+    /** 存进网盘时的文件名。 */
+    fun nameToSave(index: Int): String {
+        val original = items[index].file.name
+        return if (useCanonicalNames) canonicalNameList?.getOrNull(index) ?: original else original
+    }
+
+    /** 面板行上改显示的名字：开着规范命名、且这一行确实会改名时才有，否则为 null，照常显示解析出的标签。 */
+    fun renamedLabel(row: InstantRow): String? =
+        nameToSave(row.index).takeIf { useCanonicalNames && it != items[row.index].file.name }
+
+    /** 种子内路径到存进网盘时的名字，只列改了名的。 */
+    private fun namesToSave(toSave: List<InstantFileItem>): Map<String, String> {
+        if (!useCanonicalNames) return emptyMap()
+        val indexOf = items.withIndex().associate { (index, item) -> item.file.path to index }
+        return toSave.mapNotNull { item ->
+            val index = indexOf[item.file.path] ?: return@mapNotNull null
+            nameToSave(index).takeIf { it != item.file.name }?.let { item.file.path to it }
+        }.toMap()
+    }
+
+    /** 新建文件夹的名字：开着规范命名、用户没改过时换成规范名。输入框显示的也是它。 */
+    val folderNameToSave: String by derivedStateOf {
+        canonicalFolderName?.takeIf { useCanonicalNames && !folderNameEdited } ?: folderName
+    }
+
+    // endregion
+
     /** 网盘剩余空间，解析成功后查一次。null 表示还没查到或查询失败，此时不拦整包离线。 */
     var remainingBytes by mutableStateOf<Long?>(null)
         private set
@@ -261,7 +316,7 @@ class InstantSheetState private constructor(
 
     val canSaveSelection: Boolean by derivedStateOf {
         !isSaving && selectedItems.isNotEmpty() && target != null &&
-            !(willCreateFolder && folderName.isBlank())
+            !(willCreateFolder && folderNameToSave.isBlank())
     }
 
     /** 今天还能建几个离线任务，会员或未知时为 null。 */
@@ -477,6 +532,7 @@ class InstantSheetState private constructor(
 
     fun updateFolderName(value: String) {
         folderName = value
+        folderNameEdited = true
     }
 
     /** 更换本次的保存目标。只管这一次会话，下次仍默认存进网盘页的当前目录。 */
@@ -603,12 +659,12 @@ class InstantSheetState private constructor(
         }
     }
 
-    /** 秒传 [toSave]，按种子里的目录结构存进 [target] 下以 [folderName] 新建的文件夹。 */
+    /** 秒传 [toSave]，按种子里的目录结构存进 [target] 下以 [folderNameToSave] 新建的文件夹。 */
     private suspend fun saveIntoNewFolder(
         target: PikoPathBreadcrumb,
         toSave: List<InstantFileItem>,
     ): Result<InstantSaveOutcome.InstantSaved> {
-        val name = driveFolderName(folderName)
+        val name = driveFolderName(folderNameToSave)
         val folderId = driveRepo.createFolder(target.id, name).getOrElse { err ->
             PikoLog.w(TAG, "新建保存目录失败", err)
             errorMessage = "新建文件夹失败：${err.message}"
@@ -673,6 +729,8 @@ class InstantSheetState private constructor(
         resolveJob?.cancel()
         resolution = null
         tree = null
+        canonicalNameList = null
+        canonicalFolderName = null
         selectedIndices = emptySet()
         errorMessage = null
         isUnindexed = false
@@ -712,8 +770,13 @@ class InstantSheetState private constructor(
         val built = withContext(Dispatchers.Default) {
             if (parse) buildInstantTree(inputs, data.resource.name) else buildRawInstantTree(inputs, data.resource.name)
         }
+        // 解析关着时连番号也不认，规范命名的开关一并不给
+        val canonical = if (parse) withContext(Dispatchers.Default) { canonicalNamesOf(data) } else null
         // 树与解析结果一起就位，面板不会先闪一个没有分组的列表
         tree = built
+        canonicalNameList = canonical?.first
+        canonicalFolderName = canonical?.second
+        folderNameEdited = false
         resolution = data
         expandedGroups.clear()
         showsOnlyUnindexed = false
@@ -722,6 +785,20 @@ class InstantSheetState private constructor(
         selectedIndices = built.defaultSelection
         // 批量时余量由列表按合计查，逐行查只是多发请求
         if (isRoot) scope.launch { refreshRemainingBytes() }
+    }
+
+    /**
+     * 各文件的规范名，与只含一个番号时新建文件夹的规范名。没有一个文件会改名时为 null。
+     * 按种子里的目录分组，与网盘里同目录的规则一致：撞名、字幕跟随只在同一层里看。
+     */
+    private fun canonicalNamesOf(data: MagnetResolutionResult): Pair<List<String>, String?>? {
+        val files = data.items.map { it.file }
+        val names = canonicalAvNames(files.map { AvNamingItem(it.name, group = it.path.substringBeforeLast('/', "")) })
+        if (names.indices.none { names[it] != files[it].name }) return null
+        val codes = files.mapNotNull { file -> parseMediaName(file.name).takeIf { it.fileKind == FileKind.VIDEO }?.av }
+            .distinctBy { it.code }
+        val folder = codes.singleOrNull()?.let { info -> canonicalAvName("", info, isFolder = true) }
+        return names to folder
     }
 
     /** 查一次网盘余量与今天剩下的离线次数。limit 为 0 的账号当作不限；查询失败保留上一次的数。 */
@@ -791,7 +868,7 @@ class InstantSheetState private constructor(
         toSave: List<InstantFileItem>,
         keepStructure: Boolean,
     ): Result<List<String>> =
-        instantRepo.instantSave(toSave, target.id, reuse = previewedIds.toMap(), keepStructure = keepStructure)
+        instantRepo.instantSave(toSave, target.id, reuse = previewedIds.toMap(), keepStructure = keepStructure, names = namesToSave(toSave))
             .onSuccess {
                 // 移出 Piko-Temp 的不能再当作预览副本：下次预览会指向保存目录里的这份
                 toSave.forEach { item -> item.file.gcid?.let(previewedIds::remove) }
@@ -838,7 +915,7 @@ class InstantSheetState private constructor(
         return packTracker.submit(
             url = submittedUrl(),
             targetId = target.id,
-            folderName = driveFolderName(folderName),
+            folderName = driveFolderName(folderNameToSave),
             keep = toSave.map { it.file.path }.toSet(),
             totalFiles = allItems.size,
             totalBytes = packBytes,

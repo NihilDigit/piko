@@ -13,6 +13,7 @@ import io.github.nihildigit.pikpak.deleteOfflineTasks
 import io.github.nihildigit.pikpak.getTask
 import io.github.nihildigit.pikpak.instantCreate
 import io.github.nihildigit.pikpak.pruneOfflineOutput
+import io.github.nihildigit.pikpak.rename
 import io.github.nihildigit.pikpak.resolveMagnet
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -76,17 +77,22 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
      *
      * [keepStructure] 为真时按种子里的相对路径建子目录。逐个平铺会把「正片」「SPs」
      * 这类分区压成一层，同名文件还会撞在一起。
+     *
+     * [names] 是种子内路径到存进网盘时的名字（按番号规范命名），没有的用原名。秒传本就带名字，不多发请求；
+     * 移用的预览副本是以原名存进 Piko-Temp 的，移过来后另改一次名。
      */
     suspend fun instantSave(
         items: List<InstantFileItem>,
         targetParentId: String = "",
         reuse: Map<String, String> = emptyMap(),
         keepStructure: Boolean = false,
+        names: Map<String, String> = emptyMap(),
     ): Result<List<String>> = withContext(Dispatchers.Default) {
         val started = TimeSource.Monotonic.markNow()
         val files = items.map { it.file }.filter { it.gcid != null }
         val reused = files.count { it.gcid in reuse }
-        val summary = "${files.size} 个文件（跳过无 gcid 的 ${items.size - files.size} 个，移用预览副本 $reused 个），" +
+        val renamed = files.count { names[it.path].let { name -> name != null && name != it.name } }
+        val summary = "${files.size} 个文件（跳过无 gcid 的 ${items.size - files.size} 个，移用预览副本 $reused 个，按番号改名 $renamed 个），" +
             "${files.sumOf { it.size }} 字节，到文件夹 ${targetParentId.ifEmpty { "根目录" }}${if (keepStructure) "，保留目录结构" else ""}"
         runSuspendCatching {
             val folderIds = if (keepStructure) createFolders(files, targetParentId) else emptyMap()
@@ -98,11 +104,13 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
                         permits.withPermit {
                             val parentId = folderIds[file.path.substringBeforeLast('/', "")] ?: targetParentId
                             val existing = reuse[file.gcid]
+                            val name = names[file.path] ?: file.name
                             if (existing != null) {
                                 client.batchMove(listOf(existing), parentId)
+                                if (name != file.name) client.rename(existing, name)
                                 existing
                             } else {
-                                client.instantCreate(file = file, parentId = parentId, name = file.name)
+                                client.instantCreate(file = file, parentId = parentId, name = name)
                             }
                         }
                     }
