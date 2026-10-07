@@ -86,7 +86,7 @@ class PikoServices(
 
     val offlinePacks = OfflinePackTracker(instantMagnetRepository, driveRepository, preferences)
 
-    val moveHistory = MoveHistory(preferences, backgroundScope)
+    val moveHistory = MoveHistory(preferences, driveRepository, backgroundScope)
 
     /** 部分设置同步到网盘的 .piko 文件夹，登录后自己开始，见 PikoSettingsSync。 */
     val settingsSync = PikoSettingsSync(clientManager, driveRepository, preferences, cacheStore, backgroundScope, preferences.settingsSyncFlow)

@@ -3,6 +3,7 @@ package dev.piko.shared.data
 import dev.piko.data.auth.PikoUserPreferences
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -16,14 +17,23 @@ import kotlinx.serialization.json.Json
  * 最近移动到过的目录，最近的在前。存完整路径而不只是目标：选择器点一下就要进到那一层，
  * 面包屑与底栏的「目标位置」都靠这条路径。
  *
- * 目录后来被删或改名时记录不会跟着变，进去后列表加载失败或名字对不上，用户换一个就是；
- * 为此每次打开都去校验一遍不值得。
+ * 读出时按仓库的文件夹索引改正（见 FolderIndex.resolve）：改了名的换名字，移走的换上级，Piko 里删掉的不再列出。
+ * 存着的路径不改写，只在索引还不认识时回落；为此每次打开都去服务端校验一遍不值得。
  *
  * 写入放在进程级的 [scope] 里：确认移动的同时对话框就关了，界面的协程作用域随之取消，
  * 在那里写偏好常常写不完。
  */
-class MoveHistory(private val preferences: PikoUserPreferences, private val scope: CoroutineScope) {
-    val targets: Flow<List<List<PikoPathBreadcrumb>>> = preferences.recentMoveTargetsFlow.map(::decodeTargets)
+class MoveHistory(
+    private val preferences: PikoUserPreferences,
+    private val driveRepo: PikoDriveRepository,
+    private val scope: CoroutineScope,
+) {
+    val targets: Flow<List<List<PikoPathBreadcrumb>>> =
+        combine(preferences.recentMoveTargetsFlow.map(::decodeTargets), driveRepo.folderIndex.flow) { targets, _ ->
+            val index = driveRepo.folderIndex
+            // 截短了的是停在删掉的文件夹里，那个目标已经去不了
+            targets.mapNotNull { path -> index.resolve(path).takeIf { it.last().id == path.last().id } }
+        }
 
     fun remember(path: List<PikoPathBreadcrumb>) {
         val target = path.lastOrNull() ?: return
