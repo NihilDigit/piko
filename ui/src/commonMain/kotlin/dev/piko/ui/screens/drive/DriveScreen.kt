@@ -481,13 +481,21 @@ fun DriveScreen(
      * 已有查重标签时沿用它，同一个起点已有结果就切过去。
      * 没有标签栏时进度在底部的 sheet 里（TaskSheetScaffold），扫完有结果才进结果页；sheet 是独占的，别的事占着时先确认结束它。
      */
+    // 桌面上查重在后台标签里跑，人留在原处：开始与扫完各提示一次，「查看」切到那个标签。
+    // 只有标签上的转圈时，点了像没反应，扫完了也无从知道
+    fun announceDuplicates(message: String) = scope.launch {
+        val result = snackbarHostState.showSnackbar(message, actionLabel = "查看", withDismissAction = true, duration = SnackbarDuration.Long)
+        if (result != SnackbarResult.ActionPerformed) return@launch
+        driveRepo.tabsFlow.value.firstOrNull { it.isDuplicates }?.let { driveRepo.switchTab(it.id) }
+    }
+
     fun findDuplicates(root: PathBreadcrumb) {
         if (twoPane) {
             duplicateSession.open(root)
             val done = duplicateSession.state?.isScanning == false
             val existing = driveRepo.tabsFlow.value.firstOrNull { it.isDuplicates }
             val tabId = existing?.id ?: driveRepo.openTab(listOf(DriveLibrary.DUPLICATES.crumb), activate = false)
-            if (done) driveRepo.switchTab(tabId)
+            if (done) driveRepo.switchTab(tabId) else announceDuplicates("正在查找「${root.name}」中的重复文件")
             return
         }
         val current = duplicateSession.state
@@ -515,14 +523,27 @@ fun DriveScreen(
             }
     }
     // 窄窗口里人看着展开的 sheet 等到扫完，有结果就直接进结果页；sheet 收着时不把人拽走，sheet 上有「查看」。
-    // 只认眼看着发生的那一下：切去别的页时扫完的，回来看到的是 sheet 上的结果，不是突然跳页
+    // 只认眼看着发生的那一下：切去别的页时扫完的，回来看到的是 sheet 上的结果，不是突然跳页。
+    // 桌面不跳，提示一句结果；人已在查重标签上时不提示
     val latestTwoPane by rememberUpdatedState(twoPane)
     LaunchedEffect(duplicateState) {
         val finder = duplicateState ?: return@LaunchedEffect
         if (!finder.isScanning) return@LaunchedEffect
-        snapshotFlow { finder.phase }.first { it == DuplicateFinderState.Phase.DONE }
+        val phase = snapshotFlow { finder.phase }.first { it == DuplicateFinderState.Phase.DONE || it == DuplicateFinderState.Phase.FAILED }
         val groups = finder.report.identical.size + finder.report.versions.size
-        if (!latestTwoPane && taskSlot.duplicatesExpanded && groups > 0 && state.libraryView != DriveLibrary.DUPLICATES) openDuplicates(finder.root)
+        if (latestTwoPane) {
+            if (state.libraryView == DriveLibrary.DUPLICATES) return@LaunchedEffect
+            announceDuplicates(
+                when {
+                    phase == DuplicateFinderState.Phase.FAILED -> "查找重复失败"
+                    groups > 0 -> "找到 $groups 组重复文件"
+                    else -> "未发现重复文件"
+                },
+            )
+            return@LaunchedEffect
+        }
+        if (phase != DuplicateFinderState.Phase.DONE) return@LaunchedEffect
+        if (taskSlot.duplicatesExpanded && groups > 0 && state.libraryView != DriveLibrary.DUPLICATES) openDuplicates(finder.root)
     }
     val selectedArchives by remember(state) {
         derivedStateOf { state.displayedFiles.filter { it.id in state.selectedFileIds && (it.isExtractableArchive || it.isArchiveVolume) } }
