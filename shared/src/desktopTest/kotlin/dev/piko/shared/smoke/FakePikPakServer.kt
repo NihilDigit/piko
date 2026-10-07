@@ -53,6 +53,10 @@ class FakePikPakServer {
         val content: ByteArray = ByteArray(0),
         val size: Long = content.size.toLong(),
         val createdAtMs: Long = System.currentTimeMillis(),
+        /** 视频的时长（秒）。列目录与详情都带着它，与线上抽过元数据的视频一致。 */
+        val durationSeconds: Double? = null,
+        /** 详情里有没有 720P 转码。 */
+        val transcoded: Boolean = false,
     )
 
     class Task(val id: String, val name: String, phase: String, val parentId: String, val url: String) {
@@ -113,6 +117,9 @@ class FakePikPakServer {
     /** 每个 CDN 分段响应前的等待，用来让下载停在半途。 */
     @Volatile var cdnDelayMs = 0L
 
+    /** 列目录与查详情各自响应前的等待。线上一次约 0.2 到 0.5 秒，逐层遍历的先后由它显出来。 */
+    @Volatile var apiDelayMs = 0L
+
     val engine = MockEngine { request -> handle(request) }
 
     fun addFolder(name: String, parentId: String = "", trashed: Boolean = false): Node =
@@ -125,6 +132,10 @@ class FakePikPakServer {
         hash: String = "",
         trashed: Boolean = false,
     ): Node = add(Node(newId(), parentId, name, isFolder = false, trashed = trashed, hash = hash, content = content))
+
+    /** 抽过元数据的视频：没有内容，只有时长与可选的 720P 转码，供信息流挑段。 */
+    fun addVideo(name: String, parentId: String = "", durationSeconds: Double = 1440.0, transcoded: Boolean = true): Node =
+        add(Node(newId(), parentId, name, isFolder = false, hash = "GCID-$name", size = 1L shl 30, durationSeconds = durationSeconds, transcoded = transcoded))
 
     fun addArchive(
         name: String,
@@ -251,14 +262,20 @@ class FakePikPakServer {
             path.contains("/drive/v1/tasks/") -> taskDetail(path.substringAfterLast('/'))
             path.contains("/drive/v1/files:") -> batch(request, path.substringAfterLast(':'))
             path.endsWith("/drive/v1/files") && request.method == HttpMethod.Post -> createFile(request)
-            path.endsWith("/drive/v1/files") -> listFiles(request)
+            path.endsWith("/drive/v1/files") -> {
+                if (apiDelayMs > 0) delay(apiDelayMs)
+                listFiles(request)
+            }
             path.contains("/drive/v1/files/") && request.method == HttpMethod.Patch ->
                 rename(request, path.substringAfterLast('/'))
             path.contains("/drive/v1/files/") && request.method == HttpMethod.Delete -> {
                 removeSubtree(path.substringAfterLast('/'))
                 json("{}")
             }
-            path.contains("/drive/v1/files/") -> fileDetail(path.substringAfterLast('/'))
+            path.contains("/drive/v1/files/") -> {
+                if (apiDelayMs > 0) delay(apiDelayMs)
+                fileDetail(path.substringAfterLast('/'))
+            }
             else -> json("""{"error":"not_found"}""", HttpStatusCode.NotFound)
         }
     }
@@ -398,6 +415,15 @@ class FakePikPakServer {
                     )
                 },
             )
+            if (node.transcoded) {
+                put("medias", buildJsonArray {
+                    add(buildJsonObject {
+                        put("media_name", "720P")
+                        put("is_origin", false)
+                        put("link", buildJsonObject { put("url", "https://$CDN_HOST/${node.id}") })
+                    })
+                })
+            }
         }
         return json(detail.toString())
     }
@@ -530,6 +556,7 @@ class FakePikPakServer {
         put("phase", if (!node.isFolder && node.hash in unheldHashes) "PHASE_TYPE_PENDING" else "PHASE_TYPE_COMPLETE")
         put("trashed", node.trashed)
         put("modified_time", "2026-09-01T00:00:00.000+08:00")
+        node.durationSeconds?.let { seconds -> put("params", buildJsonObject { put("duration", seconds.toString()) }) }
         if (archives[node.id]?.primed == true) {
             put("params", buildJsonObject {
                 put("global_file_root", "ROOT-${node.id}")
