@@ -226,6 +226,10 @@ jvmTest（`PIKPAK_PROBE=1`，凭据在它的 `.env`），总量不超过 100 GB�
   多数分卷当场回 `INVALID_FILE_FORMAT`；zip span 的最后一卷能列出目录，解压任务却以 `E_INVALID_FORMAT` 失败。
 - **文件名上限按 UTF-8 算，1024 字节**（2026-09-29 实测，文件与文件夹相同）：ASCII 1024 个、汉字 341 个、
   补充平面字符 256 个，再多一个字符回 `file_name_too_long`（error_code=3，HTTP 400）。批量重命名据此当场标出。
+- **文件的 `params` 客户端写不进**（2026-10-08 实测，SDK 的 `SourceParamsProbeTest`）：秒传建文件时请求体带 `params` 被静默丢弃；
+  事后 `PATCH /drive/v1/files/{id}` 只要 `params` 非空一律 400 `invalid_argument`（`url`、自定义键、原样回传都一样），`{}` 回
+  `file_nothing_updated`。`params.url`（来源）只有离线下载与分享转存由服务端填；秒传的来源只能 Piko 自己记。
+  复制出的新文件 params 由服务端重建（多 `original_file_id`），按 ID 记的东西复制后对不上，要按 gcid 记。
 - **上传中的文件**（`phase` 为 PENDING）在开始上传时就出现在目录里，交给解压服务回 `file not complete`。
   上传会话的凭据 12 小时过期；刚传完的内容立刻进 CID 索引，再传同一文件即秒传。
 
