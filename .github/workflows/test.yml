@@ -311,26 +311,37 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $binaries = 'desktopApp/build/compose/binaries/main-release'
+          # 9.9.1 对照的旧版清单：9.9.0 的那份，把 runtime\release 的摘要改掉。两次构建的运行时逐字节相同，
+          # 这样 9.9.1 才把一个运行时文件当成变了、装进补丁包，冒烟验得到「运行时变了照样走补丁」（update-bases.sh 同理）
+          $bases = 'smoke-bases'
           foreach ($version in @('9.9.0', '9.9.1')) {
+            $extra = @(if ($version -eq '9.9.1') { "-PpikoUpdateBases=$bases" })
             .\gradlew.bat :desktopApp:packageReleaseMsi :desktopApp:packageReleaseUpdate --no-daemon --stacktrace `
-              "-PpikoDesktopVersion=$version" "-PpikoDesktopUpgradeUuid=$env:SMOKE_UPGRADE_CODE" "-PpikoDesktopPackageName=$env:SMOKE_PACKAGE"
+              "-PpikoDesktopVersion=$version" "-PpikoDesktopUpgradeUuid=$env:SMOKE_UPGRADE_CODE" "-PpikoDesktopPackageName=$env:SMOKE_PACKAGE" @extra
             if ($LASTEXITCODE -ne 0) { throw "build $version failed" }
             $out = "smoke-dist/$version"
             New-Item -ItemType Directory -Force -Path $out | Out-Null
-            # 与 release.yml 的 Collect artifacts 同样的名字与打法，更新走的是同一条路，便携标记也照放。
-            # 打完即删：下一轮的 MSI 从同一个应用目录打，留着它装出来的就成了便携版
-            $marker = "$binaries/app/$env:SMOKE_PACKAGE/portable"
-            New-Item -ItemType File -Force -Path $marker | Out-Null
-            try {
-              Compress-Archive -Path "$binaries/app/$env:SMOKE_PACKAGE" -DestinationPath "$out/piko-windows-x64-$version.zip"
-            } finally {
-              Remove-Item -LiteralPath $marker
-            }
+            # 与 release.yml 的 Collect artifacts 同样的名字与打法，更新走的是同一条路。便携标记打完即删：
+            # 下一轮的 MSI 从同一个应用目录打，留着它装出来的就成了便携版
+            & .github/scripts/pack-portable.ps1 -AppDir "$binaries/app/$env:SMOKE_PACKAGE" -Output "$out/piko-windows-x64-$version.7z"
             # 按版本号取：上一轮的 MSI 可能还留在同一个目录里
             Copy-Item "$binaries/msi/$env:SMOKE_PACKAGE-$version.msi" "$out/piko-windows-x64-$version.msi"
             Copy-Item "$binaries/update/*" $out
             Get-ChildItem $out | Format-Table Name, Length
+            if ($version -eq '9.9.0') {
+              $manifest = Get-Content -Raw "$out/piko-windows-x64-$version-files.json" | ConvertFrom-Json
+              ($manifest.files | Where-Object { $_.path -eq 'runtime/release' }).sha256 = '0' * 64
+              New-Item -ItemType Directory -Force -Path $bases | Out-Null
+              $manifest | ConvertTo-Json -Depth 5 | Set-Content "$bases/piko-windows-x64-$version-files.json" -Encoding utf8NoBOM
+            }
           }
+
+      # windows-2022 那个 job 拿同一份包，不再打一遍
+      - uses: actions/upload-artifact@v6
+        with:
+          name: windows-smoke-dist
+          path: smoke-dist
+          retention-days: 3
 
       - name: Install, update and system integration
         shell: pwsh
@@ -345,6 +356,101 @@ jobs:
         with:
           name: windows-package-smoke-logs
           path: ${{ runner.temp }}/package-smoke/logs
+          if-no-files-found: ignore
+
+  # 旧一代 Windows 上的便携版更新：Windows Server 2022（build 20348）与 Windows 10 21H2/22H2 同一代内核与系统组件，
+  # GitHub 托管的镜像里没有 Windows 10，拿它近似。并不等价：桌面组件、资源管理器与 tar.exe 的版本未必与 Win10 相同，
+  # 真正的 Win10 要 self-hosted runner。验的是便携版更新全程不依赖 7z：补丁包带着变了的运行时文件照样走补丁，
+  # 补丁对不上时干净地退回下载页；系统 tar.exe 能不能解便携包 .7z 记进 job 摘要（只关系到用户手动解压）。
+  # 包取自 windows-package，不再打一遍；那边的冒烟失败不挡这里。
+  # 另验已发布的 1.0.0、1.1.0（便携 zip 与 MSI）升级到这次构建：见 package-smoke/legacy.ps1。为此以正式的包名与
+  # UpgradeCode 另打一个 9.9.1，用这两个版本的清单作对照（-PpikoUpdateBases），与 release.yml 经 update-bases.sh 的打法相同
+  windows-package-legacy:
+    if: inputs.desktop == true && !cancelled()
+    needs: windows-package
+    runs-on: windows-2022
+    timeout-minutes: 75
+    env:
+      SMOKE_UPGRADE_CODE: 5f3c2b1e-7a4d-4c9e-9b8a-2d6e0f1a3c55
+      SMOKE_PACKAGE: PikoSmoke
+    steps:
+      # legacy.ps1 从 git 取 v1.0.0 的更新脚本，要有 tag
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/checkout@v5
+        if: format('{0}', inputs.sdk-main) != 'false'
+        with:
+          repository: NihilDigit/pikpak-kotlin
+          path: pikpak-kotlin
+
+      - name: Build against the SDK source
+        if: format('{0}', inputs.sdk-main) != 'false'
+        shell: bash
+        run: echo "pikpak.sdk.dir=pikpak-kotlin" >> local.properties
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: zulu
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Old releases
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path old-releases, old-bases | Out-Null
+          foreach ($version in @('1.0.0', '1.1.0')) {
+            gh release download "v$version" --repo $env:GITHUB_REPOSITORY --dir old-releases `
+              -p "piko-windows-x64-$version.zip" -p "piko-windows-x64-$version.msi" -p "piko-windows-x64-$version-files.json"
+            if ($LASTEXITCODE -ne 0) { throw "download v$version failed" }
+            Copy-Item "old-releases/piko-windows-x64-$version-files.json" old-bases/
+          }
+
+      - name: Build 9.9.1 against the old releases
+        shell: pwsh
+        run: |
+          .\gradlew.bat :desktopApp:packageReleaseUpdate --no-daemon --stacktrace "-PpikoDesktopVersion=9.9.1" "-PpikoUpdateBases=old-bases"
+          if ($LASTEXITCODE -ne 0) { throw 'build failed' }
+
+      - name: Old releases update to this build
+        shell: pwsh
+        run: >
+          ./desktopApp/package/package-smoke/legacy.ps1
+          -Next desktopApp/build/compose/binaries/main-release/update -NextVersion 9.9.1
+          -Old old-releases -Work "$env:RUNNER_TEMP/legacy-smoke"
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: windows-smoke-dist
+          path: smoke-dist
+
+      - name: System tar
+        shell: pwsh
+        run: |
+          $version = & "$env:SystemRoot\System32\tar.exe" --version
+          $version
+          "- Runner: $((Get-CimInstance Win32_OperatingSystem).Caption) build $([Environment]::OSVersion.Version.Build); system tar: $($version | Select-Object -First 1)" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Portable update
+        shell: pwsh
+        run: >
+          ./desktopApp/package/package-smoke/windows.ps1 -PortableOnly
+          -Base smoke-dist/9.9.0 -Next smoke-dist/9.9.1 -BaseVersion 9.9.0 -NextVersion 9.9.1
+          -PackageName $env:SMOKE_PACKAGE -UpgradeCode $env:SMOKE_UPGRADE_CODE -Work "$env:RUNNER_TEMP/package-smoke"
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-package-legacy-smoke-logs
+          path: |
+            ${{ runner.temp }}/package-smoke/logs
+            ${{ runner.temp }}/legacy-smoke/logs
           if-no-files-found: ignore
 
   # macOS 同样打两个 DMG，从 DMG 装进 ~/Applications，再让它整包换成新的；装好之后同样验默认打开方式

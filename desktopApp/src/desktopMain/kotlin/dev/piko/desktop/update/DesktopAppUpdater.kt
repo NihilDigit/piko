@@ -3,6 +3,7 @@ package dev.piko.desktop.update
 import dev.piko.desktop.LinuxDesktop
 import dev.piko.desktop.isLinux
 import dev.piko.desktop.isMacOs
+import dev.piko.shared.PikoHome
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.update.ChecksumMismatchException
 import dev.piko.shared.update.GithubReleaseClient
@@ -16,11 +17,13 @@ import io.ktor.client.engine.okhttp.OkHttp
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
+import kotlin.system.exitProcess
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 
@@ -35,7 +38,7 @@ data class DesktopUpdate(
             is DesktopUpdatePlan.Patch -> plan.zip.size
             is DesktopUpdatePlan.Delta -> plan.delta.size
             is DesktopUpdatePlan.Installer -> plan.msi.size
-            is DesktopUpdatePlan.Portable -> plan.zip.size
+            is DesktopUpdatePlan.Image -> plan.downloadBytes
             is DesktopUpdatePlan.MacBundle -> plan.dmg.size
             // 控制文件在检查时已经下过了，不算在内
             is DesktopUpdatePlan.AppImage -> plan.delta?.plan?.downloadBytes ?: plan.appImage.size
@@ -45,7 +48,11 @@ data class DesktopUpdate(
 }
 
 sealed interface DesktopUpdatePlan {
-    /** 只替换每次构建都会变的那几个文件，其余与本机逐字节相同。 */
+    /**
+     * 只替换补丁文件，其余与本机逐字节相同。补丁文件是每次构建都会变的那几个，加上与近几个旧版不同的运行时、mpv 等
+     * （见 build.gradle.kts 的 UpdateArtifactsTask）。便携版也走这条，不交给 MSI：便携版不在 Windows Installer 的
+     * 登记里，msiexec 会另装一份到 LocalAppData。
+     */
     data class Patch(val zip: ReleaseAsset, val manifest: UpdateManifest) : DesktopUpdatePlan
 
     /**
@@ -58,10 +65,14 @@ sealed interface DesktopUpdatePlan {
     data class Installer(val msi: ReleaseAsset) : DesktopUpdatePlan
 
     /**
-     * 便携版的整包更新：运行时之类也换了、只换补丁文件不够时，下整个便携 zip，只解出与本机不同的文件，
-     * 由同一个脚本换上。不交给 MSI：便携版不在 Windows Installer 的登记里，msiexec 会另装一份到 LocalAppData。
+     * 便携版补丁对不上时（运行时、mpv 也换了，或本机文件被改过）：从整个应用目录的 image.zip 里只取 [files]，
+     * 即补丁文件加上本机缺的与不同的，由同一个脚本换上，见 ImageZip.kt。[catalog] 为 null 时（取中央目录时不认 Range）
+     * 整个下载。不交给 MSI：便携版不在 Windows Installer 的登记里，msiexec 会另装一份到 LocalAppData。
      */
-    data class Portable(val zip: ReleaseAsset, val manifest: UpdateManifest) : DesktopUpdatePlan
+    class Image internal constructor(val image: ReleaseAsset, val manifest: UpdateManifest, val files: List<ManifestFile>, internal val catalog: ImageCatalog?) : DesktopUpdatePlan {
+        val downloadBytes: Long
+            get() = catalog?.let { catalog -> files.sumOf { catalog.entries[it.path]?.compressedSize ?: 0L } } ?: image.size
+    }
 
     /**
      * macOS：整个 .app 换成新 DMG 里的那份。不逐个换文件：包是签了名的（ad-hoc），改动封印里的任何一个文件
@@ -91,9 +102,9 @@ sealed interface DesktopUpdatePlan {
  * 桌面端的应用内更新。以下说的是 Windows；macOS 整包换 .app（[DesktopUpdatePlan.MacBundle]），
  * Linux 整个换 AppImage、按 zsync 只下变了的块（[DesktopUpdatePlan.AppImage]）。
  *
- * 每个版本除了 MSI 与便携 zip，还附一份应用目录清单（files.json）与只含易变文件的 app.zip。
+ * 每个版本除了 MSI 与便携包，还附一份应用目录清单（files.json）与只含易变文件的 app.zip。
  * 检查时把本机应用目录与新版清单逐个比对：不同之处都在 app.zip 里就增量更新，否则 MSI 安装的
- * 走整包重装，便携版只给下载页。增量更新时若有以本机版本为基准的差分包（CI 为最近几个版本各出一份），
+ * 走整包重装，便携版从整个应用目录的 image.zip 里只取不同的文件。增量更新时若有以本机版本为基准的差分包（CI 为最近几个版本各出一份），
  * 改下差分包。两个架构的更新同一条路，附件名按架构区分。
  *
  * 替换文件要先退出自己：下载校验完停在 [UpdateStatus.ReadyToRestart]，用户同意后写一个
@@ -115,9 +126,7 @@ class DesktopAppUpdater private constructor(
     private class Installation(val dir: File, val exe: File)
 
     private val json = Json { ignoreUnknownKeys = true }
-    // 规范成长路径：java.io.tmpdir 在 Windows 上常是 8.3 短路径（用户名带空格或汉字时），交给更新脚本后
-    // 与它列出的长路径对不上。脚本自己也不再按前缀截路径，这里再防一道
-    private val stagingRoot = File(System.getProperty("java.io.tmpdir"), "piko-update").let { runCatching { it.canonicalFile }.getOrDefault(it) }
+    private val stagingRoot = stagingRoot()
 
     private val mutableExitRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
 
@@ -139,7 +148,9 @@ class DesktopAppUpdater private constructor(
         val msi = release.asset("$prefix.msi") ?: return null
         fun update(plan: DesktopUpdatePlan) = DesktopUpdate(release.version, release.notes, release.pageUrl, plan)
 
-        val installation = installation ?: return update(DesktopUpdatePlan.Manual(msi))
+        // 写不进的（便携版解压在 Program Files 下）换不了文件，脚本要到退出之后才失败，每次启动又提示同一个新版
+        val installation = installation?.takeIf { isWritableDir(it.dir) && isWritableDir(it.dir.resolve("app")) }
+            ?: return update(DesktopUpdatePlan.Manual(msi))
         val manifest = json.decodeFromString(UpdateManifest.serializer(), fetchVerified(manifestAsset).decodeToString())
         return withContext(Dispatchers.IO) {
             when {
@@ -150,9 +161,9 @@ class DesktopAppUpdater private constructor(
                     update(if (delta != null && zstd != null) DesktopUpdatePlan.Delta(delta, patch, zstd) else patch)
                 }
                 isMsiInstall(installation.dir) -> update(DesktopUpdatePlan.Installer(msi))
-                else -> release.asset("$prefix.zip")
-                    ?.let { update(DesktopUpdatePlan.Portable(it, manifest)) }
-                    ?: update(DesktopUpdatePlan.Manual(msi))
+                else -> release.asset("$prefix-image.zip")?.let { image -> update(imagePlan(image, manifest, installation.dir)) }
+                    // 没有 image.zip 的 Release（1.1.0 及更早）只给下载页。不在应用里解便携包：它是 7z，见 ImageZip.kt
+                    ?: update(DesktopUpdatePlan.Manual(release.asset("$prefix.7z") ?: msi))
             }
         }
     }
@@ -176,6 +187,60 @@ class DesktopAppUpdater private constructor(
             }.onFailure { if (it is CancellationException) throw it; log("zsync 对照失败，改为整包下载", it) }.getOrNull()
         }
         return update(DesktopUpdatePlan.AppImage(appImage, target, delta))
+    }
+
+    /**
+     * 查到要走 image.zip 时就取它的中央目录，弹窗里的大小才是实际要下的。对照本机要把应用目录整个读一遍，
+     * 与 canPatch 同样的代价。取不了中央目录（镜像不认 Range）就按整个下载算。
+     */
+    private suspend fun imagePlan(image: ReleaseAsset, manifest: UpdateManifest, installDir: File): DesktopUpdatePlan.Image {
+        val files = changedFiles(installDir, manifest)
+        val catalog = runCatching { readImageCatalog(image.size) { range -> fetchRange(image, range) } }
+            .onFailure { if (it is CancellationException) throw it; log("取 image.zip 的目录未成，改为整个下载", it) }
+            .getOrNull()
+        return DesktopUpdatePlan.Image(image, manifest, files, catalog).also { plan ->
+            PikoLog.i("Update", "image.zip：要换 ${files.size} 个文件，下载 ${plan.downloadBytes} 字节，整个 ${image.size} 字节")
+        }
+    }
+
+    private suspend fun fetchRange(asset: ReleaseAsset, range: LongRange): ByteArray {
+        val bytes = ByteArrayOutputStream()
+        releases.downloadRange(asset, range) { buffer, length -> bytes.write(buffer, 0, length) }
+        return bytes.toByteArray()
+    }
+
+    /** 按 Range 只取要换的条目；中途不认 Range 或断了，整个下载下来再取。两条路都逐个按清单核对。 */
+    private suspend fun stageImage(plan: DesktopUpdatePlan.Image, staging: File, update: DesktopUpdate) {
+        val target = staging.resolve(PATCH_DIR)
+        val catalog = plan.catalog
+        if (catalog != null) {
+            try {
+                val total = plan.downloadBytes.coerceAtLeast(1)
+                var fetched = 0L
+                var reported = 0f
+                fetchImageEntries(catalog, plan.files, target, range = { range, onChunk -> releases.downloadRange(plan.image, range, onChunk) }) { length ->
+                    fetched += length
+                    // 每涨 1% 才改一次状态，同 GithubReleaseClient.download
+                    val progress = (fetched.toFloat() / total).coerceIn(0f, 1f)
+                    if (progress - reported >= 0.01f) {
+                        reported = progress
+                        status = UpdateStatus.Downloading(update, progress)
+                    }
+                }
+                return
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: ChecksumMismatchException) {
+                throw e
+            } catch (e: Exception) {
+                log("按 Range 取 image.zip 未成，改为整个下载", e)
+                target.deleteRecursively()
+                status = UpdateStatus.Downloading(update, 0f)
+            }
+        }
+        val zip = download(plan.image, staging.resolve(plan.image.name), update)
+        readImageEntries(zip, plan.files, target)
+        zip.delete()
     }
 
     /** AppImage 所在目录可写才能在旁边写新文件、改名换上；装在 /opt 一类位置的给下载页。 */
@@ -249,11 +314,7 @@ class DesktopAppUpdater private constructor(
                 zip.delete()
             }
             is DesktopUpdatePlan.Installer -> download(plan.msi, staging.resolve(plan.msi.name), update)
-            is DesktopUpdatePlan.Portable -> {
-                val zip = download(plan.zip, staging.resolve(plan.zip.name), update)
-                extractChanged(zip, plan.manifest, checkNotNull(installation).dir, staging.resolve(PATCH_DIR))
-                zip.delete()
-            }
+            is DesktopUpdatePlan.Image -> stageImage(plan, staging, update)
             is DesktopUpdatePlan.MacBundle -> download(plan.dmg, staging.resolve(plan.dmg.name), update)
             is DesktopUpdatePlan.AppImage -> stageAppImage(plan, update)
             is DesktopUpdatePlan.Manual -> error("只给下载页的更新不能在应用内安装")
@@ -383,12 +444,12 @@ class DesktopAppUpdater private constructor(
         val resource = checkNotNull(javaClass.getResourceAsStream("/update/apply-update.ps1")) { "缺少更新脚本" }
         resource.use { input -> script.outputStream().use { input.copyTo(it) } }
         val (mode, source) = when (plan) {
-            is DesktopUpdatePlan.Patch, is DesktopUpdatePlan.Delta, is DesktopUpdatePlan.Portable -> "patch" to staging.resolve(PATCH_DIR)
+            is DesktopUpdatePlan.Patch, is DesktopUpdatePlan.Delta, is DesktopUpdatePlan.Image -> "patch" to staging.resolve(PATCH_DIR)
             is DesktopUpdatePlan.Installer -> "msi" to staging.resolve(plan.msi.name)
             is DesktopUpdatePlan.MacBundle, is DesktopUpdatePlan.AppImage, is DesktopUpdatePlan.Manual -> error("不是 Windows 的更新方式：$plan")
         }
         val checksums = staging.resolve(CHECKSUMS_FILE)
-        checksums.writeText(stagedChecksums(update.plan, staging).joinToString("") { (sha256, path) -> "$sha256  $path\n" })
+        checksums.writeText(stagedChecksums(update.plan).joinToString("") { (sha256, path) -> "$sha256  $path\n" })
         // 新版应用目录的全部文件。换完之后 app 与 runtime 下不在其中的即旧版留下的，脚本删掉；MSI 模式用不上
         val keep = staging.resolve(KEEP_FILE)
         manifestOf(update.plan)?.let { manifest -> keep.writeText(manifest.files.joinToString("") { "${it.path}\n" }) }
@@ -397,7 +458,7 @@ class DesktopAppUpdater private constructor(
         ProcessBuilder(
             "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
             "-File", script.absolutePath,
-            "-ProcessId", appProcessIds(installation).joinToString(","),
+            "-ProcessId", appProcessIds(installation.exe).joinToString(","),
             "-InstallDir", installation.dir.absolutePath,
             "-Mode", mode,
             "-Source", source.absolutePath,
@@ -423,10 +484,10 @@ class DesktopAppUpdater private constructor(
         val resource = checkNotNull(javaClass.getResourceAsStream("/update/apply-update-mac.sh")) { "缺少更新脚本" }
         resource.use { input -> script.outputStream().use { input.copyTo(it) } }
         val checksums = staging.resolve(CHECKSUMS_FILE)
-        checksums.writeText(stagedChecksums(plan, staging).joinToString("") { (sha256, path) -> "$sha256  $path\n" })
+        checksums.writeText(stagedChecksums(plan).joinToString("") { (sha256, path) -> "$sha256  $path\n" })
         ProcessBuilder(
             "/bin/bash", script.absolutePath,
-            appProcessIds(installation).joinToString(","),
+            appProcessIds(installation.exe).joinToString(","),
             plan.bundle.absolutePath,
             staging.resolve(plan.dmg.name).absolutePath,
             checksums.absolutePath,
@@ -497,40 +558,23 @@ class DesktopAppUpdater private constructor(
     }
 
     /**
-     * 脚本要等退出的进程：本进程，以及拉起它的启动器。jpackage 的 Windows 启动器会另起一个同名的
-     * 子进程跑 JVM，自己留着等它结束（实测进程树里是两个 Piko.exe，父子关系）。只等本进程的话，
-     * JVM 退出的那一刻启动器还在，替换 exe 删不掉旧的那份，msiexec 则撞上占用中的文件。
-     */
-    private fun appProcessIds(installation: Installation): List<Long> {
-        val self = ProcessHandle.current()
-        val launcher = self.parent().orElse(null)?.takeIf { parent ->
-            parent.info().command().map { File(it).canonicalFile == installation.exe.canonicalFile }.orElse(false)
-        }
-        return listOfNotNull(self.pid(), launcher?.pid())
-    }
-
-    /**
      * 脚本安装前逐个复核的摘要，路径相对暂存目录。下载时已校验过一遍，这里再交给脚本，是因为
      * 从校验完到本进程退出之间，暂存目录仍可能被改写：Bilby 0.15.1 就把重下到一半的 MSI 交给了 msiexec。
      */
-    private fun stagedChecksums(plan: DesktopUpdatePlan, staging: File): List<Pair<String, String>> = when (plan) {
+    private fun stagedChecksums(plan: DesktopUpdatePlan): List<Pair<String, String>> = when (plan) {
         is DesktopUpdatePlan.Patch -> plan.manifest.patchChecksums()
         is DesktopUpdatePlan.Delta -> plan.fallback.manifest.patchChecksums()
         is DesktopUpdatePlan.Installer -> listOf(checkNotNull(plan.msi.sha256) to plan.msi.name)
         is DesktopUpdatePlan.MacBundle -> listOf(checkNotNull(plan.dmg.sha256) to plan.dmg.name)
         is DesktopUpdatePlan.AppImage -> error("AppImage 在本进程里换上，不经脚本")
-        // 解出了哪些随本机情况而定，按实际解出的列
-        is DesktopUpdatePlan.Portable -> {
-            val byPath = plan.manifest.files.associateBy { it.path }
-            stagedFiles(staging.resolve(PATCH_DIR)).map { path -> checkNotNull(byPath[path]).sha256 to "$PATCH_DIR/$path" }
-        }
+        is DesktopUpdatePlan.Image -> plan.files.map { it.sha256 to "$PATCH_DIR/${it.path}" }
         is DesktopUpdatePlan.Manual -> error("只给下载页的更新不能在应用内安装")
     }
 
     private fun manifestOf(plan: DesktopUpdatePlan): UpdateManifest? = when (plan) {
         is DesktopUpdatePlan.Patch -> plan.manifest
         is DesktopUpdatePlan.Delta -> plan.fallback.manifest
-        is DesktopUpdatePlan.Portable -> plan.manifest
+        is DesktopUpdatePlan.Image -> plan.manifest
         is DesktopUpdatePlan.Installer, is DesktopUpdatePlan.MacBundle, is DesktopUpdatePlan.AppImage, is DesktopUpdatePlan.Manual -> null
     }
 
@@ -544,10 +588,16 @@ class DesktopAppUpdater private constructor(
      */
     private fun keepScriptLogs(staging: File) {
         runCatching {
+            val history = stagingRoot.resolve(HISTORY_LOG)
             listOf("update.log", "powershell.log", "bash.log", "msiexec.log")
                 .map(staging::resolve)
                 .filter { it.isFile && it.length() > 0 }
-                .forEach { log -> stagingRoot.resolve(HISTORY_LOG).appendText("== ${staging.name}/${log.name}\n${log.readText()}\n") }
+                .forEach { log -> history.appendText("== ${staging.name}/${log.name}\n${log.readText()}\n") }
+            // msiexec 的详细日志一次就有几 MB，只留最近的部分
+            if (history.length() > HISTORY_LIMIT) {
+                val bytes = history.readBytes()
+                history.writeBytes(bytes.copyOfRange(bytes.size - HISTORY_LIMIT / 2, bytes.size))
+            }
         }.onFailure { log("保留更新日志失败", it) }
     }
 
@@ -570,6 +620,74 @@ class DesktopAppUpdater private constructor(
         private const val CHECKSUMS_FILE = "staged.sha256"
         private const val KEEP_FILE = "keep.txt"
         private const val HISTORY_LOG = "update-history.log"
+        private const val HISTORY_LIMIT = 1024 * 1024
+
+        /** 补丁的事务记录，在安装目录下，由 apply-update.ps1 写，同名常量在脚本里。 */
+        private const val JOURNAL_FILE = ".piko-update.journal"
+
+        /**
+         * 暂存目录在数据根目录下：单实例锁按数据根目录加，同一个根下同时只有一个 Piko 在跑，也就只有一次更新。
+         * 原先在 %TEMP% 下只按版本分目录，安装版与几份便携版同时开着时会删改彼此暂存的文件。便携版的暂存也就跟着
+         * 程序目录走。规范成长路径：交给更新脚本后要与它列出的长路径对得上，8.3 短路径对不上。
+         */
+        private fun stagingRoot(): File =
+            PikoHome.root.resolve("update").toFile().let { runCatching { it.canonicalFile }.getOrDefault(it) }
+
+        /**
+         * 脚本要等退出的进程：本进程，以及拉起它的启动器 [exe]。jpackage 的 Windows 启动器会另起一个同名的
+         * 子进程跑 JVM，自己留着等它结束（实测进程树里是两个 Piko.exe，父子关系）。只等本进程的话，
+         * JVM 退出的那一刻启动器还在，替换 exe 删不掉旧的那份，msiexec 则撞上占用中的文件。
+         */
+        private fun appProcessIds(exe: File): List<Long> {
+            val self = ProcessHandle.current()
+            val launcher = self.parent().orElse(null)?.takeIf { parent ->
+                parent.info().command().map { File(it).canonicalFile == exe.canonicalFile }.orElse(false)
+            }
+            return listOfNotNull(self.pid(), launcher?.pid())
+        }
+
+        /** 真建一个文件试，与 PikoHome 判断便携目录可写同法。 */
+        private fun isWritableDir(dir: File): Boolean = runCatching {
+            File.createTempFile(".write-probe", null, dir).delete()
+        }.getOrDefault(false)
+
+        /**
+         * 上次的补丁没做完（断电、脚本被杀）时留下事务记录。换文件的顺序保证这时仍启动得起来，但 jar 已是新旧混杂，
+         * 本进程正开着它们，换不回去：把更新脚本以 recover 模式交出去，由它等本进程退出、按记录回滚、再拉起旧版。
+         * 返回 true 表示已交出，调用方随即退出。记录被独占打开说明脚本还在干活（更新中途又点开了 Piko），不管它。
+         */
+        private fun handOverInterruptedUpdate(installDir: File, exe: File): Boolean {
+            val journal = installDir.resolve(JOURNAL_FILE)
+            if (!journal.isFile) return false
+            val staging = try {
+                journal.bufferedReader().use { it.readLine() }
+                    ?.takeIf { it.startsWith("staging\t") }?.substringAfter('\t')?.let(::File)
+                    ?: stagingRoot().resolve("recover")
+            } catch (e: java.io.IOException) {
+                PikoLog.i("Update", "更新脚本正在换文件")
+                return false
+            }
+            return runCatching {
+                staging.mkdirs()
+                val script = staging.resolve("apply-update.ps1")
+                val resource = checkNotNull(DesktopAppUpdater::class.java.getResourceAsStream("/update/apply-update.ps1")) { "缺少更新脚本" }
+                resource.use { input -> script.outputStream().use { input.copyTo(it) } }
+                ProcessBuilder(
+                    "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                    "-File", script.absolutePath,
+                    "-ProcessId", appProcessIds(exe).joinToString(","),
+                    "-InstallDir", installDir.absolutePath,
+                    "-Mode", "recover",
+                    "-Executable", exe.name,
+                    "-LogFile", staging.resolve("update.log").absolutePath,
+                )
+                    .directory(staging)
+                    .redirectErrorStream(true)
+                    .redirectOutput(staging.resolve("powershell.log"))
+                    .start()
+                PikoLog.w("Update", "上次更新中断，交给更新脚本回滚后重新启动")
+            }.onFailure { PikoLog.w("Update", "无法启动回滚中断更新的脚本", it) }.isSuccess
+        }
 
         /** 换掉 Release 接口地址，用于在本机对着假的 Release 走一遍更新。 */
         private const val API_OVERRIDE_PROPERTY = "piko.update.api"
@@ -635,7 +753,15 @@ class DesktopAppUpdater private constructor(
             val exe = if (isLinux) {
                 LinuxDesktop.appImage?.also(::removeStagedAppImage)
             } else {
-                System.getProperty("jpackage.app-path")?.let(::File)?.takeIf { it.isFile }?.also { it.parentFile?.let(::removeUpdateLeftovers) }
+                System.getProperty("jpackage.app-path")?.let(::File)?.takeIf { it.isFile }?.also { exe ->
+                    val dir = exe.parentFile ?: return@also
+                    // 只在 Windows 上有事务记录。记录在时 .old 与 .new 是回滚要用的，不能当残留删
+                    if (!isMacOs && handOverInterruptedUpdate(dir, exe)) {
+                        runBlocking { PikoLog.flush() }
+                        exitProcess(0)
+                    }
+                    if (!dir.resolve(JOURNAL_FILE).exists()) removeUpdateLeftovers(dir)
+                }
             }
             val releases = GithubReleaseClient(
                 http = HttpClient(OkHttp),

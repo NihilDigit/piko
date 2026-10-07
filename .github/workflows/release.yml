@@ -185,8 +185,15 @@ jobs:
 
       # MSI 与应用内更新的两个附件在同一次调用里生成，取自同一份应用目录。MSI 未签名，
       # 安装时 SmartScreen 会提示；安装包元数据只能用 ASCII，见 build.gradle.kts 的 description
+      # 近几个旧版的文件清单：运行时、mpv 与它们不同时，补丁包把这些文件也带上，便携版不必下整包
+      - name: Update bases
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/update-bases.sh "$VERSION" "${{ matrix.arch }}" "$RUNNER_TEMP/update-bases"
+
       - name: Build
-        run: .\gradlew.bat :desktopApp:packageReleaseMsi :desktopApp:packageReleaseUpdate --no-daemon --stacktrace
+        run: .\gradlew.bat :desktopApp:packageReleaseMsi :desktopApp:packageReleaseUpdate --no-daemon --stacktrace "-PpikoUpdateBases=$env:RUNNER_TEMP/update-bases"
 
       # 打包出的类逐个让 JVM 校验。ProGuard 改写过的字节码可能校验不过，而那只在装上之后
       # 进到某一页才崩，gradle run 与单测都走不到（见 desktopApp/package/VerifyClasses.java）
@@ -201,14 +208,8 @@ jobs:
           $appDir = "$binaries/app/Piko"
           if (-not (Test-Path "$appDir/Piko.exe")) { throw "缺少 $appDir/Piko.exe" }
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          # 便携版：整个应用目录打包，解压即得 Piko 目录。Piko.exe 旁的 portable 标记让数据落在 Piko\data 而不是
-          # ~/.piko（PikoHome）。MSI 与应用内更新包在前面已经打好，标记只进 zip
-          New-Item -ItemType File -Force -Path "$appDir/portable" | Out-Null
-          try {
-            Compress-Archive -Path $appDir -DestinationPath "dist/piko-windows-${{ matrix.arch }}-$env:VERSION.zip"
-          } finally {
-            Remove-Item -LiteralPath "$appDir/portable"
-          }
+          # 便携版（.7z，带 portable 标记），见 .github/scripts/pack-portable.ps1
+          & .github/scripts/pack-portable.ps1 -AppDir $appDir -Output "dist/piko-windows-${{ matrix.arch }}-$env:VERSION.7z"
           # 两个架构的 MSI 同名，按架构改名
           $msi = Get-ChildItem "$binaries/msi/*.msi" | Select-Object -First 1
           if (-not $msi) { throw 'packageReleaseMsi 没有产出 MSI' }
@@ -342,11 +343,11 @@ jobs:
           (cd dist && sha256sum * > SHA256SUMS.txt)
           ls -l dist
           # generator 要 base64 过的 sha256sum 输出。只列会被安装或执行的文件：APK、MSI、DMG、AppImage、
-          # 便携 zip、Linux 的 app-image tar.gz 与应用内更新解开的 app.zip 和差分包；files.json、.zsync 与 mapping
+          # 便携 7z、Linux 的 app-image tar.gz 与应用内更新解开的 app.zip 和差分包；files.json、.zsync 与 mapping
           # 由 SHA256SUMS.txt 覆盖。
           # 写进文件而不走 job 输出：这一长串 base64 偶然含有某个较短 secret 的值时，Actions 会
           # 以「可能含 secret」为由丢掉整条输出（Bilby 发版时撞上过）。文件放在 dist 外，免得被当成附件
-          (cd dist && sha256sum *.apk *.msi *.dmg *.AppImage *.tar.gz *.zip | base64 -w0) > slsa-subjects.b64
+          (cd dist && sha256sum *.apk *.msi *.dmg *.AppImage *.tar.gz *.7z *.zip | base64 -w0) > slsa-subjects.b64
 
       # 检查更新的备用来源：GitHub API 被限流（匿名按出口 IP 每小时 60 次）或连不上时，应用改取
       # releases/latest/download/release.json，见 GithubReleaseClient.LATEST_RELEASE_SOURCES。与 API 的
@@ -413,6 +414,7 @@ jobs:
             dist/*.dmg
             dist/*.AppImage
             dist/*.tar.gz
+            dist/*.7z
             dist/*.zip
 
       # 正文是附件表与校验说明，更新日志由人在公开前写在最前面

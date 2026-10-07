@@ -8,12 +8,12 @@
 | Android 模拟器、x86 设备 | [piko-{{version}}-x86_64.apk](https://github.com/NihilDigit/piko/releases/download/v{{version}}/piko-{{version}}-x86_64.apk) |
 | Windows 电脑（Intel、AMD 处理器） | [piko-windows-x64-{{version}}.msi](https://github.com/NihilDigit/piko/releases/download/v{{version}}/piko-windows-x64-{{version}}.msi) |
 | Windows on ARM（骁龙等 ARM 处理器） | [piko-windows-arm64-{{version}}.msi](https://github.com/NihilDigit/piko/releases/download/v{{version}}/piko-windows-arm64-{{version}}.msi) |
-| Windows 电脑，便携版 | [piko-windows-x64-{{version}}.zip](https://github.com/NihilDigit/piko/releases/download/v{{version}}/piko-windows-x64-{{version}}.zip) |
-| Windows on ARM，便携版 | [piko-windows-arm64-{{version}}.zip](https://github.com/NihilDigit/piko/releases/download/v{{version}}/piko-windows-arm64-{{version}}.zip) |
+| Windows 电脑，便携版 | [piko-windows-x64-{{version}}.7z](https://github.com/NihilDigit/piko/releases/download/v{{version}}/piko-windows-x64-{{version}}.7z) |
+| Windows on ARM，便携版 | [piko-windows-arm64-{{version}}.7z](https://github.com/NihilDigit/piko/releases/download/v{{version}}/piko-windows-arm64-{{version}}.7z) |
 | Mac（Apple 芯片，实验性） | [piko-macos-arm64-{{version}}.dmg](https://github.com/NihilDigit/piko/releases/download/v{{version}}/piko-macos-arm64-{{version}}.dmg) |
 | Linux（x64，实验性） | [piko-linux-x64-{{version}}.AppImage](https://github.com/NihilDigit/piko/releases/download/v{{version}}/piko-linux-x64-{{version}}.AppImage) |
 
-`.msi` 安装至当前用户目录，无需管理员权限，支持应用内更新。`.zip` 为便携版，解压后运行 `Piko.exe`，仅在改动较小的版本支持应用内更新，其余版本需手动下载。
+`.msi` 安装至当前用户目录，无需管理员权限，支持应用内更新。`.7z` 为便携版，解压后运行 `Piko.exe`，支持应用内更新。Windows 11 可在资源管理器中直接解压，Windows 10 可用 [NanaZip](https://apps.microsoft.com/detail/9n8g7tscl18r) 或 7-Zip 解压。
 
 Windows 安装包未经代码签名，首次运行时 SmartScreen 会拦截，选择「更多信息」→「仍要运行」。
 
@@ -21,7 +21,7 @@ Mac 版为实验性版本，需 macOS 12 及以上，有新版本时需手动下
 
 Linux 版为实验性版本，需 glibc 2.38 及以上（Ubuntu 24.04、Debian 13、Fedora 39 或更新），播放视频需要显卡驱动提供硬件 OpenGL。下载后加上执行权限即可运行（`chmod +x`），支持应用内更新。
 
-**以下文件无需下载**：`-app.zip`、`-files.json`、`-from-<旧版本>.zip` 与 `.AppImage.zsync` 供应用内更新使用，`linux-x64-<版本>.tar.gz` 供发行版打包，`mapping.txt` 用于还原崩溃堆栈，`SHA256SUMS.txt` 与 `multiple.intoto.jsonl` 用于校验。
+**以下文件无需下载**：`-app.zip`、`-image.zip`、`-files.json`、`-from-<旧版本>.zip` 与 `.AppImage.zsync` 供应用内更新使用，`linux-x64-<版本>.tar.gz` 供发行版打包，`mapping.txt` 用于还原崩溃堆栈，`SHA256SUMS.txt` 与 `multiple.intoto.jsonl` 用于校验。
 
 ## 校验
 

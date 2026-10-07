@@ -81,7 +81,7 @@
 前往 [Releases](https://github.com/NihilDigit/piko/releases/latest) 下载。安装包均由 GitHub Actions 从源码构建，Release 页面按设备列出应下载的文件。
 
 - **Android**：Android 8.0 及以上。按设备架构选择 APK，无法确定时选 `universal`。
-- **Windows**：Windows 10 及以上，x64 与 arm64。`.msi` 为安装版，`.zip` 为便携版。
+- **Windows**：Windows 10 及以上，x64 与 arm64。`.msi` 为安装版，`.7z` 为便携版；Windows 11 可在资源管理器中直接解压，Windows 10 可用 [NanaZip](https://apps.microsoft.com/detail/9n8g7tscl18r) 或 7-Zip 解压。
 - **macOS**（实验性）：macOS 12 及以上，仅 Apple 芯片。安装包未经公证，首次打开需在「系统设置」→「隐私与安全性」中放行。
 
 ## 贡献

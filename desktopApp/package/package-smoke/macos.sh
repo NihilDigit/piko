@@ -25,7 +25,8 @@ apps="$HOME/Applications"
 bundle="$apps/$package.app"
 releases="$work/releases"
 logs="$work/logs"
-staging="${TMPDIR:-/tmp}/piko-update"
+# 更新暂存在数据根目录下（DesktopAppUpdater.stagingRoot）
+staging="$HOME/.piko/update"
 mkdir -p "$releases" "$logs" "$apps"
 
 fail() { echo "SMOKE FAILED: $*" >&2; save_logs; exit 1; }

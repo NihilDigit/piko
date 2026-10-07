@@ -11,7 +11,7 @@ import java.lang.foreign.ValueLayout.JAVA_INT
 import java.nio.charset.StandardCharsets.UTF_16LE
 
 /**
- * 查 Windows Installer 的登记，判断应用目录是不是由我们的 MSI 装的。便携版 zip 解出来的目录
+ * 查 Windows Installer 的登记，判断应用目录是不是由我们的 MSI 装的。便携包解出来的目录
  * 不在登记里，交给 msiexec 会另装一份到 LocalAppData，而不是更新用户正在用的那份。
  *
  * 按 UpgradeCode 找产品，再比 InstallLocation；UpgradeCode 由构建经系统属性传进来，与 MSI 同源。

@@ -2,7 +2,7 @@
 
 目录结构：<root>/<版本>/<附件>，<root>/latest.txt 写要公布的版本，改它即换「最新版」，不必重启服务。
   GET /latest               与 GitHub 同形的 Release JSON，附件带 digest（应用据此校验下载）
-  GET /assets/<版本>/<名字> 附件本身，认单段的 Range
+  GET /assets/<版本>/<名字> 附件本身，认单段的 Range（<root>/no-range 在时不认）
 每个请求记进 <root>/requests.log，失败时对照应用到底下了什么；每次送出的附件字节数记进 <root>/bytes.log。
 
 用法：python fake_release.py <root> [端口]
@@ -84,7 +84,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         start, end = 0, size - 1
         # Linux 的 zsync 差分更新按 Range 取单段，与 GitHub 的附件地址一样回 206；每段记进 bytes.log，
         # 冒烟据此算差分实际下了多少字节
-        ranged = self.headers.get("Range", "")
+        # <root>/no-range 在时照不认 Range 的镜像回整个文件（200），冒烟据此验应用退回整个下载
+        ranged = "" if os.path.exists(os.path.join(ROOT, "no-range")) else self.headers.get("Range", "")
         if ranged.startswith("bytes="):
             first, _, last = ranged[len("bytes="):].partition("-")
             start, end = int(first), min(int(last), size - 1) if last else size - 1
@@ -98,17 +99,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/octet-stream")
         self.send_header("Content-Length", str(end - start + 1))
         self.end_headers()
-        with open(os.path.join(ROOT, "bytes.log"), "a", encoding="utf-8") as log:
-            log.write("%s %d\n" % (os.path.basename(path), end - start + 1))
-        with open(path, "rb") as f:
-            f.seek(start)
-            remaining = end - start + 1
-            while remaining > 0:
-                chunk = f.read(min(1 << 16, remaining))
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
-                remaining -= len(chunk)
+        # 记实际送出的字节，不记应答声明的长度：应用见到 200 就当场断开（取 image.zip 的目录时），
+        # 按声明记的话这次也算成整个文件，不认 Range 的场景就像下了两遍
+        sent = 0
+        try:
+            with open(path, "rb") as f:
+                f.seek(start)
+                remaining = end - start + 1
+                while remaining > 0:
+                    chunk = f.read(min(1 << 16, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    sent += len(chunk)
+                    remaining -= len(chunk)
+        finally:
+            with open(os.path.join(ROOT, "bytes.log"), "a", encoding="utf-8") as log:
+                log.write("%s %d\n" % (os.path.basename(path), sent))
 
 
 # Windows 上 SO_REUSEADDR 让第二个进程也能绑同一个端口，请求被分给上一次没关掉的那个，

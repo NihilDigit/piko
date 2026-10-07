@@ -94,24 +94,6 @@ class UpdateManifestTest {
         assertEquals(1_700_000_000_000L, jar.lastModified())
     }
 
-    @Test
-    fun portableZipSkipsItsMarker() {
-        write("runtime/lib/modules", "modules")
-        val staged = root.resolve("staged")
-        // CI 的 Compress-Archive 打出的条目带一层应用目录名，分隔符可能是反斜杠；标记不在清单里
-        val portable = zip(
-            "Piko\\portable" to "",
-            "Piko/Piko.exe" to "exe v2",
-            "Piko/app/desktopApp-desktop.jar" to "jar v2",
-            "Piko/runtime/lib/modules" to "modules",
-            "Piko/app/resources/mpv/libmpv-2.dll" to "mpv",
-        )
-        extractChanged(portable, manifest, install, staged)
-        assertEquals("jar v2", staged.resolve("app/desktopApp-desktop.jar").readText())
-        // 不装进来：经应用内更新升上来的便携版数据原本在 ~/.piko，多出标记就改读 data/
-        assertFalse(staged.resolve("portable").exists())
-    }
-
     private fun fixture(name: String): ByteArray =
         checkNotNull(javaClass.getResourceAsStream("/update/$name")) { name }.use { it.readBytes() }
 

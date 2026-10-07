@@ -29,7 +29,8 @@ say "update started: pids=$pids bundle=$bundle"
 deadline=$((SECONDS + 120))
 for pid in ${pids//,/ }; do
     while kill -0 "$pid" 2>/dev/null; do
-        if (( SECONDS > deadline )); then say 'app did not exit within 120 s, update aborted'; exit 1; fi
+        # Nothing touched yet. A still running app only gets activated by the open in fail().
+        if (( SECONDS > deadline )); then fail 'the app did not exit within 120 s'; fi
         sleep 0.2
     done
 done
@@ -86,5 +87,7 @@ if ! mv "$new" "$bundle"; then
 fi
 rm -rf "$old"
 say 'update applied'
+# Only after success: a failed update is retried from the same download. The logs stay.
+rm -f "$dmg" "$checksums"
 relaunch
 exit 0

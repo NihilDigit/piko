@@ -1,4 +1,5 @@
 import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
 import java.nio.file.attribute.FileTime
 import java.security.MessageDigest
 import java.util.Collections
@@ -72,8 +73,6 @@ kotlin {
                 implementation(libs.ktor.client.logging)
                 implementation(libs.coil.compose)
                 implementation(libs.coil.network.okhttp)
-                // MP4 无损切片（流复制，不断点转码）：纯 JVM，无需捆绑 ffmpeg。
-                implementation(libs.mp4parser.isobox)
                 // PikoUploadSources.open 返回 RawSource，shared 只以 implementation 引入
                 implementation(libs.kotlinx.io.core)
             }
@@ -183,6 +182,19 @@ val bundledAppResources by tasks.registering(Sync::class) {
             includeEmptyDirs = false
         }
     }
+    // JNA 的 jnidispatch 从实际打进包里的那个 jna jar 取：原生库与 Java 端版本不一致时 JNA 拒绝载入。
+    // 免得它每次启动都解压到 %TEMP%，见 BundledNatives.kt 的 useBundledJnaDispatch。只做了 Windows：
+    // 别的系统未验证 JNA 在禁止解压时的查找规则，照旧解压
+    if (isWindowsHost) {
+        val jnaJar = configurations.named("desktopRuntimeClasspath").map { classpath ->
+            classpath.filter { Regex("""jna-[0-9][0-9.]*\.jar""").matches(it.name) }
+        }
+        from({ jnaJar.get().map { zipTree(it) } }) {
+            include("com/sun/jna/win32-${if (hostArch == "arm64") "aarch64" else "x86-64"}/jnidispatch.dll")
+            eachFile { path = "jna/$name" }
+            includeEmptyDirs = false
+        }
+    }
     // Toast 的 AUMID 登记要一个磁盘上的图标文件，exe 里内嵌的那份用不上
     from("src/desktopMain/resources/app-icon.png")
     into(layout.buildDirectory.dir("appResources/common"))
@@ -192,6 +204,9 @@ val bundledAppResources by tasks.registering(Sync::class) {
 // 可覆写只为在本机测试 MSI 更新：另起一个产品，不碰已安装的 Piko
 val msiUpgradeUuid = providers.gradleProperty("pikoDesktopUpgradeUuid").getOrElse("6d8d332e-f0f4-4ee0-bc2d-fb3ebf3d4267")
 val desktopPackageName = providers.gradleProperty("pikoDesktopPackageName").getOrElse("Piko")
+// 写进 HKCU 的名字（通知的 AUMID、打开方式的 ProgID、Capabilities）由它派生，见 ShellIdentity。测试包用包名，
+// 本机跑安装冒烟时不改、不删装着的 Piko 的登记；正式包不传，名字与发过的版本相同
+val shellId = desktopPackageName
 // 不传版本的是本地或非 tag 构建。默认值取 1.0.0 而不是 0.x：macOS 的 CFBundleVersion 首位必须大于 0，
 // jpackage 直接拒绝。它与正式版可能同号，所以是不是发布构建另由 piko.release-build 标明，见 DesktopAppUpdater
 val releaseVersion = providers.gradleProperty("pikoDesktopVersion").map { it.trim() }.filter { it.isNotEmpty() }
@@ -210,7 +225,14 @@ compose.desktop {
         jvmArgs += "--enable-native-access=ALL-UNNAMED"
         // 应用内更新据此在 Windows Installer 的登记里认出自己是不是 MSI 装的，见 DesktopAppUpdater
         jvmArgs += "-Dpiko.upgrade-code=$msiUpgradeUuid"
+        if (shellId != "Piko") jvmArgs += "-Dpiko.shell-id=$shellId"
         if (releaseVersion.isPresent) jvmArgs += "-Dpiko.release-build=true"
+        // 本机不带版本号打的包与 :desktopApp:run 一样用 ~/.piko-dev：否则它与装着的正式版共用 ~/.piko 与单实例锁，
+        // 版本号又默认 1.0.0，日志里分不出是谁。CI 的打包与安装冒烟都传版本号，不受影响
+        // 写正斜杠：jpackage 的 .cfg 把反斜杠当转义吃掉，C:\Users\x 读回来成了 C:Usersx
+        else jvmArgs += "-Dpiko.home=" + File(System.getProperty("user.home"), ".piko-dev").invariantSeparatorsPath
+        // 不写 %TEMP%\hsperfdata_<用户>：jps、jstat 因此看不到 Piko，jcmd 按进程号照样可用
+        jvmArgs += "-XX:-UsePerfData"
         // AOT 缓存里不存机器码。JDK 25 会把训练时生成的调用适配代码与桩代码一并存进 app.aot，换一台机器
         // 也不核对 CPU 特性：CI runner 支持 AVX-512，缓存里的适配代码用了 EVEX 指令，装到不支持的 CPU
         // （例如 12 代酷睿）上随机报 EXCEPTION_ILLEGAL_INSTRUCTION，崩在 AdapterBlob。训练与运行都读这里的参数，
@@ -362,6 +384,38 @@ tasks.matching { it.name == "createReleaseAotArchive" }.configureEach {
             .forEach { it.setLastModified(it.lastModified() / 2000 * 2000) }
     }
 }
+// AOT 训练真的启动一次应用。带版本号打的包启动配置里没有 piko.home（装好后用 ~/.piko），训练进程就读写打包机上
+// 真实的 ~/.piko，本机打冒烟包时它把当前账号登出了。不带版本号的 ~/.piko-dev 同样是真实数据，所以一律换成
+// build 下每次清空的目录。插件不给训练单独加参数：它把启动配置备份一份、去掉运行时的 AOT 参数、追加训练参数、
+// 跑完再拿备份换回。这里在它之前把一行 piko.home 加进启动配置的末尾（同名属性后写的生效），备份与训练用的都带着它，
+// 换回之后再删掉，装进包里的启动配置不变
+val aotTrainingHome = layout.buildDirectory.dir("aot-training-home").get().asFile
+val aotTrainingHomeOption = "java-options=-Dpiko.home=" + aotTrainingHome.invariantSeparatorsPath
+val releaseLauncherConfig = layout.buildDirectory
+    .file("compose/binaries/main-release/app/$desktopPackageName/app/$desktopPackageName.cfg").get().asFile
+// 原样保留换行符：启动配置是增量更新的补丁文件，内容变了就与没加过这一行时的构建对不上
+fun rewriteLauncherConfig(edit: (List<String>) -> List<String>) {
+    val text = releaseLauncherConfig.readText()
+    val newline = if (text.contains("\r\n")) "\r\n" else "\n"
+    val lines = text.split(newline).dropLastWhile { it.isEmpty() }.filter { it != aotTrainingHomeOption }
+    releaseLauncherConfig.writeText(edit(lines).joinToString(newline, postfix = newline))
+}
+tasks.matching { it.name == "createReleaseAotArchive" }.configureEach {
+    doFirst {
+        aotTrainingHome.deleteRecursively()
+        aotTrainingHome.mkdirs()
+        rewriteLauncherConfig { lines ->
+            val lastOption = lines.indexOfLast { it.startsWith("java-options=") }
+            check(lastOption >= 0) { "${releaseLauncherConfig.name} 里没有 java-options，jpackage 的格式可能变了" }
+            lines.take(lastOption + 1) + aotTrainingHomeOption + lines.drop(lastOption + 1)
+        }
+    }
+    doLast {
+        rewriteLauncherConfig { it }
+        // 训练进程开了日志就说明它读到了这个属性；没有日志则它仍在用别处的数据目录
+        check(aotTrainingHome.resolve("logs").isDirectory) { "AOT 训练没有写进 $aotTrainingHome，piko.home 没有生效" }
+    }
+}
 tasks.matching { it.name == "prepareAppResources" }.configureEach { dependsOn(bundledAppResources) }
 
 // jpackage 的 MSI 先卸旧版、单独提交，再装新版：新版装失败时旧版已经没了。打完即把卸载挪进
@@ -371,7 +425,7 @@ val releaseMsiDir = layout.buildDirectory.dir("compose/binaries/main-release/msi
 tasks.matching { it.name == "packageReleaseMsi" }.configureEach {
     doLast {
         releaseMsiDir.listFiles { f -> f.extension == "msi" }.orEmpty().forEach { msi ->
-            val exit = ProcessBuilder("pwsh", "-NoProfile", "-File", transactionalUpgradeScript.absolutePath, "-Msi", msi.absolutePath)
+            val exit = ProcessBuilder("pwsh", "-NoProfile", "-File", transactionalUpgradeScript.absolutePath, "-Msi", msi.absolutePath, "-Identity", shellId)
                 .inheritIO()
                 .start()
                 .waitFor()
@@ -385,10 +439,22 @@ tasks.matching { it.name == "packageReleaseMsi" }.configureEach {
  * 与只含易变文件的 app.zip。实测两次构建之间只有 exe（版本资源）、jar、AOT 缓存、Piko.cfg 与
  * .jpackage.xml 不同，运行时与 mpv 等 180MB 逐字节相同，客户端据清单判断能否只换这几个。
  * 修改时间记在清单里而不是只靠 zip：zip 的时间戳按本地时区存，CI 与用户的时区不同。
+ *
+ * 别的文件（运行时、mpv、新加的原生库）偶尔也变。[baseManifests] 给出仍在用的已发布版本的清单，与其中任一份不同
+ * 或旧版没有的文件同样标为补丁、装进 app.zip。这是老客户端唯一的路：1.1.0 及更早只认 files.json、app.zip 与 .msi，
+ * 补丁对不上时便携版去找已不再发布的 .zip，只能手动更新。标在清单的 patch 上，它们认的就是这个字段。
+ *
+ * 另出 image.zip：整个应用目录，给本版起的客户端在补丁仍对不上时按 Range 只取不同的文件（ImageZip.kt）。
+ * 不把 app.zip 扩成全量：老客户端会把 patch 之外的条目当成异常拒掉。
  */
 abstract class UpdateArtifactsTask : DefaultTask() {
     @get:InputDirectory
     abstract val appImage: DirectoryProperty
+
+    /** 旧版的 files.json，同一架构。不传时只有固定的那几类文件算补丁。 */
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val baseManifests: ConfigurableFileCollection
 
     @get:Input
     abstract val version: Property<String>
@@ -407,13 +473,23 @@ abstract class UpdateArtifactsTask : DefaultTask() {
             .map { it.relativeTo(root).invariantSeparatorsPath to it }
             .sortedBy { it.first }
             .toList()
+        @Suppress("UNCHECKED_CAST")
+        val bases = baseManifests.files.map { manifest ->
+            ((JsonSlurper().parse(manifest) as Map<String, Any>)["files"] as List<Map<String, Any>>)
+                .associate { it["path"] as String to it["sha256"] as String }
+        }
+        val hashes = files.associate { (path, file) -> path to sha256(file) }
+        val patched = files.map { it.first }.filter { path ->
+            isPatch(path) || bases.any { base -> base[path] != hashes.getValue(path) }
+        }.toSet()
+        (patched.filterNot(::isPatch)).forEach { logger.lifecycle("补丁包另带变了的文件：$it") }
         val entries = files.map { (path, file) ->
             linkedMapOf(
                 "path" to path,
                 "size" to file.length(),
-                "sha256" to sha256(file),
+                "sha256" to hashes.getValue(path),
                 "mtime" to file.lastModified(),
-                "patch" to isPatch(path),
+                "patch" to (path in patched),
             )
         }
         val prefix = artifactPrefix.get()
@@ -421,10 +497,18 @@ abstract class UpdateArtifactsTask : DefaultTask() {
             JsonOutput.prettyPrint(JsonOutput.toJson(mapOf("version" to version.get(), "files" to entries))),
         )
         ZipOutputStream(out.resolve("$prefix-app.zip").outputStream().buffered()).use { zip ->
-            files.filter { isPatch(it.first) }.forEach { (path, file) ->
+            files.filter { it.first in patched }.forEach { (path, file) ->
                 zip.putNextEntry(ZipEntry(path).apply {
                     lastModifiedTime = FileTime.fromMillis(file.lastModified())
                 })
+                file.inputStream().use { it.copyTo(zip) }
+                zip.closeEntry()
+            }
+        }
+        // 逐条目压缩、不固实，客户端才能按 Range 只取其中几个。修改时间不必存：客户端按清单还原
+        ZipOutputStream(out.resolve("$prefix-image.zip").outputStream().buffered()).use { zip ->
+            files.forEach { (path, file) ->
+                zip.putNextEntry(ZipEntry(path))
                 file.inputStream().use { it.copyTo(zip) }
                 zip.closeEntry()
             }
@@ -458,6 +542,8 @@ tasks.register<UpdateArtifactsTask>("packageReleaseUpdate") {
     version = desktopPackageVersion
     artifactPrefix = "piko-$hostPlatform-$desktopPackageVersion"
     outputDir = layout.buildDirectory.dir("compose/binaries/main-release/update")
+    // 放着旧版 files.json 的目录，CI 由 .github/scripts/update-bases.sh 取来
+    providers.gradleProperty("pikoUpdateBases").orNull?.takeIf { it.isNotBlank() }?.let { dir -> baseManifests.from(fileTree(dir) { include("*-files.json") }) }
 }
 // compose 的 run 任务在 afterEvaluate 里重写 jvmArgs，会盖掉上面的配置，
 // 这里后注册、后执行，把 flag 补回去（注册顺序：插件先、脚本后）。

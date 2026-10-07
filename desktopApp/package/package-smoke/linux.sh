@@ -28,7 +28,8 @@ apps="$HOME/Applications"
 appimage="$apps/Piko.AppImage"
 releases="$work/releases"
 logs="$work/logs"
-staging="${TMPDIR:-/tmp}/piko-update"
+# 更新暂存在数据根目录下（DesktopAppUpdater.stagingRoot）
+staging="$HOME/.piko/update"
 # 本机 WSL 里 xdg-open 会认出 WSL、转给 Windows，可以用 SMOKE_OPEN='gio open' 换掉
 open_cmd="${SMOKE_OPEN:-xdg-open}"
 mkdir -p "$releases" "$logs" "$apps"
