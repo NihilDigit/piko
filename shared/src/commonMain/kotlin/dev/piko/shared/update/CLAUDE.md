@@ -12,7 +12,7 @@ Windows 补丁换文件前先写事务记录（安装目录的 `.piko-update.jou
 下次启动 `DesktopAppUpdater.create` 见到无人占用的记录，就以 `-Mode recover` 交给脚本、自己退出，由脚本按记录回滚到旧版、
 留下失败记号、再拉起。记录在时 `.old`、`.new` 不当残留删。复制、改名与删除遇到占用（杀毒、索引器）退避重试约 7 秒；
 等应用退出超时同样写失败记号并拉起旧版。程序目录写不进（便携版放在 Program Files 下）时只给下载页。
-脚本的这些行为由 `ApplyUpdateScriptTest` 真跑 PowerShell 验证。
+脚本的这些行为由 `ApplyUpdateScriptTest` 真跑 PowerShell 验证；装好的包认出记录、交出、回滚后提示，由 `windows.ps1` 的场景 7 验证。
 应用内更新从不解便携包（7z，只给人手动下载，理由见 `desktopApp/CLAUDE.md` 的 AOT 一条）。Windows 的更新附件有两路：
 - **老客户端的路**：files.json、app.zip、.msi。app.zip 除了每次构建都变的那几类文件，还带上与仍在用的已发布版本
   （1.0.0 起全部已公开、带清单的，`.github/scripts/update-bases.sh` 取来）不同或它们没有的运行时、mpv、原生库，清单里同样标
@@ -29,7 +29,7 @@ Windows 补丁换文件前先写事务记录（安装目录的 `.piko-update.jou
 - 补丁包的对照是 1.0.0 起全部已公开、带清单的版本，不限主版本（update-bases.sh）。不要缩小这个范围：被排除的版本
   本机缺新增的文件，补丁对不上，老便携版就只能手动更新。
 `package-smoke/legacy.ps1`（test.yml 的 windows-package-legacy）拿真实的 1.0.0、1.1.0 便携 zip 与 MSI 升级到当次构建，
-断言走补丁、能启动、版本对、数据在。1.0.0 没有自动安装，它的下载与暂存由冒烟照原样代劳，再跑它原样的更新脚本。
+断言走补丁、能启动、版本对、数据在，MSI 版再修复一次仍能启动。1.0.0 没有自动安装，它的下载与暂存由冒烟照原样代劳，再跑它原样的更新脚本。
 脚本里的相对路径逐级比对目录名得出，不按前缀截取：`%TEMP%` 可能是 8.3 短路径（`MARVIN~1`），与展开后的长路径
 前缀对不上，CI 上出过换完文件又重启、无限循环。增量补丁（zstd 差分，`piko-windows-<架构>-<版本>-from-<旧版本>.zip`）
 经 FFM 直调安装包资源目录 `zstd/` 里的 libzstd（`desktopApp/.../update/ZstdPatch.kt`），x64 与 arm64 同一条路：
@@ -52,7 +52,7 @@ Piko 只在它们不存在时新建（`LinkRegistration`），已有 UserChoice 
 
 MSI 安装版也就地打补丁，不改走整包重装：Windows Installer 修复（控制面板的「修复」、`msiexec /f` 默认的 omus）
 保留创建时间早于修改时间的无版本文件，当它是用户改过的；exe 带版本号，新的不会被换回。所以修复只会保留补丁，
-或（`/fa` 强制全部重装）退回一个能运行、会再提示更新的旧版，不会装坏（实测）。`apply-update.ps1` 换上文件后显式沿用
+或（`/fa` 强制全部重装）退回一个能运行、会再提示更新的旧版，不会装坏（实测；`windows.ps1` 与 `legacy.ps1` 打完补丁后各修复一次）。`apply-update.ps1` 换上文件后显式沿用
 原文件的创建时间；1.0.0、1.1.0 用的是它们自带的旧脚本，那一跳靠的是 NTFS 文件名隧道（同名文件 15 秒内重建时
 继承旧的创建时间），默认开着。补丁不改 Windows Installer 登记的版本，「应用」设置里显示的仍是装时的版本号。
 

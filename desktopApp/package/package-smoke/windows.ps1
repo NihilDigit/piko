@@ -11,14 +11,17 @@
 #   1. 全新安装 MSI，启动后存活，没有新版时不动
 #   1b. 设为 magnet 与 .torrent 的默认打开方式：系统真把磁力链接与种子交给 Piko（拉起与转交各一次），再取消关联
 #   1c. 「打开所在文件夹」：资源管理器开在文件所在的文件夹并选中它，文件名带空格与方括号
-#   2. MSI 安装版增量更新（换补丁文件）：目录与新版清单逐文件一致，jar 的修改时间原样（AOT 缓存认它）
+#   2. MSI 安装版增量更新（换补丁文件）：目录与新版清单逐文件一致，jar 的修改时间原样（AOT 缓存认它），
+#      没有带进便携标记；随后 Windows Installer 修复（msiexec /fomus），补丁文件原样留着，新版照常启动
 #   3. MSI 安装版整包更新：先弄坏一个运行时文件，增量更新不成立，走 msiexec；登记的版本随之更新
 #   4. 卸载：安装目录下 app 与 runtime 不留任何文件。打过补丁与整包更新之后各卸一次，都当场查
 #      （增量更新换进去的新名字 jar 不在 MSI 的文件表里，靠打包时加的 RemoveFile 规则删）
 #      安装根目录里放的用户文件，卸载与整包升级后都还在
-#   5. 便携版增量更新，补丁包里带着变了的运行时文件。便携包（.7z）都在非 UTC 时区解压，jar 的修改时间要与清单相同
+#   5. 便携版增量更新，补丁包里带着变了的运行时文件。便携包（.7z）都在非 UTC 时区解压，jar 的修改时间要与清单相同。
+#      经 8.3 短路径启动，安装目录以短路径交给更新脚本
 #   6. 便携版补丁对不上（弄坏一个运行时文件）：从 image.zip 只取不同的文件，按 Range 与照不认 Range 的镜像各一次
-# -PortableOnly 只跑 5、6。
+#   7. 便携版上次更新中断（留着事务记录与 .old、.new）：启动即交给脚本回滚、重新拉起，查到同一新版时记下「更新未完成」
+# -PortableOnly 只跑 5、6、7。
 # 每次更新成功后，暂存目录只剩日志
 #
 # 用法（pwsh）：
@@ -46,7 +49,10 @@ $ErrorActionPreference = 'Stop'
 $installDir = Join-Path $env:LOCALAPPDATA $PackageName
 $exeName = "$PackageName.exe"
 $releases = Join-Path $Work 'releases'
-$portableRoot = Join-Path $Work 'portable'
+# 便携版解在系统临时目录下一个超过 8 个字符的目录里，场景 5 才有 8.3 短名可用：CI 的 Work 在 D 盘，
+# 那里未必生成短名，临时目录在 C 盘。runner 上临时目录本身就是 C:\Users\RUNNER~1\...，先展开成长路径：
+# 更新脚本拉起的进程报的是长路径，按目录找进程时要对得上
+$portableRoot = Join-Path (Get-Item -LiteralPath ([System.IO.Path]::GetTempPath())).FullName "$PackageName-portable-smoke"
 $portableDir = Join-Path $portableRoot $PackageName
 $installedHome = if ($DataRoot) { $DataRoot } else { Join-Path $HOME '.piko' }
 $homeOption = if ($DataRoot) { "-Dpiko.home=$DataRoot" } else { '' }
@@ -85,7 +91,9 @@ function Get-Sha256([string] $path) {
 #
 # 点开头的文件不比：那是安装器的元数据，不是应用文件。MSI 装的是 app\.package（记在它的文件表里），
 # 不装应用目录里的 app\.jpackage.xml；更新前后都得原样留着 .package
-function Assert-Tree([string] $dir, $manifest) {
+#
+# -AllowExtra 不查清单外的文件：MSI 修复会把补丁删掉的旧版文件按文件表装回来，它们不在类路径上，不影响启动
+function Assert-Tree([string] $dir, $manifest, [switch] $AllowExtra) {
     $expected = @{}
     foreach ($entry in @($manifest.files | Where-Object { -not ($_.path -split '/')[-1].StartsWith('.') })) {
         $path = Join-Path $dir ($entry.path.Replace('/', '\'))
@@ -100,7 +108,7 @@ function Assert-Tree([string] $dir, $manifest) {
             if ($mtime -ne [long] $entry.mtime) { Fail "mtime differs: $($entry.path) $mtime != $($entry.mtime)" }
         }
     }
-    foreach ($folder in @('app', 'runtime')) {
+    foreach ($folder in @(if (-not $AllowExtra) { 'app', 'runtime' })) {
         foreach ($file in @(Get-ChildItem -LiteralPath (Join-Path $dir $folder) -Recurse -File -Force | Where-Object { -not $_.Name.StartsWith('.') })) {
             if (-not $expected.ContainsKey($file.FullName.ToLowerInvariant())) { Fail "stale file left: $($file.FullName)" }
         }
@@ -124,23 +132,52 @@ function Start-Server {
     Fail 'fake release server did not start'
 }
 
-function App-Processes([string] $dir) {
-    $prefix = (Join-Path $dir '').ToLowerInvariant()
-    @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.ToLowerInvariant().StartsWith($prefix) })
+function Short-Path([string] $dir) {
+    (New-Object -ComObject Scripting.FileSystemObject).GetFolder($dir).ShortPath
 }
 
+# 经短路径启动的进程报的也是短路径，长短两种都认
+function App-Processes([string] $dir) {
+    $prefixes = @($dir) + @(if (Test-Path -LiteralPath $dir -PathType Container) { Short-Path $dir }) |
+        ForEach-Object { (Join-Path $_ '').ToLowerInvariant() }
+    @(Get-CimInstance Win32_Process | Where-Object {
+        $path = if ($_.ExecutablePath) { $_.ExecutablePath.ToLowerInvariant() } else { '' }
+        $path -and @($prefixes | Where-Object { $path.StartsWith($_) }).Count -gt 0
+    })
+}
+
+# 每一轮都重新找、重新杀，不只杀第一次找到的：漏掉一个就占着单实例锁，下一次启动只把参数转交给它就退出，
+# 不写「启动」一行。本机出过一次 2b 等不到启动、事后又没有残留进程（finally 会杀），疑为启动器拉起 JVM 时被杀、
+# 子进程晚一步出现，未坐实
 function Stop-App([string] $dir) {
-    foreach ($p in (App-Processes $dir)) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
-    for ($i = 0; $i -lt 50 -and (App-Processes $dir).Count -gt 0; $i++) { Start-Sleep -Milliseconds 200 }
+    for ($i = 0; $i -lt 50; $i++) {
+        $left = @(App-Processes $dir)
+        if ($left.Count -eq 0) { return }
+        foreach ($p in $left) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
+        Start-Sleep -Milliseconds 200
+    }
 }
 
 # 启动器会另起一个同名子进程跑 JVM；环境变量随之传下去，更新脚本也继承它，所以更新后重新拉起的版本同样指向假 Release
-function Start-App([string] $dir, [switch] $AutoInstall) {
+#
+# -ViaShortPath 经 8.3 短路径启动：启动器把它原样写进 jpackage.app-path，应用以它作安装目录交给更新脚本
+function Start-App([string] $dir, [switch] $AutoInstall, [switch] $ViaShortPath) {
     $options = "-Dpiko.update.api=http://127.0.0.1:$Port/latest"
     if ($AutoInstall) { $options += ' -Dpiko.update.auto=true' }
     if ($dir -eq $installDir) { $options += " $homeOption" }
+    $launchDir = $dir
+    if ($ViaShortPath) {
+        $launchDir = Short-Path $dir
+        if ($launchDir -eq $dir) {
+            # 卷上关了 8.3 短名。runner 的 C 盘一直有（RUNNER~1），那里拿不到就是脚本的前提错了
+            if ($env:GITHUB_ACTIONS) { Fail "no 8.3 short name for $dir" }
+            Write-Host "::warning::no 8.3 short name for $dir; launching by the long path"
+        } else {
+            Write-Host "launching through the short path $launchDir"
+        }
+    }
     $env:JAVA_TOOL_OPTIONS = $options
-    try { Start-Process -FilePath (Join-Path $dir $exeName) -WorkingDirectory $dir }
+    try { Start-Process -FilePath (Join-Path $launchDir $exeName) -WorkingDirectory $launchDir }
     finally { Remove-Item Env:JAVA_TOOL_OPTIONS }
 }
 
@@ -169,7 +206,7 @@ function Save-UpdateLogs([string] $name) {
     $appLogs = Join-Path $installedHome 'logs'
     if (Test-Path -LiteralPath $appLogs) { Copy-Item -Recurse -Force $appLogs (Join-Path $target 'app-logs') }
     # 便携版的日志在程序目录的 data\logs 下（PikoHome）
-    $portableLogs = Join-Path $Work "portable\$PackageName\data\logs"
+    $portableLogs = Join-Path $portableDir 'data\logs'
     if (Test-Path -LiteralPath $portableLogs) { Copy-Item -Recurse -Force $portableLogs (Join-Path $target 'portable-app-logs') }
 }
 
@@ -225,6 +262,33 @@ function Uninstall-Msi([string] $log) {
     }
 }
 
+# 「修复」按 msiexec /f 的默认 omus 做，与控制面板一样；修复时缺的文件从原安装包取，它还在原处
+function Repair-Msi([string] $log) {
+    foreach ($product in (Msi-Products)) {
+        $p = Start-Process msiexec.exe -ArgumentList @('/fomus', $product.Code, '/qn', '/norestart', '/l*v', "`"$log`"") -Wait -PassThru
+        if ($p.ExitCode -ne 0) { Fail "msiexec /fomus exited $($p.ExitCode), see $log" }
+    }
+}
+
+# 应用日志里匹配的行数
+function Count-Log([string] $logsDir, [string] $pattern) {
+    if (-not (Test-Path -LiteralPath $logsDir)) { return 0 }
+    @(Get-ChildItem -LiteralPath $logsDir -File | Select-String -Pattern $pattern -Encoding utf8).Count
+}
+
+# 进程在不等于启动成功：JVM 起不来时启动器弹出错误框，照样活着。以应用日志里「启动 <版本>，」一行为准
+function Count-Started([string] $logsDir, [string] $version) { Count-Log $logsDir "启动 $([regex]::Escape($version))，" }
+
+function Wait-Started([string] $dir, [string] $logsDir, [string] $version, [int] $before, [string] $scenario) {
+    for ($i = 0; $i -lt 60; $i++) {
+        if ((Count-Started $logsDir $version) -gt $before) { Write-Host "$version started"; return }
+        Start-Sleep -Seconds 1
+    }
+    Save-UpdateLogs $scenario
+    $running = @(App-Processes $dir | ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" })
+    Fail "$scenario : $version did not log its start within 60 s; running: $($running -join '; ')"
+}
+
 function Assert-NoAppFiles([string] $when) {
     foreach ($folder in @('app', 'runtime')) {
         $left = @(Get-ChildItem -LiteralPath (Join-Path $installDir $folder) -Recurse -File -Force -ErrorAction SilentlyContinue)
@@ -275,6 +339,8 @@ function Expand-Portable([string] $archive, [string] $destination, $manifest) {
         if ($mtime -ne [long] $entry.mtime) { "$($entry.path) off by $(($mtime - [long] $entry.mtime) / 1000) s" }
     })
     if ($wrong.Count -gt 0) { Fail "jar times differ after extracting the portable package: $($wrong -join '; ')" }
+    # 没有标记的便携版把数据写进 ~/.piko，与装在本机的 Piko 混在一起
+    if (-not (Test-Path -LiteralPath (Join-Path $destination "$PackageName\portable") -PathType Leaf)) { Fail 'the portable package has no portable marker' }
 }
 
 # 安装根目录里的用户文件（旧版把下载默认放进过安装目录）。卸载与整包升级都不该删它们：
@@ -350,6 +416,10 @@ foreach ($pair in @(@($Base, $BaseVersion), @($Next, $NextVersion))) {
     Copy-Item -Path (Join-Path $pair[0] '*') -Destination $dir -Force
 }
 $nextManifest = Read-Manifest $NextVersion $Next
+# 便携标记进了清单就进了补丁包：MSI 安装版打完补丁变成便携版，数据改读安装目录下的 data，原有的看上去全没了
+foreach ($manifest in @($nextManifest, (Read-Manifest $BaseVersion $Base))) {
+    if (@($manifest.files | Where-Object { $_.path -eq 'portable' }).Count -gt 0) { Fail "the $($manifest.version) manifest lists the portable marker" }
+}
 # 包本身要先对：更新包里的启动配置若仍写着旧版本号，补丁照常换上，重启后还是旧版，
 # 又查到同一个新版，只会表现为更新一直不生效
 foreach ($pair in @(@($Base, $BaseVersion), @($Next, $NextVersion))) {
@@ -446,7 +516,19 @@ try {
         Stop-App $installDir
         Assert-Tree $installDir $nextManifest
         if (-not (Test-Path -LiteralPath (Join-Path $installDir 'app\.package'))) { Fail 'patch removed app\.package, which the MSI installed' }
+        if (Test-Path -LiteralPath (Join-Path $installDir 'portable')) { Fail 'the patch put the portable marker into the MSI install' }
         Assert-StagingCleaned $stagingRoots[0]
+        EndStep
+
+        Step '2b. Windows Installer repair keeps the patch'
+        # 修复把创建时间不早于修改时间的无版本文件换回 MSI 里的旧版。补丁换上的文件沿用原文件的创建时间（apply-update.ps1），
+        # 修复才当它们是用户改过的、原样留着。换回一部分就是新旧混杂：变了的运行时文件退回旧版、带版本号的 DLL 留着新版
+        Repair-Msi (Join-Path $logs 'repair-after-patch.log')
+        Assert-Tree $installDir $nextManifest -AllowExtra
+        $started = Count-Started (Join-Path $installedHome 'logs') $NextVersion
+        Start-App $installDir
+        Wait-Started $installDir (Join-Path $installedHome 'logs') $NextVersion $started 'msi-repair'
+        Stop-App $installDir
         EndStep
 
         Step '3. MSI install, full update through msiexec'
@@ -487,7 +569,8 @@ try {
     if (Test-Path -LiteralPath $portableRoot) { Remove-Item -Recurse -Force -LiteralPath $portableRoot }
     Expand-Portable $basePortable $portableRoot $baseManifest
     Publish $NextVersion
-    Start-App $portableDir -AutoInstall
+    # 更新脚本拿短路径的安装目录与 Get-ChildItem 报出的长路径比对时，曾把换好的整个新版当成多余文件删掉
+    Start-App $portableDir -AutoInstall -ViaShortPath
     Wait-Updated $portableDir 'portable-patch'
     Stop-App $portableDir
     Assert-Tree $portableDir $nextManifest
@@ -527,9 +610,48 @@ try {
         EndStep
     }
 
+    Step '7. portable, recover an interrupted update on launch'
+    # 补丁换到一半断电的现场，同 ApplyUpdateScriptTest.recoverRollsBackAnInterruptedSwap，这里放进装好的包里：
+    # 新增的 jar 已放上，一个 jar 已换（旧的在 .old），启动配置还没换（新的在 .new）。同名 jar 内容相同（jar 名带内容哈希），
+    # 所以 .old 用原文件拷一份即可。脚本在应用退出后才回滚，要验的是装好的应用自己认出记录、交出去、退出，回滚后拉起的旧版
+    # 查到同一新版时读到失败记号；交不出去或记录删不掉，每次启动都会退出
+    Reset-Staging
+    Remove-Item -Recurse -Force -LiteralPath $portableRoot
+    Expand-Portable $basePortable $portableRoot $baseManifest
+    $replaced = @($baseManifest.files | Where-Object { $_.path -match '^app/[^/]+\.jar$' })[0].path.Replace('/', '\')
+    $cfg = "app\$PackageName.cfg"
+    $added = 'app\piko-smoke-added.jar'
+    Copy-Item -LiteralPath (Join-Path $portableDir $replaced) -Destination (Join-Path $portableDir "$replaced.old")
+    Copy-Item -LiteralPath (Join-Path $portableDir $cfg) -Destination (Join-Path $portableDir "$cfg.new")
+    Set-Content -LiteralPath (Join-Path $portableDir $added) -Value 'not a jar' -Encoding ascii
+    $staging = Join-Path $stagingRoots[1] $NextVersion
+    New-Item -ItemType Directory -Force -Path $staging | Out-Null
+    $journal = Join-Path $portableDir '.piko-update.journal'
+    [System.IO.File]::WriteAllText($journal, "staging`t$staging`n+`t$added`n~`t$replaced`n~`t$cfg`n")
+    $logsDir = Join-Path $portableDir 'data\logs'
+    $noticed = "上次更新到 $([regex]::Escape($NextVersion)) 未完成"
+    Publish $NextVersion
+    Start-App $portableDir
+    $deadline = (Get-Date).AddSeconds(120)
+    while (-not ((Count-Log $logsDir $noticed) -gt 0 -and (App-Processes $portableDir).Count -gt 0)) {
+        if ((Get-Date) -gt $deadline) { Save-UpdateLogs 'portable-recover'; Fail 'the relaunched app did not report the interrupted update within 120 s' }
+        Start-Sleep -Seconds 2
+    }
+    Save-UpdateLogs 'portable-recover'
+    if ((Count-Log $logsDir '上次更新中断，交给更新脚本回滚') -eq 0) { Fail 'the app did not hand the journal over to the update script' }
+    Stop-App $portableDir
+    if (Test-Path -LiteralPath $journal) { Fail 'the journal is still there after the recovery' }
+    if (Test-Path -LiteralPath (Join-Path $staging 'failed')) { Fail 'the failure marker was not taken by the relaunched app' }
+    $left = @(Get-ChildItem -LiteralPath $portableDir -Recurse -File -Force | Where-Object { $_.Name -match '\.(old|new)$' })
+    if ($left.Count -gt 0) { Fail "the recovery left $($left.FullName -join ', ')" }
+    Assert-Tree $portableDir $baseManifest
+    if ((Installed-Version $portableDir) -ne $BaseVersion) { Fail 'the recovery did not leave the old version' }
+    EndStep
+
     Write-Host 'package smoke passed'
 } finally {
     Stop-App $installDir
+    Stop-App $portableDir
     if ($script:server) { Stop-Process -Id $script:server.Id -Force -ErrorAction SilentlyContinue }
     # 按命令行再找一遍：scoop 装的 python 是个转发壳，停掉壳，真正的服务进程还在，占着端口
     Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('fake_release.py') -and $_.CommandLine.Contains($releases) } |

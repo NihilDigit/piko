@@ -5,6 +5,8 @@
 # 便携版去找已不再发布的 .zip，1.0.0 直接给下载页。所以 Next 要用这两个版本的清单作对照打（-PpikoUpdateBases），
 # 与它们不同的文件都标成补丁、装进 app.zip（build.gradle.kts 的 UpdateArtifactsTask）。
 #
+# MSI 安装版升级后另做一次 Windows Installer 修复，补丁要原样留着、新版照常启动。
+#
 # 1.1.0 带 piko.update.api 与 piko.update.auto，整个流程由它自己走：查到 Next、下载、退出、交给它自带的更新脚本。
 # 1.0.0 有 piko.update.api，没有自动安装，下载与暂存只能由这里照它的做法代劳：先按它的 canPatch 断言能走补丁，
 # 把 app.zip 的条目逐个核对后放进暂存目录，再跑 v1.0.0 原样的 apply-update.ps1，并重现它换 exe 时留下的 Piko.exe.old，
@@ -65,9 +67,14 @@ function App-Processes([string] $dir) {
     @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.ToLowerInvariant().StartsWith($prefix) })
 }
 
+# 每一轮都重新找、重新杀，理由见 windows.ps1 的 Stop-App
 function Stop-App([string] $dir) {
-    foreach ($p in (App-Processes $dir)) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
-    for ($i = 0; $i -lt 50 -and (App-Processes $dir).Count -gt 0; $i++) { Start-Sleep -Milliseconds 200 }
+    for ($i = 0; $i -lt 50; $i++) {
+        $left = @(App-Processes $dir)
+        if ($left.Count -eq 0) { return }
+        foreach ($p in $left) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
+        Start-Sleep -Milliseconds 200
+    }
 }
 
 function Installed-Version([string] $dir) {
@@ -274,12 +281,27 @@ try {
             Assert-Tree $dir $nextManifest
             if (-not (Test-Path -LiteralPath $sentinel)) { Fail "$name lost the user data in ~/.piko" }
             if ($kind -eq 'msi') {
+                # Windows Installer 修复（msiexec /f 默认的 omus）后补丁仍在、新版仍起得来。这一跳用的是老版本自带的脚本，
+                # 它不沿用原文件的创建时间，补丁文件靠 NTFS 文件名隧道继承；没继承到的被修复换回老版本，
+                # 运行时一旦新旧混杂（带版本号的 DLL 留新、lib\modules 退旧）就起不来
+                foreach ($code in (Msi-Products)) {
+                    $p = Start-Process msiexec.exe -ArgumentList @('/fomus', $code, '/qn', '/norestart', '/l*v', "`"$(Join-Path $logs "repair-$name.log")`"") -Wait -PassThru
+                    if ($p.ExitCode -ne 0) { Fail "msiexec /fomus after $name exited $($p.ExitCode)" }
+                }
+                Assert-Tree $dir $nextManifest
+                $started = Count-Log "启动 $([regex]::Escape($NextVersion))，"
+                $env:JAVA_TOOL_OPTIONS = "-Dpiko.update.api=http://127.0.0.1:$Port/latest $homeOption"
+                try { Start-Process -FilePath (Join-Path $dir 'Piko.exe') -WorkingDirectory $dir }
+                finally { Remove-Item Env:JAVA_TOOL_OPTIONS }
+                for ($i = 0; $i -lt 60 -and (Count-Log "启动 $([regex]::Escape($NextVersion))，") -le $started; $i++) { Start-Sleep -Seconds 1 }
+                if ((Count-Log "启动 $([regex]::Escape($NextVersion))，") -le $started) { Save-Logs $name; Fail "$name : $NextVersion did not start after a Windows Installer repair" }
+                Stop-App $dir
                 foreach ($code in (Msi-Products)) {
                     $p = Start-Process msiexec.exe -ArgumentList @('/x', $code, '/qn', '/norestart', '/l*v', "`"$(Join-Path $logs "uninstall-$name.log")`"") -Wait -PassThru
                     if ($p.ExitCode -ne 0) { Fail "msiexec /x after $name exited $($p.ExitCode)" }
                 }
             }
-            Write-Summary "$oldVersion $kind took the patch to $NextVersion, started, user data kept."
+            Write-Summary "$oldVersion $kind took the patch to $NextVersion, started$(if ($kind -eq 'msi') { ', survived a repair' }), user data kept."
             EndStep
         }
     }
