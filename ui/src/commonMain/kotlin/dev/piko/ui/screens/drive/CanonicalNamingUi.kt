@@ -63,13 +63,12 @@ internal fun canonicalPrimaryAction(
     return SheetAction(Icons.Outlined.DriveFileRenameOutline, "应用所选 ${chosen.size} 项", { onApply(chosen) })
 }
 
-/** 每行下面那一栏：原名与所在的文件夹，行标题已是规范名。 */
+/** 每行下面那一栏：所在的文件夹。行标题已是规范名，原名照网盘页的规矩写在行标题下面（DriveItemName）。 */
 internal fun canonicalNotes(naming: CanonicalNamingState?): Map<String, String> {
     naming ?: return emptyMap()
-    return naming.groups.flatMap { it.rows }.associate { row ->
-        val folder = if (row.folderPath.isEmpty()) naming.root.name else "${naming.root.name}/${row.folderPath}"
-        // 起点自己也可能要改名，它不在自己里面
-        row.file.id to if (row.file.id == naming.root.id) "原名 ${row.file.name}" else "原名 ${row.file.name}，在 $folder"
+    // 起点自己也可能要改名，它不在自己里面，没有这一栏
+    return naming.groups.flatMap { it.rows }.filter { it.file.id != naming.root.id }.associate { row ->
+        row.file.id to if (row.folderPath.isEmpty()) naming.root.name else "${naming.root.name}/${row.folderPath}"
     }
 }
 

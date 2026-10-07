@@ -251,7 +251,7 @@ class DriveScreenState(
     private val searchedFiles: List<FileStat> by derivedStateOf {
         when {
             isGlobalSearchActive -> globalSearchHits.map { it.file }
-            searchQuery.isNotBlank() -> files.filter { it.name.contains(searchQuery.trim(), ignoreCase = true) }
+            searchQuery.isNotBlank() -> searchQuery.trim().let { query -> files.filter { listedName(it).matches(query) } }
             else -> files
         }
     }
@@ -372,6 +372,24 @@ class DriveScreenState(
     fun expandSection(blockId: String) {
         DriveViewMemory.expanded[expandKey(blockId)] = true
     }
+
+    /** 各行带的显示信息，按文件 ID。查找重复里一个文件占两行，两行的显示信息相同。 */
+    private val rowViews: Map<String, DriveFileView> by derivedStateOf {
+        fileRows.mapNotNull { row -> row.view?.let { row.file.id to it } }.toMap()
+    }
+
+    /** 文件夹的解析结果，解析关闭或还没算出时为 null。 */
+    fun folderView(file: FileStat): DriveFolderView? = if (isNameParsing && file.isFolder) folderViews[file.id] else null
+
+    /** 一项眼下在列表里叫什么，见 [DriveItemName]。不在眼前列表里的照原样。 */
+    fun itemName(file: FileStat): DriveItemName = driveItemName(file, rowViews[file.id], folderView(file))
+
+    /**
+     * 不搜索时这一项在列表里叫什么，目录内搜索按它与真实名称匹配。搜索结果平铺、没有作品头，行上不带解析结果，
+     * [itemName] 在搜索时取不到集号前的作品名，所以另从这个目录的分析结果取。
+     */
+    private fun listedName(file: FileStat): DriveItemName =
+        driveItemName(file, if (isNameParsing) currentAnalysis?.views?.get(file.id) else null, folderView(file))
 
     /** 文件的解析结果，详情面板用。解析关闭或未识别时为 null。 */
     fun fileView(fileId: String): DriveFileView? = if (!isNameParsing) null else currentAnalysis?.views?.get(fileId)

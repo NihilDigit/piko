@@ -474,9 +474,9 @@ fun DriveScreen(
         val single = files.singleOrNull()
         properties = if (single != null) {
             val item = state.displayItems.firstOrNull { it is DriveListItem.File && it.file.id == single.id } as? DriveListItem.File
-            val text = item?.let { cellText(it, if (single.isFolder && state.isNameParsing) state.folderViews[single.id] else null) }
+            val text = item?.let { cellText(it, state.folderView(single)) }
             PropertiesTarget.Single(
-                file = single,
+                name = state.itemName(single),
                 tags = listOfNotNull(text?.code) + text?.tags.orEmpty(),
                 location = locationOf(single),
                 isBlurred = isSpoilerBlurEnabled && single.id !in state.revealedFileIds,
@@ -1054,7 +1054,7 @@ fun DriveScreen(
                     FileDragPayload(
                         ids = batch.map { it.id },
                         parentIds = batch.mapTo(HashSet()) { it.parentId },
-                        label = batch.singleOrNull()?.name ?: "${batch.size} 项",
+                        label = batch.singleOrNull()?.let { state.itemName(it).headingText } ?: "${batch.size} 项",
                         perform = { target, copy ->
                             val ids = batch.map { it.id }
                             if (copy) state.copy(ids, target.id, target.name) else state.move(ids, target.id, target.name)
@@ -1988,7 +1988,7 @@ fun DriveScreen(
                                 } else {
                                     DriveFileGrid(
                                         items = state.displayItems,
-                                        folderView = { if (!state.isNameParsing) null else state.folderViews[it.id] },
+                                        folderView = state::folderView,
                                         viewMode = viewMode,
                                         tileSize = tileSize,
                                         onZoom = { larger -> scope.launch { zoom.step(larger) } },
@@ -2057,7 +2057,7 @@ fun DriveScreen(
 
     actionTargetFile?.let { target ->
         FileActionsSheet(
-            file = target,
+            name = state.itemName(target),
             locationLabel = rowNotes[target.id],
             // 回收站里的条目查不了详情，文件夹也统计不了。remember 住同一个 flow：每次重组新建的话，produceState 会把统计从头再跑一遍
             folderUsage = remember(target.id, inTrash) { if (target.isFolder && !inTrash && isDriveFolderId(target.id)) driveRepo.folderUsage(target.id) else null },
@@ -2083,12 +2083,13 @@ fun DriveScreen(
         )
     }
 
+    // 归档会话只拿名字来写对话框、进度卡片与结果提示，说的都是「哪一项」，所以给卡片上的那个名字，不是路径
     restoreVaultTarget?.let { folder ->
-        RestoreVaultFolderDialog(PathBreadcrumb(folder.id, folder.name), vaultSession, onDismiss = { restoreVaultTarget = null })
+        RestoreVaultFolderDialog(PathBreadcrumb(folder.id, state.itemName(folder).headingText), vaultSession, onDismiss = { restoreVaultTarget = null })
     }
 
     vaultTarget?.let { folder ->
-        VaultFolderDialog(PathBreadcrumb(folder.id, folder.name), vaultSession, onDismiss = { vaultTarget = null })
+        VaultFolderDialog(PathBreadcrumb(folder.id, state.itemName(folder).headingText), vaultSession, onDismiss = { vaultTarget = null })
     }
 
     libraryConfirm?.let { request ->
@@ -2247,6 +2248,7 @@ fun DriveScreen(
                 segmentSession.end()
                 openTransfers()
             },
+            itemName = state.itemName(segmentTarget).headingText,
         )
     }
 

@@ -10,6 +10,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.data.FolderUsage
+import dev.piko.shared.state.DriveItemName
 import dev.piko.ui.components.FileTypeIcon
 import dev.piko.ui.components.ItemDetailsSheet
 import dev.piko.ui.components.SheetAction
@@ -24,17 +25,18 @@ import kotlinx.coroutines.flow.Flow
  *
  * [actions] 与这一项的右键菜单是同一份（DriveScreen 的 itemActions），这里只管头部。
  * folderUsage 只对文件夹给出，面板打开期间收集，关闭即取消统计。
- * 标题是原始文件名：列表里显示的是解析后的短标题，这里给全名，可选中复制。
+ * 标题与卡片上是同一个名字（集号前带上作品名），真实名称在它下面，都可选中复制，见 DriveItemName。
  * 离线下载与分享转存来的条目，头部注明来源。
  */
 @Composable
 internal fun FileActionsSheet(
-    file: FileStat,
+    name: DriveItemName,
     locationLabel: String?,
     folderUsage: Flow<FolderUsage>?,
     actions: List<SheetAction>,
     onDismiss: () -> Unit,
 ) {
+    val file = name.file
     val usage by produceState<FolderUsageResult?>(null, folderUsage) {
         folderUsage ?: return@produceState
         try {
@@ -47,7 +49,8 @@ internal fun FileActionsSheet(
     }
 
     ItemDetailsSheet(
-        title = file.name,
+        title = name.headingText,
+        subtitle = name.headingOriginal,
         headerIcon = { FileTypeIcon(file = file, iconSize = 24.dp, modifier = Modifier.fillMaxSize()) },
         actions = actions,
         onDismiss = onDismiss,

@@ -146,6 +146,8 @@ fun SegmentDownloadSheet(
     session: SegmentSession,
     /** [quality] 是从哪一档截，原画的 name 为 null；档位还没列出来时为 null，由下载调度按设置挑。 */
     onConfirmDownload: (startByte: Long, lengthBytes: Long, timeLabel: String, startMs: Long, endMs: Long, streamUrl: String?, quality: DownloadQuality?) -> Unit,
+    /** 标题下写的是哪一项：网盘页给卡片上的那个名字（见 DriveItemName），为 null 时写文件名。 */
+    itemName: String? = null,
 ) {
     val file = session.file ?: return
     val services = LocalPikoServices.current
@@ -224,7 +226,7 @@ fun SegmentDownloadSheet(
             Column {
                 Text("下载片段", style = MaterialTheme.typography.titleLarge)
                 Text(
-                    text = file.name,
+                    text = itemName ?: file.name,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 2,

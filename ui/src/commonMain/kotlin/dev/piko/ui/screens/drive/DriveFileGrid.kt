@@ -99,6 +99,8 @@ import dev.piko.shared.data.field
 import dev.piko.shared.data.isAscending
 import dev.piko.ui.components.ContextMenuArea
 import dev.piko.shared.state.DriveFolderView
+import dev.piko.shared.state.DriveItemName
+import dev.piko.shared.state.driveItemName
 import dev.piko.shared.state.DriveListItem
 import dev.piko.ui.components.FileListItem
 import dev.piko.ui.components.FileRowSkeleton
@@ -470,18 +472,16 @@ private const val SKELETON_ITEM_COUNT = 40
 // 标题宽度逐项错开，一排等长的色块读起来像表格
 private val SkeletonTitleWidths = listOf(0.62f, 0.45f, 0.74f, 0.52f, 0.68f, 0.4f)
 
-/** 单元格上的文字：解析出的标题与标签。[title] 为 null 时照原样显示名字。 */
-internal class CellText(val title: String?, val tags: List<String>, val code: String? = null, val resolution: String? = null)
-
-internal val RawCellText = CellText(null, emptyList())
+/** 单元格上的文字：名字（见 [DriveItemName]）与解析出的标签。 */
+internal class CellText(val name: DriveItemName, val tags: List<String>, val code: String? = null, val resolution: String? = null)
 
 internal fun cellText(item: DriveListItem.File, folder: DriveFolderView?): CellText {
     val view = item.view
+    val name = driveItemName(item.file, view, folder)
     return when {
-        view != null -> CellText(view.title, view.tags, view.code, view.resolution)
-        folder != null && (folder.title != null || folder.tags.isNotEmpty()) ->
-            CellText(folder.title ?: item.file.name, folder.tags, folder.code, folder.resolution)
-        else -> RawCellText
+        view != null -> CellText(name, view.tags, view.code, view.resolution)
+        folder != null -> CellText(name, folder.tags, folder.code, folder.resolution)
+        else -> CellText(name, emptyList())
     }
 }
 
@@ -632,6 +632,8 @@ private fun DriveCell(
                 onLongClick = { callbacks.onStartSelection(file) },
                 onSelectToggle = { callbacks.onSelect(file, it) },
                 folderHasVault = folderHasVault,
+                title = text.name.rowTitle(),
+                original = text.name.rowOriginal(),
             )
             DriveViewMode.POSTER -> PosterCard(
                 file = file,
@@ -645,7 +647,8 @@ private fun DriveCell(
                 onMoreClick = { callbacks.onMore(file) },
                 moreButton = moreButton,
                 isEmptyFolder = isEmptyFolder,
-                title = text.title,
+                title = text.name.title,
+                original = text.name.rowOriginal(),
                 tags = text.tags,
                 code = text.code,
                 resolution = text.resolution,
@@ -664,7 +667,8 @@ private fun DriveCell(
                 onSelectToggle = { callbacks.onSelect(file, it) },
                 onMoreClick = { callbacks.onMore(file) },
                 moreButton = moreButton,
-                title = text.title,
+                title = text.name.title,
+                original = text.name.rowOriginal(),
                 tags = text.tags,
                 code = text.code,
                 folderHasVault = folderHasVault,

@@ -7,6 +7,7 @@ import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -58,6 +59,10 @@ internal fun GalleryTile(
     modifier: Modifier = Modifier,
     /** 文件夹里直接放着归档条目，见 itemMarks。 */
     folderHasVault: Boolean = false,
+    /** 没封面的文件夹压在底部的名字，与海报墙、列表同一个，见 DriveItemName。 */
+    title: String = file.name,
+    /** 真实名称，与 [title] 不同时写在它下面。 */
+    original: String? = null,
 ) {
     val shape = MaterialTheme.shapes.small
     Box(
@@ -99,7 +104,7 @@ internal fun GalleryTile(
                     modifier = Modifier.size(36.dp).padding(bottom = 8.dp),
                 )
             }
-            TileName(file.name, Modifier.align(Alignment.BottomStart))
+            TileName(title, original, Modifier.align(Alignment.BottomStart))
         }
         // 方格上没有标题行，标记压在左上角；垫一层圆底，压在任何画面上都看得清
         if (file.isVaulted || (file.isFolder && folderHasVault)) {
@@ -133,8 +138,8 @@ internal fun GalleryTile(
 
 /** 压在格子底部的名字，底下垫一层渐变，浅色图标块与深色主题里都读得清。 */
 @Composable
-private fun TileName(name: String, modifier: Modifier = Modifier) {
-    Box(
+private fun TileName(name: String, original: String?, modifier: Modifier = Modifier) {
+    Column(
         modifier = modifier
             .fillMaxWidth()
             .background(Brush.verticalGradient(listOf(Color.Transparent, MaterialTheme.colorScheme.surface.copy(alpha = 0.85f))))
@@ -144,8 +149,18 @@ private fun TileName(name: String, modifier: Modifier = Modifier) {
             text = name,
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 2,
+            // 方格只放得下两行字：底下还有真实名称时，显示名让出一行
+            maxLines = if (original != null) 1 else 2,
             overflow = TextOverflow.Ellipsis,
         )
+        if (original != null) {
+            Text(
+                text = original,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.MiddleEllipsis,
+            )
+        }
     }
 }

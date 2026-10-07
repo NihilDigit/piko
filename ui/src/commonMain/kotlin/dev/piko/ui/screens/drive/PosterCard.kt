@@ -133,6 +133,8 @@ internal fun PosterCard(
     isEmptyFolder: Boolean = false,
     modifier: Modifier = Modifier,
     title: String? = null,
+    /** 真实名称，[title] 与它不同时在标题下面写一行小字，见 DriveItemName。 */
+    original: String? = null,
     tags: List<String> = emptyList(),
     /** 番号芯片，放在封面左下角。 */
     code: String? = null,
@@ -230,16 +232,26 @@ internal fun PosterCard(
                 itemMarks(file, folderHasVault)?.let { marks ->
                     Box(Modifier.padding(top = 2.dp, end = 4.dp)) { marks() }
                 }
-                Text(
-                    text = title ?: file.displayTitle(),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    // 不再固定占两行：短名字下面空着一行，一屏卡片的下半截全是空白。同一行里有长名字的，
-                    // 按行对齐的网格照最高的那张排，其余行照样紧凑
-                    maxLines = TITLE_LINES,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = title ?: file.displayTitle(),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        // 不再固定占两行：短名字下面空着一行，一屏卡片的下半截全是空白。同一行里有长名字的，
+                        // 按行对齐的网格照最高的那张排，其余行照样紧凑
+                        maxLines = TITLE_LINES,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (original != null) {
+                        Text(
+                            text = original,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.MiddleEllipsis,
+                        )
+                    }
+                }
             }
             if (trailingShown) {
                 // matchParentSize 不参与量高度：标题只有一行时这一行 20dp，按钮一出现就把它撑高的话，悬停时卡片会跳

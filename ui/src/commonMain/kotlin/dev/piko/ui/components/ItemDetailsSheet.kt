@@ -62,6 +62,8 @@ fun ItemDetailsSheet(
     onDismiss: () -> Unit,
     metaParts: List<String> = emptyList(),
     extraLines: @Composable ColumnScope.() -> Unit = {},
+    /** 标题下面的一行，网盘条目在标题是显示名时写真实名称。与标题一起可选中复制。 */
+    subtitle: String? = null,
 ) {
     PikoSheet(onDismissRequest = onDismiss) {
         val sheet = this
@@ -84,11 +86,20 @@ fun ItemDetailsSheet(
                 Spacer(modifier = Modifier.width(16.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     SelectionContainer {
-                        Text(
-                            text = title,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
+                        Column {
+                            Text(
+                                text = title,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            if (subtitle != null) {
+                                Text(
+                                    text = subtitle,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
                     }
                     Spacer(modifier = Modifier.height(2.dp))
                     if (metaParts.isNotEmpty()) {

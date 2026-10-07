@@ -234,6 +234,8 @@ fun FileListItem(
     /** 全盘搜索结果所在的目录路径。仅搜索结果需要，平时为 null。 */
     locationLabel: String? = null,
     title: String? = null,
+    /** 真实名称，[title] 与它不同时写在标题下面一行，见 DriveItemName。 */
+    original: String? = null,
     tags: List<String> = emptyList(),
     /** 番号芯片，排在标签行最前。 */
     code: String? = null,
@@ -252,6 +254,15 @@ fun FileListItem(
         badge = itemMarks(file, folderHasVault),
         supporting = {
             Column {
+                if (original != null) {
+                    Text(
+                        text = original,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.MiddleEllipsis,
+                    )
+                }
                 if (tags.isNotEmpty() || code != null) MediaTagRow(tags = tags, lead = code, modifier = Modifier.padding(vertical = 2.dp))
                 if (tags.isEmpty() || !file.isFolder) MetaRow(parts = file.metaParts())
                 if (!locationLabel.isNullOrEmpty()) {

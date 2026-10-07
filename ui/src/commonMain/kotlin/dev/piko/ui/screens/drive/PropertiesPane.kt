@@ -1,6 +1,8 @@
 package dev.piko.ui.screens.drive
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import dev.piko.shared.state.DriveItemName
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -54,7 +56,9 @@ import kotlinx.coroutines.CancellationException
  * 属性看的是哪几项：一项、几项，或者没指着条目时的当前目录。在打开的那一刻取定，之后选中怎么变都不跟，照资源管理器。
  */
 internal sealed interface PropertiesTarget {
-    class Single(val file: FileStat, val tags: List<String>, val location: String?, val isBlurred: Boolean) : PropertiesTarget
+    class Single(val name: DriveItemName, val tags: List<String>, val location: String?, val isBlurred: Boolean) : PropertiesTarget {
+        val file: FileStat get() = name.file
+    }
 
     class Selection(val files: List<FileStat>, val location: String?) : PropertiesTarget
 
@@ -102,12 +106,12 @@ private fun SingleDetails(target: PropertiesTarget.Single) {
             SpoilerThumbnail(model = file.thumbnailLink, isBlurred = target.isBlurred, blur = PosterSpoilerBlur, modifier = Modifier.fillMaxSize())
         }
         Spacer(Modifier.height(16.dp))
-        FullName(file)
+        FullName(target.name)
     } else {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
             FileTypeIcon(file = file, iconSize = 32.dp, modifier = Modifier.size(40.dp))
             Spacer(Modifier.width(12.dp))
-            FullName(file)
+            FullName(target.name)
         }
     }
     if (target.tags.isNotEmpty()) {
@@ -155,11 +159,16 @@ private fun SummaryDetails(title: String, files: List<FileStat>, location: Strin
     )
 }
 
-// 全名可以选中复制：列表里显示的是解析后的短标题。长名字换行，不截断
+// 与卡片上同一个名字，真实名称在它下面；都可以选中复制，长名字换行，不截断
 @Composable
-private fun FullName(file: FileStat) {
+private fun FullName(name: DriveItemName) {
     SelectionContainer {
-        Text(file.name, style = MaterialTheme.typography.titleMedium)
+        Column {
+            Text(name.headingText, style = MaterialTheme.typography.titleMedium)
+            name.headingOriginal?.let { original ->
+                Text(original, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
     }
 }
 
