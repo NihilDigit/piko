@@ -162,6 +162,10 @@ internal fun BatchRenameOptions(
         }
 
         Column {
+            // 开着时常驻，正则文本模式下也能从这里关掉
+            if (state.avNaming) {
+                CheckboxRow("按番号规范命名", checked = true, enabled) { if (!it) state.stopAvNaming() }
+            }
             Row {
                 CheckboxRow("区分大小写", options.caseSensitive, enabled, Modifier.weight(1f)) { update { copy(caseSensitive = it) } }
                 CheckboxRow("全部替换", options.matchAll, enabled, Modifier.weight(1f)) { update { copy(matchAll = it) } }
@@ -266,6 +270,10 @@ private fun PresetRow(state: BatchRenameState, enabled: Boolean, replaceFocus: F
         itemVerticalAlignment = Alignment.CenterVertically,
     ) {
         Text("常用", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        // 所选里有番号才给：多数人的网盘里没有番号，常驻一块只是噪声
+        if (state.avNamingAvailable) {
+            AssistChip(onClick = state::startAvNaming, enabled = enabled, label = { Text("按番号规范命名") })
+        }
         for (preset in RenamePresets) {
             AssistChip(
                 onClick = {

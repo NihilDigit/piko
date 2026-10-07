@@ -58,14 +58,18 @@ class BatchRenamePipelineResult(val names: List<String>, val affixes: CommonAffi
  * 不会去掉一段各名里已不再共有的文字。
  *
  * [findReplace] 为 null 表示正则写错了，此时名称原样进入第二步。
+ *
+ * [base] 是整套改写名称的规则（按番号规范命名），排在最前：查找替换接着在它给出的名称上微调。
  */
 fun runBatchRenamePipeline(
     items: List<RenameSource>,
     findReplace: RenameRule?,
     stripPrefix: Boolean,
     stripSuffix: Boolean,
+    base: RenameRule? = null,
 ): BatchRenamePipelineResult {
-    val replaced = findReplace?.apply(items, items.map { it.name }) ?: items.map { it.name }
+    val start = base?.apply(items, items.map { it.name }) ?: items.map { it.name }
+    val replaced = findReplace?.apply(items, start) ?: start
     val affixes = commonAffixes(items.zip(replaced) { item, name -> item.copy(name = name) })
     val strip = AffixStripRule(if (stripPrefix) affixes.prefix else "", if (stripSuffix) affixes.suffix else "")
     return BatchRenamePipelineResult(strip.apply(items, replaced), affixes)

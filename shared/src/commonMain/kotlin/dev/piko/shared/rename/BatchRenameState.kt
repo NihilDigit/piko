@@ -11,6 +11,7 @@ import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.log.logFile
+import dev.piko.shared.naming.av.hasAvCode
 import io.github.nihildigit.pikpak.FileStat
 import kotlin.random.Random
 import kotlin.time.TimeSource
@@ -37,12 +38,47 @@ class BatchRenameState(
     files: List<FileStat>,
     private val memory: BatchRenameMemory,
     initialTextMode: Boolean = false,
+    initialAvNaming: Boolean = false,
 ) {
     enum class Phase { EDITING, RUNNING, DONE }
 
     val sources: List<RenameSource> = files.map {
         RenameSource(it.id, it.parentId, it.name, it.isFolder, it.createdTime, it.modifiedTime)
     }
+
+    // region 按番号规范命名
+
+    /** 所选里有带番号的文件，才给「按番号规范命名」的入口。 */
+    val avNamingAvailable: Boolean = sources.any { !it.isFolder && hasAvCode(it.name) }
+
+    /**
+     * 按番号规范命名（[CanonicalAvRule]）是否开着。它排在查找替换之前，开着时查找替换在规范名上接着改。
+     * 不记进偏好：下次打开时预览里不该已有改动。
+     */
+    var avNaming by mutableStateOf(false)
+        private set
+
+    /**
+     * 换上「按番号规范命名」：积木与输入框清空，免得原先的查找替换接在规范名后面改出意外的结果。
+     * 文件夹默认不勾：文件夹名常是用户自己的归类，规范名只在明确要改时才用。
+     */
+    fun startAvNaming() {
+        pendingFindText = ""
+        pendingReplaceText = ""
+        findInsertAt = null
+        replaceInsertAt = null
+        updateFindBlocks(emptyList())
+        updateReplaceBlocks(emptyList())
+        if (textMode) options = options.copy(search = "", replacement = "")
+        excludedIds = excludedIds + sources.filter { it.isFolder }.map { it.id }
+        avNaming = true
+    }
+
+    fun stopAvNaming() {
+        avNaming = false
+    }
+
+    // endregion
 
     // 默认关、也不从上次恢复：打开时预览里不该已有改动
     var stripPrefix by mutableStateOf(false)
@@ -109,9 +145,11 @@ class BatchRenameState(
 
     /**
      * 换上起手式：查找与替换整组换掉，输入框里没收的文字一并清掉，否则它会接进起手式的积木里。
+     * 按番号规范命名随之关掉，两者是两种起点。
      * 替换的插入点放到最前：添加前缀时替换条是空的，最前即末尾；改为序号时接着打的字落在序号前面。
      */
     fun applyPreset(preset: RenamePreset) {
+        avNaming = false
         pendingFindText = ""
         pendingReplaceText = ""
         findInsertAt = null
@@ -273,7 +311,8 @@ class BatchRenameState(
         } catch (error: InvalidPatternException) {
             null to error.message.orEmpty()
         }
-        val result = runBatchRenamePipeline(included, findReplace, stripPrefix, stripSuffix)
+        val base = if (avNaming) CanonicalAvRule() else null
+        val result = runBatchRenamePipeline(included, findReplace, stripPrefix, stripSuffix, base)
         val newNameById = included.map { it.id }.zip(result.names).toMap()
         val newNames = sources.map { newNameById[it.id] ?: it.name }
         Preview(planRenames(sources, newNames, siblingNames.orEmpty()), result.affixes, error)
@@ -317,6 +356,7 @@ class BatchRenameState(
 
     init {
         loadSiblings()
+        if (initialAvNaming && avNamingAvailable) startAvNaming()
     }
 
     fun loadSiblings() {
@@ -356,7 +396,7 @@ class BatchRenameState(
         phase = Phase.RUNNING
         val started = TimeSource.Monotonic.markNow()
         PikoLog.i(TAG, "开始批量重命名：${plan.changeCount} 项，${plan.steps.size} 步（含经临时名称的 ${plan.steps.size - plan.changeCount} 步），" +
-            "${sources.map { it.parentId }.distinct().size} 个目录，${if (textMode) "正则文本" else "积木"}模式")
+            "${sources.map { it.parentId }.distinct().size} 个目录，${if (textMode) "正则文本" else "积木"}模式${if (avNaming) "，按番号规范命名" else ""}")
         job = scope.launch {
             try {
                 val failedIds = mutableSetOf<String>()

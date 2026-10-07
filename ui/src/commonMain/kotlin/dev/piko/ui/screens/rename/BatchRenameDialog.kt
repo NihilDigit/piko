@@ -94,6 +94,8 @@ fun BatchRenameDialog(
     files: List<FileStat>,
     onDismiss: () -> Unit,
     onFinished: (message: String) -> Unit,
+    /** 打开时即换上「按番号规范命名」，命令面板的同名命令经这里进来。 */
+    startWithAvNaming: Boolean = false,
 ) {
     val services = LocalPikoServices.current
     // 上次的选项读出来之前不画：先画默认值再跳成上次的，选项会闪一下
@@ -102,7 +104,7 @@ fun BatchRenameDialog(
     }
     val (memory, textMode) = remembered ?: return
     val scope = rememberCoroutineScope()
-    val state = remember(files) { BatchRenameState(services.driveRepository, services.preferences, scope, files, memory, textMode) }
+    val state = remember(files) { BatchRenameState(services.driveRepository, services.preferences, scope, files, memory, textMode, startWithAvNaming) }
     val latestOnFinished by rememberUpdatedState(onFinished)
     val latestOnDismiss by rememberUpdatedState(onDismiss)
     // 结果与关闭放在同一个协程里依次做：分成两个 effect 的话，对话框可能先关掉，结果就收不到了

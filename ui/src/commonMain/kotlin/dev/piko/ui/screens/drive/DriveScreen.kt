@@ -156,6 +156,7 @@ import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.InstantSaveOutcome
 import dev.piko.shared.upload.UploadSelection
 import dev.piko.shared.upload.isUploading
+import dev.piko.shared.naming.av.hasAvCode
 import dev.piko.shared.download.DriveDownloadFolderSource
 import dev.piko.ui.adaptive.isDesktopLayout
 import dev.piko.ui.components.PikoSheet
@@ -1340,6 +1341,22 @@ fun DriveScreen(
         )
     }
 
+    // 按番号规范命名：打开批量重命名并换上这条规则。没选中时作用于当前目录的全部文件。
+    // 右键菜单与操作面板里的入口待它们改完再补
+    var avNamingTargets by remember { mutableStateOf<List<FileStat>>(emptyList()) }
+    if (avNamingTargets.isNotEmpty()) {
+        BatchRenameDialog(
+            files = avNamingTargets,
+            onDismiss = { avNamingTargets = emptyList() },
+            onFinished = { message ->
+                if (state.isSelectionMode) state.exitSelection()
+                scope.launch { snackbarHostState.showSnackbar(message, withDismissAction = true) }
+            },
+            startWithAvNaming = true,
+        )
+    }
+    val avNamingCandidates = commandTargets.ifEmpty { displayedFiles }.filter { !it.isUploading }
+
     // 网盘页在眼前时，命令面板里多出这一页的命令
     ContributePaletteItems("drive") {
         val label = platform.shortcutModifier::label
@@ -1382,6 +1399,9 @@ fun DriveScreen(
             }
             if (!state.isVirtualPlace) {
                 add(PaletteItem("在当前文件夹查找重复", Icons.Outlined.FileCopy, "网盘", keywords = "duplicate dedupe") { findDuplicates(activeFolder) })
+            }
+            if (commands.rename && avNamingCandidates.any { !it.isFolder && hasAvCode(it.name) }) {
+                add(PaletteItem("按番号规范命名", Icons.Outlined.Edit, "网盘", keywords = "rename av code 番号 重命名") { avNamingTargets = avNamingCandidates })
             }
         }
     }
