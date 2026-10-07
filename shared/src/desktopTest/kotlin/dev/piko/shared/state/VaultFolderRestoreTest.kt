@@ -57,6 +57,10 @@ class VaultFolderRestoreTest {
         assertTrue(!metadata.isArchived)
         val restoredId = assertNotNull(metadata.restoredFileId)
         assertNull(server.client().getFile(restoredId).sourceUrl, "秒传文件本身没有来源")
+        // 复制到别处后清单里的取回记录对不上了，来源账本按内容仍补得上
+        val elsewhere = server.addFolder("Elsewhere")
+        server.addFile("复制的一集.mkv", elsewhere.id, content = ByteArray(100), hash = "GCID")
+        assertEquals(source, repo.listBrowsable(elsewhere.id, PikoFileSortOrder.NAME_ASC).getOrThrow().single().sourceUrl)
         val restarted = repository(server, prefs)
         val real = restarted.listBrowsable(folder.id, PikoFileSortOrder.NAME_ASC).getOrThrow().single { it.id == restoredId }
         assertEquals(source, real.sourceUrl)

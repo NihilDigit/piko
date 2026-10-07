@@ -3,6 +3,7 @@ package dev.piko.ui
 import dev.piko.shared.sync.ArchivePasswordSync
 import dev.piko.shared.sync.PikoSettingsSync
 import dev.piko.shared.sync.SyncCipher
+import dev.piko.shared.sync.SourceLedgerSync
 import dev.piko.shared.sync.VaultTreeSync
 import dev.piko.ui.components.SegmentSession
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -97,6 +98,8 @@ class PikoServices(
     val settingsSync = PikoSettingsSync(clientManager, driveRepository, preferences, cacheStore, backgroundScope, preferences.settingsSyncFlow)
         .also { it.start() }
     private val vaultTreeSync = VaultTreeSync(clientManager, driveRepository, backgroundScope, preferences.settingsSyncFlow)
+        .also { it.start() }
+    private val sourceLedgerSync = SourceLedgerSync(clientManager, driveRepository, backgroundScope, preferences.settingsSyncFlow)
         .also { it.start() }
     private val archivePasswordSync = syncCipher?.let {
         ArchivePasswordSync(clientManager, driveRepository, preferences, it, backgroundScope, preferences.settingsSyncFlow).also { sync -> sync.start() }

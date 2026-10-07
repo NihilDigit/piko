@@ -555,7 +555,7 @@ private class DriveFolderVaultOperations(private val drive: PikoDriveRepository)
     override suspend fun untrash(ids: List<String>) = drive.restore(ids).getOrThrow()
     override suspend fun rename(id: String, name: String) = drive.rename(id, name).getOrThrow()
     override suspend fun recreate(entry: VaultEntry, folderId: String) =
-        drive.instantCreate(ResolvedFile(path = entry.name, size = entry.size, gcid = entry.gcid), folderId).getOrThrow()
+        drive.instantCreate(ResolvedFile(path = entry.name, size = entry.size, gcid = entry.gcid), folderId, entry.source).getOrThrow()
     override suspend fun markRestored(folderId: String, files: Map<String, FileStat>) =
         drive.vault.update(folderId, VaultEdits.restore(files)).getOrThrow()
 }

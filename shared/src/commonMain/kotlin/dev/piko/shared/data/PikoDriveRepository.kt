@@ -670,7 +670,8 @@ open class PikoDriveRepository(
     private suspend fun fetchListing(parentId: String): List<FileStat> {
         val request = backgroundScope.async(start = CoroutineStart.LAZY) {
             val serial = changeMarks.value.serial
-            val files = client.listFiles(parentId)
+            // 补来源放在这里：列表缓存、目录图、地址栏与网盘页读的都是这一份
+            val files = sourceLedger.enrich(client.listFiles(parentId))
             if (unchangedSince(parentId, serial)) listingFetched(parentId, files)
             files
         }
@@ -744,6 +745,9 @@ open class PikoDriveRepository(
     /** 整棵归档过的文件夹，见 [VaultTrees]。跨设备的同步在 VaultTreeSync。 */
     val vaultTrees = VaultTrees(cacheStore, backgroundScope)
 
+    /** 秒传文件的来源，列出的文件经它补上 sourceUrl，见 [SourceLedger]。跨设备的同步在 SourceLedgerSync。 */
+    val sourceLedger = SourceLedger(cacheStore, backgroundScope)
+
     init {
         // 记下的目录内容按账号存：换号时换一份，退出登录只清内存
         backgroundScope.launch {
@@ -751,6 +755,16 @@ open class PikoDriveRepository(
                 childContents.switchAccount(it?.account)
                 recentFolders.switchAccount(it?.account)
                 vaultTrees.switchAccount(it?.account)
+                sourceLedger.switchAccount(it?.account)
+            }
+        }
+        // 账本从磁盘载入或从别的设备合并进来时，已缓存的列表是按旧账本补的，含有这些内容的那几层重列一次
+        backgroundScope.launch {
+            sourceLedger.arrivals.collect { keys ->
+                val folders = listings.value.filterValues { listing ->
+                    listing.files.any { !it.isFolder && it.sourceUrl.isNullOrBlank() && SourceLedger.keyOf(it.hash, it.sizeBytes) in keys }
+                }.keys
+                if (folders.isNotEmpty()) applyChange(DriveChange.ContentsChanged(folders))
             }
         }
         // 额度与账号类型属于账号：换号时先清掉，否则新账号在取到之前沿用上一个账号的，
@@ -1064,9 +1078,13 @@ open class PikoDriveRepository(
         runSuspendCatching { client.sampleCid(client.getFile(fileId)) }
     }
 
-    /** 按 gcid 秒传出一个文件，恢复归档条目用。 */
-    suspend fun instantCreate(file: ResolvedFile, parentId: String): Result<String> = withContext(Dispatchers.Default) {
+    /**
+     * 按 gcid 秒传出一个文件，恢复归档条目用。[source] 是条目记着的来源，记进来源账本：取回的文件被复制、
+     * 移出原文件夹后，清单里的取回记录就对不上了，账本按内容记，仍补得上。
+     */
+    suspend fun instantCreate(file: ResolvedFile, parentId: String, source: String? = null): Result<String> = withContext(Dispatchers.Default) {
         runSuspendCatching { client.instantCreate(file, parentId) }.onSuccess { id ->
+            source?.let { sourceLedger.record(it, listOf(file)) }
             applyChange(DriveChange.Created(parentId, id, file.path.substringAfterLast('/'), isFolder = false))
         }
     }
@@ -1140,7 +1158,7 @@ open class PikoDriveRepository(
     }
 
     suspend fun search(query: String): Result<List<FileStat>> = withContext(Dispatchers.Default) {
-        runSuspendCatching { client.searchFiles(query) }
+        runSuspendCatching { sourceLedger.enrich(client.searchFiles(query)) }
     }
 
     /**
@@ -1152,7 +1170,7 @@ open class PikoDriveRepository(
         client.searchFilesRecursive(query, parentId).filter { hit ->
             !isPikoInternalFolder(hit.file) && !VaultStore.looksLikeManifest(hit.file) &&
                 !(parentId.isEmpty() && hit.breadcrumb.firstOrNull()?.let(::isPikoInternalFolderName) == true)
-        }
+        }.map { hit -> hit.copy(file = sourceLedger.enrich(hit.file)) }
 
     suspend fun trashFiles(): Result<List<FileStat>> = withContext(Dispatchers.Default) {
         runSuspendCatching { client.listTrash() }
@@ -1225,7 +1243,7 @@ open class PikoDriveRepository(
 
     /** 全盘的星标文件与文件夹。服务端按 parent_id=* 一次返回全部，不分页。 */
     suspend fun starredFiles(): Result<List<FileStat>> = withContext(Dispatchers.Default) {
-        runSuspendCatching { client.listStarred() }
+        runSuspendCatching { sourceLedger.enrich(client.listStarred()) }
     }
 
     suspend fun setStarred(ids: List<String>, starred: Boolean): Result<Unit> = withContext(Dispatchers.Default) {
@@ -1237,7 +1255,7 @@ open class PikoDriveRepository(
 
     /** 播放历史的一页，按最近播放倒序，与官方客户端共用同一份。 */
     suspend fun playHistory(pageToken: String = ""): Result<EventPage> = withContext(Dispatchers.Default) {
-        runSuspendCatching { client.listPlayHistory(pageToken = pageToken) }
+        runSuspendCatching { client.listPlayHistory(pageToken = pageToken).withSources() }
     }
 
     /**
@@ -1246,8 +1264,10 @@ open class PikoDriveRepository(
      * 但那是服务端眼下的默认，以后多一种事件就会混进来。
      */
     suspend fun recentlyAdded(pageToken: String = ""): Result<EventPage> = withContext(Dispatchers.Default) {
-        runSuspendCatching { client.listEvents(listOf(EventType.UPLOAD, EventType.RESTORE), pageToken = pageToken) }
+        runSuspendCatching { client.listEvents(listOf(EventType.UPLOAD, EventType.RESTORE), pageToken = pageToken).withSources() }
     }
+
+    private fun EventPage.withSources() = copy(events = events.map { event -> event.copy(file = event.file?.let(sourceLedger::enrich)) })
 
     /** 删掉几条事件记录（播放历史或最近添加里的一行），文件本身不动。 */
     suspend fun deleteEvents(eventIds: List<String>): Result<Unit> = withContext(Dispatchers.Default) {

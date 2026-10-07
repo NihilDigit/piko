@@ -249,7 +249,7 @@ interface RemoteSettingsStore {
 
 /**
  * 网盘里的同步文件：`.piko/<filePrefix><毫秒时间戳>.json`。设置是 `settings-`，整棵归档过的文件夹是 `vault-trees-`
- * （见 VaultTreeSync），各管各的一份。PikPak 上传同名文件不覆盖，另起一个带序号的，
+ * （见 VaultTreeSync），秒传文件的来源账本是 `sources-`（见 SourceLedgerSync），各管各的一份。PikPak 上传同名文件不覆盖，另起一个带序号的，
  * 所以每次写一个新文件、再删掉旧的；读的时候取时间戳最大的一个。删旧文件失败也无妨，下次读的仍是最新的那个。
  */
 class DriveSettingsStore(

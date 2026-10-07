@@ -204,6 +204,16 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 与设置文件分开，合并取并集）。同目录另存完整来源：磁力为 `归档来源-<标识>.magnet`，分享链接为 `.txt`，其他客户端可直接读取；这些文件不参与归档。代码里叫 vault，与压缩包（ArchiveRepository、服务端解压）区分；界面上叫「归档」。
 并发与写入的实测数据在 `docs/development/archive.md`。
 
+来源账本（`SourceLedger`）：服务端只给离线下载与分享转存的文件填 `params.url`，Piko 按 gcid 秒传的文件为空、也写不进，
+由 Piko 记下。键是 gcid（大写）加大小，不用文件 ID：复制换 ID，内容不变。值是来源（完整磁力，原样）、种子内路径与记下的时刻。
+写入点是磁力秒传保存（`InstantSheetState.rawInstantSave`，批量逐行同经此处）与归档取回、撤销归档时的秒传
+（`PikoDriveRepository.instantCreate` 带上条目的来源）；分享转存服务端已填 url，不记。补全只在仓库：列目录（`fetchListing`，
+列表缓存、目录图、网盘页同读这一份）、全盘搜索、星标与事件库出来的文件，`sourceUrl` 为空而账本里有的，以 `params + ("url" to 来源)`
+并进，与 `VaultEntry.enrich` 同一形式，下游照常读 `sourceUrl`，不分辨文件怎么来的。账本载入或合并进新内容时，已缓存的相关几层重列。
+本机按账号存缓存目录，跨设备存网盘 `.piko/sources-<时间戳>.json`（`SourceLedgerSync`，跟着设置同步的开关），来源单列一张表、文件按下标引用。
+合并取并集，同键取记下得晚的，时刻相同按来源、路径的字典序取大者，只留一条。不加密：归档本就把来源明文存在网盘里；
+提取码不进账本。官方客户端秒传的、账本之前秒传的文件不回填。
+
 免费账号与会员的取舍：目标排序是 Piko+会员 > 官方+会员 > Piko+免费 > 官方+免费。免费账号的归档、播放、信息流不设上限，
 画质与速度不由 Piko 限制（服务端的限额照旧生效），只在结构上低于会员：不做激进优化（不悬停预借、不额外并行预取）。
 已否决：按日限额、限画质、Piko 侧限速、刻意降级、伪装流量。账号等级自动识别（`TransferAllowances.isPremium`），不给开关。
@@ -229,7 +239,7 @@ jvmTest（`PIKPAK_PROBE=1`，凭据在它的 `.env`），总量不超过 100 GB�
   补充平面字符 256 个，再多一个字符回 `file_name_too_long`（error_code=3，HTTP 400）。批量重命名据此当场标出。
 - **文件的 `params` 客户端写不进**（2026-10-08 实测，SDK 的 `SourceParamsProbeTest`）：秒传建文件时请求体带 `params` 被静默丢弃；
   事后 `PATCH /drive/v1/files/{id}` 只要 `params` 非空一律 400 `invalid_argument`（`url`、自定义键、原样回传都一样），`{}` 回
-  `file_nothing_updated`。`params.url`（来源）只有离线下载与分享转存由服务端填；秒传的来源只能 Piko 自己记。
+  `file_nothing_updated`。`params.url`（来源）只有离线下载与分享转存由服务端填；秒传的来源只能 Piko 自己记（见「归档」一节的来源账本）。
   复制出的新文件 params 由服务端重建（多 `original_file_id`），按 ID 记的东西复制后对不上，要按 gcid 记。
 - **上传中的文件**（`phase` 为 PENDING）在开始上传时就出现在目录里，交给解压服务回 `file not complete`。
   上传会话的凭据 12 小时过期；刚传完的内容立刻进 CID 索引，再传同一文件即秒传。

@@ -930,6 +930,8 @@ class InstantSheetState private constructor(
             .onSuccess {
                 // 移出 Piko-Temp 的不能再当作预览副本：下次预览会指向保存目录里的这份
                 toSave.forEach { item -> item.file.gcid?.let(previewedIds::remove) }
+                // 服务端不给秒传的文件填来源，由 Piko 记下。只改内存，存盘与上传网盘随后在后台做，失败不连累这次保存
+                resolvedKey?.let { magnet -> driveRepo.sourceLedger.record(magnet, toSave.map { it.file }) }
             }
 
     /**

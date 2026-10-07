@@ -144,7 +144,7 @@ class DriveChangeJournal internal constructor(
                             continue
                         }
                         val file = ResolvedFile(path = entry.name, size = entry.size, gcid = entry.gcid)
-                        driveRepo.instantCreate(file, folderId).onSuccess { id ->
+                        driveRepo.instantCreate(file, folderId, entry.source).onSuccess { id ->
                             restored[entry.id] = entry.toFileStat(folderId).copy(id = id)
                         }.onFailure { missing++ }
                     }
