@@ -131,7 +131,9 @@ class PikoServices(
                     instantSaveRecords,
                     scope,
                     magnet,
-                    instantTitleFill,
+                    // 添加链接面板里的 MetaTube 暂停用：面板查片名与保存后补名实测都不生效，片名改由批量重命名取
+                    // （见 docs/development/av-naming.md）。恢复时把下一行放回来，面板与先存后补随之接上
+                    // instantTitleFill,
                 )
             },
         )
