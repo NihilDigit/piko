@@ -116,8 +116,8 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val REDUCE_MOTION = booleanPreferencesKey("reduce_motion")
         val HARDWARE_DECODING = booleanPreferencesKey("hardware_decoding")
         val PLAYBACK_MAX_HEIGHT = intPreferencesKey("playback_max_height")
-        val DOWNLOAD_MAX_HEIGHT = intPreferencesKey("download_max_height")
-        val DOWNLOAD_QUALITY_PROMPT = booleanPreferencesKey("download_quality_prompt")
+        // 不沿用开发期的 download_max_height：那时它只是对话框的默认选中，存过的值换到新语义就成了「不再询问」
+        val DOWNLOAD_MAX_HEIGHT = intPreferencesKey("download_default_max_height")
         val PLAYER_SEEK_STEP_SECONDS = intPreferencesKey("player_seek_step_seconds")
         val PLAYER_BOOST_SPEED = floatPreferencesKey("player_boost_speed")
         val FOLDER_MAP_OPEN = booleanPreferencesKey("folder_map_open")
@@ -234,19 +234,11 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
-    override val downloadMaxHeightFlow: Flow<Int> = preference { it[PreferencesKeys.DOWNLOAD_MAX_HEIGHT] ?: 0 }
+    override val downloadMaxHeightFlow: Flow<Int?> = preference { it[PreferencesKeys.DOWNLOAD_MAX_HEIGHT] }
 
-    override suspend fun setDownloadMaxHeight(height: Int) {
+    override suspend fun setDownloadMaxHeight(height: Int?) {
         context.dataStore.edit { preferences ->
-            preferences[PreferencesKeys.DOWNLOAD_MAX_HEIGHT] = height
-        }
-    }
-
-    override val downloadQualityPromptFlow: Flow<Boolean> = preference { it[PreferencesKeys.DOWNLOAD_QUALITY_PROMPT] ?: true }
-
-    override suspend fun setDownloadQualityPrompt(enabled: Boolean) {
-        context.dataStore.edit { preferences ->
-            preferences[PreferencesKeys.DOWNLOAD_QUALITY_PROMPT] = enabled
+            if (height == null) preferences.remove(PreferencesKeys.DOWNLOAD_MAX_HEIGHT) else preferences[PreferencesKeys.DOWNLOAD_MAX_HEIGHT] = height
         }
     }
 

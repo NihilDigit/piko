@@ -165,7 +165,7 @@ fun SegmentDownloadSheet(
             PikoLog.w("Download", "片段面板查询画质失败：${logFile(file.id, file.name)}", e)
         }
     }
-    val defaultCap by produceState(0) { value = services.preferences.downloadMaxHeightFlow.first() }
+    val defaultCap by produceState(0) { value = services.preferences.downloadMaxHeightFlow.first() ?: 0 }
     val qualities = session.qualities
     val pickedOption = qualities?.let { all -> session.pickedQuality?.let { picked -> all.firstOrNull { (it.name ?: ORIGINAL_QUALITY) == picked } } }
     // 点过的档随后探出读不出：不替用户换一档，清掉选中、停用下载按钮，并说明原因

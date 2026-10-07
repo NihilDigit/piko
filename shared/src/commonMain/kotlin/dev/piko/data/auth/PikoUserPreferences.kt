@@ -213,19 +213,13 @@ interface PikoUserPreferences {
     suspend fun setPlaybackMaxHeight(height: Int)
 
     /**
-     * 下载画质上限：画面高度，0 是原画（默认）。点「下载」时对话框默认选中它；不询问（[downloadQualityPromptFlow]）时
-     * 直接按它挑，规则见 dev.piko.shared.media.downloadQualityOrder，转码档转封装成 MP4 存下。
+     * 默认下载画质：画面高度的上限，0 是原画；null 是未设置（默认），下载视频时每次弹画质框。设了就不再问，
+     * 按它直接挑，规则见 dev.piko.shared.media.downloadQualityOrder，转码档转封装成 MP4 存下。
+     * 「问不问」与「按哪一档」合成这一项：原先分成两项，可能出现关了询问、画质却是没人选过的原画。
      * 每台设备各自的，不同步，理由同 [playbackMaxHeightFlow]。
      */
-    val downloadMaxHeightFlow: Flow<Int>
-    suspend fun setDownloadMaxHeight(height: Int)
-
-    /**
-     * 点「下载」时若有视频或文件夹，先问画质，默认开。对话框里勾「以后按此画质直接下载」即关掉，同时把所选存为
-     * [downloadMaxHeightFlow]。每台设备各自的，不同步：它与画质上限是一对，上限不同步。
-     */
-    val downloadQualityPromptFlow: Flow<Boolean>
-    suspend fun setDownloadQualityPrompt(enabled: Boolean)
+    val downloadMaxHeightFlow: Flow<Int?>
+    suspend fun setDownloadMaxHeight(height: Int?)
 
     /** 播放器双击、方向键进退一步的秒数，默认 10。在播放设置里改，跟着设置同步：这是看片的习惯，不看设备。 */
     val playerSeekStepSecondsFlow: Flow<Int>

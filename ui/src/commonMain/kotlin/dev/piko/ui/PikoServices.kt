@@ -42,10 +42,13 @@ import dev.piko.shared.scrape.MetaTubeService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -176,6 +179,15 @@ class PikoServices(
 
     fun consumeOpenTransfersRequest() {
         _openTransfersRequested.value = false
+    }
+
+    // 切到传输页时一并给的提示（如刚存下默认下载画质）。发出时传输页还没组合出来，SharedFlow 没有订阅者会丢掉，
+    // 所以用 Channel 存着，等传输页取走
+    private val transfersNotices = Channel<String>(Channel.BUFFERED)
+    val transfersNotice: Flow<String> = transfersNotices.receiveAsFlow()
+
+    fun noticeOnTransfers(message: String) {
+        transfersNotices.trySend(message)
     }
 
     // 主线程且与进程同寿：打开完整播放器时随机片段页可能被销毁，队列要留着回来接着看

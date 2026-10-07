@@ -40,7 +40,7 @@ import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.CancellationException
 
 /**
- * 点「下载」时选画质，入口见 [DownloadLauncher]。默认选中设置里的下载画质会挑的那一档，直接点「下载」与不询问时结果相同。
+ * 点「下载」时选画质，入口见 [DownloadLauncher]。只在没设默认下载画质时弹，所以默认选中原画。
  * 单个视频列出原画与各档转码及其大小；几项一起（多选、文件夹）只列画质级别，每个视频各自按 downloadQualityOrder 挑，
  * 不逐个探测：文件夹里上千个视频，逐个查详情太慢。
  */
@@ -53,9 +53,9 @@ internal fun DownloadQualityDialog(
     var keep by remember(request) { mutableStateOf(false) }
     val video = request.video
     if (video != null) {
-        SingleVideoDialog(video, request.defaultCap, keep, { keep = it }, onConfirm, onDismiss)
+        SingleVideoDialog(video, keep, { keep = it }, onConfirm, onDismiss)
     } else {
-        var picked by remember(request) { mutableStateOf(request.defaultCap) }
+        var picked by remember(request) { mutableStateOf(ORIGINAL_MAX_HEIGHT) }
         QualityDialogFrame(
             confirmEnabled = true,
             onConfirm = { onConfirm(DownloadChoice.Cap(picked), keep) },
@@ -91,7 +91,6 @@ private class Picked(val name: String?)
 @Composable
 private fun SingleVideoDialog(
     file: FileStat,
-    defaultCap: Int,
     keep: Boolean,
     onKeepChange: (Boolean) -> Unit,
     onConfirm: (choice: DownloadChoice, keep: Boolean) -> Unit,
@@ -115,7 +114,7 @@ private fun SingleVideoDialog(
     val pickedOption = options?.let { all -> picked?.let { p -> all.firstOrNull { it.name == p.name } } }
     // 点过的档随后探出读不出：不替用户换一档，清掉选中、停用「下载」，并说明原因
     val pickedUnreadable = pickedOption?.unreadable == true
-    val selected = if (pickedUnreadable) null else pickedOption ?: options?.let { chooseDownloadQuality(it, defaultCap) ?: it.first() }
+    val selected = if (pickedUnreadable) null else pickedOption ?: options?.let { chooseDownloadQuality(it, ORIGINAL_MAX_HEIGHT) ?: it.first() }
 
     QualityDialogFrame(
         confirmEnabled = selected != null,
@@ -177,7 +176,7 @@ private fun QualityDialogFrame(
     )
 }
 
-/** 勾上即以后不再弹出，按这一档（换算成画质上限）直接下载；在设置的「下载」里改回。 */
+/** 勾上即把这一档（换算成画质上限）存为默认下载画质，以后不再弹出；在设置的「默认下载画质」里改回「每次询问」。 */
 @Composable
 private fun KeepChoiceRow(checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
     Row(
@@ -258,3 +257,5 @@ private fun QualityRow(label: String, detail: String?, selected: Boolean, enable
 }
 
 private const val TAG = "Download"
+
+private const val ORIGINAL_MAX_HEIGHT = 0

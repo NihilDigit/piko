@@ -13,10 +13,13 @@
 
 转码档（1080P、720P、480P）只有 MPEG-TS（HEVC 与 AAC），大小不在详情里，要探测（`PikoMediaRepository.downloadVariant`、
 `downloadQualities`，各发一次 1 字节的 Range 请求）。这一字节也要真读出来：有的档服务端回 206、Content-Range 写着全长，
-正文却是空的（2026-10-07 实测），读不出的档在对话框与片段面板里停用，按上限挑时跳过，用户选定的那一档读不出则以「该画质的转码文件无法读取」失败。
+正文却是空的（2026-10-07 实测），读不出的档在对话框与片段面板里停用，按上限挑时跳过，用户选定的那一档读不出则以
+`UnreadableTranscodeException`（「PikPak 的转码文件暂不可读」）失败，档已从详情里消失的以 `TRANSCODE_GONE_MESSAGE` 失败，都点明是服务端。
 探测按账号与文件留 10 分钟，对话框、片段面板与下载开始时共用；在菜单项上按下或悬停时就开始（`prefetchDownloadQualities`）。
-下载画质是每台设备各自的偏好 `downloadMaxHeightFlow`，不同步，选项与播放画质相同；点「下载」时是否先问画质是
-`downloadQualityPromptFlow`（默认问），问不问、怎么问在界面的 `DownloadLauncher`，见 `ui/.../screens/drive/CLAUDE.md`。
+默认下载画质是每台设备各自的偏好 `downloadMaxHeightFlow`（可空，null 是未设置、每次询问），不同步，档位与播放画质相同。
+问不问、怎么问在界面的 `DownloadLauncher`，见 `ui/.../screens/drive/CLAUDE.md`；调度这边没给上限时取它，未设置按原画。
+这一项与它取代的「下载画质」「下载前选择画质」都只在 1.1.0 之后的开发期存在过，没有迁移；存储键换了名字
+（`download_default_max_height`、`download.defaultMaxHeight`），开发期存下的旧值按旧语义只是默认选中，不沿用。
 
 按上限挑档的规则只有一处，纯函数 `media/DownloadQualityOrder.kt` 的 `downloadQualityOrder`（测试 `DownloadQualityOrderTest`），
 下载、片段、对话框的默认选中都用它：不高于上限的最高一档；一档都没有时取最低的一档，不退回原画（选低档是为了省流量与空间，

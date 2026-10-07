@@ -70,7 +70,7 @@ fun rememberPlayerFileActions(fileId: String, isLocalPlayback: Boolean, onMessag
         if (!isLocalPlayback) {
             add(
                 DriveActions.download(
-                    onClick = { withFile { file -> downloads.download(listOf(file)) { message("已加入下载") } } },
+                    onClick = { withFile { file -> downloads.download(listOf(file)) { notice -> message(notice ?: "已加入下载") } } },
                     onPrepare = { services.mediaRepository.prefetchDownloadQualities(fileId) },
                 ),
             )

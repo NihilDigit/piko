@@ -195,6 +195,9 @@ fun TransfersScreen(
             }
         }
     }
+    LaunchedEffect(services) {
+        services.transfersNotice.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
+    }
 
     // 只记本次查看：这一组是低价值的历史，默认收起
     var deletedExpanded by rememberSaveable { mutableStateOf(false) }

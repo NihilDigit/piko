@@ -272,7 +272,7 @@ class PikoDownloadCoordinator(
 
     /**
      * 多选文件一次入队，共用全局并发上限；重复文件复用已有任务。视频按画质上限 [maxHeight] 挑档（0 是原画，
-     * null 取设置里的下载画质），开始下载时才挑，见 [DownloadTask.qualityCap]。
+     * null 取设置里的默认下载画质，没设过取原画），开始下载时才挑，见 [DownloadTask.qualityCap]。
      */
     fun enqueueFiles(files: List<FileStat>, maxHeight: Int? = null) {
         enqueueFiles(files, leasedSource = false, maxHeight = maxHeight)
@@ -303,7 +303,7 @@ class PikoDownloadCoordinator(
         scope.launch(Dispatchers.IO) {
             enqueueLock.withLock {
                 val now = Clock.System.now().toEpochMilliseconds()
-                val cap = if (chosen == null && !leasedSource) maxHeight ?: preferences.downloadMaxHeightFlow.first() else 0
+                val cap = if (chosen == null && !leasedSource) maxHeight ?: defaultMaxHeight() else 0
                 val batch = if (accepted.size > 1) DownloadBatch("files@$now-${++batchSequence}", "批量下载", isFolder = false) else null
                 val taken = _tasks.value.values.mapTo(mutableSetOf()) { it.fileName.lowercase() }
                 val reused = accepted.count { existingTask(it, account, chosen) != null }
@@ -435,7 +435,7 @@ class PikoDownloadCoordinator(
             }
             // 已在本机的按长度认作完成，与单个文件的下载一样；上千个文件逐个查长度，放在 IO 线程上
             val lengths = storage.existingLengths(planned.map { it.path })
-            val cap = work.maxHeight ?: preferences.downloadMaxHeightFlow.first()
+            val cap = work.maxHeight ?: defaultMaxHeight()
             val tasks = withContext(Dispatchers.IO) { planned.map { plannedTask(it, listing, lengths[it.path] ?: 0L, cap) } }
             val needed = tasks.filter { it.status != DownloadStatus.COMPLETED }.sumOf { it.totalBytes - it.downloadedBytes }
             val remaining = runSuspendCatching { work.source.remainingDailyDownload() }.getOrNull()
@@ -587,6 +587,9 @@ class PikoDownloadCoordinator(
         if (_tasks.value[fileId]?.let { it.account.isNotEmpty() && it.account != account } == true) "$account:$fileId" else fileId
 
     private fun currentAccount(): String = clientProvider.currentClient.value?.account.orEmpty()
+
+    /** 没给上限时取设置里的默认下载画质；没设过默认的，经对话框来的都已带上上限，其余入口下原画。 */
+    private suspend fun defaultMaxHeight(): Int = preferences.downloadMaxHeightFlow.first() ?: 0
 
     private fun belongsToCurrent(task: DownloadTask): Boolean = task.account.isEmpty() || task.account == currentAccount()
 
@@ -780,7 +783,7 @@ class PikoDownloadCoordinator(
     ) {
         val account = currentAccount()
         scope.launch {
-            val cap = if (quality == null) preferences.downloadMaxHeightFlow.first() else 0
+            val cap = if (quality == null) defaultMaxHeight() else 0
             // 选定了转码档时名字里带上档位；按上限挑的开始时才知道，名字不改
             val label = quality?.name?.let { "_[$it]" }.orEmpty()
             val name = FileNameSanitizer.sanitize(

@@ -201,8 +201,7 @@ fun SettingsScreen(
     var showPlaybackQuality by remember { mutableStateOf(false) }
     val playbackMaxHeight by sessionManager.playbackMaxHeightFlow.collectAsStateWithLifecycle(initialValue = 0)
     var showDownloadQuality by remember { mutableStateOf(false) }
-    val downloadMaxHeight by sessionManager.downloadMaxHeightFlow.collectAsStateWithLifecycle(initialValue = 0)
-    val isDownloadQualityPrompt by sessionManager.downloadQualityPromptFlow.collectAsStateWithLifecycle(initialValue = true)
+    val downloadMaxHeight by sessionManager.downloadMaxHeightFlow.collectAsStateWithLifecycle(initialValue = null)
 
     val metaTube = services.metaTube
     val metaTubeUrl by sessionManager.metaTubeUrlFlow.collectAsStateWithLifecycle(initialValue = "")
@@ -479,24 +478,16 @@ fun SettingsScreen(
                                 trailingIcon = null,
                             )
                             SettingsNavigationRow(
-                                index = 1, count = 5,
+                                index = 1, count = 4,
                                 icon = Icons.Outlined.HighQuality,
-                                title = "下载画质",
-                                supporting = playbackQualitySummary(downloadMaxHeight),
+                                title = "默认下载画质",
+                                supporting = downloadQualitySummary(downloadMaxHeight),
                                 onClick = { showDownloadQuality = true },
                                 trailingIcon = null,
                             )
-                            SettingsSwitchRow(
-                                index = 2, count = 5,
-                                icon = Icons.Outlined.Tune,
-                                title = "下载前选择画质",
-                                supporting = if (isDownloadQualityPrompt) "下载视频或文件夹时询问" else "按下载画质直接下载",
-                                checked = isDownloadQualityPrompt,
-                                onCheckedChange = { scope.launch { sessionManager.setDownloadQualityPrompt(it) } },
-                            )
                             // 字幕靠解析配到视频上。解析在另一页，关掉解析时写明原因，而不是只把开关灰掉
                             SettingsSwitchRow(
-                                index = 3, count = 5,
+                                index = 2, count = 4,
                                 icon = Icons.Outlined.Subtitles,
                                 title = "保存配套字幕",
                                 supporting = if (isNameParsingEnabled) "保存视频时一并保存外挂字幕" else "需先在「网盘」里开启文件名解析",
@@ -505,7 +496,7 @@ fun SettingsScreen(
                                 enabled = isNameParsingEnabled,
                             )
                             SettingsSwitchRow(
-                                index = 4, count = 5,
+                                index = 3, count = 4,
                                 icon = Icons.Outlined.Speed,
                                 title = "并发加速",
                                 supporting = "多连接下载，提升速度",
@@ -632,7 +623,7 @@ fun SettingsScreen(
     if (showPlaybackQuality) {
         PlaybackQualityDialog(
             maxHeight = playbackMaxHeight,
-            onSelect = { scope.launch { sessionManager.setPlaybackMaxHeight(it) } },
+            onSelect = { height -> if (height != null) scope.launch { sessionManager.setPlaybackMaxHeight(height) } },
             onDismiss = { showPlaybackQuality = false },
         )
     }
@@ -642,8 +633,9 @@ fun SettingsScreen(
             maxHeight = downloadMaxHeight,
             onSelect = { scope.launch { sessionManager.setDownloadMaxHeight(it) } },
             onDismiss = { showDownloadQuality = false },
-            title = "下载画质",
-            description = "下载视频时默认选中这一档。每个视频取不高于所选的最高一档，都高于所选时取最低一档；转码档存为 MP4。",
+            title = "默认下载画质",
+            description = "设定后下载视频不再询问。每个视频取不高于所选的最高一档，都高于所选时取最低一档；转码档存为 MP4。",
+            unsetLabel = DOWNLOAD_QUALITY_UNSET,
         )
     }
 

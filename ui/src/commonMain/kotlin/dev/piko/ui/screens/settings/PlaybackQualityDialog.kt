@@ -31,15 +31,25 @@ internal fun playbackQualityLabel(maxHeight: Int): String = if (maxHeight <= 0) 
 internal fun playbackQualitySummary(maxHeight: Int): String =
     if (maxHeight <= 0) "原画" else "不高于 ${maxHeight}P"
 
-/** 画质上限的单选对话框，播放画质与下载画质共用，选项相同（[PlayerGestureDefaults.MaxHeightChoices]）。 */
+/** 默认下载画质未设置时的名字：下载视频时每次弹画质框。 */
+internal const val DOWNLOAD_QUALITY_UNSET = "每次询问"
+
+internal fun downloadQualitySummary(maxHeight: Int?): String = maxHeight?.let(::playbackQualitySummary) ?: DOWNLOAD_QUALITY_UNSET
+
+/**
+ * 画质上限的单选对话框，播放画质与默认下载画质共用，档位相同（[PlayerGestureDefaults.MaxHeightChoices]）。
+ * 给了 [unsetLabel] 时在各档之前多列一项「未设置」，选它回调 null。
+ */
 @Composable
 internal fun PlaybackQualityDialog(
-    maxHeight: Int,
-    onSelect: (Int) -> Unit,
+    maxHeight: Int?,
+    onSelect: (Int?) -> Unit,
     onDismiss: () -> Unit,
     title: String = "播放画质",
     description: String = "超过所选画质时改放较低的转码，没有合适的转码则放原画。播放时仍可临时切换。",
+    unsetLabel: String? = null,
 ) {
+    val choices: List<Int?> = (if (unsetLabel != null) listOf(null) else emptyList()) + PlayerGestureDefaults.MaxHeightChoices
     PikoDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Outlined.HighQuality, contentDescription = null) },
@@ -51,7 +61,7 @@ internal fun PlaybackQualityDialog(
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Column(modifier = Modifier.selectableGroup()) {
-                    PlayerGestureDefaults.MaxHeightChoices.forEach { choice ->
+                    choices.forEach { choice ->
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -65,7 +75,7 @@ internal fun PlaybackQualityDialog(
                         ) {
                             // 单选钮不单独接点击，免得点钮和点行各触发一次
                             RadioButton(selected = choice == maxHeight, onClick = null, modifier = Modifier.padding(horizontal = 12.dp))
-                            Text(playbackQualityLabel(choice), style = MaterialTheme.typography.bodyLarge)
+                            Text(choice?.let(::playbackQualityLabel) ?: unsetLabel.orEmpty(), style = MaterialTheme.typography.bodyLarge)
                         }
                     }
                 }

@@ -32,19 +32,44 @@ internal sealed interface DownloadChoice {
 internal class DownloadRequest(
     val files: List<FileStat>,
     val folderSource: DownloadFolderSource?,
-    val onQueued: () -> Unit,
-    /** 设置里的下载画质，对话框默认选中它会挑的那一档。 */
-    val defaultCap: Int,
+    val onQueued: (notice: String?) -> Unit,
 ) {
     /** 只有一个视频时逐档列出大小，否则只列级别。 */
     val video: FileStat? = files.singleOrNull()?.takeIf { !it.isFolder }
 }
 
+/** 点「下载」之后怎么走。 */
+internal sealed interface DownloadPlan {
+    data object Ask : DownloadPlan
+
+    /** 不问，按上限直接下，0 是原画。 */
+    data class Direct(val maxHeight: Int) : DownloadPlan
+}
+
+/**
+ * 设了默认下载画质（[defaultMaxHeight] 不为 null）就按它直接下，不再探文件夹里有没有视频；没设时有视频才问，
+ * 没有视频的直接下，上限用不上，记作原画。[holdsVideo] 可能要列目录，所以只在没设默认时才调。
+ */
+internal suspend fun planDownload(defaultMaxHeight: Int?, holdsVideo: suspend () -> Boolean): DownloadPlan = when {
+    defaultMaxHeight != null -> DownloadPlan.Direct(defaultMaxHeight)
+    holdsVideo() -> DownloadPlan.Ask
+    else -> DownloadPlan.Direct(0)
+}
+
+/** 对话框里勾了「以后按此画质直接下载」时存成默认下载画质的上限；没勾为 null，所选只管这一次。 */
+internal fun keptDefaultMaxHeight(choice: DownloadChoice, keep: Boolean): Int? = if (!keep) null else when (choice) {
+    is DownloadChoice.Exact -> downloadMaxHeightFor(choice.quality)
+    is DownloadChoice.Cap -> choice.maxHeight
+}
+
+/** 勾选存下默认画质后，入队时给用户的提示：此后不再弹框，要告诉他去哪里改回。 */
+internal const val DEFAULT_QUALITY_SAVED_NOTICE = "已设为默认下载画质，可在设置中更改"
+
 /**
  * 「下载」的唯一入口，网盘页（面板、右键菜单、命令栏、多选栏）与播放器都经它，画质问不问、怎么问只在这里定。
  *
- * 有视频、或文件夹里有视频时先弹 [DownloadQualityDialog]，默认选中设置里的下载画质，一次确认即下；
- * 只有别的文件时直接下载。对话框里勾「以后按此画质直接下载」后不再弹，按设置的上限直接下，设置的「下载」里改回。
+ * 规则见 [planDownload]：设置里的「默认下载画质」未设置时，有视频、或文件夹里有视频就先弹 [DownloadQualityDialog]，
+ * 一次确认即下；设了就按它直接下。对话框里勾「以后按此画质直接下载」即把所选存为默认，不勾只管这一次。
  * 归档条目与压缩包里的文件经借出的对象取流，只有原画，不弹。
  */
 @Stable
@@ -55,33 +80,32 @@ class DownloadLauncher internal constructor(
 ) {
     internal var request by mutableStateOf<DownloadRequest?>(null)
 
-    /** [folderSource] 为 null 时 [files] 里的文件夹不下。有东西入队后调 [onQueued]（切到传输页、提示一句）。 */
-    fun download(files: List<FileStat>, folderSource: DownloadFolderSource? = null, onQueued: () -> Unit = {}) {
+    /**
+     * [folderSource] 为 null 时 [files] 里的文件夹不下。有东西入队后调 [onQueued]（切到传输页、提示一句），
+     * notice 不为 null 时是要额外显示给用户的一句话，见 [DEFAULT_QUALITY_SAVED_NOTICE]。
+     */
+    fun download(files: List<FileStat>, folderSource: DownloadFolderSource? = null, onQueued: (notice: String?) -> Unit = {}) {
         if (files.isEmpty()) return
         scope.launch {
-            val pending = DownloadRequest(files, folderSource, onQueued, preferences.downloadMaxHeightFlow.first())
-            val ask = preferences.downloadQualityPromptFlow.first() &&
-                (files.any { !it.isFolder && it.hasDownloadQualities } || foldersHoldVideo(files.filter { it.isFolder }, folderSource))
-            if (ask) request = pending else enqueue(pending, DownloadChoice.Cap(pending.defaultCap))
+            val pending = DownloadRequest(files, folderSource, onQueued)
+            val plan = planDownload(preferences.downloadMaxHeightFlow.first()) {
+                files.any { !it.isFolder && it.hasDownloadQualities } || foldersHoldVideo(files.filter { it.isFolder }, folderSource)
+            }
+            when (plan) {
+                DownloadPlan.Ask -> request = pending
+                is DownloadPlan.Direct -> enqueue(pending, DownloadChoice.Cap(plan.maxHeight), notice = null)
+            }
         }
     }
 
     internal fun confirm(request: DownloadRequest, choice: DownloadChoice, keep: Boolean) {
         this.request = null
-        if (keep) {
-            val cap = when (choice) {
-                is DownloadChoice.Exact -> downloadMaxHeightFor(choice.quality)
-                is DownloadChoice.Cap -> choice.maxHeight
-            }
-            scope.launch {
-                preferences.setDownloadMaxHeight(cap)
-                preferences.setDownloadQualityPrompt(false)
-            }
-        }
-        enqueue(request, choice)
+        val kept = keptDefaultMaxHeight(choice, keep)
+        if (kept != null) scope.launch { preferences.setDownloadMaxHeight(kept) }
+        enqueue(request, choice, notice = DEFAULT_QUALITY_SAVED_NOTICE.takeIf { kept != null })
     }
 
-    private fun enqueue(request: DownloadRequest, choice: DownloadChoice) {
+    private fun enqueue(request: DownloadRequest, choice: DownloadChoice, notice: String?) {
         val files = request.files.filter { !it.isFolder }
         val folders = request.files.filter { it.isFolder }
         val cap = (choice as? DownloadChoice.Cap)?.maxHeight
@@ -90,7 +114,7 @@ class DownloadLauncher internal constructor(
             is DownloadChoice.Cap -> coordinator.enqueueFiles(files, choice.maxHeight)
         }
         val batches = request.folderSource?.takeIf { folders.isNotEmpty() }?.let { coordinator.enqueueFolders(folders, it, cap) } ?: 0
-        if (files.isNotEmpty() || batches > 0) request.onQueued()
+        if (files.isNotEmpty() || batches > 0) request.onQueued(notice)
     }
 }
 

@@ -280,6 +280,7 @@ fun DriveScreen(
     val canonicalSession = LocalPikoServices.current.canonicalNamingSession
     val downloadManager = LocalPikoServices.current.downloadManager
     val downloads = rememberDownloadLauncher()
+    val services = LocalPikoServices.current
     val metaTube = LocalPikoServices.current.metaTube
     val metaTubeEnabled by remember(metaTube) { metaTube?.enabled ?: flowOf(false) }.collectAsStateWithLifecycle(initialValue = false)
     val scope = rememberCoroutineScope()
@@ -827,7 +828,11 @@ fun DriveScreen(
             return
         }
         val singles = files.filter { !it.isFolder && !it.isUploading }
-        downloads.download(singles + files.filter { it.isFolder }, DriveDownloadFolderSource(driveRepo), onQueued = { openTransfers() })
+        downloads.download(singles + files.filter { it.isFolder }, DriveDownloadFolderSource(driveRepo)) { notice ->
+            // 提示要在切过去的传输页上显示，这一页随即离开
+            notice?.let(services::noticeOnTransfers)
+            openTransfers()
+        }
     }
 
     fun enqueueDownload(file: FileStat) = download(listOf(file))
