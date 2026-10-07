@@ -150,7 +150,7 @@ internal enum class DriveViewMode {
  * 列表视图单列宽度下限 360dp，手机上始终一列，横屏平板上自动排成两列以上。M3 列表规范
  * 要求宽窗口下控制行长或改为多栏，否则一行名字会被拉得很长。
  *
- * 海报墙与图库的卡宽下限随卡片大小分三档，见 [tileMinWidth]。
+ * 海报墙与图库一行几栏随卡片大小分三档，见 [tileColumns]。
  */
 // 与各内容列表页同一个栏宽，见 PikoItemGrid
 private val ListColumnMinWidth = ItemColumnMinWidth
@@ -369,9 +369,35 @@ internal fun DriveFileGrid(
 
 @Composable
 private fun gridCells(viewMode: DriveViewMode, tileSize: TileSize, referenceWidth: Dp? = null): GridCells {
-    val compact = currentWidthClass() == WidthClass.Compact
-    val minSize = if (viewMode.isGrid) tileMinWidth(viewMode, tileSize, compact) else ListColumnMinWidth
-    return StableColumns(minSize, referenceWidth)
+    if (!viewMode.isGrid) return StableColumns(ListColumnMinWidth, referenceWidth)
+    return TileColumns(tileColumns(viewMode, tileSize, currentWidthClass()), tileMaxWidth(viewMode, tileSize), referenceWidth)
+}
+
+/**
+ * 海报墙与图库：一行 [columns] 栏，卡宽由宽度除出来；宽到卡片超过 [maxSize] 时多排几栏，见 tileColumns。
+ * 栏数照 [StableColumns] 按 [referenceWidth] 定，信息流侧栏滑出时卡片一起收窄、不换行，窄过七成才少排一栏。
+ */
+private class TileColumns(private val columns: Int, private val maxSize: Dp, private val referenceWidth: Dp?) : GridCells {
+    override fun Density.calculateCrossAxisCellSizes(availableSize: Int, spacing: Int): List<Int> {
+        val max = maxSize.roundToPx()
+        val reference = maxOf(referenceWidth?.roundToPx() ?: 0, availableSize)
+        // 每栏不超过 max 至少要几栏：向上取整
+        val capped = (reference + spacing + max + spacing - 1) / (max + spacing)
+        var count = maxOf(columns, capped)
+        val floor = ((reference - spacing * (count - 1)) / count * MIN_FRACTION).toInt()
+        while (count > 1 && (availableSize - spacing * (count - 1)) / count < floor) count--
+        val total = availableSize - spacing * (count - 1)
+        return List(count) { index -> total / count + if (index < total % count) 1 else 0 }
+    }
+
+    override fun equals(other: Any?) =
+        other is TileColumns && other.columns == columns && other.maxSize == maxSize && other.referenceWidth == referenceWidth
+
+    override fun hashCode() = (31 * columns + maxSize.hashCode()) * 31 + referenceWidth.hashCode()
+
+    private companion object {
+        const val MIN_FRACTION = 0.7f
+    }
 }
 
 /**

@@ -8,6 +8,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.piko.data.auth.PikoUserPreferences
+import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.components.ActionGroup
 import dev.piko.ui.components.SheetAction
 import kotlinx.coroutines.flow.first
@@ -47,24 +48,46 @@ internal val TileSize.icon: ImageVector
     }
 
 /**
- * 卡片的最小宽度，栏数由它与网格宽度定（见 DriveFileGrid 的 StableColumns）。中档是加入大小之前的值。
- *
- * 宽窗口按 1440x900 与 1100x800 两种窗口挑的：海报墙小、中、大在前者排 6、4、3 栏，在后者排 4、3、2 栏，
- * 每一档都换一个栏数，滚一格看得出变化；大档的封面接近 16:9 的 360p，模糊时也认得出画面。
- * 图库是正方形缩略图，格子小得多，三档在 1440 宽下是 11、8、5 栏。
- * 窄窗口（手机）的大档海报墙是一栏通栏，图库的小档与系统相册的密集档相近。
+ * 每一档一行排几栏，按窗口宽度档位取，卡宽由网格宽度除出来（见 DriveFileGrid 的 TileColumns）。
+ * 按栏数而不按固定卡宽分档：固定卡宽时栏数随宽度跳，平板竖握（700dp 上下）大档只剩一栏，某些宽度下两档又撞成同样的栏数；
+ * 按栏数分，任何宽度下三档都各差一截。窗口宽到卡片超过 [tileMaxWidth] 时才多排几栏，超宽屏上卡片不至于大得离谱。
  */
-internal fun tileMinWidth(mode: DriveViewMode, size: TileSize, compact: Boolean): Dp = when (mode) {
+internal fun tileColumns(mode: DriveViewMode, size: TileSize, width: WidthClass): Int {
+    val (small, medium, large) = when (mode) {
+        DriveViewMode.LIST -> error("列表没有卡片大小")
+        DriveViewMode.POSTER -> when (width) {
+            WidthClass.Compact -> Triple(3, 2, 1)
+            WidthClass.Medium -> Triple(4, 3, 2)
+            WidthClass.Expanded -> Triple(6, 4, 3)
+        }
+        DriveViewMode.GALLERY -> when (width) {
+            WidthClass.Compact -> Triple(4, 3, 2)
+            WidthClass.Medium -> Triple(6, 5, 3)
+            WidthClass.Expanded -> Triple(10, 8, 5)
+        }
+    }
+    return when (size) {
+        TileSize.SMALL -> small
+        TileSize.MEDIUM -> medium
+        TileSize.LARGE -> large
+    }
+}
+
+/**
+ * 卡片宽度的上限，只在超宽屏上起作用，每档各一个：只给一个上限时，2560 宽下中档与大档都被它挤成同样的栏数。
+ * 各档的上限要比 1440 宽的窗口里这一档的卡宽大一截（大档海报墙那里约 370dp），否则平常的窗口里也多挤出一栏。
+ */
+internal fun tileMaxWidth(mode: DriveViewMode, size: TileSize): Dp = when (mode) {
     DriveViewMode.LIST -> error("列表没有卡片大小")
     DriveViewMode.POSTER -> when (size) {
-        TileSize.SMALL -> if (compact) 120.dp else 180.dp
-        TileSize.MEDIUM -> if (compact) 160.dp else 240.dp
-        TileSize.LARGE -> if (compact) 240.dp else 320.dp
+        TileSize.SMALL -> 280.dp
+        TileSize.MEDIUM -> 400.dp
+        TileSize.LARGE -> 560.dp
     }
     DriveViewMode.GALLERY -> when (size) {
-        TileSize.SMALL -> if (compact) 80.dp else 96.dp
-        TileSize.MEDIUM -> if (compact) 104.dp else 140.dp
-        TileSize.LARGE -> if (compact) 160.dp else 200.dp
+        TileSize.SMALL -> 160.dp
+        TileSize.MEDIUM -> 220.dp
+        TileSize.LARGE -> 320.dp
     }
 }
 
