@@ -131,6 +131,7 @@ dependencies {
     implementation(libs.androidx.documentfile)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.lifecycle.process)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
 
     // Compose (Material 3 Expressive 1.5.0-alpha28 via BOM)

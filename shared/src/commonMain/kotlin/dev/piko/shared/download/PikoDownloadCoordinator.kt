@@ -64,7 +64,6 @@ class PikoDownloadCoordinator(
     private val segmentDownloader: PikoSegmentDownloader? = null,
     /** 片段抽取经它开本机代理会话读源文件。缺省时退回任务里存下的直链。 */
     private val mediaRepository: PikoMediaRepository? = null,
-    private val onDownloadStarted: (() -> Unit)? = null,
 ) {
     private val _tasks = MutableStateFlow<Map<String, DownloadTask>>(emptyMap())
     val tasks: StateFlow<Map<String, DownloadTask>> = _tasks.asStateFlow()
@@ -300,7 +299,6 @@ class PikoDownloadCoordinator(
         val account = currentAccount()
         val accepted = files.filter { !it.isFolder && !it.isUploading }.distinctBy { it.id }
         if (accepted.isEmpty()) return
-        onDownloadStarted?.invoke()
         scope.launch(Dispatchers.IO) {
             enqueueLock.withLock {
                 val now = Clock.System.now().toEpochMilliseconds()
@@ -489,7 +487,6 @@ class PikoDownloadCoordinator(
         _listings.update { it - batchId }
         PikoLog.i(TAG, "文件夹下载入队：${tasks.size} 个文件，本机已完整 ${tasks.count { it.status == DownloadStatus.COMPLETED }} 个，" +
             "共 ${tasks.sumOf { it.totalBytes }} 字节")
-        onDownloadStarted?.invoke()
         pumpBatch(batchId)
     }
 
@@ -549,7 +546,6 @@ class PikoDownloadCoordinator(
                     ?.let { id to it.copy(status = DownloadStatus.PENDING, errorMessage = null) }
             }
         }
-        onDownloadStarted?.invoke()
         pumpBatch(batchId)
     }
 
@@ -601,7 +597,6 @@ class PikoDownloadCoordinator(
             return
         }
         update(taskId) { it.copy(status = DownloadStatus.PENDING, errorMessage = null) }
-        onDownloadStarted?.invoke()
         pumpQueue()
     }
 
@@ -612,7 +607,6 @@ class PikoDownloadCoordinator(
             update(taskId) { it.copy(status = DownloadStatus.PAUSED, errorMessage = OTHER_ACCOUNT) }
             return
         }
-        onDownloadStarted?.invoke()
         // 整文件下载的开始在取得缓存之后记，那时才知道续传点
         if (task.isSegment) PikoLog.d(TAG, "开始片段：${logFile(task.fileId, task.fileName)}，${task.startMs}–${task.endMs} ms")
         // 片段任务要重新抽取，不能走整文件下载：它的 totalBytes 是 0，gcid 属于整个源文件
@@ -783,7 +777,6 @@ class PikoDownloadCoordinator(
         /** 从哪一档截，原画的 name 为 null；为 null 时按设置里的下载画质上限，开始截取时再挑。 */
         quality: DownloadQuality? = null,
     ) {
-        onDownloadStarted?.invoke()
         val account = currentAccount()
         scope.launch {
             val cap = if (quality == null) preferences.downloadMaxHeightFlow.first() else 0

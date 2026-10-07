@@ -12,7 +12,6 @@ import dev.piko.data.auth.SessionManager
 import dev.piko.data.repository.DriveRepository
 import dev.piko.download.AndroidPikoDownloadStorage
 import dev.piko.download.AndroidPikoSegmentDownloader
-import dev.piko.download.PikoDownloadService
 import dev.piko.download.WorkResultNotifier
 import dev.piko.platform.AndroidPikoPlatform
 import dev.piko.platform.followSystemAnimatorScale
@@ -96,10 +95,8 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
                 scope = appScope,
                 segmentDownloader = AndroidPikoSegmentDownloader(this),
                 mediaRepository = mediaRepository,
-                onDownloadStarted = { PikoDownloadService.start(this) },
             ),
             uploadSources = AndroidPikoUploadSources(this),
-            onUploadStarted = { PikoDownloadService.start(this) },
             cacheStore = FilePikoCacheStore(File(cacheDir, "piko").path),
             syncCipher = JvmSyncCipher(),
             metaTube = MetaTubeService(sessionManager) { HttpClient(OkHttp) },

@@ -58,8 +58,6 @@ class PikoServices(
     val downloadManager: PikoDownloadCoordinator,
     val mediaRepository: PikoMediaRepository,
     uploadSources: PikoUploadSources,
-    /** Android 在这里拉起前台服务。 */
-    onUploadStarted: (() -> Unit)? = null,
     /** 记下的文件夹内容跨进程保留在这里，见 FolderContentMemory。 */
     cacheStore: PikoCacheStore? = null,
     /** 压缩包密码同步进网盘前的加密，两端都传 JvmSyncCipher；为 null 时不同步它们（截图环境）。 */
@@ -106,7 +104,7 @@ class PikoServices(
     /** API 走哪个根域名：用户固定的，或登录后测速自动挑的，见 PikPakDomainSelector。 */
     val domainSelector = PikPakDomainSelector(clientManager, preferences, backgroundScope).also { it.start() }
 
-    val uploadManager = PikoUploadCoordinator(clientManager, preferences, uploadSources, driveRepository, backgroundScope, onUploadStarted)
+    val uploadManager = PikoUploadCoordinator(clientManager, preferences, uploadSources, driveRepository, backgroundScope)
 
     val instantSaveRecords = InstantSaveRecords(clientManager, cacheStore, backgroundScope)
 

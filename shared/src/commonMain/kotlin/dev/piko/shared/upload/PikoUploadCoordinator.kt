@@ -73,8 +73,6 @@ class PikoUploadCoordinator(
     private val sources: PikoUploadSources,
     private val driveRepository: PikoDriveRepository,
     private val scope: CoroutineScope,
-    /** Android 在这里拉起前台服务。 */
-    private val onUploadStarted: (() -> Unit)? = null,
 ) {
     private val _tasks = MutableStateFlow<Map<String, UploadTask>>(emptyMap())
 
@@ -176,7 +174,6 @@ class PikoUploadCoordinator(
             PikoLog.i(TAG, "上传入队 ${added.size} 个文件到文件夹 $parentId，共 ${added.sumOf { it.size }} 字节")
             _tasks.update { current -> current + added.associateBy { it.taskId } }
             _enqueued.tryEmit(added.size)
-            onUploadStarted?.invoke()
         }
     }
 
@@ -189,7 +186,6 @@ class PikoUploadCoordinator(
                 it
             }
         }
-        onUploadStarted?.invoke()
     }
 
     fun pause(taskId: String) {

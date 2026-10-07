@@ -34,14 +34,13 @@ import androidx.core.view.WindowInsetsControllerCompat
 import dev.piko.ui.adaptive.isHeightCompact
 import dev.piko.ui.screens.player.findActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import dev.piko.download.DownloadStatus
-import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.InstantSheetState
 import dev.piko.shared.state.TorrentMagnet
 import dev.piko.shared.state.extractLinks
 import dev.piko.shared.upload.UploadSelection
 import dev.piko.ui.PikoApp
 import dev.piko.ui.PikoServices
+import dev.piko.ui.hasBackgroundWork
 import dev.piko.ui.VideoPlayerHost
 import dev.piko.ui.screens.player.MediampVideoPlayerScreen
 import dev.piko.ui.theme.appearanceFlow
@@ -225,15 +224,9 @@ private fun AskForNotificationsOnFirstWork(services: PikoServices) {
     val context = LocalContext.current
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
     LaunchedEffect(services) {
-        val serverWork = snapshotFlow {
-            val scanning = services.duplicateSession.state?.phase.let {
-                it == DuplicateFinderState.Phase.SCANNING || it == DuplicateFinderState.Phase.ANALYZING
-            }
-            services.archiveExtractSession.jobs.isNotEmpty() || scanning
-        }
-        combine(services.downloadManager.tasks, services.uploadManager.tasks, serverWork) { downloads, uploads, busy ->
-            busy || downloads.values.any { it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.PENDING } ||
-                uploads.values.any { it.status.isActive }
+        // 与拉起前台服务同一个判断（hasBackgroundWork）；任务表是 StateFlow，snapshotFlow 看不到，另外合进来
+        combine(snapshotFlow { services.hasBackgroundWork() }, services.downloadManager.tasks, services.uploadManager.tasks) { _, _, _ ->
+            services.hasBackgroundWork()
         }.first { it }
         val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
         if (!granted) launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
