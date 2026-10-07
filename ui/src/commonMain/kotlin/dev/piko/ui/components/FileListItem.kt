@@ -41,6 +41,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import dev.piko.ui.adaptive.isDesktopLayout
 import dev.piko.ui.theme.LocalFixedColors
 import io.github.nihildigit.pikpak.FileStat
 
@@ -195,9 +196,13 @@ fun FileListItem(
     }
 }
 
-/** 行尾的更多按钮，打开该项的详情面板。 */
+/**
+ * 行尾的更多按钮，打开该项的详情面板。只在移动端画：桌面的同一组操作在右键菜单里，
+ * 每一行挂一个按钮只是满屏一样的图标，见 FormFactor。
+ */
 @Composable
 fun ListMoreButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    if (isDesktopLayout()) return
     IconButton(onClick = onClick, modifier = modifier) {
         Icon(imageVector = Icons.Outlined.MoreVert, contentDescription = "更多操作")
     }
