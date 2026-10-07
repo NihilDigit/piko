@@ -1,5 +1,7 @@
 package dev.piko.shared.naming
 
+import dev.piko.shared.naming.av.matchAv
+
 /**
  * 解析单个文件名（不含目录）。目录能提供的信息（分区、作品名的兜底）由 [analyzeMediaBatch] 补上。
  *

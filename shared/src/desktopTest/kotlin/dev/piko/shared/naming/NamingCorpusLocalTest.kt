@@ -1,5 +1,6 @@
 package dev.piko.shared.naming
 
+import dev.piko.shared.naming.av.normalizeAvCode
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject

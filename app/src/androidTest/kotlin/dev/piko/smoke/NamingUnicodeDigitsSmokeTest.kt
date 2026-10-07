@@ -10,7 +10,7 @@ import dev.piko.shared.media.player.buildRawPlaylist
 import dev.piko.shared.naming.MediaFileInput
 import dev.piko.shared.naming.analyzeMediaBatch
 import dev.piko.shared.naming.describeFolder
-import dev.piko.shared.naming.normalizeAvCode
+import dev.piko.shared.naming.av.normalizeAvCode
 import dev.piko.shared.naming.parseMediaName
 import dev.piko.shared.naming.workKeyOf
 import dev.piko.shared.state.analyzeDriveFolder

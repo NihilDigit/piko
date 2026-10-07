@@ -1,5 +1,6 @@
 package dev.piko.shared.naming
 
+import dev.piko.shared.naming.av.normalizeAvCode
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
