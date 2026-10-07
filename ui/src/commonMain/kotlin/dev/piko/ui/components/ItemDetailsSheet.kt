@@ -1,5 +1,6 @@
 package dev.piko.ui.components
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,52 +15,29 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.SegmentedListItem
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-
-/** 详情面板里的一项操作。[destructive] 的操作单独成组排在最后，并用错误色。 */
-class SheetAction(
-    val icon: ImageVector,
-    val label: String,
-    val onClick: () -> Unit,
-    val destructive: Boolean = false,
-    /** 右键菜单里的分组，同号的排在一个容器里，按出现的先后排。危险操作不论几号都单独成组放在最后。 */
-    val group: Int = 0,
-    /** 几选一里的一项（视图）：true 是眼下这一项，菜单里打勾；null 不是这类项。 */
-    val checked: Boolean? = null,
-    /**
-     * 按下或指针移到这一项上时调用，点下去之前先做准备（例如提前查画质）。可能调用多次，要能重入。
-     * 面板里的操作要等面板收起才执行，按下到执行之间有三四百毫秒，菜单里还有悬停的时间。
-     */
-    val onPrepare: (() -> Unit)? = null,
-)
-
-/** 在 [action] 上按下或指针移入时调用 [SheetAction.onPrepare]。不消费事件，点击照常。 */
-internal fun Modifier.prepareOnPointer(action: SheetAction): Modifier {
-    val prepare = action.onPrepare ?: return this
-    return pointerInput(action) {
-        awaitPointerEventScope {
-            while (true) {
-                val event = awaitPointerEvent(PointerEventPass.Initial)
-                if (event.type == PointerEventType.Press || event.type == PointerEventType.Enter) prepare()
-            }
-        }
-    }
-}
 
 /**
  * 单个条目的详情与操作面板，网盘列表、海报墙与传输列表共用。
@@ -72,8 +50,8 @@ internal fun Modifier.prepareOnPointer(action: SheetAction): Modifier {
  * 从这里绕过防窥遮蔽看到画面不符合用户预期。[metaParts] 由 [MetaRow] 排成一行，
  * [extraLines] 放在其下，默认是 bodyMedium，调用方自定颜色。
  *
- * 操作用 M3 Expressive 的分段列表，与设置页一致；删除一类操作单独成组，
- * 与其余操作隔开，免得误触。
+ * 操作按 [layoutActions] 排，与右键菜单同一套：顶上一排图标加短标签，下面是 M3 Expressive 的分段列表，
+ * 一组一段，「更多」是列表末尾一行、点开就地展开，然后是「属性」，危险项垫底。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -125,39 +103,112 @@ fun ItemDetailsSheet(
                     }
                 }
             }
-            val (regular, destructive) = actions.partition { !it.destructive }
-            Column(
-                modifier = Modifier
-                    .padding(horizontal = 16.dp)
-                    .padding(bottom = 16.dp),
-            ) {
-                if (regular.isNotEmpty()) SheetActionGroup(regular, onAction = { sheet.hideThen(it) })
-                if (regular.isNotEmpty() && destructive.isNotEmpty()) Spacer(modifier = Modifier.height(12.dp))
-                if (destructive.isNotEmpty()) SheetActionGroup(destructive, onAction = { sheet.hideThen(it) })
-            }
+            SheetActions(layoutActions(actions), onAction = { sheet.hideThen(it) })
         }
     }
 }
 
+@Composable
+private fun SheetActions(layout: ActionLayout, onAction: (() -> Unit) -> Unit) {
+    var moreExpanded by remember { mutableStateOf(false) }
+    val moreRow = MoreRow(moreExpanded, onToggle = { moreExpanded = !moreExpanded }).takeIf { layout.more.isNotEmpty() }
+    Column(
+        modifier = Modifier
+            .padding(horizontal = 16.dp)
+            .padding(bottom = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(SheetGroupGap),
+    ) {
+        if (layout.quick.isNotEmpty()) {
+            // 面板是 surfaceContainerLow，与下面的分段同取高两级
+            ActionIconRow(layout.quick, onAction = { onAction(it.onClick) }, containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+        }
+        // 「更多」接在列表最后一段的末尾，不自成一段：单独一段的话，加上属性与危险项，面板里尽是一行一块的碎块
+        layout.sections.forEachIndexed { index, section ->
+            SheetActionGroup(section, onAction, more = moreRow.takeIf { index == layout.sections.lastIndex })
+        }
+        if (layout.sections.isEmpty() && moreRow != null) SheetActionGroup(emptyList(), onAction, more = moreRow)
+        AnimatedVisibility(visible = moreExpanded && moreRow != null) {
+            Column(verticalArrangement = Arrangement.spacedBy(SheetGroupGap)) {
+                layout.more.forEach { section -> SheetActionGroup(section, onAction) }
+            }
+        }
+        if (layout.properties.isNotEmpty()) SheetActionGroup(layout.properties, onAction)
+        if (layout.danger.isNotEmpty()) SheetActionGroup(layout.danger, onAction)
+    }
+}
+
+private class MoreRow(val expanded: Boolean, val onToggle: () -> Unit)
+
+private val SheetGroupGap = 12.dp
 
 @Composable
-private fun SheetActionGroup(actions: List<SheetAction>, onAction: (() -> Unit) -> Unit) {
+private fun SheetActionGroup(actions: List<SheetAction>, onAction: (() -> Unit) -> Unit, more: MoreRow? = null) {
+    val count = actions.size + if (more != null) 1 else 0
+    // 面板是 surfaceContainerLow，段取高两级才看得出分段
+    val containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
     Column(verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
         actions.forEachIndexed { index, action ->
             val color = if (action.destructive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
             SegmentedListItem(
                 onClick = { onAction(action.onClick) },
                 modifier = Modifier.prepareOnPointer(action),
-                shapes = ListItemDefaults.segmentedShapes(index = index, count = actions.size),
-                // 面板是 surfaceContainerLow，段取高两级才看得出分段
+                shapes = ListItemDefaults.segmentedShapes(index = index, count = count),
                 colors = ListItemDefaults.segmentedColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    containerColor = containerColor,
                     contentColor = color,
                     leadingContentColor = if (action.destructive) color else MaterialTheme.colorScheme.onSurfaceVariant,
                 ),
                 leadingContent = { Icon(action.icon, contentDescription = null) },
                 content = { Text(action.label) },
             )
+        }
+        if (more != null) {
+            SegmentedListItem(
+                onClick = more.onToggle,
+                shapes = ListItemDefaults.segmentedShapes(index = count - 1, count = count),
+                colors = ListItemDefaults.segmentedColors(
+                    containerColor = containerColor,
+                    leadingContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    trailingContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                ),
+                leadingContent = { Icon(Icons.Outlined.MoreHoriz, contentDescription = null) },
+                trailingContent = {
+                    Icon(if (more.expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, contentDescription = null)
+                },
+                content = { Text("更多") },
+            )
+        }
+    }
+}
+
+/**
+ * 一排等分的图标，图标在上、短标签（[SheetAction.shortLabel]）在下，操作面板顶上与播放器设置面板共用。
+ * 四项在 360dp 宽的竖屏里也排得下。[containerColor] 为透明时不垫底色，用在这排操作只是陪衬的地方。
+ */
+@Composable
+internal fun ActionIconRow(
+    actions: List<SheetAction>,
+    onAction: (SheetAction) -> Unit,
+    containerColor: Color = Color.Transparent,
+) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        actions.forEach { action ->
+            Surface(
+                onClick = { onAction(action) },
+                shape = MaterialTheme.shapes.large,
+                color = containerColor,
+                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f).prepareOnPointer(action),
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.padding(vertical = 10.dp, horizontal = 4.dp),
+                ) {
+                    Icon(action.icon, contentDescription = null)
+                    Text(action.shortLabel, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
         }
     }
 }

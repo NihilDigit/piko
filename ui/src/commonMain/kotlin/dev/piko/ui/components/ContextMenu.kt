@@ -1,14 +1,22 @@
 package dev.piko.ui.components
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.MoreHoriz
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.backhandler.BackHandler
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -134,57 +142,189 @@ private fun placeAlong(pointer: Int, size: Int, window: Int): Int = when {
 }
 
 /**
- * 危险操作单独成组放在最后，与操作面板的分组一致；其余按 [SheetAction.group] 分组，组间一道细线。
+ * 按 [layoutActions] 排，与操作面板同一套：顶上一排纯图标（悬停出提示），下面的列表按组一道细线隔开，
+ * 「更多」是列表末尾一行，点开是原地换上的一页（顶上一行「返回」），只有一层；然后是「属性」，危险项垫底。
+ * 不用弹出式子菜单：Compose 的 material3 没有，自己做要处理悬停延时与斜穿，一层原地翻页两端一套就够。
  * 用 DropdownMenuPopup 自己摆，不走 [PikoDropdownMenu]，为的是菜单项形状与分组自己定。
+ *
+ * 菜单向上翻转（指针下方放不下）时次序不反过来。Apple HIG 的 context menus 建议按菜单出现在内容上方还是下方
+ * 反转次序，让常用项靠近手指，那是 iOS 从内容上长出来的菜单；Windows 与 macOS 的右键菜单都不反转，
+ * 反转后图标行沉到底、危险项升到顶，键盘从第一项起走，位置记忆也随窗口位置变。
  *
  * 桌面端 DropdownMenu 额外做的两件事 DropdownMenuPopup 没有，这里补上：超出窗口时滚动；方向键在菜单项间
  * 移动焦点。后者照 M3 menus 的 Keyboard navigation 一节：菜单一打开焦点就在第一项上，上下键逐项移动，
- * 回车执行。焦点落进菜单之后，按键先经过这里的 onPreviewKeyEvent，Popup 本身不必暴露按键回调。
+ * 左右键在图标行里移动，回车执行；在「更多」上按右键也进入那一页，那一页里按左键或 Esc 回来，再按 Esc 关掉。
+ * 焦点落进菜单之后，按键先经过这里的 onPreviewKeyEvent，Popup 本身不必暴露按键回调。
  */
 @Composable
 private fun ActionMenu(actions: List<SheetAction>, positionProvider: DropdownMenuPopupPositionProvider, onDismiss: () -> Unit) {
-    val (regular, destructive) = actions.partition { !it.destructive }
-    val groups = (regular.groupBy { it.group }.values + listOf(destructive)).filter { it.isNotEmpty() }
-    val focusManager = LocalFocusManager.current
+    val layout = layoutActions(actions)
+    var onMorePage by remember { mutableStateOf(false) }
+    // 回到首页时焦点放回「更多」那一行，不从头走
+    var returnedFromMore by remember { mutableStateOf(false) }
     val firstItem = remember { FocusRequester() }
+    val moreItem = remember { FocusRequester() }
+    // 子页往往比首页窄，换页时菜单宽度不跳：子页至少与首页一样宽
+    var mainWidth by remember { mutableIntStateOf(0) }
+    fun backToMain() {
+        onMorePage = false
+        returnedFromMore = true
+    }
     DropdownMenuPopup(
         expanded = true,
         onDismissRequest = onDismiss,
-        modifier = Modifier
-            .verticalScroll(rememberScrollState())
-            .onPreviewKeyEvent { event ->
+        modifier = Modifier.verticalScroll(rememberScrollState()),
+        popupPositionProvider = positionProvider,
+    ) {
+        // 弹层是另一层，有自己的焦点。要在这里面取：在外面取到的是窗口主层的，方向键会去挪列表里的焦点
+        val focusManager = LocalFocusManager.current
+        // 子页上 Esc 先回首页。要写在弹层里面：Popup 自己在返回事件上登记了关闭，后登记的先收到，
+        // 写在 DropdownMenuPopup 之前就比它早登记，Esc 直接关掉整个菜单
+        BackHandler(enabled = onMorePage, onBack = ::backToMain)
+        LaunchedEffect(onMorePage) {
+            runCatching { if (returnedFromMore && !onMorePage) moreItem.requestFocus() else firstItem.requestFocus() }
+        }
+        // 一个容器，组与组之间一道细线。各组各带容器、之间留缝（M3E 竖向菜单的分组）在四五组时像一摞碎块
+        DropdownMenuGroup(
+            shapes = MenuDefaults.groupShape(0, 1),
+            modifier = Modifier.onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                 when (event.key) {
                     Key.DirectionDown -> focusManager.moveFocus(FocusDirection.Down)
                     Key.DirectionUp -> focusManager.moveFocus(FocusDirection.Up)
+                    Key.DirectionLeft -> if (onMorePage) {
+                        backToMain()
+                        true
+                    } else {
+                        focusManager.moveFocus(FocusDirection.Left)
+                    }
+                    Key.DirectionRight -> focusManager.moveFocus(FocusDirection.Right)
                     else -> false
                 }
             },
-        popupPositionProvider = positionProvider,
-    ) {
-        LaunchedEffect(Unit) { runCatching { firstItem.requestFocus() } }
-        // 一个容器，组与组之间一道细线。各组各带容器、之间留缝（M3E 竖向菜单的分组）在四五组时像一摞碎块
-        val items = groups.flatten()
-        DropdownMenuGroup(shapes = MenuDefaults.groupShape(0, 1)) {
-            groups.forEachIndexed { groupIndex, group ->
-                if (groupIndex > 0) {
-                    HorizontalDivider(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                        color = MaterialTheme.colorScheme.outlineVariant,
-                    )
+        ) {
+            if (onMorePage) {
+                Column(Modifier.widthIn(min = with(LocalDensity.current) { mainWidth.toDp() })) {
+                    MoreMenuPage(layout.more, firstItem, onBack = ::backToMain, onDismiss = onDismiss)
                 }
-                group.forEach { action ->
-                    val index = items.indexOf(action)
-                    ActionMenuItem(
-                        action = action,
-                        shape = menuItemShape(index, items.size),
-                        onDismiss = onDismiss,
-                        modifier = if (index == 0) Modifier.focusRequester(firstItem) else Modifier,
-                    )
+            } else {
+                Column(Modifier.onSizeChanged { mainWidth = it.width }) {
+                    MainMenuPage(layout, firstItem, moreItem, onOpenMore = { onMorePage = true }, onDismiss = onDismiss)
                 }
             }
         }
     }
+}
+
+@Composable
+private fun MainMenuPage(
+    layout: ActionLayout,
+    firstItem: FocusRequester,
+    moreItem: FocusRequester,
+    onOpenMore: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val hasMore = layout.more.isNotEmpty()
+    // 「更多」接在列表最后一段的末尾、属性之前；列表为空时它自成一段
+    val sections = if (hasMore) layout.sections.ifEmpty { listOf(emptyList()) } else layout.sections
+    val blocks = sections + listOf(layout.properties, layout.danger).filter { it.isNotEmpty() }
+    // 图标行算一行、「更多」算一行，首末两行的选中底色才贴着容器的圆角
+    val rowCount = (if (layout.quick.isNotEmpty()) 1 else 0) + blocks.sumOf { it.size } + (if (hasMore) 1 else 0)
+    var row = 0
+    // 打开时焦点落在列表的第一行，不在图标行：图标按钮得了焦点就弹出提示，盖住下面一行。按上键能回到图标行
+    var focusPlaced = blocks.isEmpty()
+    if (layout.quick.isNotEmpty()) {
+        MenuIconRow(layout.quick, firstItem.takeIf { focusPlaced }, onDismiss)
+        row++
+    }
+    fun focusIfFirst(): Modifier = if (!focusPlaced) Modifier.focusRequester(firstItem).also { focusPlaced = true } else Modifier
+    blocks.forEachIndexed { blockIndex, block ->
+        if (row > 0) MenuDivider()
+        block.forEach { action ->
+            ActionMenuItem(action = action, shape = menuItemShape(row, rowCount), onDismiss = onDismiss, modifier = focusIfFirst())
+            row++
+        }
+        if (hasMore && blockIndex == sections.lastIndex) {
+            MoreMenuItem(menuItemShape(row, rowCount), focusIfFirst().focusRequester(moreItem), onOpenMore)
+            row++
+        }
+    }
+}
+
+@Composable
+private fun MoreMenuPage(sections: List<List<SheetAction>>, firstItem: FocusRequester, onBack: () -> Unit, onDismiss: () -> Unit) {
+    val rowCount = 1 + sections.sumOf { it.size }
+    DropdownMenuItem(
+        text = { Text("返回") },
+        shape = menuItemShape(0, rowCount),
+        leadingIcon = { Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = null) },
+        onClick = onBack,
+    )
+    var row = 1
+    sections.forEach { section ->
+        MenuDivider()
+        section.forEach { action ->
+            ActionMenuItem(
+                action = action,
+                shape = menuItemShape(row, rowCount),
+                onDismiss = onDismiss,
+                // 焦点落在第一项操作上，不在「返回」上：要回去有左键与 Esc
+                modifier = if (row == 1) Modifier.focusRequester(firstItem) else Modifier,
+            )
+            row++
+        }
+    }
+}
+
+@Composable
+private fun MoreMenuItem(shape: Shape, modifier: Modifier, onOpen: () -> Unit) {
+    DropdownMenuItem(
+        text = { Text("更多") },
+        shape = shape,
+        modifier = modifier.onPreviewKeyEvent { event ->
+            if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionRight) {
+                onOpen()
+                true
+            } else {
+                false
+            }
+        },
+        leadingIcon = { Icon(Icons.Outlined.MoreHoriz, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+        trailingIcon = { Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, contentDescription = null) },
+        onClick = onOpen,
+    )
+}
+
+/** 顶上一排纯图标，名字在悬停提示里，照 HIG 菜单顶部的小号图标行（四项、只有图标）。 */
+@Composable
+private fun MenuIconRow(actions: List<SheetAction>, firstItem: FocusRequester?, onDismiss: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+        horizontalArrangement = Arrangement.SpaceEvenly,
+    ) {
+        actions.forEachIndexed { index, action ->
+            TooltipIconButton(
+                icon = action.icon,
+                label = action.label,
+                onClick = {
+                    onDismiss()
+                    action.onClick()
+                },
+                modifier = Modifier
+                    .prepareOnPointer(action)
+                    .then(if (index == 0 && firstItem != null) Modifier.focusRequester(firstItem) else Modifier),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MenuDivider() {
+    HorizontalDivider(
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+        color = MaterialTheme.colorScheme.outlineVariant,
+    )
 }
 
 /**

@@ -83,6 +83,8 @@ kotlin {
                 implementation(libs.junit)
                 // 控件的鼠标悬停只能用真实的指针事件序列验证；版本跟界面库走，理由同 composeDesktopRuntime
                 implementation("org.jetbrains.compose.ui:ui-test:${libs.versions.composeMultiplatform.get()}")
+                // 测试里按键不经窗口的返回输入，要从组合里取到返回事件的分发器自己发。版本取界面库已经解析到的那一个
+                implementation("org.jetbrains.androidx.navigationevent:navigationevent-compose:1.1.0")
                 // 测试进程没有打包好的资源目录，mpv 的原生库仍从类路径解压
                 runtimeOnly(hostMpvRuntime)
             }

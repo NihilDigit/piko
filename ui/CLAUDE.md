@@ -107,7 +107,14 @@ TopAppBar 先量动作、标题拿剩下的，桌面窄窗口加上窗口按钮�
 
 条目右键弹出与操作面板相同的菜单（`ContextMenuArea`）；右键点在几项选中里的一项上时菜单作用于全部选中的，照资源管理器。
 列表一律用按行对齐的 `LazyVerticalGrid`（`PikoItemGrid`），不用瀑布流：瀑布流按最矮的一栏放，顺序会在各栏间跳。每页把一项的操作写成一个
-`actionsFor`，面板与菜单都读它（网盘页是 `fileActions`）；新列表照做。
+`actionsFor`，面板与菜单都读它（网盘页是 `DriveScreen` 的 `itemActions`）；新列表照做。
+面板与菜单怎么摆由 `components/ActionLayout.kt` 的 `layoutActions` 统一定，两端一套：危险项（`destructive`）垫底、错误色，「属性」
+（`ActionGroup.Properties`）在它之前，各自成组；其余按 `SheetAction.tier` 分三档，顶上一排图标（至多 4 个；面板是图标加
+`shortLabel`，菜单是纯图标、名字在悬停提示里）、常驻列表、「更多」，列表按 `group` 一组一道分隔。非危险项连同属性不超过 6 项时
+不分档、全部平铺，「更多」里只有一项时就地放进列表。「更多」在面板里是列表末尾一行、点开就地展开；在菜单里是原地换上的一页，
+顶上一行「返回」，只有一层，左键或 Esc 回首页，再按 Esc 关菜单。不用弹出式子菜单：material3 没有，自己做要处理悬停延时与斜穿。
+菜单向上翻转时次序不反过来（理由见 `ActionMenu`）。菜单打开时焦点在列表第一行，不在图标行：图标按钮一得焦点就弹提示，
+盖住下面一行。方向键挪的是弹层自己的焦点，`LocalFocusManager` 要在弹层里面取，在外面取到的是窗口主层的。
 快捷键一览（F1 或主修饰键+/，`ShortcutsDialog`）是手写的一张表，加了快捷键要同时写进去。
 命令面板（主修饰键+K，`CommandPalette`）：模糊搜索最近去过的与快速访问里的文件夹、当前目录的子文件夹、去处与命令，方向键挑、回车执行。
 全局的命令在 `PikoMainScaffold` 的 `paletteItems`；某一页自己的命令在页里经 `ContributePaletteItems` 登记，页面离开组合时撤掉
