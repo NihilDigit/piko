@@ -182,16 +182,11 @@ fun ProfileScreen(
         ) {
             AccountCard(account)
 
-            Spacer(modifier = Modifier.height(12.dp))
-
             AccountSwitcher()
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // 最近添加、星标与播放历史是看内容的入口，排在前面；分享、回收站与设置是管理，排在后面，两组之间多空一点
-            Column(verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
+            // 最近添加、星标与播放历史是看内容的入口，排在前面；分享、回收站与设置是管理，排在后面
+            SettingsGroup(null) {
                 SettingsNavigationRow(
-                    index = 0, count = 3,
                     icon = DriveLibrary.RECENT.icon,
                     selectedIcon = DriveLibrary.RECENT.selectedIcon,
                     title = DriveLibrary.RECENT.title,
@@ -199,7 +194,6 @@ fun ProfileScreen(
                     onClick = { onOpenLibrary(DriveLibrary.RECENT) },
                 )
                 SettingsNavigationRow(
-                    index = 1, count = 3,
                     icon = DriveLibrary.STARRED.icon,
                     selectedIcon = DriveLibrary.STARRED.selectedIcon,
                     title = DriveLibrary.STARRED.title,
@@ -207,7 +201,6 @@ fun ProfileScreen(
                     onClick = { onOpenLibrary(DriveLibrary.STARRED) },
                 )
                 SettingsNavigationRow(
-                    index = 2, count = 3,
                     icon = DriveLibrary.HISTORY.icon,
                     selectedIcon = DriveLibrary.HISTORY.selectedIcon,
                     title = DriveLibrary.HISTORY.title,
@@ -216,11 +209,8 @@ fun ProfileScreen(
                 )
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Column(verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
+            SettingsGroup(null) {
                 SettingsNavigationRow(
-                    index = 0, count = 3,
                     icon = Icons.Outlined.FolderShared,
                     selectedIcon = Icons.Filled.FolderShared,
                     title = "我的分享",
@@ -229,7 +219,6 @@ fun ProfileScreen(
                     selected = selectedPane == Screen.MyShares,
                 )
                 SettingsNavigationRow(
-                    index = 1, count = 3,
                     icon = DriveLibrary.TRASH.icon,
                     selectedIcon = DriveLibrary.TRASH.selectedIcon,
                     title = DriveLibrary.TRASH.title,
@@ -237,7 +226,6 @@ fun ProfileScreen(
                     onClick = { onOpenLibrary(DriveLibrary.TRASH) },
                 )
                 SettingsNavigationRow(
-                    index = 2, count = 3,
                     icon = Icons.Outlined.Settings,
                     selectedIcon = Icons.Filled.Settings,
                     title = "设置",
@@ -246,8 +234,6 @@ fun ProfileScreen(
                     selected = selectedPane == Screen.Settings,
                 )
             }
-
-            Spacer(modifier = Modifier.height(16.dp))
 
             AboutSection(snackbarHostState)
 
@@ -371,9 +357,10 @@ internal fun AccountCard(account: AccountSummary, showRefresh: Boolean = false) 
     val quota = account.quota
     val allowances = account.allowances
     val allowancesError = account.allowancesError
+    // 圆角与设置的分组相同：桌面设置页里它与下面的账号列表是同一套卡片
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
+        shape = settingsStyle().groupShape,
         color = MaterialTheme.colorScheme.surfaceContainer,
     ) {
         Column(modifier = Modifier.padding(16.dp)) {

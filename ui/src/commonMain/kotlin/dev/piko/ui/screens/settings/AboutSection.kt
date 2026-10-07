@@ -23,12 +23,10 @@ import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.material3.Badge
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -75,7 +73,7 @@ internal fun AboutSection(snackbarHostState: SnackbarHostState, modifier: Modifi
         updater?.messages?.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
     }
 
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
+    SettingsGroup(title = null, modifier = modifier) {
         AboutCard(
             version = platform.appVersion,
             updateStatus = updater?.status,
@@ -95,35 +93,28 @@ internal fun AboutSection(snackbarHostState: SnackbarHostState, modifier: Modifi
             onOpenChannel = { platform.openUrl(CHANNEL_URL) },
         )
         // 没有应用内更新的平台不给这个开关
-        val aboutCount = if (updater != null) 3 else 2
-        val aboutOffset = aboutCount - 2
         if (updater != null) {
             val autoCheckUpdates by sessionManager.autoCheckUpdatesFlow.collectAsState(initial = true)
             SettingsSwitchRow(
-                index = 0, count = aboutCount,
                 icon = Icons.Outlined.SystemUpdate,
                 title = "自动检查更新",
-                supporting = "启动时检查一次，有新版本时提示",
+                supporting = "启动时检查，有新版本时提示",
                 checked = autoCheckUpdates,
                 onCheckedChange = { scope.launch { sessionManager.setAutoCheckUpdates(it) } },
             )
         }
         SettingsNavigationRow(
-            index = aboutOffset,
-            count = aboutCount,
             icon = Icons.Outlined.BugReport,
             title = "导出日志",
-            supporting = "反馈问题时请附上。只记录操作经过，不含文件名、账号与密码",
+            supporting = "反馈问题时附上。不含文件名、账号与密码",
             onClick = { scope.launch { exportLogs(platform) } },
             trailingIcon = null,
         )
         // 日志只留七天，这里给的是复现之前手动清一次：导出的就只有这一次的经过
         SettingsNavigationRow(
-            index = aboutOffset + 1,
-            count = aboutCount,
             icon = Icons.Outlined.History,
             title = "清除日志",
-            supporting = "自动保留最近七天。复现问题之前清除一次，导出的内容更清楚",
+            supporting = "日志保留七天。复现问题前先清除，导出内容更清楚",
             onClick = {
                 scope.launch {
                     PikoLog.clear()
@@ -170,11 +161,7 @@ private fun AboutCard(
     onOpenChannel: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        color = colors.surfaceContainer,
-    ) {
+    SettingsCard {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(

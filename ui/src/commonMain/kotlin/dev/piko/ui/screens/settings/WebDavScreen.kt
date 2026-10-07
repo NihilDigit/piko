@@ -25,13 +25,9 @@ import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SegmentedListItem
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -57,6 +53,7 @@ import dev.piko.ui.components.IslandTitle
 import dev.piko.ui.components.PikoDialog
 import dev.piko.ui.components.PikoDialogConfirm
 import dev.piko.ui.components.PikoScaffold
+import dev.piko.ui.components.PikoTextField
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.PinnedPriority
 import dev.piko.ui.components.PrimaryActionButton
@@ -151,7 +148,6 @@ fun WebDavScreen(
             ) {
                 SettingsGroup(null) {
                     SettingsSwitchRow(
-                        index = 0, count = 3,
                         icon = Icons.Outlined.Lan,
                         title = "WebDAV",
                         supporting = "关闭后各应用均无法连接",
@@ -159,8 +155,8 @@ fun WebDavScreen(
                         onCheckedChange = state::setEnabled,
                         enabled = !state.isToggling,
                     )
-                    AddressRow(1, 3, "服务器地址", WebDav.ENDPOINT, onCopy = { copy("服务器地址", WebDav.ENDPOINT) })
-                    AddressRow(2, 3, "备用地址", WebDav.ALTERNATIVE_ENDPOINT, onCopy = { copy("备用地址", WebDav.ALTERNATIVE_ENDPOINT) })
+                    AddressRow("服务器地址", WebDav.ENDPOINT, onCopy = { copy("服务器地址", WebDav.ENDPOINT) })
+                    AddressRow("备用地址", WebDav.ALTERNATIVE_ENDPOINT, onCopy = { copy("备用地址", WebDav.ALTERNATIVE_ENDPOINT) })
                 }
                 SettingsGroup("应用") {
                     val clients = state.webDavClients
@@ -172,11 +168,9 @@ fun WebDavScreen(
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                         )
                     }
-                    clients.forEachIndexed { index, client ->
+                    clients.forEach { client ->
                         WebDavClientCard(
                             client = client,
-                            index = index,
-                            count = clients.size,
                             busy = client.id in state.busyIds,
                             onCopy = ::copy,
                             onEdit = { editing = client },
@@ -257,27 +251,23 @@ fun WebDavScreen(
 }
 
 @Composable
-private fun AddressRow(index: Int, count: Int, title: String, url: String, onCopy: () -> Unit) {
-    SegmentedListItem(
+private fun AddressRow(title: String, url: String, onCopy: () -> Unit) {
+    SettingsRow(
+        title = title,
+        icon = Icons.Outlined.Link,
+        supporting = url,
         onClick = onCopy,
-        shapes = stableSegmentedShapes(index, count),
-        colors = settingsRowColors(),
-        leadingContent = { Icon(Icons.Outlined.Link, contentDescription = null) },
-        trailingContent = { Icon(Icons.Outlined.ContentCopy, contentDescription = "复制") },
-        supportingContent = { Text(url) },
-        content = { Text(title) },
+        trailing = { Icon(Icons.Outlined.ContentCopy, contentDescription = "复制") },
     )
 }
 
 /**
- * 一个应用：名称与操作在首行，下面是用户名与密码。不用 SegmentedListItem：它只有标题与一行副文本，
- * 两行凭据各带按钮放不进去。外观照分段列表，与上面的开关、地址连成一组。
+ * 一个应用：名称与操作在首行，下面是用户名与密码。不用 SettingsRow：它只有标题与一行说明，
+ * 两行凭据各带按钮放不进去。外观照设置的卡片，各应用连成一组。
  */
 @Composable
 private fun WebDavClientCard(
     client: WebDavClient,
-    index: Int,
-    count: Int,
     busy: Boolean,
     onCopy: (label: String, text: String) -> Unit,
     onEdit: () -> Unit,
@@ -286,11 +276,7 @@ private fun WebDavClientCard(
 ) {
     // 按 ID 记，换了密码仍保持显示；账号切换后列表整份换掉，ID 对不上自然遮回去
     var revealed by remember(client.id) { mutableStateOf(false) }
-    Surface(
-        shape = ListItemDefaults.segmentedShapes(index = index, count = count).shape,
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
+    SettingsCard {
         Column(modifier = Modifier.padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
@@ -355,13 +341,11 @@ private fun WebDavClientDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = {
-            OutlinedTextField(
+            PikoTextField(
                 value = name,
                 onValueChange = { name = it },
-                label = { Text("名称") },
-                placeholder = { Text("例如 Infuse") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
+                label = "名称",
+                placeholder = "例如 Infuse",
             )
         },
         confirmButton = {

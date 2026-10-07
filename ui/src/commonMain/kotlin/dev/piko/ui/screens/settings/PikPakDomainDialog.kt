@@ -1,27 +1,15 @@
 package dev.piko.ui.screens.settings
 
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Dns
-import dev.piko.ui.components.PikoDialog
-import androidx.compose.material3.Icon
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
+import dev.piko.ui.components.TooltipIconButton
 import io.github.nihildigit.pikpak.DomainProbe
 import io.github.nihildigit.pikpak.PikPakDomain
 
@@ -40,73 +28,47 @@ fun PikPakDomainDialog(
     onProbeAgain: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    PikoDialog(
-        onDismissRequest = onDismiss,
-        icon = { Icon(Icons.Outlined.Dns, contentDescription = null) },
-        title = { Text("服务器域名") },
-        text = {
-            Column {
-                Column(Modifier.selectableGroup()) {
-                    DomainRow(
-                        title = "自动选择",
-                        // 测速是异步的，结果回来才有域名；原先「按测速结果选用最快的域名，当前为 …」在窄屏上
-                        // 折成两行，整个对话框随之跳一下。有域名时只写域名，短到一行放得下
-                        supporting = active?.let { "测速选定 ${it.root}" } ?: "选用测速最快的域名",
-                        selected = choice.isEmpty(),
-                        onSelect = { onChoose("") },
-                    )
-                    PikPakDomain.entries.forEach { domain ->
-                        DomainRow(
-                            title = domain.root,
-                            supporting = probes[domain].latencyLabel(probing),
-                            selected = choice == domain.root,
-                            onSelect = { onChoose(domain.root) },
-                        )
-                    }
-                }
+    SettingsChoiceDialog(
+        icon = Icons.Outlined.Dns,
+        title = "服务器域名",
+        onDismiss = onDismiss,
+        footer = "各域名指向同一组服务器，账号通用。某一域名受限时可换用其他域名。",
+        // 测速放在列表上方：原来是底部与「完成」并排的第二个按钮，读起来像另一种提交方式（ux-review M2）
+        header = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = "各域名指向同一组服务器，账号通用。某一域名受网络限速时，可改用其他域名。",
-                    style = MaterialTheme.typography.bodySmall,
+                    text = if (probing) "正在测速" else "延迟为最近一次测速结果",
+                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 8.dp),
+                    modifier = Modifier.weight(1f),
                 )
+                TooltipIconButton(Icons.Outlined.Refresh, "重新测速", onProbeAgain, enabled = !probing)
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("完成") } },
-        dismissButton = {
-            TextButton(onClick = onProbeAgain, enabled = !probing) { Text(if (probing) "测速中" else "重新测速") }
-        },
-    )
+    ) {
+        SettingsChoiceOption(
+            title = "自动选择",
+            // 测速是异步的，结果回来才有域名；原先「按测速结果选用最快的域名，当前为 …」在窄屏上
+            // 折成两行，整个对话框随之跳一下。有域名时只写域名，短到一行放得下
+            supporting = active?.let { "测速选定 ${it.root}" } ?: "选用测速最快的域名",
+            selected = choice.isEmpty(),
+            onClick = { onChoose("") },
+        )
+        PikPakDomain.entries.forEach { domain ->
+            SettingsChoiceOption(
+                title = domain.root,
+                supporting = probes[domain].latencyLabel(probing),
+                selected = choice == domain.root,
+                onClick = { onChoose(domain.root) },
+            )
+        }
+    }
 }
 
 private fun DomainProbe?.latencyLabel(probing: Boolean): String = when {
     this == null -> if (probing) "测速中" else "未测速"
     !usable || warmRequest == null -> "不可用"
     else -> "延迟 ${warmRequest!!.inWholeMilliseconds} ms"
-}
-
-@Composable
-private fun DomainRow(title: String, supporting: String, selected: Boolean, onSelect: () -> Unit) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 56.dp)
-            .clip(MaterialTheme.shapes.medium)
-            .selectable(selected = selected, onClick = onSelect, role = Role.RadioButton),
-    ) {
-        RadioButton(selected = selected, onClick = null, modifier = Modifier.padding(end = 16.dp))
-        Column {
-            Text(title, style = MaterialTheme.typography.bodyLarge)
-            Text(
-                supporting,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-    }
 }
 
 /** 设置页那一行的说明：「自动选择 mypikpak.net，延迟 92 ms」，固定时是「固定为 mypikpak.net，延迟 92 ms」。 */

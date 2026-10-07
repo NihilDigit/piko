@@ -240,8 +240,9 @@ fun SavedArchivePasswordsDialog(
                 }
             }
         },
+        // 删除当场生效，与设置里点选即生效的对话框一样只留「关闭」
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("完成") }
+            TextButton(onClick = onDismiss) { Text("关闭") }
         },
     )
 }

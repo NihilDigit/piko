@@ -1,14 +1,8 @@
 package dev.piko.ui.screens.settings
 
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
@@ -21,7 +15,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -32,7 +25,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.shared.data.SavedAccount
@@ -43,64 +37,75 @@ import dev.piko.ui.components.toReadableSize
 import kotlinx.coroutines.launch
 
 /**
- * 账号卡片下面的账号管理：本机保存的其余账号（点一下切过去）与添加账号。退出在 [LogoutButton]。
- * 「我的」页与宽窗口的设置页共用。当前账号就是上面那张卡片，这里不再列它。
+ * 账号卡片下面的账号管理：本机保存的其余账号（点一下切过去）与添加账号。
+ * 「我的」页与桌面的设置页共用。当前账号就是上面那张卡片，这里不再列它。
+ *
+ * [onLoggedOut] 不为 null 时组末加一行「退出登录」（桌面设置页）；「我的」页照惯例把退出放在页底（[LogoutButton]）。
  */
 @Composable
-internal fun AccountSwitcher() {
+internal fun AccountSwitcher(onLoggedOut: (() -> Unit)? = null) {
     val clientManager = LocalPikoServices.current.clientManager
     val others = otherAccounts()
     val scope = rememberCoroutineScope()
     var switching by remember { mutableStateOf<String?>(null) }
     val expired by clientManager.expiredAccounts.collectAsStateWithLifecycle()
     var forgetting by remember { mutableStateOf<SavedAccount?>(null) }
+    var confirmLogout by remember { mutableStateOf(false) }
 
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surfaceContainer,
-    ) {
-        Column(modifier = Modifier.padding(vertical = 8.dp)) {
-            others.forEach { saved ->
-                AccountRow(
-                    leading = { Avatar(saved.displayName, saved.avatarUrl, size = 36.dp) },
-                    title = saved.displayName,
-                    supporting = if (saved.account in expired) "需重新登录" else accountLine(saved),
-                    supportingIsError = saved.account in expired,
-                    enabled = switching == null,
-                    onClick = {
-                        if (saved.account in expired) {
-                            clientManager.beginAddingAccount(saved.account)
-                            return@AccountRow
-                        }
-                        switching = saved.account
-                        scope.launch {
-                            // 失败时 switchTo 已把它记进 expiredAccounts，这一行随之改成「需重新登录」
-                            clientManager.switchTo(saved.account)
-                            switching = null
-                        }
-                    },
-                    trailing = {
-                        if (switching == saved.account) {
-                            Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) { InlineLoadingIndicator() }
-                        } else {
-                            TooltipIconButton(Icons.Outlined.Close, "移除", onClick = { forgetting = saved }, enabled = switching == null)
-                        }
-                    },
-                )
-            }
-            AccountRow(
-                leading = {
-                    Box(Modifier.size(36.dp), contentAlignment = Alignment.Center) {
-                        Icon(Icons.Outlined.PersonAdd, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+    SettingsGroup(null) {
+        others.forEach { saved ->
+            val isExpired = saved.account in expired
+            SettingsRow(
+                title = saved.displayName,
+                leading = { Avatar(saved.displayName, saved.avatarUrl, size = AccountAvatarSize) },
+                supporting = if (isExpired) "需重新登录" else accountLine(saved),
+                supportingColor = if (isExpired) MaterialTheme.colorScheme.error else Color.Unspecified,
+                enabled = switching == null,
+                onClick = {
+                    if (isExpired) {
+                        clientManager.beginAddingAccount(saved.account)
+                        return@SettingsRow
+                    }
+                    switching = saved.account
+                    scope.launch {
+                        // 失败时 switchTo 已把它记进 expiredAccounts，这一行随之改成「需重新登录」
+                        clientManager.switchTo(saved.account)
+                        switching = null
                     }
                 },
-                title = "添加账号",
-                supporting = if (others.isEmpty()) "可同时保存多个账号并随时切换" else null,
-                enabled = switching == null,
-                onClick = { clientManager.beginAddingAccount() },
+                trailing = {
+                    if (switching == saved.account) {
+                        Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) { InlineLoadingIndicator() }
+                    } else {
+                        TooltipIconButton(Icons.Outlined.Close, "移除", onClick = { forgetting = saved }, enabled = switching == null)
+                    }
+                },
             )
         }
+        // 这一组的图标放进与头像同宽的格子里，各行标题才对得齐
+        SettingsRow(
+            title = "添加账号",
+            leading = { AvatarSlot(Icons.Outlined.PersonAdd, MaterialTheme.colorScheme.onSurfaceVariant) },
+            supporting = if (others.isEmpty()) "可同时保存多个账号并随时切换" else null,
+            enabled = switching == null,
+            onClick = { clientManager.beginAddingAccount() },
+        )
+        if (onLoggedOut != null) {
+            SettingsRow(
+                title = if (others.isEmpty()) "退出登录" else "退出此账号",
+                leading = { AvatarSlot(Icons.AutoMirrored.Outlined.Logout, MaterialTheme.colorScheme.error) },
+                titleColor = MaterialTheme.colorScheme.error,
+                enabled = switching == null,
+                onClick = { confirmLogout = true },
+            )
+        }
+    }
+    if (confirmLogout && onLoggedOut != null) {
+        LogoutDialog(
+            next = others.maxByOrNull { it.usedAt },
+            onDismiss = { confirmLogout = false },
+            onLoggedOut = onLoggedOut,
+        )
     }
     forgetting?.let { saved ->
         PikoDialog(
@@ -163,36 +168,11 @@ private fun accountLine(saved: SavedAccount): String? {
 }
 
 @Composable
-private fun AccountRow(
-    leading: @Composable () -> Unit,
-    title: String,
-    supporting: String?,
-    enabled: Boolean,
-    onClick: () -> Unit,
-    supportingIsError: Boolean = false,
-    trailing: (@Composable () -> Unit)? = null,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        leading()
-        Column(modifier = Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            supporting?.let {
-                Text(
-                    it,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (supportingIsError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-        if (trailing != null) trailing() else Spacer(Modifier.size(40.dp))
+private fun AvatarSlot(icon: ImageVector, tint: Color) {
+    Box(Modifier.size(AccountAvatarSize), contentAlignment = Alignment.Center) {
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(settingsStyle().iconSize))
     }
 }
+
+// 比行图标大一号，仍放得进一行之内；与当前账号卡片的 48dp 头像分出主次
+private val AccountAvatarSize = 32.dp
