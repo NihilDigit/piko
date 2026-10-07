@@ -754,6 +754,8 @@ internal fun FolderMapPanel(
             },
             onSettled = state::judgeDock,
             onGesture = { state.gesturing = it },
+            // 停靠那一侧的拖动区正压在把手上，悬停展开时指针一落下就是改大小的光标，像是要拖
+            fixedSide = state.dock,
             visible = expanded,
             enter = motion.peekEnter(fromEnd = state.dock != DockSide.Left, offsetPx = with(density) { PeekOffset.roundToPx() }),
             exit = motion.peekExit(),

@@ -147,6 +147,7 @@ internal class FloatingPanelState(width: Dp, followsEnd: Boolean = true) {
  *
  * [visible] 为 false 时卡片照 [exit] 消失、离开组合，位置、大小与 [FloatingPanelState.bounds] 留着，再出现时照 [enter] 在原处出现。
  * [onGesture] 在开始拖标题行或改大小时以 true 调、松手或取消时以 false 调：目录图在手势进行中不自动收起。
+ * [fixedSide] 那一侧的边与两个角不给拖：贴边停靠的面板那一侧本来就顶着列表边沿。
  *
  * 用普通 Layout 而不是 Popup：不抢焦点的 Popup 收不到键盘，目录图的方向键与过滤框都用不了。
  * 也不是 BoxWithConstraints：里面有提示气泡这类弹层，测量时组合的布局在桌面端会撞上弹层销毁的崩溃（desktopApp/CLAUDE.md）。
@@ -167,6 +168,7 @@ internal fun FloatingPanel(
     onActivate: () -> Unit = {},
     onSettled: () -> Unit = {},
     onGesture: (Boolean) -> Unit = {},
+    fixedSide: DockSide? = null,
     visible: Boolean = true,
     enter: EnterTransition = EnterTransition.None,
     exit: ExitTransition = ExitTransition.None,
@@ -306,7 +308,7 @@ internal fun FloatingPanel(
                 )
             }
             if (resizable) {
-                ResizeHandles(Modifier.matchParentSize(), onResize = ::resizeBy, onSettled = onSettled, onGesture = onGesture)
+                ResizeHandles(Modifier.matchParentSize(), fixedSide, onResize = ::resizeBy, onSettled = onSettled, onGesture = onGesture)
             }
         }
     }
@@ -424,21 +426,30 @@ private fun ContentWidthFrame(minWidth: Dp, maxWidth: Dp, maxHeight: Dp, header:
  * 曾在左沿单画一道把手，只有一条边有，看着像只有那条边能拖。
  */
 @Composable
-private fun ResizeHandles(modifier: Modifier, onResize: (ResizeEdges, Dp, Dp) -> Unit, onSettled: () -> Unit, onGesture: (Boolean) -> Unit) {
+private fun ResizeHandles(
+    modifier: Modifier,
+    fixedSide: DockSide?,
+    onResize: (ResizeEdges, Dp, Dp) -> Unit,
+    onSettled: () -> Unit,
+    onGesture: (Boolean) -> Unit,
+) {
     val horizontal = LocalHorizontalResizeCursor.current
     val vertical = LocalVerticalResizeCursor.current
     val diagonal = LocalDiagonalResizeCursor.current
     val antiDiagonal = LocalAntiDiagonalResizeCursor.current
+    // 面板位置按屏幕左右记（见 FloatingPanelState），start 即左
+    val start = fixedSide != DockSide.Left
+    val end = fixedSide != DockSide.Right
     Box(modifier) {
         // 边让出两端的角，角压在边上面
-        ResizeHandle(Modifier.align(Alignment.CenterStart).width(ResizeGrab).fillMaxHeight().padding(vertical = CornerGrab), ResizeEdges(start = true), horizontal, onResize, onSettled, onGesture)
-        ResizeHandle(Modifier.align(Alignment.CenterEnd).width(ResizeGrab).fillMaxHeight().padding(vertical = CornerGrab), ResizeEdges(end = true), horizontal, onResize, onSettled, onGesture)
+        if (start) ResizeHandle(Modifier.align(Alignment.CenterStart).width(ResizeGrab).fillMaxHeight().padding(vertical = CornerGrab), ResizeEdges(start = true), horizontal, onResize, onSettled, onGesture)
+        if (end) ResizeHandle(Modifier.align(Alignment.CenterEnd).width(ResizeGrab).fillMaxHeight().padding(vertical = CornerGrab), ResizeEdges(end = true), horizontal, onResize, onSettled, onGesture)
         ResizeHandle(Modifier.align(Alignment.TopCenter).height(ResizeGrab).fillMaxWidth().padding(horizontal = CornerGrab), ResizeEdges(top = true), vertical, onResize, onSettled, onGesture)
         ResizeHandle(Modifier.align(Alignment.BottomCenter).height(ResizeGrab).fillMaxWidth().padding(horizontal = CornerGrab), ResizeEdges(bottom = true), vertical, onResize, onSettled, onGesture)
-        ResizeHandle(Modifier.align(Alignment.TopStart).size(CornerGrab), ResizeEdges(start = true, top = true), diagonal, onResize, onSettled, onGesture)
-        ResizeHandle(Modifier.align(Alignment.BottomEnd).size(CornerGrab), ResizeEdges(end = true, bottom = true), diagonal, onResize, onSettled, onGesture)
-        ResizeHandle(Modifier.align(Alignment.TopEnd).size(CornerGrab), ResizeEdges(end = true, top = true), antiDiagonal, onResize, onSettled, onGesture)
-        ResizeHandle(Modifier.align(Alignment.BottomStart).size(CornerGrab), ResizeEdges(start = true, bottom = true), antiDiagonal, onResize, onSettled, onGesture)
+        if (start) ResizeHandle(Modifier.align(Alignment.TopStart).size(CornerGrab), ResizeEdges(start = true, top = true), diagonal, onResize, onSettled, onGesture)
+        if (end) ResizeHandle(Modifier.align(Alignment.BottomEnd).size(CornerGrab), ResizeEdges(end = true, bottom = true), diagonal, onResize, onSettled, onGesture)
+        if (end) ResizeHandle(Modifier.align(Alignment.TopEnd).size(CornerGrab), ResizeEdges(end = true, top = true), antiDiagonal, onResize, onSettled, onGesture)
+        if (start) ResizeHandle(Modifier.align(Alignment.BottomStart).size(CornerGrab), ResizeEdges(start = true, bottom = true), antiDiagonal, onResize, onSettled, onGesture)
     }
 }
 
