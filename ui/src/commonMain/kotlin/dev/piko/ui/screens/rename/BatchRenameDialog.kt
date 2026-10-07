@@ -98,15 +98,31 @@ fun BatchRenameDialog(
     startWithAvNaming: Boolean = false,
 ) {
     val services = LocalPikoServices.current
-    // 上次的选项读出来之前不画：先画默认值再跳成上次的，选项会闪一下
-    val remembered by produceState<Pair<BatchRenameMemory, Boolean>?>(null) {
-        value = BatchRenameMemory.load(services.preferences) to services.preferences.renameRegexTextModeFlow.first()
-    }
-    val (memory, textMode) = remembered ?: return
+    val (memory, textMode) = rememberRenameMemory() ?: return
     val scope = rememberCoroutineScope()
     val state = remember(files) {
         BatchRenameState(services.driveRepository, services.preferences, scope, files, memory, textMode, startWithAvNaming, services.metaTube)
     }
+    CloseWhenFinished(state, onDismiss, onFinished)
+    val dismiss = { if (state.phase != Phase.RUNNING) onDismiss() }
+    BatchRenameWindow(dismiss) { twoPane, fullscreen ->
+        BatchRenameContent(state, "批量重命名", dismiss, twoPane, fullscreen)
+    }
+}
+
+/** 上次执行时的选项与写法。读出来之前为 null，调用方先不画：先画默认值再跳成上次的，选项会闪一下。 */
+@Composable
+internal fun rememberRenameMemory(): Pair<BatchRenameMemory, Boolean>? {
+    val services = LocalPikoServices.current
+    val remembered by produceState<Pair<BatchRenameMemory, Boolean>?>(null) {
+        value = BatchRenameMemory.load(services.preferences) to services.preferences.renameRegexTextModeFlow.first()
+    }
+    return remembered
+}
+
+/** 执行结束时交出结果；全部成功即关闭，有失败或中途停止时留着列出没改成的项。 */
+@Composable
+internal fun CloseWhenFinished(state: BatchRenameState, onDismiss: () -> Unit, onFinished: (message: String) -> Unit) {
     val latestOnFinished by rememberUpdatedState(onFinished)
     val latestOnDismiss by rememberUpdatedState(onDismiss)
     // 结果与关闭放在同一个协程里依次做：分成两个 effect 的话，对话框可能先关掉，结果就收不到了
@@ -116,12 +132,17 @@ fun BatchRenameDialog(
             if (state.failures.isEmpty() && !state.wasStopped) latestOnDismiss()
         }
     }
-    val dismiss = { if (state.phase != Phase.RUNNING) onDismiss() }
+}
 
-    // 高度 compact 时规则与预览上下叠着放不下，同窄屏一样全屏
+/**
+ * 批量重命名的外框，按窗口大小取全屏、单栏或两栏的对话框。[content] 收到的是要不要两栏、是不是全屏。
+ * 高度 compact 时规则与预览上下叠着放不下，同窄屏一样全屏。
+ */
+@Composable
+internal fun BatchRenameWindow(onDismiss: () -> Unit, content: @Composable (twoPane: Boolean, fullscreen: Boolean) -> Unit) {
     when (if (isHeightCompact()) WidthClass.Compact else currentWidthClass()) {
         WidthClass.Compact -> LocalPikoPlatform.current.FullscreenDialog(
-            onDismiss = dismiss,
+            onDismiss = onDismiss,
             immersive = false,
             systemBarsVisible = true,
         ) {
@@ -129,17 +150,13 @@ fun BatchRenameDialog(
                 // 底部由底栏自己让开手势横条，底色才能铺到横条下面
                 Box(modifier = Modifier.windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))) {
                     CompositionLocalProvider(LocalRenameRowColor provides MaterialTheme.colorScheme.surfaceContainer) {
-                        BatchRenameContent(state, dismiss, twoPane = false, fullscreen = true)
+                        content(false, true)
                     }
                 }
             }
         }
-        WidthClass.Medium -> RenameDialogSurface(dismiss, maxWidth = 640) {
-            BatchRenameContent(state, dismiss, twoPane = false, fullscreen = false)
-        }
-        WidthClass.Expanded -> RenameDialogSurface(dismiss, maxWidth = 1120) {
-            BatchRenameContent(state, dismiss, twoPane = true, fullscreen = false)
-        }
+        WidthClass.Medium -> RenameDialogSurface(onDismiss, maxWidth = 640) { content(false, false) }
+        WidthClass.Expanded -> RenameDialogSurface(onDismiss, maxWidth = 1120) { content(true, false) }
     }
 }
 
@@ -169,10 +186,22 @@ internal fun RenameDialogSurface(onDismiss: () -> Unit, maxWidth: Int, heightFra
     }
 }
 
+/**
+ * [treeSummary] 只给一棵树（[BatchRenameState.isNamingTree]）：扫描的范围，写在规则区的位置上，那里没有规则可调。
+ */
 @Composable
-private fun BatchRenameContent(state: BatchRenameState, onClose: () -> Unit, twoPane: Boolean, fullscreen: Boolean) {
-    val focusSearch = !fullscreen
-    var changedOnly by remember { mutableStateOf(false) }
+internal fun BatchRenameContent(
+    state: BatchRenameState,
+    title: String,
+    onClose: () -> Unit,
+    twoPane: Boolean,
+    fullscreen: Boolean,
+    treeSummary: String? = null,
+) {
+    val focusSearch = !fullscreen && !state.isNamingTree
+    // 一棵树里多数项不改名，几千行里找改动的那几行，所以默认只列变更项
+    var changedOnly by remember { mutableStateOf(state.isNamingTree) }
+    var editing by remember { mutableStateOf<RenameRow?>(null) }
     val searchFocus = remember { FocusRequester() }
     // 触屏上一打开就弹出键盘会盖住预览，只在宽窗口里直接把焦点给查找框
     if (focusSearch) {
@@ -189,6 +218,7 @@ private fun BatchRenameContent(state: BatchRenameState, onClose: () -> Unit, two
                 state.failures.toList()
             } else {
                 state.plan.rows
+                    .map { row -> state.proposedRow(row) }
                     .filter { !changedOnly || it.isChanged || it.problem != null }
                     .sortedBy { it.problem == null }
             }
@@ -196,31 +226,22 @@ private fun BatchRenameContent(state: BatchRenameState, onClose: () -> Unit, two
     }
     val editable = state.phase == Phase.EDITING
     val showRules = state.phase != Phase.DONE
+    val rules: @Composable (Modifier) -> Unit = { modifier ->
+        if (treeSummary != null) {
+            CanonicalTreeOptions(state, treeSummary, editable, changedOnly, { changedOnly = it }, modifier)
+        } else {
+            BatchRenameOptions(state, editable, searchFocus, changedOnly, { changedOnly = it }, modifier)
+        }
+    }
+    val onEdit: ((RenameRow) -> Unit)? = if (state.isNamingTree && editable) ({ editing = it }) else null
 
     Column(modifier = Modifier.fillMaxSize()) {
-        PikoTopBar(
-            title = "批量重命名",
-            navigationIcon = if (fullscreen) {
-                {
-                    IconButton(onClick = onClose, enabled = state.phase != Phase.RUNNING) {
-                        Icon(Icons.Outlined.Close, contentDescription = "关闭")
-                    }
-                }
-            } else {
-                null
-            },
-            colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
-        )
+        RenameTopBar(title, onClose, fullscreen, closeEnabled = state.phase != Phase.RUNNING)
         if (twoPane) {
             Row(modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp)) {
                 if (showRules) {
-                    BatchRenameOptions(
-                        state = state,
-                        enabled = editable,
-                        searchFocus = searchFocus,
-                        changedOnly = changedOnly,
-                        onChangedOnlyChange = { changedOnly = it },
-                        modifier = Modifier
+                    rules(
+                        Modifier
                             .width(380.dp)
                             .fillMaxHeight()
                             .verticalScroll(rememberScrollState())
@@ -234,26 +255,67 @@ private fun BatchRenameContent(state: BatchRenameState, onClose: () -> Unit, two
                     modifier = Modifier.weight(1f).fillMaxHeight(),
                 ) {
                     // 卡片里只有文件名：不写「原名」「新名」列头，箭头与新名的加粗已分得清两边
-                    PreviewList(state, rows, wide = true, segmented = false, contentPadding = PaddingValues(vertical = 8.dp), modifier = Modifier.fillMaxSize()) {}
+                    PreviewList(state, rows, wide = true, segmented = false, contentPadding = PaddingValues(vertical = 8.dp), onEdit, Modifier.fillMaxSize()) {}
                 }
             }
         } else {
-            PreviewList(state, rows, wide = false, segmented = true, contentPadding = PaddingValues(horizontal = 16.dp), modifier = Modifier.weight(1f)) {
+            PreviewList(state, rows, wide = false, segmented = true, contentPadding = PaddingValues(horizontal = 16.dp), onEdit, Modifier.weight(1f)) {
                 if (showRules) {
-                    item(key = "rules") {
-                        BatchRenameOptions(state = state, enabled = editable, searchFocus = searchFocus, changedOnly = changedOnly, onChangedOnlyChange = { changedOnly = it })
-                    }
+                    item(key = "rules") { rules(Modifier) }
                 }
                 item(key = "gap") { Spacer(Modifier.height(24.dp)) }
             }
         }
         RenameActionBar(state, onClose, showCancel = !fullscreen)
     }
+    editing?.let { row ->
+        EditNewNameDialog(
+            row = row,
+            overridden = row.source.id in state.overrides,
+            onConfirm = { name ->
+                state.setOverride(row.source.id, name)
+                state.setIncluded(row.source.id, true)
+                editing = null
+            },
+            onDismiss = { editing = null },
+        )
+    }
+}
+
+/**
+ * 标题栏。关闭照 M3：全屏对话框才在左上角放关闭；浮着的基本对话框不画关闭，底栏「取消」在主按钮左边。
+ */
+@Composable
+internal fun RenameTopBar(title: String, onClose: () -> Unit, fullscreen: Boolean, closeEnabled: Boolean = true) {
+    PikoTopBar(
+        title = title,
+        navigationIcon = if (fullscreen) {
+            {
+                IconButton(onClick = onClose, enabled = closeEnabled) {
+                    Icon(Icons.Outlined.Close, contentDescription = "关闭")
+                }
+            }
+        } else {
+            null
+        },
+        colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
+    )
+}
+
+/**
+ * 一棵树里取消勾选的项照样写出勾上时的新名称（[BatchRenameState.proposedName]）：冲突的默认不勾，
+ * 不写出来就看不出它本要改成什么。
+ */
+private fun BatchRenameState.proposedRow(row: RenameRow): RenameRow {
+    if (row.source.id !in excludedIds) return row
+    val proposed = proposedName(row.source.id) ?: return row
+    return row.copy(newName = proposed)
 }
 
 /**
  * 预览列表。[header] 放在各行之前，单栏时规则区与计数即由此接进同一个列表一起滚。
  * [segmented] 时每行自带设置页那样的分段底色；两栏时整个列表已在一张卡片里，行不再另上底色。
+ * 一棵树里每行另写所在的目录，[onEdit] 不为 null 时行尾可手改新名称。
  */
 @Composable
 private fun PreviewList(
@@ -262,6 +324,7 @@ private fun PreviewList(
     wide: Boolean,
     segmented: Boolean,
     contentPadding: PaddingValues,
+    onEdit: ((RenameRow) -> Unit)?,
     modifier: Modifier,
     header: LazyListScope.() -> Unit,
 ) {
@@ -270,14 +333,19 @@ private fun PreviewList(
         LazyColumn(state = listState, contentPadding = contentPadding, modifier = Modifier.fillMaxSize()) {
             header()
             itemsIndexed(rows, key = { _, row -> row.source.id }) { index, row ->
+                // 一棵树没有查找，原名不分查找够得着的部分与够不着的部分
+                val plain = state.phase == Phase.DONE || state.isNamingTree
                 PreviewRow(
                     row = row,
-                    highlights = if (state.phase == Phase.DONE) emptyList() else state.highlights(row.source),
-                    searchRange = if (state.phase == Phase.DONE) row.source.name.indices else state.searchRange(row.source),
+                    highlights = if (plain) emptyList() else state.highlights(row.source),
+                    searchRange = if (plain) row.source.name.indices else state.searchRange(row.source),
                     included = row.source.id !in state.excludedIds,
                     onIncludedChange = if (state.phase == Phase.DONE) null else { checked -> state.setIncluded(row.source.id, checked) },
                     wide = wide,
                     container = if (segmented) ListItemDefaults.segmentedShapes(index = index, count = rows.size).shape else null,
+                    location = state.locationOf(row.source.id),
+                    // 只给要改名的行：不改的行每行一个按钮只是噪声，要改也多半是规则漏认的番号，交给单个文件的重命名
+                    onEdit = onEdit?.takeIf { row.isChanged || row.problem != null }?.let { edit -> { edit(row) } },
                 )
                 if (segmented && index < rows.lastIndex) Spacer(Modifier.height(ListItemDefaults.SegmentedGap))
             }
@@ -317,8 +385,8 @@ private fun RenameActionBar(state: BatchRenameState, onClose: () -> Unit, showCa
             )
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            // 教程只讲积木，正则文本模式下不给
-            if (state.phase == Phase.EDITING && !state.textMode) {
+            // 教程只讲积木，正则文本模式与一棵树（没有积木）不给
+            if (state.phase == Phase.EDITING && !state.textMode && !state.isNamingTree) {
                 var showGuide by remember { mutableStateOf(false) }
                 TooltipIconButton(Icons.AutoMirrored.Outlined.HelpOutline, "使用说明", { showGuide = true })
                 if (showGuide) RenameGuideDialog(onDismiss = { showGuide = false })
@@ -339,6 +407,8 @@ private fun RenameActionBar(state: BatchRenameState, onClose: () -> Unit, showCa
             when (state.phase) {
                 Phase.EDITING -> {
                     if (state.siblingsFailed) TextButton(onClick = state::loadSiblings) { Text("重试") }
+                    // 查到的照用，其余用原名里的片名
+                    if (state.metaTubeProgress != null) TextButton(onClick = state::skipMetaTube) { Text("跳过") }
                     if (showCancel) TextButton(onClick = onClose) { Text("取消") }
                     renameButton()
                 }

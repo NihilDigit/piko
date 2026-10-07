@@ -108,7 +108,7 @@ class DriveScreenState(
     private val preferences: PikoUserPreferences,
     private val scope: CoroutineScope,
     /**
-     * 会话位置（查找重复、按番号规范命名，见 [DriveLibrary.isSession]）眼下列的内容，会话没开着时为 null，那里是空的。
+     * 会话位置（查找重复，见 [DriveLibrary.isSession]）眼下列的内容，会话没开着时为 null，那里是空的。
      * 读的是会话的 Compose 状态，结果变了列表跟着变。
      */
     private val sessionListing: (DriveLibrary) -> SessionListing? = { null },
@@ -423,7 +423,7 @@ class DriveScreenState(
                 onFolderChanged()
             }
         }
-        // 查重与规范命名的结果随扫描、删除、改名与撤销变化，不经 load：停在那个位置时跟着重画
+        // 查重的结果随扫描、删除、改名与撤销变化，不经 load：停在那个位置时跟着重画
         scope.launch {
             snapshotFlow { libraryView?.takeIf { it.isSession }?.let { it to sessionListing(it)?.files } }.collect { shown ->
                 if (shown != null) showSession(shown.first)
@@ -770,10 +770,10 @@ class DriveScreenState(
         DriveLibrary.TRASH -> driveRepo.trashFiles().map { LibraryListing(it, emptyMap()) }
         DriveLibrary.RECENT -> driveRepo.recentlyAdded().map(::eventListing)
         DriveLibrary.HISTORY -> driveRepo.playHistory().map(::eventListing)
-        DriveLibrary.DUPLICATES, DriveLibrary.CANONICAL_NAMES -> error("${library.title}的内容来自会话，不经网络")
+        DriveLibrary.DUPLICATES -> error("${library.title}的内容来自会话，不经网络")
     }
 
-    // region 会话位置：查找重复、按番号规范命名
+    // region 会话位置：查找重复
 
     /** 会话的结果换了（扫完、移走或改了名、撤销）就重画。files 只放去重后的文件，供按 ID 找回与空态判断。 */
     private fun showSession(library: DriveLibrary) {
@@ -785,7 +785,7 @@ class DriveScreenState(
     }
 
     /**
-     * 选中 [ids]（查重建议移走的、规范命名里能改的），之后就是普通的多选。不在进来时自动选上：曾经那样做，一进来就在多选里，
+     * 选中 [ids]（查重建议移走的），之后就是普通的多选。不在进来时自动选上：曾经那样做，一进来就在多选里，
      * 单击变成勾选、播不了也看不了预览，点一下空白处整组勾选又没了。
      */
     fun selectOnly(ids: Set<String>) {

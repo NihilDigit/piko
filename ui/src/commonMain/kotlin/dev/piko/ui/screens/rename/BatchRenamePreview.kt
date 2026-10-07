@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.ArrowDownward
+import androidx.compose.material.icons.outlined.Edit
+import dev.piko.ui.components.TooltipIconButton
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -43,6 +45,7 @@ import dev.piko.shared.rename.RenameRow
  * 不改的行只留原名，不必每行都写一遍「不改」。
  * 原名里被查找匹配到的各段（[highlights]）按积木的颜色铺底，与查找条上的积木、替换条上的 ①② 同色。
  * [onIncludedChange] 为 null 时不画勾选框（执行结束后列失败项时）。[container] 不为 null 时这一行自带分段底色。
+ * [location] 是一棵树里这一项所在的目录，小字写在原名下面；[onEdit] 不为 null 时行尾有修改新名称的按钮。
  */
 @Composable
 internal fun PreviewRow(
@@ -53,13 +56,15 @@ internal fun PreviewRow(
     wide: Boolean,
     container: Shape?,
     searchRange: IntRange? = row.source.name.indices,
+    location: String? = null,
+    onEdit: (() -> Unit)? = null,
 ) {
     if (container != null) {
         Surface(shape = container, color = LocalRenameRowColor.current, modifier = Modifier.fillMaxWidth()) {
-            PreviewRowContent(row, highlights, included, onIncludedChange, wide, searchRange)
+            PreviewRowContent(row, highlights, included, onIncludedChange, wide, searchRange, location, onEdit)
         }
     } else {
-        PreviewRowContent(row, highlights, included, onIncludedChange, wide, searchRange)
+        PreviewRowContent(row, highlights, included, onIncludedChange, wide, searchRange, location, onEdit)
     }
 }
 
@@ -71,6 +76,8 @@ private fun PreviewRowContent(
     onIncludedChange: ((Boolean) -> Unit)?,
     wide: Boolean,
     searchRange: IntRange?,
+    location: String?,
+    onEdit: (() -> Unit)?,
 ) {
     val colors = MaterialTheme.colorScheme
     val shown = row.isChanged || row.problem != null
@@ -96,15 +103,19 @@ private fun PreviewRowContent(
         }
     }
     val originalName: @Composable (Modifier) -> Unit = { modifier ->
-        // 原名不划线：前后缀整段去掉时几乎整行都被划掉，反而读不出来。改动只在新名上标
-        Text(
-            text = original,
-            style = MaterialTheme.typography.bodyMedium,
-            color = colors.onSurfaceVariant,
-            maxLines = 3,
-            overflow = TextOverflow.Ellipsis,
-            modifier = modifier,
-        )
+        Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            // 原名不划线：前后缀整段去掉时几乎整行都被划掉，反而读不出来。改动只在新名上标
+            Text(
+                text = original,
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.onSurfaceVariant,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
+            location?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = outOfRange, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
     }
     val newName: @Composable (Modifier) -> Unit = { modifier ->
         Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -112,7 +123,12 @@ private fun PreviewRowContent(
                 Text(
                     text = if (row.newName.isEmpty()) AnnotatedString("（空）") else markAdded(row.source.name, row.newName, highlight),
                     style = MaterialTheme.typography.bodyMedium,
-                    color = if (row.problem != null) colors.error else colors.onSurface,
+                    // 不勾的项写出的是勾上时的新名称（一棵树里冲突的默认不勾），调暗以示不改
+                    color = when {
+                        row.problem != null -> colors.error
+                        !included -> outOfRange
+                        else -> colors.onSurface
+                    },
                     maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -150,6 +166,7 @@ private fun PreviewRowContent(
                 }
             }
         }
+        if (onEdit != null) TooltipIconButton(Icons.Outlined.Edit, "修改新名称", onEdit)
     }
 }
 

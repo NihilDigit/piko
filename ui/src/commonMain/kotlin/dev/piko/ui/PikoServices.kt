@@ -28,8 +28,6 @@ import dev.piko.shared.state.FolderVaultSession
 import dev.piko.shared.state.ClipFeedSession
 import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.DuplicateSession
-import dev.piko.shared.state.CanonicalNamingState
-import dev.piko.shared.state.FolderTaskSession
 import dev.piko.shared.state.InstantSaveRecords
 import dev.piko.shared.state.InstantSession
 import dev.piko.shared.state.InstantSheetState
@@ -149,14 +147,6 @@ class PikoServices(
         )
     }
 
-    /** 按番号规范命名一个文件夹，与查找重复同一种会话，见 CanonicalNamingState。 */
-    val canonicalNamingSession: FolderTaskSession<CanonicalNamingState> by lazy {
-        FolderTaskSession(
-            newScope = { CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate) },
-            newState = { scope, root -> CanonicalNamingState(clientManager, driveRepository, metaTube, scope, root) },
-        )
-    }
-
     // 主线程且与进程同寿：会话在这个作用域上改 Compose 状态，离开网盘页后解压仍要继续
     val archiveExtractSession: ArchiveExtractSession by lazy {
         ArchiveExtractSession(
@@ -205,14 +195,13 @@ class PikoServices(
     }
 
     init {
-        // 未完成的添加链接、查重、规范命名、解压、片段下载、信息流与归档都属于上一个账号：保存目标、文件 ID 都是那边的。
+        // 未完成的添加链接、查重、解压、片段下载、信息流与归档都属于上一个账号：保存目标、文件 ID 都是那边的。
         // 主线程上当场结束，会话的状态只在主线程上改
         CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).launchOnAccountLeave(clientManager) { left ->
             PikoLog.i(TAG, "${if (clientManager.currentClient.value == null) "退出登录" else "换号"}：结束上一账号的进程级会话")
             instantSession.end()
             instantTitleFill.endAccount()
             duplicateSession.end()
-            canonicalNamingSession.end()
             archiveExtractSession.clear()
             archiveBrowser.clear()
             segmentSession.end()

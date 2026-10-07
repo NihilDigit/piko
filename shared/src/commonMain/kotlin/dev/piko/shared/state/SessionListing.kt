@@ -1,7 +1,6 @@
 package dev.piko.shared.state
 
 import dev.piko.shared.data.readableSize
-import dev.piko.shared.rename.RenameProblem
 import io.github.nihildigit.pikpak.FileStat
 
 /**
@@ -54,38 +53,4 @@ class DuplicateListing(private val finder: DuplicateFinderState) : SessionListin
         }
         return DriveFileView(title = file.name, tags = tags, heading = file.name, fields = emptyList())
     }
-}
-
-/**
- * 按番号规范命名的建议，按作品分组。行标题是规范名，原名与位置写在行下面那一栏（由界面给），
- * 改不了的在标签里注明原因。
- */
-class CanonicalListing(private val naming: CanonicalNamingState) : SessionListing {
-    override val files: List<FileStat> get() = naming.groups.flatMap { group -> group.rows.map { it.file } }
-
-    override fun items(isExpanded: (blockId: String) -> Boolean): List<DriveListItem> = buildList {
-        for (group in naming.groups) {
-            val title = group.code.ifEmpty { "其他" }
-            val blockId = "canonical:${group.code}"
-            val expanded = isExpanded(blockId)
-            val blocked = group.rows.count { it.problem != null }
-            val label = "$title：${group.rows.size} 项" + if (blocked > 0) "，$blocked 项无法改名" else ""
-            add(DriveListItem.SectionHeader(blockId, blockId, label, title, expanded))
-            if (!expanded) continue
-            for (row in group.rows) {
-                val tags = listOfNotNull(row.problem?.let(::problemLabel))
-                add(DriveListItem.File(row.file, DriveFileView(title = row.newName, tags = tags, heading = row.newName, fields = emptyList())))
-            }
-        }
-    }
-}
-
-// 行上的标签放不下长句，比批量重命名预览里的说法（BatchRenamePreview 的 problemLabel）短
-private fun problemLabel(problem: RenameProblem): String = when (problem) {
-    RenameProblem.EMPTY -> "名称为空"
-    RenameProblem.INVALID_CHARS -> "含不支持的字符"
-    RenameProblem.TOO_LONG -> "名称过长"
-    RenameProblem.TAKEN -> "与现有名称重复"
-    RenameProblem.BLOCKED -> "目标名称被占用"
-    RenameProblem.DUPLICATE -> "与其他新名称重复"
 }

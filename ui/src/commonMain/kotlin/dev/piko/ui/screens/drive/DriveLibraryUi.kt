@@ -2,8 +2,6 @@ package dev.piko.ui.screens.drive
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.DriveFileRenameOutline
-import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.FileCopy
 import androidx.compose.material.icons.filled.NewReleases
 import androidx.compose.material.icons.filled.PlayCircle
@@ -48,8 +46,8 @@ import java.util.Locale
  * 回收站是何时彻底清除。星标没有可说的，为 null。
  */
 internal fun libraryNote(library: DriveLibrary, file: FileStat, event: DriveEvent?): String? = when (library) {
-    // 查找重复与规范命名的附注要从会话取，见 duplicateLocations、canonicalNotes
-    DriveLibrary.STARRED, DriveLibrary.DUPLICATES, DriveLibrary.CANONICAL_NAMES -> null
+    // 查找重复的附注要从会话取，见 duplicateLocations
+    DriveLibrary.STARRED, DriveLibrary.DUPLICATES -> null
     // delete_time 是服务端排定的彻底清除时间。实测为移入回收站后 15 天，但期限由服务端决定，不在这里按固定天数推算
     DriveLibrary.TRASH -> file.deleteTime.takeIf { it.isNotEmpty() }?.let { "将于 ${it.take(10)} 彻底删除" }
     DriveLibrary.RECENT -> event?.let {
@@ -92,7 +90,6 @@ internal val DriveLibrary.icon: ImageVector
         DriveLibrary.HISTORY -> Icons.Outlined.PlayCircle
         DriveLibrary.TRASH -> Icons.Outlined.Delete
         DriveLibrary.DUPLICATES -> Icons.Outlined.FileCopy
-        DriveLibrary.CANONICAL_NAMES -> Icons.Outlined.DriveFileRenameOutline
     }
 
 internal val DriveLibrary.selectedIcon: ImageVector
@@ -102,7 +99,6 @@ internal val DriveLibrary.selectedIcon: ImageVector
         DriveLibrary.HISTORY -> Icons.Filled.PlayCircle
         DriveLibrary.TRASH -> Icons.Filled.Delete
         DriveLibrary.DUPLICATES -> Icons.Filled.FileCopy
-        DriveLibrary.CANONICAL_NAMES -> Icons.Filled.DriveFileRenameOutline
     }
 
 internal val DriveLibrary.empty: LibraryEmpty
@@ -113,8 +109,6 @@ internal val DriveLibrary.empty: LibraryEmpty
         DriveLibrary.TRASH -> LibraryEmpty("回收站为空", "移入回收站的文件显示于此，可恢复或彻底删除", icon)
         // 实际画的是 DuplicatesEmptyState，要分扫描中、失败与已结束
         DriveLibrary.DUPLICATES -> LibraryEmpty("未发现重复文件", "",Icons.Outlined.FolderOpen)
-        // 实际画的是 CanonicalNamingEmptyState
-        DriveLibrary.CANONICAL_NAMES -> LibraryEmpty("没有需要改名的项", "", Icons.Outlined.FolderOpen)
     }
 
 /**

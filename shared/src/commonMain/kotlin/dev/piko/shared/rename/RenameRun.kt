@@ -10,7 +10,7 @@ import dev.piko.shared.log.logFailure
 import dev.piko.shared.log.logFile
 
 /**
- * 执行一份 [RenamePlan]：按 [RenamePlan.steps] 逐个改名，批量重命名、文件夹的规范命名与转存后的规范命名共用。
+ * 执行一份 [RenamePlan]：按 [RenamePlan.steps] 逐个改名，批量重命名（含文件夹的规范命名）与转存后的规范命名共用。
  *
  * 一次一个：顺序本身就是为了避开 A 改成 B、B 改成 C 的中间冲突，并发会打乱它；改名请求也只是一次元数据修改，
  * 逐个执行的耗时可以接受。一项失败后它余下的步骤跳过；停在临时名称上的项试着改回原名，改不回就留着临时名称，撤销时照样能改回。
@@ -30,8 +30,7 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
     /** 成功的每一步，按执行顺序，撤销时倒着改回去。临时名称的那一步也在里面，撤销时同样倒着经过它。 */
     val renamed = mutableListOf<DriveChangeJournal.Renamed>()
 
-    /** [onRenamed] 在每一项改成最终名字时回调，调用方据此更新手上的快照。 */
-    suspend fun execute(plan: RenamePlan, onRenamed: (id: String, newName: String) -> Unit = { _, _ -> }) {
+    suspend fun execute(plan: RenamePlan) {
         val targets = plan.rows.associateBy { it.source.id }
         total = plan.changeCount
         processed = 0
@@ -49,7 +48,6 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
                 failures += row
                 if (step.from != step.source.name) renameStep(id, step.from, step.source.name)
             }
-            if (succeeded && isFinal) onRenamed(id, step.to)
             if (!succeeded || isFinal) processed++
         }
     }

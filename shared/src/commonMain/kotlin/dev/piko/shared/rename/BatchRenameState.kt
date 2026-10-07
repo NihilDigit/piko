@@ -32,6 +32,9 @@ import kotlinx.coroutines.launch
  *
  * 冲突检查要知道同目录里未选中的项叫什么，网盘页手上的列表可能是全盘搜索的结果，不代表所在目录的全部，
  * 所以打开时按所选项的 parentId 各列一次目录。列完之前与列失败时都不能执行。
+ *
+ * [tree] 不为 null 时是按番号规范命名一个文件夹（[CanonicalTreeScan] 扫出的整棵树）：规则固定为按番号规范命名，
+ * 不给查找替换，免得与算好的规范名叠在一起改出意外的结果；用户只取消勾选或逐项改新名称（[setOverride]）。
  */
 class BatchRenameState(
     private val driveRepo: PikoDriveRepository,
@@ -43,6 +46,7 @@ class BatchRenameState(
     initialAvNaming: Boolean = false,
     /** 用户配了 MetaTube 时可以从那里取片名；为 null 时没有这个选项。 */
     private val metaTube: MetaTubeService? = null,
+    private val tree: RenameTree? = null,
 ) {
     enum class Phase { EDITING, RUNNING, DONE }
 
@@ -51,6 +55,12 @@ class BatchRenameState(
     }
 
     // region 按番号规范命名
+
+    /** 规则固定为按番号规范命名，见类注释。 */
+    val isNamingTree: Boolean get() = tree != null
+
+    /** 一棵树里的项所在的目录，预览据此标出它在哪一层；不是一棵树或是树根时为 null。 */
+    fun locationOf(id: String): String? = tree?.locations?.get(id)
 
     /** 所选里有带番号的文件，才给「按番号规范命名」的入口。 */
     val avNamingAvailable: Boolean = sources.any { !it.isFolder && hasAvCode(it.name) }
@@ -64,7 +74,8 @@ class BatchRenameState(
 
     /**
      * 换上「按番号规范命名」：积木与输入框清空，免得原先的查找替换接在规范名后面改出意外的结果。
-     * 文件夹默认不勾：文件夹名常是用户自己的归类，规范名只在明确要改时才用。
+     * 多选时文件夹默认不勾：文件夹名常是用户自己的归类，规范名只在明确要改时才用。一棵树里的文件夹由资源文件夹的规则
+     * 判断过（认不出番号的、合集都不改），照常勾上。
      */
     fun startAvNaming() {
         pendingFindText = ""
@@ -74,11 +85,12 @@ class BatchRenameState(
         updateFindBlocks(emptyList())
         updateReplaceBlocks(emptyList())
         if (textMode) options = options.copy(search = "", replacement = "")
-        excludedIds = excludedIds + sources.filter { it.isFolder }.map { it.id }
+        if (tree == null) excludedIds = excludedIds + sources.filter { it.isFolder }.map { it.id }
         avNaming = true
     }
 
     fun stopAvNaming() {
+        if (tree != null) return
         avNaming = false
     }
 
@@ -114,15 +126,30 @@ class BatchRenameState(
             if (source.isFolder) matchAvFolder(source.name) else parseMediaName(source.name).av
         }
         metaTubeProgress = 0 to infos.distinctBy { it.code }.size
-        metaTubeJob = scope.launch {
-            try {
-                val result = service.titles(infos, onProgress = { done, total -> metaTubeProgress = done to total })
-                metaTubeTitles = metaTubeTitles + result.titles
-                metaTubeFailed = result.failed
-            } finally {
+        val found = HashMap<String, String>()
+        val job = scope.launch {
+            val result = service.titles(
+                infos,
+                onProgress = { done, total -> metaTubeProgress = done to total },
+                onFound = { code, title -> found[code] = title },
+            )
+            metaTubeFailed = result.failed
+        }
+        metaTubeJob = job
+        // 跳过（取消）时查到的照用。只收自己这一次的尾：关了又开时，旧的一次取消后才走到这里，不能清掉新一次的进度
+        job.invokeOnCompletion {
+            scope.launch {
+                if (metaTubeJob !== job) return@launch
+                metaTubeTitles = metaTubeTitles + found
                 metaTubeProgress = null
+                if (tree != null && siblingNames != null) excludeProblems()
             }
         }
+    }
+
+    /** 不等片名查完：查到的照用，其余用原名里的片名。 */
+    fun skipMetaTube() {
+        metaTubeJob?.cancel()
     }
 
     // endregion
@@ -351,18 +378,67 @@ class BatchRenameState(
 
     private class Preview(val plan: RenamePlan, val affixes: CommonAffixes, val patternError: String?)
 
+    private val canonicalTitles: Map<String, String> get() = if (useMetaTubeTitles) metaTubeTitles else emptyMap()
+
+    /**
+     * 一棵树的规范名按整棵树算一次，不随勾选重算：取消勾选只让那一项保持原名。按勾上的重算的话，取消勾选资源文件夹，
+     * 里面的文件就不再算在资源里、改成带片名的名字，一下变了一片；几千项的树每点一次也要整棵重新解析。
+     */
+    private val treeNames: Map<String, String>? by derivedStateOf {
+        tree ?: return@derivedStateOf null
+        sources.map { it.id }.zip(CanonicalAvRule(canonicalTitles).apply(sources, sources.map { it.name })).toMap()
+    }
+
+    /** 逐项手改的新名称，只在一棵树里有，见 [setOverride]。 */
+    var overrides by mutableStateOf(emptyMap<String, String>())
+        private set
+
+    /**
+     * 手改一项的新名称，[name] 为 null 时恢复规范名。只给一棵树：那里没有规则可调，要改一两项只能逐项改；
+     * 多选时规则还会再变，手改过的项不跟着规则走，反而看不出哪些是规则的结果。
+     */
+    fun setOverride(id: String, name: String?) {
+        if (tree == null) return
+        overrides = if (name == null) overrides - id else overrides + (id to name)
+    }
+
+    /**
+     * 一棵树里这一项勾上时的新名称（手改的或规范名），供预览给取消勾选的项也写出来：冲突的默认不勾，
+     * 不写出来就看不出它本要改成什么、为什么没勾。不是一棵树时为 null。
+     */
+    fun proposedName(id: String): String? = overrides[id] ?: treeNames?.get(id)
+
     private val preview by derivedStateOf {
         val included = sources.filter { it.id !in excludedIds }
+        val treeNames = treeNames
+        if (treeNames != null) {
+            val newNames = sources.map { source ->
+                if (source.id in excludedIds) source.name else overrides[source.id] ?: treeNames.getValue(source.id)
+            }
+            return@derivedStateOf Preview(planRenames(sources, newNames, siblingNames.orEmpty()), CommonAffixes("", ""), null)
+        }
         val (findReplace, error) = try {
             FindReplaceRule(effectiveOptions, randomSeed) to null
         } catch (error: InvalidPatternException) {
             null to error.message.orEmpty()
         }
-        val base = if (avNaming) CanonicalAvRule(if (useMetaTubeTitles) metaTubeTitles else emptyMap()) else null
+        val base = if (avNaming) CanonicalAvRule(canonicalTitles) else null
         val result = runBatchRenamePipeline(included, findReplace, stripPrefix, stripSuffix, base)
         val newNameById = included.map { it.id }.zip(result.names).toMap()
         val newNames = sources.map { newNameById[it.id] ?: it.name }
         Preview(planRenames(sources, newNames, siblingNames.orEmpty()), result.affixes, error)
+    }
+
+    /**
+     * 有问题的项取消勾选，直到不剩问题：取消勾选的项保持原名，原名又可能挡住别的项，所以反复做。
+     * 一棵树打开时默认如此，几千项里的几处冲突不必让人逐个找出来取消；人再勾上的照常标出问题。
+     */
+    private fun excludeProblems() {
+        while (true) {
+            val blocked = plan.rows.filter { it.problem != null }.map { it.source.id }
+            if (blocked.isEmpty()) return
+            excludedIds = excludedIds + blocked
+        }
     }
 
     val plan: RenamePlan get() = preview.plan
@@ -400,16 +476,22 @@ class BatchRenameState(
 
     init {
         loadSiblings()
-        if (initialAvNaming && avNamingAvailable) startAvNaming()
-        metaTube?.let { service -> scope.launch { metaTubeAvailable = service.enabled.first() } }
+        if (tree != null) startAvNaming() else if (initialAvNaming && avNamingAvailable) startAvNaming()
+        metaTube?.let { service ->
+            scope.launch {
+                metaTubeAvailable = service.enabled.first()
+                // 整理一棵树时片名值得等，打开即查；可以跳过，也可以取消勾选不用。多选时仍由人勾选
+                if (tree != null && metaTubeAvailable) updateUseMetaTubeTitles(true)
+            }
+        }
     }
 
     fun loadSiblings() {
         siblingsFailed = false
         val selectedIds = sources.map { it.id }.toSet()
         scope.launch {
-            val names = mutableMapOf<String, Set<String>>()
-            for (parentId in sources.map { it.parentId }.distinct()) {
+            val names = tree?.siblingNames.orEmpty().toMutableMap()
+            for (parentId in sources.map { it.parentId }.distinct().filter { it !in names }) {
                 val listing = driveRepo.listAllFiles(parentId)
                     .logFailure(TAG, "列出同目录名称失败：文件夹 $parentId")
                     .getOrElse {
@@ -419,6 +501,8 @@ class BatchRenameState(
                 names[parentId] = listing.filter { it.id !in selectedIds }.map { it.name }.toSet()
             }
             siblingNames = names
+            // 片名还在查时等查完再做，规范名还会变
+            if (tree != null && metaTubeProgress == null) excludeProblems()
         }
     }
 
@@ -426,7 +510,8 @@ class BatchRenameState(
     fun rename() {
         if (!canRename) return
         val plan = plan
-        scope.launch { BatchRenameMemory.save(preferences, memory.remember(effectiveOptions)) }
+        // 一棵树没用查找替换，记下的会是一组空的选项
+        if (tree == null) scope.launch { BatchRenameMemory.save(preferences, memory.remember(effectiveOptions)) }
         wasStopped = false
         phase = Phase.RUNNING
         val started = TimeSource.Monotonic.markNow()

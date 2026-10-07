@@ -36,14 +36,12 @@
   「选中建议移走的」是这一页的主操作（`PrimaryAction`）。不在进来时自动勾上：那样一进来就在多选里，单击变成勾选、播不了，点空白处勾选又没了。勾选与
   移入回收站就是网盘页的多选与删除。结果是扫描那一刻的快照，`DuplicateFinderState` 订阅撤销日志，移入回收站的拿掉、
   撤销回来的补回，再重新分组。离开后从查重标签回来；没有标签栏时离开即结束（先确认）。
-- 按番号规范命名一个文件夹（`DriveLibrary.CANONICAL_NAMES`）与查找重复是同一种形态，规则与理由见 `docs/development/av-naming.md`：
-  进程级会话（`FolderTaskSession`，状态 `CanonicalNamingState`），宽窗口是后台标签，窄窗口是独占 sheet 加结果页，
-  离开那棵树先确认。两者共用的部分只写一份：位置的内容经 `SessionListing` 交给 `DriveScreenState`（`DuplicateListing`、
-  `CanonicalListing`），会话标签经 `DriveTab.session` 认、由 `PikoDriveRepository.sessionTabHeld` 占住，标签上的样子是
-  `SessionTab`，窄窗口的锚点与 sheet 的档位是 `TaskSlot.placeTaskAnchor`、`placeTaskExpanded`（同一时刻只有一件，见 `Task.followsPlace`）。
-  再加这类位置照这几处接上，不要另写一套。结果页的行是真实条目，行标题换成规范名（`DriveFileView.title`），
-  原名照下面「名字」一条写在行标题下，所在文件夹在行下面那一栏；主操作在多选里也在（「应用所选」），窄窗口里也是，
-  不像查重那样窄窗口多选时把 FAB 让给多选顶栏。
+  查重的接线：位置的内容经 `SessionListing` 交给 `DriveScreenState`（`DuplicateListing`），会话标签经 `DriveTab.session` 认、
+  由 `PikoDriveRepository.sessionTabHeld` 占住，标签上的样子是 `SessionTab`，窄窗口的锚点与 sheet 的档位是
+  `TaskSlot.placeTaskAnchor`、`placeTaskExpanded`。再加这类位置照这几处接上，不要另写一套。
+- 按番号规范命名一个文件夹复用批量重命名（`screens/rename/CanonicalFolderRenameDialog`），规则与理由见 `docs/development/av-naming.md`：
+  对话框里先扫描这棵树（`CanonicalTreeScan`），扫完即是批量重命名的预览，每项是树里的一个文件或文件夹，带所在目录；
+  规则固定为按番号规范命名（`BatchRenameState` 的 `tree`），可取消勾选、逐项改新名称。关掉对话框即放弃，没有会话、标签与结果页。
 - 收起而没做完的东西不再收进命令栏右端的「收着的东西」菜单（已删）：那是一张竖排菜单，点一项就跳走，看着像操作、实为导航。
   现在宽窗口的添加链接开着时在右栏（放不下时是浮动的侧边面板），收起后是右下角的浮动卡片（`FloatingTasks`），更窄时是底部 sheet 停在部分展开那一档；下载片段不能收起（关掉即放弃，改过区间的先确认），
   挂起的信息流由命令栏「信息流」按钮上的小圆点提示，收起的添加链接同样在「添加链接」入口上挂小圆点（见 `ui/CLAUDE.md`）。
@@ -158,11 +156,11 @@
   认条目的地方用显示名，真实名称另起一行小字写在下面，只在两者不同时：海报墙、列表、图库（没封面的文件夹）、操作面板头部、
   属性卡片，以及提到「哪一项」的拖放说明、下载片段面板、归档对话框与归档的进度和结果。标路径的地方一律用真实名称，
   `FolderIndex` 与存下的路径不动：地址栏、标签、移动端标题、目录选择器、目录图、重命名框（预填真实名称）、库与搜索结果的位置一栏、
-  拖放与移动、复制的目标文件夹、查重与规范命名的起点（它们开成标签）。
+  拖放与移动、复制的目标文件夹、查重的起点（它开成标签）、按番号规范命名的起点（对话框标题）。
   单一来源是 `DriveItemName`（`shared/.../state/DriveItemName.kt`）：卡片经 `driveItemName` 从行的 `DriveFileView` 与文件夹的
   `DriveFolderView` 取，别处经 `DriveScreenState.itemName`，同一份输入，不要再写 `folderViews[id]?.title ?: name`。
   行与卡片用 `title`（集号不带作品名，作品头里已有），面板、属性与提示用 `heading`（「Frieren 01」）；怎么摆见 `ItemNames.kt`。
-  解析关闭时一律真实名称；结果页的标题（查重是原名、规范命名是新名）不是解析结果，不随开关。
+  解析关闭时一律真实名称；查重结果页的标题是原名，不是解析结果，不随开关。
   目录内搜索两个名字都认（`listedName`：搜索结果平铺、行上没有解析结果，按这个目录不搜索时的名字匹配）。
   全盘搜索仍只认真实名称：遍历在 SDK 的 `searchFilesRecursive` 里按名字过滤，文件夹的显示名要等列出它的内容才算得出，
   要做得让 SDK 交出每层的列表、由 Piko 匹配，文件夹在列出它自己那一层时才报出，最深一层的文件夹认不出。
@@ -186,7 +184,7 @@ Shift 点选是连选（`selectionClicks`，状态在 `DriveScreenState.toggleSe
 落点只提供文件夹。
 移动、移入回收站与重命名做完都记进 `DriveChangeJournal`（`driveRepository.changes`），提示带「撤销」，
 Ctrl+Z 撤销最近一次。这条提示不由网盘页弹，由主界面一层（`ChangeNotices.kt` 的 `showChangeNotices`）弹在根页面共用的
-Snackbar 队列（`LocalRootSnackbar`）上：日志的事件不重放，归档、规范命名「应用所选」这类几分钟后才做完的改动，
+Snackbar 队列（`LocalRootSnackbar`）上：日志的事件不重放，归档这类几分钟后才做完的改动，
 手机上做完时人多半在传输页，网盘页已离开组合。网盘页不要再订阅一份；以后的批量改动（自动重命名、按刮削结果整理）也记一条，撤销即反向再做一次。
 
 键盘：方向键在条目间走（焦点所在的一项由 `focusIndication` 描边，键盘导航时描边、鼠标点的盖底色，

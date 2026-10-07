@@ -28,7 +28,7 @@ sealed interface DuplicateScanEvent {
     /**
      * [stop] 为 null 表示完整走完。[failedFolders] 是列不出来而跳过的目录数：
      * 几千个目录里偶有一个超时，不值得让整轮扫描作废。
-     * [subfolders] 是起点之下列出过内容的文件夹，没来得及列或列失败的不在里面：按番号规范命名据此看文件夹里有什么，
+     * [subfolders] 是起点之下列出过内容的文件夹，没来得及列或列失败的不在里面：按番号规范命名（CanonicalTreeScan）据此看文件夹里有什么，
      * 内容不明的文件夹不能拿来判断。
      */
     data class Finished(

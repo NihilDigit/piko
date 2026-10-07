@@ -373,7 +373,7 @@ open class PikoDriveRepository(
     }
 
     /**
-     * 活动标签停在会话的位置（查重、规范命名，见 [DriveLibrary.isSession]）、那个会话还没结束时为真，由主界面装上。
+     * 活动标签停在会话的位置（查重，见 [DriveLibrary.isSession]）、那个会话还没结束时为真，由主界面装上。
      * 这时换栈改为另开一个普通标签：会话标签只是一个位置，改写它，会话还在、标签却没了，成了关不掉的孤儿。
      * 只在有标签栏时为真；窄窗口里离开结果页先由 [leaveGuard] 确认结束会话，再走到这里。
      */
@@ -1428,7 +1428,7 @@ private val tabsJson = Json { ignoreUnknownKeys = true }
 data class DriveTab(val id: Long, val stack: List<PikoPathBreadcrumb>, val history: FolderHistory = FolderHistory()) {
     val title: String get() = stack.lastOrNull()?.name.orEmpty()
 
-    /** 停在会话的位置里（查重结果、规范命名的建议），见 [DriveLibrary.isSession]。结果只活在会话里，标签随它关掉。 */
+    /** 停在会话的位置里（查重结果），见 [DriveLibrary.isSession]。结果只活在会话里，标签随它关掉。 */
     val session: DriveLibrary? get() = stack.library?.takeIf { it.isSession }
 }
 

@@ -122,7 +122,7 @@ internal fun itemCommands(place: CommandPlace, targets: List<FileStat>): ItemCom
         // 压缩包里解压的是选中的几项本身，不是选中项里的压缩包
         extract = hasTargets && !inTrash && (inArchive || targets.any { it.isExtractableArchive || it.isArchiveVolume }),
         removeRecord = hasTargets && eventLog,
-        // 回收站与压缩包里的不在网盘里。库（星标、最近添加、播放历史、查重与规范命名的结果）里要做的是回到原处、下载、移走或删除，
+        // 回收站与压缩包里的不在网盘里。库（星标、最近添加、播放历史、查重的结果）里要做的是回到原处、下载、移走或删除，
         // 不给：移动端面板在最近添加里已满 8 行，见 MobilePanelSizeTest。搜索结果的条目仍在各自的文件夹里，清单按所在文件夹写，照常给
         vault =settled && (place == CommandPlace.ROOT || place == CommandPlace.FOLDER || place == CommandPlace.SEARCH),
     )

@@ -18,7 +18,7 @@ val LocalRootSnackbar = staticCompositionLocalOf<SnackbarHostState> {
 
 /**
  * 网盘改动做完或撤销后的提示，可撤销的带「撤销」。收在主界面一层而不在网盘页：改动日志的事件不重放，没人订阅时发出即丢；
- * 归档、按番号规范命名的「应用所选」要做几分钟，手机上人这时多半在传输页或「我的」，网盘页已离开组合。
+ * 归档要做几分钟，手机上人这时多半在传输页或「我的」，网盘页已离开组合。
  * 每条先等界面回到前台（[awaitVisible]）再弹：退到后台时 Snackbar 仍可能照常计时，回来时已经消失。
  */
 suspend fun showChangeNotices(

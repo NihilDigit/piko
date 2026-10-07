@@ -4,7 +4,6 @@ import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
 import dev.piko.shared.state.ArchiveJob
 import dev.piko.shared.state.ArchiveJobStatus
-import dev.piko.shared.state.CanonicalNamingState
 import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.FolderVaultSession
 import dev.piko.shared.upload.UploadTask
@@ -12,7 +11,7 @@ import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.screens.transfers.remainingTime
 
 /** 后台工作的种类。通知按它挑图标，进度列表按它排序。 */
-enum class WorkKind { VAULT, EXTRACT, DOWNLOAD, UPLOAD, DUPLICATES, NAMING }
+enum class WorkKind { VAULT, EXTRACT, DOWNLOAD, UPLOAD, DUPLICATES }
 
 /** 进度条画成什么样。 */
 sealed interface WorkMeter {
@@ -163,24 +162,6 @@ fun DuplicateFinderState.workProgress(): WorkProgress? {
     }
 }
 
-/** 按番号规范命名的扫描与查片名。查片名有总数，进度确定。 */
-fun CanonicalNamingState.workProgress(): WorkProgress? {
-    val title = "按番号规范命名「${root.name}」"
-    return when (phase) {
-        CanonicalNamingState.Phase.SCANNING ->
-            WorkProgress(WorkKind.NAMING, title, WorkMeter.Indeterminate, "已扫描 $scannedFolders 个文件夹、$scannedFiles 个文件")
-        CanonicalNamingState.Phase.TITLES -> {
-            val titles = titlesProgress
-            if (titles == null) {
-                WorkProgress(WorkKind.NAMING, title, WorkMeter.Indeterminate, "正在从 MetaTube 查询片名")
-            } else {
-                WorkProgress(WorkKind.NAMING, title, fraction(titles.first, titles.second), "正在从 MetaTube 查询片名 ${titles.first} / ${titles.second}")
-            }
-        }
-        CanonicalNamingState.Phase.DONE, CanonicalNamingState.Phase.FAILED -> null
-    }
-}
-
 /**
  * 眼下在后台跑的全部工作，按 [WorkKind] 的次序。读的是 Compose 状态，在 snapshotFlow 或组合里调用才会随之更新。
  * 下载与上传另读 StateFlow 的当前值，调用方要自己订阅它们的变化。
@@ -190,7 +171,6 @@ fun PikoServices.runningWork(): List<WorkProgress> = listOfNotNull(
     archiveExtractSession.jobs.extractProgress(),
     transferProgress(downloadManager.tasks.value.values.toList(), currentAccountUploads()),
     duplicateSession.state?.workProgress(),
-    canonicalNamingSession.state?.workProgress(),
 ).sortedBy { it.kind.ordinal }
 
 /** 上传队列只跑当前账号的，别的账号排着的任务一直是 QUEUED，算进来就永远有活，见 [anyActiveFor]。 */
@@ -207,7 +187,6 @@ fun PikoServices.hasBackgroundWork(): Boolean =
     folderVaultSession.isRunning ||
         archiveExtractSession.jobs.isNotEmpty() ||
         duplicateSession.state?.isScanning == true ||
-        canonicalNamingSession.state?.isScanning == true ||
         downloadManager.tasks.value.values.any { it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.PENDING } ||
         currentAccountUploads().any { it.status.isActive }
 

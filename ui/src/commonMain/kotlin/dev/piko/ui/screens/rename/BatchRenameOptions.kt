@@ -203,7 +203,7 @@ private enum class ItemKinds {
 
 /** 复选框连同文字整行可点，至少 48dp 高。 */
 @Composable
-private fun CheckboxRow(label: String, checked: Boolean, enabled: Boolean, modifier: Modifier = Modifier, onChange: (Boolean) -> Unit) {
+internal fun CheckboxRow(label: String, checked: Boolean, enabled: Boolean, modifier: Modifier = Modifier, onChange: (Boolean) -> Unit) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier

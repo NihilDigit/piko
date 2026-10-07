@@ -70,7 +70,7 @@ import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 
 /**
- * 会话占着的标签（查找重复、按番号规范命名）上显示的东西：标题、悬停说明、是否还在扫（标签上转圈）与图标。
+ * 会话占着的标签（查找重复）上显示的东西：标题、悬停说明、是否还在扫（标签上转圈）与图标。
  * 由网盘页按各自的会话给出，标签栏不认识具体是哪一种。
  */
 internal class SessionTab(val title: String, val tooltip: String, val busy: Boolean, val icon: ImageVector)

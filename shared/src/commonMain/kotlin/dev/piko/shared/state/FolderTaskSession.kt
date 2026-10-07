@@ -7,17 +7,17 @@ import dev.piko.shared.data.PikoPathBreadcrumb
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
 
-/** 从一个文件夹起扫一遍的任务：查找重复、按番号规范命名。 */
+/** 从一个文件夹起扫一遍的任务，如查找重复。 */
 interface FolderTask {
     val root: PikoPathBreadcrumb
 }
 
 /**
  * 一次从文件夹起扫的任务，活得比网盘页长：大目录要扫好几分钟，人可以去别处，扫描照常进行，扫完时提示。
- * 结果在网盘页的一个位置里看（DriveLibrary.DUPLICATES、CANONICAL_NAMES）。
+ * 结果在网盘页的一个位置里看（DriveLibrary.DUPLICATES）。
  *
  * 对同一个目录再开回到这一次；换一个目录就结束旧的、开新的。
- * 结果只在这一次里有效，结束就丢：它反映的是扫描那一刻的网盘，留着旧结果可能按过期的列表去删、去改名。
+ * 结果只在这一次里有效，结束就丢：它反映的是扫描那一刻的网盘，留着旧结果可能按过期的列表去删。
  */
 class FolderTaskSession<S : FolderTask>(
     private val newScope: () -> CoroutineScope,
