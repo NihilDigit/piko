@@ -110,6 +110,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import dev.piko.ui.screens.instant.DockedAddLink
+import dev.piko.ui.screens.instant.FloatingAddLinkSheet
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -532,7 +535,13 @@ fun PikoMainScaffold(
         coroutineScope.launch { preferences.setClipPanelOpen(shown) }
     }
     val feedOnFilesTab = feedShown && !feedSuspended && !feedPoppedOut && currentTab == MainTab.FILES
-    val feedInPanel = feedOnFilesTab && panelFits
+    // 右栏同一时刻只放一样：信息流或添加链接，不做标签切换。添加链接挤得走信息流（信息流挂起让位，见下面
+    // suspendFeed 那一处），信息流挤不走添加链接（「信息流」入口置灰）：添加链接是有未完成工作的任务，信息流只是浏览。
+    // 添加链接收成右下角的浮动卡片后右栏就空出来了，信息流照常打开
+    val instantSession = services.instantSession
+    val addLinkDocked = panelFits && instantSession.state != null && instantSession.isSheetOpen
+    val feedBlockedReason = if (addLinkDocked) "添加链接进行中，关闭后可打开信息流" else null
+    val feedInPanel = feedOnFilesTab && panelFits && !addLinkDocked
     val feedFullScreen = feedOnFilesTab && !panelFits
     val sidebarMode = sidebarWindow &&
         (onHome || topScreen == Screen.Profile || topScreen in ProfilePanes || topScreen in SettingsSubpages)
@@ -569,12 +578,18 @@ fun PikoMainScaffold(
     /**
      * 信息流挂起，与「在网盘中显示」同一种状态：队列与看到哪一段都留着，应用内不画它，网盘里留一个「继续刷」，
      * 继续刷就回到 [from]。凡是让它离开那一栏或那块地方的都走这里，不再各有各的收起：
-     * 离开开始时的文件夹、从信息流跳去网盘看文件。
+     * 离开开始时的文件夹、从信息流跳去网盘看文件、右栏让给添加链接。
      * 独立窗口不挂起，它本来就在旁边，不挡网盘。
      */
     fun suspendFeed(from: PikoDriveRepository.DriveLocation) {
         if (!feedShown || !feedOpened || feedDetour != null || feedPoppedOut) return
         feedDetour = from
+    }
+
+    // 添加链接一停进右栏，信息流就让位挂起；添加链接关掉后不自动回来，命令栏的小圆点提示它还在，点了才继续：
+    // 右栏里的东西不自己跳回来。也看弹出窗口：窗口收回主窗口的那一刻信息流要回右栏，右栏若被添加链接占着同样挂起
+    LaunchedEffect(addLinkDocked, feedPoppedOut, feedOpened) {
+        if (addLinkDocked) suspendFeed(services.driveRepository.currentLocation())
     }
 
     // 进它的子文件夹不算离开，路径栈里仍有它。离开时挂起而不是收起：人多半只是去别处看一眼
@@ -701,20 +716,32 @@ fun PikoMainScaffold(
         }
     }
 
+    // 右栏眼下放的是哪一样。收起的动画期间两者都不该在了，仍画最后放着的那一样，不让它在收窄途中换成别的
+    val columnContent = when {
+        addLinkDocked -> SideColumnContent.AddLink
+        // 不看当前页：切走时网盘页随淡出一起消失，侧栏不必先收起
+        feedShown && !feedSuspended && panelFits && !feedPoppedOut -> SideColumnContent.Feed
+        else -> null
+    }
+    var lastColumnContent by remember { mutableStateOf(SideColumnContent.Feed) }
+    SideEffect { if (columnContent != null) lastColumnContent = columnContent }
+    val columnShows = columnContent ?: lastColumnContent
+
     val feedFrame: @Composable (@Composable () -> Unit) -> Unit = { drive ->
+        val addLink = columnShows == SideColumnContent.AddLink
         SidePanelLayout(
-            // 不看当前页：切走时网盘页随淡出一起消失，侧栏不必先收起
-            open = feedShown && !feedSuspended && panelFits && !feedPoppedOut,
+            open = columnContent != null,
+            // 两者共用一个宽度：同一栏，拖宽一次两样都生效
             savedWidthDp = panelPrefs.widthDp,
-            title = "信息流",
-            closeDescription = "关闭信息流",
-            onClose = { setFeedShown(false) },
+            title = if (addLink) "添加链接" else "信息流",
+            closeDescription = if (addLink) "收起添加链接" else "关闭信息流",
+            onClose = { if (addLink) instantSession.collapse() else setFeedShown(false) },
             onWidthChange = { coroutineScope.launch { preferences.setClipPanelWidth(it) } },
             defaultWidth = ClipPanelDefaultWidth,
             minWidth = ClipPanelMinWidth,
             ready = feedShownState != null,
-            // 整张卡是黑底的竖屏画面，范围、静音、弹出与关闭都在它自己的顶栏上
-            showHeader = false,
+            // 信息流整张卡是黑底的竖屏画面，范围、静音、弹出与关闭都在它自己的顶栏上；添加链接用栏名那一行
+            showHeader = addLink,
             main = {
                 Box(Modifier.fillMaxSize()) {
                     drive()
@@ -731,7 +758,18 @@ fun PikoMainScaffold(
                     )
                 }
             },
-            panel = { FeedContent(compact = true, visible = feedInPanel) },
+            panel = {
+                when (columnShows) {
+                    SideColumnContent.AddLink -> EscClosesWhenFocused(onClose = instantSession::collapse) {
+                        instantSession.state?.let { state ->
+                            DockedAddLink(state, onPreview = { fileId, fileName -> playVideo(FileStat(id = fileId, name = fileName), emptyList()) })
+                        }
+                    }
+                    SideColumnContent.Feed -> EscClosesWhenFocused(onClose = { setFeedShown(false) }) {
+                        FeedContent(compact = true, visible = feedInPanel)
+                    }
+                }
+            },
         )
     }
 
@@ -842,6 +880,7 @@ fun PikoMainScaffold(
                                 }
                             },
                             feedStashed = feedSuspended,
+                            feedBlockedReason = feedBlockedReason,
                             feedTabId = feedDetourTab,
                             feedFrame = feedFrame,
                             // 「文件」就是网盘页自己，地址栏里不列
@@ -970,11 +1009,14 @@ fun PikoMainScaffold(
         })
         add(PaletteItem("撤销", Icons.AutoMirrored.Outlined.Undo, "操作", detail = label("Z"), keywords = "undo") { services.driveRepository.changes.undoLast() })
         if (feedSuspended) {
-            add(PaletteItem("继续刷信息流", Icons.Outlined.SwipeVertical, "操作", keywords = "feed clips resume") { resumeFeed() })
+            add(PaletteItem("继续刷信息流", Icons.Outlined.SwipeVertical, "操作", keywords = "feed clips resume", disabledReason = feedBlockedReason) { resumeFeed() })
         }
         // 信息流刷的是网盘里的一个文件夹，库与压缩包都不是
         if (feedShown || isDriveFolderId(folderStack.lastOrNull()?.id.orEmpty())) {
-            add(PaletteItem(if (feedShown) "关闭信息流" else "打开信息流", Icons.Outlined.SwipeVertical, "操作", keywords = "feed clips") {
+            add(PaletteItem(
+                if (feedShown) "关闭信息流" else "打开信息流", Icons.Outlined.SwipeVertical, "操作", keywords = "feed clips",
+                disabledReason = feedBlockedReason.takeIf { !feedShown },
+            ) {
                 if (feedShown) {
                     currentTab = MainTab.FILES
                     resetToHome()
@@ -1181,6 +1223,15 @@ fun PikoMainScaffold(
                         instant = services.instantSession,
                         modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
                     )
+                    // 窗口窄得放不下右栏时，添加链接退回浮动的侧边面板。只在网盘页上：入口都先切过去，与右栏一致
+                    val instantState = instantSession.state
+                    if (instantState != null && instantSession.isSheetOpen && !addLinkDocked && currentTab == MainTab.FILES && onHome) {
+                        FloatingAddLinkSheet(
+                            session = instantSession,
+                            state = instantState,
+                            onPreview = { fileId, fileName -> playVideo(FileStat(id = fileId, name = fileName), emptyList()) },
+                        )
+                    }
                 }
             } }
             // 拖动网盘条目时指针旁的说明，盖在一切之上
@@ -1208,6 +1259,22 @@ fun PikoMainScaffold(
             pathLookup?.let { lookup -> LocatingOverlay(onCancel = { lookup.cancel() }) }
         }
     }
+}
+
+/** 网盘页右栏放着的那一样，同一时刻只有一样，见 addLinkDocked 那一处。 */
+private enum class SideColumnContent { Feed, AddLink }
+
+/**
+ * 焦点在右栏里时 Esc 关掉右栏里的东西。只看焦点：焦点在列表里时 Esc 照旧归网盘页（退出多选、关属性卡片、回上一级），
+ * 目录图与浮动卡片各管各的。
+ *
+ * BackHandler 写在内容之前：后登记的先收到，添加链接里展开的一行（InstantBatchSection）有自己的返回，要先于这里。
+ */
+@Composable
+private fun EscClosesWhenFocused(onClose: () -> Unit, content: @Composable () -> Unit) {
+    var hasFocus by remember { mutableStateOf(false) }
+    BackHandler(enabled = hasFocus, onBack = onClose)
+    Box(Modifier.fillMaxSize().onFocusChanged { hasFocus = it.hasFocus }) { content() }
 }
 
 /** 侧栏的宽度下限：竖排的片段控件与横屏画面在这个宽度里还放得开。 */

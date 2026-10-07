@@ -424,6 +424,8 @@ internal fun ViewSwitcher(
     feedShown: Boolean,
     onFeedShownChange: ((Boolean) -> Unit)?,
     feedSuspended: Boolean = false,
+    /** 非 null 时信息流一段置灰，悬停提示写这个原因：右栏被添加链接占着，信息流挤不走它。 */
+    feedBlockedReason: String? = null,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val count = if (onFeedShownChange == null) 1 else 2
@@ -479,24 +481,37 @@ internal fun ViewSwitcher(
             }
         }
         if (onFeedShownChange != null) {
-            TonalToggleButton(
-                checked = feedShown,
-                onCheckedChange = onFeedShownChange,
-                shapes = connectedToggleShapes(1, count),
-                contentPadding = PaddingValues(start = 12.dp, end = 16.dp),
-                modifier = Modifier.heightIn(min = 40.dp),
-            ) {
-                // 挂起的信息流（离开了它的文件夹、队列还在）在图标上点一个小圆点，点开就是接着刷。
-                // 原来另在命令栏右端的「收着的东西」里放一项「继续刷信息流」，与这个按钮是同一件事的两个入口
-                BadgedBox(badge = { if (feedSuspended) Badge() }) {
-                    Icon(
-                        imageVector = if (feedShown) Icons.Filled.SwipeVertical else Icons.Outlined.SwipeVertical,
-                        contentDescription = if (feedSuspended) "信息流已暂停" else null,
-                        modifier = Modifier.size(18.dp),
-                    )
+            val feedButton: @Composable () -> Unit = {
+                TonalToggleButton(
+                    checked = feedShown,
+                    onCheckedChange = onFeedShownChange,
+                    enabled = feedBlockedReason == null,
+                    shapes = connectedToggleShapes(1, count),
+                    contentPadding = PaddingValues(start = 12.dp, end = 16.dp),
+                    modifier = Modifier.heightIn(min = 40.dp),
+                ) {
+                    // 挂起的信息流（离开了它的文件夹、队列还在）在图标上点一个小圆点，点开就是接着刷。
+                    // 原来另在命令栏右端的「收着的东西」里放一项「继续刷信息流」，与这个按钮是同一件事的两个入口
+                    BadgedBox(badge = { if (feedSuspended) Badge() }) {
+                        Icon(
+                            imageVector = if (feedShown) Icons.Filled.SwipeVertical else Icons.Outlined.SwipeVertical,
+                            contentDescription = if (feedSuspended) "信息流已暂停" else null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                    Spacer(Modifier.width(6.dp))
+                    Text("信息流")
                 }
-                Spacer(Modifier.width(6.dp))
-                Text("信息流")
+            }
+            // 置灰而不藏起来：藏起来时人找不到它，也不知道为什么没了
+            if (feedBlockedReason != null) {
+                TooltipBox(
+                    positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
+                    tooltip = { PlainTooltip { Text(feedBlockedReason) } },
+                    state = rememberTooltipState(),
+                ) { feedButton() }
+            } else {
+                feedButton()
             }
         }
     }

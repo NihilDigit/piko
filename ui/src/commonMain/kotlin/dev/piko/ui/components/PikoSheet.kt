@@ -63,9 +63,10 @@ interface PikoSheetScope : ColumnScope {
 /**
  * 模态面板。桌面与移动端的宽窗口（expanded）里是从末端边缘滑入的侧边面板，其余是只有展开一档的底部 sheet。
  *
- * 面板承接的是临时任务（条目操作、传输详情、添加链接），一律浮在内容上，不停进外框右侧那一栏。
+ * 面板承接的是临时任务（条目操作、传输详情），一律浮在内容上，不停进外框右侧那一栏。
  * 曾经停进去过，图它不挡列表；但那一栏还放详情与信息流，三者轮流让位，返回键关的是哪一个说不清。
- * scaffold.md 的划分是常驻的工具与内容并排，临时任务无论多宽都浮着，右栏因此只留给信息流。
+ * scaffold.md 的划分是常驻的工具与内容并排，临时任务无论多宽都浮着。唯一的例外是桌面的添加链接：
+ * 详情栏删掉后那一栏只剩信息流，添加链接停回去与它互斥，放不下时才经这里浮着，见 ui/CLAUDE.md 的「右侧那一栏」。
  *
  * bottom-sheets.md 的 Adaptive design 一节："On larger expanded breakpoints, like desktop, a bottom
  * sheet can be swapped for a side sheet that shows similar content." 底部 sheet 在宽窗口里只能在正中

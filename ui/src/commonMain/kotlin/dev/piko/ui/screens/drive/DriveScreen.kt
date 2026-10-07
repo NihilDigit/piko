@@ -250,6 +250,8 @@ fun DriveScreen(
     onFeedShownChange: ((Boolean) -> Unit)? = null,
     /** 信息流挂起着（队列还在、应用内不画），宽窗口命令栏的「信息流」按钮据此点一个小圆点。 */
     feedStashed: Boolean = false,
+    /** 信息流此刻打不开的原因（右栏被添加链接占着），宽窗口命令栏的「信息流」按钮据此置灰、在提示里写明。null 为打得开。 */
+    feedBlockedReason: String? = null,
     /** 从信息流跳出来浏览的那个标签，标签栏上与别的分开画。没有时为 null。 */
     feedTabId: Long? = null,
     /**
@@ -262,7 +264,7 @@ fun DriveScreen(
      * 主界面据此切回那一页；网盘页不知道库从哪里打开。
      */
     onLibraryLeft: () -> Unit = {},
-    /** 把页眉下面的列表区包进去的外框，宽窗口里主界面由它在列表右边放信息流侧栏；页眉不在里面。 */
+    /** 把页眉下面的列表区包进去的外框，宽窗口里主界面由它在列表右边放信息流或添加链接；页眉不在里面。 */
     contentFrame: @Composable (content: @Composable () -> Unit) -> Unit = { it() },
     modifier: Modifier = Modifier,
 ) {
@@ -1471,6 +1473,7 @@ fun DriveScreen(
                     feedShown = feedShown,
                     onFeedShownChange = onFeedShownChange.takeIf { commands.feed },
                     feedSuspended = feedStashed,
+                    feedBlockedReason = feedBlockedReason,
                 )
             },
             primaryAction = placePrimaryAction ?: if (commands.addLink) SheetAction(Icons.Outlined.Bolt, "添加链接", ::openAddLink, group = ActionGroup.Refresh) else null,
@@ -1620,7 +1623,7 @@ fun DriveScreen(
     }
 
     // 窄窗口底部那一块 sheet：添加链接、查找重复或按番号规范命名，同一时刻只有一件（TaskSlot 管着入口）。
-    // 宽窗口是侧边面板、右下角的浮动卡片与会话标签，不用它
+    // 宽窗口不用它：添加链接由主界面放进右栏或侧边面板、收起后是右下角的浮动卡片，查重与规范命名是会话标签
     val taskSheet: TaskSheetModel? = when {
         twoPane -> null
         instantState != null -> TaskSheetModel(
@@ -2126,25 +2129,6 @@ fun DriveScreen(
         )
     }
 
-
-    // 宽窗口的秒传面板。关掉只是收起，会话还在，右下角留一张浮动卡片，见 InstantSession；窄窗口在底部的 sheet 里（taskSheet）
-    if (twoPane && instantState != null && instantSession.isSheetOpen) {
-        // 侧栏形态的顶上已有标题与关闭那一行，标题交给它，内容里不再画第二个
-        PikoSheet(onDismissRequest = instantSession::collapse, sideSheetTitle = "添加链接") {
-            val sideSheet = isSideSheet
-            Column {
-                InstantSheetContent(
-                    state = instantState,
-                    inSideSheet = sideSheet,
-                    // 先收起面板：Android 上它是独立窗口，会盖在应用内的播放器上面
-                    onPreview = { fileId, fileName ->
-                        instantSession.collapse()
-                        navigateToPlayer(FileStat(id = fileId, name = fileName), emptyList())
-                    },
-                )
-            }
-        }
-    }
 
     if (showNewFolderDialog) {
         NameInputDialog(

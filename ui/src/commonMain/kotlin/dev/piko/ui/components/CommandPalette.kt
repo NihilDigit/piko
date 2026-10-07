@@ -57,6 +57,7 @@ import dev.piko.shared.search.fuzzyScore
 /**
  * 命令面板的一项：跳到一个文件夹，或做一件事。[keywords] 是标题之外也能搜到它的词（英文名、别称），
  * [detail] 是右侧的灰字：文件夹的路径、命令的快捷键。
+ * [disabledReason] 非 null 时这一项置灰、执行不了，右侧改写这个原因：与界面上同一个入口一致，置灰而不藏起来。
  */
 class PaletteItem(
     val title: String,
@@ -64,6 +65,7 @@ class PaletteItem(
     val group: String,
     val detail: String? = null,
     val keywords: String = "",
+    val disabledReason: String? = null,
     val run: () -> Unit,
 )
 
@@ -123,6 +125,8 @@ fun CommandPalette(items: List<PaletteItem>, onDismiss: () -> Unit) {
 
     fun runAt(index: Int) {
         val item = results.getOrNull(index) ?: return
+        // 面板留着：原因就写在这一行上
+        if (item.disabledReason != null) return
         onDismiss()
         item.run()
     }
@@ -225,33 +229,38 @@ fun CommandPalette(items: List<PaletteItem>, onDismiss: () -> Unit) {
 @Composable
 private fun PaletteRow(item: PaletteItem, selected: Boolean, onClick: () -> Unit) {
     val colors = MaterialTheme.colorScheme
+    val enabled = item.disabledReason == null
+    // M3 的停用态：内容 38% 不透明
+    val iconColor = if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant
+    val titleColor = if (selected) colors.onSecondaryContainer else colors.onSurface
+    val detail = item.disabledReason ?: item.detail
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 8.dp)
             .clip(MaterialTheme.shapes.medium)
             .background(if (selected) colors.secondaryContainer else colors.surfaceContainerHigh)
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
             item.icon,
             contentDescription = null,
-            tint = if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant,
+            tint = if (enabled) iconColor else iconColor.copy(alpha = DisabledAlpha),
             modifier = Modifier.size(20.dp),
         )
         Text(
             item.title,
             style = MaterialTheme.typography.bodyLarge,
-            color = if (selected) colors.onSecondaryContainer else colors.onSurface,
+            color = if (enabled) titleColor else titleColor.copy(alpha = DisabledAlpha),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f).padding(start = 12.dp),
         )
-        if (item.detail != null) {
+        if (detail != null) {
             Text(
-                item.detail,
+                detail,
                 style = MaterialTheme.typography.labelMedium,
                 color = colors.onSurfaceVariant,
                 maxLines = 1,
@@ -282,6 +291,7 @@ private suspend fun LazyListState.revealItem(index: Int) {
     }
 }
 
+private const val DisabledAlpha = 0.38f
 private const val EMPTY_QUERY_LIMIT = 12
 private const val RESULT_LIMIT = 50
 // 比标题里连着出现（约 1000）低，比标题里拆开找齐高

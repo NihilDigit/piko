@@ -19,8 +19,10 @@ fun FilesScreen(
     /** 见 DriveScreen 的同名参数。 */
     feedStashed: Boolean = false,
     /** 见 DriveScreen 的同名参数。 */
+    feedBlockedReason: String? = null,
+    /** 见 DriveScreen 的同名参数。 */
     feedTabId: Long? = null,
-    /** 把网盘页的列表区（页眉下面）包进去的外框，宽窗口里由它在右侧放信息流侧栏。 */
+    /** 把网盘页的列表区（页眉下面）包进去的外框，宽窗口里由它在右侧放信息流或添加链接。 */
     feedFrame: @Composable (content: @Composable () -> Unit) -> Unit = { it() },
     /** 见 DriveScreen 的同名参数。 */
     addressDestinations: List<PaletteItem> = emptyList(),
@@ -39,6 +41,7 @@ fun FilesScreen(
         feedShown = feedShown,
         onFeedShownChange = onFeedShownChange,
         feedStashed = feedStashed,
+        feedBlockedReason = feedBlockedReason,
         feedTabId = feedTabId,
         modifier = modifier,
     )
