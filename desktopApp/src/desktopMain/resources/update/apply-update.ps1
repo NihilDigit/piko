@@ -34,6 +34,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# The long form of the install dir. Get-ChildItem reports long names, so an 8.3 path here (a
+# short temp dir, a user name with spaces) matched no entry of the keep list and the stale-file
+# sweep deleted the whole new app image; CI caught it with C:\Users\RUNNER~1.
+$InstallDir = (Get-Item -LiteralPath $InstallDir).FullName
+
 # Same name in DesktopAppUpdater.JOURNAL_FILE.
 $JournalPath = Join-Path $InstallDir '.piko-update.journal'
 

@@ -72,7 +72,7 @@ class ApplyUpdateScriptTest {
             "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
             "-File", script.absolutePath,
             "-ProcessId", processId.toString(),
-            "-InstallDir", install.absolutePath,
+            "-InstallDir", shortPath(install),
             "-Mode", mode,
             "-Source", files.absolutePath,
             "-Executable", "relaunch.cmd",
@@ -86,6 +86,16 @@ class ApplyUpdateScriptTest {
         println(output)
         staging.resolve("update.log").takeIf { it.isFile }?.let { println(it.readText()) }
         return code
+    }
+
+    /**
+     * 安装目录的 8.3 短路径。GitHub 的 Windows runner 上临时目录本来就是 C:\Users\RUNNER~1，本机通常是长路径，
+     * 脚本拿短路径与 Get-ChildItem 报出的长路径比对时曾把整个新版当成多余文件删掉，这里在本机也照 CI 的样子传。
+     * 卷上关了 8.3 名时得到的就是原路径。
+     */
+    private fun shortPath(dir: File): String {
+        val process = ProcessBuilder("cmd.exe", "/c", "for %I in (\"${dir.absolutePath}\") do @echo %~sI").start()
+        return process.inputStream.bufferedReader().readText().trim().also { process.waitFor() }.ifEmpty { dir.absolutePath }
     }
 
     /** 一个已经退出的进程，脚本不必等它。 */
