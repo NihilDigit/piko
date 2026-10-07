@@ -57,6 +57,33 @@ class DriveSelectionSmokeTest {
     }
 
     @Test
+    fun `select all enters selection like box selection, long press keeps an emptied selection open`() = smoke { scope ->
+        val server = FakePikPakServer()
+        listOf("a.txt", "b.txt", "c.txt").forEach { server.addFile(it) }
+        val prefs = MemoryPreferences()
+        val drive = DriveScreenState(PikoDriveRepository(server.provider(), prefs), prefs, scope)
+        drive.load()
+        awaitUntil("网盘列表加载完成") { !drive.isLoading && drive.displayedFiles.size == 3 }
+
+        // 桌面 Ctrl+A、命令栏、命令面板与空白处右键的全选都走这里，选上了就要在多选里
+        drive.toggleSelectAll()
+        assertTrue(drive.isSelectionMode)
+        // 换筛选清掉选中：不在多选里的选中会漏过去，「移动所选」动到看不见的文件
+        drive.updateTypeFilter(null)
+        assertTrue(drive.selectedFileIds.isEmpty())
+
+        drive.toggleSelectAll()
+        drive.toggleSelectAll()
+        assertFalse(drive.isSelectionMode)
+
+        // 移动端长按进来的，取消到一项不剩仍在多选里，由顶栏的 ✕ 退出
+        drive.enterSelection(drive.displayedFiles.first().id)
+        drive.toggleSelectAll()
+        drive.toggleSelectAll()
+        assertTrue(drive.isSelectionMode)
+    }
+
+    @Test
     fun `box selection replaces the selection unless it started with a modifier`() = smoke { scope ->
         val server = FakePikPakServer()
         listOf("a.txt", "b.txt", "c.txt", "d.txt").forEach { server.addFile(it) }

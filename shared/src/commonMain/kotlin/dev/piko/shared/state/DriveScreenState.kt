@@ -143,9 +143,16 @@ class DriveScreenState(
     private val globalSearchHits = mutableStateListOf<SearchHit>()
     private var globalSearchJob: Job? = null
 
-    var isSelectionMode by mutableStateOf(false)
-        private set
     val selectedFileIds = mutableStateListOf<String>()
+
+    /** 移动端长按进入的多选：取消到一项不剩仍留在多选里，由顶栏的 ✕ 退出。 */
+    private var selectionHeldOpen by mutableStateOf(false)
+
+    /**
+     * 是否在多选里，由选中集合推出，不由各入口自己置位。全选曾只填集合、未置标志：桌面上条目描了边却没有勾选框，
+     * 命令栏未换成多选，换筛选时这些选中也未清除。
+     */
+    val isSelectionMode: Boolean by derivedStateOf { selectionHeldOpen || selectedFileIds.isNotEmpty() }
 
     val revealedFileIds = mutableStateListOf<String>()
 
@@ -759,7 +766,6 @@ class DriveScreenState(
     fun selectOnly(ids: Set<String>) {
         if (ids.isEmpty()) return
         exitSelection()
-        isSelectionMode = true
         selectedFileIds.addAll(ids)
     }
 
@@ -1116,12 +1122,12 @@ class DriveScreenState(
     }
 
     fun enterSelection(fileId: String? = null) {
-        isSelectionMode = true
+        selectionHeldOpen = true
         if (fileId != null && fileId !in selectedFileIds) selectedFileIds.add(fileId)
     }
 
     fun exitSelection() {
-        isSelectionMode = false
+        selectionHeldOpen = false
         selectedFileIds.clear()
         selectionAnchor = null
     }
@@ -1146,7 +1152,6 @@ class DriveScreenState(
      */
     fun toggleSelected(rowKey: String) {
         val fileId = fileByRowKey[rowKey]?.id ?: return
-        isSelectionMode = true
         setSelected(fileId, fileId !in selectedFileIds)
         selectionAnchor = rowKey
         if (selectedFileIds.isEmpty()) exitSelection()
@@ -1160,7 +1165,6 @@ class DriveScreenState(
         val rows = fileRows
         val to = rows.indexOfFirst { it.key == rowKey }.takeIf { it >= 0 } ?: return
         val from = selectionAnchor?.let { anchor -> rows.indexOfFirst { it.key == anchor } }?.takeIf { it >= 0 }
-        isSelectionMode = true
         if (from == null) {
             setSelected(rows[to].file.id, true)
             selectionAnchor = rowKey
@@ -1179,7 +1183,6 @@ class DriveScreenState(
             exitSelection()
             return
         }
-        isSelectionMode = true
         if (selectedFileIds.toSet() != next) {
             selectedFileIds.clear()
             selectedFileIds.addAll(next)

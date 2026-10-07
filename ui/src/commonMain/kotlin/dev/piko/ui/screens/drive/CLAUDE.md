@@ -122,7 +122,9 @@
 Shift 点选是连选（`selectionClicks`，状态在 `DriveScreenState.toggleSelected` / `selectRange`）。
 这几个桌面手势与框选交给状态的是行的 key（`DriveListItem.File.key`），不是文件 ID，由 `DriveScreenState` 换成行上的文件；
 平常两者相同，查找重复里不同。网格里读到的 key（`visibleItemsInfo`）同理，不要直接当文件 ID 用。
-在网格空白处拖动是框选（`marqueeSelection`，`selectBoxed`），空白处单击退出多选。按在已选中或刚点过（焦点所在）的条目上拖动是拖放移动，
+在网格空白处拖动是框选（`marqueeSelection`，`selectBoxed`），空白处单击退出多选。
+全选（主修饰键+A、命令栏、命令面板、空白处右键）与框选一样进入多选。是否在多选里由选中集合推出（`isSelectionMode`），
+入口只管改选中的文件，不另置标志；唯一例外是移动端长按进来的多选，取消到一项不剩仍留着。按在已选中或刚点过（焦点所在）的条目上拖动是拖放移动，
 按在空白或别的条目上拖动是框选，照相册的做法：海报墙与图库几乎没有空白可按。拖放移动：
 拖到侧边栏的文件夹、路径栏的上级或网格里的文件夹上，按着 Ctrl（mac 上 ⌥）是复制。拖放是应用内自己做的
 （`FileDragState`，根上一份，落点经 `fileDropTarget` 登记范围），不走平台拖放；拖出去的一批自带落下后做什么，
