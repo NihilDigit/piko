@@ -113,6 +113,8 @@ internal fun DriveSelectionTopBar(
     canonicalName: SheetAction?,
     /** 选中的有归档条目时，把它们恢复成网盘文件。 */
     restoreFromVault: SheetAction?,
+    /** 归档选中的文件与文件夹。用得少，同在竖三点菜单里。 */
+    vault: SheetAction?,
 ) {
     PikoTopBar(
         scrollBehavior = scrollBehavior,
@@ -134,7 +136,7 @@ internal fun DriveSelectionTopBar(
             copyTo?.let { add(it.asBarItem(priority = 50)) }
             trash?.let { add(it.asBarItem(priority = 70, shortcut = shortcutModifier.trashLabel)) }
         },
-        moreActions = listOfNotNull(canonicalName),
+        moreActions = listOfNotNull(canonicalName, vault),
     )
 }
 

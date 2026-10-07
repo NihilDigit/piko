@@ -17,7 +17,7 @@ import kotlin.test.assertEquals
 class VaultTreesTest {
 
     // 选了「剧集」归档，条目写在「剧集/第一季/上」与「剧集/第二季」；「剧集」与「第一季」自己只有子文件夹
-    private val tree = vaultTree("show", setOf("s1a", "s2"), mapOf("s1" to "show", "s1a" to "s1", "s2" to "show"))
+    private val tree = vaultTree(setOf("show"),setOf("s1a", "s2"), mapOf("s1" to "show", "s1a" to "s1", "s2" to "show"))
 
     @Test
     fun `the archived outer folder is marked while an inner folder still holds entries`() {

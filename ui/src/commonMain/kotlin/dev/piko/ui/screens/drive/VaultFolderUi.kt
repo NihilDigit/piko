@@ -30,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import dev.piko.shared.state.VaultArchiveOptions
+import dev.piko.shared.state.VaultScope
 import dev.piko.ui.LocalPikoServices
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -46,35 +47,53 @@ import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.toReadableSize
 
 /**
- * 归档一个文件夹之前的确认。先清点整棵树：多少文件、多大，其中没有来源记录的（自己上传、秒传）单独计，
+ * 归档之前的确认，文件夹与单独选的文件共用。先清点：多少文件、多大，其中没有来源记录的（自己上传、秒传）单独计，
  * 默认不带上：它们没有磁力或分享链接可凭，PikPak 不再保存时就找不回来。
+ *
+ * 只有文件时，对这几个文件不起作用的选项不显示，也不生效：大小全在门槛同一侧时「不归档小文件」只会把它们全留下，
+ * 全有来源或全无来源时「仅归档有来源记录的文件」同理。全无来源时改为直接说明，归不归档由人按确认或取消决定。
+ * 文件夹的选项照旧全给：整棵树里有什么，打开前看不到。
  *
  * 丢失的风险只在这里讲清楚。考虑过给回收站里的原件打标记、清空时再提醒，否决了：官方客户端照样能清空回收站，
  * Piko 拦不住，拦一半只会让人以为有保护。
  */
 @Composable
-internal fun VaultFolderDialog(
-    folder: PikoPathBreadcrumb,
+internal fun VaultDialog(
+    target: VaultScope,
     session: FolderVaultSession,
+    onArchive: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val preferences = LocalPikoServices.current.preferences
-    val survey by produceState<Result<FolderVaultSession.Survey>?>(null, folder.id) { value = session.survey(folder) }
+    val survey by produceState<Result<FolderVaultSession.Survey>?>(null, target) { value = session.survey(target) }
     // 读出上次的选择之前不画勾选，免得先按默认值画出来再跳
     var options by remember { mutableStateOf<VaultArchiveOptions?>(null) }
     LaunchedEffect(Unit) { options = VaultArchiveOptions.load(preferences) }
     val scope = rememberCoroutineScope()
     val chosen = options ?: VaultArchiveOptions()
     val all = survey?.getOrNull()
-    val counted = all?.let { if (chosen.skipSmallFiles) it.largeFiles else it }
-    val files = counted?.let { if (chosen.sourcedOnly) it.files - it.unsourcedFiles else it.files } ?: 0
-    val bytes = counted?.let { if (chosen.sourcedOnly) it.bytes - it.unsourcedBytes else it.bytes } ?: 0L
+    val largeFiles = all?.largeFiles?.files
+    val offersSizeChoice = !target.filesOnly || (all != null && largeFiles != null && largeFiles in 1 until all.files)
+    val skipSmallFiles = offersSizeChoice && chosen.skipSmallFiles
+    val counted = all?.let { if (skipSmallFiles) it.largeFiles else it }
+    val offersSourceChoice = !target.filesOnly || (counted != null && counted.unsourcedFiles in 1 until counted.files)
+    val sourcedOnly = offersSourceChoice && chosen.sourcedOnly
+    val files = counted?.let { if (sourcedOnly) it.files - it.unsourcedFiles else it.files } ?: 0
+    val bytes = counted?.let { if (sourcedOnly) it.bytes - it.unsourcedBytes else it.bytes } ?: 0L
     PikoDialog(
         onDismissRequest = onDismiss,
-        title = { Text("归档文件夹") },
+        title = {
+            Text(
+                when {
+                    target.filesOnly -> "归档文件"
+                    target.files.isEmpty() -> "归档文件夹"
+                    else -> "归档"
+                },
+            )
+        },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                VaultDialogHeading(folder.name, survey, counted?.files, files, bytes, emptyText = "无可归档的文件")
+                VaultDialogHeading(target.name, survey, counted?.files, files, bytes, emptyText = "无可归档的文件")
                 // 原文件放进回收站也一样醒目：清空回收站是常事，人会想「反正有归档」，清空后只剩引用
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
@@ -99,28 +118,38 @@ internal fun VaultFolderDialog(
                         scope.launch { VaultArchiveOptions.save(preferences, next) }
                     }
                     val unsourced = all?.unsourcedFiles ?: 0
-                    VaultCheckboxOption(
-                        checked = current.sourcedOnly,
-                        onCheckedChange = { update(current.copy(sourcedOnly = it)) },
-                        label = "仅归档有来源记录的文件",
-                        supporting = when {
-                            !current.sourcedOnly -> "自己上传或秒传的文件失效后无法重新添加"
-                            unsourced > 0 -> "$unsourced 个无来源记录的文件留在网盘"
-                            else -> "无来源记录的文件留在网盘"
-                        },
-                    )
+                    if (offersSourceChoice) {
+                        VaultCheckboxOption(
+                            checked = current.sourcedOnly,
+                            onCheckedChange = { update(current.copy(sourcedOnly = it)) },
+                            label = "仅归档有来源记录的文件",
+                            supporting = when {
+                                !current.sourcedOnly -> "自己上传或秒传的文件失效后无法重新添加"
+                                unsourced > 0 -> "$unsourced 个无来源记录的文件留在网盘"
+                                else -> "无来源记录的文件留在网盘"
+                            },
+                        )
+                    } else if (counted != null && counted.files > 0 && counted.unsourcedFiles == counted.files) {
+                        Text(
+                            if (counted.files == 1) "此文件无来源记录，失效后无法重新添加" else "这些文件均无来源记录，失效后无法重新添加",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
                     VaultCheckboxOption(
                         checked = current.toTrash,
                         onCheckedChange = { update(current.copy(toTrash = it)) },
                         label = "原文件放入回收站",
                         supporting = if (current.toTrash) "清空回收站前仍可找回原文件" else "原文件将永久删除",
                     )
-                    VaultCheckboxOption(
-                        checked = current.skipSmallFiles,
-                        onCheckedChange = { update(current.copy(skipSmallFiles = it)) },
-                        label = "不归档小文件",
-                        supporting = "50 MiB 以下的文件留在网盘",
-                    )
+                    if (offersSizeChoice) {
+                        VaultCheckboxOption(
+                            checked = current.skipSmallFiles,
+                            onCheckedChange = { update(current.copy(skipSmallFiles = it)) },
+                            label = "不归档小文件",
+                            supporting = "50 MiB 以下的文件留在网盘",
+                        )
+                    }
                 }
             }
         },
@@ -132,7 +161,8 @@ internal fun VaultFolderDialog(
                 destructive = !chosen.toTrash,
                 enabled = files > 0 && options != null,
                 onClick = {
-                    session.archive(folder, includeUnsourced = !chosen.sourcedOnly, onlyLargeFiles = chosen.skipSmallFiles, moveToTrash = chosen.toTrash)
+                    session.archive(target, includeUnsourced = !sourcedOnly, onlyLargeFiles = skipSmallFiles, moveToTrash = chosen.toTrash)
+                    onArchive()
                     onDismiss()
                 },
             )

@@ -35,7 +35,7 @@ class MobilePanelSizeTest {
         copySource = null, openSource = null,
         openInExternalPlayer = {},
         openInNewTab = null, togglePin = null, isPinned = false,
-        vault = if (inLibrary) null else ({}),
+        vault = {},
         unvault = if (!inLibrary && vaultMarked) ({}) else null,
         previewHidden = false, togglePreview = {},
         putOnClipboard = null,
@@ -58,7 +58,11 @@ class MobilePanelSizeTest {
 
     @Test
     fun `the most crowded panels fit one phone screen`() {
-        assertFits(panel(video("ABC-123 某片名.mp4"), CommandPlace.FOLDER), "番号视频，防窥，带来源")
+        // 文件的归档在这里已占满 8 行；库里不给归档（itemCommands.vault），最近添加里才放得下在网盘中显示与移除记录
+        val inFolder = panel(video("ABC-123 某片名.mp4"), CommandPlace.FOLDER)
+        assertTrue(inFolder.any { it.label == "归档" })
+        assertFits(inFolder, "番号视频，防窥，带来源")
+        assertFits(panel(video("ABC-123 某片名.mp4"), CommandPlace.SEARCH), "搜索结果里的番号视频")
         assertFits(panel(video("ABC-123 某片名.mp4"), CommandPlace.RECENT), "最近添加里的番号视频")
         assertFits(panel(video("ABC-123 某片名.mp4"), CommandPlace.HISTORY), "播放历史里的番号视频")
         // 查重与规范命名的结果页、星标都算 LIBRARY

@@ -20,7 +20,7 @@ class FileActionsRowTest {
     private fun handlers(desktop: Boolean) = FileActionHandlers(
         toggleStar = {}, download = {}, share = {}, rename = {}, move = {}, copy = {}, trash = {}, extract = {},
         findDuplicates = {}, canonicalNameFolder = null, downloadSegment = {}, prepareQualities = {}, copySource = {}, openSource = {},
-        openInExternalPlayer = null, openInNewTab = null, togglePin = null, isPinned = false, vault = null, unvault = null,
+        openInExternalPlayer = null, openInNewTab = null, togglePin = null, isPinned = false, vault = {}, unvault = null,
         previewHidden = null, togglePreview = {},
         putOnClipboard = if (desktop) ({ _ -> }) else null,
     )

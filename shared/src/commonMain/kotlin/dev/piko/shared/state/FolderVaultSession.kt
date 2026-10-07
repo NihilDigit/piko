@@ -44,7 +44,27 @@ import kotlin.time.TimeSource
 private const val LARGE_FILE_MIN_BYTES = 50L * 1024 * 1024
 
 /**
- * 把文件夹里的真实文件换成归档条目，腾出网盘空间，以及反过来恢复到网盘。进程级：离开网盘页照常进行；
+ * 一次归档的范围：几个文件夹各自的整棵树，加上单独选的几个文件。单独的文件按所在文件夹分组，清单写进各自那一层，
+ * 与整棵树里的一层没有区别，确认、处置、撤销、进度与通知都走同一条路。[name] 用在进度、提示与通知里。
+ */
+data class VaultScope(
+    val name: String,
+    val folders: List<PikoPathBreadcrumb> = emptyList(),
+    val files: List<FileStat> = emptyList(),
+) {
+    /** 不含文件夹：确认框据此省掉对单个或几个文件没有意义的选项。 */
+    val filesOnly: Boolean get() = folders.isEmpty()
+
+    // 日志里只留数量与 ID，名字不进日志
+    internal val logScope: String get() = "${folders.size} 个文件夹（${folders.joinToString { it.id }}）与 ${files.size} 个单独的文件"
+
+    companion object {
+        fun of(folder: PikoPathBreadcrumb) = VaultScope(folder.name, folders = listOf(folder))
+    }
+}
+
+/**
+ * 把文件夹里或单独选的真实文件换成归档条目（范围见 [VaultScope]），腾出网盘空间，以及反过来恢复到网盘。进程级：离开网盘页照常进行；
  * 归档与恢复同一时刻只做一件，免得两边同时改同一份清单。
  *
  * 八个目录并行处理，各自清单确认写成后才处置原文件。中途失败时已写成的引用与恢复依据保留。
@@ -129,8 +149,11 @@ class FolderVaultSession internal constructor(
     }
 
     /** 清点 [folder] 整棵树里能归档的文件。 */
-    suspend fun survey(folder: PikoPathBreadcrumb): Result<Survey> = runSuspendCatching {
-        val files = walk(folder.id).flatMap { it.second }
+    suspend fun survey(folder: PikoPathBreadcrumb): Result<Survey> = survey(VaultScope.of(folder))
+
+    /** 清点 [target] 里能归档的文件。 */
+    suspend fun survey(target: VaultScope): Result<Survey> = runSuspendCatching {
+        val files = levelsOf(target).flatMap { it.second }
         val unsourced = files.filter { it.sourceUrl.isNullOrBlank() }
         val large = files.filter { it.sizeBytes >= LARGE_FILE_MIN_BYTES }
         val largeUnsourced = large.filter { it.sourceUrl.isNullOrBlank() }
@@ -138,8 +161,12 @@ class FolderVaultSession internal constructor(
             Survey(large.size, large.sumOf { it.sizeBytes }, largeUnsourced.size, largeUnsourced.sumOf { it.sizeBytes }))
     }
 
-    /** 开始归档 [folder]。[includeUnsourced] 为假时没有来源记录的文件原样留着。已有一个在做时不接。 */
-    fun archive(folder: PikoPathBreadcrumb, includeUnsourced: Boolean, onlyLargeFiles: Boolean = false, moveToTrash: Boolean = true) {
+    /** 开始归档 [folder] 整棵树。 */
+    fun archive(folder: PikoPathBreadcrumb, includeUnsourced: Boolean, onlyLargeFiles: Boolean = false, moveToTrash: Boolean = true) =
+        archive(VaultScope.of(folder), includeUnsourced, onlyLargeFiles, moveToTrash)
+
+    /** 开始归档 [target]。[includeUnsourced] 为假时没有来源记录的文件原样留着。已有一个在做时不接。 */
+    fun archive(target: VaultScope, includeUnsourced: Boolean, onlyLargeFiles: Boolean = false, moveToTrash: Boolean = true) {
         if (busy()) return
         job = scope.launch {
             val reverts = mutableMapOf<String, VaultEdit>()
@@ -151,18 +178,18 @@ class FolderVaultSession internal constructor(
             var noCid = 0
             val result = runSuspendCatching {
                 val delete = !moveToTrash
-                val levels = walk(folder.id, until = { stopping }, parents = parents).map { (folderId, files) ->
+                val levels = levelsOf(target, until = { stopping }, parents = parents).map { (folderId, files) ->
                     folderId to files.filter {
                         (includeUnsourced || !it.sourceUrl.isNullOrBlank()) && (!onlyLargeFiles || it.sizeBytes >= LARGE_FILE_MIN_BYTES)
                     }
                 }.filter { it.second.isNotEmpty() }
                 val total = levels.sumOf { it.second.size }
-                PikoLog.i(TAG, "开始归档：文件夹 ${folder.id}，${levels.size} 个文件夹里 $total 个文件，${levels.sumOf { l -> l.second.sumOf { it.sizeBytes } }} 字节，" +
+                PikoLog.i(TAG, "开始归档：${target.logScope}，${levels.size} 个文件夹里 $total 个文件，${levels.sumOf { l -> l.second.sumOf { it.sizeBytes } }} 字节，" +
                     "${if (includeUnsourced) "含" else "不含"}无来源的${if (onlyLargeFiles) "，只归档大文件" else ""}，原文件${if (delete) "直接删除" else "移入回收站"}")
                 var done = 0
                 var prepared = 0
                 val progressLock = Mutex()
-                progress = Progress(folder.name, 0, total, 0)
+                progress = Progress(target.name, 0, total, 0)
                 coroutineScope {
                     val sampler = VaultCidSampler(this, operations::sampleCid, cidTimeoutMillis)
                     val folders = Semaphore(8)
@@ -174,7 +201,7 @@ class FolderVaultSession internal constructor(
                                 val cid = file.params["piko_vault_cid"] ?: sampler.sample(file)
                                 progressLock.withLock {
                                     prepared++
-                                    progress = Progress(folder.name, done, total, prepared)
+                                    progress = Progress(target.name, done, total, prepared)
                                 }
                                 if (cid == null) progressLock.withLock { noCid++ }
                                 VaultEntry.create(file.name, file.sizeBytes, file.hash, file.sourceUrl, addedAt, cid)
@@ -189,7 +216,7 @@ class FolderVaultSession internal constructor(
                             progressLock.withLock {
                                 if (!delete) trashed += files.map { it.id }
                                 done += files.size
-                                progress = Progress(folder.name, done, total, prepared)
+                                progress = Progress(target.name, done, total, prepared)
                             }
                         }
                     } }.awaitAll()
@@ -198,10 +225,11 @@ class FolderVaultSession internal constructor(
             }
             progress = null
             val stopped = stopping
-            PikoLog.i(TAG, "归档${if (result.isFailure) "中途失败" else if (stopped) "已停止" else "完成"}：文件夹 ${folder.id}，" +
+            PikoLog.i(TAG, "归档${if (result.isFailure) "中途失败" else if (stopped) "已停止" else "完成"}：${target.logScope}，" +
                 "写成清单 ${reverts.size + deleted.size} 个文件夹，归档 ${result.getOrNull() ?: "?"} 个文件，CID 未取到 $noCid 个，" +
                 "历时 ${started.elapsedNow().inWholeMilliseconds} ms")
-            operations.rememberTree(vaultTree(folder.id, reverts.keys + deleted.keys, parents))
+            // 单独归档的文件只在所在那一层写清单，那一层自己就有标记，不进目录表
+            operations.rememberTree(vaultTree(target.folders.mapTo(HashSet()) { it.id }, reverts.keys + deleted.keys, parents))
             // 做完的几层记成一条改动，哪怕后面失败了：撤销得回已经归档的那些
             if (reverts.isNotEmpty() || deleted.isNotEmpty()) {
                 val count = result.getOrNull()?.let { if (stopped) "已停止，已归档 $it 个文件" else "已归档 $it 个文件" }
@@ -215,13 +243,13 @@ class FolderVaultSession internal constructor(
                     stopped -> "归档已停止"
                     else -> "归档完成"
                 }
-                _outcomes.tryEmit(Outcome(title, "「${folder.name}」：$summary"))
+                _outcomes.tryEmit(Outcome(title, "「${target.name}」：$summary"))
             } else if (result.getOrNull() == 0) {
                 _messages.tryEmit(if (stopped) "已停止归档" else "无可归档的文件")
             }
             result.reportFailure(TAG, "归档") { message ->
                 _messages.tryEmit(message)
-                if (reverts.isEmpty() && deleted.isEmpty()) _outcomes.tryEmit(Outcome(message, "「${folder.name}」"))
+                if (reverts.isEmpty() && deleted.isEmpty()) _outcomes.tryEmit(Outcome(message, "「${target.name}」"))
             }
             operations.refresh()
         }
@@ -445,6 +473,35 @@ class FolderVaultSession internal constructor(
     }
 
     /**
+     * [target] 涉及的各层：文件夹各取整棵树，单独的文件按所在文件夹归入那一层，同一层只出现一次。
+     * 单独的文件现读所在文件夹再取：列表里的行可能已被别的设备移走、删掉，来源也以仓库按账本补上的为准。
+     */
+    private suspend fun levelsOf(
+        target: VaultScope,
+        until: () -> Boolean = { false },
+        parents: MutableMap<String, String>? = null,
+    ): List<Pair<String, List<FileStat>>> {
+        val levels = LinkedHashMap<String, LinkedHashMap<String, FileStat>>()
+        fun add(folderId: String, files: List<FileStat>) {
+            levels.getOrPut(folderId) { LinkedHashMap() }.putAll(files.associateBy { it.id })
+        }
+        for (folder in target.folders) {
+            if (until()) break
+            walk(folder.id, until, parents).forEach { (folderId, files) -> add(folderId, files) }
+        }
+        val requested = target.files.groupBy({ it.parentId }, { it.id })
+        for (chunk in requested.entries.chunked(4)) {
+            if (until()) break
+            val listings = coroutineScope { chunk.map { (folderId, _) -> async { operations.list(folderId) } }.awaitAll() }
+            chunk.zip(listings).forEach { (request, listing) ->
+                val ids = request.value.toSet()
+                add(request.key, listing.filter { it.id in ids && archivable(it) })
+            }
+        }
+        return levels.map { (folderId, files) -> folderId to files.values.toList() }
+    }
+
+    /**
      * [rootId] 整棵树，每层一项：目录 ID 与其中能归档的文件。已是归档条目的、清单文件、还在上传的、
      * 没有 gcid 的都不算；Piko-Temp 与同步设置的 .piko 不进去。
      */
@@ -489,14 +546,14 @@ class FolderVaultSession internal constructor(
 private val SKIPPED_FOLDERS = setOf("Piko-Temp", ".piko")
 
 /**
- * 从选的那一层 [rootId] 到各写了清单的文件夹（[written]）之间的每一层 → 其下写了清单的那些，
+ * 从选的那几层 [roots] 到各写了清单的文件夹（[written]）之间的每一层 → 其下写了清单的那些，
  * 见 FolderContentMemory.markedFolders。写了清单的文件夹自己不进来，它们有直接的标记。
  */
-internal fun vaultTree(rootId: String, written: Set<String>, parents: Map<String, String>): Map<String, Set<String>> {
+internal fun vaultTree(roots: Set<String>, written: Set<String>, parents: Map<String, String>): Map<String, Set<String>> {
     val tree = mutableMapOf<String, MutableSet<String>>()
     for (folderId in written) {
         var current = folderId
-        while (current != rootId) {
+        while (current !in roots) {
             current = parents[current] ?: break
             tree.getOrPut(current) { mutableSetOf() } += folderId
         }

@@ -120,8 +120,8 @@ internal class FileActionHandlers(
     /** 固定或取消固定到快速访问；没有快速访问可去（移动端）时为 null。 */
     val togglePin: (() -> Unit)?,
     val isPinned: Boolean,
-    /** 把文件夹里的文件换成归档记录，腾出空间。库里列的是散落各处的条目，不在原地，为 null。 */
-    val vault: (() -> Unit)?,
+    /** 把这个文件或文件夹里的文件换成归档记录，腾出空间。给不给看 [ItemCommands.vault]。 */
+    val vault: () -> Unit,
     /** 文件夹挂着归档标记时才有。 */
     val unvault: (() -> Unit)?,
     /** 没有可切换的预览（防窥关闭或没有缩略图）时为 null。 */
@@ -168,7 +168,9 @@ internal fun fileActions(file: FileStat, commands: ItemCommands, on: FileActionH
     if (file.isFolder) {
         if (commands.rename) on.canonicalNameFolder?.let { add(DriveActions.canonicalName(it)) }
         on.findDuplicates?.let { add(DriveActions.findDuplicates(it)) }
-        on.vault?.let { add(DriveActions.vault(it)) }
+    }
+    if (commands.vault) {
+        add(DriveActions.vault(on.vault))
         on.unvault?.let { add(DriveActions.unvault(it)) }
     }
     on.previewHidden?.let { add(DriveActions.previewVisibility(it, on.togglePreview)) }

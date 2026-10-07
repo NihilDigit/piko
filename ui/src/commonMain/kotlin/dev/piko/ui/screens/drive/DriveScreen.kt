@@ -154,6 +154,7 @@ import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.media.proxy.openForExternalPlayer
 import dev.piko.shared.state.DriveScreenState
+import dev.piko.shared.state.VaultScope
 import dev.piko.shared.state.CanonicalListing
 import dev.piko.shared.state.CanonicalNamingState
 import dev.piko.shared.state.DuplicateFinderState
@@ -333,7 +334,7 @@ fun DriveScreen(
     LaunchedEffect(vaultSession) {
         vaultSession.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
     }
-    var vaultTarget by remember { mutableStateOf<FileStat?>(null) }
+    var vaultTarget by remember { mutableStateOf<VaultScope?>(null) }
     var restoreVaultTarget by remember { mutableStateOf<FileStat?>(null) }
 
     // 视图模式存进偏好，切 Tab 与重启后保持上次的选择
@@ -899,6 +900,13 @@ fun DriveScreen(
     fun clipboardActions(files: List<FileStat>): ((Boolean) -> Unit)? =
         if (desktop) ({ cut -> state.putOnClipboard(files.map { it.id }, cut) }) else null
 
+    // 混选时一并归档：文件夹各取整棵树，文件按所在文件夹写清单，同一次确认、同一条撤销
+    fun vaultScopeOf(files: List<FileStat>): VaultScope {
+        val (folders, singles) = files.partition { it.isFolder }
+        val name = files.singleOrNull()?.let { state.itemName(it).headingText } ?: "所选 ${files.size} 项"
+        return VaultScope(name, folders.map { PathBreadcrumb(it.id, state.itemName(it).headingText) }, singles)
+    }
+
     // 选中的几项一起的操作
     fun selectionActions(files: List<FileStat>, commands: ItemCommands): List<SheetAction> = buildList {
         val ids = files.map { it.id }
@@ -935,6 +943,7 @@ fun DriveScreen(
             add(DriveActions.moveTo { moveTargetIds = ids.toSet() })
             add(DriveActions.copyTo { copyTargetIds = ids.toSet() })
         }
+        if (commands.vault) add(DriveActions.vault { vaultTarget = vaultScopeOf(files) })
         if (commands.removeRecord) add(DriveActions.removeRecord { state.removeFromLibrary(ids.toSet()) })
         if (commands.moveToTrash) add(DriveActions.moveToTrash { state.moveToTrash(ids) })
     }
@@ -988,10 +997,9 @@ fun DriveScreen(
             openInNewTab = latestOpenInNewTab?.let { { it(file) } },
             togglePin = latestTogglePin?.let { { it(file) } },
             isPinned = latestPinnedFolders.any { it.id == file.id },
-            // 库里列的是散落各处的条目，归档一个文件夹要在它所在的地方做。挂着归档标记的才给取消归档；
-            // 归档却一直给：跳过小文件或之后又放进新文件时，挂着标记的文件夹里仍有可归档的
-            vault = if (library == null) ({ vaultTarget = file }) else null,
-            unvault = if (library == null && file.id in vaultedFolders) ({ restoreVaultTarget = file }) else null,
+            // 挂着归档标记的才给取消归档；归档却一直给：跳过小文件或之后又放进新文件时，挂着标记的文件夹里仍有可归档的
+            vault = { vaultTarget = vaultScopeOf(listOf(file)) },
+            unvault = if (file.id in vaultedFolders) ({ restoreVaultTarget = file }) else null,
             previewHidden = if (isSpoilerBlurEnabled && file.thumbnailLink.isNotEmpty()) file.id !in state.revealedFileIds else null,
             togglePreview = { state.toggleSpoiler(file.id) },
             putOnClipboard = clipboardActions(listOf(file)),
@@ -1764,6 +1772,7 @@ fun DriveScreen(
                                         vaultSession.restore(vaulted)
                                     }
                                 },
+                                vault = DriveActions.vault { vaultTarget = vaultScopeOf(commandTargets) }.takeIf { targetCommands.vault },
                             )
 
                             isSearchOpen -> DriveSearchTopBar(
@@ -2091,8 +2100,15 @@ fun DriveScreen(
         RestoreVaultFolderDialog(PathBreadcrumb(folder.id, state.itemName(folder).headingText), vaultSession, onDismiss = { restoreVaultTarget = null })
     }
 
-    vaultTarget?.let { folder ->
-        VaultFolderDialog(PathBreadcrumb(folder.id, state.itemName(folder).headingText), vaultSession, onDismiss = { vaultTarget = null })
+    vaultTarget?.let { target ->
+        // 归档的是选中的那几项时退出多选，归档后它们换成了条目，选中的 ID 已对不上；对着别的一项归档时不动选中
+        val targetIds = target.folders.map { it.id } + target.files.map { it.id }
+        VaultDialog(
+            target,
+            vaultSession,
+            onArchive = { if (targetIds.any { it in state.selectedFileIds }) state.exitSelection() },
+            onDismiss = { vaultTarget = null },
+        )
     }
 
     libraryConfirm?.let { request ->
