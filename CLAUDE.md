@@ -243,8 +243,10 @@ URL。直链过期重取、连接预算、预读与缓存都在 SDK 的 `PikPakF
 请求开一个：mpv 拖动时新旧连接重叠、交错差的 MP4 在两处来回读，请求之间都互不取消。预取走
 `handle.prefetch`，不占读位置；同一优先级按提出的先后取完，调用方不必自己限并发。
 
-**Android 分发包是 GPLv3**：jdtech 包里的 FFmpeg 以 `--enable-gpl --enable-version3` 构建，mpv 也是 GPL 构建。
-piko 源码仍是 MIT，但发版时要附 GPLv3 与第三方声明，并指明对应源码的获取方式。
+**许可**：piko 源码是 AGPL-3.0-or-later（1.1.0 及更早是 MIT），外部 PR 须签 `CLA.md`（FSFE Contributor Agreements 生成的个人非独占协议，
+外向许可承诺贡献始终以 AGPL-3.0-or-later 提供，另可附加其他许可证，以便单独授权），由 `.github/workflows/cla.yml` 收签，签名存于 `cla-signatures` 分支。
+Android 分发包里 jdtech 的 FFmpeg 以 `--enable-gpl --enable-version3` 构建，mpv 也是 GPL 构建，与 AGPL 按其第 13 条可合并分发；
+发版时附第三方声明，并指明对应源码的获取方式。取自其他项目的代码（如 PowerRename 的 MIT 代码）保留原有的版权与许可说明。
 
 ## 截图
 

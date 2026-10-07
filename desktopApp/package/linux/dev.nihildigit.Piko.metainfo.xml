@@ -2,7 +2,7 @@
 <component type="desktop-application">
   <id>dev.nihildigit.Piko</id>
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>MIT</project_license>
+  <project_license>AGPL-3.0-or-later</project_license>
   <name>Piko</name>
   <summary>Fast, cross-platform PikPak client</summary>
   <summary xml:lang="zh-CN">快速的跨平台 PikPak 客户端</summary>
