@@ -82,7 +82,6 @@ class InstantBatchState internal constructor(
     private val emitOutcome: suspend (InstantSaveOutcome) -> Unit,
     private val emitMessage: suspend (String) -> Unit,
     private val onEmpty: () -> Unit,
-    private val titleFill: InstantTitleFill? = null,
 ) {
     var rows by mutableStateOf(links.map(::createRow))
         private set
@@ -186,11 +185,9 @@ class InstantBatchState internal constructor(
                 val createdIds = mutableListOf<String>()
                 var allInstant = true
                 val succeeded = mutableListOf<InstantBatchRow>()
-                // 各行的补片名合成一批：只弹一次提示，撤销一步撤回整次批量保存补上的片名
-                val titleFills = mutableListOf<InstantTitleFill.Request>()
                 // 逐条提交：秒传内部已按文件并发，行与行之间不再叠一层
                 for (row in toSubmit) {
-                    row.state.submitForBatch(target, titleFills)
+                    row.state.submitForBatch(target)
                         .onSuccess { ids ->
                             if (ids == null) allInstant = false else createdIds += ids
                             succeeded += row
@@ -198,8 +195,6 @@ class InstantBatchState internal constructor(
                         // 行里的保存已经记过日志，这里只换成给列表看的一句
                         .onFailure { saveErrors[row.key] = failureText("保存", it) }
                 }
-                // 在发出结果之前交出去：调用方收到结果就结束会话，这个作用域随之取消
-                titleFill?.fill(titleFills)
                 PikoLog.i(TAG, "批量保存：${toSubmit.size} 条链接，成功 ${succeeded.size} 条（秒传出 ${createdIds.size} 个文件），失败 ${saveErrors.size} 条")
                 if (saveErrors.isEmpty()) {
                     emitOutcome(

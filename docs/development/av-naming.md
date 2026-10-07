@@ -140,7 +140,6 @@ Piko 不内置任何成人站点网址，也不内置、不推荐任何 MetaTube
 
 - `AvNamingTest`：识别与成批整理；`AvCanonicalNameTest`：样例表、往返与幂等；`CanonicalAvRuleTest`：接入重命名管线。
 - `InstantFlowSmokeTest`：添加链接的开关默认关，开启后落盘的名字、资源文件夹与里面的文件名。
-- `InstantTitleFillSmokeTest`：测的是未上线的先存后补，见末节。
 - `CanonicalTreeTest`：资源文件夹、合集与用户归类的文件夹、同番号子文件夹，以及再走一遍不变。
 - `ShareDestinationSmokeTest`：转存后改名、撞名不改、撤销。
 - `CanonicalFolderRenameSmokeTest`：文件夹的规范命名从扫描到批量重命名的预览（资源文件夹、用户归类、所在目录、
@@ -170,7 +169,7 @@ Piko 不内置任何成人站点网址，也不内置、不推荐任何 MetaTube
 ### 设计
 
 - 触发：面板的开关开着、资源里有会改名的番号文件（`offersCanonicalNames`）、配了 MetaTube 地址。每个解析结果只查一次，
-  保存时还没发起的当场发起（`InstantSheetState.titleFillRequest`）。
+  保存时还没发起的当场发起。
 - 进程级：查询与补名挂在 `InstantTitleFill` 上，作用域是 `PikoServices` 的后台作用域。保存成功会话即结束，面板与网盘页
   也可能已不在；补名等的是面板发起的同一次查询，不另查。换号时 `endAccount` 取消全部查询与补名，每次读写网盘前另核对账号。
 - 跳过：补改前现查详情。名字已不是保存时那个的（用户或别处改过）、进了回收站的、与同目录已有名字撞上的、
@@ -181,22 +180,31 @@ Piko 不内置任何成人站点网址，也不内置、不推荐任何 MetaTube
 
 ### 现状
 
-代码与测试都在。`InstantSheetState` 的查询（`fetchTitles`）与补名请求（`titleFillRequest`）在没有 `InstantTitleFill` 时
-当场返回；`PikoServices` 建了实例，但传给 `InstantSheetState` 的 `instantTitleFill` 那一行注释掉了，面板因此不查也不补。
-`InstantTitleFillSmokeTest` 直接把实例交给面板，照常通过。
+只有 `shared/.../state/InstantTitleFill.kt` 留着，标为 WIP：没有接线，没有调用方，也没有测试。
+面板一侧的接入已拆掉，`InstantSheetState`、`InstantBatchState` 与 `PikoServices` 里没有它的痕迹；
+拆之前的完整接线与冒烟测试（`InstantTitleFillSmokeTest`）在提交 a45cedc3 里可以查到。
 
 ### 未上线的原因
 
-实机上开启开关后，面板预览不变，保存后也不补名；同样的流程在 `InstantTitleFillSmokeTest` 里通过。
+实机上开启开关后，面板预览不变，保存后也不补名；拆掉的冒烟测试在同样的流程上通过。
 日志里有「查片名：1 个番号，查到 1 个」，但这一行出自 `MetaTubeService`，批量重命名查片名时同样会打，
 不能据此断定面板的查询跑过并查到。原因未查明。
 
 ### 接回前要做的事
 
-- 在实机上复现，查清片名为何没到预览、补名为何没执行。先给 `fetchTitles` 与 `InstantTitleFill.fill` 各打一行日志，
-  与批量重命名的查询区分开。首先排除的一处差别：面板在 `snapshotFlow` 里等开关与解析结果，测试另起协程每 20 ms
+- 补回接入点（可照 a45cedc3 的写法）：
+  - `InstantSheetState` 收 `InstantTitleFill`，批量各行的子实例一并传下去。
+  - 面板在 `snapshotFlow` 里等开关、规范名与解析结果，经 `lookUp` 查片名；查到后另存一份片名，重算规范名与新建文件夹名。
+  - 保存时按保存那一刻的命名生成 `InstantTitleFill.Request`：存下的文件 ID 与名字、按番号命名的新建文件夹，
+    以及按片名重算名字的函数；单条保存后交给 `fill`。
+  - `InstantBatchState` 收齐各行的请求，在发出结果之前合成一次 `fill`：收到结果会话即结束，作用域随之取消。
+  - 换解析结果或会话结束时，取消没交出去的查询。
+  - `PikoServices` 建一个进程级实例，换号时调 `endAccount`。
+- 在实机上复现，查清片名为何没到预览、补名为何没执行。先在面板的查询与 `InstantTitleFill.fill` 里各打一行日志，
+  与批量重命名的查询区分开。首先排除的一处差别：面板在 `snapshotFlow` 里等状态变化，原先的测试另起协程每 20 ms
   发一次快照通知，应用里靠 Compose 的 `GlobalSnapshotManager`。
 - 面板上加一行可见的状态（查询中、查到几个、补名结果），实测时看得出走到了哪一步。
 - 原名已是规范名（片名取自原名）时开关不出现，也就不查 MetaTube；要用 MetaTube 片名替换原名里的片名，
   得让开关在这种情况下也出现。
-- 接回 `PikoServices` 里那一行，把本节的行为并入「入口」的添加链接一条，测试一节去掉对本节的引用。
+- 补回冒烟测试：保存后片名到达再改名与撤销、用户改过的不碰、新建文件夹补片名而里面的文件不动、批量合成一条改动、换号后不补。
+- 上线后把本节的行为并入「入口」的添加链接一条，测试一节补上对应的测试。
