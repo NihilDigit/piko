@@ -1,32 +1,6 @@
 package dev.piko.ui.screens.drive
 
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ContentCopy
-import androidx.compose.material.icons.outlined.ContentCut
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.Download
-import androidx.compose.material.icons.outlined.HighQuality
-import androidx.compose.material.icons.outlined.DriveFileMove
-import androidx.compose.material.icons.outlined.Link
-import androidx.compose.material.icons.outlined.OndemandVideo
-import androidx.compose.material.icons.automirrored.outlined.OpenInNew
-import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.FileCopy
-import androidx.compose.material.icons.outlined.Inventory2
-import androidx.compose.material.icons.outlined.Share
-import androidx.compose.material.icons.outlined.SwipeVertical
-import androidx.compose.material.icons.outlined.Tab
-import dev.piko.shared.upload.isUploading
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.outlined.StarOutline
-import androidx.compose.material.icons.outlined.Unarchive
-import androidx.compose.material.icons.outlined.PushPin
-import dev.piko.shared.data.isArchiveVolume
-import dev.piko.ui.LocalPikoServices
-import dev.piko.shared.data.isExtractableArchive
-import androidx.compose.material.icons.outlined.Visibility
-import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -48,46 +22,19 @@ import kotlinx.coroutines.flow.Flow
 /**
  * 网盘条目的操作面板，列表与海报墙共用。外壳是 [ItemDetailsSheet]。
  *
- * previewHidden 为 null 表示没有可切换的预览（防窥关闭或没有缩略图），不显示该项。
+ * [actions] 与这一项的右键菜单是同一份（DriveScreen 的 itemActions），这里只管头部。
  * folderUsage 只对文件夹给出，面板打开期间收集，关闭即取消统计。
  * 标题是原始文件名：列表里显示的是解析后的短标题，这里给全名，可选中复制。
- * 离线下载与分享转存来的条目，头部注明来源，操作里给出复制或打开来源链接。
+ * 离线下载与分享转存来的条目，头部注明来源。
  */
 @Composable
 internal fun FileActionsSheet(
     file: FileStat,
     locationLabel: String?,
-    previewHidden: Boolean?,
     folderUsage: Flow<FolderUsage>?,
-    onTogglePreview: () -> Unit,
-    onToggleStar: () -> Unit,
+    actions: List<SheetAction>,
     onDismiss: () -> Unit,
-    onDownload: () -> Unit,
-    onDownloadSegment: () -> Unit,
-    onRename: () -> Unit,
-    onMove: () -> Unit,
-    onCopy: () -> Unit,
-    onTrash: () -> Unit,
-    onCopySource: () -> Unit,
-    onOpenSource: () -> Unit,
-    onFindDuplicates: () -> Unit,
-    onExtract: () -> Unit,
-    onShare: () -> Unit,
-    onOpenInExternalPlayer: (() -> Unit)?,
-    onOpenInNewTab: (() -> Unit)? = null,
-    onDownloadQuality: (() -> Unit)? = null,
-    onTogglePin: (() -> Unit)? = null,
-    isPinned: Boolean = false,
-    onVault: (() -> Unit)? = null,
-    onRestoreVault: (() -> Unit)? = null,
-    /** 库里多出的操作（在网盘中显示、移除记录），排在最前。 */
-    leadingActions: List<SheetAction> = emptyList(),
-    /** 整个取代文件操作，回收站用：那里只能恢复与彻底删除。给了它时「属性」由它自己带上。 */
-    actionsOverride: List<SheetAction>? = null,
-    /** 末尾的「属性」，见 [propertiesAction]。 */
-    onProperties: (() -> Unit)? = null,
 ) {
-    val mediaRepository = LocalPikoServices.current.mediaRepository
     val usage by produceState<FolderUsageResult?>(null, folderUsage) {
         folderUsage ?: return@produceState
         try {
@@ -98,32 +45,6 @@ internal fun FileActionsSheet(
             value = FolderUsageResult.Failed
         }
     }
-
-    val actions = actionsOverride ?: leadingActions + fileActions(
-        file = file,
-        previewHidden = previewHidden,
-        onTogglePreview = onTogglePreview,
-        onToggleStar = onToggleStar,
-        onDownload = onDownload,
-        onDownloadQuality = onDownloadQuality,
-        onPrepareQualities = { mediaRepository.prefetchDownloadQualities(file.id) },
-        onDownloadSegment = onDownloadSegment,
-        onRename = onRename,
-        onMove = onMove,
-        onCopy = onCopy,
-        onTrash = onTrash,
-        onCopySource = onCopySource,
-        onOpenSource = onOpenSource,
-        onFindDuplicates = onFindDuplicates,
-        onExtract = onExtract,
-        onShare = onShare,
-        onOpenInExternalPlayer = onOpenInExternalPlayer,
-        onOpenInNewTab = onOpenInNewTab,
-        onTogglePin = onTogglePin,
-        isPinned = isPinned,
-        onVault = onVault,
-        onRestoreVault = onRestoreVault,
-    ) + listOfNotNull(onProperties?.let(::propertiesAction))
 
     ItemDetailsSheet(
         title = file.name,
@@ -141,93 +62,69 @@ internal fun FileActionsSheet(
     )
 }
 
-/**
- * 网盘条目的操作。底部面板与桌面的右键菜单用同一份，两处不会漏项。
- * onOpenInExternalPlayer 为 null 表示平台交不出去，不显示该项。
- */
-internal fun fileActions(
-    file: FileStat,
-    previewHidden: Boolean?,
-    onTogglePreview: () -> Unit,
-    onToggleStar: () -> Unit,
-    onDownload: () -> Unit,
-    onDownloadSegment: () -> Unit,
-    onRename: () -> Unit,
-    onMove: () -> Unit,
-    onCopy: () -> Unit,
-    onTrash: () -> Unit,
-    onCopySource: () -> Unit,
-    onOpenSource: () -> Unit,
-    onFindDuplicates: () -> Unit,
-    onExtract: () -> Unit,
-    onShare: () -> Unit,
-    onOpenInExternalPlayer: (() -> Unit)?,
-    onOpenInNewTab: (() -> Unit)? = null,
-    /** 视频的「选择画质下载」；为 null 时不给这一项。 */
-    onDownloadQuality: (() -> Unit)? = null,
+/** 网盘里一项的操作要做的事。为 null 的表示这里做不了，不给那一项。 */
+internal class FileActionHandlers(
+    val toggleStar: () -> Unit,
+    val download: () -> Unit,
+    val share: () -> Unit,
+    val rename: () -> Unit,
+    val move: () -> Unit,
+    val copy: () -> Unit,
+    val trash: () -> Unit,
+    val extract: () -> Unit,
+    val findDuplicates: () -> Unit,
+    val downloadSegment: () -> Unit,
+    /** 视频的「选择画质下载」。 */
+    val downloadQuality: () -> Unit,
     /** 在「选择画质下载」「下载指定段落」上按下或悬停时提前查各档，见 [SheetAction.onPrepare]。 */
-    onPrepareQualities: (() -> Unit)? = null,
-    /** 固定或取消固定到快速访问；为 null 时没有快速访问可去（窄窗口），不给这一项。 */
-    onTogglePin: (() -> Unit)? = null,
-    isPinned: Boolean = false,
-    /** 把文件夹里的文件换成归档记录，腾出空间；为 null 时不给这一项。 */
-    onVault: (() -> Unit)? = null,
-    onRestoreVault: (() -> Unit)? = null,
-): List<SheetAction> = buildList {
-    // 文件夹在宽窗口里可以在新标签页打开，放在最前：它是「打开」的另一种
-    if (file.isFolder && onOpenInNewTab != null) add(SheetAction(Icons.Outlined.Tab, "在新标签页打开", onOpenInNewTab))
-    if (file.isFolder && onTogglePin != null) {
-        add(SheetAction(Icons.Outlined.PushPin, if (isPinned) "从快速访问取消固定" else "固定到快速访问", onTogglePin))
-    }
-    if (previewHidden != null) {
-        add(
-            SheetAction(
-                icon = if (previewHidden) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
-                label = if (previewHidden) "显示预览" else "隐藏预览",
-                onClick = onTogglePreview,
-            ),
-        )
-    }
-    add(
-        SheetAction(
-            // 图标画的是现状，与信息流的星标按钮一致：已加星标时实心，未加时描边
-            icon = if (file.isStarred) Icons.Filled.Star else Icons.Outlined.StarOutline,
-            label = if (file.isStarred) "取消星标" else "添加星标",
-            onClick = onToggleStar,
-        ),
-    )
-    if (file.isExtractableArchive || file.isArchiveVolume) add(SheetAction(Icons.Outlined.Unarchive, "解压到当前位置", onExtract))
+    val prepareQualities: () -> Unit,
+    val copySource: () -> Unit,
+    val openSource: () -> Unit,
+    /** 平台交不出去时为 null。 */
+    val openInExternalPlayer: (() -> Unit)?,
+    /** 没有标签栏（移动端）时为 null。 */
+    val openInNewTab: (() -> Unit)?,
+    /** 固定或取消固定到快速访问；没有快速访问可去（移动端）时为 null。 */
+    val togglePin: (() -> Unit)?,
+    val isPinned: Boolean,
+    /** 把文件夹里的文件换成归档记录，腾出空间。库里列的是散落各处的条目，不在原地，为 null。 */
+    val vault: (() -> Unit)?,
+    /** 文件夹挂着归档标记时才有。 */
+    val unvault: (() -> Unit)?,
+    /** 没有可切换的预览（防窥关闭或没有缩略图）时为 null。 */
+    val previewHidden: Boolean?,
+    val togglePreview: () -> Unit,
+)
+
+/**
+ * 网盘里一项（不在回收站、压缩包里，也不是归档条目）的操作。通用的几样做不做得了看 [commands]，
+ * 与命令栏同一份规则；这里只加各类条目自己的。先后即各档里的先后，见 [DriveActions]。
+ */
+internal fun fileActions(file: FileStat, commands: ItemCommands, on: FileActionHandlers): List<SheetAction> = buildList {
+    val video = !file.isFolder && file.isPlayableVideo()
     // 文件夹连同子文件夹整个下载
-    if (!file.isUploading) add(SheetAction(Icons.Outlined.Download, "下载到本地", onDownload))
-    if (!file.isFolder && !file.isUploading && file.isPlayableVideo() && onDownloadQuality != null) {
-        add(SheetAction(Icons.Outlined.HighQuality, "选择画质下载…", onDownloadQuality, onPrepare = onPrepareQualities))
+    if (commands.download) add(DriveActions.download(on.download))
+    if (commands.share) add(DriveActions.share(on.share))
+    add(DriveActions.star(file.isStarred, on.toggleStar))
+    if (commands.rename) add(DriveActions.rename(on.rename))
+    if (file.isFolder) on.openInNewTab?.let { add(DriveActions.openInNewTab(it)) }
+    if (video) on.openInExternalPlayer?.let { add(DriveActions.openInExternalPlayer(it)) }
+    if (commands.extract) add(DriveActions.extract(on.extract))
+    if (commands.moveCopyTo) {
+        add(DriveActions.moveTo(on.move))
+        add(DriveActions.copyTo(on.copy))
     }
-    if (!file.isFolder) {
-        if (file.isPlayableVideo()) {
-            if (onOpenInExternalPlayer != null) {
-                add(SheetAction(Icons.Outlined.OndemandVideo, "用外部播放器打开", onOpenInExternalPlayer))
-            }
-            add(SheetAction(Icons.Outlined.ContentCut, "下载指定段落", onDownloadSegment, onPrepare = onPrepareQualities))
-        }
+    if (file.isFolder) on.togglePin?.let { add(DriveActions.pin(on.isPinned, it)) }
+    if (video && commands.download) add(DriveActions.downloadQuality(on.downloadQuality, on.prepareQualities))
+    if (video) add(DriveActions.downloadSegment(on.downloadSegment, on.prepareQualities))
+    if (file.isFolder) {
+        add(DriveActions.findDuplicates(on.findDuplicates))
+        on.vault?.let { add(DriveActions.vault(it)) }
+        on.unvault?.let { add(DriveActions.unvault(it)) }
     }
-    when (file.source) {
-        FileSource.Magnet -> add(SheetAction(Icons.Outlined.Link, "复制磁力链接", onCopySource))
-        FileSource.Share -> {
-            add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "打开来源分享", onOpenSource))
-            add(SheetAction(Icons.Outlined.Link, "复制分享链接", onCopySource))
-        }
-        null -> Unit
-    }
-    if (file.isFolder) add(SheetAction(Icons.Outlined.FileCopy, "查找重复", onFindDuplicates))
-    if (file.isFolder && onVault != null) add(SheetAction(Icons.Outlined.Inventory2, "归档", onVault))
-    if (file.isFolder && onRestoreVault != null) add(SheetAction(Icons.Outlined.Unarchive, "取消归档", onRestoreVault))
-    // 上传中的文件分享出去对方打不开
-    if (!file.isUploading) add(SheetAction(Icons.Outlined.Share, "分享", onShare))
-    add(SheetAction(Icons.Outlined.Edit, "重命名", onRename))
-    add(SheetAction(Icons.Outlined.DriveFileMove, "移动到", onMove))
-    add(SheetAction(Icons.Outlined.ContentCopy, "复制到", onCopy))
-    // 移入回收站单独成组，不紧挨着「移动到」被误触
-    add(SheetAction(Icons.Outlined.Delete, "移入回收站", onTrash, destructive = true))
+    on.previewHidden?.let { add(DriveActions.previewVisibility(it, on.togglePreview)) }
+    addAll(DriveActions.sourceActions(file.source, on.copySource, on.openSource))
+    if (commands.moveToTrash) add(DriveActions.moveToTrash(on.trash))
 }
 
 /**

@@ -49,13 +49,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.ContentCopy
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.DriveFileMove
-import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material.icons.outlined.SelectAll
-import androidx.compose.material.icons.outlined.Share
-import androidx.compose.material.icons.outlined.Unarchive
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalIconToggleButton
 import androidx.compose.material3.PlainTooltip
@@ -88,6 +82,8 @@ import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.menuItemShape
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.iconBarItem
+import dev.piko.ui.components.SheetAction
+import dev.piko.ui.components.asBarItem
 import dev.piko.ui.components.AdaptiveBar
 import dev.piko.ui.components.BarItem
 import dev.piko.ui.components.verticalWheelScrollsRow
@@ -97,7 +93,7 @@ import dev.piko.ui.platform.windowDragArea
 
 /**
  * 多选态顶栏。动作都作用于整批选中项，没有可以下放到别处的。
- * [onExtract] 为 null 表示所选里没有压缩包，不显示解压。
+ * 各项的名字与图标取自 [DriveActions]，与右键菜单、操作面板一致。
  */
 @Composable
 internal fun DriveSelectionTopBar(
@@ -106,12 +102,13 @@ internal fun DriveSelectionTopBar(
     onExit: () -> Unit,
     // 以下为 null 的不画：眼下做不了的不摆，规则见 DriveCommands.kt
     onSelectAll: (() -> Unit)?,
-    onMove: (() -> Unit)?,
-    onCopy: (() -> Unit)?,
-    onTrash: (() -> Unit)?,
-    onExtract: (() -> Unit)?,
-    onShare: (() -> Unit)?,
-    onBatchRename: (() -> Unit)?,
+    download: SheetAction?,
+    moveTo: SheetAction?,
+    copyTo: SheetAction?,
+    trash: SheetAction?,
+    extract: SheetAction?,
+    share: SheetAction?,
+    batchRename: SheetAction?,
 ) {
     PikoTopBar(
         scrollBehavior = scrollBehavior,
@@ -119,21 +116,18 @@ internal fun DriveSelectionTopBar(
         navigationIcon = {
             TooltipIconButton(Icons.Outlined.Close, "退出多选", onExit, shortcut = "Esc")
         },
-        // 放不下时先收全选（另有快捷键）、解压与批量重命名，移动、复制与移入回收站最后收
+        // 放不下时先收全选（另有快捷键）、批量重命名与解压，移动、复制与移入回收站最后收
         actions = buildList {
             val shortcutModifier = LocalPikoPlatform.current.shortcutModifier
             if (onSelectAll != null) add(iconBarItem(Icons.Outlined.SelectAll, "全选", onSelectAll, priority = 10, shortcut = shortcutModifier.label("A")))
-            if (onExtract != null) add(iconBarItem(Icons.Outlined.Unarchive, "解压所选压缩包", onExtract, priority = 30))
-            if (onShare != null) add(iconBarItem(Icons.Outlined.Share, "分享所选", onShare, priority = 40))
+            extract?.let { add(it.asBarItem(priority = 30)) }
+            download?.let { add(it.asBarItem(priority = 35)) }
+            share?.let { add(it.asBarItem(priority = 40)) }
             // 只选一项时没有共同前后缀可言，单项改名走条目菜单
-            if (onBatchRename != null && selectedCount >= 2) {
-                add(iconBarItem(Icons.Outlined.DriveFileRenameOutline, "批量重命名", onBatchRename, priority = 20, shortcut = "F2"))
-            }
-            if (onMove != null) add(iconBarItem(Icons.Outlined.DriveFileMove, "移动所选", onMove, priority = 60))
-            if (onCopy != null) add(iconBarItem(Icons.Outlined.ContentCopy, "复制所选", onCopy, priority = 50))
-            if (onTrash != null) {
-                add(iconBarItem(Icons.Outlined.Delete, "将所选移入回收站", onTrash, priority = 70, shortcut = shortcutModifier.trashLabel, destructive = true))
-            }
+            if (batchRename != null && selectedCount >= 2) add(batchRename.asBarItem(priority = 20, shortcut = "F2"))
+            moveTo?.let { add(it.asBarItem(priority = 60)) }
+            copyTo?.let { add(it.asBarItem(priority = 50)) }
+            trash?.let { add(it.asBarItem(priority = 70, shortcut = shortcutModifier.trashLabel)) }
         },
     )
 }

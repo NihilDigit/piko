@@ -1,10 +1,6 @@
 package dev.piko.ui.screens.drive
 
-import androidx.compose.material.icons.outlined.Download
-import androidx.compose.material.icons.outlined.CloudDownload
-import androidx.compose.material.icons.outlined.Link
 import dev.piko.shared.data.isVaulted
-import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.material.icons.outlined.Tab
 import androidx.compose.material.icons.outlined.Close
@@ -18,15 +14,12 @@ import androidx.compose.material.icons.outlined.Unarchive
 import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.ui.zIndex
 import dev.piko.ui.components.PrimaryActionFab
+import dev.piko.ui.components.ActionGroup
 import dev.piko.ui.components.SheetAction
 import dev.piko.shared.state.DriveListItem
 import androidx.compose.ui.graphics.Color
 import androidx.compose.runtime.produceState
-import androidx.compose.material.icons.outlined.Share
-import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.filled.Info
@@ -211,9 +204,6 @@ private const val HighlightAppearTimeoutMs = 4000L
 
 // 目录图里点了别处的文件，等它所在的文件夹列出来的上限；平常一两百毫秒，有缓存时当场就有
 private const val MapOpenTimeoutMs = 10_000L
-
-// 在压缩包里解压选中的几项。不写「到当前位置」：当前位置是包里，解压出来的落在压缩包所在的文件夹
-private const val ExtractEntriesLabel = "解压到压缩包旁"
 
 /**
  * 网盘主界面：目录导航、列表与海报墙两种视图、防窥遮蔽、秒传入口与批量操作。
@@ -760,109 +750,102 @@ fun DriveScreen(
     val latestTogglePin by rememberUpdatedState(togglePin)
     val latestPinnedFolders by rememberUpdatedState(pinnedFolders)
 
-    // 压缩包里的条目不在网盘里：能做的只有下载文件与解压出来，打开就是单击
-    fun archiveEntryActions(files: List<FileStat>): List<SheetAction> = buildList {
-        if (files.any { !it.isFolder }) add(SheetAction(Icons.Outlined.Download, "下载到本地", { download(files) }))
-        add(SheetAction(Icons.Outlined.Unarchive, ExtractEntriesLabel, { extractFromArchive(files) }))
+    // 眼前在哪，命令栏与条目的菜单都按它定做不做得了。记住的回调里也调它，所以只读 state 与仓库上的当下值
+    fun commandPlace(stackDepth: Int = driveRepo.folderStackFlow.value.size): CommandPlace = when {
+        state.archiveView != null -> CommandPlace.ARCHIVE
+        state.libraryView == DriveLibrary.TRASH -> CommandPlace.TRASH
+        state.libraryView == DriveLibrary.HISTORY -> CommandPlace.HISTORY
+        state.libraryView == DriveLibrary.RECENT -> CommandPlace.RECENT
+        state.libraryView != null -> CommandPlace.LIBRARY
+        state.searchQuery.isNotBlank() || state.isGlobalSearchActive -> CommandPlace.SEARCH
+        stackDepth == 1 -> CommandPlace.ROOT
+        else -> CommandPlace.FOLDER
     }
 
-    // 选中的几项一起的操作，右键菜单用
-    fun selectionActions(files: List<FileStat>): List<SheetAction> {
-        if (state.archiveView != null) return archiveEntryActions(files)
+    // 压缩包里的条目不在网盘里：能做的只有下载文件与解压出来，打开就是单击
+    fun archiveEntryActions(files: List<FileStat>, commands: ItemCommands): List<SheetAction> = buildList {
+        if (commands.download) add(DriveActions.download { download(files) })
+        add(DriveActions.extractEntries { extractFromArchive(files) })
+    }
+
+    // 选中的几项一起的操作
+    fun selectionActions(files: List<FileStat>, commands: ItemCommands): List<SheetAction> = buildList {
+        val ids = files.map { it.id }
+        val settled = files.filterNot { it.isUploading || it.isVaulted }
+        if (commands.download) add(DriveActions.download { download(files.filterNot { it.isUploading }) })
+        // 按列表顺序：服务端取第一项的名字作分享标题
+        if (commands.share) add(DriveActions.share { shareTargets = settled })
+        if (commands.rename) add(DriveActions.batchRename { batchRenameTargets = settled })
+        files.filter { it.isVaulted }.takeIf { it.isNotEmpty() }?.let { vaulted ->
+            add(DriveActions.restoreFromVault {
+                state.exitSelection()
+                vaultSession.restore(vaulted)
+            })
+        }
+        if (commands.moveCopyTo) {
+            add(DriveActions.moveTo { moveTargetIds = ids.toSet() })
+            add(DriveActions.copyTo { copyTargetIds = ids.toSet() })
+        }
+        if (commands.removeRecord) add(DriveActions.removeRecord { state.removeFromLibrary(ids.toSet()) })
+        if (commands.moveToTrash) add(DriveActions.moveToTrash { state.moveToTrash(ids) })
+    }
+
+    // 归档条目只是清单里的一行：能做的是打开、下载、改名、复制来源，以及恢复成网盘文件或从清单里去掉。
+    // 改名改的是清单里的名字，不受「网盘里没有文件就不能改名」那条规则限制
+    fun vaultActions(file: FileStat): List<SheetAction> = buildList {
+        add(DriveActions.restoreFromVault { vaultSession.restore(listOf(file)) })
+        add(DriveActions.download { enqueueDownload(file) })
+        add(DriveActions.rename { startRename(file) })
+        addAll(DriveActions.sourceActions(file.source, onCopy = { copySource(file) }, onOpen = { file.sourceUrl?.let(platform::openUrl) }))
+        add(DriveActions.removeFromVault { state.removeFromVault(listOf(file.id)) })
+    }
+
+    // 一项（或 targets 那几项）的全部操作，右键菜单与操作面板只从这里取。读 state 上的当下值：记住的回调里拿不到重组后的局部变量。
+    // 点的那一项在几项选中里时，照资源管理器作用于全部选中的：只作用于这一项的话，多选后右键「移入回收站」只删掉一项
+    fun operationsOf(file: FileStat, targets: List<FileStat>): List<SheetAction> {
         val library = state.libraryView
-        if (library == DriveLibrary.TRASH) {
-            val ids = files.map { it.id }
+        val commands = itemCommands(commandPlace(), targets)
+        if (commands.restoreOrDelete) {
+            val ids = targets.map { it.id }
             return trashActions(
                 onRestore = { state.restoreFromTrash(ids) },
                 onDelete = { libraryConfirm = LibraryConfirm.DeleteForever(ids, emptying = false) },
             )
         }
-        val ids = files.map { it.id }.toSet()
-        // 归档条目只在清单里，改名、分享都要网盘里的文件；移动与复制由 state 拦下并提示
-        val renamable = files.filterNot { it.isUploading || it.isVaulted }
-        val remove = library?.takeIf { it.isEventLog }?.let {
-            SheetAction(Icons.Outlined.Delete, "从${it.title}中移除", { state.removeFromLibrary(ids) })
-        }
-        val restore = files.filter { it.isVaulted }.takeIf { it.isNotEmpty() }?.let { vaulted ->
-            SheetAction(Icons.Outlined.CloudDownload, "恢复到网盘", {
-                state.exitSelection()
-                vaultSession.restore(vaulted)
-            })
-        }
-        val downloadable = files.filterNot { it.isUploading }.takeIf { it.isNotEmpty() }?.let { targets ->
-            SheetAction(Icons.Outlined.Download, "下载到本地", { download(targets) })
-        }
-        return listOfNotNull(remove, restore, downloadable) + listOf(
-            SheetAction(Icons.Outlined.DriveFileMove, "移动到", { moveTargetIds = ids }),
-            SheetAction(Icons.Outlined.ContentCopy, "复制到", { copyTargetIds = ids }),
-            SheetAction(Icons.Outlined.Edit, "批量重命名", { batchRenameTargets = renamable }),
-            SheetAction(Icons.Outlined.Share, "分享", { shareTargets = renamable }),
-            SheetAction(Icons.Outlined.Delete, "移入回收站", { state.moveToTrash(ids.toList()) }, destructive = true),
-        )
-    }
-
-    // 归档条目只是清单里的一行：能做的是打开、下载、改名、复制来源，以及恢复成网盘文件或从清单里去掉
-    fun vaultActions(file: FileStat): List<SheetAction> = buildList {
-        add(SheetAction(Icons.Outlined.CloudDownload, "恢复到网盘", { vaultSession.restore(listOf(file)) }))
-        add(SheetAction(Icons.Outlined.Download, "下载到本地", { enqueueDownload(file) }))
-        when (file.source) {
-            FileSource.Magnet -> add(SheetAction(Icons.Outlined.Link, "复制磁力链接", { copySource(file) }))
-            FileSource.Share -> {
-                add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "打开来源分享", { file.sourceUrl?.let(platform::openUrl) }))
-                add(SheetAction(Icons.Outlined.Link, "复制分享链接", { copySource(file) }))
-            }
-            null -> Unit
-        }
-        add(SheetAction(Icons.Outlined.Edit, "重命名", { startRename(file) }))
-        add(SheetAction(Icons.Outlined.Delete, "从归档移除", { state.removeFromVault(listOf(file.id)) }, destructive = true))
-    }
-
-    // 一项（或 targets 那几项）的全部操作，右键菜单与操作面板共用。库读 state 上的当下值：记住的回调里拿不到重组后的局部变量。
-    // 点的那一项在几项选中里时，照资源管理器作用于全部选中的：只作用于这一项的话，多选后右键「移入回收站」只删掉一项
-    fun operationsOf(file: FileStat, targets: List<FileStat>): List<SheetAction> {
-        if (targets.size > 1) return selectionActions(targets)
-        val library = state.libraryView
-        if (library == DriveLibrary.TRASH) {
-            return trashActions(
-                onRestore = { state.restoreFromTrash(listOf(file.id)) },
-                onDelete = { libraryConfirm = LibraryConfirm.DeleteForever(listOf(file.id), emptying = false) },
-            )
-        }
+        if (state.archiveView != null) return archiveEntryActions(targets, commands)
+        if (targets.size > 1) return selectionActions(targets, commands)
         if (file.isVaulted) return vaultActions(file)
-        if (state.archiveView != null) return archiveEntryActions(listOf(file))
-        val extras = library?.let {
-            libraryExtraActions(it, onReveal = { state.revealInDrive(file) }, onRemove = { state.removeFromLibrary(listOf(file.id)) })
-        }.orEmpty()
-        return extras + fileActions(
-            file = file,
-            previewHidden = if (isSpoilerBlurEnabled && file.thumbnailLink.isNotEmpty()) {
-                file.id !in state.revealedFileIds
-            } else {
-                null
-            },
-            onTogglePreview = { state.toggleSpoiler(file.id) },
-            onToggleStar = { state.setStarred(file, starred = !file.isStarred) },
-            onDownload = { enqueueDownload(file) },
-            onDownloadQuality = { qualityTarget = file },
-            onPrepareQualities = { mediaRepository.prefetchDownloadQualities(file.id) },
-            onDownloadSegment = { segmentSession.open(file) },
-            onRename = { startRename(file) },
-            onMove = { moveTargetIds = setOf(file.id) },
-            onCopy = { copyTargetIds = setOf(file.id) },
-            onTrash = { state.moveToTrash(listOf(file.id)) },
-            onCopySource = { copySource(file) },
-            onOpenSource = { file.sourceUrl?.let(platform::openUrl) },
-            onFindDuplicates = { findDuplicates(PathBreadcrumb(file.id, file.name)) },
-            onExtract = { archiveSession.extract(listOf(file)) },
-            onShare = { shareTargets = listOf(file) },
-            onOpenInExternalPlayer = platform.externalPlayer?.let { { openInExternalPlayer(file) } },
-            onOpenInNewTab = latestOpenInNewTab?.let { { it(file) } },
-            onTogglePin = latestTogglePin?.let { { it(file) } },
+        // 库里的条目多一个在网盘中显示，置首；移除记录由 itemCommands 给
+        val reveal = listOfNotNull(library?.let { DriveActions.revealInDrive { state.revealInDrive(file) } })
+        val removeRecord = listOfNotNull(DriveActions.removeRecord { state.removeFromLibrary(setOf(file.id)) }.takeIf { commands.removeRecord })
+        val handlers = FileActionHandlers(
+            toggleStar = { state.setStarred(file, starred = !file.isStarred) },
+            download = { enqueueDownload(file) },
+            share = { shareTargets = listOf(file) },
+            rename = { startRename(file) },
+            move = { moveTargetIds = setOf(file.id) },
+            copy = { copyTargetIds = setOf(file.id) },
+            trash = { state.moveToTrash(listOf(file.id)) },
+            extract = { archiveSession.extract(listOf(file)) },
+            findDuplicates = { findDuplicates(PathBreadcrumb(file.id, file.name)) },
+            downloadSegment = { segmentSession.open(file) },
+            downloadQuality = { qualityTarget = file },
+            prepareQualities = { mediaRepository.prefetchDownloadQualities(file.id) },
+            copySource = { copySource(file) },
+            openSource = { file.sourceUrl?.let(platform::openUrl) },
+            openInExternalPlayer = platform.externalPlayer?.let { { openInExternalPlayer(file) } },
+            openInNewTab = latestOpenInNewTab?.let { { it(file) } },
+            togglePin = latestTogglePin?.let { { it(file) } },
             isPinned = latestPinnedFolders.any { it.id == file.id },
-            // 库里列的是散落各处的条目，归档一个文件夹要在它所在的地方做
-            onVault = if (library == null) ({ vaultTarget = file }) else null,
-            onRestoreVault = if (library == null) ({ restoreVaultTarget = file }) else null,
+            // 库里列的是散落各处的条目，归档一个文件夹要在它所在的地方做。挂着归档标记的才给取消归档；
+            // 归档却一直给：跳过小文件或之后又放进新文件时，挂着标记的文件夹里仍有可归档的
+            vault = if (library == null) ({ vaultTarget = file }) else null,
+            unvault = if (library == null && file.id in vaultedFolders) ({ restoreVaultTarget = file }) else null,
+            previewHidden = if (isSpoilerBlurEnabled && file.thumbnailLink.isNotEmpty()) file.id !in state.revealedFileIds else null,
+            togglePreview = { state.toggleSpoiler(file.id) },
         )
+        // 移除记录排在移入回收站之前，两者同在末组
+        return reveal + removeRecord + fileActions(file, commands, handlers)
     }
 
     // 对着一项右键或按属性键时作用于哪几项：它在几项选中里时是全部选中的
@@ -873,12 +856,12 @@ fun DriveScreen(
             listOf(file)
         }
 
-    // 右键菜单的全部项：操作，末尾一组是「属性」
-    fun itemActions(file: FileStat): List<SheetAction> {
-        val targets = targetsOf(file)
-        // 多半是从右键菜单点的，卡片放在右键按下的地方；操作面板里点的没有那一点，贴着这一项
-        return operationsOf(file, targets) + propertiesAction { latestShowProperties(targets, propertiesAnchors.fromMenu(file.id)) }
-    }
+    // 右键菜单与操作面板的全部项：操作，加上「属性」。右键菜单作用于 targetsOf，操作面板只看它自己那一项。
+    // 右键菜单里点的属性卡片放在右键按下的地方，操作面板里点的贴着这一项
+    fun itemActions(file: FileStat, targets: List<FileStat>, fromMenu: Boolean): List<SheetAction> =
+        operationsOf(file, targets) + DriveActions.properties {
+            latestShowProperties(targets, if (fromMenu) propertiesAnchors.fromMenu(file.id) else propertiesAnchors.beside(file.id))
+        }
 
     // 只在移动端的条目上画打开操作面板的按钮：桌面有右键菜单，每一项挂一个按钮只是满屏一样的图标。
     // 曾按宽度判断，平板横握没有右键也没有这个按钮，单项的操作整个不可达
@@ -963,7 +946,7 @@ fun DriveScreen(
                     focusedFile = null
                 }
             },
-            contextActions = { file -> itemActions(file) },
+            contextActions = { file -> itemActions(file, targetsOf(file), fromMenu = true) },
             onToggleSection = state::toggleSection,
             onFolderVisible = state::onFolderVisible,
         )
@@ -1033,7 +1016,7 @@ fun DriveScreen(
                     mode.icon(selected = mode == viewMode),
                     mode.paletteLabel,
                     { scope.launch { sessionManager.setDriveViewMode(mode.name) } },
-                    group = 0,
+                    group = ActionGroup.View,
                     checked = mode == viewMode,
                 ),
             )
@@ -1044,24 +1027,24 @@ fun DriveScreen(
                 Icons.Outlined.TextFields,
                 "文件扩展名",
                 { scope.launch { sessionManager.setShowExtensions(!showExtensions) } },
-                group = 0,
+                group = ActionGroup.View,
                 checked = showExtensions,
             ),
         )
-        add(SheetAction(Icons.Outlined.Refresh, "刷新", { state.load(refresh = true) }, group = 1))
+        add(SheetAction(Icons.Outlined.Refresh, "刷新", { state.load(refresh = true) }, group = ActionGroup.Refresh))
         if (!state.isVirtualPlace) {
-            if (clipboard != null) add(SheetAction(Icons.Outlined.ContentPaste, "粘贴", { state.paste() }, group = 1))
+            if (clipboard != null) add(SheetAction(Icons.Outlined.ContentPaste, "粘贴", { state.paste() }, group = ActionGroup.Refresh))
             add(SheetAction(Icons.Outlined.CreateNewFolder, "新建文件夹", {
                 newFolderName = ""
                 showNewFolderDialog = true
-            }, group = 2))
-            add(SheetAction(Icons.Outlined.UploadFile, "上传文件", { pickFiles() }, group = 2))
-            add(SheetAction(Icons.Outlined.DriveFolderUpload, "上传文件夹", { pickFolder() }, group = 2))
-            add(SheetAction(Icons.Outlined.Bolt, "添加链接", ::openAddLink, group = 2))
+            }, group = ActionGroup.Create))
+            add(SheetAction(Icons.Outlined.UploadFile, "上传文件", { pickFiles() }, group = ActionGroup.Create))
+            add(SheetAction(Icons.Outlined.DriveFolderUpload, "上传文件夹", { pickFolder() }, group = ActionGroup.Create))
+            add(SheetAction(Icons.Outlined.Bolt, "添加链接", ::openAddLink, group = ActionGroup.Create))
         }
-        add(SheetAction(Icons.Outlined.SelectAll, "全选", { state.toggleSelectAll() }, group = 3))
+        add(SheetAction(Icons.Outlined.SelectAll, "全选", { state.toggleSelectAll() }, group = ActionGroup.Select))
         addAll(libraryPageActions(libraryView, state.files.isEmpty(), { libraryConfirm = it }, { state.files.map { it.id } }))
-        add(propertiesAction(::showFolderProperties))
+        add(DriveActions.properties(::showFolderProperties))
     }
 
 
@@ -1195,16 +1178,7 @@ fun DriveScreen(
     // 各入口上摆哪些操作：宽窗口的命令栏、窄窗口的 FAB 菜单与多选顶栏共用这一份规则，见 DriveCommands.kt
     val commands = driveCommands(
         CommandInputs(
-            place = when {
-                state.archiveView != null -> CommandPlace.ARCHIVE
-                libraryView == DriveLibrary.TRASH -> CommandPlace.TRASH
-                libraryView == DriveLibrary.HISTORY -> CommandPlace.HISTORY
-                libraryView == DriveLibrary.RECENT -> CommandPlace.RECENT
-                libraryView != null -> CommandPlace.LIBRARY
-                state.searchQuery.isNotBlank() || state.isGlobalSearchActive -> CommandPlace.SEARCH
-                folderStack.size == 1 -> CommandPlace.ROOT
-                else -> CommandPlace.FOLDER
-            },
+            place = commandPlace(folderStack.size),
             atRoot = folderStack.size == 1 && activeFolderId.isEmpty(),
             targets = commandTargets,
             selecting = state.isSelectionMode && selectedIdSet.isNotEmpty(),
@@ -1330,29 +1304,26 @@ fun DriveScreen(
             },
             // 显不显示由 commands 定，这里只管每一项做什么
             moreActions = buildList {
-                if (commands.removeRecord) {
-                    libraryView?.let { library ->
-                        add(SheetAction(Icons.Outlined.Delete, "从${library.title}中移除", { state.removeFromLibrary(targetIds) }))
-                    }
-                }
                 if (commands.moveCopyTo) {
-                    add(SheetAction(Icons.Outlined.DriveFileMove, "移动到…", { moveTargetIds = movable.map { it.id }.toSet() }))
-                    add(SheetAction(Icons.Outlined.ContentCopy, "复制到…", { copyTargetIds = movable.map { it.id }.toSet() }))
+                    add(DriveActions.moveTo { moveTargetIds = movable.map { it.id }.toSet() })
+                    add(DriveActions.copyTo { copyTargetIds = movable.map { it.id }.toSet() })
                 }
                 if (commands.download) {
                     val targets = movable
-                    add(SheetAction(Icons.Outlined.Download, "下载到本地", { download(targets) }))
+                    add(DriveActions.download { download(targets) })
                 }
                 if (commands.extract && state.archiveView != null) {
                     val items = commandTargets
-                    add(SheetAction(Icons.Outlined.Unarchive, ExtractEntriesLabel, { extractFromArchive(items) }))
+                    add(DriveActions.extractEntries { extractFromArchive(items) })
                 } else if (commands.extract) {
                     val archives = movable.filter { it.isExtractableArchive || it.isArchiveVolume }
-                    add(SheetAction(Icons.Outlined.Unarchive, "解压到当前位置", {
+                    add(DriveActions.extract {
                         archiveSession.extract(archives)
                         state.exitSelection()
-                    }))
+                    })
                 }
+                // 找不回来的垫底，与右键菜单一致
+                if (commands.removeRecord) add(DriveActions.removeRecord { state.removeFromLibrary(targetIds) })
             },
             onRefresh = { state.load(refresh = true) },
             onHome = ::goHome,
@@ -1365,7 +1336,7 @@ fun DriveScreen(
                     feedSuspended = feedStashed,
                 )
             },
-            primaryAction = placePrimaryAction ?: if (commands.addLink) SheetAction(Icons.Outlined.Bolt, "添加链接", ::openAddLink, group = 5) else null,
+            primaryAction = placePrimaryAction ?: if (commands.addLink) SheetAction(Icons.Outlined.Bolt, "添加链接", ::openAddLink, group = ActionGroup.Refresh) else null,
         )
     }
 
@@ -1592,22 +1563,23 @@ fun DriveScreen(
                                 selectedCount = state.selectedFileIds.size,
                                 onExit = { state.exitSelection() },
                                 onSelectAll = { state.toggleSelectAll() }.takeIf { commands.selectAll },
-                                onMove = { moveTargetIds = state.selectedFileIds.toSet() }.takeIf { commands.moveCopyTo },
-                                onCopy = { copyTargetIds = state.selectedFileIds.toSet() }.takeIf { commands.moveCopyTo },
-                                onTrash = { state.moveToTrash(state.selectedFileIds.toList()) }.takeIf { commands.moveToTrash },
-                                onExtract = if (state.archiveView != null) {
-                                    { extractFromArchive(state.displayedFiles.filter { it.id in state.selectedFileIds }) }
+                                download = DriveActions.download { download(commandTargets.filterNot { it.isUploading }) }.takeIf { commands.download },
+                                moveTo = DriveActions.moveTo { moveTargetIds = state.selectedFileIds.toSet() }.takeIf { commands.moveCopyTo },
+                                copyTo = DriveActions.copyTo { copyTargetIds = state.selectedFileIds.toSet() }.takeIf { commands.moveCopyTo },
+                                trash = DriveActions.moveToTrash { state.moveToTrash(state.selectedFileIds.toList()) }.takeIf { commands.moveToTrash },
+                                extract = if (state.archiveView != null) {
+                                    DriveActions.extractEntries { extractFromArchive(state.displayedFiles.filter { it.id in state.selectedFileIds }) }
                                 } else selectedArchives.takeIf { commands.extract && it.isNotEmpty() }?.let { archives ->
-                                    {
+                                    DriveActions.extract {
                                         archiveSession.extract(archives)
                                         state.exitSelection()
                                     }
                                 },
-                                onShare = {
+                                share = DriveActions.share {
                                     // 按列表顺序：服务端取第一项的名字作分享标题
                                     shareTargets = state.displayedFiles.filter { it.id in state.selectedFileIds && !it.isUploading }
                                 }.takeIf { commands.share },
-                                onBatchRename = {
+                                batchRename = DriveActions.batchRename {
                                     batchRenameTargets = state.displayedFiles.filter { it.id in state.selectedFileIds && !it.isUploading }
                                 }.takeIf { commands.rename },
                             )
@@ -1891,40 +1863,11 @@ fun DriveScreen(
         FileActionsSheet(
             file = target,
             locationLabel = rowNotes[target.id],
-            // 回收站里的条目查不了详情，文件夹也统计不了；压缩包里的只能下载与解压
-            actionsOverride = if (inTrash || target.isVaulted || state.archiveView != null) itemActions(target) else null,
-            leadingActions = libraryView?.takeIf { !inTrash }?.let { library ->
-                libraryExtraActions(library, onReveal = { state.revealInDrive(target) }, onRemove = { state.removeFromLibrary(listOf(target.id)) })
-            }.orEmpty(),
-            previewHidden = if (isSpoilerBlurEnabled && target.thumbnailLink.isNotEmpty()) {
-                target.id !in state.revealedFileIds
-            } else {
-                null
-            },
-            // remember 住同一个 flow：每次重组新建的话，produceState 会把统计从头再跑一遍
+            // 回收站里的条目查不了详情，文件夹也统计不了。remember 住同一个 flow：每次重组新建的话，produceState 会把统计从头再跑一遍
             folderUsage = remember(target.id, inTrash) { if (target.isFolder && !inTrash && isDriveFolderId(target.id)) driveRepo.folderUsage(target.id) else null },
-            onTogglePreview = { state.toggleSpoiler(target.id) },
-            onToggleStar = { state.setStarred(target, starred = !target.isStarred) },
+            // 面板从这一项的更多按钮打开，只作用于它自己，不随多选扩到全部选中的
+            actions = itemActions(target, listOf(target), fromMenu = false),
             onDismiss = { actionTargetFile = null },
-            onDownload = { enqueueDownload(target) },
-            onDownloadQuality = { qualityTarget = target },
-            onDownloadSegment = { segmentSession.open(target) },
-            onRename = { startRename(target) },
-            onMove = { moveTargetIds = setOf(target.id) },
-            onCopy = { copyTargetIds = setOf(target.id) },
-            onTrash = { state.moveToTrash(listOf(target.id)) },
-            onCopySource = { copySource(target) },
-            onOpenSource = { target.sourceUrl?.let(platform::openUrl) },
-            onFindDuplicates = { findDuplicates(PathBreadcrumb(target.id, target.name)) },
-            onExtract = { archiveSession.extract(listOf(target)) },
-            onShare = { shareTargets = listOf(target) },
-            onOpenInExternalPlayer = platform.externalPlayer?.let { { openInExternalPlayer(target) } },
-            onOpenInNewTab = openInNewTab?.let { { it(target) } },
-            onTogglePin = togglePin?.let { { it(target) } },
-            isPinned = pinnedFolders.any { it.id == target.id },
-            onVault = if (!state.isVirtualPlace) ({ vaultTarget = target }) else null,
-            onRestoreVault = if (!state.isVirtualPlace) ({ restoreVaultTarget = target }) else null,
-            onProperties = { showProperties(listOf(target), propertiesAnchors.beside(target.id)) },
         )
     }
 

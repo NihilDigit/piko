@@ -43,6 +43,10 @@ class BarItem(
 
 const val PinnedPriority = Int.MAX_VALUE
 
+/** 把别处定义好的一项操作摆成图标按钮，名字、图标与是否危险照它，与它在菜单里的样子一致。 */
+fun SheetAction.asBarItem(priority: Int, shortcut: String? = null, enabled: Boolean = true): BarItem =
+    iconBarItem(icon, label, onClick, priority, shortcut = shortcut, destructive = destructive, enabled = enabled)
+
 /** 最常见的一项：图标按钮，收起后是菜单里同名的一项。 */
 fun iconBarItem(
     icon: ImageVector,

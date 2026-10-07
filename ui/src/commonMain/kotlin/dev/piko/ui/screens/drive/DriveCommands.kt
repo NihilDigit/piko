@@ -90,30 +90,63 @@ internal class DriveCommands(
     val moreMenu: Boolean get() = moveCopyTo || download || extract || removeRecord
 }
 
-internal fun driveCommands(input: CommandInputs): DriveCommands = with(input) {
-    val folder = place == CommandPlace.ROOT || place == CommandPlace.FOLDER
+/**
+ * 作用于几项条目的操作做不做得了。命令栏、移动端多选顶栏、右键菜单与操作面板都照它，同一个操作在各处出现的条件一致；
+ * 某类条目自己多出的操作（视频的外部播放器、文件夹的查重）不在这里，由 fileActions 按类型加。
+ */
+internal class ItemCommands(
+    val cutCopy: Boolean,
+    val rename: Boolean,
+    val share: Boolean,
+    val moveToTrash: Boolean,
+    /** 回收站的恢复与彻底删除，取代上面那一组。 */
+    val restoreOrDelete: Boolean,
+    val moveCopyTo: Boolean,
+    val download: Boolean,
+    val extract: Boolean,
+    val removeRecord: Boolean,
+)
+
+internal fun itemCommands(place: CommandPlace, targets: List<FileStat>): ItemCommands {
     val inTrash = place == CommandPlace.TRASH
     val inArchive = place == CommandPlace.ARCHIVE
     val eventLog = place == CommandPlace.RECENT || place == CommandPlace.HISTORY
     val hasTargets = targets.isNotEmpty()
     // 上传中的文件改名、移动、分享都会失败，作用对象里有它就不给这几样；归档条目与压缩包里的条目在网盘里没有文件，同理
     val settled = hasTargets && !inArchive && targets.none { it.isUploading || it.isVaulted }
-    DriveCommands(
-        home = !atRoot,
-        // 多选时左端换成「已选 N 项」；搜索结果不是目录
-        create = folder && !selecting,
+    return ItemCommands(
         cutCopy = settled && !inTrash,
-        paste = clipboardFull && folder,
-        rename = hasTargets && settled && !inTrash,
-        share = hasTargets && settled && !inTrash,
+        rename = settled && !inTrash,
+        share = settled && !inTrash,
         moveToTrash = hasTargets && !inTrash && !inArchive,
         restoreOrDelete = hasTargets && inTrash,
-        moveCopyTo = hasTargets && settled && !inTrash,
+        moveCopyTo = settled && !inTrash,
         // 文件夹整个下载，见 PikoDownloadCoordinator.enqueueFolders；压缩包里的文件夹不在网盘里，列不出内容，只下文件
         download = hasTargets && !inTrash && targets.any { !it.isUploading && !(inArchive && it.isFolder) },
         // 压缩包里解压的是选中的几项本身，不是选中项里的压缩包
         extract = hasTargets && !inTrash && (inArchive || targets.any { it.isExtractableArchive || it.isArchiveVolume }),
         removeRecord = hasTargets && eventLog,
+    )
+}
+
+internal fun driveCommands(input: CommandInputs): DriveCommands = with(input) {
+    val folder = place == CommandPlace.ROOT || place == CommandPlace.FOLDER
+    val inTrash = place == CommandPlace.TRASH
+    val items = itemCommands(place, targets)
+    DriveCommands(
+        home = !atRoot,
+        // 多选时左端换成「已选 N 项」；搜索结果不是目录
+        create = folder && !selecting,
+        cutCopy = items.cutCopy,
+        paste = clipboardFull && folder,
+        rename = items.rename,
+        share = items.share,
+        moveToTrash = items.moveToTrash,
+        restoreOrDelete = items.restoreOrDelete,
+        moveCopyTo = items.moveCopyTo,
+        download = items.download,
+        extract = items.extract,
+        removeRecord = items.removeRecord,
         // 清空只在有东西可清时。与 libraryPageActions 对应：只有回收站与播放历史有清空
         emptyPlace = (inTrash || place == CommandPlace.HISTORY) && itemCount > 0,
         selectAll = itemCount > 0 && !allSelected,

@@ -12,8 +12,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -47,7 +45,6 @@ import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.components.FileTypeIcon
 import dev.piko.ui.components.MediaTagRow
 import dev.piko.ui.components.PosterSpoilerBlur
-import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.SpoilerThumbnail
 import dev.piko.ui.components.toReadableSize
 import io.github.nihildigit.pikpak.FileStat
@@ -269,9 +266,6 @@ private fun formatDuration(seconds: Long): String {
 
 private val PropertyLabelGap = 16.dp
 private val PropertyRowGap = 8.dp
-
-/** 右键菜单与操作面板末尾的「属性」，单独成组。组号只用来与别的组分开，取一个各处都不会用到的。 */
-internal fun propertiesAction(onClick: () -> Unit) = SheetAction(Icons.Outlined.Info, "属性", onClick, group = 100)
 
 /**
  * 属性卡片放在哪要用到的几样位置，都在列表这一块（[propertiesAnchorArea] 挂的那一层）的坐标里。

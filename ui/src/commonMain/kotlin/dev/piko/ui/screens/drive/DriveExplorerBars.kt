@@ -27,15 +27,12 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ContentCut
 import androidx.compose.material.icons.outlined.ContentPaste
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.LocalContentColor
@@ -93,6 +90,7 @@ import dev.piko.ui.components.PikoDropdownMenu
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import dev.piko.ui.components.PrimaryActionButton
+import dev.piko.ui.components.ActionGroup
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.menuItemShape
@@ -327,64 +325,54 @@ internal fun ExplorerCommandBar(
                 })
             }
         }
+        // 收进「更多」时这一组同在 Edit 一组；重命名、分享、移入回收站的名字与图标取自 DriveActions，与右键菜单一致
+        fun asEdit(action: SheetAction) = listOf(SheetAction(action.icon, action.label, action.onClick, destructive = action.destructive, group = ActionGroup.Edit))
+        fun itemButton(key: String, priority: Int, action: SheetAction, shortcut: String? = null) =
+            BarItem(key, priority, asEdit(action)) {
+                TooltipIconButton(
+                    action.icon,
+                    action.label,
+                    action.onClick,
+                    shortcut = shortcut,
+                    tint = if (action.destructive) MaterialTheme.colorScheme.error else Color.Unspecified,
+                )
+            }
         if (commands.cutCopy) {
-            add(BarItem("cut", 80, listOf(SheetAction(Icons.Outlined.ContentCut, "剪切", onCut, group = 1))) {
-                TooltipIconButton(Icons.Outlined.ContentCut, "剪切", onCut, shortcut = label("X"))
-            })
-            add(BarItem("copy", 80, listOf(SheetAction(Icons.Outlined.ContentCopy, "复制", onCopy, group = 1))) {
-                TooltipIconButton(Icons.Outlined.ContentCopy, "复制", onCopy, shortcut = label("C"))
-            })
+            add(itemButton("cut", 80, SheetAction(Icons.Outlined.ContentCut, "剪切", onCut), shortcut = label("X")))
+            add(itemButton("copy", 80, SheetAction(Icons.Outlined.ContentCopy, "复制", onCopy), shortcut = label("C")))
         }
         if (commands.paste) {
-            add(BarItem("paste", 80, listOf(SheetAction(Icons.Outlined.ContentPaste, "粘贴", onPaste, group = 1))) {
-                TooltipIconButton(Icons.Outlined.ContentPaste, "粘贴", onPaste, shortcut = label("V"))
-            })
+            add(itemButton("paste", 80, SheetAction(Icons.Outlined.ContentPaste, "粘贴", onPaste), shortcut = label("V")))
         }
         if (commands.rename) {
-            val renameLabel = if (targetCount > 1) "批量重命名" else "重命名"
-            add(BarItem("rename", 70, listOf(SheetAction(Icons.Outlined.DriveFileRenameOutline, renameLabel, onRename, group = 1))) {
-                TooltipIconButton(Icons.Outlined.DriveFileRenameOutline, renameLabel, onRename, shortcut = if (mac) "↩" else "F2")
-            })
+            val rename = if (targetCount > 1) DriveActions.batchRename(onRename) else DriveActions.rename(onRename)
+            add(itemButton("rename", 70, rename, shortcut = if (mac) "↩" else "F2"))
         }
-        if (commands.share) {
-            add(BarItem("share", 60, listOf(SheetAction(Icons.Outlined.Share, "分享", onShare, group = 1))) {
-                TooltipIconButton(Icons.Outlined.Share, "分享", onShare)
-            })
-        }
-        if (commands.moveToTrash) {
-            add(BarItem("trash", 85, listOf(SheetAction(Icons.Outlined.Delete, "移入回收站", onTrash, destructive = true, group = 1))) {
-                TooltipIconButton(
-                    Icons.Outlined.Delete,
-                    "移入回收站",
-                    onTrash,
-                    shortcut = shortcuts.trashLabel,
-                    tint = MaterialTheme.colorScheme.error,
-                )
-            })
-        }
+        if (commands.share) add(itemButton("share", 60, DriveActions.share(onShare)))
+        if (commands.moveToTrash) add(itemButton("trash", 85, DriveActions.moveToTrash(onTrash), shortcut = shortcuts.trashLabel))
         add(barDivider("viewDivider"))
         if (commands.sort) {
-            add(BarItem("sort", 40, sortOverflowActions(sortOrder, onSortChange, group = 2)) { SortButton(sortOrder, onSortChange) })
+            add(BarItem("sort", 40, sortOverflowActions(sortOrder, onSortChange)) { SortButton(sortOrder, onSortChange) })
         }
         if (commands.filter) {
-            add(BarItem("filter", 35, typeFilterOverflowActions(typeFilter, availableTypes, onTypeFilterChange, group = 3)) {
+            add(BarItem("filter", 35, typeFilterOverflowActions(typeFilter, availableTypes, onTypeFilterChange)) {
                 TypeFilterButton(typeFilter, availableTypes, onTypeFilterChange)
             })
         }
         if (commands.selectAll) {
-            add(BarItem("selectAll", 30, listOf(SheetAction(Icons.Outlined.SelectAll, "全选", onSelectAll, group = 4))) {
+            add(BarItem("selectAll", 30, listOf(SheetAction(Icons.Outlined.SelectAll, "全选", onSelectAll, group = ActionGroup.Select))) {
                 TooltipIconButton(Icons.Outlined.SelectAll, "全选", onSelectAll, shortcut = label("A"))
             })
         }
         if (commands.findDuplicates) {
-            add(BarItem("findDuplicates", 20, listOf(SheetAction(Icons.Outlined.FileCopy, "查找重复", onFindDuplicates, group = 4))) {
+            add(BarItem("findDuplicates", 20, listOf(SheetAction(Icons.Outlined.FileCopy, "查找重复", onFindDuplicates, group = ActionGroup.Select))) {
                 TooltipIconButton(Icons.Outlined.FileCopy, "查找重复", onFindDuplicates)
             })
         }
     }
     val trailing = buildList {
         // 刷新作用于眼前这份列表，与视图、信息流同属「怎么看这个文件夹」，不放在管位置的导航栏
-        add(BarItem("refresh", 50, listOf(SheetAction(Icons.Outlined.Refresh, "刷新", onRefresh, group = 5))) {
+        add(BarItem("refresh", 50, listOf(SheetAction(Icons.Outlined.Refresh, "刷新", onRefresh, group = ActionGroup.Refresh))) {
             TooltipIconButton(Icons.Outlined.Refresh, "刷新", onRefresh, shortcut = if (mac) "⌘R" else "F5")
         })
         // 属性不放在这里：它看的是某一项，入口在右键菜单与操作面板末尾，以及主修饰键+I、Alt+Enter

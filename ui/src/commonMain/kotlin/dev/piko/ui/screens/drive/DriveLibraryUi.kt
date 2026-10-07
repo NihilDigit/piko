@@ -8,14 +8,11 @@ import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.DeleteForever
-import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.NewReleases
 import androidx.compose.material.icons.outlined.PlayCircle
-import androidx.compose.material.icons.outlined.RestoreFromTrash
 import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.material.icons.outlined.StarOutline
 import dev.piko.ui.components.PikoDialog
@@ -29,6 +26,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.vector.ImageVector
 import dev.piko.shared.data.DriveLibrary
 import dev.piko.ui.components.PikoTopBar
+import dev.piko.ui.components.asBarItem
 import dev.piko.ui.components.iconBarItem
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.TooltipIconButton
@@ -114,21 +112,12 @@ internal val DriveLibrary.empty: LibraryEmpty
     }
 
 /**
- * 库里的条目比网盘里多出的操作，排在文件操作之前：在网盘中显示，以及从最近添加或播放历史里移除这条记录。
- * 星标的「取消星标」本就在文件操作里。
- */
-internal fun libraryExtraActions(library: DriveLibrary, onReveal: () -> Unit, onRemove: () -> Unit): List<SheetAction> = buildList {
-    add(SheetAction(Icons.Outlined.FolderOpen, "在网盘中显示", onReveal))
-    if (library.isEventLog) add(SheetAction(Icons.Outlined.DeleteOutline, "从${library.title}中移除", onRemove))
-}
-
-/**
  * 回收站里的条目只能恢复与彻底删除：打不开、查不了详情（服务端回 file_in_recycle_bin），
  * 移动、改名、分享也都无从谈起。
  */
 internal fun trashActions(onRestore: () -> Unit, onDelete: () -> Unit): List<SheetAction> = listOf(
-    SheetAction(Icons.Outlined.RestoreFromTrash, "恢复", onRestore),
-    SheetAction(Icons.Outlined.DeleteForever, "彻底删除", onDelete, destructive = true),
+    DriveActions.restoreFromTrash(onRestore),
+    DriveActions.deleteForever(onDelete),
 )
 
 /** 回收站与播放历史里不能撤销的操作，先确认。 */
@@ -193,8 +182,8 @@ internal fun TrashSelectionTopBar(
             val canAct = enabled && selectedCount > 0
             listOf(
                 iconBarItem(Icons.Outlined.SelectAll, "全选", onSelectAll, priority = 10, shortcut = shortcutModifier.label("A")),
-                iconBarItem(Icons.Outlined.RestoreFromTrash, "恢复所选", onRestore, priority = 30, enabled = canAct),
-                iconBarItem(Icons.Outlined.DeleteForever, "彻底删除所选", onDelete, priority = 20, destructive = true, enabled = canAct),
+                DriveActions.restoreFromTrash(onRestore).asBarItem(priority = 30, enabled = canAct),
+                DriveActions.deleteForever(onDelete).asBarItem(priority = 20, enabled = canAct),
             )
         },
     )

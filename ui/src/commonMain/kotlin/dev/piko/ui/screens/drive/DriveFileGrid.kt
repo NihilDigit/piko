@@ -106,6 +106,7 @@ import dev.piko.ui.components.SkeletonGroup
 import dev.piko.ui.components.icon
 import dev.piko.ui.components.MediaTagRow
 import dev.piko.ui.components.PikoDropdownMenu
+import dev.piko.ui.components.ActionGroup
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.menuItemShape
 import dev.piko.ui.components.selectionClicks
@@ -708,13 +709,13 @@ internal fun DriveListHeader(
         AdaptiveBar(
             modifier = Modifier.fillMaxWidth().height(48.dp),
             leading = listOfNotNull(
-                BarItem("sort", 30, sortOverflowActions(sortOrder, onSortChange, group = 1)) { SortButton(sortOrder, onSortChange) },
-                BarItem("filter", 20, typeFilterOverflowActions(typeFilter, availableTypes, onTypeFilterChange, group = 2)) {
+                BarItem("sort", 30, sortOverflowActions(sortOrder, onSortChange)) { SortButton(sortOrder, onSortChange) },
+                BarItem("filter", 20, typeFilterOverflowActions(typeFilter, availableTypes, onTypeFilterChange)) {
                     TypeFilterButton(typeFilter, availableTypes, onTypeFilterChange)
                 }.takeIf { showFilter },
             ),
             trailing = listOf(
-                BarItem("view", 10, viewModeOverflowActions(viewMode, onViewModeChange, group = 3)) {
+                BarItem("view", 10, viewModeOverflowActions(viewMode, onViewModeChange)) {
                     ViewModeToggle(viewMode = viewMode, onViewModeChange = onViewModeChange)
                 },
             ),
@@ -723,7 +724,7 @@ internal fun DriveListHeader(
 }
 
 /** 排序收进「更多」时摊成几项，当前的一项打勾并写出方向，再点它是翻转，与排序按钮的菜单相同。 */
-internal fun sortOverflowActions(sortOrder: FileSortOrder, onSortChange: (FileSortOrder) -> Unit, group: Int): List<SheetAction> =
+internal fun sortOverflowActions(sortOrder: FileSortOrder, onSortChange: (FileSortOrder) -> Unit): List<SheetAction> =
     PikoSortField.entries.map { field ->
         val current = field.owns(sortOrder)
         val direction = if (sortOrder.isAscending) "升序" else "降序"
@@ -731,7 +732,7 @@ internal fun sortOverflowActions(sortOrder: FileSortOrder, onSortChange: (FileSo
             Icons.AutoMirrored.Outlined.Sort,
             if (current) "按${field.label}（$direction）" else "按${field.label}",
             { onSortChange(field.selectFrom(sortOrder)) },
-            group = group,
+            group = ActionGroup.Sort,
             checked = current,
         )
     }
@@ -740,16 +741,15 @@ internal fun typeFilterOverflowActions(
     typeFilter: FileCategory?,
     availableTypes: List<Pair<FileCategory, Int>>,
     onTypeFilterChange: (FileCategory?) -> Unit,
-    group: Int,
 ): List<SheetAction> =
-    listOf(SheetAction(Icons.Outlined.FilterList, "全部类型", { onTypeFilterChange(null) }, group = group, checked = typeFilter == null)) +
+    listOf(SheetAction(Icons.Outlined.FilterList, "全部类型", { onTypeFilterChange(null) }, group = ActionGroup.Filter, checked = typeFilter == null)) +
         availableTypes.map { (category, count) ->
-            SheetAction(category.icon(), "${category.label}（$count）", { onTypeFilterChange(category) }, group = group, checked = category == typeFilter)
+            SheetAction(category.icon(), "${category.label}（$count）", { onTypeFilterChange(category) }, group = ActionGroup.Filter, checked = category == typeFilter)
         }
 
-internal fun viewModeOverflowActions(viewMode: DriveViewMode, onViewModeChange: (DriveViewMode) -> Unit, group: Int): List<SheetAction> =
+internal fun viewModeOverflowActions(viewMode: DriveViewMode, onViewModeChange: (DriveViewMode) -> Unit): List<SheetAction> =
     DriveViewMode.entries.map { mode ->
-        SheetAction(mode.icon(selected = mode == viewMode), mode.label, { onViewModeChange(mode) }, group = group, checked = mode == viewMode)
+        SheetAction(mode.icon(selected = mode == viewMode), mode.label, { onViewModeChange(mode) }, group = ActionGroup.View, checked = mode == viewMode)
     }
 
 /**
