@@ -52,6 +52,7 @@ import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -110,6 +111,8 @@ import dev.piko.ui.components.ActionGroup
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.menuItemShape
 import dev.piko.ui.components.selectionClicks
+import dev.piko.ui.components.zoomOnWheel
+import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.ShortcutModifier
 import androidx.compose.ui.input.key.Key
@@ -147,17 +150,10 @@ internal enum class DriveViewMode {
  * 列表视图单列宽度下限 360dp，手机上始终一列，横屏平板上自动排成两列以上。M3 列表规范
  * 要求宽窗口下控制行长或改为多栏，否则一行名字会被拉得很长。
  *
- * 海报墙的卡宽下限：手机上 160dp，排两列（原先 128dp 在 432dp 宽的手机上排成三列，名字只剩
- * 一行四个汉字）；宽窗口里 240dp，封面够大，模糊时也辨得出轮廓。
- *
- * 图库的格宽下限：手机上 104dp，432dp 宽排三列，与系统相册相近；宽窗口里 140dp。
+ * 海报墙与图库的卡宽下限随卡片大小分三档，见 [tileMinWidth]。
  */
 // 与各内容列表页同一个栏宽，见 PikoItemGrid
 private val ListColumnMinWidth = ItemColumnMinWidth
-private val PosterColumnMinWidthCompact = 160.dp
-private val PosterColumnMinWidth = 240.dp
-private val GalleryColumnMinWidthCompact = 104.dp
-private val GalleryColumnMinWidth = 140.dp
 
 private const val DraggedAlpha = 0.4f
 
@@ -209,6 +205,10 @@ internal fun driveLeadingItemCount(hasFoldBanner: Boolean): Int = 1 + (if (hasFo
 internal fun DriveFileGrid(
     items: List<DriveListItem>,
     viewMode: DriveViewMode,
+    /** 海报墙或图库的卡片大小；列表视图不看它。 */
+    tileSize: TileSize,
+    /** 主修饰键加滚轮，见 [zoomOnWheel]。 */
+    onZoom: (larger: Boolean) -> Unit,
     gridState: LazyGridState,
     isSelectionMode: Boolean,
     selectedIds: Set<String>,
@@ -254,7 +254,7 @@ internal fun DriveFileGrid(
     // 从信息流跳过去时新目录要列一两秒，内容一到，滚动与闪烁同时开始（2026-10-06 桌面端日志）
     var highlightSettled by remember { mutableStateOf(true) }
 
-    Box(modifier = modifier.fillMaxSize()) {
+    Box(modifier = modifier.fillMaxSize().zoomOnWheel(onZoom)) {
         // 有条目要定位时滚到它（刚秒传的、从别处「在网盘中显示」的）。视图模式是异步读出来的偏好，首帧拿到的还是默认值，
         // 所以它也要进 key，否则真值到达前的滚动会停在错误的位置。
         LaunchedEffect(highlightRevision, highlightedIds, viewMode) {
@@ -278,7 +278,7 @@ internal fun DriveFileGrid(
         LazyVerticalGrid(
             state = gridState,
             // 网格的可用宽度扣掉了两侧边距，参照宽度也扣掉，侧栏关着时两者相等
-            columns = gridCells(viewMode, columnReferenceWidth?.minus(horizontalPadding * 2)),
+            columns = gridCells(viewMode, tileSize, columnReferenceWidth?.minus(horizontalPadding * 2)),
             modifier = modifier
                 .fillMaxSize()
                 .marqueeSelection(
@@ -368,13 +368,9 @@ internal fun DriveFileGrid(
 }
 
 @Composable
-private fun gridCells(viewMode: DriveViewMode, referenceWidth: Dp? = null): GridCells {
+private fun gridCells(viewMode: DriveViewMode, tileSize: TileSize, referenceWidth: Dp? = null): GridCells {
     val compact = currentWidthClass() == WidthClass.Compact
-    val minSize = when (viewMode) {
-        DriveViewMode.LIST -> ListColumnMinWidth
-        DriveViewMode.POSTER -> if (compact) PosterColumnMinWidthCompact else PosterColumnMinWidth
-        DriveViewMode.GALLERY -> if (compact) GalleryColumnMinWidthCompact else GalleryColumnMinWidth
-    }
+    val minSize = if (viewMode.isGrid) tileMinWidth(viewMode, tileSize, compact) else ListColumnMinWidth
     return StableColumns(minSize, referenceWidth)
 }
 
@@ -420,11 +416,11 @@ private fun gridItemSpacing(viewMode: DriveViewMode): Dp = when (viewMode) {
  * 不可滚动，条目数给够一屏，多出来的懒加载不会组合。
  */
 @Composable
-internal fun DriveGridSkeleton(viewMode: DriveViewMode, modifier: Modifier = Modifier) {
+internal fun DriveGridSkeleton(viewMode: DriveViewMode, tileSize: TileSize, modifier: Modifier = Modifier) {
     val itemSpacing = gridItemSpacing(viewMode)
     SkeletonGroup(modifier = modifier.fillMaxSize()) {
         LazyVerticalGrid(
-            columns = gridCells(viewMode),
+            columns = gridCells(viewMode, tileSize),
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = gridHorizontalPadding(viewMode)),
             horizontalArrangement = Arrangement.spacedBy(itemSpacing),
@@ -686,6 +682,8 @@ internal fun DriveListHeader(
     onTypeFilterChange: (FileCategory?) -> Unit,
     viewMode: DriveViewMode,
     onViewModeChange: (DriveViewMode) -> Unit,
+    tileSize: TileSize,
+    onTileSizeChange: (TileSize) -> Unit,
     /** 为 false 时只留搜索结果的说明：宽窗口里这些控件在命令栏上。 */
     showControls: Boolean = true,
 ) {
@@ -716,7 +714,11 @@ internal fun DriveListHeader(
                     TypeFilterButton(typeFilter, availableTypes, onTypeFilterChange)
                 }.takeIf { showFilter },
             ),
-            trailing = listOf(
+            // 大小紧挨在视图切换前面，放不下时先于它收起
+            trailing = listOfNotNull(
+                BarItem("size", 5, tileSizeActions(viewMode, tileSize, onTileSizeChange)) {
+                    TileSizeButton(tileSize, onTileSizeChange)
+                }.takeIf { viewMode.isGrid },
                 BarItem("view", 10, viewModeOverflowActions(viewMode, onViewModeChange)) {
                     ViewModeToggle(viewMode = viewMode, onViewModeChange = onViewModeChange)
                 },
@@ -873,6 +875,36 @@ internal fun ViewModeToggle(
 }
 
 private val ViewToggleContentPadding = PaddingValues(horizontal = 12.dp)
+
+/** 窄窗口列表页眉里的卡片大小：图标是眼下这一档，点开三档里挑。宽窗口的在命令栏的视图菜单里。 */
+@Composable
+private fun TileSizeButton(tileSize: TileSize, onTileSizeChange: (TileSize) -> Unit) {
+    var showMenu by remember { mutableStateOf(false) }
+    Box {
+        TooltipIconButton(tileSize.icon, "卡片大小：${tileSize.label}", { showMenu = true })
+        PikoDropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+            TileSizeMenuItems(tileSize) {
+                showMenu = false
+                onTileSizeChange(it)
+            }
+        }
+    }
+}
+
+/** 大、中、小三项，眼下这一档用强调色，与视图菜单里当前视图的写法一致。列表页眉与命令栏的视图菜单共用。 */
+@Composable
+internal fun TileSizeMenuItems(tileSize: TileSize, firstIndex: Int = 0, total: Int = TileSize.entries.size, onSelect: (TileSize) -> Unit) {
+    TileSize.entries.reversed().forEachIndexed { index, option ->
+        val current = option == tileSize
+        val tint = if (current) MaterialTheme.colorScheme.primary else Color.Unspecified
+        DropdownMenuItem(
+            text = { Text(option.label, color = tint) },
+            leadingIcon = { Icon(option.icon, contentDescription = null, tint = if (current) tint else LocalContentColor.current, modifier = Modifier.size(20.dp)) },
+            shape = menuItemShape(firstIndex + index, total),
+            onClick = { onSelect(option) },
+        )
+    }
+}
 
 /** 启发式折叠提示。作为列表的一项随内容滚走，不再常驻在列表上方。 */
 @Composable

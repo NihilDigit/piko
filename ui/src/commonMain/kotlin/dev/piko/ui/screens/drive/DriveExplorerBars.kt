@@ -412,13 +412,15 @@ private val SectionJumperMinWidth = 72.dp
 
 
 /**
- * 命令栏右端「怎么看这个文件夹」的连体按钮：左段是当前视图，点开在列表、海报墙、图库间换；右段是信息流。
+ * 命令栏右端「怎么看这个文件夹」的连体按钮：左段是当前视图，点开在列表、海报墙、图库间换，海报墙与图库另挑卡片大小；右段是信息流。
  * 视图三选一平时用不着一直摊开，收进下拉；信息流是开关，常驻。[onFeedShownChange] 为 null 时只有左段。
  */
 @Composable
 internal fun ViewSwitcher(
     viewMode: DriveViewMode,
     onViewModeChange: (DriveViewMode) -> Unit,
+    tileSize: TileSize,
+    onTileSizeChange: (TileSize) -> Unit,
     feedShown: Boolean,
     onFeedShownChange: ((Boolean) -> Unit)?,
     feedSuspended: Boolean = false,
@@ -445,6 +447,9 @@ internal fun ViewSwitcher(
             }
             PikoDropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                 val modes = DriveViewMode.entries
+                // 海报墙与图库下面另起一组挑卡片大小，主修饰键加滚轮走的也是这几档；触控板与触屏从这里挑
+                val sizeCount = if (viewMode.isGrid) TileSize.entries.size else 0
+                val total = modes.size + sizeCount
                 modes.forEachIndexed { index, mode ->
                     val current = mode == viewMode
                     DropdownMenuItem(
@@ -457,12 +462,19 @@ internal fun ViewSwitcher(
                                 modifier = Modifier.size(20.dp),
                             )
                         },
-                        shape = menuItemShape(index, modes.size),
+                        shape = menuItemShape(index, total),
                         onClick = {
                             menuOpen = false
                             onViewModeChange(mode)
                         },
                     )
+                }
+                if (sizeCount > 0) {
+                    Spacer(Modifier.height(6.dp))
+                    TileSizeMenuItems(tileSize, firstIndex = modes.size, total = total) {
+                        menuOpen = false
+                        onTileSizeChange(it)
+                    }
                 }
             }
         }

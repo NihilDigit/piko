@@ -219,6 +219,18 @@ class DesktopPikoPreferences(
         driveViewMode.value = mode
     }
 
+    private val tileSizes = mutableMapOf<String, MutableStateFlow<String>>()
+
+    private fun tileSize(view: String): MutableStateFlow<String> = synchronized(tileSizes) {
+        tileSizes.getOrPut(view) { MutableStateFlow(settings.get(tileSizeKey(view))) }
+    }
+
+    override fun driveTileSizeFlow(view: String): Flow<String> = tileSize(view).asStateFlow()
+    override suspend fun setDriveTileSize(view: String, size: String) {
+        settings.set(tileSizeKey(view), size)
+        tileSize(view).value = size
+    }
+
     override val sidebarCollapsedFlow: Flow<Boolean> = sidebarCollapsed.asStateFlow()
     override suspend fun setSidebarCollapsed(collapsed: Boolean) {
         settings.set(KEY_SIDEBAR_COLLAPSED, collapsed.toString())
@@ -442,6 +454,7 @@ class DesktopPikoPreferences(
         const val KEY_NAME_PARSING = "ui.nameParsing"
         const val KEY_GRID_VIEW = "ui.gridView"
         const val KEY_DRIVE_VIEW_MODE = "ui.driveViewMode"
+        fun tileSizeKey(view: String) = "ui.drive.tileSize.$view"
         const val KEY_CLIP_PANEL_OPEN = "ui.clipPanel.open"
         const val KEY_CLIP_PANEL_WIDTH = "ui.clipPanel.width"
         const val KEY_SIDEBAR_COLLAPSED = "ui.sidebar.collapsed"

@@ -66,6 +66,8 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun setThemeSeed(seed: String?) = Unit
     override val driveViewModeFlow: Flow<String> = MutableStateFlow("LIST")
     override suspend fun setDriveViewMode(mode: String) = Unit
+    override fun driveTileSizeFlow(view: String): Flow<String> = MutableStateFlow("")
+    override suspend fun setDriveTileSize(view: String, size: String) = Unit
     override val sidebarCollapsedFlow: Flow<Boolean> = MutableStateFlow(false)
     override suspend fun setSidebarCollapsed(collapsed: Boolean) = Unit
     override val showExtensionsFlow: Flow<Boolean> = MutableStateFlow(false)

@@ -47,6 +47,7 @@ internal fun ShortcutsDialog(modifier: ShortcutModifier, onDismiss: () -> Unit) 
             (if (mac) "⌘⇧E" else "Ctrl+Shift+E") to "打开或关闭目录图",
             "${primary}F" to "搜索",
             "F5" to "刷新",
+            "${primary}滚轮" to "放大、缩小视图：列表与三档海报墙之间逐档，图库里换格子大小",
             "${primary}A" to "全选",
             (if (mac) "⌘⌫" else "Delete") to "将所选条目移入回收站",
             (if (mac) "回车 或 F2" else "F2") to "重命名，选了几项时批量重命名",

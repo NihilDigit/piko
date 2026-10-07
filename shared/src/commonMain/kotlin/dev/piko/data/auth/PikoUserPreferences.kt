@@ -87,6 +87,13 @@ interface PikoUserPreferences {
     val driveViewModeFlow: Flow<String>
     suspend fun setDriveViewMode(mode: String)
 
+    /**
+     * 海报墙与图库各自的卡片大小，[view] 是 DriveViewMode 的名字，值是 ui 里 TileSize 的名字，没存过时为空串。
+     * 每台设备各自的，不同步：同一档在手机与宽屏上排出的栏数相差很远。
+     */
+    fun driveTileSizeFlow(view: String): Flow<String>
+    suspend fun setDriveTileSize(view: String, size: String)
+
     /** 大窗口左侧边栏收起成了窄轨。每台设备各自的，不同步：屏幕宽窄因机而异。 */
     val sidebarCollapsedFlow: Flow<Boolean>
     suspend fun setSidebarCollapsed(collapsed: Boolean)

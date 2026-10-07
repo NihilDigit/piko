@@ -128,6 +128,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val NAME_PARSING_ENABLED = booleanPreferencesKey("name_parsing_enabled")
         val WATERFALL_VIEW_ENABLED = booleanPreferencesKey("waterfall_view_enabled")
         val DRIVE_VIEW_MODE = stringPreferencesKey("drive_view_mode")
+        fun driveTileSize(view: String) = stringPreferencesKey("drive_tile_size_$view")
         val CLIP_PANEL_OPEN = booleanPreferencesKey("clip_panel_open")
         val CLIP_PANEL_WIDTH = floatPreferencesKey("clip_panel_width")
         val SIDEBAR_COLLAPSED = booleanPreferencesKey("sidebar_collapsed")
@@ -349,6 +350,14 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun setDriveViewMode(mode: String) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.DRIVE_VIEW_MODE] = mode
+        }
+    }
+
+    override fun driveTileSizeFlow(view: String): Flow<String> = preference { it[PreferencesKeys.driveTileSize(view)].orEmpty() }
+
+    override suspend fun setDriveTileSize(view: String, size: String) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.driveTileSize(view)] = size
         }
     }
 

@@ -56,6 +56,9 @@ enum class ActionGroup {
     /** 用得少的：查重、归档、预览遮蔽、来源链接。 */
     Manage,
     View,
+
+    /** 海报墙与图库的卡片大小，紧跟在视图之后另成一组。 */
+    ViewSize,
     Refresh,
     Create,
     Edit,

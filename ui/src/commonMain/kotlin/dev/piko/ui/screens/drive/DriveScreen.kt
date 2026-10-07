@@ -315,6 +315,14 @@ fun DriveScreen(
     val viewModeName by sessionManager.driveViewModeFlow.collectAsStateWithLifecycle(initialViewMode)
     val viewMode = DriveViewMode.of(viewModeName)
     LaunchedEffect(state, viewMode) { state.updateThumbnailsOnly(viewMode == DriveViewMode.GALLERY) }
+    // 海报墙与图库各记一份卡片大小，初值同样同步读，免得先闪一帧中档
+    val tileSizeFlow = remember(viewMode) { sessionManager.driveTileSizeFlow(viewMode.name) }
+    val initialTileSize = remember(tileSizeFlow) { runBlocking { tileSizeFlow.first() } }
+    val tileSize = TileSize.of(tileSizeFlow.collectAsStateWithLifecycle(initialTileSize).value)
+    val zoom = remember(sessionManager) { DriveZoom(sessionManager) }
+    fun selectTileSize(size: TileSize) {
+        scope.launch { zoom.select(viewMode, size) }
+    }
 
     // 目录导航栈：持久化并与全局单例共享，切 Tab / 重启不丢失
     val folderStack by state.folderStack.collectAsStateWithLifecycle()
@@ -1339,6 +1347,8 @@ fun DriveScreen(
                 ViewSwitcher(
                     viewMode = viewMode,
                     onViewModeChange = { mode -> scope.launch { sessionManager.setDriveViewMode(mode.name) } },
+                    tileSize = tileSize,
+                    onTileSizeChange = ::selectTileSize,
                     feedShown = feedShown,
                     onFeedShownChange = onFeedShownChange.takeIf { commands.feed },
                     feedSuspended = feedStashed,
@@ -1778,7 +1788,7 @@ fun DriveScreen(
                                 // 面包屑与页眉的位置先空出来，内容换上时各行不挪
                                 breadcrumbs()
                                 if (!pathInTopBar) Spacer(modifier = Modifier.height(DriveListHeaderHeight))
-                                DriveGridSkeleton(viewMode = viewMode, modifier = Modifier.weight(1f))
+                                DriveGridSkeleton(viewMode = viewMode, tileSize = tileSize, modifier = Modifier.weight(1f))
                             }
                             return@Crossfade
                         }
@@ -1825,6 +1835,8 @@ fun DriveScreen(
                                         items = state.displayItems,
                                         folderView = { if (!state.isNameParsing) null else state.folderViews[it.id] },
                                         viewMode = viewMode,
+                                        tileSize = tileSize,
+                                        onZoom = { larger -> scope.launch { zoom.step(larger) } },
                                         gridState = gridState,
                                         isSelectionMode = state.isSelectionMode,
                                         selectedIds = selectedIdSet,
@@ -1866,6 +1878,8 @@ fun DriveScreen(
                                                         onViewModeChange = { mode ->
                                                             scope.launch { sessionManager.setDriveViewMode(mode.name) }
                                                         },
+                                                        tileSize = tileSize,
+                                                        onTileSizeChange = ::selectTileSize,
                                                         // 宽窗口的排序、筛选与视图在命令栏上，页眉只剩搜索结果的说明
                                                         showControls = !pathInTopBar,
                                                     )
