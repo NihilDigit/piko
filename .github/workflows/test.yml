@@ -13,7 +13,9 @@ name: Test
 
 on:
   push:
-    branches: ['**']
+    # cla-signatures 只存 CLA 签名（cla.yml），每签一次就是一次推送，不是代码。
+    # 同一事件不能同时写 branches 与 branches-ignore，排除用 ! 写进同一个列表
+    branches: ['**', '!cla-signatures']
   pull_request:
   workflow_dispatch:
     inputs:
