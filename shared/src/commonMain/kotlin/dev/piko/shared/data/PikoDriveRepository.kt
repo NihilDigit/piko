@@ -371,6 +371,13 @@ open class PikoDriveRepository(
         if (leaveAllowed(next, action)) action()
     }
 
+    /**
+     * 活动标签是查重标签、查重还没结束时为真，由主界面装上。这时换栈改为另开一个普通标签：
+     * 查重标签只是一个位置，改写它，查重会话还在、标签却没了，成了关不掉的孤儿。
+     * 只在有标签栏时为真；窄窗口里离开结果页先由 [leaveGuard] 确认结束查重，再走到这里。
+     */
+    var duplicatesTabHeld: () -> Boolean = { false }
+
     /** 把栈换成 [requested]，换了才把原来的位置记进后退、清掉前进。 */
     private fun moveTo(requested: List<PikoPathBreadcrumb>) {
         // 调用方手上的栈可能是改名、移动之前拼的，进栈前先按索引改正，免得旧名字又写回来
@@ -378,6 +385,10 @@ open class PikoDriveRepository(
         val previous = _folderStackFlow.value
         if (next == previous) return
         if (!leaveAllowed(next) { moveTo(requested) }) return
+        if (previous.library == DriveLibrary.DUPLICATES && next.library != DriveLibrary.DUPLICATES && duplicatesTabHeld()) {
+            openTab(next)
+            return
+        }
         _folderStackFlow.value = next
         _historyFlow.update { it.visited(previous) }
         stackChanged()

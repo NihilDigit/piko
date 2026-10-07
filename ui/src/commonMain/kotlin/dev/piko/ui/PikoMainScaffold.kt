@@ -648,7 +648,12 @@ fun PikoMainScaffold(
     DisposableEffect(taskSlot) {
         val driveRepo = services.driveRepository
         driveRepo.leaveGuard = PikoDriveRepository.LeaveGuard(taskSlot::allowsLeaving)
-        onDispose { driveRepo.leaveGuard = null }
+        // 有标签栏时查重标签由查重会话占着，往别处走另开标签，见 PikoDriveRepository.duplicatesTabHeld
+        driveRepo.duplicatesTabHeld = { !taskSlot.exclusive && services.duplicateSession.state != null }
+        onDispose {
+            driveRepo.leaveGuard = null
+            driveRepo.duplicatesTabHeld = { false }
+        }
     }
     // 不经守卫的换栈（换账号、切标签、信息流的继续刷）离开了那棵树，静默结束。放在这里而不是网盘页：
     // 切走时网盘页不在组合里，路径栈照样会被改

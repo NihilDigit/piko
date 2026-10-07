@@ -19,7 +19,7 @@ import kotlin.test.assertTrue
 
 /**
  * 网盘里改了名、移走、删掉文件夹之后，各处存着的路径（栈、别的标签、浏览历史、最近去过、快速访问）跟着变，
- * 目录图与地址栏 › 读到的是改动之后的列表。
+ * 目录图与地址栏 › 读到的是改动之后的列表；查重标签不被别处的跳转改写。
  */
 class FolderLocationSmokeTest {
     private val root = PikoDriveRepository.ROOT_BREADCRUMB
@@ -142,4 +142,28 @@ class FolderLocationSmokeTest {
         assertTrue(server.calls.none { it.startsWith("GET") && it.endsWith("/drive/v1/files") }, "库的 ID 不该拿去列目录")
     }
 
+    @Test
+    fun `a duplicates tab held by its search is not overwritten`() = smoke {
+        val server = FakePikPakServer()
+        val anime = server.addFolder("动画")
+        val repo = PikoDriveRepository(server.provider(), MemoryPreferences())
+        var searching = true
+        repo.duplicatesTabHeld = { searching }
+        val duplicates = repo.openTab(listOf(DriveLibrary.DUPLICATES.crumb))
+
+        // 查重还在：往别处走是另开一个标签，查重标签原样留着
+        repo.updateFolderStack(listOf(root, PikoPathBreadcrumb(anime.id, anime.name)))
+        assertEquals(listOf(DriveLibrary.DUPLICATES.crumb), repo.tabsFlow.value.first { it.id == duplicates }.stack)
+        assertEquals(listOf(root, PikoPathBreadcrumb(anime.id, anime.name)), repo.folderStackFlow.value)
+        assertTrue(repo.activeTabId.value != duplicates)
+        val tabs = repo.tabsFlow.value.size
+
+        // 查重结束后结果页的「回到网盘」照旧改写当前标签
+        searching = false
+        repo.switchTab(duplicates)
+        repo.updateFolderStack(listOf(root))
+        assertEquals(duplicates, repo.activeTabId.value)
+        assertEquals(listOf(root), repo.folderStackFlow.value)
+        assertEquals(tabs, repo.tabsFlow.value.size)
+    }
 }

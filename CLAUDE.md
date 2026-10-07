@@ -171,6 +171,7 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 目录的内容也只有一份：仓库的列表缓存，网盘页、目录图、地址栏的 › 与补全、命令面板都读它。网盘里的改动一律经
 `applyChange(DriveChange)` 收口（索引、缓存过期、广播 `folderChanges`），新加改动网盘的入口照此调一次，不要自己清缓存或通知界面；
 `DriveScreenState` 与目录图已订阅，只重列受影响的那几层，视图不要再订阅一遍。
+有标签栏时查重标签由查重会话占着（`duplicatesTabHeld`）：往别处走另开标签，不改写它；查重结束后照常改写。
 
 ### 账号与凭据
 
