@@ -9,6 +9,7 @@ import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.pointer.PointerButton
 import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
@@ -27,6 +28,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.unit.dp
 import dev.piko.ui.PikoApp
 import dev.piko.ui.platform.LocalWindowCaption
+import dev.piko.ui.platform.PikoPlatform
 import dev.piko.ui.platform.WindowCaption
 import dev.piko.ui.VideoPlayerHost
 import dev.piko.ui.theme.Appearance
@@ -41,7 +43,7 @@ import org.jetbrains.skia.Image
  * 在 [ShotEnv] 上无头运行整个应用（[PikoApp]，与桌面入口同一个），按真实时间推进帧，
  * 让假服务端的异步响应落进界面。窗口外框（自绘标题栏、拖放层）不在其中，页面从窗口顶端开始。
  */
-class AppScene private constructor(private val scene: ImageComposeScene) : AutoCloseable {
+class AppScene private constructor(private val scene: ImageComposeScene, private val touch: Boolean) : AutoCloseable {
     private val start = System.nanoTime()
     private var image: Image = edt { scene.render(0) }
 
@@ -96,33 +98,113 @@ class AppScene private constructor(private val scene: ImageComposeScene) : AutoC
 
     fun hasText(text: String) = find(text) != null
 
+    /** 文本恰为 [text] 的节点里最靠上的那个：页顶的标签与列表行里的同名标注（「云端」「上传」）并存时用。 */
+    fun clickHighest(text: String) {
+        pumpUntil(5_000) { nodes().any { node -> node.texts().any { it == text } } }
+        // 预取而未摆放的列表项边界是零，top 也是 0，要排除
+        val node = nodes().filter { node -> node.texts().any { it == text } && node.boundsInRoot.width > 0f }.minByOrNull { it.boundsInRoot.top }
+            ?: error("找不到「$text」。界面上现有的文本：${texts().take(60)}")
+        click(node.boundsInRoot.center)
+    }
+
     /** [topmost] 只在最上层的弹层里找：对话框底下的页面有同名节点时，默认先找到的是页面上的那个。 */
     fun click(text: String, button: PointerButton = PointerButton.Primary, topmost: Boolean = false) {
         // 目标可能还在路上（文件夹的解析名要等描述取回来），等一会儿再算找不到
         if (find(text, topmost) == null) pumpUntil(5_000) { find(text, topmost) != null }
         val node = find(text, topmost) ?: error("找不到「$text」。界面上现有的文本：${texts().take(60)}")
-        click(node.boundsInRoot.center, button)
+        click(scrollIntoView(node, text, topmost), button)
+    }
+
+    /**
+     * 节点在可滚动祖先的可见范围外（设置页下方的行）时滚过去，返回滚完后的中心。
+     * 只对已组合的节点有效：懒加载列表里没组合出来的项本来就找不到。
+     */
+    private fun scrollIntoView(node: SemanticsNode, text: String, topmost: Boolean): Offset {
+        // 看的是可滚动容器自己的可见范围：底部导航栏、FAB 盖着的那一截也在窗口里，点下去落在它们上面。
+        // 用滚轮一格格滚、每格重新量：预取未摆放的项边界是零，按它算一次滚动距离会滚错方向
+        var parent = node.parent
+        while (parent != null && parent.config.getOrNull(androidx.compose.ui.semantics.SemanticsActions.ScrollBy) == null) parent = parent.parent
+        val viewport = parent?.boundsInRoot ?: return node.boundsInRoot.center
+        val visible = (viewport.top + 24f)..(viewport.bottom - 96f)
+        var bounds = node.boundsInRoot
+        var center = bounds.center
+        var scrolled = false
+        repeat(60) {
+            // 懒加载列表预取出来、还没摆放的项边界是零，它在下方
+            val placed = bounds.width > 0f || bounds.height > 0f
+            if (placed && center.y in visible) {
+                // 滚轮滚动带惯性动画，动画没停时按下去只会让它停住，不算点击
+                if (scrolled) {
+                    pump(800)
+                    center = find(text, topmost)?.boundsInRoot?.center ?: center
+                }
+                return center
+            }
+            scrolled = true
+            val down = !placed || center.y > visible.endInclusive
+            edt {
+                scene.sendPointerEvent(PointerEventType.Move, viewport.center)
+                scene.sendPointerEvent(PointerEventType.Scroll, viewport.center, scrollDelta = Offset(0f, if (down) 1f else -1f))
+            }
+            pump(60)
+            bounds = find(text, topmost)?.boundsInRoot ?: return center
+            center = bounds.center
+        }
+        return center
     }
 
     /** 按住不放再松开，触屏上进多选的那一下。 */
     fun longPress(text: String) {
         if (find(text, topmost = false) == null) pumpUntil(5_000) { find(text, topmost = false) != null }
         val at = (find(text, topmost = false) ?: error("找不到「$text」。界面上现有的文本：${texts().take(60)}")).boundsInRoot.center
-        edt { scene.sendPointerEvent(PointerEventType.Move, at) }
-        pump(30)
-        edt { scene.sendPointerEvent(PointerEventType.Press, at) }
-        pump(800)
-        edt { scene.sendPointerEvent(PointerEventType.Release, at) }
-        pump(50)
+        longPress(at)
+    }
+
+    /** 按住 [holdMs] 再松开；[releaseAfter] 为 false 时不松手，看按住期间的样子（长按倍速）。 */
+    fun longPress(at: Offset, holdMs: Long = 800, releaseAfter: Boolean = true) {
+        press(at, PointerButton.Primary)
+        pump(holdMs)
+        if (releaseAfter) {
+            releasePointer(at, PointerButton.Primary)
+            pump(50)
+        }
     }
 
     fun click(at: Offset, button: PointerButton = PointerButton.Primary) {
-        edt { scene.sendPointerEvent(PointerEventType.Move, at) }
+        press(at, button)
         pump(30)
-        edt { scene.sendPointerEvent(PointerEventType.Press, at, button = button) }
-        pump(30)
-        edt { scene.sendPointerEvent(PointerEventType.Release, at, button = button) }
+        releasePointer(at, button)
         pump(50)
+    }
+
+    /** 连点两下，间隔短于双击窗口：桌面上打开条目，信息流里是收藏。 */
+    fun doubleClick(at: Offset) {
+        press(at, PointerButton.Primary)
+        pump(20)
+        releasePointer(at, PointerButton.Primary)
+        pump(40)
+        press(at, PointerButton.Primary)
+        pump(20)
+        releasePointer(at, PointerButton.Primary)
+        pump(50)
+    }
+
+    // 移动端的左键按成触屏：条目单击即打开、长按进多选、没有悬停，与手指一致。右键仍是鼠标，移动端接鼠标时同样可用
+    private fun press(at: Offset, button: PointerButton) = edt {
+        if (touch && button == PointerButton.Primary) {
+            scene.sendPointerEvent(PointerEventType.Press, at, type = PointerType.Touch)
+        } else {
+            scene.sendPointerEvent(PointerEventType.Move, at)
+            scene.sendPointerEvent(PointerEventType.Press, at, button = button)
+        }
+    }
+
+    private fun releasePointer(at: Offset, button: PointerButton) = edt {
+        if (touch && button == PointerButton.Primary) {
+            scene.sendPointerEvent(PointerEventType.Release, at, type = PointerType.Touch)
+        } else {
+            scene.sendPointerEvent(PointerEventType.Release, at, button = button)
+        }
     }
 
     /**
@@ -163,6 +245,19 @@ class AppScene private constructor(private val scene: ImageComposeScene) : AutoC
         }
         // 松手前留一张：框还画着
         pump(200)
+    }
+
+    /** 手指从 [from] 划到 [to] 再抬起：下拉刷新、翻页这类只认触屏的手势。 */
+    fun swipe(from: Offset, to: Offset, steps: Int = 16) {
+        edt { scene.sendPointerEvent(PointerEventType.Press, from, type = PointerType.Touch) }
+        pump(30)
+        for (i in 1..steps) {
+            val at = from + (to - from) * (i / steps.toFloat())
+            edt { scene.sendPointerEvent(PointerEventType.Move, at, type = PointerType.Touch) }
+            pump(20)
+        }
+        edt { scene.sendPointerEvent(PointerEventType.Release, to, type = PointerType.Touch) }
+        pump(100)
     }
 
     fun release(at: Offset) {
@@ -208,11 +303,25 @@ class AppScene private constructor(private val scene: ImageComposeScene) : AutoC
 
     companion object {
         /** 开一个 [width]×[height]（dp，密度 1）的窗口，等根目录列出来再交给调用方。 */
-        fun open(env: ShotEnv, width: Int, height: Int, mode: ThemeMode, showPlayer: Boolean = false, caption: Boolean = false, mobile: Boolean = false): AppScene {
-            val platform = if (mobile) MobileShotPlatform(env.platform) else env.platform
+        fun open(
+            env: ShotEnv,
+            width: Int,
+            height: Int,
+            mode: ThemeMode,
+            player: PlayerShot? = null,
+            caption: Boolean = false,
+            mobile: Boolean = false,
+            /** 换掉平台的部分能力（假的更新服务），再按 [mobile] 套上移动端。 */
+            wrapPlatform: (PikoPlatform) -> PikoPlatform = { it },
+            /** 等到界面上出现它再交给调用方；null 不等，登录页、加载中这类画面要的就是开头那一刻。 */
+            waitFor: String? = "Kusuriya",
+        ): AppScene {
+            val base = wrapPlatform(env.platform)
+            val platform = if (mobile) MobileShotPlatform(base) else base
+            val showPlayer = player != null
             // 信息流的独立窗口不画，只记开没开着：应用内据此收起侧栏，弹出后的样子也能截
             val feedWindow = mutableStateOf(false)
-            val player = VideoPlayerHost.Detached(
+            val host = VideoPlayerHost.Detached(
                 open = {},
                 openClipFeed = { feedWindow.value = true },
                 isClipFeedOpen = { feedWindow.value },
@@ -223,18 +332,18 @@ class AppScene private constructor(private val scene: ImageComposeScene) : AutoC
             // 「performMeasureAndLayout called during measure layout」
             val scene = edt {
                 ImageComposeScene(width, height, Density(1f), coroutineContext = Dispatchers.Main) {
-                    if (showPlayer) {
-                        PlayerPreview(env, mode)
+                    if (player != null) {
+                        PlayerPreview(env, mode, player, platform)
                     } else {
                         CompositionLocalProvider(LocalWindowCaption provides if (caption) ShotWindowCaption else null) {
-                            PikoApp(env.services, platform, Appearance(mode = mode), player)
+                            PikoApp(env.services, platform, Appearance(mode = mode), host)
                         }
                     }
                 }
             }
-            val app = AppScene(scene)
-            // 以根目录里一部作品的名字为准：原名或解析后的名字都含这一段
-            if (!showPlayer && !app.pumpUntil { app.hasText("Kusuriya") }) {
+            val app = AppScene(scene, touch = mobile)
+            // 默认以根目录里一部作品的名字为准：原名或解析后的名字都含这一段
+            if (!showPlayer && waitFor != null && !app.pumpUntil { app.hasText(waitFor) }) {
                 System.err.println("根目录没有列出来，界面文本：${app.texts().take(40)}")
             }
             app.pump(600)

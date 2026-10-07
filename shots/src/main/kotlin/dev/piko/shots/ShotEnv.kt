@@ -95,6 +95,37 @@ fun FakePikPak.seed() {
     addTask("[ANi] Dandadan S2 - 12 [1080P][Baha][WEB-DL][AAC AVC][CHT].mp4", "PHASE_TYPE_RUNNING", 42, 1 * GB + 300 * MB)
     addTask("Ubuntu 26.04 LTS Desktop amd64.iso", "PHASE_TYPE_PENDING", 0, 6 * GB)
     addTask("Blade.Runner.2049.2017.2160p.mkv", "PHASE_TYPE_COMPLETE", 100, 22 * GB)
+
+    // 以下只在各自的页面读到，加了不影响网盘根目录与传输页的图
+    addEvent("TYPE_UPLOAD", node("Perfect.Days.2023.1080p.WEB-DL.mp4"), hoursAgo(3))
+    addEvent("TYPE_RESTORE", node("Dune.Part.Two.2024.2160p.UHD.BluRay.x265.10bit.HDR.DTS-HD.MA.7.1.mkv"), hoursAgo(26))
+    addEvent("TYPE_UPLOAD", node("2026 年度报告（终稿）.pdf"), hoursAgo(50))
+    addEvent("TYPE_PLAY", node("Oppenheimer.2023.1080p.BluRay.x264.mkv"), hoursAgo(2), playSeconds = 4_210, playDuration = 10_800)
+    addEvent("TYPE_PLAY", node("$show - 03 [1080p][HEVC].mkv"), hoursAgo(20), playSeconds = 880, playDuration = 1_440)
+
+    addArchive(node("Project Sekai OST Vol.3.zip"), FakePikPak.Archive(listOf(
+        "Disc 1/" to 0L, "Disc 2/" to 0L, "cover.jpg" to 2 * MB, "booklet.pdf" to 18 * MB, "readme.txt" to 1_024L,
+        "Disc 1/01 - Opening.flac" to 32 * MB, "Disc 1/02 - Theme.flac" to 41 * MB,
+    )))
+    addArchive(node("截图合集.zip"), FakePikPak.Archive(emptyList()))
+    addArchive(node("android-sdk-backup.7z"), FakePikPak.Archive(listOf("platforms/" to 0L, "build-tools/" to 0L, "licenses.txt" to 4_096L), password = "piko"))
+
+    fun share(id: String, title: String, kind: String, size: Long, files: Int, views: Int, saves: Int, status: String = "OK", passCode: String = "") = buildJsonObject {
+        put("share_id", id); put("share_url", "https://mypikpak.com/s/$id"); put("share_status", status); put("title", title)
+        put("pass_code", passCode); put("file_num", "$files"); put("file_id", node(title).id); put("file_kind", kind)
+        put("file_size", "$size"); put("expiration_days", "-1"); put("expiration_at", "-1")
+        put("restore_count", "$saves"); put("view_count", "$views"); put("create_time", hoursAgo(views.toLong() * 3))
+    }
+    shares = listOf(
+        share("VSHOT1", "动画", "drive#folder", 6 * GB, 13, 42, 7),
+        share("VSHOT2", "Perfect.Days.2023.1080p.WEB-DL.mp4", "drive#file", 4 * GB + 120 * MB, 1, 15, 3, passCode = "pk7q"),
+        share("VSHOT3", "三体 全集.epub", "drive#file", 5 * MB, 1, 120, 0, status = "EXPIRED"),
+    )
+    webDavApps = listOf(buildJsonObject {
+        put("id", 1); put("application_name", "Infuse"); put("username", "piko-infuse"); put("password", "s3cret-pass")
+        put("max_entries_in_response", 500); put("optimized_for_media_play", 1); put("read_only", 1); put("enable", 1)
+        put("created_at", "2026-10-01T10:00:00.000+08:00"); put("last_active_at", hoursAgo(5)); put("last_active_ip", "203.0.113.7")
+    })
 }
 
 private fun FakePikPak.addVaultManifest(parentId: String, vararg entries: VaultEntry) {
@@ -111,7 +142,15 @@ private val logInstalled by lazy {
  * 一套完整的 [PikoServices]，照桌面入口（Main.kt）拼装，全部指向临时目录与 [FakePikPak]，
  * 已登录。每个截图各用一份，关掉时连同临时目录一起清掉。
  */
-class ShotEnv(viewMode: String? = null, extraSeed: FakePikPak.() -> Unit = {}) : AutoCloseable {
+class ShotEnv(
+    viewMode: String? = null,
+    extraSeed: FakePikPak.() -> Unit = {},
+    login: LoginSeed = LoginSeed.SIGNED_IN,
+    /** 为 false 时不预置本机下载，传输页才可能是空的。 */
+    localDownloads: Boolean = true,
+    /** 只给这一张写的设置项，键照 DesktopSettingsStore，如上传任务 upload.tasks。 */
+    prefs: Map<String, String> = emptyMap(),
+) : AutoCloseable {
     val dir: File = Files.createTempDirectory("piko-shots-").toFile()
     val server = FakePikPak().apply {
         seed()
@@ -121,7 +160,8 @@ class ShotEnv(viewMode: String? = null, extraSeed: FakePikPak.() -> Unit = {}) :
     val downloads = File(dir, "Downloads").apply { mkdirs() }
     val settings = DesktopSettingsStore(File(dir, "settings.properties")).apply {
         setDownloadDirectory(downloads.path)
-        set("download.tasks", seededDownloads(downloads))
+        if (localDownloads) set("download.tasks", seededDownloads(downloads))
+        prefs.forEach { (key, value) -> set(key, value) }
         if (viewMode != null) set("ui.driveViewMode", viewMode)
     }
     val preferences = DesktopPikoPreferences(settings) { PlainFileVault(dir.toPath().resolve("secrets")) }
@@ -130,7 +170,7 @@ class ShotEnv(viewMode: String? = null, extraSeed: FakePikPak.() -> Unit = {}) :
 
     init {
         logInstalled
-        val clientManager = PikoClientManager(MemorySessionStore(ACCOUNT), scope, server.httpClient())
+        val clientManager = PikoClientManager(MemorySessionStore(ACCOUNT, login), scope, server.httpClient())
         val media = PikoMediaRepository(clientManager, preferences, clipCache = FileClipCache(File(dir, "clip-cache")))
         services = PikoServices(
             platformPreferences = preferences,

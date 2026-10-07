@@ -40,6 +40,8 @@ dependencies {
     implementation(libs.cmp.material.icons.extended)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.ktor.client.okhttp)
+    // 片段面板与信息流建预览播放器时要 mpv 的原生库；没有它组合当场抛异常。理由同 desktopApp 的 desktopTest
+    runtimeOnly("org.openani.mediamp:mediamp-mpv-runtime-$hostOs-$hostArch:${libs.versions.mediamp.get()}")
 }
 
 // Gradle 跑在 JDK 21 上时 run 默认也用它，加载 25 编出的类即失败；理由同 desktopApp 的 run
@@ -52,4 +54,10 @@ tasks.named<JavaExec>("run") {
 // 同 :cli：runtime-desktop 是转发到 androidx 的空壳，与真正的 jar 同名，installDist 往 lib/ 里拷时撞名
 configurations.runtimeClasspath {
     exclude(group = "org.jetbrains.compose.runtime", module = "runtime-desktop")
+}
+
+// runtime-saveable-desktop 同样是转发到 androidx 的同名空壳。装出来的副本供跑整套用：gradle run 直接读各模块的
+// build/classes，跑的半小时里别处重新编译界面，进程就在下一次加载类时 NoClassDefFoundError
+tasks.named<Sync>("installDist") {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }
