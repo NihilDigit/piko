@@ -28,10 +28,11 @@ import dev.piko.shared.naming.av.AvNamingItem
 import dev.piko.shared.naming.av.canonicalAvNames
 import dev.piko.shared.naming.av.canonicalResourceName
 import dev.piko.shared.naming.parseMediaName
-import dev.piko.shared.scrape.MetaTubeService
+import dev.piko.shared.scrape.MetaTubeTitles
 import io.github.nihildigit.pikpak.InstantContentUnavailableException
 import io.github.nihildigit.pikpak.QuotaResponse
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -147,8 +148,8 @@ class InstantSheetState private constructor(
     private val shared: InstantSharedContext,
     /** 面板直接持有的那个实例；批量列表里各行的子实例为 false。 */
     private val isRoot: Boolean,
-    /** 规范命名时取片名；为 null 或没配地址时用原名里的片名。 */
-    private val metaTube: MetaTubeService?,
+    /** 规范命名时取 MetaTube 片名、保存后补名；为 null 或没配地址时用原名里的片名。 */
+    private val titleFill: InstantTitleFill?,
 ) {
     constructor(
         instantRepo: InstantMagnetRepository,
@@ -159,10 +160,10 @@ class InstantSheetState private constructor(
         saveRecords: InstantSaveRecords,
         scope: CoroutineScope,
         initialMagnet: String = "",
-        metaTube: MetaTubeService? = null,
+        titleFill: InstantTitleFill? = null,
     ) : this(
         instantRepo, driveRepo, preferences, previewFolder, packTracker, saveRecords, scope, initialMagnet,
-        InstantSharedContext(), isRoot = true, metaTube,
+        InstantSharedContext(), isRoot = true, titleFill,
     )
 
     var input by mutableStateOf(initialMagnet)
@@ -241,6 +242,10 @@ class InstantSheetState private constructor(
     /** 从 MetaTube 查到的片名，番号到片名。没配 MetaTube 或还没查时为空。 */
     private var titles by mutableStateOf(emptyMap<String, String>())
 
+    // 这个解析结果的片名查询，挂在进程级的 InstantTitleFill 上。保存时交给它补名（adopted），此后不随面板取消
+    private var titleLookup: Deferred<MetaTubeTitles>? = null
+    private var titleLookupAdopted = false
+
     // 用户改过文件夹名就以他写的为准，开关不再替换
     private var folderNameEdited by mutableStateOf(false)
 
@@ -261,35 +266,47 @@ class InstantSheetState private constructor(
     fun nameToSave(index: Int): String {
         val original = items[index].file.name
         val names = canonical?.takeIf { useCanonicalNames } ?: return original
-        val inNamedFolder = names.codes.getOrNull(index)?.let { it == folderCode } == true
-        return (if (inNamedFolder) names.bare else names.titled).getOrNull(index) ?: original
+        return fileNameIn(names, index, folderCode, original)
     }
 
     /** 面板行上改显示的名字：开着规范命名、且这一行确实会改名时才有，否则为 null，照常显示解析出的标签。 */
     fun renamedLabel(row: InstantRow): String? =
         nameToSave(row.index).takeIf { useCanonicalNames && it != items[row.index].file.name }
 
-    /** 种子内路径到存进网盘时的名字，只列改了名的。 */
-    private fun namesToSave(toSave: List<InstantFileItem>): Map<String, String> {
-        if (!useCanonicalNames) return emptyMap()
-        val indexOf = items.withIndex().associate { (index, item) -> item.file.path to index }
-        return toSave.mapNotNull { item ->
-            val index = indexOf[item.file.path] ?: return@mapNotNull null
-            nameToSave(index).takeIf { it != item.file.name }?.let { item.file.path to it }
-        }.toMap()
-    }
+    // 新建文件夹以番号命名：开着规范命名、用户没改过文件夹名、所选视频只有一个番号
+    private val folderNamedByCode: Boolean by derivedStateOf { useCanonicalNames && !folderNameEdited && folderCode != null }
 
     /**
      * 新建文件夹的名字：开着规范命名、用户没改过、所选视频只有一个番号时换成规范名（ABC-123 片名），
      * 不带分段与压制标记。输入框显示的也是它。整包离线完成后产出的文件夹同样改成它，里面的文件离线任务改不了名。
      */
     val folderNameToSave: String by derivedStateOf {
-        val canonicalFolder = if (useCanonicalNames && !folderNameEdited && folderCode != null) {
-            canonicalResourceName(folderName, selectedVideos, titles)
-        } else {
-            null
-        }
-        canonicalFolder ?: folderName
+        if (folderNamedByCode) resourceFolderName(folderName, selectedVideos, titles) else folderName
+    }
+
+    /**
+     * 保存那一刻的命名：落盘用它定名字，片名随后查到时也按它重算（见 [titleFillRequest]），
+     * 保存途中或之后面板上再改开关、勾选与文件夹名，都不影响这一次。
+     */
+    private inner class SaveNaming(toSave: List<InstantFileItem>) {
+        val data = resolution
+        val names = canonical?.takeIf { useCanonicalNames }
+        val folderCode = this@InstantSheetState.folderCode
+        val folderNamedByCode = this@InstantSheetState.folderNamedByCode
+        val folderName = this@InstantSheetState.folderName
+        val folderVideos = selectedVideos
+        val folderNameToSave = this@InstantSheetState.folderNameToSave
+        private val indexOf = items.withIndex().associate { (index, item) -> item.file.path to index }
+
+        /** 种子内路径到存进网盘时的名字，只列改了名的。 */
+        val fileNames: Map<String, String> = names?.let { names ->
+            toSave.mapNotNull { item ->
+                val index = indexOf[item.file.path] ?: return@mapNotNull null
+                fileNameIn(names, index, folderCode, item.file.name).takeIf { it != item.file.name }?.let { item.file.path to it }
+            }.toMap()
+        }.orEmpty()
+
+        fun indexOf(item: InstantFileItem): Int? = indexOf[item.file.path]
     }
 
     // endregion
@@ -489,6 +506,8 @@ class InstantSheetState private constructor(
         }
         scope.launch { preferences.bundleSubtitlesFlow.collect { saveAttachedSubtitles = it } }
         scope.launch { fetchTitles() }
+        // 没保存就结束的，片名不再有人要
+        scope.coroutineContext[Job]?.invokeOnCompletion { releaseTitleLookup() }
         if (initialMagnet.isNotBlank() && !startBatchIfMany()) {
             if (normalizeMagnet(initialMagnet) == null) {
                 // 外部唤起的链不合法时自动解析不会发生，说明一句它只能整条离线
@@ -525,12 +544,13 @@ class InstantSheetState private constructor(
             emitOutcome = { _outcomes.emit(it) },
             emitMessage = { _messages.emit(it) },
             onEmpty = ::leaveBatch,
+            titleFill = titleFill,
         )
         return true
     }
 
     private fun newBatchRow(link: PastedLink, rowScope: CoroutineScope) = InstantSheetState(
-        instantRepo, driveRepo, preferences, previewFolder, packTracker, saveRecords, rowScope, link.uri, shared, isRoot = false, metaTube,
+        instantRepo, driveRepo, preferences, previewFolder, packTracker, saveRecords, rowScope, link.uri, shared, isRoot = false, titleFill,
     )
 
     /** 列表里的行删光了，回到空的输入框。 */
@@ -639,14 +659,15 @@ class InstantSheetState private constructor(
         if (isSaving || plan.blocked) return
         val toSave = itemsToSave
         isSaving = true
+        val fills = mutableListOf<InstantTitleFill.Request>()
         scope.launch {
             try {
                 val targetBread = target ?: resolveTarget()
                 when (plan.route) {
                     SaveRoute.INSTANT -> if (willCreateFolder) {
-                        saveIntoNewFolder(targetBread, toSave).onSuccess { _outcomes.emit(it) }
+                        saveIntoNewFolder(targetBread, toSave, fills).onSuccess { _outcomes.emit(it) }
                     } else {
-                        saveInstantOrOffline(targetBread, toSave).onSuccess { ids ->
+                        saveInstantOrOffline(targetBread, toSave, fills).onSuccess { ids ->
                             _outcomes.emit(
                                 if (ids != null) InstantSaveOutcome.InstantSaved(ids, targetBread) else InstantSaveOutcome.OfflineTaskCreated(targetBread),
                             )
@@ -670,6 +691,7 @@ class InstantSheetState private constructor(
                 }
             } finally {
                 isSaving = false
+                titleFill?.fill(fills)
             }
         }
     }
@@ -682,6 +704,7 @@ class InstantSheetState private constructor(
         if (isSaving || savePlan?.fallback == null) return
         val toSave = itemsToSave.filter { it.isInstantReady }
         isSaving = true
+        val fills = mutableListOf<InstantTitleFill.Request>()
         scope.launch {
             try {
                 val targetBread = target ?: resolveTarget()
@@ -691,28 +714,35 @@ class InstantSheetState private constructor(
                     errorMessage = "网盘空间不足，无法保存所选文件"
                     return@launch
                 }
-                val saved = saveIntoNewFolder(targetBread, toSave)
+                val saved = saveIntoNewFolder(targetBread, toSave, fills)
                 saved.onSuccess { _outcomes.emit(it) }
             } finally {
                 isSaving = false
+                titleFill?.fill(fills)
             }
         }
     }
 
-    /** 秒传 [toSave]，按种子里的目录结构存进 [target] 下以 [folderNameToSave] 新建的文件夹。 */
+    /**
+     * 秒传 [toSave]，按种子里的目录结构存进 [target] 下以 [folderNameToSave] 新建的文件夹。
+     * 存成了而片名可能随后才查到的，往 [titleFills] 里添一项，由调用方交给 InstantTitleFill。
+     */
     private suspend fun saveIntoNewFolder(
         target: PikoPathBreadcrumb,
         toSave: List<InstantFileItem>,
+        titleFills: MutableList<InstantTitleFill.Request>,
     ): Result<InstantSaveOutcome.InstantSaved> {
-        val name = driveFolderName(folderNameToSave)
+        val naming = SaveNaming(toSave)
+        val name = driveFolderName(naming.folderNameToSave)
         val folderId = driveRepo.createFolder(target.id, name).getOrElse { err ->
             PikoLog.w(TAG, "新建保存目录失败", err)
             errorMessage = "新建文件夹失败：${err.message}"
             return Result.failure(err)
         }
         val folder = PikoPathBreadcrumb(folderId, name)
-        return instantSave(folder, toSave, keepStructure = true).map { ids ->
+        return instantSave(folder, toSave, naming, keepStructure = true).map { ids ->
             saveRecords.add(name, ids.size, toSave.sumOf { it.file.size }, target.name, locateId = folderId)
+            titleFillRequest(naming, toSave, ids, folder)?.let(titleFills::add)
             InstantSaveOutcome.InstantSaved(ids, folder)
         }
     }
@@ -738,9 +768,9 @@ class InstantSheetState private constructor(
     /**
      * 批量保存时由 [InstantBatchState] 逐行调用，路线与单条时的主操作相同，只是结果交回给列表汇总，
      * 不发 [outcomes]。空间由列表按全部整包合计后检查，这里不再逐条查。
-     * 秒传成功返回新文件的 id，离线返回 null。
+     * 秒传成功返回新文件的 id，离线返回 null。要补片名的添进 [titleFills]，各行合成一批再交给 InstantTitleFill。
      */
-    internal suspend fun submitForBatch(target: PikoPathBreadcrumb): Result<List<String>?> {
+    internal suspend fun submitForBatch(target: PikoPathBreadcrumb, titleFills: MutableList<InstantTitleFill.Request>): Result<List<String>?> {
         val plan = savePlan
         val toSave = itemsToSave
         isSaving = true
@@ -748,8 +778,8 @@ class InstantSheetState private constructor(
             return when {
                 resolution == null -> submitWhole(target).map { null }
                 plan == null -> Result.failure(IllegalStateException("未勾选文件"))
-                plan.route == SaveRoute.INSTANT && willCreateFolder -> saveIntoNewFolder(target, toSave).map { it.createdIds }
-                plan.route == SaveRoute.INSTANT -> saveInstantOrOffline(target, toSave)
+                plan.route == SaveRoute.INSTANT && willCreateFolder -> saveIntoNewFolder(target, toSave, titleFills).map { it.createdIds }
+                plan.route == SaveRoute.INSTANT -> saveInstantOrOffline(target, toSave, titleFills)
                 else -> packSave(target, toSave).map { null }
             }
         } finally {
@@ -771,6 +801,7 @@ class InstantSheetState private constructor(
         tree = null
         canonical = null
         titles = emptyMap()
+        releaseTitleLookup()
         selectedIndices = emptySet()
         selectionPicked = false
         errorMessage = null
@@ -826,30 +857,15 @@ class InstantSheetState private constructor(
     }
 
     /**
-     * 各文件的规范名。没有一个文件会改名时为 null。
-     * 按种子里的目录分组，与网盘里同目录的规则一致：撞名、字幕跟随只在同一层里看。
-     */
-    private fun canonicalNamesOf(data: MagnetResolutionResult, titles: Map<String, String>): CanonicalNames? {
-        val files = data.items.map { it.file }
-        val inputs = files.map { AvNamingItem(it.name, group = it.path.substringBeforeLast('/', "")) }
-        val titled = canonicalAvNames(inputs, titles)
-        if (titled.indices.none { titled[it] != files[it].name }) return null
-        val bare = canonicalAvNames(inputs, titles) { _, _ -> false }
-        val codes = titled.map { parseMediaName(it).av?.code }
-        val videos = files.map { file -> parseMediaName(file.name).takeIf { it.fileKind == FileKind.VIDEO }?.av }
-        return CanonicalNames(titled, bare, codes, videos)
-    }
-
-    /**
-     * 开着规范命名、配了 MetaTube 时查片名，查到后重算规范名。每个解析结果只查一次；查不到或出错的沿用原名里的片名，
-     * 保存不等它：查询要等外部站点，几秒到十几秒。
+     * 开着规范命名、配了 MetaTube 时查片名，查到后重算规范名。每个解析结果只查一次；查不到或出错的沿用原名里的片名。
+     * 保存不等它：查询要等外部站点，几秒到十几秒，查到时已保存的由 InstantTitleFill 补改，见 [titleFillRequest]。
      */
     private suspend fun fetchTitles() {
-        val service = metaTube ?: return
+        val fill = titleFill ?: return
         snapshotFlow { Triple(useCanonicalNames, canonical, resolution) }.collectLatest { (enabled, names, data) ->
             if (!enabled || names == null || data == null || titles.isNotEmpty()) return@collectLatest
-            if (!service.enabled.first()) return@collectLatest
-            val found = service.titles(names.videos.filterNotNull()).titles
+            val lookup = titleLookup ?: fill.lookUp(names.videos.filterNotNull())?.also { titleLookup = it } ?: return@collectLatest
+            val found = lookup.titlesOrEmpty()
             if (found.isEmpty() || resolution !== data) return@collectLatest
             val renamed = withContext(Dispatchers.Default) { canonicalNamesOf(data, found) }
             if (resolution !== data) return@collectLatest
@@ -917,15 +933,17 @@ class InstantSheetState private constructor(
     private suspend fun instantSave(
         target: PikoPathBreadcrumb,
         toSave: List<InstantFileItem>,
+        naming: SaveNaming,
         keepStructure: Boolean,
-    ): Result<List<String>> = rawInstantSave(target, toSave, keepStructure).reportSaveFailure()
+    ): Result<List<String>> = rawInstantSave(target, toSave, naming, keepStructure).reportSaveFailure()
 
     private suspend fun rawInstantSave(
         target: PikoPathBreadcrumb,
         toSave: List<InstantFileItem>,
+        naming: SaveNaming,
         keepStructure: Boolean,
     ): Result<List<String>> =
-        instantRepo.instantSave(toSave, target.id, reuse = previewedIds.toMap(), keepStructure = keepStructure, names = namesToSave(toSave))
+        instantRepo.instantSave(toSave, target.id, reuse = previewedIds.toMap(), keepStructure = keepStructure, names = naming.fileNames)
             .onSuccess {
                 // 移出 Piko-Temp 的不能再当作预览副本：下次预览会指向保存目录里的这份
                 toSave.forEach { item -> item.file.gcid?.let(previewedIds::remove) }
@@ -940,8 +958,13 @@ class InstantSheetState private constructor(
      * 等上传的占位，SDK 已把它删掉并抛出 InstantContentUnavailableException。只对单文件资源回退：
      * 离线任务只收整条磁力，多文件资源里一部分秒传、一部分离线必然存出重复的文件。
      */
-    private suspend fun saveInstantOrOffline(target: PikoPathBreadcrumb, toSave: List<InstantFileItem>): Result<List<String>?> {
-        val instant = rawInstantSave(target, toSave, keepStructure = false)
+    private suspend fun saveInstantOrOffline(
+        target: PikoPathBreadcrumb,
+        toSave: List<InstantFileItem>,
+        titleFills: MutableList<InstantTitleFill.Request>,
+    ): Result<List<String>?> {
+        val naming = SaveNaming(toSave)
+        val instant = rawInstantSave(target, toSave, naming, keepStructure = false)
         val missing = instant.exceptionOrNull() as? InstantContentUnavailableException
         if (items.size == 1 && missing != null) {
             if (shared.account.value.free) {
@@ -953,7 +976,52 @@ class InstantSheetState private constructor(
             PikoLog.i(TAG, "云端没有这个文件的内容，改交离线任务")
             return submitWhole(target).map { null }
         }
-        return instant.onSuccess { ids -> recordSingleEntry(target, toSave, ids) }.reportSaveFailure()
+        return instant.onSuccess { ids ->
+            recordSingleEntry(target, toSave, ids)
+            titleFillRequest(naming, toSave, ids, folder = null)?.let(titleFills::add)
+        }.reportSaveFailure()
+    }
+
+    /**
+     * 这次保存要等片名补改的项：开着规范命名、配了 MetaTube 时，存下的各个文件，与按番号命名的新建文件夹 [folder]。
+     * 片名在保存前已查到的也照样交出去：结果相同时补名一项不改。保存时查询还没发起（开关刚打开、解析刚完）就现在发起。
+     * [ids] 与 [toSave] 里带 gcid 的文件按顺序一一对应。
+     */
+    private suspend fun titleFillRequest(
+        naming: SaveNaming,
+        toSave: List<InstantFileItem>,
+        ids: List<String>,
+        folder: PikoPathBreadcrumb?,
+    ): InstantTitleFill.Request? {
+        val fill = titleFill ?: return null
+        val names = naming.names ?: return null
+        val data = naming.data ?: return null
+        val account = fill.currentAccount() ?: return null
+        val files = toSave.filter { it.file.gcid != null }.zip(ids).mapNotNull { (item, id) ->
+            naming.indexOf(item)?.let { index -> Triple(item, id, index) }
+        }
+        val renamedFolder = folder?.takeIf { naming.folderNamedByCode }
+        val savedVideos = files.mapNotNull { (_, _, index) -> names.videos.getOrNull(index) }
+        val lookup = titleLookup ?: fill.lookUp(savedVideos)?.also { titleLookup = it } ?: return null
+        titleLookupAdopted = true
+        val saved = files.map { (item, id, _) -> InstantTitleFill.Saved(id, naming.fileNames[item.file.path] ?: item.file.name) } +
+            listOfNotNull(renamedFolder?.let { InstantTitleFill.Saved(it.id, it.name) })
+        // 只捕获保存那一刻的值，不捕获面板：补名时会话多半已结束
+        val folderCode = naming.folderCode
+        val folderName = naming.folderName
+        val folderVideos = naming.folderVideos
+        return InstantTitleFill.Request(account, saved, lookup) { titles ->
+            val renamed = canonicalNamesOf(data, titles) ?: names
+            files.map { (item, _, index) -> fileNameIn(renamed, index, folderCode, item.file.name) } +
+                listOfNotNull(renamedFolder?.let { driveFolderName(resourceFolderName(folderName, folderVideos, titles)) })
+        }
+    }
+
+    /** 不再需要的片名查询就取消；已交给 InstantTitleFill 补名的留着，它还在等。 */
+    private fun releaseTitleLookup() {
+        if (!titleLookupAdopted) titleLookup?.cancel()
+        titleLookup = null
+        titleLookupAdopted = false
     }
 
     /**
@@ -987,6 +1055,30 @@ class InstantSheetState private constructor(
     companion object {
         private const val TAG = "Instant"
         private const val AUTO_RESOLVE_DEBOUNCE_MS = 350L
+
+        /**
+         * 各文件的规范名。没有一个文件会改名时为 null。
+         * 按种子里的目录分组，与网盘里同目录的规则一致：撞名、字幕跟随只在同一层里看。
+         */
+        private fun canonicalNamesOf(data: MagnetResolutionResult, titles: Map<String, String>): CanonicalNames? {
+            val files = data.items.map { it.file }
+            val inputs = files.map { AvNamingItem(it.name, group = it.path.substringBeforeLast('/', "")) }
+            val titled = canonicalAvNames(inputs, titles)
+            if (titled.indices.none { titled[it] != files[it].name }) return null
+            val bare = canonicalAvNames(inputs, titles) { _, _ -> false }
+            val codes = titled.map { parseMediaName(it).av?.code }
+            val videos = files.map { file -> parseMediaName(file.name).takeIf { it.fileKind == FileKind.VIDEO }?.av }
+            return CanonicalNames(titled, bare, codes, videos)
+        }
+
+        /** 第 [index] 个文件的规范名：归入以番号 [folderCode] 命名的新建文件夹时只写番号，否则带片名。 */
+        private fun fileNameIn(names: CanonicalNames, index: Int, folderCode: String?, original: String): String {
+            val inNamedFolder = names.codes.getOrNull(index)?.let { it == folderCode } == true
+            return (if (inNamedFolder) names.bare else names.titled).getOrNull(index) ?: original
+        }
+
+        private fun resourceFolderName(folderName: String, videos: List<AvInfo>, titles: Map<String, String>): String =
+            canonicalResourceName(folderName, videos, titles) ?: folderName
 
         /**
          * 输入框里的内容归一化成可解析的磁力链。文本里恰好只有一条链接且是磁力时返回它，

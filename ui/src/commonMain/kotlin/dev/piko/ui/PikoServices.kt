@@ -33,6 +33,7 @@ import dev.piko.shared.state.FolderTaskSession
 import dev.piko.shared.state.InstantSaveRecords
 import dev.piko.shared.state.InstantSession
 import dev.piko.shared.state.InstantSheetState
+import dev.piko.shared.state.InstantTitleFill
 import dev.piko.shared.state.launchOnAccountLeave
 import dev.piko.shared.upload.PikoUploadCoordinator
 import dev.piko.shared.upload.PikoUploadSources
@@ -116,6 +117,9 @@ class PikoServices(
 
     val instantSaveRecords = InstantSaveRecords(clientManager, cacheStore, backgroundScope)
 
+    // 添加链接保存后查到 MetaTube 片名再补改，会话结束后仍要做完，见 InstantTitleFill
+    private val instantTitleFill = InstantTitleFill(clientManager, driveRepository, metaTube, backgroundScope)
+
     val instantSession: InstantSession by lazy {
         InstantSession(
             newScope = { CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate) },
@@ -129,7 +133,7 @@ class PikoServices(
                     instantSaveRecords,
                     scope,
                     magnet,
-                    metaTube,
+                    instantTitleFill,
                 )
             },
         )
@@ -206,6 +210,7 @@ class PikoServices(
         CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).launchOnAccountLeave(clientManager) { left ->
             PikoLog.i(TAG, "${if (clientManager.currentClient.value == null) "退出登录" else "换号"}：结束上一账号的进程级会话")
             instantSession.end()
+            instantTitleFill.endAccount()
             duplicateSession.end()
             canonicalNamingSession.end()
             archiveExtractSession.clear()
