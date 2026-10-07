@@ -548,8 +548,12 @@ tasks.register<UpdateArtifactsTask>("packageReleaseUpdate") {
     version = desktopPackageVersion
     artifactPrefix = "piko-$hostPlatform-$desktopPackageVersion"
     outputDir = layout.buildDirectory.dir("compose/binaries/main-release/update")
-    // 放着旧版 files.json 的目录，CI 由 .github/scripts/update-bases.sh 取来
-    providers.gradleProperty("pikoUpdateBases").orNull?.takeIf { it.isNotBlank() }?.let { dir -> baseManifests.from(fileTree(dir) { include("*-files.json") }) }
+    // 放着旧版 files.json 的目录，CI 由 .github/scripts/update-bases.sh 取来。相对路径按仓库根目录算，与在根目录跑 gradlew
+    // 时的写法一致；按本模块算的话 test.yml 传的 smoke-bases 落到 desktopApp 下，一份清单都没取到，补丁包照样打出来
+    providers.gradleProperty("pikoUpdateBases").orNull?.takeIf { it.isNotBlank() }?.let { dir ->
+        baseManifests.from(rootProject.fileTree(dir) { include("*-files.json") })
+        doFirst { check(!baseManifests.isEmpty) { "pikoUpdateBases=$dir 下没有 *-files.json" } }
+    }
 }
 // compose 的 run 任务在 afterEvaluate 里重写 jvmArgs，会盖掉上面的配置，
 // 这里后注册、后执行，把 flag 补回去（注册顺序：插件先、脚本后）。
