@@ -31,7 +31,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberBottomSheetScaffoldState
 import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.saveable.LocalSaveableStateRegistry
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -48,6 +50,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.ui.components.TooltipIconButton
 import kotlinx.coroutines.flow.first
+
+/** 在 [block] 里 rememberSaveable 退化成 remember：不往页面的保存表里存，也不从中恢复。 */
+@Composable
+private fun <T> withoutSavedState(block: @Composable () -> T): T {
+    var result: T? = null
+    CompositionLocalProvider(LocalSaveableStateRegistry provides null) { result = block() }
+    @Suppress("UNCHECKED_CAST")
+    return result as T
+}
 
 /**
  * 窄窗口网盘页底部那一块 sheet 里眼下放的东西：查找重复或添加链接，同一时刻只有一件（见 workbench/TaskSlot）。
@@ -72,10 +83,14 @@ internal class TaskSheetModel(
  */
 @Composable
 internal fun TaskSheetScaffold(model: TaskSheetModel?, content: @Composable () -> Unit) {
-    val sheetState = rememberBottomSheetState(
-        initialValue = if (model?.expanded == true) SheetValue.Expanded else SheetValue.PartiallyExpanded,
-        enabledValues = setOf(SheetValue.PartiallyExpanded, SheetValue.Expanded),
-    )
+    // 不存不恢复：停在哪一档由下面按 model.expanded 推，用不着存下来的。存下来反而会出事：网盘页离开组合再回来时
+    // （桌面从设置返回即是）库按存下的值重建，存下的是不在 enabledValues 里的档位时当场抛异常，整个窗口崩掉（2026-10-08）
+    val sheetState = withoutSavedState {
+        rememberBottomSheetState(
+            initialValue = if (model?.expanded == true) SheetValue.Expanded else SheetValue.PartiallyExpanded,
+            enabledValues = setOf(SheetValue.PartiallyExpanded, SheetValue.Expanded),
+        )
+    }
     val scaffoldState = rememberBottomSheetScaffoldState(bottomSheetState = sheetState)
     val density = LocalDensity.current
     var headerHeight by remember { mutableIntStateOf(0) }
