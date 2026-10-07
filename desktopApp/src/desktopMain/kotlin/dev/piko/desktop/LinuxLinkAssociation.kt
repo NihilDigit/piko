@@ -24,6 +24,9 @@ internal object LinuxLinkAssociation : LinkAssociation {
     private val MIME_TYPES = listOf("x-scheme-handler/magnet", "application/x-bittorrent")
     private const val DESKTOP_FILE = "${LinuxDesktop.APP_ID}.desktop"
 
+    // 桌面项规范里 Exec 参数须加引号的字符
+    private const val EXEC_RESERVED = " \t\n\"'\\><~|&;$*?#()`"
+
     override val needsSystemConfirmation: Boolean = false
 
     // 删掉自己写的 .desktop 与 mimeapps.list 里指向它的几行，系统就回到用户原先的选择或没有默认
@@ -110,10 +113,17 @@ internal object LinuxLinkAssociation : LinkAssociation {
     """.trimIndent()
 
     /**
-     * Exec 里的一个参数。按桌面项规范加双引号，引号里的 "、`、$、\ 前加反斜杠；键值本身又把反斜杠当转义，
-     * 所以反斜杠要再翻一倍。% 写成 %%，免得被当成域代码。
+     * Exec 里的一个参数。% 一律写成 %%，免得被当成域代码。
+     *
+     * 只在含保留字符时才加双引号：没有识别出桌面环境时（i3、sway、Hyprland 一类窗口管理器，或 CI 的 xvfb），
+     * xdg-open 自己解析 Exec，取第一个词时不认引号（xdg-utils 1.1.3 与 1.2.1 相同），带引号的路径找不到可执行文件，
+     * 1.1.3 执行空命令名后报 Permission denied，1.2.1 跳过这一项。GNOME、KDE 等交给 gio、kde-open，两种写法都认。
+     * 路径含空格时只能加引号，那种环境下仍打不开，规范里没有不加引号的转义写法。
+     *
+     * 加引号时，引号里的 "、`、$、\ 前加反斜杠；键值本身又把反斜杠当转义，所以反斜杠要再翻一倍。
      */
     private fun execArgument(path: String): String {
+        if (path.none { it in EXEC_RESERVED }) return path.replace("%", "%%")
         val quoted = buildString {
             for (c in path) {
                 if (c in "\"`$\\") append('\\')

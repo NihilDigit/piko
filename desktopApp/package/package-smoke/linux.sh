@@ -114,7 +114,7 @@ sleep 15
 before="$(incoming_links magnet)"
 $open_cmd 'magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=smoke'
 wait_incoming magnet "$before" 'the magnet scheme'
-# 最小的种子：info 里只有一个 1 字节的文件，Piko 在本地算 infohash 换成磁力链接。目录名带空格，验 Exec 的引号
+# 最小的种子：info 里只有一个 1 字节的文件，Piko 在本地算 infohash 换成磁力链接。目录名带空格，验参数原样交到 Piko
 mkdir -p "$work/with space"
 torrent="$work/with space/smoke.torrent"
 { printf 'd4:infod6:lengthi1e4:name9:smoke.bin12:piece lengthi16384e6:pieces20:'; head -c 20 /dev/zero; printf 'ee'; } > "$torrent"
