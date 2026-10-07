@@ -129,6 +129,29 @@ TopAppBar 先量动作、标题拿剩下的，桌面窄窗口加上窗口按钮�
   两者外壳同为 `screens/drive/FloatingPanel.kt`，与信息流可同时开着；两块浮窗最近碰过的在上面。目录图停在右上角、可改大小，不钉住时收成贴边的把手；
   属性卡片出现在触发它的地方，大小随内容、不给改，见 `screens/drive/CLAUDE.md`。
 
+## 设置页
+
+设置项全在 `screens/settings/SettingsScreen.kt`，行、组与对话框的外壳在同目录的 `SettingsLayout.kt`。加设置项照下面做。
+
+- 分类（`SettingsSection`）按用户要做的事分：账号、外观、浏览与播放、保存与命名、下载与传输、网络、同步与数据、关于。
+  账号与关于只在桌面，移动端在「我的」页。新项先归进已有的一类，不为一两项另开一类；一类里不止一组时才给组标题。
+  每类都有类标题，两端、各宽度的层级相同，不在窄窗口省掉类标题、改由组标题兼任（ux-review L9）。
+- 行一律用 `SettingsRow` 或其包装 `SettingsSwitchRow`、`SettingsNavigationRow`，放进 `SettingsGroup`；不是标准行的一块
+  （账号卡片、关于卡片、WebDAV 的应用）用 `SettingsCard`。不要再用 `SegmentedListItem` 或自己拼 Surface：外侧圆角由组裁出，
+  行只画内侧小圆角，不逐行传位置，单项组与多项组的圆角因此一致（M14）。
+- 对齐：前导图标与标题首行垂直居中，有说明时不随说明下移；行尾控件对标题与说明整块居中；下方附加控件（分段按钮、色块）
+  左缘与标题文字齐。尺寸按交互模型取（`settingsStyle()`）：桌面照 Windows 设置页的卡片，每项一张 8dp 圆角的卡片、间距 4dp、
+  20dp 图标配 14sp 标题、行高 64dp；移动端照 M3 分段列表，外侧 16dp、内侧 4dp、间距 2dp、24dp 图标配 16sp 标题、行高至少 56dp。
+- 行尾：开关；去下一页画箭头；弹对话框或当场执行的不画；动作用 `SettingsRowButton`（tonal 或描边），不用文字按钮，
+  文字按钮禁用时只是一行灰字，看不出是按钮。行禁用时标题、图标与控件淡去，说明照常显示，写明为什么不可用。
+- 选择：二三选一用 `SettingsSegmentedChoice` 放在行尾，手机竖握放不下时挪到标题下方；选项多的用 `SettingsChoiceDialog`
+  加 `SettingsChoiceOption`，点选即生效，只有一个「关闭」。要填写的用 `SettingsInputDialog`（「取消」「保存」），
+  输入框用 `PikoTextField`（M2、M3）。
+- 依赖：依赖同组上一行开关的用 `DependentRow`，关着时收起；依赖别的类里的开关时留着并禁用，说明写「需先开启……」，
+  收起的话人找不到它去了哪。
+- 桌面目录在设置页宽到 900dp 时出现，平板与手机没有。亮哪一类由 `activeSettingsSection` 定：点了的一类在滚动途中与停下后都亮，
+  滚到底亮最后一类（末尾几类矮，起点到不了视口顶端，M13），测试在 `ActiveSettingsSectionTest`。
+
 ## 鼠标与键盘
 
 条目右键弹出与操作面板相同的菜单（`ContextMenuArea`）；右键点在几项选中里的一项上时菜单作用于全部选中的，照资源管理器。

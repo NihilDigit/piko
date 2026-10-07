@@ -9,7 +9,7 @@ Piko 是 PikPak 的第三方跨平台客户端。Android、Windows、macOS 与 L
 
 | 文件 | 内容 |
 | --- | --- |
-| `ui/CLAUDE.md` | 响应式布局、导航与侧边栏、外框与标题栏、面板、图标、鼠标与键盘、命令面板、动效与减少动画 |
+| `ui/CLAUDE.md` | 响应式布局、导航与侧边栏、外框与标题栏、面板、图标、设置页的分类与行组件、鼠标与键盘、命令面板、动效与减少动画 |
 | `ui/.../screens/drive/CLAUDE.md` | 网盘页：库、命令栏、地址栏、详情栏、选中与框选、拖放、键位 |
 | `ui/.../screens/clips/CLAUDE.md` | 信息流：范围、挂起与继续、挑段先后、取流调度 |
 | `desktopApp/CLAUDE.md` | 桌面端：界面库版本、release 与 AOT、原生库、显卡失效、弹层崩溃、标题栏、触摸、文件框、macOS、Linux |
