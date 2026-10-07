@@ -148,7 +148,7 @@ class FolderLocationSmokeTest {
         val anime = server.addFolder("动画")
         val repo = PikoDriveRepository(server.provider(), MemoryPreferences())
         var searching = true
-        repo.duplicatesTabHeld = { searching }
+        repo.sessionTabHeld = { searching }
         val duplicates = repo.openTab(listOf(DriveLibrary.DUPLICATES.crumb))
 
         // 查重还在：往别处走是另开一个标签，查重标签原样留着

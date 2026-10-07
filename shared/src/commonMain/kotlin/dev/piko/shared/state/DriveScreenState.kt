@@ -27,7 +27,6 @@ import androidx.compose.runtime.snapshotFlow
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.data.ChildFile
 import dev.piko.shared.data.DriveLibrary
-import dev.piko.shared.data.readableSize
 import dev.piko.shared.data.library
 import dev.piko.shared.log.PikoLog
 import io.github.nihildigit.pikpak.DriveEvent
@@ -108,8 +107,11 @@ class DriveScreenState(
     private val driveRepo: PikoDriveRepository,
     private val preferences: PikoUserPreferences,
     private val scope: CoroutineScope,
-    /** 「查找重复」这个位置列的内容，见 [DriveLibrary.DUPLICATES]。为 null 时那里是空的。 */
-    private val duplicates: DuplicateSession? = null,
+    /**
+     * 会话位置（查找重复、按番号规范命名，见 [DriveLibrary.isSession]）眼下列的内容，会话没开着时为 null，那里是空的。
+     * 读的是会话的 Compose 状态，结果变了列表跟着变。
+     */
+    private val sessionListing: (DriveLibrary) -> SessionListing? = { null },
     /** 把压缩包当文件夹看，见 [ArchiveLocation]。为 null 时进不了压缩包。 */
     private val archives: ArchiveBrowser? = null,
     initialSortOrder: PikoFileSortOrder = PikoFileSortOrder.TIME_DESC,
@@ -280,7 +282,7 @@ class DriveScreenState(
         when {
             filter != null -> searchedFiles.filter { !it.isFolder && it.fileCategory() == filter }.map { DriveListItem.File(it, null) }
             isGlobalSearchActive || searchQuery.isNotBlank() -> searchedFiles.map { DriveListItem.File(it, null) }
-            libraryView == DriveLibrary.DUPLICATES -> duplicateItems { blockId -> isDuplicateGroupExpanded(blockId) }
+            libraryView?.isSession == true -> sessionItems { blockId -> isSessionGroupExpanded(blockId) }
             // 库里的条目散在全盘各处，按作品与分区归拢的是一个目录里的东西，这里照原来的先后平铺；
             // 压缩包里的也平铺、不折叠：在包里多半是挑要解压的几项，折起来的次要文件正是要挑的一部分
             structure == null || isVirtualPlace -> files.map { DriveListItem.File(it, null) }
@@ -307,7 +309,7 @@ class DriveScreenState(
         val structure = currentAnalysis
         val rows = when {
             isStructured && structure != null -> buildDriveItems(files, structure, isFoldingActive && !showAllFilesTemporarily) { true }
-            !isSearching && libraryView == DriveLibrary.DUPLICATES -> duplicateItems { true }
+            !isSearching && libraryView?.isSession == true -> sessionItems { true }
             else -> displayItems
         }
         rows.filterIsInstance<DriveListItem.File>().filterNot { isHiddenByThumbnails(it.file) }
@@ -396,12 +398,10 @@ class DriveScreenState(
                 onFolderChanged()
             }
         }
-        // 查重的结果随扫描、删除与撤销变化，不经 load：停在那个位置时跟着重画
-        if (duplicates != null) {
-            scope.launch {
-                snapshotFlow { duplicates.state.let { it to it?.report to it?.phase } }.collect {
-                    if (libraryView == DriveLibrary.DUPLICATES) showDuplicates()
-                }
+        // 查重与规范命名的结果随扫描、删除、改名与撤销变化，不经 load：停在那个位置时跟着重画
+        scope.launch {
+            snapshotFlow { libraryView?.takeIf { it.isSession }?.let { it to sessionListing(it)?.files } }.collect { shown ->
+                if (shown != null) showSession(shown.first)
             }
         }
         // 同理，高亮请求随时可能来，不只在网盘页建出来的那一刻
@@ -451,9 +451,9 @@ class DriveScreenState(
         }
     }
 
-    /** 眼前这一页受不受 [change] 影响。库是从全盘挑出来的，哪里改了都可能有它；查重与压缩包里的不经网络重列。 */
+    /** 眼前这一页受不受 [change] 影响。库是从全盘挑出来的，哪里改了都可能有它；会话位置与压缩包里的不经网络重列。 */
     private fun isAffectedBy(change: DriveChange): Boolean = when {
-        libraryView == DriveLibrary.DUPLICATES || archiveView != null -> false
+        libraryView?.isSession == true || archiveView != null -> false
         libraryView != null -> true
         else -> change.affects(activeFolderId)
     }
@@ -562,10 +562,10 @@ class DriveScreenState(
     private val libraryListings = mutableMapOf<DriveLibrary, LibraryListing>()
 
     private fun loadLibrary(library: DriveLibrary, useCache: Boolean, showRefreshing: Boolean) {
-        if (library == DriveLibrary.DUPLICATES) {
+        if (library.isSession) {
             loadJob?.cancel()
             isRefreshing = false
-            showDuplicates()
+            showSession(library)
             return
         }
         val cached = if (useCache) libraryListings[library] else null
@@ -738,73 +738,35 @@ class DriveScreenState(
         DriveLibrary.TRASH -> driveRepo.trashFiles().map { LibraryListing(it, emptyMap()) }
         DriveLibrary.RECENT -> driveRepo.recentlyAdded().map(::eventListing)
         DriveLibrary.HISTORY -> driveRepo.playHistory().map(::eventListing)
-        DriveLibrary.DUPLICATES -> error("查找重复的内容来自 DuplicateSession，不经网络")
+        DriveLibrary.DUPLICATES, DriveLibrary.CANONICAL_NAMES -> error("${library.title}的内容来自会话，不经网络")
     }
 
-    // region 查找重复
+    // region 会话位置：查找重复、按番号规范命名
 
-    /** 查重结果换了（扫完、移走了文件、撤销）就重画。files 只放去重后的文件，供按 ID 找回与空态判断。 */
-    private fun showDuplicates() {
-        val finder = duplicates?.state
-        val report = finder?.report ?: DuplicateReport.EMPTY
-        files = (report.identical + report.versions)
-            .flatMap { group -> group.rows.mapNotNull { finder?.fileStat(it.file.id) } }
-            .distinctBy { it.id }
+    /** 会话的结果换了（扫完、移走或改了名、撤销）就重画。files 只放去重后的文件，供按 ID 找回与空态判断。 */
+    private fun showSession(library: DriveLibrary) {
+        files = sessionListing(library)?.files.orEmpty()
         libraryEvents = emptyMap()
-        loadedFolderId = DriveLibrary.DUPLICATES.id
+        loadedFolderId = library.id
         loadError = null
         isLoading = false
     }
 
     /**
-     * 选中查重建议移走的那些，之后就是普通的多选与删除。不在进来时自动选上：曾经那样做，一进来就在多选里，
+     * 选中 [ids]（查重建议移走的、规范命名里能改的），之后就是普通的多选。不在进来时自动选上：曾经那样做，一进来就在多选里，
      * 单击变成勾选、播不了也看不了预览，点一下空白处整组勾选又没了。
      */
-    fun selectSuggestedDuplicates() {
-        val suggested = duplicates?.state?.suggestedIds.orEmpty()
-        if (suggested.isEmpty()) return
+    fun selectOnly(ids: Set<String>) {
+        if (ids.isEmpty()) return
         exitSelection()
         isSelectionMode = true
-        selectedFileIds.addAll(suggested)
+        selectedFileIds.addAll(ids)
     }
 
-    private fun isDuplicateGroupExpanded(blockId: String): Boolean = DriveViewMemory.expanded[expandKey(blockId)] ?: true
+    private fun isSessionGroupExpanded(blockId: String): Boolean = DriveViewMemory.expanded[expandKey(blockId)] ?: true
 
-    /**
-     * 每组一个分区标题，下面是组里的各份。同一个文件可能既在完全相同的组里、又代表版本组里的一行，
-     * 列表项的 key 因此带上组；选中仍按文件，两处是同一个勾，见 [fileRows]。
-     */
-    private fun duplicateItems(isExpanded: (blockId: String) -> Boolean): List<DriveListItem> {
-        val finder = duplicates?.state ?: return emptyList()
-        val report = finder.report
-        return buildList {
-            for (group in report.identical + report.versions) {
-                val blockId = "dup:${group.kind}:${group.key}"
-                val expanded = isExpanded(blockId)
-                add(DriveListItem.SectionHeader(blockId, blockId, duplicateLabel(group), group.title, expanded))
-                if (!expanded) continue
-                for (row in group.rows) {
-                    val file = finder.fileStat(row.file.id) ?: continue
-                    add(DriveListItem.File(file, duplicateView(file, row, group), key = "$blockId/${file.id}"))
-                }
-            }
-        }
-    }
-
-    private fun duplicateLabel(group: DuplicateGroup): String = when (group.kind) {
-        DuplicateKind.IDENTICAL -> "${group.title}：${group.rows.size} 份相同，可腾出 ${readableSize(group.reclaimableBytes)}"
-        DuplicateKind.VERSIONS -> "${group.title}：${group.rows.size} 个版本，共 ${readableSize(group.totalBytes)}"
-    }
-
-    // 标签写这一份与同组其余几份的区别：字幕组、分辨率这些，以及默认留哪一份
-    private fun duplicateView(file: FileStat, row: DuplicateRow, group: DuplicateGroup): DriveFileView {
-        val tags = buildList {
-            if (file.id == group.keptId) add("建议保留")
-            addAll(row.details)
-            if (row.sameCopies > 0) add("另有 ${row.sameCopies} 份相同")
-        }
-        return DriveFileView(title = file.name, tags = tags, heading = file.name, fields = emptyList())
-    }
+    private fun sessionItems(isExpanded: (blockId: String) -> Boolean): List<DriveListItem> =
+        libraryView?.let(sessionListing)?.items(isExpanded).orEmpty()
 
     // endregion
 

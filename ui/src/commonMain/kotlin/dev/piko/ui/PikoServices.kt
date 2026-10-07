@@ -26,6 +26,8 @@ import dev.piko.shared.state.FolderVaultSession
 import dev.piko.shared.state.ClipFeedSession
 import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.DuplicateSession
+import dev.piko.shared.state.CanonicalNamingState
+import dev.piko.shared.state.FolderTaskSession
 import dev.piko.shared.state.InstantSaveRecords
 import dev.piko.shared.state.InstantSession
 import dev.piko.shared.state.InstantSheetState
@@ -136,6 +138,14 @@ class PikoServices(
         )
     }
 
+    /** 按番号规范命名一个文件夹，与查找重复同一种会话，见 CanonicalNamingState。 */
+    val canonicalNamingSession: FolderTaskSession<CanonicalNamingState> by lazy {
+        FolderTaskSession(
+            newScope = { CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate) },
+            newState = { scope, root -> CanonicalNamingState(clientManager, driveRepository, metaTube, scope, root) },
+        )
+    }
+
     // 主线程且与进程同寿：会话在这个作用域上改 Compose 状态，离开网盘页后解压仍要继续
     val archiveExtractSession: ArchiveExtractSession by lazy {
         ArchiveExtractSession(
@@ -175,16 +185,17 @@ class PikoServices(
     }
 
     init {
-        // 未完成的添加链接、查重、解压、信息流与归档都属于上一个账号：保存目标、文件 ID 都是那边的。
+        // 未完成的添加链接、查重、规范命名、解压、信息流与归档都属于上一个账号：保存目标、文件 ID 都是那边的。
         // 退出到登录页也算，同一账号登回来不算
         backgroundScope.launch {
             var previous: String? = null
             clientManager.currentClient.map { it?.account }.distinctUntilChanged().collect { account ->
                 if (previous != null && account != previous) {
-                    PikoLog.i(TAG, "${if (account == null) "退出登录" else "换号"}：结束上一账号的添加链接、查重、解压、信息流与归档会话")
+                    PikoLog.i(TAG, "${if (account == null) "退出登录" else "换号"}：结束上一账号的添加链接、查重、规范命名、解压、信息流与归档会话")
                     withContext(Dispatchers.Main) {
                         instantSession.end()
                         duplicateSession.end()
+                        canonicalNamingSession.end()
                         archiveExtractSession.clear()
                         archiveBrowser.clear()
                         clipFeedSession.close()

@@ -34,8 +34,8 @@ class DuplicateFinderState(
     private val clients: PikoClientProvider,
     private val driveRepo: PikoDriveRepository,
     private val scope: CoroutineScope,
-    val root: PikoPathBreadcrumb,
-) {
+    override val root: PikoPathBreadcrumb,
+) : FolderTask {
     enum class Phase { SCANNING, ANALYZING, DONE, FAILED }
 
     var phase by mutableStateOf(Phase.SCANNING)

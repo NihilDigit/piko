@@ -372,11 +372,11 @@ open class PikoDriveRepository(
     }
 
     /**
-     * 活动标签是查重标签、查重还没结束时为真，由主界面装上。这时换栈改为另开一个普通标签：
-     * 查重标签只是一个位置，改写它，查重会话还在、标签却没了，成了关不掉的孤儿。
-     * 只在有标签栏时为真；窄窗口里离开结果页先由 [leaveGuard] 确认结束查重，再走到这里。
+     * 活动标签停在会话的位置（查重、规范命名，见 [DriveLibrary.isSession]）、那个会话还没结束时为真，由主界面装上。
+     * 这时换栈改为另开一个普通标签：会话标签只是一个位置，改写它，会话还在、标签却没了，成了关不掉的孤儿。
+     * 只在有标签栏时为真；窄窗口里离开结果页先由 [leaveGuard] 确认结束会话，再走到这里。
      */
-    var duplicatesTabHeld: () -> Boolean = { false }
+    var sessionTabHeld: (DriveLibrary) -> Boolean = { false }
 
     /** 把栈换成 [requested]，换了才把原来的位置记进后退、清掉前进。 */
     private fun moveTo(requested: List<PikoPathBreadcrumb>) {
@@ -385,7 +385,8 @@ open class PikoDriveRepository(
         val previous = _folderStackFlow.value
         if (next == previous) return
         if (!leaveAllowed(next) { moveTo(requested) }) return
-        if (previous.library == DriveLibrary.DUPLICATES && next.library != DriveLibrary.DUPLICATES && duplicatesTabHeld()) {
+        val session = previous.library?.takeIf { it.isSession }
+        if (session != null && next.library != session && sessionTabHeld(session)) {
             openTab(next)
             return
         }
@@ -1361,8 +1362,8 @@ private val tabsJson = Json { ignoreUnknownKeys = true }
 data class DriveTab(val id: Long, val stack: List<PikoPathBreadcrumb>, val history: FolderHistory = FolderHistory()) {
     val title: String get() = stack.lastOrNull()?.name.orEmpty()
 
-    /** 停在查重结果里。结果只活在这一次会话里，标签随它关掉。 */
-    val isDuplicates: Boolean get() = stack.firstOrNull()?.id == DriveLibrary.DUPLICATES.id
+    /** 停在会话的位置里（查重结果、规范命名的建议），见 [DriveLibrary.isSession]。结果只活在会话里，标签随它关掉。 */
+    val session: DriveLibrary? get() = stack.library?.takeIf { it.isSession }
 }
 
 /**

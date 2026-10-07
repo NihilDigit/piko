@@ -36,6 +36,13 @@
   「选中建议移走的」是这一页的主操作（`PrimaryAction`）。不在进来时自动勾上：那样一进来就在多选里，单击变成勾选、播不了，点空白处勾选又没了。勾选与
   移入回收站就是网盘页的多选与删除。结果是扫描那一刻的快照，`DuplicateFinderState` 订阅撤销日志，移入回收站的拿掉、
   撤销回来的补回，再重新分组。离开后从查重标签回来；没有标签栏时离开即结束（先确认）。
+- 按番号规范命名一个文件夹（`DriveLibrary.CANONICAL_NAMES`）与查找重复是同一种形态，规则与理由见 `docs/development/av-naming.md`：
+  进程级会话（`FolderTaskSession`，状态 `CanonicalNamingState`），宽窗口是后台标签，窄窗口是独占 sheet 加结果页，
+  离开那棵树先确认。两者共用的部分只写一份：位置的内容经 `SessionListing` 交给 `DriveScreenState`（`DuplicateListing`、
+  `CanonicalListing`），会话标签经 `DriveTab.session` 认、由 `PikoDriveRepository.sessionTabHeld` 占住，标签上的样子是
+  `SessionTab`，窄窗口的锚点与 sheet 的档位是 `TaskSlot.placeTaskAnchor`、`placeTaskExpanded`（同一时刻只有一件，见 `Task.followsPlace`）。
+  再加这类位置照这几处接上，不要另写一套。结果页的行是真实条目，行标题换成规范名（`DriveFileView.title`），
+  原名与位置在行下面那一栏；主操作在多选里也在（「应用所选」），不像查重那样多选时让给命令栏。
 - 收起而没做完的东西不再收进命令栏右端的「收着的东西」菜单（已删）：那是一张竖排菜单，点一项就跳走，看着像操作、实为导航。
   现在添加链接收起后，宽窗口是右下角的浮动卡片（`FloatingTasks`），更窄时是底部 sheet 停在部分展开那一档；下载片段不能收起（关掉即放弃，改过区间的先确认），
   挂起的信息流由命令栏「信息流」按钮上的小圆点提示。

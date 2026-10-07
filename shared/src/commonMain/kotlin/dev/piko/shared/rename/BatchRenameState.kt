@@ -116,7 +116,7 @@ class BatchRenameState(
         metaTubeProgress = 0 to infos.distinctBy { it.code }.size
         metaTubeJob = scope.launch {
             try {
-                val result = service.titles(infos) { done, total -> metaTubeProgress = done to total }
+                val result = service.titles(infos, onProgress = { done, total -> metaTubeProgress = done to total })
                 metaTubeTitles = metaTubeTitles + result.titles
                 metaTubeFailed = result.failed
             } finally {

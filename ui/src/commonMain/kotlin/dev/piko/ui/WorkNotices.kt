@@ -8,6 +8,8 @@ import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.state.ArchiveExtractSession
 import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.DuplicateSession
+import dev.piko.shared.state.CanonicalNamingState
+import dev.piko.shared.state.FolderTaskSession
 import dev.piko.shared.upload.PikoUploadCoordinator
 import dev.piko.shared.upload.UploadStatus
 import dev.piko.shared.upload.UploadTask
@@ -25,7 +27,7 @@ import kotlin.time.Clock
 class WorkNotice(val title: String, val message: String)
 
 /**
- * 下载、上传、解压、查找重复、归档与恢复的结局汇成一条流。何时呈现由各端决定：应用或窗口在前台时，
+ * 下载、上传、解压、查找重复、按番号规范命名、归档与恢复的结局汇成一条流。何时呈现由各端决定：应用或窗口在前台时，
  * 列表与 Snackbar 已经说明了，通常不必再发。只报订阅之后结束的工作，启动时读回的旧记录不报。
  */
 fun PikoServices.workNotices(): Flow<WorkNotice> = merge(
@@ -33,6 +35,7 @@ fun PikoServices.workNotices(): Flow<WorkNotice> = merge(
     uploadNotices(uploadManager, clientManager),
     archiveExtractSession.outcomes.map { WorkNotice(if (it.succeeded) "解压完成" else "解压失败", it.message) },
     duplicateNotices(duplicateSession),
+    canonicalNamingNotices(canonicalNamingSession),
     folderVaultSession.outcomes.map { WorkNotice(it.title, it.message) },
 )
 
@@ -142,6 +145,22 @@ private fun duplicateNotices(session: DuplicateSession): Flow<WorkNotice> =
         flow {
             snapshotFlow { finder.phase }.first { it == DuplicateFinderState.Phase.DONE || it == DuplicateFinderState.Phase.FAILED }
             emit(duplicateSummary(finder))
+        }
+    }
+
+/** 按番号规范命名的扫描，同查找重复，扫完报一次。 */
+private fun canonicalNamingNotices(session: FolderTaskSession<CanonicalNamingState>): Flow<WorkNotice> =
+    snapshotFlow { session.state }.filterNotNull().flatMapLatest { naming ->
+        flow {
+            snapshotFlow { naming.phase }.first { it == CanonicalNamingState.Phase.DONE || it == CanonicalNamingState.Phase.FAILED }
+            emit(
+                when {
+                    naming.phase == CanonicalNamingState.Phase.FAILED ->
+                        WorkNotice("按番号规范命名失败", "「${naming.root.name}」：${naming.errorMessage ?: "未知错误"}")
+                    naming.suggestionCount == 0 -> WorkNotice("按番号规范命名", "「${naming.root.name}」中没有需要改名的项")
+                    else -> WorkNotice("按番号规范命名", "「${naming.root.name}」中有 ${naming.suggestionCount} 项可改名")
+                },
+            )
         }
     }
 

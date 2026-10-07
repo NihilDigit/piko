@@ -61,7 +61,12 @@ class MetaTubeService(
      * 查一批番号的片名。没配置时返回空表。[onProgress] 每查完一个回调一次（已完成数，总数）。
      * 并发取得保守：每次搜索服务端都要去外部站点查，压得太多只会排队超时。
      */
-    suspend fun titles(infos: List<AvInfo>, onProgress: (Int, Int) -> Unit = { _, _ -> }): MetaTubeTitles {
+    suspend fun titles(
+        infos: List<AvInfo>,
+        onProgress: (Int, Int) -> Unit = { _, _ -> },
+        /** 每查到一个片名回调一次（番号，片名）。调用方中途取消时手上仍有已查到的这些。 */
+        onFound: (String, String) -> Unit = { _, _ -> },
+    ): MetaTubeTitles {
         val client = client() ?: return MetaTubeTitles(emptyMap(), 0)
         val unique = infos.distinctBy { it.code }
         val base = preferences.metaTubeUrlFlow.first().trim()
@@ -78,6 +83,7 @@ class MetaTubeService(
                     cacheLock.withLock {
                         done++
                         if (result.isFailure) failed++
+                        result.getOrNull()?.let { onFound(info.code, it) }
                         onProgress(done, unique.size)
                     }
                     result.getOrNull()?.let { info.code to it }

@@ -43,7 +43,7 @@ class MetaTubeLiveProbe {
         val prefs = MemoryPreferences().apply { metaTubeUrlFlow.value = url; metaTubeTokenFlow.value = token }
         val service = MetaTubeService(prefs) { http }
         val names = listOf("ssis00001hhb.mp4", "SSIS-001-C.mp4", "fc2-ppv-1234567.mp4", "1pon-092415_001.mp4", "NOPE-99999.mp4")
-        val titles = service.titles(names.map { parseMediaName(it).av!! }) { done, total -> println("进度 $done/$total") }
+        val titles = service.titles(names.map { parseMediaName(it).av!! }, onProgress = { done, total -> println("进度 $done/$total") })
         println("片名：$titles")
         println("出错的请求：" + MetaTubeClient(http, url, token, timeoutMillis = 120_000).movie("NO_SUCH_PROVIDER", "x"))
     }

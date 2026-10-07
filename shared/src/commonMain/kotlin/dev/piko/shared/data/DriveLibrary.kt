@@ -19,12 +19,24 @@ enum class DriveLibrary(val id: String, val title: String) {
      * 不在侧边栏里，由「查找重复」进来。做成网盘页的位置而不是面板：要挑留哪一份，得看得到缩略图与详情。
      */
     DUPLICATES("piko:duplicates", "查找重复"),
+
+    /**
+     * 按番号规范命名一个文件夹的改名建议，按作品分组，每行是一个要改名的文件或文件夹。内容来自进程级的会话，
+     * 与查找重复同一种形态：不在侧边栏里，由文件夹的「按番号规范命名」与命令面板进来。
+     */
+    CANONICAL_NAMES("piko:canonical-names", "按番号规范命名"),
     ;
 
     val crumb: PikoPathBreadcrumb get() = PikoPathBreadcrumb(id, title)
 
     /** 条目来自服务端的事件记录：能从列表里移除一条记录，文件本身不动。 */
     val isEventLog: Boolean get() = this == RECENT || this == HISTORY
+
+    /**
+     * 内容来自进程级的会话、不经网络（见 SessionListing）：有标签栏时开成会话占着的标签，关标签即结束会话；
+     * 窄窗口里离开即结束，先确认。
+     */
+    val isSession: Boolean get() = this == DUPLICATES || this == CANONICAL_NAMES
 
     companion object {
         fun of(id: String): DriveLibrary? = entries.firstOrNull { it.id == id }

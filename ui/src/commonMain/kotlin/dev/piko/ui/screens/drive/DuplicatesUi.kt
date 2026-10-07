@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.TaskAlt
 import androidx.compose.foundation.layout.widthIn
@@ -42,6 +43,17 @@ internal fun duplicateLocations(finder: DuplicateFinderState?): Map<String, Stri
         val location = if (folder.isEmpty()) finder.root.name else "${finder.root.name}/$folder"
         row.file.id to if (row.file.id in suggested) "$location，建议移走" else location
     }
+}
+
+/** 宽窗口里查重标签上的样子：扫描中转圈，悬停说明进度或结果。 */
+internal fun duplicatesTab(finder: DuplicateFinderState): SessionTab {
+    val groups = finder.report.identical.size + finder.report.versions.size
+    val tooltip = when {
+        finder.isScanning -> "正在查找重复文件，已扫描 ${finder.scannedFolders} 个文件夹。关闭标签页将结束查找"
+        groups == 0 -> "未发现重复文件。关闭标签页将结束查找"
+        else -> "发现 $groups 组重复文件。关闭标签页将结束查找"
+    }
+    return SessionTab("查重：${finder.root.name}", tooltip, busy = finder.isScanning, icon = Icons.Outlined.FileCopy)
 }
 
 /**

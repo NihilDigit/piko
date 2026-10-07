@@ -13,7 +13,7 @@ import dev.piko.ui.components.PikoDialog
 import dev.piko.ui.components.PikoDialogConfirm
 
 /**
- * 窄窗口里同一时刻只做一件占位置的事：查找重复、添加链接（网盘页底部那一块 sheet）与信息流的临时浏览（「继续刷」那一条）。
+ * 窄窗口里同一时刻只做一件占位置的事：查找重复、按番号规范命名、添加链接（网盘页底部那一块 sheet）与信息流的临时浏览（「继续刷」那一条）。
  * 宽窗口靠标签与浮动卡片能同时挂着几件；窄窗口只有栈导航，再开一件要先明确结束眼前这件，不静默叠加或替换。
  * 各入口经 [claim] 打开，有冲突时由主界面弹一次确认（[ClaimDialog]）。
  *
@@ -22,7 +22,12 @@ import dev.piko.ui.components.PikoDialogConfirm
  */
 @Stable
 class TaskSlot {
-    enum class Task { DUPLICATES, ADD_LINK, FEED }
+    enum class Task {
+        DUPLICATES, CANONICAL_NAMES, ADD_LINK, FEED;
+
+        /** 从一个文件夹起扫、结果在网盘页一个位置里看的任务：离开那棵树即结束，见 [allowsLeaving]。 */
+        val followsPlace: Boolean get() = this == DUPLICATES || this == CANONICAL_NAMES
+    }
 
     class Occupant(
         val task: Task,
@@ -46,16 +51,20 @@ class TaskSlot {
         private set
 
     /**
-     * 查找重复的 sheet 展开着没有。窄窗口里切到别的底部标签时网盘页离开组合，回来要还是原来那一档，所以记在这里。
+     * 查找重复或规范命名的 sheet 展开着没有（两者同一时刻只有一件，见 [Task.followsPlace]）。窄窗口里切到别的底部标签时
+     * 网盘页离开组合，回来要还是原来那一档，所以记在这里。
      * 添加链接的那一档是 InstantSession.isSheetOpen，宽窗口的侧边面板也认它，不另记。
      */
-    var duplicatesExpanded by mutableStateOf(true)
+    var placeTaskExpanded by mutableStateOf(true)
 
     /**
-     * 查找重复所在的位置：开始时的路径栈，进了结果页换成结果页。当前的栈以它开头就算还在（进起点的子文件夹不算离开），
+     * 查找重复或规范命名所在的位置：开始时的路径栈，进了结果页换成结果页。当前的栈以它开头就算还在（进起点的子文件夹不算离开），
      * 人往树外走之前先确认（[allowsLeaving]），换账号这类不是人走的照旧静默结束。为 null 时由主界面取当前的栈补上（从宽窗口缩过来的）。
      */
-    var duplicatesAnchor: List<PikoPathBreadcrumb>? = null
+    var placeTaskAnchor: List<PikoPathBreadcrumb>? = null
+
+    /** 眼下占着位置的那件（查找重复或规范命名），没有时为 null。 */
+    fun activePlaceTask(): Occupant? = occupants.firstOrNull { it.task.followsPlace && it.active() }
 
     /**
      * 打开一件事。[action] 接在对话框标题「结束…并」后面，[confirmLabel] 是确认按钮。
@@ -90,17 +99,17 @@ class TaskSlot {
     }
 
     /**
-     * 网盘的路径栈要换成 [next] 之前问一声（PikoDriveRepository.leaveGuard）。窄窗口里离开查找重复所在的那棵树会结束查找：
-     * 宽窗口里结束查找是关掉它的标签，一个显式的动作；窄窗口里离开是顺手的一下，所以先确认，把它变成显式的。
-     * 确认就结束查找并走完这一步（[retry]），取消就留在原地。返回 false 即拦下。
+     * 网盘的路径栈要换成 [next] 之前问一声（PikoDriveRepository.leaveGuard）。窄窗口里离开查找重复或规范命名所在的那棵树会结束它：
+     * 宽窗口里结束是关掉它的标签，一个显式的动作；窄窗口里离开是顺手的一下，所以先确认，把它变成显式的。
+     * 确认就结束并走完这一步（[retry]），取消就留在原地。返回 false 即拦下。
      */
     fun allowsLeaving(next: List<PikoPathBreadcrumb>, retry: () -> Unit): Boolean {
         if (!exclusive) return true
-        val anchor = duplicatesAnchor ?: return true
-        val duplicates = occupants.firstOrNull { it.task == Task.DUPLICATES }?.takeIf { it.active() } ?: return true
+        val anchor = placeTaskAnchor ?: return true
+        val task = activePlaceTask() ?: return true
         if (next.size >= anchor.size && next.take(anchor.size).map { it.id } == anchor.map { it.id }) return true
-        pending = Claim(title = "结束${duplicates.name}？", body = duplicates.loss, confirmLabel = "结束") {
-            duplicates.end()
+        pending = Claim(title = "结束${task.name}？", body = task.loss, confirmLabel = "结束") {
+            task.end()
             retry()
         }
         return false

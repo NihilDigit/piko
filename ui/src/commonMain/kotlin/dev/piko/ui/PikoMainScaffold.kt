@@ -641,35 +641,45 @@ fun PikoMainScaffold(
         taskSlot.exclusive = !desktop
         taskSlot.occupants = listOf(
             TaskSlot.Occupant(TaskSlot.Task.DUPLICATES, "查找重复", "扫描结果不会保存。", { services.duplicateSession.state != null }, services.duplicateSession::end),
+            TaskSlot.Occupant(
+                TaskSlot.Task.CANONICAL_NAMES, "按番号规范命名", "未应用的改名建议将被丢弃。",
+                { services.canonicalNamingSession.state != null }, services.canonicalNamingSession::end,
+            ),
             TaskSlot.Occupant(TaskSlot.Task.ADD_LINK, "添加链接", "尚未保存的链接将被丢弃。", { services.instantSession.state != null }, services.instantSession::end),
             TaskSlot.Occupant(TaskSlot.Task.FEED, "信息流", "再次打开时将从头开始。", { feedShownState == true && feedDetour != null }) { latestSetFeedShown(false) },
         )
     }
-    // 窄窗口里人往查找重复所在的那棵树外走（返回、面包屑、从别处跳进网盘、快速访问、「我的」里的库、命令面板）之前先确认，
+    // 窄窗口里人往查找重复或规范命名所在的那棵树外走（返回、面包屑、从别处跳进网盘、快速访问、「我的」里的库、命令面板）之前先确认，
     // 在仓库换栈之前拦下，见 TaskSlot.allowsLeaving。切到别的底部标签不改路径栈，不算离开
     DisposableEffect(taskSlot) {
         val driveRepo = services.driveRepository
         driveRepo.leaveGuard = PikoDriveRepository.LeaveGuard(taskSlot::allowsLeaving)
-        // 有标签栏时查重标签由查重会话占着，往别处走另开标签，见 PikoDriveRepository.duplicatesTabHeld
-        driveRepo.duplicatesTabHeld = { !taskSlot.exclusive && services.duplicateSession.state != null }
+        // 有标签栏时会话标签由会话占着，往别处走另开标签，见 PikoDriveRepository.sessionTabHeld
+        driveRepo.sessionTabHeld = { place ->
+            !taskSlot.exclusive && when (place) {
+                DriveLibrary.DUPLICATES -> services.duplicateSession.state != null
+                DriveLibrary.CANONICAL_NAMES -> services.canonicalNamingSession.state != null
+                else -> false
+            }
+        }
         onDispose {
             driveRepo.leaveGuard = null
-            driveRepo.duplicatesTabHeld = { false }
+            driveRepo.sessionTabHeld = { false }
         }
     }
     // 不经守卫的换栈（换账号、切标签、信息流的继续刷）离开了那棵树，静默结束。放在这里而不是网盘页：
     // 切走时网盘页不在组合里，路径栈照样会被改
     LaunchedEffect(taskSlot) {
-        snapshotFlow { Triple(services.duplicateSession.state, folderStack, taskSlot.exclusive) }
-            .collect { (finder, stack, exclusive) ->
-                // 宽窗口里查找重复在标签上，关标签即结束，不看位置。查找结束时不清锚点：换起点是先结束旧的、
-                // 再记下新锚点，这里晚一步看到「结束」会把新记的清掉；窄窗口里开始查找的入口都会重记
-                if (!exclusive) taskSlot.duplicatesAnchor = null
-                if (finder == null || !exclusive) return@collect
-                val anchor = taskSlot.duplicatesAnchor
+        snapshotFlow { Triple(taskSlot.activePlaceTask(), folderStack, taskSlot.exclusive) }
+            .collect { (task, stack, exclusive) ->
+                // 宽窗口里查找重复与规范命名在标签上，关标签即结束，不看位置。结束时不清锚点：换起点是先结束旧的、
+                // 再记下新锚点，这里晚一步看到「结束」会把新记的清掉；窄窗口里开始的入口都会重记
+                if (!exclusive) taskSlot.placeTaskAnchor = null
+                if (task == null || !exclusive) return@collect
+                val anchor = taskSlot.placeTaskAnchor
                 when {
-                    anchor == null -> taskSlot.duplicatesAnchor = stack
-                    stack.size < anchor.size || stack.take(anchor.size).map { it.id } != anchor.map { it.id } -> services.duplicateSession.end()
+                    anchor == null -> taskSlot.placeTaskAnchor = stack
+                    stack.size < anchor.size || stack.take(anchor.size).map { it.id } != anchor.map { it.id } -> task.end()
                 }
             }
     }

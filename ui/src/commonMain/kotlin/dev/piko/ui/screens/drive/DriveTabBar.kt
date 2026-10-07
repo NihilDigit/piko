@@ -21,7 +21,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.SwipeVertical
 import androidx.compose.material3.CircularProgressIndicator
@@ -55,7 +54,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.data.DriveTab
-import dev.piko.shared.state.DuplicateFinderState
+import androidx.compose.ui.graphics.vector.ImageVector
 import dev.piko.ui.components.IslandTab
 import dev.piko.ui.components.IslandTabBarHeight
 import androidx.compose.foundation.layout.Spacer
@@ -71,6 +70,12 @@ import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 
 /**
+ * 会话占着的标签（查找重复、按番号规范命名）上显示的东西：标题、悬停说明、是否还在扫（标签上转圈）与图标。
+ * 由网盘页按各自的会话给出，标签栏不认识具体是哪一种。
+ */
+internal class SessionTab(val title: String, val tooltip: String, val busy: Boolean, val icon: ImageVector)
+
+/**
  * 网盘页的标签栏，只在宽窗口、开了不止一个标签时出现。一个标签是一个位置，各有各的后退与前进：
  * 整理文件时开两三个，把东西拖到另一个标签上就是移进它停着的文件夹。
  * 点一下切过去，中键点它或点叉关掉；关闭按钮平时只在活动标签与鼠标停着的那个上出现，免得一排叉。
@@ -83,8 +88,8 @@ internal fun DriveTabBar(
     onClose: (Long) -> Unit,
     onNewTab: () -> Unit,
     newTabShortcut: String,
-    /** 查重标签上显示它的进度与结果。 */
-    duplicates: DuplicateFinderState?,
+    /** 会话标签上显示它的进度与结果；普通的标签为 null。 */
+    sessionTab: (DriveTab) -> SessionTab?,
     /** 从信息流跳出来浏览的那个标签，见 PikoMainScaffold 的 feedDetourTab。 */
     feedTabId: Long?,
     modifier: Modifier = Modifier,
@@ -121,7 +126,7 @@ internal fun DriveTabBar(
                 tabs.forEachIndexed { index, tab ->
                     TabChip(
                         tab,
-                        duplicates = duplicates.takeIf { tab.isDuplicates },
+                        session = sessionTab(tab),
                         fromFeed = tab.id == feedTabId,
                         active = index == activeIndex,
                         first = index == 0,
@@ -174,7 +179,7 @@ private class TabBarDragArea(private val caption: WindowCaption?) {
 @Composable
 private fun TabChip(
     tab: DriveTab,
-    duplicates: DuplicateFinderState?,
+    session: SessionTab?,
     fromFeed: Boolean,
     active: Boolean,
     first: Boolean,
@@ -186,17 +191,13 @@ private fun TabChip(
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
     val contentColor = if (active) colors.onSurface else colors.onSurfaceVariant
-    // 查重标签不接拖放：那里不是文件夹
-    val target = tab.stack.lastOrNull()?.takeIf { !tab.isDuplicates }
-    val title = if (duplicates != null) "查重：${duplicates.root.name}" else tab.title
+    // 会话标签不接拖放：那里不是文件夹
+    val target = tab.stack.lastOrNull()?.takeIf { tab.session == null }
+    val title = session?.title ?: tab.title
     val tooltip = when {
         fromFeed -> "从信息流打开：" + tab.stack.joinToString(" › ") { it.name }
-        duplicates == null -> tab.stack.joinToString(" › ") { it.name }
-        duplicates.isScanning -> "正在查找重复文件，已扫描 ${duplicates.scannedFolders} 个文件夹。关闭标签页将结束查找"
-        else -> {
-            val groups = duplicates.report.identical.size + duplicates.report.versions.size
-            (if (groups == 0) "未发现重复文件" else "发现 $groups 组重复文件") + "。关闭标签页将结束查找"
-        }
+        session != null -> session.tooltip
+        else -> tab.stack.joinToString(" › ") { it.name }
     }
     TooltipBox(
         positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
@@ -223,13 +224,13 @@ private fun TabChip(
                 },
         ) {
             Spacer(Modifier.width(10.dp))
-            if (duplicates?.isScanning == true) {
+            if (session?.busy == true) {
                 CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
             } else {
                 // 信息流的标签换成信息流的图标，用第三色：它停着的是普通文件夹，标题与别的标签没有分别
                 Icon(
                     when {
-                        tab.isDuplicates -> Icons.Outlined.FileCopy
+                        session != null -> session.icon
                         fromFeed -> Icons.Outlined.SwipeVertical
                         else -> Icons.Outlined.Folder
                     },

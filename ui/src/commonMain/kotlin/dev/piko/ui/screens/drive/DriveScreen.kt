@@ -153,7 +153,10 @@ import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.media.proxy.openForExternalPlayer
 import dev.piko.shared.state.DriveScreenState
+import dev.piko.shared.state.CanonicalListing
+import dev.piko.shared.state.CanonicalNamingState
 import dev.piko.shared.state.DuplicateFinderState
+import dev.piko.shared.state.DuplicateListing
 import dev.piko.shared.state.InstantSaveOutcome
 import dev.piko.shared.upload.UploadSelection
 import dev.piko.shared.upload.isUploading
@@ -268,6 +271,7 @@ fun DriveScreen(
     val instantRepo = LocalPikoServices.current.instantMagnetRepository
     val instantSession = LocalPikoServices.current.instantSession
     val duplicateSession = LocalPikoServices.current.duplicateSession
+    val canonicalSession = LocalPikoServices.current.canonicalNamingSession
     val downloadManager = LocalPikoServices.current.downloadManager
     val metaTube = LocalPikoServices.current.metaTube
     val metaTubeEnabled by remember(metaTube) { metaTube?.enabled ?: flowOf(false) }.collectAsStateWithLifecycle(initialValue = false)
@@ -279,7 +283,15 @@ fun DriveScreen(
     val isSpoilerBlurEnabled by sessionManager.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = true)
 
     val archiveBrowser = LocalPikoServices.current.archiveBrowser
-    val state = remember { DriveScreenState(driveRepo, sessionManager, scope, duplicateSession, archiveBrowser) }
+    val state = remember {
+        DriveScreenState(driveRepo, sessionManager, scope, sessionListing = { place ->
+            when (place) {
+                DriveLibrary.DUPLICATES -> duplicateSession.state?.let(::DuplicateListing)
+                DriveLibrary.CANONICAL_NAMES -> canonicalSession.state?.let(::CanonicalListing)
+                else -> null
+            }
+        }, archives = archiveBrowser)
+    }
     // 目录图：宽窗口里浮在列表上的面板，见 FolderMap
     val folderMap = remember(state) { FolderMapState(state::folderMapLevel, scope) }
     LaunchedEffect(folderMap) { driveRepo.folderChanges.collect(folderMap::onChange) }
@@ -433,12 +445,17 @@ fun DriveScreen(
     var moveTargetIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     val duplicateState = duplicateSession.state
     val inDuplicates = state.libraryView == DriveLibrary.DUPLICATES
+    val canonicalState = canonicalSession.state
+    val inCanonical = state.libraryView == DriveLibrary.CANONICAL_NAMES
     // 行下面那一栏：全盘搜索时是所在的目录，库里是何时添加、看到哪里、何时清除
     val libraryEvents = state.libraryEvents
     val libraryNotes = remember(libraryView, state.files, libraryEvents) {
-        if (libraryView == null) emptyMap()
-        else if (libraryView == DriveLibrary.DUPLICATES) duplicateLocations(duplicateState)
-        else state.files.mapNotNull { file -> libraryNote(libraryView, file, libraryEvents[file.id])?.let { file.id to it } }.toMap()
+        when (libraryView) {
+            null -> emptyMap()
+            DriveLibrary.DUPLICATES -> duplicateLocations(duplicateState)
+            DriveLibrary.CANONICAL_NAMES -> canonicalNotes(canonicalState)
+            else -> state.files.mapNotNull { file -> libraryNote(libraryView, file, libraryEvents[file.id])?.let { file.id to it } }.toMap()
+        }
     }
     val rowNotes = if (libraryNotes.isEmpty()) state.hitLocations else state.hitLocations + libraryNotes
 
@@ -479,13 +496,43 @@ fun DriveScreen(
 
     val taskSlot = LocalTaskSlot.current
 
+    /**
+     * 去会话的结果那一页（查重结果、规范命名的建议）。会话由调用方开好；窄窗口里结果页是压栈进去的一个位置，
+     * 从此离开结果页即结束（主界面按这个锚点判断）。
+     */
+    fun openSessionPlace(place: DriveLibrary) {
+        if (state.libraryView == place) return
+        if (!twoPane) taskSlot.placeTaskAnchor = listOf(place.crumb)
+        driveRepo.updateFolderStack(listOf(place.crumb))
+    }
+
     /** 去查重结果那一页。同一个起点的扫描还在就回到它，不重扫；换了起点就结束旧的、从头扫。 */
     fun openDuplicates(root: PathBreadcrumb) {
         duplicateSession.open(root)
-        if (inDuplicates) return
-        // 窄窗口里结果页是压栈进去的一个位置，从此离开结果页即结束查找（主界面按这个锚点判断）
-        if (!twoPane) taskSlot.duplicatesAnchor = listOf(DriveLibrary.DUPLICATES.crumb)
-        driveRepo.updateFolderStack(listOf(DriveLibrary.DUPLICATES.crumb))
+        openSessionPlace(DriveLibrary.DUPLICATES)
+    }
+
+    fun openCanonical(root: PathBreadcrumb) {
+        canonicalSession.open(root)
+        openSessionPlace(DriveLibrary.CANONICAL_NAMES)
+    }
+
+    // 桌面上查重与规范命名在后台标签里跑，人留在原处：开始与扫完各提示一次，「查看」切到那个标签。
+    // 只有标签上的转圈时，点了像没反应，扫完了也无从知道
+    fun announceSession(place: DriveLibrary, message: String) = scope.launch {
+        val result = snackbarHostState.showSnackbar(message, actionLabel = "查看", withDismissAction = true, duration = SnackbarDuration.Long)
+        if (result != SnackbarResult.ActionPerformed) return@launch
+        driveRepo.tabsFlow.value.firstOrNull { it.session == place }?.let { driveRepo.switchTab(it.id) }
+    }
+
+    /**
+     * 宽窗口里开始一次会话：在后台开一个会话标签（已有就沿用），人留在原处；已经扫完的直接切过去。
+     * [started] 是开始时的那句提示。
+     */
+    fun startSessionTab(place: DriveLibrary, done: Boolean, started: String) {
+        val existing = driveRepo.tabsFlow.value.firstOrNull { it.session == place }
+        val tabId = existing?.id ?: driveRepo.openTab(listOf(place.crumb), activate = false)
+        if (done) driveRepo.switchTab(tabId) else announceSession(place, started)
     }
 
     /**
@@ -494,21 +541,10 @@ fun DriveScreen(
      * 已有查重标签时沿用它，同一个起点已有结果就切过去。
      * 没有标签栏时进度在底部的 sheet 里（TaskSheetScaffold），扫完有结果才进结果页；sheet 是独占的，别的事占着时先确认结束它。
      */
-    // 桌面上查重在后台标签里跑，人留在原处：开始与扫完各提示一次，「查看」切到那个标签。
-    // 只有标签上的转圈时，点了像没反应，扫完了也无从知道
-    fun announceDuplicates(message: String) = scope.launch {
-        val result = snackbarHostState.showSnackbar(message, actionLabel = "查看", withDismissAction = true, duration = SnackbarDuration.Long)
-        if (result != SnackbarResult.ActionPerformed) return@launch
-        driveRepo.tabsFlow.value.firstOrNull { it.isDuplicates }?.let { driveRepo.switchTab(it.id) }
-    }
-
     fun findDuplicates(root: PathBreadcrumb) {
         if (twoPane) {
             duplicateSession.open(root)
-            val done = duplicateSession.state?.isScanning == false
-            val existing = driveRepo.tabsFlow.value.firstOrNull { it.isDuplicates }
-            val tabId = existing?.id ?: driveRepo.openTab(listOf(DriveLibrary.DUPLICATES.crumb), activate = false)
-            if (done) driveRepo.switchTab(tabId) else announceDuplicates("正在查找「${root.name}」中的重复文件")
+            startSessionTab(DriveLibrary.DUPLICATES, done = duplicateSession.state?.isScanning == false, started = "正在查找「${root.name}」中的重复文件")
             return
         }
         val current = duplicateSession.state
@@ -519,25 +555,50 @@ fun DriveScreen(
             replacesSame = current != null && current.root.id != root.id,
         ) {
             val sameRoot = duplicateSession.state?.root?.id == root.id
-            if (!sameRoot) taskSlot.duplicatesAnchor = folderStack
+            if (!sameRoot) taskSlot.placeTaskAnchor = folderStack
             duplicateSession.open(root)
-            taskSlot.duplicatesExpanded = true
+            taskSlot.placeTaskExpanded = true
             val groups = duplicateSession.state?.report?.let { it.identical.size + it.versions.size } ?: 0
             if (sameRoot && duplicateSession.state?.phase == DuplicateFinderState.Phase.DONE && groups > 0) openDuplicates(root)
         }
     }
-    // 查重结束了（结果页里点了结束、换号、重启后恢复出旧的查重标签），查重标签随之关掉：留着只剩一页「已结束」。
+
+    /** 按番号规范命名一个文件夹（连同子树），与「查找重复」同一种走法：宽窗口是后台标签，窄窗口是独占的底部 sheet。 */
+    fun findCanonical(root: PathBreadcrumb) {
+        if (twoPane) {
+            canonicalSession.open(root)
+            startSessionTab(DriveLibrary.CANONICAL_NAMES, done = canonicalSession.state?.isScanning == false, started = "正在扫描「${root.name}」中的番号")
+            return
+        }
+        val current = canonicalSession.state
+        taskSlot.claim(
+            action = "按番号规范命名「${root.name}」",
+            confirmLabel = "开始",
+            task = TaskSlot.Task.CANONICAL_NAMES,
+            replacesSame = current != null && current.root.id != root.id,
+        ) {
+            val sameRoot = canonicalSession.state?.root?.id == root.id
+            if (!sameRoot) taskSlot.placeTaskAnchor = folderStack
+            canonicalSession.open(root)
+            taskSlot.placeTaskExpanded = true
+            val naming = canonicalSession.state
+            if (sameRoot && naming?.phase == CanonicalNamingState.Phase.DONE && naming.suggestionCount > 0) openCanonical(root)
+        }
+    }
+
+    // 会话结束了（结果页里点了结束、换号、重启后恢复出旧的会话标签），它的标签随之关掉：留着只剩一页「已结束」。
     // 只剩它一个标签时关不掉，留给那一页的「回到网盘」
     LaunchedEffect(Unit) {
-        combine(driveRepo.tabsFlow, snapshotFlow { duplicateSession.state }) { tabs, session -> tabs to session }
-            .collect { (tabs, session) ->
-                if (session != null || tabs.size <= 1) return@collect
-                tabs.filter { it.isDuplicates }.forEach { driveRepo.closeTab(it.id) }
+        val sessions = snapshotFlow { setOfNotNull(DriveLibrary.DUPLICATES.takeIf { duplicateSession.state != null }, DriveLibrary.CANONICAL_NAMES.takeIf { canonicalSession.state != null }) }
+        combine(driveRepo.tabsFlow, sessions) { tabs, live -> tabs to live }
+            .collect { (tabs, live) ->
+                if (tabs.size <= 1) return@collect
+                tabs.filter { tab -> tab.session != null && tab.session !in live }.forEach { driveRepo.closeTab(it.id) }
             }
     }
     // 窄窗口里人看着展开的 sheet 等到扫完，有结果就直接进结果页；sheet 收着时不把人拽走，sheet 上有「查看」。
     // 只认眼看着发生的那一下：切去别的页时扫完的，回来看到的是 sheet 上的结果，不是突然跳页。
-    // 桌面不跳，提示一句结果；人已在查重标签上时不提示
+    // 桌面不跳，提示一句结果；人已在会话标签上时不提示
     val latestTwoPane by rememberUpdatedState(twoPane)
     LaunchedEffect(duplicateState) {
         val finder = duplicateState ?: return@LaunchedEffect
@@ -546,7 +607,8 @@ fun DriveScreen(
         val groups = finder.report.identical.size + finder.report.versions.size
         if (latestTwoPane) {
             if (state.libraryView == DriveLibrary.DUPLICATES) return@LaunchedEffect
-            announceDuplicates(
+            announceSession(
+                DriveLibrary.DUPLICATES,
                 when {
                     phase == DuplicateFinderState.Phase.FAILED -> "查找重复失败"
                     groups > 0 -> "找到 $groups 组重复文件"
@@ -556,7 +618,30 @@ fun DriveScreen(
             return@LaunchedEffect
         }
         if (phase != DuplicateFinderState.Phase.DONE) return@LaunchedEffect
-        if (taskSlot.duplicatesExpanded && groups > 0 && state.libraryView != DriveLibrary.DUPLICATES) openDuplicates(finder.root)
+        if (taskSlot.placeTaskExpanded && groups > 0 && state.libraryView != DriveLibrary.DUPLICATES) openDuplicates(finder.root)
+    }
+    LaunchedEffect(canonicalState) {
+        canonicalState?.messages?.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
+    }
+    LaunchedEffect(canonicalState) {
+        val naming = canonicalState ?: return@LaunchedEffect
+        if (!naming.isScanning) return@LaunchedEffect
+        val phase = snapshotFlow { naming.phase }.first { it == CanonicalNamingState.Phase.DONE || it == CanonicalNamingState.Phase.FAILED }
+        val count = naming.suggestionCount
+        if (latestTwoPane) {
+            if (state.libraryView == DriveLibrary.CANONICAL_NAMES) return@LaunchedEffect
+            announceSession(
+                DriveLibrary.CANONICAL_NAMES,
+                when {
+                    phase == CanonicalNamingState.Phase.FAILED -> "按番号规范命名的扫描失败"
+                    count > 0 -> "「${naming.root.name}」中有 $count 项可按番号规范命名"
+                    else -> "「${naming.root.name}」中没有需要改名的项"
+                },
+            )
+            return@LaunchedEffect
+        }
+        if (phase != CanonicalNamingState.Phase.DONE) return@LaunchedEffect
+        if (taskSlot.placeTaskExpanded && count > 0 && state.libraryView != DriveLibrary.CANONICAL_NAMES) openCanonical(naming.root)
     }
     val selectedArchives by remember(state) {
         derivedStateOf { state.displayedFiles.filter { it.id in state.selectedFileIds && (it.isExtractableArchive || it.isArchiveVolume) } }
@@ -567,10 +652,14 @@ fun DriveScreen(
     var batchRenameTargets by remember { mutableStateOf<List<FileStat>>(emptyList()) }
     // 几项一起按番号规范命名：打开批量重命名并换上这条规则
     var avNamingTargets by remember { mutableStateOf<List<FileStat>>(emptyList()) }
-    // 按番号规范命名的分派：一个文件是普通的重命名对话框，几项是批量重命名
+    // 按番号规范命名的分派：一个文件是普通的重命名对话框，一个文件夹是扫描它的子树出改名建议，几项是批量重命名
     fun nameByCode(files: List<FileStat>) {
         val single = files.singleOrNull()
-        if (single != null && !single.isFolder) startCanonicalRename(single) else avNamingTargets = files
+        when {
+            single == null -> avNamingTargets = files
+            single.isFolder -> findCanonical(PathBreadcrumb(single.id, single.name))
+            else -> startCanonicalRename(single)
+        }
     }
     var previewImage by remember { mutableStateOf<FileStat?>(null) }
     // 外部打开的磁力链是一次明确的新请求：开新会话并就地取走，面板收起后不再靠它续命。
@@ -751,9 +840,13 @@ fun DriveScreen(
     val tabs by driveRepo.tabsFlow.collectAsStateWithLifecycle()
     val activeTabId by driveRepo.activeTabId.collectAsStateWithLifecycle()
 
-    // 关掉查重标签就是结束这次查重：结果只在会话里，标签是它唯一的入口
+    // 关掉会话标签就是结束这次查重或规范命名：结果只在会话里，标签是它唯一的入口
     fun closeTab(id: Long) {
-        if (tabs.firstOrNull { it.id == id }?.isDuplicates == true) duplicateSession.end()
+        when (tabs.firstOrNull { it.id == id }?.session) {
+            DriveLibrary.DUPLICATES -> duplicateSession.end()
+            DriveLibrary.CANONICAL_NAMES -> canonicalSession.end()
+            else -> Unit
+        }
         driveRepo.closeTab(id)
     }
     val tabsAvailable = twoPane
@@ -876,7 +969,10 @@ fun DriveScreen(
             togglePreview = { state.toggleSpoiler(file.id) },
         )
         val canonicalName = listOfNotNull(
-            DriveActions.canonicalName { nameByCode(listOf(file)) }.takeIf { commands.rename && !file.isFolder && hasAvCode(file.name) },
+            // 文件夹整理的是它的子树，要在网盘里它所在的地方做，库里不给
+            DriveActions.canonicalName { nameByCode(listOf(file)) }.takeIf {
+                commands.rename && if (file.isFolder) library == null else hasAvCode(file.name)
+            },
         )
         // 移除记录排在移入回收站之前，两者同在末组
         return reveal + removeRecord + fileActions(file, commands, handlers) + canonicalName
@@ -1227,9 +1323,16 @@ fun DriveScreen(
 
     // 库与查重这类位置自己的主操作。窄窗口里是扩展 FAB，宽窗口里在命令栏右端，没有时那里是添加链接
     val placePrimaryAction: SheetAction? = when {
+        // 规范命名的主操作在多选里也在：勾选就是为了应用
+        inCanonical -> canonicalState?.let { naming ->
+            canonicalPrimaryAction(naming, selectedIdSet.takeIf { state.isSelectionMode }, state::selectOnly) { chosen ->
+                naming.apply(chosen)
+                state.exitSelection()
+            }
+        }
         state.isSelectionMode -> null
-        inDuplicates -> duplicateState?.suggestedIds?.size?.takeIf { it > 0 }?.let { count ->
-            SheetAction(Icons.Outlined.Checklist, "选中建议移走的 $count 项", state::selectSuggestedDuplicates)
+        inDuplicates -> duplicateState?.suggestedIds?.takeIf { it.isNotEmpty() }?.let { suggested ->
+            SheetAction(Icons.Outlined.Checklist, "选中建议移走的 ${suggested.size} 项", { state.selectOnly(suggested) })
         }
         state.archiveView != null && displayedFiles.isNotEmpty() ->
             SheetAction(Icons.Outlined.Unarchive, "全部解压", { extractFromArchive(emptyList()) })
@@ -1387,7 +1490,6 @@ fun DriveScreen(
             startWithAvNaming = true,
         )
     }
-    val avNamingCandidates = commandTargets.ifEmpty { displayedFiles }.filter { !it.isUploading }
 
     // 网盘页在眼前时，命令面板里多出这一页的命令
     ContributePaletteItems("drive") {
@@ -1432,8 +1534,17 @@ fun DriveScreen(
             if (!state.isVirtualPlace) {
                 add(PaletteItem("在当前文件夹查找重复", Icons.Outlined.FileCopy, "网盘", keywords = "duplicate dedupe") { findDuplicates(activeFolder) })
             }
-            if (commands.rename && avNamingCandidates.any { !it.isFolder && hasAvCode(it.name) }) {
-                add(PaletteItem("按番号规范命名", Icons.Outlined.DriveFileRenameOutline, "网盘", keywords = "rename av code 番号 重命名") { nameByCode(avNamingCandidates) })
+            // 选中了就作用于选中的（一个文件是对话框，几项是批量重命名，一个文件夹是整理它的子树）；没选中时整理当前文件夹
+            val nameTargets = commandTargets.filterNot { it.isUploading }
+            when {
+                nameTargets.isNotEmpty() -> if (commands.rename && nameTargets.any { it.isFolder || hasAvCode(it.name) }) {
+                    add(PaletteItem("按番号规范命名", Icons.Outlined.DriveFileRenameOutline, "网盘", keywords = "rename av code 番号 重命名") { nameByCode(nameTargets) })
+                }
+                !state.isVirtualPlace -> add(
+                    PaletteItem("按番号规范命名当前文件夹", Icons.Outlined.DriveFileRenameOutline, "网盘", keywords = "rename av code 番号 重命名 整理") {
+                        findCanonical(activeFolder)
+                    },
+                )
             }
         }
     }
@@ -1505,8 +1616,8 @@ fun DriveScreen(
         }
     }
 
-    // 窄窗口底部那一块 sheet：添加链接或查找重复，同一时刻只有一件（TaskSlot 管着入口）。
-    // 宽窗口是侧边面板、右下角的浮动卡片与查重标签，不用它
+    // 窄窗口底部那一块 sheet：添加链接、查找重复或按番号规范命名，同一时刻只有一件（TaskSlot 管着入口）。
+    // 宽窗口是侧边面板、右下角的浮动卡片与会话标签，不用它
     val taskSheet: TaskSheetModel? = when {
         twoPane -> null
         instantState != null -> TaskSheetModel(
@@ -1532,10 +1643,17 @@ fun DriveScreen(
         )
         duplicateState != null && !inDuplicates -> duplicatesSheet(
             finder = duplicateState,
-            expanded = taskSlot.duplicatesExpanded,
-            onExpandedChange = { taskSlot.duplicatesExpanded = it },
+            expanded = taskSlot.placeTaskExpanded,
+            onExpandedChange = { taskSlot.placeTaskExpanded = it },
             onOpenResults = { openDuplicates(duplicateState.root) },
             onEnd = duplicateSession::end,
+        )
+        canonicalState != null && !inCanonical -> canonicalNamingSheet(
+            naming = canonicalState,
+            expanded = taskSlot.placeTaskExpanded,
+            onExpandedChange = { taskSlot.placeTaskExpanded = it },
+            onOpenResults = { openCanonical(canonicalState.root) },
+            onEnd = canonicalSession::end,
         )
         else -> null
     }
@@ -1574,7 +1692,13 @@ fun DriveScreen(
                                 activeId = activeTabId,
                                 onSelect = driveRepo::switchTab,
                                 onClose = ::closeTab,
-                                duplicates = duplicateState,
+                                sessionTab = { tab ->
+                                    when (tab.session) {
+                                        DriveLibrary.DUPLICATES -> duplicateState?.let(::duplicatesTab)
+                                        DriveLibrary.CANONICAL_NAMES -> canonicalState?.let(::canonicalNamingTab)
+                                        else -> null
+                                    }
+                                },
                                 feedTabId = feedTabId,
                                 onNewTab = { driveRepo.openTab(folderStack) },
                                 newTabShortcut = platform.shortcutModifier.label("T"),
@@ -1844,6 +1968,14 @@ fun DriveScreen(
                                         canLeave = twoPane,
                                         modifier = Modifier.weight(1f),
                                     )
+                                } else if (inCanonical && state.files.isEmpty()) {
+                                    breadcrumbs()
+                                    CanonicalNamingEmptyState(
+                                        naming = canonicalState,
+                                        onLeave = ::goHome,
+                                        canLeave = twoPane,
+                                        modifier = Modifier.weight(1f),
+                                    )
                                 } else if (state.displayItems.isEmpty() && state.typeFilter == null && !state.thumbnailsOnly) {
                                     // 空目录没有列表页眉，面包屑单独放在空状态上方
                                     breadcrumbs()
@@ -1881,6 +2013,9 @@ fun DriveScreen(
                                                 breadcrumbs()
                                                 if (inDuplicates && duplicateState != null) {
                                                     DuplicatesBanner(duplicateState, onEnd = duplicateSession::end)
+                                                }
+                                                if (inCanonical && canonicalState != null) {
+                                                    CanonicalNamingBanner(canonicalState, onEnd = canonicalSession::end)
                                                 }
                                                 // 起始只留 4dp：排序是 TextButton，自带 12dp 内边距，合起来图标落在 16dp
                                                 // 页边距上。末端的视图切换是 ToggleButton，没有内边距，要给足 16dp

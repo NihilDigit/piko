@@ -6,7 +6,9 @@ import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.state.DriveListItem
 import dev.piko.shared.state.DriveScreenState
 import dev.piko.shared.state.DuplicateFinderState
+import dev.piko.shared.state.DuplicateListing
 import dev.piko.shared.state.DuplicateSession
+import dev.piko.shared.state.SessionListing
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -30,7 +32,7 @@ class DuplicatesLocationSmokeTest {
             newScope = { scope },
             newState = { sessionScope, root -> DuplicateFinderState(server.provider(), repository, sessionScope, root) },
         )
-        val drive = DriveScreenState(repository, prefs, scope, session)
+        val drive = DriveScreenState(repository, prefs, scope, listingOf(session))
 
         session.open(PikoDriveRepository.ROOT_BREADCRUMB)
         repository.updateFolderStack(listOf(DriveLibrary.DUPLICATES.crumb))
@@ -38,7 +40,7 @@ class DuplicatesLocationSmokeTest {
 
         // 进来时不在多选里，单击照常打开；名字里没有副本标记、存入最早的那份留着，选中的是另外两份
         assertTrue(!drive.isSelectionMode)
-        drive.selectSuggestedDuplicates()
+        drive.selectOnly(session.state!!.suggestedIds)
         assertEquals(setOf(copy.id, nested.id), drive.selectedFileIds.toSet())
         assertTrue(original.id !in drive.selectedFileIds)
         val keys = drive.displayItems.map { it.key }
@@ -73,7 +75,7 @@ class DuplicatesLocationSmokeTest {
             newScope = { scope },
             newState = { sessionScope, root -> DuplicateFinderState(server.provider(), repository, sessionScope, root) },
         )
-        val drive = DriveScreenState(repository, prefs, scope, session)
+        val drive = DriveScreenState(repository, prefs, scope, listingOf(session))
 
         session.open(PikoDriveRepository.ROOT_BREADCRUMB)
         repository.updateFolderStack(listOf(DriveLibrary.DUPLICATES.crumb))
@@ -110,6 +112,10 @@ class DuplicatesLocationSmokeTest {
         drive.selectBoxed(emptySet(), listOf(versions[1].key))
         drive.moveToTrash(drive.selectedFileIds.toList())
         awaitUntil("移入回收站") { scene.trashed }
+    }
+
+    private fun listingOf(session: DuplicateSession): (DriveLibrary) -> SessionListing? = { library ->
+        session.state?.takeIf { library == DriveLibrary.DUPLICATES }?.let(::DuplicateListing)
     }
 
     private fun rowsBySection(items: List<DriveListItem>): List<List<DriveListItem.File>> {
