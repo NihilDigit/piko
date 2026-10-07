@@ -1,8 +1,10 @@
 package dev.piko.desktop.winrt
 
+import dev.piko.desktop.update.WindowsInstaller
 import java.awt.Desktop
 import java.io.File
 import java.net.URI
+import java.security.MessageDigest
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -25,7 +27,7 @@ object WinRTSupport {
      * HKCU\Software\Classes\AppUserModelId 下登记，见 [ensureNotificationRegistration]。
      * 没登记时 Show 照样返回成功，通知却不会出现，所以开发机上 gradle run 看不到 Toast。
      */
-    const val APP_USER_MODEL_ID = "dev.piko.Piko"
+    val APP_USER_MODEL_ID = ShellIdentity.current.appUserModelId
 
     private val comThread = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "Piko-WinRT").also { it.isDaemon = true }
@@ -56,27 +58,47 @@ object WinRTSupport {
     }
 
     /**
-     * 在当前用户下登记 AUMID 的显示名与图标，Toast 才会真正显示。jpackage 生成的开始菜单
-     * 快捷方式不带 System.AppUserModel.ID 属性，靠快捷方式登记这条路走不通。
+     * 在当前用户下登记 AUMID 的显示名与图标，Toast 才会真正显示。MSI 的开始菜单快捷方式虽也带着这个 AUMID，
+     * 用户删了快捷方式通知就没了，所以照样登记。
      * 只由 MSI 装的那份调用（见 WindowsInstaller.installedExecutable）：便携版或测试镜像写的话，
-     * 图标会指向它们的目录。
+     * 图标会指向它们的目录。便携版另用自己的标识，见 [toastAppId]。卸载时由 MSI 撤掉。
      */
     fun ensureNotificationRegistration(icon: File?): Boolean {
         if (!isWindows) return false
-        val key = "HKCU\\Software\\Classes\\AppUserModelId\\$APP_USER_MODEL_ID"
-        val iconOk = icon?.takeIf { it.isFile }?.let {
-            regAdd(key, "/v", "IconUri", "/t", "REG_SZ", "/d", it.absolutePath, "/f")
-        } ?: true
-        return regAdd(key, "/v", "DisplayName", "/t", "REG_SZ", "/d", "Piko", "/f") && iconOk
+        return registerToastIdentity(APP_USER_MODEL_ID, icon)
     }
 
-    private fun regAdd(vararg args: String): Boolean =
-        runCatching {
-            ProcessBuilder(listOf("reg", "add") + args)
-                .redirectErrorStream(true)
-                .start()
-                .waitFor(15, TimeUnit.SECONDS)
+    private fun registerToastIdentity(appId: String, icon: File?): Boolean {
+        val key = "Software\\Classes\\AppUserModelId\\$appId"
+        // 安装版每次启动都会走到这里，值没变就不写，只读两次
+        return runCatching {
+            val iconOk = icon?.takeIf { it.isFile }?.let { HkcuRegistry.ensureString(key, "IconUri", it.absolutePath) } ?: true
+            HkcuRegistry.ensureString(key, "DisplayName", "Piko") && iconOk
         }.getOrDefault(false)
+    }
+
+    @Volatile
+    private var resolvedToastAppId: String? = null
+
+    /**
+     * 发 Toast 用的标识。安装版与开发版是 [APP_USER_MODEL_ID]；便携版没有安装版那份登记（实测未登记的 AUMID
+     * 发出的 Toast 进了通知历史，却不弹出横幅），在第一次发通知时按自己的路径另登记一个，
+     * 与安装版、别处的便携版互不覆盖图标。不在启动时登记：从不发通知的便携版就不在注册表里留东西。
+     * 便携版挪了位置会另登记一个新的，旧的留在原处。
+     */
+    private fun toastAppId(): String = resolvedToastAppId ?: resolveToastAppId().also { resolvedToastAppId = it }
+
+    private fun resolveToastAppId(): String {
+        val exe = System.getProperty("jpackage.app-path")?.let(::File)?.takeIf { it.isFile } ?: return APP_USER_MODEL_ID
+        if (runCatching { WindowsInstaller.installedExecutable() }.getOrNull() != null) return APP_USER_MODEL_ID
+        val pathHash = MessageDigest.getInstance("SHA-256")
+            .digest(exe.absolutePath.lowercase().toByteArray())
+            .take(4)
+            .joinToString("") { "%02x".format(it) }
+        val appId = "$APP_USER_MODEL_ID.Portable.$pathHash"
+        val icon = System.getProperty("compose.application.resources.dir")?.let { File(it, "app-icon.png") }
+        return if (registerToastIdentity(appId, icon)) appId else APP_USER_MODEL_ID
+    }
 
     /** shell32.SetCurrentProcessExplicitAppUserModelID 的最小 FFM 绑定。 */
     private object Shell32AppId {
@@ -126,7 +148,7 @@ object WinRTSupport {
                         </visual>
                     </toast>
                 """.trimIndent()
-                WindowsToast.show(APP_USER_MODEL_ID, xml)
+                WindowsToast.show(toastAppId(), xml)
             }
             true
         }.getOrDefault(false)

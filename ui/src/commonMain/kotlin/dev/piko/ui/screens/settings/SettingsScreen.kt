@@ -197,6 +197,8 @@ fun SettingsScreen(
     var showArchivePasswords by remember { mutableStateOf(false) }
     var showPlaybackQuality by remember { mutableStateOf(false) }
     val playbackMaxHeight by sessionManager.playbackMaxHeightFlow.collectAsStateWithLifecycle(initialValue = 0)
+    var showDownloadQuality by remember { mutableStateOf(false) }
+    val downloadMaxHeight by sessionManager.downloadMaxHeightFlow.collectAsStateWithLifecycle(initialValue = 0)
 
     var showDownloadDirDialog by remember { mutableStateOf(false) }
     val proxySetting by sessionManager.proxySettingFlow.collectAsStateWithLifecycle(initialValue = ProxySetting())
@@ -440,16 +442,24 @@ fun SettingsScreen(
                     SettingsSectionBlock(SettingsSection.Transfer, paged, onPositioned(SettingsSection.Transfer)) {
                         SettingsGroup("下载") {
                             SettingsNavigationRow(
-                                index = 0, count = 3,
+                                index = 0, count = 4,
                                 icon = Icons.Outlined.FolderOpen,
                                 title = "下载位置",
                                 supporting = resolvedDownloadPath,
                                 onClick = { showDownloadDirDialog = true },
                                 trailingIcon = null,
                             )
+                            SettingsNavigationRow(
+                                index = 1, count = 4,
+                                icon = Icons.Outlined.HighQuality,
+                                title = "下载画质",
+                                supporting = playbackQualitySummary(downloadMaxHeight),
+                                onClick = { showDownloadQuality = true },
+                                trailingIcon = null,
+                            )
                             // 字幕靠解析配到视频上。解析在另一页，关掉解析时写明原因，而不是只把开关灰掉
                             SettingsSwitchRow(
-                                index = 1, count = 3,
+                                index = 2, count = 4,
                                 icon = Icons.Outlined.Subtitles,
                                 title = "保存配套字幕",
                                 supporting = if (isNameParsingEnabled) "保存视频时一并保存外挂字幕" else "需先在「网盘」里开启文件名解析",
@@ -458,7 +468,7 @@ fun SettingsScreen(
                                 enabled = isNameParsingEnabled,
                             )
                             SettingsSwitchRow(
-                                index = 2, count = 3,
+                                index = 3, count = 4,
                                 icon = Icons.Outlined.Speed,
                                 title = "并发加速",
                                 supporting = "多连接下载，提升速度",
@@ -567,6 +577,16 @@ fun SettingsScreen(
             maxHeight = playbackMaxHeight,
             onSelect = { scope.launch { sessionManager.setPlaybackMaxHeight(it) } },
             onDismiss = { showPlaybackQuality = false },
+        )
+    }
+
+    if (showDownloadQuality) {
+        PlaybackQualityDialog(
+            maxHeight = downloadMaxHeight,
+            onSelect = { scope.launch { sessionManager.setDownloadMaxHeight(it) } },
+            onDismiss = { showDownloadQuality = false },
+            title = "下载画质",
+            description = "超过所选画质时改下较低的转码，存为 MP4；没有合适的转码则下原画。单个视频下载时仍可另选。",
         )
     }
 
@@ -828,9 +848,11 @@ private fun StaticSegmentedRow(
 private val StaticRowLeadingGap = 12.dp
 
 /**
- * 磁力链接与种子文件的默认打开方式：说明眼下是谁在打开，行尾一个按钮，不是 Piko 时「设为默认」，
- * 是 Piko 时「取消关联」，随时能撤销、重做。整行不可点：两个方向的动作都有后果，放在明写着的按钮上。
- * 系统不能取消的（macOS，见 LinkAssociation.canUnregister）已是默认时不给按钮，说明怎么换回去。
+ * 磁力链接与种子文件的默认打开方式：说明眼下是谁在打开，行尾是对应的按钮。不是默认时「设为默认」，
+ * 登记过（不论是不是默认）时「取消关联」，随时能撤销、重做。只登记、没设成默认是常见的中间态：
+ * Windows 上用户在系统设置里没选 Piko，或选了又换回别的应用，登记仍留着，要能从这里撤掉。
+ * 整行不可点：两个方向的动作都有后果，放在明写着的按钮上。
+ * 系统不能取消的（macOS，见 LinkAssociation.canUnregister）不给取消的按钮，已是默认时说明怎么换回去。
  *
  * 开发版也列出来，按钮不可点并写明原因：藏起来的话，在开发版里找这一项的人会以为功能不存在。
  */
@@ -844,6 +866,18 @@ private fun LinkAssociationRow(
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
     val isDefault = state == LinkAssociationState.Default
+    val isRegistered = isDefault || state == LinkAssociationState.Registered
+    val confirmHint = if (association.needsSystemConfirmation) "。设为默认需在系统设置中确认" else ""
+    val act: (Boolean) -> Unit = { register ->
+        busy = true
+        scope.launch {
+            val done = if (register) association.register() else association.unregister()
+            if (!done) onFailure(if (register) "无法设为默认打开方式" else "无法取消关联")
+            // 不经系统设置的平台当场就改好了，窗口不会失焦再回来，这里重读一次
+            onStateChange(association.state())
+            busy = false
+        }
+    }
     StaticSegmentedRow(
         shapes = ListItemDefaults.segmentedShapes(index = 0, count = 1),
         leadingContent = { Icon(Icons.Outlined.Link, contentDescription = null) },
@@ -853,27 +887,17 @@ private fun LinkAssociationRow(
                     state == LinkAssociationState.Unavailable -> "开发版不能设为默认打开方式，需用安装版或便携版"
                     isDefault && !association.canUnregister -> "由 Piko 打开。要换回其他应用，在该应用中设为默认"
                     isDefault -> "由 Piko 打开"
-                    association.needsSystemConfirmation -> "由其他应用打开。设为默认需在系统设置中确认"
-                    else -> "由其他应用打开"
+                    isRegistered -> "已登记，尚未设为默认$confirmHint"
+                    else -> "由其他应用打开$confirmHint"
                 },
             )
         },
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("磁力链接与种子文件", modifier = Modifier.weight(1f))
-            if (!isDefault || association.canUnregister) TextButton(
-                enabled = state != LinkAssociationState.Unavailable && !busy,
-                onClick = {
-                    busy = true
-                    scope.launch {
-                        val done = if (isDefault) association.unregister() else association.register()
-                        if (!done) onFailure(if (isDefault) "无法取消关联" else "无法设为默认打开方式")
-                        // 不经系统设置的平台当场就改好了，窗口不会失焦再回来，这里重读一次
-                        onStateChange(association.state())
-                        busy = false
-                    }
-                },
-            ) { Text(if (isDefault) "取消关联" else "设为默认") }
+            val enabled = state != LinkAssociationState.Unavailable && !busy
+            if (!isDefault) TextButton(enabled = enabled, onClick = { act(true) }) { Text("设为默认") }
+            if (isRegistered && association.canUnregister) TextButton(enabled = enabled, onClick = { act(false) }) { Text("取消关联") }
         }
     }
 }

@@ -8,9 +8,11 @@
 
 ```powershell
 magick -background none docs/icon.svg `
-  -define icon:auto-resize=256,128,64,48,32,16 `
+  -define icon:auto-resize=256,128,64,48,40,32,24,20,16 `
   desktopApp/package/windows/icon.ico
 ```
+
+20、24、40 是 125%、150% 缩放下小图标与开始菜单用的尺寸，缺了由系统从邻近尺寸缩放，边缘发虚。
 
 注意 `-background none` 必须放在输入文件前面，否则圆角外的透明区会被铺成白色。
 窗口标题栏/任务栏图标另见 `desktopApp/src/desktopMain/resources/app-icon.png`（同源 256px PNG）。

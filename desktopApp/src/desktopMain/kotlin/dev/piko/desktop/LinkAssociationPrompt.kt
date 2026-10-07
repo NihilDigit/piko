@@ -34,7 +34,8 @@ internal fun LinkAssociationPrompt(association: LinkAssociation?, settings: Desk
     LaunchedEffect(association) {
         if (settings.get(ASKED_KEY) == "true") return@LaunchedEffect
         when (association.state()) {
-            LinkAssociationState.NotDefault -> isShown = true
+            // 只登记、不是默认的也问：可能是挪了位置的旧副本留下的，眼下这一份没被问过
+            LinkAssociationState.NotDefault, LinkAssociationState.Registered -> isShown = true
             // 已经是默认就不必再问，日后被别的应用抢走也不追着弹
             LinkAssociationState.Default -> settings.set(ASKED_KEY, "true")
             LinkAssociationState.Unavailable -> Unit

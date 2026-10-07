@@ -115,6 +115,13 @@ interface PikoPlatform {
     fun HideSystemBars() = Unit
 
     /**
+     * 把屏幕转成横屏的开关，信息流的横屏按钮用；转不了方向的平台为 null。离开组合时自动 release。
+     * 系统锁定了自动旋转时，横握手机靠这个才转得过来。
+     */
+    @Composable
+    fun rememberLandscapeLock(): LandscapeLock? = null
+
+    /**
      * 列表右侧可拖动的滚动条，放在列表所在的 Box 里靠右对齐。鼠标没有甩动，几百项的目录只靠滚轮
      * 走不到底，也看不出当前位置。Android 不画：触屏靠甩动，系统也没有这个惯例。
      */
@@ -193,6 +200,18 @@ interface PlatformToggle {
     fun set(enabled: Boolean)
 }
 
+/**
+ * 横屏请求。命令式而不是「在组合期间生效」：要能在离开组合之前当场放开，
+ * 理由见 ClipFeedScreen 里看完整之前的 release。
+ */
+interface LandscapeLock {
+    /** 转成横屏，随传感器在两个横向间转。头一次调用时记下原来的方向，重复调用不改记下的值。 */
+    fun lock()
+
+    /** 恢复 [lock] 之前的方向；没锁着时什么也不做。 */
+    fun release()
+}
+
 fun interface ExternalVideoPlayer {
     suspend fun open(url: String, fileName: String): Boolean
 }
@@ -246,6 +265,12 @@ enum class LinkAssociationState {
     /** 这份构建不能登记，例如开发版：登记的是开发工具的进程，不是 Piko。 */
     Unavailable,
     NotDefault,
+
+    /**
+     * 登记过、但系统眼下不由它打开（Windows：用户在系统设置里没选 Piko，或选了又换回去），可以取消关联。
+     * 不能取消的平台不报这一态。
+     */
+    Registered,
     /** 磁力链接与种子文件都已由 Piko 打开。 */
     Default,
 }
