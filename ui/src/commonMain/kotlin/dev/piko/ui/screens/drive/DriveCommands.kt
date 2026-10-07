@@ -76,7 +76,7 @@ internal data class DriveCommands(
     val emptyPlace: Boolean,
     val selectAll: Boolean,
     val findDuplicates: Boolean,
-    /** 按番号规范命名当前文件夹。桌面的命令栏不摆，经命令面板与文件夹的右键菜单。 */
+    /** 按番号规范命名当前文件夹。桌面在命令栏查找重复旁边，移动端在列表页眉的 ⋮ 里，同一个条件。 */
     val canonicalNaming: Boolean,
     val sort: Boolean,
     val filter: Boolean,

@@ -1435,6 +1435,7 @@ fun DriveScreen(
             onPaste = { state.paste() },
             onSelectAll = { state.toggleSelectAll() },
             onFindDuplicates = { findDuplicates(activeFolder) },
+            onCanonicalNaming = { findCanonical(activeFolder) },
             sortOrder = state.sortOrder,
             onSortChange = { state.changeSortOrder(it) },
             typeFilter = state.typeFilter,

@@ -247,7 +247,7 @@ internal fun ExplorerSearchField(
 }
 
 /**
- * 宽窗口网盘页的第二行：新建；粘贴；排序、筛选；查找重复，多选时再加全选。右端是刷新、视图与信息流（[viewSwitcher]）、
+ * 宽窗口网盘页的第二行：新建；粘贴；排序、筛选；查找重复、按番号规范命名，多选时再加全选。右端是刷新、视图与信息流（[viewSwitcher]）、
  * 这一页的主操作。只放作用于当前位置的命令，条目操作在右键菜单里，理由见 DriveCommands.kt。
  * 每一样显不显示由 [commands] 定；这里只管摆不摆得下：放不下时按 [BarItem.priority] 从低往高收进「⋯」。
  *
@@ -270,6 +270,7 @@ internal fun ExplorerCommandBar(
     onTypeFilterChange: (FileCategory?) -> Unit,
     onSelectAll: () -> Unit,
     onFindDuplicates: () -> Unit,
+    onCanonicalNaming: () -> Unit,
     sectionJumper: @Composable () -> Unit,
     onRefresh: () -> Unit,
     onHome: () -> Unit,
@@ -322,6 +323,13 @@ internal fun ExplorerCommandBar(
             // 查重的标签、库与右下角的卡片都用它
             add(BarItem("findDuplicates", 20, listOf(SheetAction(Icons.Outlined.FileCopy, "查找重复", onFindDuplicates, group = ActionGroup.Select))) {
                 BarTextButton(Icons.Outlined.FileCopy, "查找重复", onFindDuplicates)
+            })
+        }
+        // 与查找重复同为作用于整个文件夹的整理，摆在一起；条件与移动端页眉 ⋮ 里的同一项相同（DriveCommands）
+        if (commands.canonicalNaming) {
+            val action = DriveActions.canonicalName(onCanonicalNaming)
+            add(BarItem("canonicalNaming", 15, listOf(action)) {
+                BarTextButton(action.icon, action.label, onCanonicalNaming)
             })
         }
         // 只在多选里出现（见 DriveCommands），排在查找重复之后：它是对眼前选择的补充，不是平时要摆着的命令
