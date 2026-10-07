@@ -1,6 +1,5 @@
 package dev.piko.desktop.ui
 
-import dev.piko.data.auth.FolderMapMode
 import dev.piko.ui.screens.drive.DockSide
 import dev.piko.ui.screens.drive.FolderMapAutoHide
 import dev.piko.ui.screens.drive.FolderMapEvent
@@ -22,7 +21,7 @@ import kotlin.test.assertNull
  * 目录图自动收起的时机，在虚拟时间线上走：每一步先把到期的唤醒按时刻发完，再发这一步的事件，
  * 与界面里「wakeAt 到了发 Tick」的做法一致。
  *
- * 列表这一块宽 1000dp，面板停在右上角（右沿离列表右沿 24dp），细条的打开区在 x 972..988、y 12..68。
+ * 列表这一块宽 1000dp，面板停在右上角（右沿离列表右沿 24dp），把手（打开区）在 x 968..988、y 12..68。
  */
 class FolderMapAutoHideTest {
     private val area = 1000f
@@ -34,8 +33,8 @@ class FolderMapAutoHideTest {
     private val inStrip = PointerMoved(980f, 40f)
     private val inList = PointerMoved(300f, 300f)
 
-    private class Timeline(start: FolderMapPresence, var zones: FolderMapZones) {
-        var state = FolderMapAutoHide(start)
+    private class Timeline(start: FolderMapPresence, var zones: FolderMapZones, pinned: Boolean = false) {
+        var state = FolderMapAutoHide(start, pinned = pinned)
         var now = 0L
 
         fun at(time: Long, event: FolderMapEvent? = null): FolderMapPresence {
@@ -54,13 +53,13 @@ class FolderMapAutoHideTest {
     @Test
     fun `sweeping across the strip does not open it`() {
         val t = Timeline(Collapsed, docked)
-        // 每 40ms 挪 6dp，穿过打开区用了两百多毫秒，一直在动
+        // 每 40ms 挪 8dp，穿过打开区用了两百多毫秒，一直在动
         var time = 0L
         var y = 12f
         while (y < 68f) {
             t.at(time, PointerMoved(980f, y))
             time += 40
-            y += 6f
+            y += 8f
         }
         t.at(time, inList)
         assertEquals(Collapsed, t.at(time + 2_000))
@@ -70,31 +69,32 @@ class FolderMapAutoHideTest {
     fun `resting on the strip opens it after the open delay`() {
         val t = Timeline(Collapsed, docked)
         t.at(1_000, inStrip)
-        assertEquals(Collapsed, t.at(1_399))
-        assertEquals(Peeking, t.at(1_400))
+        assertEquals(Collapsed, t.at(1_199))
+        assertEquals(Peeking, t.at(1_200))
     }
 
     @Test
     fun `moving beyond the slop restarts the timer, jitter within it does not`() {
         val t = Timeline(Collapsed, docked)
         t.at(0, inStrip)
-        t.at(300, PointerMoved(980f, 45f))
-        assertEquals(Collapsed, t.at(400))
-        assertEquals(Collapsed, t.at(699))
-        assertEquals(Peeking, t.at(700))
+        t.at(150, PointerMoved(980f, 47f))
+        assertEquals(Collapsed, t.at(200))
+        assertEquals(Collapsed, t.at(349))
+        assertEquals(Peeking, t.at(350))
 
+        // 手停下时漂的几个 dp 不重新计时，等待不比 OpenDelay 长
         val jitter = Timeline(Collapsed, docked)
         jitter.at(0, inStrip)
-        jitter.at(200, PointerMoved(982f, 42f))
-        jitter.at(300, PointerMoved(978f, 38f))
-        assertEquals(Peeking, jitter.at(400))
+        jitter.at(100, PointerMoved(984f, 43f))
+        jitter.at(150, PointerMoved(977f, 36f))
+        assertEquals(Peeking, jitter.at(200))
     }
 
     @Test
     fun `leaving the strip before the delay cancels it`() {
         val t = Timeline(Collapsed, docked)
         t.at(0, inStrip)
-        t.at(300, PointerMoved(960f, 40f))
+        t.at(150, PointerMoved(960f, 40f))
         assertEquals(Collapsed, t.at(5_000))
     }
 
@@ -177,70 +177,144 @@ class FolderMapAutoHideTest {
         // 先离开打开区，回来再停住才弹
         t.at(3_000, PointerMoved(900f, 40f))
         t.at(3_100, inStrip)
-        assertEquals(Collapsed, t.at(3_499))
-        assertEquals(Peeking, t.at(3_500))
+        assertEquals(Collapsed, t.at(3_299))
+        assertEquals(Peeking, t.at(3_300))
     }
 
     @Test
-    fun `touch does not open by resting and a tap pins it`() {
+    fun `touch does not open by resting and a tap opens it`() {
         val t = Timeline(Collapsed, docked)
         t.at(0, PointerMoved(980f, 40f, mouse = false))
         assertEquals(Collapsed, t.at(3_000))
-        assertEquals(Held, t.at(3_000, FolderMapEvent.StripActivated))
+        assertEquals(Peeking, t.at(3_000, FolderMapEvent.StripActivated))
+        assertEquals(false, t.state.pinned)
     }
 
     @Test
-    fun `click and shortcut go straight to held`() {
-        assertEquals(Held, Timeline(Collapsed, docked).at(0, FolderMapEvent.StripActivated))
-        assertEquals(Held, Timeline(Collapsed, docked).at(0, FolderMapEvent.Toggle))
-        assertEquals(Held, Timeline(Closed, docked).at(0, FolderMapEvent.Toggle))
-        assertEquals(Held, Timeline(Closed, docked).at(0, FolderMapEvent.Open))
-    }
+    fun `opening follows the pin, and nothing but the pin button changes it`() {
+        assertEquals(Peeking, Timeline(Collapsed, docked).at(0, FolderMapEvent.StripActivated))
+        assertEquals(Peeking, Timeline(Collapsed, docked).at(0, FolderMapEvent.Toggle))
+        assertEquals(Peeking, Timeline(Closed, docked).at(0, FolderMapEvent.Toggle))
+        assertEquals(Peeking, Timeline(Closed, docked).at(0, FolderMapEvent.Open))
+        assertEquals(Held, Timeline(Closed, docked, pinned = true).at(0, FolderMapEvent.Open))
+        assertEquals(Held, Timeline(Closed, docked, pinned = true).at(0, FolderMapEvent.Toggle))
 
-    @Test
-    fun `engaging a peeking panel pins it, then leaving does not collapse`() {
+        // 拖动、过滤这类只算忙，不顺手钉住
         val t = peeking()
-        t.at(1_000, FolderMapEvent.Engaged)
-        assertEquals(Held, t.state.presence)
-        t.at(1_100, inList)
-        t.at(1_200, FolderMapEvent.PointerLeft)
-        assertEquals(Held, t.at(60_000))
+        t.at(1_000, FolderMapEvent.BusyChanged(true))
+        t.at(1_100, FolderMapEvent.BusyChanged(false))
+        assertEquals(false, t.state.pinned)
     }
 
     @Test
-    fun `escape and unpinning collapse while the close button closes`() {
-        assertEquals(Collapsed, Timeline(Held, docked).at(0, FolderMapEvent.Escape))
-        assertEquals(Collapsed, Timeline(Held, docked).at(0, FolderMapEvent.PinToggled))
-        assertEquals(Collapsed, Timeline(Held, docked).at(0, FolderMapEvent.Toggle))
-        assertEquals(Closed, Timeline(Held, docked).at(0, FolderMapEvent.Close))
+    fun `closing keeps the pin and reopening is pinned again`() {
+        val t = peeking()
+        t.at(1_000, FolderMapEvent.PinToggled)
+        assertEquals(Held, t.state.presence)
+        assertEquals(true, t.state.pinned)
+        assertEquals(Closed, t.at(2_000, FolderMapEvent.Close))
+        assertEquals(true, t.state.pinned)
+        assertEquals(Held, t.at(3_000, FolderMapEvent.Open))
+        // 钉住时快捷键是关掉，钉住照旧
+        assertEquals(Closed, t.at(4_000, FolderMapEvent.Toggle))
+        assertEquals(Held, t.at(5_000, FolderMapEvent.Toggle))
+    }
+
+    @Test
+    fun `an explicit open waits for the pointer to come in before counting the leave delay`() {
+        val t = Timeline(Closed, docked)
+        // 导航栏按钮在列表这一块外面，打开那一刻指针不在面板附近
+        t.at(0, FolderMapEvent.Open)
+        t.at(10, FolderMapEvent.PointerLeft)
+        t.at(50, inList)
+        assertEquals(Peeking, t.at(10_000))
+        // 进来过一次之后照常
+        t.at(10_000, PointerMoved(800f, 100f))
+        t.at(11_000, inList)
+        assertEquals(Peeking, t.at(11_499))
+        assertEquals(Collapsed, t.at(11_500))
+    }
+
+    @Test
+    fun `keyboard focus after an explicit open counts as having come in`() {
+        val t = Timeline(Collapsed, docked)
+        t.at(0, FolderMapEvent.Toggle)
+        t.at(10, FolderMapEvent.BusyChanged(true))
+        t.at(20, inList)
+        assertEquals(Peeking, t.at(5_000))
+        t.at(5_000, FolderMapEvent.BusyChanged(false))
+        assertEquals(Collapsed, t.at(5_500))
+    }
+
+    @Test
+    fun `dragging holds it open and leaving after release collapses`() {
+        val t = peeking()
+        t.at(1_000, FolderMapEvent.BusyChanged(true))
+        // 拖着时指针可能冲出保持区
+        t.at(1_100, inList)
+        assertEquals(Peeking, t.at(3_000))
+        t.at(3_000, PointerMoved(800f, 100f))
+        t.at(3_010, FolderMapEvent.BusyChanged(false))
+        assertEquals(Peeking, t.at(6_000))
+        t.at(6_000, inList)
+        assertEquals(Collapsed, t.at(6_500))
+    }
+
+    @Test
+    fun `unpinning peeks while the pointer is near and collapses when it is away`() {
+        val near = Timeline(Held, docked, pinned = true)
+        near.at(0, PointerMoved(800f, 100f))
+        assertEquals(Peeking, near.at(10, FolderMapEvent.PinToggled))
+        assertEquals(false, near.state.pinned)
+        near.at(100, inList)
+        assertEquals(Collapsed, near.at(600))
+
+        val away = Timeline(Held, docked, pinned = true)
+        away.at(0, inList)
+        assertEquals(Collapsed, away.at(10, FolderMapEvent.PinToggled))
+        assertEquals(false, away.state.pinned)
+    }
+
+    @Test
+    fun `escape and the shortcut collapse a peek while the close button closes`() {
+        assertEquals(Collapsed, peeking().at(1_000, FolderMapEvent.Escape))
+        assertEquals(Collapsed, peeking().at(1_000, FolderMapEvent.Toggle))
         assertEquals(Closed, peeking().at(1_000, FolderMapEvent.Close))
         assertEquals(Closed, Timeline(Collapsed, docked).at(0, FolderMapEvent.Close))
+        // 钉住时 Esc 只还焦点，不改状态
+        val pinned = Timeline(Held, docked, pinned = true)
+        assertEquals(Held, pinned.at(0, FolderMapEvent.Escape))
+        assertEquals(true, pinned.state.pinned)
+        assertEquals(Closed, pinned.at(0, FolderMapEvent.Close))
+        assertEquals(true, pinned.state.pinned)
     }
 
     @Test
     fun `an undocked panel never auto hides`() {
         val middle = FolderMapZones(open = null, keep = listOf(panel.outset(24f)), docked = false)
-        val t = Timeline(Held, middle)
-        assertEquals(Held, t.at(0, FolderMapEvent.PinToggled))
-        assertEquals(Held, t.at(0, FolderMapEvent.Escape))
-        t.at(100, inList)
+        // 临时展开的面板拖到中间、松手判为不停靠：常驻，钉住照旧是否
+        val t = peeking()
+        t.zones = middle
+        assertEquals(Held, t.at(1_000, FolderMapEvent.Relayout))
+        assertEquals(false, t.state.pinned)
+        assertEquals(Held, t.at(1_000, FolderMapEvent.Escape))
+        t.at(1_100, inList)
         assertEquals(Held, t.at(60_000))
-        // 快捷键退回原来的开关：收不起来就关掉
-        assertEquals(Closed, t.at(60_000, FolderMapEvent.Toggle))
+        // 在中间也能钉住、取消钉住，只记偏好
+        assertEquals(Held, t.at(60_000, FolderMapEvent.PinToggled))
+        assertEquals(true, t.state.pinned)
+        assertEquals(Held, t.at(60_000, FolderMapEvent.PinToggled))
+        assertEquals(false, t.state.pinned)
+        // 拖回边沿：没钉住的又按临时展开算
+        t.zones = docked
+        t.at(60_100, PointerMoved(800f, 100f))
+        assertEquals(Peeking, t.at(60_200, FolderMapEvent.Relayout))
+        assertEquals(Collapsed, t.at(60_300, FolderMapEvent.Toggle))
 
         // 收着的面板因窗口变窄而不再停靠时，展开常驻
         val shrunk = Timeline(Collapsed, docked)
         shrunk.zones = middle
         assertEquals(Held, shrunk.at(0, FolderMapEvent.Relayout))
-    }
-
-    @Test
-    fun `presence maps onto the saved three states`() {
-        assertEquals(FolderMapMode.AutoHide, Peeking.mode)
-        assertEquals(FolderMapMode.AutoHide, Collapsed.mode)
-        assertEquals(FolderMapMode.Pinned, Held.mode)
-        assertEquals(Collapsed, FolderMapPresence.of(FolderMapMode.AutoHide))
-        assertEquals(FolderMapMode.Closed, FolderMapMode.parse("true"))
     }
 
     @Test
@@ -255,7 +329,7 @@ class FolderMapAutoHideTest {
     private fun peeking(): Timeline {
         val t = Timeline(Collapsed, docked)
         t.at(0, inStrip)
-        check(t.at(400) == Peeking)
+        check(t.at(200) == Peeking)
         // 展开后指针挪进面板
         t.at(500, PointerMoved(800f, 100f))
         return t

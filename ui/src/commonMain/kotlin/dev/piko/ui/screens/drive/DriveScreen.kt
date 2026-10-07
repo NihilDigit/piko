@@ -293,8 +293,12 @@ fun DriveScreen(
         }, archives = archiveBrowser)
     }
     // 目录图：宽窗口里浮在列表上的面板，见 FolderMap
-    val folderMap = remember(state) { FolderMapState(state::folderMapLevel, scope, sessionManager::setFolderMapMode) }
-    LaunchedEffect(folderMap) { folderMap.restore(sessionManager.folderMapModeFlow.first()) }
+    val folderMap = remember(state) {
+        FolderMapState(state::folderMapLevel, scope, sessionManager::setFolderMapOpen, sessionManager::setFolderMapPinned)
+    }
+    LaunchedEffect(folderMap) {
+        folderMap.restore(open = sessionManager.folderMapOpenFlow.first(), pinned = sessionManager.folderMapPinnedFlow.first())
+    }
     LaunchedEffect(folderMap) { driveRepo.folderChanges.collect(folderMap::onChange) }
 
     LaunchedEffect(state) {
@@ -1551,8 +1555,7 @@ fun DriveScreen(
     var propertiesOnTop by remember { mutableStateOf(true) }
     LaunchedEffect(properties) { if (properties != null) propertiesOnTop = true }
     // 目录图展开（含悬停临时展开）时压在属性卡片上面
-    val folderMapExpanded = folderMap.presence == FolderMapPresence.Peeking || folderMap.presence == FolderMapPresence.Held
-    LaunchedEffect(folderMapExpanded) { if (folderMapExpanded) propertiesOnTop = false }
+    LaunchedEffect(folderMap.expanded) { if (folderMap.expanded) propertiesOnTop = false }
 
     // 页眉下面的一块：列表，上面浮着目录图与属性。都只在这一块里，不往上伸到页眉：
     // 地址栏与命令栏始终横贯整个宽度，窗口按钮也就始终在地址栏那一行

@@ -6,21 +6,6 @@ import kotlinx.coroutines.flow.Flow
 /** 网盘空间用量。取到之前先用账号列表里记着的上一次的值，免得卡片整块缺席。 */
 data class QuotaSnapshot(val usageBytes: Long, val limitBytes: Long)
 
-/**
- * 目录图的三态。[AutoHide] 平时收成贴边的细条，悬停或点击展开；[Pinned] 一直展开。
- * 按名字存，读不出的当作 [Closed]。
- */
-enum class FolderMapMode {
-    Closed,
-    AutoHide,
-    Pinned,
-    ;
-
-    companion object {
-        fun parse(name: String?): FolderMapMode = entries.firstOrNull { it.name == name } ?: Closed
-    }
-}
-
 /** 侧栏的开关与宽度。[widthDp] 为 null 表示从未拖过，取调用方的默认宽度。 */
 data class SidePanelPrefs(val open: Boolean, val widthDp: Float?)
 
@@ -243,11 +228,14 @@ interface PikoUserPreferences {
     suspend fun setPlayerBoostSpeed(speed: Float)
 
     /**
-     * 网盘页的目录图（FolderMap）关着、自动收起还是钉住，默认关。每台设备各自的，不同步：目录图只在宽窗口里有，
+     * 网盘页的目录图（FolderMap）开着与钉着，默认都否。两项各自独立：× 关掉不改钉住，再打开照旧钉着；
+     * 没钉住的目录图停在边沿时不用就收成把手。每台设备各自的，不同步：目录图只在宽窗口里有，
      * 桌面上钉着它的人未必在另一台机器上也想钉着。
      */
-    val folderMapModeFlow: Flow<FolderMapMode>
-    suspend fun setFolderMapMode(mode: FolderMapMode)
+    val folderMapOpenFlow: Flow<Boolean>
+    suspend fun setFolderMapOpen(open: Boolean)
+    val folderMapPinnedFlow: Flow<Boolean>
+    suspend fun setFolderMapPinned(pinned: Boolean)
 
     /** 开屏提示里点了「忽略此版本」的版本号。只比相等，更新的版本出来照常提示。 */
     suspend fun getIgnoredUpdateVersion(): String?

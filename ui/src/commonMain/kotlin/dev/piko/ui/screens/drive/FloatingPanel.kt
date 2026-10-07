@@ -6,7 +6,6 @@ import androidx.compose.animation.ExitTransition
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -147,7 +146,7 @@ internal class FloatingPanelState(width: Dp, followsEnd: Boolean = true) {
  * 位置见 [PanelAnchor]；没有锚点时停在右上角，[avoid] 给出另一块开着的面板占的地方，与它重叠时改停在它左边，两块不叠在一起。
  *
  * [visible] 为 false 时卡片照 [exit] 消失、离开组合，位置、大小与 [FloatingPanelState.bounds] 留着，再出现时照 [enter] 在原处出现。
- * [onEngage] 在开始拖标题行、开始改大小、点标题行空白处时调：目录图据此把临时展开的面板钉住。
+ * [onGesture] 在开始拖标题行或改大小时以 true 调、松手或取消时以 false 调：目录图在手势进行中不自动收起。
  *
  * 用普通 Layout 而不是 Popup：不抢焦点的 Popup 收不到键盘，目录图的方向键与过滤框都用不了。
  * 也不是 BoxWithConstraints：里面有提示气泡这类弹层，测量时组合的布局在桌面端会撞上弹层销毁的崩溃（desktopApp/CLAUDE.md）。
@@ -167,7 +166,7 @@ internal fun FloatingPanel(
     avoid: () -> DpRect? = { null },
     onActivate: () -> Unit = {},
     onSettled: () -> Unit = {},
-    onEngage: () -> Unit = {},
+    onGesture: (Boolean) -> Unit = {},
     visible: Boolean = true,
     enter: EnterTransition = EnterTransition.None,
     exit: ExitTransition = ExitTransition.None,
@@ -301,13 +300,13 @@ internal fun FloatingPanel(
                     autoMaxHeight = autoMaxHeight,
                     onMove = ::moveBy,
                     onSettled = onSettled,
-                    onEngage = onEngage,
+                    onGesture = onGesture,
                     headerActions = headerActions,
                     content = content,
                 )
             }
             if (resizable) {
-                ResizeHandles(Modifier.matchParentSize(), onResize = ::resizeBy, onSettled = onSettled, onEngage = onEngage)
+                ResizeHandles(Modifier.matchParentSize(), onResize = ::resizeBy, onSettled = onSettled, onGesture = onGesture)
             }
         }
     }
@@ -351,22 +350,27 @@ private fun PanelFrame(
     autoMaxHeight: Dp,
     onMove: (Dp, Dp) -> Unit,
     onSettled: () -> Unit,
-    onEngage: () -> Unit,
+    onGesture: (Boolean) -> Unit,
     headerActions: @Composable RowScope.() -> Unit,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
     val settled by rememberUpdatedState(onSettled)
-    val engage by rememberUpdatedState(onEngage)
+    val gesture by rememberUpdatedState(onGesture)
     val header = @Composable {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(PanelHeaderHeight)
-                // 标题行上的按钮自己接住点击，落到这里的是空白处
-                .pointerInput(Unit) { detectTapGestures { engage() } }
                 .pointerInput(Unit) {
-                    detectDragGestures(onDragStart = { engage() }, onDragEnd = { settled() }) { change, delta ->
+                    detectDragGestures(
+                        onDragStart = { gesture(true) },
+                        onDragEnd = {
+                            gesture(false)
+                            settled()
+                        },
+                        onDragCancel = { gesture(false) },
+                    ) { change, delta ->
                         change.consume()
                         onMove(delta.x.toDp(), delta.y.toDp())
                     }
@@ -420,21 +424,21 @@ private fun ContentWidthFrame(minWidth: Dp, maxWidth: Dp, maxHeight: Dp, header:
  * 曾在左沿单画一道把手，只有一条边有，看着像只有那条边能拖。
  */
 @Composable
-private fun ResizeHandles(modifier: Modifier, onResize: (ResizeEdges, Dp, Dp) -> Unit, onSettled: () -> Unit, onEngage: () -> Unit) {
+private fun ResizeHandles(modifier: Modifier, onResize: (ResizeEdges, Dp, Dp) -> Unit, onSettled: () -> Unit, onGesture: (Boolean) -> Unit) {
     val horizontal = LocalHorizontalResizeCursor.current
     val vertical = LocalVerticalResizeCursor.current
     val diagonal = LocalDiagonalResizeCursor.current
     val antiDiagonal = LocalAntiDiagonalResizeCursor.current
     Box(modifier) {
         // 边让出两端的角，角压在边上面
-        ResizeHandle(Modifier.align(Alignment.CenterStart).width(ResizeGrab).fillMaxHeight().padding(vertical = CornerGrab), ResizeEdges(start = true), horizontal, onResize, onSettled, onEngage)
-        ResizeHandle(Modifier.align(Alignment.CenterEnd).width(ResizeGrab).fillMaxHeight().padding(vertical = CornerGrab), ResizeEdges(end = true), horizontal, onResize, onSettled, onEngage)
-        ResizeHandle(Modifier.align(Alignment.TopCenter).height(ResizeGrab).fillMaxWidth().padding(horizontal = CornerGrab), ResizeEdges(top = true), vertical, onResize, onSettled, onEngage)
-        ResizeHandle(Modifier.align(Alignment.BottomCenter).height(ResizeGrab).fillMaxWidth().padding(horizontal = CornerGrab), ResizeEdges(bottom = true), vertical, onResize, onSettled, onEngage)
-        ResizeHandle(Modifier.align(Alignment.TopStart).size(CornerGrab), ResizeEdges(start = true, top = true), diagonal, onResize, onSettled, onEngage)
-        ResizeHandle(Modifier.align(Alignment.BottomEnd).size(CornerGrab), ResizeEdges(end = true, bottom = true), diagonal, onResize, onSettled, onEngage)
-        ResizeHandle(Modifier.align(Alignment.TopEnd).size(CornerGrab), ResizeEdges(end = true, top = true), antiDiagonal, onResize, onSettled, onEngage)
-        ResizeHandle(Modifier.align(Alignment.BottomStart).size(CornerGrab), ResizeEdges(start = true, bottom = true), antiDiagonal, onResize, onSettled, onEngage)
+        ResizeHandle(Modifier.align(Alignment.CenterStart).width(ResizeGrab).fillMaxHeight().padding(vertical = CornerGrab), ResizeEdges(start = true), horizontal, onResize, onSettled, onGesture)
+        ResizeHandle(Modifier.align(Alignment.CenterEnd).width(ResizeGrab).fillMaxHeight().padding(vertical = CornerGrab), ResizeEdges(end = true), horizontal, onResize, onSettled, onGesture)
+        ResizeHandle(Modifier.align(Alignment.TopCenter).height(ResizeGrab).fillMaxWidth().padding(horizontal = CornerGrab), ResizeEdges(top = true), vertical, onResize, onSettled, onGesture)
+        ResizeHandle(Modifier.align(Alignment.BottomCenter).height(ResizeGrab).fillMaxWidth().padding(horizontal = CornerGrab), ResizeEdges(bottom = true), vertical, onResize, onSettled, onGesture)
+        ResizeHandle(Modifier.align(Alignment.TopStart).size(CornerGrab), ResizeEdges(start = true, top = true), diagonal, onResize, onSettled, onGesture)
+        ResizeHandle(Modifier.align(Alignment.BottomEnd).size(CornerGrab), ResizeEdges(end = true, bottom = true), diagonal, onResize, onSettled, onGesture)
+        ResizeHandle(Modifier.align(Alignment.TopEnd).size(CornerGrab), ResizeEdges(end = true, top = true), antiDiagonal, onResize, onSettled, onGesture)
+        ResizeHandle(Modifier.align(Alignment.BottomStart).size(CornerGrab), ResizeEdges(start = true, bottom = true), antiDiagonal, onResize, onSettled, onGesture)
     }
 }
 
@@ -445,17 +449,24 @@ private fun ResizeHandle(
     cursor: PointerIcon?,
     onResize: (ResizeEdges, Dp, Dp) -> Unit,
     onSettled: () -> Unit,
-    onEngage: () -> Unit,
+    onGesture: (Boolean) -> Unit,
 ) {
     // 手势协程只起一次，拿最新的回调：回调里读的宽高每拖一下都在变
     val resize by rememberUpdatedState(onResize)
     val settled by rememberUpdatedState(onSettled)
-    val engage by rememberUpdatedState(onEngage)
+    val gesture by rememberUpdatedState(onGesture)
     Box(
         modifier = modifier
             .then(if (cursor != null) Modifier.pointerHoverIcon(cursor) else Modifier)
             .pointerInput(Unit) {
-                detectDragGestures(onDragStart = { engage() }, onDragEnd = { settled() }) { change, delta ->
+                detectDragGestures(
+                    onDragStart = { gesture(true) },
+                    onDragEnd = {
+                        gesture(false)
+                        settled()
+                    },
+                    onDragCancel = { gesture(false) },
+                ) { change, delta ->
                     change.consume()
                     resize(edges, delta.x.toDp(), delta.y.toDp())
                 }

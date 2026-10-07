@@ -104,7 +104,15 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
-import dev.piko.data.auth.FolderMapMode
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.material.icons.outlined.AccountTree
+import androidx.compose.material3.Surface
+import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import dev.piko.ui.components.LocalPointerSource
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.PikoPlatform
@@ -121,13 +129,14 @@ import kotlin.time.TimeSource
  *
  * 状态挂在网盘页上：列过的层与展开的节点都还在，再展开时先显示上次的、后台重列。
  * 过滤、高亮与滚动位置也在这里而不在组合里：自动收起时面板离开组合（隐藏的面板留在组合里的话，焦点遍历与读屏还会进去），
- * 展开回来要原样。展开与收起的时机见 [FolderMapAutoHide]，[saveMode] 把关、自动收起、钉住三态存进偏好。
+ * 展开回来要原样。展开与收起的时机见 [FolderMapAutoHide]；开着与否、钉着与否两项分别经 [saveOpen]、[savePinned] 存进偏好。
  */
 @Stable
 internal class FolderMapState(
     private val load: suspend (String) -> FolderMapLevel,
     private val scope: CoroutineScope,
-    private val saveMode: suspend (FolderMapMode) -> Unit,
+    private val saveOpen: suspend (Boolean) -> Unit,
+    private val savePinned: suspend (Boolean) -> Unit,
 ) {
     val levels = mutableStateMapOf<String, FolderMapLevel>()
     private val expandedIds = mutableStateMapOf<String, Boolean>()
@@ -166,14 +175,17 @@ internal class FolderMapState(
     /** 下一次树出现时把焦点给它：快捷键与键盘展开时用。 */
     var pendingTreeFocus by mutableStateOf(false)
 
-    /** 面板内有键盘焦点、过滤框非空或有焦点：不自动收起。 */
-    val busy: Boolean get() = keyboardInside || filterFocused || query.isNotEmpty()
+    /** 正在拖标题行或改大小。按手势的开始与结束记，不按指针位置猜。 */
+    var gesturing by mutableStateOf(false)
+
+    /** 正在拖动或改大小、面板内有键盘焦点、过滤框非空或有焦点：不自动收起。 */
+    val busy: Boolean get() = gesturing || keyboardInside || filterFocused || query.isNotEmpty()
 
     private val clock = TimeSource.Monotonic.markNow()
 
     fun now(): Long = clock.elapsedNow().inWholeMilliseconds
 
-    /** 细条的上沿：与面板上沿对齐。面板还没出现过时取默认位置。 */
+    /** 把手的上沿：与面板上沿对齐。面板还没出现过时取默认位置。 */
     val stripTop: Dp get() = panel.bounds?.top ?: panel.position?.y ?: PanelTopMargin
 
     fun zones(): FolderMapZones {
@@ -186,45 +198,50 @@ internal class FolderMapState(
     }
 
     fun dispatch(event: FolderMapEvent) {
-        val before = autoHide.presence
+        val before = autoHide
         autoHide = autoHide.step(event, zones(), now())
-        val after = autoHide.presence
-        if (after.mode != before.mode) scope.launch { saveMode(after.mode) }
+        val open = autoHide.presence != FolderMapPresence.Closed
+        if (open != (before.presence != FolderMapPresence.Closed)) scope.launch { saveOpen(open) }
+        if (autoHide.pinned != before.pinned) scope.launch { savePinned(autoHide.pinned) }
     }
 
-    /** 启动或网盘页重建时按存下的偏好摆好。 */
-    fun restore(mode: FolderMapMode) {
-        autoHide = FolderMapAutoHide(FolderMapPresence.of(mode))
+    /** 启动或网盘页重建时按存下的偏好摆好。没钉住的从把手起，不会一启动就是临时展开的。 */
+    fun restore(open: Boolean, pinned: Boolean) {
+        val presence = when {
+            !open -> FolderMapPresence.Closed
+            pinned -> FolderMapPresence.Held
+            else -> FolderMapPresence.Collapsed
+        }
+        autoHide = FolderMapAutoHide(presence, pinned = pinned)
     }
 
-    /** 快捷键与命令面板：关着的打开、收着的展开（焦点进树），展开着的收起，停在中间的关掉。 */
+    /** 快捷键与命令面板，见 [FolderMapAutoHide]。展开时焦点进树。 */
     fun toggle() {
+        val wasExpanded = expanded
         dispatch(FolderMapEvent.Toggle)
-        if (presence == FolderMapPresence.Held) pendingTreeFocus = true
+        if (!wasExpanded && expanded) pendingTreeFocus = true
     }
 
-    /** 点击或轻点细条，[keyboard] 为 Tab 到细条后按回车、空格。 */
+    /** 点击或轻点把手，[keyboard] 为 Tab 到把手后按回车、空格。 */
     fun activateStrip(keyboard: Boolean) {
         dispatch(FolderMapEvent.StripActivated)
         if (keyboard) pendingTreeFocus = true
     }
 
+    /** 面板看得见：临时展开或常驻。 */
+    val expanded: Boolean get() = presence == FolderMapPresence.Peeking || presence == FolderMapPresence.Held
+
     val toggleLabel: String
         get() = when {
             presence == FolderMapPresence.Closed -> "打开目录图"
             presence == FolderMapPresence.Collapsed -> "展开目录图"
-            dock == null -> "关闭目录图"
+            presence == FolderMapPresence.Held -> "关闭目录图"
             else -> "收起目录图"
         }
 
     fun toggleFilter() {
         filterShown = !filterShown
         if (!filterShown) query = ""
-    }
-
-    fun typeFilter(text: String) {
-        query = text
-        dispatch(FolderMapEvent.Engaged)
     }
 
     /**
@@ -484,7 +501,7 @@ private fun FolderMapTree(
                 if (query.isEmpty()) Text("过滤已展开的内容", style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
                 BasicTextField(
                     value = query,
-                    onValueChange = state::typeFilter,
+                    onValueChange = { state.query = it },
                     singleLine = true,
                     textStyle = MaterialTheme.typography.bodyMedium.copy(color = colors.onSurface),
                     cursorBrush = SolidColor(colors.primary),
@@ -648,15 +665,15 @@ private fun Modifier.treeGuides(row: MapRow, color: Color, childrenBelow: Boolea
 }
 
 /**
- * 宽窗口网盘页的目录图：一块浮在列表上的面板，停靠在列表左右边沿时不用就收成贴边的细条。
- * 导航栏搜索旁的树形按钮打开（只在关着时出现），打开即钉住；标题行的钉住按钮取消钉住后转为自动收起：
- * 指针在细条上停住片刻临时展开，离开即收；点细条、快捷键直接钉住。Esc 收起，× 关掉（导航栏上的按钮重新出现）。
- * 时机见 [FolderMapAutoHide] 与 [FolderMapTiming]。拖到列表中间的面板不自动收起，没有钉住按钮。
+ * 宽窗口网盘页的目录图：一块浮在列表上的面板，没钉住、停靠在列表左右边沿时不用就收成贴边的把手。
+ * 导航栏搜索旁的树形按钮打开（只在关着时出现）；钉住与否只由标题行的钉住按钮改，× 关掉再开照旧。
+ * 指针在把手上停住片刻、点把手、快捷键都是临时展开，离开即收。Esc 收起，× 关掉（导航栏上的按钮重新出现）。
+ * 时机与各入口的规则见 [FolderMapAutoHide] 与 [FolderMapTiming]。拖到列表中间的面板不自动收起。
  * 拖动、改大小与层叠见 [FloatingPanel]，[avoid] 等参数照传。由调用方铺满列表这一块，并在列表这一块上挂 [folderMapPointer]。
  * 树的根总是网盘根目录，进来与换了位置时都展开到眼前的文件夹。
  * 树里没有根目录那一行（从根的子项列起），回根目录靠标题行的 [onHome]，与导航栏的主页按钮同一个入口；已在根目录时为 null，不显示。
  *
- * 细条与面板是两个节点：细条只在收起时有，面板在自己的位置上淡入，不从细条形变出来。上一版细轨与树是同一个容器在形变，
+ * 把手与面板是两个节点：把手只在收起时有，面板在自己的位置上淡入，不从把手形变出来。上一版细轨与树是同一个容器在形变，
  * 碰到的东西当场变形、拖的与停下的不是同一个东西。
  */
 @Composable
@@ -683,7 +700,8 @@ internal fun FolderMapPanel(
     LaunchedEffect(state) {
         snapshotFlow { state.autoHide.wakeAt }.collectLatest { at ->
             if (at == null) return@collectLatest
-            delay((at - state.now()).coerceAtLeast(0))
+            // 计时器早到一两毫秒时状态机不认这次叫醒，wakeAt 又没变、不会再叫，所以等到确实过点再发
+            while (state.now() < at) delay(at - state.now())
             state.dispatch(FolderMapEvent.Tick)
         }
     }
@@ -735,19 +753,17 @@ internal fun FolderMapPanel(
                 onActivate()
             },
             onSettled = state::judgeDock,
-            onEngage = { state.dispatch(FolderMapEvent.Engaged) },
+            onGesture = { state.gesturing = it },
             visible = expanded,
             enter = motion.peekEnter(fromEnd = state.dock != DockSide.Left, offsetPx = with(density) { PeekOffset.roundToPx() }),
             exit = motion.peekExit(),
             headerActions = {
                 if (onHome != null) PanelHeaderButton(Icons.Outlined.Home, "网盘根目录", onHome)
                 PanelHeaderToggle(Icons.Outlined.Search, Icons.Filled.Search, "过滤", checked = state.filterShown, onClick = state::toggleFilter)
-                // 停在中间的面板收不起来，不给钉住按钮
-                if (state.dock != null) {
-                    val held = presence == FolderMapPresence.Held
-                    PanelHeaderToggle(Icons.Outlined.PushPin, Icons.Filled.PushPin, if (held) "取消钉住" else "钉住", checked = held) {
-                        state.dispatch(FolderMapEvent.PinToggled)
-                    }
+                // 停在中间时也给：钉住是记下来的偏好，拖回边沿或关掉再开时生效
+                val pinned = state.autoHide.pinned
+                PanelHeaderToggle(Icons.Outlined.PushPin, Icons.Filled.PushPin, if (pinned) "取消钉住" else "钉住", checked = pinned) {
+                    state.dispatch(FolderMapEvent.PinToggled)
                 }
             },
         ) {
@@ -771,21 +787,37 @@ internal fun FolderMapPanel(
 }
 
 /**
- * 收起时贴在列表边沿的细条：看得见的只有一道 [FolderMapTiming.StripVisualWidth] 宽的竖条，命中区是打开区那么宽，
- * 触屏时加宽。上面不放任何控件（上一版在细轨上放按钮，难看又难点）。可以 Tab 到，回车或空格展开并把焦点给树。
- * 悬停展开不在这里判，由列表这一块上的 [folderMapPointer] 交给状态机：细条只是打开区里看得见的部分。
+ * 收起时贴在列表边沿的把手：与面板同一种容器色、带一点阴影，中间一个目录树图标（与导航栏的树形按钮同一个），
+ * 贴边一侧直角、靠内一侧圆角。整条把手就是一个入口，只放这一个图标，不放多个控件（上一版在细轨上摆按钮，难看又难点）。
+ * 原先只画一道 4dp 的半透明竖条，手测几乎看不见。命中区就是把手本身，触屏时向内加宽。
+ * 可以 Tab 到，回车或空格展开并把焦点给树。悬停展开不在这里判，由列表这一块上的 [folderMapPointer] 交给状态机。
  */
 @Composable
 private fun BoxScope.FolderMapStrip(state: FolderMapState, side: DockSide) {
     val colors = MaterialTheme.colorScheme
     val width = if (LocalPointerSource.current.isTouchLike) FolderMapTiming.TouchOpenZoneWidth else FolderMapTiming.OpenZoneWidth
     var focused by remember { mutableStateOf(false) }
+    val interactions = remember { MutableInteractionSource() }
+    val hovered by interactions.collectIsHoveredAsState()
     val end = side == DockSide.Right
-    Box(
+    val shape = if (end) {
+        RoundedCornerShape(topStart = HandleCorner, bottomStart = HandleCorner)
+    } else {
+        RoundedCornerShape(topEnd = HandleCorner, bottomEnd = HandleCorner)
+    }
+    // 悬停时叠一层 M3 的悬停状态层（onSurface 8%），容器色深一档
+    val container = if (hovered) colors.onSurface.copy(alpha = 0.08f).compositeOver(colors.surfaceContainerHighest) else colors.surfaceContainerHighest
+    Surface(
+        shape = shape,
+        color = container,
+        shadowElevation = 2.dp,
+        border = if (focused) BorderStroke(2.dp, colors.primary) else null,
         modifier = Modifier
             .align(if (end) Alignment.TopEnd else Alignment.TopStart)
             .padding(top = state.stripTop, end = if (end) FolderMapTiming.ScrollbarClearance else 0.dp)
             .size(width, FolderMapTiming.StripHeight)
+            .hoverable(interactions)
+            .pointerHoverIcon(PointerIcon.Hand)
             .semantics {
                 contentDescription = "展开目录图"
                 role = Role.Button
@@ -802,30 +834,26 @@ private fun BoxScope.FolderMapStrip(state: FolderMapState, side: DockSide) {
             }
             .focusable()
             .pointerInput(state) { detectTapGestures { state.activateStrip(keyboard = false) } },
-        contentAlignment = if (end) Alignment.CenterEnd else Alignment.CenterStart,
     ) {
-        Box(
-            Modifier
-                .fillMaxHeight()
-                .width(if (focused) FolderMapTiming.StripVisualWidth * 1.5f else FolderMapTiming.StripVisualWidth)
-                .clip(CircleShape)
-                // 用强调色：灰色的竖条与旁边的滚动条长得一样，看不出是另一样东西
-                .background(if (focused) colors.primary else colors.primary.copy(alpha = 0.5f)),
-        )
+        // 触屏加宽时图标仍留在贴边那一截里，与鼠标时看到的位置相同
+        Box(Modifier.fillMaxSize(), contentAlignment = if (end) Alignment.CenterEnd else Alignment.CenterStart) {
+            Box(Modifier.width(FolderMapTiming.OpenZoneWidth), contentAlignment = Alignment.Center) {
+                Icon(Icons.Outlined.AccountTree, contentDescription = null, tint = colors.onSurfaceVariant, modifier = Modifier.size(16.dp))
+            }
+        }
     }
 }
 
 /**
  * 挂在列表这一块上（目录图与列表共同的上层），把鼠标的位置交给目录图的状态机。挂在上层而不是目录图自己身上：
  * 目录图铺满列表这一块，自己接指针就把列表整个盖住了；上层在 Initial 阶段只看不吃，列表照常收到。
- * 只在自动收起的两态里转交，关着与钉住时什么也不做。
+ * 关着时什么也不做；常驻时也转交，取消钉住那一刻要知道指针在不在面板附近。
  */
 internal fun Modifier.folderMapPointer(state: FolderMapState): Modifier = pointerInput(state) {
     awaitPointerEventScope {
         while (true) {
             val event = awaitPointerEvent(PointerEventPass.Initial)
-            val presence = state.presence
-            if (presence != FolderMapPresence.Collapsed && presence != FolderMapPresence.Peeking) continue
+            if (state.presence == FolderMapPresence.Closed) continue
             val change = event.changes.firstOrNull() ?: continue
             when (event.type) {
                 PointerEventType.Exit -> state.dispatch(FolderMapEvent.PointerLeft)
@@ -865,7 +893,8 @@ private fun BoxScope.FolderMapDebugOverlay(state: FolderMapState) {
     }
     fun remaining(at: Long?) = at?.let { "${(it - now).coerceAtLeast(0)}ms" } ?: "-"
     Text(
-        "${machine.presence}  停靠 ${state.dock ?: "无"}  武装 ${machine.armed}  忙 ${machine.busy}\n" +
+        "${machine.presence}  钉住 ${machine.pinned}  停靠 ${state.dock ?: "无"}  武装 ${machine.armed}  " +
+            "进过 ${machine.entered}  忙 ${machine.busy}\n" +
             "展开倒计时 ${remaining(machine.openAt)}  收起倒计时 ${remaining(machine.collapseAt)}",
         style = MaterialTheme.typography.labelSmall,
         color = Color.White,
@@ -888,6 +917,8 @@ private val FolderMapMaxHeight = 560.dp
 
 // 展开时从停靠那一侧向内移的距离：只为看出它是从边上出来的，大了像整块飞进来
 private val PeekOffset = 8.dp
+
+private val HandleCorner = 10.dp
 
 private val PanelWidth = 360.dp
 private val PanelMinWidth = 220.dp

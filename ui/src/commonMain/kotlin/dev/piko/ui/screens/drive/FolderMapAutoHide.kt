@@ -1,7 +1,6 @@
 package dev.piko.ui.screens.drive
 
 import androidx.compose.ui.unit.dp
-import dev.piko.data.auth.FolderMapMode
 import kotlin.math.hypot
 
 /**
@@ -12,11 +11,16 @@ import kotlin.math.hypot
  * 收起后指针要先离开打开区一次才重新武装。
  */
 object FolderMapTiming {
-    /** 照 Windows 悬停时间的默认值。展开的是一整块面板，误弹代价高，宁可慢一点。 */
-    const val OpenDelayMillis = 400L
+    /**
+     * 原取 Windows 悬停时间的默认值 400ms，手测嫌慢。把手现在是看得见的入口，指针停上去多半是有意的，误弹代价随之变小。
+     */
+    const val OpenDelayMillis = 200L
 
-    /** 照 Windows 悬停矩形的默认大小。只看位移，不另设速度阈值：停住与慢慢划过靠计时区分。 */
-    val HoverSlop = 4.dp
+    /**
+     * 停住的判定半径。原取 Windows 悬停矩形的 4 像素，手停下时还会漂两三个像素，换算成 dp 后常越过它而重新计时，
+     * 实际等待比 [OpenDelayMillis] 长；放宽到 6dp。只看位移，不另设速度阈值：停住与慢慢划过靠计时区分。
+     */
+    val HoverSlop = 6.dp
 
     /**
      * 离开保持区后等这么久才收起，期间回来即取消。任务栏与 Dock 都是半秒级；
@@ -24,8 +28,8 @@ object FolderMapTiming {
      */
     const val LeaveDelayMillis = 500L
 
-    /** 细条的鼠标打开区宽度。触屏轻点要更宽的命中区，见 [TouchOpenZoneWidth]，触屏不走悬停。 */
-    val OpenZoneWidth = 16.dp
+    /** 把手的宽度，也就是鼠标的打开区。触屏轻点要更宽的命中区，见 [TouchOpenZoneWidth]，触屏不走悬停。 */
+    val OpenZoneWidth = 20.dp
     val TouchOpenZoneWidth = 32.dp
 
     /** 保持区是面板外扩这么多：指针冲过头一点再回来，不算离开。 */
@@ -34,46 +38,26 @@ object FolderMapTiming {
     /** 松手时面板左沿或右沿离列表同侧边沿不超过它，算停靠；只有停靠的面板自动收起。默认位置离右沿 24dp，算停靠。 */
     val DockThreshold = 48.dp
 
-    /** 细条的高度，约是面板标题行加一截；上沿与面板上沿对齐。 */
+    /** 把手的高度，约是面板标题行加一截；上沿与面板上沿对齐。 */
     val StripHeight = 56.dp
 
-    /** 细条看得见的那一道的宽度，命中区另见 [OpenZoneWidth]。 */
-    val StripVisualWidth = 4.dp
-
-    /** 右侧的细条让出列表滚动条（2dp 边距、6dp 粗、2dp 边距）再多留 2dp，两者的热区不重叠。 */
+    /** 右侧的把手让出列表滚动条（2dp 边距、6dp 粗、2dp 边距）再多留 2dp，两者的热区不重叠。 */
     val ScrollbarClearance = 12.dp
 }
 
-/** 目录图眼下的样子。展开中、收起中只是动画，事件按目标状态处理。 */
+/** 目录图眼下的样子。展开中、收起中只是动画，事件按目标状态处理。钉住与否另记在 [FolderMapAutoHide.pinned]。 */
 enum class FolderMapPresence {
     /** × 关掉，导航栏上的树形按钮重新出现。 */
     Closed,
 
-    /** 只剩贴边的细条。 */
+    /** 只剩贴边的把手。 */
     Collapsed,
 
-    /** 悬停临时展开，离开即收。 */
+    /** 临时展开，离开即收。 */
     Peeking,
 
-    /** 钉住展开。 */
+    /** 常驻展开：钉住了，或面板停在列表中间、收不起来。 */
     Held,
-    ;
-
-    val mode: FolderMapMode
-        get() = when (this) {
-            Closed -> FolderMapMode.Closed
-            Collapsed, Peeking -> FolderMapMode.AutoHide
-            Held -> FolderMapMode.Pinned
-        }
-
-    companion object {
-        /** 启动时按存下的偏好取。自动收起的从细条起，不会一启动就是临时展开的。 */
-        fun of(mode: FolderMapMode): FolderMapPresence = when (mode) {
-            FolderMapMode.Closed -> Closed
-            FolderMapMode.AutoHide -> Collapsed
-            FolderMapMode.Pinned -> Held
-        }
-    }
 }
 
 /** 面板停靠在列表的哪一侧。按屏幕左右算，不随书写方向翻转：面板的位置本来就是按左右记的。 */
@@ -87,7 +71,7 @@ data class MapZone(val left: Float, val top: Float, val right: Float, val bottom
 }
 
 /**
- * 判定用的几块区域。[open] 是细条的打开区，[keep] 是保持区（面板外扩 [FolderMapTiming.KeepMargin]，连同打开区），
+ * 判定用的几块区域。[open] 是把手（打开区），[keep] 是保持区（面板外扩 [FolderMapTiming.KeepMargin]，连同打开区），
  * [docked] 为 false 时面板不在边沿，整套自动收起不生效。
  */
 data class FolderMapZones(val open: MapZone?, val keep: List<MapZone>, val docked: Boolean)
@@ -100,7 +84,7 @@ fun dockSideOf(panel: MapZone, areaWidth: Float): DockSide? {
     return side.takeIf { minOf(toLeft, toRight) <= FolderMapTiming.DockThreshold.value }
 }
 
-/** 细条的打开区：贴着停靠那一侧的列表边沿，右侧让出滚动条；上沿与面板上沿对齐。 */
+/** 把手占的地方，也就是打开区：贴着停靠那一侧的列表边沿，右侧让出滚动条；上沿与面板上沿对齐。 */
 fun stripZone(side: DockSide, top: Float, areaWidth: Float, width: Float = FolderMapTiming.OpenZoneWidth.value): MapZone {
     val bottom = top + FolderMapTiming.StripHeight.value
     return when (side) {
@@ -120,19 +104,16 @@ sealed interface FolderMapEvent {
     /** 指针离开了列表这一块（移到页眉、侧边栏或窗口外）。 */
     data object PointerLeft : FolderMapEvent
 
-    /** 「忙」：面板内有键盘焦点、过滤框非空或有焦点。忙时不收起，解除后从头计时。 */
+    /** 「忙」：正在拖标题行或改大小、面板内有键盘焦点、过滤框非空或有焦点。忙时不收起，解除后从头计时。 */
     data class BusyChanged(val busy: Boolean) : FolderMapEvent
 
     /** 到了 [FolderMapAutoHide.wakeAt]。 */
     data object Tick : FolderMapEvent
 
-    /** 点击、轻点细条，或 Tab 到细条后回车、空格。 */
+    /** 点击、轻点把手，或 Tab 到把手后回车、空格。 */
     data object StripActivated : FolderMapEvent
 
-    /** 在临时展开的面板上做了要留下来的事：拖标题行、改大小、过滤框输入、点标题行空白。 */
-    data object Engaged : FolderMapEvent
-
-    /** 标题行的钉住按钮。 */
+    /** 标题行的钉住按钮，唯一改 [FolderMapAutoHide.pinned] 的事件。 */
     data object PinToggled : FolderMapEvent
 
     /** 焦点在树里时按 Esc。 */
@@ -155,14 +136,24 @@ sealed interface FolderMapEvent {
  * 目录图展开与收起的状态机，不依赖 Compose，时间由调用方给（毫秒，单调）。
  * 界面在 [wakeAt] 到时发一次 [FolderMapEvent.Tick]。
  *
- * [armed] 为 false 时悬停不计时：收起之后指针多半还停在细条上，要先离开打开区一次。
+ * 开着与否（[presence] 是不是 Closed）与 [pinned] 是两个独立的偏好。[pinned] 只表示人按过钉住按钮，别的动作一律不改它：
+ * × 关掉再打开照旧钉着；拖动、改大小、在过滤框里打字只算「忙」，不顺手钉住，否则没按过钉住的人也被记成钉住。
+ * 钉住时打开即常驻；没钉住时打开即临时展开，停在边沿的面板离开即收。
+ * 快捷键在钉住时是关掉（同 ×，钉住照旧），没钉住时是展开或收起：钉住就是不想让它自己收，
+ * 快捷键若把钉住的面板收成把手，看上去像取消了钉住，再悬停又会弹出临时展开。
+ *
+ * [armed] 为 false 时悬停不计时：收起之后指针多半还停在把手上，要先离开打开区一次。
  * [hover] 是这一轮停住的起点，挪出 [FolderMapTiming.HoverSlop] 换新的起点重新计时。
- * [pointerOutside] 是指针在不在保持区外，忙解除时据此决定要不要开始计 [FolderMapTiming.LeaveDelayMillis]。
+ * [entered] 是这一次临时展开以来指针进过保持区没有（或忙过）：点把手、快捷键、导航栏按钮打开时指针多半在别处，
+ * 不等它进来过就按离开计时的话，从导航栏按钮那里打开，半秒就收了。
+ * [pointerOutside] 是指针在不在保持区外，忙解除、取消钉住时据此决定收不收。
  */
 data class FolderMapAutoHide(
     val presence: FolderMapPresence,
+    val pinned: Boolean = false,
     val armed: Boolean = true,
     val hover: HoverAnchor? = null,
+    val entered: Boolean = true,
     val pointerOutside: Boolean = false,
     val busy: Boolean = false,
     val collapseAt: Long? = null,
@@ -181,13 +172,23 @@ data class FolderMapAutoHide(
             FolderMapPresence.Peeking -> peekingStep(event, zones, now)
             FolderMapPresence.Held -> heldStep(event, zones)
         }
-        // 拖到中间的面板保持常驻：收起之后细条贴在哪一侧都说不通
-        val autoHides = next.presence == FolderMapPresence.Collapsed || next.presence == FolderMapPresence.Peeking
-        return if (!zones.docked && autoHides) next.held() else next
+        return next.settled(zones, now)
+    }
+
+    /**
+     * 停靠决定能不能自动收起：拖到中间的面板常驻（收起之后把手贴在哪一侧都说不通）；
+     * 没钉住的面板拖回边沿后又按临时展开算，指针此刻就在面板上。
+     */
+    private fun settled(zones: FolderMapZones, now: Long): FolderMapAutoHide = when {
+        !zones.docked && (presence == FolderMapPresence.Collapsed || presence == FolderMapPresence.Peeking) ->
+            copy(presence = FolderMapPresence.Held, hover = null, collapseAt = null)
+        zones.docked && presence == FolderMapPresence.Held && !pinned ->
+            peeking(entered = true).pointerAt(pointerOutside, now)
+        else -> this
     }
 
     private fun closedStep(event: FolderMapEvent): FolderMapAutoHide = when (event) {
-        FolderMapEvent.Open, FolderMapEvent.Toggle -> held()
+        FolderMapEvent.Open, FolderMapEvent.Toggle -> opened()
         is FolderMapEvent.BusyChanged -> copy(busy = event.busy)
         else -> this
     }
@@ -197,13 +198,10 @@ data class FolderMapAutoHide(
         FolderMapEvent.PointerLeft -> copy(hover = null, armed = true)
         FolderMapEvent.Tick -> {
             val due = openAt
-            if (due != null && now >= due) {
-                copy(presence = FolderMapPresence.Peeking, hover = null, pointerOutside = false, collapseAt = null)
-            } else {
-                this
-            }
+            // 悬停展开时指针就在把手上，把手在保持区里
+            if (due != null && now >= due) peeking(entered = true) else this
         }
-        FolderMapEvent.StripActivated, FolderMapEvent.Toggle, FolderMapEvent.Open -> held()
+        FolderMapEvent.StripActivated, FolderMapEvent.Toggle, FolderMapEvent.Open -> opened()
         FolderMapEvent.Close -> closed()
         is FolderMapEvent.BusyChanged -> copy(busy = event.busy)
         else -> this
@@ -222,40 +220,54 @@ data class FolderMapAutoHide(
         is FolderMapEvent.PointerMoved -> pointerAt(zones.keep.none { it.contains(event.x, event.y) }, now)
         FolderMapEvent.PointerLeft -> pointerAt(outside = true, now)
         is FolderMapEvent.BusyChanged -> when {
-            event.busy -> copy(busy = true, collapseAt = null)
-            pointerOutside -> copy(busy = false, collapseAt = now + FolderMapTiming.LeaveDelayMillis)
+            // 忙过（键盘打开后焦点在树里、拖过标题行）等于进来过：焦点离开时指针若在外面，照常计时收起
+            event.busy -> copy(busy = true, entered = true, collapseAt = null)
+            pointerOutside && entered -> copy(busy = false, collapseAt = now + FolderMapTiming.LeaveDelayMillis)
             else -> copy(busy = false)
         }
         FolderMapEvent.Tick -> {
             val due = collapseAt
             if (due != null && now >= due) collapsed() else this
         }
-        FolderMapEvent.Engaged, FolderMapEvent.PinToggled, FolderMapEvent.StripActivated, FolderMapEvent.Open -> held()
+        FolderMapEvent.PinToggled -> copy(presence = FolderMapPresence.Held, pinned = true, hover = null, collapseAt = null)
         FolderMapEvent.Escape, FolderMapEvent.Toggle -> collapsed()
         FolderMapEvent.Close -> closed()
-        FolderMapEvent.Relayout -> this
+        FolderMapEvent.StripActivated, FolderMapEvent.Open, FolderMapEvent.Relayout -> this
     }
 
     private fun pointerAt(outside: Boolean, now: Long): FolderMapAutoHide = when {
-        !outside -> copy(pointerOutside = false, collapseAt = null)
-        busy -> copy(pointerOutside = true, collapseAt = null)
+        !outside -> copy(pointerOutside = false, entered = true, collapseAt = null)
+        !entered || busy -> copy(pointerOutside = true, collapseAt = null)
         // 已在计时的不重新起算：在保持区外来回挪不该一直拖着不收
         else -> copy(pointerOutside = true, collapseAt = collapseAt ?: (now + FolderMapTiming.LeaveDelayMillis))
     }
 
     private fun heldStep(event: FolderMapEvent, zones: FolderMapZones): FolderMapAutoHide = when (event) {
-        // 停在中间的面板收不起来：钉住按钮不显示，Esc 只把焦点还给列表，快捷键照旧开关
-        FolderMapEvent.PinToggled, FolderMapEvent.Escape -> if (zones.docked) collapsed() else this
-        FolderMapEvent.Toggle -> if (zones.docked) collapsed() else closed()
-        FolderMapEvent.Close -> closed()
+        // 记着指针在不在保持区里，取消钉住时据此决定转为临时展开还是收起
+        is FolderMapEvent.PointerMoved -> copy(pointerOutside = zones.keep.none { it.contains(event.x, event.y) })
+        FolderMapEvent.PointerLeft -> copy(pointerOutside = true)
+        FolderMapEvent.PinToggled -> when {
+            !pinned -> copy(pinned = true)
+            // 停在中间的取消钉住后照旧常驻，拖回边沿才按临时展开算（见 settled）
+            !zones.docked -> copy(pinned = false)
+            pointerOutside -> collapsed().copy(pinned = false)
+            else -> copy(pinned = false).peeking(entered = true)
+        }
+        FolderMapEvent.Toggle, FolderMapEvent.Close -> closed()
         is FolderMapEvent.BusyChanged -> copy(busy = event.busy)
+        // Esc 不改钉住，界面只把焦点还给列表
         else -> this
     }
 
-    private fun held() = FolderMapAutoHide(FolderMapPresence.Held, busy = busy)
+    /** 打开：钉着的常驻，没钉的临时展开、等指针进来过再按离开计时。 */
+    private fun opened(): FolderMapAutoHide =
+        if (pinned) copy(presence = FolderMapPresence.Held, hover = null, collapseAt = null) else peeking(entered = false)
 
-    // 收起时多半指针还在细条上或刚按过快捷键，先不武装
-    private fun collapsed() = FolderMapAutoHide(FolderMapPresence.Collapsed, armed = false)
+    private fun peeking(entered: Boolean) =
+        copy(presence = FolderMapPresence.Peeking, hover = null, entered = entered, pointerOutside = !entered, collapseAt = null)
 
-    private fun closed() = FolderMapAutoHide(FolderMapPresence.Closed)
+    // 收起时多半指针还在把手上或刚按过快捷键，先不武装
+    private fun collapsed() = FolderMapAutoHide(FolderMapPresence.Collapsed, pinned = pinned, armed = false)
+
+    private fun closed() = FolderMapAutoHide(FolderMapPresence.Closed, pinned = pinned)
 }

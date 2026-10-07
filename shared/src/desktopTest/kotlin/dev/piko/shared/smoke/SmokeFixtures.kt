@@ -1,6 +1,5 @@
 package dev.piko.shared.smoke
 
-import dev.piko.data.auth.FolderMapMode
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.auth.SidePanelPrefs
 import dev.piko.data.auth.SnailMode
@@ -47,8 +46,10 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun setPlayerSeekStepSeconds(seconds: Int) = Unit
     override val playerBoostSpeedFlow: Flow<Float> = MutableStateFlow(2f)
     override suspend fun setPlayerBoostSpeed(speed: Float) = Unit
-    override val folderMapModeFlow: Flow<FolderMapMode> = MutableStateFlow(FolderMapMode.Closed)
-    override suspend fun setFolderMapMode(mode: FolderMapMode) = Unit
+    override val folderMapOpenFlow: Flow<Boolean> = MutableStateFlow(false)
+    override suspend fun setFolderMapOpen(open: Boolean) = Unit
+    override val folderMapPinnedFlow: Flow<Boolean> = MutableStateFlow(false)
+    override suspend fun setFolderMapPinned(pinned: Boolean) = Unit
     override val heuristicFilterFlow: Flow<Boolean> = MutableStateFlow(false)
     override suspend fun setHeuristicFilterEnabled(enabled: Boolean) = Unit
     override val nameParsingFlow: Flow<Boolean> = MutableStateFlow(true)

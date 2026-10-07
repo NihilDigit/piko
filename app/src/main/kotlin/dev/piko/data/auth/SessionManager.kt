@@ -119,7 +119,8 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val DOWNLOAD_MAX_HEIGHT = intPreferencesKey("download_max_height")
         val PLAYER_SEEK_STEP_SECONDS = intPreferencesKey("player_seek_step_seconds")
         val PLAYER_BOOST_SPEED = floatPreferencesKey("player_boost_speed")
-        val FOLDER_MAP_MODE = stringPreferencesKey("folder_map_mode")
+        val FOLDER_MAP_OPEN = booleanPreferencesKey("folder_map_open")
+        val FOLDER_MAP_PINNED = booleanPreferencesKey("folder_map_pinned")
         val HEURISTIC_FILTER_ENABLED = booleanPreferencesKey("heuristic_filter_enabled")
         val BUNDLE_SUBTITLES_ENABLED = booleanPreferencesKey("bundle_subtitles_enabled")
         val AUTO_CANONICAL_NAMES = booleanPreferencesKey("auto_canonical_names")
@@ -258,11 +259,19 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
-    override val folderMapModeFlow: Flow<FolderMapMode> = preference { FolderMapMode.parse(it[PreferencesKeys.FOLDER_MAP_MODE]) }
+    override val folderMapOpenFlow: Flow<Boolean> = preference { it[PreferencesKeys.FOLDER_MAP_OPEN] ?: false }
 
-    override suspend fun setFolderMapMode(mode: FolderMapMode) {
+    override suspend fun setFolderMapOpen(open: Boolean) {
         context.dataStore.edit { preferences ->
-            preferences[PreferencesKeys.FOLDER_MAP_MODE] = mode.name
+            preferences[PreferencesKeys.FOLDER_MAP_OPEN] = open
+        }
+    }
+
+    override val folderMapPinnedFlow: Flow<Boolean> = preference { it[PreferencesKeys.FOLDER_MAP_PINNED] ?: false }
+
+    override suspend fun setFolderMapPinned(pinned: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.FOLDER_MAP_PINNED] = pinned
         }
     }
 
