@@ -12,21 +12,36 @@ Windows、macOS 与 Linux 的入口、平台实现与播放器窗口。应用内
   部分 API 仍是实验性，`ui` 模块已统一 opt-in；它也缺少无点击的 `SegmentedListItem`，设置页用
   `StaticSegmentedRow` 顶替。
 - **release**：`./gradlew :desktopApp:packageReleaseMsi`（或 `createReleaseDistributable`）。ProGuard 只裁剪不混淆，
-  规则在 `desktopApp/proguard-rules.pro`，JNA、MediaMP、ServiceLoader 实现、isoparser 必须保留；
-  经 `MethodHandles` 按名字取出、交给 FFM 做 upcall 的方法（`WindowsCaption` 的窗口过程）代码里没有直接调用，
+  规则在 `desktopApp/proguard-rules.pro`，JNA、MediaMP、ServiceLoader 实现必须保留；
+  经 `MethodHandles` 按名字取出、交给 FFM 做 upcall 的方法（`WindowsCaption` 的窗口过程、转封装的 `AvioReader`）代码里没有直接调用，
   同样要写 keep，否则 release 包里悄悄失效，debug 看不出来。
   打包时会跑一遍 AOT 训练（进程带 `compose.aot.training-run`，由 `Main.kt` 在 12 秒后自行退出），
-  得到 `app.aot`。训练与运行都带 `-XX:-AOTAdapterCaching -XX:-AOTStubCaching`：JDK 25 会把训练机上生成的
-  调用适配代码存进缓存且不核对 CPU 特性，CI runner 有 AVX-512，缓存装到没有它的 CPU 上随机崩在 AdapterBlob。AOT 缓存按 jar 的修改时间校验，MSI 与 zip 只存到偶数秒，训练前先把 jar 的时间取整，
-  否则安装后缓存作废（`msiexec /a` 解出安装包即可验证）。
+  得到 `app.aot`。训练进程的数据目录是 build 下每次清空的 `aot-training-home`：它真的启动一次应用，
+  带版本号的包启动配置里没有 `piko.home`，训练便读写打包机上真实的 `~/.piko`（本机打冒烟包时把当前账号登出过）。
+  插件不给训练单独加参数，`build.gradle.kts` 在训练前往启动配置里加一行、训练后删掉。训练与运行都带 `-XX:-AOTAdapterCaching -XX:-AOTStubCaching`：JDK 25 会把训练机上生成的
+  调用适配代码存进缓存且不核对 CPU 特性，CI runner 有 AVX-512，缓存装到没有它的 CPU 上随机崩在 AdapterBlob。AOT 缓存按 jar 的修改时间校验，MSI 只存到偶数秒，训练前先把 jar 的时间取整，
+  否则安装后缓存作废（`msiexec /a` 解出安装包即可验证）。便携版因此发 .7z（`.github/scripts/pack-portable.ps1`）：
+  zip 只存打包机的本地时间，CI 是 UTC，解到别的时区 jar 偏几个小时、缓存整份作废，资源管理器与 Expand-Archive
+  也不读 zip 里 UTC 的扩展时间戳（实测）；7z 存的就是 UTC 时间。冒烟在东八区解包核对 jar 的时间。
   jlink、jpackage 与 ProGuard 用 Azul 的 JDK 25 工具链，与运行 Gradle 的 JDK 无关；Temurin 25 不带 jmods，ProGuard 会失败。
   打出 MSI 后由 `package/windows/transactional-upgrade.ps1` 把卸载旧版挪进安装事务：新版装失败时旧版文件保留，
   但 Windows Installer 只把它记为「通告」状态，之后的应用内更新退回下载页。它还给 app 目录登记 `*.jar`、`*.xml`
   的 RemoveFile 规则：增量更新换进来的新名字 jar 不在 MSI 的文件表里，没有这条卸载时会留下。打包会弹出训练窗口约 12 秒。
 - **原生**：mpv 与 FFmpeg 的 DLL 解开放在应用资源目录的 `mpv/` 下，启动时经
-  `MpvMediampPlayer.prepareLibraries` 指过去；MediaMP 默认每次运行都解压一份到 `%TEMP%` 且删不掉。
+  `MpvMediampPlayer.prepareLibraries` 指过去；MediaMP 默认每次运行都解压一份到 `%TEMP%` 且删不掉。准备在启动后的后台做，
+  建播放器前 `BundledMpvRuntime.ensure()` 等它，最多 3 秒。JNA 的 `jnidispatch.dll` 打包时从实际依赖的 jna jar 取出放在
+  `jna/` 下，`main` 第一行指过去并禁止解压（`BundledNatives.kt`）；不写进 jvmArgs，因为 `:desktopApp:run` 不展开 `$APPDIR`。
   Toast 经 FFM 直调 combase 与 COM 虚表（`WindowsToast`），不用 kotlin-winrt。未打包应用的 AUMID
   要在 `HKCU\Software\Classes\AppUserModelId` 登记才会显示通知，安装版首次启动时写入。
+- **转封装**：片段截取与转码档下载经 FFM 直调 mpv 运行库里随带的 FFmpeg 8（`media/Ffmpeg.kt`、`FfmpegRemuxer.kt`），
+  流复制、不转码，输出 moov 前置的 MP4，HEVC 写成 hvc1（QuickTime 与系统播放器不认 hev1）。库从资源目录的 `mpv/` 载入：
+  Windows 是 `avformat-62.dll` 等，先以 `LOAD_WITH_ALTERED_SEARCH_PATH` 载一次，依赖才从同目录找；Linux 取 SONAME
+  `libavformat.so.62`；macOS 取 `libavformat.62.dylib`，依赖写的是 `@loader_path`。结构体字段按 FFmpeg 8.0.1 头文件的
+  偏移读写（`FfmpegLayout`），载入时核对 avutil 60、avcodec 62、avformat 62 的主版本，对不上就拒绝。**升级 MediaMP 或其
+  mpv 运行库时先看这里**：主版本变了要按新头文件重算偏移（写个 offsetof 的小程序，WSL 里 gcc 编即可，只要头文件），
+  所用函数的签名也要对照。源经自定义 AVIO 读，回调接 `RandomAccessMediaSource`（SDK 的 handle 与稀疏暂存），不用 FFmpeg 的
+  http 协议；回调 `AvioReader.read`、`seek` 经 MethodHandles 取出，release 要 keep。测试从类路径上的运行库 jar 解出库
+  （`DesktopPikoSegmentDownloaderTest`），样片在 `testdata/media`。
 - **显卡设备失效**：驱动复位 GPU（NVIDIA 事件 153、TDR）时 D3D 设备一律失效，skiko 0.150 不检查 HRESULT，
   下一次改窗口尺寸就在 `makeDirectXSurface` 里解引用空指针，整个 JVM 崩溃。`GpuDeviceWatch` 在改尺寸前与每秒一次
   问 `GetDeviceRemovedReason`，失效了就让 `PikoWindow` 以 `generation` 为 key 重建所有窗口。它读的是 skiko 的内部布局
@@ -42,10 +57,11 @@ Windows、macOS 与 Linux 的入口、平台实现与播放器窗口。应用内
     做判断的地方照 `PikoMainScaffold` 的 `panelFits` 那样，拖动中先存着、松手再算。
   - 兜底：`PikoWindow` 的异常处理认出这一个异常，重建出事的窗口，不弹错误框。认的是 require 的文案，升级 Compose 时核对。
 - **数据目录**：一律经 `PikoHome.root`，不自己拼 user.home。`:desktopApp:run` 与 CLI 用 `~/.piko-dev`（系统属性 `piko.home`），
-  安装版用 `~/.piko`，Windows 便携版（zip 里 `Piko.exe` 旁有 `portable` 文件）用程序目录的 `data\`，写不进时退回 `~/.piko`。
-  标记只进 zip：在 `packageReleaseUpdate` 生成清单之后才放，所以不在 `files.json` 里，便携整包更新解压时跳过它、也不装进来
+  安装版用 `~/.piko`，Windows 便携版（便携包里 `Piko.exe` 旁有 `portable` 文件）用程序目录的 `data\`，写不进时退回 `~/.piko`。
+  标记只进便携包：在 `packageReleaseUpdate` 生成清单之后才放，所以不在 `files.json` 里，应用内更新不会装进来
   （经应用内更新升上来的旧便携版数据在 `~/.piko`，多出标记就改读 `data\`）。macOS 钥匙串与 Linux Secret Service 的条目名
-  随非默认的根目录加后缀（`PikoHome.secretNamespace`）。Coil 的磁盘缓存与更新暂存目录还在 `%TEMP%`，不随根目录走。
+  随非默认的根目录加后缀（`PikoHome.secretNamespace`）。Coil 的磁盘缓存在根目录的 `cache/images`（`DesktopImageLoader`），
+  更新暂存在根目录的 `update` 下。`%TEMP%` 里只剩单实例的 socket，正常退出时删除。
 - **单实例**：`SingleInstance` 以数据根目录下 `instance.lock` 的文件锁决定主实例，后来者经 Unix domain socket
   （`PikoHome.instanceSocket`）转交启动参数（磁力链接）后退出。开发版与安装版的根目录不同，可以同时开着。AOT 训练进程不参与。
 - **关窗**：仍有下载进行时关主窗口不退出，藏进托盘，下完自动退出。窗口位置、大小与最大化状态存在

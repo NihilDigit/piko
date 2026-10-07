@@ -240,6 +240,7 @@ class DesktopPikoPlatform(
         @Composable
         override fun rememberPreviewBackend(keyframeStart: Boolean): PreviewBackend {
             val scope = rememberCoroutineScope()
+            BundledMpvRuntime.ensure()
             val player = rememberMediampPlayer()
             val preferences = LocalPikoServices.current.preferences
             val backend = remember(player) {

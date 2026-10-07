@@ -12,6 +12,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -54,7 +55,10 @@ import dev.piko.ui.VideoPlayerHost
 import dev.piko.ui.VideoPlayerRequest
 import dev.piko.ui.anyActiveFor
 import dev.piko.ui.workNotices
+import dev.piko.ui.components.LocalAntiDiagonalResizeCursor
+import dev.piko.ui.components.LocalDiagonalResizeCursor
 import dev.piko.ui.components.LocalHorizontalResizeCursor
+import dev.piko.ui.components.LocalVerticalResizeCursor
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.theme.PikoTheme
 import dev.piko.ui.theme.SidebarMinWindowWidth
@@ -74,7 +78,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import org.openani.mediamp.mpv.MpvMediampPlayer
 
 /**
  * 打包 release 时 Compose 以这个系统属性跑一遍 AOT 训练。训练进程要自己退出，JVM 在退出时
@@ -84,6 +87,8 @@ private const val AOT_TRAINING_PROPERTY = "compose.aot.training-run"
 private const val AOT_TRAINING_MILLIS = 12_000L
 
 fun main(args: Array<String>) {
+    // 最先做：之后任何一处碰到 JNA 都会让它按当时的属性初始化
+    useBundledJnaDispatch()
     // 走系统代理：JVM 默认只认 http.proxyHost 一类属性，不看 Windows 与 macOS 设置里的代理，
     // 在系统里开了代理（例如代理软件的「系统代理」模式）也照样直连。这个属性在 ProxySelector
     // 首次初始化时读取，所以放在一切网络请求之前。Android 不用设，系统会把网络的代理同步给进程
@@ -119,7 +124,8 @@ fun main(args: Array<String>) {
         ).apply { isDaemon = true; start() }
     }
 
-    useBundledMpvRuntime()
+    BundledMpvRuntime.prepareInBackground()
+    installImageLoader()
 
     val settings = DesktopSettingsStore()
     val preferences = DesktopPikoPreferences(settings, ::desktopPreferenceSecrets)
@@ -186,6 +192,12 @@ fun main(args: Array<String>) {
         var clipFeed by remember { mutableStateOf<ClipFeedLinks?>(null) }
         var clipFeedRaises by remember { mutableIntStateOf(0) }
         var mainWindow by remember { mutableStateOf<java.awt.Frame?>(null) }
+        var portableFallback by remember { mutableStateOf(pendingPortableFallback(settings)) }
+        // 播放器与信息流窗口等 mpv 运行库准备好再建，理由见 BundledMpvRuntime；启动后立刻打开的先排着
+        val mpvReady by produceState(BundledMpvRuntime.isPrepared) {
+            withContext(Dispatchers.IO) { BundledMpvRuntime.ensure() }
+            value = true
+        }
         val videoPlayer = remember {
             VideoPlayerHost.Detached(
                 open = { players += it },
@@ -279,6 +291,9 @@ fun main(args: Array<String>) {
             CompositionLocalProvider(
                 LocalPikoPlatform provides platform,
                 LocalHorizontalResizeCursor provides HorizontalResizeCursor,
+                LocalVerticalResizeCursor provides VerticalResizeCursor,
+                LocalDiagonalResizeCursor provides DiagonalResizeCursor,
+                LocalAntiDiagonalResizeCursor provides AntiDiagonalResizeCursor,
             ) {
                 PikoTheme(appearance = appearance) {
                     // 有侧边栏时与侧边栏、网盘页页眉同为外框色；没有时与网盘页的顶栏同为页面本色。
@@ -309,12 +324,18 @@ fun main(args: Array<String>) {
                             )
                         }
                     }
-                    if (askLinkAssociation) LinkAssociationPrompt(platform.linkAssociation, settings)
+                    // 两个对话框不叠在一起：先说数据去了哪里，关掉之后才问关联
+                    val fallback = portableFallback
+                    if (fallback != null) {
+                        PortableFallbackNotice(fallback, settings, onDismiss = { portableFallback = null })
+                    } else if (askLinkAssociation) {
+                        LinkAssociationPrompt(platform.linkAssociation, settings)
+                    }
                 }
             }
         }
 
-        clipFeed?.let { links ->
+        if (mpvReady) clipFeed?.let { links ->
             ClipFeedWindow(
                 links = ClipFeedLinks(
                     playFull = links.playFull,
@@ -341,7 +362,7 @@ fun main(args: Array<String>) {
         }
 
         // 每个播放请求一个独立窗口，可以边播边浏览网盘
-        players.forEach { request ->
+        if (mpvReady) players.forEach { request ->
             key(request) {
                 VideoPlayerWindow(
                     request = request,
@@ -361,6 +382,11 @@ fun main(args: Array<String>) {
 
 // 侧栏拖宽处的悬停光标。公共代码里的 PointerIcon 没有调整大小这一种，见 LocalHorizontalResizeCursor
 private val HorizontalResizeCursor = PointerIcon(java.awt.Cursor(java.awt.Cursor.E_RESIZE_CURSOR))
+
+// 浮动面板（目录图）上下两边与四个角的悬停光标，见 FloatingPanel 的 ResizeHandles
+private val VerticalResizeCursor = PointerIcon(java.awt.Cursor(java.awt.Cursor.N_RESIZE_CURSOR))
+private val DiagonalResizeCursor = PointerIcon(java.awt.Cursor(java.awt.Cursor.NW_RESIZE_CURSOR))
+private val AntiDiagonalResizeCursor = PointerIcon(java.awt.Cursor(java.awt.Cursor.NE_RESIZE_CURSOR))
 
 private val DownloadStatus.isActive: Boolean
     get() = this == DownloadStatus.DOWNLOADING || this == DownloadStatus.PENDING
@@ -418,21 +444,6 @@ internal fun bringToFront(window: java.awt.Frame) {
     window.requestFocus()
 }
 
-/**
- * 安装包把 mpv 与 FFmpeg 的原生库放在资源目录的 mpv 子目录里，这里指给 mediamp，免得它每次
- * 首次播放都把库从 jar 解压到新的临时目录。资源目录里没有时（测试进程）沿用它的默认行为。
- */
-private fun useBundledMpvRuntime() {
-    val dir = System.getProperty("compose.application.resources.dir")?.let { File(it, "mpv") } ?: return
-    // Windows 上是 mediampv.dll，macOS 上是 libmediampv.dylib，Linux 上是 libmediampv.so
-    if (!dir.resolve(System.mapLibraryName("mediampv")).isFile) return
-    // 设置目录时 mediamp 会校验并加载封装层，连带 mpv 与 FFmpeg 一串依赖，放后台线程，不挡开窗
-    Thread(
-        { runCatching { MpvMediampPlayer.prepareLibraries(dir.absolutePath, false) } },
-        "Piko-Mpv-Setup",
-    ).apply { isDaemon = true; start() }
-}
-
 private fun createServices(settings: DesktopSettingsStore, preferences: DesktopPikoPreferences): PikoServices {
     // 进程级作用域，与 Android 的 appScope 对应：下载与会话刷新不随某个窗口的组合结束
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -481,7 +492,7 @@ private fun installLog() {
     PikoLog.install(PikoHome.root.resolve("logs").toString()) { level, tag, message, error ->
         if (level >= LogLevel.WARN) System.err.println("Piko/$tag: $message" + (error?.let { "\n" + it.stackTraceToString() } ?: ""))
     }
-    PikoHome.fallbackNote?.let { PikoLog.w("App", it) }
+    PikoHome.portableFallback?.let { PikoLog.w("App", "便携目录不可写（${it.problem.javaClass.simpleName}），数据改放用户目录") }
     MpvLogBridge.install()
     val previous = Thread.getDefaultUncaughtExceptionHandler()
     Thread.setDefaultUncaughtExceptionHandler { thread, error ->

@@ -14,21 +14,25 @@ import java.nio.file.Path
  *    放进这个文件，安装包不放。程序目录取 jpackage 启动器给的 `jpackage.app-path`（exe 的路径），`:desktopApp:run` 与测试
  *    没有这个属性，不会误判。macOS 不做：exe 在 .app 的 Contents/MacOS 里，标记放进去会破坏签名，整包更新又会连 data 一起换掉；
  *    Linux 的 AppImage 挂载目录只读，解开的 tar.gz 程序目录是 bin/，都不合适。`data` 建不出或写不进（解压在 Program Files 下）时
- *    退回 `~/.piko`，原因记在 [fallbackNote]，日志装好后由入口记下。机密由 DPAPI 按当前 Windows 用户加密，拷到别的机器或
- *    换个用户要重新登录，其余数据照旧。
+ *    退回 `~/.piko`，见 [portableFallback]。机密由 DPAPI 按当前 Windows 用户加密，拷到别的机器或换个用户要重新登录，其余数据照旧。
+ *    不按 Windows 用户分目录：便携版常随 U 盘换机器用，换一台机器 SID 就变，分了目录设置与缓存便跟不过去；
+ *    两个用户同时开同一份数据由单实例锁挡下，见 SingleInstance。
  * 3. `~/.piko`，与旧版相同，已安装的用户升级后照旧读得到原来的数据。
  *
  * 下载目录的默认值（`~/Downloads/Piko`）不跟着走：那是用户的文件，不是程序的数据。
  */
 object PikoHome {
-    private class Resolved(val root: Path, val isDefault: Boolean, val fallbackNote: String? = null)
+    private class Resolved(val root: Path, val isDefault: Boolean, val portableFallback: PortableFallback? = null)
+
+    /** 便携目录 [portableData] 写不进，数据改放在了 [root]。[problem] 是写入失败的异常，可能带路径，不进日志。 */
+    class PortableFallback(val portableData: Path, val problem: Throwable)
 
     private val resolved: Resolved by lazy { resolve() }
 
     val root: Path get() = resolved.root
 
-    /** 便携目录用不了、退回 `~/.piko` 的原因。解析时日志还没装上，由入口在装好之后记一笔。 */
-    val fallbackNote: String? get() = resolved.fallbackNote
+    /** 便携版却用不了程序目录、退回了 `~/.piko`。解析时日志与界面都还没起来，由入口记日志并提示用户。 */
+    val portableFallback: PortableFallback? get() = resolved.portableFallback
 
     /** 便携版的标记文件名，放在 Piko.exe 旁边。 */
     const val PORTABLE_MARKER = "portable"
@@ -57,7 +61,7 @@ object PikoHome {
         val default = Path.of(System.getProperty("user.home"), ".piko")
         val portable = portableRoot() ?: return Resolved(default, isDefault = true)
         val problem = writeProblem(portable) ?: return Resolved(portable, isDefault = false)
-        return Resolved(default, isDefault = true, fallbackNote = "便携目录 $portable 不可写（$problem），数据改放 $default")
+        return Resolved(default, isDefault = true, portableFallback = PortableFallback(portable, problem))
     }
 
     private fun portableRoot(): Path? {
@@ -68,9 +72,9 @@ object PikoHome {
     }
 
     /** 建得出目录、写得进文件时为 null。 */
-    private fun writeProblem(directory: Path): String? = runCatching {
+    private fun writeProblem(directory: Path): Throwable? = runCatching {
         Files.createDirectories(directory)
         val probe = Files.createTempFile(directory, ".write-probe", null)
         Files.delete(probe)
-    }.exceptionOrNull()?.let { it.javaClass.simpleName + (it.message?.let { message -> "：$message" } ?: "") }
+    }.exceptionOrNull()
 }
