@@ -55,6 +55,9 @@ interface PikoPlatform {
      */
     val revealsLastTypedPassword: Boolean get() = false
 
+    /** 开发构建里描出目录图自动收起的打开区与保持区，角上显示状态与倒计时，用来对照时机。发布构建恒为 false。 */
+    val debugFolderMapZones: Boolean get() = false
+
     /** 交互模型，见 [dev.piko.ui.adaptive.FormFactor]。 */
     val formFactor: FormFactor
 

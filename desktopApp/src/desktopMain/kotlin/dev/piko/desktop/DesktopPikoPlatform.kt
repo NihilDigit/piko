@@ -96,6 +96,10 @@ class DesktopPikoPlatform(
 
     override val supportsBlur: Boolean = true
 
+    // 开发用，经 JAVA_TOOL_OPTIONS 传 -Dpiko.debug.folder-map=true。带版本号打的包（piko.release-build）里不认
+    override val debugFolderMapZones: Boolean =
+        System.getProperty("piko.release-build") != "true" && System.getProperty("piko.debug.folder-map") == "true"
+
 
     // 中文 Windows 自己的界面字体，西文部分取自 Segoe UI。默认字体族在 Windows 上只有 Segoe UI 与
     // Arial，汉字全靠系统后备，英文系统按英文 locale 挑，常用字落到日文字体、简体字落到雅黑，

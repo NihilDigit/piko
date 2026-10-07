@@ -293,7 +293,8 @@ fun DriveScreen(
         }, archives = archiveBrowser)
     }
     // 目录图：宽窗口里浮在列表上的面板，见 FolderMap
-    val folderMap = remember(state) { FolderMapState(state::folderMapLevel, scope) }
+    val folderMap = remember(state) { FolderMapState(state::folderMapLevel, scope, sessionManager::setFolderMapMode) }
+    LaunchedEffect(folderMap) { folderMap.restore(sessionManager.folderMapModeFlow.first()) }
     LaunchedEffect(folderMap) { driveRepo.folderChanges.collect(folderMap::onChange) }
 
     LaunchedEffect(state) {
@@ -419,11 +420,6 @@ fun DriveScreen(
     val pathInTopBar = desktop
     // 标签栏、命令栏、浮动的属性卡片与目录图、右键菜单代替条目上的更多按钮：桌面那一套
     val twoPane = desktop
-    // 目录图只在宽窗口里有：导航栏搜索旁的按钮、快捷键与命令面板打开，面板上的 × 关掉；开着与否存进偏好（每台设备各自的）
-    val folderMapOpen by sessionManager.folderMapOpenFlow.collectAsStateWithLifecycle(initialValue = false)
-    fun setFolderMapOpen(open: Boolean) {
-        scope.launch { sessionManager.setFolderMapOpen(open) }
-    }
     // 地址栏进入输入的请求，快捷键加一，见 DrivePathTitle
     var addressEditRequests by remember { mutableIntStateOf(0) }
     // 输入框从原名开始改；只设目标的话，框里留着上一次改名时输入的字
@@ -1236,7 +1232,7 @@ fun DriveScreen(
         when {
             addressKey && pathInTopBar -> addressEditRequests++
             // 照 VS Code 的资源管理器（Ctrl+Shift+E）
-            pathInTopBar && primary && event.isShiftPressed && event.key == Key.E -> setFolderMapOpen(!folderMapOpen)
+            pathInTopBar && primary && event.isShiftPressed && event.key == Key.E -> folderMap.toggle()
             // 宽窗口的搜索框常驻，取得焦点即可；窄屏点开搜索栏
             primary && event.key == Key.F -> if (pathInTopBar) searchFocusRequests++ else isSearchOpen = true
             // 剪切、复制、粘贴，照资源管理器：换个目录粘贴，剪切的即移过去
@@ -1353,7 +1349,7 @@ fun DriveScreen(
             onBack = { state.goBack() },
             onForward = { state.goForward() },
             onUp = { state.navigateUp() },
-            showFolderMap = if (folderMapOpen) null else ({ setFolderMapOpen(true) }),
+            showFolderMap = if (folderMap.presence == FolderMapPresence.Closed) ({ folderMap.dispatch(FolderMapEvent.Open) }) else null,
             address = {
                 val recentFolders by driveRepo.recentFoldersFlow.collectAsStateWithLifecycle()
                 DrivePathTitle(
@@ -1501,9 +1497,9 @@ fun DriveScreen(
                 add(PaletteItem("上传文件夹", Icons.Outlined.DriveFolderUpload, "网盘", keywords = "upload folder") { pickFolder() })
             }
             if (pathInTopBar) {
-                add(PaletteItem(if (folderMapOpen) "关闭目录图" else "打开目录图", Icons.Outlined.AccountTree, "网盘",
+                add(PaletteItem(folderMap.toggleLabel, Icons.Outlined.AccountTree, "网盘",
                     detail = if (platform.shortcutModifier == ShortcutModifier.Command) "⌘⇧E" else "Ctrl+Shift+E", keywords = "folder tree map 树") {
-                    setFolderMapOpen(!folderMapOpen)
+                    folderMap.toggle()
                 })
             }
             add(PaletteItem("搜索文件", Icons.Outlined.Search, "网盘", detail = label("F"), keywords = "search find") {
@@ -1554,7 +1550,9 @@ fun DriveScreen(
     // 目录图与属性同浮在列表这一块里，最近碰过或打开的那块在上面；对别的项再开属性也算打开
     var propertiesOnTop by remember { mutableStateOf(true) }
     LaunchedEffect(properties) { if (properties != null) propertiesOnTop = true }
-    LaunchedEffect(folderMapOpen) { if (folderMapOpen) propertiesOnTop = false }
+    // 目录图展开（含悬停临时展开）时压在属性卡片上面
+    val folderMapExpanded = folderMap.presence == FolderMapPresence.Peeking || folderMap.presence == FolderMapPresence.Held
+    LaunchedEffect(folderMapExpanded) { if (folderMapExpanded) propertiesOnTop = false }
 
     // 页眉下面的一块：列表，上面浮着目录图与属性。都只在这一块里，不往上伸到页眉：
     // 地址栏与命令栏始终横贯整个宽度，窗口按钮也就始终在地址栏那一行
@@ -1576,13 +1574,17 @@ fun DriveScreen(
         ) {
             contentFrame {
                 // 属性卡片的锚点在这一块的坐标里：右键按下的点、条目的范围都换算到这里
-                Box(Modifier.fillMaxSize().propertiesAnchorArea(propertiesAnchors)) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .propertiesAnchorArea(propertiesAnchors)
+                        .then(if (pathInTopBar) Modifier.folderMapPointer(folderMap) else Modifier),
+                ) {
                     list()
-                    if (pathInTopBar && folderMapOpen) {
+                    if (pathInTopBar && folderMap.presence != FolderMapPresence.Closed) {
                         FolderMapPanel(
                             state = folderMap,
                             current = folderStack,
-                            onClose = { setFolderMapOpen(false) },
                             onOpen = driveRepo::updateFolderStack,
                             onOpenFile = ::openFromMap,
                             // 与命令栏的主页按钮同一条规则：已在根目录时不给

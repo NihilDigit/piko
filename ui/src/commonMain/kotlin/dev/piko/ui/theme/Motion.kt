@@ -54,6 +54,9 @@ class PikoMotion internal constructor(
     private val forwardEnterMillis: Int,
     /** 压栈时旧页淡出所用的时长，比横滑短：它淡完新页才开始淡入。 */
     private val forwardFadeOutMillis: Int,
+    /** 浮在内容上的面板就地出现与消失（目录图从细条展开、收起）。 */
+    private val peekEnterMillis: Int,
+    private val peekExitMillis: Int,
     /**
      * 右键菜单与命令栏菜单的 motionScheme，为 null 时跟随主题。桌面上只淡入不缩放：DropdownMenu 默认从 0.8 放大到 1，
      * graphicsLayer 的缩放同样作用于点击判定，右键后立刻点、凭肌肉记忆快速点选时，菜单项还没到最终位置，会点偏。
@@ -78,6 +81,17 @@ class PikoMotion internal constructor(
     fun overlayEnter(): EnterTransition = enter(fromEnd = true, afterExit = false)
 
     fun overlayExit(): ExitTransition = exit(toStart = false)
+
+    /**
+     * 浮在内容上的面板在原位出现：淡入，同时从 [fromEnd] 那一侧向内移 [offsetPx]。不缩放、不形变：
+     * graphicsLayer 的缩放同样作用于点击判定，刚出现就点会点偏（见 [menuScheme]）。
+     */
+    fun peekEnter(fromEnd: Boolean, offsetPx: Int): EnterTransition =
+        fadeIn(tween(peekEnterMillis, easing = Easing.StandardDecelerate)) +
+            slideInHorizontally(tween(peekEnterMillis, easing = Easing.StandardDecelerate)) { if (fromEnd) offsetPx else -offsetPx }
+
+    /** 与 [peekEnter] 配对的消失：只淡出，不位移。 */
+    fun peekExit(): ExitTransition = fadeOut(tween(peekExitMillis, easing = Easing.StandardAccelerate))
 
     /** 首屏三态切换（转圈、错误、列表）的 Crossfade。 */
     val stateCrossfade: FiniteAnimationSpec<Float> = tween(topLevelEnterMillis, easing = Easing.Standard)
@@ -125,6 +139,8 @@ class PikoMotion internal constructor(
                 forwardExitMillis = 200,
                 forwardEnterMillis = 400,
                 forwardFadeOutMillis = 100,
+                peekEnterMillis = 250,
+                peekExitMillis = 150,
                 menuScheme = null,
             )
             // WinUI 的 83、167、250ms。M3 说生产力应用里打开菜单这类高频操作可以跳切，
@@ -137,6 +153,8 @@ class PikoMotion internal constructor(
                 forwardExitMillis = 150,
                 forwardEnterMillis = 250,
                 forwardFadeOutMillis = 83,
+                peekEnterMillis = 167,
+                peekExitMillis = 83,
                 menuScheme = DesktopMenuMotionScheme,
             )
         }

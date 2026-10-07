@@ -1,8 +1,12 @@
 package dev.piko.ui.screens.drive
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -58,6 +62,7 @@ import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.DpRect
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.width
 import dev.piko.ui.components.LocalAntiDiagonalResizeCursor
 import dev.piko.ui.components.LocalDiagonalResizeCursor
 import dev.piko.ui.components.LocalHorizontalResizeCursor
@@ -84,9 +89,16 @@ internal sealed interface PanelAnchor {
  * null 为还没放过，第一次排版时照 [anchor] 取位置后定下来，此后另一块面板开合也不再挪它。
  */
 @Stable
-internal class FloatingPanelState(width: Dp, val followsEnd: Boolean = true) {
+internal class FloatingPanelState(width: Dp, followsEnd: Boolean = true) {
     var position by mutableStateOf<DpOffset?>(null)
     var width by mutableStateOf(width)
+
+    var followsEnd by mutableStateOf(followsEnd)
+        private set
+
+    /** 列表这一块的大小，还没排过版时为 null。 */
+    var area by mutableStateOf<DpSize?>(null)
+        internal set
 
     /** 拖过上下边之后的高度，没拖过为 null，随内容长短。 */
     var height by mutableStateOf<Dp?>(null)
@@ -95,9 +107,29 @@ internal class FloatingPanelState(width: Dp, val followsEnd: Boolean = true) {
     var anchor by mutableStateOf<PanelAnchor?>(null)
         private set
 
-    /** 眼下在列表这一块里占的地方，另一块面板据此错开默认位置；关着时为 null。 */
+    /**
+     * 眼下在列表这一块里占的地方，另一块面板据此错开默认位置；关着时为 null。
+     * 收起（[FloatingPanel] 的 visible 为 false）时仍是收起前的位置，别的面板照旧按它避让，不因开合跳动。
+     */
     var bounds by mutableStateOf<DpRect?>(null)
         internal set
+
+    /**
+     * 改为按哪一侧记位置，屏幕上的位置不变。停靠在左沿的面板要跟着左沿走，否则窗口一拉宽它就离开了左沿。
+     * 还没放过或没排过版时只改记法。
+     */
+    fun followEdge(end: Boolean) {
+        if (end == followsEnd) return
+        val at = position
+        val areaWidth = area?.width
+        // 宽度取 bounds 的：拖动不改宽度。位置取 position 本身，bounds 要等下一帧才跟上
+        val panelWidth = bounds?.width
+        if (at != null && areaWidth != null && panelWidth != null) {
+            // 两种记法互为镜像：左沿距离 + 宽度 + 右沿距离 = 列表宽度
+            position = DpOffset(areaWidth - at.x - panelWidth, at.y)
+        }
+        followsEnd = end
+    }
 
     /** 关掉之后再开：忘掉拖到的位置，照新的触发点重新放。 */
     fun placeAt(anchor: PanelAnchor?) {
@@ -113,6 +145,9 @@ internal class FloatingPanelState(width: Dp, val followsEnd: Boolean = true) {
  * 调用方据此把它提到最上面。[onSettled] 在拖动或改大小松手时调，要记住位置的在这里存。
  *
  * 位置见 [PanelAnchor]；没有锚点时停在右上角，[avoid] 给出另一块开着的面板占的地方，与它重叠时改停在它左边，两块不叠在一起。
+ *
+ * [visible] 为 false 时卡片照 [exit] 消失、离开组合，位置、大小与 [FloatingPanelState.bounds] 留着，再出现时照 [enter] 在原处出现。
+ * [onEngage] 在开始拖标题行、开始改大小、点标题行空白处时调：目录图据此把临时展开的面板钉住。
  *
  * 用普通 Layout 而不是 Popup：不抢焦点的 Popup 收不到键盘，目录图的方向键与过滤框都用不了。
  * 也不是 BoxWithConstraints：里面有提示气泡这类弹层，测量时组合的布局在桌面端会撞上弹层销毁的崩溃（desktopApp/CLAUDE.md）。
@@ -132,12 +167,17 @@ internal fun FloatingPanel(
     avoid: () -> DpRect? = { null },
     onActivate: () -> Unit = {},
     onSettled: () -> Unit = {},
+    onEngage: () -> Unit = {},
+    visible: Boolean = true,
+    enter: EnterTransition = EnterTransition.None,
+    exit: ExitTransition = ExitTransition.None,
     headerActions: @Composable RowScope.() -> Unit = {},
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
     val density = LocalDensity.current
     var area by remember { mutableStateOf(DpSize.Zero) }
+    LaunchedEffect(area) { if (area != DpSize.Zero) state.area = area }
     var size by remember { mutableStateOf(DpSize.Zero) }
     val activate by rememberUpdatedState(onActivate)
     val avoiding by rememberUpdatedState(avoid)
@@ -228,51 +268,58 @@ internal fun FloatingPanel(
     }
     DisposableEffect(state) { onDispose { state.bounds = null } }
 
-    Layout(
-        modifier = modifier.fillMaxSize().onSizeChanged { area = with(density) { DpSize(it.width.toDp(), it.height.toDp()) } },
-        content = {
-            Box(
-                Modifier
-                    // 先于里面的按钮看到按下，不吃掉事件：点在哪都算碰过这块面板
-                    .pointerInput(Unit) {
-                        awaitPointerEventScope {
-                            while (true) {
-                                if (awaitPointerEvent(PointerEventPass.Initial).type == PointerEventType.Press) activate()
-                            }
+    val card = @Composable {
+        Box(
+            Modifier
+                // 先于里面的按钮看到按下，不吃掉事件：点在哪都算碰过这块面板
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            if (awaitPointerEvent(PointerEventPass.Initial).type == PointerEventType.Press) activate()
                         }
                     }
-                    .semantics { paneTitle = title },
-            ) {
-                Surface(
-                    modifier = Modifier
-                        .padding(outset)
-                        .onSizeChanged { size = with(density) { DpSize(it.width.toDp(), it.height.toDp()) } },
-                    shape = MaterialTheme.shapes.large,
-                    color = colors.surfaceContainerLow,
-                    border = BorderStroke(1.dp, colors.outlineVariant),
-                    shadowElevation = 3.dp,
-                ) {
-                    PanelFrame(
-                        state = state,
-                        title = title,
-                        closeLabel = closeLabel,
-                        onClose = onClose,
-                        resizable = resizable,
-                        minWidth = minWidth,
-                        maxWidth = maxWidth,
-                        autoMaxHeight = autoMaxHeight,
-                        onMove = ::moveBy,
-                        onSettled = onSettled,
-                        headerActions = headerActions,
-                        content = content,
-                    )
                 }
-                if (resizable) ResizeHandles(Modifier.matchParentSize(), onResize = ::resizeBy, onSettled = onSettled)
+                .semantics { paneTitle = title },
+        ) {
+            Surface(
+                modifier = Modifier
+                    .padding(outset)
+                    .onSizeChanged { size = with(density) { DpSize(it.width.toDp(), it.height.toDp()) } },
+                shape = MaterialTheme.shapes.large,
+                color = colors.surfaceContainerLow,
+                border = BorderStroke(1.dp, colors.outlineVariant),
+                shadowElevation = 3.dp,
+            ) {
+                PanelFrame(
+                    state = state,
+                    title = title,
+                    closeLabel = closeLabel,
+                    onClose = onClose,
+                    resizable = resizable,
+                    minWidth = minWidth,
+                    maxWidth = maxWidth,
+                    autoMaxHeight = autoMaxHeight,
+                    onMove = ::moveBy,
+                    onSettled = onSettled,
+                    onEngage = onEngage,
+                    headerActions = headerActions,
+                    content = content,
+                )
             }
-        },
+            if (resizable) {
+                ResizeHandles(Modifier.matchParentSize(), onResize = ::resizeBy, onSettled = onSettled, onEngage = onEngage)
+            }
+        }
+    }
+
+    Layout(
+        modifier = modifier.fillMaxSize().onSizeChanged { area = with(density) { DpSize(it.width.toDp(), it.height.toDp()) } },
+        content = { AnimatedVisibility(visible = visible, enter = enter, exit = exit) { card() } },
     ) { measurables, constraints ->
+        // 收起后卡片离开组合，这一块里什么都不放
+        val measurable = measurables.firstOrNull() ?: return@Layout layout(constraints.maxWidth, constraints.maxHeight) {}
         val inset = (EdgeClearance * 2 - outset * 2).roundToPx()
-        val placeable = measurables.first().measure(
+        val placeable = measurable.measure(
             constraints.copy(
                 minWidth = 0,
                 minHeight = 0,
@@ -304,18 +351,22 @@ private fun PanelFrame(
     autoMaxHeight: Dp,
     onMove: (Dp, Dp) -> Unit,
     onSettled: () -> Unit,
+    onEngage: () -> Unit,
     headerActions: @Composable RowScope.() -> Unit,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
     val settled by rememberUpdatedState(onSettled)
+    val engage by rememberUpdatedState(onEngage)
     val header = @Composable {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(PanelHeaderHeight)
+                // 标题行上的按钮自己接住点击，落到这里的是空白处
+                .pointerInput(Unit) { detectTapGestures { engage() } }
                 .pointerInput(Unit) {
-                    detectDragGestures(onDragEnd = { settled() }) { change, delta ->
+                    detectDragGestures(onDragStart = { engage() }, onDragEnd = { settled() }) { change, delta ->
                         change.consume()
                         onMove(delta.x.toDp(), delta.y.toDp())
                     }
@@ -369,21 +420,21 @@ private fun ContentWidthFrame(minWidth: Dp, maxWidth: Dp, maxHeight: Dp, header:
  * 曾在左沿单画一道把手，只有一条边有，看着像只有那条边能拖。
  */
 @Composable
-private fun ResizeHandles(modifier: Modifier, onResize: (ResizeEdges, Dp, Dp) -> Unit, onSettled: () -> Unit) {
+private fun ResizeHandles(modifier: Modifier, onResize: (ResizeEdges, Dp, Dp) -> Unit, onSettled: () -> Unit, onEngage: () -> Unit) {
     val horizontal = LocalHorizontalResizeCursor.current
     val vertical = LocalVerticalResizeCursor.current
     val diagonal = LocalDiagonalResizeCursor.current
     val antiDiagonal = LocalAntiDiagonalResizeCursor.current
     Box(modifier) {
         // 边让出两端的角，角压在边上面
-        ResizeHandle(Modifier.align(Alignment.CenterStart).width(ResizeGrab).fillMaxHeight().padding(vertical = CornerGrab), ResizeEdges(start = true), horizontal, onResize, onSettled)
-        ResizeHandle(Modifier.align(Alignment.CenterEnd).width(ResizeGrab).fillMaxHeight().padding(vertical = CornerGrab), ResizeEdges(end = true), horizontal, onResize, onSettled)
-        ResizeHandle(Modifier.align(Alignment.TopCenter).height(ResizeGrab).fillMaxWidth().padding(horizontal = CornerGrab), ResizeEdges(top = true), vertical, onResize, onSettled)
-        ResizeHandle(Modifier.align(Alignment.BottomCenter).height(ResizeGrab).fillMaxWidth().padding(horizontal = CornerGrab), ResizeEdges(bottom = true), vertical, onResize, onSettled)
-        ResizeHandle(Modifier.align(Alignment.TopStart).size(CornerGrab), ResizeEdges(start = true, top = true), diagonal, onResize, onSettled)
-        ResizeHandle(Modifier.align(Alignment.BottomEnd).size(CornerGrab), ResizeEdges(end = true, bottom = true), diagonal, onResize, onSettled)
-        ResizeHandle(Modifier.align(Alignment.TopEnd).size(CornerGrab), ResizeEdges(end = true, top = true), antiDiagonal, onResize, onSettled)
-        ResizeHandle(Modifier.align(Alignment.BottomStart).size(CornerGrab), ResizeEdges(start = true, bottom = true), antiDiagonal, onResize, onSettled)
+        ResizeHandle(Modifier.align(Alignment.CenterStart).width(ResizeGrab).fillMaxHeight().padding(vertical = CornerGrab), ResizeEdges(start = true), horizontal, onResize, onSettled, onEngage)
+        ResizeHandle(Modifier.align(Alignment.CenterEnd).width(ResizeGrab).fillMaxHeight().padding(vertical = CornerGrab), ResizeEdges(end = true), horizontal, onResize, onSettled, onEngage)
+        ResizeHandle(Modifier.align(Alignment.TopCenter).height(ResizeGrab).fillMaxWidth().padding(horizontal = CornerGrab), ResizeEdges(top = true), vertical, onResize, onSettled, onEngage)
+        ResizeHandle(Modifier.align(Alignment.BottomCenter).height(ResizeGrab).fillMaxWidth().padding(horizontal = CornerGrab), ResizeEdges(bottom = true), vertical, onResize, onSettled, onEngage)
+        ResizeHandle(Modifier.align(Alignment.TopStart).size(CornerGrab), ResizeEdges(start = true, top = true), diagonal, onResize, onSettled, onEngage)
+        ResizeHandle(Modifier.align(Alignment.BottomEnd).size(CornerGrab), ResizeEdges(end = true, bottom = true), diagonal, onResize, onSettled, onEngage)
+        ResizeHandle(Modifier.align(Alignment.TopEnd).size(CornerGrab), ResizeEdges(end = true, top = true), antiDiagonal, onResize, onSettled, onEngage)
+        ResizeHandle(Modifier.align(Alignment.BottomStart).size(CornerGrab), ResizeEdges(start = true, bottom = true), antiDiagonal, onResize, onSettled, onEngage)
     }
 }
 
@@ -394,15 +445,17 @@ private fun ResizeHandle(
     cursor: PointerIcon?,
     onResize: (ResizeEdges, Dp, Dp) -> Unit,
     onSettled: () -> Unit,
+    onEngage: () -> Unit,
 ) {
     // 手势协程只起一次，拿最新的回调：回调里读的宽高每拖一下都在变
     val resize by rememberUpdatedState(onResize)
     val settled by rememberUpdatedState(onSettled)
+    val engage by rememberUpdatedState(onEngage)
     Box(
         modifier = modifier
             .then(if (cursor != null) Modifier.pointerHoverIcon(cursor) else Modifier)
             .pointerInput(Unit) {
-                detectDragGestures(onDragEnd = { settled() }) { change, delta ->
+                detectDragGestures(onDragStart = { engage() }, onDragEnd = { settled() }) { change, delta ->
                     change.consume()
                     resize(edges, delta.x.toDp(), delta.y.toDp())
                 }
@@ -445,7 +498,7 @@ internal fun PanelHeaderButton(
 
 // 没拖过时离列表右沿与顶上的距离：贴着右沿时与网格最右一栏的滚动条、条目右上角的标签挤在一起
 private val PanelEndMargin = 24.dp
-private val PanelTopMargin = 12.dp
+internal val PanelTopMargin = 12.dp
 
 // 让开另一块面板时两块之间留的距离
 private val PanelGap = 12.dp
