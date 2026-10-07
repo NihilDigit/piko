@@ -157,6 +157,7 @@ import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.InstantSaveOutcome
 import dev.piko.shared.upload.UploadSelection
 import dev.piko.shared.upload.isUploading
+import dev.piko.shared.naming.av.canonicalAvNameOf
 import dev.piko.shared.naming.av.hasAvCode
 import dev.piko.shared.download.DriveDownloadFolderSource
 import dev.piko.ui.adaptive.isDesktopLayout
@@ -165,6 +166,7 @@ import dev.piko.ui.platform.ShortcutModifier
 import dev.piko.ui.platform.LocalWindowCaption
 import dev.piko.ui.screens.share.ShareDialog
 import dev.piko.ui.screens.rename.BatchRenameDialog
+import dev.piko.ui.screens.rename.MetaTubeTitleRow
 import dev.piko.ui.LocalPikoServices
 import dev.piko.shared.data.ArchiveEntryId
 import dev.piko.shared.data.isArchiveVolume
@@ -197,6 +199,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
@@ -266,6 +269,8 @@ fun DriveScreen(
     val instantSession = LocalPikoServices.current.instantSession
     val duplicateSession = LocalPikoServices.current.duplicateSession
     val downloadManager = LocalPikoServices.current.downloadManager
+    val metaTube = LocalPikoServices.current.metaTube
+    val metaTubeEnabled by remember(metaTube) { metaTube?.enabled ?: flowOf(false) }.collectAsStateWithLifecycle(initialValue = false)
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -395,6 +400,7 @@ fun DriveScreen(
     var keyboardFocusTarget by remember { mutableStateOf<String?>(null) }
     val focusManager = LocalFocusManager.current
     var renameNewName by remember { mutableStateOf("") }
+    var canonicalRename by remember { mutableStateOf(false) }
     // 桌面的顶栏是地址栏加后退、前进与上一级，照资源管理器；移动端是目录名作标题、上级另成一行面包屑，平板也是。
     // 按交互模型分而不按宽度，见 FormFactor
     val desktop = isDesktopLayout()
@@ -412,6 +418,13 @@ fun DriveScreen(
     fun startRename(file: FileStat) {
         renameTargetFile = file
         renameNewName = file.name
+        canonicalRename = false
+    }
+    // 单个文件按番号规范命名：普通的重命名对话框，名字预填为规范名，配了 MetaTube 时可在框下取片名
+    fun startCanonicalRename(file: FileStat) {
+        renameTargetFile = file
+        renameNewName = canonicalAvNameOf(file.name) ?: file.name
+        canonicalRename = true
     }
     val segmentSession = LocalPikoServices.current.segmentSession
     var actionTargetFile by remember { mutableStateOf<FileStat?>(null) }
@@ -552,8 +565,13 @@ fun DriveScreen(
     var shareTargets by remember { mutableStateOf<List<FileStat>>(emptyList()) }
     var qualityTarget by remember { mutableStateOf<FileStat?>(null) }
     var batchRenameTargets by remember { mutableStateOf<List<FileStat>>(emptyList()) }
-    // 按番号规范命名：打开批量重命名并换上这条规则。从命令面板进来、没选中时作用于当前目录的全部文件
+    // 几项一起按番号规范命名：打开批量重命名并换上这条规则
     var avNamingTargets by remember { mutableStateOf<List<FileStat>>(emptyList()) }
+    // 按番号规范命名的分派：一个文件是普通的重命名对话框，几项是批量重命名
+    fun nameByCode(files: List<FileStat>) {
+        val single = files.singleOrNull()
+        if (single != null && !single.isFolder) startCanonicalRename(single) else avNamingTargets = files
+    }
     var previewImage by remember { mutableStateOf<FileStat?>(null) }
     // 外部打开的磁力链是一次明确的新请求：开新会话并就地取走，面板收起后不再靠它续命。
     // 已有一次粘过东西的添加链接时不静默换掉它，与别的占着 sheet 的事一样先确认
@@ -858,7 +876,7 @@ fun DriveScreen(
             togglePreview = { state.toggleSpoiler(file.id) },
         )
         val canonicalName = listOfNotNull(
-            DriveActions.canonicalName { avNamingTargets = listOf(file) }.takeIf { commands.rename && !file.isFolder && hasAvCode(file.name) },
+            DriveActions.canonicalName { nameByCode(listOf(file)) }.takeIf { commands.rename && !file.isFolder && hasAvCode(file.name) },
         )
         // 移除记录排在移入回收站之前，两者同在末组
         return reveal + removeRecord + fileActions(file, commands, handlers) + canonicalName
@@ -1415,7 +1433,7 @@ fun DriveScreen(
                 add(PaletteItem("在当前文件夹查找重复", Icons.Outlined.FileCopy, "网盘", keywords = "duplicate dedupe") { findDuplicates(activeFolder) })
             }
             if (commands.rename && avNamingCandidates.any { !it.isFolder && hasAvCode(it.name) }) {
-                add(PaletteItem("按番号规范命名", Icons.Outlined.DriveFileRenameOutline, "网盘", keywords = "rename av code 番号 重命名") { avNamingTargets = avNamingCandidates })
+                add(PaletteItem("按番号规范命名", Icons.Outlined.DriveFileRenameOutline, "网盘", keywords = "rename av code 番号 重命名") { nameByCode(avNamingCandidates) })
             }
         }
     }
@@ -2032,6 +2050,11 @@ fun DriveScreen(
                 renameTargetFile = null
                 state.rename(id, name)
             },
+            extra = if (canonicalRename && metaTubeEnabled && metaTube != null) {
+                { MetaTubeTitleRow(target.name, metaTube) { renameNewName = it } }
+            } else {
+                null
+            },
         )
     }
 
@@ -2248,6 +2271,8 @@ private fun NameInputDialog(
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit,
     initialSelection: TextRange? = null,
+    /** 输入框下面多出的一行，如按番号规范命名时取片名的按钮。 */
+    extra: (@Composable () -> Unit)? = null,
 ) {
     val autoClean by LocalPikoServices.current.preferences.autoCleanNamesFlow.collectAsStateWithLifecycle(initialValue = false)
     var pendingName by remember { mutableStateOf<String?>(null) }
@@ -2260,17 +2285,20 @@ private fun NameInputDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = {
-            FileNameField(
-                value = value,
-                onValueChange = onValueChange,
-                label = label,
-                modifier = Modifier.fillMaxWidth(),
-                isError = unfixable,
-                supportingText = driveNameHint(value, autoClean),
-                onDone = { if (canConfirm) confirm() },
-                autoFocus = true,
-                initialSelection = initialSelection,
-            )
+            Column {
+                FileNameField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    label = label,
+                    modifier = Modifier.fillMaxWidth(),
+                    isError = unfixable,
+                    supportingText = driveNameHint(value, autoClean),
+                    onDone = { if (canConfirm) confirm() },
+                    autoFocus = true,
+                    initialSelection = initialSelection,
+                )
+                extra?.invoke()
+            }
         },
         confirmButton = {
             PikoDialogConfirm(confirmLabel, onClick = ::confirm, enabled = canConfirm)

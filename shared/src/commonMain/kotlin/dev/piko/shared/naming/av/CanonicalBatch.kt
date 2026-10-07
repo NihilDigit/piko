@@ -67,6 +67,13 @@ fun canonicalAvNames(items: List<AvNamingItem>, titles: Map<String, String> = em
     return result
 }
 
+/** 单独一个文件的规范名，认不出番号时为 null。[title] 不为 null 时取代原名里的片名。 */
+fun canonicalAvNameOf(fileName: String, title: String? = null): String? {
+    val info = parseMediaName(fileName).av ?: return null
+    val titles = title?.let { mapOf(info.code to it) }.orEmpty()
+    return canonicalAvNames(listOf(AvNamingItem(fileName, group = "")), titles).single()
+}
+
 /** 只含一个番号的文件夹名：「番号 片名」，不带分段。认不出番号时为 null。 */
 private fun canonicalFolderName(name: String, titles: Map<String, String>): String? {
     val info = matchAvFolder(name) ?: return null
