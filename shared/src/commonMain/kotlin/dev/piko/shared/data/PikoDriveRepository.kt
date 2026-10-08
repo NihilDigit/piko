@@ -791,8 +791,9 @@ open class PikoDriveRepository(
     val sourceLedger = SourceLedger(cacheStore, backgroundScope)
 
     init {
-        // 记下的目录内容按账号存：换号时换一份，退出登录只清内存
-        backgroundScope.launch {
+        // 构造结束前先切到当前账号，避免首次收集清掉刚记下的目录内容、归档树与来源。
+        // 磁盘缓存仍在后台载入；换号时换一份，退出登录只清内存。
+        backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) {
             clientManager.currentClient.collect {
                 childContents.switchAccount(it?.account)
                 recentFolders.switchAccount(it?.account)
