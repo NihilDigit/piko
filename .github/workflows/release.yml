@@ -326,10 +326,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # 各平台的产物落进同一个 dist，校验和与证明才会一并算上
+      # 只合并五份正式产物，排除 test job 上传的 windows-smoke-dist
       - uses: actions/download-artifact@v7
         with:
-          pattern: '*-dist'
+          pattern: '{android,windows-x64,windows-arm64,macos,linux}-dist'
           path: dist
           merge-multiple: true
 
