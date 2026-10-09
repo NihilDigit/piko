@@ -67,6 +67,25 @@ msiexec /a 解开 MSI，比对各处启动器的 SHA-256。
 仅运行 Windows 构建和两个架构各自的桌面单测；Windows 产物保留在 workflow 中，不汇总
 其他平台、不创建 Release。默认完整演练与 tag 发布仍要求全部前置测试。
 
+## 首次签名演练结果
+
+2026-10-09，[Windows 专项演练](https://github.com/NihilDigit/piko/actions/runs/37900460247)
+成功完成，代码为 `4194ee9`。同一提交的
+[完整 Test 工作流](https://github.com/NihilDigit/piko/actions/runs/37900427137)也全部通过。
+
+x64 和 ARM64 均完成 EXE、MSI 两阶段签名及 Authenticode 验证，并确认 MSI、便携 7z、
+app.zip、image.zip 和 files.json 中的启动器与签名文件一致。测试证书指纹为
+`E3BE654A569066A23D3FDA802EA363AA90744ED7`。
+
+| 架构 | EXE 请求 | MSI 请求 |
+| --- | --- | --- |
+| x64 | [查看](https://app.signpath.io/Web/641251b4-b3c6-4958-88f3-a5e9349050cc/SigningRequests/99f86483-1d67-4e82-86cc-dbb51077ffbc) | [查看](https://app.signpath.io/Web/641251b4-b3c6-4958-88f3-a5e9349050cc/SigningRequests/9deff0a6-6d4a-4fe9-aca7-7f119fde8d26) |
+| ARM64 | [查看](https://app.signpath.io/Web/641251b4-b3c6-4958-88f3-a5e9349050cc/SigningRequests/1b295173-79f6-4c6e-a90c-df893056e135) | [查看](https://app.signpath.io/Web/641251b4-b3c6-4958-88f3-a5e9349050cc/SigningRequests/1fc99193-3da5-48a2-9f11-4faec4600282) |
+
+此次验证覆盖签名、打包与解包一致性，未执行签名产物的交互式启动、安装及旧版升级。
+产物保留在 Actions 中，没有创建 Release。下一步向 SignPath Support 提供演练链接，
+请其审核配置并签发正式证书；正式证书导入后再验证 release-signing。
+
 ## 官方依据
 
 - [GitHub integration](https://docs.signpath.io/trusted-build-systems/github)
