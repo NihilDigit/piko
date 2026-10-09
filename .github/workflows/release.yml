@@ -19,6 +19,7 @@ name: Release
 # 演练：手动触发并填一个版本号，测试、构建与汇总照常跑完，产物留作 workflow 产物，不建 release、
 # 不做证明。发版流程本身改过之后先演练一遍，确认能走通再推 tag。
 # 需要仓库 Secret：ANDROID_KEYSTORE_BASE64、ANDROID_KEYSTORE_PASSWORD、ANDROID_KEY_ALIAS、ANDROID_KEY_PASSWORD
+# Windows 签名：SIGNPATH_API_TOKEN；手动演练用 test-signing，tag 发布用 release-signing。
 
 on:
   push:
@@ -140,6 +141,9 @@ jobs:
 
   windows:
     needs: [version, test]
+    permissions:
+      contents: read
+      actions: read
     strategy:
       fail-fast: false
       matrix:
@@ -154,6 +158,7 @@ jobs:
       # Gradle 把 ORG_GRADLE_PROJECT_ 前缀的环境变量读作项目属性；带了它才是发布构建，见 build.gradle.kts
       ORG_GRADLE_PROJECT_pikoDesktopVersion: ${{ needs.version.outputs.name }}
       VERSION: ${{ needs.version.outputs.name }}
+      SIGNING_POLICY: ${{ github.event_name == 'workflow_dispatch' && 'test-signing' || 'release-signing' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -183,8 +188,6 @@ jobs:
         continue-on-error: true
         run: choco install wixtoolset -y --no-progress
 
-      # MSI 与应用内更新的两个附件在同一次调用里生成，取自同一份应用目录。MSI 未签名，
-      # 安装时 SmartScreen 会提示；安装包元数据只能用 ASCII，见 build.gradle.kts 的 description
       # 近几个旧版的文件清单：运行时、mpv 与它们不同时，补丁包把这些文件也带上，便携版不必下整包。
       # 不再给补丁的旧版（1.0.0）的清单另放，构建时核对它们确实走不了补丁，理由见 update-bases.sh
       - name: Update bases
@@ -193,20 +196,57 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: bash .github/scripts/update-bases.sh "$VERSION" "${{ matrix.arch }}" "$RUNNER_TEMP/update-bases" "$RUNNER_TEMP/update-retired"
 
-      - name: Build
-        run: .\gradlew.bat :desktopApp:packageReleaseMsi :desktopApp:packageReleaseUpdate --no-daemon --stacktrace "-PpikoUpdateBases=$env:RUNNER_TEMP/update-bases" "-PpikoUpdateRetired=$env:RUNNER_TEMP/update-retired"
+      - name: Build application image
+        run: .\gradlew.bat :desktopApp:createReleaseDistributable --no-daemon --stacktrace
 
       # 打包出的类逐个让 JVM 校验。ProGuard 改写过的字节码可能校验不过，而那只在装上之后
       # 进到某一页才崩，gradle run 与单测都走不到（见 desktopApp/package/VerifyClasses.java）
       - name: Verify classes
         run: java -Xverify:all desktopApp/package/VerifyClasses.java desktopApp/build/compose/binaries/main-release/app/Piko/app
 
+      - name: Upload unsigned launcher
+        id: unsigned-launcher
+        uses: actions/upload-artifact@v6
+        with:
+          name: unsigned-launcher-${{ matrix.arch }}
+          path: desktopApp/build/compose/binaries/main-release/app/Piko/Piko.exe
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Sign launcher
+        id: sign-launcher
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: 641251b4-b3c6-4958-88f3-a5e9349050cc
+          project-slug: piko
+          signing-policy-slug: ${{ env.SIGNING_POLICY }}
+          artifact-configuration-slug: windows-launcher
+          github-artifact-id: ${{ steps.unsigned-launcher.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: ${{ runner.temp }}/signed-launcher
+
+      - name: Stage signed application image
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .github/scripts/verify-windows-signature.ps1 -Path "$env:RUNNER_TEMP/signed-launcher/Piko.exe" -TestCertificate:($env:SIGNING_POLICY -eq 'test-signing')
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/signed-image" | Out-Null
+          # robocopy 保留文件时间；AOT 缓存依赖 jar 的修改时间。
+          robocopy desktopApp/build/compose/binaries/main-release/app/Piko "$env:RUNNER_TEMP/signed-image/Piko" /E /COPY:DAT /DCOPY:DAT /NFL /NDL /NJH /NJS
+          if ($LASTEXITCODE -ge 8) { throw "robocopy failed: $LASTEXITCODE" }
+          Copy-Item "$env:RUNNER_TEMP/signed-launcher/Piko.exe" "$env:RUNNER_TEMP/signed-image/Piko/Piko.exe" -Force
+          exit 0
+
+      - name: Package signed application
+        run: .\gradlew.bat :desktopApp:packageReleaseMsi :desktopApp:packageReleaseUpdate --no-daemon --stacktrace "-PpikoSignedAppImage=$env:RUNNER_TEMP/signed-image/Piko" "-PpikoUpdateBases=$env:RUNNER_TEMP/update-bases" "-PpikoUpdateRetired=$env:RUNNER_TEMP/update-retired"
+
       - name: Collect artifacts
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $binaries = 'desktopApp/build/compose/binaries/main-release'
-          $appDir = "$binaries/app/Piko"
+          $appDir = "$env:RUNNER_TEMP/signed-image/Piko"
           if (-not (Test-Path "$appDir/Piko.exe")) { throw "缺少 $appDir/Piko.exe" }
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           # 便携版（.7z，带 portable 标记），见 .github/scripts/pack-portable.ps1
@@ -218,6 +258,57 @@ jobs:
           # 应用内更新的 files.json 与 app.zip，名字由 packageReleaseUpdate 定好
           Copy-Item "$binaries/update/*" dist/
           Get-ChildItem dist | Format-Table Name, Length
+
+      - name: Upload unsigned MSI
+        id: unsigned-msi
+        uses: actions/upload-artifact@v6
+        with:
+          name: unsigned-msi-${{ matrix.arch }}
+          path: dist/*.msi
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Sign MSI
+        id: sign-msi
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: 641251b4-b3c6-4958-88f3-a5e9349050cc
+          project-slug: piko
+          signing-policy-slug: ${{ env.SIGNING_POLICY }}
+          artifact-configuration-slug: windows-msi
+          github-artifact-id: ${{ steps.unsigned-msi.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: ${{ runner.temp }}/signed-msi
+
+      - name: Verify signed packages
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $name = "piko-windows-${{ matrix.arch }}-$env:VERSION"
+          Copy-Item "$env:RUNNER_TEMP/signed-msi/$name.msi" "dist/$name.msi" -Force
+          & .github/scripts/verify-windows-signature.ps1 -Path "$env:RUNNER_TEMP/signed-image/Piko/Piko.exe", "dist/$name.msi" -TestCertificate:($env:SIGNING_POLICY -eq 'test-signing')
+          & .github/scripts/verify-windows-packages.ps1 -Dist dist -Prefix $name -Launcher "$env:RUNNER_TEMP/signed-image/Piko/Piko.exe" -Work "$env:RUNNER_TEMP/verify-packages"
+
+      - name: Signing request links
+        if: always()
+        shell: pwsh
+        env:
+          LAUNCHER_REQUEST: ${{ steps.sign-launcher.outputs.signing-request-web-url }}
+          MSI_REQUEST: ${{ steps.sign-msi.outputs.signing-request-web-url }}
+        run: |
+          "### Windows ${{ matrix.arch }} ($env:SIGNING_POLICY)" >> $env:GITHUB_STEP_SUMMARY
+          "Launcher: $env:LAUNCHER_REQUEST" >> $env:GITHUB_STEP_SUMMARY
+          "MSI: $env:MSI_REQUEST" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload package verification logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-signing-logs-${{ matrix.arch }}
+          path: ${{ runner.temp }}/verify-packages/*.log
+          if-no-files-found: ignore
+          retention-days: 7
 
       - uses: actions/upload-artifact@v6
         with:

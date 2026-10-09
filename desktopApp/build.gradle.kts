@@ -12,6 +12,7 @@ import org.jetbrains.compose.desktop.application.dsl.AotMode
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.compose.desktop.application.tasks.AbstractCheckNativeDistributionRuntime
 import org.jetbrains.compose.desktop.application.tasks.AbstractJvmToolOperationTask
+import org.jetbrains.compose.desktop.application.tasks.AbstractJPackageTask
 import org.jetbrains.compose.desktop.application.tasks.AbstractProguardTask
 import org.jetbrains.compose.desktop.application.tasks.AbstractSuggestModulesTask
 
@@ -577,10 +578,27 @@ abstract class UpdateArtifactsTask : DefaultTask() {
     }
 }
 
-// CI 在打出 MSI 的同一次调用里跑它：同一份应用目录，jar 的修改时间与 AOT 训练时一致
+// CI 将签好的启动器放进独立的应用目录；后续 Gradle 即使重建原目录，也不会覆盖签名。
+val signedAppImage = providers.gradleProperty("pikoSignedAppImage").map { rootProject.file(it) }
+if (isWindowsHost) {
+    afterEvaluate {
+        tasks.named<AbstractJPackageTask>("packageReleaseMsi") {
+            if (signedAppImage.isPresent) {
+                // Compose 的 appImage 指向包名目录的父目录，jpackage 参数再拼上 packageName。
+                appImage.set(layout.dir(signedAppImage.map { it.parentFile }))
+                doFirst {
+                    check(signedAppImage.get().name == desktopPackageName)
+                    check(signedAppImage.get().resolve("$desktopPackageName.exe").isFile)
+                }
+            }
+        }
+    }
+}
+
+// MSI、便携版与更新清单必须使用同一份签名后的应用目录，并保留 AOT 训练时的 jar 时间。
 tasks.register<UpdateArtifactsTask>("packageReleaseUpdate") {
     dependsOn("createReleaseDistributable")
-    appImage = layout.buildDirectory.dir("compose/binaries/main-release/app/$desktopPackageName")
+    appImage = layout.dir(signedAppImage).orElse(layout.buildDirectory.dir("compose/binaries/main-release/app/$desktopPackageName"))
     version = desktopPackageVersion
     artifactPrefix = "piko-$hostPlatform-$desktopPackageVersion"
     outputDir = layout.buildDirectory.dir("compose/binaries/main-release/update")
