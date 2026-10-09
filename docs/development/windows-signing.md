@@ -54,12 +54,18 @@ Windows job 应显式配置 contents: read、actions: read。所有签名前置 
 - x64 和 ARM64 分别在对应 GitHub runner 上验证。
 
 verify-windows-signature.ps1 使用系统 Authenticode 验证签名，并要求 EXE、MSI 使用同一证书。
-测试证书只在 GitHub runner 的 CurrentUser 根证书存储中临时信任，验证完移除；正式签名
+测试证书只在 GitHub runner 的 LocalMachine 根证书存储中临时信任，验证完移除；CurrentUser
+根存储会弹出交互式确认窗口，不适合 CI。正式签名
 还要求时间戳。verify-windows-packages.ps1 检查清单与更新 ZIP，解开便携包并通过
 msiexec /a 解开 MSI，比对各处启动器的 SHA-256。
 
 本机 Gradle 原生缓存需要沙箱外访问；此前 native-platform.dll 加载失败与此有关。
 首次演练完成后的真实签名结果以 Actions run 和 Step summary 中的 SignPath 请求链接为准。
+
+首次完整演练的所有前置测试已通过，GitHub App 安装后两个架构的 EXE 均成功签名。
+调试后续签名步骤可用 `gh workflow run release.yml -f version=9.9.9 -f windows-only=true`，
+仅运行 Windows 构建和两个架构各自的桌面单测；Windows 产物保留在 workflow 中，不汇总
+其他平台、不创建 Release。默认完整演练与 tag 发布仍要求全部前置测试。
 
 ## 官方依据
 

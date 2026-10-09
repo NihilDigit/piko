@@ -19,16 +19,19 @@ try {
     if ($TestCertificate) {
         if ($env:GITHUB_ACTIONS -ne 'true') { throw 'Test certificate trust is only permitted on the CI runner' }
         if ($signer.Subject -ne $signer.Issuer) { throw 'Expected a self-signed test certificate' }
-        # 只在临时 runner 上信任本次测试证书，再让 WinVerifyTrust 验证文件内容；不能把 NotTrusted 当通过。
-        $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('Root', 'CurrentUser')
+        # CurrentUser 根存储会弹确认窗口；临时 runner 用机器存储，验证后移除。不能把 NotTrusted 当通过。
+        $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('Root', 'LocalMachine')
         $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
         $existing = $store.Certificates.Find('FindByThumbprint', $signer.Thumbprint, $false)
         if ($existing.Count -eq 0) {
+            Write-Host "Temporarily trusting test certificate $($signer.Thumbprint) on the CI runner"
             $store.Add($signer)
             $added = $true
+            Write-Host 'Test certificate added'
         }
     }
     foreach ($file in $Path) {
+        Write-Host "Verifying Authenticode signature: $file"
         $signature = Get-AuthenticodeSignature -LiteralPath $file
         if ($signature.Status -ne 'Valid') { throw "Invalid signature on ${file}: $($signature.Status) $($signature.StatusMessage)" }
         if (-not $TestCertificate -and -not $signature.TimeStamperCertificate) { throw "Missing timestamp: $file" }

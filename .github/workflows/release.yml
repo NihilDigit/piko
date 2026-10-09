@@ -31,6 +31,10 @@ on:
         description: 演练用的版本号（MAJOR.MINOR.PATCH），不发布
         required: true
         default: '9.9.9'
+      windows-only:
+        description: 仅演练 Windows 签名（仍运行两个架构的桌面单测）
+        type: boolean
+        default: false
 
 concurrency:
   group: release-${{ github.ref }}
@@ -70,6 +74,7 @@ jobs:
   # 发版前把全部测试在真机器上跑一遍：JVM 与各平台的单测，Android 模拟器、Windows 与 macOS 上的原生行为冒烟
   # （含全新安装与应用内更新），并行跑，全绿才开始打正式包。用已发布的 SDK，与下面的正式构建一致
   test:
+    if: github.event_name != 'workflow_dispatch' || !inputs.windows-only
     uses: ./.github/workflows/test.yml
     with:
       desktop: true
@@ -77,6 +82,7 @@ jobs:
 
   # 签名密钥只进这个 job，负责汇总发布的 release 不碰它。
   android:
+    if: github.event_name != 'workflow_dispatch' || !inputs.windows-only
     needs: [version, test]
     runs-on: ubuntu-latest
     env:
@@ -141,6 +147,7 @@ jobs:
 
   windows:
     needs: [version, test]
+    if: ${{ !cancelled() && needs.version.result == 'success' && (needs.test.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.windows-only)) }}
     permissions:
       contents: read
       actions: read
@@ -227,6 +234,7 @@ jobs:
           output-artifact-directory: ${{ runner.temp }}/signed-launcher
 
       - name: Stage signed application image
+        timeout-minutes: 5
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -282,6 +290,7 @@ jobs:
           output-artifact-directory: ${{ runner.temp }}/signed-msi
 
       - name: Verify signed packages
+        timeout-minutes: 10
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -319,6 +328,7 @@ jobs:
 
   # Apple 芯片。jpackage 不能交叉构建，Intel Mac 要另起 macos-15-intel runner，暂不出
   macos:
+    if: github.event_name != 'workflow_dispatch' || !inputs.windows-only
     needs: [version, test]
     runs-on: macos-15
     env:
@@ -361,6 +371,7 @@ jobs:
   # x64 AppImage 与 app-image 的 tar.gz。MediaMP 的 mpv 运行库没有 linux-arm64，Linux 只出 x64。
   # 打包时的 AOT 训练要开窗，套一层 xvfb-run；appimagetool 与运行时的版本和摘要钉在 build-appimage.sh 里
   linux:
+    if: github.event_name != 'workflow_dispatch' || !inputs.windows-only
     needs: [version, test]
     runs-on: ubuntu-24.04
     env:
