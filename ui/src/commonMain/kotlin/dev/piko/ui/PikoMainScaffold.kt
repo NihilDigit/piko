@@ -151,7 +151,6 @@ import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.adaptive.isDesktopLayout
 import dev.piko.ui.adaptive.isHeightCompact
 import dev.piko.ui.components.SidePanelLayout
-import dev.piko.ui.components.sidePanelFits
 import dev.piko.ui.components.trackInputModality
 import dev.piko.ui.components.FocusFallback
 import dev.piko.ui.components.LocalFocusFallback
@@ -505,8 +504,9 @@ fun PikoMainScaffold(
     val initialPanelPrefs = remember { runBlocking { preferences.clipPanelFlow.first() } }
     val panelPrefs by preferences.clipPanelFlow.collectAsStateWithLifecycle(initialPanelPrefs)
     val contentWidth = with(density) { contentSize.width.toDp() }.takeIf { contentSize != IntSize.Zero }
-    // 右栏只在桌面：移动端的信息流一律全屏，平板横握也是，与手机同一套
-    val panelFits = contentWidth != null && desktop && sidePanelFits(contentWidth, ClipPanelMinWidth)
+    val contentHeight = with(density) { contentSize.height.toDp() }.takeIf { contentSize != IntSize.Zero }
+    // 分屏只看内容区能否放下，不把移动端的导航、触控操作与任务模型换成桌面那套。
+    val panelFits = feedPanelFits(contentWidth, contentHeight, desktop, ClipPanelMinWidth)
     // null 是还没量出内容区宽度。上次开着侧栏退出的，只在这回仍放得下侧栏时照样打开；
     // 放不下就是全屏形态，窄窗口一启动就开始播不是谁想要的
     var feedShownState by rememberSaveable { mutableStateOf<Boolean?>(null) }
@@ -549,7 +549,7 @@ fun PikoMainScaffold(
     // suspendFeed 那一处），信息流挤不走添加链接（「信息流」入口置灰）：添加链接是有未完成工作的任务，信息流只是浏览。
     // 添加链接收成右下角的浮动卡片后右栏就空出来了，信息流照常打开
     val instantSession = services.instantSession
-    val addLinkDocked = panelFits && instantSession.state != null && instantSession.isSheetOpen
+    val addLinkDocked = desktop && panelFits && instantSession.state != null && instantSession.isSheetOpen
     val feedBlockedReason = if (addLinkDocked) "添加链接进行中，关闭后可打开信息流" else null
     val feedInPanel = feedOnFilesTab && panelFits && !addLinkDocked
     val feedFullScreen = feedOnFilesTab && !panelFits
@@ -667,7 +667,7 @@ fun PikoMainScaffold(
         taskSlot.occupants = listOf(
             TaskSlot.Occupant(TaskSlot.Task.DUPLICATES, "查找重复", "扫描结果不会保存。", { services.duplicateSession.state != null }, services.duplicateSession::end),
             TaskSlot.Occupant(TaskSlot.Task.ADD_LINK, "添加链接", "尚未保存的链接将被丢弃。", { services.instantSession.state != null }, services.instantSession::end),
-            TaskSlot.Occupant(TaskSlot.Task.FEED, "信息流", "再次打开时将从头开始。", { feedShownState == true && feedDetour != null }) { latestSetFeedShown(false) },
+            TaskSlot.Occupant(TaskSlot.Task.FEED, "信息流", "再次打开时将从头开始。", { feedTaskActive(desktop, feedShownState == true, feedDetour != null) }) { latestSetFeedShown(false) },
         )
     }
     // 窄窗口里人往查找重复所在的那棵树外走（返回、面包屑、从别处跳进网盘、快速访问、「我的」里的库、命令面板）之前先确认，
@@ -930,6 +930,10 @@ fun PikoMainScaffold(
             BackHandler(enabled = currentTab != MainTab.FILES && !feedFullScreen) {
                 currentTab = MainTab.FILES
             }
+
+            // 分屏时先让网盘的目录、多选、搜索与弹层处理返回；根目录再返回才关闭信息流。
+            // 登记在内容之前，网盘内部后登记的 BackHandler 优先。桌面 Esc 仍只归网盘。
+            BackHandler(enabled = !desktop && feedInPanel) { setFeedShown(false) }
 
             // 移动端窄时是 64dp 的 ShortNavigationBar，宽了（横握的手机、平板）换成收起的 Rail，照 M3 的断点。
             // 写死而不交给库挑：库还看窗口高度，横握的手机宽够了、高度不够，给的是一条占地方的横向底栏
