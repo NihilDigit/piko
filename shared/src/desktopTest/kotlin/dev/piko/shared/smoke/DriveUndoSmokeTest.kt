@@ -35,15 +35,15 @@ class DriveUndoSmokeTest {
 
         // 最近的先撤：先从回收站恢复，再把两个文件移回根目录
         assertTrue(drive.undoLast())
-        awaitUntil("从回收站恢复") { !target.trashed }
+        awaitUntil("从回收站恢复并确认撤销完成") { !target.trashed && repository.changes.state.value.undo.values.none { it.status == DriveChangeJournal.UndoStatus.RUNNING } }
         assertTrue(drive.undoLast())
-        awaitUntil("移回原处") { a.parentId == "" && b.parentId == "" }
+        awaitUntil("移回原处并确认撤销完成") { a.parentId == "" && b.parentId == "" && repository.changes.state.value.undo.values.none { it.status == DriveChangeJournal.UndoStatus.RUNNING } }
 
         drive.rename(a.id, "c.txt")
         awaitUntil("重命名") { a.name == "c.txt" }
         awaitUntil("重命名记下") { repository.changes.latest.value is DriveChangeJournal.Change.Rename }
         assertTrue(drive.undoLast())
-        awaitUntil("改回原名") { a.name == "a.txt" }
+        awaitUntil("改回原名并确认撤销完成") { a.name == "a.txt" && repository.changes.state.value.undo.values.none { it.status == DriveChangeJournal.UndoStatus.RUNNING } }
         assertEquals("", a.parentId)
 
         // 都撤完了

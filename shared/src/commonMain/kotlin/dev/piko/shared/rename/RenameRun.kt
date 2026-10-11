@@ -6,6 +6,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.data.DriveWriteAccess
+import dev.piko.shared.data.DriveChange
+import io.github.nihildigit.pikpak.PikPakException
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.log.logFile
 
@@ -17,7 +20,7 @@ import dev.piko.shared.log.logFile
  *
  * 不自己记撤销：调用方在 [execute] 结束（含被取消）后把 [renamed] 记进改动日志，被取消时已改成的也在里面。
  */
-class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: String) {
+class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: String, private val access: DriveWriteAccess? = null) {
     /** 要改名的项数，与已处理的项数（含失败）。 */
     var total by mutableStateOf(0)
         private set
@@ -29,6 +32,7 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
 
     /** 成功的每一步，按执行顺序，撤销时倒着改回去。临时名称的那一步也在里面，撤销时同样倒着经过它。 */
     val renamed = mutableListOf<DriveChangeJournal.Renamed>()
+    val unconfirmed = mutableListOf<DriveChangeJournal.Renamed>()
 
     suspend fun execute(plan: RenamePlan) {
         val targets = plan.rows.associateBy { it.source.id }
@@ -36,7 +40,9 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
         processed = 0
         failures.clear()
         renamed.clear()
+        unconfirmed.clear()
         val failedIds = mutableSetOf<String>()
+        val completedIds = mutableSetOf<String>()
         for (step in plan.steps) {
             val id = step.source.id
             if (id in failedIds) continue
@@ -46,17 +52,40 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
             if (!succeeded) {
                 failedIds += id
                 failures += row
-                if (step.from != step.source.name) renameStep(id, step.from, step.source.name)
+                if (unconfirmed.none { it.id == id } && step.from != step.source.name) renameStep(id, step.from, step.source.name)
             }
             if (!succeeded || isFinal) processed++
+            if (succeeded && isFinal) completedIds += id
+            if (access != null && unconfirmed.any { it.id == id }) {
+                val unvisited = plan.rows.filter { it.isChanged && it.problem == null && it.source.id !in completedIds && failures.none { failed -> failed.source.id == it.source.id } }
+                failures += unvisited
+                processed = completedIds.size + failures.size
+                break
+            }
         }
     }
 
     val succeeded: Int get() = processed - failures.size
 
-    private suspend fun renameStep(id: String, from: String, to: String): Boolean =
-        driveRepo.rename(id, to)
-            .logFailure(tag, "重命名失败：${logFile(id, from)}")
-            .onSuccess { renamed += DriveChangeJournal.Renamed(id, from, to) }
-            .isSuccess
+    private suspend fun renameStep(id: String, from: String, to: String): Boolean {
+        val bound = access
+        var parentId: String? = null
+        if (bound != null) {
+            val current = bound.detail(id).getOrNull() ?: return false
+            if (current.trashed || current.name != from) return false
+            parentId = current.parentId
+        }
+        val result = (bound?.rename(id, to) ?: driveRepo.rename(id, to)).logFailure(tag, "重命名失败：${logFile(id, from)}")
+        val error = result.exceptionOrNull()
+        val refused = error is PikPakException && error.httpStatus in setOf(400, 401, 403, 404, 409, 422)
+        val observed = if (result.isFailure && bound != null && !refused) bound.detail(id).getOrNull()?.name == to else false
+        if (result.isSuccess || observed) {
+            renamed += DriveChangeJournal.Renamed(id, from, to)
+            bound?.publish(DriveChange.Renamed(id, to, parentId))
+            return true
+        }
+        if (bound != null && !refused)
+            unconfirmed += DriveChangeJournal.Renamed(id, from, to)
+        return false
+    }
 }

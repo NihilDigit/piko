@@ -3,6 +3,7 @@ package dev.piko.shared.state
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.data.PikoDriveRepository
@@ -38,6 +39,9 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlin.time.Clock
 import kotlin.time.TimeSource
 
@@ -54,6 +58,7 @@ data class VaultScope(
 ) {
     /** 不含文件夹：确认框据此省掉对单个或几个文件没有意义的选项。 */
     val filesOnly: Boolean get() = folders.isEmpty()
+    val targets: VaultWorkTargets get() = VaultWorkTargets(folders.mapTo(HashSet()) { it.id }, files.mapTo(HashSet()) { it.parentId }, files.mapTo(HashSet()) { it.id })
 
     // 日志里只留数量与 ID，名字不进日志
     internal val logScope: String get() = "${folders.size} 个文件夹（${folders.joinToString { it.id }}）与 ${files.size} 个单独的文件"
@@ -62,6 +67,8 @@ data class VaultScope(
         fun of(folder: PikoPathBreadcrumb) = VaultScope(folder.name, folders = listOf(folder))
     }
 }
+
+data class VaultWorkTargets(val roots: Set<String> = emptySet(), val manifests: Set<String> = emptySet(), val files: Set<String> = emptySet())
 
 /**
  * 把文件夹里或单独选的真实文件换成归档条目（范围见 [VaultScope]），腾出网盘空间，以及反过来恢复到网盘。进程级：离开网盘页照常进行；
@@ -79,6 +86,35 @@ class FolderVaultSession internal constructor(
     private val cidTimeoutMillis: Long = 5_000,
 ) {
     constructor(driveRepo: PikoDriveRepository, scope: CoroutineScope) : this(DriveFolderVaultOperations(driveRepo), scope)
+
+    enum class Completion { SUCCEEDED, PARTIAL, FAILED, STOPPED }
+    data class Work(val id: Long, val name: String, val restoring: Boolean, val createdAtMs: Long)
+    data class Record(
+        val work: Work,
+        val completion: Completion,
+        val title: String,
+        val message: String,
+        val finishedAtMs: Long,
+        val undoChangeId: Long? = null,
+    )
+
+    var activeWork by mutableStateOf<Work?>(null)
+        private set
+    var activeTargets by mutableStateOf<VaultWorkTargets?>(null)
+        private set
+    var conflictReason: (VaultWorkTargets) -> String? = { null }
+    fun unavailableReason(targets: VaultWorkTargets): String? = if (isRunning) "已有归档或恢复正在进行" else conflictReason(targets)
+
+    private fun refused(targets: VaultWorkTargets): Boolean {
+        val reason = unavailableReason(targets) ?: return false
+        _messages.tryEmit(reason)
+        return true
+    }
+    var records by mutableStateOf<List<Record>>(emptyList())
+        private set
+    private var sequence = 0L
+
+    fun dismissRecord(id: Long) { records = records.filterNot { it.work.id == id } }
 
     /**
      * 一次归档之前的清点，给确认框用。没有来源记录的（自己上传、秒传）单独计。
@@ -127,7 +163,7 @@ class FolderVaultSession internal constructor(
     val outcomes: SharedFlow<Outcome> = _outcomes.asSharedFlow()
 
     /** 归档或恢复正在进行，Android 据此保持前台服务。 */
-    val isRunning: Boolean get() = progress != null || restoreProgress != null
+    val isRunning: Boolean get() = activeWork != null
 
     private var job: Job? = null
 
@@ -139,18 +175,58 @@ class FolderVaultSession internal constructor(
         private set
 
     fun stop() {
-        if (job?.isActive == true) stopping = true
+        if (activeWork != null) stopping = true
     }
+
+    fun stop(id: Long) { if (activeWork?.id == id) stop() }
 
     /** 已有一件在做时提示一句并返回 true，否则为新的一件清掉停止标记。 */
     private fun busy(): Boolean {
-        if (job?.isActive != true) {
+        if (activeWork == null) {
             stopping = false
             return false
         }
         val running = progress?.let { "「${it.folderName}」归档中" } ?: restoreProgress?.let { "「${it.folderName}」恢复中" } ?: "归档处理中"
         _messages.tryEmit("$running，请稍后再试")
         return true
+    }
+
+    private fun launchWork(name: String, restoring: Boolean, targets: VaultWorkTargets, block: suspend (Work) -> Unit) {
+        if (!scope.isActive) return
+        val work = Work(++sequence, name, restoring, Clock.System.now().toEpochMilliseconds())
+        activeWork = work
+        activeTargets = targets
+        if (restoring) restoreProgress = RestoreProgress(name)
+        val nextJob = scope.launch(start = CoroutineStart.LAZY) {
+            try { block(work) } finally {
+                if (activeWork === work) {
+                    activeWork = null
+                    activeTargets = null
+                    progress = null
+                    restoreProgress = null
+                }
+            }
+        }
+        job = nextJob
+        nextJob.start()
+    }
+
+    private suspend fun ensureCurrent(work: Work) {
+        currentCoroutineContext().ensureActive()
+        if (activeWork !== work) throw CancellationException("归档会话已结束")
+    }
+
+    private fun publish(work: Work, completion: Completion, title: String, message: String, change: DriveChangeJournal.Change.Vault? = null) {
+        if (activeWork !== work) return
+        val record = Record(work, completion, title, message, Clock.System.now().toEpochMilliseconds(), change?.id)
+        Snapshot.withMutableSnapshot {
+            records = (records + record).takeLast(100)
+            activeWork = null
+            activeTargets = null
+            progress = null
+            restoreProgress = null
+        }
+        _outcomes.tryEmit(Outcome(title, message, undoable = change != null))
     }
 
     /** 清点 [folder] 整棵树里能归档的文件。 */
@@ -172,8 +248,8 @@ class FolderVaultSession internal constructor(
 
     /** 开始归档 [target]。[includeUnsourced] 为假时没有来源记录的文件原样留着。已有一个在做时不接。 */
     fun archive(target: VaultScope, includeUnsourced: Boolean, onlyLargeFiles: Boolean = false, moveToTrash: Boolean = true) {
-        if (busy()) return
-        job = scope.launch {
+        if (busy() || refused(target.targets)) return
+        launchWork(target.name, restoring = false, target.targets) { work ->
             val reverts = mutableMapOf<String, VaultEdit>()
             val trashed = mutableListOf<String>()
             val deleted = mutableMapOf<String, List<VaultEntry>>()
@@ -188,7 +264,13 @@ class FolderVaultSession internal constructor(
                         (includeUnsourced || !it.sourceUrl.isNullOrBlank()) && (!onlyLargeFiles || it.sizeBytes >= LARGE_FILE_MIN_BYTES)
                     }
                 }.filter { it.second.isNotEmpty() }
+                ensureCurrent(work)
                 val total = levels.sumOf { it.second.size }
+                val targets = requireNotNull(activeTargets)
+                activeTargets = targets.copy(
+                    manifests = targets.manifests + levels.map { it.first },
+                    files = targets.files + levels.flatMap { it.second }.map { it.id },
+                )
                 PikoLog.i(TAG, "开始归档：${target.logScope}，${levels.size} 个文件夹里 $total 个文件，${levels.sumOf { l -> l.second.sumOf { it.sizeBytes } }} 字节，" +
                     "${if (includeUnsourced) "含" else "不含"}无来源的${if (onlyLargeFiles) "，只归档大文件" else ""}，原文件${if (delete) "直接删除" else "移入回收站"}")
                 var done = 0
@@ -206,12 +288,14 @@ class FolderVaultSession internal constructor(
                                 val cid = file.params["piko_vault_cid"] ?: sampler.sample(file)
                                 progressLock.withLock {
                                     prepared++
-                                    progress = Progress(target.name, done, total, prepared)
+                                    if (activeWork === work) progress = Progress(target.name, done, total, prepared)
                                 }
                                 if (cid == null) progressLock.withLock { noCid++ }
                                 VaultEntry.create(file.name, file.sizeBytes, file.hash, file.sourceUrl, addedAt, cid)
                             } }.awaitAll()
+                            ensureCurrent(work)
                             operations.write(folderId, entries)
+                            ensureCurrent(work)
                             // 删除请求的返回状态可能不明确，先记录恢复依据；撤销时跳过仍在原位的文件。
                             progressLock.withLock {
                                 if (delete) deleted[folderId] = entries
@@ -221,13 +305,14 @@ class FolderVaultSession internal constructor(
                             progressLock.withLock {
                                 if (!delete) trashed += files.map { it.id }
                                 done += files.size
-                                progress = Progress(target.name, done, total, prepared)
+                                if (activeWork === work) progress = Progress(target.name, done, total, prepared)
                             }
                         }
                     } }.awaitAll()
                 }
                 done
             }
+            ensureCurrent(work)
             progress = null
             val stopped = stopping
             PikoLog.i(TAG, "归档${if (result.isFailure) "中途失败" else if (stopped) "已停止" else "完成"}：${target.logScope}，" +
@@ -242,21 +327,22 @@ class FolderVaultSession internal constructor(
                     else if (deleted.isNotEmpty()) "$count，原文件已删除" else "$count，原文件已移入回收站"
                 // 带上名字：这条提示常在别的页、几分钟后才弹出，不写明是哪个文件夹就认不出
                 val summary = "「${target.name}」：$report"
-                operations.record(
-                    DriveChangeJournal.Change.Vault(reverts, summary, untrashOnRevert = trashed, recreateOnRevert = deleted),
-                )
+                val change = DriveChangeJournal.Change.Vault(reverts, summary, untrashOnRevert = trashed, recreateOnRevert = deleted)
+                operations.record(change)
                 val title = when {
                     result.isFailure -> "归档未全部完成"
                     stopped -> "归档已停止"
                     else -> "归档完成"
                 }
-                _outcomes.tryEmit(Outcome(title, summary, undoable = true))
+                publish(work, when { result.isFailure -> Completion.PARTIAL; stopped -> Completion.STOPPED; else -> Completion.SUCCEEDED }, title, summary, change)
             } else if (result.getOrNull() == 0) {
-                _messages.tryEmit(if (stopped) "已停止归档" else "无可归档的文件")
+                val message = if (stopped) "已停止归档" else "无可归档的文件"
+                _messages.tryEmit(message)
+                publish(work, if (stopped) Completion.STOPPED else Completion.SUCCEEDED, message, "「${target.name}」：$message")
             }
             result.reportFailure(TAG, "归档") { message ->
                 _messages.tryEmit(message)
-                if (reverts.isEmpty() && deleted.isEmpty()) _outcomes.tryEmit(Outcome(message, "「${target.name}」"))
+                if (reverts.isEmpty() && deleted.isEmpty()) publish(work, Completion.FAILED, "归档失败", "「${target.name}」：$message")
             }
             operations.refresh()
         }
@@ -268,28 +354,31 @@ class FolderVaultSession internal constructor(
      */
     fun cancel() {
         job?.cancel()
+        job = null
+        activeWork = null
+        activeTargets = null
         progress = null
         restoreProgress = null
+        records = emptyList()
+        stopping = false
     }
 
     /** 把列表里的这几行归档条目恢复成网盘文件。 */
     fun restore(files: List<FileStat>) {
         val requested = files.filter { it.isVaulted }.groupBy { it.parentId }
             .mapValues { (_, rows) -> rows.mapNotNullTo(HashSet()) { VaultEntry.entryIdOf(it.id) } }
-        if (requested.isEmpty() || busy()) return
-        restoreProgress = RestoreProgress("所选文件")
-        job = scope.launch {
-            try {
-                runSuspendCatching {
-                    // 现读清单，不用列表里的行：别的设备可能已恢复或移除了其中几条
-                    val byFolder = coroutineScope {
-                        requested.map { (folderId, ids) ->
-                            async { folderId to operations.archived(folderId).entries.filter { it.id in ids } }
-                        }.awaitAll()
-                    }.filter { it.second.isNotEmpty() }.toMap()
-                    restoreEntries(byFolder)
-                }.reportFailure(TAG, "恢复归档") { restoreFailed(it) }
-            } finally { restoreProgress = null }
+        if (requested.isEmpty() || busy() || refused(VaultWorkTargets(manifests = requested.keys))) return
+        launchWork("所选文件", restoring = true, VaultWorkTargets(manifests = requested.keys)) { work ->
+            runSuspendCatching {
+                // 现读清单，不用列表里的行：别的设备可能已恢复或移除了其中几条
+                val byFolder = coroutineScope {
+                    requested.map { (folderId, ids) ->
+                        async { folderId to operations.archived(folderId).entries.filter { it.id in ids } }
+                    }.awaitAll()
+                }.filter { it.second.isNotEmpty() }.toMap()
+                ensureCurrent(work)
+                restoreEntries(work, byFolder)
+            }.reportFailure(TAG, "恢复归档") { restoreFailed(work, it) }
         }
     }
 
@@ -310,28 +399,27 @@ class FolderVaultSession internal constructor(
 
     /** 递归恢复 [folder] 中的归档条目，真实文件保持原样。清点失败时不开始恢复。 */
     fun restoreFolder(folder: PikoPathBreadcrumb) {
-        if (busy()) return
-        restoreProgress = RestoreProgress(folder.name)
-        job = scope.launch {
-            try {
-                runSuspendCatching {
-                    // 确认框里清点过一次，这里重扫：确认前后别的设备可能已改了清单，照旧的恢复会多秒传一份
-                    val byFolder = scanArchived(folder.id, until = { stopping }) { scanned ->
-                        restoreProgress = restoreProgress?.copy(scannedFolders = scanned)
-                    }
-                    when {
-                        stopping -> _messages.tryEmit("已停止恢复")
-                        byFolder.isEmpty() -> _messages.tryEmit("这个文件夹中没有归档条目")
-                        else -> restoreEntries(byFolder)
-                    }
-                }.reportFailure(TAG, "取消文件夹归档") { restoreFailed(it) }
-            } finally { restoreProgress = null }
+        if (busy() || refused(VaultWorkTargets(roots = setOf(folder.id)))) return
+        launchWork(folder.name, restoring = true, VaultWorkTargets(roots = setOf(folder.id))) { work ->
+            runSuspendCatching {
+                // 确认框里清点过一次，这里重扫：确认前后别的设备可能已改了清单，照旧的恢复会多秒传一份
+                val byFolder = scanArchived(folder.id, until = { stopping }) { scanned ->
+                    if (activeWork === work) restoreProgress = restoreProgress?.copy(scannedFolders = scanned)
+                }
+                ensureCurrent(work)
+                when {
+                    stopping -> publish(work, Completion.STOPPED, "恢复已停止", "「${folder.name}」：已停止恢复")
+                    byFolder.isEmpty() -> publish(work, Completion.SUCCEEDED, "恢复完成", "「${folder.name}」：没有归档条目")
+                    else -> restoreEntries(work, byFolder)
+                }
+            }.reportFailure(TAG, "取消文件夹归档") { restoreFailed(work, it) }
         }
     }
 
-    private fun restoreFailed(message: String) {
+    private fun restoreFailed(work: Work, message: String) {
+        if (activeWork !== work) return
         _messages.tryEmit(message)
-        _outcomes.tryEmit(Outcome(message, "「${restoreProgress?.folderName.orEmpty()}」"))
+        publish(work, Completion.FAILED, "恢复失败", "「${work.name}」：$message")
     }
 
     private suspend fun scanArchived(
@@ -372,21 +460,32 @@ class FolderVaultSession internal constructor(
      * 回收站里还在的原文件优先，免占新空间；其余按 gcid 秒传，先比一次剩余空间。云端已不存的秒传不出来，
      * 也不扣额度，留在清单里。目录并发与归档相同，秒传全局十六个。
      */
-    private suspend fun restoreEntries(byFolder: Map<String, List<VaultEntry>>) {
+    private suspend fun restoreEntries(work: Work, byFolder: Map<String, List<VaultEntry>>) {
         val total = byFolder.values.sumOf { it.size }
+        if (total == 0) {
+            publish(work, Completion.SUCCEEDED, "恢复完成", "「${work.name}」：所选条目已不在归档中")
+            return
+        }
         restoreProgress = restoreProgress?.copy(stage = "正在检查恢复空间", total = total)
         val plan = planRestore(byFolder)
+        ensureCurrent(work)
         val originals = plan.originals
+        val targets = requireNotNull(activeTargets)
+        activeTargets = targets.copy(
+            manifests = targets.manifests + byFolder.keys,
+            files = targets.files + originals.values.map { it.id },
+        )
         PikoLog.i(TAG, "恢复归档：${byFolder.size} 个文件夹 $total 项，回收站里有原文件 ${originals.size} 项，" +
             "需秒传 ${plan.neededBytes} 字节，剩余空间 ${plan.remainingBytes ?: "不限或未知"}")
         if (plan.remainingBytes != null && plan.neededBytes > plan.remainingBytes) {
-            _messages.tryEmit("网盘空间不足，放不下这 $total 项")
+            restoreFailed(work, "网盘空间不足，放不下这 $total 项")
             return
         }
         val started = TimeSource.Monotonic.markNow()
         restoreProgress = restoreProgress?.copy(stage = "正在恢复到网盘")
         val lock = Mutex()
         var missing = 0
+        var manifestFailures = 0
         val created = mutableListOf<String>()
         val reverts = mutableMapOf<String, VaultEdit>()
         coroutineScope {
@@ -401,10 +500,11 @@ class FolderVaultSession internal constructor(
                             restored[entry.id] = FileStat(id = fileId, name = entry.name, hash = entry.gcid, size = entry.size.toString())
                             created += fileId
                         }
-                        restoreProgress = restoreProgress?.let { it.copy(done = it.done + 1) }
+                        if (activeWork === work) restoreProgress = restoreProgress?.let { it.copy(done = it.done + 1) }
                     }
                     val (fromTrash, fromCloud) = entries.partition { it.id in originals }
                     if (fromTrash.isNotEmpty()) {
+                        ensureCurrent(work)
                         val untrashed = runSuspendCatching { operations.untrash(fromTrash.map { originals.getValue(it.id).id }) }
                             .logFailure(TAG, "从回收站恢复原文件失败").isSuccess
                         for (entry in fromTrash) {
@@ -419,6 +519,7 @@ class FolderVaultSession internal constructor(
                     fromCloud.map { entry -> async {
                         recreates.withPermit {
                             if (stopping) return@withPermit
+                            ensureCurrent(work)
                             val id = runSuspendCatching { operations.recreate(entry, folderId) }
                                 .onFailure { if (it is InstantContentUnavailableException) lock.withLock { missing++ } }
                                 .logFailure(TAG, "恢复归档条目失败")
@@ -427,36 +528,47 @@ class FolderVaultSession internal constructor(
                         }
                     } }.awaitAll()
                     if (restored.isEmpty()) return@withPermit
+                    ensureCurrent(work)
                     // 清单没改成的话，文件已恢复、条目还在，列表里会重复一行，不丢东西
                     runSuspendCatching { operations.markRestored(folderId, restored) }
                         .onSuccess { write -> lock.withLock { reverts[folderId] = VaultEdits.add(write.before.filter { it.id in restored }) } }
+                        .onFailure { lock.withLock { manifestFailures++ } }
                         .logFailure(TAG, "恢复后改写归档清单失败")
                 }
             } }.awaitAll()
         }
+        ensureCurrent(work)
         val failed = total - created.size
         PikoLog.i(TAG, "恢复归档${if (stopping) "已停止" else "结束"}：恢复 ${created.size}/$total 项，云端已无内容 $missing 项，" +
             "其他失败 ${failed - missing} 项，改写清单 ${reverts.size}/${byFolder.size} 个文件夹，历时 ${started.elapsedNow().inWholeMilliseconds} ms")
         val summary = when {
             stopping -> if (created.isEmpty()) "已停止恢复" else "已停止，已恢复 ${created.size} 项"
+            failed == 0 && manifestFailures > 0 -> "已恢复 $total 项，$manifestFailures 个文件夹的归档清单未更新，列表可能重复显示"
             failed == 0 -> if (total == 1) "已恢复到网盘" else "已恢复 $total 项"
             missing == failed -> "已恢复 ${created.size} 项，$missing 项云端已无内容"
             else -> "已恢复 ${created.size} 项，$failed 项失败"
         }
-        val named = "「${restoreProgress?.folderName.orEmpty()}」：$summary"
+        val manifestNote = if (manifestFailures > 0 && (failed > 0 || stopping)) "，$manifestFailures 个文件夹的归档清单未更新，列表可能重复显示" else ""
+        val named = "「${work.name}」：$summary$manifestNote"
         val undoable = created.isNotEmpty()
+        val change = if (undoable) DriveChangeJournal.Change.Vault(reverts, named, trashOnRevert = created) else null
         if (undoable) {
-            operations.record(DriveChangeJournal.Change.Vault(reverts, named, trashOnRevert = created))
+            operations.record(requireNotNull(change))
         } else {
             _messages.tryEmit(summary)
         }
         val title = when {
             stopping -> "恢复已停止"
-            failed == 0 -> "恢复完成"
+            failed == 0 && manifestFailures == 0 -> "恢复完成"
             created.isEmpty() -> "恢复失败"
             else -> "恢复未全部完成"
         }
-        _outcomes.tryEmit(Outcome(title, named, undoable))
+        publish(work, when {
+            stopping -> Completion.STOPPED
+            failed == 0 && manifestFailures == 0 -> Completion.SUCCEEDED
+            created.isEmpty() -> Completion.FAILED
+            else -> Completion.PARTIAL
+        }, title, named, change)
         operations.refresh()
     }
 

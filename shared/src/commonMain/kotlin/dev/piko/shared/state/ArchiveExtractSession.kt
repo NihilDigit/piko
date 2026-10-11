@@ -4,11 +4,13 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import dev.piko.shared.data.ArchivePasswordVault
 import dev.piko.shared.log.LogLevel
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFile
 import dev.piko.shared.data.ArchiveRepository
+import dev.piko.shared.data.ArchiveSubmissionUnconfirmed
 import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
@@ -30,16 +32,21 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Clock
+
+enum class ArchiveCompletion { SUCCEEDED, FAILED, UNCONFIRMED }
 
 sealed interface ArchiveJobStatus {
     data object Waiting : ArchiveJobStatus
 
     /** 解压请求已发出，服务端在校验密码、建任务。 */
     data object Submitting : ArchiveJobStatus
+    data object Checking : ArchiveJobStatus
     data class Extracting(val progress: Int) : ArchiveJobStatus
 
     /** [incorrect] 为假表示还没给过密码。 */
     data class NeedsPassword(val incorrect: Boolean) : ArchiveJobStatus
+    data class Finished(val outcome: ArchiveCompletion, val message: String, val finishedAtMs: Long) : ArchiveJobStatus
 }
 
 data class ArchiveJob(
@@ -49,17 +56,20 @@ data class ArchiveJob(
     val password: String = "",
     /** 只解压包里的这几项（包内路径），在压缩包里多选后解压时用；为空是全部。 */
     val paths: List<String> = emptyList(),
-) {
-    val id: String get() = file.id
-}
+    val id: String = file.id,
+    val createdAtMs: Long = Clock.System.now().toEpochMilliseconds(),
+    val remoteTaskId: String? = null,
+)
 
 /** 一个压缩包的结局：解压完成，或以某种原因失败。[message] 与 Snackbar 上的提示相同。 */
-class ArchiveOutcome(val fileName: String, val succeeded: Boolean, val message: String)
+class ArchiveOutcome(val fileName: String, val outcome: ArchiveCompletion, val message: String) {
+    val succeeded: Boolean get() = outcome == ArchiveCompletion.SUCCEEDED
+}
 
 /**
  * 压缩包的服务端解压，进程级：离开网盘页、切到别处，解压照常进行。
  *
- * [jobs] 只含未结束的压缩包；完成、失败都从中移除，结果经 [messages] 提示。
+ * [jobs] 只含未结束的压缩包；结局保留在 [completedJobs]，提示只是额外的即时反馈。
  * 多个压缩包逐个提交、逐个等完成：并发提交时 PikPak 会回「系统繁忙」，
  * 而解压本身多在几秒内完成，串行慢不了多少。
  *
@@ -73,11 +83,18 @@ class ArchiveExtractSession(
     private val driveRepository: PikoDriveRepository,
     private val vault: ArchivePasswordVault,
     private val scope: CoroutineScope,
+    private val queryRetryDelay: Duration = 3.seconds,
 ) {
     private val repository = ArchiveRepository(clientProvider)
 
     var jobs by mutableStateOf<List<ArchiveJob>>(emptyList())
         private set
+    var completedJobs by mutableStateOf<List<ArchiveJob>>(emptyList())
+        private set
+    private var sequence = 0L
+
+    private fun newJob(file: FileStat, paths: List<String> = emptyList(), password: String = "") =
+        ArchiveJob(file, password = password, paths = paths, id = "archive-${++sequence}")
 
     val savedPasswords: StateFlow<List<String>> =
         vault.passwords.stateIn(scope, SharingStarted.Eagerly, emptyList())
@@ -105,7 +122,7 @@ class ArchiveExtractSession(
 
     /** 把 [files] 里的压缩包加进队列，其余文件与已在队列里的忽略。 */
     fun extract(files: List<FileStat>) {
-        val queued = jobs.map { it.id }.toSet()
+        val queued = jobs.map { it.file.id }.toSet()
         val archives = files.filter { it.isExtractableArchive && it.id !in queued }.distinctBy { it.id }
         val volumes = files.count { it.isArchiveVolume }
         if (volumes > 0 || archives.isEmpty()) {
@@ -116,7 +133,7 @@ class ArchiveExtractSession(
             if (volumes == 0 && files.none { it.isExtractableArchive }) _messages.tryEmit("所选文件中没有可解压的压缩包")
             return
         }
-        jobs = jobs + archives.map { ArchiveJob(it) }
+        jobs = jobs + archives.map { newJob(it) }
         ensureWorker()
     }
 
@@ -125,24 +142,39 @@ class ArchiveExtractSession(
      * 同一个包已在队列里时不再加：任务按压缩包排队，同一个包的两批会互相顶掉。
      */
     fun extractEntries(archive: FileStat, paths: List<String>, password: String) {
-        if (jobs.any { it.id == archive.id }) {
+        if (jobs.any { it.file.id == archive.id }) {
             _messages.tryEmit("这个压缩包已在解压中")
             return
         }
-        jobs = jobs + ArchiveJob(archive, password = password, paths = paths)
+        jobs = jobs + newJob(archive, password = password, paths = paths)
         ensureWorker()
     }
 
     fun submitPassword(jobId: String, password: String) {
         val job = jobs.firstOrNull { it.id == jobId } ?: return
         // 排到队首：用户正等着看这个密码对不对
-        jobs = listOf(job.copy(status = ArchiveJobStatus.Waiting, password = password)) + jobs.filterNot { it.id == jobId }
+        jobs = listOf(job.copy(status = ArchiveJobStatus.Waiting, password = password, remoteTaskId = null)) + jobs.filterNot { it.id == jobId }
         ensureWorker()
     }
 
     /** 放弃一个待输密码的压缩包。 */
     fun skip(jobId: String) {
         jobs = jobs.filterNot { it.id == jobId && it.status is ArchiveJobStatus.NeedsPassword }
+        completedJobs = completedJobs.filterNot { it.id == jobId }
+    }
+
+    fun canRecheck(jobId: String): Boolean = completedJobs.any {
+        it.id == jobId && it.remoteTaskId != null && (it.status as? ArchiveJobStatus.Finished)?.outcome == ArchiveCompletion.UNCONFIRMED
+    }
+
+    fun recheck(jobId: String) {
+        val job = completedJobs.firstOrNull { it.id == jobId } ?: return
+        if (!canRecheck(jobId)) return
+        Snapshot.withMutableSnapshot {
+            completedJobs = completedJobs.filterNot { it.id == jobId }
+            jobs = jobs + job.copy(status = ArchiveJobStatus.Waiting)
+        }
+        ensureWorker()
     }
 
     /**
@@ -153,6 +185,7 @@ class ArchiveExtractSession(
         worker?.cancel()
         worker = null
         jobs = emptyList()
+        completedJobs = emptyList()
     }
 
     private fun ensureWorker() {
@@ -167,6 +200,11 @@ class ArchiveExtractSession(
     }
 
     private suspend fun process(job: ArchiveJob) {
+        job.remoteTaskId?.let { taskId ->
+            update(job.id) { it.copy(status = ArchiveJobStatus.Checking) }
+            follow(job, taskId)
+            return
+        }
         update(job.id) { it.copy(status = ArchiveJobStatus.Submitting) }
         val task = repository.start(job.file, job.password, job.paths).getOrElse { err ->
             PikoLog.w(TAG, "提交解压失败：${logFile(job.file.id, job.file.name)}", err)
@@ -174,6 +212,8 @@ class ArchiveExtractSession(
                 PikoLog.i(TAG, "解压要密码：${logFile(job.file.id, job.file.name)}，${if (job.password.isEmpty()) "未带密码" else "所带密码被拒"}")
                 // 没带密码时服务端报的是「缺少」；带了还被拒才算输错
                 update(job.id) { it.copy(status = ArchiveJobStatus.NeedsPassword(incorrect = job.password.isNotEmpty())) }
+            } else if (err is ArchiveSubmissionUnconfirmed) {
+                finish(job, "无法确认 ${job.file.name} 是否已提交解压，请先检查所在目录", outcome = ArchiveCompletion.UNCONFIRMED)
             } else {
                 finish(job, "${job.file.name} 解压失败：${failureReason(err)}")
             }
@@ -183,7 +223,7 @@ class ArchiveExtractSession(
             "${if (job.paths.isEmpty()) "整包" else "选 ${job.paths.size} 项"}，${if (job.password.isEmpty()) "无密码" else "带密码"}，队列还有 ${jobs.size - 1} 个")
         // 服务端收下即说明密码正确，此时就存，不等解压完：下一个待输密码的包马上能选到它
         if (job.password.isNotEmpty()) vault.remember(job.password)
-        update(job.id) { it.copy(status = ArchiveJobStatus.Extracting(0)) }
+        update(job.id) { it.copy(status = ArchiveJobStatus.Extracting(0), remoteTaskId = task.taskId) }
         follow(job, task.taskId)
     }
 
@@ -194,10 +234,10 @@ class ArchiveExtractSession(
                 PikoLog.w(TAG, "查询解压进度失败：${logFile(job.file.id, job.file.name)}，第 ${failures + 1} 次", err)
                 failures++
                 if (failures >= MAX_POLL_FAILURES) {
-                    finish(job, "${job.file.name} 解压进度查询失败：${failureReason(err)}")
+                    finish(job, "暂时无法确认 ${job.file.name} 的解压结果：${failureReason(err)}", outcome = ArchiveCompletion.UNCONFIRMED)
                     return
                 }
-                delay(POLL_RETRY_DELAY)
+                delay(queryRetryDelay)
                 continue
             }
             failures = 0
@@ -229,13 +269,23 @@ class ArchiveExtractSession(
         }
     }
 
-    private fun finish(job: ArchiveJob, message: String, succeeded: Boolean = false) {
-        jobs = jobs.filterNot { it.id == job.id }
+    private fun finish(
+        job: ArchiveJob,
+        message: String,
+        succeeded: Boolean = false,
+        outcome: ArchiveCompletion = if (succeeded) ArchiveCompletion.SUCCEEDED else ArchiveCompletion.FAILED,
+    ) {
+        val current = jobs.firstOrNull { it.id == job.id } ?: return
+        val record = current.copy(password = "", status = ArchiveJobStatus.Finished(outcome, message, Clock.System.now().toEpochMilliseconds()))
+        Snapshot.withMutableSnapshot {
+            jobs = jobs.filterNot { it.id == job.id }
+            completedJobs = (completedJobs.filterNot { it.id == job.id } + record).takeLast(100)
+        }
         // 提示里带着压缩包的名字，写进日志前换成 ID
         val logged = message.replace(job.file.name, logFile(job.file.id, job.file.name))
         PikoLog.log(if (succeeded) LogLevel.INFO else LogLevel.WARN, TAG, logged, null)
         _messages.tryEmit(message)
-        _outcomes.tryEmit(ArchiveOutcome(job.file.name, succeeded, message))
+        _outcomes.tryEmit(ArchiveOutcome(job.file.name, outcome, message))
     }
 
     private fun update(jobId: String, transform: (ArchiveJob) -> ArchiveJob) {
@@ -245,7 +295,6 @@ class ArchiveExtractSession(
     private companion object {
         const val TAG = "Archive"
         const val MAX_POLL_FAILURES = 5
-        val POLL_RETRY_DELAY = 3.seconds
         const val VOLUME_UNSUPPORTED = "PikPak 不支持解压分卷压缩包"
     }
 }

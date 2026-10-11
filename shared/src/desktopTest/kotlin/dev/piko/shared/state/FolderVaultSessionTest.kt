@@ -14,6 +14,13 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -23,8 +30,96 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.test.assertNotNull
+import kotlin.test.assertNotEquals
 
 class FolderVaultSessionTest {
+    @Test
+    fun `results remain queryable without a subscriber and old task actions cannot target new work`() = smoke { scope ->
+        val drive = Drive().apply { sampleDelayMs = 1; directories["one"] = listOf(file("file")) }
+        val session = FolderVaultSession(drive, scope)
+        session.archive(PikoPathBreadcrumb("one", "one"), true)
+        val active = assertNotNull(session.activeWork)
+        awaitUntil("无页面订阅仍保留归档结果") { session.records.size == 1 }
+        val record = session.records.single()
+        assertEquals(active, record.work)
+        assertEquals(FolderVaultSession.Completion.SUCCEEDED, record.completion)
+        assertEquals(drive.changes.single().id, record.undoChangeId)
+        assertFalse(session.isRunning)
+
+        session.archive(PikoPathBreadcrumb("empty", "empty"), true)
+        session.stop(active.id)
+        assertFalse(session.stopping, "旧详情中的停止按钮不能停止下一项工作")
+        awaitUntil("空操作也保留结局") { session.records.size == 2 }
+        assertNotEquals(active.id, session.records.last().work.id)
+        assertEquals(FolderVaultSession.Completion.SUCCEEDED, session.records.last().completion)
+        session.dismissRecord(active.id)
+        assertEquals(1, session.records.size)
+        assertEquals(1, drive.manifests.size, "移除结果记录不撤销归档")
+        session.cancel()
+        assertTrue(session.records.isEmpty())
+    }
+
+    @Test
+    fun `a cancelled restore cannot clear or publish into a replacement session`() = smoke { scope ->
+        val oldEntered = CompletableDeferred<Unit>()
+        val oldRelease = CompletableDeferred<Unit>()
+        val newEntered = CompletableDeferred<Unit>()
+        val newRelease = CompletableDeferred<Unit>()
+        val operations = object : FolderVaultOperations by Drive() {
+            override suspend fun archived(folderId: String): ArchivedLevel {
+                if (folderId == "old") {
+                    oldEntered.complete(Unit)
+                    withContext(NonCancellable) { oldRelease.await() }
+                } else {
+                    newEntered.complete(Unit)
+                    newRelease.await()
+                }
+                return ArchivedLevel(emptyList(), emptyList())
+            }
+        }
+        val parent = SupervisorJob(scope.coroutineContext[Job])
+        val session = FolderVaultSession(operations, CoroutineScope(scope.coroutineContext + parent))
+        session.restoreFolder(PikoPathBreadcrumb("old", "old"))
+        withTimeout(5_000) { oldEntered.await() }
+        val oldJob = parent.children.single()
+        val oldWork = assertNotNull(session.activeWork)
+        session.cancel()
+        session.restoreFolder(PikoPathBreadcrumb("new", "new"))
+        withTimeout(5_000) { newEntered.await() }
+        val replacement = assertNotNull(session.activeWork)
+        oldRelease.complete(Unit)
+        withTimeout(5_000) { oldJob.join() }
+        assertTrue(session.activeWork === replacement)
+        assertEquals("new", assertNotNull(session.restoreProgress).folderName)
+        assertTrue(session.records.isEmpty())
+        assertNotEquals(oldWork.id, replacement.id)
+        newRelease.complete(Unit)
+        awaitUntil("只保留新会话的结果") { session.records.size == 1 }
+        assertEquals(replacement, session.records.single().work)
+        parent.cancel()
+    }
+
+    @Test
+    fun `restored files with an unconfirmed manifest update are reported as partial`() = smoke { scope ->
+        val drive = Drive()
+        val entry = VaultEntry.create("one.mkv", 100, "GCID", null, 0)
+        val operations = object : FolderVaultOperations by drive {
+            override suspend fun archived(folderId: String) = ArchivedLevel(emptyList(), listOf(entry))
+            override suspend fun trash(): List<FileStat> = emptyList()
+            override suspend fun remainingBytes(): Long? = null
+            override suspend fun recreate(entry: VaultEntry, folderId: String) = "restored"
+            override suspend fun markRestored(folderId: String, files: Map<String, FileStat>): VaultWrite = throw IOException("manifest acknowledgement lost")
+        }
+        val session = FolderVaultSession(operations, scope)
+        session.restoreFolder(PikoPathBreadcrumb("folder", "folder"))
+        awaitUntil("恢复后的清单失败保留部分结果") { session.records.size == 1 }
+        val record = session.records.single()
+        assertEquals(FolderVaultSession.Completion.PARTIAL, record.completion)
+        assertTrue(record.message.contains("清单未更新"))
+        assertEquals(listOf("restored"), drive.changes.single().trashOnRevert)
+        assertEquals(drive.changes.single().id, record.undoChangeId)
+    }
     @Test
     fun `directory confirmation stays within eight slots and cancellation leaves originals intact`() = smoke { scope ->
         val drive = Drive().apply { stalledWrites = true; sampleDelayMs = 1 }
@@ -229,6 +324,8 @@ class FolderVaultSessionTest {
         val session = FolderVaultSession(drive, scope)
         session.archive(PikoPathBreadcrumb("Dramas", "Dramas"), true, moveToTrash = false)
         awaitUntil("失败仍记录恢复依据") { drive.changes.isNotEmpty() }
+        awaitUntil("不确定结果可以查询") { session.records.isNotEmpty() }
+        assertEquals(FolderVaultSession.Completion.PARTIAL, session.records.single().completion)
         assertEquals(2, drive.manifests.getValue("Dramas").size)
         assertEquals(2, drive.changes.single().recreateOnRevert.getValue("Dramas").size)
         assertNull(session.progress)

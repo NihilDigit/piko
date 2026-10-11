@@ -1,6 +1,7 @@
 package dev.piko.shared.state
 
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.data.VaultEntry
 import dev.piko.shared.data.VaultEdits
 import dev.piko.shared.data.PikoFileSortOrder
@@ -40,6 +41,37 @@ class VaultFolderRestoreTest {
                 override suspend fun delete(ids: List<String>) { server.client().batchDelete(ids) }
             }, confirmDelay = Duration.ZERO)
         }
+
+    @Test
+    fun `a retained result undoes its own restore after another file has been renamed`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val folder = server.addFolder("Show")
+        val unrelated = server.addFile("before.txt")
+        val entry = VaultEntry.create("episode.mkv", 100, "GCID", null, 0)
+        val repo = repository(server, MemoryPreferences())
+        repo.vault.update(folder.id, VaultEdits.add(listOf(entry))).getOrThrow()
+        val session = FolderVaultSession(repo, scope)
+        session.restoreFolder(PikoPathBreadcrumb(folder.id, folder.name))
+        awaitUntil("无页面订阅仍保留恢复结果") { session.records.size == 1 }
+        val record = session.records.single()
+        assertEquals(FolderVaultSession.Completion.SUCCEEDED, record.completion)
+        val inverse = repo.changes.state.value.available.filterIsInstance<DriveChangeJournal.Change.Vault>().single { it.id == record.undoChangeId }
+        val restoredId = inverse.trashOnRevert.single()
+        repo.rename(unrelated.id, "after.txt").getOrThrow()
+        val later = DriveChangeJournal.Change.Rename(listOf(DriveChangeJournal.Renamed(unrelated.id, "before.txt", "after.txt")), "renamed")
+        repo.changes.record(later)
+        assertTrue(inverse in repo.changes.state.value.available)
+        assertTrue(repo.changes.undo(inverse))
+        awaitUntil("仅撤销这次归档恢复") { repo.changes.state.value.undo[inverse.id]?.status == DriveChangeJournal.UndoStatus.UNDONE }
+        assertTrue(assertNotNull(server.node(restoredId)).trashed)
+        val manifest = repo.vault.read(folder.id, repo.listAllFiles(folder.id).getOrThrow()).getOrThrow()
+        assertTrue(manifest.single().isArchived)
+        assertEquals("after.txt", unrelated.name, "结果中的撤销不能撤销后来发生的改名")
+        assertEquals(listOf<DriveChangeJournal.Change>(later), repo.changes.state.value.available)
+        session.dismissRecord(record.work.id)
+        assertTrue(session.records.isEmpty())
+        assertTrue(manifest.single().isArchived)
+    }
 
     @Test
     fun `instant restore retains portable sources and metadata through another archive after restart`() = smoke { scope ->

@@ -155,6 +155,9 @@ object VaultEdits {
 /** 一次改写前后的条目，撤销要用改之前的。 */
 class VaultWrite(val before: List<VaultEntry>, val after: List<VaultEntry>)
 
+/** 清单提交后失去确认时，保留该次真实写入的基线，供结果核对与具体撤销使用。 */
+class VaultWriteUnconfirmed(val attempted: VaultWrite, cause: Throwable) : Exception("归档清单写入结果未确认", cause)
+
 /** [VaultStore] 对网盘的全部要求。测试里换成内存里的，好模拟两台设备同时写。 */
 interface VaultFolderIo {
     suspend fun list(folderId: String): List<FileStat>
@@ -183,12 +186,6 @@ class VaultStore(
     /** 写成之后这个文件夹里的条目。归档一整棵树时子文件夹没人列过，靠它给文件夹挂上标记。 */
     private val onWritten: (folderId: String, entries: List<VaultEntry>) -> Unit = { _, _ -> },
 ) {
-    constructor(driveRepo: PikoDriveRepository) : this(
-        DriveVaultIo(driveRepo),
-        onChanged = { folderId -> driveRepo.applyChange(DriveChange.ContentsChanged(setOf(folderId))) },
-        onWritten = driveRepo::vaultEntriesKnown,
-    )
-
     // 各文件夹最近一次读到或写成的条目
     private val known = MutableStateFlow<Map<String, List<VaultEntry>>>(emptyMap())
 
@@ -214,6 +211,11 @@ class VaultStore(
         entries
     }
 
+    /** 核对业务结果时只读当前胜出的清单，不把其他待写操作的乐观投影当作已提交结果。 */
+    suspend fun committed(folderId: String): Result<List<VaultEntry>> = runSuspendCatching {
+        winner(io.list(folderId))?.let { entriesOf(it.file) }.orEmpty()
+    }
+
     /** 只用缓存的 [read]：算数的那份没读过时返回 null。 */
     fun cached(folderId: String, listing: List<FileStat>): List<VaultEntry>? {
         pending.value[folderId]?.let { return it }
@@ -232,7 +234,12 @@ class VaultStore(
             onChanged(folderId)
         }
         return try {
-            write(folderId, edit).onSuccess { write ->
+            var attempted: VaultWrite? = null
+            val result = write(folderId, edit) { attempted = it }
+            val outcome = result.exceptionOrNull()?.let { error ->
+                attempted?.let { Result.failure<VaultWrite>(VaultWriteUnconfirmed(it, error)) }
+            } ?: result
+            outcome.onSuccess { write ->
                 known.update { it + (folderId to write.after) }
                 onWritten(folderId, write.after)
             }
@@ -242,7 +249,7 @@ class VaultStore(
         }
     }
 
-    private suspend fun write(folderId: String, edit: VaultEdit): Result<VaultWrite> =
+    private suspend fun write(folderId: String, edit: VaultEdit, onAttempt: (VaultWrite) -> Unit): Result<VaultWrite> =
         lockOf(folderId).withLock {
             runSuspendCatching {
                 repeat(MAX_ATTEMPTS) { attempt ->
@@ -258,17 +265,21 @@ class VaultStore(
                     // 上传完成即内容已按 gcid 核对过，不读回：刚传完的文件常常一时还没有直链，读回反倒失败。
                     // 自己写的这份直接记进缓存，确认输赢时不必下载
                     writeRecoveryFiles(folderId, after)
+                    onAttempt(VaultWrite(before, after))
                     val id = io.upload(folderId, nameOf(version, token), text.encodeToByteArray())
                     parsed.update { it + (id to after) }
 
                     if (won(folderId, version, token) && won(folderId, version, token, afterDelay = true)) {
                         // 旧版本连同同版本里输掉又没来得及删的一并清掉；同版本别人的那份留给它自己
-                        val stale = io.list(folderId).filter { file ->
-                            looksLikeManifest(file) && file.id != id && (versionOf(file)?.let { it.first < version } ?: true)
-                        }
-                        if (stale.isNotEmpty()) io.delete(stale.map { it.id })
+                        val cleaned = runSuspendCatching {
+                            val stale = io.list(folderId).filter { file ->
+                                looksLikeManifest(file) && file.id != id && (versionOf(file)?.let { it.first < version } ?: true)
+                            }
+                            if (stale.isNotEmpty()) io.delete(stale.map { it.id })
+                            stale.size
+                        }.logFailure(TAG, "清单已可信写成，旧版本清理留待下次更新").getOrNull()
                         PikoLog.i(TAG, "写成归档清单：文件夹 $folderId，v$version，条目 ${before.size} → ${after.size}，" +
-                            "第 ${attempt + 1} 次尝试，清掉旧清单 ${stale.size} 份")
+                            "第 ${attempt + 1} 次尝试，${cleaned?.let { "清掉旧清单 $it 份" } ?: "旧版本清理未完成"}")
                         return@runSuspendCatching VaultWrite(before, after)
                     }
                     PikoLog.w(TAG, "归档清单写入冲突：文件夹 $folderId，v$version 输给同版本的另一份，第 ${attempt + 1}/$MAX_ATTEMPTS 次，重读重写")
@@ -361,13 +372,6 @@ class VaultStore(
         fun looksLikeManifest(file: FileStat): Boolean =
             !file.isFolder && file.name.startsWith(PREFIX) && file.name.endsWith(SUFFIX)
     }
-}
-
-private class DriveVaultIo(private val driveRepo: PikoDriveRepository) : VaultFolderIo {
-    override suspend fun list(folderId: String) = driveRepo.listAllFiles(folderId).getOrThrow()
-    override suspend fun read(fileId: String) = driveRepo.readBytes(fileId).getOrThrow()
-    override suspend fun upload(folderId: String, name: String, bytes: ByteArray) = driveRepo.uploadBytes(folderId, name, bytes).getOrThrow()
-    override suspend fun delete(ids: List<String>) = driveRepo.delete(ids).getOrThrow()
 }
 
 private fun randomToken(): String = Random.nextBytes(8).joinToString("") { (it.toInt() and 0xff).toString(16).padStart(2, '0') }
