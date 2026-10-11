@@ -8,25 +8,27 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.ui.components.PikoDialog
 import dev.piko.ui.components.PikoDialogConfirm
+import dev.piko.shared.presentation.ActionAvailability
 
-/**
- * 窄窗口里同一时刻只做一件占位置的事：查找重复、添加链接（网盘页底部那一块 sheet）与信息流的临时浏览（「继续刷」那一条）。
- * 宽窗口靠标签与浮动卡片能同时挂着几件；窄窗口只有栈导航，再开一件要先明确结束眼前这件，不静默叠加或替换。
- * 各入口经 [claim] 打开，有冲突时由主界面弹一次确认（[ClaimDialog]）。
- *
- * 谁在占用不另存，开打时从各会话的状态读（[Occupant.active]）：会话另有许多结束的路径（换账号、保存成功、继续刷），
- * 另存一份会与它们对不上。
- */
+/** 添加链接与信息流仍按面板空间确认替换；查重独立运行，只在更换扫描起点时确认丢弃旧结果。 */
 @Stable
 class TaskSlot {
-    enum class Task {
-        DUPLICATES, ADD_LINK, FEED;
+    fun requestUndoLast(changes: dev.piko.shared.data.DriveChangeJournal, commands: dev.piko.shared.presentation.FileCommands? = null): Boolean {
+        if (changes.state.value.undo.values.any { it.status == dev.piko.shared.data.DriveChangeJournal.UndoStatus.RUNNING }) {
+            showBlocked("撤销", "上一项撤销仍在进行，完成后再试。")
+            return true
+        }
+        val change = changes.state.value.available.lastOrNull() ?: return false
+        val state = commands?.undoAvailability(change)
+        if (state is ActionAvailability.Blocked) { showBlocked("撤销", state.reason); return true }
+        return changes.undoLast()
+    }
 
-        /** 从一个文件夹起扫、结果在网盘页一个位置里看的任务：离开那棵树即结束，见 [allowsLeaving]。 */
-        val followsPlace: Boolean get() = this == DUPLICATES
+    enum class Task {
+        DUPLICATES, ADD_LINK, FEED,
+
     }
 
     class Occupant(
@@ -37,11 +39,13 @@ class TaskSlot {
         val loss: String,
         val active: () -> Boolean,
         val end: () -> Unit,
+        val replacementAvailability: () -> ActionAvailability = { ActionAvailability.Available },
     )
 
     class Claim(val title: String, val body: String, val confirmLabel: String, val proceed: () -> Unit)
+    class BlockedClaim(val title: String, val reason: String, val resolve: (() -> Unit)? = null)
 
-    /** 只在窄窗口里排他；宽窗口里 [claim] 直接放行。由主界面按窗口设。 */
+    /** 面板空间只在移动端排他；替换同一份查重会话的确认不随平台改变。 */
     var exclusive by mutableStateOf(false)
 
     /** 由主界面登记，开打时才读，不必是状态。 */
@@ -49,22 +53,13 @@ class TaskSlot {
 
     var pending by mutableStateOf<Claim?>(null)
         private set
+    var blocked by mutableStateOf<BlockedClaim?>(null)
+        private set
 
-    /**
-     * 查找重复的 sheet 展开着没有。窄窗口里切到别的底部标签时
-     * 网盘页离开组合，回来要还是原来那一档，所以记在这里。
-     * 添加链接的那一档是 InstantSession.isSheetOpen，宽窗口的侧边面板也认它，不另记。
-     */
-    var placeTaskExpanded by mutableStateOf(true)
-
-    /**
-     * 查找重复所在的位置：开始时的路径栈，进了结果页换成结果页。当前的栈以它开头就算还在（进起点的子文件夹不算离开），
-     * 人往树外走之前先确认（[allowsLeaving]），换账号这类不是人走的照旧静默结束。为 null 时由主界面取当前的栈补上（从宽窗口缩过来的）。
-     */
-    var placeTaskAnchor: List<PikoPathBreadcrumb>? = null
-
-    /** 眼下占着位置的那件（查找重复），没有时为 null。 */
-    fun activePlaceTask(): Occupant? = occupants.firstOrNull { it.task.followsPlace && it.active() }
+    fun showBlocked(action: String, reason: String, resolve: (() -> Unit)? = null) {
+        pending = null
+        blocked = BlockedClaim("暂时无法$action", reason, resolve)
+    }
 
     /**
      * 打开一件事。[action] 接在对话框标题「结束…并」后面，[confirmLabel] 是确认按钮。
@@ -79,11 +74,15 @@ class TaskSlot {
         conflictsWith: Set<Task> = Task.entries.toSet(),
         start: () -> Unit,
     ) {
-        val blocking = if (!exclusive) {
-            emptyList()
-        } else {
-            occupants.filter { it.task in conflictsWith && (it.task != task || replacesSame) && it.active() }
+        pending = null
+        blocked = null
+        val blocking = occupants.filter {
+            val duplicateReplacement = it.task == Task.DUPLICATES || task == Task.DUPLICATES
+            if (duplicateReplacement) it.task == task && replacesSame && it.active()
+            else (exclusive || (it.task == task && replacesSame)) &&
+                it.task in conflictsWith && (it.task != task || replacesSame) && it.active()
         }
+        if (!canReplace(blocking, action)) return
         if (blocking.isEmpty()) {
             start()
             return
@@ -93,25 +92,18 @@ class TaskSlot {
             body = blocking.joinToString("") { it.loss },
             confirmLabel = confirmLabel,
         ) {
+            if (!canReplace(blocking, action)) return@Claim
             blocking.forEach { it.end() }
             start()
         }
     }
 
-    /**
-     * 网盘的路径栈要换成 [next] 之前问一声（PikoDriveRepository.leaveGuard）。窄窗口里离开查找重复所在的那棵树会结束它：
-     * 宽窗口里结束是关掉它的标签，一个显式的动作；窄窗口里离开是顺手的一下，所以先确认，把它变成显式的。
-     * 确认就结束并走完这一步（[retry]），取消就留在原地。返回 false 即拦下。
-     */
-    fun allowsLeaving(next: List<PikoPathBreadcrumb>, retry: () -> Unit): Boolean {
-        if (!exclusive) return true
-        val anchor = placeTaskAnchor ?: return true
-        val task = activePlaceTask() ?: return true
-        if (next.size >= anchor.size && next.take(anchor.size).map { it.id } == anchor.map { it.id }) return true
-        pending = Claim(title = "结束${task.name}？", body = task.loss, confirmLabel = "结束") {
-            task.end()
-            retry()
-        }
+    private fun canReplace(occupants: List<Occupant>, action: String): Boolean {
+        val unavailable = occupants.filter { it.active() }
+            .map { it.replacementAvailability() }
+            .filterIsInstance<ActionAvailability.Blocked>()
+            .firstOrNull() ?: return true
+        blocked = BlockedClaim("暂时无法$action", unavailable.reason)
         return false
     }
 
@@ -123,6 +115,7 @@ class TaskSlot {
 
     fun dismiss() {
         pending = null
+        blocked = null
     }
 }
 
@@ -132,6 +125,17 @@ val LocalTaskSlot = staticCompositionLocalOf { TaskSlot() }
 /** 切换前的确认，主界面里只画这一处。 */
 @Composable
 fun ClaimDialog(slot: TaskSlot) {
+    val blocked = slot.blocked
+    if (blocked != null) {
+        PikoDialog(
+            onDismissRequest = slot::dismiss,
+            title = { Text(blocked.title) },
+            text = { Text(blocked.reason) },
+            confirmButton = { TextButton(onClick = { slot.dismiss(); blocked.resolve?.invoke() }) { Text(if (blocked.resolve == null) "知道了" else "查看任务") } },
+            dismissButton = blocked.resolve?.let { { TextButton(onClick = slot::dismiss) { Text("取消") } } },
+        )
+        return
+    }
     val claim = slot.pending ?: return
     PikoDialog(
         onDismissRequest = slot::dismiss,

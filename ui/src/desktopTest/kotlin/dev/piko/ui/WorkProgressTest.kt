@@ -4,7 +4,9 @@ import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
 import dev.piko.shared.state.ArchiveJob
 import dev.piko.shared.state.ArchiveJobStatus
+import dev.piko.shared.state.ArchiveCompletion
 import dev.piko.shared.state.FolderVaultSession
+import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.upload.UploadStatus
 import dev.piko.shared.upload.UploadTask
 import io.github.nihildigit.pikpak.FileStat
@@ -18,7 +20,50 @@ import kotlin.test.assertTrue
  * 进度条停住不动、停止时进度条跳空、几件并行时取错了眼下那一件、空闲的任务被算成在跑。
  */
 class WorkProgressTest {
+    @Test
+    fun waitingForInputOrAnUnconfirmedResultDoesNotRequireBackgroundExecution() {
+        assertTrue(ArchiveJobStatus.Waiting.hasExecutingWork())
+        assertTrue(ArchiveJobStatus.Submitting.hasExecutingWork())
+        assertTrue(ArchiveJobStatus.Checking.hasExecutingWork())
+        assertTrue(ArchiveJobStatus.Extracting(20).hasExecutingWork())
+        assertTrue(!ArchiveJobStatus.NeedsPassword(false).hasExecutingWork())
+        assertTrue(ArchiveJobStatus.NeedsPassword(false).needsDesktopSession())
+        assertTrue(!ArchiveJobStatus.Finished(ArchiveCompletion.UNCONFIRMED, "待查询", 1).hasExecutingWork())
+        assertTrue(ArchiveJobStatus.Finished(ArchiveCompletion.UNCONFIRMED, "待查询", 1).needsDesktopSession())
+        assertTrue(!ArchiveJobStatus.Finished(ArchiveCompletion.SUCCEEDED, "完成", 1).needsDesktopSession())
+        val listing = dev.piko.shared.download.FolderListing(dev.piko.download.DownloadBatch("batch", "folder"), 1, "account")
+        assertTrue(!listing.needsDesktopSession())
+        assertTrue(listing.copy(quotaExcess = dev.piko.shared.download.QuotaExcess(20, 10)).needsDesktopSession())
+        assertTrue(listing.copy(error = "列目录失败").needsDesktopSession())
+        assertEquals(WorkMeter.None, listOf(job("locked.zip", ArchiveJobStatus.NeedsPassword(false))).extractProgress()!!.meter)
+    }
     private fun meterOf(work: WorkProgress?) = (work?.meter as WorkMeter.Determinate).fraction
+
+    @Test
+    fun unconfirmedFileWriteIsAnActionableResultAndItsInverseHasSeparateProgress() {
+        val work = dev.piko.shared.state.FileWriteWork(1, "account",
+            dev.piko.shared.state.FileWriteCommand.Rename("file", "new.txt"), 1,
+            result = dev.piko.shared.state.FileWriteResult(dev.piko.shared.state.FileWriteCompletion.UNCONFIRMED,
+                "请检查实际文件", unconfirmed = setOf("file"), finishedAtMs = 2),
+        )
+        assertEquals("结果待确认", work.workProgress().status)
+        assertEquals(WorkMeter.None, work.workProgress().meter)
+        assertEquals("请检查实际文件", work.workProgress().detail)
+        val undo = DriveChangeJournal.UndoResult(DriveChangeJournal.UndoStatus.RUNNING, "正在撤销已确认部分")
+        assertEquals(WorkMeter.Indeterminate, work.workProgress(undo).meter)
+        assertEquals("正在撤销已确认部分", work.workProgress(undo).status)
+    }
+
+    @Test
+    fun retainedVaultResultReflectsTheUndoOfThatSpecificChange() {
+        val record = FolderVaultSession.Record(FolderVaultSession.Work(1, "folder", true, 1), FolderVaultSession.Completion.PARTIAL,
+            "恢复未全部完成", "已恢复 1 项，归档清单未更新", 2)
+        assertEquals(WorkMeter.None, record.workProgress().meter)
+        assertEquals("恢复未全部完成", record.workProgress().status)
+        assertEquals(WorkMeter.Indeterminate, record.workProgress(DriveChangeJournal.UndoResult(DriveChangeJournal.UndoStatus.RUNNING, "正在撤销")).meter)
+        assertEquals("已撤销", record.workProgress(DriveChangeJournal.UndoResult(DriveChangeJournal.UndoStatus.UNDONE, "已撤销")).status)
+        assertEquals("撤销未全部完成", record.workProgress(DriveChangeJournal.UndoResult(DriveChangeJournal.UndoStatus.FAILED, "请重试")).status)
+    }
 
     @Test
     fun archivePreparationMovesTheBarBeforeAnyFolderIsDone() {
@@ -79,6 +124,15 @@ class WorkProgressTest {
         val work = listOf(job("a.rar", ArchiveJobStatus.NeedsPassword(incorrect = true))).extractProgress()!!
         assertEquals(WorkMeter.None, work.meter)
         assertEquals("密码错误", work.status)
+    }
+
+    @Test
+    fun unconfirmedExtractionHasNoProgressBarAndIsNotReportedAsFailed() {
+        val work = job("pack.zip", ArchiveJobStatus.Finished(ArchiveCompletion.UNCONFIRMED, "查询暂不可用", 1)).workProgress()
+        assertEquals(WorkMeter.None, work.meter)
+        assertEquals("结果待确认", work.status)
+        assertEquals("查询暂不可用", work.detail)
+        assertEquals(WorkMeter.Indeterminate, job("pack.zip", ArchiveJobStatus.Checking).workProgress().meter)
     }
 
     private fun download(name: String, status: DownloadStatus, done: Long = 0, total: Long = 100, speed: Long = 0) =

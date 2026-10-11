@@ -38,7 +38,7 @@ import dev.piko.ui.components.MetaRow
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.theme.LocalStatusColors
 
-private fun TransferItem.Pack.statusLabel(): String = when (job.stage) {
+private fun TransferItem.Pack.statusLabel(): String = if (isBusy) "正在处理任务" else when (job.stage) {
     OfflinePackStage.QUEUED -> "排队中"
     OfflinePackStage.DOWNLOADING -> "$progress%"
     OfflinePackStage.PRUNING -> "处理中"
@@ -151,7 +151,7 @@ internal fun PackTransferRow(
         },
         trailing = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (job.stage == OfflinePackStage.FAILED) {
+                if (job.stage == OfflinePackStage.FAILED && !item.isBusy) {
                     IconButton(onClick = onRetry) {
                         Icon(Icons.Outlined.Refresh, contentDescription = "重试")
                     }
@@ -164,6 +164,7 @@ internal fun PackTransferRow(
 
 /** 点按一项做的事：完成的打开，失败的重试。 */
 internal fun packPrimaryAction(item: TransferItem.Pack, onOpen: () -> Unit, onRetry: () -> Unit): (() -> Unit)? = when {
+    item.isBusy -> null
     item.job.canOpen -> onOpen
     item.job.stage == OfflinePackStage.FAILED -> onRetry
     else -> null
@@ -178,6 +179,7 @@ internal fun packTransferActions(
 ): List<SheetAction> {
     val job = item.job
     return buildList {
+        if (item.isBusy) return@buildList
         if (job.canOpen) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "打开", onOpen))
         if (job.stage == OfflinePackStage.FAILED) {
             add(SheetAction(Icons.Outlined.Refresh, "重试", onRetry))

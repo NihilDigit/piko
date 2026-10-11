@@ -3,6 +3,7 @@ package dev.piko.ui
 import androidx.compose.material3.SnackbarHostState
 import dev.piko.shared.data.DriveChangeJournal
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -15,6 +16,28 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 class ChangeNoticesTest {
+    @Test
+    fun queuedOldAccountNoticeIsSkippedWhenTheAppReturnsToTheForeground() = runBlocking {
+        val events = MutableSharedFlow<DriveChangeJournal.Event>(extraBufferCapacity = 8)
+        val foreground = MutableStateFlow(false)
+        val generation = MutableStateFlow(1L)
+        val waiting = CompletableDeferred<Unit>()
+        val host = SnackbarHostState()
+        val job = launch {
+            showChangeNotices(events, host, awaitVisible = { waiting.complete(Unit); foreground.first { it } }, undo = {},
+                isCurrent = { it.generation == generation.value })
+        }
+        events.subscriptionCount.first { it > 0 }
+        events.emit(DriveChangeJournal.Event("old account", null, generation = 1))
+        withTimeout(5_000) { waiting.await() }
+        generation.value = 2
+        foreground.value = true
+        events.emit(DriveChangeJournal.Event("new account", null, generation = 2))
+        withTimeout(5_000) { while (host.currentSnackbarData == null) delay(10) }
+        assertEquals("new account", host.currentSnackbarData!!.visuals.message)
+        host.currentSnackbarData!!.dismiss()
+        job.cancel()
+    }
     /**
      * 归档在后台做完时，提示要等人回到前台才弹，弹出后点「撤销」撤的是那一次改动。
      * 不等的话 Snackbar 在后台计完时，人回来什么也看不到。

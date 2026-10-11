@@ -4,14 +4,116 @@ import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
 import dev.piko.shared.state.ArchiveJob
 import dev.piko.shared.state.ArchiveJobStatus
+import dev.piko.shared.state.ArchiveCompletion
 import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.FolderVaultSession
+import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.upload.UploadTask
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.screens.transfers.remainingTime
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.map
+import androidx.compose.runtime.snapshotFlow
 
 /** 后台工作的种类。通知按它挑图标，进度列表按它排序。 */
-enum class WorkKind { VAULT, EXTRACT, DOWNLOAD, UPLOAD, DUPLICATES }
+enum class WorkKind { VAULT, EXTRACT, FILES, DOWNLOAD, UPLOAD, DUPLICATES }
+
+fun dev.piko.shared.upload.UploadPreparation.workProgress() = WorkProgress(
+    WorkKind.UPLOAD, "上传到「$parentName」", if (isRunning) WorkMeter.Indeterminate else WorkMeter.None,
+    when (result?.completion) {
+        null -> "正在准备上传"
+        dev.piko.shared.upload.UploadPreparationCompletion.SUCCEEDED -> "已入队"
+        dev.piko.shared.upload.UploadPreparationCompletion.PARTIAL -> "部分准备未完成"
+        dev.piko.shared.upload.UploadPreparationCompletion.FAILED -> "准备失败"
+        dev.piko.shared.upload.UploadPreparationCompletion.UNCONFIRMED -> "目录结果待确认"
+        dev.piko.shared.upload.UploadPreparationCompletion.STOPPED -> "准备已停止"
+    }, result?.message ?: "正在读取所选的 $selectedCount 项并建立目标目录",
+)
+
+fun dev.piko.shared.state.OfflineSubmitWork.workProgress(): WorkProgress = WorkProgress(
+    WorkKind.FILES, title, if (isRunning) WorkMeter.Indeterminate else WorkMeter.None,
+    when (status) {
+        dev.piko.shared.state.OfflineSubmitStatus.SUBMITTING -> "正在提交离线"
+        dev.piko.shared.state.OfflineSubmitStatus.COMPLETE -> "已保存"
+        dev.piko.shared.state.OfflineSubmitStatus.REFUSED -> "未提交"
+        dev.piko.shared.state.OfflineSubmitStatus.UNCONFIRMED -> "结果待确认"
+    }, message,
+)
+
+fun dev.piko.shared.state.ShareSaveWork.workProgress(undo: DriveChangeJournal.UndoResult? = null): WorkProgress = WorkProgress(
+    WorkKind.FILES, title,
+    when {
+        !isRunning && undo?.status != DriveChangeJournal.UndoStatus.RUNNING -> WorkMeter.None
+        phase == dev.piko.shared.state.ShareSavePhase.TRACKING && remoteProgress != null -> WorkMeter.Determinate(requireNotNull(remoteProgress).coerceIn(0, 100) / 100f)
+        else -> WorkMeter.Indeterminate
+    },
+    undo?.message ?: result?.let { when (it.completion) {
+        dev.piko.shared.state.ShareSaveCompletion.SUCCEEDED -> "已转存"
+        dev.piko.shared.state.ShareSaveCompletion.PARTIAL -> "部分处理未完成"
+        dev.piko.shared.state.ShareSaveCompletion.FAILED -> "未提交转存"
+        dev.piko.shared.state.ShareSaveCompletion.UNCONFIRMED -> "结果待确认"
+    } } ?: when (phase) {
+        dev.piko.shared.state.ShareSavePhase.PREPARING -> "正在准备转存"
+        dev.piko.shared.state.ShareSavePhase.SUBMITTING -> "正在提交转存"
+        dev.piko.shared.state.ShareSavePhase.TRACKING -> "云端正在转存"
+        dev.piko.shared.state.ShareSavePhase.IDENTIFYING -> "正在核对转存产物"
+        dev.piko.shared.state.ShareSavePhase.NAMING -> "正在规范命名"
+        dev.piko.shared.state.ShareSavePhase.FINISHED -> "正在重新查询"
+    }, result?.message,
+)
+
+fun dev.piko.shared.state.InstantSaveAttempt.workProgress(): WorkProgress = WorkProgress(
+    WorkKind.FILES, title, if (isRunning) WorkMeter.Indeterminate else WorkMeter.None,
+    if (isRunning) "正在保存" else if (receipt?.requiresInspection == true) "结果需要核对" else if (receipt?.confirmed?.isEmpty() != false) "未保存" else "部分保存未完成",
+    receipt?.message,
+)
+
+fun dev.piko.shared.state.FileWriteWork.workProgress(undo: DriveChangeJournal.UndoResult? = null): WorkProgress {
+    val status = undo?.message ?: result?.let {
+        when (it.completion) {
+            dev.piko.shared.state.FileWriteCompletion.SUCCEEDED -> "已完成"
+            dev.piko.shared.state.FileWriteCompletion.PARTIAL -> "部分完成"
+            dev.piko.shared.state.FileWriteCompletion.FAILED -> "未完成"
+            dev.piko.shared.state.FileWriteCompletion.UNCONFIRMED -> "结果待确认"
+        }
+    } ?: when (phase) {
+        dev.piko.shared.state.FileWritePhase.PREPARING -> "正在核对文件"
+        dev.piko.shared.state.FileWritePhase.WRITING -> "正在提交修改"
+        dev.piko.shared.state.FileWritePhase.CHECKING -> "正在核对结果"
+        dev.piko.shared.state.FileWritePhase.COPYING -> "服务端正在复制"
+        dev.piko.shared.state.FileWritePhase.FINISHED -> "已结束"
+    }
+    return WorkProgress(WorkKind.FILES, command.title,
+        if (isRunning || undo?.status == DriveChangeJournal.UndoStatus.RUNNING) WorkMeter.Indeterminate else WorkMeter.None,
+        status, result?.message?.takeUnless { it == "已完成" },
+    )
+}
+
+fun dev.piko.shared.state.HistoryEditWork.workProgress(): WorkProgress = WorkProgress(
+    WorkKind.FILES, command.title, if (isRunning) WorkMeter.Indeterminate else WorkMeter.None,
+    when (result?.completion) {
+        null -> "正在处理历史记录"
+        dev.piko.shared.state.HistoryEditCompletion.SUCCEEDED -> "已完成"
+        dev.piko.shared.state.HistoryEditCompletion.PARTIAL -> "部分完成"
+        dev.piko.shared.state.HistoryEditCompletion.FAILED -> "未完成"
+        dev.piko.shared.state.HistoryEditCompletion.UNCONFIRMED -> "结果待确认"
+    }, result?.message,
+)
+
+fun dev.piko.shared.state.VaultEntryEditWork.workProgress(undo: DriveChangeJournal.UndoResult? = null): WorkProgress = WorkProgress(
+    WorkKind.FILES, command.title,
+    if (isRunning || undo?.status == DriveChangeJournal.UndoStatus.RUNNING) WorkMeter.Indeterminate else WorkMeter.None,
+    undo?.message ?: when (result?.completion) {
+        null -> "正在编辑归档清单"
+        dev.piko.shared.state.VaultEntryEditCompletion.SUCCEEDED -> "已完成"
+        dev.piko.shared.state.VaultEntryEditCompletion.PARTIAL -> "部分完成"
+        dev.piko.shared.state.VaultEntryEditCompletion.FAILED -> "未完成"
+        dev.piko.shared.state.VaultEntryEditCompletion.UNCONFIRMED -> "结果待确认"
+    }, result?.message,
+)
 
 /** 进度条画成什么样。 */
 sealed interface WorkMeter {
@@ -87,13 +189,30 @@ fun vaultRestoreProgress(progress: FolderVaultSession.RestoreProgress, stopping:
 /** 进程级归档会话眼下的那一件，没有在做时为 null。 */
 fun FolderVaultSession.workProgress(): WorkProgress? =
     progress?.let { vaultArchiveProgress(it, stopping) } ?: restoreProgress?.let { vaultRestoreProgress(it, stopping) }
+        ?: activeWork?.let { WorkProgress(WorkKind.VAULT, "归档「${it.name}」", WorkMeter.Indeterminate, if (stopping) STOPPING_STATUS else "正在清点文件") }
+
+fun FolderVaultSession.Record.workProgress(undo: DriveChangeJournal.UndoResult? = null): WorkProgress = WorkProgress(
+    WorkKind.VAULT,
+    "${if (work.restoring) "恢复归档" else "归档"}「${work.name}」",
+    if (undo?.status == DriveChangeJournal.UndoStatus.RUNNING) WorkMeter.Indeterminate else WorkMeter.None,
+    when (undo?.status) {
+        DriveChangeJournal.UndoStatus.RUNNING -> "正在撤销"
+        DriveChangeJournal.UndoStatus.UNDONE -> "已撤销"
+        DriveChangeJournal.UndoStatus.FAILED -> "撤销未全部完成"
+        null -> title
+    },
+    if (undo == null) message else "$message\n${undo.message}",
+)
 
 /** 一个压缩包的解压进度。 */
 fun ArchiveJob.workProgress(): WorkProgress {
     val title = "解压「${file.name}」"
     return when (val status = status) {
-        ArchiveJobStatus.Waiting -> WorkProgress(WorkKind.EXTRACT, title, WorkMeter.Determinate(0f), "排队中")
+        ArchiveJobStatus.Waiting -> if (remoteTaskId == null) {
+            WorkProgress(WorkKind.EXTRACT, title, WorkMeter.Determinate(0f), "排队中")
+        } else WorkProgress(WorkKind.EXTRACT, title, WorkMeter.Indeterminate, "等待重新查询")
         ArchiveJobStatus.Submitting -> WorkProgress(WorkKind.EXTRACT, title, WorkMeter.Indeterminate, "正在提交")
+        ArchiveJobStatus.Checking -> WorkProgress(WorkKind.EXTRACT, title, WorkMeter.Indeterminate, "正在查询结果")
         is ArchiveJobStatus.Extracting ->
             WorkProgress(WorkKind.EXTRACT, title, WorkMeter.Determinate(status.progress.coerceIn(0, 100) / 100f), "已解压 ${status.progress}%")
         is ArchiveJobStatus.NeedsPassword -> WorkProgress(
@@ -102,6 +221,15 @@ fun ArchiveJob.workProgress(): WorkProgress {
             WorkMeter.None,
             if (status.incorrect) "密码错误" else "需要密码",
             "输入密码后继续，或放弃解压",
+        )
+        is ArchiveJobStatus.Finished -> WorkProgress(
+            WorkKind.EXTRACT, title, WorkMeter.None,
+            when (status.outcome) {
+                ArchiveCompletion.SUCCEEDED -> "解压完成"
+                ArchiveCompletion.FAILED -> "解压失败"
+                ArchiveCompletion.UNCONFIRMED -> "结果待确认"
+            },
+            status.message,
         )
     }
 }
@@ -120,6 +248,8 @@ fun List<ArchiveJob>.extractProgress(): WorkProgress? {
         detail = listOfNotNull(current.file.name, needPassword.takeIf { it > 0 }?.let { "另有 $it 个需要密码" }).joinToString("，"),
     )
 }
+
+internal fun ArchiveJobStatus.hasExecutingWork(): Boolean = this !is ArchiveJobStatus.NeedsPassword && this !is ArchiveJobStatus.Finished
 
 /**
  * 下载与上传合成一条，给通知：传输页逐个列出，通知里只放得下一份总量。只有一个文件时写它的名字。
@@ -166,12 +296,44 @@ fun DuplicateFinderState.workProgress(): WorkProgress? {
  * 眼下在后台跑的全部工作，按 [WorkKind] 的次序。读的是 Compose 状态，在 snapshotFlow 或组合里调用才会随之更新。
  * 下载与上传另读 StateFlow 的当前值，调用方要自己订阅它们的变化。
  */
-fun PikoServices.runningWork(): List<WorkProgress> = listOfNotNull(
+fun PikoServices.runningWork(): List<WorkProgress> = (listOfNotNull(
     folderVaultSession.workProgress(),
     archiveExtractSession.jobs.extractProgress(),
     transferProgress(downloadManager.tasks.value.values.toList(), currentAccountUploads()),
     duplicateSession.state?.workProgress(),
-).sortedBy { it.kind.ordinal }
+    trashSession.progress?.let { progress ->
+        WorkProgress(WorkKind.FILES, "移入回收站", fraction(progress.completed, progress.total), "已处理 ${progress.completed} / ${progress.total} 项")
+    },
+    instantSession.state?.takeIf { (it.isSaving || it.batch?.isSaving == true) && it.shareSave?.isSaving != true && instantMagnetRepository.offlineSubmissions.works.value.none { work -> work.isRunning } }?.let {
+        WorkProgress(WorkKind.FILES, "保存添加链接", WorkMeter.Indeterminate, if (it.shareSave?.isSaving == true) "正在转存分享" else "正在保存")
+    },
+) + fileWrites.works.value.filter { it.account == driveRepository.currentAccount && it.isRunning }.map { it.workProgress() } +
+    historyEdits.works.value.filter { it.account == driveRepository.currentAccount && it.isRunning }.map { it.workProgress() } +
+    vaultEntryEdits.works.value.filter { it.account == driveRepository.currentAccount && it.isRunning }.map { it.workProgress() } +
+    shareSaves.works.value.filter { it.account == driveRepository.currentAccount && it.isRunning }.map { it.workProgress() } +
+    instantMagnetRepository.offlineSubmissions.works.value.filter { it.account == driveRepository.currentAccount && it.isRunning }.map { it.workProgress() } +
+    uploadManager.preparations.value.filter { it.account == driveRepository.currentAccount && it.isRunning }.map { it.workProgress() } +
+    offlinePacks.jobs.value.filter { it.account == driveRepository.currentAccount && dev.piko.shared.data.OfflinePackRef(it.account, it.taskId) in offlinePacks.busy.value }.map {
+        WorkProgress(WorkKind.FILES, it.folderName, WorkMeter.Indeterminate, "正在处理云端任务")
+    } +
+    downloadManager.listings.value.values.filter { it.account == driveRepository.currentAccount && it.error == null }.map {
+        WorkProgress(WorkKind.DOWNLOAD, "下载「${it.batch.folderName}」",
+            if (it.isListing) WorkMeter.Indeterminate else WorkMeter.None,
+            if (it.isListing) "正在列出文件夹" else "等待确认下载额度",
+            "已找到 ${it.filesFound} 个文件",
+        )
+    } + listOfNotNull(driveRepository.changes.state.value.undo.values.count { it.status == DriveChangeJournal.UndoStatus.RUNNING }.takeIf { it > 0 }?.let {
+        WorkProgress(WorkKind.FILES, "撤销文件改动", WorkMeter.Indeterminate, "正在撤销 $it 项改动")
+    })).sortedBy { it.kind.ordinal }
+
+/** 文件处理、撤销和目录展开用 StateFlow 提供变化信号，平台据此重读后台工作状态。 */
+fun PikoServices.fileWorkChanges(): Flow<Unit> = merge(
+    combine(fileWrites.works, historyEdits.works, vaultEntryEdits.works, driveRepository.changes.state, downloadManager.listings) { _, _, _, _, _ -> Unit },
+    shareSaves.works.map { Unit },
+    instantMagnetRepository.offlineSubmissions.works.map { Unit },
+    offlinePacks.busy.map { Unit },
+    uploadManager.preparations.map { Unit },
+)
 
 /** 上传队列只跑当前账号的，别的账号排着的任务一直是 QUEUED，算进来就永远有活，见 [anyActiveFor]。 */
 private fun PikoServices.currentAccountUploads(): List<UploadTask> {
@@ -185,10 +347,26 @@ private fun PikoServices.currentAccountUploads(): List<UploadTask> {
  */
 fun PikoServices.hasBackgroundWork(): Boolean =
     folderVaultSession.isRunning ||
-        archiveExtractSession.jobs.isNotEmpty() ||
+        archiveExtractSession.jobs.any { it.status.hasExecutingWork() } ||
         duplicateSession.state?.isScanning == true ||
+        trashSession.progress != null || trashSession.isUndoing ||
+        instantSession.state?.let { it.isSaving || it.batch?.isSaving == true } == true ||
+        fileWrites.works.value.any { it.account == driveRepository.currentAccount && it.isRunning } ||
+        historyEdits.works.value.any { it.account == driveRepository.currentAccount && it.isRunning } ||
+        vaultEntryEdits.works.value.any { it.account == driveRepository.currentAccount && it.isRunning } ||
+        shareSaves.works.value.any { it.account == driveRepository.currentAccount && it.isRunning } ||
+        instantMagnetRepository.offlineSubmissions.works.value.any { it.account == driveRepository.currentAccount && it.isRunning } ||
+        offlinePacks.busy.value.any { it.account == driveRepository.currentAccount } ||
+        driveRepository.changes.state.value.undo.values.any { it.status == DriveChangeJournal.UndoStatus.RUNNING } ||
+        downloadManager.listings.value.values.any { it.account == driveRepository.currentAccount && it.isListing } ||
         downloadManager.tasks.value.values.any { it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.PENDING } ||
-        currentAccountUploads().any { it.status.isActive }
+        currentAccountUploads().any { it.status.isActive } ||
+        uploadManager.preparations.value.any { it.account == driveRepository.currentAccount && it.isRunning }
+
+/** 平台共同订阅业务执行状态；等待密码、确认或结果待查不会单独维持后台执行。 */
+fun PikoServices.backgroundWorkChanges(): Flow<Boolean> = combine(
+    snapshotFlow { hasBackgroundWork() }, downloadManager.tasks, uploadManager.tasks, fileWorkChanges(),
+) { _, _, _, _ -> hasBackgroundWork() }.distinctUntilChanged()
 
 /** 进度通知的内容。只有一件时原样照搬它；几件并行时标题与进度取第一件，展开后逐件一行。 */
 data class WorkNotificationContent(

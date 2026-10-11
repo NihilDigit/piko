@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.combine
 import kotlin.time.Clock
 
 /** 一件后台工作的结局，给不在眼前的用户看：Android 发系统通知，桌面发 Toast。 */
@@ -32,8 +33,15 @@ class WorkNotice(val title: String, val message: String)
 fun PikoServices.workNotices(): Flow<WorkNotice> = merge(
     downloadNotices(downloadManager),
     uploadNotices(uploadManager, clientManager),
+    uploadManager.preparationOutcomes.filter { it.account == driveRepository.currentAccount }.map { WorkNotice("上传准备未完成", it.result?.message.orEmpty()) },
     serverWorkNotices(),
     duplicateNotices(duplicateSession),
+    fileWrites.outcomes.filter { it.account == driveRepository.currentAccount }.map { WorkNotice(it.title, it.result.message) },
+    historyEdits.outcomes.filter { it.account == driveRepository.currentAccount }.map { WorkNotice(it.title, it.result.message) },
+    vaultEntryEdits.outcomes.filter { it.account == driveRepository.currentAccount }.map { WorkNotice(it.title, it.result.message) },
+    shareSaves.outcomes.filter { it.account == driveRepository.currentAccount }.map { WorkNotice(it.title, it.result.message) },
+    instantSaveRecords.outcomes.filter { it.account == driveRepository.currentAccount }.map { WorkNotice(it.title, it.message) },
+    instantMagnetRepository.offlineSubmissions.outcomes.filter { it.account == driveRepository.currentAccount && it.status != dev.piko.shared.state.OfflineSubmitStatus.COMPLETE }.map { WorkNotice(it.title, it.message) },
 )
 
 /**
@@ -41,7 +49,13 @@ fun PikoServices.workNotices(): Flow<WorkNotice> = merge(
  * [withUndoable] 为假时略去已记进改动日志的归档结局：它们由主界面带「撤销」提示过（showChangeNotices）。
  */
 fun PikoServices.serverWorkNotices(withUndoable: Boolean = true): Flow<WorkNotice> = merge(
-    archiveExtractSession.outcomes.map { WorkNotice(if (it.succeeded) "解压完成" else "解压失败", it.message) },
+    archiveExtractSession.outcomes.map {
+        WorkNotice(when (it.outcome) {
+            dev.piko.shared.state.ArchiveCompletion.SUCCEEDED -> "解压完成"
+            dev.piko.shared.state.ArchiveCompletion.FAILED -> "解压失败"
+            dev.piko.shared.state.ArchiveCompletion.UNCONFIRMED -> "解压结果待确认"
+        }, it.message)
+    },
     folderVaultSession.outcomes.filter { withUndoable || !it.undoable }.map { WorkNotice(it.title, it.message) },
 )
 
@@ -87,11 +101,23 @@ private fun downloadNotices(downloads: PikoDownloadCoordinator): Flow<WorkNotice
  * 只有一个文件时写出文件名。
  */
 private fun uploadNotices(uploads: PikoUploadCoordinator, clients: PikoClientProvider): Flow<WorkNotice> = flow {
-    val startedAtMs = Clock.System.now().toEpochMilliseconds()
-    var previousStatuses = emptyMap<String, UploadStatus>()
-    val finished = mutableMapOf<String, UploadTask>()
-    uploads.tasks.collect { tasks ->
+    val accumulator = UploadNoticeAccumulator(Clock.System.now().toEpochMilliseconds())
+    combine(uploads.tasks, uploads.preparations, clients.currentClient) { tasks, preparing, client -> Triple(tasks, preparing, client?.account) }
+        .collect { (tasks, preparing, account) ->
+            accumulator.accept(tasks, preparing, account)?.let { emit(it) }
+        }
+}
+
+/** 队列暂空不等于准备结束；跨账号切换也不能交付上一个账号的汇总。 */
+internal class UploadNoticeAccumulator(private val startedAtMs: Long) {
+    private var previousStatuses = emptyMap<String, UploadStatus>()
+    private val finished = mutableMapOf<String, UploadTask>()
+    private var previousAccount: String? = null
+
+    fun accept(tasks: Map<String, UploadTask>, preparing: List<dev.piko.shared.upload.UploadPreparation>, account: String?): WorkNotice? {
+        if (account != previousAccount) { finished.clear(); previousAccount = account }
         tasks.forEach { (id, task) ->
+            if (task.account != account) return@forEach
             val previous = previousStatuses[id]
             if (previous == task.status) return@forEach
             // 没见过的任务有两种：启动时读回的旧记录，不该报；刚入队就在两次收集之间秒传完的，要报
@@ -105,10 +131,10 @@ private fun uploadNotices(uploads: PikoUploadCoordinator, clients: PikoClientPro
         }
         finished.keys.retainAll(tasks.keys)
         previousStatuses = tasks.mapValues { it.value.status }
-        val account = clients.currentClient.value?.account
-        if (finished.isEmpty() || tasks.values.anyActiveFor(account)) return@collect
-        emit(uploadSummary(finished.values.toList()))
+        if (finished.isEmpty() || tasks.values.anyActiveFor(account) || preparing.any { it.account == account && it.isRunning }) return null
+        val notice = uploadSummary(finished.values.toList())
         finished.clear()
+        return notice
     }
 }
 

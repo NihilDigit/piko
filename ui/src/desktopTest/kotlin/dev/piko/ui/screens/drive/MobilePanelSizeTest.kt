@@ -9,7 +9,7 @@ import kotlin.test.Test
 import kotlin.test.assertTrue
 
 /**
- * 移动端的操作面板没有「更多」，全部平铺，要在 400x860 的竖屏上一屏放下：列表行（含属性与危险项）至多 8 行，
+ * 移动端的操作面板没有「更多」，全部平铺；增加显式画质入口后，最长列表允许滚动，列表行（含属性与危险项）至多 9 行，
  * 图标行至多 4 个。这里取各类条目里最挤的情形，按 DriveScreen.operationsOf 在移动端的拼法（库里多在网盘中显示与移除记录，
  * 处理器里移动端为 null 的几项照样为 null）拼出整份操作。往 fileActions 里给某类条目加一项而没想到手机，这里就超。
  */
@@ -26,7 +26,7 @@ class MobilePanelSizeTest {
     private val folder = FileStat(kind = FileKind.FOLDER, id = "d", name = "ABC-123", params = mapOf("url" to "https://mypikpak.com/s/x"))
 
     private fun mobileHandlers(inLibrary: Boolean, vaultMarked: Boolean) = FileActionHandlers(
-        toggleStar = {}, download = {}, share = {}, rename = {}, move = {},
+        toggleStar = {}, download = {}, downloadAtQuality = {}, share = {}, rename = {}, move = {},
         copy = if (inLibrary) null else ({}),
         trash = {}, extract = {},
         findDuplicates = null,
@@ -57,7 +57,7 @@ class MobilePanelSizeTest {
     }
 
     @Test
-    fun `the most crowded panels fit one phone screen`() {
+    fun `the most crowded panels keep actions within the scrollable row budget`() {
         // 文件的归档在这里已占满 8 行；库里不给归档（itemCommands.vault），最近添加里才放得下在网盘中显示与移除记录
         val inFolder = panel(video("ABC-123 某片名.mp4"), CommandPlace.FOLDER)
         assertTrue(inFolder.any { it.label == "归档" })
@@ -72,7 +72,7 @@ class MobilePanelSizeTest {
     }
 
     private companion object {
-        // 400x860 竖屏上列表 8 行加一排图标是不滚的上限，见 ui/CLAUDE.md「鼠标与键盘」
-        const val MaxRows = 8
+        // 显式画质入口增加一行；保留滚动，不通过删除其他业务动作腾位置。
+        const val MaxRows = 9
     }
 }

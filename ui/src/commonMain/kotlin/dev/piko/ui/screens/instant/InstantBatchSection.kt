@@ -162,6 +162,7 @@ private fun BatchRowItem(
             val error = saveError ?: when (status) {
                 InstantBatchRowStatus.FAILED -> sheet.errorMessage ?: "解析失败"
                 InstantBatchRowStatus.NEEDS_NAME -> "文件夹名为空"
+                InstantBatchRowStatus.NEEDS_REVIEW -> sheet.saveBlockReason ?: sheet.saveIssue?.message ?: "保存结果需要核对"
                 else -> null
             }
             if (error != null) {
@@ -221,7 +222,7 @@ private fun BatchStatusIcon(status: InstantBatchRowStatus) {
     Box(modifier = Modifier.size(24.dp), contentAlignment = Alignment.Center) {
         when (status) {
             InstantBatchRowStatus.RESOLVING -> InlineLoadingIndicator()
-            InstantBatchRowStatus.FAILED, InstantBatchRowStatus.NEEDS_NAME -> Icon(
+            InstantBatchRowStatus.FAILED, InstantBatchRowStatus.NEEDS_NAME, InstantBatchRowStatus.NEEDS_REVIEW -> Icon(
                 imageVector = Icons.Outlined.ErrorOutline,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.error,

@@ -21,6 +21,7 @@ import dev.piko.shared.log.PikoLog
 import dev.piko.ui.WorkMeter
 import dev.piko.ui.WorkNotificationContent
 import dev.piko.ui.hasBackgroundWork
+import dev.piko.ui.fileWorkChanges
 import dev.piko.ui.runningWork
 import dev.piko.ui.workNotificationContent
 import kotlinx.coroutines.CoroutineScope
@@ -100,10 +101,11 @@ class PikoDownloadService : Service() {
             // 归档、解压、查重是 Compose 状态，下载与上传是 StateFlow，合在一起只当作「有变化」的信号，
             // 每次都从 services 重新取一遍
             val serverWork = snapshotFlow { services.runningWork() }
+            val fileWork = services.fileWorkChanges()
             // 用 collect 而非 collectLatest，每轮末尾等一秒：conflate 让等待期间的中间值直接跳过，
             // 通知更新被压到每秒一次。系统对单个应用的通知更新有频率上限，超出的直接丢弃，
             // 多发只是白白重建 Notification。combine 自身不合并，要显式 conflate
-            combine(services.downloadManager.tasks, services.uploadManager.tasks, serverWork, AppVisibility.visible) { _, _, _, visible ->
+            combine(services.downloadManager.tasks, services.uploadManager.tasks, serverWork, AppVisibility.visible, fileWork) { _, _, _, visible, _ ->
                 visible
             }.conflate().collect { visible ->
                 when {

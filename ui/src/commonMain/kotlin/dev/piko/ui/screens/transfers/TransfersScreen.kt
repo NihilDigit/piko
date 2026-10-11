@@ -90,6 +90,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.piko.ui.workProgress
 import androidx.lifecycle.repeatOnLifecycle
 import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
@@ -125,8 +126,11 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun TransfersScreen(
+    state: TransfersState,
     onNavigateToVideoPlayer: (fileId: String, fileName: String, localPath: String?) -> Unit,
     onNavigateToInstant: () -> Unit = {},
+    onResumeAddLink: () -> Unit = onNavigateToInstant,
+    onOpenDuplicateReport: () -> Unit = {},
     /** 跳到网盘里该文件所在目录。找不到（已移动或删除）时返回 false，由本页提示。 */
     onOpenCloudFile: suspend (fileId: String, fileName: String) -> Boolean = { _, _ -> false },
     /** 再点一次底栏的「传输」时加一：回到列表顶部。 */
@@ -136,24 +140,7 @@ fun TransfersScreen(
     val scope = rememberCoroutineScope()
     val services = LocalPikoServices.current
     val platform = LocalPikoPlatform.current
-    val client by services.clientManager.currentClient.collectAsStateWithLifecycle()
-    val account = client?.account.orEmpty()
     val desktop = isDesktopLayout()
-    val state = remember(account, desktop) {
-        TransfersState(
-            services.downloadManager,
-            services.taskRepository,
-            services.offlinePacks,
-            scope,
-            services.driveRepository,
-            services.uploadManager,
-            services.instantSaveRecords,
-            account,
-            services.archiveExtractSession,
-            services.folderVaultSession,
-            listsServerWork = !desktop,
-        )
-    }
     val vaultSession = services.folderVaultSession
     val snackbarHostState = LocalRootSnackbar.current
     // 找不到文件的提示走本页的 Snackbar，不用系统 Toast：Toast 不跟随 M3 主题与配色
@@ -186,8 +173,8 @@ fun TransfersScreen(
     LaunchedEffect(state) {
         state.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
     }
-    // 解压与归档做完，这一行随即消失，在这里说明结局。只在本页可见时收：退到后台由系统通知说，
-    // 回来不再补一遍。桌面不列这两种，结局另由网盘页与通知说明。记进改动日志的那些由主界面带「撤销」提示，这里不再说一遍
+    // 移动端的即时结局提示只在可见时收集；解压结局同时保留为可查询记录。
+    // 记进改动日志的由主界面带「撤销」提示，这里不再说一遍。
     if (!desktop) {
         LaunchedEffect(services, lifecycleOwner) {
             lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -219,8 +206,13 @@ fun TransfersScreen(
 
     // 记 key 而不是条目本身：进度每半秒刷新，面板要跟着显示最新状态；条目被移除时面板随之关闭
     var detailsKey by rememberSaveable { mutableStateOf<String?>(null) }
+    var confirmingDelete by remember { mutableStateOf(false) }
 
     val localFiles = platform.localFiles
+
+    fun openBatchFolder(batch: dev.piko.download.DownloadBatch, open: (String) -> Unit) {
+        scope.launch { state.batchFolderPath(batch)?.let(open) }
+    }
 
     fun batchIntents(item: TransferItem.LocalBatch): LocalBatchIntents {
         val id = item.batch.id
@@ -230,14 +222,19 @@ fun TransfersScreen(
             onResume = { state.resumeBatch(id) },
             onRetryListing = { state.retryListing(id) },
             onConfirm = { state.confirmListing(id) },
-            onOpenFolder = { state.withBatchFolder(item.batch) { localFiles.openExternally(it, isMedia = false) } },
-            onRevealFolder = { state.withBatchFolder(item.batch) { localFiles.openContainingFolder(it) } },
+            onOpenFolder = { openBatchFolder(item.batch) { localFiles.openExternally(it, isMedia = false) } },
+            onRevealFolder = { openBatchFolder(item.batch) { localFiles.openContainingFolder(it) } },
             onRemove = { state.removeBatch(id) },
         )
     }
 
     // 一项的全部操作，详情面板与右键菜单共用：两处给的总是同一组
     fun actionsFor(item: TransferItem): List<SheetAction> = when (item) {
+        is TransferItem.UploadPreparing -> uploadPreparationActions(item.work,
+            item.work.parentId.takeIf { it.isNotEmpty() }?.let { { openCloudFileById(it, item.work.parentName) } }, {
+                if (item.work.hasSideEffects) { detailsKey = null; state.selectOnly(item.key); confirmingDelete = true }
+                else state.remove(item)
+            })
         is TransferItem.LocalBatch -> localBatchActions(item, item.key in expandedBatches, batchIntents(item))
         is TransferItem.Local -> localTransferActions(
             task = item.task,
@@ -272,16 +269,74 @@ fun TransfersScreen(
             onOpen = { openCloudFileById(item.record.locateId, item.record.name) },
             onRemove = { state.removeInstant(item.record.id) },
         )
+        is TransferItem.InstantAttempt -> instantAttemptActions(item.work,
+            item.work.locateId?.let { { openCloudFileById(it, item.work.title) } },
+            onResumeAddLink.takeIf { services.addLink.state?.containsInstantAttempt(item.work.id) == true },
+            {
+                if (item.work.receipt?.requiresInspection == true) {
+                    detailsKey = null; state.selectOnly(item.key); confirmingDelete = true
+                } else state.remove(item)
+            },
+        )
+        is TransferItem.Share -> shareTransferActions(item.work, state.shareUndoStatus(item.work), state.canUndoShare(item.work), services.shareSaves.canRecheck(item.work.id),
+            { state.undoShare(item.work) }, { services.shareSaves.recheck(item.work.id) }, {
+                if (item.work.result?.unconfirmedSources?.isNotEmpty() == true || item.work.pendingRenames.isNotEmpty()) {
+                    detailsKey = null; state.selectOnly(item.key); confirmingDelete = true
+                } else state.remove(item)
+            },
+            (item.work.associatedOutputs.values.firstOrNull() ?: item.work.command.target.id.takeIf { it.isNotEmpty() })?.let { { openCloudFileById(it, item.work.title) } },
+            onResumeAddLink.takeIf { services.addLink.state?.containsShareWork(item.work.id) == true },
+        )
+        is TransferItem.OfflineSubmit -> offlineSubmitActions(item.work,
+            (item.work.outputId ?: item.work.target.id.takeIf { it.isNotEmpty() })?.let { { openCloudFileById(it, item.work.title) } },
+            onResumeAddLink.takeIf { services.addLink.state?.containsOfflineSubmission(item.work.id) == true },
+            {
+                if (item.work.status == dev.piko.shared.state.OfflineSubmitStatus.UNCONFIRMED) {
+                    detailsKey = null; state.selectOnly(item.key); confirmingDelete = true
+                } else state.remove(item)
+            },
+        )
         is TransferItem.Extract -> extractTransferActions(
             item = item,
             onShowInDrive = { openCloudFileById(item.job.file.id, item.job.file.name) },
             onSkip = { state.skipExtract(item.job.id) },
+            onRecheck = { state.recheckExtract(item.job.id) },
         )
-        is TransferItem.Vault -> vaultTransferActions(state.isVaultStopping, state::stopVault)
+        is TransferItem.Vault -> vaultTransferActions(
+            item, state.isVaultStopping, { state.stopVault(item.work.id) }, { state.dismissVault(item.work.id) },
+            item.record?.let(state::canUndoVault) == true, item.record?.let(state::vaultUndoStatus),
+            { item.record?.let(state::undoVault) },
+        )
+        is TransferItem.Write -> {
+            val work = item.work
+            val locateId = when (work.command) {
+                is dev.piko.shared.state.FileWriteCommand.Delete -> null
+                is dev.piko.shared.state.FileWriteCommand.Copy -> work.command.target?.id?.takeIf { it.isNotEmpty() }
+                else -> work.result?.createdId ?: work.result?.confirmed?.firstOrNull()
+            }
+            fileWriteActions(work, state.writeUndoStatus(work), state.canUndoWrite(work), services.fileWrites.canRecheck(work.id),
+                { state.undoWrite(work) }, { services.fileWrites.recheck(work.id) },
+                { if (work.result?.unconfirmed?.isNotEmpty() == true) { detailsKey = null; state.selectOnly(item.key); confirmingDelete = true } else state.remove(item) },
+                locateId?.let { { openCloudFileById(it, work.command.title) } },
+            )
+        }
+        is TransferItem.VaultEdit -> vaultEditActions(item.work, state.vaultEditUndoStatus(item.work), state.canUndoVaultEdit(item.work), services.vaultEntryEdits.canRecheck(item.work.id),
+            { state.undoVaultEdit(item.work) }, { services.vaultEntryEdits.recheck(item.work.id) }, {
+                if (item.work.result?.unconfirmed?.isNotEmpty() == true) {
+                    detailsKey = null; state.selectOnly(item.key); confirmingDelete = true
+                } else state.remove(item)
+            })
+        is TransferItem.History -> historyTransferActions(item.work, services.historyEdits.canRecheck(item.work.id),
+            { services.historyEdits.recheck(item.work.id) }, {
+                if (item.work.result?.completion in setOf(dev.piko.shared.state.HistoryEditCompletion.PARTIAL, dev.piko.shared.state.HistoryEditCompletion.UNCONFIRMED)) {
+                    detailsKey = null; state.selectOnly(item.key); confirmingDelete = true
+                } else state.remove(item)
+            })
     }
 
     // 点按一项做的事，轻点与鼠标双击共用
     fun primaryActionFor(item: TransferItem): (() -> Unit)? = when (item) {
+        is TransferItem.UploadPreparing -> { { detailsKey = item.key } }
         is TransferItem.LocalBatch -> localBatchPrimaryAction(item, batchIntents(item)) { detailsKey = item.key }
         is TransferItem.Local -> localPrimaryAction(
             task = item.task,
@@ -303,16 +358,21 @@ fun TransfersScreen(
             onRetry = { state.retryPack(item.job.taskId) },
         )
         is TransferItem.Instant -> { { openCloudFileById(item.record.locateId, item.record.name) } }
+        is TransferItem.InstantAttempt -> { { detailsKey = item.key } }
+        is TransferItem.Share -> { { detailsKey = item.key } }
+        is TransferItem.OfflineSubmit -> { { detailsKey = item.key } }
         is TransferItem.Extract -> { { openCloudFileById(item.job.file.id, item.job.file.name) } }
         // 归档的文件夹只记着名字，没有可跳的位置；点按看详情
         is TransferItem.Vault -> { { detailsKey = item.key } }
+        is TransferItem.Write -> { { detailsKey = item.key } }
+        is TransferItem.History -> { { detailsKey = item.key } }
+        is TransferItem.VaultEdit -> { { detailsKey = item.key } }
     }
 
     // 眼前列出的先后，连选与全选按它。收起的「文件已删除」组不在其中，展开的文件夹下载连同其中的文件
     val visibleOrder = (state.inProgress + state.needsAttention + state.completed +
         if (deletedExpanded) state.outputDeleted else emptyList()).withBatchChildren(expandedBatches).map { it.key }
     val selectionActive = state.selectedKeys.isNotEmpty()
-    var confirmingDelete by remember { mutableStateOf(false) }
 
     // 列表的键盘焦点：鼠标按进列表时取得（pageFocusTarget），Delete、Esc 与全选才有处可去
     val listFocus = remember { FocusRequester() }
@@ -394,8 +454,16 @@ fun TransfersScreen(
                 item = item,
                 session = vaultSession,
                 onMoreClick = { detailsKey = item.key },
+                undo = item.record?.let(state::vaultUndoStatus),
                 selection = selection,
             )
+            is TransferItem.Write -> FileWriteTransferRow(item.work, state.writeUndoStatus(item.work), { detailsKey = item.key }, selection)
+            is TransferItem.History -> ProcessingTransferRow(item.work.workProgress(), { detailsKey = item.key }, selection)
+            is TransferItem.InstantAttempt -> ProcessingTransferRow(item.work.workProgress(), { detailsKey = item.key }, selection)
+            is TransferItem.Share -> ProcessingTransferRow(item.work.workProgress(state.shareUndoStatus(item.work)), { detailsKey = item.key }, selection)
+            is TransferItem.OfflineSubmit -> ProcessingTransferRow(item.work.workProgress(), { detailsKey = item.key }, selection)
+            is TransferItem.UploadPreparing -> ProcessingTransferRow(item.work.workProgress(), { detailsKey = item.key }, selection)
+            is TransferItem.VaultEdit -> ProcessingTransferRow(item.work.workProgress(state.vaultEditUndoStatus(item.work)), { detailsKey = item.key }, selection)
         }
     }
 
@@ -533,6 +601,8 @@ fun TransfersScreen(
                                 onToggleDeleted = { deletedExpanded = !deletedExpanded },
                                 expandedBatches = expandedBatches,
                                 renderItem = renderItem,
+                                onResumeAddLink = onResumeAddLink,
+                                onOpenDuplicateReport = onOpenDuplicateReport,
                                 gridState = gridStates.getValue(kind),
                                 modifier = Modifier.fillMaxSize(),
                             )
@@ -543,8 +613,8 @@ fun TransfersScreen(
                         )
                         TransfersPhase.EMPTY -> PullableCentered {
                             PikoEmptyState(
-                                title = "暂无传输任务",
-                                description = "下载、上传、离线与秒传将显示于此",
+                                title = "暂无任务",
+                                description = "传输、文件处理和待继续的操作将显示于此",
                                 icon = Icons.Outlined.SyncAlt,
                                 actionText = "新建离线任务",
                                 onActionClick = onNavigateToInstant,
@@ -641,11 +711,18 @@ fun TransfersScreen(
         is TransferItem.LocalBatch -> LocalBatchSheet(detailsItem, actionsFor(detailsItem), closeDetails)
         is TransferItem.Local -> LocalTransferSheet(detailsItem.task, actionsFor(detailsItem), closeDetails)
         is TransferItem.Upload -> UploadTransferSheet(detailsItem.task, actionsFor(detailsItem), closeDetails)
+        is TransferItem.UploadPreparing -> UploadPreparingSheet(detailsItem.work, actionsFor(detailsItem), closeDetails)
         is TransferItem.Cloud -> CloudTransferSheet(detailsItem.task, actionsFor(detailsItem), closeDetails)
         is TransferItem.Pack -> PackTransferSheet(detailsItem, actionsFor(detailsItem), closeDetails)
         is TransferItem.Instant -> InstantTransferSheet(detailsItem.record, actionsFor(detailsItem), closeDetails)
+        is TransferItem.InstantAttempt -> InstantAttemptSheet(detailsItem.work, actionsFor(detailsItem), closeDetails)
+        is TransferItem.Share -> ShareTransferSheet(detailsItem.work, state.shareUndoStatus(detailsItem.work), actionsFor(detailsItem), closeDetails)
+        is TransferItem.OfflineSubmit -> OfflineSubmitSheet(detailsItem.work, actionsFor(detailsItem), closeDetails)
         is TransferItem.Extract -> ExtractTransferSheet(detailsItem, actionsFor(detailsItem), closeDetails)
-        is TransferItem.Vault -> VaultTransferSheet(detailsItem, vaultSession, actionsFor(detailsItem), closeDetails)
+        is TransferItem.Vault -> VaultTransferSheet(detailsItem, vaultSession, actionsFor(detailsItem), closeDetails, detailsItem.record?.let(state::vaultUndoStatus))
+        is TransferItem.Write -> FileWriteTransferSheet(detailsItem.work, state.writeUndoStatus(detailsItem.work), actionsFor(detailsItem), closeDetails)
+        is TransferItem.History -> HistoryTransferSheet(detailsItem.work, actionsFor(detailsItem), closeDetails)
+        is TransferItem.VaultEdit -> VaultEditTransferSheet(detailsItem.work, state.vaultEditUndoStatus(detailsItem.work), actionsFor(detailsItem), closeDetails)
     }
 }
 
@@ -677,11 +754,13 @@ private fun TransfersList(
     onToggleDeleted: () -> Unit,
     expandedBatches: List<String>,
     renderItem: @Composable (TransferItem, Modifier) -> Unit,
+    onResumeAddLink: () -> Unit,
+    onOpenDuplicateReport: () -> Unit,
     gridState: LazyGridState,
     modifier: Modifier = Modifier,
 ) {
     Box(modifier) {
-        if (sections.isEmpty) {
+        if (sections.isEmpty && (state.continuations?.count(kind) ?: 0) == 0) {
             // 筛到一项不剩时说清是这一类没有，而不是整页空白像没加载出来
             PullableCentered {
                 Text(
@@ -714,6 +793,7 @@ private fun TransfersList(
                 movable = { false },
             ),
         ) {
+            continuationItems(state.continuations, kind, onResumeAddLink, onOpenDuplicateReport)
             transferSection("进行中", sections.inProgress, expanded, renderItem)
             transferSection("需要处理", sections.needsAttention, expanded, renderItem, onClearCloud = state::clearFailedCloud)
             transferSection("已完成", sections.completed, expanded, renderItem)
@@ -741,6 +821,27 @@ private fun DeleteSelectedDialog(items: List<TransferItem>, onConfirm: () -> Uni
         "已下载的文件会从本机删除。".takeIf { deletesFiles },
         "未传完的上传会取消，网盘里上传到一半的文件随之删除。".takeIf { cancelsUploads },
         "云端任务只删记录，已保存到网盘的文件不受影响。".takeIf { items.any { TransferKind.CLOUD.matches(it) } },
+        "待确认的文件操作仍可能已在服务端执行。移除记录不会取消操作，也不证明可以重新提交，请先检查实际文件。".takeIf {
+            items.any { it is TransferItem.Write && it.work.result?.unconfirmed?.isNotEmpty() == true }
+        },
+        "历史记录的处理结果尚未确认。移除这里的结果不会取消原操作，也不会恢复续播位置。".takeIf {
+            items.any { it is TransferItem.History && it.work.result?.completion in setOf(dev.piko.shared.state.HistoryEditCompletion.PARTIAL, dev.piko.shared.state.HistoryEditCompletion.UNCONFIRMED) }
+        },
+        "归档清单编辑结果尚未确认。移除记录不会取消已经提交的编辑，请先检查实际清单。".takeIf {
+            items.any { it is TransferItem.VaultEdit && it.work.result?.unconfirmed?.isNotEmpty() == true }
+        },
+        "部分秒传请求可能已执行。移除结果不会取消请求，也不证明可以再次保存。".takeIf {
+            items.any { it is TransferItem.InstantAttempt && it.work.receipt?.requiresInspection == true }
+        },
+        "分享转存或名称修改的结果尚未确认。移除记录不会取消原请求，也不证明可以重新转存。".takeIf {
+            items.any { it is TransferItem.Share && (it.work.result?.unconfirmedSources?.isNotEmpty() == true || it.work.pendingRenames.isNotEmpty()) }
+        },
+        "离线请求可能已经执行。移除记录不会取消远端任务，也不证明可以再次提交。".takeIf {
+            items.any { it is TransferItem.OfflineSubmit && it.work.status == dev.piko.shared.state.OfflineSubmitStatus.UNCONFIRMED }
+        },
+        "上传准备可能已创建目录或将部分文件入队。移除准备记录不会删除目录或取消上传，也不证明可以重新创建。".takeIf {
+            items.any { it is TransferItem.UploadPreparing && it.work.hasSideEffects }
+        },
     )
     PikoDialog(
         onDismissRequest = onDismiss,

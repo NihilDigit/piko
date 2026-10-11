@@ -4,6 +4,7 @@ import dev.piko.shared.data.isArchiveVolume
 import dev.piko.shared.data.isExtractableArchive
 import dev.piko.shared.data.isVaulted
 import dev.piko.shared.upload.isUploading
+import dev.piko.data.repository.isPlayableVideo
 import io.github.nihildigit.pikpak.FileStat
 
 /*
@@ -97,6 +98,7 @@ internal class ItemCommands(
     val restoreOrDelete: Boolean,
     val moveCopyTo: Boolean,
     val download: Boolean,
+    val downloadAtQuality: Boolean,
     val extract: Boolean,
     val removeRecord: Boolean,
     /** 归档，文件夹另有取消归档。 */
@@ -119,6 +121,9 @@ internal fun itemCommands(place: CommandPlace, targets: List<FileStat>): ItemCom
         moveCopyTo = settled && !inTrash,
         // 文件夹整个下载，见 PikoDownloadCoordinator.enqueueFolders；压缩包里的文件夹不在网盘里，列不出内容，只下文件
         download = hasTargets && !inTrash && targets.any { !it.isUploading && !(inArchive && it.isFolder) },
+        downloadAtQuality = hasTargets && !inTrash && !inArchive && targets.any {
+            !it.isUploading && !it.isVaulted && (it.isFolder || it.isPlayableVideo())
+        },
         // 压缩包里解压的是选中的几项本身，不是选中项里的压缩包
         extract = hasTargets && !inTrash && (inArchive || targets.any { it.isExtractableArchive || it.isArchiveVolume }),
         removeRecord = hasTargets && eventLog,

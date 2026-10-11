@@ -82,7 +82,7 @@ internal fun ColumnScope.ShareSaveSection(
                     )
                 }
             }
-            if (state.offersCanonicalNames) CanonicalNamesToggle(canonicalNames, enabled = !state.isSaving, onChange = onCanonicalNamesChange)
+            if (state.offersCanonicalNames) CanonicalNamesToggle(canonicalNames, enabled = state.canEdit, onChange = onCanonicalNamesChange)
             // 与磁力的文件列表一样占去剩下的高度，不定死：长分享在面板里自己滚动，短的照常收缩
             ShareBrowser(state, canonicalNames, onPreview, previewingId, onDownload, modifier = Modifier.weight(1f, fill = false))
         }
@@ -105,14 +105,17 @@ internal fun ShareSaveFooter(state: ShareSaveState, target: PathBreadcrumb?, can
     }
 
     if (info != null && !state.needsPassCode) {
-        TargetRow(target = target, notice = null, enabled = !state.isSaving, onClick = onPickTarget)
+        val targetBlocked = target?.let { state.targetBlockReason(it.id) }
+        TargetRow(target = target, notice = null, enabled = state.canEdit, onClick = onPickTarget)
+        targetBlocked?.let { ErrorBanner(it, onRetry = null) }
         val size = state.selectedBytes.takeIf { it > 0 }?.let { "（${it.toReadableSize()}）" }.orEmpty()
         SaveButton(
-            label = if (state.selectedIds.isEmpty()) "勾选要转存的内容" else "转存 ${state.selectedIds.size} 项$size",
-            enabled = target != null && state.selectedIds.isNotEmpty(),
+            label = if (state.hasPendingResult) "请先核对转存结果" else if (state.selectedIds.isEmpty()) "勾选要转存的内容" else "转存 ${state.selectedIds.size} 项$size",
+            enabled = target != null && targetBlocked == null && state.selectedIds.isNotEmpty() && state.canEdit,
             isSaving = state.isSaving,
             onClick = { target?.let { state.save(PikoPathBreadcrumb(it.id, it.name), canonicalNames) } },
         )
+        if (state.canRecheck && !state.isSaving) TextButton(onClick = state::recheck) { Text("重新查询结果") }
     }
 }
 
@@ -149,7 +152,7 @@ private fun ShareBrowser(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 if (state.path.isNotEmpty()) {
-                    IconButton(onClick = { state.goTo(state.path.size - 1) }) {
+                    IconButton(onClick = { state.goTo(state.path.size - 1) }, enabled = state.canEdit) {
                         Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "上一层")
                     }
                 } else {
@@ -164,7 +167,7 @@ private fun ShareBrowser(
                     modifier = Modifier.weight(1f).padding(vertical = 12.dp),
                 )
                 if (state.entries.isNotEmpty()) {
-                    TextButton(onClick = state::toggleAll) {
+                    TextButton(onClick = state::toggleAll, enabled = state.canEdit) {
                         Text(if (state.selectedIds.size == state.entries.size) "全不选" else "全选")
                     }
                 }
@@ -175,6 +178,7 @@ private fun ShareBrowser(
                         file = file,
                         renamed = if (canonicalNames) state.canonicalPreview(file) else null,
                         checked = file.id in state.selectedIds,
+                        enabled = state.canEdit,
                         onToggle = { state.toggle(file) },
                         onOpen = { state.enter(file) },
                         onPreview = if (file.isPlayableVideo() && file.hash.isNotBlank()) ({ onPreview(file) }) else null,
@@ -193,6 +197,7 @@ private fun ShareEntryRow(
     /** 开着规范命名时转存后的名字，不改时为 null。 */
     renamed: String?,
     checked: Boolean,
+    enabled: Boolean,
     onToggle: () -> Unit,
     onOpen: () -> Unit,
     onPreview: (() -> Unit)?,
@@ -202,12 +207,12 @@ private fun ShareEntryRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = if (file.isFolder) onOpen else onToggle)
+            .clickable(enabled = enabled, onClick = if (file.isFolder) onOpen else onToggle)
             // 复选框的起点与磁力文件树的行对齐
             .padding(start = 4.dp, end = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Checkbox(checked = checked, onCheckedChange = { onToggle() })
+        Checkbox(checked = checked, enabled = enabled, onCheckedChange = { onToggle() })
         FileTypeIcon(file = file, iconSize = 20.dp, modifier = Modifier.size(24.dp))
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f).padding(vertical = 8.dp)) {

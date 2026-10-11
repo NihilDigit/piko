@@ -19,6 +19,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.data.auth.SnailMode
 import dev.piko.download.DownloadStatus
 import dev.piko.shared.upload.UploadStatus
+import dev.piko.shared.presentation.needsAttention
+import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.ui.LocalPikoServices
 import kotlin.math.roundToInt
 import io.github.nihildigit.pikpak.TaskPhase
@@ -38,12 +40,21 @@ internal class TransferActivity(val downloadSpeed: Long, val uploadSpeed: Long, 
 @Composable
 internal fun rememberTransferActivity(
     pollCloud: Boolean = true,
-    /** 解压与归档算不算。桌面不算：它们在右下角的浮动卡片里，不列进传输页，按钮上的数也就不该含它们。 */
-    countsServerWork: Boolean = true,
 ): TransferActivity {
     val services = LocalPikoServices.current
     val downloads by services.downloadManager.tasks.collectAsStateWithLifecycle()
     val uploads by services.uploadManager.tasks.collectAsStateWithLifecycle()
+    val preparingUploads by services.uploadManager.preparations.collectAsStateWithLifecycle()
+    val fileWrites by services.fileWrites.works.collectAsStateWithLifecycle()
+    val instantAttempts by services.instantSaveRecords.attempts.collectAsStateWithLifecycle()
+    val shares by services.shareSaves.works.collectAsStateWithLifecycle()
+    val offlineSubmits by services.instantMagnetRepository.offlineSubmissions.works.collectAsStateWithLifecycle()
+    val packs by services.offlinePacks.jobs.collectAsStateWithLifecycle()
+    val busyPacks by services.offlinePacks.busy.collectAsStateWithLifecycle()
+    val vaultEdits by services.vaultEntryEdits.works.collectAsStateWithLifecycle()
+    val historyEdits by services.historyEdits.works.collectAsStateWithLifecycle()
+    val listings by services.downloadManager.listings.collectAsStateWithLifecycle()
+    val journal by services.driveRepository.changes.state.collectAsStateWithLifecycle()
     val cloud by produceState(services.taskRepository.cachedTasks().orEmpty(), services, pollCloud) {
         while (pollCloud) {
             services.taskRepository.getTasks().onSuccess { value = it.tasks }
@@ -57,30 +68,49 @@ internal fun rememberTransferActivity(
         it.belongsTo(account) && (it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.PENDING)
     }
     val activeUploads = uploads.values.filter { it.account == account && it.status.isActive }
-    val activeCloud = if (pollCloud) cloud.count { it.phase == TaskPhase.RUNNING || it.phase == TaskPhase.PENDING } else 0
+    val shareTasks = shares.mapNotNullTo(HashSet()) { it.remoteTaskId } + packs.map { it.taskId }
+    val activeCloud = if (pollCloud) cloud.count { it.id !in shareTasks && (it.phase == TaskPhase.RUNNING || it.phase == TaskPhase.PENDING) } else 0
     // 待输密码的压缩包也算：它停着等人，正该引人去看
-    val serverWork = if (!countsServerWork) {
-        0
-    } else {
-        services.archiveExtractSession.jobs.size + (if (services.folderVaultSession.isRunning) 1 else 0)
-    }
+    val serverWork = services.archiveExtractSession.jobs.size +
+        services.archiveExtractSession.completedJobs.count { (it.status as? dev.piko.shared.state.ArchiveJobStatus.Finished)?.outcome != dev.piko.shared.state.ArchiveCompletion.SUCCEEDED } +
+        (if (services.folderVaultSession.isRunning) 1 else 0) +
+        services.folderVaultSession.records.count { record ->
+            val undo = record.undoChangeId?.let { journal.undo[it] }
+            record.needsAttention(undo) || undo?.status == DriveChangeJournal.UndoStatus.RUNNING
+        }
+    val finder = services.duplicateSession.state
+    val cleanup = services.trashSession
+    val continuations = (if (finder?.isScanning == true || finder?.phase == dev.piko.shared.state.DuplicateFinderState.Phase.FAILED) 1 else 0) +
+        (if (cleanup.progress != null || cleanup.failure != null || cleanup.isUndoing) 1 else 0) +
+        (if (services.addLink.state?.let { !it.isBlank && !it.hasRetainedInstantAttempt && !it.hasRetainedShareWork && !it.hasRetainedOfflineSubmission } == true) 1 else 0)
     return TransferActivity(
         downloadSpeed = activeDownloads.sumOf { it.speedBytesPerSec },
         uploadSpeed = activeUploads.sumOf { it.speedBytesPerSec },
         // 文件夹下载一批算一项，与传输页一致；按文件数的话一个文件夹就是上千项
-        count = activeDownloads.distinctBy { it.batch?.id ?: it.taskId }.size + activeUploads.size + activeCloud + serverWork,
+        count = activeDownloads.distinctBy { it.batch?.id ?: it.taskId }.size + activeUploads.size + preparingUploads.count { it.account == account } + activeCloud + serverWork + continuations +
+            listings.values.count { it.account == account } + fileWrites.count { work ->
+                work.account == account && (work.isRunning || work.result?.completion != dev.piko.shared.state.FileWriteCompletion.SUCCEEDED ||
+                    work.result?.undoChangeIds.orEmpty().any { journal.undo[it]?.status in setOf(DriveChangeJournal.UndoStatus.RUNNING, DriveChangeJournal.UndoStatus.FAILED) })
+            } + historyEdits.count { it.account == account && (it.isRunning || it.result?.completion != dev.piko.shared.state.HistoryEditCompletion.SUCCEEDED) } +
+            vaultEdits.count { work -> work.account == account && (work.isRunning || work.result?.completion != dev.piko.shared.state.VaultEntryEditCompletion.SUCCEEDED ||
+                work.result?.undoChangeIds.orEmpty().any { journal.undo[it]?.status in setOf(DriveChangeJournal.UndoStatus.RUNNING, DriveChangeJournal.UndoStatus.FAILED) }) } +
+            instantAttempts.count { it.account == account } + packs.count { it.account == account && (it.isActive || it.stage == dev.piko.shared.data.OfflinePackStage.FAILED || dev.piko.shared.data.OfflinePackRef(it.account, it.taskId) in busyPacks) } +
+            offlineSubmits.count { it.account == account && it.status != dev.piko.shared.state.OfflineSubmitStatus.COMPLETE } + shares.count { work ->
+                work.account == account && (work.isRunning || work.result?.completion != dev.piko.shared.state.ShareSaveCompletion.SUCCEEDED ||
+                    work.undoChangeIds.any { journal.undo[it]?.status in setOf(DriveChangeJournal.UndoStatus.RUNNING, DriveChangeJournal.UndoStatus.FAILED) })
+            },
     )
 }
 
 /**
- * 侧边栏「传输」按钮上代替「传输」二字的读数：上行与下行里快的那一边，「↓ 6.2 MB/s」；没有速度但有任务在排队
+ * 侧边栏「任务」入口的辅助读数：上行与下行里快的那一边，「↓ 6.2 MB/s」；没有速度但有任务在排队
  * 或在云端跑时写项数。蜗牛模式开着时用强调色，一眼看得出这个速度是被压着的；按钮选中时底色已是主色，
  * 强调色压在上面读不清，沿用按钮自己的文字色。
  *
  * 取代了原来窗口底部的状态栏与侧边栏的小卡：人找传输的地方就在这个按钮，读数放在它身上，不另占一块。
  */
 @Composable
-internal fun SidebarTransferReadout(activity: TransferActivity, checked: Boolean) {
+internal fun SidebarTransferReadout(activity: TransferActivity, checked: Boolean, compact: Boolean = false) {
     val preferences = LocalPikoServices.current.preferences
     val snail by preferences.snailModeFlow.collectAsStateWithLifecycle(initialValue = SnailMode())
     val color = if (snail.enabled && !checked) MaterialTheme.colorScheme.tertiary else LocalContentColor.current
@@ -89,7 +119,7 @@ internal fun SidebarTransferReadout(activity: TransferActivity, checked: Boolean
         speed > 0 -> "${if (activity.downloadSpeed >= activity.uploadSpeed) "↓" else "↑"} ${compactRate(speed)}"
         else -> "${activity.count} 项"
     }
-    Text(text, color = color, maxLines = 1, style = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum"))
+    Text(text, color = color, maxLines = 1, style = (if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelLarge).copy(fontFeatureSettings = "tnum"))
 }
 
 /**

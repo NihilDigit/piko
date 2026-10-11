@@ -39,7 +39,12 @@ sealed interface Screen : NavKey {
     @Serializable
     data object WebDav : Screen
 
-    // 最近添加、星标、播放历史与回收站不是单独的页，是网盘页里的位置，见 DriveLibrary
+    @Serializable
+    data class Library(val libraryId: String, val instance: Long) : Screen
+
+    @Serializable
+    data class Browse(val path: List<Pair<String, String>>, val highlightId: String, val instance: Long) : Screen
+
     @Serializable
     data object MyShares : Screen
 
@@ -55,6 +60,6 @@ sealed interface Screen : NavKey {
 
 enum class MainTab(val title: String) {
     FILES("文件"),
-    TRANSFERS("传输"),
+    TRANSFERS("任务"),
     SETTINGS("我的"),
 }

@@ -98,7 +98,6 @@ import dev.piko.shared.state.NameGroupSummary
 import dev.piko.shared.state.ShareSaveState
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.ui.LocalPikoServices
-import io.github.nihildigit.pikpak.shareIdFromUrl
 import dev.piko.ui.components.FileNameField
 import dev.piko.ui.components.FolderPickerDialog
 import dev.piko.ui.components.MediaTagRow
@@ -158,14 +157,7 @@ fun InstantSheetContent(
     }
 
     // 分享链接走转存，与磁力的解析、秒传、离线互不相干，下面整段换成分享面板
-    val shareId = remember(state.input) { InstantSheetState.findShareLink(state.input)?.let(::shareIdFromUrl) }
-    val driveRepo = LocalPikoServices.current.driveRepository
-    val shareScope = rememberCoroutineScope()
-    val shareState = remember(shareId) {
-        shareId?.let {
-            ShareSaveState(driveRepo, shareScope, it, initialPassCode = InstantSheetState.findSharePassCode(state.input).orEmpty())
-        }
-    }
+    val shareState = state.shareSave
 
     val action = state.primaryAction
     var askOffline by remember { mutableStateOf<OfflineConfirm?>(null) }
@@ -179,7 +171,7 @@ fun InstantSheetContent(
         batch != null -> if (batch.openedRow == null && batch.canSaveAll) batch::saveAll else null
         shareState != null -> state.target?.takeIf { shareState.selectedIds.isNotEmpty() && !shareState.isSaving }
             ?.let { target -> { shareState.save(PikoPathBreadcrumb(target.id, target.name), canonicalNames = state.useCanonicalNames) } }
-        action != null && action.enabled && !state.isSaving && state.savePlan?.blocked != true -> saveMagnet
+        action != null && action.enabled && !state.isSaving && (state.hasInstantRetry || state.savePlan?.blocked != true) -> saveMagnet
         else -> null
     }
     val shortcutModifier = platform.shortcutModifier
@@ -241,7 +233,7 @@ fun InstantSheetContent(
             TargetRow(
                 target = state.target,
                 notice = state.targetNotice,
-                enabled = !state.isSaving,
+                enabled = state.canEdit,
                 onClick = { showTargetPicker = true },
             )
             SaveBar(state = state, action = action, onSave = saveMagnet)
@@ -330,7 +322,7 @@ private fun ColumnScope.InstantBody(
         shape = MaterialTheme.shapes.largeIncreased,
         singleLine = inputCompact,
         maxLines = if (inputCompact) 1 else 3,
-        enabled = !state.isSaving,
+        enabled = state.canEdit,
         trailingIcon = {
             IconButton(onClick = {
                 val clip = platform.readClipboardText()
@@ -367,6 +359,7 @@ private fun ColumnScope.InstantBody(
             onRetry = if (canRetry) state::retryResolve else null,
         )
     }
+    if (shareState == null) state.saveBlockReason?.takeUnless { it == state.errorMessage }?.let { ErrorBanner(it, onRetry = null) }
 
     notice?.let { NoticeBanner(it) }
 
@@ -388,7 +381,7 @@ internal fun resolvingText(state: InstantSheetState): String = if (state.isAnaly
 
 /** 免费账号这次保存要不要先确认离线；会员与秒传为 null。 */
 private fun offlineConfirmOf(state: InstantSheetState, action: InstantPrimaryAction): OfflineConfirm? {
-    val plan = state.savePlan.takeIf { state.resolution != null && !state.contentMissing }
+    val plan = state.savePlan.takeIf { state.resolution != null && !state.contentMissing && !state.hasInstantRetry && state.saveIssue?.requiresInspection != true }
     val fallback = plan?.fallback
     return when {
         !state.confirmsOffline -> null
@@ -408,7 +401,7 @@ private fun offlineConfirmOf(state: InstantSheetState, action: InstantPrimaryAct
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun SaveBar(state: InstantSheetState, action: InstantPrimaryAction, onSave: () -> Unit) {
-    val plan = state.savePlan.takeIf { state.resolution != null && !state.contentMissing }
+    val plan = state.savePlan.takeIf { state.resolution != null && !state.contentMissing && !state.hasInstantRetry && state.saveIssue?.requiresInspection != true }
     val fallback = plan?.fallback
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (plan != null && plan.lacksSpace) {
@@ -432,7 +425,12 @@ private fun SaveBar(state: InstantSheetState, action: InstantPrimaryAction, onSa
             if (fallback.skippedCount > 0) SaveCaption("将跳过 ${fallback.skippedCount} 个未收录文件")
         } else {
             SaveButton(
-                label = if (state.contentMissing) "离线下载" else "保存",
+                label = when {
+                    state.hasInstantRetry && state.retryFileCount > 0 -> "重试未保存的 ${state.retryFileCount} 个文件"
+                    state.saveIssue?.requiresInspection == true -> "请先核对保存结果"
+                    state.contentMissing -> "离线下载"
+                    else -> "保存"
+                },
                 enabled = action.enabled,
                 isSaving = state.isSaving,
                 onClick = onSave,
@@ -618,7 +616,7 @@ internal fun ColumnScope.ResolutionSection(
                     onValueChange = state::updateFolderName,
                     label = "新建文件夹",
                     collapseWhenIdle = true,
-                    enabled = !state.isSaving,
+                    enabled = state.canEdit,
                     isError = isBlank,
                     supportingText = if (isBlank) "名称不能为空" else null,
                     modifier = Modifier.fillMaxWidth(),
@@ -650,7 +648,7 @@ internal fun ColumnScope.ResolutionSection(
     // 列表占去面板剩下的高度，不再定死 320dp：长资源的上半部分有文件夹名、计数与芯片，
     // 定高时列表里只看得到两三行。fill = false 让短列表照常收缩
     UnindexedBanner(state)
-    if (state.offersCanonicalNames) CanonicalNamesToggle(state.useCanonicalNames, enabled = !state.isSaving, onChange = state::updateUseCanonicalNames)
+    if (state.offersCanonicalNames) CanonicalNamesToggle(state.useCanonicalNames, enabled = state.canEdit, onChange = state::updateUseCanonicalNames)
 
     // 列表连同它的页眉占去剩下的高度，短列表照常收缩
     Column(modifier = Modifier.weight(1f, fill = false)) {
@@ -720,7 +718,7 @@ private fun SelectionHeader(state: InstantSheetState) {
             modifier = Modifier.weight(1f),
         )
         if (!state.isUnindexedFilterActive) {
-            TextButton(onClick = state::toggleSelectAll) {
+            TextButton(onClick = state::toggleSelectAll, enabled = state.canEdit) {
                 Text(if (state.isAllSelected) "全不选" else "全选")
             }
         }
@@ -758,6 +756,7 @@ private fun FileTreeList(state: InstantSheetState, onDownloaded: () -> Unit, mod
                             summary = state.summaryOf(node),
                             onToggleExpanded = if (filtering) null else ({ state.toggleGroupExpanded(node) }),
                             onSelectAll = { state.setGroupSelected(node, it) },
+                            selectionEnabled = state.canEdit,
                         )
                     }
                     is InstantRow -> {
@@ -769,6 +768,7 @@ private fun FileTreeList(state: InstantSheetState, onDownloaded: () -> Unit, mod
                             depth = row.depth,
                             isInstantReady = !state.isUnindexed(node),
                             checked = node.index in state.selectedIndices,
+                            enabled = state.canEdit,
                             onCheckedChange = { state.setItemSelected(node.index, it) },
                             onPreview = if (state.canPreview(node.index)) {
                                 { state.preview(node.index) }
@@ -806,6 +806,7 @@ private fun GroupRow(
     /** 为 null 时不能收起，也不画展开箭头。 */
     onToggleExpanded: (() -> Unit)?,
     onSelectAll: (Boolean) -> Unit,
+    selectionEnabled: Boolean,
 ) {
     val selectedCount = summary.selected
     val total = summary.total
@@ -828,7 +829,7 @@ private fun GroupRow(
             .padding(start = 4.dp + TreeIndent * depth, end = 8.dp, top = 4.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        TriStateCheckbox(state = checkState, onClick = { onSelectAll(checkState != ToggleableState.On) })
+        TriStateCheckbox(state = checkState, enabled = selectionEnabled, onClick = { onSelectAll(checkState != ToggleableState.On) })
         Column(
             modifier = Modifier
                 .weight(1f)
@@ -945,6 +946,7 @@ private fun InstantFileRow(
     depth: Int,
     isInstantReady: Boolean,
     checked: Boolean,
+    enabled: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     onPreview: (() -> Unit)?,
     isPreviewing: Boolean,
@@ -960,12 +962,12 @@ private fun InstantFileRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .toggleable(value = checked, role = Role.Checkbox, onValueChange = onCheckedChange)
+            .toggleable(value = checked, enabled = enabled, role = Role.Checkbox, onValueChange = onCheckedChange)
             // 单行时就是复选框的 48dp，再加上下边距，二十几集的列表会显得松散
             .padding(start = 4.dp + TreeIndent * depth, end = 16.dp, top = if (isCompact) 0.dp else 4.dp, bottom = if (isCompact) 0.dp else 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Checkbox(checked = checked, onCheckedChange = null, modifier = Modifier.minimumInteractiveComponentSize())
+        Checkbox(checked = checked, enabled = enabled, onCheckedChange = null, modifier = Modifier.minimumInteractiveComponentSize())
         Row(
             modifier = Modifier
                 .weight(1f)
@@ -1132,7 +1134,7 @@ internal fun InstantSheetState.summary(): InstantSummary {
         saving -> "正在保存"
         batch != null -> batch.blockedReason ?: "可保存 ${batch.submittableCount} 项"
         // 分享链接不走磁力解析，errorMessage 里那句「非磁力链接，可离线下载」说的不是它
-        InstantSheetState.findShareLink(input) != null -> "分享链接"
+        shareSave != null -> shareSave?.doneMessage ?: shareSave?.errorMessage ?: "分享链接"
         isResolving -> resolvingText(this)
         errorMessage != null -> errorMessage
         result != null -> "已选 $selectedEntryCount / $entryCount"

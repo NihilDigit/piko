@@ -65,12 +65,13 @@ class TasksAndTrashSmokeTest {
         val file = server.addFile("a.mkv", trashed = true)
         val prefs = MemoryPreferences()
         val repository = PikoDriveRepository(server.provider(), prefs)
-        val drive = DriveScreenState(repository, prefs, scope)
+        val repositoryWorkspace = dev.piko.shared.presentation.DriveWorkspace(repository, backgroundScope = scope)
+        val drive = DriveScreenState(repository, prefs, scope, navigation = repositoryWorkspace)
         drive.load()
         awaitUntil("网盘列表加载完成") { !drive.isLoading }
         assertEquals(emptyList(), drive.files.map { it.name })
 
-        repository.updateFolderStack(listOf(DriveLibrary.TRASH.crumb))
+        repositoryWorkspace.updateFolderStack(listOf(DriveLibrary.TRASH.crumb))
         awaitUntil("回收站加载完成") { drive.files.any { it.id == file.id } }
         drive.enterSelection(file.id)
         drive.restoreFromTrash(drive.selectedFileIds.toList())
@@ -92,7 +93,8 @@ class TasksAndTrashSmokeTest {
         val server = FakePikPakServer()
         val prefs = MemoryPreferences()
         val repository = PikoDriveRepository(server.provider(), prefs)
-        val drive = DriveScreenState(repository, prefs, scope)
+        val repositoryWorkspace = dev.piko.shared.presentation.DriveWorkspace(repository, backgroundScope = scope)
+        val drive = DriveScreenState(repository, prefs, scope, navigation = repositoryWorkspace)
         drive.load()
         awaitUntil("网盘列表加载完成") { !drive.isLoading }
 

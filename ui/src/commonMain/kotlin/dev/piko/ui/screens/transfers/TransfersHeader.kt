@@ -2,13 +2,12 @@ package dev.piko.ui.screens.transfers
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.getValue
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -29,30 +28,30 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material3.ButtonGroupDefaults
+import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.ToggleButton
 import androidx.compose.material3.TopAppBarDefaults
 import dev.piko.ui.components.PikoTopBar
-import dev.piko.ui.components.connectedToggleShapes
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.state.TransferKind
 import dev.piko.shared.state.TransfersState
 import dev.piko.ui.components.SnailModeToggle
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.toReadableSize
-import dev.piko.ui.components.verticalWheelScrollsRow
-import dev.piko.ui.platform.LocalWindowCaption
 import dev.piko.ui.components.iconBarItem
 import dev.piko.ui.components.AdaptiveBar
 import dev.piko.ui.platform.rememberCaptionSlot
@@ -105,7 +104,7 @@ internal fun TransfersTabRow(state: TransfersState, showTabs: Boolean) {
         if (showTabs) {
             val kinds = TransferKind.entries
             val activeIndex = kinds.indexOf(state.filter)
-            Row(Modifier.selectableGroup(), verticalAlignment = Alignment.Bottom) {
+            Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()).selectableGroup(), verticalAlignment = Alignment.Bottom) {
                 kinds.forEachIndexed { index, kind ->
                     IslandTab(
                         active = index == activeIndex,
@@ -140,7 +139,7 @@ internal fun TransfersTabRow(state: TransfersState, showTabs: Boolean) {
                 }
             }
         }
-        Spacer(Modifier.weight(1f).fillMaxHeight().windowDragArea())
+        if (!showTabs) Spacer(Modifier.weight(1f).fillMaxHeight().windowDragArea())
         Box(Modifier.fillMaxHeight(), contentAlignment = Alignment.Center) { caption.buttons?.invoke() }
     }
 }
@@ -199,15 +198,16 @@ private val TransferKind.icon: ImageVector
         TransferKind.DOWNLOAD -> Icons.Outlined.Download
         TransferKind.UPLOAD -> Icons.Outlined.Upload
         TransferKind.CLOUD -> Icons.Outlined.Cloud
+        TransferKind.FILES -> Icons.Outlined.SwapVert
     }
 
 private val KindTabMinWidth = 96.dp
 
-/** 手机上标题与四个筛选按钮同一行时，这一段至少要的宽度：「传输」加四个「下载 12」。 */
-private val InlineFilterMinWidth = 260.dp
+/** 紧凑页头为标题和类型菜单保留的宽度。 */
+private val InlineFilterMinWidth = 180.dp
 
 /**
- * 手机上的页头只有一行：标题「传输」、类型筛选、操作。筛选原来另起一行，页头连状态栏占去一百多 dp，
+ * 手机上的页头只有一行：标题「任务」、类型菜单、操作。筛选原来另起一行，页头连状态栏占去一百多 dp，
  * 手机上一屏本就放不下几项传输。筛选夹在中间，四个按钮等宽铺满标题与操作之间的宽度。
  *
  * 列表滚离顶端时底色换成 surfaceContainer（[scrolled]），与 M3 top app bar 的 on scroll 状态相同，
@@ -243,22 +243,6 @@ private fun CompactTransfersHeader(
         return
     }
     val caption = rememberCaptionSlot()
-    // 桌面的窄窗口里窗口按钮画在这一行末尾，占去一百多 dp，筛选挤得连「全部」都显示不全。这时筛选另起一行、铺满全宽，
-    // 即 M3 把 filter chips 放在顶栏下方的样子；手机上没有窗口按钮，仍是一行，不多占纵向空间。
-    // 看标题栏是否并进内容，不看 caption.buttons：后者按每帧量到的边界算，拖动改尺寸时会短暂为 null，页头跟着跳回挤着的一行
-    val filterBelow = showFilter && LocalWindowCaption.current != null
-    val filter: @Composable (Modifier, PaddingValues) -> Unit = { modifier, padding ->
-        // 四类按钮等宽铺满：各按内容定宽时挤在左边、宽窄不一，右边空出一截，连体按钮看着像没摆完
-        KindFilter(
-            current = state.filter,
-            counts = state.counts,
-            onChange = state::changeFilter,
-            modifier = modifier,
-            contentPadding = padding,
-            itemPadding = 8.dp,
-            fillWidth = true,
-        )
-    }
     Column(
         Modifier
             .fillMaxWidth()
@@ -266,7 +250,7 @@ private fun CompactTransfersHeader(
             .then(caption.modifier)
             .windowInsetsPadding(TopAppBarDefaults.windowInsets),
     ) {
-        val filterInline = showFilter && !filterBelow
+        val filterInline = showFilter
         // 标题（与同一行的筛选）、操作与窗口按钮交给 AdaptiveBar 排：操作放不下时收进「更多」，不挤标题与筛选
         AdaptiveBar(
             modifier = Modifier
@@ -281,75 +265,48 @@ private fun CompactTransfersHeader(
             middle = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = "传输",
+                        text = "任务",
                         style = MaterialTheme.typography.titleLargeEmphasized,
                         maxLines = 1,
                         modifier = if (caption.atTop) Modifier.windowDragArea() else Modifier,
                     )
                     Spacer(Modifier.width(12.dp))
                     if (filterInline) {
-                        filter(Modifier.weight(1f), PaddingValues(end = 8.dp))
+                        CompactKindFilter(state)
+                        Spacer(Modifier.weight(1f))
                     } else {
                         // 标题与操作之间的空白，标题栏并进内容时是拖动区
                         Spacer(Modifier.weight(1f).height(40.dp).then(if (caption.atTop) Modifier.windowDragArea() else Modifier))
                     }
                 }
             },
-            // 筛选在同一行时四个按钮要放得下名字与数目，操作先让位
+            // 类型菜单与标题优先保留，操作放不下时进入更多菜单。
             middleMinWidth = if (filterInline) InlineFilterMinWidth else 96.dp,
             reserveMiddle = true,
             fillMiddle = true,
             end = caption.buttons,
             dragWindow = caption.atTop,
         )
-        if (filterBelow) filter(Modifier, PaddingValues(start = 16.dp, end = 16.dp, bottom = 8.dp))
     }
 }
 
-/**
- * 类型筛选，M3 连体按钮。某一类为空时照样列出、数目为 0：按钮随任务出现消失的话，一行的位置老在变。
- * 形状不随按下与选中变：库里的连体按钮在几种形状间用弹簧过渡，内侧小圆角冲过头算出负值，
- * CornerBasedShape 直接抛异常（网盘页的视图按钮实测崩过）。
- */
+/** 紧凑窗口用类型菜单，避免把所有类别挤在标题旁。空类别保留在菜单中。 */
 @Composable
-private fun KindFilter(
-    current: TransferKind,
-    counts: Map<TransferKind, Int>,
-    onChange: (TransferKind) -> Unit,
-    modifier: Modifier = Modifier,
-    contentPadding: PaddingValues = PaddingValues(),
-    /** 每个按钮两侧的内边距。手机上与标题挤在一行，收窄一些。 */
-    itemPadding: Dp = 16.dp,
-    /** 为 true 时各按钮等宽铺满可用宽度，不滚动；否则按内容定宽，放不下时横向滚动。 */
-    fillWidth: Boolean = false,
-) {
-    val kinds = TransferKind.entries
-    val scroll = rememberScrollState()
-    Row(
-        modifier = if (fillWidth) {
-            modifier.fillMaxWidth().padding(contentPadding)
-        } else {
-            modifier.verticalWheelScrollsRow(scroll).horizontalScroll(scroll).padding(contentPadding)
-        },
-        horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
-    ) {
-        kinds.forEachIndexed { index, kind ->
-            ToggleButton(
-                checked = kind == current,
-                onCheckedChange = { if (kind != current) onChange(kind) },
-                shapes = connectedToggleShapes(index, kinds.size),
-                contentPadding = PaddingValues(horizontal = itemPadding),
-                modifier = if (fillWidth) Modifier.weight(1f) else Modifier,
-            ) {
-                FilterLabel(kind.label, counts[kind] ?: 0)
+private fun CompactKindFilter(state: TransfersState) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        TextButton(onClick = { expanded = true }) {
+            Text("${state.filter.label} ${state.counts[state.filter] ?: 0}", maxLines = 1)
+            Icon(Icons.Outlined.ExpandMore, contentDescription = "筛选任务类型", modifier = Modifier.size(20.dp))
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            TransferKind.entries.forEach { kind ->
+                DropdownMenuItem(
+                    text = { Text("${kind.label} ${state.counts[kind] ?: 0}") },
+                    leadingIcon = { Icon(kind.icon, contentDescription = null) },
+                    onClick = { expanded = false; state.changeFilter(kind) },
+                )
             }
         }
     }
-}
-
-@Composable
-private fun RowScope.FilterLabel(label: String, count: Int) {
-    Text(label, maxLines = 1)
-    Spacer(Modifier.width(6.dp))
-    Text(count.toString(), style = MaterialTheme.typography.labelMedium, maxLines = 1)
 }

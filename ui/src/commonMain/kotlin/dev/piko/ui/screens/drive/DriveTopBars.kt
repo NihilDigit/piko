@@ -103,9 +103,11 @@ internal fun DriveSelectionTopBar(
     // 以下为 null 的不画：眼下做不了的不摆，规则见 DriveCommands.kt
     onSelectAll: (() -> Unit)?,
     download: SheetAction?,
+    downloadAtQuality: SheetAction?,
     moveTo: SheetAction?,
     copyTo: SheetAction?,
     trash: SheetAction?,
+    trashEnabled: Boolean = true,
     extract: SheetAction?,
     share: SheetAction?,
     batchRename: SheetAction?,
@@ -134,9 +136,9 @@ internal fun DriveSelectionTopBar(
             restoreFromVault?.let { add(it.asBarItem(priority = 45)) }
             moveTo?.let { add(it.asBarItem(priority = 60)) }
             copyTo?.let { add(it.asBarItem(priority = 50)) }
-            trash?.let { add(it.asBarItem(priority = 70, shortcut = shortcutModifier.trashLabel)) }
+            trash?.let { add(it.asBarItem(priority = 70, shortcut = shortcutModifier.trashLabel, enabled = trashEnabled)) }
         },
-        moreActions = listOfNotNull(canonicalName, vault),
+        moreActions = listOfNotNull(downloadAtQuality, canonicalName, vault),
     )
 }
 

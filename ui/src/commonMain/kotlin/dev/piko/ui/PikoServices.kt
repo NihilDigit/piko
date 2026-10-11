@@ -61,7 +61,7 @@ class PikoServices(
     val mediaRepository: PikoMediaRepository,
     uploadSources: PikoUploadSources,
     /** 记下的文件夹内容跨进程保留在这里，见 FolderContentMemory。 */
-    cacheStore: PikoCacheStore? = null,
+    internal val cacheStore: PikoCacheStore? = null,
     /** 压缩包密码同步进网盘前的加密，两端都传 JvmSyncCipher；为 null 时不同步它们（截图环境）。 */
     syncCipher: SyncCipher? = null,
     /** 用户自己部署的 MetaTube，两端传入；为 null 时设置里没有刮削一组（截图环境）。 */
@@ -75,15 +75,48 @@ class PikoServices(
         cacheStore?.let { AccountScopedPreferences(platformPreferences, clientManager, it) } ?: platformPreferences
 
     val driveRepository: DriveRepository = DriveRepository(clientManager, preferences, cacheStore)
+    internal val presentationStores = dev.piko.ui.workbench.AccountPresentationStores()
+    val fileExecutionScopes = dev.piko.shared.state.AccountExecutionScopes(
+        driveRepository, CoroutineScope(backgroundScope.coroutineContext + Dispatchers.Main.immediate),
+    )
+    val fileWrites = dev.piko.shared.state.FileWriteSession(
+        driveRepository, CoroutineScope(backgroundScope.coroutineContext + Dispatchers.Main.immediate),
+    )
+    val historyEdits = dev.piko.shared.state.HistoryEditSession(
+        driveRepository, CoroutineScope(backgroundScope.coroutineContext + Dispatchers.Main.immediate),
+    )
+    val vaultEntryEdits = dev.piko.shared.state.VaultEntryEditSession(
+        driveRepository, CoroutineScope(backgroundScope.coroutineContext + Dispatchers.Main.immediate),
+    )
+    val shareSaves = dev.piko.shared.state.ShareSaveSession(
+        driveRepository, CoroutineScope(backgroundScope.coroutineContext + Dispatchers.Main.immediate),
+    )
+    val driveWorkspace by lazy { dev.piko.shared.presentation.DriveWorkspace(driveRepository, cacheStore, backgroundScope) }
+    internal val saveTargets = dev.piko.shared.state.SaveTargetBinding({ driveRepository.currentAccount }, driveRepository.accountChanges)
+    private val _openDriveRequested = MutableStateFlow(false)
+    val openDriveRequested: StateFlow<Boolean> = _openDriveRequested.asStateFlow()
+    fun requestOpenDrive() {
+        _openDriveRequested.value = true
+        driveRepository.applyChange(dev.piko.shared.data.DriveChange.ContentsChanged(null))
+    }
+    fun consumeOpenDriveRequest() { _openDriveRequested.value = false }
+    class FileHighlightRequest internal constructor(val account: String, val ids: Set<String>)
+    private val _fileHighlightRequested = MutableStateFlow<FileHighlightRequest?>(null)
+    val fileHighlightRequested: StateFlow<FileHighlightRequest?> = _fileHighlightRequested.asStateFlow()
+    fun requestFileHighlight(ids: Set<String>) {
+        val account = driveRepository.currentAccount ?: return
+        _fileHighlightRequested.value = FileHighlightRequest(account, ids.toSet())
+    }
+    fun consumeFileHighlight(request: FileHighlightRequest) { _fileHighlightRequested.compareAndSet(request, null) }
     val accountRepository: PikoAccountRepository = PikoAccountRepository(clientManager, driveRepository, backgroundScope)
     val instantMagnetRepository: InstantMagnetRepository = InstantMagnetRepository(clientManager)
-    val taskRepository: TaskRepository = TaskRepository(clientManager, driveRepository)
+    val taskRepository: TaskRepository = TaskRepository(clientManager, driveRepository, instantMagnetRepository)
 
     val previewTempFolder = PreviewTempFolder(clientManager, driveRepository, instantMagnetRepository, backgroundScope)
 
     init {
         // 打开归档条目时借的对象放进 Piko-Temp：取到直链就删，偶有删不掉的也随 Piko-Temp 一起清走
-        mediaRepository.leaseFolder = { previewTempFolder.folderId().getOrThrow() }
+        mediaRepository.leaseFolder = { owner -> previewTempFolder.folderId(owner).getOrThrow() }
     }
 
     val vaultStore: VaultStore get() = driveRepository.vault
@@ -113,6 +146,7 @@ class PikoServices(
     val uploadManager = PikoUploadCoordinator(clientManager, preferences, uploadSources, driveRepository, backgroundScope)
 
     val instantSaveRecords = InstantSaveRecords(clientManager, cacheStore, backgroundScope)
+    val receivingActivity by lazy { dev.piko.shared.presentation.ReceivingActivity(instantSaveRecords, uploadManager, instantMagnetRepository.offlineSubmissions, archiveExtractSession, offlinePacks, backgroundScope) }
 
     val instantSession: InstantSession by lazy {
         InstantSession(
@@ -127,18 +161,26 @@ class PikoServices(
                     instantSaveRecords,
                     scope,
                     magnet,
+                    saveTargetContext = saveTargets.context,
+                    shareSaves = shareSaves,
                 )
             },
         )
     }
 
+    val addLink by lazy { dev.piko.shared.presentation.AddLinkViewModel(instantSession) }
+
     /** 下载片段的面板收起后选好的区间还在，见 [SegmentSession]。 */
     val segmentSession: SegmentSession by lazy { SegmentSession() }
+
+    val trashSession by lazy {
+        dev.piko.shared.state.TrashSession(driveRepository, CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate))
+    }
 
     val duplicateSession: DuplicateSession by lazy {
         DuplicateSession(
             newScope = { CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate) },
-            newState = { scope, root -> DuplicateFinderState(clientManager, driveRepository, scope, root) },
+            newState = { scope, root -> DuplicateFinderState(clientManager, driveRepository, scope, root, trashSession) },
         )
     }
 
@@ -154,16 +196,21 @@ class PikoServices(
 
     // 网盘页重建后，进过的压缩包的密码与列过的层还在，见 ArchiveBrowser
     val archiveBrowser: ArchiveBrowser by lazy {
-        ArchiveBrowser(clientManager, archivePasswords, scratchFolder = { previewTempFolder.folderId() })
+        ArchiveBrowser(clientManager, archivePasswords, scratchFolder = { owner -> previewTempFolder.folderId(owner) })
     }
 
     // 主线程且与进程同寿：离开网盘页后归档仍要继续
     val folderVaultSession: FolderVaultSession by lazy {
-        FolderVaultSession(driveRepository, CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate))
+        FolderVaultSession(driveRepository, CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)).also { session ->
+            session.conflictReason = { targets ->
+                val commands = dev.piko.shared.presentation.FileCommands(driveRepository, fileWrites, cleanup = trashSession, vault = session, vaultEdits = vaultEntryEdits, shareSaves = shareSaves, receiving = receivingActivity)
+                (commands.vaultAvailability(targets) as? dev.piko.shared.presentation.ActionAvailability.Blocked)?.reason
+            }
+        }
     }
 
     // 点进行中的系统通知要看传输页。应用可能正冷启动、还没登录，所以是待办而不是事件，由主界面组合时取走，
-    // 同 driveRepository.openDriveRequested
+    // 外部通知要求打开任务页，主界面出现后再消费。
     private val _openTransfersRequested = MutableStateFlow(false)
     val openTransfersRequested: StateFlow<Boolean> = _openTransfersRequested.asStateFlow()
 
@@ -194,7 +241,17 @@ class PikoServices(
         // 主线程上当场结束，会话的状态只在主线程上改
         CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).launchOnAccountLeave(clientManager) { left ->
             PikoLog.i(TAG, "${if (clientManager.currentClient.value == null) "退出登录" else "换号"}：结束上一账号的进程级会话")
-            instantSession.end()
+            presentationStores.leave(left)
+            fileWrites.clear(left)
+            historyEdits.clear(left)
+            vaultEntryEdits.clear(left)
+            instantSaveRecords.clearAttempts(left)
+            shareSaves.clear(left)
+            instantMagnetRepository.offlineSubmissions.clear(left)
+            driveRepository.enterAccount(clientManager.currentClient.value?.account)
+            _fileHighlightRequested.value?.takeIf { it.account == left }?.let(::consumeFileHighlight)
+            instantSession.clear()
+            trashSession.clear()
             duplicateSession.end()
             archiveExtractSession.clear()
             archiveBrowser.clear()
@@ -208,7 +265,7 @@ class PikoServices(
                 if (client == null) return@collectLatest
                 // 上次进程被杀时面板来不及清 Piko-Temp，登录后补上。每个账号只清一次：断线重连
                 // 也会换一个新的 client，那时面板可能正开着，预览的文件还要用
-                if (cleanedAccounts.add(client.account)) previewTempFolder.clear().logFailure(TAG, "登录后清理 Piko-Temp 失败")
+                if (cleanedAccounts.add(client.account)) previewTempFolder.clear(client).logFailure(TAG, "登录后清理 Piko-Temp 失败")
                 // 换号或退出登录时 collectLatest 取消它，换成新账号的记录重来
                 offlinePacks.run(client.account)
             }

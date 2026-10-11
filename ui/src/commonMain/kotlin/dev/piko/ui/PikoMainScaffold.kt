@@ -6,10 +6,9 @@ import dev.piko.ui.workbench.ShortcutsDialog
 import dev.piko.ui.workbench.ClaimDialog
 import dev.piko.ui.workbench.LocalTaskSlot
 import dev.piko.ui.workbench.TaskSlot
+import dev.piko.ui.workbench.LocalFileWorkspace
 import androidx.compose.runtime.SideEffect
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.snapshotFlow
-import dev.piko.ui.workbench.FloatingTasks
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.foundation.layout.fillMaxWidth
 import dev.piko.ui.workbench.SidebarTransferReadout
@@ -87,6 +86,7 @@ import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.SyncAlt
 import androidx.compose.material3.Badge
 import androidx.compose.material3.Icon
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.adaptive.ExperimentalMaterial3AdaptiveApi
@@ -106,6 +106,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.runtime.key
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.backhandler.BackHandler
@@ -140,6 +143,11 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation3.runtime.NavKey
 import androidx.navigation3.runtime.entryProvider
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.navigationBarsPadding
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.filter
 import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.ui.NavDisplay
 import androidx.savedstate.serialization.SavedStateConfiguration
@@ -212,7 +220,6 @@ import dev.piko.ui.workbench.LocatingOverlay
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
-import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.first
@@ -274,6 +281,8 @@ private val NavKeyConfiguration = SavedStateConfiguration {
             subclass(Screen.Home::class)
             subclass(Screen.Profile::class)
             subclass(Screen.MyShares::class)
+            subclass(Screen.Library::class)
+            subclass(Screen.Browse::class)
             subclass(Screen.Settings::class)
             subclass(Screen.WebDav::class)
             subclass(Screen.VideoPlayer::class)
@@ -293,17 +302,49 @@ private val NavKeyConfiguration = SavedStateConfiguration {
 @OptIn(ExperimentalMaterial3AdaptiveApi::class)
 @Composable
 fun PikoMainScaffold(
+    account: String,
     onLogout: () -> Unit,
     videoPlayer: VideoPlayerHost,
     modifier: Modifier = Modifier,
 ) {
     val services = LocalPikoServices.current
+    if (services.driveRepository.currentAccount != account) return
+    val coroutineScope = rememberCoroutineScope()
+    val desktop = isDesktopLayout()
     val localFiles = LocalPikoPlatform.current.localFiles
     val shortcutModifier = LocalPikoPlatform.current.shortcutModifier
-    var currentTab by rememberSaveable { mutableStateOf(MainTab.FILES) }
-    val backStack = rememberNavBackStack(NavKeyConfiguration, Screen.Home)
+    val presentationOwner = remember(services, account, services.presentationStores.generation) {
+        services.presentationStores.forAccount(account)
+    }
+    val workspaceModel = viewModel<dev.piko.ui.workbench.WorkspaceViewModel>(
+        viewModelStoreOwner = presentationOwner,
+        key = if (desktop) "desktop-workspace" else "mobile-workspace",
+    ) { dev.piko.ui.workbench.WorkspaceViewModel(services, account, desktop) }
+    val fileWorkspace = workspaceModel.fileWorkspace
+    val desktopWorkspace = workspaceModel.desktopWorkspace
+    var currentTab by rememberSaveable { mutableStateOf(workspaceModel.lastMainTab) }
+    val backStack = rememberNavBackStack(NavKeyConfiguration, *workspaceModel.lastNavigation.toTypedArray())
+    val activeFileTab = desktopWorkspace?.let { workspace ->
+        val active by workspace.activeTabId.collectAsStateWithLifecycle()
+        active
+    }
+    val fileBrowser = workspaceModel.mainBrowser(activeFileTab)
+    val fileUiStates = rememberSaveableStateHolder()
+    desktopWorkspace?.let { workspace ->
+        val tabs by workspace.tabsFlow.collectAsStateWithLifecycle()
+        LaunchedEffect(tabs.map { it.id }) {
+            requireNotNull(workspaceModel.tabs).retainTabs(tabs.mapTo(HashSet()) { it.id }).forEach(fileUiStates::removeState)
+        }
+    }
+    LaunchedEffect(backStack.toList()) {
+        workspaceModel.retainPages(backStack.filterIsInstance<Screen>())
+    }
+    SideEffect { workspaceModel.rememberNavigation(backStack.filterIsInstance<Screen>(), currentTab) }
+    fun pushLibrary(library: DriveLibrary) {
+        if ((backStack.lastOrNull() as? Screen.Library)?.libraryId == library.id) return
+        backStack.add(Screen.Library(library.id, kotlin.random.Random.nextLong()))
+    }
     val widthClass = currentWidthClass()
-    val coroutineScope = rememberCoroutineScope()
     // 窄窗口里同一时刻只做一件占位置的事，再开一件先确认结束眼前的，见 TaskSlot
     val taskSlot = remember { TaskSlot() }
 
@@ -313,7 +354,6 @@ fun PikoMainScaffold(
     // 桌面任何宽度都是一整条侧边栏：上面是去处，下面是网盘的快捷访问与库，照 Finder 的边栏与资源管理器的导航窗格。
     // 移动端是底部导航栏，宽了换成 Rail，三项与底栏相同，见 FormFactor。
     // 侧边栏在返回栈外面，打开设置、我的分享时不被盖住
-    val desktop = isDesktopLayout()
     val windowWidth = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.width.toDp() }
     val sidebarWindow = desktop
     // 只用于移动端横握时收起系统栏
@@ -329,6 +369,10 @@ fun PikoMainScaffold(
     // 与导航栏里「我的」一模一样的页面
     fun popBack() {
         val popped = backStack.removeLastOrNull()
+        workspaceModel.feed.returningFrom(popped as? Screen)?.let {
+            fileWorkspace.returnTo(it)
+            currentTab = MainTab.FILES
+        }
         if (popped in ProfilePanes && backStack.lastOrNull() == Screen.Profile) backStack.removeLastOrNull()
         if (backStack.isEmpty()) backStack.add(Screen.Home)
     }
@@ -360,12 +404,19 @@ fun PikoMainScaffold(
         }
     }
 
-    val openDriveRequested by services.driveRepository.openDriveRequested.collectAsStateWithLifecycle()
+    val openDriveRequested by services.openDriveRequested.collectAsStateWithLifecycle()
+    val fileHighlightRequested by services.fileHighlightRequested.collectAsStateWithLifecycle()
+    LaunchedEffect(fileHighlightRequested) {
+        val request = fileHighlightRequested ?: return@LaunchedEffect
+        if (request.account != account || services.driveRepository.currentAccount != account) return@LaunchedEffect
+        fileWorkspace.requestHighlight(request.ids)
+        services.consumeFileHighlight(request)
+    }
     LaunchedEffect(openDriveRequested) {
         if (openDriveRequested) {
             currentTab = MainTab.FILES
             resetToHome()
-            services.driveRepository.consumeOpenDriveRequest()
+            services.consumeOpenDriveRequest()
         }
     }
 
@@ -379,7 +430,9 @@ fun PikoMainScaffold(
     // 订阅调度器而不是在各上传入口各跳一次：应用外进来的上传在主界面之外确认，
     // 而且要等任务真的排进队列，所选文件读不出来时只该有一条失败提示
     LaunchedEffect(services.uploadManager) {
-        services.uploadManager.enqueued.collect { openTransfers() }
+        services.uploadManager.enqueued.collect { event ->
+            if (event.account == services.driveRepository.currentAccount) openTransfers()
+        }
     }
 
     val openTransfersRequested by services.openTransfersRequested.collectAsStateWithLifecycle()
@@ -411,7 +464,7 @@ fun PikoMainScaffold(
      * 用户取消时返回 null。
      */
     suspend fun lookUpPath(fileId: String): Result<List<PikoPathBreadcrumb>>? {
-        val lookup = coroutineScope.async { services.driveRepository.locateFolder(fileId) }
+        val lookup = workspaceModel.lookupPath(fileId)
         pathLookup = lookup
         return try {
             lookup.await()
@@ -426,39 +479,28 @@ fun PikoMainScaffold(
     }
 
     /**
-     * 从别的页跳进网盘的 [stack]，[then] 是跳过去之后的一步（标出某一项）。窄窗口里会结束查找重复的先问，
-     * 问的是整个动作：取消就留在原来的页面，确认才切页、换栈并做完 [then]，见 PikoDriveRepository.navigateThen。
+     * 从别的页跳进主文件工作区，[then] 是跳过去之后的一步。普通导航不结束查重或其他业务会话。
      * 先设好栈再切页：网盘页重新组合时直接加载栈顶目录。
      */
-    fun goToDrive(stack: List<PikoPathBreadcrumb>, then: () -> Unit = {}) = services.driveRepository.navigateThen(stack) {
-        services.driveRepository.updateFolderStack(stack)
-        then()
-        resetToHome()
-        currentTab = MainTab.FILES
+    fun goToDrive(stack: List<PikoPathBreadcrumb>, then: () -> Unit = {}) {
+        if (services.driveRepository.currentAccount != account) return
+        fileWorkspace.navigateThen(stack) {
+            if (services.driveRepository.currentAccount != account) return@navigateThen
+            fileWorkspace.updateFolderStack(stack)
+            then()
+            resetToHome()
+            currentTab = MainTab.FILES
+        }
     }
 
     fun showInDrive(stack: List<PikoPathBreadcrumb>, fileId: String) = goToDrive(stack) {
-        services.driveRepository.requestHighlight(setOf(fileId))
+        fileWorkspace.requestHighlight(setOf(fileId))
     }
 
-    /**
-     * 打开一个库，照开关的用法：人已停在这个库里时再点一下是关掉它，退回打开之前的位置；
-     * 没有可退的（启动时就恢复在库里）回到网盘根目录。人在库里的子文件夹时点它回到库本身。
-     */
+    /** 侧边栏再次点击当前资料页时返回来源页，其余入口正常压栈。 */
     fun toggleLibrary(library: DriveLibrary) {
-        val driveRepo = services.driveRepository
-        val stack = driveRepo.folderStackFlow.value
-        val showing = onHome && currentTab == MainTab.FILES && stack.singleOrNull()?.id == library.id
-        // 先按要去的地方问一声，取消时连切页也不发生，见 goToDrive
-        val next = if (showing) driveRepo.historyFlow.value.back.lastOrNull() ?: listOf(PikoDriveRepository.ROOT_BREADCRUMB) else listOf(library.crumb)
-        driveRepo.navigateThen(next) {
-            resetToHome()
-            currentTab = MainTab.FILES
-            when {
-                !showing -> driveRepo.updateFolderStack(listOf(library.crumb))
-                !driveRepo.goBack() -> driveRepo.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB))
-            }
-        }
+        if ((backStack.lastOrNull() as? Screen.Library)?.libraryId == library.id) popBack()
+        else pushLibrary(library)
     }
 
     /**
@@ -467,7 +509,8 @@ fun PikoMainScaffold(
      */
     suspend fun revealInDrive(fileId: String): Boolean {
         val stack = (lookUpPath(fileId) ?: return true).getOrElse { return false }
-        showInDrive(stack, fileId)
+        if (services.driveRepository.currentAccount != account) return true
+        backStack.add(Screen.Browse(stack.map { it.id to it.name }, fileId, kotlin.random.Random.nextLong()))
         return true
     }
 
@@ -509,7 +552,7 @@ fun PikoMainScaffold(
     val panelFits = contentWidth != null && desktop && sidePanelFits(contentWidth, ClipPanelMinWidth)
     // null 是还没量出内容区宽度。上次开着侧栏退出的，只在这回仍放得下侧栏时照样打开；
     // 放不下就是全屏形态，窄窗口一启动就开始播不是谁想要的
-    var feedShownState by rememberSaveable { mutableStateOf<Boolean?>(null) }
+    var feedShownState by workspaceModel.feed::shown
     // 换号后重建时不照开关打开：开关不分账号，见 ClipFeedSession.reopensFor
     LaunchedEffect(contentWidth != null) {
         if (feedShownState == null && contentWidth != null) {
@@ -523,33 +566,30 @@ fun PikoMainScaffold(
     val feedPoppedOut = detachedHost?.isClipFeedOpen?.invoke() == true
     // 从信息流跳去网盘看一个文件时记下的出发点。不为 null 时信息流挂起：队列与看到哪一段都留着，应用内不画它，
     // 网盘里留一个「继续刷」；这期间的浏览是临时的，继续刷就整段丢掉、回到这里，见 resumeFeed
-    var feedDetour by remember { mutableStateOf<PikoDriveRepository.DriveLocation?>(null) }
+    var feedDetour by workspaceModel.feed::returnLocation
     val feedSuspended = feedShown && feedDetour != null
     // 有标签栏时，从信息流跳出来的浏览开在单独的一个标签里，见 locateFromFeed。「继续刷」只切回原来的标签，
     // 不关它：原来的标签没被碰过，关掉它还原不了什么，只会把刚才在看的丢掉；下次跳出来仍用它，始终只有这一个
-    var feedDetourTab by remember { mutableStateOf<Long?>(null) }
+    var feedDetourTab by workspaceModel.feed::detourTab
     // 头一次 open 完成前会话里是空的，此时组合 ClipFeedScreen 会闪一下「没有可播放的视频」
-    var feedOpened by remember { mutableStateOf(false) }
+    val feedOpened by workspaceModel.feed::opened
     // 关掉信息流连同它的窗口一起关：开关是它唯一的总开关，不管它此刻在哪一处。
     // 关掉才清空队列；挂起着关掉的，这期间的临时浏览就此留下，成为寻常的浏览
     fun setFeedShown(shown: Boolean) {
         feedShownState = shown
+        if (shown) workspaceModel.feed.prepare(snapshotFlow { fileBrowser.initialized })
         if (!shown) {
             if (feedPoppedOut) detachedHost?.closeClipFeed?.invoke()
-            feedDetour = null
-            // 标签留下，成了寻常的标签
-            feedDetourTab = null
-            feedOpened = false
-            clipFeedSession.close()
+            workspaceModel.feed.close()
         }
         coroutineScope.launch { preferences.setClipPanelOpen(shown) }
     }
     val feedOnFilesTab = feedShown && !feedSuspended && !feedPoppedOut && currentTab == MainTab.FILES
     // 右栏同一时刻只放一样：信息流或添加链接，不做标签切换。添加链接挤得走信息流（信息流挂起让位，见下面
     // suspendFeed 那一处），信息流挤不走添加链接（「信息流」入口置灰）：添加链接是有未完成工作的任务，信息流只是浏览。
-    // 添加链接收成右下角的浮动卡片后右栏就空出来了，信息流照常打开
-    val instantSession = services.instantSession
-    val addLinkDocked = panelFits && instantSession.state != null && instantSession.isSheetOpen
+    // 添加链接收起后空出右栏，草稿从任务页或添加链接入口恢复。
+    val addLinkViewModel = services.addLink
+    val addLinkDocked = panelFits && addLinkViewModel.state != null && addLinkViewModel.isExpanded
     val feedBlockedReason = if (addLinkDocked) "添加链接进行中，关闭后可打开信息流" else null
     val feedInPanel = feedOnFilesTab && panelFits && !addLinkDocked
     val feedFullScreen = feedOnFilesTab && !panelFits
@@ -569,21 +609,23 @@ fun PikoMainScaffold(
     }
 
     // 信息流刷的是打开时网盘页所在的文件夹，连同子文件夹
-    val folderStack by services.driveRepository.folderStackFlow.collectAsStateWithLifecycle()
+    val folderStack by fileWorkspace.folderStackFlow.collectAsStateWithLifecycle()
     // 浮着的侧边栏里点快速访问或库，换的只是文件夹，不经上面那几个键
     LaunchedEffect(folderStack) { sidebarFloatRequested = false }
-    val quickAccess =remember { QuickAccessState(services.driveRepository, services.clientManager, coroutineScope) }
+    val quickAccess = remember(fileWorkspace) {
+        QuickAccessState(services.driveRepository, services.clientManager, coroutineScope) { stack ->
+            desktopWorkspace?.openTab(stack, activate = false)
+        }
+    }
     val pinnedFolders by quickAccess.pinnedFolders.collectAsStateWithLifecycle(emptyList())
     // 快捷键一览，F1 或主修饰键+/
     var shortcutsOpen by remember { mutableStateOf(false) }
     // 只在打开的那一刻取文件夹：开着时进子文件夹不换掉正在刷的这一批
-    LaunchedEffect(feedShown) {
-        if (!feedShown) return@LaunchedEffect
-        clipFeedSession.open(folderStack.ifEmpty { listOf(PikoDriveRepository.ROOT_BREADCRUMB) })
-        feedOpened = true
+    LaunchedEffect(feedShown, fileBrowser) {
+        if (feedShown) workspaceModel.feed.prepare(snapshotFlow { fileBrowser.initialized })
     }
     // 信息流所在的那块地方里，人最后停在哪：离开时挂起，「继续刷」回到这里
-    var feedHome by remember { mutableStateOf<PikoDriveRepository.DriveLocation?>(null) }
+    var feedHome by workspaceModel.feed::home
 
     /**
      * 信息流挂起，与「在网盘中显示」同一种状态：队列与看到哪一段都留着，应用内不画它，网盘里留一个「继续刷」，
@@ -591,7 +633,7 @@ fun PikoMainScaffold(
      * 离开开始时的文件夹、从信息流跳去网盘看文件、右栏让给添加链接。
      * 独立窗口不挂起，它本来就在旁边，不挡网盘。
      */
-    fun suspendFeed(from: PikoDriveRepository.DriveLocation) {
+    fun suspendFeed(from: dev.piko.shared.presentation.FileLocation) {
         if (!feedShown || !feedOpened || feedDetour != null || feedPoppedOut) return
         feedDetour = from
     }
@@ -599,17 +641,17 @@ fun PikoMainScaffold(
     // 添加链接一停进右栏，信息流就让位挂起；添加链接关掉后不自动回来，命令栏的小圆点提示它还在，点了才继续：
     // 右栏里的东西不自己跳回来。也看弹出窗口：窗口收回主窗口的那一刻信息流要回右栏，右栏若被添加链接占着同样挂起
     LaunchedEffect(addLinkDocked, feedPoppedOut, feedOpened) {
-        if (addLinkDocked) suspendFeed(services.driveRepository.currentLocation())
+        if (addLinkDocked) suspendFeed(fileWorkspace.currentLocation())
     }
 
     // 进它的子文件夹不算离开，路径栈里仍有它。离开时挂起而不是收起：人多半只是去别处看一眼
-    LaunchedEffect(folderStack) {
+    LaunchedEffect(folderStack, feedOpened) {
         val feedRoot = clipFeedSession.root ?: return@LaunchedEffect
         if (!feedShown || feedDetour != null) return@LaunchedEffect
         if (folderStack.any { it.id == feedRoot.id }) {
-            feedHome = services.driveRepository.currentLocation()
+            feedHome = fileWorkspace.currentLocation()
         } else {
-            suspendFeed(feedHome ?: services.driveRepository.currentLocation())
+            suspendFeed(feedHome ?: fileWorkspace.currentLocation())
         }
     }
 
@@ -624,17 +666,25 @@ fun PikoMainScaffold(
      * 有标签栏时临时浏览开在新标签里（[feedDetourTab]），挂起期间再定位就在那个标签里换位置。
      */
     fun locateFromFeed(file: FileStat) {
+        if (services.driveRepository.currentAccount != account) return
         val driveRepo = services.driveRepository
-        val origin = driveRepo.currentLocation()
+        val origin = fileWorkspace.currentLocation()
         coroutineScope.launch {
             val stack = clipFeedSession.pathTo(file.parentId)
                 ?: lookUpPath(file.id)?.getOrNull()
                 ?: return@launch
+            if (services.driveRepository.currentAccount != account) return@launch
             suspendFeed(origin)
-            val detourTab = feedDetourTab?.takeIf { id -> driveRepo.tabsFlow.value.any { it.id == id } }
+            if (!desktop) {
+                val entry = Screen.Browse(stack.map { it.id to it.name }, file.id, kotlin.random.Random.nextLong())
+                workspaceModel.feed.markBrowse(entry)
+                backStack.add(entry)
+                return@launch
+            }
+            val detourTab = feedDetourTab?.takeIf { id -> desktopWorkspace?.tabsFlow?.value?.any { it.id == id } == true }
             when {
-                detourTab != null -> driveRepo.switchTab(detourTab)
-                feedDetour != null && desktop -> feedDetourTab = driveRepo.openTab(stack)
+                detourTab != null -> desktopWorkspace?.switchTab(detourTab)
+                feedDetour != null && desktop -> feedDetourTab = desktopWorkspace?.openTab(stack)
             }
             showInDrive(stack, file.id)
         }
@@ -653,9 +703,8 @@ fun PikoMainScaffold(
 
     /** 继续刷：丢掉临时浏览，连同后退与前进回到出发的地方，信息流从挂起前的那一段接着放。 */
     fun resumeFeed() {
-        val detour = feedDetour ?: return
-        services.driveRepository.returnTo(detour)
-        feedDetour = null
+        val detour = workspaceModel.feed.resume() ?: return
+        fileWorkspace.returnTo(detour)
         resetToHome()
         currentTab = MainTab.FILES
         if (feedPoppedOut) popOutFeed()
@@ -666,47 +715,14 @@ fun PikoMainScaffold(
         taskSlot.exclusive = !desktop
         taskSlot.occupants = listOf(
             TaskSlot.Occupant(TaskSlot.Task.DUPLICATES, "查找重复", "扫描结果不会保存。", { services.duplicateSession.state != null }, services.duplicateSession::end),
-            TaskSlot.Occupant(TaskSlot.Task.ADD_LINK, "添加链接", "尚未保存的链接将被丢弃。", { services.instantSession.state != null }, services.instantSession::end),
-            TaskSlot.Occupant(TaskSlot.Task.FEED, "信息流", "再次打开时将从头开始。", { feedShownState == true && feedDetour != null }) { latestSetFeedShown(false) },
+            TaskSlot.Occupant(
+                TaskSlot.Task.ADD_LINK, "添加链接", "尚未保存的链接将被丢弃。",
+                { services.addLink.state != null }, services.addLink::discard,
+                { services.addLink.replacementAvailability },
+            ),
+            TaskSlot.Occupant(TaskSlot.Task.FEED, "信息流", "再次打开时将从头开始。", { feedShownState == true && feedDetour != null }, end = { latestSetFeedShown(false) }),
         )
     }
-    // 窄窗口里人往查找重复所在的那棵树外走（返回、面包屑、从别处跳进网盘、快速访问、「我的」里的库、命令面板）之前先确认，
-    // 在仓库换栈之前拦下，见 TaskSlot.allowsLeaving。切到别的底部标签不改路径栈，不算离开
-    DisposableEffect(taskSlot) {
-        val driveRepo = services.driveRepository
-        val guard = PikoDriveRepository.LeaveGuard(taskSlot::allowsLeaving)
-        driveRepo.leaveGuard = guard
-        // 有标签栏时会话标签由会话占着，往别处走另开标签，见 PikoDriveRepository.sessionTabHeld
-        val held: (DriveLibrary) -> Boolean = { place ->
-            !taskSlot.exclusive && when (place) {
-                DriveLibrary.DUPLICATES -> services.duplicateSession.state != null
-                else -> false
-            }
-        }
-        driveRepo.sessionTabHeld = held
-        onDispose {
-            // 只撤自己装的：换号时新主界面先建起、装上它的，淡出完的旧主界面才离开组合
-            if (driveRepo.leaveGuard === guard) driveRepo.leaveGuard = null
-            if (driveRepo.sessionTabHeld === held) driveRepo.sessionTabHeld = { false }
-        }
-    }
-    // 不经守卫的换栈（换账号、切标签、信息流的继续刷）离开了那棵树，静默结束。放在这里而不是网盘页：
-    // 切走时网盘页不在组合里，路径栈照样会被改
-    LaunchedEffect(taskSlot) {
-        snapshotFlow { Triple(taskSlot.activePlaceTask(), folderStack, taskSlot.exclusive) }
-            .collect { (task, stack, exclusive) ->
-                // 宽窗口里查找重复在标签上，关标签即结束，不看位置。结束时不清锚点：换起点是先结束旧的、
-                // 再记下新锚点，这里晚一步看到「结束」会把新记的清掉；窄窗口里开始的入口都会重记
-                if (!exclusive) taskSlot.placeTaskAnchor = null
-                if (task == null || !exclusive) return@collect
-                val anchor = taskSlot.placeTaskAnchor
-                when {
-                    anchor == null -> taskSlot.placeTaskAnchor = stack
-                    stack.size < anchor.size || stack.take(anchor.size).map { it.id } != anchor.map { it.id } -> task.end()
-                }
-            }
-    }
-
     @Composable
     fun FeedContent(compact: Boolean, visible: Boolean) {
         when {
@@ -737,17 +753,17 @@ fun PikoMainScaffold(
 
     val feedFrame: @Composable (@Composable () -> Unit) -> Unit = { drive ->
         val addLink = columnShows == SideColumnContent.AddLink
-        val discardAddLink = rememberDiscardAddLink(instantSession)
+        val discardAddLink = rememberDiscardAddLink(addLinkViewModel)
         SidePanelLayout(
             open = columnContent != null,
             // 两者共用一个宽度：同一栏，拖宽一次两样都生效
             savedWidthDp = panelPrefs.widthDp,
             title = if (addLink) "添加链接" else "信息流",
             closeDescription = if (addLink) CollapseAddLinkLabel else "关闭信息流",
-            onClose = { if (addLink) instantSession.collapse() else setFeedShown(false) },
+            onClose = { if (addLink) addLinkViewModel.collapse() else setFeedShown(false) },
             endActions = {
                 // 收起的动画期间会话可能已经结束，那时不再画 ×
-                val addLinkState = instantSession.state
+                val addLinkState = addLinkViewModel.state
                 if (addLink && addLinkState != null) DiscardAddLinkButton(addLinkState, discardAddLink)
             },
             onWidthChange = { coroutineScope.launch { preferences.setClipPanelWidth(it) } },
@@ -774,8 +790,8 @@ fun PikoMainScaffold(
             },
             panel = {
                 when (columnShows) {
-                    SideColumnContent.AddLink -> EscClosesWhenFocused(onClose = instantSession::collapse) {
-                        instantSession.state?.let { state ->
+                    SideColumnContent.AddLink -> EscClosesWhenFocused(onClose = addLinkViewModel::collapse) {
+                        addLinkViewModel.state?.let { state ->
                             DockedAddLink(state, onPreview = { fileId, fileName -> playVideo(FileStat(id = fileId, name = fileName), emptyList()) })
                         }
                     }
@@ -823,32 +839,26 @@ fun PikoMainScaffold(
         val label = shortcutModifier::label
         return listOfNotNull(
             PaletteItem("文件", Icons.Outlined.Folder, "前往", detail = label("1"), keywords = "files drive") { currentTab = MainTab.FILES; resetToHome() },
-            PaletteItem("传输", Icons.Outlined.SyncAlt, "前往", detail = label("2"), keywords = "transfers downloads uploads") { openTransfers() },
+            PaletteItem("任务", Icons.Outlined.SyncAlt, "前往", detail = label("2"), keywords = "tasks transfers downloads uploads") { openTransfers() },
             if (desktop) null else PaletteItem("我的", Icons.Outlined.Person, "前往", detail = label("3"), keywords = "profile me") { currentTab = MainTab.SETTINGS; resetToHome() },
         )
     }
 
     // 库从这里打开时不当开关用：从命令面板与地址栏去一个地方，人已在那里也不该被带走
-    fun openLibrary(library: DriveLibrary, then: () -> Unit = {}) = goToDrive(listOf(library.crumb), then)
+    fun openLibrary(library: DriveLibrary) = pushLibrary(library)
 
-    // 从「我的」打开的库，记下是哪一个：从它退出时回到「我的」，而不是留在网盘里。
-    // 库只是网盘路径栈的第一级，退出时网盘照旧回到打开之前的位置，要补的只有切回哪一页。
-    // 经别的路离开这个库（地址栏、在网盘中显示、侧边栏）或切去别的页，就不再是从「我的」来的那一趟，随即忘掉
-    var libraryFromProfile by rememberSaveable { mutableStateOf<String?>(null) }
-    LaunchedEffect(folderStack) {
-        if (folderStack.firstOrNull()?.id != libraryFromProfile) libraryFromProfile = null
-    }
-    LaunchedEffect(currentTab) {
-        if (currentTab != MainTab.FILES) libraryFromProfile = null
-    }
+    fun openLibraryFromProfile(library: DriveLibrary) = pushLibrary(library)
 
-    // 取消时不记：人还在「我的」里
-    fun openLibraryFromProfile(library: DriveLibrary) = openLibrary(library) { libraryFromProfile = library.id }
-
-    fun onLibraryLeft() {
-        if (libraryFromProfile == null) return
-        libraryFromProfile = null
-        currentTab = MainTab.SETTINGS
+    fun openDuplicateReport() {
+        if (services.driveRepository.currentAccount != account || services.duplicateSession.state == null) return
+        if (desktop) {
+            currentTab = MainTab.FILES
+            resetToHome()
+            val workspace = requireNotNull(desktopWorkspace)
+            val existing = workspace.tabsFlow.value.firstOrNull { it.session == DriveLibrary.DUPLICATES }
+            if (existing != null) workspace.switchTab(existing.id)
+            else workspace.openTab(listOf(DriveLibrary.DUPLICATES.crumb))
+        } else pushLibrary(DriveLibrary.DUPLICATES)
     }
 
     fun libraryDestination(library: DriveLibrary, keywords: String) =
@@ -879,30 +889,44 @@ fun PikoMainScaffold(
             ) { tab ->
                 when (tab) {
                     MainTab.FILES -> {
-                        FilesScreen(
-                            onNavigateToVideoPlayer = { file, playlist -> playVideo(file, playlist) },
-                            scrollToTopRequests = filesScrollToTop,
-                            onOpenTransfers = ::openTransfers,
-                            // 挂起时开关显示为关着，按下即继续刷
-                            feedShown = feedShown && !feedSuspended,
-                            onFeedShownChange = { shown ->
-                                when {
-                                    shown && feedSuspended -> resumeFeed()
-                                    shown -> taskSlot.claim("打开信息流", "打开信息流", TaskSlot.Task.FEED) { setFeedShown(true) }
-                                    else -> setFeedShown(false)
-                                }
-                            },
-                            feedStashed = feedSuspended,
-                            feedBlockedReason = feedBlockedReason,
-                            feedTabId = feedDetourTab,
-                            feedFrame = feedFrame,
-                            // 「文件」就是网盘页自己，地址栏里不列
-                            addressDestinations = tabDestinations().drop(1) + pageDestinations(),
-                            onLibraryLeft = ::onLibraryLeft,
-                        )
+                        key(fileBrowser) {
+                            fileUiStates.SaveableStateProvider(activeFileTab ?: "mobile-files") {
+                                FilesScreen(
+                                    onNavigateToVideoPlayer = { file, playlist -> playVideo(file, playlist) },
+                                    scrollToTopRequests = filesScrollToTop,
+                                    onOpenTransfers = ::openTransfers,
+                                    onOpenDuplicateReport = ::openDuplicateReport,
+                                    // 挂起时开关显示为关着，按下即继续刷
+                                    feedShown = feedShown && !feedSuspended,
+                                    onFeedShownChange = { shown ->
+                                        when {
+                                            shown && feedSuspended -> resumeFeed()
+                                            shown -> taskSlot.claim("打开信息流", "打开信息流", TaskSlot.Task.FEED) { setFeedShown(true) }
+                                            else -> setFeedShown(false)
+                                        }
+                                    },
+                                    feedStashed = feedSuspended,
+                                    feedBlockedReason = feedBlockedReason,
+                                    feedTabId = feedDetourTab,
+                                    feedFrame = feedFrame,
+                                    // 「文件」就是网盘页自己，地址栏里不列
+                                    addressDestinations = tabDestinations().drop(1) + pageDestinations(),
+                                    browserSession = fileBrowser,
+                                    onRevealInDrive = { file -> coroutineScope.launch { revealInDrive(file.id) } },
+                                )
+                            }
+                        }
                     }
                     MainTab.TRANSFERS -> {
                         TransfersScreen(
+                            state = workspaceModel.transfers,
+                            onResumeAddLink = {
+                                taskSlot.claim("继续添加链接", "继续", TaskSlot.Task.ADD_LINK) {
+                                    currentTab = MainTab.FILES
+                                    services.addLink.resume()
+                                }
+                            },
+                            onOpenDuplicateReport = ::openDuplicateReport,
                             scrollToTopRequests = transfersScrollToTop,
                             onNavigateToInstant = {
                                 currentTab = MainTab.FILES
@@ -1017,10 +1041,12 @@ fun PikoMainScaffold(
             taskSlot.claim("添加链接", "添加链接", TaskSlot.Task.ADD_LINK) {
                 currentTab = MainTab.FILES
                 resetToHome()
-                services.instantSession.run { if (state != null) reopen() else start() }
+                services.addLink.run { resume() }
             }
         })
-        add(PaletteItem("撤销", Icons.AutoMirrored.Outlined.Undo, "操作", detail = label("Z"), keywords = "undo") { services.driveRepository.changes.undoLast() })
+        add(PaletteItem("撤销", Icons.AutoMirrored.Outlined.Undo, "操作", detail = label("Z"), keywords = "undo") {
+            if (services.driveRepository.currentAccount == account) taskSlot.requestUndoLast(services.driveRepository.changes, workspaceModel.fileCommands)
+        })
         if (feedSuspended) {
             add(PaletteItem("继续刷信息流", Icons.Outlined.SwipeVertical, "操作", keywords = "feed clips resume", disabledReason = feedBlockedReason) { resumeFeed() })
         }
@@ -1061,16 +1087,135 @@ fun PikoMainScaffold(
     val focusFallback = remember { FocusFallback(shortcutFocus) }
     val rootSnackbar = remember { SnackbarHostState() }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    LaunchedEffect(services.driveRepository, lifecycle) {
+    val duplicateTask = services.duplicateSession.state
+    LaunchedEffect(duplicateTask) {
+        val finder = duplicateTask ?: return@LaunchedEffect
+        if (!finder.isScanning) return@LaunchedEffect
+        snapshotFlow { finder.isScanning }.first { !it }
+        if (services.duplicateSession.state !== finder) return@LaunchedEffect
+        val groups = finder.report.identical.size + finder.report.versions.size
+        val message = when {
+            finder.phase == dev.piko.shared.state.DuplicateFinderState.Phase.FAILED -> "查找重复失败"
+            finder.scanStop != null || finder.failedFolders > 0 -> "部分扫描结果，发现 $groups 组重复文件"
+            groups > 0 -> "发现 $groups 组重复文件"
+            else -> "未发现重复文件"
+        }
+        val result = rootSnackbar.showSnackbar(message, actionLabel = "查看报告", withDismissAction = true)
+        if (result == SnackbarResult.ActionPerformed && services.duplicateSession.state === finder) openDuplicateReport()
+    }
+    LaunchedEffect(services.instantSession, lifecycle, account) {
+        val session = services.instantSession
+        session.pendingCompletions
+            .map { it.firstOrNull() }
+            .distinctUntilChanged()
+            .collect { completion ->
+                if (completion == null) return@collect
+                lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
+                if (session.pendingCompletions.value.none { it.id == completion.id }) return@collect
+                val outcome = completion.outcome
+                val message = when (outcome) {
+                    is dev.piko.shared.state.InstantSaveOutcome.InstantSaved -> "已保存 ${outcome.createdIds.size} 个文件"
+                    is dev.piko.shared.state.InstantSaveOutcome.OfflineTaskCreated -> "已提交云端保存"
+                }
+                val result = rootSnackbar.showSnackbar(message, actionLabel = "查看", withDismissAction = true)
+                if (session.pendingCompletions.value.none { it.id == completion.id }) return@collect
+                session.acknowledgeCompletion(completion.id)
+                if (result == SnackbarResult.ActionPerformed) {
+                    when (outcome) {
+                        is dev.piko.shared.state.InstantSaveOutcome.InstantSaved -> {
+                            resetToHome()
+                            currentTab = MainTab.FILES
+                            fileWorkspace.navigateToFolder(outcome.target)
+                            fileWorkspace.requestHighlight(outcome.createdIds.toSet())
+                        }
+                        is dev.piko.shared.state.InstantSaveOutcome.OfflineTaskCreated -> openTransfers()
+                    }
+                }
+            }
+    }
+    LaunchedEffect(services.historyEdits, lifecycle, account) {
+        services.historyEdits.outcomes.collect { outcome ->
+            if (outcome.account != services.driveRepository.currentAccount) return@collect
+            lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
+            if (outcome.account != services.driveRepository.currentAccount || services.historyEdits.works.value.none { it.id == outcome.id }) return@collect
+            val answer = rootSnackbar.showSnackbar("${outcome.title}：${outcome.result.message}", actionLabel = "查看任务", withDismissAction = true)
+            if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) openTransfers()
+        }
+    }
+    LaunchedEffect(services.instantSaveRecords, lifecycle, account) {
+        services.instantSaveRecords.outcomes.collect { outcome ->
+            if (outcome.account != services.driveRepository.currentAccount) return@collect
+            lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
+            if (outcome.account != services.driveRepository.currentAccount || services.instantSaveRecords.attempts.value.none { it.id == outcome.id } || services.addLink.isExpanded) return@collect
+            val answer = rootSnackbar.showSnackbar(outcome.message, actionLabel = "查看任务", withDismissAction = true)
+            if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) openTransfers()
+        }
+    }
+    LaunchedEffect(services.uploadManager, lifecycle, account) {
+        services.uploadManager.preparationOutcomes.collect { outcome ->
+            if (outcome.account != services.driveRepository.currentAccount) return@collect
+            lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
+            if (outcome.account != services.driveRepository.currentAccount || services.uploadManager.preparations.value.none { it.id == outcome.id }) return@collect
+            val answer = rootSnackbar.showSnackbar(outcome.result?.message.orEmpty(), actionLabel = "查看任务", withDismissAction = true)
+            if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) openTransfers()
+        }
+    }
+    LaunchedEffect(services.instantMagnetRepository, lifecycle, account) {
+        val submissions = services.instantMagnetRepository.offlineSubmissions
+        submissions.outcomes.collect { outcome ->
+            if (outcome.account != services.driveRepository.currentAccount || outcome.status == dev.piko.shared.state.OfflineSubmitStatus.COMPLETE) return@collect
+            lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
+            if (outcome.account != services.driveRepository.currentAccount || submissions.works.value.none { it.id == outcome.id } || services.addLink.isExpanded) return@collect
+            val answer = rootSnackbar.showSnackbar(outcome.message, actionLabel = "查看任务", withDismissAction = true)
+            if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) openTransfers()
+        }
+    }
+    LaunchedEffect(services.shareSaves, lifecycle, account) {
+        services.shareSaves.outcomes.collect { outcome ->
+            if (outcome.account != services.driveRepository.currentAccount) return@collect
+            if (outcome.result.completion == dev.piko.shared.state.ShareSaveCompletion.SUCCEEDED && services.shareSaves.works.value.firstOrNull { it.id == outcome.id }?.undoChangeIds?.isNotEmpty() == true) return@collect
+            lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
+            if (outcome.account != services.driveRepository.currentAccount || services.shareSaves.works.value.none { it.id == outcome.id } || services.addLink.isExpanded) return@collect
+            val answer = rootSnackbar.showSnackbar(outcome.result.message, actionLabel = "查看任务", withDismissAction = true)
+            if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) openTransfers()
+        }
+    }
+    LaunchedEffect(services.vaultEntryEdits, lifecycle, account) {
+        services.vaultEntryEdits.outcomes.collect { outcome ->
+            if (outcome.account != services.driveRepository.currentAccount) return@collect
+            if (outcome.result.undoChangeIds.isNotEmpty() && outcome.result.completion == dev.piko.shared.state.VaultEntryEditCompletion.SUCCEEDED) return@collect
+            lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
+            if (outcome.account != services.driveRepository.currentAccount || services.vaultEntryEdits.works.value.none { it.id == outcome.id }) return@collect
+            val answer = rootSnackbar.showSnackbar("${outcome.title}：${outcome.result.message}", actionLabel = "查看任务", withDismissAction = true)
+            if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) openTransfers()
+        }
+    }
+    LaunchedEffect(services.fileWrites, lifecycle, account) {
+        services.fileWrites.outcomes.collect { outcome ->
+            if (outcome.account != services.driveRepository.currentAccount) return@collect
+            if (outcome.result.undoChangeIds.isNotEmpty() && outcome.result.completion == dev.piko.shared.state.FileWriteCompletion.SUCCEEDED) return@collect
+            lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
+            if (outcome.account != services.driveRepository.currentAccount || services.fileWrites.works.value.none { it.id == outcome.workId }) return@collect
+            val answer = rootSnackbar.showSnackbar("${outcome.title}：${outcome.result.message}", actionLabel = "查看任务", withDismissAction = true)
+            if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) openTransfers()
+        }
+    }
+    LaunchedEffect(services.driveRepository, lifecycle, account) {
         val changes = services.driveRepository.changes
         showChangeNotices(
-            changes.events,
+            changes.events.filter { it.change !is dev.piko.shared.data.DriveChangeJournal.Change.Trash },
             rootSnackbar,
             awaitVisible = { lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) } },
-            undo = changes::undo,
+            undo = { change ->
+                val result = workspaceModel.fileCommands.undo(change.id)
+                if (result is dev.piko.shared.presentation.FileCommandResult.Rejected) taskSlot.showBlocked("撤销", result.reason)
+            },
+            isCurrent = { event -> services.driveRepository.currentAccount == account &&
+                (event.generation == null || event.generation == changes.state.value.generation) },
         )
     }
     CompositionLocalProvider(
+        LocalFileWorkspace provides fileWorkspace,
         LocalRootSnackbar provides rootSnackbar,
         LocalFileDrag provides fileDrag,
         LocalPaletteRegistry provides palette,
@@ -1139,9 +1284,9 @@ fun PikoMainScaffold(
                     },
                     quickAccess = quickAccess,
                     pinned = pinnedFolders,
-                    folderStack = folderStack,
+                    folderStack = (topScreen as? Screen.Library)?.let { DriveLibrary.of(it.libraryId)?.let { place -> listOf(place.crumb) } } ?: folderStack,
                     onOpenQuickAccess = { stack -> goToDrive(stack) },
-                    selectedPage = selectedPane,
+                    selectedPage = (topScreen as? Screen.Library) ?: selectedPane,
                     onOpenPage = ::openPage,
                     onToggleLibrary = ::toggleLibrary,
                     collapsed = collapsed,
@@ -1178,6 +1323,33 @@ fun PikoMainScaffold(
                             predictivePopTransitionSpec = { _ -> motion.backward() },
                             entryProvider = entryProvider {
                                 entry<Screen.Home> { HomeContent() }
+                                entry<Screen.Browse> { screen ->
+                                    val session = remember(screen, workspaceModel) { workspaceModel.browser(screen) }
+                                    FilesScreen(
+                                        browserSession = session,
+                                        onNavigateToVideoPlayer = { file, playlist -> playVideo(file, playlist) },
+                                        onOpenTransfers = ::openTransfers,
+                                        onOpenDuplicateReport = ::openDuplicateReport,
+                                        onLibraryLeft = ::popBack,
+                                        addressDestinations = tabDestinations() + pageDestinations(),
+                                        onRevealInDrive = { file -> coroutineScope.launch { revealInDrive(file.id) } },
+                                    )
+                                }
+                                entry<Screen.Library> { screen ->
+                                    val library = DriveLibrary.of(screen.libraryId)
+                                    if (library != null) {
+                                        val session = remember(screen, workspaceModel) { workspaceModel.browser(screen) }
+                                        FilesScreen(
+                                            browserSession = session,
+                                            onRevealInDrive = { file -> coroutineScope.launch { revealInDrive(file.id) } },
+                                            onNavigateToVideoPlayer = { file, playlist -> playVideo(file, playlist) },
+                                            onOpenTransfers = ::openTransfers,
+                                            onOpenDuplicateReport = ::openDuplicateReport,
+                                            onLibraryLeft = ::popBack,
+                                            addressDestinations = tabDestinations() + pageDestinations(),
+                                        )
+                                    }
+                                }
                                 // 原来的两栏布局才压这一页，只为恢复旧版存下的返回栈而留着
                                 entry<Screen.Profile> {
                                     ProfileScreen(
@@ -1240,19 +1412,12 @@ fun PikoMainScaffold(
                         }
                     }
                 }
-                // 后台任务的浮动卡片只在桌面。移动端解压与归档的进度在传输页，查重与添加链接在网盘页底部的 sheet 里，一次一件（TaskSlot）
                 if (desktop) {
-                    FloatingTasks(
-                        archive = services.archiveExtractSession,
-                        vault = services.folderVaultSession,
-                        instant = services.instantSession,
-                        modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
-                    )
                     // 窗口窄得放不下右栏时，添加链接退回浮动的侧边面板。只在网盘页上：入口都先切过去，与右栏一致
-                    val instantState = instantSession.state
-                    if (instantState != null && instantSession.isSheetOpen && !addLinkDocked && currentTab == MainTab.FILES && onHome) {
+                    val instantState = addLinkViewModel.state
+                    if (instantState != null && addLinkViewModel.isExpanded && !addLinkDocked && currentTab == MainTab.FILES && onHome) {
                         FloatingAddLinkSheet(
-                            session = instantSession,
+                            session = addLinkViewModel,
                             state = instantState,
                             onPreview = { fileId, fileName -> playVideo(FileStat(id = fileId, name = fileName), emptyList()) },
                         )
@@ -1263,9 +1428,10 @@ fun PikoMainScaffold(
             FileDragOverlay(fileDrag)
             if (shortcutsOpen) ShortcutsDialog(shortcutModifier, onDismiss = { shortcutsOpen = false })
             ClaimDialog(taskSlot)
+            dev.piko.ui.screens.instant.AddLinkBlockedAction(services.addLink)
             // 窗口缩到没有侧边栏时不画：那时设置回到「我的」里，开着的面板随之收起
             if (paletteOpen) {
-                val recent by services.driveRepository.recentFoldersFlow.collectAsStateWithLifecycle()
+                val recent by fileWorkspace.recentFoldersFlow.collectAsStateWithLifecycle()
                 CommandPalette(
                     items = paletteItems(
                         recent = recent,
@@ -1409,7 +1575,7 @@ private fun MainSidebar(
             MainTabSwitch(
                 currentTab = currentTab.takeIf { selectedPage == null },
                 onTabClick = onTabClick,
-                activity = rememberTransferActivity(countsServerWork = false),
+                activity = rememberTransferActivity(),
                 collapsed = collapsed,
             )
             QuickAccessSection(
@@ -1420,7 +1586,7 @@ private fun MainSidebar(
                 onOpen = onOpenQuickAccess,
             )
             SectionLabel("库")
-            val onFilesTab = selectedPage == null && currentTab == MainTab.FILES
+            val onFilesTab = selectedPage is Screen.Library || (selectedPage == null && currentTab == MainTab.FILES)
             for (entry in LibraryEntries) {
                 val library = entry.library
                 SidebarItem(
@@ -1437,12 +1603,12 @@ private fun MainSidebar(
 }
 
 /**
- * 侧边栏顶上的「文件」与「传输」，一组连体按钮。它们是两个去处，下面快速访问里的是文件页里的位置：
+ * 侧边栏顶上的「文件」与「任务」，一组连体按钮。它们是两个去处，下面快速访问里的是文件页里的位置：
  * 做成与列表项同样的两行时，人在某个固定的文件夹里「文件」与那个文件夹同时亮着，看着像选了两处；
  * 做成按钮组，按钮亮表示在哪一页，列表项亮表示在哪个文件夹，两者说的不是一回事。
  *
- * 传输有速度时按钮上写速度（上行、下行取快的那一边），不写「传输」二字；没有速度但有任务在跑时写项数。
- * 蜗牛模式开着时「传输」这一个按钮整个用强调色，有没有传输都是：限速是一直生效的设置，
+ * 任务入口固定保留名称；第二行显示速度或需要关注的项数。
+ * 蜗牛模式开着时「任务」按钮用强调色，有没有传输都是：限速是一直生效的设置，
  * 只在有读数时才显出来的话，没在传的时候看不出它开着。
  *
  * 收起成窄轨时两个去处各是一项图标，速度写在传输图标下面。
@@ -1458,7 +1624,7 @@ private fun MainTabSwitch(currentTab: MainTab?, onTabClick: (MainTab) -> Unit, a
             SidebarItem(
                 icon = tab.icon(false),
                 selectedIcon = tab.icon(true),
-                label = if (snailed) "传输（蜗牛模式）" else tab.title,
+                label = if (snailed) "任务（蜗牛模式）" else tab.title,
                 selected = selected,
                 onClick = { onTabClick(tab) },
                 trailing = if (tab == MainTab.TRANSFERS && activity.hasReadout) {
@@ -1482,23 +1648,18 @@ private fun MainTabSwitch(currentTab: MainTab?, onTabClick: (MainTab) -> Unit, a
                 onCheckedChange = { onTabClick(tab) },
                 shapes = connectedToggleShapes(index, tabs.size),
                 contentPadding = PaddingValues(horizontal = 12.dp),
-                modifier = Modifier.weight(1f).heightIn(min = 44.dp),
+                modifier = Modifier.weight(1f).heightIn(min = if (activity.hasReadout) 60.dp else 44.dp),
             ) {
                 // 按钮选中时底色已是主色，强调色压在上面读不清，沿用按钮自己的文字色
                 val snailed = tab == MainTab.TRANSFERS && snail.enabled && !selected
                 CompositionLocalProvider(LocalContentColor provides if (snailed) MaterialTheme.colorScheme.tertiary else LocalContentColor.current) {
-                    val readout = tab == MainTab.TRANSFERS && activity.hasReadout
-                    // 写着速度时让出图标：半个按钮放不下图标加一串速度，速度前的箭头已表明这是传输。
-                    // 项数短，又没有箭头，图标留着
-                    val showsSpeed = readout && maxOf(activity.downloadSpeed, activity.uploadSpeed) > 0
-                    if (!showsSpeed) {
-                        Icon(tab.icon(selected), contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                    }
-                    if (readout) {
-                        SidebarTransferReadout(activity, checked = selected)
-                    } else {
-                        Text(tab.title, maxLines = 1)
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(tab.icon(selected), contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(tab.title, maxLines = 1)
+                        }
+                        if (tab == MainTab.TRANSFERS && activity.hasReadout) SidebarTransferReadout(activity, checked = selected, compact = true)
                     }
                 }
             }

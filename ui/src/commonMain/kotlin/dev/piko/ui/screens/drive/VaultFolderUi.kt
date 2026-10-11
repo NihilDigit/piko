@@ -80,6 +80,7 @@ internal fun VaultDialog(
     val sourcedOnly = offersSourceChoice && chosen.sourcedOnly
     val files = counted?.let { if (sourcedOnly) it.files - it.unsourcedFiles else it.files } ?: 0
     val bytes = counted?.let { if (sourcedOnly) it.bytes - it.unsourcedBytes else it.bytes } ?: 0L
+    val blocked = session.unavailableReason(target.targets)
     PikoDialog(
         onDismissRequest = onDismiss,
         title = {
@@ -94,6 +95,7 @@ internal fun VaultDialog(
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 VaultDialogHeading(target.name, survey, counted?.files, files, bytes, emptyText = "无可归档的文件")
+                blocked?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 // 原文件放进回收站也一样醒目：清空回收站是常事，人会想「反正有归档」，清空后只剩引用
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
@@ -159,7 +161,7 @@ internal fun VaultDialog(
             PikoDialogConfirm(
                 label = "归档",
                 destructive = !chosen.toTrash,
-                enabled = files > 0 && options != null,
+                enabled = files > 0 && options != null && blocked == null,
                 onClick = {
                     session.archive(target, includeUnsourced = !sourcedOnly, onlyLargeFiles = skipSmallFiles, moveToTrash = chosen.toTrash)
                     onArchive()
@@ -201,12 +203,14 @@ internal fun RestoreVaultFolderDialog(
 ) {
     val survey by produceState<Result<FolderVaultSession.RestoreSurvey>?>(null, folder.id) { value = session.surveyRestore(folder) }
     val counted = survey?.getOrNull()
+    val blocked = session.unavailableReason(dev.piko.shared.state.VaultWorkTargets(roots = setOf(folder.id)))
     PikoDialog(
         onDismissRequest = onDismiss,
         title = { Text("取消归档") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 VaultDialogHeading(folder.name, survey, counted?.entries, counted?.entries ?: 0, counted?.bytes ?: 0L, emptyText = "没有归档的文件")
+                blocked?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 if (counted != null && counted.entries > 0) {
                     val parts = buildList {
                         if (counted.fromTrash > 0) add("${counted.fromTrash} 个从回收站取回")
@@ -228,7 +232,7 @@ internal fun RestoreVaultFolderDialog(
         confirmButton = {
             PikoDialogConfirm(
                 label = "恢复到网盘",
-                enabled = counted != null && counted.entries > 0 && counted.fits,
+                enabled = counted != null && counted.entries > 0 && counted.fits && blocked == null,
                 onClick = {
                     session.restoreFolder(folder)
                     onDismiss()

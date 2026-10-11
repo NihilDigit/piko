@@ -57,7 +57,10 @@ import dev.piko.ui.PikoServices
 import dev.piko.ui.ClipFeedLinks
 import dev.piko.ui.VideoPlayerHost
 import dev.piko.ui.VideoPlayerRequest
-import dev.piko.ui.anyActiveFor
+import dev.piko.ui.backgroundWorkChanges
+import dev.piko.ui.hasBackgroundWork
+import dev.piko.ui.hasDesktopResumeContext
+import dev.piko.ui.desktopSessionChanges
 import dev.piko.ui.workNotices
 import dev.piko.ui.components.LocalAntiDiagonalResizeCursor
 import dev.piko.ui.components.LocalDiagonalResizeCursor
@@ -224,19 +227,19 @@ fun main(args: Array<String>) {
         val downloads by services.downloadManager.tasks.collectAsState()
         val uploads by services.uploadManager.tasks.collectAsState()
         val account = services.clientManager.currentClient.collectAsState().value?.account
-        // 归档与取消归档也算：在写成清单与处置原文件之间退出，原文件与条目会同时留着（见 FolderVaultSession）。
-        // 解压在服务端跑，退出不影响它
-        val hasActiveTransfers = downloads.values.any { it.status.isActive } || uploads.values.anyActiveFor(account) ||
-            services.folderVaultSession.isRunning
-        // 关窗时下载或上传还在跑，就藏进托盘传完再退出；传完之前随时可以从托盘叫回来或直接退出
+        val hasActiveTransfers by remember(services) { services.backgroundWorkChanges() }
+            .collectAsState(initial = services.hasBackgroundWork())
+        val keepSessionAlive by remember(services) { services.desktopSessionChanges() }
+            .collectAsState(initial = services.hasBackgroundWork() || services.hasDesktopResumeContext())
+        // 执行结束但仍有待输入、报告或未知结果时保留托盘，避免自动退出丢失恢复入口。
         var isInBackground by remember { mutableStateOf(false) }
         var isMainWindowFocused by remember { mutableStateOf(true) }
 
         // 主窗口在前台时列表与 Snackbar 已经说明了，不再弹 Toast
         WorkNotifications(services) { isInBackground || !isMainWindowFocused }
 
-        LaunchedEffect(isInBackground, hasActiveTransfers) {
-            if (isInBackground && !hasActiveTransfers) exitApplication()
+        LaunchedEffect(isInBackground, keepSessionAlive) {
+            if (isInBackground && !keepSessionAlive && !services.hasBackgroundWork() && !services.hasDesktopResumeContext()) exitApplication()
         }
         // 更新脚本等本进程退出后才替换文件。下载会被中断，更新对话框已先征得用户同意
         LaunchedEffect(Unit) {
@@ -246,7 +249,7 @@ fun main(args: Array<String>) {
         if (isInBackground) {
             Tray(
                 icon = appIcon ?: BitmapPainter(ImageBitmap(16, 16)),
-                tooltip = backgroundTooltip(downloads.values, uploads.values.filter { it.account == account }),
+                tooltip = if (hasActiveTransfers) backgroundTooltip(downloads.values, uploads.values.filter { it.account == account }) else "Piko：有待处理工作",
                 onAction = { isInBackground = false },
                 menu = {
                     Item("显示 Piko", onClick = { isInBackground = false })
@@ -256,7 +259,7 @@ fun main(args: Array<String>) {
         }
 
         val closeMainWindow = {
-            if (hasActiveTransfers) {
+            if (services.hasBackgroundWork() || services.hasDesktopResumeContext()) {
                 isInBackground = true
                 // Toast 同步等系统结果，不能压在界面线程上
                 Thread {
@@ -266,7 +269,8 @@ fun main(args: Array<String>) {
                         isLinux -> LinuxDesktop.backgroundHint()
                         else -> "可从通知区域图标重新打开"
                     }
-                    showSystemNotification("Piko 在后台继续传输", "传输完成后自动退出，$reopenHint。")
+                    if (services.hasBackgroundWork()) showSystemNotification("Piko 在后台继续处理", "工作完成后自动退出；需你处理的结果会保留，$reopenHint。")
+                    else showSystemNotification("Piko 已保留待处理工作", "重新打开窗口可继续处理，$reopenHint。")
                 }.start()
             } else {
                 exitApplication()
@@ -436,7 +440,7 @@ private fun backgroundTooltip(downloads: Collection<DownloadTask>, uploads: Coll
         transferSummary("下载", activeDownloads.size, activeDownloads.sumOf { it.downloadedBytes }, activeDownloads.sumOf { it.totalBytes }),
         transferSummary("上传", activeUploads.size, activeUploads.sumOf { it.processedBytes }, activeUploads.sumOf { it.size }),
     )
-    return "Piko：" + parts.joinToString("；").ifEmpty { "正在后台传输" }
+    return "Piko：" + parts.joinToString("；").ifEmpty { "正在后台处理" }
 }
 
 private fun transferSummary(verb: String, count: Int, doneBytes: Long, totalBytes: Long): String? = when {

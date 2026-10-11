@@ -13,6 +13,7 @@ import dev.piko.MainActivity
 import dev.piko.ui.PikoServices
 import dev.piko.ui.WorkNotice
 import dev.piko.ui.hasBackgroundWork
+import dev.piko.ui.fileWorkChanges
 import dev.piko.ui.workNotices
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -49,7 +50,8 @@ internal class WorkResultNotifier(
                 snapshotFlow { services.hasBackgroundWork() },
                 services.downloadManager.tasks,
                 services.uploadManager.tasks,
-            ) { _, _, _ -> services.hasBackgroundWork() }
+                services.fileWorkChanges(),
+            ) { _, _, _, _ -> services.hasBackgroundWork() }
             combine(AppVisibility.visible, busy) { visible, working -> !visible && working }
                 .distinctUntilChanged()
                 .collect { needed -> if (needed) PikoDownloadService.start(app) }

@@ -172,7 +172,7 @@ private fun intoAnime(form: Form): List<Step> = open(form, "Frieren") + listOf(S
 
 /** 去传输页。桌面的「传输」按钮有传输时写速度或项数，文本不定，用快捷键。 */
 private fun toTransfers(form: Form): List<Step> =
-    listOf(if (form.desktop) Step.Key("Ctrl+2") else Step.Click("传输"), Step.Pump(1_500))
+    listOf(if (form.desktop) Step.Key("Ctrl+2") else Step.Click("任务"), Step.Pump(1_500))
 
 /** 去库里的一页。桌面在侧边栏，移动端从「我的」进。 */
 private fun toLibrary(form: Form, title: String, mobileRow: String = title): List<Step> =
@@ -800,7 +800,7 @@ private fun run(shot: Shot, finish: (AppScene) -> Unit): Boolean {
         AppScene.open(env, shot.width, shot.height, shot.mode, shot.player, shot.caption, shot.mobile, wrap, shot.waitFor, shot.motion).use { app ->
             shot.highlightName?.let { name ->
                 val file = env.rootFile(name)
-                edt { env.services.driveRepository.requestHighlight(setOf(file.id)) }
+                edt { env.services.requestFileHighlight(setOf(file.id)) }
             }
             shot.initialLink?.let { link -> edt { env.services.instantSession.start(link) } }
             app.changed()

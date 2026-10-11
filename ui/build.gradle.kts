@@ -46,6 +46,7 @@ kotlin {
             // Screen 继承 NavKey，Android 入口把播放器页交进来时要看得到它
             api(libs.androidx.navigation3.runtime)
             implementation(libs.androidx.lifecycle.runtime.compose)
+            implementation(libs.androidx.lifecycle.viewmodel.compose)
             implementation(libs.coil.compose)
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.serialization.json)

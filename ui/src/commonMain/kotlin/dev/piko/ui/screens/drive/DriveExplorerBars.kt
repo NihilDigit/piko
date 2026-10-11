@@ -320,7 +320,7 @@ internal fun ExplorerCommandBar(
         add(barDivider("selectDivider"))
         if (commands.findDuplicates) {
             // FileCopy 与「复制」的 ContentCopy 都是叠放的两张纸，带上文字才不会被认成复制。图标不换，
-            // 查重的标签、库与右下角的卡片都用它
+            // 查重报告与库使用同一会话摘要。
             add(BarItem("findDuplicates", 20, listOf(SheetAction(Icons.Outlined.FileCopy, "查找重复", onFindDuplicates, group = ActionGroup.Select))) {
                 BarTextButton(Icons.Outlined.FileCopy, "查找重复", onFindDuplicates)
             })

@@ -26,17 +26,19 @@ suspend fun showChangeNotices(
     host: SnackbarHostState,
     awaitVisible: suspend () -> Unit,
     undo: (DriveChangeJournal.Change) -> Unit,
+    isCurrent: (DriveChangeJournal.Event) -> Boolean = { true },
 ) {
     events.collect { event ->
+        if (!isCurrent(event)) return@collect
         awaitVisible()
+        if (!isCurrent(event)) return@collect
         val change = event.change
         val result = host.showSnackbar(
             message = event.message,
             actionLabel = if (change != null) "撤销" else null,
             withDismissAction = true,
-            // 停留长一些，好来得及点撤销
-            duration = if (change != null) SnackbarDuration.Long else SnackbarDuration.Short,
+            duration = if (change != null) SnackbarDuration.Indefinite else SnackbarDuration.Short,
         )
-        if (change != null && result == SnackbarResult.ActionPerformed) undo(change)
+        if (change != null && result == SnackbarResult.ActionPerformed && isCurrent(event)) undo(change)
     }
 }

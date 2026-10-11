@@ -16,7 +16,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
-import dev.piko.shared.state.InstantSession
+import dev.piko.shared.presentation.AddLinkViewModel
 import dev.piko.shared.state.InstantSheetState
 import dev.piko.ui.components.PikoDialog
 import dev.piko.ui.components.PikoDialogConfirm
@@ -42,12 +42,12 @@ fun DockedAddLink(state: InstantSheetState, onPreview: (fileId: String, fileName
 }
 
 /**
- * 右栏放不下时的退路：浮动的模态侧边面板。顶上一行与右栏的栏头相同：收起（[InstantSession.collapse]，点遮罩、Esc 同此）
+ * 右栏放不下时的退路：浮动的模态侧边面板。顶上一行与右栏的栏头相同：收起（[AddLinkViewModel.collapse]，点遮罩、Esc 同此）
  * 与放弃（×）。
  */
 @Composable
 fun FloatingAddLinkSheet(
-    session: InstantSession,
+    session: AddLinkViewModel,
     state: InstantSheetState,
     onPreview: (fileId: String, fileName: String) -> Unit,
 ) {
@@ -85,25 +85,38 @@ fun DiscardAddLinkButton(state: InstantSheetState, discard: () -> Unit) {
 
 /**
  * 放弃这一次添加链接（×）。右栏、浮动侧边面板、浮动卡片与手机底部 sheet 的 × 都经这里，确认只写这一处。
- * 人亲手勾过要保存的文件、还没保存时先确认（[InstantSession.endNeedsConfirm]）；什么都没勾、只粘了链接的直接结束，
+ * 人亲手勾过要保存的文件、还没保存时先确认（[AddLinkViewModel.discardNeedsConfirm]）；什么都没勾、只粘了链接的直接结束，
  * 再粘一次就回来，问了只是多点一下。
  */
 @Composable
-fun rememberDiscardAddLink(session: InstantSession): () -> Unit {
+fun rememberDiscardAddLink(session: AddLinkViewModel): () -> Unit {
     var asking by remember { mutableStateOf(false) }
     if (asking) {
         PikoDialog(
             onDismissRequest = { asking = false },
             title = { Text("放弃添加？") },
-            text = { Text("已勾选的文件不会保存。") },
+            text = { Text(if (session.state?.saveIssue != null || session.state?.shareSave?.hasPendingResult == true || session.state?.batch?.rows?.any { it.state.saveIssue != null } == true)
+                "本次保存已有部分结果。已提交的请求不会取消，已保存文件保留；待确认的结果仍可在任务页查看。"
+                else "已勾选的文件不会保存。") },
             confirmButton = {
                 PikoDialogConfirm("放弃", destructive = true, onClick = {
                     asking = false
-                    session.end()
+                    session.discard()
                 })
             },
             dismissButton = { TextButton(onClick = { asking = false }) { Text("取消") } },
         )
     }
-    return remember(session) { { if (session.endNeedsConfirm) asking = true else session.end() } }
+    return remember(session) { { if (session.discardNeedsConfirm) asking = true else session.discard() } }
+}
+
+@Composable
+fun AddLinkBlockedAction(viewModel: AddLinkViewModel) {
+    val blocked = viewModel.blockedAction ?: return
+    PikoDialog(
+        onDismissRequest = viewModel::dismissBlockedAction,
+        title = { Text("暂时无法替换添加链接") },
+        text = { Text(blocked.reason) },
+        confirmButton = { TextButton(onClick = viewModel::dismissBlockedAction) { Text("知道了") } },
+    )
 }

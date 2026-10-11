@@ -13,6 +13,7 @@ fun FilesScreen(
     /** 见 DriveScreen 的同名参数。 */
     scrollToTopRequests: Int = 0,
     onOpenTransfers: () -> Unit = {},
+    onOpenDuplicateReport: (() -> Unit)? = null,
     /** 见 DriveScreen 的同名参数。 */
     feedShown: Boolean = false,
     onFeedShownChange: ((Boolean) -> Unit)? = null,
@@ -28,16 +29,21 @@ fun FilesScreen(
     addressDestinations: List<PaletteItem> = emptyList(),
     /** 见 DriveScreen 的同名参数。 */
     onLibraryLeft: () -> Unit = {},
+    browserSession: dev.piko.shared.state.DriveBrowserSession? = null,
+    onRevealInDrive: ((FileStat) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     DriveScreen(
         addressDestinations = addressDestinations,
         onLibraryLeft = onLibraryLeft,
+        browserSession = browserSession,
+        onRevealInDrive = onRevealInDrive,
         contentFrame = feedFrame,
         onNavigateToFolder = onNavigateToFolder,
         onNavigateToVideoPlayer = onNavigateToVideoPlayer,
         scrollToTopRequests = scrollToTopRequests,
         onOpenTransfers = onOpenTransfers,
+        onOpenDuplicateReport = onOpenDuplicateReport,
         feedShown = feedShown,
         onFeedShownChange = onFeedShownChange,
         feedStashed = feedStashed,

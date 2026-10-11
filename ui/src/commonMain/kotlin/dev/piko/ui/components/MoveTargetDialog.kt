@@ -82,7 +82,7 @@ import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.launch
 
 /**
- * 目录选择器，compact 下全屏，更宽时是居中的基本对话框。维护自己的路径栈，不触碰 driveRepo.folderStackFlow，
+ * 目录选择器，compact 下全屏，更宽时是居中的基本对话框。维护自己的路径栈，不触碰 services.driveWorkspace.folderStackFlow，
  * 否则选目标会把网盘主界面的位置一并改掉。
  *
  * onConfirm 只回传选中的目标目录，后续动作、刷新与提示由调用方负责。

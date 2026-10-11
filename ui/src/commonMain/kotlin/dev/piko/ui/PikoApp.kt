@@ -67,13 +67,13 @@ fun PikoApp(
                     is AppState.Login -> LoginScreen(onCancel = if (state.adding) clientManager::cancelAddingAccount else null)
                     // 按账号区分：换号时整个主界面重建，各页的记忆状态（滚动、展开、选中）不带到另一个账号。
                     // 退出登录后 currentClient 变空，根状态自动回到 Login
-                    is AppState.Main -> PikoMainScaffold(onLogout = {}, videoPlayer = videoPlayer)
+                    is AppState.Main -> PikoMainScaffold(account = state.account, onLogout = {}, videoPlayer = videoPlayer)
                 }
             }
             // 解压的密码框放在网盘页之外：离开网盘页后，加密包仍要能问到密码
             if (currentClient != null) {
                 ArchiveExtractHost(services.archiveExtractSession)
-                UploadRequestHost(services.uploadManager, services.driveRepository)
+                UploadRequestHost(services.uploadManager, services.saveTargets.context)
             }
             // 放在根状态之外：登录前后切换时弹窗不跟着重建
             platform.updater?.let { updater ->

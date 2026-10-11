@@ -53,7 +53,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import dev.piko.shared.data.DriveTab
+import dev.piko.shared.presentation.DriveTab
 import androidx.compose.ui.graphics.vector.ImageVector
 import dev.piko.ui.components.IslandTab
 import dev.piko.ui.components.IslandTabBarHeight

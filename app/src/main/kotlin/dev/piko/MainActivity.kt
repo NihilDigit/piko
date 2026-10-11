@@ -41,6 +41,7 @@ import dev.piko.shared.upload.UploadSelection
 import dev.piko.ui.PikoApp
 import dev.piko.ui.PikoServices
 import dev.piko.ui.hasBackgroundWork
+import dev.piko.ui.fileWorkChanges
 import dev.piko.ui.VideoPlayerHost
 import dev.piko.ui.screens.player.MediampVideoPlayerScreen
 import dev.piko.ui.theme.appearanceFlow
@@ -126,7 +127,7 @@ class MainActivity : ComponentActivity() {
         }
         intent.dataString?.let(PikPakAppLink::parse)?.let { target ->
             when (target) {
-                PikPakAppLink.Target.Drive -> PikoApplication.instance.driveRepository.requestOpenDrive()
+                PikPakAppLink.Target.Drive -> PikoApplication.instance.services.requestOpenDrive()
             }
             return
         }
@@ -225,7 +226,8 @@ private fun AskForNotificationsOnFirstWork(services: PikoServices) {
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
     LaunchedEffect(services) {
         // 与拉起前台服务同一个判断（hasBackgroundWork）；任务表是 StateFlow，snapshotFlow 看不到，另外合进来
-        combine(snapshotFlow { services.hasBackgroundWork() }, services.downloadManager.tasks, services.uploadManager.tasks) { _, _, _ ->
+        combine(snapshotFlow { services.hasBackgroundWork() }, services.downloadManager.tasks, services.uploadManager.tasks,
+            services.fileWorkChanges()) { _, _, _, _ ->
             services.hasBackgroundWork()
         }.first { it }
         val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
