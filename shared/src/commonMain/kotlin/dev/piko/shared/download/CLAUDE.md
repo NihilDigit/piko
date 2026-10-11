@@ -16,10 +16,13 @@
 正文却是空的（2026-10-07 实测），读不出的档在对话框与片段面板里停用，按上限挑时跳过，用户选定的那一档读不出则以
 `UnreadableTranscodeException`（「PikPak 的转码文件暂不可读」）失败，档已从详情里消失的以 `TRANSCODE_GONE_MESSAGE` 失败，都点明是服务端。
 探测按账号与文件留 10 分钟，对话框、片段面板与下载开始时共用；在菜单项上按下或悬停时就开始（`prefetchDownloadQualities`）。
-默认下载画质是每台设备各自的偏好 `downloadMaxHeightFlow`（可空，null 是未设置、每次询问），不同步，档位与播放画质相同。
+默认下载画质是每台设备各自的偏好 `downloadMaxHeightFlow`（null 或 0 均按原画），不同步，档位与播放画质相同。
+普通下载直接入队；文件夹先显示准备任务，再展开下载内容，不为判断是否包含视频而做额外扫描。
+只有显式「下载指定画质…」打开选择框；单项、多选、文件夹与播放器共用这条规则。
 问不问、怎么问在界面的 `DownloadLauncher`，见 `ui/.../screens/drive/CLAUDE.md`；调度这边没给上限时取它，未设置按原画。
-这一项与它取代的「下载画质」「下载前选择画质」都只在 1.1.0 之后的开发期存在过，没有迁移；存储键换了名字
-（`download_default_max_height`、`download.defaultMaxHeight`），开发期存下的旧值按旧语义只是默认选中，不沿用。
+v1.2.0 已发布的 key 是 Android 的 `download_default_max_height`、桌面的 `download.defaultMaxHeight`，继续直接读取，
+保留用户明确设置的上限；未设置时从「每次询问」改为原画，无需改写存储。v1.1.0 没有这项偏好。
+更早开发期的 `download_max_height`、`download.maxHeight` 不迁移：它们只是选择框的预选值，没有作为已发布设置保存。
 
 按上限挑档的规则只有一处，纯函数 `media/DownloadQualityOrder.kt` 的 `downloadQualityOrder`（测试 `DownloadQualityOrderTest`），
 下载、片段、对话框的默认选中都用它：不高于上限的最高一档；一档都没有时取最低的一档，不退回原画（选低档是为了省流量与空间，

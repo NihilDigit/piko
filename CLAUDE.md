@@ -98,19 +98,34 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 
 ### 界面写一次
 
+交互状态归属见 `docs/development/interaction-refactor.md`，审查入口与验收边界见
+`docs/development/interaction-refactor-review.md`。
+文件仓库不持有导航和剪贴板；桌面由 `shared/presentation/DriveWorkspace` 持有标签工作区，
+移动端由 `MobileFileWorkspace` 持有单页位置、历史、滚动与剪贴板，不创建桌面标签。
+各浏览页由导航条目或工作区持有。文件列表仍由 `DriveScreenState` 投影，业务会话的寿命不跟随页面。
+工作区前端生命周期由 `WorkspaceViewModel` 和账号级 ViewModelStore 管理，查询订阅与文件操作执行作用域分开。
+添加链接及外部上传的默认目录经账号工作区的 `SaveTargetBinding` 显式注入 `SaveTargetContext`，
+绑定当前前端的主文件位置，资料页和临时定位页不改写它；不要从仓库获取「当前目录」。
+
 `ui/src/commonMain` 是全部界面：主题、导航、网盘、传输、设置、登录与各组件，两端共用。
 入口是 `PikoApp`：`MainActivity` 与桌面的 `Main.kt` 各自拼好 `PikoServices`（进程级的仓库与调度器）
 与 `PikoPlatform`（平台能力），传进去即可。屏幕里经 `LocalPikoServices`、`LocalPikoPlatform` 取用，
 不要再引用 `PikoApplication.instance`。交互模型按平台（`PikoPlatform.formFactor`：桌面或移动），密度按窗口宽度，细节见 `ui/CLAUDE.md`。
 
 `shared/.../shared/state/DriveScreenState.kt` 仍是核心接缝：文件列表、加载态、排序、搜索、多选、
-启发式折叠、防窥揭示、目录导航与增删改动作都在这里。约定：
-- 状态用 Compose 的 `State` 而非 `StateFlow`；为此 `shared` 对 compose runtime 用的是 `api`。
+启发式折叠、防窥揭示、目录导航与动作入口在这里；普通文件写入和历史删除委托给账号业务会话，
+归档清单编辑委托 `VaultEntryCommands` 和 `VaultEntryEditSession`。约定：
+- Compose 页面投影可用只读 `State`；业务来源与跨层订阅可用只读 `StateFlow`。可变状态不交给视图直接修改。
 - 派生值用 `derivedStateOf`，不要写成 getter——它们每帧会被读到多次。
-- 面向用户的提示走 `messages: SharedFlow<String>` 事件流，界面用 Snackbar 呈现。用状态表达会在重组时重放。
+- 即时提示可走 `messages: SharedFlow<String>`，界面用 Snackbar 呈现；重要结局、待输入与恢复入口必须可查询，不能仅依赖提示订阅。
+- 普通文件动作经过 `FileCommands` 和 `FileWriteSession`，历史事件动作经过 `HistoryCommands` 和 `HistoryEditSession`；
+  页面不执行写请求或回填失败快照，任务页保留结果。根目录清单缓存随 client 隔离，旧事务固定使用原 client。
+- `ReceivingActivity` 只投影在途接收工作的依赖，供动作入口判断；整包裁剪的产出树需要保持路径，
+  普通接收目录不因此锁住无关文件。未知结果先核对，不将网络错误视为服务端未执行。
 - 长驻的错误态（如 `loadError`）才用状态，它描述的是「眼前这份数据是旧的」。
 
-新增屏幕状态时照这个形状做。已下沉的 state holder 都在 `shared/.../shared/state/`：
+新增屏幕状态先明确所有者与释放条件，见 `docs/development/interaction-refactor.md` 的 MVVM 约定。
+页面 ViewModel 负责投影和动作入口，离页后持续的执行由业务会话持有。现有 state holder 包括：
 `DriveScreenState`、`InstantSheetState`（秒传与磁力解析，多条链接时由 `InstantBatchState` 为每条各建一个）、
 `OfflineTasksState`（云端离线任务，轮询由调用方的协程控制启停）、`LoginState`、
 `FolderPickerState`（自带路径栈）、`DuplicateFinderState`（查重）、`ArchiveExtractSession`（服务端解压，
@@ -158,13 +173,14 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 一层兜底脱敏（邮箱、手机号、本机路径、远程 URL），见 `PikoLog.redact`，但它认不出不带路径的文件名，
 不能指望它。崩溃由两端入口装的默认异常处理写入并等落盘；桌面端界面线程上的异常经 `PikoWindow` 弹中文提示后同样抛出记下。
 
-### 全局导航栈在仓库层
+### 浏览导航在呈现层
 
-`PikoDriveRepository` 持有 `folderStackFlow`，是网盘主界面的全局位置，并持久化。
-宽窗口可以开几个标签（`tabsFlow`、`openTab`、`switchTab`、`closeTab`），各有自己的路径栈与历史；`folderStackFlow` 与
-`historyFlow` 始终是活动标签的那一份，切标签时仓库把它们换掉，所以别处照旧只认这两个，不必知道有标签。
+`FileWorkspace` 提供文件浏览的公共能力，不包含标签 API；移动端的 `MobileFileWorkspace` 与桌面的 `DriveWorkspace`
+分别持有状态。`folderStackFlow` 与位置持久化不由 `PikoDriveRepository` 持有。
+桌面可开多个标签（`tabsFlow`、`openTab`、`switchTab`、`closeTab`），各有自己的路径栈与历史；`folderStackFlow` 与
+`historyFlow` 是活动标签的投影；浏览会话绑定固定身份的 `TabNavigation`，不能把所有页面绑定到活动标签。
 标签栏（`DriveTabBar`）在宽窗口里一直在，只开一个标签时也是；Ctrl+T、Ctrl+W、Ctrl+Tab，中键点文件夹在后台新标签打开，
-拖到别的标签上即移进它停着的文件夹。标签按账号存进缓存目录（只存位置，不存历史），重启后由 `restoreTabs` 恢复。目录选择器
+拖到别的标签上即移进它停着的文件夹。标签按账号存进缓存目录（只存位置，不存历史），重启后由 `restoreLocation` 恢复。目录选择器
 一类的浮层**必须维护自己的路径栈**，碰它会把主界面的位置一起改掉。
 浏览历史（`historyFlow`，后退与前进）也在这里，每次换栈记一步；「上一级」与它无关。从别处跳进网盘（在网盘中显示、
 快捷栏）用 `updateFolderStack`，会记进历史；只有启动时恢复位置用 `restoreFolderStack`，不记。
@@ -177,14 +193,14 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 目录的内容也只有一份：仓库的列表缓存，网盘页、目录图、地址栏的 › 与补全、命令面板都读它。网盘里的改动一律经
 `applyChange(DriveChange)` 收口（索引、缓存过期、广播 `folderChanges`），新加改动网盘的入口照此调一次，不要自己清缓存或通知界面；
 `DriveScreenState` 与目录图已订阅，只重列受影响的那几层，视图不要再订阅一遍。
-有标签栏时查重标签由查重会话占着（`duplicatesTabHeld`）：往别处走另开标签，不改写它；查重结束后照常改写。
+查重业务会话独立于报告页面。关闭报告标签只释放浏览状态，不停止扫描或丢弃报告。
 
 ### 账号与凭据
 
 同一时刻一个账号在用（`PikoClientManager.currentClient`），登录过、没退出的记在 `accounts`（`SavedAccounts`，
 只有账号名、昵称、头像与上次的用量，不含机密）里手动切换。切换就是换一个 client，别处照旧只认 `currentClient`；
 按账号的东西在账号变了时各自换一份，新写的按账号的状态照这个做，不要假定账号不变：
-- 网盘页的位置、标签、历史、剪贴板、撤销记录与列表缓存：`PikoDriveRepository.enterAccount`，收集者与网盘页都调，谁先到谁做。
+- 文件索引、缓存与撤销记录由 `PikoDriveRepository.enterAccount` 切换；桌面工作区按账号切换，移动工作区随账号 ViewModel 创建和释放，保存目标绑定不能被旧工作区的释放覆盖。
 - 进程级会话（添加链接、查重、解压、片段下载、信息流、归档）与桌面端的播放器、信息流窗口，一律经
   `launchOnAccountLeave` 在主线程上当场结束（`PikoServices` 与桌面 `Main.kt` 各一处）；新加的进程级会话登记到这里，不另收集账号。
   下载任务带 `account`，别的账号的暂停。传输页与「传输」按钮上的项数、速度只算当前账号的下载、上传与秒传
