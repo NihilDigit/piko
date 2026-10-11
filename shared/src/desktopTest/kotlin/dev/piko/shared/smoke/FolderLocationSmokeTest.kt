@@ -24,15 +24,16 @@ import kotlin.test.assertTrue
 class FolderLocationSmokeTest {
     private val root = PikoDriveRepository.ROOT_BREADCRUMB
 
-    private fun PikoDriveRepository.names() = folderStackFlow.value.map { it.name }
+    private fun dev.piko.shared.presentation.DriveWorkspace.names() = folderStackFlow.value.map { it.name }
 
     @Test
-    fun `renaming a folder renames it in every stored path`() = smoke {
+    fun `renaming a folder renames it in every stored path`() = smoke { scope ->
         val server = FakePikPakServer()
         val anime = server.addFolder("动画")
         val show = server.addFolder("Frieren", anime.id)
         val pack = server.addArchive("extras.zip", mapOf("a.txt" to ByteArray(1)), parentId = show.id)
         val repo = PikoDriveRepository(server.provider(), MemoryPreferences())
+        val repoWorkspace = dev.piko.shared.presentation.DriveWorkspace(repo, backgroundScope = scope)
         val animeCrumb = PikoPathBreadcrumb(anime.id, anime.name)
         val showCrumb = PikoPathBreadcrumb(show.id, show.name)
         repo.listAllFiles("").getOrThrow()
@@ -40,61 +41,63 @@ class FolderLocationSmokeTest {
         repo.listAllFiles(show.id).getOrThrow()
 
         // 一个标签停在压缩包里，另一个停在动画里，历史里还有一步
-        repo.updateFolderStack(listOf(root, animeCrumb))
-        repo.updateFolderStack(listOf(root, animeCrumb, showCrumb, PikoPathBreadcrumb(ArchiveLocation(pack.node.id, pack.node.hash, "").id, pack.node.name)))
-        val other = repo.openTab(listOf(root, animeCrumb), activate = false)
+        repoWorkspace.updateFolderStack(listOf(root, animeCrumb))
+        repoWorkspace.updateFolderStack(listOf(root, animeCrumb, showCrumb, PikoPathBreadcrumb(ArchiveLocation(pack.node.id, pack.node.hash, "").id, pack.node.name)))
+        val other = repoWorkspace.openTab(listOf(root, animeCrumb), activate = false)
 
         repo.rename(anime.id, "Anime").getOrThrow()
         repo.rename(pack.node.id, "特典.zip").getOrThrow()
 
-        assertEquals(listOf("网盘", "Anime", "Frieren", "特典.zip"), repo.names())
-        assertEquals(listOf("网盘", "Anime"), repo.historyFlow.value.back.last().map { it.name })
-        assertEquals(listOf("网盘", "Anime"), repo.tabsFlow.value.first { it.id == other }.stack.map { it.name })
-        assertEquals("Anime", repo.tabsFlow.value.first { it.id == other }.title)
-        assertTrue(repo.recentFoldersFlow.value.all { stack -> stack.none { it.name == "动画" } }, "最近去过里不该留着旧名")
-        assertTrue(repo.recentFoldersFlow.value.any { stack -> stack.last().id == anime.id }, "改名不是删除，最近去过里照留")
+        assertEquals(listOf("网盘", "Anime", "Frieren", "特典.zip"), repoWorkspace.names())
+        assertEquals(listOf("网盘", "Anime"), repoWorkspace.historyFlow.value.back.last().map { it.name })
+        assertEquals(listOf("网盘", "Anime"), repoWorkspace.tabsFlow.value.first { it.id == other }.stack.map { it.name })
+        assertEquals("Anime", repoWorkspace.tabsFlow.value.first { it.id == other }.title)
+        assertTrue(repoWorkspace.recentFoldersFlow.value.all { stack -> stack.none { it.name == "动画" } }, "最近去过里不该留着旧名")
+        assertTrue(repoWorkspace.recentFoldersFlow.value.any { stack -> stack.last().id == anime.id }, "改名不是删除，最近去过里照留")
     }
 
     @Test
-    fun `a folder moved elsewhere takes its new parents into the stack`() = smoke {
+    fun `a folder moved elsewhere takes its new parents into the stack`() = smoke { scope ->
         val server = FakePikPakServer()
         val anime = server.addFolder("动画")
         val archive = server.addFolder("归档")
         val show = server.addFolder("Frieren", anime.id)
         val season = server.addFolder("S1", show.id)
         val repo = PikoDriveRepository(server.provider(), MemoryPreferences())
+        val repoWorkspace = dev.piko.shared.presentation.DriveWorkspace(repo, backgroundScope = scope)
         repo.listAllFiles("").getOrThrow()
         repo.listAllFiles(anime.id).getOrThrow()
-        repo.updateFolderStack(
+        repoWorkspace.updateFolderStack(
             listOf(root, PikoPathBreadcrumb(anime.id, anime.name), PikoPathBreadcrumb(show.id, show.name), PikoPathBreadcrumb(season.id, season.name)),
         )
 
         repo.move(listOf(show.id), archive.id).getOrThrow()
 
-        assertEquals(listOf("", archive.id, show.id, season.id), repo.folderStackFlow.value.map { it.id })
-        assertEquals(listOf("网盘", "归档", "Frieren", "S1"), repo.names())
+        assertEquals(listOf("", archive.id, show.id, season.id), repoWorkspace.folderStackFlow.value.map { it.id })
+        assertEquals(listOf("网盘", "归档", "Frieren", "S1"), repoWorkspace.names())
     }
 
     @Test
-    fun `trashing a folder takes other tabs out of it`() = smoke {
+    fun `trashing a folder takes other tabs out of it`() = smoke { scope ->
         val server = FakePikPakServer()
         val anime = server.addFolder("动画")
         val show = server.addFolder("Frieren", anime.id)
         val repo = PikoDriveRepository(server.provider(), MemoryPreferences())
+        val repoWorkspace = dev.piko.shared.presentation.DriveWorkspace(repo, backgroundScope = scope)
         repo.listAllFiles("").getOrThrow()
         repo.listAllFiles(anime.id).getOrThrow()
-        repo.updateFolderStack(listOf(root, PikoPathBreadcrumb(anime.id, anime.name), PikoPathBreadcrumb(show.id, show.name)))
-        val inside = repo.activeTabId.value
-        repo.openTab(listOf(root))
+        repoWorkspace.updateFolderStack(listOf(root, PikoPathBreadcrumb(anime.id, anime.name), PikoPathBreadcrumb(show.id, show.name)))
+        val inside = repoWorkspace.activeTabId.value
+        repoWorkspace.openTab(listOf(root))
 
         repo.trash(listOf(anime.id)).getOrThrow()
 
-        assertEquals(listOf(root), repo.tabsFlow.value.first { it.id == inside }.stack)
-        assertTrue(repo.recentFoldersFlow.value.none { stack -> stack.any { it.id == anime.id } }, "删掉的文件夹不再列在最近去过里")
+        assertEquals(listOf(root), repoWorkspace.tabsFlow.value.first { it.id == inside }.stack)
+        assertTrue(repoWorkspace.recentFoldersFlow.value.none { stack -> stack.any { it.id == anime.id } }, "删掉的文件夹不再列在最近去过里")
     }
 
     @Test
-    fun `pinned folders show the name the drive has now`() = smoke {
+    fun `pinned folders show the name the drive has now`() = smoke { scope ->
         val server = FakePikPakServer()
         val anime = server.addFolder("动画")
         val pins = MutableStateFlow("""[{"id":"${anime.id}","name":"动画"}]""")
@@ -105,6 +108,7 @@ class FolderLocationSmokeTest {
             }
         }
         val repo = PikoDriveRepository(server.provider(), prefs)
+        val repoWorkspace = dev.piko.shared.presentation.DriveWorkspace(repo, backgroundScope = scope)
         // 在别的设备上改的名：只有列到根目录时才知道
         server.node(anime.id)!!.name = "Anime"
         repo.listAllFiles("").getOrThrow()
@@ -118,8 +122,9 @@ class FolderLocationSmokeTest {
         server.addFolder("Frieren", anime.id)
         val prefs = MemoryPreferences()
         val repo = PikoDriveRepository(server.provider(), prefs)
-        val drive = DriveScreenState(repo, prefs, scope)
-        repo.updateFolderStack(listOf(root, PikoPathBreadcrumb(anime.id, anime.name)))
+        val repoWorkspace = dev.piko.shared.presentation.DriveWorkspace(repo, backgroundScope = scope)
+        val drive = DriveScreenState(repo, prefs, scope, navigation = repoWorkspace)
+        repoWorkspace.updateFolderStack(listOf(root, PikoPathBreadcrumb(anime.id, anime.name)))
         awaitUntil("列出动画") { !drive.isLoading && drive.files.map { it.name } == listOf("Frieren") }
         // 目录图与 › 先读到改动之前的一份，它在路径上，缓存一直留着
         assertEquals(listOf("Frieren"), repo.folderMapLevel(anime.id).getOrThrow().map { it.name })
@@ -135,35 +140,37 @@ class FolderLocationSmokeTest {
     }
 
     @Test
-    fun `a library has no subfolders to ask the server for`() = smoke {
+    fun `a library has no subfolders to ask the server for`() = smoke { scope ->
         val server = FakePikPakServer()
         val repo = PikoDriveRepository(server.provider(), MemoryPreferences())
+        val repoWorkspace = dev.piko.shared.presentation.DriveWorkspace(repo, backgroundScope = scope)
         assertEquals(emptyList(), repo.subfolders(DriveLibrary.STARRED.id).getOrThrow())
         assertTrue(server.calls.none { it.startsWith("GET") && it.endsWith("/drive/v1/files") }, "库的 ID 不该拿去列目录")
     }
 
     @Test
-    fun `a duplicates tab held by its search is not overwritten`() = smoke {
+    fun `a duplicates tab held by its search is not overwritten`() = smoke { scope ->
         val server = FakePikPakServer()
         val anime = server.addFolder("动画")
         val repo = PikoDriveRepository(server.provider(), MemoryPreferences())
+        val repoWorkspace = dev.piko.shared.presentation.DriveWorkspace(repo, backgroundScope = scope)
         var searching = true
-        repo.sessionTabHeld = { searching }
-        val duplicates = repo.openTab(listOf(DriveLibrary.DUPLICATES.crumb))
+        repoWorkspace.sessionTabHeld = { searching }
+        val duplicates = repoWorkspace.openTab(listOf(DriveLibrary.DUPLICATES.crumb))
 
         // 查重还在：往别处走是另开一个标签，查重标签原样留着
-        repo.updateFolderStack(listOf(root, PikoPathBreadcrumb(anime.id, anime.name)))
-        assertEquals(listOf(DriveLibrary.DUPLICATES.crumb), repo.tabsFlow.value.first { it.id == duplicates }.stack)
-        assertEquals(listOf(root, PikoPathBreadcrumb(anime.id, anime.name)), repo.folderStackFlow.value)
-        assertTrue(repo.activeTabId.value != duplicates)
-        val tabs = repo.tabsFlow.value.size
+        repoWorkspace.updateFolderStack(listOf(root, PikoPathBreadcrumb(anime.id, anime.name)))
+        assertEquals(listOf(DriveLibrary.DUPLICATES.crumb), repoWorkspace.tabsFlow.value.first { it.id == duplicates }.stack)
+        assertEquals(listOf(root, PikoPathBreadcrumb(anime.id, anime.name)), repoWorkspace.folderStackFlow.value)
+        assertTrue(repoWorkspace.activeTabId.value != duplicates)
+        val tabs = repoWorkspace.tabsFlow.value.size
 
         // 查重结束后结果页的「回到网盘」照旧改写当前标签
         searching = false
-        repo.switchTab(duplicates)
-        repo.updateFolderStack(listOf(root))
-        assertEquals(duplicates, repo.activeTabId.value)
-        assertEquals(listOf(root), repo.folderStackFlow.value)
-        assertEquals(tabs, repo.tabsFlow.value.size)
+        repoWorkspace.switchTab(duplicates)
+        repoWorkspace.updateFolderStack(listOf(root))
+        assertEquals(duplicates, repoWorkspace.activeTabId.value)
+        assertEquals(listOf(root), repoWorkspace.folderStackFlow.value)
+        assertEquals(tabs, repoWorkspace.tabsFlow.value.size)
     }
 }

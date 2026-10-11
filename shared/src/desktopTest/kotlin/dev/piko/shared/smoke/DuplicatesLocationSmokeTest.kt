@@ -7,6 +7,7 @@ import dev.piko.shared.state.DriveListItem
 import dev.piko.shared.state.DriveScreenState
 import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.DuplicateListing
+import dev.piko.shared.state.DuplicateKind
 import dev.piko.shared.state.DuplicateSession
 import dev.piko.shared.state.SessionListing
 import kotlin.test.Test
@@ -20,6 +21,42 @@ import kotlin.test.assertTrue
 class DuplicatesLocationSmokeTest {
 
     @Test
+    fun `switching result category replaces visible files and selection scope`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val kept = server.addFile("Title.S01E03.1080p.mkv", content = ByteArray(96), hash = "EP03")
+        val copy = server.addFile("Title.S01E03.1080p (1).mkv", content = ByteArray(96), hash = "EP03")
+        val version = server.addFile("Title.S01E03.720p.mkv", content = ByteArray(40), hash = "OTHER")
+        val prefs = MemoryPreferences()
+        val repository = PikoDriveRepository(server.provider(), prefs)
+        val repositoryWorkspace = dev.piko.shared.presentation.DriveWorkspace(repository, backgroundScope = scope)
+        val session = DuplicateSession(
+            newScope = { scope },
+            newState = { child, root -> DuplicateFinderState(server.provider(), repository, child, root) },
+        )
+        val view = dev.piko.shared.presentation.DuplicateReportViewModel()
+        val drive = DriveScreenState(repository, prefs, scope, { library ->
+            session.state?.takeIf { library == DriveLibrary.DUPLICATES }?.let { DuplicateListing(it, view.kind) }
+        }, navigation = repositoryWorkspace)
+        session.open(PikoDriveRepository.ROOT_BREADCRUMB)
+        repositoryWorkspace.updateFolderStack(listOf(DriveLibrary.DUPLICATES.crumb))
+        awaitUntil("相同文件") { drive.displayedFiles.map { it.id }.toSet() == setOf(kept.id, copy.id) }
+        drive.toggleSelectAll()
+        assertEquals(setOf(kept.id, copy.id), drive.selectedFileIds.toSet())
+
+        drive.exitSelection()
+        view.selectKind(DuplicateKind.VERSIONS)
+        awaitUntil("不同版本") { drive.displayedFiles.map { it.id }.toSet() == setOf(kept.id, version.id) }
+        assertTrue(!drive.isSelectionMode)
+        drive.toggleSelectAll()
+        assertEquals(setOf(kept.id, version.id), drive.selectedFileIds.toSet())
+
+        drive.exitSelection()
+        view.selectKind(DuplicateKind.IDENTICAL)
+        awaitUntil("切回相同文件") { drive.displayedFiles.map { it.id }.toSet() == setOf(kept.id, copy.id) }
+        assertEquals(1, drive.sectionHeaders.size)
+    }
+
+    @Test
     fun `trashing from the duplicates location regroups and undo brings the copies back`() = smoke { scope ->
         val server = FakePikPakServer()
         val content = ByteArray(64) { 7 }
@@ -28,14 +65,16 @@ class DuplicatesLocationSmokeTest {
         val nested = server.addFile("a.mkv", parentId = server.addFolder("sub").id, content = content, hash = "GCID")
         val prefs = MemoryPreferences()
         val repository = PikoDriveRepository(server.provider(), prefs)
+        val repositoryWorkspace = dev.piko.shared.presentation.DriveWorkspace(repository, backgroundScope = scope)
         val session = DuplicateSession(
             newScope = { scope },
             newState = { sessionScope, root -> DuplicateFinderState(server.provider(), repository, sessionScope, root) },
         )
-        val drive = DriveScreenState(repository, prefs, scope, listingOf(session))
+        val view = dev.piko.shared.presentation.DuplicateReportViewModel()
+        val drive = DriveScreenState(repository, prefs, scope, listingOf(session), navigation = repositoryWorkspace)
 
         session.open(PikoDriveRepository.ROOT_BREADCRUMB)
-        repository.updateFolderStack(listOf(DriveLibrary.DUPLICATES.crumb))
+        repositoryWorkspace.updateFolderStack(listOf(DriveLibrary.DUPLICATES.crumb))
         awaitUntil("扫完并列出") { session.state?.phase == DuplicateFinderState.Phase.DONE && drive.displayedFiles.size == 3 }
 
         // 进来时不在多选里，单击照常打开；名字里没有副本标记、存入最早的那份留着，选中的是另外两份
@@ -71,14 +110,16 @@ class DuplicatesLocationSmokeTest {
         val scene = server.addFile("Title.S01E03.720p.mkv", parentId = server.addFolder("tv").id, content = ByteArray(40) { 5 }, hash = "SCENE")
         val prefs = MemoryPreferences()
         val repository = PikoDriveRepository(server.provider(), prefs)
+        val repositoryWorkspace = dev.piko.shared.presentation.DriveWorkspace(repository, backgroundScope = scope)
         val session = DuplicateSession(
             newScope = { scope },
             newState = { sessionScope, root -> DuplicateFinderState(server.provider(), repository, sessionScope, root) },
         )
-        val drive = DriveScreenState(repository, prefs, scope, listingOf(session))
+        val view = dev.piko.shared.presentation.DuplicateReportViewModel()
+        val drive = DriveScreenState(repository, prefs, scope, listingOf(session), navigation = repositoryWorkspace)
 
         session.open(PikoDriveRepository.ROOT_BREADCRUMB)
-        repository.updateFolderStack(listOf(DriveLibrary.DUPLICATES.crumb))
+        repositoryWorkspace.updateFolderStack(listOf(DriveLibrary.DUPLICATES.crumb))
         awaitUntil("扫完并分成两组") { session.state?.phase == DuplicateFinderState.Phase.DONE && drive.sectionHeaders.size == 2 }
         val (identical, versions) = rowsBySection(drive.displayItems)
         assertEquals(listOf(kept.id, copy.id), identical.map { it.file.id })

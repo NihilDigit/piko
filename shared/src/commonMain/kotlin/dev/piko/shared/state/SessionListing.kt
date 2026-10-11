@@ -1,6 +1,7 @@
 package dev.piko.shared.state
 
 import dev.piko.shared.data.readableSize
+import dev.piko.shared.data.DriveLibrary
 import io.github.nihildigit.pikpak.FileStat
 
 /**
@@ -8,6 +9,9 @@ import io.github.nihildigit.pikpak.FileStat
  * 选中、框选、键盘与右键菜单都是网盘页的，这里只给行。
  */
 interface SessionListing {
+    val usesFolderStructure: Boolean get() = false
+    fun decorate(item: DriveListItem.File): DriveListItem.File = item
+    fun filesInFolder(folderId: String): List<FileStat>? = null
     /** 列出的文件，去重，供按 ID 找回、全选与空态判断。 */
     val files: List<FileStat>
 
@@ -15,19 +19,53 @@ interface SessionListing {
     fun items(isExpanded: (blockId: String) -> Boolean): List<DriveListItem>
 }
 
+class DuplicateDirectoryListing(
+    private val finder: DuplicateFinderState,
+    private val folderId: String,
+    private val kind: () -> DuplicateKind = { DuplicateKind.IDENTICAL },
+) : SessionListing {
+    override val usesFolderStructure: Boolean get() = true
+    override val files: List<FileStat> get() = finder.directoryFiles(folderId, kind())
+    override fun filesInFolder(folderId: String): List<FileStat> =
+        finder.directoryFiles(if (folderId == DriveLibrary.DUPLICATES.id) finder.root.id else folderId, kind())
+    override fun items(isExpanded: (blockId: String) -> Boolean): List<DriveListItem> =
+        files.map { DriveListItem.File(it, null) }
+
+    override fun decorate(item: DriveListItem.File): DriveListItem.File {
+        if (item.file.isFolder) return item
+        val view = item.view
+        val kept = item.file.id in finder.keptIds
+        val tags = listOfNotNull("建议保留".takeIf { kept }) + view?.tags.orEmpty()
+        return DriveListItem.File(item.file, DriveFileView(
+            title = view?.title ?: item.file.name,
+            tags = tags.distinct(),
+            code = view?.code,
+            resolution = view?.resolution,
+            heading = view?.heading ?: item.file.name,
+            fields = view?.fields.orEmpty(),
+        ), item.key)
+    }
+}
+
 /**
  * 查找重复的结果。同一个文件可能既在完全相同的组里、又代表版本组里的一行，列表项的 key 因此带上组；
  * 选中仍按文件，两处是同一个勾，见 DriveScreenState.fileRows。
  */
-class DuplicateListing(private val finder: DuplicateFinderState) : SessionListing {
+class DuplicateListing(private val finder: DuplicateFinderState, private val kind: DuplicateKind? = null) : SessionListing {
+    private val groups: List<DuplicateGroup>
+        get() = when (kind) {
+            DuplicateKind.IDENTICAL -> finder.report.identical
+            DuplicateKind.VERSIONS -> finder.report.versions
+            null -> finder.report.identical + finder.report.versions
+        }
+
     override val files: List<FileStat>
-        get() = (finder.report.identical + finder.report.versions)
+        get() = groups
             .flatMap { group -> group.rows.mapNotNull { finder.fileStat(it.file.id) } }
             .distinctBy { it.id }
 
     override fun items(isExpanded: (blockId: String) -> Boolean): List<DriveListItem> = buildList {
-        val report = finder.report
-        for (group in report.identical + report.versions) {
+        for (group in groups) {
             val blockId = "dup:${group.kind}:${group.key}"
             val expanded = isExpanded(blockId)
             add(DriveListItem.SectionHeader(blockId, blockId, label(group), group.title, expanded))

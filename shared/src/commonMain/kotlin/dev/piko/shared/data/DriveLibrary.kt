@@ -27,8 +27,7 @@ enum class DriveLibrary(val id: String, val title: String) {
     val isEventLog: Boolean get() = this == RECENT || this == HISTORY
 
     /**
-     * 内容来自进程级的会话、不经网络（见 SessionListing）：有标签栏时开成会话占着的标签，关标签即结束会话；
-     * 窄窗口里离开即结束，先确认。
+     * 内容来自进程级的会话、不经网络（见 SessionListing）。标签与返回栈只是结果视图，关闭视图不结束会话。
      */
     val isSession: Boolean get() = this == DUPLICATES
 

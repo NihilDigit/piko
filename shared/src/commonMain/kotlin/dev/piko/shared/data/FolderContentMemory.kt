@@ -51,10 +51,7 @@ internal class FolderContentMemory(
     // 插入顺序即使用顺序：命中时移到末尾，超额时从头丢
     private val contents = MutableStateFlow<Map<String, List<ChildFile>>>(emptyMap())
 
-    private val _loads = MutableStateFlow(0)
-
-    /** 从磁盘载入完成一次就加一，文件夹行据此重新描述。 */
-    val loads: StateFlow<Int> = _loads.asStateFlow()
+    val state: StateFlow<Map<String, List<ChildFile>>> = contents.asStateFlow()
 
     // 换号在仓库的后台协程里，记下内容在列目录的线程上，两边都读
     @Volatile
@@ -125,7 +122,6 @@ internal class FolderContentMemory(
             if (stored == null) return@launch
             val loaded = stored.associate { folder -> folder.id to folder.files.map { ChildFile(it.name, it.category) } }
             contents.update { current -> loaded - current.keys + current }
-            _loads.update { it + 1 }
         }
     }
 

@@ -24,6 +24,7 @@ class QuickAccessState(
     private val driveRepo: PikoDriveRepository,
     private val clients: PikoClientProvider,
     private val scope: CoroutineScope,
+    private val openTab: (List<PikoPathBreadcrumb>) -> Unit,
 ) {
     val pinnedFolders: Flow<List<PikoPathBreadcrumb>> get() = driveRepo.pinnedFoldersFlow
 
@@ -47,15 +48,15 @@ class QuickAccessState(
     }
 
     fun openMyPacksInNewTab(folder: PikoPathBreadcrumb) {
-        driveRepo.openTab(listOf(PikoDriveRepository.ROOT_BREADCRUMB, folder), activate = false)
+        openTab(listOf(PikoDriveRepository.ROOT_BREADCRUMB, folder))
     }
 
     fun openRootInNewTab() {
-        driveRepo.openTab(listOf(PikoDriveRepository.ROOT_BREADCRUMB), activate = false)
+        openTab(listOf(PikoDriveRepository.ROOT_BREADCRUMB))
     }
 
     /** 在后台的新标签里打开，与中键点文件夹相同。 */
-    fun openInNewTab(folder: PikoPathBreadcrumb) = locate(folder) { driveRepo.openTab(it, activate = false) }
+    fun openInNewTab(folder: PikoPathBreadcrumb) = locate(folder, openTab)
 
     fun unpin(folder: PikoPathBreadcrumb) = driveRepo.unpinFolder(folder.id)
 

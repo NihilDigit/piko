@@ -1,7 +1,5 @@
 package dev.piko.shared.data
 
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.Serializable
 import kotlinx.coroutines.Job
 import kotlinx.io.Buffer
 import io.ktor.utils.io.toByteArray
@@ -15,6 +13,7 @@ import io.github.nihildigit.pikpak.EventPage
 import io.github.nihildigit.pikpak.EventType
 import io.github.nihildigit.pikpak.FileDetail
 import io.github.nihildigit.pikpak.FileKind
+import io.github.nihildigit.pikpak.PikPakClient
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.PikPakException
 import io.github.nihildigit.pikpak.QuotaResponse
@@ -85,7 +84,7 @@ import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.flow.getAndUpdate
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
@@ -144,197 +143,46 @@ open class PikoDriveRepository(
     /** 文件夹的名字与上级，见 [FolderIndex]。下面的路径栈、标签、历史与最近去过都随它改正。 */
     internal val folderIndex = FolderIndex()
 
-    private val _folderStackFlow = MutableStateFlow(listOf(ROOT_BREADCRUMB))
-    val folderStackFlow: StateFlow<List<PikoPathBreadcrumb>> = _folderStackFlow.asStateFlow()
+    val currentAccount: String? get() = clientManager.currentClient.value?.account
+    val accountChanges: Flow<String?> = clientManager.currentClient.map { it?.account }.distinctUntilChanged()
+    private val _clientRevision = MutableStateFlow(0L)
+    val clientRevision: StateFlow<Long> = _clientRevision.asStateFlow()
 
-    /**
-     * 浏览历史，与资源管理器、Finder 的后退与前进同义：记的是去过的位置（整条路径），不是层级。
-     * 「上一级」与它是两回事：从信息流或星标跳到很深的目录后，上一级只会一层层往上走，后退才回到跳之前在看的地方。
-     * 每次改动路径栈都记一笔，只有启动时恢复上次的位置不记。不落盘，进程内有效。
-     */
-    private val _historyFlow = MutableStateFlow(FolderHistory())
-    val historyFlow: StateFlow<FolderHistory> = _historyFlow.asStateFlow()
+    fun writeAccess(expectedAccount: String): DriveWriteAccess? = clientManager.currentClient.value
+        ?.takeIf { it.account == expectedAccount }?.let { DriveWriteAccess(it.account, it, this) }
 
-    /**
-     * 网盘页的标签，各有自己的路径栈与浏览历史。活动的那个就是 [folderStackFlow] 与 [historyFlow]：
-     * 网盘页、定位、快捷访问、信息流都只认这两个，切标签时把它们换成目标标签存着的那一份，别处不用知道有标签。
-     * 这里存的活动标签那一项是切走之前的旧值，读标签用 [tabsFlow]。不落盘，进程内有效。
-     */
-    private val _tabs = MutableStateFlow(listOf(DriveTab(FIRST_TAB_ID, listOf(ROOT_BREADCRUMB))))
-    private val _activeTabId = MutableStateFlow(FIRST_TAB_ID)
-    val activeTabId: StateFlow<Long> = _activeTabId.asStateFlow()
-    private var nextTabId = FIRST_TAB_ID + 1
+    fun historyAccess(expectedAccount: String): HistoryWriteAccess? = clientManager.currentClient.value
+        ?.takeIf { it.account == expectedAccount }?.let(::HistoryWriteAccess)
 
-    private val _tabsFlow = MutableStateFlow(_tabs.value)
-
-    /** 全部标签，按显示的顺序；活动的那个带着眼下的栈与历史。每次换栈、开关标签后当场更新，读到的不会落后一步。 */
-    val tabsFlow: StateFlow<List<DriveTab>> = _tabsFlow.asStateFlow()
-
-    private fun publishTabs() {
-        val active = _activeTabId.value
-        val tabs = _tabs.value.map { if (it.id == active) it.copy(stack = _folderStackFlow.value, history = _historyFlow.value) else it }
-        // 文件夹索引每变一次都会来这里对一遍，没变的不重写存盘
-        if (tabs == _tabsFlow.value) return
-        _tabsFlow.value = tabs
-        saveTabs()
+    internal fun applyWriteChange(account: String, change: DriveChange) {
+        if (currentAccount != account) return
+        if (change is DriveChange.Renamed) pinnedFolders.renamed(change.id, change.name)
+        applyChange(change)
     }
 
-    // 标签按账号存进缓存目录，重启后接着用。只存各自停在哪、哪个是活动的，历史不存
-    private var tabsSave: Job? = null
+    private val references = MutableStateFlow<Set<FolderReferenceSource>>(emptySet())
+    internal fun registerFolderReferences(source: FolderReferenceSource) { references.update { it + source } }
+    internal fun unregisterFolderReferences(source: FolderReferenceSource) { references.update { it - source } }
 
-    private fun saveTabs() {
-        val store = cacheStore ?: return
-        val account = clientManager.currentClient.value?.account ?: return
-        val tabs = _tabsFlow.value
-        val saved = SavedTabs(
-            tabs = tabs.map { tab -> tab.stack.outsideArchives().map { SavedCrumb(it.id, it.name) } },
-            active = tabs.indexOfFirst { it.id == _activeTabId.value }.coerceAtLeast(0),
-        )
-        tabsSave?.cancel()
-        tabsSave = backgroundScope.launch {
-            delay(TABS_SAVE_DELAY_MS)
-            runCatching { store.write(tabsKey(account), tabsJson.encodeToString(SavedTabs.serializer(), saved)) }
-        }
-    }
+    private val dataAccount = MutableStateFlow<String?>(null)
 
-    /**
-     * 启动或换号后恢复这个账号上次的标签与位置，只在还停在初始状态（一个标签、在根目录）时做。没有存过的返回 false。
-     * 恢复不记历史，与 [restoreFolderStack] 相同。
-     */
-    suspend fun restoreTabs(): Boolean {
-        val store = cacheStore ?: return false
-        val account = clientManager.currentClient.value?.account ?: return false
-        enterAccount(account)
-        if (_tabs.value.size > 1 || _folderStackFlow.value.size > 1) return false
-        val saved = runCatching { store.read(tabsKey(account))?.let { tabsJson.decodeFromString(SavedTabs.serializer(), it) } }.getOrNull()
-            ?: return false
-        val stacks = saved.tabs.map { stack -> folderIndex.resolve(stack.map { PikoPathBreadcrumb(it.id, it.name) }) }.filter { it.isNotEmpty() }
-        if (stacks.isEmpty()) return false
-        val tabs = stacks.map { DriveTab(nextTabId++, it) }
-        val active = tabs[saved.active.coerceIn(0, tabs.lastIndex)]
-        _tabs.value = tabs
-        _activeTabId.value = active.id
-        _historyFlow.value = FolderHistory()
-        _folderStackFlow.value = active.stack
-        forgetFoldersOutsideStack()
-        publishTabs()
-        return true
-    }
-
-    // 眼前的路径、标签与缓存属于哪个账号，见 enterAccount
-    private val navigationAccount = MutableStateFlow<String?>(null)
-
-    /**
-     * 换号后把网盘页的位置、标签、历史、剪贴板、撤销记录与列表缓存换成新账号的一份：全回到根目录，
-     * 由网盘页接着恢复新账号上次的标签。同一账号再调不做事，所以账号变化的收集者与网盘页都调它，谁先到谁做。
-     * 不写回标签：写回会拿根目录盖掉新账号存着的那一份，恢复就没了。
-     */
     fun enterAccount(account: String?) {
+        vaultBinding.update { it?.takeIf { binding -> binding.client.account == account } }
         while (true) {
-            val previous = navigationAccount.value
+            val previous = dataAccount.value
             if (previous == account) return
-            if (!navigationAccount.compareAndSet(previous, account)) continue
+            if (!dataAccount.compareAndSet(previous, account)) continue
             if (previous == null) return
             break
         }
-        val root = DriveTab(nextTabId++, listOf(ROOT_BREADCRUMB))
-        _tabs.value = listOf(root)
-        _activeTabId.value = root.id
-        _historyFlow.value = FolderHistory()
-        _folderStackFlow.value = root.stack
-        _tabsFlow.value = _tabs.value
-        _clipboard.value = null
         // 还在路上的列目录属于上一个账号，回来的结果不能记到新账号名下
         markChanged(null)
         listingRequests.value = emptyMap()
         listings.value = emptyMap()
         folderIndex.clear()
-        scrollAnchors.value = emptyMap()
         folderMeaninglessCacheFlow.value = emptyMap()
         _folderEmptiness.value = emptyMap()
         changes.clear()
-    }
-
-    private fun tabsKey(account: String) ="drive-tabs-" + account.replace(Regex("[^A-Za-z0-9._@-]"), "_") + ".json"
-
-    /** 在活动标签后面开一个新标签，停在 [stack]。[activate] 为 false 是在后台开（中键点文件夹）。 */
-    fun openTab(stack: List<PikoPathBreadcrumb>, activate: Boolean = true): Long {
-        val tab = DriveTab(nextTabId++, stack.ifEmpty { listOf(ROOT_BREADCRUMB) })
-        _tabs.update { tabs ->
-            val at = tabs.indexOfFirst { it.id == _activeTabId.value }
-            tabs.toMutableList().apply { add(at + 1, tab) }
-        }
-        if (activate) switchTab(tab.id) else publishTabs()
-        return tab.id
-    }
-
-    fun switchTab(id: Long) {
-        val active = _activeTabId.value
-        if (id == active) return
-        val target = _tabs.value.firstOrNull { it.id == id } ?: return
-        // 先把眼下的位置存回活动标签，再换成目标标签的
-        _tabs.update { tabs -> tabs.map { if (it.id == active) it.copy(stack = _folderStackFlow.value, history = _historyFlow.value) else it } }
-        _activeTabId.value = id
-        _historyFlow.value = target.history
-        _folderStackFlow.value = target.stack
-        forgetFoldersOutsideStack()
-        publishTabs()
-    }
-
-    /** 关掉一个标签。关的是活动标签时先切到右边那个，没有就左边。只剩一个时不关。 */
-    fun closeTab(id: Long) {
-        val tabs = _tabs.value
-        if (tabs.size <= 1) return
-        val index = tabs.indexOfFirst { it.id == id }.takeIf { it >= 0 } ?: return
-        if (id == _activeTabId.value) switchTab((tabs.getOrNull(index + 1) ?: tabs[index - 1]).id)
-        _tabs.update { current -> current.filterNot { it.id == id } }
-        forgetFoldersOutsideStack()
-        publishTabs()
-    }
-
-    /** 眼前的位置：活动标签、它的路径栈与浏览历史。交给 [returnTo] 就能整个回到这里。 */
-    class DriveLocation internal constructor(
-        internal val tabId: Long,
-        internal val stack: List<PikoPathBreadcrumb>,
-        internal val history: FolderHistory,
-    )
-
-    fun currentLocation() = DriveLocation(_activeTabId.value, _folderStackFlow.value, _historyFlow.value)
-
-    /**
-     * 回到 [location]，连历史一起：之后的浏览整段丢掉，后退与前进都不留它的痕迹，像是从没离开过。
-     * 用在信息流的「继续刷」：从信息流跳去看一个文件，看完回到刷之前在的地方。
-     * 那个标签期间被关掉了，就在活动标签后面重新开一个。
-     */
-    fun returnTo(location: DriveLocation) {
-        val tabId = if (_tabs.value.any { it.id == location.tabId }) location.tabId else openTab(location.stack)
-        switchTab(tabId)
-        _historyFlow.value = location.history
-        _folderStackFlow.value = location.stack
-        forgetFoldersOutsideStack()
-        publishTabs()
-    }
-
-    /** 按显示顺序切到后一个（[step] 为 1）或前一个（-1），两头相接。 */
-    fun cycleTab(step: Int) {
-        val tabs = _tabs.value
-        if (tabs.size <= 1) return
-        val index = tabs.indexOfFirst { it.id == _activeTabId.value }
-        switchTab(tabs[(index + step).mod(tabs.size)].id)
-    }
-
-    private val recentFolders = RecentFolders(cacheStore, backgroundScope)
-
-    /** 最近去过的文件夹（整条路径），新的在前，命令面板用，见 [RecentFolders]。 */
-    val recentFoldersFlow: StateFlow<List<List<PikoPathBreadcrumb>>> get() = recentFolders.flow
-
-    private val _clipboard = MutableStateFlow<DriveClipboard?>(null)
-
-    /** 剪切或复制、等着粘贴的条目。放在仓库而不是网盘页里：换标签页、进「我的」再回来，都还在。 */
-    val clipboardFlow: StateFlow<DriveClipboard?> = _clipboard.asStateFlow()
-
-    fun setClipboard(clip: DriveClipboard?) {
-        _clipboard.value = clip
     }
 
     private val pinnedFolders = PinnedFolders(preferences, backgroundScope)
@@ -349,73 +197,6 @@ open class PikoDriveRepository(
 
     /** 做过的改动，能撤销的记在这里，见 [DriveChangeJournal]。 */
     val changes = DriveChangeJournal(this, backgroundScope)
-
-    /**
-     * 人在网盘里往别处走（进出文件夹、面包屑、后退前进、从别处跳进来）之前问一声，返回 false 即拦下、栈不动；
-     * 拦下的一方问过人之后调 retry 把同一步再走一遍。用在窄窗口离开查找重复所在的位置（ui 的 TaskSlot）。
-     * 在换栈之前拦，而不是换了再跳回去：那样历史里多出一步，画面也闪一下。
-     * 换账号、启动时恢复、切标签与信息流的继续刷不经它：那不是人在这个位置里往外走。
-     */
-    fun interface LeaveGuard {
-        fun allows(next: List<PikoPathBreadcrumb>, retry: () -> Unit): Boolean
-    }
-
-    var leaveGuard: LeaveGuard? = null
-
-    private fun leaveAllowed(next: List<PikoPathBreadcrumb>, retry: () -> Unit): Boolean = leaveGuard?.allows(next, retry) ?: true
-
-    /**
-     * 换栈之外还有别的步骤的导航（先切到网盘页、跳过去后标出某一项）：按要去的 [next] 先问 [leaveGuard]，问的是整个 [action]。
-     * 拦下后取消就什么都没发生，确认后重走的是整个动作；只靠换栈时的那一问，切页已经发生、标出那一步也丢了。
-     */
-    fun navigateThen(next: List<PikoPathBreadcrumb>, action: () -> Unit) {
-        if (leaveAllowed(next, action)) action()
-    }
-
-    /**
-     * 活动标签停在会话的位置（查重，见 [DriveLibrary.isSession]）、那个会话还没结束时为真，由主界面装上。
-     * 这时换栈改为另开一个普通标签：会话标签只是一个位置，改写它，会话还在、标签却没了，成了关不掉的孤儿。
-     * 只在有标签栏时为真；窄窗口里离开结果页先由 [leaveGuard] 确认结束会话，再走到这里。
-     */
-    var sessionTabHeld: (DriveLibrary) -> Boolean = { false }
-
-    /** 把栈换成 [requested]，换了才把原来的位置记进后退、清掉前进。 */
-    private fun moveTo(requested: List<PikoPathBreadcrumb>) {
-        // 调用方手上的栈可能是改名、移动之前拼的，进栈前先按索引改正，免得旧名字又写回来
-        val next = folderIndex.resolve(requested)
-        val previous = _folderStackFlow.value
-        if (next == previous) return
-        if (!leaveAllowed(next) { moveTo(requested) }) return
-        val session = previous.library?.takeIf { it.isSession }
-        if (session != null && next.library != session && sessionTabHeld(session)) {
-            openTab(next)
-            return
-        }
-        _folderStackFlow.value = next
-        _historyFlow.update { it.visited(previous) }
-        stackChanged()
-    }
-
-    /** 后退了返回 true。被 [leaveGuard] 拦下也返回 true：这一下已经有人接着处理，调用方不要再退到别处。 */
-    fun goBack(): Boolean {
-        val history = _historyFlow.value
-        val target = history.back.lastOrNull() ?: return false
-        if (!leaveAllowed(target) { goBack() }) return true
-        _historyFlow.value = FolderHistory(back = history.back.dropLast(1), forward = history.forward + listOf(_folderStackFlow.value))
-        _folderStackFlow.value = target
-        stackChanged()
-        return true
-    }
-
-    fun goForward(): Boolean {
-        val history = _historyFlow.value
-        val target = history.forward.lastOrNull() ?: return false
-        if (!leaveAllowed(target) { goForward() }) return true
-        _historyFlow.value = FolderHistory(back = history.back + listOf(_folderStackFlow.value), forward = history.forward.dropLast(1))
-        _folderStackFlow.value = target
-        stackChanged()
-        return true
-    }
 
     // 用事件流而非 StateFlow：订阅方只需被动收到「哪里变了」，不需要初值，也不该在重组时重放。
     // 订阅方只是据此重列，丢掉最旧的几条好过让发出改动的一方卡住
@@ -447,35 +228,6 @@ open class PikoDriveRepository(
         if (indexChanged) normalizeLocations()
         _folderChanges.tryEmit(change)
     }
-
-    // 外部链接要求打开网盘页（官方「在 App 中打开」链接）。应用可能正冷启动、还没登录，
-    // 所以是待办而不是事件，由主界面组合时取走。刷新只对已在组合里的网盘页有用；
-    // 不在的那一页新建时本就会从网络重新拉取
-    private val _openDriveRequested = MutableStateFlow(false)
-    val openDriveRequested: StateFlow<Boolean> = _openDriveRequested.asStateFlow()
-
-    fun requestOpenDrive() {
-        _openDriveRequested.value = true
-        // 链接多半是刚在别处加进网盘的东西，在哪说不清
-        applyChange(DriveChange.ContentsChanged(null))
-    }
-
-    fun consumeOpenDriveRequest() {
-        _openDriveRequested.value = false
-    }
-
-    // 界面外发起的「跳到这个文件并标出它」。网盘页此时可能不在组合里，所以存成
-    // 一次性的待办，由下一个 DriveScreenState 在初始化时取走
-    private val pendingHighlight = MutableStateFlow<Set<String>>(emptySet())
-
-    /** 待高亮的条目。网盘页开着时也会有新请求进来，所以给一个可订阅的流，取用仍走 [takePendingHighlight]。 */
-    val pendingHighlights: StateFlow<Set<String>> = pendingHighlight.asStateFlow()
-
-    fun requestHighlight(ids: Set<String>) {
-        pendingHighlight.value = ids
-    }
-
-    fun takePendingHighlight(): Set<String> = pendingHighlight.getAndUpdate { emptySet() }
 
     /**
      * 文件所在目录的完整路径栈（含根）。先查文件夹索引与列过的目录，缺哪一级才向服务端查那一级：
@@ -511,38 +263,22 @@ open class PikoDriveRepository(
      * [fileId] 所在的文件夹：文件夹看索引，文件看列过的目录里有没有它。过期的列表不认：标为过期正是因为里面的东西挪过。
      * 都没有为 null。
      */
-    private fun knownParentOf(fileId: String): String? {
+    internal fun knownParentOf(fileId: String): String? {
         folderIndex.node(fileId)?.takeUnless { it.provisional }?.parentId?.let { return it }
         return listings.value.entries.firstOrNull { (_, listing) -> !listing.stale && listing.files.any { it.id == fileId } }?.key
     }
+    internal fun knownFile(fileId: String): FileStat? = listings.value.values.asSequence().filter { !it.stale }
+        .mapNotNull { it.files.firstOrNull { file -> file.id == fileId } }.firstOrNull()
 
     /** 这几项各自所在的文件夹；有一项不知道就是 null，订阅者按说不清处理。 */
     private fun knownParentsOf(ids: Collection<String>): Set<String>? = ids.mapTo(HashSet()) { knownParentOf(it) ?: return null }
 
-    /** 路径栈、各标签、浏览历史与最近去过里出现的索引条目，见 FolderIndex.nodeIdOf。 */
-    private fun referencedNodeIds(): Set<String> =
-        (locationStacks() + recentFolders.flow.value).flatMapTo(HashSet()) { stack -> stack.mapNotNull { FolderIndex.nodeIdOf(it.id) } }
+    private fun referencedNodeIds(): Set<String> = references.value
+        .flatMap { it.referencedPaths }
+        .flatMapTo(HashSet()) { stack -> stack.mapNotNull { FolderIndex.nodeIdOf(it.id) } }
 
-    /** 存着的全部路径：各标签的栈与它们的后退、前进。活动标签取眼下的那一份。 */
-    private fun locationStacks(): List<List<PikoPathBreadcrumb>> {
-        val active = _activeTabId.value
-        val kept = _tabs.value.filter { it.id != active }.map { it.stack to it.history } + (_folderStackFlow.value to _historyFlow.value)
-        return kept.flatMap { (stack, history) -> listOf(stack) + history.back + history.forward }
-    }
-
-    /**
-     * 文件夹索引变了：各处存着的路径按它改正（名字、移走后的上级、截到删掉的之外，见 FolderIndex.resolve）。
-     * 不记历史、不经 [leaveGuard]：这不是人在走动。用 update 而不是赋值：同一时刻界面可能正在换栈，
-     * 后写的不能盖掉它；换栈本身也先按索引改正（[moveTo]），两边谁先谁后都对。
-     */
     private fun normalizeLocations() {
-        val index = folderIndex
-        _folderStackFlow.update { index.resolve(it) }
-        _historyFlow.update { it.resolved(index) }
-        _tabs.update { tabs -> tabs.map { tab -> tab.copy(stack = index.resolve(tab.stack), history = tab.history.resolved(index)) } }
-        // 截短了的（停在删掉的文件夹里）不留：那个文件夹已经去不了，留着的是它的上级，人并没有专门去过
-        recentFolders.rewrite { stacks -> stacks.mapNotNull { stack -> index.resolve(stack).takeIf { it.last().id == stack.last().id } } }
-        publishTabs()
+        references.value.forEach { it.refreshFolderReferences() }
     }
 
     /**
@@ -551,10 +287,10 @@ open class PikoDriveRepository(
      * 从当前位置往下走一两层时只多列那一两层。
      * 名字先比完全相同，没有再忽略大小写；同名的文件夹 PikPak 允许有几个，取第一个。
      */
-    suspend fun resolveFolderPath(names: List<String>): Result<List<PikoPathBreadcrumb>> = withContext(Dispatchers.Default) {
+    suspend fun resolveFolderPath(names: List<String>, from: List<PikoPathBreadcrumb> = listOf(ROOT_BREADCRUMB)): Result<List<PikoPathBreadcrumb>> = withContext(Dispatchers.Default) {
         runSuspendCatching {
             // 人在库里时路径栈的第一级不是根，地址栏里写的路径仍从根起
-            val current = folderStackFlow.value.takeIf { it.library == null } ?: listOf(ROOT_BREADCRUMB)
+            val current = from.takeIf { it.library == null } ?: listOf(ROOT_BREADCRUMB)
             val shared = current.drop(1).zip(names).takeWhile { (crumb, name) -> crumb.name == name }.size
             val stack = current.take(1 + shared).toMutableList()
             for (name in names.drop(shared)) {
@@ -599,9 +335,6 @@ open class PikoDriveRepository(
         }
     }
 
-    /** 从最近去过的文件夹里删掉一条，地址栏的历史用。 */
-    fun removeRecentFolder(folderId: String) = recentFolders.remove(folderId)
-
     /*
      * 列过的目录，按文件夹 ID，网盘页、目录图、地址栏的 › 与补全、命令面板读的都是这一份，不各存一份。
      * 放在仓库层而不是界面状态里，是因为网盘页切走再切回时界面状态会整个重建，列表要留下：
@@ -617,9 +350,6 @@ open class PikoDriveRepository(
 
     private val listings = MutableStateFlow<Map<String, Listing>>(emptyMap())
 
-    /** 路径栈上每一级的滚动位置，出栈即丢，所以重新进入某个目录总是从顶部开始。 */
-    private val scrollAnchors = MutableStateFlow<Map<String, ScrollAnchor>>(emptyMap())
-
     private fun rememberListing(folderId: String, files: List<FileStat>) {
         val kept = locationFolderIds()
         listings.update { cache ->
@@ -629,7 +359,7 @@ open class PikoDriveRepository(
         }
     }
 
-    private fun locationFolderIds(): Set<String> = locationStacks().flatMapTo(HashSet()) { stack -> stack.map { it.id } }
+    private fun locationFolderIds(): Set<String> = references.value.flatMap { it.retainedPaths }.flatMapTo(HashSet()) { stack -> stack.map { it.id } }
 
     private fun cachedListing(folderId: String): List<FileStat>? = listings.value[folderId]?.files
 
@@ -700,8 +430,41 @@ open class PikoDriveRepository(
     fun cachedFiles(folderId: String, sortOrder: PikoFileSortOrder): List<FileStat>? =
         cachedListing(folderId)?.let { sortFiles(it, sortOrder, folderId) }
 
-    /** 各目录的归档清单，见 [VaultStore]。 */
-    open val vault = VaultStore(this)
+    private data class VaultBinding(val client: PikPakClient, val store: VaultStore)
+    private val vaultBinding = MutableStateFlow<VaultBinding?>(null)
+    private val loggedOutVault = VaultStore(object : VaultFolderIo {
+        override suspend fun list(folderId: String): List<FileStat> = error("未登录")
+        override suspend fun read(fileId: String): ByteArray = error("未登录")
+        override suspend fun upload(folderId: String, name: String, bytes: ByteArray): String = error("未登录")
+        override suspend fun delete(ids: List<String>): Unit = error("未登录")
+    })
+
+    /** 缓存和待写投影随 client 分开；旧事务的所有 IO 始终使用它开始时的 client。 */
+    open val vault: VaultStore get() {
+        while (true) {
+            val asked = clientManager.currentClient.value ?: return loggedOutVault
+            val current = vaultBinding.value
+            if (current?.client === asked) return current.store
+            val store = VaultStore(object : VaultFolderIo {
+                override suspend fun list(folderId: String) = withContext(Dispatchers.Default) { asked.listFiles(folderId) }
+                override suspend fun read(fileId: String) = withContext(Dispatchers.Default) { readBytes(asked, fileId) }
+                override suspend fun upload(folderId: String, name: String, bytes: ByteArray) = withContext(Dispatchers.Default) { uploadBytes(asked, folderId, name, bytes) }
+                override suspend fun delete(ids: List<String>) = withContext(Dispatchers.Default) { asked.batchDelete(ids) }
+            }, onChanged = { folder ->
+                if (currentAccount == asked.account) applyChange(DriveChange.ContentsChanged(setOf(folder)))
+            }, onWritten = { folder, entries ->
+                if (clientManager.currentClient.value === asked) vaultEntriesKnown(folder, entries)
+            })
+            if (vaultBinding.compareAndSet(current, VaultBinding(asked, store)) && clientManager.currentClient.value === asked) return store
+        }
+    }
+
+    fun vaultAccess(expectedAccount: String): VaultStore? {
+        val asked = clientManager.currentClient.value?.takeIf { it.account == expectedAccount } ?: return null
+        val store = vault
+        val binding = vaultBinding.value?.takeIf { it.store === store }
+        return store.takeIf { clientManager.currentClient.value === asked && (binding == null || binding.client === asked) }
+    }
 
     /**
      * 网盘页看到的列表：清单文件不列，换成其中的归档条目。清单读不出来时照样列出真实文件，
@@ -791,12 +554,22 @@ open class PikoDriveRepository(
     val sourceLedger = SourceLedger(cacheStore, backgroundScope)
 
     init {
+        backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            var previous: PikPakClient? = null
+            clientManager.currentClient.collect { current ->
+                val old = previous
+                previous = current
+                if (old != null && current != null && old !== current && old.account == current.account) {
+                    applyChange(DriveChange.ContentsChanged(null))
+                    _clientRevision.update { it + 1 }
+                }
+            }
+        }
         // 构造结束前先切到当前账号，避免首次收集清掉刚记下的目录内容、归档树与来源。
         // 磁盘缓存仍在后台载入；换号时换一份，退出登录只清内存。
         backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) {
             clientManager.currentClient.collect {
                 childContents.switchAccount(it?.account)
-                recentFolders.switchAccount(it?.account)
                 vaultTrees.switchAccount(it?.account)
                 sourceLedger.switchAccount(it?.account)
             }
@@ -837,8 +610,7 @@ open class PikoDriveRepository(
         }
     }
 
-    /** 从磁盘载入完成一次就加一，文件夹行据此重新描述。 */
-    val childContentLoads: StateFlow<Int> get() = childContents.loads
+    val childContentsFlow: StateFlow<Map<String, List<ChildFile>>> get() = childContents.state
 
     fun knownChildContents(folderId: String): List<ChildFile>? = childContents.get(folderId)
 
@@ -902,66 +674,6 @@ open class PikoDriveRepository(
             if (folderIndex.listed(folderId, files, complete)) normalizeLocations()
             childContents.get(folderId)
         }
-    }
-
-    fun scrollAnchor(folderId: String): ScrollAnchor? = scrollAnchors.value[folderId]
-
-    fun saveScrollAnchor(folderId: String, anchor: ScrollAnchor) {
-        if (folderStackFlow.value.none { it.id == folderId }) return
-        scrollAnchors.update { it + (folderId to anchor) }
-    }
-
-    private fun stackChanged() {
-        // 库不是文件夹，不进「最近去过」；库里的子文件夹的路径以库开头，从命令面板再打开时也回不到真实的上级
-        if (_folderStackFlow.value.library == null && _folderStackFlow.value.archive == null) recentFolders.visited(_folderStackFlow.value)
-        forgetFoldersOutsideStack()
-        publishTabs()
-    }
-
-    // 历史里的位置也留着：后退回去时首帧就是原来的滚动位置。别的标签停着的位置与它们的历史同样留着，切回去是即时的。
-    // 列表本身不在这里丢：出了路径的目录照最近列过的留着，由 rememberListing 按数量淘汰
-    private fun forgetFoldersOutsideStack() {
-        val kept = locationFolderIds()
-        scrollAnchors.update { anchors -> anchors.filterKeys { it in kept } }
-    }
-
-    fun pushFolder(id: String, name: String) {
-        moveTo(_folderStackFlow.value + PikoPathBreadcrumb(id, name))
-    }
-
-    /** 换到一条完整的路径，记进历史：在网盘中显示、从星标或传输跳过去，后退能回到跳之前的地方。 */
-    fun updateFolderStack(stack: List<PikoPathBreadcrumb>) {
-        if (stack.isNotEmpty()) moveTo(stack)
-    }
-
-    /** 启动时恢复上次退出时的位置。不记历史：后退不该退到恢复之前那一瞬的根目录。 */
-    fun restoreFolderStack(stack: List<PikoPathBreadcrumb>) {
-        if (stack.isEmpty()) return
-        _folderStackFlow.value = stack
-        stackChanged()
-    }
-
-    fun popToBreadcrumb(index: Int): PikoPathBreadcrumb? {
-        val stack = _folderStackFlow.value
-        if (index !in 0 until stack.lastIndex) return null
-        val child = stack[index + 1]
-        moveTo(stack.take(index + 1))
-        return child
-    }
-
-    /**
-     * 直接跳到某个目录，中间层级不可知，栈只留根与目标两级。目标本身是根时只留根：
-     * 秒传的保存目标可以是根目录，拼成两级会出现两个「网盘」，返回一次还停在原地。
-     */
-    fun navigateToFolder(breadcrumb: PikoPathBreadcrumb) {
-        moveTo(if (breadcrumb.id.isEmpty()) listOf(ROOT_BREADCRUMB) else listOf(ROOT_BREADCRUMB, breadcrumb))
-    }
-
-    fun popFolder(): PikoPathBreadcrumb? {
-        val stack = _folderStackFlow.value
-        if (stack.size <= 1) return null
-        moveTo(stack.dropLast(1))
-        return stack.last()
     }
 
     suspend fun listFiles(
@@ -1082,11 +794,13 @@ open class PikoDriveRepository(
      * 算 gcid 与上传各读一遍。同名文件不会被覆盖，调用方自己删旧的。
      */
     suspend fun uploadBytes(parentId: String, name: String, bytes: ByteArray): Result<String> = withContext(Dispatchers.Default) {
-        runSuspendCatching {
-            val size = bytes.size.toLong()
-            val gcid = PikPakHash.fromSource(Buffer().apply { write(bytes) }, size)
-            client.upload(parentId, name, size, gcid, { Buffer().apply { write(bytes) } }, {}).fileId
-        }
+        runSuspendCatching { uploadBytes(client, parentId, name, bytes) }
+    }
+
+    private suspend fun uploadBytes(asked: PikPakClient, parentId: String, name: String, bytes: ByteArray): String {
+        val size = bytes.size.toLong()
+        val gcid = PikPakHash.fromSource(Buffer().apply { write(bytes) }, size)
+        return asked.upload(parentId, name, size, gcid, { Buffer().apply { write(bytes) } }, {}).fileId
     }
 
     /**
@@ -1096,18 +810,20 @@ open class PikoDriveRepository(
      * 所以没有直链时隔一会儿再查，几次都没有才算失败。
      */
     suspend fun readBytes(fileId: String): Result<ByteArray> = withContext(Dispatchers.Default) {
-        runSuspendCatching {
-            var detail = client.getFile(fileId)
-            for (wait in LINK_RETRY_DELAYS) {
-                if (detail.downloadUrl != null) break
-                delay(wait)
-                detail = client.getFile(fileId)
-            }
-            val url = detail.downloadUrl ?: error("没有下载链接")
-            val size = detail.size.toLongOrNull() ?: error("大小未知")
-            if (size == 0L) return@runSuspendCatching ByteArray(0)
-            client.streamRangeFromUrl(url, start = 0L, length = size, {}) { stream -> stream.channel.toByteArray() }
+        runSuspendCatching { readBytes(client, fileId) }
+    }
+
+    private suspend fun readBytes(asked: PikPakClient, fileId: String): ByteArray {
+        var detail = asked.getFile(fileId)
+        for (wait in LINK_RETRY_DELAYS) {
+            if (detail.downloadUrl != null) break
+            delay(wait)
+            detail = asked.getFile(fileId)
         }
+        val url = detail.downloadUrl ?: error("没有下载链接")
+        val size = detail.size.toLongOrNull() ?: error("大小未知")
+        if (size == 0L) return ByteArray(0)
+        return asked.streamRangeFromUrl(url, start = 0L, length = size, {}) { stream -> stream.channel.toByteArray() }
     }
 
     /** [parentId] 下名为 [name] 的文件夹，没有就新建。返回它的 ID。 */
@@ -1246,17 +962,18 @@ open class PikoDriveRepository(
         toParentId: String,
         ancestorIds: List<String>,
     ): Result<Unit> = withContext(Dispatchers.Default) {
+        val boundClient = client
         runSuspendCatching {
-            val restore = client.restoreShare(shareId, passCodeToken, fileIds, toParentId = toParentId, ancestorIds = ancestorIds)
+            val restore = boundClient.restoreShare(shareId, passCodeToken, fileIds, toParentId = toParentId, ancestorIds = ancestorIds)
             if (restore.restoreTaskId.isEmpty()) return@runSuspendCatching
             repeat(RESTORE_POLL_LIMIT) {
-                val task = client.getTask(restore.restoreTaskId)
+                val task = boundClient.getTask(restore.restoreTaskId)
                 if (task.phase == TaskPhase.COMPLETE) return@runSuspendCatching
                 if (task.phase == TaskPhase.ERROR) error(task.message.ifBlank { "转存失败" })
                 delay(RESTORE_POLL_INTERVAL_MILLIS)
             }
             error("转存超时")
-        }.onSuccess { applyChange(DriveChange.ContentsChanged(setOf(toParentId))) }
+        }.onSuccess { if (clientManager.currentClient.value === boundClient) applyChange(DriveChange.ContentsChanged(setOf(toParentId))) }
     }
 
     /**
@@ -1339,12 +1056,20 @@ open class PikoDriveRepository(
         listAllFiles().map { files -> files.firstOrNull { it.isMyPacksFolder() }?.let { PikoPathBreadcrumb(it.id, it.name) } }
 
     suspend fun getOrCreateMyPacksFolder(): Result<PikoPathBreadcrumb> {
-        val rootFiles = listAllFiles().getOrElse { return Result.failure(it) }
+        val access = currentAccount?.let(::writeAccess) ?: return Result.failure(IllegalStateException("未登录"))
+        return getOrCreateMyPacksFolder(access)
+    }
+
+    internal suspend fun getOrCreateMyPacksFolder(access: DriveWriteAccess): Result<PikoPathBreadcrumb> {
+        val rootFiles = access.listFolder("").getOrElse { return Result.failure(it) }
         val existing = rootFiles.firstOrNull { it.isMyPacksFolder() }
         return if (existing != null) {
             Result.success(PikoPathBreadcrumb(existing.id, existing.name))
         } else {
-            createFolder("", MY_PACKS_FOLDER_NAME).map { PikoPathBreadcrumb(it, MY_PACKS_FOLDER_NAME) }
+            access.createFolder("", MY_PACKS_FOLDER_NAME).map {
+                access.publish(DriveChange.Created("", it, MY_PACKS_FOLDER_NAME, isFolder = true))
+                PikoPathBreadcrumb(it, MY_PACKS_FOLDER_NAME)
+            }
         }
     }
 
@@ -1390,8 +1115,6 @@ open class PikoDriveRepository(
         // 批量操作的日志里列出的 ID 个数：够在网盘里对上是哪几项，几百项的移动不至于占满一屏
         private const val LOGGED_IDS = 5
         private val LINK_RETRY_DELAYS = listOf(500.milliseconds, 1.seconds, 2.seconds)
-        private const val FIRST_TAB_ID = 1L
-        private const val TABS_SAVE_DELAY_MS = 1_000L
         private const val MAX_LOCATE_DEPTH = 64
         private const val CHILD_NAME_PAGE = 20
         private const val CHILD_NAME_CONCURRENCY = 2
@@ -1414,46 +1137,5 @@ open class PikoDriveRepository(
 
         // PikPak 各端自动建的保存目录名不一，官方客户端建过的也算
         private val MY_PACKS_FOLDER_NAMES = setOf("my pack", "my packs", "我的资源", "我的离线")
-    }
-}
-
-@Serializable
-private class SavedCrumb(val id: String, val name: String)
-
-@Serializable
-private class SavedTabs(val tabs: List<List<SavedCrumb>>, val active: Int)
-
-private val tabsJson = Json { ignoreUnknownKeys = true }
-
-/** 网盘页的一个标签：停在哪（[stack]）与它自己的后退、前进。 */
-data class DriveTab(val id: Long, val stack: List<PikoPathBreadcrumb>, val history: FolderHistory = FolderHistory()) {
-    val title: String get() = stack.lastOrNull()?.name.orEmpty()
-
-    /** 停在会话的位置里（查重结果），见 [DriveLibrary.isSession]。结果只活在会话里，标签随它关掉。 */
-    val session: DriveLibrary? get() = stack.library?.takeIf { it.isSession }
-}
-
-/**
- * 网盘页的浏览历史。[back] 与 [forward] 的末尾是离眼下最近的一步，各存一条完整路径。
- * 最多记 [LIMIT] 步，再早的丢掉。
- */
-data class FolderHistory(
-    val back: List<List<PikoPathBreadcrumb>> = emptyList(),
-    val forward: List<List<PikoPathBreadcrumb>> = emptyList(),
-) {
-    val canGoBack: Boolean get() = back.isNotEmpty()
-    val canGoForward: Boolean get() = forward.isNotEmpty()
-
-    /** 从 [previous] 走开了：它进后退，前进作废。 */
-    fun visited(previous: List<PikoPathBreadcrumb>) = FolderHistory(back = (back + listOf(previous)).takeLast(LIMIT), forward = emptyList())
-
-    /** 各步按文件夹索引改正，见 FolderIndex.resolve。没有要改的返回自己。 */
-    internal fun resolved(index: FolderIndex): FolderHistory {
-        val next = FolderHistory(back.map(index::resolve), forward.map(index::resolve))
-        return if (next == this) this else next
-    }
-
-    companion object {
-        const val LIMIT = 50
     }
 }

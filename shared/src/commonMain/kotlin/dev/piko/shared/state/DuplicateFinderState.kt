@@ -4,7 +4,8 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import dev.piko.shared.data.DriveChangeJournal
+import androidx.compose.runtime.snapshotFlow
+import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.DuplicateScanEvent
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.data.DuplicateScanner
@@ -20,6 +21,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * 查找重复：递归扫描 [root]，分出完全相同与同集不同版本两类。
@@ -35,6 +38,7 @@ class DuplicateFinderState(
     private val driveRepo: PikoDriveRepository,
     private val scope: CoroutineScope,
     override val root: PikoPathBreadcrumb,
+    private val trashSession: TrashSession? = null,
 ) : FolderTask {
     enum class Phase { SCANNING, ANALYZING, DONE, FAILED }
 
@@ -59,9 +63,38 @@ class DuplicateFinderState(
         private set
 
     private var scanned by mutableStateOf<List<ScannedFile>>(emptyList())
+    private var scannedDirectories by mutableStateOf<List<ScannedFile>>(emptyList())
+
+    private val directoryIndexes by derivedStateOf {
+        DuplicateKind.entries.associateWith { kind -> directoryIndex(kind) }
+    }
+
+    private fun directoryIndex(kind: DuplicateKind): Map<String, List<FileStat>> {
+        val matches = when (kind) {
+            DuplicateKind.IDENTICAL -> report.identical
+            DuplicateKind.VERSIONS -> report.versions
+        }.flatMap { it.rows }.map { it.file.id }.toSet()
+        val directories = scannedDirectories.associate { it.file.id to it.file }
+        val includedDirectories = linkedSetOf<String>()
+        val files = scanned.filter { it.file.id in matches }.map { it.file }
+        for (file in files) {
+            var parent = file.parentId
+            while (parent != root.id && includedDirectories.add(parent)) {
+                parent = directories[parent]?.parentId ?: break
+            }
+        }
+        return (files + includedDirectories.mapNotNull(directories::get)).groupBy { it.parentId }
+    }
+
+    fun directoryFiles(folderId: String, kind: DuplicateKind = DuplicateKind.IDENTICAL): List<FileStat> =
+        directoryIndexes.getValue(kind)[folderId].orEmpty()
 
     /** 扫描后移入回收站的。不从 [scanned] 里删：撤销时要按原样补回。 */
     private var gone: Set<String> = emptySet()
+    private var projected: Set<String> = emptySet()
+    private val regroupLock = Mutex()
+    private var groupedFiles: List<ScannedFile>? = null
+    private var groupedRemoved: Set<String>? = null
 
     private val statsById: Map<String, FileStat> by derivedStateOf { scanned.associate { it.file.id to it.file } }
 
@@ -73,6 +106,8 @@ class DuplicateFinderState(
         report.identical.flatMapTo(HashSet()) { group -> group.rows.map { it.file.id }.filter { it != group.keptId } }
     }
 
+    val keptIds: Set<String> by derivedStateOf { report.identical.mapNotNullTo(HashSet()) { it.keptId } }
+
     /** 还在扫描或比对，结果还没出来。 */
     val isScanning: Boolean get() = phase == Phase.SCANNING || phase == Phase.ANALYZING
 
@@ -82,14 +117,19 @@ class DuplicateFinderState(
     private val rootName: String? get() = root.name.takeIf { root.id.isNotEmpty() }
 
     init {
+        if (trashSession != null) scope.launch {
+            snapshotFlow { trashSession.projectedIds }.collect { ids ->
+                projected = ids
+                if (phase == Phase.DONE) regroup()
+            }
+        }
         rescan()
         scope.launch {
-            driveRepo.changes.events.collect { event ->
-                val trashed = (event.change as? DriveChangeJournal.Change.Trash)?.ids
-                val restored = (event.undone as? DriveChangeJournal.Change.Trash)?.ids
-                when {
-                    trashed != null -> updateGone(gone + trashed)
-                    restored != null -> updateGone(gone - restored.toSet())
+            driveRepo.folderChanges.collect { change ->
+                when (change) {
+                    is DriveChange.Trashed -> updateGone(gone + change.ids)
+                    is DriveChange.Restored -> updateGone(gone - change.ids.toSet())
+                    else -> Unit
                 }
             }
         }
@@ -106,6 +146,7 @@ class DuplicateFinderState(
         errorMessage = null
         report = DuplicateReport.EMPTY
         scanned = emptyList()
+        scannedDirectories = emptyList()
         gone = emptySet()
         scanJob = scope.launch {
             try {
@@ -122,6 +163,7 @@ class DuplicateFinderState(
                             failedFolders = event.failedFolders
                             phase = Phase.ANALYZING
                             scanned = event.files
+                            scannedDirectories = event.subfolders
                             regroup()
                             phase = Phase.DONE
                         }
@@ -142,15 +184,21 @@ class DuplicateFinderState(
         scanner?.stop()
     }
 
-    private fun updateGone(next: Set<String>) {
+    private suspend fun updateGone(next: Set<String>) {
         if (next == gone) return
         gone = next
         // 扫描还没出结果时只记下，出结果那一刻一并扣掉
-        if (phase == Phase.DONE) scope.launch { regroup() }
+        if (phase == Phase.DONE) regroup()
     }
 
     private suspend fun regroup() {
-        val present = gone.let { removed -> scanned.filterNot { it.file.id in removed } }
-        report = withContext(Dispatchers.Default) { findDuplicates(present, rootName) }
+        regroupLock.withLock {
+            val removed = gone + projected
+            if (groupedFiles === scanned && groupedRemoved == removed) return@withLock
+            val present = scanned.filterNot { it.file.id in removed }
+            report = withContext(Dispatchers.Default) { findDuplicates(present, rootName) }
+            groupedFiles = scanned
+            groupedRemoved = removed
+        }
     }
 }

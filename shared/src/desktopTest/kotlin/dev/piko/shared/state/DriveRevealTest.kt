@@ -22,7 +22,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class DriveRevealTest {
-    @Test fun highlightedFolderIsVisibleWhenTheParsedStructureBecomesReady() = smoke {
+    @Test fun highlightedFolderIsVisibleWhenTheParsedStructureBecomesReady() = smoke { scope ->
         val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
         val scope = CoroutineScope(SupervisorJob() + dispatcher)
         val server = FakePikPakServer()
@@ -36,8 +36,9 @@ class DriveRevealTest {
         try {
             val state = withContext(dispatcher) {
                 val repository = PikoDriveRepository(server.provider(), prefs)
-                repository.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB, PikoPathBreadcrumb(root.id, root.name)))
-                DriveScreenState(repository, prefs, scope).also { it.highlight(setOf(target.id)); it.load() }
+                val repositoryWorkspace = dev.piko.shared.presentation.DriveWorkspace(repository, backgroundScope = scope)
+                repositoryWorkspace.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB, PikoPathBreadcrumb(root.id, root.name)))
+                DriveScreenState(repository, prefs, scope, navigation = repositoryWorkspace).also { it.highlight(setOf(target.id)); it.load() }
             }
             scope.launch {
                 snapshotFlow {
@@ -50,8 +51,6 @@ class DriveRevealTest {
         } finally {
             scope.cancel()
             dispatcher.close()
-            DriveViewMemory.showAll.remove(root.id)
-            DriveViewMemory.expanded.keys.filter { it.startsWith("${root.id}|") }.forEach(DriveViewMemory.expanded::remove)
         }
     }
 

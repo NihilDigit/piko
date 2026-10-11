@@ -40,7 +40,7 @@ class FolderContentMemoryTest {
 
             val restarted = FolderContentMemory(store, scope, saveDelayMillis = 0)
             restarted.switchAccount("alice")
-            restarted.loads.first { it == 1 }
+            restarted.state.first { it["folder"] == contents }
             assertEquals(contents, restarted.get("folder"))
 
             restarted.switchAccount("bob")

@@ -9,7 +9,6 @@ import dev.piko.shared.data.outsideArchives
 import io.github.nihildigit.pikpak.ArchivePasswordException
 import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.PikPakException
-import dev.piko.shared.data.VaultEdits
 import dev.piko.shared.data.VaultEntry
 import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.DriveChangeJournal
@@ -48,10 +47,14 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import dev.piko.shared.presentation.DriveClipboardState
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlin.time.TimeSource
 
@@ -92,6 +95,10 @@ private const val TAG = "Drive"
 /** 对归档条目做只有网盘文件才能做的事时的提示。 */
 private const val VAULTED_NEEDS_RESTORE = "已归档的条目需先恢复到网盘"
 
+data class TrashProgress(val completed: Int, val total: Int)
+
+data class TrashFailure(val completed: Int, val remainingIds: List<String>)
+
 /**
  * 网盘浏览的全部状态与动作，两端共用。
  *
@@ -115,7 +122,51 @@ class DriveScreenState(
     /** 把压缩包当文件夹看，见 [ArchiveLocation]。为 null 时进不了压缩包。 */
     private val archives: ArchiveBrowser? = null,
     initialSortOrder: PikoFileSortOrder = PikoFileSortOrder.TIME_DESC,
+    val navigation: dev.piko.shared.presentation.DriveNavigation = dev.piko.shared.presentation.LibraryNavigation(
+        driveRepo, null, scope, listOf(PikoDriveRepository.ROOT_BREADCRUMB),
+    ),
+    val trashSession: TrashSession = TrashSession(driveRepo, scope),
+    private val clipboard: DriveClipboardState = DriveClipboardState(),
+    operationScope: CoroutineScope = scope,
+    fileWriteSession: FileWriteSession = FileWriteSession(driveRepo, operationScope),
+    historyEditSession: HistoryEditSession = HistoryEditSession(driveRepo, operationScope),
+    vaultEditSession: VaultEntryEditSession = VaultEntryEditSession(driveRepo, operationScope),
+    folderVault: FolderVaultSession? = null,
+    shareSaves: ShareSaveSession? = null,
+    receiving: dev.piko.shared.presentation.ReceivingActivity? = null,
 ) {
+    private val browserAccount = driveRepo.currentAccount
+    private val canAcceptAction: Boolean get() = scope.isActive && driveRepo.currentAccount == browserAccount
+    val acceptsActions: Boolean get() = canAcceptAction
+    val fileActions = dev.piko.shared.presentation.FileCommands(driveRepo, fileWriteSession, browserAccount, trashSession, folderVault, vaultEditSession, shareSaves, receiving) { canAcceptAction }
+    val vaultActions = dev.piko.shared.presentation.VaultEntryCommands(driveRepo, vaultEditSession, fileActions, browserAccount) { canAcceptAction }
+    val historyActions = dev.piko.shared.presentation.HistoryCommands(driveRepo, historyEditSession, browserAccount) { canAcceptAction }
+    private var fileWrites by mutableStateOf(fileWriteSession.works.value)
+    init { scope.launch { fileWriteSession.works.collect { fileWrites = it } } }
+    init {
+        val initialRevision = driveRepo.clientRevision.value
+        scope.launch {
+            var previous = initialRevision
+            driveRepo.clientRevision.collect { revision ->
+                if (revision != previous && canAcceptAction) {
+                    libraryListings.clear()
+                    if (archiveView != null) load()
+                }
+                previous = revision
+            }
+        }
+    }
+
+    private fun submitFileAction(command: FileWriteCommand, clearSelection: Boolean = true): Boolean =
+        when (val result = fileActions.submit(command)) {
+            is dev.piko.shared.presentation.FileCommandResult.Accepted -> {
+                if (clearSelection) exitSelection()
+                true
+            }
+            is dev.piko.shared.presentation.FileCommandResult.Rejected -> { _messages.tryEmit(result.reason); false }
+        }
+
+    val clipboardFlow: StateFlow<DriveClipboard?> get() = clipboard.contents
     var files by mutableStateOf<List<FileStat>>(emptyList())
         private set
     var isLoading by mutableStateOf(true)
@@ -131,6 +182,11 @@ class DriveScreenState(
 
     var searchQuery by mutableStateOf("")
         private set
+    var isSearchOpen by mutableStateOf(false)
+        private set
+
+    fun openSearch() { isSearchOpen = true }
+    fun closeSearch() { isSearchOpen = false; updateSearchQuery("") }
     var isGlobalSearching by mutableStateOf(false)
         private set
 
@@ -143,7 +199,8 @@ class DriveScreenState(
     private val globalSearchHits = mutableStateListOf<SearchHit>()
     private var globalSearchJob: Job? = null
 
-    val selectedFileIds = mutableStateListOf<String>()
+    private val _selectedFileIds = mutableStateListOf<String>()
+    val selectedFileIds: List<String> get() = _selectedFileIds
 
     /** 移动端长按进入的多选：取消到一项不剩仍留在多选里，由顶栏的 ✕ 退出。 */
     private var selectionHeldOpen by mutableStateOf(false)
@@ -152,11 +209,12 @@ class DriveScreenState(
      * 是否在多选里，由选中集合推出，不由各入口自己置位。全选曾只填集合、未置标志：桌面上条目描了边却没有勾选框，
      * 命令栏未换成多选，换筛选时这些选中也未清除。
      */
-    val isSelectionMode: Boolean by derivedStateOf { selectionHeldOpen || selectedFileIds.isNotEmpty() }
+    val isSelectionMode: Boolean by derivedStateOf { selectionHeldOpen || _selectedFileIds.isNotEmpty() }
 
-    val revealedFileIds = mutableStateListOf<String>()
+    private val _revealedFileIds = mutableStateListOf<String>()
+    val revealedFileIds: List<String> get() = _revealedFileIds
 
-    var highlightedFileIds by mutableStateOf(driveRepo.takePendingHighlight())
+    var highlightedFileIds by mutableStateOf(navigation.takePendingHighlight())
         private set
     var highlightRevision by mutableStateOf(0)
         private set
@@ -165,7 +223,9 @@ class DriveScreenState(
      * 「显示全部」按目录记住：规则仍可能误判，用户在某个目录里点开过，回到这里时应当还是展开的。
      * 记在进程内存里而不是偏好里：目录 id 会越积越多，重启后按默认折叠也说得过去。
      */
-    val showAllFilesTemporarily: Boolean by derivedStateOf { DriveViewMemory.showAll[activeFolderId] == true }
+    private val showAllDirectories = mutableStateMapOf<String, Boolean>()
+    private val expandedSections = mutableStateMapOf<String, Boolean>()
+    val showAllFilesTemporarily: Boolean by derivedStateOf { showAllDirectories[activeFolderId] == true }
 
     var isHeuristicFilterEnabled by mutableStateOf(true)
         private set
@@ -178,17 +238,25 @@ class DriveScreenState(
     /** 面向用户的一次性提示，各端自己决定怎么呈现。 */
     val messages: SharedFlow<String> = _messages.asSharedFlow()
 
-    val folderStack get() = driveRepo.folderStackFlow
+    val folderStack get() = navigation.folderStackFlow
     val activeFolder: PikoPathBreadcrumb
-        get() = driveRepo.folderStackFlow.value.lastOrNull() ?: PikoPathBreadcrumb("", "网盘")
+        get() = navigation.folderStackFlow.value.lastOrNull() ?: PikoPathBreadcrumb("", "网盘")
 
-    private var activeFolderId by mutableStateOf(driveRepo.folderStackFlow.value.lastOrNull()?.id.orEmpty())
+    private var activeFolderId by mutableStateOf(navigation.folderStackFlow.value.lastOrNull()?.id.orEmpty())
+    private var activeFolderStack by mutableStateOf(navigation.folderStackFlow.value)
 
     /**
      * 眼前列的是哪个库（见 [DriveLibrary]），列的是文件夹时为 null。从库里进了子文件夹就是文件夹：
      * 那里的内容与操作都与网盘里无异。
      */
-    val libraryView: DriveLibrary? by derivedStateOf { DriveLibrary.of(activeFolderId) }
+    val libraryView: DriveLibrary? by derivedStateOf {
+        if (ArchiveLocation.of(activeFolderId) != null) null
+        else activeFolderStack.library?.takeIf { it.isSession } ?: DriveLibrary.of(activeFolderId)
+    }
+
+    private val usesFolderStructure: Boolean by derivedStateOf {
+        libraryView?.let(sessionListing)?.usesFolderStructure == true
+    }
 
     /** 眼前列的是压缩包里的哪一层，不在压缩包里时为 null。 */
     val archiveView: ArchiveLocation? by derivedStateOf { ArchiveLocation.of(activeFolderId) }
@@ -210,11 +278,11 @@ class DriveScreenState(
      * [files] 的分析结果。只在 [analyzedFiles] 与 [files] 是同一个列表时可用：换目录后、新结果
      * 算出来之前，不能拿上一个目录的结构去排这一个目录的文件。
      */
-    private var analyzedFiles by mutableStateOf<List<FileStat>?>(null)
-    private var analysis by mutableStateOf<DriveStructure?>(null)
+    private class FolderAnalysis(val source: List<FileStat>, val structure: DriveStructure)
+    private var analysis by mutableStateOf<FolderAnalysis?>(null)
 
-    private val currentAnalysis: DriveStructure? by derivedStateOf { analysis?.takeIf { analyzedFiles === files } }
-    val isDisplayStructureReady: Boolean by derivedStateOf { isSearching || isVirtualPlace || currentAnalysis != null }
+    private val currentAnalysis: DriveStructure? by derivedStateOf { analysis?.takeIf { it.source === files }?.structure }
+    val isDisplayStructureReady: Boolean by derivedStateOf { isSearching || (isVirtualPlace && !usesFolderStructure) || currentAnalysis != null }
 
     /** 列过的文件夹空不空，见 PikoDriveRepository.folderEmptiness。 */
     val folderEmptiness get() = driveRepo.folderEmptiness
@@ -223,7 +291,8 @@ class DriveScreenState(
     val vaultedFolders get() = driveRepo.vaultedFolders
 
     /** 按文件夹 id 的显示信息，后台算好逐个填入。解析关闭时界面不读它。 */
-    val folderViews = mutableStateMapOf<String, DriveFolderView>()
+    private val _folderViews = mutableStateMapOf<String, DriveFolderView>()
+    val folderViews: Map<String, DriveFolderView> get() = _folderViews
 
     // 以下都用 derivedStateOf 而不是 getter：这些值每帧会被读到多次（列表、空态判断、
     // 全选、折叠提示各读一次），纯 getter 意味着同一帧内把千项目录过滤好几遍。
@@ -289,6 +358,7 @@ class DriveScreenState(
         when {
             filter != null -> searchedFiles.filter { !it.isFolder && it.fileCategory() == filter }.map { DriveListItem.File(it, null) }
             isGlobalSearchActive || searchQuery.isNotBlank() -> searchedFiles.map { DriveListItem.File(it, null) }
+            usesFolderStructure -> folderSessionItems { block -> isBlockExpanded(block) }
             libraryView?.isSession == true -> sessionItems { blockId -> isSessionGroupExpanded(blockId) }
             // 库里的条目散在全盘各处，按作品与分区归拢的是一个目录里的东西，这里照原来的先后平铺；
             // 压缩包里的也平铺、不折叠：在包里多半是挑要解压的几项，折起来的次要文件正是要挑的一部分
@@ -316,6 +386,7 @@ class DriveScreenState(
         val structure = currentAnalysis
         val rows = when {
             isStructured && structure != null -> buildDriveItems(files, structure, isFoldingActive && !showAllFilesTemporarily) { true }
+            !isSearching && usesFolderStructure -> folderSessionItems { true }
             !isSearching && libraryView?.isSession == true -> sessionItems { true }
             else -> displayItems
         }
@@ -355,7 +426,7 @@ class DriveScreenState(
     }
 
     private fun isBlockExpanded(block: DriveBlock): Boolean =
-        DriveViewMemory.expanded[expandKey(block.id)] ?: block.defaultExpanded
+        expandedSections[expandKey(block.id)] ?: block.defaultExpanded
 
     private fun expandKey(blockId: String) = "$activeFolderId|$blockId"
 
@@ -363,14 +434,14 @@ class DriveScreenState(
         // 先看记下的状态，再看块的默认值：「次要文件」块由 buildDriveItems 临时拼出，不在 blocks 里，
         // 只按 blocks 查的话它永远当作展开，每点一次都写成收起，收起后就再也展不开
         val key = expandKey(blockId)
-        val current = DriveViewMemory.expanded[key]
+        val current = expandedSections[key]
             ?: currentAnalysis?.blocks?.firstOrNull { it.id == blockId }?.defaultExpanded
             ?: true
-        DriveViewMemory.expanded[key] = !current
+        expandedSections[key] = !current
     }
 
     fun expandSection(blockId: String) {
-        DriveViewMemory.expanded[expandKey(blockId)] = true
+        expandedSections[expandKey(blockId)] = true
     }
 
     /** 各行带的显示信息，按文件 ID。查找重复里一个文件占两行，两行的显示信息相同。 */
@@ -379,7 +450,7 @@ class DriveScreenState(
     }
 
     /** 文件夹的解析结果，解析关闭或还没算出时为 null。 */
-    fun folderView(file: FileStat): DriveFolderView? = if (isNameParsing && file.isFolder) folderViews[file.id] else null
+    fun folderView(file: FileStat): DriveFolderView? = if (isNameParsing && file.isFolder) _folderViews[file.id] else null
 
     /** 一项眼下在列表里叫什么，见 [DriveItemName]。不在眼前列表里的照原样。 */
     fun itemName(file: FileStat): DriveItemName = driveItemName(file, rowViews[file.id], folderView(file))
@@ -416,10 +487,14 @@ class DriveScreenState(
         // 目录一变就重新加载，不管是谁改的栈。只由这里负责：界面外的跳转（「在网盘中显示」）改栈时
         // 网盘页可能一直开着、不会重建，让各导航入口自己调加载的话，这条路就漏掉了
         scope.launch {
-            driveRepo.folderStackFlow.collect { stack ->
+            navigation.folderStackFlow.collect { stack ->
                 val id = stack.lastOrNull()?.id.orEmpty()
-                if (id == activeFolderId) return@collect
-                activeFolderId = id
+                val previousStack = activeFolderStack
+                if (id == activeFolderId && previousStack.library == stack.library) return@collect
+                Snapshot.withMutableSnapshot {
+                    activeFolderStack = stack
+                    activeFolderId = id
+                }
                 onFolderChanged()
             }
         }
@@ -431,7 +506,7 @@ class DriveScreenState(
         }
         // 同理，高亮请求随时可能来，不只在网盘页建出来的那一刻
         scope.launch {
-            driveRepo.pendingHighlights.collect { ids -> if (ids.isNotEmpty()) highlight(driveRepo.takePendingHighlight()) }
+            navigation.pendingHighlights.collect { ids -> if (ids.isNotEmpty()) highlight(navigation.takePendingHighlight()) }
         }
         scope.launch {
             snapshotFlow { highlightedFileIds to activeFolderId }.collectLatest { (ids, folderId) ->
@@ -448,20 +523,19 @@ class DriveScreenState(
         // 解析放到后台：上千个文件的目录要算几秒。按内容缓存，重组、刷新与返回上级都不重算
         scope.launch {
             snapshotFlow { files }.collectLatest { list ->
-                val key = DriveViewMemory.fingerprint(list)
-                val structure = DriveViewMemory.structure(key)
-                    ?: withContext(Dispatchers.Default) { analyzeDriveFolder(list) }.also { DriveViewMemory.putStructure(key, it) }
+                val key = DriveAnalysisCache.fingerprint(list)
+                val structure = DriveAnalysisCache.structure(key)
+                    ?: withContext(Dispatchers.Default) { analyzeDriveFolder(list) }.also { DriveAnalysisCache.putStructure(key, it) }
                 Snapshot.withMutableSnapshot {
                     revealHighlightedItems(structure, highlightedFileIds)
-                    analysis = structure
-                    analyzedFiles = list
+                    analysis = FolderAnalysis(list, structure)
                 }
             }
         }
         scope.launch {
-            // 记下的文件夹内容启动后才从磁盘载入完，载入后再描述一遍
-            combine(snapshotFlow { files }, driveRepo.childContentLoads) { list, _ -> list }
-                .collectLatest { list -> describeFolders(list.filter(FileStat::isFolder)) }
+            combine(snapshotFlow { files }, driveRepo.childContentsFlow) { list, content ->
+                list.filter(FileStat::isFolder).map { folder -> folder to content[folder.id] }
+            }.distinctUntilChanged().collectLatest(::describeFolders)
         }
         // 文件夹的归档封面在列表画出之后才读到（可见时补读、清单写成、从磁盘载入），读到就补进眼前的列表，不重列
         scope.launch {
@@ -490,12 +564,13 @@ class DriveScreenState(
         else -> change.affects(activeFolderId)
     }
 
-    /** 恢复上次退出时开着的几个标签，见 [PikoDriveRepository.restoreTabs]。恢复了返回 true。 */
-    suspend fun restoreTabs(): Boolean {
+    /** 由导航持有者恢复上次的浏览位置。恢复了返回 true。 */
+    suspend fun restoreLocation(): Boolean {
+        if (!canAcceptAction || highlightedFileIds.isNotEmpty()) return false
         val unchangedBefore = activeFolderId
-        if (!driveRepo.restoreTabs()) return false
-        // 活动标签就停在根目录时栈顶没变，栈的监听不会触发，加载由这里补上
-        if (driveRepo.folderStackFlow.value.lastOrNull()?.id.orEmpty() == unchangedBefore) onFolderChanged()
+        if (!navigation.restoreLocation()) return false
+        // 恢复后栈顶没变时，栈监听不会触发，加载由这里补上。
+        if (navigation.folderStackFlow.value.lastOrNull()?.id.orEmpty() == unchangedBefore) onFolderChanged()
         return true
     }
 
@@ -507,7 +582,7 @@ class DriveScreenState(
         if (stack.isEmpty()) return
         // 栈顶没变时栈的监听不会触发，这一次加载由这里补上
         val unchanged = stack.last().id == activeFolderId
-        driveRepo.restoreFolderStack(stack)
+        navigation.restoreFolderStack(stack)
         if (unchanged) onFolderChanged()
     }
 
@@ -534,8 +609,9 @@ class DriveScreenState(
 
     /** [useCache] 与 [showRefreshing] 都为 false 是静默重列：不用缓存，也不出任何加载指示，见 [catchUpWithHighlight]。 */
     private fun load(useCache: Boolean, showRefreshing: Boolean) {
+        if (!canAcceptAction) return
         val folderId = activeFolder.id
-        DriveLibrary.of(folderId)?.let { library ->
+        libraryView?.let { library ->
             loadLibrary(library, useCache, showRefreshing)
             return
         }
@@ -592,8 +668,22 @@ class DriveScreenState(
     private class LibraryListing(val files: List<FileStat>, val events: Map<String, DriveEvent>)
 
     private val libraryListings = mutableMapOf<DriveLibrary, LibraryListing>()
+    init {
+        var previous = historyEditSession.revisions.value
+        scope.launch {
+            historyEditSession.revisions.collect { revisions ->
+                val changed = revisions.keys.filter { revisions[it] != previous[it] }.map {
+                    if (it == dev.piko.shared.data.HistoryKind.PLAY) DriveLibrary.HISTORY else DriveLibrary.RECENT
+                }
+                previous = revisions
+                changed.forEach(libraryListings::remove)
+                libraryView?.takeIf { it in changed }?.let { loadLibrary(it, useCache = false, showRefreshing = false) }
+            }
+        }
+    }
 
     private fun loadLibrary(library: DriveLibrary, useCache: Boolean, showRefreshing: Boolean) {
+        if (!canAcceptAction) return
         if (library.isSession) {
             loadJob?.cancel()
             isRefreshing = false
@@ -650,6 +740,7 @@ class DriveScreenState(
     }
 
     private fun loadArchive(location: ArchiveLocation, useCache: Boolean, showRefreshing: Boolean, password: String? = null) {
+        if (!canAcceptAction) return
         val browser = archives ?: return
         archivePasswordRequest = null
         val cached = if (useCache) browser.cached(location) else null
@@ -700,9 +791,9 @@ class DriveScreenState(
     /** 不输密码就退出这个压缩包，回到它所在的文件夹。 */
     fun dismissArchivePassword() {
         archivePasswordRequest = null
-        val stack = driveRepo.folderStackFlow.value
+        val stack = navigation.folderStackFlow.value
         val outside = stack.outsideArchives()
-        if (outside.isNotEmpty() && outside.size < stack.size) driveRepo.popToBreadcrumb(outside.size - 1)
+        if (outside.isNotEmpty() && outside.size < stack.size) navigation.popToBreadcrumb(outside.size - 1)
     }
 
     /**
@@ -745,7 +836,7 @@ class DriveScreenState(
     }
 
     private fun archiveName(): String {
-        val stack = driveRepo.folderStackFlow.value
+        val stack = navigation.folderStackFlow.value
         return stack.getOrNull(stack.outsideArchives().size)?.name ?: "压缩包"
     }
 
@@ -758,8 +849,12 @@ class DriveScreenState(
 
     // endregion
 
-    private fun showLibrary(library: DriveLibrary, listing: LibraryListing) {
+    private fun showLibrary(library: DriveLibrary, listing: LibraryListing) = Snapshot.withMutableSnapshot {
         files = listing.files
+        if (!isGlobalSearchActive) {
+            _selectedFileIds.retainAll(listing.files.mapTo(HashSet()) { it.id })
+            if (listing.files.isEmpty()) exitSelection()
+        }
         libraryEvents = listing.events
         loadedFolderId = library.id
     }
@@ -779,7 +874,7 @@ class DriveScreenState(
     private fun showSession(library: DriveLibrary) {
         files = sessionListing(library)?.files.orEmpty()
         libraryEvents = emptyMap()
-        loadedFolderId = library.id
+        loadedFolderId = activeFolderId
         loadError = null
         isLoading = false
     }
@@ -791,13 +886,34 @@ class DriveScreenState(
     fun selectOnly(ids: Set<String>) {
         if (ids.isEmpty()) return
         exitSelection()
-        selectedFileIds.addAll(ids)
+        _selectedFileIds.addAll(ids)
     }
 
-    private fun isSessionGroupExpanded(blockId: String): Boolean = DriveViewMemory.expanded[expandKey(blockId)] ?: true
+    private fun isSessionGroupExpanded(blockId: String): Boolean = expandedSections[expandKey(blockId)] ?: true
 
     private fun sessionItems(isExpanded: (blockId: String) -> Boolean): List<DriveListItem> =
         libraryView?.let(sessionListing)?.items(isExpanded).orEmpty()
+
+    private fun folderSessionItems(isExpanded: (DriveBlock) -> Boolean): List<DriveListItem> {
+        val listing = libraryView?.let(sessionListing) ?: return emptyList()
+        val structure = currentAnalysis
+        if (!isNameParsing || structure == null || structure.blocks.isEmpty()) return files.map { listing.decorate(DriveListItem.File(it, null)) }
+        val items = buildDriveItems(files, structure, hideFolded = false, isExpanded)
+        // 普通目录把同集的其他版本挂在主文件下面；查重筛选必须让每个命中文件都能被独立选择。
+        val rows = items.filterIsInstance<DriveListItem.File>().mapTo(HashSet()) { it.file.id }
+        val related = files.filter { it.id !in rows && it.id in structure.attachedTo }.groupBy { structure.attachedTo[it.id] }
+        val groupedIds = structure.blocks.flatMapTo(HashSet()) { it.fileIds } + structure.secondaryIds + structure.attachedTo.keys
+        return buildList {
+            items.forEach { item ->
+                add(item)
+                if (item is DriveListItem.File) {
+                    related[item.file.id].orEmpty().forEach { file -> add(DriveListItem.File(file, structure.views[file.id])) }
+                }
+            }
+            files.filter { !it.isFolder && it.id !in groupedIds && it.id !in rows }
+                .forEach { add(DriveListItem.File(it, structure.views[it.id])) }
+        }.map { if (it is DriveListItem.File) listing.decorate(it) else it }
+    }
 
     // endregion
 
@@ -817,8 +933,8 @@ class DriveScreenState(
                 .logFailure(TAG, "定位条目失败")
                 .onSuccess { parents ->
                     // 被拦下问过之后，标出那一步要跟着换栈一起重走
-                    driveRepo.navigateThen(parents) {
-                        driveRepo.updateFolderStack(parents)
+                    navigation.navigateThen(parents) {
+                        navigation.updateFolderStack(parents)
                         highlight(setOf(file.id))
                     }
                 }
@@ -826,96 +942,36 @@ class DriveScreenState(
         }
     }
 
-    /** 从最近添加或播放历史里移除这几项的记录，文件本身不动。先从列表里拿掉，失败再放回来。 */
+    /** 删除由业务会话执行；相关视图重新读取事件，页面不回填旧快照。 */
     fun removeFromLibrary(ids: Collection<String>) {
         val library = libraryView?.takeIf { it.isEventLog } ?: return
         val eventIds = ids.mapNotNull { libraryEvents[it]?.id }
         if (eventIds.isEmpty()) return
-        val before = files
-        val removedIds = ids.toSet()
-        val generation = libraryGeneration
-        files = files.filterNot { it.id in removedIds }
-        exitSelection()
-        scope.launch {
-            driveRepo.deleteEvents(eventIds)
-                .onSuccess {
-                    libraryListings.remove(library)
-                    _messages.tryEmit(if (ids.size == 1) "已从${library.title}中移除" else "已从${library.title}中移除 ${ids.size} 项")
-                }
-                .logFailure(TAG, "移除记录失败")
-                .onFailure {
-                    if (activeFolderId == library.id && generation == libraryGeneration) {
-                        files = reinsertRemoved(files, before, removedIds)
-                    }
-                    _messages.tryEmit("移除失败")
-                }
-        }
+        val kind = if (library == DriveLibrary.HISTORY) dev.piko.shared.data.HistoryKind.PLAY else dev.piko.shared.data.HistoryKind.RECENT
+        submitHistoryAction(HistoryEditCommand.Remove(kind, eventIds))
     }
-
-    /**
-     * 库列表的代次，清空时加一。清空之前发出的单项移除晚于清空失败时不再放回：
-     * 那条记录已随清空没了，放回就是往清空的列表里塞一条不存在的记录。
-     * 只看位置不够，清空前后都停在播放历史里。
-     */
-    private var libraryGeneration = 0
 
     /** 清空播放历史。服务端没有撤销，官方客户端里的历史一起没了，由界面先确认。 */
     fun clearPlayHistory() {
-        val before = files
-        libraryGeneration++
-        files = emptyList()
-        exitSelection()
-        scope.launch {
-            driveRepo.clearPlayHistory()
-                .onSuccess {
-                    libraryListings.remove(DriveLibrary.HISTORY)
-                    _messages.tryEmit("已清空播放历史")
-                }
-                .logFailure(TAG, "清空播放历史失败")
-                .onFailure {
-                    if (activeFolderId == DriveLibrary.HISTORY.id) files = reinsertRemoved(files, before, before.mapTo(HashSet()) { it.id })
-                    _messages.tryEmit("清空失败")
-                }
+        submitHistoryAction(HistoryEditCommand.ClearPlay)
+    }
+
+    private fun submitHistoryAction(command: HistoryEditCommand) {
+        when (val result = historyActions.submit(command)) {
+            is dev.piko.shared.presentation.HistoryCommandResult.Accepted -> exitSelection()
+            is dev.piko.shared.presentation.HistoryCommandResult.Rejected -> _messages.tryEmit(result.reason)
         }
     }
 
     /** 回收站里有恢复或彻底删除在进行。两者改的是同一份列表，并发执行会让选中与结果对不上。 */
-    var isTrashActionRunning by mutableStateOf(false)
-        private set
-
-    fun restoreFromTrash(ids: List<String>) = trashAction(ids) {
-        driveRepo.restore(ids)
-            .onSuccess {
-                exitSelection()
-                _messages.tryEmit(if (ids.size == 1) "已恢复" else "已恢复 ${ids.size} 项")
-            }
-            .logFailure(TAG, "恢复失败")
-            .onFailure { _messages.tryEmit("恢复失败") }
+    val isTrashActionRunning: Boolean get() = fileWrites.any {
+        it.account == browserAccount && it.isRunning && (it.command is FileWriteCommand.Restore || it.command is FileWriteCommand.Delete)
     }
+
+    fun restoreFromTrash(ids: List<String>) { submitFileAction(FileWriteCommand.Restore(ids)) }
 
     /** 彻底删除，不能撤销，由界面先确认。 */
-    fun deletePermanently(ids: List<String>) = trashAction(ids) {
-        driveRepo.delete(ids)
-            .onSuccess {
-                exitSelection()
-                _messages.tryEmit(if (ids.size == 1) "已彻底删除" else "已彻底删除 ${ids.size} 项")
-            }
-            .logFailure(TAG, "彻底删除失败")
-            .onFailure { _messages.tryEmit("删除失败") }
-    }
-
-    private fun trashAction(ids: List<String>, action: suspend () -> Unit) {
-        if (ids.isEmpty() || isTrashActionRunning) return
-        isTrashActionRunning = true
-        scope.launch {
-            try {
-                action()
-            } finally {
-                isTrashActionRunning = false
-                load(useCache = false, showRefreshing = false)
-            }
-        }
-    }
+    fun deletePermanently(ids: List<String>) { submitFileAction(FileWriteCommand.Delete(ids)) }
 
     fun changeSortOrder(order: PikoFileSortOrder) {
         if (order == sortOrder) return
@@ -926,20 +982,20 @@ class DriveScreenState(
     // 以下几个导航只改栈，重新加载与清掉搜索、选中这些由栈的监听统一做，见 init
 
     fun openFolder(id: String, name: String) {
-        driveRepo.pushFolder(id, name)
+        navigation.pushFolder(id, name)
     }
 
-    fun navigateUp(): Boolean = driveRepo.popFolder() != null
+    fun navigateUp(): Boolean = navigation.popFolder() != null
 
-    /** 浏览历史里的后退与前进，见 PikoDriveRepository.historyFlow。 */
-    val history get() = driveRepo.historyFlow
+    /** 当前浏览上下文的后退与前进。 */
+    val history get() = navigation.historyFlow
 
-    fun goBack(): Boolean = driveRepo.goBack()
+    fun goBack(): Boolean = navigation.goBack()
 
-    fun goForward(): Boolean = driveRepo.goForward()
+    fun goForward(): Boolean = navigation.goForward()
 
     fun navigateToBreadcrumb(index: Int) {
-        driveRepo.popToBreadcrumb(index)
+        navigation.popToBreadcrumb(index)
     }
 
     /**
@@ -948,9 +1004,9 @@ class DriveScreenState(
      */
     suspend fun goToPath(text: String): Boolean {
         val names = addressPathNames(text, addressBase())
-        return driveRepo.resolveFolderPath(names).fold(
+        return driveRepo.resolveFolderPath(names, navigation.folderStackFlow.value).fold(
             onSuccess = { stack ->
-                driveRepo.updateFolderStack(stack)
+                navigation.updateFolderStack(stack)
                 true
             },
             onFailure = { error ->
@@ -987,10 +1043,14 @@ class DriveScreenState(
     // 相对路径与补全以眼前的位置为起点；人在库里时那不是网盘里的一条路径，改从根起。
     // 在压缩包里时从包所在的文件夹起：地址栏解析的是网盘里的路径，进不了包里
     private fun addressBase(): List<PikoPathBreadcrumb> =
-        driveRepo.folderStackFlow.value.outsideArchives().takeIf { it.library == null } ?: listOf(PikoDriveRepository.ROOT_BREADCRUMB)
+        navigation.folderStackFlow.value.outsideArchives().takeIf { it.library == null } ?: listOf(PikoDriveRepository.ROOT_BREADCRUMB)
 
     /** 某一级下的全部文件夹，地址栏里路径段后面的 › 点开用。压缩包里的一层列包里的文件夹，与目录图同一份。 */
     suspend fun subfoldersOf(folderId: String): Result<List<PikoPathBreadcrumb>> {
+        if (usesFolderStructure) {
+            val files = libraryView?.let(sessionListing)?.filesInFolder(folderId).orEmpty()
+            return Result.success(files.filter { it.isFolder }.map { PikoPathBreadcrumb(it.id, it.name) })
+        }
         if (ArchiveLocation.of(folderId) == null) return driveRepo.subfolders(folderId)
         return when (val level = folderMapLevel(folderId)) {
             is FolderMapLevel.Loaded -> Result.success(level.nodes.filter { it.expandable }.map { it.crumb })
@@ -1005,6 +1065,12 @@ class DriveScreenState(
      * 点了进到包里再输。库不是文件夹层级，下面是空的。
      */
     suspend fun folderMapLevel(id: String): FolderMapLevel {
+        if (usesFolderStructure) {
+            val files = libraryView?.let(sessionListing)?.filesInFolder(id).orEmpty()
+            return FolderMapLevel.Loaded(files.map { file ->
+                FolderMapNode(PikoPathBreadcrumb(file.id, file.name), isArchive = false, file = file.takeUnless { it.isFolder })
+            })
+        }
         ArchiveLocation.of(id)?.let { location ->
             val browser = archives ?: return FolderMapLevel.Loaded(emptyList())
             return browser.list(location).fold(
@@ -1037,13 +1103,13 @@ class DriveScreenState(
         scope.launch {
             driveRepo.locateFolder(folder.id)
                 .logFailure(TAG, "地址栏定位固定的文件夹失败")
-                .onSuccess { parents -> driveRepo.updateFolderStack(parents + folder) }
+                .onSuccess { parents -> navigation.updateFolderStack(parents + folder) }
                 .onFailure { _messages.emit("找不到这个文件夹，它可能已被删除") }
         }
     }
 
     fun navigateToFolder(breadcrumb: PikoPathBreadcrumb) {
-        driveRepo.navigateToFolder(breadcrumb)
+        navigation.navigateToFolder(breadcrumb)
     }
 
     fun updateTypeFilter(value: FileCategory?) {
@@ -1054,11 +1120,12 @@ class DriveScreenState(
 
     /** 换了目录：搜索态、选中态、防窥揭示都不该跨目录留存。 */
     private fun onFolderChanged() {
+        isSearchOpen = false
         typeFilter = null
         searchQuery = ""
         stopGlobalSearch()
         exitSelection()
-        revealedFileIds.clear()
+        _revealedFileIds.clear()
         load()
     }
 
@@ -1105,17 +1172,17 @@ class DriveScreenState(
     }
 
     fun setShowAllFiles(value: Boolean) {
-        DriveViewMemory.showAll[activeFolderId] = value
+        showAllDirectories[activeFolderId] = value
     }
 
-    private suspend fun describeFolders(folders: List<FileStat>) {
-        folders.forEach { folder -> folderViews[folder.id] = folderView(folder, driveRepo.knownChildContents(folder.id)) }
+    private suspend fun describeFolders(folders: List<Pair<FileStat, List<ChildFile>?>>) {
+        folders.forEach { (folder, content) -> _folderViews[folder.id] = folderView(folder, content) }
     }
 
     private suspend fun folderView(folder: FileStat, content: List<ChildFile>?): DriveFolderView {
-        val key = DriveViewMemory.folderKey(folder, content)
-        return DriveViewMemory.folderView(key)
-            ?: withContext(Dispatchers.Default) { describeDriveFolder(folder.name, content) }.also { DriveViewMemory.putFolderView(key, it) }
+        val key = DriveAnalysisCache.folderKey(folder, content)
+        return DriveAnalysisCache.folderView(key)
+            ?: withContext(Dispatchers.Default) { describeDriveFolder(folder.name, content) }.also { DriveAnalysisCache.putFolderView(key, it) }
     }
 
     /**
@@ -1131,7 +1198,7 @@ class DriveScreenState(
      */
     suspend fun onFolderVisible(folder: FileStat) {
         // 压缩包里的文件夹不是网盘里的，列不了
-        if (isSearching || !isDriveFolderId(folder.id)) return
+        if (isSearching || usesFolderStructure || !isDriveFolderId(folder.id)) return
         val known = driveRepo.knownChildContents(folder.id)
         val wantsCover = folder.thumbnailLink.isEmpty()
         // 记下的是空表时分不清真空还是只有子文件夹，海报墙要据此画空文件夹，探一下
@@ -1142,31 +1209,33 @@ class DriveScreenState(
         if (wantsEmptiness) driveRepo.probeFolderEmptiness(folder.id)
         if (wantsContent) {
             val content = driveRepo.fetchChildContents(folder.id)
-            if (content != null && isNameParsing) folderViews[folder.id] = folderView(folder, content)
+            if (content != null && isNameParsing) _folderViews[folder.id] = folderView(folder, content)
         }
         if (wantsCover) driveRepo.fetchVaultCover(folder.id)
     }
 
     fun toggleSpoiler(fileId: String) {
-        if (!revealedFileIds.remove(fileId)) revealedFileIds.add(fileId)
+        if (!_revealedFileIds.remove(fileId)) _revealedFileIds.add(fileId)
     }
 
     fun enterSelection(fileId: String? = null) {
+        if (fileId != null && !canSelect(fileId)) return
         selectionHeldOpen = true
-        if (fileId != null && fileId !in selectedFileIds) selectedFileIds.add(fileId)
+        if (fileId != null && fileId !in _selectedFileIds) _selectedFileIds.add(fileId)
     }
 
     fun exitSelection() {
         selectionHeldOpen = false
-        selectedFileIds.clear()
+        _selectedFileIds.clear()
         selectionAnchor = null
     }
 
     fun setSelected(fileId: String, selected: Boolean) {
+        if (selected && !canSelect(fileId)) return
         if (selected) {
-            if (fileId !in selectedFileIds) selectedFileIds.add(fileId)
+            if (fileId !in _selectedFileIds) _selectedFileIds.add(fileId)
         } else {
-            selectedFileIds.remove(fileId)
+            _selectedFileIds.remove(fileId)
         }
     }
 
@@ -1182,9 +1251,9 @@ class DriveScreenState(
      */
     fun toggleSelected(rowKey: String) {
         val fileId = fileByRowKey[rowKey]?.id ?: return
-        setSelected(fileId, fileId !in selectedFileIds)
+        setSelected(fileId, fileId !in _selectedFileIds)
         selectionAnchor = rowKey
-        if (selectedFileIds.isEmpty()) exitSelection()
+        if (_selectedFileIds.isEmpty()) exitSelection()
     }
 
     /**
@@ -1208,26 +1277,30 @@ class DriveScreenState(
      * （按着主修饰键开始框选时保留原来的选择，否则为空）。结果为空就退出多选。
      */
     fun selectBoxed(base: Set<String>, boxedRows: Collection<String>) {
-        val next = LinkedHashSet(base).apply { boxedRows.mapNotNullTo(this) { fileByRowKey[it]?.id } }
+        val next = LinkedHashSet(base.filter(::canSelect)).apply {
+            boxedRows.mapNotNull { fileByRowKey[it]?.id }.filterTo(this, ::canSelect)
+        }
         if (next.isEmpty()) {
             exitSelection()
             return
         }
-        if (selectedFileIds.toSet() != next) {
-            selectedFileIds.clear()
-            selectedFileIds.addAll(next)
+        if (_selectedFileIds.toSet() != next) {
+            _selectedFileIds.clear()
+            _selectedFileIds.addAll(next)
         }
     }
 
     fun toggleSelectAll() {
-        val visible = displayedFiles.map { it.id }
-        if (selectedFileIds.size == visible.size) {
-            selectedFileIds.clear()
+        val visible = displayedFiles.filter { canSelect(it.id) }.map { it.id }
+        if (_selectedFileIds.size == visible.size) {
+            _selectedFileIds.clear()
         } else {
-            selectedFileIds.clear()
-            selectedFileIds.addAll(visible)
+            _selectedFileIds.clear()
+            _selectedFileIds.addAll(visible)
         }
     }
+
+    private fun canSelect(id: String): Boolean = !usesFolderStructure || files.none { it.id == id && it.isFolder }
 
     fun highlight(ids: Set<String>) {
         Snapshot.withMutableSnapshot {
@@ -1268,13 +1341,7 @@ class DriveScreenState(
 
     fun createFolder(name: String) {
         if (name.isBlank() || isVirtualPlace) return
-        val trimmed = name.trim()
-        scope.launch {
-            driveRepo.createFolder(activeFolder.id, trimmed)
-                .onSuccess { _messages.tryEmit("已新建文件夹") }
-                .logFailure(TAG, "新建文件夹失败：在 ${activeFolder.id.ifEmpty { "根目录" }} 下")
-                .onFailure { _messages.tryEmit("新建文件夹失败") }
-        }
+        submitFileAction(FileWriteCommand.CreateFolder(activeFolder, name), clearSelection = false)
     }
 
     /**
@@ -1294,21 +1361,7 @@ class DriveScreenState(
             renameInVault(fileId, trimmed)
             return
         }
-        val listedName = knownFile(fileId)?.name
-        scope.launch {
-            // 撤销要用旧名字。列表刚被别的改动刷走、还没列回来时找不到这一项，改之前向服务端查一次
-            val oldName = listedName ?: driveRepo.getFileDetail(fileId).getOrNull()?.name
-            driveRepo.rename(fileId, trimmed)
-                .onSuccess {
-                    if (oldName != null && oldName != trimmed) {
-                        driveRepo.changes.record(DriveChangeJournal.Change.Rename(listOf(DriveChangeJournal.Renamed(fileId, oldName, trimmed)), "已重命名"))
-                    } else {
-                        _messages.tryEmit("已重命名")
-                    }
-                }
-                .logFailure(TAG, "重命名失败：${logFile(fileId, oldName ?: trimmed)}，新名 ${trimmed.encodeToByteArray().size} 字节")
-                .onFailure { _messages.tryEmit("重命名失败") }
-        }
+        submitFileAction(FileWriteCommand.Rename(fileId, trimmed), clearSelection = false)
     }
 
     /** 加或去星标。星标只体现在列表条目的 tags 里，这一项所在的那一层由仓库通知重列。 */
@@ -1318,78 +1371,75 @@ class DriveScreenState(
             _messages.tryEmit(VAULTED_NEEDS_RESTORE)
             return
         }
-        scope.launch {
-            driveRepo.setStarred(listOf(file.id), starred)
-                .onSuccess { _messages.tryEmit(if (starred) "已添加星标" else "已取消星标") }
-                .logFailure(TAG, "修改星标失败：${logFile(file.id, file.name)}")
-                .onFailure { _messages.tryEmit(if (starred) "添加星标失败" else "取消星标失败") }
-        }
+        submitFileAction(FileWriteCommand.Star(listOf(file.id), starred), clearSelection = false)
     }
 
-    /** 归档条目没有文件可进回收站，删它就是从清单里移除，见 [removeFromVault]。 */
+    val trashProgress get() = trashSession.progress
+    val trashFailure get() = trashSession.failure
+
+    fun retryTrash() = trashSession.retry()
+    fun dismissTrashFailure() = trashSession.dismissFailure()
+
+    /** 归档条目从清单移除，真实文件交给跨页面清理任务。 */
     fun moveToTrash(ids: List<String>) {
-        if (refusedInArchive(ids)) return
-        val (vaulted, real) = ids.partition(VaultEntry::isVaulted)
-        removeFromVault(vaulted)
-        if (real.isEmpty()) return
-        scope.launch {
-            driveRepo.trash(real)
-                .onSuccess {
-                    exitSelection()
-                    driveRepo.changes.record(
-                        DriveChangeJournal.Change.Trash(real, if (real.size == 1) "已移入回收站" else "已将 ${real.size} 项移入回收站"),
-                    )
-                }
-                .logFailure(TAG, "移入回收站失败")
-                .onFailure { _messages.tryEmit("移入回收站失败") }
+        if (!canAcceptAction) return
+        if (trashProgress != null || trashSession.isUndoing || refusedInArchive(ids)) return
+        val (vaulted, real) = ids.distinct().filter(::canSelect).partition(VaultEntry::isVaulted)
+        val availability = fileActions.filesAvailability(real)
+        if (availability is dev.piko.shared.presentation.ActionAvailability.Blocked) { _messages.tryEmit(availability.reason); return }
+        val removal = vaultRemoval(vaulted)
+        if (removal.entries.isNotEmpty()) {
+            val vaultAvailability = vaultActions.availability(removal)
+            if (vaultAvailability is dev.piko.shared.presentation.ActionAvailability.Blocked) { _messages.tryEmit(vaultAvailability.reason); return }
+            if (!submitVaultEdit(removal, clearSelection = false)) return
         }
+        if (real.isNotEmpty()) trashSession.start(real)
+        exitSelection()
     }
 
     /**
      * [sources] 是各项原来所在的文件夹，撤销时移回去用。眼前列表里有的从列表取；剪切后换了目录再粘贴时
      * 它们已不在列表里，由剪贴板带过来，否则会被当成原本就在目标里。
      */
-    fun move(ids: List<String>, targetId: String, targetName: String, sources: Map<String, String> = emptyMap()) {
+    fun move(ids: List<String>, targetId: String, targetName: String, sources: Map<String, String> = emptyMap()): Boolean {
         fun sourceOf(id: String) = knownFile(id)?.parentId ?: sources[id]
         // 已经在目标里的不动：拖回原处、把文件夹拖到它自己上面，服务端要么白做一次、要么拒绝
         val moving = withoutVaulted(ids).filter { it != targetId && sourceOf(it) != targetId }
-        if (moving.isEmpty()) return
-        val from = moving.associateWith { sourceOf(it) ?: activeFolderId }
-        scope.launch {
-            driveRepo.move(moving, targetId)
-                .onSuccess {
-                    exitSelection()
-                    val summary = if (moving.size == 1) "已移至 $targetName" else "已将 ${moving.size} 项移至 $targetName"
-                    driveRepo.changes.record(DriveChangeJournal.Change.Move(from, targetId, summary))
-                }
-                .logFailure(TAG, "移动失败")
-                .onFailure { _messages.tryEmit("移动失败") }
-        }
+        if (moving.isEmpty()) return false
+        return submitFileAction(FileWriteCommand.Move(moving, PikoPathBreadcrumb(targetId, targetName)))
     }
 
     /** 撤销最近一次移动、移入回收站或重命名，见 [DriveChangeJournal]。 */
-    fun undoLast(): Boolean = driveRepo.changes.undoLast()
+    fun undoLast(): Boolean {
+        if (!canAcceptAction) return false
+        val change = driveRepo.changes.state.value.available.lastOrNull() ?: return false
+        return when (val result = fileActions.undo(change.id)) {
+            is dev.piko.shared.presentation.FileCommandResult.Accepted -> true
+            is dev.piko.shared.presentation.FileCommandResult.Rejected -> { _messages.tryEmit(result.reason); true }
+        }
+    }
 
     // 眼前列表里的那一项：全盘搜索的结果不在当前目录的列表里，两处都找
     private fun knownFile(id: String): FileStat? = displayedFiles.firstOrNull { it.id == id } ?: files.firstOrNull { it.id == id }
 
     /** 剪切或复制到剪贴板，照资源管理器：换个目录粘贴，见 [paste]。 */
     fun putOnClipboard(requested: List<String>, cut: Boolean) {
+        if (!canAcceptAction) return
         val ids = withoutVaulted(requested)
         if (ids.isEmpty()) return
-        driveRepo.setClipboard(DriveClipboard(ids.associateWith { knownFile(it)?.parentId ?: activeFolderId }, cut))
+        clipboard.put(DriveClipboard(ids.associateWith { knownFile(it)?.parentId ?: activeFolderId }, cut))
         val verb = if (cut) "剪切" else "复制"
         _messages.tryEmit(if (ids.size == 1) "已$verb，到目标文件夹粘贴" else "已$verb ${ids.size} 项，到目标文件夹粘贴")
     }
 
     /** 粘贴到眼前的文件夹：剪切的移过来（剪贴板随即清空，与资源管理器相同），复制的复制一份过来。 */
     fun paste() {
-        val clip = driveRepo.clipboardFlow.value ?: return
-        val target = driveRepo.folderStackFlow.value.lastOrNull()?.takeIf { isDriveFolderId(it.id) } ?: return
+        if (!canAcceptAction) return
+        val clip = clipboard.contents.value ?: return
+        val target = navigation.folderStackFlow.value.lastOrNull()?.takeIf { isDriveFolderId(it.id) } ?: return
         val ids = clip.sources.keys.toList()
         if (clip.cut) {
-            driveRepo.setClipboard(null)
-            move(ids, target.id, target.name, clip.sources)
+            if (move(ids, target.id, target.name, clip.sources)) clipboard.clear()
         } else {
             copy(ids, target.id, target.name)
         }
@@ -1398,15 +1448,7 @@ class DriveScreenState(
     fun copy(requested: List<String>, targetId: String, targetName: String) {
         val ids = withoutVaulted(requested)
         if (ids.isEmpty()) return
-        scope.launch {
-            driveRepo.copy(ids, targetId)
-                .onSuccess {
-                    exitSelection()
-                    _messages.tryEmit("已复制到 $targetName")
-                }
-                .logFailure(TAG, "复制失败")
-                .onFailure { _messages.tryEmit("复制失败") }
-        }
+        submitFileAction(FileWriteCommand.Copy(ids, PikoPathBreadcrumb(targetId, targetName)))
     }
 
     /**
@@ -1428,51 +1470,29 @@ class DriveScreenState(
 
     private fun entryIds(virtualIds: Collection<String>): Set<String> = virtualIds.mapNotNullTo(HashSet(), VaultEntry::entryIdOf)
 
-    /** 从清单里去掉这几条，可以撤销。网盘里本来就没有它们的文件，这是删除归档条目的唯一含义。 */
-    fun removeFromVault(ids: Collection<String>) {
-        val byFolder = vaultedByFolder(ids)
-        if (byFolder.isEmpty()) return
-        scope.launch {
-            val removed = mutableMapOf<String, List<VaultEntry>>()
-            val result = runSuspendCatching {
-                for ((folderId, virtualIds) in byFolder) {
-                    val entryIds = entryIds(virtualIds)
-                    val write = driveRepo.vault.update(folderId, VaultEdits.remove(entryIds)).getOrThrow()
-                    removed[folderId] = write.before.filter { it.id in entryIds }
-                }
+    private fun vaultRemoval(ids: Collection<String>) = VaultEntryEditCommand.Remove(
+        vaultedByFolder(ids).mapValues { entryIds(it.value) },
+    )
+
+    private fun submitVaultEdit(command: VaultEntryEditCommand, clearSelection: Boolean = true): Boolean =
+        when (val result = vaultActions.submit(command)) {
+            is dev.piko.shared.presentation.VaultEntryCommandResult.Accepted -> {
+                if (clearSelection) exitSelection()
+                true
             }
-            // 部分文件夹已经改成功也要记：撤销时把已移除的那些写回去
-            val count = removed.values.sumOf { it.size }
-            PikoLog.i(TAG, "从归档移除：${byFolder.values.sumOf { it.size }} 项，${byFolder.size} 个文件夹，已移除 $count 项")
-            if (count > 0) {
-                exitSelection()
-                driveRepo.changes.record(
-                    DriveChangeJournal.Change.Vault(
-                        removed.mapValues { (_, entries) -> VaultEdits.add(entries) },
-                        if (count == 1) "已从归档移除" else "已从归档移除 $count 项",
-                    ),
-                )
-            }
-            result.reportFailure(TAG, "从归档移除") { _messages.tryEmit(it) }
+            is dev.piko.shared.presentation.VaultEntryCommandResult.Rejected -> { _messages.tryEmit(result.reason); false }
         }
+
+    /** 从清单移除归档条目；具体结果与已确认部分的撤销留在任务页。 */
+    fun removeFromVault(ids: Collection<String>) {
+        val command = vaultRemoval(ids)
+        if (command.entries.isNotEmpty()) submitVaultEdit(command)
     }
 
     private fun renameInVault(fileId: String, newName: String) {
         val folderId = knownFile(fileId)?.parentId ?: activeFolderId
         val entryId = VaultEntry.entryIdOf(fileId) ?: return
-        scope.launch {
-            driveRepo.vault.update(folderId, VaultEdits.rename(entryId, newName))
-                .onSuccess { write ->
-                    val oldName = write.before.firstOrNull { it.id == entryId }?.name
-                    if (oldName != null && oldName != newName) {
-                        val revert = mapOf(folderId to VaultEdits.rename(entryId, oldName))
-                        driveRepo.changes.record(DriveChangeJournal.Change.Vault(revert, "已重命名"))
-                    } else {
-                        _messages.tryEmit("已重命名")
-                    }
-                }
-                .reportFailure(TAG, "重命名") { _messages.tryEmit(it) }
-        }
+        submitVaultEdit(VaultEntryEditCommand.Rename(folderId, entryId, newName), clearSelection = false)
     }
 }
 
