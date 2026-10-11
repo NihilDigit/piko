@@ -5,8 +5,8 @@ import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.runSuspendCatching
+import dev.piko.shared.media.cache.fileCacheName
 import dev.piko.shared.log.PikoLog
-import dev.piko.shared.log.failureText
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.log.logFile
 import dev.piko.shared.update.isNetworkFailure
@@ -45,7 +45,10 @@ import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.io.buffered
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
@@ -89,19 +92,27 @@ class PikoUploadCoordinator(
 
     /** 全部账号的任务。界面按当前账号过滤。 */
     val tasks: StateFlow<Map<String, UploadTask>> = _tasks.asStateFlow()
+    private val _preparations = MutableStateFlow<List<UploadPreparation>>(emptyList())
+    val preparations = _preparations.asStateFlow()
+    private val _isRestoring = MutableStateFlow(true)
+    val isRestoring = _isRestoring.asStateFlow()
+    private val sourceLock = Mutex()
+    private val preparingSources = mutableMapOf<String, Set<String>>()
 
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
 
     /** 入队时的失败，如所选文件夹读不出来。单个任务的失败体现在任务状态上。 */
     val messages: SharedFlow<String> = _messages.asSharedFlow()
 
-    private val _enqueued = MutableSharedFlow<Int>(extraBufferCapacity = 1)
+    private val _enqueued = MutableSharedFlow<UploadEnqueued>(extraBufferCapacity = 1)
 
     /**
-     * 一次 [enqueue] 真的排进了任务，值是新增的任务数。界面据此切到传输页。发在任务入表之后而不是
+     * 一次 [enqueue] 真的排进了任务，包含所属账号和新增任务数。界面据此切到传输页。发在任务入表之后而不是
      * 调用 enqueue 时：所选文件一个也读不出来的话只有一条失败提示，不该把人带到一个没有新任务的页面。
      */
-    val enqueued: SharedFlow<Int> = _enqueued.asSharedFlow()
+    val enqueued: SharedFlow<UploadEnqueued> = _enqueued.asSharedFlow()
+    private val _preparationOutcomes = MutableSharedFlow<UploadPreparation>(extraBufferCapacity = 16)
+    val preparationOutcomes = _preparationOutcomes.asSharedFlow()
 
     private val _pendingRequest = MutableStateFlow<UploadSelection?>(null)
 
@@ -119,63 +130,196 @@ class PikoUploadCoordinator(
 
     init {
         scope.launch {
-            restore()
+            try { restore() } finally { _isRestoring.value = false }
             launch { persistOnStructuralChange() }
             runQueue()
         }
     }
 
     fun request(selection: UploadSelection) {
-        if (!selection.isEmpty) _pendingRequest.value = selection
+        if (selection.isEmpty) return
+        val previous = runBlocking { sourceLock.withLock {
+            retainSources((selection.files + selection.folders).mapTo(HashSet(), sources::permissionKey))
+            _pendingRequest.value.also { _pendingRequest.value = selection.copy(files = selection.files.distinct(), folders = selection.folders.distinct()) }
+        } }
+        previous?.let { (it.files + it.folders).mapTo(HashSet(), sources::permissionKey).forEach(::releaseIfUnused) }
     }
 
     fun clearRequest() {
-        _pendingRequest.value = null
+        val previous = runBlocking { sourceLock.withLock { _pendingRequest.value.also { _pendingRequest.value = null } } }
+        previous?.let { (it.files + it.folders).mapTo(HashSet(), sources::permissionKey).forEach(::releaseIfUnused) }
     }
 
     /**
      * 把 [selection] 排进队列，传到 [parentId]。文件夹在这里就把目录结构在网盘里建好，
      * 其下的文件各成一个任务，排进队列时已知道自己的上级目录。
      */
-    fun enqueue(selection: UploadSelection, parentId: String, parentName: String) {
+    fun enqueue(selection: UploadSelection, parentId: String, parentName: String): UploadEnqueueResult {
+        if (selection.isEmpty || !scope.isActive) return UploadEnqueueResult.Rejected("当前上传上下文已结束，或未选择文件")
         val client = clientProvider.currentClient.value
         if (client == null) {
             PikoLog.w(TAG, "上传入队失败：未登录")
             _messages.tryEmit("未登录")
-            return
+            return UploadEnqueueResult.Rejected("未登录")
         }
-        scope.launch(Dispatchers.IO) {
-            val added = mutableListOf<UploadTask>()
-            var unreadable = 0
-            selection.files.forEach { uri ->
-                val task = newTask(client.account, uri, parentId, parentName)
-                if (task == null) {
-                    unreadable++
-                    _messages.tryEmit("无法读取所选文件")
-                } else {
-                    added += task
+        preparationBlockReason(selection, parentId)?.let { return UploadEnqueueResult.Rejected(it) }
+        val frozen = selection.copy(files = selection.files.distinct(), folders = selection.folders.distinct())
+        val origins = frozen.files.mapIndexed { index, uri -> UploadPreparationSource(sourceKey(uri, false), "所选文件 ${index + 1}", false) } +
+            frozen.folders.mapIndexed { index, uri -> UploadPreparationSource(sourceKey(uri, true), "所选文件夹 ${index + 1}", true) }
+        val preparation = UploadPreparation("${nowMs()}-${Random.nextLong()}", client.account, parentId, parentName, frozen.count, nowMs(),
+            origins)
+        while (true) {
+            val previous = _preparations.value
+            preparationBlockReason(frozen, parentId, previous)?.let { return UploadEnqueueResult.Rejected(it) }
+            if (_preparations.compareAndSet(previous, previous + preparation)) break
+        }
+        runBlocking { sourceLock.withLock {
+            val keys = (frozen.files + frozen.folders).mapTo(HashSet(), sources::permissionKey)
+            retainSources(keys)
+            preparingSources[preparation.id] = keys
+        } }
+        PikoLog.i(TAG, "上传准备 ${preparation.id}：接受 ${frozen.count} 项，目标 $parentId")
+        val preparing = scope.launch(Dispatchers.IO) {
+            prepare(client, frozen, preparation)
+        }
+        preparing.invokeOnCompletion { error ->
+            if (error != null) _preparations.update { all -> all.map { work -> if (work.id == preparation.id && work.isRunning)
+                work.copy(result = UploadPreparationResult(UploadPreparationCompletion.STOPPED, "上传准备已结束，请检查已入队文件与目标目录", nowMs())) else work } }
+            val released = runBlocking { sourceLock.withLock { preparingSources.remove(preparation.id).orEmpty() } }
+            released.forEach(::releaseIfUnused)
+        }
+        return UploadEnqueueResult.Accepted(preparation.id)
+    }
+
+    private suspend fun prepare(client: PikPakClient, selection: UploadSelection, initial: UploadPreparation) {
+        var work = initial
+        fun publish() { _preparations.update { all -> all.map { if (it.id == work.id) work else it } } }
+        fun title(key: String, name: String) { work = work.copy(sources = work.sources.map { if (it.key == key) it.copy(title = name) else it }); publish() }
+        fun issue(key: String, path: String, kind: UploadPreparationIssueKind) {
+            work = work.copy(issues = work.issues + UploadPreparationIssue(key, path, kind)); publish()
+        }
+        fun queue(key: String, path: String, task: UploadTask) {
+            _tasks.update { it + (task.taskId to task) }
+            work = work.copy(files = work.files + UploadPreparedFile(key, path, task.taskId)); publish()
+        }
+        suspend fun readFile(key: String, path: String, uri: String, parent: String, name: String): UploadTask? {
+            val task = runSuspendCatching { newTask(client.account, uri, parent, name) }.getOrNull()
+            currentCoroutineContext().ensureActive()
+            if (task == null) issue(key, path, UploadPreparationIssueKind.SOURCE_UNREADABLE)
+            return task
+        }
+        var stopped = false
+        var unexpected = false
+        try {
+            for (uri in selection.files) {
+                val key = sourceKey(uri, false)
+                val task = readFile(key, "", uri, work.parentId, work.parentName) ?: continue
+                title(key, task.fileName)
+                queue(key, task.fileName, task)
+            }
+            for (uri in selection.folders) {
+                val key = sourceKey(uri, true)
+                val folder = runSuspendCatching { sources.listFolder(uri) }.getOrNull()
+                currentCoroutineContext().ensureActive()
+                if (folder == null) { issue(key, "", UploadPreparationIssueKind.SOURCE_UNREADABLE); continue }
+                title(key, folder.name)
+                if (folder.files.isEmpty()) { issue(key, "", UploadPreparationIssueKind.EMPTY_FOLDER); continue }
+                val directories = mutableMapOf<String, String>()
+                val blocked = mutableSetOf<String>()
+                suspend fun directory(path: String): String? {
+                    directories[path]?.let { return it }
+                    if (path in blocked) return null
+                    val parent = if (path.isEmpty()) work.parentId else directory(path.substringBeforeLast('/', "")) ?: return null
+                    val name = if (path.isEmpty()) folder.name else path.substringAfterLast('/')
+                    var attempted = false
+                    try {
+                        currentCoroutineContext().ensureActive()
+                        attempted = true
+                        val id = client.createFolder(parent, name)
+                        check(id.isNotBlank()) { "目录创建响应缺少 ID" }
+                        directories[path] = id
+                        work = work.copy(directories = work.directories + UploadPreparedDirectory(key, path, id, parent)); publish()
+                        driveRepository.applyWriteChange(client.account, DriveChange.Created(parent, id, name, isFolder = true))
+                        return id
+                    } catch (error: Exception) {
+                        blocked += path
+                        if (attempted) {
+                            val refused = error is PikPakException && error.httpStatus in setOf(400, 401, 403, 404, 409, 422)
+                            issue(key, path, if (refused) UploadPreparationIssueKind.DIRECTORY_REFUSED else UploadPreparationIssueKind.DIRECTORY_UNCONFIRMED)
+                            PikoLog.w(TAG, "上传准备 ${work.id}：目录创建${if (refused) "被拒绝" else "待确认"}，父目录 $parent，${error::class.simpleName}")
+                            driveRepository.applyWriteChange(client.account, DriveChange.ContentsChanged(setOf(parent)))
+                        }
+                        if (error is CancellationException) throw error
+                        return null
+                    }
+                }
+                for ((index, entry) in folder.files.withIndex()) {
+                    val sourcePath = listOf(entry.relativeDir, "所选文件 ${index + 1}").filter { it.isNotEmpty() }.joinToString("/")
+                    val task = readFile(key, sourcePath, entry.uri, "", "") ?: continue
+                    val path = listOf(entry.relativeDir, task.fileName).filter { it.isNotEmpty() }.joinToString("/")
+                    val parent = directory(entry.relativeDir)
+                    if (parent == null) { issue(key, path, UploadPreparationIssueKind.NOT_ATTEMPTED); continue }
+                    queue(key, path, task.copy(parentId = parent, parentName = entry.relativeDir.substringAfterLast('/').ifEmpty { folder.name }))
                 }
             }
-            selection.folders.forEach { uri ->
-                val folder = sources.listFolder(uri)
-                if (folder == null) {
-                    PikoLog.w(TAG, "上传入队：读不出所选文件夹")
-                    _messages.tryEmit("无法读取所选文件夹")
-                    return@forEach
-                }
-                runSuspendCatching { added += folderTasks(client, folder, parentId) }
-                    .logFailure(TAG, "上传入队：在网盘文件夹 $parentId 下建立目录结构失败，本地 ${folder.files.size} 个文件")
-                    .onFailure { _messages.tryEmit(failureText("建立文件夹", it)) }
-                // 目录建好后网盘页该看到它，不必等文件传完。里面各层是新建的，没人列过，只算上传到的那一层
-                driveRepository.applyChange(DriveChange.ContentsChanged(setOf(parentId)))
+        } catch (error: CancellationException) { stopped = true; throw error }
+        catch (error: Exception) {
+            unexpected = true
+            PikoLog.w(TAG, "上传准备 ${work.id}异常结束：${error::class.simpleName}")
+        }
+        finally {
+            val completion = when {
+                stopped -> UploadPreparationCompletion.STOPPED
+                unexpected && (work.files.isNotEmpty() || work.directories.isNotEmpty()) -> UploadPreparationCompletion.PARTIAL
+                unexpected -> UploadPreparationCompletion.FAILED
+                work.issues.isEmpty() -> UploadPreparationCompletion.SUCCEEDED
+                work.files.isNotEmpty() || work.directories.isNotEmpty() -> UploadPreparationCompletion.PARTIAL
+                work.hasUnconfirmedDirectory -> UploadPreparationCompletion.UNCONFIRMED
+                else -> UploadPreparationCompletion.FAILED
             }
-            if (unreadable > 0) PikoLog.w(TAG, "上传入队：$unreadable 个所选文件读不出")
-            if (added.isEmpty()) return@launch
-            PikoLog.i(TAG, "上传入队 ${added.size} 个文件到文件夹 $parentId，共 ${added.sumOf { it.size }} 字节")
-            _tasks.update { current -> current + added.associateBy { it.taskId } }
-            _enqueued.tryEmit(added.size)
+            val message = buildList {
+                add("已入队 ${work.files.size} 个文件")
+                if (work.directories.isNotEmpty()) add("已创建 ${work.directories.size} 个目录")
+                val unknown = work.issues.count { it.kind == UploadPreparationIssueKind.DIRECTORY_UNCONFIRMED }
+                if (unknown > 0) add("$unknown 个目录创建结果待确认")
+                val skipped = work.issues.count { it.kind == UploadPreparationIssueKind.NOT_ATTEMPTED }
+                if (skipped > 0) add("$skipped 个文件未入队")
+                val failed = work.issues.size - unknown - skipped
+                if (failed > 0) add("$failed 项未准备成功")
+                if (stopped) add("准备已停止，请检查目标目录")
+                if (unexpected) add("准备发生异常，请检查已入队文件与目标目录")
+            }.joinToString("，")
+            work = work.copy(result = UploadPreparationResult(completion, message, nowMs()))
+            PikoLog.i(TAG, "上传准备 ${work.id}结束：$completion，入队 ${work.files.size} 个文件，创建 ${work.directories.size} 个目录，${work.issues.size} 项问题")
+            if (completion == UploadPreparationCompletion.SUCCEEDED) _preparations.update { all -> all.filterNot { it.id == work.id } }
+            else {
+                publish()
+                _preparations.update { all ->
+                    val retained = all.filter { !it.isRunning && !it.hasUnconfirmedDirectory }.takeLast(100).mapTo(HashSet()) { it.id }
+                    all.filter { it.isRunning || it.hasUnconfirmedDirectory || it.id in retained }
+                }
+                _preparationOutcomes.tryEmit(work)
+            }
+            if (work.files.isNotEmpty()) _enqueued.tryEmit(UploadEnqueued(work.account, work.files.size, work.id))
         }
     }
+
+    fun forgetPreparation(id: String): Boolean {
+        if (_preparations.value.any { it.id == id && it.isRunning }) return false
+        _preparations.update { all -> all.filterNot { it.id == id } }
+        return true
+    }
+    fun preparationBlockReason(selection: UploadSelection, parentId: String, snapshot: List<UploadPreparation> = _preparations.value): String? {
+        val account = clientProvider.currentClient.value?.account ?: return "未登录"
+        if (_isRestoring.value) return "正在恢复上传任务，请稍后"
+        if (_tasks.value.values.any { it.account == account && it.parentId == parentId && it.sourceUri in selection.files && it.status != UploadStatus.COMPLETED })
+            return "此文件已有未完成的上传，请在任务页继续或先移除原任务"
+        val keys = selection.files.map { sourceKey(it, false) } + selection.folders.map { sourceKey(it, true) }
+        return "相同来源在此目录有准备中或已有副作用的上传，请先在任务页检查".takeIf {
+            snapshot.any { it.account == account && it.parentId == parentId && it.blockedSources.any { key -> key in keys } }
+        }
+    }
+    private fun sourceKey(uri: String, folder: Boolean) = fileCacheName("$folder:$uri")
 
     /** 继续暂停的任务，或重试失败的任务：放回队尾，轮到它时从断点接着传。 */
     fun resume(taskId: String) {
@@ -216,7 +360,7 @@ class PikoUploadCoordinator(
                 return@launch
             }
             runSuspendCatching { client.cancelUpload(session) }.logFailure(TAG, "移除上传任务 ${task.taskId}：放弃上传会话失败，文件 ${session.fileId}")
-            driveRepository.applyChange(DriveChange.ContentsChanged(setOf(task.parentId)))
+            driveRepository.applyWriteChange(client.account, DriveChange.ContentsChanged(setOf(task.parentId)))
         }
     }
 
@@ -239,23 +383,6 @@ class PikoUploadCoordinator(
             parentName = parentName,
             createdAtMs = nowMs(),
         )
-    }
-
-    /**
-     * 在 [parentId] 下按 [folder] 的结构建目录，返回其下每个文件的任务。同名目录已存在时服务端
-     * 另建一个「名字(1)」，不会并进去：合并要先列出目标再逐层比对，而上传进一个新目录总是对的。
-     */
-    private suspend fun folderTasks(client: PikPakClient, folder: UploadFolder, parentId: String): List<UploadTask> {
-        val rootId = client.createFolder(parentId, folder.name)
-        val dirIds = mutableMapOf("" to rootId)
-        suspend fun dirId(path: String): String = dirIds[path] ?: run {
-            val parent = dirId(path.substringBeforeLast('/', ""))
-            client.createFolder(parent, path.substringAfterLast('/')).also { dirIds[path] = it }
-        }
-        return folder.files.mapNotNull { entry ->
-            val dirName = entry.relativeDir.substringAfterLast('/').ifEmpty { folder.name }
-            newTask(client.account, entry.uri, dirId(entry.relativeDir), dirName)
-        }
     }
 
     /**
@@ -368,7 +495,7 @@ class PikoUploadCoordinator(
             }
             _tasks.value[taskId]?.let { task ->
                 releaseIfUnused(task.sourceUri)
-                driveRepository.applyChange(DriveChange.ContentsChanged(setOf(task.parentId)))
+                driveRepository.applyWriteChange(client.account, DriveChange.ContentsChanged(setOf(task.parentId)))
             }
         } catch (e: CancellationException) {
             update(taskId) { if (it.status.isActive) it.copy(status = UploadStatus.PAUSED, speedBytesPerSec = 0L) else it }
@@ -499,8 +626,18 @@ class PikoUploadCoordinator(
 
     /** 同一个文件可能排了不止一次，全部传完或移除后才交还读取授权。 */
     private fun releaseIfUnused(uri: String) {
-        val stillNeeded = _tasks.value.values.any { it.sourceUri == uri && it.status != UploadStatus.COMPLETED }
-        if (!stillNeeded) runCatching { sources.release(uri) }.logFailure(TAG, "交还源文件读取授权失败")
+        runBlocking { sourceLock.withLock {
+            val key = sources.permissionKey(uri)
+            val pending = _pendingRequest.value
+            val stillNeeded = preparingSources.values.any { key in it } ||
+                (pending?.files.orEmpty() + pending?.folders.orEmpty()).any { sources.permissionKey(it) == key } ||
+                _tasks.value.values.any { it.status != UploadStatus.COMPLETED && sources.permissionKey(it.sourceUri) == key }
+            if (!stillNeeded) runCatching { sources.release(key) }.logFailure(TAG, "交还源文件读取授权失败")
+        } }
+    }
+
+    private fun retainSources(keys: Set<String>) {
+        keys.forEach { key -> runCatching { sources.retain(key) }.onFailure { PikoLog.w(TAG, "保留来源读取授权失败：${it::class.simpleName}") } }
     }
 
     /** 放弃一个会话：尽力而为，失败只意味着网盘里多留一个上传中的文件。 */

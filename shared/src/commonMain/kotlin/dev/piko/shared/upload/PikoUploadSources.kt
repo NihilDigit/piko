@@ -30,6 +30,12 @@ interface PikoUploadSources {
     /** 无法读取时为 null。 */
     fun listFolder(uri: String): UploadFolder?
 
+    /** 共用同一授权的 URI 映射到同一个、可交给 [release] 的资源标识；例如 Android 树内文档。 */
+    fun permissionKey(uri: String): String = uri
+
+    /** 接受来源时保留可持久的读取授权；不支持持久授权的平台或来源可不实现。 */
+    fun retain(uri: String) {}
+
     /**
      * 不再需要读 [uri] 了：任务完成或被移除，且没有别的任务用它。Android 在这里交还选文件时
      * 取得的持久授权，一个应用能持有的持久授权有上限，只取不还迟早选不了文件。

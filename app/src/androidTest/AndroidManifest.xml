@@ -1,0 +1,16 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <provider
+            android:name="dev.piko.smoke.UploadGrantFixtureProvider"
+            android:authorities="dev.piko.debug.test.upload-documents"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:readPermission="android.permission.MANAGE_DOCUMENTS"
+            android:writePermission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
+        <activity android:name="dev.piko.smoke.UploadGrantFixtureActivity" android:exported="true" />
+    </application>
+</manifest>

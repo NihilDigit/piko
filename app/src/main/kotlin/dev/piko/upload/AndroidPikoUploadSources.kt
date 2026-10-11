@@ -75,11 +75,24 @@ class AndroidPikoUploadSources(context: Context) : PikoUploadSources {
         null
     }
 
-    // 只交还这个 uri 本身持有的授权。文件夹里的文档靠树授权读取，没有自己的授权；
-    // 树授权由整个文件夹的文件共用，这里不知道其他文件是否传完，留着不还
+    override fun permissionKey(uri: String): String {
+        val parsed = Uri.parse(uri)
+        val authority = parsed.authority
+        return if (authority != null && DocumentsContract.isTreeUri(parsed)) DocumentsContract.buildTreeDocumentUri(
+            authority, DocumentsContract.getTreeDocumentId(parsed),
+        ).toString() else uri
+    }
+
+    override fun retain(uri: String) {
+        runCatching { resolver.takePersistableUriPermission(Uri.parse(permissionKey(uri)), Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+    }
+
+    // 调度器按 permissionKey 统一计算所有准备和任务的引用，最后一个使用者结束后才交还。
     override fun release(uri: String) {
         val parsed = Uri.parse(uri)
-        if (resolver.persistedUriPermissions.none { it.uri == parsed }) return
+        val permission = resolver.persistedUriPermissions.firstOrNull { it.uri == parsed } ?: return
+        // 上传只持有读授权；可写目录还由下载保存位置等功能长期使用。
+        if (permission.isWritePermission) return
         runCatching { resolver.releasePersistableUriPermission(parsed, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
     }
 
