@@ -40,7 +40,7 @@ import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.CancellationException
 
 /**
- * 点「下载」时选画质，入口见 [DownloadLauncher]。只在没设默认下载画质时弹，所以默认选中原画。
+ * 点「下载指定画质」时选择，入口见 [DownloadLauncher]；普通下载不打开对话框。
  * 单个视频列出原画与各档转码及其大小；几项一起（多选、文件夹）只列画质级别，每个视频各自按 downloadQualityOrder 挑，
  * 不逐个探测：文件夹里上千个视频，逐个查详情太慢。
  */
@@ -176,7 +176,7 @@ private fun QualityDialogFrame(
     )
 }
 
-/** 勾上即把这一档（换算成画质上限）存为默认下载画质，以后不再弹出；在设置的「默认下载画质」里改回「每次询问」。 */
+/** 勾上把本次选择存为普通下载的默认画质；显式指定画质始终询问。 */
 @Composable
 private fun KeepChoiceRow(checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
     Row(

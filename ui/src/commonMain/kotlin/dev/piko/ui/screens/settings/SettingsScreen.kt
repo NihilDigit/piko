@@ -592,12 +592,11 @@ fun SettingsScreen(
 
     if (showDownloadQuality) {
         PlaybackQualityDialog(
-            maxHeight = downloadMaxHeight,
+            maxHeight = downloadMaxHeight ?: 0,
             onSelect = { scope.launch { sessionManager.setDownloadMaxHeight(it) } },
             onDismiss = { showDownloadQuality = false },
             title = "默认下载画质",
-            description = "设定后下载视频不再询问。每个视频取不高于所选的最高一档，都高于所选时取最低一档；转码档存为 MP4。",
-            unsetLabel = DOWNLOAD_QUALITY_UNSET,
+            description = "普通下载直接使用此画质；也可通过「下载指定画质」临时选择。每个视频取不高于所选的最高一档，都高于所选时取最低一档；转码档存为 MP4。",
         )
     }
 

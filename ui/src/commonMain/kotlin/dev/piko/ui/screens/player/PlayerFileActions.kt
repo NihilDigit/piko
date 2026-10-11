@@ -71,9 +71,12 @@ fun rememberPlayerFileActions(fileId: String, isLocalPlayback: Boolean, onMessag
             add(
                 DriveActions.download(
                     onClick = { withFile { file -> downloads.download(listOf(file)) { notice -> message(notice ?: "已加入下载") } } },
-                    onPrepare = { services.mediaRepository.prefetchDownloadQualities(fileId) },
                 ),
             )
+            if (!dev.piko.shared.data.LeasedFile.isLeased(fileId) && !dev.piko.shared.data.VaultEntry.isVaulted(fileId)) add(DriveActions.downloadAtQuality(
+                onClick = { withFile { file -> downloads.downloadAtQuality(listOf(file)) { notice -> message(notice ?: "已加入下载") } } },
+                onPrepare = { services.mediaRepository.prefetchDownloadQualities(fileId) },
+            ))
         }
     }
 }

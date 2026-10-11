@@ -206,9 +206,8 @@ interface PikoUserPreferences {
     suspend fun setPlaybackMaxHeight(height: Int)
 
     /**
-     * 默认下载画质：画面高度的上限，0 是原画；null 是未设置（默认），下载视频时每次弹画质框。设了就不再问，
+     * 默认下载画质：画面高度的上限，0 是原画；null 是未设置，普通下载同样使用原画。指定画质另由显式动作选择，
      * 按它直接挑，规则见 dev.piko.shared.media.downloadQualityOrder，转码档转封装成 MP4 存下。
-     * 「问不问」与「按哪一档」合成这一项：原先分成两项，可能出现关了询问、画质却是没人选过的原画。
      * 每台设备各自的，不同步，理由同 [playbackMaxHeightFlow]。
      */
     val downloadMaxHeightFlow: Flow<Int?>

@@ -108,7 +108,7 @@ internal class FileActionHandlers(
     val findDuplicates: (() -> Unit)?,
     val canonicalNameFolder: (() -> Unit)?,
     val downloadSegment: () -> Unit,
-    /** 视频的「下载」「下载指定段落」上按下或悬停时提前查各档，见 [SheetAction.onPrepare]。 */
+    /** 视频的「下载指定画质」「下载指定段落」上按下或悬停时提前查各档。普通下载不探测。 */
     val prepareQualities: () -> Unit,
     /** 移动端为 null：来源写在面板头部那一行，复制按钮挂在那里，见 [FileActionsSheet]；打开来源分享在手机上不给。 */
     val copySource: (() -> Unit)?,
@@ -132,6 +132,7 @@ internal class FileActionHandlers(
      * 不为 null 即按桌面排图标行。
      */
     val putOnClipboard: ((cut: Boolean) -> Unit)?,
+    val downloadAtQuality: () -> Unit,
 )
 
 /**
@@ -147,8 +148,7 @@ internal fun fileActions(file: FileStat, commands: ItemCommands, on: FileActionH
             desktop = desktop,
             cut = putOnClipboard?.let { put -> DriveActions.cut { put(true) } },
             copy = putOnClipboard?.let { put -> DriveActions.copy { put(false) } },
-            // 文件夹连同子文件夹整个下载；单个视频点了先选画质，各档大小提前查
-            download = DriveActions.download(onPrepare = on.prepareQualities.takeIf { video }, onClick = on.download).takeIf { commands.download },
+            download = DriveActions.download(onClick = on.download).takeIf { commands.download },
             share = DriveActions.share(on.share).takeIf { commands.share },
             rename = DriveActions.rename(on.rename).takeIf { commands.rename },
             star = DriveActions.star(file.isStarred, on.toggleStar),
@@ -156,6 +156,7 @@ internal fun fileActions(file: FileStat, commands: ItemCommands, on: FileActionH
     )
     if (file.isFolder) on.openInNewTab?.let { add(DriveActions.openInNewTab(it)) }
     if (video) on.openInExternalPlayer?.let { add(DriveActions.openInExternalPlayer(it)) }
+    if (commands.downloadAtQuality) add(DriveActions.downloadAtQuality(on.prepareQualities.takeIf { video }, on.downloadAtQuality))
     if (commands.extract) add(DriveActions.extract(on.extract))
     // 桌面的星标在列表里，排在打开方式之后：放在它们之前的话整理组先出现，整组挪到打开方式之上
     if (desktop) add(DriveActions.star(file.isStarred, on.toggleStar, tier = ActionTier.Standard))

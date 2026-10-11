@@ -8,12 +8,87 @@ import dev.piko.shared.download.DriveDownloadFolderSource
 import dev.piko.shared.download.PikoDownloadCoordinator
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.TaskPhase
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.withTimeout
+import java.util.concurrent.atomic.AtomicInteger
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class FolderDownloadSmokeTest {
+
+    @Test
+    fun `a game folder is visible while preparing and repeated clicks do not scan it again`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val game = server.addFolder("Game")
+        server.addFile("game.exe", game.id, ByteArray(128) { 2 }, hash = "GAMEEXE")
+        val data = server.addFolder("Data", game.id)
+        server.addFile("data.pak", data.id, ByteArray(256) { 4 }, hash = "GAMEPAK")
+        val provider = server.provider()
+        val prefs = MemoryPreferences()
+        val repo = PikoDriveRepository(provider, prefs)
+        val root = repo.listAllFiles().getOrThrow().single { it.id == game.id }
+        val entered = Channel<Unit>(1)
+        val release = Channel<Unit>(1)
+        val calls = AtomicInteger()
+        val real = DriveDownloadFolderSource(repo)
+        val source = object : DownloadFolderSource {
+            override suspend fun list(folderId: String): List<FileStat> {
+                calls.incrementAndGet()
+                if (folderId == game.id) { entered.send(Unit); release.receive() }
+                return real.list(folderId)
+            }
+            override suspend fun remainingDailyDownload(): Long? = null
+        }
+        val directory = Files.createTempDirectory("piko-game-download").toFile()
+        val coordinator = PikoDownloadCoordinator(provider, prefs, DirectoryStorage(directory), scope)
+        coordinator.enqueueFolders(listOf(root), source, maxHeight = 0)
+        assertEquals(1, coordinator.listings.value.size, "目录尚未列出也已经有可见的准备任务")
+        withTimeout(5_000) { entered.receive() }
+        repeat(4) { coordinator.enqueueFolders(listOf(root), source, maxHeight = 0) }
+        assertEquals(1, calls.get(), "重复点击不能并行扫描同一个游戏目录")
+        release.send(Unit)
+        awaitUntil("游戏文件夹直接展开并下载") {
+            coordinator.listings.value.isEmpty() && coordinator.tasks.value.size == 2 &&
+                coordinator.tasks.value.values.all { it.status == DownloadStatus.COMPLETED }
+        }
+        assertEquals(2, calls.get(), "顶层与子目录各列一次")
+        assertEquals(setOf("Game/game.exe", "Game/Data/data.pak"), coordinator.tasks.value.values.map { it.fileName }.toSet())
+        assertTrue(coordinator.tasks.value.values.all { it.qualityCap == 0 })
+        directory.deleteRecursively()
+    }
+
+    @Test
+    fun `cloud pending files do not block downloading completed siblings from a folder`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val folder = server.addFolder("Mixed")
+        val ready = server.addFile("ready.txt", folder.id, ByteArray(256) { 7 }, hash = "READY")
+        val nested = server.addFolder("Nested", folder.id)
+        val nestedReady = server.addFile("nested.txt", nested.id, ByteArray(128) { 3 }, hash = "NESTED")
+        val pending = server.addFile("cloud-pending.txt", folder.id, ByteArray(512), hash = "NOTHELD")
+        server.addFile("nested-pending.txt", nested.id, ByteArray(512), hash = "NOTHELD")
+        server.unheldHashes += "NOTHELD"
+        val provider = server.provider()
+        val prefs = MemoryPreferences()
+        val repo = PikoDriveRepository(provider, prefs)
+        val directory = Files.createTempDirectory("piko-mixed-download").toFile()
+        val coordinator = PikoDownloadCoordinator(provider, prefs, DirectoryStorage(directory), scope)
+        val root = repo.listAllFiles().getOrThrow().single { it.id == folder.id }
+
+        coordinator.enqueueFolders(listOf(root), DriveDownloadFolderSource(repo), maxHeight = 0)
+
+        awaitUntil("就绪文件入队并完成，云端未完成文件不阻塞整批") {
+            coordinator.listings.value.isEmpty() && coordinator.tasks.value.size == 2 &&
+                coordinator.tasks.value.values.all { it.status == DownloadStatus.COMPLETED }
+        }
+        assertEquals(setOf(ready.id, nestedReady.id), coordinator.tasks.value.values.map { it.fileId }.toSet())
+        assertTrue(directory.resolve("Mixed/ready.txt").readBytes().contentEquals(ready.content))
+        assertTrue(directory.resolve("Mixed/Nested/nested.txt").readBytes().contentEquals(nestedReady.content))
+        assertTrue(!directory.resolve("Mixed/cloud-pending.txt").exists())
+        assertEquals(0, server.count("GET /drive/v1/files/${pending.id}"), "未就绪条目不会尝试获取下载详情")
+        directory.deleteRecursively()
+    }
 
     /**
      * 固定文件夹展开成一批任务的规则：路径以文件夹名打头、保持子文件夹；归档条目照样下载；上传中的不下；

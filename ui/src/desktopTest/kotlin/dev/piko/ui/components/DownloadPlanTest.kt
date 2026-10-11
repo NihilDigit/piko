@@ -1,25 +1,28 @@
 package dev.piko.ui.components
 
 import dev.piko.shared.media.DownloadQuality
-import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 class DownloadPlanTest {
     @Test
-    fun unsetDefaultAsksOnlyWhenThereIsAVideo() = runBlocking {
-        assertEquals(DownloadPlan.Ask, planDownload(null) { true })
-        assertEquals(DownloadPlan.Direct(0), planDownload(null) { false })
+    fun ordinaryDownloadUsesOriginalWhenNoDefaultWasChosen() {
+        assertEquals(DownloadPlan.Direct(0), planDownload(null, chooseQuality = false))
     }
 
     @Test
-    fun setDefaultDownloadsDirectlyWithoutProbingFolders() = runBlocking {
+    fun ordinaryDownloadUsesTheChosenDefaultWithoutAQualityPrompt() {
         // 原画（0）也是用户显式设过的默认，不能当成未设置再问一遍
         for (height in listOf(0, 1080, 480)) {
-            val plan = planDownload(height) { error("设了默认画质还去列文件夹") }
+            val plan = planDownload(height, chooseQuality = false)
             assertEquals(DownloadPlan.Direct(height), plan)
         }
+    }
+
+    @Test
+    fun explicitQualityChoiceAlwaysAsksEvenWhenADefaultExists() {
+        for (height in listOf(null, 0, 480, 1080)) assertEquals(DownloadPlan.Ask, planDownload(height, chooseQuality = true))
     }
 
     @Test

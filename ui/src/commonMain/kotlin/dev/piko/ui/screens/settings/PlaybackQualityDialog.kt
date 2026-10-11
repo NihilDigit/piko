@@ -12,10 +12,7 @@ internal fun playbackQualityLabel(maxHeight: Int): String = if (maxHeight <= 0) 
 internal fun playbackQualitySummary(maxHeight: Int): String =
     if (maxHeight <= 0) "原画" else "不高于 ${maxHeight}P"
 
-/** 默认下载画质未设置时的名字：下载视频时每次弹画质框。 */
-internal const val DOWNLOAD_QUALITY_UNSET = "每次询问"
-
-internal fun downloadQualitySummary(maxHeight: Int?): String = maxHeight?.let(::playbackQualitySummary) ?: DOWNLOAD_QUALITY_UNSET
+internal fun downloadQualitySummary(maxHeight: Int?): String = playbackQualitySummary(maxHeight ?: 0)
 
 /**
  * 画质上限的单选对话框，播放画质与默认下载画质共用，档位相同（[PlayerGestureDefaults.MaxHeightChoices]）。

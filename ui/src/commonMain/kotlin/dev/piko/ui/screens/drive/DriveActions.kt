@@ -16,6 +16,7 @@ import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.FolderCopy
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.HighQuality
 import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.OndemandVideo
@@ -39,8 +40,7 @@ import dev.piko.ui.components.SheetAction
  * [itemCommands] 决定，不在这里判断。
  *
  * 省略号照 Windows 与 macOS 菜单的惯例：点了之后还要先挑目标或参数（目录、段落）才执行的加，
- * 只是确认、就地改名或直接执行的不加。「下载」不加：只有文件时直接下，有视频时弹出的画质对话框已选好默认的一档，
- * 一次确认即下，还可以设成不再弹；同一项的名字也不该随选中的是不是视频而变。
+ * 只是确认、就地改名或直接执行的不加。普通下载直接入队，指定画质与指定段落分别作为显式参数操作。
  *
  * 分档见 [ActionTier]：图标行按平台排，见 [quickRow]；其余都在列表里，按组排：
  * 打开（各类条目自己的打开方式、下载指定段落），整理（移动、复制、规范命名），管理（预览遮蔽、归档）。
@@ -48,15 +48,18 @@ import dev.piko.ui.components.SheetAction
  * 移动端的面板没有「更多」可收，要一屏平铺放得下：位置命令在进文件夹后的页眉菜单里，来源在面板头部。
  */
 internal object DriveActions {
-    /** 点了经 DownloadLauncher 定画质，见那里。[onPrepare] 给单个视频提前查各档大小。 */
-    fun download(onPrepare: (() -> Unit)? = null, onClick: () -> Unit) = SheetAction(
+    /** 普通下载直接入队；指定画质另有显式入口。 */
+    fun download(onClick: () -> Unit) = SheetAction(
         Icons.Outlined.Download,
         "下载到本地",
         onClick,
         group = ActionGroup.Open,
         tier = ActionTier.Quick,
-        onPrepare = onPrepare,
         shortLabel = "下载",
+    )
+
+    fun downloadAtQuality(onPrepare: (() -> Unit)? = null, onClick: () -> Unit) = SheetAction(
+        Icons.Outlined.HighQuality, "下载指定画质…", onClick, group = ActionGroup.Open, onPrepare = onPrepare,
     )
 
     fun share(onClick: () -> Unit) =

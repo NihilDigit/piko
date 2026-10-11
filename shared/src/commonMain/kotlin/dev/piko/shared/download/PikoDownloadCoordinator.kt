@@ -380,6 +380,7 @@ class PikoDownloadCoordinator(
             val batch = previous ?: DownloadBatch(id = "${folder.id}@$now", folderName = uniqueDownloadName(FileNameSanitizer.sanitizeFolderName(folder.name), taken, false), sourceFolderId = folder.id)
             _listings.update { it + (batch.id to FolderListing(batch, createdAtMs = now, account = currentAccount())) }
             listingWork.update { it + (batch.id to ListingWork(folder, source, maxHeight)) }
+            PikoLog.d(TAG, "开始准备文件夹下载：${logFile(folder.id, folder.name)}")
             startListing(batch.id)
         }
         return eligible.size

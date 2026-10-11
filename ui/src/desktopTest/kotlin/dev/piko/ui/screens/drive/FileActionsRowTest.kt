@@ -18,7 +18,7 @@ class FileActionsRowTest {
     private val file = FileStat(kind = FileKind.FILE, id = "f", name = "a.txt", fileExtension = ".txt")
 
     private fun handlers(desktop: Boolean) = FileActionHandlers(
-        toggleStar = {}, download = {}, share = {}, rename = {}, move = {}, copy = {}, trash = {}, extract = {},
+        toggleStar = {}, download = {}, downloadAtQuality = {}, share = {}, rename = {}, move = {}, copy = {}, trash = {}, extract = {},
         findDuplicates = {}, canonicalNameFolder = null, downloadSegment = {}, prepareQualities = {}, copySource = {}, openSource = {},
         openInExternalPlayer = null, openInNewTab = null, togglePin = null, isPinned = false, vault = {}, unvault = null,
         previewHidden = null, togglePreview = {},
@@ -27,6 +27,15 @@ class FileActionsRowTest {
 
     private fun actions(desktop: Boolean) =
         fileActions(file, itemCommands(CommandPlace.FOLDER, listOf(file)), handlers(desktop)) + DriveActions.properties {}
+
+    @Test
+    fun `only explicit quality actions prepare video variants`() {
+        val video = file.copy(name = "video.mp4", mimeType = "video/mp4")
+        val actions = fileActions(video, itemCommands(CommandPlace.FOLDER, listOf(video)), handlers(desktop = true))
+        assertEquals(null, actions.single { it.label == "下载到本地" }.onPrepare)
+        assertTrue(actions.single { it.label == "下载指定画质…" }.onPrepare != null)
+        assertTrue(fileActions(file, itemCommands(CommandPlace.FOLDER, listOf(file)), handlers(true)).none { it.label == "下载指定画质…" })
+    }
 
     @Test
     fun `the desktop menu row follows the windows 11 context menu and lists the star`() {
