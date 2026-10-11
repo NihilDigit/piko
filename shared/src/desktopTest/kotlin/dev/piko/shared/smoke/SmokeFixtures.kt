@@ -172,21 +172,27 @@ class MemorySessionStore : PikoSessionStore {
 }
 
 /**
- * 冒烟测试的运行环境。状态类跑在真实的 Dispatchers.Default 上：仓库层自己会切到
- * Default，虚拟时间管不到那里，与其半真半假，不如全用真实时间并按条件等待。
+ * 呈现状态与断言在同一个串行作用域执行，贴近生产环境的 Main 读写约束。
+ * 仓库、SDK 与下载的 IO 仍在真实 Default/IO 调度器上运行，不使用虚拟时间。
  */
-fun smoke(block: suspend CoroutineScope.(scope: CoroutineScope) -> Unit) = runBlocking {
-    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    try {
-        withTimeout(30_000) { block(scope) }
-    } finally {
-        scope.cancel()
+fun smoke(block: suspend CoroutineScope.(scope: CoroutineScope) -> Unit) {
+    val presentationDispatcher = Dispatchers.Default.limitedParallelism(1)
+    runBlocking(presentationDispatcher) {
+        val scope = CoroutineScope(SupervisorJob() + presentationDispatcher)
+        try {
+            withTimeout(30_000) { block(scope) }
+        } finally {
+            scope.cancel()
+        }
     }
 }
 
 suspend fun awaitUntil(description: String, timeoutMs: Long = 10_000, condition: () -> Boolean) {
     val deadline = System.currentTimeMillis() + timeoutMs
-    while (!condition()) {
+    while (true) {
+        // 无 Recomposer 的呈现状态测试也要推进全局通知，snapshotFlow 才能观察异步写入。
+        androidx.compose.runtime.snapshots.Snapshot.sendApplyNotifications()
+        if (condition()) return
         if (System.currentTimeMillis() > deadline) throw AssertionError("超时仍未满足：$description")
         delay(20)
     }

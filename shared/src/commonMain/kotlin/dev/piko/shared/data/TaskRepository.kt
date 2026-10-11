@@ -5,7 +5,6 @@ import io.github.nihildigit.pikpak.DriveTask
 import io.github.nihildigit.pikpak.TaskListResponse
 import io.github.nihildigit.pikpak.TaskPhase
 import io.github.nihildigit.pikpak.clearOfflineTasks
-import io.github.nihildigit.pikpak.createUrlFile
 import io.github.nihildigit.pikpak.deleteOfflineTasks
 import io.github.nihildigit.pikpak.listOfflineTasks
 import kotlinx.coroutines.Dispatchers
@@ -14,7 +13,9 @@ import kotlinx.coroutines.withContext
 class TaskRepository(
     private val clientManager: PikoClientProvider,
     private val driveRepository: PikoDriveRepository,
+    private val instantRepository: InstantMagnetRepository = InstantMagnetRepository(clientManager),
 ) {
+    val offlineSubmissions get() = instantRepository.offlineSubmissions
     private val client get() = clientManager.currentClient.value ?: error("Not logged in")
 
     /**
@@ -40,7 +41,10 @@ class TaskRepository(
                 pageToken = pageToken.ifEmpty { null },
                 // SDK 的默认值只含 RUNNING 与 ERROR，排队中的任务会从列表里消失
                 phaseFilter = ALL_PHASES,
-            ).also { if (pageToken.isEmpty()) lastTasks = current.account to it.tasks }
+            ).also {
+                offlineSubmissions.observeTasks(current.account, it.tasks)
+                if (pageToken.isEmpty()) lastTasks = current.account to it.tasks
+            }
         }
     }
 
@@ -50,14 +54,17 @@ class TaskRepository(
      * 不用服务端的 RETRY：实测（2026-09-23）服务端接受后任务转入 RUNNING，约两秒内又落回
      * ERROR「Save failed, retry please」，真实的保存失败也是如此；按原链接重新提交则能正常完成。
      */
-    suspend fun resubmitTask(task: DriveTask): Result<Unit> = withContext(Dispatchers.Default) {
-        runSuspendCatching {
+    suspend fun resubmitTask(task: DriveTask): Result<Unit> {
+        val owner = client
+        val access = driveRepository.writeAccess(owner.account) ?: return Result.failure(IllegalStateException("账号已改变"))
+        return runSuspendCatching {
             val url = task.sourceUrl ?: error("任务缺少来源链接")
-            client.createUrlFile(parentId = resubmitTarget(task), url = url)
+            instantRepository.enqueueOfflineTask(url, resubmitTarget(task, access), title = "重新提交云端离线", expectedAccount = owner.account).getOrThrow()
             Unit
         }.onSuccess {
             // 新任务已经提交，旧记录删不掉只是多留一条，用户可以手动删，不算重新提交失败
-            runSuspendCatching { client.deleteOfflineTasks(listOf(task.id), deleteFiles = false) }
+            runSuspendCatching { owner.deleteOfflineTasks(listOf(task.id), deleteFiles = false) }
+                .onSuccess { offlineSubmissions.forgetTasks(owner.account, ids = setOf(task.id)) }
                 .logFailure(TAG, "重新提交后删除旧离线任务 ${task.id} 失败")
         }
     }
@@ -67,18 +74,22 @@ class TaskRepository(
      * 与秒传与离线的默认目标一致，免得根目录里越积越多。取不到 My Packs 时退回根目录，
      * 重新提交本身不该因此失败。
      */
-    private suspend fun resubmitTarget(task: DriveTask): String =
+    private suspend fun resubmitTarget(task: DriveTask, access: DriveWriteAccess): String =
         task.params["parent_folder_id"]?.takeIf { it.isNotEmpty() }
-            ?: driveRepository.getOrCreateMyPacksFolder().logFailure(TAG, "取 My Packs 失败，重新提交到根目录").getOrNull()?.id.orEmpty()
+            ?: driveRepository.getOrCreateMyPacksFolder(access).logFailure(TAG, "取 My Packs 失败，重新提交到根目录").getOrNull()?.id.orEmpty()
 
     /** 只删任务记录。已完成任务的文件留在网盘里，未完成任务的占位文件由服务端一并清掉。 */
     suspend fun deleteTasks(taskIds: List<String>): Result<Unit> = withContext(Dispatchers.Default) {
-        runSuspendCatching { client.deleteOfflineTasks(taskIds, deleteFiles = false) }
+        val owner = client
+        runSuspendCatching { owner.deleteOfflineTasks(taskIds, deleteFiles = false) }
+            .onSuccess { offlineSubmissions.forgetTasks(owner.account, ids = taskIds.toSet()) }
     }
 
     /** 按阶段清除任务记录，与网页端的「清空已完成」「清空失败」相同。产出的文件保留。 */
     suspend fun clearTasks(phases: List<String>): Result<Unit> = withContext(Dispatchers.Default) {
-        runSuspendCatching { client.clearOfflineTasks(phases, deleteFiles = false) }
+        val owner = client
+        runSuspendCatching { owner.clearOfflineTasks(phases, deleteFiles = false) }
+            .onSuccess { offlineSubmissions.forgetTasks(owner.account, phases = phases.toSet()) }
     }
 
     private companion object {

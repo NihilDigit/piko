@@ -11,6 +11,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
@@ -27,6 +28,8 @@ import kotlin.time.Duration.Companion.seconds
 
 @Serializable
 enum class OfflinePackStage { QUEUED, DOWNLOADING, PRUNING, DONE, FAILED }
+
+data class OfflinePackRef(val account: String, val taskId: String)
 
 /**
  * 一次「整包离线、完成后删掉未选文件」的跟踪记录，持久化，重启后接着轮询。
@@ -91,6 +94,8 @@ class OfflinePackTracker(
 
     /** 当前账号的记录，新提交的在前。 */
     val jobs: StateFlow<List<OfflinePackJob>> = _jobs.asStateFlow()
+    private val _busy = MutableStateFlow<Set<OfflinePackRef>>(emptySet())
+    val busy = _busy.asStateFlow()
 
     // 新提交或重试的任务 id：唤醒轮询，并让这一项不等退避、立即查一次
     private val nudges = Channel<String>(Channel.UNLIMITED)
@@ -136,7 +141,7 @@ class OfflinePackTracker(
         keptBytes: Long,
     ): Result<OfflinePackJob?> {
         val owner = lock.withLock { account } ?: return Result.failure(IllegalStateException("未登录"))
-        val created = instantRepo.enqueueOfflineTask(url, targetId).getOrElse { return Result.failure(it) }
+        val created = instantRepo.enqueueOfflineTask(url, targetId, title = folderName, expectedAccount = owner, requiresTask = totalFiles > 1).getOrElse { return Result.failure(it) }
         val task = (created as? CreateUrlResult.Queued)?.task ?: run {
             PikoLog.i(TAG, "整包离线提交即完成，无从清理未选文件")
             return Result.success(null)
@@ -166,46 +171,63 @@ class OfflinePackTracker(
      * 取消进行中的任务，或移除已结束的记录。两者都是删掉服务端的任务记录：未完成任务的
      * 占位文件由服务端一并清掉，已完成任务的文件保留。
      */
-    suspend fun discard(taskId: String): Result<Unit> =
-        instantRepo.deleteOfflineTask(taskId).logFailure(TAG, "删除整包离线任务 $taskId 失败").onSuccess {
-            PikoLog.i(TAG, "已删除整包离线任务 $taskId")
-            lock.withLock {
-                all = all.orEmpty().filterNot { it.taskId == taskId }
-                persist()
-            }
+    suspend fun discard(taskId: String): Result<Unit> {
+        val job = lock.withLock {
+            val job = all.orEmpty().firstOrNull { it.account == account && it.taskId == taskId } ?: return Result.success(Unit)
+            val ref = OfflinePackRef(job.account, taskId)
+            if (ref in _busy.value) return Result.failure(IllegalStateException("此整包任务正在处理，完成后再试"))
+            _busy.update { it + ref }
+            job
         }
+        val ref = OfflinePackRef(job.account, taskId)
+        try {
+            return instantRepo.deleteOfflineTask(taskId, job.account).logFailure(TAG, "删除整包离线任务 $taskId 失败").onSuccess {
+                PikoLog.i(TAG, "已删除整包离线任务 $taskId")
+                lock.withLock {
+                    all = all.orEmpty().filterNot { it.account == job.account && it.taskId == taskId }
+                    persist()
+                }
+            }
+        } finally { _busy.update { it - ref } }
+    }
 
     /** 清理失败的只重做清理；下载失败的以原链接重新提交，换成新任务继续跟踪。 */
     suspend fun retry(taskId: String): Result<Unit> {
-        val job = lock.withLock { all.orEmpty().firstOrNull { it.taskId == taskId } }
-            ?: return Result.success(Unit)
-        if (job.stage != OfflinePackStage.FAILED) return Result.success(Unit)
-        PikoLog.i(TAG, "重试整包离线任务 $taskId：${if (job.cleanupFailed) "只重做清理" else "按原链接重新提交"}")
-        val trackedId = if (job.cleanupFailed) {
-            update(taskId, persist = true) {
-                it.copy(stage = OfflinePackStage.PRUNING, cleanupFailed = false, message = "")
-            }
-            taskId
-        } else {
-            val created = instantRepo.enqueueOfflineTask(job.url, job.targetId).getOrElse { return Result.failure(it) }
-            val task = (created as? CreateUrlResult.Queued)?.task
-                ?: return Result.failure(IllegalStateException("服务端未返回任务"))
-            // 旧记录删不掉只是在传输页多留一条失败项，不影响新任务
-            instantRepo.deleteOfflineTask(taskId).logFailure(TAG, "重试后删除旧任务 $taskId 失败")
-            PikoLog.i(TAG, "整包离线任务 $taskId 重新提交为 ${task.id}")
-            update(taskId, persist = true) {
-                it.copy(
-                    taskId = task.id,
-                    stage = OfflinePackStage.QUEUED,
-                    progress = 0,
-                    createdAtMs = now(),
-                    message = "",
-                )
-            }
-            task.id
+        val job = lock.withLock {
+            val job = all.orEmpty().firstOrNull { it.account == account && it.taskId == taskId } ?: return Result.success(Unit)
+            val ref = OfflinePackRef(job.account, taskId)
+            if (ref in _busy.value) return Result.failure(IllegalStateException("此整包任务正在处理，完成后再试"))
+            if (job.stage != OfflinePackStage.FAILED) return Result.success(Unit)
+            _busy.update { it + ref }
+            job
         }
-        nudges.trySend(trackedId)
-        return Result.success(Unit)
+        val refs = mutableSetOf(OfflinePackRef(job.account, taskId))
+        try {
+            return runSuspendCatching {
+                PikoLog.i(TAG, "重试整包离线任务 $taskId：${if (job.cleanupFailed) "只重做清理" else "按原链接重新提交"}")
+                val trackedId = if (job.cleanupFailed) {
+                    update(taskId, persist = true) {
+                        it.copy(stage = OfflinePackStage.PRUNING, cleanupFailed = false, message = "")
+                    }
+                    taskId
+                } else {
+                    val created = instantRepo.enqueueOfflineTask(job.url, job.targetId, title = job.folderName,
+                        expectedAccount = job.account, requiresTask = job.totalFiles > 1).getOrThrow()
+                    val task = (created as? CreateUrlResult.Queued)?.task ?: error("服务端未返回任务")
+                    refs += OfflinePackRef(job.account, task.id)
+                    _busy.update { it + refs }
+                    PikoLog.i(TAG, "整包离线任务 $taskId 重新提交为 ${task.id}")
+                    update(taskId, persist = true) {
+                        it.copy(taskId = task.id, stage = OfflinePackStage.QUEUED, progress = 0, createdAtMs = now(), message = "")
+                    }
+                    nudges.trySend(task.id)
+                    // 先接管新任务；旧记录删不掉只多留一条，不影响新任务的跟踪。
+                    instantRepo.deleteOfflineTask(taskId, job.account).logFailure(TAG, "重试后删除旧任务 $taskId 失败")
+                    task.id
+                }
+                nudges.trySend(trackedId)
+            }
+        } finally { _busy.update { it - refs } }
     }
 
     private suspend fun pollLoop() {
@@ -239,6 +261,7 @@ class OfflinePackTracker(
             recordFailure(job, err)
             return
         }
+        instantRepo.offlineSubmissions.observeTasks(job.account, listOf(task), job.targetId)
         serverFailures.remove(job.taskId)
         when (task.phase) {
             TaskPhase.PENDING -> update(job.taskId) { it.copy(stage = OfflinePackStage.QUEUED) }
@@ -262,8 +285,8 @@ class OfflinePackTracker(
     }
 
     private suspend fun finish(job: OfflinePackJob, task: DriveTask) {
-        if (job.stage != OfflinePackStage.PRUNING) {
-            update(job.taskId, persist = true) { it.copy(stage = OfflinePackStage.PRUNING, progress = 100) }
+        if (job.stage != OfflinePackStage.PRUNING || job.outputId != task.fileId) {
+            update(job.taskId, persist = true) { it.copy(stage = OfflinePackStage.PRUNING, progress = 100, outputId = task.fileId) }
         }
         if (task.fileId.isEmpty()) {
             fail(job, "任务没有产出文件", cleanup = false)

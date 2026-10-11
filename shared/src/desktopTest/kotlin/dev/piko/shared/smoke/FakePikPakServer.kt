@@ -1,5 +1,7 @@
 package dev.piko.shared.smoke
 
+import io.github.nihildigit.pikpak.TaskPhase
+
 import dev.piko.shared.data.PikoClientProvider
 import io.github.nihildigit.pikpak.InMemorySessionStore
 import io.github.nihildigit.pikpak.PikPakClient
@@ -52,6 +54,7 @@ class FakePikPakServer(
         @Volatile var name: String,
         val isFolder: Boolean,
         @Volatile var trashed: Boolean = false,
+        @Volatile var starred: Boolean = false,
         val hash: String = "",
         val content: ByteArray = ByteArray(0),
         val size: Long = content.size.toLong(),
@@ -60,12 +63,15 @@ class FakePikPakServer(
         val durationSeconds: Double? = null,
         /** 详情里有没有 720P 转码。 */
         val transcoded: Boolean = false,
+        val params: Map<String, String> = emptyMap(),
     )
 
-    class Task(val id: String, val name: String, phase: String, val parentId: String, val url: String) {
+    class Task(val id: String, val name: String, phase: String, val parentId: String, val url: String,
+        val type: String = "offline", val copySources: List<String> = emptyList(), val restoreShareId: String? = null) {
         @Volatile var phase: String = phase
         @Volatile var fileId: String = ""
         @Volatile var fileName: String = ""
+        @Volatile var copied = false
     }
 
     /**
@@ -88,6 +94,13 @@ class FakePikPakServer(
     val decompressCalls = AtomicInteger(0)
     private val cdnContent = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
     private val tasks = CopyOnWriteArrayList<Task>()
+    class Event(val id: String, val type: String, val fileId: String,
+        @Volatile var seconds: Long = 0, @Volatile var duration: Long = 0)
+    private val events = CopyOnWriteArrayList<Event>()
+    val ignoredEventIds: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    fun addEvent(type: String, fileId: String): Event = Event(newId(), type, fileId).also { events += it }
+    fun eventsSnapshot(): List<Event> = events.toList()
     private val magnetResources = HashMap<String, String>()
     private val nextId = AtomicInteger(1)
 
@@ -97,6 +110,8 @@ class FakePikPakServer(
 
     /** 为真时所有请求在传输层失败，模拟断网。 */
     @Volatile var offline = false
+    @Volatile var copyPhase = "PHASE_TYPE_COMPLETE"
+    val ignoredBatchIds: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
     /** /drive/v1/about 报告的空间上限与已用量。 */
     @Volatile var quotaLimit: Long = 10L shl 40
@@ -104,6 +119,13 @@ class FakePikPakServer(
 
     /** 秒传建出的文件数。只数带 hash 的建文件请求，建目录与离线任务不算。 */
     val instantCreates = AtomicInteger(0)
+    @Volatile var shareRestoreQueued = false
+    @Volatile var shareRestorePhase = TaskPhase.COMPLETE
+    @Volatile var offlineEmptyResponse = false
+    @Volatile var emptyCreatedFolderId = false
+    @Volatile var offlineEmptyTaskResponse = false
+    @Volatile var offlineImmediateFile: Node? = null
+    @Volatile var includeShareProvenance = true
 
     /**
      * 云端其实没有内容的 gcid：秒传照样建出节点，但状态是 PENDING，等着上传。与线上一致，
@@ -125,8 +147,8 @@ class FakePikPakServer(
 
     val engine = MockEngine { request -> handle(request) }
 
-    fun addFolder(name: String, parentId: String = "", trashed: Boolean = false): Node =
-        add(Node(newId(), parentId, name, isFolder = true, trashed = trashed))
+    fun addFolder(name: String, parentId: String = "", trashed: Boolean = false, params: Map<String, String> = emptyMap()): Node =
+        add(Node(newId(), parentId, name, isFolder = true, trashed = trashed, params = params))
 
     fun addFile(
         name: String,
@@ -134,7 +156,8 @@ class FakePikPakServer(
         content: ByteArray = ByteArray(0),
         hash: String = "",
         trashed: Boolean = false,
-    ): Node = add(Node(newId(), parentId, name, isFolder = false, trashed = trashed, hash = hash, content = content))
+        params: Map<String, String> = emptyMap(),
+    ): Node = add(Node(newId(), parentId, name, isFolder = false, trashed = trashed, hash = hash, content = content, params = params))
 
     /** 抽过元数据的视频：没有内容，只有时长与可选的 720P 转码，供信息流挑段。 */
     fun addVideo(name: String, parentId: String = "", durationSeconds: Double = 1440.0, transcoded: Boolean = true): Node =
@@ -260,6 +283,28 @@ class FakePikPakServer(
             }
             path.endsWith("/drive/v1/resource/list") -> resolveMagnet(request)
             path.endsWith("/drive/v1/about") -> about()
+            path.endsWith("/drive/v1/events:delete") -> {
+                val body = Json.parseToJsonElement(request.body.text()).jsonObject
+                val ids = body["ids"]!!.jsonArray.map { it.jsonPrimitive.content }.toSet()
+                events.removeIf { it.id in ids && it.id !in ignoredEventIds }
+                json("{}")
+            }
+            path.endsWith("/drive/v1/events:clear") -> {
+                val body = Json.parseToJsonElement(request.body.text()).jsonObject
+                val types = body["types"]!!.jsonArray.map { it.jsonPrimitive.content }.toSet()
+                events.removeIf { it.type in types && it.id !in ignoredEventIds }
+                json("{}")
+            }
+            path.endsWith("/drive/v1/events") && request.method == HttpMethod.Post -> {
+                val body = Json.parseToJsonElement(request.body.text()).jsonObject["event"]!!.jsonObject
+                val fileId = body["file_id"]!!.jsonPrimitive.content
+                val type = body["type"]!!.jsonPrimitive.content
+                val event = events.firstOrNull { it.type == type && it.fileId == fileId } ?: addEvent(type, fileId)
+                event.seconds = body["params"]?.jsonObject?.get("play_seconds")?.jsonPrimitive?.content?.toLongOrNull() ?: 0
+                event.duration = body["params"]?.jsonObject?.get("play_duration")?.jsonPrimitive?.content?.toLongOrNull() ?: 0
+                json("{}")
+            }
+            path.endsWith("/drive/v1/events") -> listEvents(request)
             path.endsWith("/drive/v1/tasks") && request.method == HttpMethod.Delete -> deleteTasks(request)
             path.endsWith("/drive/v1/tasks") -> listTasks(request)
             path.contains("/drive/v1/tasks/") -> taskDetail(path.substringAfterLast('/'))
@@ -352,9 +397,14 @@ class FakePikPakServer(
         val specified = body["specify_parent_id"]?.jsonPrimitive?.content == "true"
         val parent = if (specified) body["parent_id"]!!.jsonPrimitive.content else
             children("").firstOrNull { it.name == "Pack From Shared" }?.id ?: addFolder("Pack From Shared").id
-        body["file_ids"]!!.jsonArray.mapNotNull { node(it.jsonPrimitive.content) }.forEach {
-            add(Node(newId(), parent, it.name, it.isFolder, hash = it.hash, content = it.content, size = it.size))
+        val ids = body["file_ids"]!!.jsonArray.map { it.jsonPrimitive.content }
+        val share = body["share_id"]!!.jsonPrimitive.content
+        if (shareRestoreQueued) {
+            val task = Task(newId(), "restore", shareRestorePhase, parent, "", type = "restore", copySources = ids, restoreShareId = share)
+            tasks += task
+            return json("""{"share_status":"OK","restore_status":"RESTORE_START","restore_task_id":"${task.id}"}""")
         }
+        synchronized(lock) { ids.forEach { copySubtree(it, parent, share) } }
         return json("""{"share_status":"OK","restore_status":"RESTORE_COMPLETE","restore_task_id":""}""")
     }
 
@@ -373,7 +423,30 @@ class FakePikPakServer(
     private fun MockRequestHandleScope.taskDetail(id: String): HttpResponseData {
         val task = tasks.firstOrNull { it.id == id }
             ?: return json("""{"error_code":4,"error":"task_not_found"}""", HttpStatusCode.NotFound)
+        if ((task.type == "copy" || task.type == "restore") && task.phase == "PHASE_TYPE_COMPLETE") synchronized(lock) {
+            if (!task.copied) {
+                task.copySources.forEach { copySubtree(it, task.parentId, task.restoreShareId) }
+                task.copied = true
+            }
+        }
         return json(taskJson(task).toString())
+    }
+
+    private fun MockRequestHandleScope.listEvents(request: HttpRequestData): HttpResponseData {
+        val types = request.url.parameters["filters"]?.let { Json.parseToJsonElement(it).jsonObject["type"]?.jsonObject?.get("in")?.jsonPrimitive?.content?.split(',') }
+            ?: listOf("TYPE_UPLOAD", "TYPE_RESTORE")
+        val filtered = events.filter { it.type in types }.asReversed()
+        val offset = request.url.parameters["page_token"]?.toIntOrNull() ?: 0
+        val limit = (request.url.parameters["limit"]?.toIntOrNull() ?: 100).coerceIn(1, 100)
+        val page = filtered.drop(offset).take(limit)
+        return json(buildJsonObject {
+            put("next_page_token", if (offset + page.size < filtered.size) (offset + page.size).toString() else "")
+            put("events", buildJsonArray { page.forEach { event -> add(buildJsonObject {
+                put("id", event.id); put("type", event.type); put("file_id", event.fileId)
+                put("params", buildJsonObject { put("play_seconds", event.seconds.toString()); put("play_duration", event.duration.toString()) })
+                node(event.fileId)?.let { file -> put("file_name", file.name); put("folder_id", file.parentId); put("reference_resource", buildJsonObject { putNode(file) }) }
+            }) } })
+        }.toString())
     }
 
     private fun MockRequestHandleScope.deleteTasks(request: HttpRequestData): HttpResponseData {
@@ -393,6 +466,7 @@ class FakePikPakServer(
         put("id", task.id)
         put("name", task.name)
         put("phase", task.phase)
+        put("type", task.type)
         put("file_id", task.fileId)
         put("file_name", task.fileName)
         put("file_size", "0")
@@ -435,12 +509,14 @@ class FakePikPakServer(
         val filters = request.url.parameters["filters"].orEmpty()
         val wantsTrash = filters.replace(" ", "").contains("\"trashed\":{\"eq\":true}")
         val parentId = request.url.parameters["parent_id"].orEmpty()
+        val wantsStarred = filters.contains("STAR")
         val visibleBefore = System.currentTimeMillis() - listingLagMs
         val listed = synchronized(lock) {
             if (wantsTrash) {
                 nodes.values.filter { it.trashed }
             } else {
-                nodes.values.filter { it.parentId == parentId && !it.trashed && it.createdAtMs <= visibleBefore }
+                nodes.values.filter { (parentId == "*" || it.parentId == parentId) && !it.trashed &&
+                    (!wantsStarred || it.starred) && it.createdAtMs <= visibleBefore }
             }
         }
         val body = buildJsonObject {
@@ -457,9 +533,12 @@ class FakePikPakServer(
         return when {
             body["kind"]?.jsonPrimitive?.content == "drive#folder" -> {
                 val folder = addFolder(name, parentId)
-                json(buildJsonObject { put("file", buildJsonObject { putNode(folder) }) }.toString())
+                json(buildJsonObject { put("file", buildJsonObject { putNode(folder); if (emptyCreatedFolderId) put("id", "") }) }.toString())
             }
             body["upload_type"]?.jsonPrimitive?.content == "UPLOAD_TYPE_URL" -> {
+                if (offlineEmptyResponse) return json("{}")
+                if (offlineEmptyTaskResponse) return json("""{"task":{}}""")
+                offlineImmediateFile?.let { file -> return json(buildJsonObject { put("file", buildJsonObject { putNode(file) }) }.toString()) }
                 val url = body["url"]?.jsonObject?.get("url")?.jsonPrimitive?.content.orEmpty()
                 val task = Task(newId(), "offline", "PHASE_TYPE_PENDING", parentId, url)
                 tasks += task
@@ -491,14 +570,21 @@ class FakePikPakServer(
         val body = Json.parseToJsonElement(request.body.text()).jsonObject
         val ids = body["ids"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()
         val moveTo = body["to"]?.jsonObject?.get("parent_id")?.jsonPrimitive?.content.orEmpty()
+        if (op == "batchCopy") {
+            val task = Task(newId(), "copy", copyPhase, moveTo, "", type = "copy", copySources = ids)
+            tasks += task
+            return json(buildJsonObject { put("task_id", task.id) }.toString())
+        }
         synchronized(lock) {
-            ids.forEach { id ->
+            ids.filterNot { it in ignoredBatchIds }.forEach { id ->
                 when (op) {
                     "batchTrash" -> nodes[id]?.trashed = true
                     "batchUntrash" -> nodes[id]?.trashed = false
                     // 目录连同其下的一切一并删掉，与线上的永久删除一致
                     "batchDelete" -> removeSubtree(id)
                     "batchMove" -> nodes[id]?.parentId = moveTo
+                    "star" -> nodes[id]?.starred = true
+                    "unstar" -> nodes[id]?.starred = false
                 }
             }
         }
@@ -508,6 +594,16 @@ class FakePikPakServer(
     private fun removeSubtree(id: String) {
         nodes.values.filter { it.parentId == id }.map { it.id }.forEach(::removeSubtree)
         nodes.remove(id)
+    }
+
+    private fun copySubtree(id: String, parent: String, shareId: String? = null) {
+        val source = nodes[id] ?: return
+        val children = nodes.values.filter { it.parentId == id }.map { it.id }
+        val params = if (shareId != null && includeShareProvenance) mapOf("original_share_id" to shareId, "original_file_id" to id,
+            "url" to "https://mypikpak.com/s/$shareId") else source.params
+        val copy = add(Node(newId(), parent, source.name, source.isFolder, hash = source.hash, content = source.content, size = source.size,
+            params = params, durationSeconds = source.durationSeconds, transcoded = source.transcoded))
+        children.forEach { copySubtree(it, copy.id, shareId) }
     }
 
     private suspend fun MockRequestHandleScope.resolveMagnet(request: HttpRequestData): HttpResponseData {
@@ -523,7 +619,8 @@ class FakePikPakServer(
         val requested = runCatching {
             Json.parseToJsonElement(filters).jsonObject["phase"]?.jsonObject?.get("in")?.jsonPrimitive?.content
         }.getOrNull()?.split(',')?.toSet()
-        val listed = tasks.filter { requested == null || it.phase in requested }
+        val type = runCatching { Json.parseToJsonElement(filters).jsonObject["type"]?.jsonObject?.get("eq")?.jsonPrimitive?.content }.getOrNull()
+        val listed = tasks.filter { (requested == null || it.phase in requested) && (type == null || it.type == type) }
         val body = buildJsonObject {
             put("next_page_token", "")
             put("tasks", buildJsonArray {
@@ -558,12 +655,16 @@ class FakePikPakServer(
         put("hash", node.hash)
         put("phase", if (!node.isFolder && node.hash in unheldHashes) "PHASE_TYPE_PENDING" else "PHASE_TYPE_COMPLETE")
         put("trashed", node.trashed)
+        if (node.starred) put("tags", buildJsonArray { add(buildJsonObject { put("name", "STAR") }) })
         put("modified_time", "2026-09-01T00:00:00.000+08:00")
-        node.durationSeconds?.let { seconds -> put("params", buildJsonObject { put("duration", seconds.toString()) }) }
-        if (archives[node.id]?.primed == true) {
+        if (node.params.isNotEmpty() || node.durationSeconds != null || archives[node.id]?.primed == true) {
             put("params", buildJsonObject {
+                node.params.forEach { (key, value) -> put(key, value) }
+                node.durationSeconds?.let { put("duration", it.toString()) }
+                if (archives[node.id]?.primed == true) {
                 put("global_file_root", "ROOT-${node.id}")
                 put("global_file_token", "TOKEN-${node.id}")
+                }
             })
         }
     }

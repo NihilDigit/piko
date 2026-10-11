@@ -1,5 +1,7 @@
 package dev.piko.shared.smoke
 
+import io.ktor.client.plugins.plugin
+
 import dev.piko.shared.data.ArchiveLocation
 import dev.piko.shared.data.DriveLibrary
 import dev.piko.shared.data.InstantMagnetRepository
@@ -53,7 +55,7 @@ class InstantFlowSmokeTest {
         assertEquals(first, preview())
         assertEquals(1, server.instantCreates.get())
         sessionScope.cancel()
-        awaitUntil("临时预览副本已清理") { server.node(folder.id) == null }
+        awaitUntil("临时预览副本已清理，共享目录保留") { server.children(folder.id).isEmpty() }
         assertNull(server.node(first))
     }
 
@@ -66,20 +68,25 @@ class InstantFlowSmokeTest {
         Triple("info.nfo", 2048L, ""),
     )
 
-    private class Rig(val server: FakePikPakServer, val prefs: MemoryPreferences, backgroundScope: CoroutineScope) {
-        private val provider = server.provider()
+    private class Rig(
+        val server: FakePikPakServer,
+        val prefs: MemoryPreferences,
+        backgroundScope: CoroutineScope,
+        private val provider: dev.piko.shared.data.PikoClientProvider = server.provider(),
+    ) {
         val instantRepo = InstantMagnetRepository(provider)
         val driveRepo = PikoDriveRepository(provider, prefs)
+        val workspace = dev.piko.shared.presentation.DriveWorkspace(driveRepo, backgroundScope = backgroundScope)
         val tracker = OfflinePackTracker(instantRepo, driveRepo, prefs)
         val previewFolder = PreviewTempFolder(provider, driveRepo, instantRepo, backgroundScope)
         val saveRecords = InstantSaveRecords(provider, null, backgroundScope)
 
         fun sheet(scope: CoroutineScope, magnet: String) =
-            InstantSheetState(instantRepo, driveRepo, prefs, previewFolder, tracker, saveRecords, scope, magnet)
+            InstantSheetState(instantRepo, driveRepo, prefs, previewFolder, tracker, saveRecords, scope, magnet, workspace.saveTargetContext)
 
         /** 网盘页停在 [folder] 里，与用户点进去之后的栈相同。 */
         fun openInDrive(folder: FakePikPakServer.Node) {
-            driveRepo.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB, PikoPathBreadcrumb(folder.id, folder.name)))
+            workspace.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB, PikoPathBreadcrumb(folder.id, folder.name)))
         }
     }
 
@@ -173,7 +180,7 @@ class InstantFlowSmokeTest {
      * 也防面板关闭时的清理误删已保存的文件，或漏删 Piko-Temp。
      */
     @Test
-    fun `a previewed episode is moved on save and Piko-Temp goes with the session`() = smoke { scope ->
+    fun `a previewed episode is moved on save and only unsaved previews go with the session`() = smoke { scope ->
         val server = FakePikPakServer()
         server.indexMagnet(magnet, resourceListBody("Show S01", season))
         val rig = Rig(server, MemoryPreferences(), scope)
@@ -208,7 +215,7 @@ class InstantFlowSmokeTest {
         assertEquals(previewId, rig.saveRecords.records.value.single().locateId, "传输页的记录指向保存下来的那一份")
 
         sessionScope.cancel()
-        awaitUntil("Piko-Temp 被删除") { server.node(tempFolder.id) == null }
+        awaitUntil("未保存的预览被删除，共享临时目录保留") { server.children(tempFolder.id).isEmpty() }
         assertNotNull(server.node(previewId), "已保存的文件不能随 Piko-Temp 一起删掉")
     }
 
@@ -426,6 +433,103 @@ class InstantFlowSmokeTest {
         assertTrue(!session.endNeedsConfirm)
     }
 
+    @Test
+    fun `collapsing the presentation preserves the draft and a new session opens independently`() = smoke { scope ->
+        val server = FakePikPakServer()
+        server.indexMagnet(magnet, resourceListBody("Show S01", season))
+        val rig = Rig(server, MemoryPreferences(), scope)
+        val session = InstantSession({ CoroutineScope(SupervisorJob() + Dispatchers.Default) }) { child, link -> rig.sheet(child, link) }
+        val view = dev.piko.shared.presentation.AddLinkViewModel(session)
+        view.open(magnet)
+        val draft = assertNotNull(session.state)
+        awaitUntil("解析完成") { draft.resolution != null }
+        draft.toggleItem(draft.items.indexOfFirst { it.file.name == "info.nfo" })
+        val selected = draft.selectedIndices.toSet()
+
+        view.collapse()
+        assertTrue(view.hasCollapsedWork)
+        assertTrue(session.state === draft)
+        view.resume()
+        assertTrue(view.isExpanded)
+        assertEquals(selected, draft.selectedIndices.toSet())
+
+        view.collapse()
+        session.end()
+        assertTrue(!view.isExpanded)
+        session.start(magnet)
+        assertTrue(view.isExpanded, "外部打开的新会话不能继承上一会话的收起状态")
+        assertTrue(session.state !== draft)
+        view.discard()
+        assertTrue(session.state == null)
+    }
+
+    @Test
+    fun `collapsing a blank draft releases it without retaining presentation state`() = smoke { scope ->
+        val rig = Rig(FakePikPakServer(), MemoryPreferences(), scope)
+        val session = InstantSession({ CoroutineScope(SupervisorJob() + Dispatchers.Default) }) { child, link -> rig.sheet(child, link) }
+        val view = dev.piko.shared.presentation.AddLinkViewModel(session)
+        view.resume()
+        assertTrue(view.isExpanded)
+        view.collapse()
+        assertTrue(session.state == null)
+        assertTrue(!view.hasCollapsedWork)
+        view.resume()
+        assertTrue(view.isExpanded)
+        view.discard()
+    }
+
+    @Test
+    fun `saving survives a replacement request and completes without a screen subscriber`() = smoke { scope ->
+        val server = FakePikPakServer()
+        server.indexMagnet(magnet, resourceListBody("Movie", listOf(Triple("Movie.mkv", 1024L, "GCIDMOVIE"))))
+        val started = kotlinx.coroutines.channels.Channel<Unit>(1)
+        val release = kotlinx.coroutines.channels.Channel<Unit>(1)
+        val http = server.httpClient()
+        http.plugin(io.ktor.client.plugins.HttpSend).intercept { request ->
+            if (request.method == io.ktor.http.HttpMethod.Post && request.url.toString().substringBefore('?').endsWith("/drive/v1/files")) {
+                started.send(Unit)
+                release.receive()
+            }
+            execute(request)
+        }
+        val client = io.github.nihildigit.pikpak.PikPakClient(
+            account = "smoke@piko.dev", password = "pw",
+            sessionStore = io.github.nihildigit.pikpak.InMemorySessionStore(),
+            rateLimiter = io.github.nihildigit.pikpak.RateLimiter(capacity = 1000, refillPerSecond = 1000.0),
+            httpClient = http,
+        )
+        val rig = Rig(server, MemoryPreferences(), scope, server.provider(client))
+        val target = server.addFolder("目标")
+        rig.openInDrive(target)
+        val session = InstantSession({ CoroutineScope(SupervisorJob() + Dispatchers.Default) }) { child, link -> rig.sheet(child, link) }
+        val view = dev.piko.shared.presentation.AddLinkViewModel(session)
+        view.open(magnet)
+        val draft = assertNotNull(session.state)
+        awaitUntil("可以保存") { draft.canSaveSelection }
+        draft.saveSelection()
+        kotlinx.coroutines.withTimeout(5_000) { started.receive() }
+
+        view.open("magnet:?xt=urn:btih:" + "b".repeat(40))
+        assertTrue(session.state === draft)
+        assertNotNull(view.blockedAction)
+        view.discard()
+        assertTrue(session.state === draft)
+        view.collapse()
+        assertTrue(view.hasCollapsedWork)
+        release.send(Unit)
+
+        awaitUntil("没有页面订阅时仍完成") { session.state == null && session.pendingCompletions.value.isNotEmpty() }
+        val completion = session.pendingCompletions.value.single()
+        val outcome = assertIs<InstantSaveOutcome.InstantSaved>(completion.outcome)
+        assertEquals(target.id, outcome.target.id)
+        assertEquals(listOf("Movie.mkv"), server.children(target.id).map { it.name })
+        session.acknowledgeCompletion(completion.id + 1)
+        assertEquals(listOf(completion), session.pendingCompletions.value)
+        session.acknowledgeCompletion(completion.id)
+        assertTrue(session.pendingCompletions.value.isEmpty())
+        session.clear()
+    }
+
     /**
      * 防的是存进用户没在看的目录：默认目标是网盘页的当前目录；面板收起着留在后台时
      * 用户换了目录，目标跟着换；在面板里另选之后就不再跟。
@@ -472,7 +576,7 @@ class InstantFlowSmokeTest {
             ) to shows.id,
         )
         for ((stack, expected) in cases) {
-            rig.driveRepo.updateFolderStack(stack)
+            rig.workspace.updateFolderStack(stack)
             val sessionScope = CoroutineScope(scope.coroutineContext + SupervisorJob())
             val state = rig.sheet(sessionScope, "")
             awaitUntil("保存目标确定：${stack.last().name}") { state.target != null }

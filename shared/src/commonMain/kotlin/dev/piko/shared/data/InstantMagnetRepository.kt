@@ -8,12 +8,15 @@ import io.github.nihildigit.pikpak.PruneResult
 import io.github.nihildigit.pikpak.ResolvedFile
 import io.github.nihildigit.pikpak.batchMove
 import io.github.nihildigit.pikpak.createFolder
-import io.github.nihildigit.pikpak.createUrlFile
 import io.github.nihildigit.pikpak.deleteOfflineTasks
 import io.github.nihildigit.pikpak.getTask
 import io.github.nihildigit.pikpak.instantCreate
 import io.github.nihildigit.pikpak.pruneOfflineOutput
 import io.github.nihildigit.pikpak.rename
+import io.github.nihildigit.pikpak.PikPakClient
+import io.github.nihildigit.pikpak.PikPakException
+import io.github.nihildigit.pikpak.InstantContentUnavailableException
+import io.github.nihildigit.pikpak.getFile
 import io.github.nihildigit.pikpak.resolveMagnet
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -41,6 +44,7 @@ data class MagnetResolutionResult(
 )
 
 class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
+    val offlineSubmissions = dev.piko.shared.state.OfflineSubmitSession(clientManager)
     private val client get() = clientManager.currentClient.value ?: error("Not logged in")
     private val _pendingMagnetFlow = MutableStateFlow<String?>(null)
     val pendingMagnetFlow: StateFlow<String?> = _pendingMagnetFlow.asStateFlow()
@@ -87,15 +91,48 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
         reuse: Map<String, String> = emptyMap(),
         keepStructure: Boolean = false,
         names: Map<String, String> = emptyMap(),
-    ): Result<List<String>> = withContext(Dispatchers.Default) {
+        existingFolders: Map<String, String> = emptyMap(),
+    ): Result<List<String>> {
+        val owner = clientManager.currentClient.value ?: return Result.failure(IllegalStateException("Not logged in"))
+        val accepted = items.toList()
+        val previews = reuse.toMap()
+        val acceptedNames = names.toMap()
+        val folders = existingFolders.toMap()
+        return withContext(Dispatchers.Default) { saveFiles(owner, accepted, targetParentId, previews, keepStructure, acceptedNames, folders) }
+    }
+
+    private suspend fun saveFiles(owner: PikPakClient, items: List<InstantFileItem>, targetParentId: String,
+        reuse: Map<String, String>, keepStructure: Boolean, names: Map<String, String>, existingFolders: Map<String, String>): Result<List<String>> {
         val started = TimeSource.Monotonic.markNow()
         val files = items.map { it.file }.filter { it.gcid != null }
         val reused = files.count { it.gcid in reuse }
         val renamed = files.count { names[it.path].let { name -> name != null && name != it.name } }
         val summary = "${files.size} 个文件（跳过无 gcid 的 ${items.size - files.size} 个，移用预览副本 $reused 个，按番号改名 $renamed 个），" +
             "${files.sumOf { it.size }} 字节，到文件夹 ${targetParentId.ifEmpty { "根目录" }}${if (keepStructure) "，保留目录结构" else ""}"
-        runSuspendCatching {
-            val folderIds = if (keepStructure) createFolders(files, targetParentId) else emptyMap()
+        val folderIds = existingFolders.toMutableMap().apply { put("", targetParentId) }
+        var creatingFolder: String? = null
+        val directories = if (keepStructure) files.flatMap { ancestorsOf(it.path) }.distinct().sortedBy { it.count { c -> c == '/' } } else emptyList()
+        val prepared = runSuspendCatching {
+            for (dir in directories) {
+                if (dir in folderIds) continue
+                val parent = folderIds.getValue(dir.substringBeforeLast('/', ""))
+                creatingFolder = dir
+                folderIds[dir] = owner.createFolder(parent, dir.substringAfterLast('/'))
+                creatingFolder = null
+            }
+        }
+        if (prepared.isFailure) {
+            val error = prepared.exceptionOrNull()!!
+            val receipt = InstantSaveReceipt(owner.account, targetParentId,
+                notAttempted = files.mapTo(HashSet()) { it.path }, folders = folderIds.toMap(),
+                unconfirmedFolder = creatingFolder.takeUnless { definitelyNotSaved(error) })
+            return Result.failure(InstantSaveIncomplete(receipt, error))
+        }
+        val consumedPreviews = HashSet<String>()
+        val previews = files.associate { file ->
+            file.path to reuse[file.gcid]?.takeIf { consumedPreviews.add(it) }
+        }
+        val outcomes = runSuspendCatching {
             // 逐个串行时 84 个文件约 20 秒。并发数取得保守：SDK 自带限流，再高也快不了多少
             val permits = Semaphore(SAVE_CONCURRENCY)
             coroutineScope {
@@ -103,43 +140,59 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
                     async {
                         permits.withPermit {
                             val parentId = folderIds[file.path.substringBeforeLast('/', "")] ?: targetParentId
-                            val existing = reuse[file.gcid]
+                            val existing = previews[file.path]
                             val name = names[file.path] ?: file.name
-                            if (existing != null) {
-                                client.batchMove(listOf(existing), parentId)
-                                if (name != file.name) client.rename(existing, name)
-                                existing
+                            if (existing == null) {
+                                val created = runSuspendCatching { owner.instantCreate(file = file, parentId = parentId, name = name) }
+                                InstantFileOutcome(file.path, created.getOrNull(), created.exceptionOrNull())
                             } else {
-                                client.instantCreate(file = file, parentId = parentId, name = name)
+                                val moved = runSuspendCatching { owner.batchMove(listOf(existing), parentId) }
+                                val delivery = if (moved.isSuccess) true else runSuspendCatching { owner.getFile(existing) }
+                                    .getOrNull()?.let { !it.trashed && it.parentId == parentId } == true
+                                if (!delivery) InstantFileOutcome(file.path, null, moved.exceptionOrNull()) else {
+                                    val renamed = if (name == file.name) Result.success(Unit) else runSuspendCatching { owner.rename(existing, name) }
+                                    InstantFileOutcome(file.path, existing, renamed.exceptionOrNull(), namingUnconfirmed = renamed.isFailure)
+                                }
                             }
                         }
                     }
                 }.awaitAll()
             }
-        }.onSuccess { PikoLog.i(TAG, "秒传完成：$summary，历时 ${started.elapsedNow().inWholeMilliseconds} ms") }
+        }
+        val saved = outcomes.getOrElse { return Result.failure(it) }
+        val errors = saved.mapNotNull { it.error }
+        val receipt = InstantSaveReceipt(owner.account, targetParentId,
+            confirmed = saved.mapNotNull { outcome -> outcome.id?.let { outcome.path to it } }.toMap(),
+            unconfirmed = saved.filter { it.id == null && !definitelyNotSaved(it.error) }.mapTo(HashSet()) { it.path },
+            failed = saved.filter { it.id == null && definitelyNotSaved(it.error) }.mapTo(HashSet()) { it.path },
+            folders = folderIds.toMap(), namingUnconfirmed = saved.filter { it.namingUnconfirmed }.mapTo(HashSet()) { it.path })
+        val result = when {
+            errors.isEmpty() -> Result.success(saved.mapNotNull { it.id })
+            saved.size == 1 && receipt.confirmed.isEmpty() && receipt.failed.size == 1 && errors.single() is InstantContentUnavailableException -> Result.failure(errors.single())
+            else -> Result.failure(InstantSaveIncomplete(receipt, errors.first()))
+        }
+        return result.onSuccess { PikoLog.i(TAG, "秒传完成：$summary，历时 ${started.elapsedNow().inWholeMilliseconds} ms") }
             // 堆栈由调用方连同给用户的提示一起记
             .onFailure { PikoLog.w(TAG, "秒传失败：$summary，${it::class.simpleName}") }
     }
 
-    /** 按路径由浅到深建目录，返回相对目录到 id。根（空串）即 [rootId]。 */
-    private suspend fun createFolders(files: List<ResolvedFile>, rootId: String): Map<String, String> {
-        val ids = mutableMapOf("" to rootId)
-        val dirs = files.flatMap { ancestorsOf(it.path) }.distinct().sortedBy { it.count { c -> c == '/' } }
-        for (dir in dirs) {
-            val parent = ids.getValue(dir.substringBeforeLast('/', ""))
-            ids[dir] = client.createFolder(parent, dir.substringAfterLast('/'))
-        }
-        return ids
-    }
+    private data class InstantFileOutcome(val path: String, val id: String?, val error: Throwable?, val namingUnconfirmed: Boolean = false)
+
+    private fun definitelyNotSaved(error: Throwable?): Boolean = error is InstantContentUnavailableException ||
+        error is PikPakException && error.httpStatus in setOf(400, 401, 403, 404, 409, 422)
 
     /** 秒传单个文件到 [parentId]，给预览用。 */
     suspend fun instantCreate(file: ResolvedFile, parentId: String): Result<String> = withContext(Dispatchers.Default) {
-        runSuspendCatching { client.instantCreate(file = file, parentId = parentId, name = file.name) }
+        instantCreate(client, file, parentId)
     }
 
-    suspend fun enqueueOfflineTask(magnet: String, targetParentId: String = ""): Result<CreateUrlResult> =
-        withContext(Dispatchers.Default) {
-            runSuspendCatching { client.createUrlFile(parentId = targetParentId, url = magnet) }
+    internal suspend fun instantCreate(owner: PikPakClient, file: ResolvedFile, parentId: String): Result<String> =
+        withContext(Dispatchers.Default) { runSuspendCatching { owner.instantCreate(file = file, parentId = parentId, name = file.name) } }
+
+    suspend fun enqueueOfflineTask(magnet: String, targetParentId: String = "", targetName: String = "网盘目录",
+        title: String = "提交云端离线", expectedAccount: String? = clientManager.currentClient.value?.account,
+        requiresTask: Boolean = false): Result<CreateUrlResult> =
+            offlineSubmissions.submit(magnet, PikoPathBreadcrumb(targetParentId, targetName), title, expectedAccount, requiresTask)
                 .onSuccess { result ->
                     val kind = if (magnet.startsWith("magnet:", ignoreCase = true)) "磁力" else magnet.substringBefore("://", "其他").lowercase()
                     when (result) {
@@ -148,8 +201,6 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
                     }
                 }
                 .onFailure { PikoLog.w(TAG, "提交离线任务失败，到文件夹 ${targetParentId.ifEmpty { "根目录" }}，${it::class.simpleName}") }
-        }
-
     suspend fun getTask(taskId: String): Result<DriveTask> = withContext(Dispatchers.Default) {
         runSuspendCatching { client.getTask(taskId) }
     }
@@ -163,8 +214,10 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
         }
 
     /** 删除任务记录。未完成任务的占位文件由服务端一并清掉，已完成任务的文件保留。 */
-    suspend fun deleteOfflineTask(taskId: String): Result<Unit> = withContext(Dispatchers.Default) {
-        runSuspendCatching { client.deleteOfflineTasks(listOf(taskId), deleteFiles = false) }
+    suspend fun deleteOfflineTask(taskId: String, expectedAccount: String? = clientManager.currentClient.value?.account): Result<Unit> {
+        val owner = clientManager.currentClient.value?.takeIf { it.account == expectedAccount }
+            ?: return Result.failure(IllegalStateException("账号已改变"))
+        return withContext(Dispatchers.Default) { runSuspendCatching { owner.deleteOfflineTasks(listOf(taskId), deleteFiles = false) } }
     }
 
     private companion object {

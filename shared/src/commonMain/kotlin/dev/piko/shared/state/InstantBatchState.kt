@@ -35,6 +35,7 @@ enum class InstantBatchRowStatus {
 
     /** 解析失败，要重试或移除。 */
     FAILED,
+    NEEDS_REVIEW,
 }
 
 /** 批量列表里的一行。[state] 就是单条链接的工作台，点进去看到的与只粘一条时相同。 */
@@ -48,6 +49,7 @@ class InstantBatchRow internal constructor(
     val status: InstantBatchRowStatus by derivedStateOf {
         val s = state
         when {
+            s.saveBlockReason != null || (s.saveIssue?.requiresInspection == true && s.retryFileCount == 0) -> InstantBatchRowStatus.NEEDS_REVIEW
             // 防抖期间还没开始请求，同样算解析中
             s.isResolving || (s.normalizedMagnet != null && s.resolution == null && s.errorMessage == null) ->
                 InstantBatchRowStatus.RESOLVING
@@ -101,15 +103,20 @@ class InstantBatchState internal constructor(
     val saveErrors = mutableStateMapOf<String, String>()
 
     private val submittableRows: List<InstantBatchRow> by derivedStateOf {
-        rows.filter { it.status == InstantBatchRowStatus.READY || it.status == InstantBatchRowStatus.WHOLE_OFFLINE }
+        rows.filter {
+            (it.status == InstantBatchRowStatus.READY || it.status == InstantBatchRowStatus.WHOLE_OFFLINE) &&
+                (!it.state.hasInstantRetry || it.state.retryFileCount > 0) &&
+                (it.state.saveIssue?.requiresInspection != true || it.state.retryFileCount > 0)
+                && it.state.saveBlockReason == null
+        }
     }
 
     private val readyPlans: List<SavePlan> by derivedStateOf {
-        submittableRows.filter { it.status == InstantBatchRowStatus.READY }.mapNotNull { it.state.savePlan }
+        submittableRows.filter { it.status == InstantBatchRowStatus.READY && !it.state.hasInstantRetry }.mapNotNull { it.state.savePlan }
     }
 
     /** 全部要落进网盘的合计：秒传是选中的文件，整包离线是整包，下完才删掉没选的。 */
-    val neededBytes: Long by derivedStateOf { readyPlans.sumOf { it.neededBytes } }
+    val neededBytes: Long by derivedStateOf { readyPlans.sumOf { it.neededBytes } + submittableRows.sumOf { it.state.retryNeededBytes } }
 
     val lacksSpace: Boolean by derivedStateOf { remainingBytes?.let { neededBytes > it } == true }
 
@@ -136,6 +143,7 @@ class InstantBatchState internal constructor(
             resolving > 0 -> "$resolving 项正在解析"
             failed > 0 -> "$failed 项解析失败，重试或移除后再保存"
             unnamed > 0 -> "$unnamed 项的文件夹名为空"
+            submittableRows.isEmpty() && rows.any { it.status == InstantBatchRowStatus.NEEDS_REVIEW } -> rows.firstNotNullOfOrNull { it.state.saveBlockReason } ?: "保存结果需要先在任务页核对"
             submittableRows.isEmpty() -> "没有要保存的项"
             else -> null
         }
@@ -195,6 +203,9 @@ class InstantBatchState internal constructor(
                         // 行里的保存已经记过日志，这里只换成给列表看的一句
                         .onFailure { saveErrors[row.key] = failureText("保存", it) }
                 }
+                rows.filter { it !in succeeded && it.status == InstantBatchRowStatus.NEEDS_REVIEW }.forEach { row ->
+                    saveErrors[row.key] = row.state.saveBlockReason ?: row.state.saveIssue?.message ?: "保存结果需要核对"
+                }
                 PikoLog.i(TAG, "批量保存：${toSubmit.size} 条链接，成功 ${succeeded.size} 条（秒传出 ${createdIds.size} 个文件），失败 ${saveErrors.size} 条")
                 if (saveErrors.isEmpty()) {
                     emitOutcome(
@@ -206,7 +217,7 @@ class InstantBatchState internal constructor(
                     )
                 } else {
                     succeeded.forEach(::dropRow)
-                    emitMessage("已提交 ${succeeded.size} 项，${saveErrors.size} 项失败")
+                    emitMessage("已提交 ${succeeded.size} 项，${saveErrors.size} 项需要处理")
                 }
             } finally {
                 isSaving = false

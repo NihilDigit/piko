@@ -51,6 +51,7 @@ class OfflineTasksState(
     }
 
     private var refreshJob: Job? = null
+    private val resubmitting = mutableSetOf<String>()
 
     /** 用户主动刷新。失败时弹一次提示；轮询失败只更新 [loadError]，不刷屏。 */
     fun refresh() {
@@ -72,17 +73,20 @@ class OfflineTasksState(
 
     /** 以原链接重新提交，旧记录随之删除。成功后先从列表里摘掉旧记录，新任务由重新拉取带回。 */
     fun resubmit(task: DriveTask) {
+        if (!resubmitting.add(task.id)) return
         scope.launch {
-            taskRepo.resubmitTask(task)
-                .onSuccess {
-                    PikoLog.i(TAG, "已重新提交离线任务 ${task.id}（原阶段 ${task.phase}）")
-                    tasks = tasks.filterNot { it.id == task.id }
-                    launchFetch(notifyFailure = false)
-                }
-                .onFailure { err ->
-                    PikoLog.w(TAG, "重新提交离线任务 ${task.id} 失败", err)
-                    _messages.tryEmit("重新提交失败")
-                }
+            try {
+                taskRepo.resubmitTask(task)
+                    .onSuccess {
+                        PikoLog.i(TAG, "已重新提交离线任务 ${task.id}（原阶段 ${task.phase}）")
+                        tasks = tasks.filterNot { it.id == task.id }
+                        launchFetch(notifyFailure = false)
+                    }
+                    .onFailure { err ->
+                        PikoLog.w(TAG, "重新提交离线任务 ${task.id} 失败", err)
+                        _messages.tryEmit((err as? OfflineSubmitException)?.message ?: "重新提交失败")
+                    }
+            } finally { resubmitting.remove(task.id) }
         }
     }
 

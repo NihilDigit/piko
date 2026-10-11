@@ -3,11 +3,87 @@ package dev.piko.shared.smoke
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.state.ShareSaveState
+import dev.piko.shared.state.InstantSession
+import dev.piko.shared.state.InstantSheetState
+import dev.piko.shared.state.InstantSaveRecords
+import dev.piko.shared.data.InstantMagnetRepository
+import dev.piko.shared.data.OfflinePackTracker
+import dev.piko.shared.data.PreviewTempFolder
+import dev.piko.shared.presentation.AddLinkViewModel
+import io.github.nihildigit.pikpak.InMemorySessionStore
+import io.github.nihildigit.pikpak.PikPakClient
+import io.github.nihildigit.pikpak.RateLimiter
+import io.ktor.client.plugins.HttpSend
+import io.ktor.client.plugins.plugin
+import io.ktor.http.encodedPath
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.test.assertNotNull
+import kotlin.test.assertSame
 
 class ShareDestinationSmokeTest {
+    @Test
+    fun `share browsing and saving survive collapsing and rebinding the add link presentation`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val owner = server.addFolder("owner")
+        val source = server.addFile("episode.mkv", owner.id, hash = "SHARED")
+        val target = server.addFolder("target")
+        server.shares["S1"] = listOf(source.id)
+        val entered = Channel<Unit>(1)
+        val release = Channel<Unit>(1)
+        val http = server.httpClient()
+        http.plugin(HttpSend).intercept { request ->
+            if (request.url.encodedPath.endsWith("/share/restore")) { entered.send(Unit); release.receive() }
+            execute(request)
+        }
+        val provider = server.provider(PikPakClient("share@piko.dev", "pw", sessionStore = InMemorySessionStore(),
+            rateLimiter = RateLimiter(capacity = 1000, refillPerSecond = 1000.0), httpClient = http))
+        val prefs = MemoryPreferences()
+        val repo = PikoDriveRepository(provider, prefs)
+        val instant = InstantMagnetRepository(provider)
+        val packs = OfflinePackTracker(instant, repo, prefs)
+        val records = InstantSaveRecords(provider, null, scope)
+        val preview = PreviewTempFolder(provider, repo, instant, scope)
+        val session = InstantSession({ CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job])) }) { child, input ->
+            InstantSheetState(instant, repo, prefs, preview, packs, records, child, input)
+        }
+        val model = AddLinkViewModel(session)
+        model.open("https://mypikpak.com/s/S1")
+        val draft = assertNotNull(model.state)
+        val share = assertNotNull(draft.shareSave)
+        awaitUntil("分享状态由业务会话载入") { !share.isLoading && share.info != null }
+        share.toggle(share.entries.single())
+        assertTrue(model.discardNeedsConfirm)
+        share.save(PikoPathBreadcrumb(target.id, target.name))
+        withTimeout(5_000) { entered.receive() }
+        model.collapse()
+        assertTrue(model.hasCollapsedWork)
+        assertTrue(draft.isSaving, "顶层替换保护必须看见分享的保存状态")
+        model.discard()
+        model.open("another link")
+        draft.updateInput("another input")
+        assertSame(draft, model.state)
+        assertEquals("https://mypikpak.com/s/S1", draft.input)
+        assertSame(share, draft.shareSave)
+        val rebound = AddLinkViewModel(session)
+        assertSame(share, rebound.state?.shareSave, "界面绑定重建不能重建分享浏览状态")
+        release.send(Unit)
+        awaitUntil("收起状态下分享转存完成并保留回执") { !share.isSaving && share.doneMessage != null }
+        assertEquals(listOf(source.name), server.children(target.id).map { it.name })
+        model.resume()
+        assertSame(share, model.state?.shareSave)
+        assertTrue(share.selectedIds.isEmpty())
+        assertEquals(1, server.count("POST /drive/v1/share/restore"))
+        model.discard()
+        assertTrue(model.state == null)
+    }
+
     @Test fun selectedFolderAndExplicitRootOverrideTheServerDefault() = smoke { scope ->
         val server = FakePikPakServer()
         val owner = server.addFolder("Owner")
