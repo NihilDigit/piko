@@ -16,11 +16,17 @@ import io.github.nihildigit.pikpak.getFile
 import io.github.nihildigit.pikpak.getTask
 import io.github.nihildigit.pikpak.listArchive
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import io.github.nihildigit.pikpak.PikPakException
+import io.github.nihildigit.pikpak.PikPakClient
+import io.github.nihildigit.pikpak.ArchivePasswordException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.TimeSource
+
+class ArchiveSubmissionUnconfirmed(cause: Throwable) : RuntimeException(cause.message, cause)
 
 /** 服务端解压。压缩包的解析与写入都在 PikPak 那边完成，本机不下载任何内容。 */
 class ArchiveRepository(private val clientManager: PikoClientProvider) {
@@ -33,19 +39,28 @@ class ArchiveRepository(private val clientManager: PikoClientProvider) {
      */
     suspend fun start(file: FileStat, password: String, paths: List<String> = emptyList()): Result<DecompressTask> = withContext(Dispatchers.Default) {
         runSuspendCatching {
+            val current = client
             // 接口要求 gcid。列表里的文件通常带着，刚上传完的可能还没算出来，此时取一次详情
-            val gcid = file.hash.ifEmpty { client.getFile(file.id).hash }
+            val gcid = file.hash.ifEmpty { current.getFile(file.id).hash }
             check(gcid.isNotEmpty()) { "文件尚未完成校验，稍后再试" }
             // 先列一层再提交。解压接口对从没解析过的加密包照单全收，要等任务失败才知道缺密码
             // （2026-09-25 实测，新传的 ZipCrypto 包连提交两次都是如此）；列目录则当场报缺密码或密码错误
-            client.listArchive(file.id, gcid, password = password)
-            client.decompressArchive(file.id, gcid, toParentId = null, password = password, paths = paths)
+            current.listArchive(file.id, gcid, password = password)
+            try {
+                current.decompressArchive(file.id, gcid, toParentId = null, password = password, paths = paths)
+            } catch (failure: Throwable) {
+                when {
+                    failure is CancellationException || failure is ArchivePasswordException -> throw failure
+                    failure is PikPakException && failure.errorCode > 0 && (failure.httpStatus ?: 200) < 500 && failure.httpStatus != 408 -> throw failure
+                    else -> throw ArchiveSubmissionUnconfirmed(failure)
+                }
+            }
         }
     }
 
     /** 压缩包里的一层，[path] 为空是顶层。密码缺失或错误时以 ArchivePasswordException 失败。 */
-    suspend fun list(location: ArchiveLocation, password: String): Result<ArchiveListing> = withContext(Dispatchers.Default) {
-        runSuspendCatching { client.listArchive(location.archiveId, location.gcid, location.path, password) }
+    suspend fun list(location: ArchiveLocation, password: String, owner: PikPakClient? = null): Result<ArchiveListing> = withContext(Dispatchers.Default) {
+        runSuspendCatching { (owner ?: client).listArchive(location.archiveId, location.gcid, location.path, password) }
     }
 
     /**
@@ -55,22 +70,23 @@ class ArchiveRepository(private val clientManager: PikoClientProvider) {
      * 文件夹彻底删掉。树覆盖整个包，删了解压出来的副本也还在（2026-10-05 实测，SDK 的 ArchiveLeaseProbeTest）。
      * 第一次解压不一定出树：11 个新包里有 6 个解压完一分多钟仍没有，接着再解压一次都在 200ms 内出现，所以最多做两次。
      */
-    suspend fun prime(location: ArchiveLocation, entryPath: String, password: String, scratchId: String): Result<Unit> =
+    suspend fun prime(location: ArchiveLocation, entryPath: String, password: String, scratchId: String, owner: PikPakClient? = null): Result<Unit> =
         withContext(Dispatchers.Default) {
+            val current = owner ?: client
             val started = TimeSource.Monotonic.markNow()
             runSuspendCatching {
                 repeat(PRIME_ATTEMPTS) { attempt ->
-                    val task = client.decompressArchive(location.archiveId, location.gcid, toParentId = scratchId, password = password, paths = listOf(entryPath))
-                    val output = awaitDecompress(task.taskId)
+                    val task = current.decompressArchive(location.archiveId, location.gcid, toParentId = scratchId, password = password, paths = listOf(entryPath))
+                    val output = awaitDecompress(current, task.taskId)
                     try {
-                        if (awaitTree(location.archiveId)) {
+                        if (awaitTree(current, location.archiveId)) {
                             PikoLog.i(TAG, "压缩包 ${location.archiveId} 已建出包内文件树：第 ${attempt + 1} 次解压，历时 ${started.elapsedNow().inWholeMilliseconds} ms")
                             return@runSuspendCatching
                         }
                         PikoLog.d(TAG, "压缩包 ${location.archiveId} 第 ${attempt + 1} 次解压后仍无文件树")
                     } finally {
                         withContext(NonCancellable) {
-                            runSuspendCatching { client.batchDelete(listOf(output)) }
+                            runSuspendCatching { current.batchDelete(listOf(output)) }
                                 .logFailure(TAG, "删除建树用的解压副本 $output 失败，留在 Piko-Temp 里")
                         }
                     }
@@ -79,9 +95,9 @@ class ArchiveRepository(private val clientManager: PikoClientProvider) {
             }.logFailure(TAG, "为压缩包 ${location.archiveId} 建包内文件树失败，历时 ${started.elapsedNow().inWholeMilliseconds} ms")
         }
 
-    private suspend fun awaitDecompress(taskId: String): String {
+    private suspend fun awaitDecompress(owner: PikPakClient, taskId: String): String {
         repeat(PRIME_POLLS) {
-            val progress = client.getDecompressProgress(taskId)
+            val progress = owner.getDecompressProgress(taskId)
             when (progress.phase) {
                 TaskPhase.COMPLETE -> return progress.fileId
                 TaskPhase.ERROR -> error(progress.errorDescription.ifEmpty { "解压失败" })
@@ -92,9 +108,9 @@ class ArchiveRepository(private val clientManager: PikoClientProvider) {
     }
 
     // 实测树在解压完成后 170 到 420ms 出现；三秒还没有的，再等一分多钟也没有
-    private suspend fun awaitTree(archiveId: String): Boolean {
+    private suspend fun awaitTree(owner: PikPakClient, archiveId: String): Boolean {
         repeat(TREE_POLLS) {
-            if (client.getFile(archiveId).archiveTree != null) return true
+            if (owner.getFile(archiveId).archiveTree != null) return true
             delay(PRIME_POLL_INTERVAL)
         }
         return false

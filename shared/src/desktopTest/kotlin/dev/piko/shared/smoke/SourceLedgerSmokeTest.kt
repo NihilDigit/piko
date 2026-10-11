@@ -47,6 +47,7 @@ class SourceLedgerSmokeTest {
         val driveRepo = PikoDriveRepository(provider, prefs)
         val remote = BrokenRemote()
         SourceLedgerSync(provider, remote, driveRepo.sourceLedger, scope, flowOf(true)).start()
+        awaitUntil("初次账本同步已尝试") { remote.attempts.get() >= 1 }
         val state = InstantSheetState(
             instantRepo,
             driveRepo,

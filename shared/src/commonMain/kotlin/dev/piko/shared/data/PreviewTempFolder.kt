@@ -3,7 +3,15 @@ package dev.piko.shared.data
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import io.github.nihildigit.pikpak.ResolvedFile
+import io.github.nihildigit.pikpak.PikPakClient
+import io.github.nihildigit.pikpak.listFiles
+import io.github.nihildigit.pikpak.createFolder
+import io.github.nihildigit.pikpak.batchDelete
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -11,11 +19,9 @@ import kotlinx.coroutines.sync.withLock
 /**
  * 网盘根目录下的 Piko-Temp：解析面板里预览播放的文件秒传到这里。
  *
- * 不逐个记录放进去的 id，清理时整个目录永久删除。面板关闭时清一次，每个账号在进程内
- * 首次登录时再清一次：进程被杀时面板来不及清理，残留留到下次启动收拾。
- *
- * 建目录、放文件与清理共用一把锁。上一个面板关闭时发起的清理与下一个面板的首次预览
- * 可能挨得很近，锁先来先得，清理排在前面就不会删掉新放进去的文件。
+ * 各会话记录自己创建的文件，结束时只删除仍在临时目录中的那些 ID。共享目录留给其他预览和借对象，
+ * 不随单个面板结束删除。进程内首次登录另清理上次退出后残留的目录。
+ * 所有步骤固定使用接受请求时的 client；晚到的清理不能改向新登录的账号。
  */
 class PreviewTempFolder(
     private val clients: PikoClientProvider,
@@ -28,46 +34,75 @@ class PreviewTempFolder(
     // 按账号记：只记一个时，换到登录过的账号不会再清一次，借对象、预览拿到的仍是上一个账号的 Piko-Temp
     private val folderIds = HashMap<String, String>()
 
-    private fun account(): String? = clients.currentClient.value?.account
+    private val sequence = MutableStateFlow(0L)
+    private val owned = HashMap<Long, Pair<PikPakClient, MutableSet<String>>>()
 
-    /** 秒传到 Piko-Temp，目录不存在就先建。返回新文件的 id。 */
-    suspend fun put(file: ResolvedFile): Result<String> = lock.withLock {
-        val parentId = ensureFolder().getOrElse { return Result.failure(it) }
-        instantRepo.instantCreate(file, parentId)
+    inner class Session internal constructor(private val client: PikPakClient?, private val id: Long) : AutoCloseable {
+        private val closed = MutableStateFlow(false)
+        suspend fun put(file: ResolvedFile): Result<String> = withContext(Dispatchers.Default) {
+            lock.withLock {
+                val owner = client ?: return@withLock Result.failure(IllegalStateException("Not logged in"))
+                if (closed.value) return@withLock Result.failure(IllegalStateException("预览会话已结束"))
+                val folder = ensureFolder(owner).getOrElse { return@withLock Result.failure(it) }
+                if (closed.value) return@withLock Result.failure(IllegalStateException("预览会话已结束"))
+                instantRepo.instantCreate(owner, file, folder).onSuccess { fileId ->
+                    owned.getOrPut(id) { owner to HashSet() }.second.add(fileId)
+                }
+            }
+        }
+        override fun close() {
+            if (!closed.compareAndSet(false, true)) return
+            val owner = client ?: return
+            scope.launch(Dispatchers.Default) {
+                lock.withLock {
+                    val ids = owned.remove(id)?.second.orEmpty()
+                    if (ids.isEmpty()) return@withLock
+                    runSuspendCatching {
+                        val folder = folderIds[owner.account] ?: return@runSuspendCatching
+                        val remaining = owner.listFiles(folder).mapTo(HashSet()) { it.id }.intersect(ids)
+                        if (remaining.isNotEmpty()) owner.batchDelete(remaining.toList())
+                        if (clients.currentClient.value === owner) driveRepo.applyChange(DriveChange.ContentsChanged(setOf(folder)))
+                    }.logFailure(TAG, "清理会话预览失败，留到下次登录时再清")
+                }
+            }
+        }
     }
 
-    /** Piko-Temp 的 ID，不存在就先建。 */
-    suspend fun folderId(): Result<String> = lock.withLock { ensureFolder() }
+    fun session(): Session = Session(clients.currentClient.value, sequence.getAndUpdate { it + 1 } + 1)
 
-    private suspend fun ensureFolder(): Result<String> {
-        val account = account() ?: return Result.failure(IllegalStateException("Not logged in"))
+    /** Piko-Temp 的 ID，不存在就先建。 */
+    suspend fun folderId(owner: PikPakClient? = clients.currentClient.value): Result<String> = withContext(Dispatchers.Default) {
+        lock.withLock { owner?.let { ensureFolder(it) } ?: Result.failure(IllegalStateException("Not logged in")) }
+    }
+
+    private suspend fun ensureFolder(owner: PikPakClient): Result<String> {
+        val account = owner.account
         folderIds[account]?.let { return Result.success(it) }
-        val found = findFolders().getOrElse { return Result.failure(it) }.firstOrNull()
-            ?: driveRepo.createFolder("", FOLDER_NAME).getOrElse { return Result.failure(it) }
-        // 查找途中换了号，找到的是新账号的，不能记在旧账号名下
-        if (account() != account) return Result.failure(IllegalStateException("查找 Piko-Temp 途中换了账号"))
+        val found = runSuspendCatching {
+            findFolders(owner).firstOrNull() ?: owner.createFolder("", FOLDER_NAME)
+        }.getOrElse { return Result.failure(it) }
         folderIds[account] = found
         return Result.success(found)
     }
 
     /** 永久删除 Piko-Temp，找不到就什么也不做。 */
-    suspend fun clear(): Result<Unit> = lock.withLock {
-        account()?.let(folderIds::remove)
-        val ids = findFolders().getOrElse { return Result.failure(it) }
-        if (ids.isEmpty()) return Result.success(Unit)
-        driveRepo.delete(ids).onSuccess { PikoLog.d(TAG, "已清理 Piko-Temp（${ids.size} 个同名目录）") }
-    }
-
-    /** 调用方的作用域结束之后仍要跑完的清理，例如面板关闭时。 */
-    fun clearInBackground() {
-        scope.launch { clear().logFailure(TAG, "清理 Piko-Temp 失败，留到下次登录时再清") }
+    suspend fun clear(owner: PikPakClient? = clients.currentClient.value): Result<Unit> = withContext(Dispatchers.Default) {
+        lock.withLock {
+            if (owner == null) return@withLock Result.success(Unit)
+            if (owned.values.any { it.first.account == owner.account && it.second.isNotEmpty() }) return@withLock Result.success(Unit)
+            runSuspendCatching {
+                folderIds.remove(owner.account)
+                val ids = findFolders(owner)
+                if (ids.isNotEmpty()) owner.batchDelete(ids)
+                if (clients.currentClient.value === owner) driveRepo.applyChange(DriveChange.ContentsChanged(null))
+                PikoLog.d(TAG, "已清理 Piko-Temp（${ids.size} 个同名目录）")
+            }
+        }
     }
 
     // 按名字找而不是记住 id：上次运行建的目录 id 不在内存里。同名目录有多个时一并算上
-    private suspend fun findFolders(): Result<List<String>> =
-        driveRepo.listAllFiles("").map { files ->
-            files.filter { it.isFolder && it.name == FOLDER_NAME }.map { it.id }
-        }
+    private suspend fun findFolders(owner: PikPakClient): List<String> =
+        owner.listFiles("").filter { it.isFolder && it.name == FOLDER_NAME }.map { it.id }
 
     companion object {
         private const val TAG = "PikoTemp"

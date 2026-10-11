@@ -160,7 +160,7 @@ class PikoMediaRepository(
      * 打开归档条目时借用的文件对象放在哪个目录，返回它的 ID。PikoServices 组装好 Piko-Temp 之后设上：
      * 媒体仓库在各端入口建出来时，Piko-Temp 还不存在。
      */
-    var leaseFolder: (suspend () -> String)? = null
+    var leaseFolder: (suspend (PikPakClient) -> String)? = null
 
     /** 下载调度器提供；原画播放与完整下载共用缓存，转码片段仍用 ClipCache。 */
     var fileCachePool: PikoFileCachePool? = null
@@ -173,6 +173,20 @@ class PikoMediaRepository(
     // 一段省下全部的详情查询。直链的有效期远长于这几分钟
     private val freshDetails = HashMap<String, Pair<FileDetail, TimeMark>>()
     private val freshDetailsLock = Mutex()
+    private var freshDetailsOwner: PikPakClient? = null
+
+    init {
+        backgroundScope.launch {
+            clientManager.currentClient.collect { owner ->
+                freshDetailsLock.withLock {
+                    if (freshDetailsOwner !== owner) {
+                        freshDetails.clear()
+                        freshDetailsOwner = owner
+                    }
+                }
+            }
+        }
+    }
 
     // 进程内一个就够：端口按需绑定，没有会话时只占一个监听 socket
     private val proxy by lazy { PikoMediaProxy() }
@@ -245,13 +259,13 @@ class PikoMediaRepository(
     ): Result<PreparedClip> =
         withContext(Dispatchers.Default) {
             runSuspendCatching {
-                val key = clipKey(fileId, startMs)
                 val client = client
+                val key = clipKey(client.account, fileId, startMs)
                 val leased = LeasedFile.isLeased(fileId)
                 clipCache?.record(key)?.let { record ->
                     cachedClip(client, record, startMs, videoDurationMs, role, leased)?.let { return@runSuspendCatching it }
                 }
-                val detail = takeFreshDetail(fileId) ?: detailOf(client, fileId)
+                val detail = takeFreshDetail(client, fileId) ?: detailOf(client, fileId)
                 val transcode = detail.resolveVariant(VariantPreference.Resolution(CLIP_RESOLUTION))
                 if (!transcode.isOrigin && videoDurationMs > 0) {
                     openClipSlice(client, detail, transcode, key, startMs, videoDurationMs, role, leased)
@@ -315,9 +329,9 @@ class PikoMediaRepository(
 
     // 同一个视频、同一个起点才是同一截；换了清晰度截出来的字节就不同。
     // 归档条目的 ID 带着文件名，拼进磁盘上的文件名会超长，只用条目自己的 ID
-    private fun clipKey(fileId: String, startMs: Long): String {
+    private fun clipKey(account: String, fileId: String, startMs: Long): String {
         val id = VaultEntry.entryIdOf(fileId)?.let { "vault-$it" } ?: fileId
-        return "${id}_${startMs}_$CLIP_RESOLUTION"
+        return "${account}_${id}_${startMs}_$CLIP_RESOLUTION"
     }
 
     /**
@@ -330,10 +344,15 @@ class PikoMediaRepository(
     suspend fun clipProbe(fileId: String): ClipProbe =
         withContext(Dispatchers.Default) {
             runSuspendCatching {
-                val detail = detailOf(client, fileId)
+                val owner = client
+                val detail = detailOf(owner, fileId)
                 freshDetailsLock.withLock {
-                    freshDetails.entries.removeAll { it.value.second.elapsedNow() > FRESH_DETAIL_FOR }
-                    freshDetails[fileId] = detail to TimeSource.Monotonic.markNow()
+                    if (clientManager.currentClient.value === owner) {
+                        if (freshDetailsOwner !== owner) freshDetails.clear()
+                        freshDetailsOwner = owner
+                        freshDetails.entries.removeAll { it.value.second.elapsedNow() > FRESH_DETAIL_FOR }
+                        freshDetails[fileId] = detail to TimeSource.Monotonic.markNow()
+                    }
                 }
                 ClipProbe(
                     hasTranscode = detail.medias.any { !it.isOrigin && it.mediaName == CLIP_RESOLUTION && it.url != null },
@@ -351,11 +370,12 @@ class PikoMediaRepository(
     private suspend fun detailOf(client: PikPakClient, fileId: String): FileDetail {
         val leased = LeasedFile.resolvedFileOf(fileId) ?: return client.getFile(fileId)
         val folder = leaseFolder ?: error("归档条目无法打开")
-        return client.leaseDetail(leased, parentId = folder())
+        return client.leaseDetail(leased, parentId = folder(client))
     }
 
     /** [clipProbe] 刚查过的详情，还新鲜就拿走，省一次查询。 */
-    private suspend fun takeFreshDetail(fileId: String): FileDetail? = freshDetailsLock.withLock {
+    private suspend fun takeFreshDetail(owner: PikPakClient, fileId: String): FileDetail? = freshDetailsLock.withLock {
+        if (freshDetailsOwner !== owner) return@withLock null
         freshDetails.remove(fileId)?.takeIf { it.second.elapsedNow() <= FRESH_DETAIL_FOR }?.first
     }
 

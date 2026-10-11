@@ -50,13 +50,13 @@ class ArchiveBrowseSmokeTest {
         awaitUntil("根目录列出压缩包") { !drive.isLoading && drive.files.any { it.name == "pack.zip" } }
 
         drive.openArchive(drive.files.single { it.name == "pack.zip" })
-        awaitUntil("进了压缩包") { drive.archiveView != null && !drive.isLoading && drive.files.size == 2 }
+        awaitUntil("进了压缩包") { drive.archiveView != null && drive.loadedFolderId == drive.archiveView?.id && !drive.isLoading && drive.files.size == 2 }
         assertEquals(listOf("season", "readme.txt"), drive.files.map { it.name })
         assertTrue(drive.isVirtualPlace)
 
         val season = drive.files.first { it.isFolder }
         drive.openFolder(season.id, season.name)
-        awaitUntil("进了包里的子目录") { drive.archiveView?.path == "season/" && !drive.isLoading && drive.files.size == 2 }
+        awaitUntil("进了包里的子目录") { drive.archiveView?.path == "season/" && drive.loadedFolderId == season.id && !drive.isLoading && drive.files.size == 2 }
         val episode = drive.files.first { it.name == "ep01.mkv" }
         assertNull(LeasedFile.resolvedFileOf(episode.id), "没解压过的包不给 gcid，还借不出来")
 

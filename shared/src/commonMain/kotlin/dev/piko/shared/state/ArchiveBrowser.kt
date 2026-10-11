@@ -15,6 +15,8 @@ import io.github.nihildigit.pikpak.ArchivePasswordException
 import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.TaskPhase
+import io.github.nihildigit.pikpak.PikPakClient
+import kotlinx.coroutines.CancellationException
 import io.github.nihildigit.pikpak.thumbnailUrlOf
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -30,11 +32,11 @@ import kotlinx.coroutines.sync.withLock
  * 只在主线程上调用；网络请求由 [ArchiveRepository] 切到后台。
  */
 class ArchiveBrowser(
-    clientProvider: PikoClientProvider,
+    private val clientProvider: PikoClientProvider,
     /** 当前账号存过的密码，进包时逐个试，输对的记进去。 */
     private val vault: ArchivePasswordVault,
     /** 引导解压与借出对象放在哪个目录，即 Piko-Temp。 */
-    private val scratchFolder: suspend () -> Result<String>,
+    private val scratchFolder: suspend (PikPakClient) -> Result<String>,
 ) {
     private val repository = ArchiveRepository(clientProvider)
 
@@ -45,24 +47,39 @@ class ArchiveBrowser(
     private val listings = mutableMapOf<String, List<FileStat>>()
     private val primed = mutableSetOf<String>()
     private val primeLock = Mutex()
+    private var cacheOwner: PikPakClient? = null
+    private var generation = 0L
 
-    fun password(archiveId: String): String = passwords[archiveId].orEmpty()
+    private fun owner(): PikPakClient {
+        val current = clientProvider.currentClient.value ?: throw CancellationException("账号会话已结束")
+        if (cacheOwner !== current) { clear(); cacheOwner = current }
+        return current
+    }
+
+    private fun ensureOwner(owner: PikPakClient, revision: Long) {
+        if (clientProvider.currentClient.value !== owner || generation != revision) throw CancellationException("账号会话已改变")
+    }
+
+    fun password(archiveId: String): String { owner(); return passwords[archiveId].orEmpty() }
 
     /** 列过的这一层，进来时先显示它再刷新，与网盘里的目录相同。 */
-    fun cached(location: ArchiveLocation): List<FileStat>? = listings[location.id]
+    fun cached(location: ArchiveLocation): List<FileStat>? { owner(); return listings[location.id] }
 
     /**
      * 列出包里的一层。[password] 为 null 时用这个包上次验证过的；给了就是用户刚输的，通过后记下，
      * 并与解压一样存进密码表。密码缺失或错误时以 ArchivePasswordException 失败。
      */
     suspend fun list(location: ArchiveLocation, password: String? = null): Result<List<FileStat>> {
+        val owner = owner()
+        val revision = generation
         val known = password ?: passwords[location.archiveId]
         val result = if (known != null) {
-            repository.list(location, known).map { known to it }
+            repository.list(location, known, owner).map { known to it }
         } else {
-            firstAccepted(location)
+            firstAccepted(location, owner, revision)
         }
         return result.map { (used, listing) ->
+            ensureOwner(owner, revision)
             passwords[location.archiveId] = used
             if (password != null && password.isNotEmpty()) vault.remember(password)
             listing.files.map { it.toFileStat(location) }
@@ -75,14 +92,16 @@ class ArchiveBrowser(
      * 头一回进这个包：先不带密码列，要密码时把存过的逐个试一遍，都不对才让界面弹框。
      * 解压不这样做（见 ArchivePasswordVault），那边每试一次是一个真实的解压任务；列目录只是一次查询。
      */
-    private suspend fun firstAccepted(location: ArchiveLocation): Result<Pair<String, ArchiveListing>> {
-        val plain = repository.list(location, "")
+    private suspend fun firstAccepted(location: ArchiveLocation, owner: PikPakClient, revision: Long): Result<Pair<String, ArchiveListing>> {
+        val plain = repository.list(location, "", owner)
+        ensureOwner(owner, revision)
         val missing = plain.exceptionOrNull() as? ArchivePasswordException ?: return plain.map { "" to it }
         if (missing.incorrect) return plain.map { "" to it }
         val candidates = savedPasswords.first().take(MAX_SAVED_TRIES)
         // 只记第几个存过的密码对上，密码本身不记
         for ((index, saved) in candidates.withIndex()) {
-            val attempt = repository.list(location, saved)
+            ensureOwner(owner, revision)
+            val attempt = repository.list(location, saved, owner)
             if (attempt.isSuccess) {
                 PikoLog.d(TAG, "压缩包 ${location.archiveId} 要密码，存过的第 ${index + 1} 个对上")
                 return attempt.map { saved to it }
@@ -102,9 +121,12 @@ class ArchiveBrowser(
      * 之后这个包的各层都要重列才有 gcid，列过的一并作废。
      */
     suspend fun prepare(entry: FileStat, siblings: List<FileStat>): Result<FileStat> = runSuspendCatching {
+        val owner = owner()
+        val revision = generation
         val location = ArchiveLocation.of(entry.parentId) ?: error("不是压缩包里的文件")
         val path = ArchiveEntryId.pathOf(entry.id)?.second ?: error("不是压缩包里的文件")
-        val scratch = scratchFolder().getOrThrow()
+        val scratch = scratchFolder(owner).getOrThrow()
+        ensureOwner(owner, revision)
         val relisted = listings[location.id]?.firstOrNull {
             ArchiveEntryId.pathOf(it.id)?.second == path && ArchiveEntryId.resolvedFileOf(it.id) != null
         }
@@ -115,23 +137,29 @@ class ArchiveBrowser(
             relisted
         } else {
             val smallest = siblings.filter { !it.isFolder }.minByOrNull { it.sizeBytes } ?: entry
-            prime(location, ArchiveEntryId.pathOf(smallest.id)?.second ?: path, scratch)
+            prime(location, ArchiveEntryId.pathOf(smallest.id)?.second ?: path, scratch, owner, revision)
+            ensureOwner(owner, revision)
             listings.keys.removeAll { ArchiveLocation.of(it)?.archiveId == location.archiveId }
             list(location).getOrThrow().firstOrNull { ArchiveEntryId.pathOf(it.id)?.second == path }
                 ?: error("压缩包里已没有这个文件")
         }
         checkNotNull(ArchiveEntryId.resolvedFileOf(ready.id)) { "服务端未给出这个文件的内容标识" }
+        ensureOwner(owner, revision)
         ready.copy(parentId = scratch)
     }
 
     // 同一个包只引导一次：连点两个文件、或播放列表与点开的那一项同时要，不该各解压一遍
-    private suspend fun prime(location: ArchiveLocation, entryPath: String, scratch: String) = primeLock.withLock {
+    private suspend fun prime(location: ArchiveLocation, entryPath: String, scratch: String, owner: PikPakClient, revision: Long) = primeLock.withLock {
+        ensureOwner(owner, revision)
         if (location.archiveId in primed) return@withLock
-        repository.prime(location, entryPath, password(location.archiveId), scratch).getOrThrow()
+        repository.prime(location, entryPath, password(location.archiveId), scratch, owner).getOrThrow()
+        ensureOwner(owner, revision)
         primed += location.archiveId
     }
 
     fun clear() {
+        generation++
+        cacheOwner = null
         passwords.clear()
         listings.clear()
         primed.clear()

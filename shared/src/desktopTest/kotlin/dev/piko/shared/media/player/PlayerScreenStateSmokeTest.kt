@@ -27,7 +27,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
-import kotlin.test.fail
 
 /**
  * 共用取流策略的行为冒烟。两端的播放器都跑这同一份策略，所以这里一次覆盖两端：
@@ -161,13 +160,8 @@ class PlayerScreenStateSmokeTest {
         assertEquals(4, backend.opens.size)
     }
 
-    private suspend fun eventually(what: String, timeoutMillis: Long = 10_000, condition: () -> Boolean) {
-        val deadline = System.currentTimeMillis() + timeoutMillis
-        while (!condition()) {
-            if (System.currentTimeMillis() > deadline) fail("超时：$what")
-            delay(20)
-        }
-    }
+    private suspend fun eventually(what: String, timeoutMillis: Long = 10_000, condition: () -> Boolean) =
+        dev.piko.shared.smoke.awaitUntil(what, timeoutMillis, condition)
 
     private fun Opened.urlOrNull(): String? = (target as? PlaybackTarget.Url)?.url
 

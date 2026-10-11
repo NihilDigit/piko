@@ -3,6 +3,7 @@ package dev.piko.shared.sync
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.VaultTrees
+import dev.piko.shared.data.runSuspendCatching
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import kotlinx.coroutines.CoroutineScope
@@ -12,11 +13,11 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.time.Clock
+import kotlinx.coroutines.CancellationException
 
 /**
  * 把整棵归档过的文件夹（[VaultTrees]）存进网盘 `.piko` 下的 `vault-trees-<时间戳>.json`，换一台设备，外层文件夹上的
@@ -49,23 +50,27 @@ class VaultTreeSync(
                 .distinctUntilChanged()
                 .collectLatest { account ->
                     if (account == null) return@collectLatest
-                    syncNow()
-                    // 本机归档后记下的：头一个值是眼前的状态，不算改动
-                    trees.flow.drop(1).debounce(PUSH_DELAY_MS).collect { syncNow() }
+                    val before = trees.flow.value
+                    var handled = syncSnapshot(account).getOrElse { before }
+                    trees.flow.debounce(PUSH_DELAY_MS).collect { records ->
+                        if (records != handled) handled = syncSnapshot(account).getOrElse { records }
+                    }
                 }
         }
     }
 
-    suspend fun syncNow(): Boolean = lock.withLock {
-        val account = clients.currentClient.value?.account ?: return@withLock false
-        runCatching { sync(account) }
-            .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+    suspend fun syncNow(): Boolean = syncSnapshot().isSuccess
+
+    private suspend fun syncSnapshot(expectedAccount: String? = null): Result<Map<String, Set<String>>> = lock.withLock {
+        val account = clients.currentClient.value?.account ?: return@withLock Result.failure(IllegalStateException("未登录"))
+        if (expectedAccount != null && account != expectedAccount) throw CancellationException("归档树账号已改变")
+        runSuspendCatching { sync(account) }
             .logFailure(TAG, "归档树同步失败")
-            .isSuccess
     }
 
-    private suspend fun sync(account: String) {
+    private suspend fun sync(account: String): Map<String, Set<String>> {
         val remoteText = remote.read(account)
+        if (clients.currentClient.value?.account != account) throw CancellationException("归档树账号已改变")
         val remoteTrees = remoteText?.let(VaultTrees::decode).orEmpty()
         val before = trees.flow.value.size
         trees.merge(remoteTrees)
@@ -74,6 +79,7 @@ class VaultTreeSync(
         if (pushed) remote.write(account, VaultTrees.encode(merged), now())
         PikoLog.d(TAG, "归档树同步：本机 $before 个，远端${if (remoteText == null) "无文件" else " ${remoteTrees.size} 个"}，" +
             "合并后 ${merged.size} 个，${if (pushed) "已推送" else "无需推送"}")
+        return merged
     }
 
     private companion object {
