@@ -61,9 +61,9 @@ internal fun tileColumns(mode: DriveViewMode, size: TileSize, width: WidthClass)
             WidthClass.Expanded -> Triple(6, 4, 3)
         }
         DriveViewMode.GALLERY -> when (width) {
-            WidthClass.Compact -> Triple(4, 3, 2)
-            WidthClass.Medium -> Triple(6, 5, 3)
-            WidthClass.Expanded -> Triple(10, 8, 5)
+            WidthClass.Compact -> Triple(3, 2, 1)
+            WidthClass.Medium -> Triple(4, 3, 2)
+            WidthClass.Expanded -> Triple(6, 4, 3)
         }
     }
     return when (size) {
@@ -85,9 +85,9 @@ internal fun tileMaxWidth(mode: DriveViewMode, size: TileSize): Dp = when (mode)
         TileSize.LARGE -> 560.dp
     }
     DriveViewMode.GALLERY -> when (size) {
-        TileSize.SMALL -> 160.dp
-        TileSize.MEDIUM -> 220.dp
-        TileSize.LARGE -> 320.dp
+        TileSize.SMALL -> 240.dp
+        TileSize.MEDIUM -> 320.dp
+        TileSize.LARGE -> 480.dp
     }
 }
 

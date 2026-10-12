@@ -4,6 +4,7 @@ import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.math.abs
 
 class ClipFeedSelectionTest {
     private fun item(id: String, folder: String = "", work: String = id, content: String = id, atRoot: Boolean = folder == "", original: Boolean = false) =
@@ -16,10 +17,16 @@ class ClipFeedSelectionTest {
         assertEquals(setOf("same", "c"), picked.toSet())
     }
 
-    @Test fun queuedCopiesAndRecentlyWatchedContentAreExcluded() {
+    @Test fun spacingUsesTheQueueTailRatherThanAllQueuedContent() {
         val files = listOf(item("a"), item("b"), item("c"), item("d"))
         val result = choose(files, queued = listOf(files[0]), watched = listOf(files[1]))
-        assertEquals(setOf("c", "d"), result.map { it.id }.toSet())
+        assertEquals(setOf("c", "d"), result.take(2).map { it.id }.toSet())
+        assertEquals(files.map { it.id }.toSet(), result.map { it.id }.toSet())
+        assertEquals(result.size, result.distinctBy { it.content }.size)
+        val timeline = listOf(files[1], files[0]) + result
+        val gaps = timeline.withIndex().groupBy({ it.value.content }, { it.index })
+            .values.flatMap { indices -> indices.zipWithNext { a, b -> b - a } }
+        assertTrue(gaps.all { it > files.size / 2 }, "A repeat must clear the queue-tail spacing: $gaps")
     }
 
     @Test fun leastSelectedContentPrecedesPreviouslyRepeatedContent() {
@@ -32,10 +39,42 @@ class ClipFeedSelectionTest {
         assertEquals(listOf("b"), choose(files, counts = mapOf("a" to 1), collecting = true).map { it.id })
     }
 
-    @Test fun singleVideoCanRepeatWithoutDuplicatingPendingClips() {
+    @Test fun singleVideoCanRepeatToFillTheFinitePendingQueue() {
         val files = listOf(item("a"))
         assertEquals(1, choose(files, watched = listOf(files[0])).size)
-        assertTrue(choose(files, queued = listOf(files[0])).isEmpty())
+        assertEquals(1, choose(files, queued = listOf(files[0])).size)
+    }
+
+    @Test fun twoVideosAlternateAcrossQueuedBatches() {
+        val files = listOf(item("a"), item("b"))
+        var queued = emptyList<FeedCandidate>()
+        repeat(26) { queued = queued + choose(files, queued = queued, limit = 1) }
+        assertTrue(queued.zipWithNext().all { (a, b) -> a.content != b.content })
+    }
+
+    @Test fun queuedContentRemainsExcludedWithALargePool() {
+        val files = (0..99).map { item(it.toString()) }
+        val queued = files.take(25)
+        val next = choose(files, queued = queued, limit = 8)
+        assertTrue(next.none { it.content in queued.map { q -> q.content } })
+    }
+
+    @Test fun consecutiveRangesAvoidOverlapWheneverEitherSideFits() = repeat(100) { seed ->
+        val previous = 60_000L + seed * 2_000L
+        val next = chooseClipStart(600_000, previous, Random(seed))
+        assertTrue(abs(next - previous) >= CLIP_LENGTH_MS, "seed $seed: $previous -> $next")
+        assertTrue(next in 60_000L..480_000L)
+    }
+
+    @Test fun exactBoundaryFitIsStillANonOverlappingRange() {
+        // Window is 10,000..55,000. Only the last millisecond fits after 25,000.
+        assertEquals(55_000L, chooseClipStart(100_000, 25_000, Random(0)))
+    }
+
+    @Test fun shortVideoMaximizesSeparationWhenNoDisjointRangeFits() {
+        assertEquals(21_000L, chooseClipStart(60_000, 6_000, Random(0)))
+        assertEquals(6_000L, chooseClipStart(60_000, 21_000, Random(0)))
+        assertEquals(0L, chooseClipStart(20_000, 0, Random(0)))
     }
 
     /** 根下三部番各 12 集、一个 5 部电影的文件夹、3 个散文件：前 30 段要散开。 */

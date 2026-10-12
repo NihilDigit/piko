@@ -9,7 +9,6 @@ import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.data.PikoCacheStore
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
-import dev.piko.shared.data.PikoFileSortOrder
 import dev.piko.shared.data.isVaulted
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.log.PikoLog
@@ -19,15 +18,15 @@ import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.upload.isUploading
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.serialization.Transient
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -44,6 +43,8 @@ data class Clip(
     val startMs: Long,
     /** 整个视频的时长，界面据此标出片段在全片中的位置。 */
     val videoDurationMs: Long,
+    // Equal time ranges still need separate stream/player lifetimes. This identity is not persisted.
+    @Transient val occurrence: Long = Random.nextLong(),
 ) {
     val file: FileStat get() = FileStat(id = fileId, name = name, parentId = parentId)
 }
@@ -53,7 +54,7 @@ const val CLIP_LENGTH_MS = 30_000L
 /**
  * 信息流：刷网盘页当前文件夹里的视频，子文件夹里的也算，每段从片中随机一处起放 30 秒。
  * 看的是内容本身，而不是片头片尾；随机整个视频时抽到的多半是没头没尾的东西。
- * 范围只由打开时所在的文件夹决定，界面在离开这个文件夹（及其子文件夹）时收起信息流，见 PikoMainScaffold。
+ * 范围在打开时取定：显式选中的视频，或所在文件夹及其子目录；选中范围不读写文件夹的持久队列。
  *
  * 与进程同寿，挂在 PikoServices 上：看到喜欢的一段会打开完整播放器，Android 上它压在信息流之上，
  * 底下的页可能被销毁，队列不能随页面走。队列按账号与文件夹另外存盘，只存当前前后各 [KEPT_AROUND] 段：
@@ -74,6 +75,18 @@ class ClipFeedSession(
 ) {
     var root by mutableStateOf<PikoPathBreadcrumb?>(null)
         private set
+
+    var selectedVideoCount by mutableStateOf<Int?>(null)
+        private set
+
+    val scopeLabel: String get() = selectedVideoCount?.let { "已选 $it 个视频" } ?: root?.name.orEmpty()
+
+    private var selectedIds: Set<String>? = null
+    private var generation by mutableStateOf(0L)
+    val scopeVersion: Long get() = generation
+    private var openingScope = false
+    private var fillRequested = false
+    private val preparedUpcoming = HashSet<Clip>()
 
     /**
      * 队列属于哪个账号，[open] 时取定，存盘也按它分开。只有文件夹 ID 不够：各账号的根目录都是空串，
@@ -197,7 +210,7 @@ class ClipFeedSession(
     private val json = Json { ignoreUnknownKeys = true }
 
     /**
-     * 刷 [folder]。正是眼前这一个时原样继续；换了文件夹就读那个文件夹存下的。
+     * 刷 [path] 的栈顶，或 [selected] 的固定视频集合。同一范围原样继续；普通文件夹读其存盘队列。
      *
      * 每个文件夹各存一份，最近用过的 [KEPT_FOLDERS] 个：队列从上次看到的地方接着，
      * 遍历到的视频、查过有没有转码的也一并存着，打开就能挑，不必等把目录重新走一遍、把详情重新查一遍。
@@ -205,16 +218,28 @@ class ClipFeedSession(
      *
      * [path] 是网盘页眼前的整条路径栈，刷的是它的栈顶。
      */
-    suspend fun open(path: List<PikoPathBreadcrumb>) {
+    suspend fun open(path: List<PikoPathBreadcrumb>, selected: List<FileStat>? = null) {
         val folder = path.lastOrNull() ?: return
         val owner = clients.currentClient.value?.account ?: return
-        rootPath = path
-        if (account == owner && root?.id == folder.id && (clips.isNotEmpty() || upcoming.isNotEmpty() || isCollecting)) return
+        val selection = selected?.filter { it.isDiscoverableVideo() }?.distinctBy { it.id }?.toList()
+        val ids = selection?.mapTo(HashSet()) { it.id }
+        rootPath = path.toList()
+        if (account == owner && root?.id == folder.id && selectedIds == ids && (clips.isNotEmpty() || upcoming.isNotEmpty() || isCollecting)) return
+        val request = ++generation
+        openingScope = true
         collectJob?.cancel()
         fillJob?.cancel()
-        saveJob?.cancel()
+        fillJob = null
+        fillRequested = false
+        isFilling = false
+        streams.closeAll()
+        // Finish saving the previous folder before replacing it with an ephemeral selection.
+        save(immediately = true)
+        saveJob?.join()
+        if (request != generation) return
         // 旧文件夹里在取的段取好了也接不进新队列，留着只占连接
         streams.closeAll()
+        preparedUpcoming.clear()
         pool.clear()
         poolIds.clear()
         selectionCounts.clear()
@@ -227,7 +252,12 @@ class ClipFeedSession(
         listedFiles.clear()
         account = owner
         root = folder
-        val saved = load(owner, folder.id)
+        selectedIds = ids
+        selectedVideoCount = selection?.size
+        clips = emptyList()
+        upcoming = emptyList()
+        val saved = if (selection == null) load(owner, folder.id) else null
+        if (request != generation) return
         // 存下的目录与上级只补索引的空缺，这一轮遍历列到的会盖掉它们
         if (saved != null) driveRepo.seedFolders(saved.folders, saved.parents)
         PikoLog.d(TAG, "打开随机片段：存下的队列 ${saved?.clips?.size ?: 0} 段，候选 ${saved?.pool?.size ?: 0} 个")
@@ -255,8 +285,12 @@ class ClipFeedSession(
         furthestIndex = 0
         // 存下的候选够挑就先挑，不等遍历
         isCollecting = true
+        openingScope = false
         fillAhead()
-        collectJob = scope.launch { collect(folder.id) }
+        collectJob = scope.launch {
+            if (selection == null) collect(folder.id, owner, request)
+            else collectSelected(selection, request)
+        }
     }
 
     /**
@@ -264,12 +298,20 @@ class ClipFeedSession(
      * 跳去网盘看一个文件时信息流只是挂起，不调这个，队列与看到哪一段都留着。
      */
     fun close() {
+        generation++
+        openingScope = false
         collectJob?.cancel()
         fillJob?.cancel()
+        fillJob = null
+        fillRequested = false
+        isFilling = false
         // 还没看的段与查过的转码留给下次打开，趁队列还在当场存下
         save(immediately = true)
         streams.closeAll()
+        preparedUpcoming.clear()
         root = null
+        selectedIds = null
+        selectedVideoCount = null
         clips = emptyList()
         upcoming = emptyList()
         currentIndex = 0
@@ -307,9 +349,26 @@ class ClipFeedSession(
      * 扣着并不多出段来，只是每刷到翻页器末尾，滑进来的总是那张转圈的等待页，停稳才变成视频（2026-09-28）。
      */
     fun promote(clip: Clip) {
-        if (clip !in upcoming) return
-        upcoming = upcoming - clip
-        clips = clips + clip
+        if (openingScope || clip !in upcoming) return
+        preparedUpcoming += clip
+        publishPrepared()
+    }
+
+    private fun publishPrepared() {
+        // Other content may bypass a slow prepare, but ranges of one content keep their planned order.
+        val blocked = HashSet<String>()
+        val ready = upcoming.filter { pending ->
+            val content = contentKey(pending.fileId)
+            if (pending !in preparedUpcoming) {
+                blocked += content
+                false
+            } else content !in blocked
+        }
+        if (ready.isEmpty()) return
+        preparedUpcoming.removeAll(ready.toSet())
+        upcoming = upcoming - ready.toSet()
+        clips = clips + ready
+        fillAhead()
         save()
     }
 
@@ -322,13 +381,18 @@ class ClipFeedSession(
      * 有的短片的 720P 在每台主机上都断流。
      */
     fun drop(clip: Clip) {
-        if (clip !in upcoming) return
+        if (openingScope || clip !in upcoming) return
         upcoming = upcoming - clip
+        preparedUpcoming -= clip
         if (failedOnce.add(clip.fileId)) {
             PikoLog.d(TAG, "取不到，稍后重取 ${logFile(clip.fileId, clip.name)}")
-            upcoming = upcoming + clip
+            // A new identity makes the retry observable even when it stays at the same queue position.
+            val retry = clip.copy(occurrence = Random.nextLong())
+            val nextSame = upcoming.indexOfFirst { contentKey(it.fileId) == contentKey(clip.fileId) }
+            upcoming = if (nextSame < 0) upcoming + retry else upcoming.toMutableList().apply { add(nextSame, retry) }
         } else {
             rejected[clip.fileId] = Clock.System.now().toEpochMilliseconds()
+            publishPrepared()
             fillAhead()
         }
         save()
@@ -338,61 +402,63 @@ class ClipFeedSession(
     private val failedOnce = HashSet<String>()
 
     fun moveTo(index: Int) {
-        if (index !in clips.indices || index == currentIndex) return
+        if (openingScope || index !in clips.indices) return
         currentIndex = index
         furthestIndex = maxOf(furthestIndex, index)
         fillAhead()
         save()
     }
 
-    private suspend fun collect(rootId: String) {
-        isCollecting = true
+    private suspend fun collectSelected(selection: List<FileStat>, request: Long) {
+        try {
+            selection.groupBy { it.parentId }.forEach { (folderId, files) ->
+                val batch = analyzeVideoFolder(folderId, files)
+                if (request != generation) return
+                workOf.putAll(batch.workOf)
+                files.filter { it.isClipCandidate() }.forEach {
+                    listedFiles[it.id] = it
+                    addToPool(it)
+                }
+                listedFolders++
+                fillAhead()
+            }
+        } finally {
+            if (request == generation) {
+                isCollecting = false
+                fillAhead()
+            }
+        }
+    }
+
+    private suspend fun collect(rootId: String, owner: String, request: Long) {
         val started = TimeSource.Monotonic.markNow()
         try {
-            var level = listOf(rootId)
-            while (level.isNotEmpty()) {
-                val next = mutableListOf<String>()
-                for (folderId in level) {
-                    // 与网盘页同一份列表：归档条目也在里面
-                    val files = driveRepo.listBrowsable(folderId, PikoFileSortOrder.TIME_DESC)
-                        .logFailure(TAG, "随机片段列目录失败，跳过").getOrNull() ?: continue
-                    if (listedFolders++ == 0) PikoLog.d(TAG, "列出第一个目录：${files.size} 项，${started.elapsedNow().inWholeMilliseconds} ms")
-                    next += files.filter { it.isFolder }.map { it.id }
-                    // 解析整目录的文件名要花些时间，不放在主线程上。解析出错只少折叠这一个目录、认不出作品，不能让整个信息流崩掉
-                    val structure = withContext(Dispatchers.Default) {
-                        runCatching { analyzeDriveFolder(files) }
-                            .onFailure { if (it is CancellationException) throw it }
-                            .logFailure(TAG, "随机片段解析目录失败，不折叠")
-                            .getOrNull()
-                    }
-                    structure?.blocks?.forEach { block ->
-                        // 没有作品名的系列只在本目录内成立，别的目录里同样没有名字的是另一部
-                        val work = block.workKey?.let { if (block.workTitle == null) "$folderId/$it" else it } ?: return@forEach
-                        block.fileIds.forEach { workOf[it] = work }
-                    }
-                    val folded = structure?.foldedIds.orEmpty()
-                    val candidates = files.filter { it.id !in folded && it.isClipCandidate() }
-                    candidates.forEach { listedFiles[it.id] = it }
-                    candidates.forEach(::addToPool)
-                    fillAhead()
+            val discovery = VideoDiscovery(driveRepo, owner, rootId)
+            while (true) {
+                val batch = discovery.next() ?: break
+                if (request != generation) return
+                listedFolders++
+                workOf.putAll(batch.workOf)
+                batch.candidates.filter { it.isClipCandidate() }.forEach {
+                    listedFiles[it.id] = it
+                    addToPool(it)
                 }
-                level = next.shuffled()
+                fillAhead()
             }
-            isCollecting = false
             PikoLog.d(TAG, "遍历完：$listedFolders 个目录，候选 ${pool.size} 个，${started.elapsedNow().inWholeMilliseconds} ms")
-            // 补队列时视频用完了会等遍历，遍历结束得再叫它一次，才开得了下一轮
-            fillAhead()
-            save()
         } finally {
-            isCollecting = false
+            if (request == generation) {
+                isCollecting = false
+                fillAhead()
+                save()
+            }
         }
     }
 
     /**
      * 当前之后补足 [KEPT_AROUND] 段，已取好的与候补合计，已在补就不重开。
      *
-     * 一轮之内每个视频只出一段：同一部片子隔几段又冒出来，看着像是重复。视频用完了开下一轮，
-     * 队列不到头；遍历还在进行时，先等后面列出的目录补上。
+     * 遍历时每个内容只出一段，给后面目录留位；遍历结束后按队尾的内容间隔重复，候补始终有上限。
      *
      * 有 720P 转码的优先：转码流能截一小块直接播，起播只要几百 KB；原画要先读索引再跳到起点，
      * 一段起播要 5 到 10 MB，刷快了必然卡。没有转码的照样挑，只是代价高些（[FeedCost.ORIGINAL]），
@@ -400,82 +466,96 @@ class ClipFeedSession(
      * 每次并行查 [VERIFY_BATCH] 个；只查挑中的，不在遍历时把整个文件夹都查一遍。
      */
     private fun fillAhead() {
+        if (openingScope || root == null) return
+        fillRequested = true
         if (fillJob?.isActive == true) return
-        fillJob = scope.launch {
+        val request = generation
+        val job = scope.launch(start = CoroutineStart.LAZY) {
             isFilling = true
             try {
-                while (true) {
-                    val readyAhead = (clips.size - 1 - furthestIndex) + upcoming.size
-                    val missing = KEPT_AROUND - readyAhead
-                    if (missing <= 0) break
-                    val byId = pool.associateBy { it.id }
-                    fun candidateOf(clip: Clip) = byId[clip.fileId]?.let(::feedCandidate)
-                        ?: FeedCandidate(clip.fileId, clip.parentId, "id:${clip.fileId}", "id:${clip.fileId}", clip.parentId == root?.id)
-                    val picks = selectFeedCandidates(
-                        pool = pool.filter { it.id !in rejected }.map(::feedCandidate),
-                        queued = (clips.drop(furthestIndex + 1) + upcoming).map(::candidateOf),
-                        // 只看得到最近这些：避开最近放过的至多 50 段，文件夹与作品的热度看得更短
-                        watched = clips.take(furthestIndex + 1).takeLast(50).map(::candidateOf),
-                        counts = selectionCounts,
-                        collecting = isCollecting,
-                        limit = minOf(missing, VERIFY_BATCH),
-                        hold = when {
-                            !isCollecting -> null
-                            listedFolders < SPREAD_OUT_AFTER_FOLDERS -> FeedHold.Opening
-                            else -> FeedHold.Collecting
-                        },
-                    )
-                    // 排在最前的只剩原画时，遍历还没走完、手上又还有段可放，就先等：后面列出的目录里可能有转码的。
-                    // 一段都没有了才不等，免得停在转圈上
-                    val onlyOriginalsLeft = picks.firstOrNull()?.original == true
-                    if (onlyOriginalsLeft && isCollecting && readyAhead > 0) return@launch
-                    val batch = picks.mapNotNull { byId[it.id] }
-                    if (batch.isEmpty()) break
-                    val checkStarted = TimeSource.Monotonic.markNow()
-                    val probed = coroutineScope {
-                        batch.map { file -> async { file.id to transcodeOf(file) } }.awaitAll()
-                    }
-                    // 查过之后池里的那份才带着时长；量出来太短的（多是样片、花絮）从此不挑
-                    val (checked, tooShort) = probed.mapNotNull { (id, transcode) -> pooled(id)?.let { it to transcode } }
-                        .partition { (file, _) -> file.durationMs() >= MIN_DURATION_MS }
-                    tooShort.forEach { (file, _) -> rejected[file.id] = Clock.System.now().toEpochMilliseconds() }
-                    PikoLog.d(TAG, "查转码 ${batch.size} 个，有 ${checked.count { it.second == Transcode.Yes }} 个：${checkStarted.elapsedNow().inWholeMilliseconds} ms")
-                    val now = Clock.System.now().toEpochMilliseconds()
-                    checked.forEach { (file, transcode) ->
-                        when (transcode) {
-                            Transcode.Yes -> verified += file.id
-                            Transcode.JustFoundMissing -> untranscoded[file.id] = now
-                            Transcode.KnownMissing -> Unit
+                do {
+                    fillRequested = false
+                    while (true) {
+                        val readyAhead = (clips.size - 1 - furthestIndex) + upcoming.size
+                        val missing = KEPT_AROUND - readyAhead
+                        if (missing <= 0) break
+                        val byId = pool.associateBy { it.id }
+                        fun candidateOf(clip: Clip) = byId[clip.fileId]?.let(::feedCandidate)
+                            ?: FeedCandidate(clip.fileId, clip.parentId, "id:${clip.fileId}", "id:${clip.fileId}", clip.parentId == root?.id)
+                        val picks = selectFeedCandidates(
+                            pool = pool.filter { it.id !in rejected }.map(::feedCandidate),
+                            queued = (clips.drop(furthestIndex + 1) + upcoming).map(::candidateOf),
+                            // 只看得到最近这些：避开最近放过的至多 50 段，文件夹与作品的热度看得更短
+                            watched = clips.take(furthestIndex + 1).takeLast(50).map(::candidateOf),
+                            counts = selectionCounts,
+                            collecting = isCollecting,
+                            limit = minOf(missing, VERIFY_BATCH),
+                            hold = when {
+                                !isCollecting -> null
+                                listedFolders < SPREAD_OUT_AFTER_FOLDERS -> FeedHold.Opening
+                                else -> FeedHold.Collecting
+                            },
+                        )
+                        // 排在最前的只剩原画时，遍历还没走完、手上又还有段可放，就先等：后面列出的目录里可能有转码的。
+                        // 一段都没有了才不等，免得停在转圈上
+                        val onlyOriginalsLeft = picks.firstOrNull()?.original == true
+                        if (onlyOriginalsLeft && isCollecting && readyAhead > 0) return@launch
+                        val batch = picks.mapNotNull { byId[it.id] }
+                        if (batch.isEmpty()) break
+                        val checkStarted = TimeSource.Monotonic.markNow()
+                        val probed = coroutineScope {
+                            batch.map { file -> async { file.id to transcodeOf(file, request) } }.awaitAll()
+                        }
+                        if (request != generation) return@launch
+                        // 查过之后池里的那份才带着时长；量出来太短的（多是样片、花絮）从此不挑
+                        val (checked, tooShort) = probed.mapNotNull { (id, transcode) -> pooled(id)?.let { it to transcode } }
+                            .partition { (file, _) -> file.durationMs() >= MIN_DURATION_MS }
+                        tooShort.forEach { (file, _) -> rejected[file.id] = Clock.System.now().toEpochMilliseconds() }
+                        PikoLog.d(TAG, "查转码 ${batch.size} 个，有 ${checked.count { it.second == Transcode.Yes }} 个：${checkStarted.elapsedNow().inWholeMilliseconds} ms")
+                        val now = Clock.System.now().toEpochMilliseconds()
+                        checked.forEach { (file, transcode) ->
+                            when (transcode) {
+                                Transcode.Yes -> verified += file.id
+                                Transcode.JustFoundMissing -> untranscoded[file.id] = now
+                                Transcode.KnownMissing -> Unit
+                            }
+                        }
+                        // 刚查出没有转码的这一回不收，下一圈它排到有转码的后面；排在最前还挑中了它，说明已经没有更好的。
+                        // 手上的段快见底时照收：大半没有转码的文件夹里，等把候选查到只剩原画要几十秒，
+                        // 其间一段一段地挤出有转码的，翻不了几下就停在等待页（2026-09-28，170 个候选查出 1 个）
+                        val lowOnClips = readyAhead < LOW_ON_CLIPS
+                        val added = checked.filter { lowOnClips || it.second != Transcode.JustFoundMissing }.map { clipOf(it.first) }
+                        if (added.isNotEmpty()) {
+                            added.forEach {
+                                val key = contentKey(it.fileId)
+                                selectionCounts[key] = selectionCounts.getOrElse(key) { 0 } + 1
+                            }
+                            upcoming = upcoming + added
+                            save()
                         }
                     }
-                    // 刚查出没有转码的这一回不收，下一圈它排到有转码的后面；排在最前还挑中了它，说明已经没有更好的。
-                    // 手上的段快见底时照收：大半没有转码的文件夹里，等把候选查到只剩原画要几十秒，
-                    // 其间一段一段地挤出有转码的，翻不了几下就停在等待页（2026-09-28，170 个候选查出 1 个）
-                    val lowOnClips = readyAhead < LOW_ON_CLIPS
-                    val added = checked.filter { lowOnClips || it.second != Transcode.JustFoundMissing }.map { clipOf(it.first) }
-                    if (added.isNotEmpty()) {
-                        added.forEach {
-                            val key = contentKey(it.fileId)
-                            selectionCounts[key] = selectionCounts.getOrElse(key) { 0 } + 1
-                        }
-                        upcoming = upcoming + added
-                        save()
-                    }
-                }
+                } while (fillRequested && request == generation)
             } finally {
-                isFilling = false
+                if (request == generation) {
+                    isFilling = false
+                    fillJob = null
+                    if (fillRequested) fillAhead()
+                }
             }
         }
+        fillJob = job
+        job.start()
     }
 
     private enum class Transcode { Yes, JustFoundMissing, KnownMissing }
 
     /** 没有时长的（归档条目）不走记下的结论，要查一次：时长只能从详情里取。 */
-    private suspend fun transcodeOf(file: FileStat): Transcode {
+    private suspend fun transcodeOf(file: FileStat, request: Long): Transcode {
         val timed = file.durationMs() > 0
         if (timed && file.id in verified) return Transcode.Yes
         if (timed && file.id in untranscoded) return Transcode.KnownMissing
         val probe = media.clipProbe(file.id)
+        if (request != generation) throw CancellationException("Feed scope changed")
         probe.durationMs?.let { learnDuration(file.id, it) }
         return if (probe.hasTranscode) Transcode.Yes else Transcode.JustFoundMissing
     }
@@ -506,9 +586,10 @@ class ClipFeedSession(
      */
     private fun clipOf(file: FileStat): Clip {
         val durationMs = file.durationMs()
-        val earliest = (durationMs * 0.10).toLong()
-        val latest = (durationMs * 0.85).toLong() - CLIP_LENGTH_MS
-        val start = if (latest > earliest) Random.nextLong(earliest, latest) else ((durationMs - CLIP_LENGTH_MS) / 2).coerceAtLeast(0)
+        val key = file.clipContentKey()
+        val last = upcoming.lastOrNull { contentKey(it.fileId) == key }
+            ?: clips.lastOrNull { contentKey(it.fileId) == key }
+        val start = chooseClipStart(durationMs, last?.startMs)
         return Clip(file.id, file.name, file.parentId, start, durationMs)
     }
 
@@ -517,6 +598,7 @@ class ClipFeedSession(
      * 存的是写那一刻的样子，不是叫存时的；[immediately] 时是叫存时的，[close] 接着就要清空队列。
      */
     private fun save(immediately: Boolean = false) {
+        if (selectedIds != null) return
         val store = cacheStore ?: return
         val folder = root ?: return
         val owner = account ?: return

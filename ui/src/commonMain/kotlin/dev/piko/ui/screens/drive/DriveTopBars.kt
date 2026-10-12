@@ -117,6 +117,7 @@ internal fun DriveSelectionTopBar(
     restoreFromVault: SheetAction?,
     /** 归档选中的文件与文件夹。用得少，同在竖三点菜单里。 */
     vault: SheetAction?,
+    feed: SheetAction? = null,
 ) {
     PikoTopBar(
         scrollBehavior = scrollBehavior,
@@ -128,6 +129,7 @@ internal fun DriveSelectionTopBar(
         actions = buildList {
             val shortcutModifier = LocalPikoPlatform.current.shortcutModifier
             if (onSelectAll != null) add(iconBarItem(Icons.Outlined.SelectAll, "全选", onSelectAll, priority = 10, shortcut = shortcutModifier.label("A")))
+            feed?.let { add(it.asBarItem(priority = 65)) }
             extract?.let { add(it.asBarItem(priority = 30)) }
             download?.let { add(it.asBarItem(priority = 35)) }
             share?.let { add(it.asBarItem(priority = 40)) }

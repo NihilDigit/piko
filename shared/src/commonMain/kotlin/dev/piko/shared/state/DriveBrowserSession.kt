@@ -47,6 +47,7 @@ class DriveBrowserSession(
         library != null -> LibraryNavigation(repository, library, scope)
         else -> requireNotNull(fileNavigation) { "文件页需要由工作区提供导航上下文" }
     }
+    val gallery = GallerySession(repository, scope)
     var initialized by mutableStateOf(false)
     val state = DriveScreenState(
         repository, preferences, scope,
@@ -67,6 +68,7 @@ class DriveBrowserSession(
         folderVault = folderVault,
         shareSaves = shareSaves,
         receiving = receiving,
+        supplementalFiles = { gallery.files },
     )
 
     init {
@@ -81,6 +83,7 @@ class DriveBrowserSession(
     }
 
     fun close() {
+        gallery.dispose()
         (navigation as? LibraryNavigation)?.close()
         (navigation as? TabNavigation)?.close()
         scope.cancel()

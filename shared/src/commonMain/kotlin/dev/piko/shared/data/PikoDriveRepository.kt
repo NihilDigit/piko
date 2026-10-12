@@ -1,6 +1,7 @@
 package dev.piko.shared.data
 
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.io.Buffer
 import io.ktor.utils.io.toByteArray
 import io.github.nihildigit.pikpak.streamRangeFromUrl
@@ -398,11 +399,13 @@ open class PikoDriveRepository(
      * 向服务端列出 [parentId] 的全部条目，记进列表缓存与文件夹索引。请求挂在仓库的作用域上：
      * 先来的调用方被取消（网盘页换了目录），等着同一个结果的其余调用方不受连累。
      */
-    private suspend fun fetchListing(parentId: String): List<FileStat> {
+    private suspend fun fetchListing(parentId: String, asked: PikPakClient = client): List<FileStat> {
         val request = backgroundScope.async(start = CoroutineStart.LAZY) {
             val serial = changeMarks.value.serial
             // 补来源放在这里：列表缓存、目录图、地址栏与网盘页读的都是这一份
-            val files = sourceLedger.enrich(client.listFiles(parentId))
+            val listed = asked.listFiles(parentId)
+            if (clientManager.currentClient.value !== asked) throw CancellationException("Account changed")
+            val files = sourceLedger.enrich(listed)
             if (unchangedSince(parentId, serial)) listingFetched(parentId, files)
             files
         }
@@ -470,13 +473,36 @@ open class PikoDriveRepository(
      * 网盘页看到的列表：清单文件不列，换成其中的归档条目。清单读不出来时照样列出真实文件，
      * 只少了归档的那几行，不让整个目录打不开。
      */
-    suspend fun listBrowsable(parentId: String, sortOrder: PikoFileSortOrder): Result<List<FileStat>> =
-        listAllFiles(parentId, sortOrder).map { listing ->
-            val entries = vault.read(parentId, listing).logFailure(TAG, "读取归档清单失败")
-                .onSuccess { vaultEntriesKnown(parentId, it) }
-                .getOrDefault(emptyList())
+    suspend fun listBrowsable(parentId: String, sortOrder: PikoFileSortOrder): Result<List<FileStat>> {
+        val asked = clientManager.currentClient.value ?: return Result.failure(IllegalStateException("未登录"))
+        return listBrowsable(parentId, sortOrder, asked, vault)
+    }
+
+    /** 遍历在打开时固定 client 和归档仓库；换号后不能继续拿新账号列旧目录。 */
+    internal fun browsableReader(expectedAccount: String): (suspend (String) -> Result<List<FileStat>>)? {
+        val asked = clientManager.currentClient.value?.takeIf { it.account == expectedAccount } ?: return null
+        val store = vault
+        if (clientManager.currentClient.value !== asked) return null
+        return { folderId -> listBrowsable(folderId, PikoFileSortOrder.TIME_DESC, asked, store) }
+    }
+
+    private suspend fun listBrowsable(
+        parentId: String,
+        sortOrder: PikoFileSortOrder,
+        asked: PikPakClient,
+        store: VaultStore,
+    ): Result<List<FileStat>> = withContext(Dispatchers.Default) {
+        runSuspendCatching {
+            if (clientManager.currentClient.value !== asked) throw CancellationException("Account changed")
+            val listing = fetchListing(parentId, asked)
+            if (clientManager.currentClient.value !== asked) throw CancellationException("Account changed")
+            val manifest = store.read(parentId, listing).logFailure(TAG, "读取归档清单失败")
+            if (clientManager.currentClient.value !== asked) throw CancellationException("Account changed")
+            manifest.onSuccess { vaultEntriesKnown(parentId, it) }
+            val entries = manifest.getOrDefault(emptyList())
             withVaulted(parentId, listing, entries, sortOrder)
         }
+    }
 
     /** [cachedFiles] 的 [listBrowsable] 版本。清单还没读过时先不列归档条目，等随后的刷新补上。 */
     fun cachedBrowsable(folderId: String, sortOrder: PikoFileSortOrder): List<FileStat>? =
