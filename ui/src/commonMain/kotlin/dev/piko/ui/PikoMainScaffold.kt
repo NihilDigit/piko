@@ -577,9 +577,9 @@ fun PikoMainScaffold(
     val feedOpened by workspaceModel.feed::opened
     // 关掉信息流连同它的窗口一起关：开关是它唯一的总开关，不管它此刻在哪一处。
     // 关掉才清空队列；挂起着关掉的，这期间的临时浏览就此留下，成为寻常的浏览
-    fun setFeedShown(shown: Boolean) {
+    fun setFeedShown(shown: Boolean, selected: List<FileStat>? = null) {
         feedShownState = shown
-        if (shown) workspaceModel.feed.prepare(snapshotFlow { fileBrowser.initialized })
+        if (shown) workspaceModel.feed.prepare(snapshotFlow { fileBrowser.initialized }, selected)
         if (!shown) {
             if (feedPoppedOut) detachedHost?.closeClipFeed?.invoke()
             workspaceModel.feed.close()
@@ -853,6 +853,11 @@ fun PikoMainScaffold(
                                             shown && feedSuspended -> resumeFeed()
                                             shown -> taskSlot.claim("打开信息流", "打开信息流", TaskSlot.Task.FEED) { setFeedShown(true) }
                                             else -> setFeedShown(false)
+                                        }
+                                    },
+                                    onOpenSelectedFeed = { selected ->
+                                        taskSlot.claim("打开所选视频的信息流", "打开信息流", TaskSlot.Task.FEED) {
+                                            setFeedShown(true, selected.toList())
                                         }
                                     },
                                     feedStashed = feedSuspended,

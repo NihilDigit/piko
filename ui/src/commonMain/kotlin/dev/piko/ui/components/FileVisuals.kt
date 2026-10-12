@@ -288,6 +288,9 @@ fun SpoilerThumbnail(
      * 模糊本身已经说明预览遮住了。
      */
     showBlurIcon: Boolean = true,
+    /** Decoded cover dimensions; shares the existing image request and cache. */
+    onAspectRatio: ((Float) -> Unit)? = null,
+    onError: (() -> Unit)? = null,
 ) {
     if (!isBlurred) {
         AsyncImage(
@@ -295,6 +298,11 @@ fun SpoilerThumbnail(
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = modifier,
+            onSuccess = { state ->
+                val image = state.result.image
+                if (image.width > 0 && image.height > 0) onAspectRatio?.invoke(image.width.toFloat() / image.height)
+            },
+            onError = { onError?.invoke() },
         )
         return
     }
@@ -308,7 +316,7 @@ fun SpoilerThumbnail(
         contentAlignment = Alignment.Center,
     ) {
         if (supportsRenderEffect) {
-            BlurredThumbnail(model = model, blur = blur, modifier = Modifier.fillMaxSize())
+            BlurredThumbnail(model = model, blur = blur, modifier = Modifier.fillMaxSize(), onAspectRatio = onAspectRatio, onError = onError)
             // 遮罩压低色块对比度，并给图标一个在任何底色上都成立的衬底
             Box(
                 modifier = Modifier
@@ -335,7 +343,7 @@ fun SpoilerThumbnail(
  * clip 把卷积溢出的部分裁在图层边界内。
  */
 @Composable
-private fun BlurredThumbnail(model: Any, blur: SpoilerBlur, modifier: Modifier) {
+private fun BlurredThumbnail(model: Any, blur: SpoilerBlur, modifier: Modifier, onAspectRatio: ((Float) -> Unit)? = null, onError: (() -> Unit)? = null) {
     val context = LocalPlatformContext.current
     val request = remember(model, blur.decodePx) {
         ImageRequest.Builder(context)
@@ -350,5 +358,10 @@ private fun BlurredThumbnail(model: Any, blur: SpoilerBlur, modifier: Modifier) 
         contentDescription = null,
         contentScale = ContentScale.Crop,
         modifier = modifier.blur(blur.radius, edgeTreatment = BlurredEdgeTreatment.Rectangle),
+        onSuccess = { state ->
+            val image = state.result.image
+            if (image.width > 0 && image.height > 0) onAspectRatio?.invoke(image.width.toFloat() / image.height)
+        },
+        onError = { onError?.invoke() },
     )
 }

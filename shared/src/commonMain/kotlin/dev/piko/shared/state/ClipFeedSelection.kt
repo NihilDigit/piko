@@ -22,7 +22,7 @@ internal class FeedCandidate(
 /**
  * 从 [pool] 里挑出接下来的至多 [limit] 段，按放的先后排好。
  *
- * 先筛：同一内容只留一份；已在队列里的、最近看过的不挑；遍历还没走完时只挑一轮里还没出过的，等新列出的目录。
+ * 先筛：每批同一内容只留一份；队尾最近出现的内容不挑；遍历还没走完时只挑一轮里还没出过的，等新列出的目录。
  * 再排：逐个挑，视频少的文件夹按比例隔开（[folderPace]），其余之中挑代价最小的，代价是几项倾向之和，见 [FeedCost]。
  *
  * [watched] 是看过的，[queued] 是排在当前之后、已挑好的，都按先后排列；两者连同这一批挑中的一起，
@@ -40,14 +40,25 @@ internal fun selectFeedCandidates(
     hold: FeedHold? = null,
     random: Random = Random,
 ): List<FeedCandidate> {
-    val unique = pool.shuffled(random).distinctBy { it.content }
-    val queuedContent = queued.mapTo(HashSet()) { it.content }
-    // 同一内容至少隔这么多段才再出，视频不多时至多隔一半，否则一个几十个视频的文件夹第二轮就挑不出来
-    val contentSpacing = minOf(MAX_CONTENT_SPACING, unique.size / 2)
-    val avoid = watched.takeLast(contentSpacing).mapTo(HashSet()) { it.content }
-    val eligible = unique.filterTo(ArrayList()) {
-        it.content !in queuedContent && it.content !in avoid && (!collecting || counts.getOrElse(it.content) { 0 } == 0)
+    return selectSpreadCandidates(pool, queued, watched, counts, limit, hold, random) {
+        !collecting || counts.getOrElse(it.content) { 0 } == 0
     }
+}
+
+/** Shared content, folder and work spreading; the caller supplies playback preferences if applicable. */
+internal fun selectSpreadCandidates(
+    pool: List<FeedCandidate>,
+    queued: List<FeedCandidate>,
+    watched: List<FeedCandidate>,
+    counts: Map<String, Int>,
+    limit: Int,
+    hold: FeedHold? = null,
+    random: Random = Random,
+    allowed: (FeedCandidate) -> Boolean = { true },
+): List<FeedCandidate> {
+    val unique = pool.shuffled(random).distinctBy { it.content }
+    val contentSpacing = minOf(MAX_CONTENT_SPACING, unique.size / 2)
+    val eligible = ArrayList(unique.filter(allowed))
     val pace = folderPace(unique, contentSpacing)
     val history = ArrayList(watched.takeLast(MAX_CONTENT_SPACING) + queued)
     val picked = mutableListOf<FeedCandidate>()
@@ -59,7 +70,11 @@ internal fun selectFeedCandidates(
         val workHeat = heat(history, FeedCost.WORK_SPAN) { it.work }
         val sinceFolder = distanceSinceLast(history) { it.folder }
         val aheadPerFolder = (queued + picked).groupingBy { it.folder }.eachCount()
-        val held = eligible.filter { hold == null || ahead < hold.from || aheadPerFolder.getOrElse(it.folder) { 0 } < hold.perFolder }
+        // Spacing follows the actual queue tail. Excluding every queued content stalls small pools forever.
+        val avoid = history.takeLast(contentSpacing).mapTo(HashSet()) { it.content }
+        val held = eligible.filter {
+            it.content !in avoid && (hold == null || ahead < hold.from || aheadPerFolder.getOrElse(it.folder) { 0 } < hold.perFolder)
+        }
         val paced = held.filter { (sinceFolder[it.folder] ?: Int.MAX_VALUE) >= pace.getValue(it.folder) }.ifEmpty { held }
         val choice = paced
             .minByOrNull {
@@ -158,5 +173,29 @@ internal class FeedHold(val perFolder: Int, val from: Int) {
 
         /** 列出的目录够多以后：每个文件夹至多两段，队列不到三段（界面冷启动只备的段数）时不留。 */
         val Collecting = FeedHold(perFolder = 2, from = 3)
+    }
+}
+
+/** Choose within the usual time window, avoiding the previous interval whenever it can fit. */
+internal fun chooseClipStart(durationMs: Long, previousStartMs: Long?, random: Random = Random): Long {
+    val first = (durationMs * 0.10).toLong()
+    val last = (durationMs * 0.85).toLong() - CLIP_LENGTH_MS
+    if (last <= first) return ((durationMs - CLIP_LENGTH_MS) / 2).coerceAtLeast(0)
+    if (previousStartMs == null) return random.nextLong(first, last + 1)
+    val beforeLast = minOf(last, previousStartMs - CLIP_LENGTH_MS)
+    val afterFirst = maxOf(first, previousStartMs + CLIP_LENGTH_MS)
+    val beforeCount = (beforeLast - first + 1).coerceAtLeast(0)
+    val afterCount = (last - afterFirst + 1).coerceAtLeast(0)
+    if (beforeCount + afterCount > 0) {
+        val offset = random.nextLong(beforeCount + afterCount)
+        return if (offset < beforeCount) first + offset else afterFirst + offset - beforeCount
+    }
+    val leftDistance = kotlin.math.abs(first - previousStartMs)
+    val rightDistance = kotlin.math.abs(last - previousStartMs)
+    return when {
+        leftDistance > rightDistance -> first
+        rightDistance > leftDistance -> last
+        random.nextBoolean() -> first
+        else -> last
     }
 }

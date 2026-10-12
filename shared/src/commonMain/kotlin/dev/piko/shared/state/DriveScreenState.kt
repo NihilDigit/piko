@@ -134,6 +134,8 @@ class DriveScreenState(
     folderVault: FolderVaultSession? = null,
     shareSaves: ShareSaveSession? = null,
     receiving: dev.piko.shared.presentation.ReceivingActivity? = null,
+    /** 递归画廊当前显示的条目；只读借用来源信息，不并进普通目录列表。 */
+    private val supplementalFiles: () -> List<FileStat> = { emptyList() },
 ) {
     private val browserAccount = driveRepo.currentAccount
     private val canAcceptAction: Boolean get() = scope.isActive && driveRepo.currentAccount == browserAccount
@@ -1419,8 +1421,10 @@ class DriveScreenState(
         }
     }
 
-    // 眼前列表里的那一项：全盘搜索的结果不在当前目录的列表里，两处都找
-    private fun knownFile(id: String): FileStat? = displayedFiles.firstOrNull { it.id == id } ?: files.firstOrNull { it.id == id }
+    // 全盘搜索与递归画廊的条目可能不在当前目录；动作仍要使用条目实际所在的文件夹。
+    private fun knownFile(id: String): FileStat? = displayedFiles.firstOrNull { it.id == id }
+        ?: files.firstOrNull { it.id == id }
+        ?: supplementalFiles().firstOrNull { it.id == id }
 
     /** 剪切或复制到剪贴板，照资源管理器：换个目录粘贴，见 [paste]。 */
     fun putOnClipboard(requested: List<String>, cut: Boolean) {

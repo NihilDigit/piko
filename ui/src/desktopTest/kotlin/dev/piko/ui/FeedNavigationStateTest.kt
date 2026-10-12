@@ -1,6 +1,7 @@
 package dev.piko.ui
 
 import dev.piko.shared.presentation.FileLocation
+import io.github.nihildigit.pikpak.FileStat
 import dev.piko.ui.navigation.Screen
 import dev.piko.ui.workbench.FeedNavigationState
 import kotlinx.coroutines.CompletableDeferred
@@ -20,7 +21,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class FeedNavigationStateTest {
-    private fun state(scope: CoroutineScope) = FeedNavigationState(scope, { object : FileLocation {} }, { emptyList() }, {}, {}, { true })
+    private fun state(scope: CoroutineScope) = FeedNavigationState(scope, { object : FileLocation {} }, { emptyList() }, { _, _ -> }, {}, { true })
     @Test
     fun returningFromTheMobileDetourResumesItsOriginAfterNestedNavigation() = runBlocking {
         val state = state(this)
@@ -55,7 +56,7 @@ class FeedNavigationStateTest {
         val release = CompletableDeferred<Unit>()
         var opens = 0
         val origin = object : FileLocation {}
-        val state = FeedNavigationState(this, { origin }, { emptyList() }, {
+        val state = FeedNavigationState(this, { origin }, { emptyList() }, { _, _ ->
             opens++
             started.complete(Unit)
             release.await()
@@ -75,6 +76,25 @@ class FeedNavigationStateTest {
     }
 
     @Test
+    fun selectedScopeIsCapturedBeforeReadinessAndCanReplaceAnOpenedFeed() = runBlocking {
+        val ready = MutableStateFlow(false)
+        val selected = mutableListOf(FileStat(id = "one", name = "one.mp4"))
+        val received = mutableListOf<List<FileStat>?>()
+        val state = FeedNavigationState(this, { object : FileLocation {} }, { emptyList() }, { _, files ->
+            received += files
+        }, {}, { true })
+        state.prepare(ready, selected)
+        selected.clear()
+        ready.value = true
+        withTimeout(5_000) { while (!state.opened) delay(1) }
+        assertEquals(listOf("one"), received.single()!!.map { it.id })
+        state.prepare(ready, listOf(FileStat(id = "two", name = "two.mp4")))
+        withTimeout(5_000) { while (received.size < 2) delay(1) }
+        assertEquals(listOf("two"), received.last()!!.map { it.id })
+        state.close()
+    }
+
+    @Test
     fun anOldOpeningCannotClearTheStateOfARapidlyReopenedFeed() = runBlocking {
         val parent = SupervisorJob(coroutineContext[Job])
         val scope = CoroutineScope(coroutineContext + parent)
@@ -83,7 +103,7 @@ class FeedNavigationStateTest {
         val newStarted = CompletableDeferred<Unit>()
         val newRelease = CompletableDeferred<Unit>()
         var opens = 0
-        val state = FeedNavigationState(scope, { object : FileLocation {} }, { emptyList() }, {
+        val state = FeedNavigationState(scope, { object : FileLocation {} }, { emptyList() }, { _, _ ->
             opens++
             if (opens == 1) {
                 oldStarted.complete(Unit)

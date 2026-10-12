@@ -8,6 +8,10 @@ import dev.piko.shared.data.SavedAccounts
 import io.github.nihildigit.pikpak.Session
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
+import java.io.File
+import org.jetbrains.skia.EncodedImageFormat
+import org.jetbrains.skia.Paint
+import org.jetbrains.skia.Surface
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
@@ -144,6 +148,51 @@ class FakePikPak {
     /** 视频在列表里带上时长与分辨率。信息流只挑一分钟以上的，属性里也多出这两行。 */
     fun giveVideosDuration() = synchronized(nodes) {
         nodes.values.filter { isVideo(it.name) }.forEach { it.params = it.params + mapOf("duration" to "1450", "width" to "1920", "height" to "1080") }
+    }
+
+    /** Screenshot covers come from small local PNGs, without video preparation. */
+    fun giveGalleryCovers() = synchronized(nodes) {
+        nodes.values.filter { !it.trashed && isVideo(it.name) }.forEachIndexed { index, node ->
+            val width = node.params["width"]?.toIntOrNull() ?: 1920
+            val height = node.params["height"]?.toIntOrNull() ?: 1080
+            node.params = node.params + mapOf("width" to "$width", "height" to "$height")
+            node.thumbnail = galleryCover(node.id, width, height, index)
+        }
+    }
+
+    /** Replace the drive tree for one screenshot, leaving the shared seed unchanged. */
+    fun replaceGalleryVideos(dimensions: List<Pair<Int, Int>>) {
+        synchronized(nodes) { nodes.clear() }
+        blobs.clear()
+        archives.clear()
+        dimensions.forEachIndexed { index, (width, height) ->
+            addFile("Gallery ${index + 1}.mp4", (100L + index) shl 20).params = mapOf(
+                "duration" to "1450", "width" to "$width", "height" to "$height",
+            )
+        }
+        giveGalleryCovers()
+    }
+
+    private fun galleryCover(id: String, width: Int, height: Int, index: Int): String {
+        val maximum = maxOf(width, height).toFloat()
+        val imageWidth = (width / maximum * 480).toInt().coerceAtLeast(1)
+        val imageHeight = (height / maximum * 480).toInt().coerceAtLeast(1)
+        val palette = listOf(0xFF345C72.toInt(), 0xFF725E8C.toInt(), 0xFF83754B.toInt(), 0xFF3C786E.toInt(), 0xFF98634D.toInt(), 0xFF536BA1.toInt())
+        val directory = File(ShotDirs.run, "gallery-covers-${ProcessHandle.current().pid()}").apply { mkdirs() }
+        val file = File(directory, "$id-${width}x$height-$index.png")
+        Surface.makeRasterN32Premul(imageWidth, imageHeight).use { surface ->
+            surface.canvas.clear(palette[index % palette.size])
+            Paint().use { paint ->
+                paint.color = 0xFFE5C38C.toInt()
+                surface.canvas.drawCircle(imageWidth * 0.68f, imageHeight * 0.28f, minOf(imageWidth, imageHeight) * 0.16f, paint)
+                paint.color = 0xFF233747.toInt()
+                surface.canvas.drawRect(org.jetbrains.skia.Rect.makeLTRB(0f, imageHeight * 0.68f, imageWidth.toFloat(), imageHeight.toFloat()), paint)
+            }
+            surface.makeImageSnapshot().use { image ->
+                image.encodeToData(EncodedImageFormat.PNG)!!.use { data -> file.writeBytes(data.bytes) }
+            }
+        }
+        return file.absolutePath
     }
 
     private fun add(node: Node) = synchronized(nodes) { nodes[node.id] = node; node }

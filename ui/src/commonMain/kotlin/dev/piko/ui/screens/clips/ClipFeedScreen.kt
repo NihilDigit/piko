@@ -143,7 +143,7 @@ fun ClipFeedScreen(
     val session = services.clipFeedSession
     val videoPreview = LocalPikoPlatform.current.videoPreview
     val clips = session.clips
-    val rootId = session.root?.id
+    val scopeVersion = session.scopeVersion
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -152,12 +152,12 @@ fun ClipFeedScreen(
     // 头一段画面走起来没有。之前只备前 COLD_START_CLIPS 段：冷开时十来段一齐备会话、取开头，
     // 头一段分到的带宽只剩几分之一，实测要等 5 秒多才取好（2026-09-28）。
     // 页面重建（打开、继续刷）都从这一步重来
-    var started by remember(rootId) { mutableStateOf(false) }
+    var started by remember(scopeVersion) { mutableStateOf(false) }
     // 只取够用的几段：翻页器里到过的最远一段之后取好的不到 READY_AHEAD 段时，才从候补里补上差额去取。
     // 二十几段一起取，刷过去的多半轮不到，流量白花，还跟真要播的抢带宽；每段也只取开头几秒，见 PreparedClip。
     // 备会话只调接口不费流量，往前多备 PREPARE_AHEAD 段：轮到取时会话现成，取好一段只剩下载那一两 MB，
     // 连着快翻时供得上。从最远处数而不从当前段数，往回翻时照样取，见 ClipFeedSession.furthestIndex
-    LaunchedEffect(streams, rootId) {
+    LaunchedEffect(streams, scopeVersion) {
         snapshotFlow {
             val ready = session.clips.size - 1 - session.furthestIndex
             val prepareAhead = if (started) PREPARE_AHEAD else COLD_START_CLIPS
@@ -196,7 +196,7 @@ fun ClipFeedScreen(
     BackHandler(enabled = inLandscape) { session.landscape = false }
     val topBar: @Composable BoxScope.(onHideChrome: (() -> Unit)?) -> Unit = { onHideChrome ->
         ClipFeedTopBar(
-            title = session.root?.name ?: "信息流",
+            title = session.scopeLabel,
             muted = session.muted,
             onToggleMute = { session.muted = !session.muted },
             onClose = { if (inLandscape) session.landscape = false else onBackClick() },
@@ -226,7 +226,7 @@ fun ClipFeedScreen(
                 }
                 clips.isEmpty() -> FeedMessage("这里没有可播放的视频", "只挑一分钟以上的正片，子文件夹里的也算", topBar)
                 // 换了范围就是另一条队列，页码、播放器与各段的装载状态都不再对得上，整个重建
-                else -> key(rootId) {
+                else -> key(scopeVersion) {
                     ClipPager(
                         session = session,
                         clips = clips,

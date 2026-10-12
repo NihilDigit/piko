@@ -434,7 +434,34 @@ private val standardSet: List<Shot> = buildList {
     addAll(tri("drive-select") { selectSome(it, "Oppenheimer") })
     // 视图：海报墙即 drive-root
     addAll(tri("drive-view-list", viewMode = "LIST"))
-    addAll(tri("drive-view-gallery", viewMode = "GALLERY", waitFor = null) { listOf(Step.Pump(2_500)) })
+    addAll(tri("drive-view-gallery", viewMode = "GALLERY", extraSeed = { giveGalleryCovers() }, prefs = { mapOf("ui.spoilerBlur" to "false") }, waitFor = null) {
+        listOf(Step.Pump(2_500))
+    })
+    addAll(tri("drive-view-gallery-single", viewMode = "GALLERY", extraSeed = {
+        replaceGalleryVideos(listOf(1920 to 1080))
+    }, prefs = { mapOf("ui.spoilerBlur" to "false") }, waitFor = null) { listOf(Step.Wait("1 个视频"), Step.Pump(800)) })
+    val mixedGallery: FakePikPak.() -> Unit = {
+        replaceGalleryVideos(List(4) { listOf(1920 to 1080, 1080 to 1920, 1080 to 1080) }.flatten())
+    }
+    addAll(tri("drive-view-gallery-mixed", viewMode = "GALLERY", extraSeed = mixedGallery,
+        prefs = { mapOf("ui.spoilerBlur" to "false") }, waitFor = null) {
+        listOf(Step.Wait("12 个视频"), Step.Pump(800))
+    })
+    addAll(tri("drive-view-gallery-scrolled", viewMode = "GALLERY", extraSeed = mixedGallery,
+        prefs = { mapOf("ui.spoilerBlur" to "false") }, waitFor = null) { form ->
+        val scrolling = if (form.desktop) {
+            listOf(Step.ClickAt(Offset(400f, 350f)), Step.MoveTo(Offset(1000f, 22f)), Step.Pump(600)) +
+                List(6) { Step.Key("PageDown") }
+        } else {
+            List(6) {
+                Step.Swipe(Offset(form.width * 0.6f, form.height * 0.85f), Offset(form.width * 0.6f, form.height * 0.25f))
+            }
+        }
+        listOf(Step.Wait("12 个视频"), Step.Pump(800)) + scrolling + listOf(Step.Pump(800))
+    })
+    addAll(tri("drive-view-gallery-empty", viewMode = "GALLERY", extraSeed = {
+        replaceGalleryVideos(emptyList())
+    }, prefs = { mapOf("ui.spoilerBlur" to "false") }, waitFor = null) { listOf(Step.Wait("此范围内没有可浏览的视频"), Step.Pump(800)) })
     // 目录图（仅桌面）
     add(Shot("drive-foldermap-desktop-1440x900", steps = listOf(Step.Pump(800), Step.Key("Ctrl+Shift+E"), Step.Pump(1_500))))
     // 剪贴板（仅桌面）：剪切后的提示与命令栏的「粘贴」

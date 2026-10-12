@@ -3,12 +3,8 @@ package dev.piko.ui.screens.drive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-/**
- * 命令栏只放位置命令：进不进多选，除了左端「新建」让给「已选 N 项」，别的一样不变，清空回收站这类主操作也在。
- * 多选时一旦按选中的几项摆东西（批量下载、移动、删除）或把主操作让出去，这里的对比就不相等。
- */
 class DriveCommandsTest {
-    private fun inputs(place: CommandPlace, selecting: Boolean, nameParsing: Boolean = true) = CommandInputs(
+    private fun inputs(place: CommandPlace, selecting: Boolean, nameParsing: Boolean = true, selectedVideoCount: Int = 0, feedSupported: Boolean = true) = CommandInputs(
         place = place,
         atRoot = place == CommandPlace.ROOT,
         selecting = selecting,
@@ -17,7 +13,8 @@ class DriveCommandsTest {
         allSelected = false,
         typeCount = 3,
         filtering = false,
-        feedSupported = true,
+        feedSupported = feedSupported,
+        selectedVideoCount = selectedVideoCount,
         nameParsing = nameParsing,
     )
 
@@ -37,12 +34,22 @@ class DriveCommandsTest {
     }
 
     @Test
-    fun `selection swaps the create menu for select all and changes nothing else`() {
+    fun `selection swaps create for select all and needs videos for feed`() {
         for (place in CommandPlace.entries) {
             val idle = driveCommands(inputs(place, selecting = false))
             val selecting = driveCommands(inputs(place, selecting = true))
             assertEquals(false, idle.selectAll, "$place")
-            assertEquals(idle.copy(create = false, selectAll = selecting.selectAll), selecting, "$place")
+            assertEquals(idle.copy(create = false, selectAll = selecting.selectAll, feed = false), selecting, "$place")
+        }
+    }
+    @Test
+    fun `selected videos open a fixed feed from browsable places`() {
+        for (place in CommandPlace.entries) {
+            val selected = inputs(place, selecting = true, selectedVideoCount = 2)
+            assertEquals(place != CommandPlace.TRASH && place != CommandPlace.ARCHIVE,
+                driveCommands(selected).feed, "$place")
+            assertEquals(false, driveCommands(inputs(place, selecting = true, selectedVideoCount = 2, feedSupported = false)).feed)
+            assertEquals(false, driveCommands(inputs(place, selecting = true)).feed)
         }
     }
 }

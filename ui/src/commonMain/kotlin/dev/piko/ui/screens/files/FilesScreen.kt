@@ -17,6 +17,7 @@ fun FilesScreen(
     /** 见 DriveScreen 的同名参数。 */
     feedShown: Boolean = false,
     onFeedShownChange: ((Boolean) -> Unit)? = null,
+    onOpenSelectedFeed: ((List<FileStat>) -> Unit)? = null,
     /** 见 DriveScreen 的同名参数。 */
     feedStashed: Boolean = false,
     /** 见 DriveScreen 的同名参数。 */
@@ -46,6 +47,7 @@ fun FilesScreen(
         onOpenDuplicateReport = onOpenDuplicateReport,
         feedShown = feedShown,
         onFeedShownChange = onFeedShownChange,
+        onOpenSelectedFeed = onOpenSelectedFeed,
         feedStashed = feedStashed,
         feedBlockedReason = feedBlockedReason,
         feedTabId = feedTabId,

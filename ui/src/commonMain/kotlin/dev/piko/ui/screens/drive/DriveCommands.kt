@@ -13,7 +13,7 @@ import io.github.nihildigit.pikpak.FileStat
  *
  * 命令栏只放作用于当前位置的命令，不放作用于条目的操作，点中一项与多选都是：条目操作经右键菜单（桌面触屏与笔是长按）
  * 与快捷键。多选时在任一选中项上右键，菜单作用于全部选中的，命令栏再摆一份只是重复，还把位置命令挤进「更多」。
- * 所以 [CommandInputs] 里没有作用于哪几项，[DriveCommands] 里也没有条目操作。
+ * 信息流复用原入口：多选时限定到选中的视频，只需传入可播放视频数量。
  *
  * 眼下的状态由两样东西决定，全在 [CommandInputs] 里：
  * - 在哪（[CommandPlace]）：网盘根目录、文件夹、搜索结果、星标这类库、最近添加与播放历史、回收站、压缩包里。
@@ -62,6 +62,7 @@ internal class CommandInputs(
     val feedSupported: Boolean,
     /** 设置里的文件名解析总开关，番号识别跟着它。 */
     val nameParsing: Boolean,
+    val selectedVideoCount: Int = 0,
 )
 
 /**
@@ -153,8 +154,9 @@ internal fun driveCommands(input: CommandInputs): DriveCommands = with(input) {
         sort = (folder || place == CommandPlace.SEARCH) && itemCount >= 2,
         // 只有一类时筛了等于没筛；筛着的时候要留着，才撤得掉
         filter = typeCount >= 2 || filtering,
-        // 信息流刷的是一个文件夹
-        feed = feedSupported && folder,
+        feed = feedSupported && if (selecting) {
+            selectedVideoCount > 0 && place != CommandPlace.TRASH && place != CommandPlace.ARCHIVE
+        } else folder,
         // 默认存进眼前的目录（InstantSheetState.followDriveFolder）。库、查重、压缩包的栈顶是 piko: 一类的虚拟 ID，
         // 存不进去，会退到 My Packs 并提示「当前目录已不存在」。搜索时栈顶仍是搜索所在的目录，地址栏也还写着它，
         // 照常给；否则一输入搜索词命令栏右端就跳

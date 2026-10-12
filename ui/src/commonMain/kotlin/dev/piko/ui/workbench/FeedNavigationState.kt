@@ -6,6 +6,7 @@ import androidx.compose.runtime.setValue
 import dev.piko.shared.presentation.FileLocation
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.ui.navigation.Screen
+import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CoroutineStart
@@ -18,7 +19,7 @@ internal class FeedNavigationState(
     private val scope: CoroutineScope,
     private val currentLocation: () -> FileLocation,
     private val currentPath: () -> List<PikoPathBreadcrumb>,
-    private val open: suspend (List<PikoPathBreadcrumb>) -> Unit,
+    private val open: suspend (List<PikoPathBreadcrumb>, List<FileStat>?) -> Unit,
     private val closeSession: () -> Unit,
     private val isCurrent: () -> Boolean,
 ) {
@@ -32,17 +33,24 @@ internal class FeedNavigationState(
     private var opening = false
     private var generation = 0L
 
-    fun prepare(ready: Flow<Boolean>) {
-        if (opened || opening || !isCurrent()) return
+    fun prepare(ready: Flow<Boolean>, selected: List<FileStat>? = null) {
+        if ((selected == null && (opened || opening)) || !isCurrent()) return
+        val selection = selected?.toList()
+        val selectedPath = if (selection != null) currentPath().toList() else null
+        val selectedHome = if (selection != null) currentLocation() else null
+        if (selection != null) {
+            returnLocation = null
+            browseEntry = null
+        }
         prepareJob?.cancel()
         val request = ++generation
         val job = scope.launch(start = CoroutineStart.LAZY) {
             ready.first { it }
             if (request != generation || !isCurrent()) return@launch
             opening = true
-            home = currentLocation()
+            home = selectedHome ?: currentLocation()
             try {
-                open(currentPath())
+                open(selectedPath ?: currentPath(), selection)
                 if (request == generation && isCurrent()) opened = true
             } finally { if (request == generation) opening = false }
         }
