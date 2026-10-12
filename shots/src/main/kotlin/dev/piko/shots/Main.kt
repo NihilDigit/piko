@@ -40,6 +40,8 @@ private const val USAGE = """用法：piko-shots <命令> [选项]
         --pump <毫秒>         多等一会儿：等到画面稳定，至多这么久
   texts [--size <宽>x<高>] [步骤…]
       不存图，打印界面上所有文本与内容描述，写 --click 时找名字用。
+  verify-workspaces
+      用假 PikPak 服务端和真实界面操作验证移动端任务面板、桌面工作区上下文。
 
 窗口尺寸按 dp 计（密度 1），默认 1440x900。窄于 840 按移动端拍，--mobile 与 --desktop 显式指定
 （平板横屏是 --size 1280x800 --mobile）。移动端的左键按成触屏。输出默认在 build/shots/<名字>.png，
@@ -218,10 +220,6 @@ private fun selectSome(form: Form, target: String): List<Step> =
     if (form.desktop) listOf(Step.Pump(800), Step.Click(target), Step.Key("Ctrl+A"), Step.Pump(600))
     else listOf(Step.LongPress(target), Step.Pump(600))
 
-/** 点拖动条把手机上的任务 sheet 收到部分展开，露出 FAB。平板的 sheet 窄、不挡 FAB，不必收。 */
-private fun collapseSheet(form: Form): List<Step> =
-    if (form == Form.PHONE) listOf(Step.Click("Drag handle"), Step.Pump(800)) else emptyList()
-
 /** 移动端 FAB 菜单里的 [item]；桌面没有 FAB。 */
 private fun fab(item: String): List<Step> = listOf(Step.Click("添加"), Step.Pump(600), Step.Click(item, topmost = true), Step.Pump(1_200))
 
@@ -274,10 +272,10 @@ private fun FakePikPak.seedDuplicates() {
     }
 }
 
-/** 开查重：桌面经命令面板，移动端 FAB。 */
+/** 开查重：桌面经命令面板，移动端经文件列表页眉的位置命令。 */
 private fun startDuplicates(form: Form): List<Step> =
     if (form.desktop) listOf(Step.Pump(800), Step.Key("Ctrl+K"), Step.Pump(500), Step.Type("查找重复"), Step.Key("Enter"), Step.Pump(4_000))
-    else fab("查找重复") + listOf(Step.Pump(3_000))
+    else listOf(Step.Click("更多"), Step.Pump(500), Step.Click("查找重复", topmost = true), Step.Pump(3_000))
 
 /** 传输页的丰富数据：云端各阶段、文件已删除、整包离线；上传的暂停、失败与完成另由 [transferPrefs] 写进设置。 */
 private fun FakePikPak.seedTransfers() {
@@ -315,8 +313,8 @@ private fun transferPrefs(): Map<String, String> {
     )
 }
 
-/** 桌面的添加链接停在右栏，标题行的按钮把它收成浮动卡片。 */
-private val collapseAddLink = Step.Click("收起添加链接")
+/** 添加链接保留在独立标签，切回主文件标签继续浏览。 */
+private val returnToFiles = Step.Key("Ctrl+Tab")
 
 /** 秒传记录在缓存里，账号登录后才能写，放在步骤开头。 */
 private val instantRecord = Step.Run {
@@ -375,15 +373,15 @@ private val standardSet: List<Shot> = buildList {
         listOf(Step.Pump(800), Step.Click("动画", PointerButton.Secondary), Step.Pump(600))))
     add(Shot("shell-snail-desktop-1440x900", prefs = { mapOf("transfer.snail.enabled" to "true") }))
     add(Shot("shell-update-dot-desktop-1440x900", update = UpdateSpec(onStartup = false)))
-    // 浮动卡片（仅桌面）：解压、收起的添加链接、整摞收成胶囊
+    // 桌面后台工作：导入留在标签，解压仍使用浮动卡片。
     add(Shot("shell-cards-extract-desktop-1440x900", steps = listOf(Step.Run { services.archiveExtractSession.extract(listOf(rootFile("Project Sekai OST Vol.3.zip"))) }, Step.Pump(2_500))))
     add(Shot("shell-cards-addlink-desktop-1440x900", initialLink = "magnet:?xt=urn:btih:" + "a".repeat(40),
-        steps = listOf(Step.Pump(2_000), collapseAddLink, Step.Pump(1_000))))
+        steps = listOf(Step.Pump(2_000), returnToFiles, Step.Pump(1_000))))
     add(Shot("shell-cards-stack-desktop-1440x900", initialLink = "magnet:?xt=urn:btih:" + "a".repeat(40),
-        steps = listOf(Step.Pump(2_000), collapseAddLink, Step.Pump(600),
+        steps = listOf(Step.Pump(2_000), returnToFiles, Step.Pump(600),
             Step.Run { services.archiveExtractSession.extract(listOf(rootFile("Project Sekai OST Vol.3.zip"))) }, Step.Pump(2_500))))
     add(Shot("shell-cards-capsule-desktop-1440x900", initialLink = "magnet:?xt=urn:btih:" + "a".repeat(40),
-        steps = listOf(Step.Pump(2_000), collapseAddLink, Step.Pump(600),
+        steps = listOf(Step.Pump(2_000), returnToFiles, Step.Pump(600),
             Step.Run { services.archiveExtractSession.extract(listOf(rootFile("Project Sekai OST Vol.3.zip"))) }, Step.Pump(2_000),
             Step.Click("收到角落"), Step.Pump(1_000))))
     // 命令面板与快捷键一览：移动端只在接键盘时可开，这里照样按键
@@ -477,7 +475,7 @@ private val standardSet: List<Shot> = buildList {
     addAll(tri("panel-addlink") { form -> if (form.desktop) listOf(Step.Pump(600), Step.Click("添加链接"), Step.Pump(1_000)) else fab("添加链接") })
     addAll(tri("panel-addlink-share", initialLink = "https://mypikpak.com/s/SHOT") { listOf(Step.Pump(2_500)) })
     addAll(tri("panel-addlink-magnet", initialLink = "magnet:?xt=urn:btih:" + "a".repeat(40)) { listOf(Step.Pump(2_500)) })
-    // 查找重复：桌面是查重标签，移动端独占 sheet；不加重复数据，sheet 停在扫完无结果
+    // 查找重复：桌面是独立标签，移动端在可与添加链接切换的底部面板；不加重复数据，停在无结果。
     addAll(tri("panel-duplicates") { form ->
         startDuplicates(form) + if (form.desktop) listOf(Step.Click("查重"), Step.Pump(1_000)) else emptyList()
     })
@@ -657,20 +655,25 @@ private val standardSet: List<Shot> = buildList {
     addAll(playerShots("player-quality", PlayerShot(playing = false)) { playerPanel("播放设置", "下载") + listOf(Step.Pump(1_500)) })
 
     // ===== 任务占用与叠加 =====
-    // 移动端独占：添加链接开着时查找重复、查找重复结果页上添加链接、离开查重目录树
+    // 移动端叠加：添加链接与查重默认在低位预览，文件列表里可以继续打开另一件事。
     addAll(tri("task-claim-addlink-to-duplicates", forms = MOBILE_ONLY, initialLink = "magnet:?xt=urn:btih:" + "a".repeat(40)) {
-        listOf(Step.Pump(2_000)) + collapseSheet(it) + fab("查找重复")
+        listOf(Step.Pump(2_000)) + startDuplicates(it)
     })
     // 不加重复数据：扫完停在 sheet 里，收起后会话还在
-    addAll(tri("task-claim-duplicates-to-addlink", forms = MOBILE_ONLY) { startDuplicates(it) + collapseSheet(it) + fab("添加链接") })
-    // 结果页是一个位置，点顶栏返回即离开查重的目录树
-    addAll(tri("task-leave-duplicates", forms = MOBILE_ONLY, extraSeed = { seedDuplicates() }) { startDuplicates(it) + listOf(Step.Click("返回"), Step.Pump(800)) })
+    addAll(tri("task-claim-duplicates-to-addlink", forms = MOBILE_ONLY) { startDuplicates(it) + fab("添加链接") })
+    // 从全屏详情返回仍保留面板中的查重上下文。
+    addAll(tri("task-leave-duplicates", forms = MOBILE_ONLY, extraSeed = { seedDuplicates() }) {
+        startDuplicates(it) + listOf(
+            Step.Swipe(Offset(it.width / 2f, it.height * 0.84f), Offset(it.width / 2f, it.height * 0.3f)),
+            Step.Click("查看更多"), Step.Click("返回面板"), Step.Pump(800),
+        )
+    })
     addAll(tri("task-claim-feed", forms = MOBILE_ONLY, extraSeed = feedSeed) {
         openFeed() + listOf(Step.Pump(2_000), Step.Click("在网盘中显示"), Step.Pump(2_000)) + fab("添加链接")
     })
-    // 桌面放行：添加链接卡片、查重标签与解压卡片同时在
+    // 桌面共存：添加链接标签、查重标签与解压卡片同时在
     add(Shot("task-coexist-desktop-1440x900", initialLink = "magnet:?xt=urn:btih:" + "a".repeat(40), extraSeed = { seedDuplicates() },
-        steps = listOf(Step.Pump(2_000), collapseAddLink, Step.Pump(600),
+        steps = listOf(Step.Pump(2_000), returnToFiles, Step.Pump(600),
             Step.Run { services.archiveExtractSession.extract(listOf(rootFile("Project Sekai OST Vol.3.zip"))) }, Step.Pump(800)) + startDuplicates(Form.DESKTOP)))
     // 根层浮层：定位遮罩、外部上传去向、解压密码
     // 已完成的云端任务「打开」即在网盘中定位，逐级查路径时盖遮罩；只留云端任务，手机上那一行才在首屏
@@ -710,6 +713,7 @@ fun main(args: Array<String>) {
     ShotDirs.start()
     val code = try {
         when (args[0]) {
+            "verify-workspaces" -> { verifyWorkspaceContexts(); 0 }
             "all" -> if (renderAll(rest, outDir)) 0 else 1
             "shot" -> {
                 val name = rest.firstOrNull()?.takeUnless { it.startsWith("-") } ?: fail("shot 要一个名字")
@@ -802,7 +806,7 @@ private fun run(shot: Shot, finish: (AppScene) -> Unit): Boolean {
                 val file = env.rootFile(name)
                 edt { env.services.requestFileHighlight(setOf(file.id)) }
             }
-            shot.initialLink?.let { link -> edt { env.services.instantSession.start(link) } }
+            shot.initialLink?.let { link -> edt { env.services.instantMagnetRepository.onIncomingMagnet(link) } }
             app.changed()
             var lastDragEnd: Offset? = null
             for (step in shot.steps) {

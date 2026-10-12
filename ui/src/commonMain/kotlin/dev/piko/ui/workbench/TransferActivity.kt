@@ -20,6 +20,7 @@ import dev.piko.data.auth.SnailMode
 import dev.piko.download.DownloadStatus
 import dev.piko.shared.upload.UploadStatus
 import dev.piko.shared.presentation.needsAttention
+import dev.piko.shared.state.InstantSaveExecution
 import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.ui.LocalPikoServices
 import kotlin.math.roundToInt
@@ -31,6 +32,9 @@ internal class TransferActivity(val downloadSpeed: Long, val uploadSpeed: Long, 
     /** 有没有可写在「传输」按钮上的读数：有速度，或者有任务在跑。 */
     val hasReadout: Boolean get() = downloadSpeed > 0 || uploadSpeed > 0 || count > 0
 }
+
+internal fun closedUntrackedImportCount(liveDraftIds: Set<Long>, executions: List<InstantSaveExecution>): Int =
+    executions.count { it.draftId !in liveDraftIds && !it.trackedInstantAttempt && !it.trackedOffline }
 
 /**
  * 眼下当前账号进行中的传输：本机的下载与上传、解压与归档，加上云端的离线任务。离线任务不像下载那样有进程级的状态，
@@ -78,11 +82,15 @@ internal fun rememberTransferActivity(
             val undo = record.undoChangeId?.let { journal.undo[it] }
             record.needsAttention(undo) || undo?.status == DriveChangeJournal.UndoStatus.RUNNING
         }
-    val finder = services.duplicateSession.state
     val cleanup = services.trashSession
-    val continuations = (if (finder?.isScanning == true || finder?.phase == dev.piko.shared.state.DuplicateFinderState.Phase.FAILED) 1 else 0) +
+    val liveDrafts = services.instantSession.drafts
+    val untrackedClosedSaves = closedUntrackedImportCount(liveDrafts.mapTo(HashSet()) { it.id }, services.instantSession.executingSaves)
+    val continuations = services.duplicateSessions.count { session ->
+        session.state?.let { it.isScanning || it.phase == dev.piko.shared.state.DuplicateFinderState.Phase.FAILED } == true
+    } +
         (if (cleanup.progress != null || cleanup.failure != null || cleanup.isUndoing) 1 else 0) +
-        (if (services.addLink.state?.let { !it.isBlank && !it.hasRetainedInstantAttempt && !it.hasRetainedShareWork && !it.hasRetainedOfflineSubmission } == true) 1 else 0)
+        liveDrafts.count { draft -> draft.state.let { !it.isBlank && !it.hasRetainedInstantAttempt && !it.hasRetainedShareWork && !it.hasRetainedOfflineSubmission } } +
+        untrackedClosedSaves
     return TransferActivity(
         downloadSpeed = activeDownloads.sumOf { it.speedBytesPerSec },
         uploadSpeed = activeUploads.sumOf { it.speedBytesPerSec },

@@ -100,12 +100,15 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 
 交互状态归属见 `docs/development/interaction-refactor.md`，审查入口与验收边界见
 `docs/development/interaction-refactor-review.md`。
-文件仓库不持有导航和剪贴板；桌面由 `shared/presentation/DriveWorkspace` 持有标签工作区，
-移动端由 `MobileFileWorkspace` 持有单页位置、历史、滚动与剪贴板，不创建桌面标签。
+文件仓库不持有导航和剪贴板；桌面由 `shared/presentation/DriveWorkspace` 持有文件标签的位置、历史和剪贴板，
+移动端由 `MobileFileWorkspace` 持有单个主文件位置。两端的文件、查重、导入草稿用同一套 `WorkspaceContexts`
+记录稳定身份和活动项；移动端不创建桌面文件标签。
 各浏览页由导航条目或工作区持有。文件列表仍由 `DriveScreenState` 投影，业务会话的寿命不跟随页面。
 工作区前端生命周期由 `WorkspaceViewModel` 和账号级 ViewModelStore 管理，查询订阅与文件操作执行作用域分开。
-添加链接及外部上传的默认目录经账号工作区的 `SaveTargetBinding` 显式注入 `SaveTargetContext`，
-绑定当前前端的主文件位置，资料页和临时定位页不改写它；不要从仓库获取「当前目录」。
+外部上传的默认目录经账号工作区的 `SaveTargetBinding` 注入 `SaveTargetContext`。
+新导入草稿从主文件工作区的 `SaveTargetContext` 取得打开时的目录，固定为本次默认目标；
+之后不随文件导航改变，用户可在草稿里另选。
+资料页和临时定位页不改写主文件位置；不要从仓库获取「当前目录」。
 
 `ui/src/commonMain` 是全部界面：主题、导航、网盘、传输、设置、登录与各组件，两端共用。
 入口是 `PikoApp`：`MainActivity` 与桌面的 `Main.kt` 各自拼好 `PikoServices`（进程级的仓库与调度器）
@@ -177,10 +180,15 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 
 `FileWorkspace` 提供文件浏览的公共能力，不包含标签 API；移动端的 `MobileFileWorkspace` 与桌面的 `DriveWorkspace`
 分别持有状态。`folderStackFlow` 与位置持久化不由 `PikoDriveRepository` 持有。
-桌面可开多个标签（`tabsFlow`、`openTab`、`switchTab`、`closeTab`），各有自己的路径栈与历史；`folderStackFlow` 与
-`historyFlow` 是活动标签的投影；浏览会话绑定固定身份的 `TabNavigation`，不能把所有页面绑定到活动标签。
+桌面可开多个文件标签（`tabsFlow`、`openTab`、`switchTab`、`closeTab`），各有自己的路径栈与历史；`folderStackFlow` 与
+`historyFlow` 是活动文件标签的投影；浏览会话绑定固定身份的 `TabNavigation`，不能把所有页面绑定到活动标签。
+`WorkspaceContexts` 另按 ID 记录文件、查重和导入草稿上下文。桌面可同时保留多个查重与草稿；移动端保留一个主文件上下文，
+辅助上下文在标准底部 sheet 中分页，同一时刻至多一个查重。手机默认只露出 sheet 的一截；上拉展开完整 sheet，
+仍保留主界面可见；最高档的「查看更多」才进入全屏详情，返回时恢复展开的 sheet。切换、收起和进出详情保留任务与页面状态。
+关闭查重上下文结束该次扫描；关闭草稿释放编辑，已接受的保存按业务执行寿命继续结算。
 标签栏（`DriveTabBar`）在宽窗口里一直在，只开一个标签时也是；Ctrl+T、Ctrl+W、Ctrl+Tab，中键点文件夹在后台新标签打开，
-拖到别的标签上即移进它停着的文件夹。标签按账号存进缓存目录（只存位置，不存历史），重启后由 `restoreLocation` 恢复。目录选择器
+拖到别的文件标签上即移进它停着的文件夹。只有文件标签按账号存进缓存目录（只存位置，不存历史），重启后由 `restoreLocation` 恢复；
+旧缓存里的查重结果标签没有可恢复的扫描，读取时跳过。目录选择器
 一类的浮层**必须维护自己的路径栈**，碰它会把主界面的位置一起改掉。
 浏览历史（`historyFlow`，后退与前进）也在这里，每次换栈记一步；「上一级」与它无关。从别处跳进网盘（在网盘中显示、
 快捷栏）用 `updateFolderStack`，会记进历史；只有启动时恢复位置用 `restoreFolderStack`，不记。
@@ -193,7 +201,7 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 目录的内容也只有一份：仓库的列表缓存，网盘页、目录图、地址栏的 › 与补全、命令面板都读它。网盘里的改动一律经
 `applyChange(DriveChange)` 收口（索引、缓存过期、广播 `folderChanges`），新加改动网盘的入口照此调一次，不要自己清缓存或通知界面；
 `DriveScreenState` 与目录图已订阅，只重列受影响的那几层，视图不要再订阅一遍。
-查重业务会话独立于报告页面。关闭报告标签只释放浏览状态，不停止扫描或丢弃报告。
+查重会话按上下文 ID 分别持有；离开或收起报告不停止扫描，关闭查重上下文才停止并丢弃该报告。
 
 ### 账号与凭据
 
@@ -201,8 +209,8 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 只有账号名、昵称、头像与上次的用量，不含机密）里手动切换。切换就是换一个 client，别处照旧只认 `currentClient`；
 按账号的东西在账号变了时各自换一份，新写的按账号的状态照这个做，不要假定账号不变：
 - 文件索引、缓存与撤销记录由 `PikoDriveRepository.enterAccount` 切换；桌面工作区按账号切换，移动工作区随账号 ViewModel 创建和释放，保存目标绑定不能被旧工作区的释放覆盖。
-- 进程级会话（添加链接、查重、解压、片段下载、信息流、归档）与桌面端的播放器、信息流窗口，一律经
-  `launchOnAccountLeave` 在主线程上当场结束（`PikoServices` 与桌面 `Main.kt` 各一处）；新加的进程级会话登记到这里，不另收集账号。
+- 账号工作区持有的查重和导入草稿按上下文释放；解压、片段下载、归档等进程级会话与桌面端的播放器、信息流窗口经
+  `launchOnAccountLeave` 在主线程上结束（`PikoServices` 与桌面 `Main.kt` 各一处）。新加的会话按其实际所有者登记退出清理。
   下载任务带 `account`，别的账号的暂停。传输页与「传输」按钮上的项数、速度只算当前账号的下载、上传与秒传
   （`TransfersState`、`TransferActivity`），别的账号的任务原样留着，切回去照旧可见、可继续。
 - 压缩包密码按账号存，与会话、密码同在账号的机密里（`ArchivePasswordStore`，桌面并进 `DesktopSessionStore` 那一份，

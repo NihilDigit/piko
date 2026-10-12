@@ -27,7 +27,7 @@ fun PikoServices.hasDesktopResumeContext(): Boolean {
     val account = driveRepository.currentAccount ?: return false
     val journal = driveRepository.changes.state.value
     fun undoFailed(ids: List<Long>) = ids.any { journal.undo[it]?.status == DriveChangeJournal.UndoStatus.FAILED }
-    return instantSession.state?.isBlank == false || duplicateSession.state != null ||
+    return instantSession.drafts.any { !it.state.isBlank } || duplicateSessions.any { it.state != null } ||
         trashSession.failure != null || trashSession.completedCount > 0 ||
         (archiveExtractSession.jobs + archiveExtractSession.completedJobs).any { it.status.needsDesktopSession() } ||
         folderVaultSession.records.any { it.needsAttention(it.undoChangeId?.let(journal.undo::get)) } ||

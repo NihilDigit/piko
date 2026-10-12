@@ -7,6 +7,7 @@ import dev.piko.shared.state.ArchiveJobStatus
 import dev.piko.shared.state.ArchiveCompletion
 import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.FolderVaultSession
+import dev.piko.shared.state.InstantSaveExecution
 import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.upload.UploadTask
 import dev.piko.ui.components.toReadableSize
@@ -292,6 +293,11 @@ fun DuplicateFinderState.workProgress(): WorkProgress? {
     }
 }
 
+internal fun importSaveProgress(executions: List<InstantSaveExecution>): List<WorkProgress> =
+    executions.filterNot { it.trackedOffline }.map {
+        WorkProgress(WorkKind.FILES, "保存添加链接", WorkMeter.Indeterminate, "正在保存")
+    }
+
 /**
  * 眼下在后台跑的全部工作，按 [WorkKind] 的次序。读的是 Compose 状态，在 snapshotFlow 或组合里调用才会随之更新。
  * 下载与上传另读 StateFlow 的当前值，调用方要自己订阅它们的变化。
@@ -300,14 +306,12 @@ fun PikoServices.runningWork(): List<WorkProgress> = (listOfNotNull(
     folderVaultSession.workProgress(),
     archiveExtractSession.jobs.extractProgress(),
     transferProgress(downloadManager.tasks.value.values.toList(), currentAccountUploads()),
-    duplicateSession.state?.workProgress(),
     trashSession.progress?.let { progress ->
         WorkProgress(WorkKind.FILES, "移入回收站", fraction(progress.completed, progress.total), "已处理 ${progress.completed} / ${progress.total} 项")
     },
-    instantSession.state?.takeIf { (it.isSaving || it.batch?.isSaving == true) && it.shareSave?.isSaving != true && instantMagnetRepository.offlineSubmissions.works.value.none { work -> work.isRunning } }?.let {
-        WorkProgress(WorkKind.FILES, "保存添加链接", WorkMeter.Indeterminate, if (it.shareSave?.isSaving == true) "正在转存分享" else "正在保存")
-    },
-) + fileWrites.works.value.filter { it.account == driveRepository.currentAccount && it.isRunning }.map { it.workProgress() } +
+) + duplicateSessions.mapNotNull { it.state?.workProgress() } +
+    importSaveProgress(instantSession.executingSaves) +
+    fileWrites.works.value.filter { it.account == driveRepository.currentAccount && it.isRunning }.map { it.workProgress() } +
     historyEdits.works.value.filter { it.account == driveRepository.currentAccount && it.isRunning }.map { it.workProgress() } +
     vaultEntryEdits.works.value.filter { it.account == driveRepository.currentAccount && it.isRunning }.map { it.workProgress() } +
     shareSaves.works.value.filter { it.account == driveRepository.currentAccount && it.isRunning }.map { it.workProgress() } +
@@ -348,9 +352,9 @@ private fun PikoServices.currentAccountUploads(): List<UploadTask> {
 fun PikoServices.hasBackgroundWork(): Boolean =
     folderVaultSession.isRunning ||
         archiveExtractSession.jobs.any { it.status.hasExecutingWork() } ||
-        duplicateSession.state?.isScanning == true ||
+        duplicateSessions.any { it.state?.isScanning == true } ||
         trashSession.progress != null || trashSession.isUndoing ||
-        instantSession.state?.let { it.isSaving || it.batch?.isSaving == true } == true ||
+        instantSession.executingSaves.isNotEmpty() ||
         fileWrites.works.value.any { it.account == driveRepository.currentAccount && it.isRunning } ||
         historyEdits.works.value.any { it.account == driveRepository.currentAccount && it.isRunning } ||
         vaultEntryEdits.works.value.any { it.account == driveRepository.currentAccount && it.isRunning } ||

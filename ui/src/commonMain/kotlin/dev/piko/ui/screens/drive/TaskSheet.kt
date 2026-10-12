@@ -53,24 +53,26 @@ import kotlinx.coroutines.flow.first
 
 /** 在 [block] 里 rememberSaveable 退化成 remember：不往页面的保存表里存，也不从中恢复。 */
 @Composable
-private fun <T> withoutSavedState(block: @Composable () -> T): T {
+internal fun <T> withoutSavedState(block: @Composable () -> T): T {
     var result: T? = null
     CompositionLocalProvider(LocalSaveableStateRegistry provides null) { result = block() }
     @Suppress("UNCHECKED_CAST")
     return result as T
 }
 
-/**
- * 窄窗口网盘页底部那一块 sheet 里眼下放的东西：查找重复或添加链接，同一时刻只有一件（见 workbench/TaskSlot）。
- * 收起时露出 [header]，展开再看到 [body]。
- */
+/** 底部面板里的一个独立上下文。收起时露出活动页的 [header]，展开后看到 [body]。 */
 internal class TaskSheetModel(
-    /** 换了一件事时按它重新定档。 */
+    /** 与页的位置无关，关闭或重新排列其他页后仍指向同一个上下文。 */
     val key: Any,
-    val expanded: Boolean,
-    val onExpandedChange: (Boolean) -> Unit,
+    /** 多任务面板的可点选标题。 */
+    val title: String = "",
+    val summary: String? = null,
+    val tabTitle: String = title,
+    val expanded: Boolean = false,
+    val onExpandedChange: (Boolean) -> Unit = {},
     val header: @Composable () -> Unit,
     val body: @Composable ColumnScope.() -> Unit,
+    val actions: @Composable () -> Unit = {},
 )
 
 /**

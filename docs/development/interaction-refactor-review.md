@@ -3,9 +3,10 @@
 本文用于审查本次跨 shared、ui、Android 和桌面的重构，说明设计约束、代码入口、验证方法与已知边界。
 它与 [推进记录](interaction-refactor.md) 的用途不同：推进记录保留实验与阶段结果，本文按审查顺序组织。
 
-**当前状态：本地代码收尾与审查交接。** 自动化结果与平台未验收范围分别列在第 8、9、10 节，
-不能据此宣称真实账号、全部设备或发布升级已验收。本文随本地提交保存，便于后续逐项审查。
-不要把本地日志、测试产物或旧 release notes 草稿当作本次提交的一部分。
+**当前状态：上一轮重构已在本地提交，本轮多上下文交互仍是未提交的工作区改动。**
+下方第 2—7 节以当前有效规则为准；第 8—10 节的 723 项完整回归和提交索引属于上一轮代码，
+不能当作新交互已完成的平台验收。新增的专项与仍待完成的验证在第 12 节另列。
+真实账号、全部设备和发布升级仍未验收；本地日志、测试产物与旧 release notes 草稿不属于源码提交。
 
 ## 1. 审查目标与判断标准
 
@@ -22,6 +23,9 @@
 4. 冲突先在统一动作入口拦截，按具体文件、目标目录或清单判断。
 5. 停止、暂停、取消远端任务、移除记录和撤销分别遵循真实业务能力。
 6. 结果不确定时，不能把“请求失败”直接解释为“服务端没有执行”。
+7. 文件、查重与导入草稿按稳定上下文 ID 分别持有。切换或收起保留任务；关闭查重上下文才结束该次扫描。
+   桌面可同时保留多个同类上下文，移动端只有一个主文件位置，辅助上下文在底部 sheet 分页、查重最多一份。
+   手机 sheet 默认露出一截，上拉完整展开但主界面仍可见，最高档点「查看更多」进入全屏，返回恢复展开 sheet。
 
 没有建立覆盖所有业务的通用事务、锁或调度器。
 各业务保留自己的执行模型，任务页负责组合呈现。
@@ -50,8 +54,8 @@ HIG 的顶层 tab bar 与桌面文档标签不是同一种交互，不能用“�
 | 顺序 | 入口 | 主要问题 |
 | --- | --- | --- |
 | 1 | `shared/.../presentation/FileWorkspace.kt`、`DriveNavigation.kt` | 共享能力是否夹带桌面标签假设 |
-| 2 | `DriveWorkspace.kt`、`TabNavigation.kt`、`MobileFileWorkspace.kt` | 两端状态是否真正独立；位置恢复是否覆盖新动作 |
-| 3 | `ui/.../workbench/AccountPresentationStores.kt`、`WorkspaceViewModel.kt` | 生命周期和账号边界是否正确 |
+| 2 | `WorkspaceContexts.kt`、`DriveWorkspace.kt`、`TabNavigation.kt`、`MobileFileWorkspace.kt` | 稳定 ID、两端文件导航和启动恢复是否保留新开的辅助上下文 |
+| 3 | `ui/.../workbench/AccountPresentationStores.kt`、`WorkspaceViewModel.kt`、`WorkspaceContextHost.kt`、`screens/drive/TaskPagerSheet.kt` | 按 ID 持有/释放任务，桌面标签和移动 sheet 是否显示同一活动上下文 |
 | 4 | `shared/.../state/DriveBrowserSession.kt`、`DriveScreenState.kt` | 查询、选择、筛选、写入和界面回调分别由谁持有 |
 | 5 | `FileCommands.kt`、`HistoryCommands.kt`、`VaultEntryCommands.kt`、`ArchiveCommands.kt` | 拦截范围与所有动作入口是否一致 |
 | 6 | `FileWriteSession.kt`、`HistoryEditSession.kt`、`VaultEntryEditSession.kt`、`ArchiveExtractSession.kt`、`ShareSaveSession.kt`、`OfflineSubmitSession.kt`、`InstantSaveRecords.kt` | 提交、查询、部分结果和响应丢失的处理 |
@@ -69,13 +73,14 @@ HIG 的顶层 tab bar 与桌面文档标签不是同一种交互，不能用“�
 | 所有者 | 状态 | 保留 | 结束 |
 | --- | --- | --- | --- |
 | `PikoDriveRepository` | 文件事实、目录索引、查询缓存、变更通知 | 多个浏览上下文共享 | 账号数据切换，资源按 client 释放 |
-| 桌面 `DriveWorkspace` | 稳定标签 ID、各标签路径/历史、滚动、高亮、剪贴板 | 页面组合重建、窗口隐藏 | 账号工作区结束 |
+| 桌面 `DriveWorkspace` | 文件标签的稳定 ID、路径/历史、滚动、高亮、剪贴板 | 页面组合重建、窗口隐藏 | 账号工作区结束 |
 | `MobileFileWorkspace` | 单个主文件上下文、历史、滚动、高亮、剪贴板 | 配置变化；主位置按账号缓存 | 账号工作区结束 |
-| `WorkspaceViewModel` | 浏览会话集合、任务页状态、信息流展开与导航记忆 | 同账号界面重建 | 账号 ViewModelStore 清除 |
+| `WorkspaceContexts` | 文件、查重、导入草稿的稳定 ID、顺序和活动项 | 桌面标签切换、移动 sheet 收起与重开 | 关闭对应上下文或账号工作区结束 |
+| `WorkspaceViewModel` | 各 ID 的浏览/查重/导入会话、任务页状态、信息流与导航记忆 | 同账号界面重建；切换和收起不丢任务 | 关闭对应上下文或账号 ViewModelStore 清除 |
 | `DriveBrowserSession` | 单个标签或返回栈页面的查询、搜索、多选、筛选、报告投影 | 标签或返回栈条目仍存在 | 关闭标签、出栈、账号离开 |
 | `AccountExecutionScopes` | 已接受写操作的协程 | 浏览页关闭 | 活动账号结束、进程结束 |
-| 添加链接业务会话 | 可编辑内容、解析结果、分享浏览/转存、选择、预览临时资源 | 面板收起、跨页面 | 明确放弃、替换或保存完成 |
-| `AddLinkViewModel` | 添加链接面板展开/收起与阻止替换的原因 | 工作区呈现 | 工作区结束 |
+| 每份导入草稿与 `AddLinkViewModel` | 各自的可编辑内容、解析/分享预览、选择与呈现状态 | 切换上下文、收起 sheet、跨页面 | 关闭该草稿或保存完成；已接受的保存按业务执行寿命结算 |
+| 每份查重会话 | 对应根目录的扫描和报告；浏览会话独立保留筛选 | 切换上下文、收起 sheet | 关闭该查重上下文或账号结束 |
 | 各业务 session | 工作身份、执行状态、远端引用、结果 | 没有页面订阅 | 各业务明确结束规则 |
 | `InstantSaveRecords.attempts` | 秒传尝试的参数快照、逐文件回执与恢复关联 | 面板收起、离开文件页、没有提示订阅 | 同一 ID 转成功历史，显式移除或账号结束 |
 | `ShareSaveSession` | 转存、远端任务、命名步骤与具体撤销关联 | 来源浏览页关闭、没有提示订阅 | 已确认结果最近 100 项，未知结果显式移除或账号结束 |
@@ -99,8 +104,9 @@ Compose State 用于同一 UI 线程上的呈现状态；StateFlow 用于可订�
 
 ### 保存目标
 
-`SaveTargetBinding` 将当前前端的主文件工作区连接到业务需要的 `SaveTargetContext`。
-资料页与临时 Browse 不覆盖主文件目录；用户手选添加链接目标后停止自动跟随。
+`SaveTargetBinding` 将主文件工作区连接到外部上传等需要持续读取当前位置的业务。
+新导入草稿在打开时把主文件目录固定为本次默认目标；随后文件导航不会改动它，用户仍可在草稿里另选。
+资料页与临时 Browse 不覆盖主文件目录。
 释放绑定按对象身份判断，旧工作区的释放不能清除新绑定。
 目标目录已不存在时，沿用业务的 My Packs 回退规则。
 
@@ -249,8 +255,9 @@ confirmed 和 unconfirmed 都不再次提交；有未知目录时停止自动重
 一个派生快照生成进行中、需要处理、已完成和产出已删除四组，同一 key 只分类一次。
 计数、筛选、多选和空态读取同一分组，避免完成项仍残留在进行中。
 
-任务页提供添加链接草稿、查重扫描/报告与清理的恢复入口。
-关闭查重标签不结束扫描；桌面按需重开报告标签，移动使用独立返回栈页面。
+任务页按上下文 ID 提供每份导入草稿、查重扫描/报告与清理的恢复入口。
+桌面多个上下文并列成标签；移动端在标准底部 sheet 中分页，默认只露出一截，上拉完整展开仍可见主界面，
+再点「查看更多」进入全屏，返回恢复展开 sheet。收起仍可恢复；关闭查重上下文才停止扫描并丢弃报告。
 原桌面浮动进度卡、移动清理悬浮层与查重进度 sheet 已移除。
 两端任务入口保持“任务”名称，速度/项数作为辅助信息。
 
@@ -383,7 +390,7 @@ Android 树内文件映射到共同的树授权，不能在首个文件完成或
 | 测试组 | 要保护的行为 |
 | --- | --- |
 | DriveWorkspace / MobileWorkspace / BrowserContext / LibraryNavigation | 稳定身份、两端隔离、资料页导航、上下文释放 |
-| FolderLocation / DriveReveal / FeedNavigation / SaveTargetBinding | 定位、高亮、位置恢复与目标跟随 |
+| FolderLocation / DriveReveal / FeedNavigation / SaveTargetBinding | 定位、高亮、位置恢复与外部上传等持续目标绑定 |
 | InstantFlow / ShareDestination / TaskSlot / TransfersAccount | 收起恢复、分享状态重绑、离页完成、任务投影不拥有执行 |
 | OfflineSubmission | 预约去重、丢失回执、明确拒绝、无任务响应、整包不认领、批量未知行及换号晚到响应 |
 | ReceivingRules | 目标祖先移动、未知移动、改名独立、业务规则更新与提交前复查 |
@@ -399,7 +406,8 @@ Android 树内文件映射到共同的树授权，不能在首个文件完成或
 | SourceLedgerSyncBoundary / VaultTreeSyncBoundary | 首次同步期间新增数据不会被 drop 掉 |
 | FolderDownload / DownloadPlan / FileActionsRow / MobilePanelSize | 直接下载、重复点击、混合就绪状态与显式画质入口 |
 
-最终集成结果与复跑命令见下表；日志是本机忽略的构建产物，不随源代码提交。
+上一轮提交的集成结果与复跑命令见下表；表内测试数不包含本轮未提交的多上下文改动。
+日志是本机忽略的构建产物，不随源代码提交。
 
 2026-10-11，Windows x64 本机对同一份收尾源代码完成以下验证：
 
@@ -577,3 +585,38 @@ git log -1 --format='%h %s' -- docs/development/interaction-refactor-review.md
 再从 `TaskContinuations` / `TransfersState` 追到两端任务入口。
 整包离线是另一条路径：它先接受整个种子，完成后在自己的产出树裁剪未选内容，
 不能把秒传逐文件回执的成功条件或重试语义套到整包上。
+
+## 12. 多上下文交互的后续审查（2026-10-11）
+
+第 8—11 节的测试统计与提交索引属于上一轮本地提交，其中单会话、报告视图和移动返回栈的证据
+不能代替本轮多上下文验证。本轮目标改为文件、查重、导入草稿共用稳定的 `WorkspaceContext.id`。桌面可同时打开多个同类上下文；
+移动端保留一个主文件位置，辅助上下文在标准底部 sheet 的 Pager 中切换，查重最多一份。
+手机默认只露出一截，上拉展开完整 sheet 时主界面仍可见；最高档的「查看更多」才进入全屏详情，
+返回恢复展开 sheet。切换、收起、进出详情与关闭必须分别验证：前三者保留原任务和浏览状态，
+关闭查重才取消扫描并丢弃报告。
+导入草稿在打开时确定本次默认目标；旧版“未手选时跟随随后文件导航”的规则已被这次多上下文交互调整取代。
+
+审查从 `WorkspaceContexts` 的身份与顺序进入 `WorkspaceViewModel` 的 ID→会话所有权，再到桌面标签、
+移动 sheet 和 `TaskContinuations`。传输页的每份草稿/报告应使用 ID 作行键；秒传、分享、离线提交
+关联的草稿可恢复，但不另占一行草稿计数。迟到的旧行操作须同时核对 ID 和会话对象身份，
+不能结束同 ID 下的新会话。文件标签继续按账号恢复位置，旧版缓存里的报告标签应被跳过。
+
+已核对 v1.1.0/v1.2.0 发布的标签缓存格式。本轮手机三态纠正前的完整回归通过：
+shared 570 项（6 跳过）、ui 47 项、desktopApp 98 项（4 跳过）、Android 单测 16 项，
+共 731 项、10 跳过、0 失败；Android 与桌面编译通过。工作区 UI 场景在纠正前也已通过。
+“缓存读取期间打开草稿”已包含在上述 shared 回归中并通过。
+三态定稿后再次通过 Android/桌面编译、ui 全部 47 项测试及 `:shots:run --args=verify-workspaces`。
+该场景使用真实 `PikoApp` 和假服务端，覆盖低位预览、上拉展开、底部进入详情、返回面板、
+草稿保留、Pager 切换、逐页关闭、手机查重复用/替换及桌面多上下文。
+日志见 `build/reports/workspace-context-validation.log` 与 `build/reports/workspace-sheet-validation.log`；
+三态画面见 `build/shots/workspace-mobile-{collapsed,expanded,details}.png`。
+本机未连接 Android 设备，真实设备手势、输入法与后台生命周期仍需人工验证。
+
+最新移动呈现改为单行 Tab 和完整内容，Sheet 上限为内容区的 70%，底部固定「查看更多」。
+Tab 行末菜单关闭当前上下文。Android/桌面编译、UI 47 项测试和 `verify-workspaces` 再次通过，
+包含 Sheet 内直接编辑及切换后保留输入，日志见 `build/reports/workspace-tabs-validation.log`。
+
+截图夹具的外部链接现通过 `onIncomingMagnet` 进入实际工作区，桌面通过切换文件标签保留草稿。
+单张 `task-coexist` 场景直接运行验证通过（`workspace-fixture-direct-validation.log`）。
+`renderAll` 的分发副本运行曾因缺少 `SaveableStateRegistry` 失败，分发类路径问题仍需另行处理；
+应用与上述直接运行场景使用的完整类路径均通过，本轮未修改分发配置。

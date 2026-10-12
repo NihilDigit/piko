@@ -98,6 +98,7 @@ import dev.piko.shared.data.sourceUrl
 import dev.piko.shared.state.TransferItem
 import dev.piko.shared.state.TransferKind
 import dev.piko.shared.state.TransfersState
+import dev.piko.shared.state.InstantSheetState
 import dev.piko.shared.upload.UploadStatus
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.serverWorkNotices
@@ -228,6 +229,12 @@ fun TransfersScreen(
         )
     }
 
+    fun resumeDraftContaining(contains: (InstantSheetState) -> Boolean): (() -> Unit)? {
+        val continuations = state.continuations ?: return null
+        val entry = continuations.allDraftEntries.firstOrNull { draft -> draft.addLink.state?.let(contains) == true } ?: return null
+        return { continuations.resumeDraft(entry) }
+    }
+
     // 一项的全部操作，详情面板与右键菜单共用：两处给的总是同一组
     fun actionsFor(item: TransferItem): List<SheetAction> = when (item) {
         is TransferItem.UploadPreparing -> uploadPreparationActions(item.work,
@@ -271,7 +278,7 @@ fun TransfersScreen(
         )
         is TransferItem.InstantAttempt -> instantAttemptActions(item.work,
             item.work.locateId?.let { { openCloudFileById(it, item.work.title) } },
-            onResumeAddLink.takeIf { services.addLink.state?.containsInstantAttempt(item.work.id) == true },
+            resumeDraftContaining { it.containsInstantAttempt(item.work.id) },
             {
                 if (item.work.receipt?.requiresInspection == true) {
                     detailsKey = null; state.selectOnly(item.key); confirmingDelete = true
@@ -285,11 +292,11 @@ fun TransfersScreen(
                 } else state.remove(item)
             },
             (item.work.associatedOutputs.values.firstOrNull() ?: item.work.command.target.id.takeIf { it.isNotEmpty() })?.let { { openCloudFileById(it, item.work.title) } },
-            onResumeAddLink.takeIf { services.addLink.state?.containsShareWork(item.work.id) == true },
+            resumeDraftContaining { it.containsShareWork(item.work.id) },
         )
         is TransferItem.OfflineSubmit -> offlineSubmitActions(item.work,
             (item.work.outputId ?: item.work.target.id.takeIf { it.isNotEmpty() })?.let { { openCloudFileById(it, item.work.title) } },
-            onResumeAddLink.takeIf { services.addLink.state?.containsOfflineSubmission(item.work.id) == true },
+            resumeDraftContaining { it.containsOfflineSubmission(item.work.id) },
             {
                 if (item.work.status == dev.piko.shared.state.OfflineSubmitStatus.UNCONFIRMED) {
                     detailsKey = null; state.selectOnly(item.key); confirmingDelete = true
@@ -601,8 +608,6 @@ fun TransfersScreen(
                                 onToggleDeleted = { deletedExpanded = !deletedExpanded },
                                 expandedBatches = expandedBatches,
                                 renderItem = renderItem,
-                                onResumeAddLink = onResumeAddLink,
-                                onOpenDuplicateReport = onOpenDuplicateReport,
                                 gridState = gridStates.getValue(kind),
                                 modifier = Modifier.fillMaxSize(),
                             )
@@ -754,8 +759,6 @@ private fun TransfersList(
     onToggleDeleted: () -> Unit,
     expandedBatches: List<String>,
     renderItem: @Composable (TransferItem, Modifier) -> Unit,
-    onResumeAddLink: () -> Unit,
-    onOpenDuplicateReport: () -> Unit,
     gridState: LazyGridState,
     modifier: Modifier = Modifier,
 ) {
@@ -793,7 +796,7 @@ private fun TransfersList(
                 movable = { false },
             ),
         ) {
-            continuationItems(state.continuations, kind, onResumeAddLink, onOpenDuplicateReport)
+            continuationItems(state.continuations, kind)
             transferSection("进行中", sections.inProgress, expanded, renderItem)
             transferSection("需要处理", sections.needsAttention, expanded, renderItem, onClearCloud = state::clearFailedCloud)
             transferSection("已完成", sections.completed, expanded, renderItem)

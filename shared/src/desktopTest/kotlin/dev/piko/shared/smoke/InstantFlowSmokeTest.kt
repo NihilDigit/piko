@@ -15,6 +15,7 @@ import dev.piko.shared.state.InstantSaveOutcome
 import dev.piko.shared.state.InstantSaveRecords
 import dev.piko.shared.state.InstantSession
 import dev.piko.shared.state.InstantSheetState
+import dev.piko.shared.state.SaveTargetContext
 import dev.piko.shared.state.SaveRoute
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -81,8 +82,13 @@ class InstantFlowSmokeTest {
         val previewFolder = PreviewTempFolder(provider, driveRepo, instantRepo, backgroundScope)
         val saveRecords = InstantSaveRecords(provider, null, backgroundScope)
 
-        fun sheet(scope: CoroutineScope, magnet: String) =
-            InstantSheetState(instantRepo, driveRepo, prefs, previewFolder, tracker, saveRecords, scope, magnet, workspace.saveTargetContext)
+        fun sheet(
+            scope: CoroutineScope,
+            magnet: String,
+            targetContext: SaveTargetContext = workspace.saveTargetContext,
+            saveScope: CoroutineScope = scope,
+        ) = InstantSheetState(instantRepo, driveRepo, prefs, previewFolder, tracker, saveRecords, scope, magnet,
+            targetContext, saveScope = saveScope)
 
         /** 网盘页停在 [folder] 里，与用户点进去之后的栈相同。 */
         fun openInDrive(folder: FakePikPakServer.Node) {
@@ -528,6 +534,149 @@ class InstantFlowSmokeTest {
         session.acknowledgeCompletion(completion.id)
         assertTrue(session.pendingCompletions.value.isEmpty())
         session.clear()
+    }
+
+    @Test
+    fun `closing one draft preserves its accepted save and another draft's fixed target`() = smoke { scope ->
+        val server = FakePikPakServer()
+        server.indexMagnet(magnet, resourceListBody("Movie", listOf(Triple("Movie.mkv", 1024L, "GCIDMOVIE"))))
+        val firstFolder = server.addFolder("First")
+        val secondFolder = server.addFolder("Second")
+        val elsewhere = server.addFolder("Elsewhere")
+        val started = kotlinx.coroutines.channels.Channel<Unit>(1)
+        val release = kotlinx.coroutines.channels.Channel<Unit>(1)
+        val http = server.httpClient()
+        http.plugin(io.ktor.client.plugins.HttpSend).intercept { request ->
+            if (request.method == io.ktor.http.HttpMethod.Post && request.url.toString().substringBefore('?').endsWith("/drive/v1/files")) {
+                started.send(Unit)
+                release.receive()
+            }
+            execute(request)
+        }
+        val client = io.github.nihildigit.pikpak.PikPakClient(
+            account = "smoke@piko.dev", password = "pw",
+            sessionStore = io.github.nihildigit.pikpak.InMemorySessionStore(),
+            rateLimiter = io.github.nihildigit.pikpak.RateLimiter(capacity = 1000, refillPerSecond = 1000.0),
+            httpClient = http,
+        )
+        val rig = Rig(server, MemoryPreferences(), scope, server.provider(client))
+        val session = InstantSession(
+            newScope = { CoroutineScope(SupervisorJob() + Dispatchers.Default) },
+            newState = { child, link -> rig.sheet(child, link) },
+            newStateForDraft = { child, save, link, target -> rig.sheet(child, link, target, save) },
+        )
+        val first = session.openDraft(magnet, SaveTargetContext.fixed(PikoPathBreadcrumb(firstFolder.id, firstFolder.name)))
+        val second = session.openDraft(magnet, SaveTargetContext.fixed(PikoPathBreadcrumb(secondFolder.id, secondFolder.name)))
+        awaitUntil("两个草稿各有固定目标") {
+            first.state.canSaveSelection && second.state.canSaveSelection &&
+                first.state.target?.id == firstFolder.id && second.state.target?.id == secondFolder.id
+        }
+        rig.openInDrive(elsewhere)
+        assertEquals(firstFolder.id, first.state.target?.id)
+        assertEquals(secondFolder.id, second.state.target?.id)
+
+        first.state.saveSelection()
+        kotlinx.coroutines.withTimeout(5_000) { started.receive() }
+        assertEquals(listOf(first.id), session.executingSaves.map { it.draftId })
+        assertTrue(session.executingSaves.single().trackedInstantAttempt)
+        val firstView = dev.piko.shared.presentation.AddLinkViewModel(first)
+        assertTrue(!firstView.discardNeedsConfirm, "accepted work continues after the editor closes")
+        firstView.discard()
+        assertTrue(first.isClosed)
+        assertNull(firstView.state)
+        assertEquals(listOf(second), session.drafts)
+        assertEquals(listOf(first.id), session.executingSaves.map { it.draftId })
+        assertTrue(second.state.canSaveSelection)
+        release.send(Unit)
+
+        awaitUntil("关闭后的保存产生独立回执") { session.pendingCompletions.value.any { it.id == first.id } }
+        val outcome = assertIs<InstantSaveOutcome.InstantSaved>(session.pendingCompletions.value.single().outcome)
+        assertEquals(firstFolder.id, outcome.target.id)
+        assertEquals(listOf("Movie.mkv"), server.children(firstFolder.id).map { it.name })
+        assertTrue(server.children(secondFolder.id).isEmpty())
+        assertEquals(secondFolder.id, second.state.target?.id)
+        awaitUntil("保存完成后不再算后台执行") { session.executingSaves.isEmpty() }
+        session.clear()
+    }
+
+    @Test
+    fun `closing a draft keeps an unknown save result available for inspection`() = smoke { scope ->
+        val server = FakePikPakServer()
+        server.indexMagnet(magnet, resourceListBody("Movie", listOf(Triple("Movie.mkv", 1024L, "GCIDMOVIE"))))
+        val started = kotlinx.coroutines.channels.Channel<Unit>(1)
+        val release = kotlinx.coroutines.channels.Channel<Unit>(1)
+        val http = server.httpClient()
+        http.plugin(io.ktor.client.plugins.HttpSend).intercept { request ->
+            val response = execute(request)
+            if (request.method == io.ktor.http.HttpMethod.Post && request.url.toString().substringBefore('?').endsWith("/drive/v1/files")) {
+                started.send(Unit)
+                release.receive()
+                throw java.io.IOException("file acknowledgement lost")
+            }
+            response
+        }
+        val client = io.github.nihildigit.pikpak.PikPakClient(
+            account = "smoke@piko.dev", password = "pw",
+            sessionStore = io.github.nihildigit.pikpak.InMemorySessionStore(),
+            rateLimiter = io.github.nihildigit.pikpak.RateLimiter(capacity = 1000, refillPerSecond = 1000.0),
+            httpClient = http,
+        )
+        val rig = Rig(server, MemoryPreferences(), scope, server.provider(client))
+        val session = InstantSession(
+            newScope = { CoroutineScope(SupervisorJob() + Dispatchers.Default) },
+            newState = { child, link -> rig.sheet(child, link) },
+            newStateForDraft = { child, save, link, target -> rig.sheet(child, link, target, save) },
+        )
+        val draft = session.openDraft(magnet, SaveTargetContext.fixed())
+        awaitUntil("可以保存") { draft.state.canSaveSelection }
+        draft.state.saveSelection()
+        kotlinx.coroutines.withTimeout(5_000) { started.receive() }
+        draft.close()
+        release.send(Unit)
+
+        awaitUntil("关闭后保存回执仍可检查") {
+            rig.saveRecords.attempts.value.any { it.receipt?.requiresInspection == true && !it.isRunning }
+        }
+        assertTrue(session.pendingCompletions.value.isEmpty())
+        assertEquals(listOf("Movie.mkv"), server.children("").filter { it.name == "Movie.mkv" }.map { it.name })
+        session.clear()
+    }
+
+    @Test
+    fun `account leave clears a closed draft's executing save projection`() = smoke { scope ->
+        val server = FakePikPakServer()
+        server.indexMagnet(magnet, resourceListBody("Movie", listOf(Triple("Movie.mkv", 1024L, "GCIDMOVIE"))))
+        val started = kotlinx.coroutines.channels.Channel<Unit>(1)
+        val release = kotlinx.coroutines.channels.Channel<Unit>(1)
+        val http = server.httpClient()
+        http.plugin(io.ktor.client.plugins.HttpSend).intercept { request ->
+            if (request.method == io.ktor.http.HttpMethod.Post && request.url.toString().substringBefore('?').endsWith("/drive/v1/files")) {
+                started.send(Unit)
+                release.receive()
+            }
+            execute(request)
+        }
+        val client = io.github.nihildigit.pikpak.PikPakClient(
+            account = "smoke@piko.dev", password = "pw",
+            sessionStore = io.github.nihildigit.pikpak.InMemorySessionStore(),
+            rateLimiter = io.github.nihildigit.pikpak.RateLimiter(capacity = 1000, refillPerSecond = 1000.0),
+            httpClient = http,
+        )
+        val rig = Rig(server, MemoryPreferences(), scope, server.provider(client))
+        val session = InstantSession(
+            newScope = { CoroutineScope(SupervisorJob() + Dispatchers.Default) },
+            newState = { child, link -> rig.sheet(child, link) },
+            newStateForDraft = { child, save, link, target -> rig.sheet(child, link, target, save) },
+        )
+        val draft = session.openDraft(magnet, SaveTargetContext.fixed())
+        awaitUntil("可以保存") { draft.state.canSaveSelection }
+        draft.state.saveSelection()
+        kotlinx.coroutines.withTimeout(5_000) { started.receive() }
+        draft.close()
+        assertEquals(listOf(draft.id), session.executingSaves.map { it.draftId })
+        session.clear()
+        assertTrue(session.executingSaves.isEmpty())
+        assertTrue(session.pendingCompletions.value.isEmpty())
     }
 
     /**

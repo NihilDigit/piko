@@ -477,6 +477,13 @@ class DriveScreenState(
         }
     }
 
+    /**
+     * [files] 当前是哪个目录的内容。视图据此恢复滚动位置：必须等列表真的换成目标目录的
+     * 内容再恢复，否则会把旧列表的位置记到新目录名下。
+     */
+    var loadedFolderId by mutableStateOf<String?>(null)
+        private set
+
     init {
         scope.launch {
             preferences.heuristicFilterFlow.collect { isHeuristicFilterEnabled = it }
@@ -585,13 +592,6 @@ class DriveScreenState(
         navigation.restoreFolderStack(stack)
         if (unchanged) onFolderChanged()
     }
-
-    /**
-     * [files] 当前是哪个目录的内容。视图据此恢复滚动位置：必须等列表真的换成目标目录的
-     * 内容再恢复，否则会把旧列表的位置记到新目录名下。
-     */
-    var loadedFolderId by mutableStateOf<String?>(null)
-        private set
 
     private var loadJob: Job? = null
 

@@ -61,6 +61,19 @@ class DriveWorkspace(
     private val _tabs = MutableStateFlow(listOf(DriveTab(FIRST_TAB_ID, listOf(ROOT_BREADCRUMB))))
     private val _activeTabId = MutableStateFlow(FIRST_TAB_ID)
     val activeTabId: StateFlow<Long> = _activeTabId.asStateFlow()
+    private var selectingFileContext = false
+
+    /** File tabs and transient task contexts share one ordered identity space. */
+    val contexts = WorkspaceContexts(FIRST_TAB_ID).also { collection ->
+        collection.onActivated = { context ->
+            if (!selectingFileContext && context is WorkspaceContext.File) switchTab(context.id)
+        }
+    }
+    val contextsFlow: StateFlow<List<WorkspaceContext>> get() = contexts.contextsFlow
+    val activeContextId: StateFlow<Long> get() = contexts.activeContextId
+
+    /** The owner uses this to stop a task when its context is actually discarded. */
+    var onContextClosed: (WorkspaceContext) -> Unit = {}
 
     private val _tabsFlow = MutableStateFlow(_tabs.value)
 
@@ -69,7 +82,7 @@ class DriveWorkspace(
 
     private fun newTabId(excluding: Set<Long> = emptySet()): Long {
         var id: Long
-        do { id = Random.nextLong() } while (id == 0L || id == FIRST_TAB_ID || id in excluding || _tabs.value.any { it.id == id })
+        do { id = Random.nextLong() } while (id == 0L || id == FIRST_TAB_ID || id in excluding || contextsFlow.value.any { it.id == id })
         return id
     }
 
@@ -158,20 +171,29 @@ class DriveWorkspace(
             ?: return false
         // 读取缓存期间可能已经导航或换号，旧的恢复结果不能覆盖用户刚打开的位置。
         if (_tabsFlow.value !== initialTabs || highlightRequests.value != initialHighlightRevision || repository.currentAccount != account) return false
-        val stacks = saved.tabs.map { stack -> folderIndex.resolve(stack.map { PikoPathBreadcrumb(it.id, it.name) }) }.filter { it.isNotEmpty() }
+        // Older releases saved duplicate report positions as tabs. Their task state was never saved,
+        // so only actual file positions can be restored into this workspace.
+        val stacks = saved.tabs.mapIndexedNotNull { index, crumbs ->
+            folderIndex.resolve(crumbs.map { PikoPathBreadcrumb(it.id, it.name) })
+                .takeIf { it.isNotEmpty() && it.library?.isSession != true }?.let { index to it }
+        }
         if (stacks.isEmpty()) return false
-        val savedIds = saved.ids.takeIf { it.size == stacks.size && it.distinct().size == it.size && it.none { id -> id == 0L } }
+        val auxiliaryIds = contextsFlow.value.filterNot { it is WorkspaceContext.File }.mapTo(HashSet()) { it.id }
+        val savedIds = saved.ids.takeIf { it.size == saved.tabs.size && it.distinct().size == it.size && it.none { id -> id == 0L || id in auxiliaryIds } }
         val allocated = HashSet<Long>()
-        val tabs = stacks.mapIndexed { index, stack ->
-            val id = savedIds?.get(index) ?: newTabId(allocated)
+        val tabs = stacks.map { (savedIndex, stack) ->
+            val id = savedIds?.get(savedIndex) ?: newTabId(allocated)
             allocated += id
             DriveTab(id, stack)
         }
-        val active = tabs[saved.active.coerceIn(0, tabs.lastIndex)]
+        val activeIndex = stacks.indexOfFirst { it.first >= saved.active }.takeIf { it >= 0 } ?: tabs.lastIndex
+        val active = tabs[activeIndex]
         _tabs.value = tabs
         _activeTabId.value = active.id
         _historyFlow.value = FolderHistory()
         _folderStackFlow.value = active.stack
+
+        contexts.restoreFilesPreservingAux(tabs.map { it.id }, active.id)
         forgetFoldersOutsideStack()
         publishTabs()
         return true
@@ -199,6 +221,8 @@ class DriveWorkspace(
         _activeTabId.value = root.id
         _historyFlow.value = FolderHistory()
         _folderStackFlow.value = root.stack
+
+        contexts.resetFiles(listOf(root.id), root.id).forEach(onContextClosed)
         _tabsFlow.value = _tabs.value
         scrollAnchors.value = emptyMap()
         pendingHighlight.value = emptySet()
@@ -215,14 +239,21 @@ class DriveWorkspace(
             val at = tabs.indexOfFirst { it.id == _activeTabId.value }
             tabs.toMutableList().apply { add(at + 1, tab) }
         }
+        contexts.openFile(tab.id, activate = false, afterId = _activeTabId.value)
         if (activate) switchTab(tab.id) else publishTabs()
         return tab.id
     }
 
-    fun switchTab(id: Long) {
+    fun switchTab(id: Long) = switchFileTab(id, activateContext = true)
+
+    private fun switchFileTab(id: Long, activateContext: Boolean) {
         val active = _activeTabId.value
-        if (id == active) return
         val target = _tabs.value.firstOrNull { it.id == id } ?: return
+        if (activateContext) {
+            selectingFileContext = true
+            try { contexts.activate(id) } finally { selectingFileContext = false }
+        }
+        if (id == active) return
         // 先把眼下的位置存回活动标签，再换成目标标签的
         _tabs.update { tabs -> tabs.map { if (it.id == active) it.copy(stack = _folderStackFlow.value, history = _historyFlow.value) else it } }
         _activeTabId.value = id
@@ -238,11 +269,37 @@ class DriveWorkspace(
         val tabs = _tabs.value
         if (tabs.size <= 1) return
         val index = tabs.indexOfFirst { it.id == id }.takeIf { it >= 0 } ?: return
-        if (id == _activeTabId.value) switchTab((tabs.getOrNull(index + 1) ?: tabs[index - 1]).id)
+        if (id == _activeTabId.value) {
+            switchFileTab((tabs.getOrNull(index + 1) ?: tabs[index - 1]).id, activateContext = contexts.activeContextId.value == id)
+        }
         _tabs.update { current -> current.filterNot { it.id == id } }
+        contexts.close(id)?.let(onContextClosed)
         pendingByTab.update { it - id }
         forgetFoldersOutsideStack()
         publishTabs()
+    }
+
+    fun openDuplicateContext(root: PikoPathBreadcrumb, activate: Boolean = true): Long =
+        contexts.openDuplicate(root, activate)
+
+    fun openImportDraftContext(activate: Boolean = true): Long = contexts.openImportDraft(activate)
+
+    fun switchContext(id: Long): Boolean {
+        val context = contextsFlow.value.firstOrNull { it.id == id } ?: return false
+        return if (context is WorkspaceContext.File) {
+            switchTab(id)
+            true
+        } else contexts.activate(id)
+    }
+
+    fun closeContext(id: Long): WorkspaceContext? {
+        val context = contextsFlow.value.firstOrNull { it.id == id } ?: return null
+        if (context is WorkspaceContext.File) {
+            if (_tabs.value.size <= 1) return null
+            closeTab(id)
+            return context
+        }
+        return contexts.close(id)?.also(onContextClosed)
     }
 
     /** 眼前的位置：活动标签、它的路径栈与浏览历史。交给 [returnTo] 就能整个回到这里。 */
@@ -498,6 +555,7 @@ class DriveWorkspace(
     }
 
     fun close() {
+        contextsFlow.value.filterNot { it is WorkspaceContext.File }.forEach(onContextClosed)
         clipboard.clear()
         job.cancel()
         tabsSave?.cancel()

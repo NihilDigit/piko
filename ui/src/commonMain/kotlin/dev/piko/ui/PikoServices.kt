@@ -165,6 +165,13 @@ class PikoServices(
                     shareSaves = shareSaves,
                 )
             },
+            newStateForDraft = { scope, saveScope, magnet, target ->
+                InstantSheetState(
+                    instantMagnetRepository, driveRepository, preferences, previewTempFolder,
+                    offlinePacks, instantSaveRecords, scope, magnet,
+                    saveTargetContext = target, shareSaves = shareSaves, saveScope = saveScope,
+                )
+            },
         )
     }
 
@@ -177,12 +184,20 @@ class PikoServices(
         dev.piko.shared.state.TrashSession(driveRepository, CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate))
     }
 
-    val duplicateSession: DuplicateSession by lazy {
+    val duplicateSessions = androidx.compose.runtime.mutableStateListOf<DuplicateSession>()
+
+    fun newDuplicateSession(): DuplicateSession =
         DuplicateSession(
             newScope = { CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate) },
             newState = { scope, root -> DuplicateFinderState(clientManager, driveRepository, scope, root, trashSession) },
-        )
+        ).also(duplicateSessions::add)
+
+    fun releaseDuplicateSession(session: DuplicateSession) {
+        session.end()
+        duplicateSessions.remove(session)
     }
+
+    val duplicateSession: DuplicateSession by lazy { newDuplicateSession() }
 
     // 主线程且与进程同寿：会话在这个作用域上改 Compose 状态，离开网盘页后解压仍要继续
     val archiveExtractSession: ArchiveExtractSession by lazy {
@@ -252,7 +267,8 @@ class PikoServices(
             _fileHighlightRequested.value?.takeIf { it.account == left }?.let(::consumeFileHighlight)
             instantSession.clear()
             trashSession.clear()
-            duplicateSession.end()
+            duplicateSessions.toList().forEach { it.end() }
+            duplicateSessions.clear()
             archiveExtractSession.clear()
             archiveBrowser.clear()
             segmentSession.end()

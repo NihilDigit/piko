@@ -151,6 +151,7 @@ class InstantSheetState private constructor(
     private val packTracker: OfflinePackTracker,
     private val saveRecords: InstantSaveRecords,
     private val scope: CoroutineScope,
+    private val saveScope: CoroutineScope,
     initialMagnet: String,
     private val shared: InstantSharedContext,
     /** 面板直接持有的那个实例；批量列表里各行的子实例为 false。 */
@@ -169,8 +170,9 @@ class InstantSheetState private constructor(
         initialMagnet: String = "",
         saveTargetContext: SaveTargetContext = SaveTargetContext.fixed(),
         shareSaves: ShareSaveSession? = null,
+        saveScope: CoroutineScope = scope,
     ) : this(
-        instantRepo, driveRepo, preferences, previewFolder, packTracker, saveRecords, scope, initialMagnet,
+        instantRepo, driveRepo, preferences, previewFolder, packTracker, saveRecords, scope, saveScope, initialMagnet,
         InstantSharedContext(), isRoot = true, saveTargetContext, shareSaves ?: ShareSaveSession(driveRepo, scope),
     )
 
@@ -188,6 +190,20 @@ class InstantSheetState private constructor(
     var isSaving: Boolean
         get() = magnetSaveRunning || shareSave?.isSaving == true
         private set(value) { magnetSaveRunning = value }
+    /** The accepted save uses [saveScope] and may outlive the editor. Share saves live in [shareSaves]. */
+    internal val hasLocalSave: Boolean get() = magnetSaveRunning || batch?.isSaving == true
+    private var submittingOfflineAt by mutableStateOf<PikoPathBreadcrumb?>(null)
+    internal val hasTrackedOfflineSubmission: Boolean
+        get() = submittingOfflineAt?.let { destination ->
+            saveAccount?.let { account ->
+                instantRepo.offlineSubmissions.conflict(account, submittedUrl(), destination.id)?.isRunning == true
+            }
+        } == true
+    internal val hasTrackedInstantAttempt: Boolean
+        get() = saveRecords.attempts.value.any { containsInstantAttempt(it.id) }
+    internal val hasUntrackedLocalSave: Boolean
+        get() = (magnetSaveRunning && !hasTrackedOfflineSubmission) ||
+            (batch?.isSaving == true && batch?.rows?.none { it.state.hasTrackedOfflineSubmission } == true)
     var shareSave by mutableStateOf<ShareSaveState?>(null)
         private set
     private var shareScope: CoroutineScope? = null
@@ -550,7 +566,7 @@ class InstantSheetState private constructor(
             shared.previewLease = previews
             // 明确结束业务会话后清理自己的预览；收起面板不会取消这个作用域。
             // 子实例不登记：移除一行只取消那一行，Piko-Temp 里可能还有别的行预览过的文件
-            scope.coroutineContext[Job]?.invokeOnCompletion {
+            saveScope.coroutineContext[Job]?.invokeOnCompletion {
                 previews.close()
             }
             scope.launch { followDriveFolder() }
@@ -570,7 +586,7 @@ class InstantSheetState private constructor(
     }
 
     fun updateInput(value: String) {
-        if (!canEdit || batch?.isSaving == true) return
+        if (!scope.isActive || !canEdit || batch?.isSaving == true) return
         if (input != value) { offlineWorkId = null; instantAttemptId = null; saveIssue = null; savedContainer = null; saveParent = null; shared.targetHeld.value = false }
         input = value
         refreshShare()
@@ -608,6 +624,7 @@ class InstantSheetState private constructor(
             driveRepo = driveRepo,
             shared = shared,
             scope = scope,
+            saveScope = saveScope,
             emitOutcome = { _outcomes.emit(it) },
             emitMessage = { _messages.emit(it) },
             onEmpty = ::leaveBatch,
@@ -616,7 +633,7 @@ class InstantSheetState private constructor(
     }
 
     private fun newBatchRow(link: PastedLink, rowScope: CoroutineScope) = InstantSheetState(
-        instantRepo, driveRepo, preferences, previewFolder, packTracker, saveRecords, rowScope, link.uri, shared, isRoot = false, saveTargetContext, shareSaves,
+        instantRepo, driveRepo, preferences, previewFolder, packTracker, saveRecords, rowScope, saveScope, link.uri, shared, isRoot = false, saveTargetContext, shareSaves,
     )
 
     /** 列表里的行删光了，回到空的输入框。 */
@@ -728,12 +745,12 @@ class InstantSheetState private constructor(
 
     /** 按 [savePlan] 的路线保存当前勾选。 */
     fun saveSelection() {
-        if (isSaving) return
+        if (!scope.isActive || isSaving) return
         saveBlockReason?.let { errorMessage = it; return }
         if (instantRetry != null) {
             if (retryFileCount == 0) { errorMessage = "本次保存结果需要先在任务页核对，不能再次提交"; return }
             isSaving = true
-            scope.launch {
+            saveScope.launch {
                 try {
                     val target = requireNotNull(instantRetry).target
                     resumeInstant().onSuccess { _outcomes.emit(InstantSaveOutcome.InstantSaved(it, target)) }
@@ -746,7 +763,7 @@ class InstantSheetState private constructor(
         if (isSaving || plan.blocked) return
         val toSave = itemsToSave
         isSaving = true
-        scope.launch {
+        saveScope.launch {
             try {
                 val targetBread = target ?: resolveTarget()
                 when (plan.route) {
@@ -786,13 +803,14 @@ class InstantSheetState private constructor(
      * 未收录的文件没有 gcid，这条路存不了，保存栏已写明会跳过几个。
      */
     fun saveSelectionInstantly() {
+        if (!scope.isActive) return
         saveBlockReason?.let { errorMessage = it; return }
         if (instantRetry != null) { saveSelection(); return }
         if (saveIssue?.requiresInspection == true) return
         if (isSaving || savePlan?.fallback == null) return
         val toSave = itemsToSave.filter { it.isInstantReady }
         isSaving = true
-        scope.launch {
+        saveScope.launch {
             try {
                 val targetBread = target ?: resolveTarget()
                 val remaining = refreshRemainingBytes()
@@ -848,10 +866,11 @@ class InstantSheetState private constructor(
      * URL，但 resolveMagnet 只认磁力，所以这些输入不会有文件列表可勾。
      */
     fun submitOfflineTask() {
+        if (!scope.isActive) return
         if (instantRetry != null || saveIssue?.requiresInspection == true || saveBlockReason != null) return
         if (isSaving || input.isBlank()) return
         isSaving = true
-        scope.launch {
+        saveScope.launch {
             try {
                 val targetBread = target ?: resolveTarget()
                 submitWhole(targetBread)
@@ -889,10 +908,15 @@ class InstantSheetState private constructor(
 
     private suspend fun submitWhole(target: PikoPathBreadcrumb): Result<Unit> {
         if (!canReceiveAt(target)) return Result.failure(IllegalStateException(errorMessage))
-        return instantRepo.enqueueOfflineTask(submittedUrl(), target.id, target.name, folderNameToSave.ifBlank { "提交云端离线" }, saveAccount)
-            .map { }
-            .onSuccess { instantAttemptId?.let(saveRecords::forgetAttempt); instantAttemptId = null; saveIssue = null }
-            .reportSaveFailure()
+        submittingOfflineAt = target
+        return try {
+            instantRepo.enqueueOfflineTask(submittedUrl(), target.id, target.name, folderNameToSave.ifBlank { "提交云端离线" }, saveAccount)
+                .map { }
+                .onSuccess { instantAttemptId?.let(saveRecords::forgetAttempt); instantAttemptId = null; saveIssue = null }
+                .reportSaveFailure()
+        } finally {
+            submittingOfflineAt = null
+        }
     }
 
     private fun scheduleResolve(debounce: Boolean = true) {
@@ -1154,21 +1178,26 @@ class InstantSheetState private constructor(
         if (!canReceiveAt(target)) return Result.failure(IllegalStateException(errorMessage))
         val allItems = items
         val packBytes = allItems.sumOf { it.file.size }
-        return packTracker.submit(
-            url = submittedUrl(),
-            targetId = target.id,
-            folderName = driveFolderName(folderNameToSave),
-            keep = toSave.map { it.file.path }.toSet(),
-            totalFiles = allItems.size,
-            totalBytes = packBytes,
-            keptBytes = toSave.sumOf { it.file.size },
-        )
-            .map { }
-            .reportSaveFailure()
+        submittingOfflineAt = target
+        return try {
+            packTracker.submit(
+                url = submittedUrl(),
+                targetId = target.id,
+                folderName = driveFolderName(folderNameToSave),
+                keep = toSave.map { it.file.path }.toSet(),
+                totalFiles = allItems.size,
+                totalBytes = packBytes,
+                keptBytes = toSave.sumOf { it.file.size },
+            )
+                .map { }
+                .reportSaveFailure()
+        } finally {
+            submittingOfflineAt = null
+        }
     }
 
     private fun canReceiveAt(target: PikoPathBreadcrumb): Boolean {
-        if (saveAccount == null || driveRepo.currentAccount != saveAccount || !scope.isActive) {
+        if (saveAccount == null || driveRepo.currentAccount != saveAccount || !saveScope.isActive) {
             errorMessage = "当前保存上下文已结束"
             return false
         }

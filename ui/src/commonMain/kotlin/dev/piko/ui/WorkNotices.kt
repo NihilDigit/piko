@@ -17,10 +17,14 @@ import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlin.time.Clock
 
 /** 一件后台工作的结局，给不在眼前的用户看：Android 发系统通知，桌面发 Toast。 */
@@ -35,7 +39,9 @@ fun PikoServices.workNotices(): Flow<WorkNotice> = merge(
     uploadNotices(uploadManager, clientManager),
     uploadManager.preparationOutcomes.filter { it.account == driveRepository.currentAccount }.map { WorkNotice("上传准备未完成", it.result?.message.orEmpty()) },
     serverWorkNotices(),
-    duplicateNotices(duplicateSession),
+    sessionNotices({ duplicateSessions.toList() }) { session, preexisting ->
+        duplicateNotices(session, if (preexisting) session.state?.takeIf { it.phase.isFinished() } else null)
+    },
     fileWrites.outcomes.filter { it.account == driveRepository.currentAccount }.map { WorkNotice(it.title, it.result.message) },
     historyEdits.outcomes.filter { it.account == driveRepository.currentAccount }.map { WorkNotice(it.title, it.result.message) },
     vaultEntryEdits.outcomes.filter { it.account == driveRepository.currentAccount }.map { WorkNotice(it.title, it.result.message) },
@@ -171,11 +177,29 @@ private fun uploadSummary(tasks: List<UploadTask>): WorkNotice {
     return WorkNotice(title, listOfNotNull(completedPart, failedPart).joinToString("；"))
 }
 
+/** Keep each session's observer across unrelated additions; removal ends only that observer. */
+internal fun <T : Any, R> sessionNotices(sessions: () -> List<T>, notices: (T, Boolean) -> Flow<R>): Flow<R> = channelFlow {
+    val observers = mutableMapOf<T, Job>()
+    var first = true
+    snapshotFlow { sessions() }.collect { current ->
+        observers.keys.filter { it !in current }.forEach { removed -> observers.remove(removed)?.cancel() }
+        current.filter { it !in observers }.forEach { session ->
+            val preexisting = first
+            observers[session] = launch { notices(session, preexisting).collect { send(it) } }
+        }
+        first = false
+    }
+}
+
+private fun DuplicateFinderState.Phase.isFinished() =
+    this == DuplicateFinderState.Phase.DONE || this == DuplicateFinderState.Phase.FAILED
+
 /** 每开一次查找重复，等它扫完报一次；开着面板时结果就在眼前，由呈现的一端决定报不报。 */
-private fun duplicateNotices(session: DuplicateSession): Flow<WorkNotice> =
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+private fun duplicateNotices(session: DuplicateSession, skipExisting: DuplicateFinderState?): Flow<WorkNotice> =
     snapshotFlow { session.state }.filterNotNull().flatMapLatest { finder ->
-        flow {
-            snapshotFlow { finder.phase }.first { it == DuplicateFinderState.Phase.DONE || it == DuplicateFinderState.Phase.FAILED }
+        if (finder === skipExisting) emptyFlow() else flow {
+            snapshotFlow { finder.phase }.first { it.isFinished() }
             emit(duplicateSummary(finder))
         }
     }

@@ -6,9 +6,11 @@ import dev.piko.shared.state.ArchiveJob
 import dev.piko.shared.state.ArchiveJobStatus
 import dev.piko.shared.state.ArchiveCompletion
 import dev.piko.shared.state.FolderVaultSession
+import dev.piko.shared.state.InstantSaveExecution
 import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.upload.UploadStatus
 import dev.piko.shared.upload.UploadTask
+import dev.piko.ui.workbench.closedUntrackedImportCount
 import io.github.nihildigit.pikpak.FileStat
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -20,6 +22,20 @@ import kotlin.test.assertTrue
  * 进度条停住不动、停止时进度条跳空、几件并行时取错了眼下那一件、空闲的任务被算成在跑。
  */
 class WorkProgressTest {
+    @Test
+    fun closedDraftSavesKeepProgressWithoutDuplicatingOfflineSubmissions() {
+        val executions = listOf(
+            InstantSaveExecution(1, trackedOffline = false, trackedInstantAttempt = true),
+            InstantSaveExecution(2, trackedOffline = true, trackedInstantAttempt = false),
+            InstantSaveExecution(3, trackedOffline = false, trackedInstantAttempt = false),
+        )
+        val progress = importSaveProgress(executions)
+        assertEquals(2, progress.size)
+        assertTrue(progress.all { it.title == "保存添加链接" && it.meter == WorkMeter.Indeterminate })
+        assertEquals(1, closedUntrackedImportCount(emptySet(), executions))
+        assertEquals(0, closedUntrackedImportCount(setOf(3), executions))
+    }
+
     @Test
     fun waitingForInputOrAnUnconfirmedResultDoesNotRequireBackgroundExecution() {
         assertTrue(ArchiveJobStatus.Waiting.hasExecutingWork())

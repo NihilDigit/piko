@@ -22,7 +22,7 @@ import dev.piko.shared.presentation.TabNavigation
 class DriveBrowserSession(
     repository: PikoDriveRepository,
     preferences: PikoUserPreferences,
-    duplicates: DuplicateSession,
+    val duplicates: DuplicateSession,
     archives: ArchiveBrowser?,
     trash: TrashSession,
     parentScope: CoroutineScope,

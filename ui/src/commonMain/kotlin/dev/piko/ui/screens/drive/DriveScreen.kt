@@ -244,6 +244,8 @@ fun DriveScreen(
     /** 下载或离线任务已提交，切到传输页看进度。上传由主界面直接订阅调度器，不经这里。 */
     onOpenTransfers: () -> Unit = {},
     onOpenDuplicateReport: (() -> Unit)? = null,
+    onCloseContext: (() -> Unit)? = null,
+    interactionEnabled: Boolean = true,
     /**
      * 信息流开着没有，以及视图切换里信息流一项的回调，为 null 时不给这一项。信息流在哪里呈现、
      * 播哪个文件夹由主界面决定，网盘页只管开关。
@@ -274,12 +276,14 @@ fun DriveScreen(
 ) {
     val driveRepo = LocalPikoServices.current.driveRepository
     val workspace = dev.piko.ui.workbench.LocalFileWorkspace.current
+    val contexts = dev.piko.ui.workbench.LocalWorkspaceContexts.current
     val navigation = browserSession?.navigation ?: workspace
     val isWorkspaceBrowser = navigation is dev.piko.shared.presentation.TabNavigation || navigation === workspace
+    val acceptsNavigation = interactionEnabled && (!isWorkspaceBrowser || contexts?.desktop != false || !contexts.sheetExpanded)
     val clientManager = LocalPikoServices.current.clientManager
     val instantRepo = LocalPikoServices.current.instantMagnetRepository
     val addLink = LocalPikoServices.current.addLink
-    val duplicateSession = LocalPikoServices.current.duplicateSession
+    val duplicateSession = browserSession?.duplicates ?: LocalPikoServices.current.duplicateSession
     val downloadManager = LocalPikoServices.current.downloadManager
     val downloads = rememberDownloadLauncher()
     val services = LocalPikoServices.current
@@ -405,9 +409,9 @@ fun DriveScreen(
 
     // 返回键（桌面上是 Esc）的优先级，后声明的 BackHandler 先收到：属性 > 多选
     // > 单击高亮 > 搜索 > 上一级目录。越临时、越晚出现的越先被吃掉；后三样声明在下面，挨着它们要看的状态
-    BackHandler(enabled = folderStack.size > navigation.rootDepth) { state.navigateUp() }
-    BackHandler(enabled = folderStack.size <= navigation.rootDepth && (libraryView != null || !isWorkspaceBrowser)) { leaveLibrary() }
-    BackHandler(enabled = isSearchOpen) { closeSearch() }
+    BackHandler(enabled = acceptsNavigation && folderStack.size > navigation.rootDepth) { state.navigateUp() }
+    BackHandler(enabled = acceptsNavigation && folderStack.size <= navigation.rootDepth && (libraryView != null || !isWorkspaceBrowser)) { leaveLibrary() }
+    BackHandler(enabled = acceptsNavigation && isSearchOpen) { closeSearch() }
 
     // 对话框与面板状态
     var showNewFolderDialog by remember { mutableStateOf(false) }
@@ -518,6 +522,10 @@ fun DriveScreen(
     /** 扫描独立运行，进度与结果从任务页恢复；更换起点才确认丢弃旧报告。 */
     fun findDuplicates(root: PathBreadcrumb) {
         if (!state.acceptsActions) return
+        if (contexts != null) {
+            contexts.openDuplicate(root)
+            return
+        }
         val current = duplicateSession.state
         taskSlot.claim(
             action = "查找「${root.name}」中的重复文件",
@@ -558,6 +566,10 @@ fun DriveScreen(
     }
     var previewImage by remember { mutableStateOf<FileStat?>(null) }
     fun openLink(link: String) {
+        if (contexts != null) {
+            contexts.openImport(link, workspace.saveTargetContext.currentFolder())
+            return
+        }
         val replacing = addLink.state?.isBlank == false
         taskSlot.claim(
             action = if (replacing) "打开新链接" else "添加链接",
@@ -571,7 +583,7 @@ fun DriveScreen(
     val pendingMagnet by instantRepo.pendingMagnetFlow.collectAsStateWithLifecycle()
     LaunchedEffect(pendingMagnet) {
         val magnet = pendingMagnet
-        if (!magnet.isNullOrBlank()) {
+        if (contexts == null && !magnet.isNullOrBlank()) {
             instantRepo.clearPendingMagnet()
             openLink(magnet)
         }
@@ -579,8 +591,9 @@ fun DriveScreen(
 
     val openTransfers by rememberUpdatedState(onOpenTransfers)
     val instantState = addLink.state
-    fun openAddLink() = taskSlot.claim("添加链接", "添加链接", TaskSlot.Task.ADD_LINK) {
-        addLink.resume()
+    fun openAddLink() {
+        if (contexts != null) contexts.openImport(target = workspace.saveTargetContext.currentFolder())
+        else taskSlot.claim("添加链接", "添加链接", TaskSlot.Task.ADD_LINK) { addLink.resume() }
     }
 
     // 没有浮动卡片的窗口里，解压与归档的进度只在传输页。开始时提示一次并给出去处；不像离线那样直接跳过去：
@@ -622,7 +635,7 @@ fun DriveScreen(
         snapshotFlow { latestScrollToTop }.drop(1).collect { gridState.animateScrollToItem(0) }
     }
     var isFabMenuExpanded by rememberSaveable { mutableStateOf(false) }
-    BackHandler(enabled = isFabMenuExpanded) { isFabMenuExpanded = false }
+    BackHandler(enabled = acceptsNavigation && isFabMenuExpanded) { isFabMenuExpanded = false }
 
     val displayedFiles = state.displayedFiles
     val folderEmptiness by state.folderEmptiness.collectAsStateWithLifecycle()
@@ -748,14 +761,14 @@ fun DriveScreen(
 
     // 回调对象只建一次，列表项拿到的引用不变；外部传入的导航回调经 rememberUpdatedState 取最新值
     val navigateToPlayer by rememberUpdatedState(onNavigateToVideoPlayer)
-    // 标签由工作区持有；关闭结果视图不结束扫描或报告。
+    // 工作区统一拥有标签和任务上下文，关闭时由它释放对应会话。
     val desktopWorkspace = workspace as? dev.piko.shared.presentation.DriveWorkspace
     val tabs = desktopWorkspace?.let { value -> val current by value.tabsFlow.collectAsStateWithLifecycle(); current }.orEmpty()
     val activeTabId = desktopWorkspace?.let { value -> val current by value.activeTabId.collectAsStateWithLifecycle(); current } ?: 0L
-    fun closeTab(id: Long) { desktopWorkspace?.closeTab(id) }
-    fun selectTab(id: Long) { desktopWorkspace?.switchTab(id) }
+    fun closeTab(id: Long) { if (contexts != null) contexts.requestCloseContext(contexts.contexts.activeContextId.value) else desktopWorkspace?.closeTab(id) }
+    fun selectTab(id: Long) { if (contexts != null) contexts.activateContext(id) else desktopWorkspace?.switchTab(id) }
     fun newTab(stack: List<PathBreadcrumb>, activate: Boolean = true) { desktopWorkspace?.openTab(stack, activate) }
-    fun cycleTab(step: Int) { desktopWorkspace?.cycleTab(step) }
+    fun cycleTab(step: Int) { if (contexts != null) contexts.cycleContext(step) else desktopWorkspace?.cycleTab(step) }
     val tabsAvailable = desktopWorkspace != null && twoPane && isWorkspaceBrowser
     val openInNewTab: ((FileStat) -> Unit)? = if (tabsAvailable) {
         { folder -> newTab(folderStack + PathBreadcrumb(folder.id, folder.name), activate = false) }
@@ -1063,14 +1076,14 @@ fun DriveScreen(
 
     // Esc 依次吃掉的几样，优先级见上面 BackHandler 那一段。
     // 单击高亮：鼠标点过的那一项留着焦点底色，命令栏也作用于它；Esc 让它回到没点过的样子，焦点交回页面，快捷键照常
-    BackHandler(enabled = commandFile != null && !state.isSelectionMode) {
+    BackHandler(enabled = acceptsNavigation && commandFile != null && !state.isSelectionMode) {
         commandFile = null
         focusedFile = null
         runCatching { shortcutFocus.requestFocus() }
     }
-    BackHandler(enabled = state.isSelectionMode) { state.exitSelection() }
+    BackHandler(enabled = acceptsNavigation && state.isSelectionMode) { state.exitSelection() }
     // 属性：最后声明，Esc 先关它。它是最晚打开、最临时的东西
-    BackHandler(enabled = properties != null) { properties = null }
+    BackHandler(enabled = acceptsNavigation && properties != null) { properties = null }
 
     // 网格空白处的右键菜单，照资源管理器的顺序：怎么看、刷新、粘贴、往这里添东西、全选、属性。
     // 排序不在这里：六种排法平铺出来太长，这套菜单没有二级菜单，命令栏的排序按钮就在上方
@@ -1533,6 +1546,7 @@ fun DriveScreen(
     // 宽窗口的添加链接由主界面放进右栏或侧边面板；任务页提供草稿与报告的恢复入口。
     val discardAddLink = rememberDiscardAddLink(addLink)
     val taskSheet: TaskSheetModel? = when {
+        contexts != null -> null
         !isWorkspaceBrowser -> null
         twoPane -> null
         instantState != null -> TaskSheetModel(
@@ -1587,7 +1601,7 @@ fun DriveScreen(
                 topBar = {
                     Column {
                         // 宽窗口一直有标签栏，只开一个标签时也是：开第二个时页面不跳，窗口按钮也一直在这一行
-                        if (tabsAvailable) {
+                        if (tabsAvailable && contexts == null) {
                             DriveTabBar(
                                 tabs = tabs,
                                 activeId = activeTabId,
@@ -1874,7 +1888,7 @@ fun DriveScreen(
                                             duplicateReport.selectKind(kind)
                                             scope.launch { gridState.scrollToItem(0) }
                                         },
-                                        onEnd = duplicateSession::end,
+                                        onEnd = onCloseContext ?: duplicateSession::end,
                                     )
                                 }
                                 // 筛选或图库视图下为空时仍给列表：空目录页没有页眉，筛选撤不掉，视图也切不回去

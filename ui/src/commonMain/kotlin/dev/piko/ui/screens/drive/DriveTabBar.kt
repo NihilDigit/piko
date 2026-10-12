@@ -92,6 +92,7 @@ internal fun DriveTabBar(
     sessionTab: (DriveTab) -> SessionTab?,
     /** 从信息流跳出来浏览的那个标签，见 PikoMainScaffold 的 feedDetourTab。 */
     feedTabId: Long?,
+    canClose: (Long) -> Boolean = { tabs.size > 1 },
     modifier: Modifier = Modifier,
 ) {
     val scroll = rememberScrollState()
@@ -134,7 +135,7 @@ internal fun DriveTabBar(
                         divider = index < tabs.lastIndex && index != activeIndex && index + 1 != activeIndex,
                         onSelect = { onSelect(tab.id) },
                         // 只剩一个时关不掉，不给叉
-                        onClose = if (tabs.size > 1) ({ onClose(tab.id) }) else null,
+                        onClose = if (canClose(tab.id)) ({ onClose(tab.id) }) else null,
                     )
                 }
             }
@@ -192,7 +193,7 @@ private fun TabChip(
     val hovered by interaction.collectIsHoveredAsState()
     val contentColor = if (active) colors.onSurface else colors.onSurfaceVariant
     // 会话标签不接拖放：那里不是文件夹
-    val target = tab.stack.lastOrNull()?.takeIf { tab.session == null }
+    val target = tab.stack.lastOrNull()?.takeIf { tab.session == null && session == null }
     val title = session?.title ?: tab.title
     val tooltip = when {
         fromFeed -> "从信息流打开：" + tab.stack.joinToString(" › ") { it.name }

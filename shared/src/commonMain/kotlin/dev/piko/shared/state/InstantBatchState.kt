@@ -13,6 +13,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 private const val TAG = "Instant"
@@ -81,6 +82,7 @@ class InstantBatchState internal constructor(
     private val driveRepo: PikoDriveRepository,
     private val shared: InstantSharedContext,
     private val scope: CoroutineScope,
+    private val saveScope: CoroutineScope,
     private val emitOutcome: suspend (InstantSaveOutcome) -> Unit,
     private val emitMessage: suspend (String) -> Unit,
     private val onEmpty: () -> Unit,
@@ -150,7 +152,7 @@ class InstantBatchState internal constructor(
     }
 
     val canSaveAll: Boolean by derivedStateOf {
-        !isSaving && shared.target.value != null && blockedReason == null && !lacksSpace && !lacksOfflineCount
+        scope.isActive && !isSaving && shared.target.value != null && blockedReason == null && !lacksSpace && !lacksOfflineCount
     }
 
     init {
@@ -178,7 +180,7 @@ class InstantBatchState internal constructor(
         val needed = neededBytes
         isSaving = true
         saveErrors.clear()
-        scope.launch {
+        saveScope.launch {
             try {
                 // 解析时查到的余量与次数可能已经过时，而离线一旦提交就是整包落盘
                 val remaining = refreshRemainingBytes()
