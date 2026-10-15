@@ -122,6 +122,7 @@ internal fun DriveSelectionTopBar(
     PikoTopBar(
         scrollBehavior = scrollBehavior,
         title = "已选择 $selectedCount 项",
+        persistentActions = { dev.piko.ui.workbench.WorkspaceControls() },
         navigationIcon = {
             TooltipIconButton(Icons.Outlined.Close, "退出多选", onExit, shortcut = "Esc")
         },
@@ -229,6 +230,7 @@ internal fun DriveSearchTopBar(
             IconButton(onClick = { if (query.isNotEmpty()) onQueryChange("") else onClose() }) {
                 Icon(Icons.Outlined.Close, contentDescription = if (query.isNotEmpty()) "清除搜索词" else "关闭搜索")
             }
+            dev.piko.ui.workbench.WorkspaceControls(compact = true)
             caption.buttons?.invoke()
         },
         colors = TopAppBarDefaults.topAppBarColors(
@@ -278,7 +280,7 @@ internal fun DriveBrowseTopBar(
                 },
                 middleMinWidth = BrowseTitleMinWidth,
                 reserveMiddle = true,
-                end = caption.buttons,
+                end = { Row { dev.piko.ui.workbench.WorkspaceControls(); caption.buttons?.invoke() } },
                 dragWindow = caption.atTop,
             )
         },

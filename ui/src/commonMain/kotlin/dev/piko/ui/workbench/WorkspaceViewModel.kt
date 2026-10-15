@@ -17,6 +17,7 @@ import dev.piko.shared.presentation.DriveNavigation
 import dev.piko.shared.presentation.WorkspaceContext
 import dev.piko.shared.presentation.WorkspaceContexts
 import dev.piko.shared.presentation.AddLinkViewModel
+import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.DuplicateSession
 import dev.piko.shared.state.InstantDraft
 import dev.piko.shared.state.SaveTargetContext
@@ -47,15 +48,9 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
         else MobileFileWorkspace(services.driveRepository, account, services.cacheStore, viewModelScope)
     val desktopWorkspace: DriveWorkspace? get() = fileWorkspace as? DriveWorkspace
     val contexts = desktopWorkspace?.contexts ?: WorkspaceContexts()
-    var sheetExpanded by mutableStateOf(false)
-    var sheetDetailed by mutableStateOf(false)
-        private set
-    var sheetContextId by mutableStateOf<Long?>(null)
     var activationRevision by mutableStateOf(0L)
         private set
     private var handledActivationRevision = 0L
-    var pendingDuplicateRoot by mutableStateOf<PikoPathBreadcrumb?>(null)
-        private set
     var pendingCloseId by mutableStateOf<Long?>(null)
         private set
     val duplicateSessions = mutableStateMapOf<Long, DuplicateSession>()
@@ -67,34 +62,17 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
         if (!available || !contexts.activate(id)) return
         activationRevision++
         importModels[id]?.resume()
-        if (!desktop && contexts.contextsFlow.value.any { it.id == id && it !is WorkspaceContext.File }) {
-            sheetContextId = id
-            sheetExpanded = false
-            sheetDetailed = false
-        }
     }
 
-    fun activateFileBrowser() {
-        val id = desktopWorkspace?.activeTabId?.value
-            ?: contexts.contextsFlow.value.filterIsInstance<WorkspaceContext.File>().first().id
-        activateContext(id)
-        sheetExpanded = false
-        sheetDetailed = false
-    }
+    private fun fileContextId(): Long = desktopWorkspace?.activeTabId?.value
+        ?: contexts.contextsFlow.value.filterIsInstance<WorkspaceContext.File>().first().id
 
-    fun setSheetExpansion(expanded: Boolean) {
-        if (expanded) sheetContextId?.let(contexts::activate)
-        sheetExpanded = expanded
-    }
+    fun activateFileBrowser() { activateContext(fileContextId()) }
 
-    fun viewSheetDetails(id: Long) {
-        if (!available || !contexts.activate(id)) return
-        sheetContextId = id
-        sheetExpanded = true
-        sheetDetailed = true
+    fun minimizeContext(id: Long) {
+        if (!available) return
+        contexts.minimizeToFile(id, fileContextId())
     }
-
-    fun returnToSheet() { sheetDetailed = false }
 
     fun consumeContextActivation(): Boolean {
         if (activationRevision == handledActivationRevision) return false
@@ -104,15 +82,9 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
 
     fun openDuplicate(root: PikoPathBreadcrumb) {
         if (!available) return
-        if (!desktop) {
-            val existing = contexts.contextsFlow.value.filterIsInstance<WorkspaceContext.Duplicate>().firstOrNull()
-            if (existing != null) {
-                if (existing.root.id == root.id) activateContext(existing.id)
-                else pendingDuplicateRoot = root
-                return
-            }
-        }
-        createDuplicate(root)
+        val existing = contexts.contextsFlow.value.filterIsInstance<WorkspaceContext.Duplicate>()
+            .firstOrNull { it.root.id == root.id }
+        if (existing != null) activateContext(existing.id) else createDuplicate(root)
     }
 
     private fun createDuplicate(root: PikoPathBreadcrumb) {
@@ -121,16 +93,6 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
         duplicateSessions[id] = session
         activateContext(id)
     }
-
-    fun confirmDuplicateReplacement() {
-        val root = pendingDuplicateRoot ?: return
-        pendingDuplicateRoot = null
-        if (!available) return
-        contexts.contextsFlow.value.filterIsInstance<WorkspaceContext.Duplicate>().forEach { closeContext(it.id) }
-        createDuplicate(root)
-    }
-
-    fun cancelDuplicateReplacement() { pendingDuplicateRoot = null }
 
     fun openImport(link: String = "", target: PikoPathBreadcrumb = fileWorkspace.saveTargetContext.currentFolder()) {
         if (!available) return
@@ -143,7 +105,16 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
     }
 
     fun requestCloseContext(id: Long) {
-        if (importModels[id]?.discardNeedsConfirm == true) pendingCloseId = id else closeContext(id)
+        if (!available || contexts.contextsFlow.value.none { it.id == id }) return
+        val model = importModels[id]
+        val draft = model?.state
+        val unsubmittedInput = draft != null && !draft.isBlank && !draft.isSaving && draft.batch?.isSaving != true &&
+            !draft.hasRetainedInstantAttempt && !draft.hasRetainedShareWork && !draft.hasRetainedOfflineSubmission
+        val duplicate = duplicateSessions[id]?.state
+        val hasReport = duplicate?.report?.let { it.identical.isNotEmpty() || it.versions.isNotEmpty() } == true
+        val scanning = duplicate?.phase == DuplicateFinderState.Phase.SCANNING || duplicate?.phase == DuplicateFinderState.Phase.ANALYZING
+        if (model?.discardNeedsConfirm == true || unsubmittedInput || scanning || hasReport) pendingCloseId = id
+        else closeContext(id)
     }
 
     fun confirmCloseContext() { pendingCloseId?.let(::closeContext); pendingCloseId = null }
@@ -158,15 +129,7 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
         duplicateSessions.remove(id)?.let(services::releaseDuplicateSession)
         importModels.remove(id)
         importDrafts.remove(id)?.close()
-        if (sheetContextId == id) {
-            val remaining = contexts.contextsFlow.value.filter { it !is WorkspaceContext.File }
-            sheetContextId = remaining.firstOrNull { it.id == contexts.activeContextId.value }?.id ?: remaining.firstOrNull()?.id
-            sheetContextId?.let(contexts::activate)
-            if (sheetContextId == null) {
-                sheetExpanded = false
-                sheetDetailed = false
-            }
-        }
+        if (pendingCloseId == id) pendingCloseId = null
     }
 
     fun duplicateBrowser(id: Long): DriveBrowserSession = duplicateBrowsers.getOrPut(id) {
@@ -227,21 +190,7 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
             viewModelScope, services.driveRepository, services.uploadManager,
             services.instantSaveRecords, account, services.archiveExtractSession,
             services.folderVaultSession, listsServerWork = true,
-            continuations = dev.piko.shared.presentation.TaskContinuations(
-                drafts = {
-                    val models = importModels.toMap()
-                    contexts.contextsFlow.value.mapNotNull { context -> models[context.id]?.let { model ->
-                        dev.piko.shared.presentation.TaskContinuations.DraftContinuation(context.id, model, { activateContext(context.id) }, { closeContext(context.id) })
-                    } }
-                },
-                duplicates = {
-                    val sessions = duplicateSessions.toMap()
-                    contexts.contextsFlow.value.mapNotNull { context -> sessions[context.id]?.state?.let {
-                        dev.piko.shared.presentation.TaskContinuations.DuplicateContinuation(context.id, it, { activateContext(context.id) }, { closeContext(context.id) })
-                    } }
-                },
-                cleanup = services.trashSession,
-            ),
+            cleanup = services.trashSession,
             fileWrites = services.fileWrites,
             historyEdits = services.historyEdits,
             vaultEdits = services.vaultEntryEdits,
@@ -291,3 +240,10 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
 internal val LocalFileWorkspace = staticCompositionLocalOf<FileWorkspace> { error("文件工作区未提供") }
 
 internal val LocalWorkspaceContexts = staticCompositionLocalOf<WorkspaceViewModel?> { null }
+
+/** Minimizing an inactive view must not steal focus from another retained work item. */
+internal fun WorkspaceContexts.minimizeToFile(id: Long, fileId: Long) {
+    if (activeContextId.value == id && contextsFlow.value.any { it.id == fileId && it is WorkspaceContext.File }) {
+        activate(fileId)
+    }
+}

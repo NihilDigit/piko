@@ -18,6 +18,7 @@ import dev.piko.shared.media.player.PlaybackStatsSection
 import dev.piko.shared.media.player.PlayerAspectRatio
 import dev.piko.shared.media.player.PlaylistEntry
 import dev.piko.ui.LocalPikoServices
+import dev.piko.ui.navigation.Screen
 import dev.piko.ui.adaptive.FormFactor
 import dev.piko.ui.components.LocalPointerSource
 import dev.piko.ui.components.PointerSource
@@ -52,7 +53,14 @@ private class FixedLevel(private var value: Float) : PlayerLevelControl {
  * 文件操作（分享与画质下载对话框按 [fileIdOf] 取到的网盘文件弹出）。
  */
 @Composable
-internal fun PlayerPreview(env: ShotEnv, mode: ThemeMode, shot: PlayerShot, platform: PikoPlatform) {
+internal fun PlayerPreview(
+    env: ShotEnv,
+    mode: ThemeMode,
+    shot: PlayerShot,
+    platform: PikoPlatform,
+    request: Screen.VideoPlayer? = null,
+    onBack: () -> Unit = {},
+) {
     val pointers = remember { PointerSource() }
     CompositionLocalProvider(LocalPikoServices provides env.services, LocalPikoPlatform provides platform,
         LocalPointerSource provides pointers) {
@@ -62,7 +70,11 @@ internal fun PlayerPreview(env: ShotEnv, mode: ThemeMode, shot: PlayerShot, plat
             var speed by remember { mutableFloatStateOf(1f) }
             var rotation by remember { mutableIntStateOf(0) }
             var subtitle by remember { mutableStateOf<String?>("s1") }
-            val episodes = remember { playlist(env) }
+            val episodes = remember(request) {
+                if (request == null) playlist(env)
+                else listOf(PlaylistEntry(fileId = request.fileId, name = request.fileName, label = request.fileName,
+                    sectionKey = "preview", sectionLabel = "预览"))
+            }
             val current = episodes.first()
             val actions = rememberPlayerFileActions(current.fileId, isLocalPlayback = false) {}
             Box(Modifier.fillMaxSize().background(Color.Black).trackPointerSource(pointers)) {
@@ -75,10 +87,10 @@ internal fun PlayerPreview(env: ShotEnv, mode: ThemeMode, shot: PlayerShot, plat
                     errorMessage = shot.error, resumedFromMillis = shot.resumedFromMillis,
                     onPlayPause = { playing = !playing }, onSeek = { position = it }, onSpeedChange = { speed = it },
                     onAspectRatioChange = {}, onQualityChange = {}, onRetry = {}, onRestartFromBeginning = {},
-                    onBack = {}, onToggleFullscreen = {},
+                    onBack = onBack, onToggleFullscreen = {},
                     isFullscreen = shot.fullscreen,
                     isLandscapeVideo = shot.landscapeVideo,
-                    playlist = episodes, currentFileId = current.fileId, hasPrevious = false, hasNext = true,
+                    playlist = episodes, currentFileId = current.fileId, hasPrevious = false, hasNext = episodes.size > 1,
                     audioTracks = listOf(MediaTrack("a1", "日语", "jpn"), MediaTrack("a2", "评论音轨", "jpn")),
                     selectedAudioTrackId = "a1",
                     subtitleTracks = listOf(MediaTrack("s1", "简日双语", "chi"), MediaTrack("s2", "繁日双语", "chi")),

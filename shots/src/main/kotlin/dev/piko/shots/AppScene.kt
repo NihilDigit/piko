@@ -159,6 +159,36 @@ class AppScene private constructor(
 
     fun hasText(text: String) = find(text) != null
 
+    fun exactTextCount(text: String, topmost: Boolean = false): Int =
+        nodes(topmost).count { node -> node.texts().any { it == text } }
+
+    fun editableTexts(): List<String> = nodes().mapNotNull {
+        it.config.getOrNull(SemanticsProperties.EditableText)?.text
+    }
+
+    fun clickEditableText(text: String) {
+        val node = nodes().firstOrNull { it.config.getOrNull(SemanticsProperties.EditableText)?.text == text }
+            ?: error("找不到输入框「$text」；现有输入：${editableTexts()}")
+        click(node.boundsInRoot.center)
+    }
+
+    /** Invoke the visible control's accessibility click; popup roots can expose local coordinates. */
+    fun semanticsClick(text: String) {
+        pumpUntil { nodes().any { it.layoutInfo.isPlaced && it.texts().any { value -> value == text } } }
+        var node: SemanticsNode? = nodes().firstOrNull { it.layoutInfo.isPlaced && it.texts().any { value -> value == text } }
+            ?: error("找不到可见控件「$text」")
+        while (node != null) {
+            val action = node.config.getOrNull(SemanticsActions.OnClick)?.action
+            if (action != null) {
+                check(edt { action() }) { "控件未处理点击：$text" }
+                changed(); idle(500)
+                return
+            }
+            node = node.parent
+        }
+        error("控件没有可访问点击操作：$text")
+    }
+
     /** 文本恰为 [text] 的节点里最靠上的那个：页顶的标签与列表行里的同名标注（「云端」「上传」）并存时用。 */
     fun clickHighest(text: String) {
         pumpUntil(5_000) { nodes().any { node -> node.texts().any { it == text } } }
@@ -384,7 +414,9 @@ class AppScene private constructor(
             val showPlayer = player != null
             val host = if (mobile) {
                 // Android 是应用内压栈的播放器，没有独立窗口；给移动端套桌面的宿主，信息流顶栏会多出「在独立窗口播放」
-                VideoPlayerHost.InApp { _, _ -> }
+                VideoPlayerHost.InApp { request, onBack ->
+                    PlayerPreview(env, mode, PlayerShot(playing = false), platform, request, onBack)
+                }
             } else {
                 // 信息流的独立窗口不画，只记开没开着：应用内据此收起侧栏，弹出后的样子也能截
                 val feedWindow = mutableStateOf(false)

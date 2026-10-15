@@ -129,9 +129,7 @@ import kotlinx.coroutines.launch
 fun TransfersScreen(
     state: TransfersState,
     onNavigateToVideoPlayer: (fileId: String, fileName: String, localPath: String?) -> Unit,
-    onNavigateToInstant: () -> Unit = {},
-    onResumeAddLink: () -> Unit = onNavigateToInstant,
-    onOpenDuplicateReport: () -> Unit = {},
+    onCreateImport: () -> Unit = {},
     /** 跳到网盘里该文件所在目录。找不到（已移动或删除）时返回 false，由本页提示。 */
     onOpenCloudFile: suspend (fileId: String, fileName: String) -> Boolean = { _, _ -> false },
     /** 再点一次底栏的「传输」时加一：回到列表顶部。 */
@@ -229,12 +227,6 @@ fun TransfersScreen(
         )
     }
 
-    fun resumeDraftContaining(contains: (InstantSheetState) -> Boolean): (() -> Unit)? {
-        val continuations = state.continuations ?: return null
-        val entry = continuations.allDraftEntries.firstOrNull { draft -> draft.addLink.state?.let(contains) == true } ?: return null
-        return { continuations.resumeDraft(entry) }
-    }
-
     // 一项的全部操作，详情面板与右键菜单共用：两处给的总是同一组
     fun actionsFor(item: TransferItem): List<SheetAction> = when (item) {
         is TransferItem.UploadPreparing -> uploadPreparationActions(item.work,
@@ -278,7 +270,6 @@ fun TransfersScreen(
         )
         is TransferItem.InstantAttempt -> instantAttemptActions(item.work,
             item.work.locateId?.let { { openCloudFileById(it, item.work.title) } },
-            resumeDraftContaining { it.containsInstantAttempt(item.work.id) },
             {
                 if (item.work.receipt?.requiresInspection == true) {
                     detailsKey = null; state.selectOnly(item.key); confirmingDelete = true
@@ -292,11 +283,9 @@ fun TransfersScreen(
                 } else state.remove(item)
             },
             (item.work.associatedOutputs.values.firstOrNull() ?: item.work.command.target.id.takeIf { it.isNotEmpty() })?.let { { openCloudFileById(it, item.work.title) } },
-            resumeDraftContaining { it.containsShareWork(item.work.id) },
         )
         is TransferItem.OfflineSubmit -> offlineSubmitActions(item.work,
             (item.work.outputId ?: item.work.target.id.takeIf { it.isNotEmpty() })?.let { { openCloudFileById(it, item.work.title) } },
-            resumeDraftContaining { it.containsOfflineSubmission(item.work.id) },
             {
                 if (item.work.status == dev.piko.shared.state.OfflineSubmitStatus.UNCONFIRMED) {
                     detailsKey = null; state.selectOnly(item.key); confirmingDelete = true
@@ -619,10 +608,10 @@ fun TransfersScreen(
                         TransfersPhase.EMPTY -> PullableCentered {
                             PikoEmptyState(
                                 title = "暂无任务",
-                                description = "传输、文件处理和待继续的操作将显示于此",
+                                description = "已提交的传输和文件处理将显示于此",
                                 icon = Icons.Outlined.SyncAlt,
-                                actionText = "新建离线任务",
-                                onActionClick = onNavigateToInstant,
+                                actionText = "添加链接",
+                                onActionClick = onCreateImport,
                             )
                         }
                     }
@@ -763,7 +752,7 @@ private fun TransfersList(
     modifier: Modifier = Modifier,
 ) {
     Box(modifier) {
-        if (sections.isEmpty && (state.continuations?.count(kind) ?: 0) == 0) {
+        if (sections.isEmpty && state.cleanupCount(kind) == 0) {
             // 筛到一项不剩时说清是这一类没有，而不是整页空白像没加载出来
             PullableCentered {
                 Text(
@@ -796,7 +785,9 @@ private fun TransfersList(
                 movable = { false },
             ),
         ) {
-            continuationItems(state.continuations, kind)
+            if (state.cleanupCount(kind) > 0) fullLineItem(key = "cleanup") {
+                dev.piko.ui.workbench.CleanupTaskCard(requireNotNull(state.cleanup), Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp))
+            }
             transferSection("进行中", sections.inProgress, expanded, renderItem)
             transferSection("需要处理", sections.needsAttention, expanded, renderItem, onClearCloud = state::clearFailedCloud)
             transferSection("已完成", sections.completed, expanded, renderItem)

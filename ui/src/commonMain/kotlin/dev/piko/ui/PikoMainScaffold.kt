@@ -277,6 +277,7 @@ private val NavKeyConfiguration = SavedStateConfiguration {
             subclass(Screen.MyShares::class)
             subclass(Screen.Library::class)
             subclass(Screen.Browse::class)
+            subclass(Screen.Workspace::class)
             subclass(Screen.Settings::class)
             subclass(Screen.WebDav::class)
             subclass(Screen.VideoPlayer::class)
@@ -318,10 +319,35 @@ fun PikoMainScaffold(
     val desktopWorkspace = workspaceModel.desktopWorkspace
     var currentTab by rememberSaveable { mutableStateOf(workspaceModel.lastMainTab) }
     val backStack = rememberNavBackStack(NavKeyConfiguration, *workspaceModel.lastNavigation.toTypedArray())
+    val workspaceUiStates = rememberSaveableStateHolder()
+    val workspaceContexts by workspaceModel.contexts.contextsFlow.collectAsStateWithLifecycle()
+    var ongoingWorkShown by remember { mutableStateOf(false) }
+    val retainedWorkIds = remember { mutableSetOf<Long>() }
+    LaunchedEffect(workspaceContexts.map { it.id }) {
+        val live = workspaceContexts.mapTo(mutableSetOf()) { it.id }
+        val retainedRoutes = dev.piko.ui.navigation.retainWorkspaceRoutes(backStack.filterIsInstance<Screen>(), live)
+        backStack.indices.reversed().forEach { index ->
+            val screen = backStack[index]
+            if (screen is Screen.Workspace && screen !in retainedRoutes) backStack.removeAt(index)
+        }
+        if (backStack.isEmpty()) backStack.add(Screen.Home)
+        (retainedWorkIds - live).forEach(workspaceUiStates::removeState)
+        retainedWorkIds.clear()
+        retainedWorkIds.addAll(live)
+    }
     LaunchedEffect(workspaceModel.activationRevision) {
         if (workspaceModel.consumeContextActivation()) {
-            currentTab = MainTab.FILES
-            while (backStack.size > 1) backStack.removeLastOrNull()
+            val active = workspaceModel.contexts.activeContextId.value
+            val context = workspaceModel.contexts.contextsFlow.value.firstOrNull { it.id == active }
+            if (!desktop && context != null && context !is dev.piko.shared.presentation.WorkspaceContext.File) {
+                val next = dev.piko.ui.navigation.openWorkspaceRoute(backStack.filterIsInstance<Screen>(), active)
+                val sharedPrefix = backStack.zip(next).takeWhile { (before, after) -> before == after }.size
+                while (backStack.size > sharedPrefix) backStack.removeLastOrNull()
+                next.drop(sharedPrefix).forEach(backStack::add)
+            } else {
+                currentTab = MainTab.FILES
+                while (backStack.size > 1) backStack.removeLastOrNull()
+            }
         }
     }
     val activeFileTab = desktopWorkspace?.let { workspace ->
@@ -350,14 +376,15 @@ fun PikoMainScaffold(
     LaunchedEffect(pendingLink) {
         pendingLink?.takeIf { it.isNotBlank() }?.let { link ->
             services.instantMagnetRepository.clearPendingMagnet()
-            currentTab = MainTab.FILES
-            while (backStack.size > 1) backStack.removeLastOrNull()
             workspaceModel.openImport(link)
         }
     }
 
 
     val topScreen = backStack.lastOrNull() as? Screen
+    LaunchedEffect(topScreen) {
+        if (topScreen is Screen.Workspace) workspaceModel.contexts.activate(topScreen.contextId)
+    }
     val onHome = backStack.size <= 1
 
     // 桌面任何宽度都是一整条侧边栏：上面是去处，下面是网盘的快捷访问与库，照 Finder 的边栏与资源管理器的导航窗格。
@@ -371,6 +398,7 @@ fun PikoMainScaffold(
     val sidebarOverlays = windowWidth < SidebarPushMinWindowWidth
 
     fun resetToHome() {
+        backStack.filterIsInstance<Screen.Workspace>().lastOrNull()?.let { workspaceModel.minimizeContext(it.contextId) }
         while (backStack.size > 1) backStack.removeLastOrNull()
     }
 
@@ -378,6 +406,7 @@ fun PikoMainScaffold(
     // 与导航栏里「我的」一模一样的页面
     fun popBack() {
         val popped = backStack.removeLastOrNull()
+        if (popped is Screen.Workspace) workspaceModel.minimizeContext(popped.contextId)
         workspaceModel.feed.returningFrom(popped as? Screen)?.let {
             fileWorkspace.returnTo(it)
             currentTab = MainTab.FILES
@@ -798,11 +827,15 @@ fun PikoMainScaffold(
     fun openLibraryFromProfile(library: DriveLibrary) = pushLibrary(library)
 
     fun openDuplicateReport() {
-        val context = workspaceModel.contexts.contextsFlow.value
-            .filterIsInstance<dev.piko.shared.presentation.WorkspaceContext.Duplicate>().firstOrNull() ?: return
-        resetToHome()
-        currentTab = MainTab.FILES
-        workspaceModel.activateContext(context.id)
+        val reports = workspaceModel.contexts.contextsFlow.value
+            .filterIsInstance<dev.piko.shared.presentation.WorkspaceContext.Duplicate>()
+        if (reports.size == 1) workspaceModel.activateContext(reports.single().id)
+        else if (reports.isNotEmpty()) {
+            if (desktop) {
+                currentTab = MainTab.FILES
+                resetToHome()
+            } else ongoingWorkShown = true
+        }
     }
 
     fun libraryDestination(library: DriveLibrary, keywords: String) =
@@ -876,17 +909,8 @@ fun PikoMainScaffold(
                     MainTab.TRANSFERS -> {
                         TransfersScreen(
                             state = workspaceModel.transfers,
-                            onResumeAddLink = {
-                                taskSlot.claim("继续添加链接", "继续", TaskSlot.Task.ADD_LINK) {
-                                    currentTab = MainTab.FILES
-                                    workspaceModel.importModels.keys.firstOrNull()?.let(workspaceModel::activateContext)
-                                }
-                            },
-                            onOpenDuplicateReport = ::openDuplicateReport,
+                            onCreateImport = { workspaceModel.openImport() },
                             scrollToTopRequests = transfersScrollToTop,
-                            onNavigateToInstant = {
-                                currentTab = MainTab.FILES
-                            },
                             onOpenCloudFile = { fileId, _ -> revealInDrive(fileId) },
                             onNavigateToVideoPlayer = ::playLocal,
                         )
@@ -995,8 +1019,6 @@ fun PikoMainScaffold(
         addAll(contributed)
         add(PaletteItem("添加链接", Icons.Outlined.Bolt, "操作", keywords = "magnet link offline 磁力 离线") {
             taskSlot.claim("添加链接", "添加链接", TaskSlot.Task.ADD_LINK) {
-                currentTab = MainTab.FILES
-                resetToHome()
                 workspaceModel.openImport()
             }
         })
@@ -1051,6 +1073,9 @@ fun PikoMainScaffold(
                 if (finder == null || !finder.isScanning) return@LaunchedEffect
                 snapshotFlow { finder.isScanning }.first { !it }
                 if (workspaceModel.duplicateSessions[id]?.state !== finder) return@LaunchedEffect
+                val visibleReport = if (desktop) currentTab == MainTab.FILES && backStack.size == 1 && workspaceModel.contexts.activeContextId.value == id
+                    else (backStack.lastOrNull() as? Screen.Workspace)?.contextId == id
+                if (visibleReport) return@LaunchedEffect
                 val groups = finder.report.identical.size + finder.report.versions.size
                 val message = when {
                     finder.phase == dev.piko.shared.state.DuplicateFinderState.Phase.FAILED -> "查找重复失败"
@@ -1060,8 +1085,6 @@ fun PikoMainScaffold(
                 }
                 val result = rootSnackbar.showSnackbar(message, actionLabel = "查看报告", withDismissAction = true)
                 if (result == SnackbarResult.ActionPerformed && workspaceModel.duplicateSessions[id]?.state === finder) {
-                    resetToHome()
-                    currentTab = MainTab.FILES
                     workspaceModel.activateContext(id)
                 }
             }
@@ -1111,7 +1134,7 @@ fun PikoMainScaffold(
         services.instantSaveRecords.outcomes.collect { outcome ->
             if (outcome.account != services.driveRepository.currentAccount) return@collect
             lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
-            if (outcome.account != services.driveRepository.currentAccount || services.instantSaveRecords.attempts.value.none { it.id == outcome.id } || (workspaceModel.importModels.isNotEmpty() && (desktop || workspaceModel.sheetExpanded))) return@collect
+            if (outcome.account != services.driveRepository.currentAccount || services.instantSaveRecords.attempts.value.none { it.id == outcome.id } || (workspaceModel.importModels.isNotEmpty() && (desktop || (backStack.lastOrNull() as? Screen.Workspace)?.contextId in workspaceModel.importModels))) return@collect
             val answer = rootSnackbar.showSnackbar(outcome.message, actionLabel = "查看任务", withDismissAction = true)
             if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) openTransfers()
         }
@@ -1130,7 +1153,7 @@ fun PikoMainScaffold(
         submissions.outcomes.collect { outcome ->
             if (outcome.account != services.driveRepository.currentAccount || outcome.status == dev.piko.shared.state.OfflineSubmitStatus.COMPLETE) return@collect
             lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
-            if (outcome.account != services.driveRepository.currentAccount || submissions.works.value.none { it.id == outcome.id } || (workspaceModel.importModels.isNotEmpty() && (desktop || workspaceModel.sheetExpanded))) return@collect
+            if (outcome.account != services.driveRepository.currentAccount || submissions.works.value.none { it.id == outcome.id } || (workspaceModel.importModels.isNotEmpty() && (desktop || (backStack.lastOrNull() as? Screen.Workspace)?.contextId in workspaceModel.importModels))) return@collect
             val answer = rootSnackbar.showSnackbar(outcome.message, actionLabel = "查看任务", withDismissAction = true)
             if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) openTransfers()
         }
@@ -1140,7 +1163,7 @@ fun PikoMainScaffold(
             if (outcome.account != services.driveRepository.currentAccount) return@collect
             if (outcome.result.completion == dev.piko.shared.state.ShareSaveCompletion.SUCCEEDED && services.shareSaves.works.value.firstOrNull { it.id == outcome.id }?.undoChangeIds?.isNotEmpty() == true) return@collect
             lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
-            if (outcome.account != services.driveRepository.currentAccount || services.shareSaves.works.value.none { it.id == outcome.id } || (workspaceModel.importModels.isNotEmpty() && (desktop || workspaceModel.sheetExpanded))) return@collect
+            if (outcome.account != services.driveRepository.currentAccount || services.shareSaves.works.value.none { it.id == outcome.id } || (workspaceModel.importModels.isNotEmpty() && (desktop || (backStack.lastOrNull() as? Screen.Workspace)?.contextId in workspaceModel.importModels))) return@collect
             val answer = rootSnackbar.showSnackbar(outcome.result.message, actionLabel = "查看任务", withDismissAction = true)
             if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) openTransfers()
         }
@@ -1188,6 +1211,7 @@ fun PikoMainScaffold(
         LocalShowExtensions provides showExtensions,
         LocalTaskSlot provides taskSlot,
         dev.piko.ui.workbench.LocalWorkspaceContexts provides workspaceModel,
+        dev.piko.ui.workbench.LocalShowOngoingWork provides if (desktop) null else ({ ongoingWorkShown = true }),
     ) {
         Box(
             modifier = modifier
@@ -1289,6 +1313,18 @@ fun PikoMainScaffold(
                             predictivePopTransitionSpec = { _ -> motion.backward() },
                             entryProvider = entryProvider {
                                 entry<Screen.Home> { HomeContent() }
+                                entry<Screen.Workspace> { screen ->
+                                    dev.piko.ui.workbench.WorkspaceContextHost(
+                                        model = workspaceModel,
+                                        onPlay = { file, playlist -> playVideo(file, playlist) },
+                                        onReveal = { file -> coroutineScope.launch { revealInDrive(file.id) } },
+                                        onTransfers = ::openTransfers,
+                                        mobileContextId = screen.contextId,
+                                        onMinimize = { if (backStack.lastOrNull() == screen) popBack() },
+                                        retainedStates = workspaceUiStates,
+                                        fileContent = {},
+                                    )
+                                }
                                 entry<Screen.Browse> { screen ->
                                     val session = remember(screen, workspaceModel) { workspaceModel.browser(screen) }
                                     FilesScreen(
@@ -1383,6 +1419,7 @@ fun PikoMainScaffold(
             FileDragOverlay(fileDrag)
             if (shortcutsOpen) ShortcutsDialog(shortcutModifier, onDismiss = { shortcutsOpen = false })
             ClaimDialog(taskSlot)
+            if (!desktop && ongoingWorkShown) dev.piko.ui.workbench.OngoingWorkSheet(workspaceModel) { ongoingWorkShown = false }
             dev.piko.ui.workbench.WorkspaceContextDialogs(workspaceModel)
             // 窗口缩到没有侧边栏时不画：那时设置回到「我的」里，开着的面板随之收起
             if (paletteOpen) {

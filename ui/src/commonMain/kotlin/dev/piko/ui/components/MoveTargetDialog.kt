@@ -359,7 +359,7 @@ private fun FolderPickerContent(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(top = innerPadding.calculateTopPadding()),
+                .padding(innerPadding),
         ) {
             // 面包屑固定、下面的列表滚动，不画分隔线：文件夹行各有底色，滚到面包屑下沿就被裁掉，层次已经分开
             BreadcrumbBar(
@@ -392,7 +392,7 @@ private fun FolderPickerContent(
                         contentPadding = PaddingValues(
                             start = 16.dp,
                             end = 16.dp,
-                            bottom = innerPadding.calculateBottomPadding() + 8.dp,
+                            bottom = 8.dp,
                         ),
                         verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap),
                     ) {

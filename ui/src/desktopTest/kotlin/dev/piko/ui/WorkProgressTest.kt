@@ -10,7 +10,7 @@ import dev.piko.shared.state.InstantSaveExecution
 import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.upload.UploadStatus
 import dev.piko.shared.upload.UploadTask
-import dev.piko.ui.workbench.closedUntrackedImportCount
+import dev.piko.ui.workbench.untrackedImportCount
 import io.github.nihildigit.pikpak.FileStat
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -32,8 +32,8 @@ class WorkProgressTest {
         val progress = importSaveProgress(executions)
         assertEquals(2, progress.size)
         assertTrue(progress.all { it.title == "保存添加链接" && it.meter == WorkMeter.Indeterminate })
-        assertEquals(1, closedUntrackedImportCount(emptySet(), executions))
-        assertEquals(0, closedUntrackedImportCount(setOf(3), executions))
+        assertEquals(1, untrackedImportCount(executions))
+        assertEquals(0, untrackedImportCount(executions.take(2)))
     }
 
     @Test

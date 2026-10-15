@@ -9,7 +9,6 @@ import dev.piko.shared.data.OfflinePackTracker
 import dev.piko.shared.data.PreviewTempFolder
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.presentation.AddLinkViewModel
-import dev.piko.shared.presentation.TaskContinuations
 import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.DuplicateSession
 import dev.piko.shared.state.InstantSession
@@ -62,7 +61,7 @@ class TransfersAccountSmokeTest {
     }
 
     @Test
-    fun `task page includes resumable drafts reports and cleanup without owning their execution`() = smoke { ownerScope ->
+    fun `task page excludes drafts and reports while retaining submitted work and cleanup`() = smoke { ownerScope ->
         val server = FakePikPakServer()
         val original = server.addFile("a.mkv", content = byteArrayOf(1), hash = "SAME")
         val copy = server.addFile("copy.mkv", content = byteArrayOf(1), hash = "SAME")
@@ -81,7 +80,6 @@ class TransfersAccountSmokeTest {
         })
         val duplicates = DuplicateSession(::childScope) { child, root -> DuplicateFinderState(provider, drive, child, root) }
         val cleanup = TrashSession(drive, ownerScope)
-        val continuations = TaskContinuations(links, duplicates, cleanup)
         val vaultSession = FolderVaultSession(drive, ownerScope)
         val fileWrites = dev.piko.shared.state.FileWriteSession(drive, ownerScope)
         val historyEdits = dev.piko.shared.state.HistoryEditSession(drive, ownerScope)
@@ -91,7 +89,7 @@ class TransfersAccountSmokeTest {
             TaskRepository(provider, drive, instant), packs, ownerScope, drive,
             PikoUploadCoordinator(provider, prefs, NoSources, drive, ownerScope), records, account,
             ArchiveExtractSession(provider, drive, ArchivePasswordVault(provider, MemorySessionStore(), prefs), ownerScope),
-            vaultSession, listsServerWork = true, continuations = continuations, fileWrites = fileWrites, historyEdits = historyEdits, vaultEdits = vaultEdits,
+            vaultSession, listsServerWork = true, cleanup = cleanup, fileWrites = fileWrites, historyEdits = historyEdits, vaultEdits = vaultEdits,
         )
         assertTrue(state.isEmpty)
         links.open("draft text")
@@ -99,25 +97,20 @@ class TransfersAccountSmokeTest {
         duplicates.open(PikoDriveRepository.ROOT_BREADCRUMB)
         val firstReport = assertNotNull(duplicates.state)
         awaitUntil("没有报告页面时扫描仍完成") { firstReport.phase == DuplicateFinderState.Phase.DONE }
-        assertEquals(2, state.counts[TransferKind.ALL])
-        assertEquals(1, state.counts[TransferKind.FILES])
+        assertEquals(0, state.counts[TransferKind.ALL])
+        assertEquals(0, state.counts[TransferKind.FILES])
         assertEquals(0, state.counts[TransferKind.CLOUD])
-        assertTrue(!state.isEmpty)
+        assertTrue(state.isEmpty)
         assertEquals(1, firstReport.report.identical.size)
 
         cleanup.start(listOf(copy.id))
         awaitUntil("任务页可继续处理清理结果") { cleanup.completedCount == 1 && cleanup.progress == null }
-        assertEquals(3, state.counts[TransferKind.ALL])
-        assertEquals(2, state.counts[TransferKind.FILES])
+        assertEquals(1, state.counts[TransferKind.ALL])
+        assertEquals(1, state.counts[TransferKind.FILES])
         links.resume()
         assertEquals("draft text", assertNotNull(links.state).input)
         links.discard()
-        duplicates.open(PikoPathBreadcrumb(other.id, other.name))
-        val replacement = assertNotNull(duplicates.state)
-        continuations.discardDuplicate(firstReport)
-        continuations.stopDuplicate(firstReport)
-        assertTrue(duplicates.state === replacement, "旧报告界面的晚到动作不能结束新扫描")
-        continuations.discardDuplicate(replacement)
+        duplicates.end()
         cleanup.dismiss()
         assertTrue(state.isEmpty)
         vaultSession.archive(PikoPathBreadcrumb(other.id, other.name), includeUnsourced = true)
@@ -150,7 +143,7 @@ class TransfersAccountSmokeTest {
             assertEquals(projected.size, projected.distinctBy { it.key }.size, "同一任务在一份投影中只能出现一次")
             assertEquals(1, state.counts[TransferKind.FILES])
         } catch (error: AssertionError) {
-            throw AssertionError("progress=${state.inProgress.map { it.key }}, attention=${state.needsAttention.map { it.key }}, completed=${state.completed.map { it.key }}, counts=${state.counts}, cleanup=${continuations.hasCleanup}, duplicate=${continuations.duplicate != null}, writes=${fileWrites.works.value.map { it.id to it.result?.completion }}, history=${historyEdits.works.value.map { it.id to it.result?.completion }}", error)
+            throw AssertionError("progress=${state.inProgress.map { it.key }}, attention=${state.needsAttention.map { it.key }}, completed=${state.completed.map { it.key }}, counts=${state.counts}, cleanup=${state.hasCleanup}, duplicate=${duplicates.state != null}, writes=${fileWrites.works.value.map { it.id to it.result?.completion }}, history=${historyEdits.works.value.map { it.id to it.result?.completion }}", error)
         }
         assertEquals(1, state.counts[TransferKind.FILES])
         state.remove(state.completed.filterIsInstance<TransferItem.History>().single())

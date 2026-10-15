@@ -15,8 +15,7 @@ import dev.piko.ui.components.SheetAction
 import dev.piko.ui.workProgress
 
 internal fun shareTransferActions(work: ShareSaveWork, undo: DriveChangeJournal.UndoResult?, canUndo: Boolean, canRecheck: Boolean,
-    onUndo: () -> Unit, onRecheck: () -> Unit, onForget: () -> Unit, onShow: (() -> Unit)?, onResume: (() -> Unit)?): List<SheetAction> = buildList {
-    if (onResume != null) add(SheetAction(Icons.Outlined.Bolt, "继续处理添加链接", onResume))
+    onUndo: () -> Unit, onRecheck: () -> Unit, onForget: () -> Unit, onShow: (() -> Unit)?): List<SheetAction> = buildList {
     if (onShow != null) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中查看", onShow))
     if (!work.isRunning && undo?.status != DriveChangeJournal.UndoStatus.RUNNING) {
         if (canUndo) add(SheetAction(Icons.Outlined.Refresh, if (work.undoLimited) "撤销可用的命名记录" else "撤销本次命名", onUndo))

@@ -5,7 +5,6 @@ import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.DriveLibrary
 import dev.piko.shared.data.PikoCacheStore
 import dev.piko.shared.presentation.DriveWorkspace
-import dev.piko.shared.presentation.TaskContinuations
 import dev.piko.shared.presentation.WorkspaceContext
 import dev.piko.shared.presentation.WorkspaceContexts
 import dev.piko.shared.state.DuplicateFinderState
@@ -129,34 +128,4 @@ class WorkspaceContextsSmokeTest {
         assertEquals(path, workspace.tabsFlow.value.first { it.id == first }.stack)
     }
 
-    @Test
-    fun `continuation entries count both reports and ignore a stale close action`() = smoke { scope ->
-        val server = FakePikPakServer()
-        val provider = server.provider()
-        val repository = PikoDriveRepository(provider, MemoryPreferences())
-        val sessions = mutableMapOf<Long, DuplicateSession>()
-        fun newSession(root: PikoPathBreadcrumb): DuplicateSession = DuplicateSession(
-            newScope = { CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job])) },
-            newState = { child, folder -> DuplicateFinderState(provider, repository, child, folder) },
-        ).also { it.open(root) }
-        sessions[11L] = newSession(PikoDriveRepository.ROOT_BREADCRUMB)
-        sessions[12L] = newSession(PikoPathBreadcrumb(server.addFolder("Other").id, "Other"))
-        val continuations = TaskContinuations(
-            drafts = { emptyList() },
-            duplicates = { sessions.mapNotNull { (id, session) -> session.state?.let { finder ->
-                TaskContinuations.DuplicateContinuation(id, finder, {}, { sessions.remove(id)?.end() })
-            } } },
-            cleanup = TrashSession(repository, scope),
-        )
-        assertEquals(2, continuations.count(TransferKind.FILES))
-        val old = continuations.duplicateEntries.first { it.contextId == 11L }
-        continuations.discardDuplicate(old)
-        assertEquals(1, continuations.count(TransferKind.FILES))
-        assertTrue(sessions[12L]?.state != null)
-
-        sessions[11L] = newSession(PikoDriveRepository.ROOT_BREADCRUMB)
-        continuations.discardDuplicate(old)
-        assertTrue(sessions[11L]?.state != null, "a late action cannot close a replacement with the same ID")
-        sessions.values.forEach { it.end() }
-    }
 }

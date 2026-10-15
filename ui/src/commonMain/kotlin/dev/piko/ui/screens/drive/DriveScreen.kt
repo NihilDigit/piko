@@ -245,6 +245,7 @@ fun DriveScreen(
     onOpenTransfers: () -> Unit = {},
     onOpenDuplicateReport: (() -> Unit)? = null,
     onCloseContext: (() -> Unit)? = null,
+    rootTitle: String? = null,
     interactionEnabled: Boolean = true,
     /**
      * 信息流开着没有，以及视图切换里信息流一项的回调，为 null 时不给这一项。信息流在哪里呈现、
@@ -280,7 +281,7 @@ fun DriveScreen(
     val contexts = dev.piko.ui.workbench.LocalWorkspaceContexts.current
     val navigation = browserSession?.navigation ?: workspace
     val isWorkspaceBrowser = navigation is dev.piko.shared.presentation.TabNavigation || navigation === workspace
-    val acceptsNavigation = interactionEnabled && (!isWorkspaceBrowser || contexts?.desktop != false || !contexts.sheetExpanded)
+    val acceptsNavigation = interactionEnabled
     val clientManager = LocalPikoServices.current.clientManager
     val instantRepo = LocalPikoServices.current.instantMagnetRepository
     val addLink = LocalPikoServices.current.addLink
@@ -1758,7 +1759,7 @@ fun DriveScreen(
 
                             else -> DriveBrowseTopBar(
                                 scrollBehavior = topBarScrollBehavior,
-                                title = activeFolder.name,
+                                title = if (folderStack.size <= navigation.rootDepth) rootTitle ?: activeFolder.name else activeFolder.name,
                                 currentSection = currentSection.takeUnless { galleryActive },
                                 sections = if (galleryActive) emptyList() else state.sectionHeaders.map { it.value.menuLabel },
                                 onSectionSelected = ::jumpToSection,

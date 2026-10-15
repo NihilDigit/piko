@@ -51,9 +51,11 @@ fun PikoDialogConfirm(
     onClick: () -> Unit,
     enabled: Boolean = true,
     destructive: Boolean = false,
+    modifier: Modifier = Modifier,
 ) {
     Button(
         onClick = onClick,
+        modifier = modifier,
         enabled = enabled,
         colors = if (destructive) {
             ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError)

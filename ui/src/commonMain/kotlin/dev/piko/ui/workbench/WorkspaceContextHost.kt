@@ -3,15 +3,12 @@ package dev.piko.ui.workbench
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Bolt
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.MoreVert
-import androidx.compose.material.icons.outlined.ContentCopy
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.unit.dp
@@ -33,11 +30,14 @@ internal fun WorkspaceContextHost(
     onPlay: (FileStat, List<FileStat>) -> Unit,
     onReveal: (FileStat) -> Unit,
     onTransfers: () -> Unit,
+    mobileContextId: Long? = null,
+    onMinimize: () -> Unit = {},
+    retainedStates: androidx.compose.runtime.saveable.SaveableStateHolder? = null,
     fileContent: @Composable () -> Unit,
 ) {
     val contexts by model.contexts.contextsFlow.collectAsStateWithLifecycle()
     val active by model.contexts.activeContextId.collectAsStateWithLifecycle()
-    val states = rememberSaveableStateHolder()
+    val states = retainedStates ?: rememberSaveableStateHolder()
     val retained = remember { mutableSetOf<Long>() }
     LaunchedEffect(contexts.map { it.id }) {
         val live = contexts.mapTo(mutableSetOf()) { it.id }
@@ -59,17 +59,18 @@ internal fun WorkspaceContextHost(
                         onRevealInDrive = onReveal,
                         onOpenTransfers = onTransfers,
                         onCloseContext = { model.requestCloseContext(context.id) },
-                        interactionEnabled = model.desktop || (model.sheetExpanded && model.sheetContextId == context.id),
+                        rootTitle = workspaceTitle(model, context),
+                        interactionEnabled = true,
                         onLibraryLeft = {
                             if (!model.desktop) {
-                                if (model.sheetDetailed) model.returnToSheet() else model.setSheetExpansion(false)
+                                onMinimize()
                             }
                         },
                     )
                 }
                 is WorkspaceContext.ImportDraft -> model.importModels[context.id]?.state?.let { draft ->
                     Box(Modifier.fillMaxSize().padding(horizontal = if (model.desktop) 24.dp else 0.dp)) {
-                        InstantSheetContent(draft, headerShown = !model.desktop, onPreview = { id, name ->
+                        InstantSheetContent(draft, headerShown = !model.desktop, fillHeight = !model.desktop, onPreview = { id, name ->
                             onPlay(FileStat(id = id, name = name), emptyList())
                         })
                     }
@@ -122,118 +123,41 @@ internal fun WorkspaceContextHost(
             )
             Box(Modifier.weight(1f)) { contexts.firstOrNull { it.id == active }?.let { ContextContent(it) } }
         }
-    } else {
-        val pages = contexts.filter { it !is WorkspaceContext.File }.map { context ->
-            val finder = model.duplicateSessions[context.id]?.state
-            val draft = model.importModels[context.id]?.state
-            val summary = draft?.summary()
-            val title = when (context) {
-                is WorkspaceContext.Duplicate -> "查重：${context.root.name}"
-                else -> summary?.title ?: "添加链接"
-            }
-            val status = if (finder != null) {
-                when {
-                    finder.isScanning -> "正在查找重复"
-                    finder.errorMessage != null -> "扫描未完成"
-                    finder.scanStop != null || finder.failedFolders > 0 -> "部分扫描结果"
-                    else -> "扫描完成"
+    } else if (mobileContextId != null) {
+        val context = contexts.firstOrNull { it.id == mobileContextId } ?: return
+        CompositionLocalProvider(LocalWorkspaceSurface provides WorkspaceSurface(context.id, onMinimize)) {
+            BackHandler(onBack = onMinimize)
+            if (context is WorkspaceContext.ImportDraft) {
+                dev.piko.ui.components.PikoScaffold(
+                    modifier = Modifier.fillMaxSize().imePadding(),
+                    topBar = {
+                        dev.piko.ui.components.PikoTopBar(
+                            title = "添加链接",
+                            persistentActions = { WorkspaceControls() },
+                        )
+                    },
+                    snackbarHost = { SnackbarHost(dev.piko.ui.LocalRootSnackbar.current) },
+                ) { padding ->
+                    Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) { ContextContent(context) }
                 }
-            } else summary?.status ?: "导入草稿"
-            TaskSheetModel(
-                key = context.id, title = title, summary = status,
-                expanded = model.sheetExpanded,
-                onExpandedChange = model::setSheetExpansion,
-                header = {
-                    ContextPeekHeader(
-                        title, status,
-                        if (finder != null) Icons.Outlined.ContentCopy else Icons.Outlined.Bolt,
-                        if (context is WorkspaceContext.Duplicate) "结束查重" else "放弃草稿",
-                    ) { model.requestCloseContext(context.id) }
-                },
-                body = { ContextContent(context) },
-                tabTitle = when (context) {
-                    is WorkspaceContext.Duplicate -> "查重：${context.root.name}"
-                    else -> draft?.resolution?.resource?.name ?: if (model.importDrafts.size > 1) {
-                        "添加链接 ${model.importDrafts[context.id]?.id ?: ""}"
-                    } else "添加链接"
-                },
-                actions = {
-                    ContextActions(title, if (context is WorkspaceContext.Duplicate) "结束查重" else "放弃草稿") {
-                        model.requestCloseContext(context.id)
-                    }
-                },
-            )
+            } else Box(Modifier.fillMaxSize().imePadding()) { ContextContent(context) }
         }
-        val detailed = contexts.firstOrNull { it.id == model.sheetContextId && it !is WorkspaceContext.File }
-        if (model.sheetDetailed && detailed != null) {
-            BackHandler { model.returnToSheet() }
-            Column(Modifier.fillMaxSize()) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                    IconButton(onClick = model::returnToSheet) {
-                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回面板")
-                    }
-                    Text(
-                        pages.first { it.key == detailed.id }.title,
-                        modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium,
-                        maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                    )
-                    IconButton(onClick = { model.requestCloseContext(detailed.id) }) {
-                        Icon(Icons.Outlined.Close, "关闭上下文")
-                    }
-                }
-                Box(Modifier.weight(1f)) { ContextContent(detailed) }
-            }
-        } else TaskSheetScaffold(
-            models = pages, activeKey = model.sheetContextId, expanded = model.sheetExpanded,
-            onActiveKeyChange = { model.sheetContextId = it as Long; model.contexts.activate(it) },
-            onExpandedChange = model::setSheetExpansion,
-            onViewDetails = { model.viewSheetDetails(it as Long) },
-            content = fileContent,
-        )
-    }
-}
-
-@Composable
-private fun ContextPeekHeader(title: String, status: String?, icon: ImageVector, closeLabel: String, onClose: () -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 12.dp, bottom = 12.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-        Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
-            status?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }
-        }
-        ContextActions(title, closeLabel, onClose)
-    }
-}
-
-@Composable
-private fun ContextActions(title: String, closeLabel: String, onClose: () -> Unit) {
-    var menuShown by remember(title) { mutableStateOf(false) }
-    Box {
-        IconButton(onClick = { menuShown = true }) { Icon(Icons.Outlined.MoreVert, "操作：$title") }
-        DropdownMenu(expanded = menuShown, onDismissRequest = { menuShown = false }) {
-            DropdownMenuItem(text = { Text(closeLabel) }, onClick = { menuShown = false; onClose() })
-        }
-    }
+    } else fileContent()
 }
 
 @Composable
 internal fun WorkspaceContextDialogs(model: WorkspaceViewModel) {
-    model.pendingDuplicateRoot?.let { root ->
-        PikoDialog(
-            onDismissRequest = model::cancelDuplicateReplacement,
-            title = { Text("替换当前查重？") },
-            text = { Text("当前扫描会停止，结果会被丢弃，然后查找「${root.name}」中的重复文件。") },
-            confirmButton = { PikoDialogConfirm("替换", model::confirmDuplicateReplacement, destructive = true) },
-            dismissButton = { TextButton(model::cancelDuplicateReplacement) { Text("取消") } },
-        )
-    }
-    if (model.pendingCloseId != null) PikoDialog(
+    val context = model.contexts.contextsFlow.value.firstOrNull { it.id == model.pendingCloseId } ?: return
+    val duplicate = context is WorkspaceContext.Duplicate
+    val scanning = model.duplicateSessions[context.id]?.state?.isScanning == true
+    val name = workspaceTitle(model, context)
+    PikoDialog(
         onDismissRequest = model::cancelCloseContext,
-        title = { Text("放弃添加？") },
-        text = { Text("未提交的内容将被丢弃。已提交的保存继续执行，结果可在任务页查看。") },
-        confirmButton = { PikoDialogConfirm("放弃", model::confirmCloseContext, destructive = true) },
+        title = { Text(if (duplicate) "关闭查重？" else "关闭草稿？") },
+        text = { Text("「$name」" + if (duplicate) (if (scanning) "的扫描将停止，已有结果不再保留。已执行的文件操作不会撤销。" else "的本次查重结果将不再保留。已执行的文件操作不会撤销。")
+            else "中未提交的内容将不再保留。已提交的保存继续执行，结果可在任务页查看。") },
+        confirmButton = { PikoDialogConfirm("关闭", model::confirmCloseContext, destructive = true,
+            modifier = Modifier.semantics { contentDescription = "确认关闭工作" }) },
         dismissButton = { TextButton(model::cancelCloseContext) { Text("取消") } },
     )
 }

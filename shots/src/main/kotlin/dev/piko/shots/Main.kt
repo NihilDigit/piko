@@ -40,8 +40,16 @@ private const val USAGE = """用法：piko-shots <命令> [选项]
         --pump <毫秒>         多等一会儿：等到画面稳定，至多这么久
   texts [--size <宽>x<高>] [步骤…]
       不存图，打印界面上所有文本与内容描述，写 --click 时找名字用。
-  verify-workspaces
-      用假 PikPak 服务端和真实界面操作验证移动端任务面板、桌面工作区上下文。
+  verify-workspaces [--only phone|landscape|tablet|desktop|desktop-narrow|selection|isolation]
+      用假 PikPak 服务端和真实界面验证工作保留、切换、关闭与查重目录导航。
+  verify-workspace-origins
+      验证库、搜索、外部链接与任务定位页面的工作恢复及返回来源。
+  verify-workspace-imports
+      验证分享、批量链接的独立编辑和同一应用会话内的界面重建。
+  verify-workspace-preview
+      验证真实草稿预览入口及返回；假服务不支持播放时记录实际限制。
+  verify-workspace-target-picker
+      验证三种移动窗口的目标选择器布局与末尾文件夹选择回写。
 
 窗口尺寸按 dp 计（密度 1），默认 1440x900。窄于 840 按移动端拍，--mobile 与 --desktop 显式指定
 （平板横屏是 --size 1280x800 --mobile）。移动端的左键按成触屏。输出默认在 build/shots/<名字>.png，
@@ -265,7 +273,7 @@ private fun blockSteps(): List<Step> {
 private fun pickerSteps(form: Form): List<Step> = action(form, "文档", "移动到") + listOf(Step.Pump(1_500))
 
 /** 查重要有结果：另一个字幕组的两集，与「动画」里的同集构成「同集不同版本」。 */
-private fun FakePikPak.seedDuplicates() {
+internal fun FakePikPak.seedDuplicates() {
     val folder = addFolder("备份")
     for (ep in 1..2) {
         addFile("[ANi] Frieren - %02d [1080P][Baha][WEB-DL][AAC AVC][CHT].mp4".format(ep), 380L * (1 shl 20), parentId = folder.id)
@@ -502,7 +510,7 @@ private val standardSet: List<Shot> = buildList {
     addAll(tri("panel-addlink") { form -> if (form.desktop) listOf(Step.Pump(600), Step.Click("添加链接"), Step.Pump(1_000)) else fab("添加链接") })
     addAll(tri("panel-addlink-share", initialLink = "https://mypikpak.com/s/SHOT") { listOf(Step.Pump(2_500)) })
     addAll(tri("panel-addlink-magnet", initialLink = "magnet:?xt=urn:btih:" + "a".repeat(40)) { listOf(Step.Pump(2_500)) })
-    // 查找重复：桌面是独立标签，移动端在可与添加链接切换的底部面板；不加重复数据，停在无结果。
+    // 查找重复：桌面是独立标签，移动端是完整工作页；不加重复数据，停在无结果。
     addAll(tri("panel-duplicates") { form ->
         startDuplicates(form) + if (form.desktop) listOf(Step.Click("查重"), Step.Pump(1_000)) else emptyList()
     })
@@ -682,17 +690,16 @@ private val standardSet: List<Shot> = buildList {
     addAll(playerShots("player-quality", PlayerShot(playing = false)) { playerPanel("播放设置", "下载") + listOf(Step.Pump(1_500)) })
 
     // ===== 任务占用与叠加 =====
-    // 移动端叠加：添加链接与查重默认在低位预览，文件列表里可以继续打开另一件事。
+    // 移动端先最小化完整工作页，再从文件页打开另一件事。
     addAll(tri("task-claim-addlink-to-duplicates", forms = MOBILE_ONLY, initialLink = "magnet:?xt=urn:btih:" + "a".repeat(40)) {
-        listOf(Step.Pump(2_000)) + startDuplicates(it)
+        listOf(Step.Pump(2_000), Step.Click("最小化"), Step.Pump(600)) + startDuplicates(it)
     })
-    // 不加重复数据：扫完停在 sheet 里，收起后会话还在
-    addAll(tri("task-claim-duplicates-to-addlink", forms = MOBILE_ONLY) { startDuplicates(it) + fab("添加链接") })
-    // 从全屏详情返回仍保留面板中的查重上下文。
+    // 不加重复数据：最小化后报告仍可从工作列表恢复。
+    addAll(tri("task-claim-duplicates-to-addlink", forms = MOBILE_ONLY) { startDuplicates(it) + listOf(Step.Click("最小化"), Step.Pump(600)) + fab("添加链接") })
+    // 最小化完整报告，打开保留工作列表。
     addAll(tri("task-leave-duplicates", forms = MOBILE_ONLY, extraSeed = { seedDuplicates() }) {
         startDuplicates(it) + listOf(
-            Step.Swipe(Offset(it.width / 2f, it.height * 0.84f), Offset(it.width / 2f, it.height * 0.3f)),
-            Step.Click("查看更多"), Step.Click("返回面板"), Step.Pump(800),
+            Step.Click("最小化"), Step.Pump(800), Step.Click("正在进行"), Step.Pump(800),
         )
     })
     addAll(tri("task-claim-feed", forms = MOBILE_ONLY, extraSeed = feedSeed) {
@@ -740,7 +747,11 @@ fun main(args: Array<String>) {
     ShotDirs.start()
     val code = try {
         when (args[0]) {
-            "verify-workspaces" -> { verifyWorkspaceContexts(); 0 }
+            "verify-workspaces" -> { verifyWorkspaceContexts(option(rest, "--only")); 0 }
+            "verify-workspace-origins" -> { verifyWorkspaceOrigins(); 0 }
+            "verify-workspace-imports" -> { verifyWorkspaceImportVariants(); 0 }
+            "verify-workspace-preview" -> { verifyWorkspacePreview(); 0 }
+            "verify-workspace-target-picker" -> { verifyWorkspaceTargetPicker(); 0 }
             "all" -> if (renderAll(rest, outDir)) 0 else 1
             "shot" -> {
                 val name = rest.firstOrNull()?.takeUnless { it.startsWith("-") } ?: fail("shot 要一个名字")

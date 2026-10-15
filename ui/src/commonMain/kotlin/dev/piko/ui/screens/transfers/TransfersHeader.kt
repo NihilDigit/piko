@@ -231,6 +231,7 @@ private fun CompactTransfersHeader(
     )
     if (selectedCount > 0) {
         PikoTopBar(
+            persistentActions = { dev.piko.ui.workbench.WorkspaceControls(compact = true) },
             title = "已选择 $selectedCount 项",
             navigationIcon = { TooltipIconButton(Icons.Outlined.Close, "取消选择", state::clearSelection, shortcut = "Esc") },
             actions = listOfNotNull(
@@ -284,7 +285,7 @@ private fun CompactTransfersHeader(
             middleMinWidth = if (filterInline) InlineFilterMinWidth else 96.dp,
             reserveMiddle = true,
             fillMiddle = true,
-            end = caption.buttons,
+            end = { Row { dev.piko.ui.workbench.WorkspaceControls(); caption.buttons?.invoke() } },
             dragWindow = caption.atTop,
         )
     }

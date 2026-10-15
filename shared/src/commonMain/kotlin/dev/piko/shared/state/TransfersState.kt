@@ -201,7 +201,7 @@ class TransfersState(
     private val vault: FolderVaultSession,
     /** 是否包含服务端文件处理。主任务页两端都包含，局部投影可关闭。 */
     private val listsServerWork: Boolean,
-    val continuations: dev.piko.shared.presentation.TaskContinuations? = null,
+    val cleanup: TrashSession? = null,
     val fileWrites: FileWriteSession? = null,
     val historyEdits: HistoryEditSession? = null,
     val vaultEdits: VaultEntryEditSession? = null,
@@ -209,6 +209,9 @@ class TransfersState(
     val offlineSubmits: OfflineSubmitSession? = taskRepo.offlineSubmissions,
     receiving: dev.piko.shared.presentation.ReceivingActivity? = null,
 ) {
+    val hasCleanup: Boolean get() = cleanup?.let { it.progress != null || it.failure != null || it.completedCount > 0 || it.isUndoing } == true
+    fun cleanupCount(kind: TransferKind): Int = if (hasCleanup && (kind == TransferKind.ALL || kind == TransferKind.FILES)) 1 else 0
+
     private val cloud = OfflineTasksState(taskRepo, scope)
 
     private fun isMine(task: DownloadTask): Boolean = task.belongsTo(account)
@@ -233,7 +236,7 @@ class TransfersState(
     private var journal by mutableStateOf(driveRepo.changes.state.value)
     private var writeRecords by mutableStateOf(fileWrites?.works?.value.orEmpty().filter { it.account == account })
     private var historyRecords by mutableStateOf(historyEdits?.works?.value.orEmpty().filter { it.account == account })
-    private val fileCommands = fileWrites?.let { dev.piko.shared.presentation.FileCommands(driveRepo, it, account, continuations?.cleanup, vault, vaultEdits, shareSaves, receiving) }
+    private val fileCommands = fileWrites?.let { dev.piko.shared.presentation.FileCommands(driveRepo, it, account, cleanup, vault, vaultEdits, shareSaves, receiving) }
     private var vaultEditRecords by mutableStateOf(vaultEdits?.works?.value.orEmpty().filter { it.account == account })
 
     private fun requestUndo(id: Long): Boolean {
@@ -349,7 +352,7 @@ class TransfersState(
     val counts: Map<TransferKind, Int> by derivedStateOf {
         val sections = allSections
         val items = sections.inProgress + sections.needsAttention + sections.completed + sections.outputDeleted
-        TransferKind.entries.associateWith { kind -> items.count(kind::matches) + (continuations?.count(kind) ?: 0) }
+        TransferKind.entries.associateWith { kind -> items.count(kind::matches) + cleanupCount(kind) }
     }
 
     /** 下行与上行的总速度，只算本机的下载与上传：云端离线任务没有速度可报。 */
@@ -583,7 +586,7 @@ class TransfersState(
 
     /** 一项传输也没有，不论筛选。筛选后为空另看各段，界面给的是「这一类没有任务」。 */
     val isEmpty: Boolean by derivedStateOf {
-        allSections.isEmpty && (continuations?.count(TransferKind.ALL) ?: 0) == 0
+        allSections.isEmpty && !hasCleanup
     }
 
     init {

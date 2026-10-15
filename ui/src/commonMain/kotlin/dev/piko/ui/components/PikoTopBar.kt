@@ -78,13 +78,14 @@ fun PikoTopBar(
     alignToReadableWidth: Boolean = false,
     /** 不论宽窄都只在竖三点菜单里的项，排在收起的 [actions] 之后。非空时竖三点一直在。 */
     moreActions: List<SheetAction> = emptyList(),
+    persistentActions: (@Composable () -> Unit)? = null,
 ) {
     if (alignToReadableWidth) {
         BoxWithConstraints(modifier) {
-            PikoTopBarContent(title, Modifier, navigationIcon, onBackClick, actions, moreActions, scrollBehavior, colors, readableSidePadding(maxWidth))
+            PikoTopBarContent(title, Modifier, navigationIcon, onBackClick, actions, moreActions, scrollBehavior, colors, readableSidePadding(maxWidth), persistentActions)
         }
     } else {
-        PikoTopBarContent(title, modifier, navigationIcon, onBackClick, actions, moreActions, scrollBehavior, colors, 0.dp)
+        PikoTopBarContent(title, modifier, navigationIcon, onBackClick, actions, moreActions, scrollBehavior, colors, 0.dp, persistentActions)
     }
 }
 
@@ -100,6 +101,7 @@ private fun PikoTopBarContent(
     scrollBehavior: TopAppBarScrollBehavior?,
     colors: TopAppBarColors,
     sideInset: Dp,
+    persistentActions: (@Composable () -> Unit)?,
 ) {
     // 贴着窗口右上角时（标题栏并进内容），窗口按钮接在动作按钮后面
     val caption = rememberCaptionSlot()
@@ -142,7 +144,7 @@ private fun PikoTopBarContent(
                 fillMiddle = true,
                 alwaysMore = moreActions.isNotEmpty(),
                 moreActions = moreActions,
-                end = caption.buttons,
+                end = { androidx.compose.foundation.layout.Row { persistentActions?.invoke(); caption.buttons?.invoke() } },
                 dragWindow = caption.atTop,
             )
         },

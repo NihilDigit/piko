@@ -47,6 +47,7 @@ dependencies {
 // Gradle 跑在 JDK 21 上时 run 默认也用它，加载 25 编出的类即失败；理由同 desktopApp 的 run
 tasks.named<JavaExec>("run") {
     javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(25) }
+    jvmArgs = application.applicationDefaultJvmArgs.toList() + listOf("-Dstdout.encoding=UTF-8", "-Dstderr.encoding=UTF-8")
     // 相对路径的输出目录落在仓库根下的 build/shots，与从哪个目录调用 Gradle 无关
     workingDir = rootProject.projectDir
 }

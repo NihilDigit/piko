@@ -33,8 +33,8 @@ internal class TransferActivity(val downloadSpeed: Long, val uploadSpeed: Long, 
     val hasReadout: Boolean get() = downloadSpeed > 0 || uploadSpeed > 0 || count > 0
 }
 
-internal fun closedUntrackedImportCount(liveDraftIds: Set<Long>, executions: List<InstantSaveExecution>): Int =
-    executions.count { it.draftId !in liveDraftIds && !it.trackedInstantAttempt && !it.trackedOffline }
+internal fun untrackedImportCount(executions: List<InstantSaveExecution>): Int =
+    executions.count { !it.trackedInstantAttempt && !it.trackedOffline }
 
 /**
  * 眼下当前账号进行中的传输：本机的下载与上传、解压与归档，加上云端的离线任务。离线任务不像下载那样有进程级的状态，
@@ -83,19 +83,13 @@ internal fun rememberTransferActivity(
             record.needsAttention(undo) || undo?.status == DriveChangeJournal.UndoStatus.RUNNING
         }
     val cleanup = services.trashSession
-    val liveDrafts = services.instantSession.drafts
-    val untrackedClosedSaves = closedUntrackedImportCount(liveDrafts.mapTo(HashSet()) { it.id }, services.instantSession.executingSaves)
-    val continuations = services.duplicateSessions.count { session ->
-        session.state?.let { it.isScanning || it.phase == dev.piko.shared.state.DuplicateFinderState.Phase.FAILED } == true
-    } +
-        (if (cleanup.progress != null || cleanup.failure != null || cleanup.isUndoing) 1 else 0) +
-        liveDrafts.count { draft -> draft.state.let { !it.isBlank && !it.hasRetainedInstantAttempt && !it.hasRetainedShareWork && !it.hasRetainedOfflineSubmission } } +
-        untrackedClosedSaves
+    val untrackedSaves = untrackedImportCount(services.instantSession.executingSaves)
+    val cleanupCount = if (cleanup.progress != null || cleanup.failure != null || cleanup.isUndoing) 1 else 0
     return TransferActivity(
         downloadSpeed = activeDownloads.sumOf { it.speedBytesPerSec },
         uploadSpeed = activeUploads.sumOf { it.speedBytesPerSec },
         // 文件夹下载一批算一项，与传输页一致；按文件数的话一个文件夹就是上千项
-        count = activeDownloads.distinctBy { it.batch?.id ?: it.taskId }.size + activeUploads.size + preparingUploads.count { it.account == account } + activeCloud + serverWork + continuations +
+        count = activeDownloads.distinctBy { it.batch?.id ?: it.taskId }.size + activeUploads.size + preparingUploads.count { it.account == account } + activeCloud + serverWork + cleanupCount + untrackedSaves +
             listings.values.count { it.account == account } + fileWrites.count { work ->
                 work.account == account && (work.isRunning || work.result?.completion != dev.piko.shared.state.FileWriteCompletion.SUCCEEDED ||
                     work.result?.undoChangeIds.orEmpty().any { journal.undo[it]?.status in setOf(DriveChangeJournal.UndoStatus.RUNNING, DriveChangeJournal.UndoStatus.FAILED) })

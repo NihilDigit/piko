@@ -3,6 +3,10 @@ package dev.piko.ui.screens.instant
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,6 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -56,8 +61,10 @@ import androidx.compose.material3.TriStateCheckbox
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -129,10 +136,12 @@ fun InstantSheetContent(
     inSideSheet: Boolean = false,
     /** 窄窗口的 sheet 顶上已有一行标题与状态（收起时露出的那一截），内容里不再画标题。 */
     headerShown: Boolean = false,
+    fillHeight: Boolean = false,
     /** 预览的文件已秒传进 Piko-Temp，交给播放器打开。 */
     onPreview: (fileId: String, fileName: String) -> Unit,
 ) {
     val platform = LocalPikoPlatform.current
+    val platformDownloads = LocalPikoServices.current.downloadManager
     var showTargetPicker by remember { mutableStateOf(false) }
 
     val batch = state.batch
@@ -177,56 +186,9 @@ fun InstantSheetContent(
     val shortcutModifier = platform.shortcutModifier
 
     val focusManager = LocalFocusManager.current
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            // 侧边面板是整窗高：占满它，保存栏才能钉在底部，文件树用满中间的高度。
-            // 底部 sheet 随内容定高，照旧收缩
-            .then(if (inSideSheet) Modifier.fillMaxHeight() else Modifier)
-            // 点面板的空白处交出输入框的焦点。子项自己的点击先消费，走不到这里
-            .pointerInput(Unit) { detectTapGestures { focusManager.clearFocus() } }
-            .onPreviewKeyEvent { event ->
-                val save = saveByShortcut
-                if (save != null && event.type == KeyEventType.KeyDown && event.key == Key.Enter && shortcutModifier.isPressed(event)) {
-                    save()
-                    true
-                } else {
-                    false
-                }
-            }
-            .padding(horizontal = if (inSideSheet) 16.dp else 24.dp)
-            .padding(bottom = if (inSideSheet) 16.dp else 24.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        val openedRow = batch?.openedRow
-        if (batch != null) {
-            if (openedRow != null) {
-                BatchRowDetail(batch, openedRow, notice, onReceipt = showReceipt)
-            } else {
-                BatchList(
-                    batch, state, notice,
-                    showTitle = !inSideSheet && !headerShown,
-                    fillHeight = inSideSheet,
-                    onPickTarget = { showTargetPicker = true },
-                )
-            }
-            return@Column
-        }
-
-        // 内容与保存栏分开：侧边面板里内容占满中间，保存栏钉在底部，解析前后、勾多勾少，按钮都在同一处
-        Column(
-            modifier = Modifier.weight(1f, fill = inSideSheet),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            InstantBody(
-                state = state,
-                shareState = shareState,
-                showTitle = !inSideSheet && !headerShown,
-                notice = notice,
-                onReceipt = showReceipt,
-            )
-        }
-
+    val fileListState = key(state.input) { rememberLazyListState() }
+    @Composable
+    fun Footer() {
         if (shareState != null) {
             ShareSaveFooter(state = shareState, target = state.target, canonicalNames = state.useCanonicalNames, onPickTarget = { showTargetPicker = true })
         } else if (action != null) {
@@ -238,6 +200,90 @@ fun InstantSheetContent(
             )
             SaveBar(state = state, action = action, onSave = saveMagnet)
         }
+    }
+    BoxWithConstraints(Modifier.fillMaxWidth().then(if (inSideSheet || fillHeight) Modifier.fillMaxHeight() else Modifier)) {
+        val splitSelection = fillHeight && maxWidth >= 720.dp && maxHeight < 480.dp && batch == null &&
+            (shareState != null || state.resolution != null)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                // 侧边面板是整窗高：占满它，保存栏才能钉在底部，文件树用满中间的高度。
+                // 底部 sheet 随内容定高，照旧收缩
+                .then(if (inSideSheet || fillHeight) Modifier.fillMaxHeight() else Modifier)
+                // 点面板的空白处交出输入框的焦点。子项自己的点击先消费，走不到这里
+                .pointerInput(Unit) { detectTapGestures { focusManager.clearFocus() } }
+                .onPreviewKeyEvent { event ->
+                    val save = saveByShortcut
+                    if (save != null && event.type == KeyEventType.KeyDown && event.key == Key.Enter && shortcutModifier.isPressed(event)) {
+                        save()
+                        true
+                    } else {
+                        false
+                    }
+                }
+                .padding(horizontal = if (inSideSheet) 16.dp else 24.dp)
+                .padding(bottom = if (inSideSheet) 16.dp else 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            val openedRow = batch?.openedRow
+            if (batch != null) {
+                if (openedRow != null) {
+                    BatchRowDetail(batch, openedRow, notice, onReceipt = showReceipt)
+                } else {
+                    BatchList(
+                        batch, state, notice,
+                        showTitle = !inSideSheet && !headerShown,
+                        fillHeight = inSideSheet || fillHeight,
+                        onPickTarget = { showTargetPicker = true },
+                    )
+                }
+                return@Column
+            }
+
+            if (splitSelection) {
+                Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                    Column(Modifier.weight(.45f).fillMaxHeight().verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        InstantBody(state, shareState, false, notice, showReceipt, showSelection = false)
+                        Footer()
+                    }
+                    Column(Modifier.weight(.55f).fillMaxHeight()) {
+                        if (shareState != null) {
+                            ShareSaveSection(
+                                state = shareState, canonicalNames = state.useCanonicalNames,
+                                onCanonicalNamesChange = state::updateUseCanonicalNames,
+                                onPreview = state::previewSharedFile, previewingId = state.previewingSharedId,
+                                onDownload = { file ->
+                                    platformDownloads.enqueueResolved(listOf(io.github.nihildigit.pikpak.ResolvedFile(file.name, file.sizeBytes, file.hash)), state.target?.id.orEmpty())
+                                    showReceipt(QUEUED_RECEIPT)
+                                },
+                            )
+                        } else {
+                            SelectionHeader(state)
+                            FileTreeList(state, { showReceipt(QUEUED_RECEIPT) }, Modifier.weight(1f), fileListState)
+                        }
+                    }
+                }
+            } else {
+                // 内容与保存栏分开：侧边面板里内容占满中间，保存栏钉在底部，解析前后、勾多勾少，按钮都在同一处
+                Column(
+                    modifier = Modifier.weight(1f, fill = inSideSheet || fillHeight),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    InstantBody(
+                        state = state,
+                        shareState = shareState,
+                        showTitle = !inSideSheet && !headerShown,
+                        notice = notice,
+                        onReceipt = showReceipt,
+                        fileListState = fileListState,
+                    )
+                }
+
+                Footer()
+            }
+        }
+
     }
 
     askOffline?.let { confirm ->
@@ -294,6 +340,8 @@ private fun ColumnScope.InstantBody(
     showTitle: Boolean,
     notice: PanelNotice?,
     onReceipt: (String) -> Unit,
+    showSelection: Boolean = true,
+    fileListState: LazyListState? = null,
 ) {
     val platform = LocalPikoPlatform.current
     val downloads = LocalPikoServices.current.downloadManager
@@ -333,7 +381,7 @@ private fun ColumnScope.InstantBody(
         },
     )
 
-    if (shareState != null) {
+    if (shareState != null && showSelection) {
         ShareSaveSection(
             state = shareState,
             canonicalNames = state.useCanonicalNames,
@@ -370,6 +418,8 @@ private fun ColumnScope.InstantBody(
             // 链接就在上面的输入框里
             showCopyLink = false,
             onDownloaded = { onReceipt(QUEUED_RECEIPT) },
+            showFileSelection = showSelection,
+            fileListState = fileListState,
         )
     }
 }
@@ -605,6 +655,8 @@ internal fun ColumnScope.ResolutionSection(
     showCopyLink: Boolean,
     /** 文件行上的「下载」把文件加进了本机下载队列，面板据此给回执。 */
     onDownloaded: () -> Unit,
+    showFileSelection: Boolean = true,
+    fileListState: LazyListState? = null,
 ) {
     // 批量列表里点开的一行没有输入框，链接看不到，标题右侧留一个复制入口，好转发或换设备打开
     Row(verticalAlignment = Alignment.Top) {
@@ -650,10 +702,12 @@ internal fun ColumnScope.ResolutionSection(
     UnindexedBanner(state)
     if (state.offersCanonicalNames) CanonicalNamesToggle(state.useCanonicalNames, enabled = state.canEdit, onChange = state::updateUseCanonicalNames)
 
+    if (!showFileSelection) return
+
     // 列表连同它的页眉占去剩下的高度，短列表照常收缩
     Column(modifier = Modifier.weight(1f, fill = false)) {
         SelectionHeader(state)
-        FileTreeList(state, onDownloaded = onDownloaded, modifier = Modifier.weight(1f, fill = false))
+        FileTreeList(state, onDownloaded = onDownloaded, modifier = Modifier.weight(1f, fill = false), retainedListState = fileListState)
     }
 }
 
@@ -727,7 +781,7 @@ private fun SelectionHeader(state: InstantSheetState) {
 
 /** 层级、展开状态与组统计都在 [InstantSheetState]，这里只按行渲染。 */
 @Composable
-private fun FileTreeList(state: InstantSheetState, onDownloaded: () -> Unit, modifier: Modifier = Modifier) {
+private fun FileTreeList(state: InstantSheetState, onDownloaded: () -> Unit, modifier: Modifier = Modifier, retainedListState: LazyListState? = null) {
     val rows = state.treeRows
     val downloads = LocalPikoServices.current.downloadManager
     val filtering = state.isUnindexedFilterActive
@@ -738,8 +792,14 @@ private fun FileTreeList(state: InstantSheetState, onDownloaded: () -> Unit, mod
         modifier = modifier,
     ) {
         // 切换筛选时回到顶上：两份列表长短不同，停在原来的位置可能整屏都是空的
-        val listState = rememberLazyListState()
-        LaunchedEffect(filtering) { listState.scrollToItem(0) }
+        val listState = retainedListState ?: rememberLazyListState()
+        var previousFilter by rememberSaveable { mutableStateOf(filtering) }
+        LaunchedEffect(filtering) {
+            if (previousFilter != filtering) {
+                listState.scrollToItem(0)
+                previousFilter = filtering
+            }
+        }
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxWidth(),
@@ -1128,7 +1188,8 @@ internal fun InstantSheetState.summary(): InstantSummary {
     val saving = isSaving || batch?.isSaving == true
     val title = when {
         batch != null -> "${batch.rows.size} 条链接"
-        else -> result?.resource?.name ?: input.trim().ifEmpty { "添加链接" }
+        else -> result?.resource?.name ?: shareSave?.info?.title?.takeIf { it.isNotBlank() }
+            ?: input.trim().ifEmpty { "添加链接" }
     }
     val status = when {
         saving -> "正在保存"

@@ -46,6 +46,9 @@ sealed interface Screen : NavKey {
     data class Browse(val path: List<Pair<String, String>>, val highlightId: String, val instance: Long) : Screen
 
     @Serializable
+    data class Workspace(val contextId: Long) : Screen
+
+    @Serializable
     data object MyShares : Screen
 
     @Serializable

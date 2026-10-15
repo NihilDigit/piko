@@ -12,8 +12,7 @@ import dev.piko.ui.components.ListLeadingIcon
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.workProgress
 
-internal fun instantAttemptActions(work: InstantSaveAttempt, onShow: (() -> Unit)?, onResume: (() -> Unit)?, onForget: () -> Unit): List<SheetAction> = buildList {
-    if (onResume != null) add(SheetAction(Icons.Outlined.Bolt, "继续处理添加链接", onResume))
+internal fun instantAttemptActions(work: InstantSaveAttempt, onShow: (() -> Unit)?, onForget: () -> Unit): List<SheetAction> = buildList {
     if (onShow != null) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中查看", onShow))
     if (!work.isRunning) add(SheetAction(Icons.Outlined.Close, "移除记录", onForget))
 }
