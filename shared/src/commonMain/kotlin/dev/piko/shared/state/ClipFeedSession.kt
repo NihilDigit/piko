@@ -278,10 +278,11 @@ class ClipFeedSession(
         val current = saved?.current?.coerceIn(0, (saved.clips.size - 1).coerceAtLeast(0)) ?: 0
         // 关掉信息流就是清空了队列，看过的不再摆回翻页器；还没看的那些接着用，它们的开头多半已在磁盘上，
         // 打开即有现成的段。存盘时取好的，这回的会话早关了，得重新取，所以都回到候补。
-        // 上次正看的那段也回去：一关一开，它已经不算看过
+        // 上次正看的那段也回去：一关一开，它已经不算看过。如果模式（Mode A/B）变了，丢弃旧模式下保存的段。
         clips = emptyList()
+        val validSavedClips = saved?.clips.orEmpty().filter { it.fullVideo == isFullVideoMode }
         // 有转码的排前面：原画是手上的段见底时才收下的，重开时一上来就轮到它们，开头几段就慢
-        upcoming = saved?.clips.orEmpty().drop(current).sortedBy { it.fileId in untranscoded }
+        upcoming = validSavedClips.drop(current).sortedBy { it.fileId in untranscoded }
         currentIndex = 0
         furthestIndex = 0
         // 存下的候选够挑就先挑，不等遍历
