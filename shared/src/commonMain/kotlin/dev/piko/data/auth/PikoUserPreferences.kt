@@ -113,6 +113,12 @@ interface PikoUserPreferences {
     suspend fun setClipPanelOpen(open: Boolean)
     suspend fun setClipPanelWidth(widthDp: Float)
 
+    /**
+     * 信息流（随机片段）全片模式：开启时随机播放同目录下的完整视频文件，关闭时随机截取 30 秒片段（默认关）。
+     */
+    val clipFeedFullVideoFlow: Flow<Boolean>
+    suspend fun setClipFeedFullVideoEnabled(enabled: Boolean)
+
     /** PikPak API 用哪个根域名（如 mypikpak.net），空串是自动测速挑选，见 PikPakDomainSelector。每台设备各自的网络，不同步。 */
     val pikpakDomainFlow: Flow<String>
     suspend fun setPikpakDomain(root: String)

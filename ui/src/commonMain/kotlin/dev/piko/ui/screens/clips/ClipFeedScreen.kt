@@ -504,7 +504,8 @@ private fun ClipPager(
         }
         // 翻回看过的一段，它停在哪里就从哪里接着；已经快放完了就从头再放，免得一翻回来就被自动翻走
         val start = startOnPlayer[slotOf(settled)]
-        val end = start + CLIP_LENGTH_MS
+        val clipLengthMs = current.lengthMs
+        val end = start + clipLengthMs
         // 只看出过首帧的：刚装上的，位置读数可能还是这个播放器上一段的。放到了切片末尾的也从头来，
         // 播放器停在流尾，只按播放不会动
         val positionIsOurs = rendered[slotOf(settled)] == current
@@ -664,14 +665,16 @@ private fun ClipPager(
     // 出过首帧才定位：刚装上的播放器位置读数可能还是它上一段的
     val seekable = current != null && rendered[slotOf(settled)] == current
 
+    val currentLength = current?.lengthMs ?: CLIP_LENGTH_MS
+
     /** 当前段已放了多久，从段首算起。 */
-    fun clipPosition(): Long = (currentPlayer.positionMillis - currentStart).coerceIn(0L, CLIP_LENGTH_MS)
+    fun clipPosition(): Long = (currentPlayer.positionMillis - currentStart).coerceIn(0L, currentLength)
 
     fun seekClip(millis: Long) {
         if (!seekable) return
         // 放到流尾停住的播放器靠定位重新走起来；不清掉的话翻回来时会被当作已放完，从头再放
         ended[slotOf(settled)] = null
-        currentPlayer.seekTo(currentStart + millis.coerceIn(0L, CLIP_LENGTH_MS))
+        currentPlayer.seekTo(currentStart + millis.coerceIn(0L, currentLength))
         seekPending++
     }
 
@@ -897,8 +900,8 @@ private fun ClipPager(
                 if (current != null) {
                     ClipProgressBar(
                         positionMillis = clipPosition(),
-                        lengthMillis = CLIP_LENGTH_MS,
-                        bufferedPositionMillis = (currentPlayer.bufferedPositionMillis - currentStart).coerceIn(0L, CLIP_LENGTH_MS),
+                        lengthMillis = current.lengthMs,
+                        bufferedPositionMillis = (currentPlayer.bufferedPositionMillis - currentStart).coerceIn(0L, current.lengthMs),
                         onSeek = ::seekClip,
                         onScrubbingChange = { scrubbing = it },
                         modifier = Modifier

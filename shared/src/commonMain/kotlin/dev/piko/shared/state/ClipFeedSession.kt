@@ -5,6 +5,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.data.PikoCacheStore
 import dev.piko.shared.data.PikoClientProvider
@@ -44,8 +45,10 @@ data class Clip(
     val startMs: Long,
     /** 整个视频的时长，界面据此标出片段在全片中的位置。 */
     val videoDurationMs: Long,
+    val fullVideo: Boolean = false,
 ) {
     val file: FileStat get() = FileStat(id = fileId, name = name, parentId = parentId)
+    val lengthMs: Long get() = if (fullVideo) videoDurationMs else CLIP_LENGTH_MS
 }
 
 const val CLIP_LENGTH_MS = 30_000L
@@ -71,8 +74,13 @@ class ClipFeedSession(
     private val media: PikoMediaRepository,
     private val cacheStore: PikoCacheStore?,
     private val scope: CoroutineScope,
+    private val preferences: PikoUserPreferences? = null,
 ) {
     var root by mutableStateOf<PikoPathBreadcrumb?>(null)
+        private set
+
+    /** 是否为完整视频播放模式（Mode B）。 */
+    var isFullVideoMode by mutableStateOf(false)
         private set
 
     /**
@@ -138,6 +146,29 @@ class ClipFeedSession(
 
     init {
         scope.launch { driveRepo.folderIndex.flow.collect { folders = it } }
+        preferences?.let { prefs ->
+            scope.launch {
+                prefs.clipFeedFullVideoFlow.collect { newMode ->
+                    if (isFullVideoMode != newMode) {
+                        isFullVideoMode = newMode
+                        val currentRoot = root
+                        if (currentRoot != null) {
+                            collectJob?.cancel()
+                            fillJob?.cancel()
+                            saveJob?.cancel()
+                            streams.closeAll()
+                            clips = emptyList()
+                            upcoming = emptyList()
+                            currentIndex = 0
+                            furthestIndex = 0
+                            isCollecting = true
+                            fillAhead()
+                            collectJob = scope.launch { collect(currentRoot.id) }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /** [folderId] 的名字；还没遍历到的为 null。 */
@@ -247,10 +278,11 @@ class ClipFeedSession(
         val current = saved?.current?.coerceIn(0, (saved.clips.size - 1).coerceAtLeast(0)) ?: 0
         // 关掉信息流就是清空了队列，看过的不再摆回翻页器；还没看的那些接着用，它们的开头多半已在磁盘上，
         // 打开即有现成的段。存盘时取好的，这回的会话早关了，得重新取，所以都回到候补。
-        // 上次正看的那段也回去：一关一开，它已经不算看过
+        // 上次正看的那段也回去：一关一开，它已经不算看过。如果模式（Mode A/B）变了，丢弃旧模式下保存的段。
         clips = emptyList()
+        val validSavedClips = saved?.clips.orEmpty().filter { it.fullVideo == isFullVideoMode }
         // 有转码的排前面：原画是手上的段见底时才收下的，重开时一上来就轮到它们，开头几段就慢
-        upcoming = saved?.clips.orEmpty().drop(current).sortedBy { it.fileId in untranscoded }
+        upcoming = validSavedClips.drop(current).sortedBy { it.fileId in untranscoded }
         currentIndex = 0
         furthestIndex = 0
         // 存下的候选够挑就先挑，不等遍历
@@ -506,10 +538,14 @@ class ClipFeedSession(
      */
     private fun clipOf(file: FileStat): Clip {
         val durationMs = file.durationMs()
-        val earliest = (durationMs * 0.10).toLong()
-        val latest = (durationMs * 0.85).toLong() - CLIP_LENGTH_MS
-        val start = if (latest > earliest) Random.nextLong(earliest, latest) else ((durationMs - CLIP_LENGTH_MS) / 2).coerceAtLeast(0)
-        return Clip(file.id, file.name, file.parentId, start, durationMs)
+        return if (isFullVideoMode) {
+            Clip(file.id, file.name, file.parentId, startMs = 0L, videoDurationMs = durationMs, fullVideo = true)
+        } else {
+            val earliest = (durationMs * 0.10).toLong()
+            val latest = (durationMs * 0.85).toLong() - CLIP_LENGTH_MS
+            val start = if (latest > earliest) Random.nextLong(earliest, latest) else ((durationMs - CLIP_LENGTH_MS) / 2).coerceAtLeast(0)
+            Clip(file.id, file.name, file.parentId, startMs = start, videoDurationMs = durationMs, fullVideo = false)
+        }
     }
 
     /**

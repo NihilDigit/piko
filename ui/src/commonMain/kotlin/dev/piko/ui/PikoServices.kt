@@ -186,7 +186,7 @@ class PikoServices(
 
     // 主线程且与进程同寿：打开完整播放器时随机片段页可能被销毁，队列要留着回来接着看
     val clipFeedSession: ClipFeedSession by lazy {
-        ClipFeedSession(clientManager, driveRepository, mediaRepository, cacheStore, CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate))
+        ClipFeedSession(clientManager, driveRepository, mediaRepository, cacheStore, CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate), preferences)
     }
 
     init {
