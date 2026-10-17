@@ -24,11 +24,17 @@ private fun verifyLibraryOrigin(name: String, entry: String, title: String, cont
             app.originShot("$name-01-source")
             app.originDraft("origin-$name-draft")
             app.originShot("$name-02-work")
+            if (name == "starred") {
+                app.resize(1280, 800)
+                check("origin-$name-draft" in app.editableTexts()) { "变宽后未显示当前草稿" }
+                app.resize(400, 860)
+                check("origin-$name-draft" in app.editableTexts()) { "变窄后当前草稿丢失" }
+            }
             app.originMinimize()
             app.originAwait(title); app.originAwait(content)
             app.originShot("$name-03-restored")
-            app.click("正在进行"); app.idle(600)
-            app.click("origin-$name-draft"); app.originAwait("最小化")
+            app.click("标签总览"); app.idle(600)
+            app.click("origin-$name-draft"); app.originAwait("标签总览")
             check("origin-$name-draft" in app.editableTexts())
             app.originMinimize()
             app.originAwait(title); app.originAwait(content)
@@ -50,8 +56,8 @@ private fun verifySearchOrigin() {
             app.originAwait("Dune")
             check(!app.hasText("Oppenheimer")) { "返回后搜索过滤失效" }
             app.originShot("search-03-restored")
-            app.click("正在进行"); app.idle(600)
-            app.click("origin-search-draft"); app.originAwait("最小化")
+            app.click("标签总览"); app.idle(600)
+            app.click("origin-search-draft"); app.originAwait("标签总览")
             check("origin-search-draft" in app.editableTexts())
             app.originMinimize()
             check(app.pumpUntil { "Dune" in app.editableTexts() }) { "从搜索栏恢复工作后查询丢失" }
@@ -68,7 +74,7 @@ private fun verifyExternalLinkOrigin() {
             app.originShot("external-01-source")
             val link = "magnet:?xt=urn:btih:" + "a".repeat(40)
             edt { env.services.instantMagnetRepository.onIncomingMagnet(link) }
-            app.changed(); app.originAwait("最小化")
+            app.changed(); app.originAwait("标签总览")
             check(app.pumpUntil { link in app.editableTexts() }) { "外链未进入草稿" }
             check(app.pumpUntil { "Frieren S01" in app.editableTexts() }) { "外链解析结果未出现" }
             app.originShot("external-02-work")
@@ -108,12 +114,12 @@ private fun AppScene.originDraft(text: String) {
     originAwait(ORIGIN_INPUT_HINT)
     click(ORIGIN_INPUT_HINT); type(text); idle(600)
     check(text in editableTexts()) { "草稿输入失败：${editableTexts()}" }
-    originAwait("最小化")
+    originAwait("标签总览")
 }
 
 private fun AppScene.originMinimize() {
-    click("最小化"); idle(800)
-    check(!hasText("关闭当前工作")) { "最小化后仍停在工作页面" }
+    click("返回来源"); idle(800)
+    check(!hasText("磁力链接、下载地址或分享链接")) { "返回后仍停在工作页面" }
 }
 
 private fun AppScene.originShot(name: String) {
@@ -160,12 +166,12 @@ internal fun verifyWorkspaceImportVariants() {
                 app.click("返回列表"); app.originAwait("未勾选文件，不保存")
                 app.originShot("imports-$form-06-batch-return")
                 app.originMinimize()
-                app.click("正在进行"); app.idle(600)
+                app.click("标签总览"); app.idle(600)
                 app.originAwait("2 条链接"); app.originAwait("Frieren 分享内容")
                 app.originShot("imports-$form-07-switcher")
                 app.click("Frieren 分享内容"); app.originAwait("转存 1 项")
                 app.originMinimize()
-                app.click("正在进行"); app.idle(600)
+                app.click("标签总览"); app.idle(600)
                 app.click("2 条链接"); app.originAwait("未勾选文件，不保存")
                 app.originShot("imports-$form-08-batch-resumed")
             }
@@ -183,8 +189,8 @@ private fun verifyRecreatedWorkspace() {
             app.originShot("recreated-01-before")
         }
         AppScene.open(env, 400, 860, ThemeMode.LIGHT, mobile = true).use { app ->
-            app.click("正在进行"); app.originAwait("origin-recreated-draft")
-            app.click("origin-recreated-draft"); app.originAwait("最小化")
+            app.click("标签总览"); app.originAwait("origin-recreated-draft")
+            app.click("origin-recreated-draft"); app.originAwait("标签总览")
             check("origin-recreated-draft" in app.editableTexts()) { "同一账号服务下界面重建丢失输入" }
             app.originShot("recreated-02-resumed")
         }
@@ -210,7 +216,7 @@ internal fun verifyWorkspacePreview() {
                 return
             }
             app.originShot("preview-01-player")
-            app.clickHighest("返回"); app.originAwait("最小化")
+            app.clickHighest("返回"); app.originAwait("标签总览")
             check(link in app.editableTexts()) { "播放器返回后来源草稿丢失" }
             app.originAwait("已选 2 / 2")
             app.originShot("preview-02-draft")
@@ -239,7 +245,7 @@ internal fun verifyWorkspaceTargetPicker() {
                     }
                     app.click("照片备份 2026"); app.idle(700)
                     app.originShot("target-$form-03-folder")
-                    app.click("存到这里"); app.originAwait("最小化")
+                    app.click("存到这里"); app.originAwait("标签总览")
                     app.originAwait("照片备份 2026")
                     check(link in app.editableTexts()) { "选择目标后草稿输入丢失" }
                     app.originShot("target-$form-04-applied")

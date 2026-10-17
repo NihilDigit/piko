@@ -39,6 +39,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * 用户信息、分享、压缩包、WebDAV。
  */
 class FakePikPak {
+    @Volatile var resourceResponse: String? = null
     class Node(
         val id: String,
         var parentId: String,
@@ -253,7 +254,7 @@ class FakePikPak {
                     ?: (400 to """{"error_code":3,"error":"invalid_argument","error_description":"读取分享失败"}""")
             }
             path.endsWith("/drive/v1/share:batchDelete") -> 200 to "{}"
-            path.endsWith("/drive/v1/resource/list") -> 200 to """{"list_id":"SHOT","list":{"page_size":500,"resources":[{"id":"root","name":"Frieren S01","file_size":"1048576000","is_dir":true,"meta":{},"dir":{"resources":[{"id":"ep1","name":"Frieren - 01.mkv","file_size":"524288000","is_dir":false,"meta":{"hash":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}},{"id":"ep2","name":"Frieren - 02.mkv","file_size":"524288000","is_dir":false,"meta":{"hash":"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"}}]}}]}}"""
+            path.endsWith("/drive/v1/resource/list") -> 200 to (resourceResponse ?: """{"list_id":"SHOT","list":{"page_size":500,"resources":[{"id":"root","name":"Frieren S01","file_size":"1048576000","is_dir":true,"meta":{},"dir":{"resources":[{"id":"ep1","name":"Frieren - 01.mkv","file_size":"524288000","is_dir":false,"meta":{"hash":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}},{"id":"ep2","name":"Frieren - 02.mkv","file_size":"524288000","is_dir":false,"meta":{"hash":"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"}}]}}]}}""")
             path.endsWith("/v1/shield/captcha/init") -> 200 to """{"captcha_token":"CAP","expires_in":300,"url":""}"""
             path.endsWith("/v1/auth/signin") -> {
                 if (signinDelayMs > 0) Thread.sleep(signinDelayMs)

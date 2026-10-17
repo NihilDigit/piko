@@ -42,6 +42,8 @@ private const val USAGE = """用法：piko-shots <命令> [选项]
       不存图，打印界面上所有文本与内容描述，写 --click 时找名字用。
   verify-workspaces [--only phone|landscape|tablet|desktop|desktop-narrow|selection|isolation]
       用假 PikPak 服务端和真实界面验证工作保留、切换、关闭与查重目录导航。
+  verify-adaptive-workspace
+      在同一场景中验证尺寸往返、标签总览、来源选择与保存投影、任务详情及蜗牛入口。
   verify-workspace-origins
       验证库、搜索、外部链接与任务定位页面的工作恢复及返回来源。
   verify-workspace-imports
@@ -747,7 +749,14 @@ fun main(args: Array<String>) {
     ShotDirs.start()
     val code = try {
         when (args[0]) {
+            "adaptive-prototypes" -> { renderAdaptivePrototypes(outDir); 0 }
             "verify-workspaces" -> { verifyWorkspaceContexts(option(rest, "--only")); 0 }
+            "verify-adaptive-workspace" -> { verifyAdaptiveWorkspace(); 0 }
+            "verify-adaptive-actions" -> { verifyAdaptiveActions(); 0 }
+            "verify-tab-reorder" -> { verifyTabReorder(); 0 }
+            "verify-shared-details-tasks" -> { verifySharedDetailsTasks(); 0 }
+            "verify-file-building-blocks" -> { verifyFileBuildingBlocks(); 0 }
+            "verify-import-panel" -> { verifyImportPanel(); 0 }
             "verify-workspace-origins" -> { verifyWorkspaceOrigins(); 0 }
             "verify-workspace-imports" -> { verifyWorkspaceImportVariants(); 0 }
             "verify-workspace-preview" -> { verifyWorkspacePreview(); 0 }

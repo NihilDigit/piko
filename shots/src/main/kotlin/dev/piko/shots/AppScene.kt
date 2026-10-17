@@ -10,6 +10,7 @@ import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.pointer.PointerButton
 import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerKeyboardModifiers
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.platform.LocalCursorBlinkEnabled
 import androidx.compose.ui.semantics.SemanticsActions
@@ -51,8 +52,9 @@ import org.jetbrains.skia.Image
  */
 class AppScene private constructor(
     private val scene: ImageComposeScene,
-    private val touch: Boolean,
+    private var touch: Boolean,
     private val motion: Boolean,
+    private val viewport: androidx.compose.runtime.MutableState<androidx.compose.ui.unit.IntSize>,
 ) : AutoCloseable {
     private val start = System.nanoTime()
     private var image: Image = edt { scene.render(0) }
@@ -73,6 +75,22 @@ class AppScene private constructor(
     fun changed() {
         dirty = true
     }
+
+    fun resize(width: Int, height: Int) {
+        edt {
+            viewport.value = androidx.compose.ui.unit.IntSize(width, height)
+            scene.constraints = androidx.compose.ui.unit.Constraints(maxWidth = width, maxHeight = height)
+            // ImageComposeScene 的 constraints 只更新布局尺寸；弹层读取的底层 WindowInfo 仍是初始尺寸。
+            // 同步它，才能在同一场景中验证窗口缩放后的 Sheet，而不是把弹层画到旧画布的边缘。
+            val info = ImageComposeScene::class.java.getDeclaredField("_windowInfo").apply { isAccessible = true }.get(scene)
+            val setter = info.javaClass.methods.single { it.name.startsWith("setContainerSize-") }
+            setter.invoke(info, (width.toLong() shl 32) or (height.toLong() and 0xffffffffL))
+        }
+        changed()
+        settle(3_000)
+    }
+
+    fun useTouchInput(value: Boolean) { touch = value }
 
     /** 推进 [ms] 毫秒的真实时间，约每 16ms 一帧。 */
     fun pump(ms: Long) {
@@ -158,6 +176,11 @@ class AppScene private constructor(
     }
 
     fun hasText(text: String) = find(text) != null
+    fun nodeBounds(text: String): Rect = find(text)?.boundsInRoot ?: error("找不到节点：$text")
+
+    fun exactTextBounds(text: String): List<Rect> = nodes().filter { node ->
+        node.config.getOrNull(SemanticsProperties.Text)?.any { it.text == text } == true
+    }.map { it.boundsInRoot }.filter { it.width > 0f && it.height > 0f }
 
     fun exactTextCount(text: String, topmost: Boolean = false): Int =
         nodes(topmost).count { node -> node.texts().any { it == text } }
@@ -277,18 +300,18 @@ class AppScene private constructor(
     // 移动端的左键按成触屏：条目单击即打开、长按进多选、没有悬停，与手指一致。右键仍是鼠标，移动端接鼠标时同样可用
     private fun press(at: Offset, button: PointerButton) = edt {
         if (touch && button == PointerButton.Primary) {
-            scene.sendPointerEvent(PointerEventType.Press, at, type = PointerType.Touch)
+            scene.sendPointerEvent(PointerEventType.Press, at, type = PointerType.Touch, keyboardModifiers = PointerKeyboardModifiers())
         } else {
-            scene.sendPointerEvent(PointerEventType.Move, at)
-            scene.sendPointerEvent(PointerEventType.Press, at, button = button)
+            scene.sendPointerEvent(PointerEventType.Move, at, keyboardModifiers = PointerKeyboardModifiers())
+            scene.sendPointerEvent(PointerEventType.Press, at, button = button, keyboardModifiers = PointerKeyboardModifiers())
         }
     }
 
     private fun releasePointer(at: Offset, button: PointerButton) = edt {
         if (touch && button == PointerButton.Primary) {
-            scene.sendPointerEvent(PointerEventType.Release, at, type = PointerType.Touch)
+            scene.sendPointerEvent(PointerEventType.Release, at, type = PointerType.Touch, keyboardModifiers = PointerKeyboardModifiers())
         } else {
-            scene.sendPointerEvent(PointerEventType.Release, at, button = button)
+            scene.sendPointerEvent(PointerEventType.Release, at, button = button, keyboardModifiers = PointerKeyboardModifiers())
         }
     }
 
@@ -313,6 +336,12 @@ class AppScene private constructor(
             )
             edt { scene.sendKeyEvent(event) }
             pump(30)
+        }
+        // 主键抬起时修饰键仍按着；补发修饰键抬起，避免后续鼠标被误当成 Ctrl/Shift 加选。
+        val modifiers = listOf("ctrl" to Key.CtrlLeft, "meta" to Key.MetaLeft, "cmd" to Key.MetaLeft,
+            "alt" to Key.AltLeft, "shift" to Key.ShiftLeft)
+        modifiers.filter { it.first in mods }.map { it.second }.distinct().forEach { modifier ->
+            edt { scene.sendKeyEvent(KeyEvent(key = modifier, type = KeyEventType.KeyUp)) }
         }
         pump(150)
     }
@@ -384,7 +413,14 @@ class AppScene private constructor(
 
     fun save(file: File) {
         file.parentFile?.mkdirs()
-        file.writeBytes(image.encodeToData(EncodedImageFormat.PNG)!!.bytes)
+        val size = viewport.value
+        check(size.width <= image.width && size.height <= image.height) { "截图尺寸超出场景画布，请使用最大窗口尺寸创建 AppScene" }
+        org.jetbrains.skia.Surface.makeRasterN32Premul(size.width, size.height).use { surface ->
+            surface.canvas.drawImage(image, 0f, 0f)
+            surface.makeImageSnapshot().use { cropped ->
+                cropped.encodeToData(EncodedImageFormat.PNG)!!.use { data -> file.writeBytes(data.bytes) }
+            }
+        }
     }
 
     override fun close() {
@@ -432,10 +468,18 @@ class AppScene private constructor(
             // 「performMeasureAndLayout called during measure layout」。
             // 动画缩放另放一份，不用平台的 motionScale：那一份连着设置页「减少动画」的开关与说明，置 0 会改掉设置页的图
             val context = Dispatchers.Main + ShotMotionScale(if (motion) 1f else 0f)
+            val viewport = mutableStateOf(androidx.compose.ui.unit.IntSize(width, height))
             val scene = edt {
                 ImageComposeScene(width, height, Density(1f), coroutineContext = context) {
+                    val baseWindow = androidx.compose.ui.platform.LocalWindowInfo.current
+                    val window = androidx.compose.runtime.remember(baseWindow) {
+                        object : androidx.compose.ui.platform.WindowInfo by baseWindow {
+                            override val containerSize get() = viewport.value
+                            override val containerDpSize get() = androidx.compose.ui.unit.DpSize(viewport.value.width.dp, viewport.value.height.dp)
+                        }
+                    }
                     // 光标每 500ms 闪一次，不随动画缩放停下：有输入框聚焦的画面永远等不到稳定，出图时光标在不在也看运气
-                    CompositionLocalProvider(LocalCursorBlinkEnabled provides false) {
+                    CompositionLocalProvider(LocalCursorBlinkEnabled provides false, androidx.compose.ui.platform.LocalWindowInfo provides window) {
                         if (player != null) {
                             PlayerPreview(env, mode, player, platform)
                         } else {
@@ -446,7 +490,7 @@ class AppScene private constructor(
                     }
                 }
             }
-            val app = AppScene(scene, touch = mobile, motion = motion)
+            val app = AppScene(scene, touch = mobile, motion = motion, viewport = viewport)
             // 默认以根目录里一部作品的名字为准：原名或解析后的名字都含这一段
             if (!showPlayer && waitFor != null && !app.pumpUntil { app.hasText(waitFor) }) {
                 System.err.println("根目录没有列出来，界面文本：${app.texts().take(40)}")
