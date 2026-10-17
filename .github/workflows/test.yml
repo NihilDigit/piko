@@ -362,6 +362,46 @@ jobs:
           path: ${{ runner.temp }}/package-smoke/logs
           if-no-files-found: ignore
 
+  # 历史 Release 是升级冒烟的外部夹具。缺失时跳过该专项测试，不让主构建因仓库历史状态失败。
+  legacy-fixtures:
+    if: inputs.desktop == true
+    runs-on: ubuntu-latest
+    outputs:
+      available: ${{ steps.check.outputs.available }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check historical Windows release fixtures
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          for version in 1.0.0 1.1.0; do
+            for suffix in .zip .msi -files.json; do
+              asset="piko-windows-x64-$version$suffix"
+              if ! gh release view "v$version" --repo "$GITHUB_REPOSITORY" --json assets --jq ".assets[].name" | grep -Fxq "$asset"; then
+                missing+=("v$version/$asset")
+              fi
+            done
+          done
+          if ((${#missing[@]})); then
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+            {
+              echo '### Legacy Windows upgrade smoke skipped'
+              echo
+              echo 'Required historical Release assets are not available:'
+              printf '%s\n' "${missing[@]}" | sed 's/^/- /'
+              echo
+              echo 'Publish v1.0.0 and v1.1.0 with the required x64 ZIP, MSI, and files.json assets to re-enable this test.'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'available=true' >> "$GITHUB_OUTPUT"
+            echo 'Historical Windows release fixtures are available.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   # 旧一代 Windows 上的便携版更新：Windows Server 2022（build 20348）与 Windows 10 21H2/22H2 同一代内核与系统组件，
   # GitHub 托管的镜像里没有 Windows 10，拿它近似。并不等价：桌面组件、资源管理器与 tar.exe 的版本未必与 Win10 相同，
   # 真正的 Win10 要 self-hosted runner。验的是便携版更新全程不依赖 7z：补丁包带着变了的运行时文件照样走补丁，
@@ -372,8 +412,8 @@ jobs:
   # （-PpikoUpdateBases），1.0.0 的只作核对（-PpikoUpdateRetired）。1.1.0 走补丁，另用 delta-updates.sh 出一份
   # -from-1.1.0.zip 验 1.1.0 的差分；1.0.0 的 MSI 版走 msiexec，便携版只给下载页
   windows-package-legacy:
-    if: inputs.desktop == true && !cancelled()
-    needs: windows-package
+    needs: [windows-package, legacy-fixtures]
+    if: inputs.desktop == true && !cancelled() && needs.legacy-fixtures.outputs.available == 'true'
     runs-on: windows-2022
     timeout-minutes: 90
     env:
