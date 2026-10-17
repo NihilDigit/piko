@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.transfers
 
+import androidx.compose.ui.Modifier
+
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Upload
 import androidx.compose.material.icons.outlined.Close
@@ -8,7 +10,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import dev.piko.shared.upload.UploadPreparation
 import dev.piko.shared.upload.UploadPreparationIssueKind
-import dev.piko.ui.components.ItemDetailsSheet
+import dev.piko.ui.components.ItemDetailsContent
 import dev.piko.ui.components.ListLeadingIcon
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.workProgress
@@ -19,16 +21,15 @@ internal fun uploadPreparationActions(work: UploadPreparation, onShow: (() -> Un
 }
 
 @Composable
-internal fun UploadPreparingSheet(work: UploadPreparation, actions: List<SheetAction>, onDismiss: () -> Unit) {
+internal fun UploadPreparingDetails(work: UploadPreparation, actions: List<SheetAction>, modifier: Modifier = Modifier) {
     val sources = work.sources.associateBy { it.key }
     fun label(key: String, path: String): String {
         val source = sources[key] ?: return path
         return if (source.folder && path.isNotEmpty()) "${source.title}/$path" else path.ifEmpty { source.title }
     }
     val progress = work.workProgress()
-    ItemDetailsSheet(title = "上传到「${work.parentName}」", headerIcon = { ListLeadingIcon(Icons.Outlined.Upload) },
-        metaParts = listOf("上传准备", progress.status), actions = actions, onDismiss = onDismiss,
-        extraLines = {
+    ItemDetailsContent(modifier = modifier, showIcon = false, title = "上传到「${work.parentName}」", headerIcon = { ListLeadingIcon(Icons.Outlined.Upload) },
+        metaParts = listOf("上传准备", progress.status), actions = actions, extraLines = {
             progress.detail?.let { Text(it) }
             if (work.files.isNotEmpty()) Text("已入队文件：\n${work.files.joinToString("\n") { label(it.sourceKey, it.path) }}")
             if (work.directories.isNotEmpty()) Text("已创建目录：\n${work.directories.joinToString("\n") { label(it.sourceKey, it.path) }}")

@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.transfers
 
+import androidx.compose.ui.Modifier
+
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Refresh
@@ -9,7 +11,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.state.ShareSaveWork
-import dev.piko.ui.components.ItemDetailsSheet
+import dev.piko.ui.components.ItemDetailsContent
 import dev.piko.ui.components.ListLeadingIcon
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.workProgress
@@ -25,10 +27,10 @@ internal fun shareTransferActions(work: ShareSaveWork, undo: DriveChangeJournal.
 }
 
 @Composable
-internal fun ShareTransferSheet(work: ShareSaveWork, undo: DriveChangeJournal.UndoResult?, actions: List<SheetAction>, onDismiss: () -> Unit) {
+internal fun ShareTransferDetails(work: ShareSaveWork, undo: DriveChangeJournal.UndoResult?, actions: List<SheetAction>, modifier: Modifier = Modifier) {
     val progress = work.workProgress(undo)
-    ItemDetailsSheet(title = work.title, headerIcon = { ListLeadingIcon(Icons.Outlined.Bolt) }, actions = actions,
-        onDismiss = onDismiss, metaParts = listOf("分享转存", progress.status), extraLines = {
+    ItemDetailsContent(modifier = modifier, showIcon = false, title = work.title, headerIcon = { ListLeadingIcon(Icons.Outlined.Bolt) }, actions = actions,
+        metaParts = listOf("分享转存", progress.status), extraLines = {
             progress.detail?.let { Text(it) }
             work.result?.let { result ->
                 val names = work.command.sources.associate { it.id to it.name }

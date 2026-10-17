@@ -68,7 +68,7 @@ fun dev.piko.shared.state.ShareSaveWork.workProgress(undo: DriveChangeJournal.Un
 
 fun dev.piko.shared.state.InstantSaveAttempt.workProgress(): WorkProgress = WorkProgress(
     WorkKind.FILES, title, if (isRunning) WorkMeter.Indeterminate else WorkMeter.None,
-    if (isRunning) "正在保存" else if (receipt?.requiresInspection == true) "结果需要核对" else if (receipt?.confirmed?.isEmpty() != false) "未保存" else "部分保存未完成",
+    if (isRunning) "正在保存" else if (isComplete) "已完成" else if (receipt?.requiresInspection == true) "结果需要核对" else if (receipt?.confirmed?.isEmpty() != false) "未保存" else "部分保存未完成",
     receipt?.message,
 )
 

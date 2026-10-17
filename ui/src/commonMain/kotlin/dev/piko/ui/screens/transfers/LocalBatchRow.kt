@@ -1,19 +1,11 @@
 package dev.piko.ui.screens.transfers
 
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
-import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Pause
@@ -21,31 +13,21 @@ import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.UnfoldLess
 import androidx.compose.material.icons.outlined.UnfoldMore
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.unit.dp
 import dev.piko.download.DownloadStatus
 import dev.piko.shared.state.TransferItem
-import dev.piko.ui.components.FileListItem
-import dev.piko.ui.components.ItemDetailsSheet
+import dev.piko.ui.components.ItemDetailsContent
 import dev.piko.ui.components.ListLeadingIcon
-import dev.piko.ui.components.ListLeadingMedia
-import dev.piko.ui.components.ListMoreButton
-import dev.piko.ui.components.MetaRow
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.theme.LocalStatusColors
 
 /** 状态词。下载中不写，理由同单个文件的行。 */
-private fun TransferItem.LocalBatch.statusLabel(): String? {
+internal fun TransferItem.LocalBatch.statusLabel(): String? {
     listing?.let { listing ->
         return when {
             listing.error != null -> "列出失败"
@@ -62,7 +44,7 @@ private fun TransferItem.LocalBatch.statusLabel(): String? {
     }
 }
 
-private fun TransferItem.LocalBatch.statusDetails(): List<String> {
+internal fun TransferItem.LocalBatch.statusDetails(): List<String> {
     listing?.let { listing ->
         val excess = listing.quotaExcess
         return when {
@@ -113,103 +95,6 @@ internal class LocalBatchIntents(
 internal fun localBatchPrimaryAction(item: TransferItem.LocalBatch, intents: LocalBatchIntents, onDetails: () -> Unit): () -> Unit =
     if (item.listing != null) onDetails else intents.onToggleExpand
 
-/**
- * 文件夹下载的一组：一行汇总，展开后各文件接在下面各占一行（由传输页排进列表）。
- * 行尾是与状态对应的快捷按钮、展开按钮与更多，比单个文件多一个，见 [BatchRowTrailingWidth]。
- */
-@Composable
-internal fun LocalBatchRow(
-    item: TransferItem.LocalBatch,
-    expanded: Boolean,
-    intents: LocalBatchIntents,
-    onMoreClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    selection: RowSelection = RowSelection.None,
-) {
-    val listing = item.listing
-    val status = item.status
-    val statusColor = item.statusColor()
-    val inProgress = listing?.isListing == true ||
-        (listing == null && status in setOf(DownloadStatus.PENDING, DownloadStatus.DOWNLOADING, DownloadStatus.PAUSED))
-    FileListItem(
-        headline = item.batch.folderName,
-        leading = {
-            ListLeadingMedia(
-                thumbnail = null,
-                fallback = { ListLeadingIcon(if (!item.batch.isFolder) Icons.Outlined.Download else if (expanded) Icons.Filled.Folder else Icons.Outlined.Folder) },
-                isSpoilerBlurred = false,
-            )
-        },
-        onClick = localBatchPrimaryAction(item, intents, onMoreClick),
-        onMoreClick = onMoreClick,
-        modifier = modifier,
-        headlineMaxLines = if (inProgress) 1 else 2,
-        onLongClick = selection.onLongClick,
-        isSelectionMode = selection.active,
-        isSelected = selection.selected,
-        onSelectToggle = { selection.onToggle() },
-        supporting = {
-            Column {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    // 完成的不写「已完成」，所在的分组已经说了
-                    item.statusLabel()?.takeIf { listing != null || status != DownloadStatus.COMPLETED }?.let { label ->
-                        Text(text = label, color = statusColor, maxLines = 1)
-                    }
-                    MetaRow(parts = item.statusDetails(), modifier = Modifier.weight(1f, fill = false))
-                }
-                if (inProgress) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    // 列出时不知道一共有多少，给不确定进度条
-                    if (listing != null) {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                    } else {
-                        LinearProgressIndicator(progress = { item.progress }, modifier = Modifier.fillMaxWidth())
-                    }
-                }
-            }
-        },
-        trailing = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                when {
-                    listing?.error != null -> IconButton(onClick = intents.onRetryListing) {
-                        Icon(Icons.Outlined.Refresh, contentDescription = "重试")
-                    }
-                    listing?.quotaExcess != null -> IconButton(onClick = intents.onConfirm) {
-                        Icon(Icons.Outlined.Download, contentDescription = "仍然下载")
-                    }
-                    listing != null -> Unit
-                    status == DownloadStatus.DOWNLOADING || status == DownloadStatus.PENDING -> IconButton(onClick = intents.onPause) {
-                        Icon(Icons.Outlined.Pause, contentDescription = "全部暂停")
-                    }
-                    status == DownloadStatus.PAUSED -> IconButton(onClick = intents.onResume) {
-                        Icon(Icons.Outlined.PlayArrow, contentDescription = "全部继续")
-                    }
-                    status == DownloadStatus.FAILED -> IconButton(onClick = intents.onResume) {
-                        Icon(Icons.Outlined.Refresh, contentDescription = "重试失败的文件")
-                    }
-                }
-                if (item.tasks.isNotEmpty()) {
-                    val rotation by animateFloatAsState(
-                        targetValue = if (expanded) 180f else 0f,
-                        animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
-                        label = "batchChevron",
-                    )
-                    IconButton(onClick = intents.onToggleExpand) {
-                        Icon(
-                            Icons.Outlined.ExpandMore,
-                            contentDescription = if (expanded) "收起" else "展开",
-                            modifier = Modifier.rotate(rotation),
-                        )
-                    }
-                }
-                ListMoreButton(onClick = onMoreClick)
-            }
-        },
-    )
-}
 
 /** 一组的全部操作，详情面板与右键菜单共用。 */
 internal fun localBatchActions(item: TransferItem.LocalBatch, expanded: Boolean, intents: LocalBatchIntents): List<SheetAction> = buildList {
@@ -248,14 +133,13 @@ internal fun localBatchActions(item: TransferItem.LocalBatch, expanded: Boolean,
 
 /** 一组的详情面板：文件夹名、汇总与全部操作。待确认时把额度的事说完整。 */
 @Composable
-internal fun LocalBatchSheet(item: TransferItem.LocalBatch, actions: List<SheetAction>, onDismiss: () -> Unit) {
+internal fun LocalBatchDetails(item: TransferItem.LocalBatch, actions: List<SheetAction>, modifier: Modifier = Modifier) {
     val statusColor = item.statusColor()
     val listing = item.listing
-    ItemDetailsSheet(
+    ItemDetailsContent(modifier = modifier, showIcon = false,
         title = item.batch.folderName,
         headerIcon = { ListLeadingIcon(Icons.Outlined.Folder) },
         actions = actions,
-        onDismiss = onDismiss,
         metaParts = listOfNotNull(item.statusLabel()) + item.statusDetails(),
         extraLines = {
             when {
@@ -268,4 +152,3 @@ internal fun LocalBatchSheet(item: TransferItem.LocalBatch, actions: List<SheetA
 }
 
 /** 一组的行尾：快捷按钮、展开与更多，各 48dp；transferClicks 在这一段不截点击。 */
-internal val BatchRowTrailingWidth = 144.dp

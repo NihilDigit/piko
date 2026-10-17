@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.transfers
 
+import androidx.compose.ui.Modifier
+
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Close
@@ -8,7 +10,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import dev.piko.shared.state.OfflineSubmitWork
 import dev.piko.shared.state.OfflineSubmitStatus
-import dev.piko.ui.components.ItemDetailsSheet
+import dev.piko.ui.components.ItemDetailsContent
 import dev.piko.ui.components.ListLeadingIcon
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.workProgress
@@ -19,11 +21,10 @@ internal fun offlineSubmitActions(work: OfflineSubmitWork, onShow: (() -> Unit)?
 }
 
 @Composable
-internal fun OfflineSubmitSheet(work: OfflineSubmitWork, actions: List<SheetAction>, onDismiss: () -> Unit) {
+internal fun OfflineSubmitDetails(work: OfflineSubmitWork, actions: List<SheetAction>, modifier: Modifier = Modifier) {
     val progress = work.workProgress()
-    ItemDetailsSheet(title = work.title, headerIcon = { ListLeadingIcon(Icons.Outlined.Bolt) },
-        metaParts = listOf("离线提交", progress.status), actions = actions, onDismiss = onDismiss,
-        extraLines = {
+    ItemDetailsContent(modifier = modifier, showIcon = false, title = work.title, headerIcon = { ListLeadingIcon(Icons.Outlined.Bolt) },
+        metaParts = listOf("离线提交", progress.status), actions = actions, extraLines = {
             Text("保存目标：${work.target.name}")
             Text(work.message)
             if (work.status == OfflineSubmitStatus.UNCONFIRMED) Text("没有收到远端任务引用，无法自动核对。请检查云端任务和实际目录；这里不会再次提交请求，也不会对疑似产出执行整包清理。")

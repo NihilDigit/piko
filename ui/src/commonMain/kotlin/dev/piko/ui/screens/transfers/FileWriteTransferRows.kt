@@ -1,6 +1,5 @@
 package dev.piko.ui.screens.transfers
 
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
@@ -14,34 +13,11 @@ import androidx.compose.ui.Modifier
 import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.state.FileWriteWork
 import dev.piko.ui.WorkMeter
-import dev.piko.ui.components.FileListItem
-import dev.piko.ui.components.ItemDetailsSheet
+import dev.piko.ui.components.ItemDetailsContent
 import dev.piko.ui.components.ListLeadingIcon
-import dev.piko.ui.components.ListMoreButton
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.WorkMeterBar
 import dev.piko.ui.workProgress
-
-@Composable
-internal fun FileWriteTransferRow(work: FileWriteWork, undo: DriveChangeJournal.UndoResult?, onDetails: () -> Unit, selection: RowSelection) {
-    ProcessingTransferRow(work.workProgress(undo), onDetails, selection)
-}
-
-@Composable
-internal fun ProcessingTransferRow(progress: dev.piko.ui.WorkProgress, onDetails: () -> Unit, selection: RowSelection) {
-    FileListItem(
-        headline = progress.title, headlineMaxLines = 1,
-        onClick = onDetails, onMoreClick = onDetails,
-        onLongClick = selection.onLongClick, isSelectionMode = selection.active, isSelected = selection.selected,
-        onSelectToggle = { selection.onToggle() },
-        leading = { ListLeadingIcon(Icons.Outlined.Description) },
-        supporting = { Column {
-            Text(progress.status, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (progress.meter != WorkMeter.None) WorkMeterBar(progress.meter, progress.title, Modifier.fillMaxWidth())
-        } },
-        trailing = { ListMoreButton(onClick = onDetails) },
-    )
-}
 
 internal fun fileWriteActions(work: FileWriteWork, undo: DriveChangeJournal.UndoResult?, canUndo: Boolean, canRecheck: Boolean,
     onUndo: () -> Unit, onRecheck: () -> Unit, onForget: () -> Unit, onShow: (() -> Unit)? = null): List<SheetAction> = buildList {
@@ -54,11 +30,10 @@ internal fun fileWriteActions(work: FileWriteWork, undo: DriveChangeJournal.Undo
 }
 
 @Composable
-internal fun FileWriteTransferSheet(work: FileWriteWork, undo: DriveChangeJournal.UndoResult?, actions: List<SheetAction>, onDismiss: () -> Unit) {
+internal fun FileWriteTransferDetails(work: FileWriteWork, undo: DriveChangeJournal.UndoResult?, actions: List<SheetAction>, modifier: Modifier = Modifier) {
     val progress = work.workProgress(undo)
-    ItemDetailsSheet(
-        title = progress.title, headerIcon = { ListLeadingIcon(Icons.Outlined.Description) }, actions = actions, onDismiss = onDismiss,
-        metaParts = listOf("文件处理", progress.status),
+    ItemDetailsContent(modifier = modifier, showIcon = false,
+        title = progress.title, headerIcon = { ListLeadingIcon(Icons.Outlined.Description) }, actions = actions, metaParts = listOf("文件处理", progress.status),
         extraLines = {
             progress.detail?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             if (progress.meter != WorkMeter.None) WorkMeterBar(progress.meter, progress.title, Modifier.fillMaxWidth())

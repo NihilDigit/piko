@@ -1,44 +1,25 @@
 package dev.piko.ui.screens.transfers
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
-import androidx.compose.material.icons.outlined.CloudDone
 import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
 import dev.piko.shared.data.OfflinePackJob
 import dev.piko.shared.data.OfflinePackStage
 import dev.piko.shared.state.TransferItem
-import dev.piko.ui.components.FileListItem
-import dev.piko.ui.components.ItemDetailsSheet
+import dev.piko.ui.components.ItemDetailsContent
 import dev.piko.ui.components.ListLeadingIcon
-import dev.piko.ui.components.ListLeadingMedia
-import dev.piko.ui.components.ListMoreButton
 import dev.piko.ui.components.SheetAction
-import dev.piko.ui.components.MetaRow
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.theme.LocalStatusColors
 
-private fun TransferItem.Pack.statusLabel(): String = if (isBusy) "正在处理任务" else when (job.stage) {
+internal fun TransferItem.Pack.statusLabel(): String = if (isBusy) "正在处理任务" else when (job.stage) {
     OfflinePackStage.QUEUED -> "排队中"
     OfflinePackStage.DOWNLOADING -> "$progress%"
     OfflinePackStage.PRUNING -> "处理中"
@@ -50,7 +31,7 @@ private fun TransferItem.Pack.statusLabel(): String = if (isBusy) "正在处理�
  * 结束后的一句说明，只在有话要说时出现：完成时是改名失败这类附注，失败时是原因。
  * 删掉未选文件是保存的实现细节，不写。
  */
-private fun OfflinePackJob.detail(): String? = when (stage) {
+internal fun OfflinePackJob.detail(): String? = when (stage) {
     OfflinePackStage.QUEUED, OfflinePackStage.DOWNLOADING, OfflinePackStage.PRUNING -> null
     OfflinePackStage.DONE -> message.ifEmpty { null }
     OfflinePackStage.FAILED -> message.ifEmpty { "服务端未给出原因" }
@@ -65,102 +46,13 @@ private fun OfflinePackJob.statusColor(): Color = when (stage) {
 }
 
 /** 「保留 / 整包」。只勾了一部分时整包大小会误导，旧记录没有保留大小就只写整包。 */
-private fun OfflinePackJob.sizeLabel(): String =
+internal fun OfflinePackJob.sizeLabel(): String =
     if (keptBytes in 1 until totalBytes) "${keptBytes.toReadableSize()} / ${totalBytes.toReadableSize()}"
     else totalBytes.toReadableSize()
 
 private val OfflinePackJob.canOpen: Boolean
     get() = stage == OfflinePackStage.DONE && outputId.isNotEmpty()
 
-/**
- * 整包离线的列表项，版式与云端任务一致。下载阶段显示进度，清理阶段是不定进度条：
- * 删除按目录层级进行，没有可报的百分比。
- */
-@Composable
-internal fun PackTransferRow(
-    item: TransferItem.Pack,
-    /** 产出的缩略图，取不到时为 null，显示状态图标。 */
-    thumbnail: String?,
-    isSpoilerBlurred: Boolean,
-    onOpen: () -> Unit,
-    onRetry: () -> Unit,
-    onMoreClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    selection: RowSelection = RowSelection.None,
-) {
-    val job = item.job
-    FileListItem(
-        headline = job.folderName,
-        onLongClick = selection.onLongClick,
-        isSelectionMode = selection.active,
-        isSelected = selection.selected,
-        onSelectToggle = { selection.onToggle() },
-        leading = {
-            ListLeadingMedia(
-                thumbnail = thumbnail,
-                fallback = { ListLeadingIcon(Icons.Outlined.CloudDownload) },
-                isSpoilerBlurred = isSpoilerBlurred,
-            )
-        },
-        onClick = { packPrimaryAction(item, onOpen, onRetry)?.invoke() },
-        onMoreClick = onMoreClick,
-        modifier = modifier,
-        headlineMaxLines = if (job.isActive) 1 else 2,
-        supporting = {
-            Column {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    // 与普通云端任务同一个标签：秒传与整包离线的区别用户不必知道
-                    Text(
-                        text = "云端",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                        maxLines = 1,
-                    )
-                    // 完成的不写「已完成」，所在的分组已经说了
-                    if (job.stage != OfflinePackStage.DONE) Text(text = item.statusLabel(), color = job.statusColor(), maxLines = 1)
-                    // 与普通云端任务一样在状态后写大小；失败原因另起一行，见下
-                    MetaRow(parts = listOf(job.sizeLabel()), modifier = Modifier.weight(1f, fill = false))
-                }
-                job.detail()?.let { detail ->
-                    Text(
-                        text = detail.lineSequence().first(),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                when (job.stage) {
-                    OfflinePackStage.QUEUED, OfflinePackStage.DOWNLOADING -> {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        LinearProgressIndicator(
-                            progress = { (item.progress / 100f).coerceIn(0f, 1f) },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
-                    OfflinePackStage.PRUNING -> {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                    }
-                    else -> Unit
-                }
-            }
-        },
-        trailing = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (job.stage == OfflinePackStage.FAILED && !item.isBusy) {
-                    IconButton(onClick = onRetry) {
-                        Icon(Icons.Outlined.Refresh, contentDescription = "重试")
-                    }
-                }
-                ListMoreButton(onClick = onMoreClick)
-            }
-        },
-    )
-}
 
 /** 点按一项做的事：完成的打开，失败的重试。 */
 internal fun packPrimaryAction(item: TransferItem.Pack, onOpen: () -> Unit, onRetry: () -> Unit): (() -> Unit)? = when {
@@ -192,14 +84,13 @@ internal fun packTransferActions(
 
 /** 整包离线的详情面板。 */
 @Composable
-internal fun PackTransferSheet(item: TransferItem.Pack, actions: List<SheetAction>, onDismiss: () -> Unit) {
+internal fun PackTransferDetails(item: TransferItem.Pack, actions: List<SheetAction>, modifier: Modifier = Modifier) {
     val job = item.job
     val statusColor = job.statusColor()
-    ItemDetailsSheet(
+    ItemDetailsContent(modifier = modifier, showIcon = false,
         title = job.folderName,
         headerIcon = { ListLeadingIcon(Icons.Outlined.CloudDownload) },
         actions = actions,
-        onDismiss = onDismiss,
         metaParts = listOf("云端", item.statusLabel(), job.sizeLabel()),
         extraLines = {
             job.detail()?.let {

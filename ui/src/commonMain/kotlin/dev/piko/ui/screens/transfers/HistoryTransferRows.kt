@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.transfers
 
+import androidx.compose.ui.Modifier
+
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.History
@@ -7,7 +9,7 @@ import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import dev.piko.shared.state.HistoryEditWork
-import dev.piko.ui.components.ItemDetailsSheet
+import dev.piko.ui.components.ItemDetailsContent
 import dev.piko.ui.components.ListLeadingIcon
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.workProgress
@@ -20,10 +22,10 @@ internal fun historyTransferActions(work: HistoryEditWork, canRecheck: Boolean, 
 }
 
 @Composable
-internal fun HistoryTransferSheet(work: HistoryEditWork, actions: List<SheetAction>, onDismiss: () -> Unit) {
+internal fun HistoryTransferDetails(work: HistoryEditWork, actions: List<SheetAction>, modifier: Modifier = Modifier) {
     val progress = work.workProgress()
-    ItemDetailsSheet(title = progress.title, headerIcon = { ListLeadingIcon(Icons.Outlined.History) },
-        actions = actions, onDismiss = onDismiss, metaParts = listOf("历史记录", progress.status),
+    ItemDetailsContent(modifier = modifier, showIcon = false, title = progress.title, headerIcon = { ListLeadingIcon(Icons.Outlined.History) },
+        actions = actions, metaParts = listOf("历史记录", progress.status),
         extraLines = {
             progress.detail?.let { Text(it) }
             Text("只修改历史事件，不删除网盘文件；删除播放记录也会移除对应续播位置，无法撤销。")

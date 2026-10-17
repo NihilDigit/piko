@@ -46,13 +46,14 @@ internal fun Modifier.transferClicks(
     onExtend: () -> Unit,
     onOpen: () -> Unit,
     trailingPassThrough: Dp,
+    leadingPassThrough: Dp = 0.dp,
 ): Modifier {
     val shortcut = LocalPikoPlatform.current.shortcutModifier
     val select by rememberUpdatedState(onSelect)
     val toggle by rememberUpdatedState(onToggle)
     val extend by rememberUpdatedState(onExtend)
     val open by rememberUpdatedState(onOpen)
-    return pointerInput(shortcut, trailingPassThrough) {
+    return pointerInput(shortcut, trailingPassThrough, leadingPassThrough) {
         var lastClickAt = 0L
         awaitPointerEventScope {
             while (true) {
@@ -61,6 +62,7 @@ internal fun Modifier.transferClicks(
                 if (event.type != PointerEventType.Press || change.type != PointerType.Mouse || !event.buttons.isPrimaryPressed) continue
                 // 行宽随窗口变，每次按下时现量
                 if (change.position.x >= size.width - trailingPassThrough.toPx()) continue
+                if (change.position.x < leadingPassThrough.toPx()) continue
                 event.changes.forEach { it.consume() }
                 val modifiers = event.keyboardModifiers
                 when {
