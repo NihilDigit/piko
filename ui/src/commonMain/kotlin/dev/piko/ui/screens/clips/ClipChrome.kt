@@ -411,7 +411,7 @@ internal fun ClipCaption(clip: Clip, startMs: Long, folderName: String?, compact
             )
         }
         Text(
-            text = "片中 ${formatTimeMs(startMs)} 起",
+            text = if (clip.fullVideo) "完整视频" else "片中 ${formatTimeMs(startMs)} 起",
             style = typography.labelMedium.copy(fontFeatureSettings = "tnum").withShadow(),
             color = Color.White.copy(alpha = 0.72f),
             maxLines = 1,

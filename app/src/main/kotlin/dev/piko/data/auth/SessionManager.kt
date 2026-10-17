@@ -113,6 +113,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         fun driveTileSize(view: String) = stringPreferencesKey("drive_tile_size_$view")
         val CLIP_PANEL_OPEN = booleanPreferencesKey("clip_panel_open")
         val CLIP_PANEL_WIDTH = floatPreferencesKey("clip_panel_width")
+        val CLIP_FEED_FULL_VIDEO_ENABLED = booleanPreferencesKey("clip_feed_full_video_enabled")
         val SIDEBAR_COLLAPSED = booleanPreferencesKey("sidebar_collapsed")
         val SHOW_EXTENSIONS = booleanPreferencesKey("show_extensions")
         val PIKPAK_DOMAIN = stringPreferencesKey("pikpak_domain")
@@ -383,6 +384,16 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun setClipPanelWidth(widthDp: Float) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.CLIP_PANEL_WIDTH] = widthDp
+        }
+    }
+
+    override val clipFeedFullVideoFlow: Flow<Boolean> = preference { preferences ->
+        preferences[PreferencesKeys.CLIP_FEED_FULL_VIDEO_ENABLED] ?: false
+    }
+
+    override suspend fun setClipFeedFullVideoEnabled(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.CLIP_FEED_FULL_VIDEO_ENABLED] = enabled
         }
     }
 

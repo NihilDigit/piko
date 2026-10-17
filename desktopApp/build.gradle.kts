@@ -113,7 +113,7 @@ afterEvaluate {
 // 放进 afterEvaluate：插件在它自己的 afterEvaluate 里给这些任务设 javaHome，先登记的会被盖掉
 val packagingJdkHome = javaToolchains.launcherFor {
     languageVersion = JavaLanguageVersion.of(25)
-    vendor = JvmVendorSpec.AZUL
+    vendor = JvmVendorSpec.matching("Azul")
 }.map { it.metadata.installationPath.asFile.absolutePath }
 afterEvaluate {
     tasks.withType<AbstractJvmToolOperationTask>().configureEach { javaHome.set(packagingJdkHome) }

@@ -242,20 +242,25 @@ class PikoMediaRepository(
         startMs: Long,
         videoDurationMs: Long,
         role: StreamRole,
+        fullVideo: Boolean = false,
     ): Result<PreparedClip> =
         withContext(Dispatchers.Default) {
             runSuspendCatching {
-                val key = clipKey(fileId, startMs)
+                val key = clipKey(fileId, startMs, fullVideo)
                 val client = client
                 val leased = LeasedFile.isLeased(fileId)
-                clipCache?.record(key)?.let { record ->
-                    cachedClip(client, record, startMs, videoDurationMs, role, leased)?.let { return@runSuspendCatching it }
+                if (!fullVideo) {
+                    clipCache?.record(key)?.let { record ->
+                        cachedClip(client, record, startMs, videoDurationMs, role, leased)?.let { return@runSuspendCatching it }
+                    }
                 }
                 val detail = takeFreshDetail(fileId) ?: detailOf(client, fileId)
-                val transcode = detail.resolveVariant(VariantPreference.Resolution(CLIP_RESOLUTION))
-                if (!transcode.isOrigin && videoDurationMs > 0) {
-                    openClipSlice(client, detail, transcode, key, startMs, videoDurationMs, role, leased)
-                        ?.let { return@runSuspendCatching it }
+                if (!fullVideo) {
+                    val transcode = detail.resolveVariant(VariantPreference.Resolution(CLIP_RESOLUTION))
+                    if (!transcode.isOrigin && videoDurationMs > 0) {
+                        openClipSlice(client, detail, transcode, key, startMs, videoDurationMs, role, leased)
+                            ?.let { return@runSuspendCatching it }
+                    }
                 }
                 val original = detail.resolveVariant(VariantPreference.Original)
                 val info = playableMediaInfo(detail, original, fileId)
@@ -315,9 +320,10 @@ class PikoMediaRepository(
 
     // 同一个视频、同一个起点才是同一截；换了清晰度截出来的字节就不同。
     // 归档条目的 ID 带着文件名，拼进磁盘上的文件名会超长，只用条目自己的 ID
-    private fun clipKey(fileId: String, startMs: Long): String {
+    private fun clipKey(fileId: String, startMs: Long, fullVideo: Boolean = false): String {
         val id = VaultEntry.entryIdOf(fileId)?.let { "vault-$it" } ?: fileId
-        return "${id}_${startMs}_$CLIP_RESOLUTION"
+        val mode = if (fullVideo) "full" else CLIP_RESOLUTION
+        return "${id}_${startMs}_$mode"
     }
 
     /**

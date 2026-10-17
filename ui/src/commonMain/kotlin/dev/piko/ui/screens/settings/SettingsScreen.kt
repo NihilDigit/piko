@@ -150,6 +150,7 @@ fun SettingsScreen(
     val isNameParsingEnabled by sessionManager.nameParsingFlow.collectAsStateWithLifecycle(initialValue = true)
     val isBundleSubtitlesEnabled by sessionManager.bundleSubtitlesFlow.collectAsStateWithLifecycle(initialValue = true)
     val isAutoCleanNamesEnabled by sessionManager.autoCleanNamesFlow.collectAsStateWithLifecycle(initialValue = false)
+    val isClipFeedFullVideoEnabled by sessionManager.clipFeedFullVideoFlow.collectAsStateWithLifecycle(initialValue = false)
     val isHardwareDecodingEnabled by sessionManager.hardwareDecodingFlow.collectAsStateWithLifecycle(initialValue = true)
     val isSyncPlayHistoryEnabled by sessionManager.syncPlayHistoryFlow.collectAsStateWithLifecycle(initialValue = true)
     val isSettingsSyncEnabled by sessionManager.settingsSyncFlow.collectAsStateWithLifecycle(initialValue = true)
@@ -374,6 +375,13 @@ fun SettingsScreen(
                                 supporting = "花屏或卡死时关闭，改用处理器解码",
                                 checked = isHardwareDecodingEnabled,
                                 onCheckedChange = { scope.launch { sessionManager.setHardwareDecoding(it) } },
+                            )
+                            SettingsSwitchRow(
+                                icon = Icons.Outlined.SlowMotionVideo,
+                                title = "信息流播放完整视频",
+                                supporting = if (isClipFeedFullVideoEnabled) "随机播放同目录下的完整视频" else "随机截取同目录下视频的 30 秒片段",
+                                checked = isClipFeedFullVideoEnabled,
+                                onCheckedChange = { scope.launch { sessionManager.setClipFeedFullVideoEnabled(it) } },
                             )
                         }
                     }
