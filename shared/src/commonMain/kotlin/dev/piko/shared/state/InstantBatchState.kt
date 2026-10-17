@@ -87,6 +87,9 @@ class InstantBatchState internal constructor(
     private val emitMessage: suspend (String) -> Unit,
     private val onEmpty: () -> Unit,
 ) {
+    var saveAsReference by mutableStateOf(false)
+        private set
+
     var rows by mutableStateOf(links.map(::createRow))
         private set
 
@@ -145,6 +148,10 @@ class InstantBatchState internal constructor(
             resolving > 0 -> "$resolving 项正在解析"
             failed > 0 -> "$failed 项解析失败，重试或移除后再保存"
             unnamed > 0 -> "$unnamed 项的文件夹名为空"
+            saveAsReference && rows.any { it.status == InstantBatchRowStatus.WHOLE_OFFLINE ||
+                it.state.sourceSelectedIndices.any { index -> !it.state.items[index].isInstantReady } } ->
+                "所选内容缺少引用，请取消选择或关闭以引用保存"
+            rows.any { it.state.savePlan?.incompleteCatalog == true } -> "有不完整的文件清单，请逐项检查并选择可保存的内容"
             submittableRows.isEmpty() && rows.any { it.status == InstantBatchRowStatus.NEEDS_REVIEW } -> rows.firstNotNullOfOrNull { it.state.saveBlockReason } ?: "保存结果需要先在任务页核对"
             submittableRows.isEmpty() -> "没有要保存的项"
             else -> null
@@ -165,6 +172,12 @@ class InstantBatchState internal constructor(
 
     fun closeRow() {
         openedRow = null
+    }
+
+    fun updateSaveAsReference(value: Boolean) {
+        if (isSaving || rows.any { !it.state.canEdit || it.state.hasRetainedInstantAttempt }) return
+        saveAsReference = value
+        rows.forEach { it.state.updateSaveAsReference(value) }
     }
 
     fun remove(row: InstantBatchRow) {
@@ -235,7 +248,7 @@ class InstantBatchState internal constructor(
     private fun createRow(link: PastedLink): InstantBatchRow {
         // 每行一个子作用域：移除时连同进行中的解析一起取消，不影响别的行
         val rowScope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
-        return InstantBatchRow(link, newRow(link, rowScope), rowScope)
+        return InstantBatchRow(link, newRow(link, rowScope).apply { updateSaveAsReference(this@InstantBatchState.saveAsReference) }, rowScope)
     }
 
     private fun dropRow(row: InstantBatchRow) {

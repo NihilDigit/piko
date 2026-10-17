@@ -17,10 +17,15 @@ data class InstantSaveAttempt(
     val containerName: String? = null,
     val names: Map<String, String> = emptyMap(),
     val keepStructure: Boolean = false,
+    val reference: Boolean = false,
     val receipt: InstantSaveReceipt? = null,
     val finishedAtMs: Long? = null,
 ) {
     val isRunning: Boolean get() = finishedAtMs == null
+    val isComplete: Boolean get() = !isRunning && receipt?.let {
+        !it.requiresInspection && it.failed.isEmpty() && it.notAttempted.isEmpty() &&
+            it.confirmed.keys.containsAll(files.filter { file -> file.gcid != null }.map { file -> file.path })
+    } == true
     val locateId: String? get() = receipt?.folders?.get("")?.takeIf { it.isNotEmpty() }
         ?: receipt?.confirmed?.values?.firstOrNull() ?: target.id.takeIf { it.isNotEmpty() }
 }

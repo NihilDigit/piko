@@ -38,6 +38,54 @@ import kotlin.test.assertTrue
  */
 class InstantFlowSmokeTest {
     @Test
+    fun flattenedBatchSelectionKeepsLinkOwnershipAndAppliesOneReferencePolicy() = smoke { scope ->
+        val server = FakePikPakServer()
+        val links = listOf('a', 'b', 'c').map { "magnet:?xt=urn:btih:" + it.toString().repeat(40) }
+        links.forEachIndexed { index, link ->
+            val files = listOf(Triple("相同文件名.mkv", 100L, "HASH$index")) +
+                if (index == 2) listOf(Triple("缺少引用.mkv", 100L, "")) else emptyList()
+            server.indexMagnet(link, resourceListBody("视频", files))
+        }
+        val state = Rig(server, MemoryPreferences(), scope).sheet(scope, links.joinToString("\n"))
+        val batch = assertNotNull(state.batch)
+        awaitUntil("所有来源解析完成") { batch.rows.all { it.state.resolution != null } && state.target != null }
+        batch.updateSaveAsReference(true)
+        assertTrue(batch.rows.all { it.state.saveAsReference })
+        assertTrue(!batch.canSaveAll)
+        assertTrue(assertNotNull(batch.blockedReason).contains("缺少引用"))
+        batch.rows.last().state.let { it.setSourceSelected(it.items.indices.toSet(), false) }
+        assertTrue(batch.canSaveAll)
+        batch.updateSaveAsReference(false)
+        assertTrue(batch.rows.none { it.state.saveAsReference })
+        val outcome = scope.async(start = CoroutineStart.UNDISPATCHED) { state.outcomes.first() }
+        batch.saveAll()
+        assertEquals(2, assertIs<InstantSaveOutcome.InstantSaved>(outcome.await()).createdIds.size)
+        assertEquals(setOf("HASH0", "HASH1"), server.children(state.target!!.id).map { it.hash }.toSet())
+    }
+
+    @Test
+    fun explicitSourceSubtitleSelectionOverridesTheDefaultAndMatchesSavedProjection() = smoke { scope ->
+        val server = FakePikPakServer()
+        server.indexMagnet(magnet, resourceListBody("Show", listOf(
+            Triple("E01.mkv", 100L, "VIDEO"), Triple("E01.zh.ass", 10L, "SUBTITLE"),
+        )))
+        val rig = Rig(server, MemoryPreferences(), scope)
+        val state = rig.sheet(scope, magnet)
+        awaitUntil("来源解析完成") { state.resolution != null && state.target != null }
+        val subtitle = state.items.indexOfFirst { it.file.name.endsWith(".ass") }
+        assertTrue(subtitle >= 0)
+        assertTrue(subtitle !in state.sourceSelectedIndices)
+        state.setSourceSelected(setOf(subtitle), true)
+        assertTrue(subtitle in state.sourceSelectedIndices)
+        val projected = state.projectedSaveFiles.map { it.name }.toSet()
+        assertEquals(setOf("E01.mkv", "E01.zh.ass"), projected)
+        val outcome = scope.async(start = CoroutineStart.UNDISPATCHED) { state.outcomes.first() }
+        state.saveSelection()
+        assertIs<InstantSaveOutcome.InstantSaved>(outcome.await())
+        assertEquals(projected, server.children(state.target!!.id).filter { !it.trashed }.map { it.name }.toSet())
+    }
+
+    @Test
     fun `shared video preview reuses the temporary copy and cleans it on close`() = smoke { scope ->
         val server = FakePikPakServer()
         val rig = Rig(server, MemoryPreferences(), scope)
@@ -227,7 +275,7 @@ class InstantFlowSmokeTest {
 
     /**
      * 防的是开着按番号规范命名时只有面板上改了名：秒传要带规范名，移用的预览副本移过来后另改名，
-     * 字幕跟着视频换主干。开关默认关着，关着时原名照存。
+     * 字幕跟着视频换主干。默认开启，手动关闭时原名照存。
      */
     @Test
     fun `canonical code names are what lands in the drive`() = smoke { scope ->
@@ -241,8 +289,9 @@ class InstantFlowSmokeTest {
         val sessionScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val state = rig.sheet(sessionScope, magnet)
         awaitUntil("解析完成且保存目标确定") { state.resolution != null && state.target != null }
-        assertEquals(false, state.useCanonicalNames)
+        assertEquals(true, state.useCanonicalNames)
         assertTrue(state.offersCanonicalNames)
+        state.updateUseCanonicalNames(false)
         assertEquals(listOf("[xxx.com]abc00123hhb.mp4", "[xxx.com]abc00123hhb.zh.srt"), state.items.indices.map(state::nameToSave))
         val video = state.items.indexOfFirst { it.file.name.endsWith(".mp4") }
         val row = assertNotNull(state.tree?.rowOf(video))

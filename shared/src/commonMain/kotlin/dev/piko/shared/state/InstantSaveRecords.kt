@@ -59,13 +59,13 @@ class InstantSaveRecords(
 
     fun beginAttempt(account: String, title: String, target: dev.piko.shared.data.PikoPathBreadcrumb,
         files: List<io.github.nihildigit.pikpak.ResolvedFile>, id: String? = null, containerName: String? = null,
-        names: Map<String, String> = emptyMap(), keepStructure: Boolean = false): String? {
+        names: Map<String, String> = emptyMap(), keepStructure: Boolean = false, reference: Boolean = false): String? {
         if (clientProvider.currentClient.value?.account != account) return null
         val key = id ?: "${now()}-${Random.nextInt(0, Int.MAX_VALUE)}"
         _attempts.update { all ->
             val old = all.firstOrNull { it.id == key && it.account == account }
             val work = old?.copy(finishedAtMs = null) ?: InstantSaveAttempt(key, account, title, target, files.toList(), now(),
-                containerName = containerName, names = names.toMap(), keepStructure = keepStructure)
+                containerName = containerName, names = names.toMap(), keepStructure = keepStructure, reference = reference)
             all.filterNot { it.id == key } + work
         }
         return key
@@ -77,6 +77,55 @@ class InstantSaveRecords(
         _attempts.update { all -> all.map { if (it.id == id && it.account == receipt.account) it.copy(receipt = receipt, finishedAtMs = now()) else it } }
         if (receipt.requiresInspection || receipt.failed.isNotEmpty() || receipt.notAttempted.isNotEmpty())
             _outcomes.tryEmit(InstantSaveAttemptOutcome(id, receipt.account, work.title, receipt.message))
+    }
+
+    private val checking = MutableStateFlow<Set<String>>(emptySet())
+    fun canRecheck(id: String): Boolean = id !in checking.value && _attempts.value.any {
+        it.id == id && !it.isRunning && it.account == clientProvider.currentClient.value?.account && it.receipt?.requiresInspection == true
+    }
+
+    /** An absent or ambiguous output stays unknown. This path never submits a write. */
+    fun recheck(id: String, repository: dev.piko.shared.data.PikoDriveRepository): Boolean {
+        if (!canRecheck(id)) return false
+        val initial = _attempts.value.firstOrNull { it.id == id } ?: return false
+        val read = repository.browsableReader(initial.account) ?: return false
+        checking.update { it + id }
+        scope.launch {
+            try {
+                val receipt = initial.receipt ?: return@launch
+                val folders = receipt.folders.toMutableMap()
+                var unknownFolder = receipt.unconfirmedFolder
+                val pendingFolder = unknownFolder
+                if (pendingFolder != null) {
+                    val prefix = pendingFolder.substringBeforeLast('/', "")
+                    val parent = if (initial.containerName == pendingFolder) initial.target.id else folders[prefix]
+                    if (parent != null) {
+                        val matches = read(parent).getOrNull().orEmpty().filter { it.isFolder && it.name == pendingFolder.substringAfterLast('/') }
+                        if (matches.size == 1) {
+                            folders[if (initial.containerName == pendingFolder) "" else pendingFolder] = matches.single().id
+                        }
+                    }
+                }
+                val confirmed = receipt.confirmed.toMutableMap()
+                val naming = receipt.namingUnconfirmed.toMutableSet()
+                val contents = mutableMapOf<String, List<io.github.nihildigit.pikpak.FileStat>>()
+                for (file in initial.files.filter { it.path in receipt.unconfirmed || it.path in naming }) {
+                    val folder = folders[if (initial.keepStructure) file.path.substringBeforeLast('/', "") else ""]
+                        ?: initial.target.id.takeIf { initial.containerName == null && !initial.keepStructure } ?: continue
+                    val actual = contents[folder] ?: read(folder).getOrNull()?.also { contents[folder] = it } ?: continue
+                    val expectedName = initial.names[file.path] ?: file.name
+                    val matches = actual.filter { !it.isFolder && it.name == expectedName && it.sizeBytes == file.size && it.hash.equals(file.gcid, true) }
+                    if (matches.size == 1) { confirmed[file.path] = matches.single().id; naming.remove(file.path) }
+                }
+                if (repository.currentAccount != initial.account) return@launch
+                if (receipt.failed.isEmpty() && receipt.notAttempted.isEmpty() &&
+                    initial.files.all { it.path in confirmed }) unknownFolder = null
+                val updated = receipt.copy(confirmed = confirmed, unconfirmed = receipt.unconfirmed - confirmed.keys,
+                    namingUnconfirmed = naming, folders = folders, unconfirmedFolder = unknownFolder)
+                _attempts.update { all -> all.map { work -> if (work === initial) work.copy(receipt = updated) else work } }
+            } finally { checking.update { it - id } }
+        }
+        return true
     }
 
     fun forgetAttempt(id: String): Boolean {

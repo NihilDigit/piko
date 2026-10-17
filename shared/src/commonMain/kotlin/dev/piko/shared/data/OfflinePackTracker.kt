@@ -294,7 +294,7 @@ class OfflinePackTracker(
         }
         // 全选时没有要删的，省掉逐层列目录
         if (job.prunedCount > 0) {
-            instantRepo.pruneOfflineOutput(task, job.keep).getOrElse { err ->
+            instantRepo.pruneOfflineOutput(task, job.keep, job.url).getOrElse { err ->
                 recordFailure(job, err)
                 return
             }
@@ -321,6 +321,10 @@ class OfflinePackTracker(
     }
 
     private suspend fun recordFailure(job: OfflinePackJob, err: Throwable) {
+        if (err is OfflinePruneBlocked) {
+            fail(job, err.message.orEmpty(), cleanup = true)
+            return
+        }
         if (err !is PikPakException) {
             PikoLog.d(TAG, "整包离线任务 ${job.taskId} 查询失败（${err::class.simpleName}），等网络恢复")
             return

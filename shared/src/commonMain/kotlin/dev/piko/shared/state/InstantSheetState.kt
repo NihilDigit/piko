@@ -111,8 +111,8 @@ internal class InstantSharedContext {
     /** 各条链接按同一个账号定路线，随网盘余量一起查。 */
     val account = mutableStateOf(SaveAccount())
 
-    /** 保存时按番号规范命名，对这次会话的全部链接与转存生效。每次打开面板都是关的。 */
-    val canonicalNames = mutableStateOf(false)
+    /** 保存时按番号规范命名，对这次会话的全部链接与转存生效，默认开启。 */
+    val canonicalNames = mutableStateOf(true)
 
     /** 从一次余量查询里取账号约束。账号类型登录时已取，这里不另发请求。 */
     fun updateAccount(free: Boolean?, quota: QuotaResponse) {
@@ -299,7 +299,11 @@ class InstantSheetState private constructor(
 
     // region 按番号规范命名
 
-    /** 保存时是否按番号规范命名，见 [InstantSharedContext.canonicalNames]。 */
+    var saveAsReference by mutableStateOf(false)
+        private set
+    fun updateSaveAsReference(value: Boolean) { if (canEdit && instantRetry == null && saveIssue == null) saveAsReference = value }
+
+    /** 保存时是否按番号规范命名,见 [InstantSharedContext.canonicalNames]。 */
     var useCanonicalNames: Boolean by shared.canonicalNames
         private set
 
@@ -413,17 +417,30 @@ class InstantSheetState private constructor(
 
     /** 「保存配套字幕」开关，读自偏好。 */
     private var saveAttachedSubtitles by mutableStateOf(true)
+    private var sourceSelectionEdited by mutableStateOf(false)
 
     /**
      * 实际要保存的文件。开关关闭时去掉挂在视频下的字幕：勾选和面板显示照旧，
      * 只在保存这一步生效，免得用户来回切开关时丢了自己的勾选。
      */
     private val itemsToSave: List<InstantFileItem> by derivedStateOf {
-        if (saveAttachedSubtitles) {
-            selectedItems
-        } else {
-            val attached = tree?.rows?.flatMap { it.subtitleIndices }?.toSet().orEmpty()
-            selectedIndices.filter { it !in attached }.sorted().mapNotNull(items::getOrNull)
+        sourceSelectedIndices.sorted().mapNotNull(items::getOrNull)
+    }
+
+    val sourceSelectedIndices: Set<Int> by derivedStateOf {
+        if (saveAttachedSubtitles || sourceSelectionEdited) selectedIndices
+        else selectedIndices - tree?.rows?.flatMap { it.subtitleIndices }?.toSet().orEmpty()
+    }
+
+    /** Exact accepted inputs for the passive result browser; querying this never writes or previews. */
+    val projectedSaveFiles: List<io.github.nihildigit.pikpak.ResolvedFile> by derivedStateOf {
+        sourceSelectedIndices.sorted().map { index ->
+            val item = items[index]
+            val name = nameToSave(index)
+            val relative = if (willCreateFolder) item.file.path.substringBeforeLast('/', "").let { dir ->
+                if (dir.isEmpty()) name else "$dir/$name"
+            } else name
+            item.file.copy(path = if (willCreateFolder) "$folderNameToSave/$relative" else relative)
         }
     }
 
@@ -434,7 +451,7 @@ class InstantSheetState private constructor(
     val willCreateFolder: Boolean by derivedStateOf { resolution != null && selectedEntryCount > 1 }
 
     val canSaveSelection: Boolean by derivedStateOf {
-        !isSaving && selectedItems.isNotEmpty() && target != null && saveBlockReason == null &&
+        !isSaving && selectedItems.isNotEmpty() && (!saveAsReference || itemsToSave.all { it.file.gcid != null }) && target != null && saveBlockReason == null &&
             !(willCreateFolder && folderNameToSave.isBlank())
     }
 
@@ -453,7 +470,9 @@ class InstantSheetState private constructor(
 
     /** 路线与代价，见 [planSave]。没勾任何一项时为 null。 */
     val savePlan: SavePlan? by derivedStateOf {
-        planSave(items, selectedIndices, selectedEntryCount, remainingBytes, shared.account.value)
+        if (saveAsReference && selectedItems.isNotEmpty()) SavePlan(SaveRoute.INSTANT, itemsToSave.size)
+        else planSave(items, selectedIndices, selectedEntryCount, remainingBytes, shared.account.value,
+            catalogComplete = resolution?.resource?.truncated == false)
     }
 
     val isAllSelected: Boolean by derivedStateOf {
@@ -558,7 +577,25 @@ class InstantSheetState private constructor(
     private var resolvedKey: String? = null
 
     init {
-        scope.launch { saveRecords.attempts.collect { saveAttempts = it } }
+        scope.launch { saveRecords.attempts.collect { attempts ->
+            saveAttempts = attempts
+            if (!isSaving) attempts.firstOrNull { it.id == instantAttemptId }?.let { work ->
+                work.receipt?.let { receipt ->
+                    val hadIssue = saveIssue != null
+                    saveIssue = receipt.takeIf { it.requiresInspection || it.failed.isNotEmpty() || it.notAttempted.isNotEmpty() }
+                    instantRetry = instantRetry?.copy(receipt = receipt)
+                    if (hadIssue && work.isComplete) {
+                        val destination = savedContainer ?: work.target
+                        val ids = work.files.mapNotNull { receipt.confirmed[it.path] }
+                        instantRetry = null
+                        instantAttemptId = null
+                        savedContainer = null
+                        saveParent = null
+                        _outcomes.emit(InstantSaveOutcome.InstantSaved(ids, destination))
+                    }
+                }
+            }
+        } }
         scope.launch { instantRepo.offlineSubmissions.works.collect { offlineWorks = it } }
         scope.launch { saveTargetContext.actionChanges.collect { targetRulesVersion++ } }
         if (isRoot) {
@@ -656,6 +693,17 @@ class InstantSheetState private constructor(
         setItemsSelected(listOf(index), selected)
     }
 
+    /** Source-tree selection addresses actual files, including individual attached subtitles. */
+    fun setSourceSelected(indices: Set<Int>, selected: Boolean) {
+        if (!canEdit) return
+        resetEditableAttempt()
+        val valid = indices.filterTo(HashSet()) { it in items.indices }
+        val current = sourceSelectedIndices
+        sourceSelectionEdited = true
+        selectedIndices = if (selected) current + valid else current - valid
+        selectionPicked = true
+    }
+
     /** 整组勾选或取消，给作品、分区与「其他文件」用。 */
     fun setGroupSelected(group: InstantGroup, selected: Boolean) {
         setItemsSelected(group.indices, selected)
@@ -745,6 +793,7 @@ class InstantSheetState private constructor(
 
     /** 按 [savePlan] 的路线保存当前勾选。 */
     fun saveSelection() {
+        if (saveAsReference && itemsToSave.any { it.file.gcid == null }) { errorMessage = "所选内容缺少引用，无法保存"; return }
         if (!scope.isActive || isSaving) return
         saveBlockReason?.let { errorMessage = it; return }
         if (instantRetry != null) {
@@ -928,6 +977,7 @@ class InstantSheetState private constructor(
         tree = null
         canonical = null
         selectedIndices = emptySet()
+        sourceSelectionEdited = false
         selectionPicked = false
         errorMessage = null
         isUnindexed = false
@@ -1056,13 +1106,16 @@ class InstantSheetState private constructor(
             return false
         }
         instantAttemptId = saveRecords.beginAttempt(account, title, target, files.map { it.file }, instantAttemptId,
-            containerName = containerName, names = names, keepStructure = keepStructure)
+            containerName = containerName, names = names, keepStructure = keepStructure, reference = saveAsReference)
         if (instantAttemptId != null) shared.targetHeld.value = true
         return instantAttemptId != null
     }
 
     private suspend fun executeInstant(plan: InstantRetryPlan, submitted: List<InstantFileItem>): Result<List<String>> {
-        val result = instantRepo.instantSave(submitted, plan.target.id, reuse = previewedIds.toMap(), keepStructure = plan.keepStructure,
+        val result = if (saveAsReference) {
+            val vault = driveRepo.vaultAccess(requireNotNull(saveAccount)) ?: throw kotlinx.coroutines.CancellationException("保存账号已结束")
+            instantRepo.saveReferences(submitted, plan.target.id, plan.keepStructure, plan.names, plan.receipt.folders, vault, resolvedKey)
+        } else instantRepo.instantSave(submitted, plan.target.id, reuse = previewedIds.toMap(), keepStructure = plan.keepStructure,
             names = plan.names, existingFolders = plan.receipt.folders)
         if (driveRepo.currentAccount != saveAccount) throw kotlinx.coroutines.CancellationException("保存账号已结束")
         val current = (result.exceptionOrNull() as? InstantSaveIncomplete)?.receipt ?: if (result.isSuccess) {
@@ -1085,7 +1138,7 @@ class InstantSheetState private constructor(
         driveRepo.applyChange(dev.piko.shared.data.DriveChange.ContentsChanged(
             receipt.folders.values.toSet() + plan.target.id + listOfNotNull(saveParent?.id),
         ))
-        submitted.filter { it.file.path in current.confirmed }.forEach { item -> item.file.gcid?.let(previewedIds::remove) }
+        if (!saveAsReference) submitted.filter { it.file.path in current.confirmed }.forEach { item -> item.file.gcid?.let(previewedIds::remove) }
         resolvedKey?.let { magnet -> driveRepo.sourceLedger.record(magnet, submitted.filter { it.file.path in current.confirmed }.map { it.file }) }
         instantAttemptId?.let { saveRecords.finishAttempt(it, receipt) }
         val complete = receipt.confirmed.keys.containsAll(plan.files.filter { it.file.gcid != null }.map { it.file.path }) && !receipt.requiresInspection
@@ -1175,6 +1228,10 @@ class InstantSheetState private constructor(
     }
 
     private suspend fun packSave(target: PikoPathBreadcrumb, toSave: List<InstantFileItem>): Result<Unit> {
+        if (resolution?.resource?.truncated != false) {
+            errorMessage = "文件清单不完整，不能提交自动裁剪的整包离线"
+            return Result.failure(IllegalStateException(errorMessage))
+        }
         if (!canReceiveAt(target)) return Result.failure(IllegalStateException(errorMessage))
         val allItems = items
         val packBytes = allItems.sumOf { it.file.size }

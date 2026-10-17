@@ -43,6 +43,8 @@ data class MagnetResolutionResult(
     val totalCount: Int,
 )
 
+internal class OfflinePruneBlocked(message: String) : IllegalStateException(message)
+
 class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
     val offlineSubmissions = dev.piko.shared.state.OfflineSubmitSession(clientManager)
     private val client get() = clientManager.currentClient.value ?: error("Not logged in")
@@ -101,8 +103,15 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
         return withContext(Dispatchers.Default) { saveFiles(owner, accepted, targetParentId, previews, keepStructure, acceptedNames, folders) }
     }
 
+    suspend fun saveReferences(items: List<InstantFileItem>, targetParentId: String, keepStructure: Boolean,
+        names: Map<String, String>, existingFolders: Map<String, String>, vault: VaultStore, source: String?): Result<List<String>> {
+        val owner = clientManager.currentClient.value ?: return Result.failure(IllegalStateException("未登录"))
+        return withContext(Dispatchers.Default) { saveFiles(owner, items.toList(), targetParentId, emptyMap(), keepStructure,
+            names.toMap(), existingFolders.toMap(), vault, source) }
+    }
+
     private suspend fun saveFiles(owner: PikPakClient, items: List<InstantFileItem>, targetParentId: String,
-        reuse: Map<String, String>, keepStructure: Boolean, names: Map<String, String>, existingFolders: Map<String, String>): Result<List<String>> {
+        reuse: Map<String, String>, keepStructure: Boolean, names: Map<String, String>, existingFolders: Map<String, String>, referenceVault: VaultStore? = null, source: String? = null): Result<List<String>> {
         val started = TimeSource.Monotonic.markNow()
         val files = items.map { it.file }.filter { it.gcid != null }
         val reused = files.count { it.gcid in reuse }
@@ -127,6 +136,29 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
                 notAttempted = files.mapTo(HashSet()) { it.path }, folders = folderIds.toMap(),
                 unconfirmedFolder = creatingFolder.takeUnless { definitelyNotSaved(error) })
             return Result.failure(InstantSaveIncomplete(receipt, error))
+        }
+        if (referenceVault != null) {
+            val confirmed = linkedMapOf<String, String>()
+            val unknown = linkedSetOf<String>()
+            val remaining = files.mapTo(linkedSetOf()) { it.path }
+            var failure: Throwable? = null
+            for ((directory, group) in files.groupBy { if (keepStructure) it.path.substringBeforeLast('/', "") else "" }) {
+                val folderId = folderIds[directory] ?: targetParentId
+                val entries = group.map { file -> VaultEntry.create(names[file.path] ?: file.name, file.size, requireNotNull(file.gcid), source,
+                    kotlin.time.Clock.System.now().toEpochMilliseconds()) }
+                val write = referenceVault.update(folderId, VaultEdits.add(entries))
+                val actual = write.getOrNull()?.after ?: referenceVault.committed(folderId).getOrNull()
+                group.zip(entries).forEach { (file, entry) ->
+                    if(actual?.any { it.id == entry.id } == true) confirmed[file.path] = entry.virtualId
+                    else if(write.exceptionOrNull() is VaultWriteUnconfirmed) unknown += file.path
+                }
+                remaining.removeAll(confirmed.keys + unknown)
+                if(write.isFailure) { failure = write.exceptionOrNull(); break }
+            }
+            val receipt = InstantSaveReceipt(owner.account, targetParentId, confirmed = confirmed, unconfirmed = unknown,
+                notAttempted = remaining, folders = folderIds.toMap())
+            return if(failure == null && remaining.isEmpty() && unknown.isEmpty()) Result.success(files.map { confirmed.getValue(it.path) })
+                else Result.failure(InstantSaveIncomplete(receipt, failure ?: IllegalStateException("引用保存待确认")))
         }
         val consumedPreviews = HashSet<String>()
         val previews = files.associate { file ->
@@ -206,9 +238,18 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
     }
 
     /** 永久删除已完成任务产出里 [keep] 以外的文件，见 SDK 的 pruneOfflineOutput。 */
-    suspend fun pruneOfflineOutput(task: DriveTask, keep: Set<String>): Result<PruneResult> =
+    suspend fun pruneOfflineOutput(task: DriveTask, keep: Set<String>, sourceUrl: String): Result<PruneResult> =
         withContext(Dispatchers.Default) {
-            runSuspendCatching { client.pruneOfflineOutput(task, keep) }
+            runSuspendCatching {
+                val owner = client
+                // Persisted jobs may predate the completeness guard. Revalidate before any deletion.
+                val resource = owner.resolveMagnet(sourceUrl)
+                if (resource == null || resource.truncated) throw OfflinePruneBlocked("文件清单不完整，已保留全部离线产出")
+                val paths = resource.files.mapTo(HashSet()) { it.path }
+                if (keep.any { it !in paths }) throw OfflinePruneBlocked("保留路径与来源清单不一致，已保留全部离线产出")
+                check(clientManager.currentClient.value === owner) { "账号已改变，未裁剪离线产出" }
+                owner.pruneOfflineOutput(task, keep)
+            }
                 // 结果里是种子内的路径，只记条数
                 .onSuccess { PikoLog.i(TAG, "裁剪离线产出：任务 ${task.id}，保留 ${keep.size} 个，删除 ${it.deleted.size} 项，保留项缺失 ${it.missing.size} 个") }
         }

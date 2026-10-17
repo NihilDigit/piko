@@ -75,6 +75,11 @@ class InstantSaveReceiptSmokeTest {
         assertTrue(records.pendingConflict("instant@piko.dev", receipt.folders.getValue("sub"), listOf(selected.last().file)))
         assertFalse(records.pendingConflict("instant@piko.dev", parent.id, listOf(selected.first().file)))
         assertFalse(records.pendingConflict("instant@piko.dev", container.id, listOf(item("other.mkv").file)))
+        val repository = PikoDriveRepository(provider, MemoryPreferences())
+        assertTrue(records.recheck(id, repository))
+        awaitUntil("只读重查确认保存内容") { records.attempts.value.single().isComplete }
+        assertEquals(2, server.instantCreates.get(), "重查不能重复提交保存")
+        assertFalse(records.pendingConflict("instant@piko.dev", container.id, listOf(selected.first().file)))
         assertTrue(records.forgetAttempt(id))
         assertFalse(records.pendingConflict("instant@piko.dev", container.id, listOf(selected.first().file)))
         assertEquals(setOf("one.mkv", "sub/two.mkv"), server.tree(container.id).toSet())

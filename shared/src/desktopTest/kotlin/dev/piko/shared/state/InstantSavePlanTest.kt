@@ -103,4 +103,14 @@ class InstantSavePlanTest {
         assertEquals(1, uploadCharge(1))
         assertEquals(0, uploadCharge(0))
     }
+
+    @Test
+    fun `partial catalogs never produce an executable pruning plan`() {
+        val ready = assertNotNull(planSave(pack, setOf(0, 2), 2, null, catalogComplete = false))
+        assertEquals(SaveRoute.INSTANT, ready.route)
+        val mixed = assertNotNull(planSave(pack, setOf(0, 3), 2, null, catalogComplete = false))
+        assertTrue(mixed.incompleteCatalog)
+        assertTrue(mixed.blocked)
+        assertEquals(1, assertNotNull(mixed.fallback).fileCount)
+    }
 }

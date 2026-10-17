@@ -783,7 +783,11 @@ class TransfersState(
             else -> null
         }
         is TransferItem.Instant -> Section.COMPLETED.takeIf { item.record.createdAtMs >= windowStart }
-        is TransferItem.InstantAttempt -> if (item.work.isRunning) Section.PROGRESS else Section.ATTENTION
+        is TransferItem.InstantAttempt -> when {
+            item.work.isRunning -> Section.PROGRESS
+            item.work.isComplete -> Section.COMPLETED
+            else -> Section.ATTENTION
+        }
         is TransferItem.OfflineSubmit -> when (item.work.status) {
             OfflineSubmitStatus.SUBMITTING -> Section.PROGRESS
             OfflineSubmitStatus.COMPLETE -> Section.COMPLETED

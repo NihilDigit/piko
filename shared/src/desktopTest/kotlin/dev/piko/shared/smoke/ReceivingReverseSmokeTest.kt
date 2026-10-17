@@ -208,6 +208,8 @@ class ReceivingReverseSmokeTest {
         f.drive.listAllFiles(output).getOrThrow()
         val job = OfflinePackJob("reverse@piko.dev", task.id, "https://example.invalid/pack", f.target.id, "pack", setOf("one.mkv"), 2, 200, 1,
             stage = OfflinePackStage.PRUNING) // 已发布的旧记录可以没有 outputId。
+        f.server.indexMagnet(job.url, resourceListBody("pack", listOf(
+            Triple("one.mkv", 100L, "HASH"), Triple("unselected.txt", 100L, "HASH2"))))
         f.preferences.saveOfflinePacks(Json.encodeToString(ListSerializer(OfflinePackJob.serializer()), listOf(job)))
         val entered = Channel<Unit>(1)
         val release = Channel<Unit>(1)

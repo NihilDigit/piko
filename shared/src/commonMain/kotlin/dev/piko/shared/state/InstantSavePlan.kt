@@ -45,9 +45,10 @@ data class SavePlan(
     val lacksSpace: Boolean = false,
     /** 要离线，而今天的离线次数已经用完。 */
     val lacksOfflineCount: Boolean = false,
+    val incompleteCatalog: Boolean = false,
     val fallback: InstantFallback? = null,
 ) {
-    val blocked: Boolean get() = lacksSpace || lacksOfflineCount
+    val blocked: Boolean get() = lacksSpace || lacksOfflineCount || incompleteCatalog
 }
 
 /**
@@ -70,10 +71,11 @@ fun planSave(
     selectedEntryCount: Int,
     remainingBytes: Long?,
     account: SaveAccount = SaveAccount(),
+    catalogComplete: Boolean = true,
 ): SavePlan? {
     val chosen = selected.sorted().mapNotNull(items::getOrNull)
     if (chosen.isEmpty()) return null
-    if (chosen.all { it.isInstantReady } && (selectedEntryCount == 1 || account.free)) {
+    if (chosen.all { it.isInstantReady } && (selectedEntryCount == 1 || account.free || !catalogComplete)) {
         val chosenBytes = chosen.sumOf { it.file.size }
         val neededBytes = chosenBytes
         return SavePlan(
@@ -96,8 +98,9 @@ fun planSave(
         neededBytes = packBytes,
         lacksSpace = lacksSpace,
         lacksOfflineCount = lacksOfflineCount,
+        incompleteCatalog = !catalogComplete,
         // 免费账号离线走得通也给：未收录的那几个未必值一次离线，由用户挑
-        fallback = if ((lacksSpace || lacksOfflineCount || account.free) && ready.isNotEmpty()) {
+        fallback = if ((lacksSpace || lacksOfflineCount || account.free || !catalogComplete) && ready.isNotEmpty()) {
             InstantFallback(
                 fileCount = ready.size,
                 uploadCostBytes = uploadCharge(ready.sumOf { it.file.size }),
