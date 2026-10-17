@@ -16,7 +16,7 @@ sealed interface WorkspaceContext {
 }
 
 /**
- * Ordered contexts shared by desktop tabs and mobile auxiliary pages. This owns only identity and
+ * Ordered work tabs shared by every platform and window layout. This owns only identity and
  * selection; the owner keeps each context's browser or task state alive until [close].
  */
 class WorkspaceContexts(initialFileId: Long = 1L) {
@@ -31,6 +31,9 @@ class WorkspaceContexts(initialFileId: Long = 1L) {
     /** Called after a selection change, including one made directly through this collection. */
     var onActivated: ((WorkspaceContext) -> Unit)? = null
 
+    /** New work only; restoring saved tabs or selecting existing work does not fire this. */
+    var onCreated: ((WorkspaceContext) -> Unit)? = null
+
     private fun newId(): Long {
         var id: Long
         do { id = Random.nextLong() } while (id == 0L || _contextsFlow.value.any { it.id == id })
@@ -44,6 +47,7 @@ class WorkspaceContexts(initialFileId: Long = 1L) {
         require(after >= 0)
         _contextsFlow.value = current.toMutableList().apply { add(after + 1, context) }
         if (activate) activate(context.id)
+        onCreated?.invoke(context)
         return context.id
     }
 
@@ -67,12 +71,22 @@ class WorkspaceContexts(initialFileId: Long = 1L) {
         return true
     }
 
-    /** The final file context cannot be closed; every workspace keeps a main file position. */
+    fun move(id: Long, targetIndex: Int): Boolean {
+        val current = _contextsFlow.value
+        val from = current.indexOfFirst { it.id == id }
+        if (from < 0) return false
+        val to = targetIndex.coerceIn(0, current.lastIndex)
+        if (from == to) return false
+        _contextsFlow.value = current.toMutableList().apply { add(to, removeAt(from)) }
+        return true
+    }
+
+    /** The collection always retains one visible work item. */
     fun close(id: Long): WorkspaceContext? {
         val current = _contextsFlow.value
         val index = current.indexOfFirst { it.id == id }.takeIf { it >= 0 } ?: return null
         val removed = current[index]
-        if (removed is WorkspaceContext.File && current.count { it is WorkspaceContext.File } == 1) return null
+        if (current.size == 1) return null
         val next = current.toMutableList().apply { removeAt(index) }
         _contextsFlow.value = next
         if (_activeContextId.value == id) {

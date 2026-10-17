@@ -4,7 +4,7 @@ import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.state.SaveTargetContext
 import kotlinx.coroutines.flow.StateFlow
 
-/** 文件浏览工作区的公共能力；桌面标签不是移动端导航的组成部分。 */
+/** 文件浏览工作区的公共能力；标签集合由工作区所有者单独提供。 */
 interface FileWorkspace : DriveNavigation {
     val clipboard: DriveClipboardState
     val recentFoldersFlow: StateFlow<List<List<PikoPathBreadcrumb>>>

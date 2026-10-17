@@ -51,4 +51,17 @@ class FileActionsRowTest {
         assertEquals(listOf("下载到本地", "分享", "添加星标", "重命名"), layout.quick.map { it.label })
         assertTrue(layout.sections.flatten().none { it.label == "剪切" || it.label == "复制" })
     }
+    @Test
+    fun `narrow selection rows preserve clipboard actions`() {
+        val cut = DriveActions.cut {}
+        val copy = DriveActions.copy {}
+        val download = DriveActions.download {}
+        val share = DriveActions.share {}
+        val rename = DriveActions.rename {}
+        fun row(wide: Boolean) = DriveActions.quickRow(wide, cut, copy, download, share, rename, null)
+        assertEquals(row(true).toSet(), row(false).toSet())
+        val layout = layoutActions(row(false) + DriveActions.properties {})
+        assertTrue((layout.quick + layout.sections.flatten()).containsAll(listOf(cut, copy)))
+    }
+
 }

@@ -7,12 +7,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.ui.graphics.ImageBitmap
 import dev.piko.shared.data.DriveLibrary
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.presentation.DriveBrowserStore
 import dev.piko.shared.presentation.DriveWorkspace
 import dev.piko.shared.presentation.FileWorkspace
-import dev.piko.shared.presentation.MobileFileWorkspace
 import dev.piko.shared.presentation.DriveNavigation
 import dev.piko.shared.presentation.WorkspaceContext
 import dev.piko.shared.presentation.WorkspaceContexts
@@ -31,9 +31,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 
 /** 界面重建和隐藏窗口不销毁浏览上下文；账号退出或工作区释放才清除。 */
-internal class WorkspaceViewModel(private val services: PikoServices, private val account: String, val desktop: Boolean) : ViewModel() {
+internal class WorkspaceViewModel(private val services: PikoServices, private val account: String) : ViewModel() {
     private var closed = false
     private val repository = services.driveRepository
     private val available: Boolean get() = !closed && repository.currentAccount == account
@@ -44,19 +46,38 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
         check(services.driveRepository.currentAccount == account)
         repository.enterAccount(account)
     }
-    val fileWorkspace: FileWorkspace = if (desktop) services.driveWorkspace.also { it.enterAccount(account) }
-        else MobileFileWorkspace(services.driveRepository, account, services.cacheStore, viewModelScope)
-    val desktopWorkspace: DriveWorkspace? get() = fileWorkspace as? DriveWorkspace
-    val contexts = desktopWorkspace?.contexts ?: WorkspaceContexts()
+    val driveWorkspace = services.driveWorkspace.also { it.enterAccount(account) }
+    val fileWorkspace: FileWorkspace get() = driveWorkspace
+    val contexts = driveWorkspace.contexts
+    var tabCreationRevision by mutableStateOf(0L)
+        private set
+    var tabCountBeforeCreation by mutableStateOf(contexts.contextsFlow.value.size)
+        private set
+    var tabButtonEmphasized by mutableStateOf(false)
+        private set
+    private var tabEmphasisJob: Job? = null
     var activationRevision by mutableStateOf(0L)
         private set
     private var handledActivationRevision = 0L
     var pendingCloseId by mutableStateOf<Long?>(null)
         private set
+    var pendingCloseOtherIds by mutableStateOf<List<Long>>(emptyList())
+        private set
+    var pendingCloseOtherNeedsAttention by mutableStateOf(false)
+        private set
     val duplicateSessions = mutableStateMapOf<Long, DuplicateSession>()
     val importDrafts = mutableStateMapOf<Long, InstantDraft>()
     val importModels = mutableStateMapOf<Long, AddLinkViewModel>()
+    private val importViews = mutableMapOf<Long, dev.piko.ui.screens.instant.ImportWorkspaceViewState>()
+    fun importView(id: Long) = importViews.getOrPut(id) { dev.piko.ui.screens.instant.ImportWorkspaceViewState() }
     private val duplicateBrowsers = mutableMapOf<Long, DriveBrowserSession>()
+    private val contextOrigins = mutableMapOf<Long, List<Screen>>()
+    val pageSnapshots = WorkspaceSnapshots<ImageBitmap>()
+    val detailPanels = dev.piko.ui.components.DetailPanelStore()
+
+    fun retainPageSnapshot(id: Long, image: ImageBitmap) {
+        if (available && contexts.contextsFlow.value.any { it.id == id }) pageSnapshots.put(id, image, image.width, image.height)
+    }
 
     fun activateContext(id: Long) {
         if (!available || !contexts.activate(id)) return
@@ -64,13 +85,24 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
         importModels[id]?.resume()
     }
 
-    private fun fileContextId(): Long = desktopWorkspace?.activeTabId?.value
-        ?: contexts.contextsFlow.value.filterIsInstance<WorkspaceContext.File>().first().id
+    private fun fileContextId(): Long = driveWorkspace.activeTabId.value
 
-    fun activateFileBrowser() { activateContext(fileContextId()) }
+    fun newFileContext() {
+        if (!available) return
+        val id = driveWorkspace.openTab(listOf(dev.piko.shared.data.PikoDriveRepository.ROOT_BREADCRUMB), activate = false)
+        activateContext(id)
+    }
+
+    fun activateFileBrowser() {
+        driveWorkspace.switchTab(fileContextId())
+        activateContext(fileContextId())
+    }
 
     fun minimizeContext(id: Long) {
         if (!available) return
+        if (contexts.activeContextId.value == id && contexts.contextsFlow.value.none { it is WorkspaceContext.File }) {
+            driveWorkspace.switchTab(fileContextId())
+        }
         contexts.minimizeToFile(id, fileContextId())
     }
 
@@ -106,6 +138,10 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
 
     fun requestCloseContext(id: Long) {
         if (!available || contexts.contextsFlow.value.none { it.id == id }) return
+        if (closeNeedsConfirmation(id)) pendingCloseId = id else closeContext(id)
+    }
+
+    private fun closeNeedsConfirmation(id: Long): Boolean {
         val model = importModels[id]
         val draft = model?.state
         val unsubmittedInput = draft != null && !draft.isBlank && !draft.isSaving && draft.batch?.isSaving != true &&
@@ -113,21 +149,39 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
         val duplicate = duplicateSessions[id]?.state
         val hasReport = duplicate?.report?.let { it.identical.isNotEmpty() || it.versions.isNotEmpty() } == true
         val scanning = duplicate?.phase == DuplicateFinderState.Phase.SCANNING || duplicate?.phase == DuplicateFinderState.Phase.ANALYZING
-        if (model?.discardNeedsConfirm == true || unsubmittedInput || scanning || hasReport) pendingCloseId = id
-        else closeContext(id)
+        return model?.discardNeedsConfirm == true || unsubmittedInput || scanning || hasReport
     }
+
+    fun requestCloseOtherContexts(keepId: Long) {
+        if (!available || contexts.contextsFlow.value.none { it.id == keepId }) return
+        val ids = contexts.contextsFlow.value.map { it.id }.filter { it != keepId }
+        pendingCloseOtherNeedsAttention = ids.any(::closeNeedsConfirmation)
+        pendingCloseOtherIds = ids
+    }
+
+    fun confirmCloseOtherContexts() {
+        val ids = pendingCloseOtherIds
+        pendingCloseOtherIds = emptyList()
+        if (!available) return
+        ids.forEach(::closeContext)
+    }
+    fun cancelCloseOtherContexts() { pendingCloseOtherIds = emptyList() }
 
     fun confirmCloseContext() { pendingCloseId?.let(::closeContext); pendingCloseId = null }
     fun cancelCloseContext() { pendingCloseId = null }
 
     fun closeContext(id: Long) {
-        if (desktop) desktopWorkspace?.closeContext(id) else contexts.close(id)?.let { releaseContext(it.id) }
+        driveWorkspace.closeContext(id)
     }
 
     private fun releaseContext(id: Long) {
-        duplicateBrowsers.remove(id)?.close()
+        detailPanels.forgetWhere { it is dev.piko.shared.presentation.TabNavigation && it.tabId == id }
+        pageSnapshots.remove(id)
+        contextOrigins.remove(id)
+        duplicateBrowsers.remove(id)?.let { detailPanels.forget(it.navigation); it.close() }
         duplicateSessions.remove(id)?.let(services::releaseDuplicateSession)
         importModels.remove(id)
+        importViews.remove(id)
         importDrafts.remove(id)?.close()
         if (pendingCloseId == id) pendingCloseId = null
     }
@@ -140,6 +194,14 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
         val values = contexts.contextsFlow.value
         val index = values.indexOfFirst { it.id == contexts.activeContextId.value }
         activateContext(values[(index + step + values.size) % values.size].id)
+    }
+    fun moveContext(id: Long, targetIndex: Int) {
+        if (available) driveWorkspace.moveContext(id, targetIndex)
+    }
+    fun moveActiveContext(step: Int) {
+        val id = contexts.activeContextId.value
+        val index = contexts.contextsFlow.value.indexOfFirst { it.id == id }
+        if (index >= 0) moveContext(id, index + step)
     }
     val feed = FeedNavigationState(
         viewModelScope, fileWorkspace::currentLocation, { fileWorkspace.folderStackFlow.value },
@@ -166,9 +228,8 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
             receiving = services.receivingActivity,
         )
     }
-    val tabs = desktopWorkspace?.let { workspace -> DriveBrowserStore { id -> createBrowser(null, null, workspace.navigationForTab(id)) } }
-    private val mobileBrowser = if (!desktop) createBrowser(null, null, fileWorkspace) else null
-    fun mainBrowser(tabId: Long?): DriveBrowserSession = mobileBrowser ?: requireNotNull(tabs).forTab(requireNotNull(tabId))
+    val tabs = DriveBrowserStore { id -> createBrowser(null, null, driveWorkspace.navigationForTab(id)) }
+    fun mainBrowser(tabId: Long?): DriveBrowserSession = tabs.forTab(requireNotNull(tabId))
     fun lookupPath(fileId: String): Deferred<Result<List<PikoPathBreadcrumb>>> = viewModelScope.async {
         if (closed || repository.currentAccount != account) throw CancellationException("工作区已结束")
         val result = repository.locateFolder(fileId)
@@ -176,7 +237,17 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
         result
     }
     init {
-        desktopWorkspace?.onContextClosed = { releaseContext(it.id) }
+        driveWorkspace.onContextClosed = { releaseContext(it.id) }
+        contexts.onCreated = {
+            tabCountBeforeCreation = (contexts.contextsFlow.value.size - 1).coerceAtLeast(1)
+            tabCreationRevision++
+            tabButtonEmphasized = true
+            tabEmphasisJob?.cancel()
+            tabEmphasisJob = viewModelScope.launch {
+                delay(700)
+                tabButtonEmphasized = false
+            }
+        }
         viewModelScope.launch {
             snapshotFlow { services.instantSession.drafts.toList() }.collect { live ->
                 importDrafts.toMap().filterValues { it !in live }.keys.forEach(::closeContext)
@@ -199,6 +270,10 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
         )
     }
     private val pages = mutableMapOf<Screen, DriveBrowserSession>()
+    fun rememberContextOrigin(id: Long, screens: List<Screen>) { if (id !in contextOrigins) contextOrigins[id] = screens.toList() }
+    fun contextOrigin(id: Long): List<Screen> = dev.piko.ui.navigation.retainWorkspaceRoutes(
+        contextOrigins[id].orEmpty().ifEmpty { listOf(Screen.Home) }, contexts.contextsFlow.value.mapTo(HashSet()) { it.id },
+    )
     var lastNavigation: List<Screen> = listOf(Screen.Home)
         private set
     var lastMainTab: MainTab = MainTab.FILES
@@ -215,7 +290,8 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
     }
 
     fun retainPages(screens: List<Screen>) {
-        pages.keys.filter { it !in screens }.forEach { pages.remove(it)?.close() }
+        val retained = screens + contextOrigins.values.flatten()
+        pages.keys.filter { it !in retained }.forEach { pages.remove(it)?.let { session -> detailPanels.forget(session.navigation); session.close() } }
     }
 
     fun rememberNavigation(screens: List<Screen>, tab: MainTab) {
@@ -226,12 +302,14 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
 
     override fun onCleared() {
         closed = true
+        contexts.onCreated = null
         contexts.contextsFlow.value.filter { it !is WorkspaceContext.File }.toList().forEach { closeContext(it.id) }
-        desktopWorkspace?.onContextClosed = {}
+        driveWorkspace.onContextClosed = {}
         releaseSaveTarget()
-        tabs?.close()
-        mobileBrowser?.close()
-        (fileWorkspace as? MobileFileWorkspace)?.close()
+        tabs.close()
+        detailPanels.clear()
+        importViews.clear()
+        pageSnapshots.clear()
         pages.values.forEach { it.close() }
         pages.clear()
     }

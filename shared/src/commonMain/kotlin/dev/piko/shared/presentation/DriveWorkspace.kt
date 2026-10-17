@@ -77,12 +77,12 @@ class DriveWorkspace(
 
     private val _tabsFlow = MutableStateFlow(_tabs.value)
 
-    /** 全部标签，按显示的顺序；活动的那个带着眼下的栈与历史。每次换栈、开关标签后当场更新，读到的不会落后一步。 */
+    /** Retained file browsers. Visible work tabs are listed by contextsFlow; a closed final file browser remains as the return location. */
     val tabsFlow: StateFlow<List<DriveTab>> = _tabsFlow.asStateFlow()
 
     private fun newTabId(excluding: Set<Long> = emptySet()): Long {
         var id: Long
-        do { id = Random.nextLong() } while (id == 0L || id == FIRST_TAB_ID || id in excluding || contextsFlow.value.any { it.id == id })
+        do { id = Random.nextLong() } while (id == 0L || id == FIRST_TAB_ID || id in excluding || _tabs.value.any { it.id == id } || contextsFlow.value.any { it.id == id })
         return id
     }
 
@@ -235,12 +235,15 @@ class DriveWorkspace(
     /** 在活动标签后面开一个新标签，停在 [stack]。[activate] 为 false 是在后台开（中键点文件夹）。 */
     fun openTab(stack: List<PikoPathBreadcrumb>, activate: Boolean = true): Long {
         val tab = DriveTab(newTabId(), stack.ifEmpty { listOf(ROOT_BREADCRUMB) })
+        val replaceReturnBrowser = contextsFlow.value.none { it is WorkspaceContext.File }
         _tabs.update { tabs ->
+            if (replaceReturnBrowser) return@update listOf(tab)
             val at = tabs.indexOfFirst { it.id == _activeTabId.value }
             tabs.toMutableList().apply { add(at + 1, tab) }
         }
-        contexts.openFile(tab.id, activate = false, afterId = _activeTabId.value)
-        if (activate) switchTab(tab.id) else publishTabs()
+        val afterId = _activeTabId.value.takeIf { id -> contextsFlow.value.any { it.id == id } } ?: contexts.activeContextId.value
+        contexts.openFile(tab.id, activate = false, afterId = afterId)
+        if (activate || replaceReturnBrowser) switchFileTab(tab.id, activateContext = activate) else publishTabs()
         return tab.id
     }
 
@@ -250,6 +253,7 @@ class DriveWorkspace(
         val active = _activeTabId.value
         val target = _tabs.value.firstOrNull { it.id == id } ?: return
         if (activateContext) {
+            if (contextsFlow.value.none { it.id == id }) contexts.openFile(id, activate = false)
             selectingFileContext = true
             try { contexts.activate(id) } finally { selectingFileContext = false }
         }
@@ -264,13 +268,17 @@ class DriveWorkspace(
         publishTabs()
     }
 
-    /** 关掉一个标签。关的是活动标签时先切到右边那个，没有就左边。只剩一个时不关。 */
+    /** Close the visible tab while retaining a return location when it is the final file browser. */
     fun closeTab(id: Long) {
         val tabs = _tabs.value
-        if (tabs.size <= 1) return
+        if (tabs.none { it.id == id }) return
+        if (tabs.size <= 1) {
+            contexts.close(id)?.let(onContextClosed)
+            return
+        }
         val index = tabs.indexOfFirst { it.id == id }.takeIf { it >= 0 } ?: return
         if (id == _activeTabId.value) {
-            switchFileTab((tabs.getOrNull(index + 1) ?: tabs[index - 1]).id, activateContext = contexts.activeContextId.value == id)
+            switchFileTab((tabs.getOrNull(index + 1) ?: tabs[index - 1]).id, activateContext = false)
         }
         _tabs.update { current -> current.filterNot { it.id == id } }
         contexts.close(id)?.let(onContextClosed)
@@ -292,12 +300,22 @@ class DriveWorkspace(
         } else contexts.activate(id)
     }
 
+    fun moveContext(id: Long, targetIndex: Int): Boolean {
+        if (!contexts.move(id, targetIndex)) return false
+        val positions = contextsFlow.value.mapIndexed { index, context -> context.id to index }.toMap()
+        _tabs.update { tabs -> tabs.sortedBy { positions[it.id] ?: Int.MAX_VALUE } }
+        publishTabs()
+        return true
+    }
+
     fun closeContext(id: Long): WorkspaceContext? {
         val context = contextsFlow.value.firstOrNull { it.id == id } ?: return null
         if (context is WorkspaceContext.File) {
-            if (_tabs.value.size <= 1) return null
             closeTab(id)
-            return context
+            return context.takeIf { contextsFlow.value.none { it.id == id } }
+        }
+        if (contextsFlow.value.size == 1) {
+            contexts.openFile(_activeTabId.value, activate = false)
         }
         return contexts.close(id)?.also(onContextClosed)
     }

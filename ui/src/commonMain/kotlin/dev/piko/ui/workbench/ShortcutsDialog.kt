@@ -70,6 +70,7 @@ internal fun ShortcutsDialog(modifier: ShortcutModifier, onDismiss: () -> Unit) 
             "${primary}T" to "新建标签页",
             "${primary}W" to "关闭标签页",
             "Ctrl+Tab / Ctrl+Shift+Tab" to "下一个、上一个标签页",
+            "${primary}Shift+PageUp / PageDown" to "向前、向后移动标签页",
             "中键点文件夹" to "在后台的新标签页打开",
         ),
         "鼠标" to listOf(

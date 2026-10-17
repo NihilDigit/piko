@@ -82,9 +82,8 @@ internal object DriveActions {
         SheetAction(Icons.Outlined.ContentCopy, "复制", onClick, group = ActionGroup.Organize, tier = ActionTier.Quick)
 
     /**
-     * 图标行的几样，按平台排，为 null 的不给。桌面照 Win11 资源管理器右键菜单顶上那一排：剪切、复制、重命名、分享、下载；
-     * 星标不在其中，由调用方放进整理组的列表：它是开关，列表里写得出「添加星标」「取消星标」，菜单的图标行只有图标。
-     * 移动端是下载、分享、星标、重命名，没有剪切与复制：粘贴只在命令栏与空白处的右键菜单里，移动端没有这两处。
+     * 调整常用操作的顺序，完整能力集合保持一致。图标行放不下的操作由 layoutActions 放回列表。
+     * 星标在宽排列中由调用方放入整理组，保留开关的文字说明。
      */
     fun quickRow(
         desktop: Boolean,
@@ -95,7 +94,8 @@ internal object DriveActions {
         rename: SheetAction?,
         star: SheetAction?,
     ): List<SheetAction> =
-        if (desktop) listOfNotNull(cut, copy, rename, share, download) else listOfNotNull(download, share, star, rename)
+        if (desktop) listOfNotNull(cut, copy, rename, share, download)
+        else listOfNotNull(download, share, star, rename, cut, copy)
 
     fun rename(onClick: () -> Unit) =
         SheetAction(Icons.Outlined.DriveFileRenameOutline, "重命名", onClick, group = ActionGroup.Organize, tier = ActionTier.Quick)

@@ -1,34 +1,39 @@
 package dev.piko.ui.workbench
 
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Layers
-import androidx.compose.material.icons.outlined.Minimize
+import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalWindowInfo
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.shared.presentation.WorkspaceContext
-import dev.piko.ui.adaptive.currentWidthClass
-import dev.piko.ui.adaptive.WidthClass
-import dev.piko.ui.adaptive.isHeightCompact
+import dev.piko.ui.adaptive.isDesktopLayout
 import dev.piko.ui.components.TooltipIconButton
+import dev.piko.ui.platform.rememberCaptionSlot
 import dev.piko.ui.screens.instant.summary
+import dev.piko.ui.theme.LocalPikoMotion
 
 internal data class WorkspaceSurface(val contextId: Long, val minimize: () -> Unit)
 internal val LocalWorkspaceSurface = staticCompositionLocalOf<WorkspaceSurface?> { null }
@@ -37,23 +42,37 @@ internal val LocalShowOngoingWork = staticCompositionLocalOf<(() -> Unit)?> { nu
 @Composable
 internal fun WorkspaceControls(compact: Boolean = false) {
     val model = LocalWorkspaceContexts.current ?: return
-    if (model.desktop) return
+    if (isDesktopLayout()) return
     val show = LocalShowOngoingWork.current ?: return
     val contexts by model.contexts.contextsFlow.collectAsStateWithLifecycle()
-    val count = contexts.count { it !is WorkspaceContext.File }
-    val surface = LocalWorkspaceSurface.current
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        if (surface == null) {
-            if (compact) TooltipIconButton(Icons.Outlined.Layers, "正在进行", show)
-            else TextButton(onClick = show, modifier = Modifier.semantics { contentDescription = "正在进行" }) {
-                Icon(Icons.Outlined.Layers, null, Modifier.size(20.dp))
-                Spacer(Modifier.width(4.dp))
-                Text(if (count == 0) "正在进行" else "正在进行 $count", maxLines = 1)
-            }
-        } else {
-            TooltipIconButton(Icons.Outlined.Layers, "正在进行", show)
-            TooltipIconButton(Icons.Outlined.Minimize, "最小化", surface.minimize)
-            TooltipIconButton(Icons.Outlined.Close, "关闭当前工作", { model.requestCloseContext(surface.contextId) })
+    val scheme = MaterialTheme.motionScheme
+    val reduced = LocalPikoMotion.current.reduced
+    var displayedCount by remember(model) {
+        mutableIntStateOf(if (model.tabButtonEmphasized && !reduced) model.tabCountBeforeCreation else contexts.size)
+    }
+    LaunchedEffect(contexts.size, model.tabCreationRevision) {
+        displayedCount = contexts.size
+    }
+    IconButton(
+        onClick = show,
+        modifier = Modifier.semantics { contentDescription = "标签总览" },
+    ) {
+        Box(
+            Modifier.size(24.dp).border(2.dp, LocalContentColor.current, RoundedCornerShape(6.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            AnimatedContent(
+                targetState = displayedCount,
+                modifier = Modifier.size(20.dp).clipToBounds(),
+                contentAlignment = Alignment.Center,
+                label = "标签数量",
+                transitionSpec = {
+                    (if (model.tabButtonEmphasized && targetState > initialState && !reduced) {
+                        slideInVertically(scheme.fastEffectsSpec()) { it } togetherWith
+                            slideOutVertically(scheme.fastEffectsSpec()) { -it }
+                    } else EnterTransition.None togetherWith ExitTransition.None).using(null)
+                },
+            ) { count -> Text("$count", style = MaterialTheme.typography.labelMedium) }
         }
     }
 }
@@ -66,84 +85,71 @@ internal fun workspaceTitle(model: WorkspaceViewModel, context: WorkspaceContext
 
 @Composable
 internal fun OngoingWorkSheet(model: WorkspaceViewModel, onDismiss: () -> Unit) {
-    if (model.desktop) return
-    if (currentWidthClass() == WidthClass.Compact || isHeightCompact()) {
-        ModalBottomSheet(
-            onDismissRequest = onDismiss,
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-        ) { OngoingWorkList(model, onDismiss) }
-    } else {
-        val maxHeight = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.height.toDp() - 48.dp }
-        Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-            Surface(
-                modifier = Modifier.widthIn(max = 480.dp).fillMaxWidth().heightIn(max = maxHeight.coerceAtLeast(0.dp)),
-                shape = MaterialTheme.shapes.large,
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            ) { OngoingWorkList(model, onDismiss, dialog = true) }
-        }
-    }
-}
-
-@Composable
-private fun OngoingWorkList(model: WorkspaceViewModel, onDismiss: () -> Unit, dialog: Boolean = false) {
+    val wide = isDesktopLayout()
+    LaunchedEffect(wide) { if (wide) onDismiss() }
+    if (wide) return
     val contexts by model.contexts.contextsFlow.collectAsStateWithLifecycle()
     val active by model.contexts.activeContextId.collectAsStateWithLifecycle()
-    val entries = contexts.filter { it !is WorkspaceContext.File }
-    Column(Modifier.fillMaxWidth().padding(top = if (dialog) 12.dp else 0.dp, bottom = 8.dp)) {
-        Row(Modifier.fillMaxWidth().padding(start = 24.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("正在进行", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-            if (entries.isNotEmpty()) Text("${entries.size} 项", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            TooltipIconButton(Icons.Outlined.Close, "关闭工作列表", onDismiss)
-        }
-        if (entries.isEmpty()) {
-            Text("没有保留的工作", modifier = Modifier.padding(24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
-        } else LazyColumn(
-            Modifier.fillMaxWidth().weight(1f, fill = false),
-            contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = if (dialog) 16.dp else 8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            val groups = listOf("导入草稿" to entries.filterIsInstance<WorkspaceContext.ImportDraft>(), "查重" to entries.filterIsInstance<WorkspaceContext.Duplicate>())
-            groups.filter { it.second.isNotEmpty() }.forEach { (label, group) ->
-                item(key = label) {
-                    Text(label, modifier = Modifier.padding(start = 12.dp, top = 8.dp, bottom = 4.dp),
-                        style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    val files by model.driveWorkspace.tabsFlow.collectAsStateWithLifecycle()
+    val caption = rememberCaptionSlot()
+    BackHandler(onBack = onDismiss)
+    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+        Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+            Row(Modifier.fillMaxWidth().then(caption.modifier).padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("${contexts.size} 个标签页", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, maxLines = 1)
+                TooltipIconButton(Icons.Outlined.Close, "关闭标签总览", onDismiss)
+                caption.buttons?.invoke()
+            }
+            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { model.newFileContext(); onDismiss() }) {
+                    Icon(Icons.Outlined.Add, null); Spacer(Modifier.width(8.dp)); Text("新建标签")
                 }
-                items(group, key = { it.id }) { context ->
-                    val title = workspaceTitle(model, context)
-                    val displayTitle = (context as? WorkspaceContext.Duplicate)?.root?.name ?: title
-                    val finder = model.duplicateSessions[context.id]?.state
-                    val draft = model.importModels[context.id]?.state
-                    val groups = finder?.let { it.report.identical.size + it.report.versions.size } ?: 0
-                    val status = if (finder != null) when {
-                        finder.isScanning -> "正在扫描 · ${finder.scannedFolders} 个文件夹"
-                        finder.errorMessage != null -> "扫描未完成"
-                        finder.scanStop != null || finder.failedFolders > 0 -> "部分结果 · $groups 组重复"
-                        groups == 0 -> "未发现重复文件"
-                        else -> "发现 $groups 组重复文件"
-                    } else draft?.summary()?.status?.takeUnless { it == "导入草稿" }
-                    Surface(shape = MaterialTheme.shapes.medium,
-                        color = if (active == context.id) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
-                    ) {
-                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            Row(
-                                Modifier.weight(1f)
-                                    .clickable(onClickLabel = if (draft != null) "继续编辑" else "查看查重", onClick = { onDismiss(); model.activateContext(context.id) })
-                                    .semantics { contentDescription = title }
-                                    .padding(horizontal = 12.dp, vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(displayTitle, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                    status?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis) }
-                                    draft?.target?.let { Text("保存到：${it.name}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { model.requestCloseOtherContexts(active) }, enabled = contexts.size > 1) { Text("关闭其他标签") }
+            }
+            LazyVerticalGrid(GridCells.Fixed(2), Modifier.weight(1f), contentPadding = PaddingValues(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                items(contexts, key = { it.id }) { context ->
+                    val file = files.firstOrNull { it.id == context.id }
+                    val title = file?.stack?.lastOrNull()?.name ?: workspaceTitle(model, context)
+                    Surface(onClick = { model.activateContext(context.id); onDismiss() }, shape = RoundedCornerShape(20.dp),
+                        border = if (context.id == active) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
+                        color = MaterialTheme.colorScheme.surfaceContainerHighest) {
+                        Column {
+                            Row(Modifier.fillMaxWidth().height(48.dp).padding(start = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                val icon = when (context) {
+                                    is WorkspaceContext.File -> Icons.Outlined.Folder
+                                    is WorkspaceContext.Duplicate -> Icons.Outlined.FileCopy
+                                    is WorkspaceContext.ImportDraft -> Icons.Outlined.Link
                                 }
-                                Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Icon(icon, null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                if (context !is WorkspaceContext.File || contexts.size > 1)
+                                    TooltipIconButton(Icons.Outlined.Close, "关闭 $title", { model.requestCloseContext(context.id) })
+                                else Spacer(Modifier.width(48.dp))
                             }
-                            TextButton(
-                                onClick = { model.requestCloseContext(context.id) },
-                                modifier = Modifier.semantics { contentDescription = "关闭：$title" },
-                            ) { Text("关闭") }
+                            val snapshot = model.pageSnapshots[context.id]
+                            Surface(
+                                modifier = Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.surface,
+                            ) {
+                                Box(Modifier.fillMaxWidth().aspectRatio(.75f), contentAlignment = Alignment.TopCenter) {
+                                    if (snapshot != null) Image(
+                                        bitmap = snapshot,
+                                        contentDescription = "页面快照：$title",
+                                        contentScale = ContentScale.FillWidth,
+                                        alignment = Alignment.TopCenter,
+                                        modifier = Modifier.fillMaxSize(),
+                                    ) else Text(
+                                        "尚无页面快照",
+                                        modifier = Modifier.padding(20.dp),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
                         }
                     }
                 }

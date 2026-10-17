@@ -85,7 +85,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.rememberCoroutineScope
 import dev.piko.data.auth.PlayerGestureDefaults
-import dev.piko.ui.adaptive.isDesktopLayout
 /**
  * 播放器的完整控件层，叠在视频画面之上。Android 与桌面共用，名字沿用只有 Android 时的叫法。
  *
@@ -607,9 +606,8 @@ fun MobilePlayerControls(
         // 纯数字集号写成「第 24 集」；「25(SP)」「23 Beta」这类照原样，套上「第…集」反而别扭
         ?.let { if (it.matches(PLAIN_EPISODE)) "第 $it 集" else it }
 
-    // 底栏的音量键与滑块只在桌面给：鼠标没有调音量的手势，滚轮与方向键又无从发现。
-    // 移动端有系统音量键与竖滑手势。读 current() 时依赖桌面实现背后的 Compose State 才随之重组
-    val volumeLevel = volume?.takeIf { isDesktopLayout() }?.current()
+    // 音量入口取决于宿主提供的能力，窄窗口同样可用。
+    val volumeLevel = volume?.current()
 
     // 控件收起且鼠标一段时间没动才藏指针。只看控件时，单击画面收起控件指针也立刻消失，手还在鼠标上
     // 就找不到它；只看鼠标时，控件还显示着指针却没了

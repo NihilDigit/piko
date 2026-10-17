@@ -31,6 +31,7 @@ import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.automirrored.outlined.ViewSidebar
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FastForward
+import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Star
@@ -122,6 +123,7 @@ internal fun ClipFeedTopBar(
     modifier: Modifier = Modifier,
     onPopOut: (() -> Unit)? = null,
     onDock: (() -> Unit)? = null,
+    onToggleFullscreen: (() -> Unit)? = null,
     onHideChrome: (() -> Unit)? = null,
     landscapeLocked: Boolean? = null,
     onToggleLandscape: () -> Unit = {},
@@ -187,6 +189,7 @@ internal fun ClipFeedTopBar(
                 // 关掉信息流在主窗口里做，这里不再并排一个关闭与一个收回
                 ChromeIconButton(Icons.Filled.Close, "收回到主窗口", onDock, buttonSize, tooltip = true, minTouchTarget = true)
             } else {
+                if (onToggleFullscreen != null) ChromeIconButton(Icons.Filled.Fullscreen, if (compact) "全屏信息流" else "返回文件与信息流", onToggleFullscreen, buttonSize, tooltip = true)
                 if (onPopOut != null) ChromeIconButton(Icons.AutoMirrored.Outlined.OpenInNew, "在独立窗口播放", onPopOut, buttonSize, tooltip = true)
                 // 侧栏里按钮画小一号，关闭仍占足最小触控尺寸
                 if (onClose != null) {

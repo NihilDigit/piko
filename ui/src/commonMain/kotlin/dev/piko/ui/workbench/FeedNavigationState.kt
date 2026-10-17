@@ -24,6 +24,7 @@ internal class FeedNavigationState(
     private val isCurrent: () -> Boolean,
 ) {
     var shown by mutableStateOf<Boolean?>(null)
+    var fullscreen by mutableStateOf(false)
     var returnLocation by mutableStateOf<FileLocation?>(null)
     var home by mutableStateOf<FileLocation?>(null)
     var detourTab by mutableStateOf<Long?>(null)
@@ -73,6 +74,7 @@ internal class FeedNavigationState(
         prepareJob = null
         opening = false
         shown = false
+        fullscreen = false
         returnLocation = null
         home = null
         detourTab = null

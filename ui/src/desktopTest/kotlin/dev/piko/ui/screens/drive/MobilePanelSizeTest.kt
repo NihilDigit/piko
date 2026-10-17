@@ -8,11 +8,7 @@ import io.github.nihildigit.pikpak.FileStat
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
-/**
- * 移动端的操作面板没有「更多」，全部平铺；增加显式画质入口后，最长列表允许滚动，列表行（含属性与危险项）至多 9 行，
- * 图标行至多 4 个。这里取各类条目里最挤的情形，按 DriveScreen.operationsOf 在移动端的拼法（库里多在网盘中显示与移除记录，
- * 处理器里移动端为 null 的几项照样为 null）拼出整份操作。往 fileActions 里给某类条目加一项而没想到手机，这里就超。
- */
+/** 窄窗口面板通过滚动承载完整操作，图标行容量不应裁掉能力。 */
 class MobilePanelSizeTest {
     private fun video(name: String) = FileStat(
         kind = FileKind.FILE,
@@ -27,18 +23,18 @@ class MobilePanelSizeTest {
 
     private fun mobileHandlers(inLibrary: Boolean, vaultMarked: Boolean) = FileActionHandlers(
         toggleStar = {}, download = {}, downloadAtQuality = {}, share = {}, rename = {}, move = {},
-        copy = if (inLibrary) null else ({}),
+        copy = {},
         trash = {}, extract = {},
-        findDuplicates = null,
-        canonicalNameFolder = null,
+        findDuplicates = {},
+        canonicalNameFolder = if (inLibrary) null else ({}),
         downloadSegment = {}, prepareQualities = {},
-        copySource = null, openSource = null,
+        copySource = {}, openSource = {},
         openInExternalPlayer = {},
-        openInNewTab = null, togglePin = null, isPinned = false,
+        openInNewTab = {}, togglePin = {}, isPinned = false,
         vault = {},
         unvault = if (!inLibrary && vaultMarked) ({}) else null,
         previewHidden = false, togglePreview = {},
-        putOnClipboard = null,
+        putOnClipboard = { _ -> },
     )
 
     private fun panel(file: FileStat, place: CommandPlace, vaultMarked: Boolean = false): List<SheetAction> {
@@ -53,12 +49,11 @@ class MobilePanelSizeTest {
         val layout = layoutActions(actions)
         val rows = layout.sections.flatten() + layout.properties + layout.danger
         assertTrue(layout.quick.size <= QuickLimit, "$case: ${layout.quick.map { it.label }}")
-        assertTrue(rows.size <= MaxRows, "$case: ${rows.size} 行 ${rows.map { it.label }}")
+        assertTrue((layout.quick + rows).toSet() == actions.toSet(), "$case: 排列丢失了操作")
     }
 
     @Test
-    fun `the most crowded panels keep actions within the scrollable row budget`() {
-        // 文件的归档在这里已占满 8 行；库里不给归档（itemCommands.vault），最近添加里才放得下在网盘中显示与移除记录
+    fun `scrollable panels preserve every available action`() {
         val inFolder = panel(video("ABC-123 某片名.mp4"), CommandPlace.FOLDER)
         assertTrue(inFolder.any { it.label == "归档" })
         assertFits(inFolder, "番号视频，防窥，带来源")
@@ -71,8 +66,13 @@ class MobilePanelSizeTest {
         assertFits(panel(folder, CommandPlace.LIBRARY), "星标里的文件夹")
     }
 
-    private companion object {
-        // 显式画质入口增加一行；保留滚动，不通过删除其他业务动作腾位置。
-        const val MaxRows = 9
+    @Test
+    fun `folder panels retain subtree actions tabs pins and clipboard`() {
+        val actions = panel(folder, CommandPlace.FOLDER, vaultMarked = true)
+        val labels = actions.map { it.label }
+        for (label in listOf("查找重复", "按番号规范命名", "在新标签页打开", "固定到快速访问", "剪切", "复制")) {
+            assertTrue(label in labels, "缺少 $label：$labels")
+        }
+        assertTrue(panel(folder, CommandPlace.LIBRARY).any { it.label == "复制到…" })
     }
 }

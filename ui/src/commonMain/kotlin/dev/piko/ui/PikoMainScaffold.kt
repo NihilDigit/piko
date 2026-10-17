@@ -10,6 +10,7 @@ import dev.piko.ui.workbench.LocalFileWorkspace
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.foundation.layout.fillMaxWidth
 import dev.piko.ui.workbench.SidebarTransferReadout
 import androidx.compose.foundation.layout.Spacer
@@ -126,6 +127,8 @@ import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -313,10 +316,10 @@ fun PikoMainScaffold(
     }
     val workspaceModel = viewModel<dev.piko.ui.workbench.WorkspaceViewModel>(
         viewModelStoreOwner = presentationOwner,
-        key = if (desktop) "desktop-workspace" else "mobile-workspace",
-    ) { dev.piko.ui.workbench.WorkspaceViewModel(services, account, desktop) }
+        key = "workspace",
+    ) { dev.piko.ui.workbench.WorkspaceViewModel(services, account) }
     val fileWorkspace = workspaceModel.fileWorkspace
-    val desktopWorkspace = workspaceModel.desktopWorkspace
+    val driveWorkspace = workspaceModel.driveWorkspace
     var currentTab by rememberSaveable { mutableStateOf(workspaceModel.lastMainTab) }
     val backStack = rememberNavBackStack(NavKeyConfiguration, *workspaceModel.lastNavigation.toTypedArray())
     val workspaceUiStates = rememberSaveableStateHolder()
@@ -339,24 +342,46 @@ fun PikoMainScaffold(
         if (workspaceModel.consumeContextActivation()) {
             val active = workspaceModel.contexts.activeContextId.value
             val context = workspaceModel.contexts.contextsFlow.value.firstOrNull { it.id == active }
+            if (context != null && context !is dev.piko.shared.presentation.WorkspaceContext.File) {
+                workspaceModel.rememberContextOrigin(active, dev.piko.ui.navigation.openWorkspaceRoute(backStack.filterIsInstance<Screen>(), active).dropLast(1))
+            }
             if (!desktop && context != null && context !is dev.piko.shared.presentation.WorkspaceContext.File) {
                 val next = dev.piko.ui.navigation.openWorkspaceRoute(backStack.filterIsInstance<Screen>(), active)
-                val sharedPrefix = backStack.zip(next).takeWhile { (before, after) -> before == after }.size
-                while (backStack.size > sharedPrefix) backStack.removeLastOrNull()
-                next.drop(sharedPrefix).forEach(backStack::add)
+                workspaceModel.rememberContextOrigin(active, next.dropLast(1))
+                val prefix = backStack.zip(next).takeWhile { (before, after) -> before == after }.size
+                while(backStack.size > prefix) backStack.removeLastOrNull()
+                next.drop(prefix).forEach(backStack::add)
             } else {
                 currentTab = MainTab.FILES
                 while (backStack.size > 1) backStack.removeLastOrNull()
             }
         }
     }
-    val activeFileTab = desktopWorkspace?.let { workspace ->
+    LaunchedEffect(desktop) {
+        if (desktop) ongoingWorkShown = false
+        if (desktop) {
+            val next = dev.piko.ui.navigation.wideWorkspaceRoutes(backStack.filterIsInstance<Screen>())
+            if (next != backStack.toList()) {
+                while (backStack.size > 1) backStack.removeLastOrNull()
+                next.drop(1).forEach(backStack::add)
+                currentTab = MainTab.FILES
+            }
+        }
+        else if (backStack.size == 1 && currentTab == MainTab.FILES) {
+            val active = workspaceModel.contexts.activeContextId.value
+            if (workspaceContexts.any { it.id == active && it !is dev.piko.shared.presentation.WorkspaceContext.File }) {
+                workspaceModel.contextOrigin(active).drop(1).forEach(backStack::add)
+                backStack.add(Screen.Workspace(active))
+            }
+        }
+    }
+    val activeFileTab = driveWorkspace?.let { workspace ->
         val active by workspace.activeTabId.collectAsStateWithLifecycle()
         active
     }
     val fileBrowser = workspaceModel.mainBrowser(activeFileTab)
     val fileUiStates = rememberSaveableStateHolder()
-    desktopWorkspace?.let { workspace ->
+    driveWorkspace?.let { workspace ->
         val tabs by workspace.tabsFlow.collectAsStateWithLifecycle()
         LaunchedEffect(tabs.map { it.id }) {
             requireNotNull(workspaceModel.tabs).retainTabs(tabs.mapTo(HashSet()) { it.id }).forEach(fileUiStates::removeState)
@@ -382,6 +407,8 @@ fun PikoMainScaffold(
 
 
     val topScreen = backStack.lastOrNull() as? Screen
+    val workspaceSurface = dev.piko.ui.navigation.isWorkspaceSurface(topScreen, currentTab)
+    LaunchedEffect(workspaceSurface) { if (!workspaceSurface) ongoingWorkShown = false }
     LaunchedEffect(topScreen) {
         if (topScreen is Screen.Workspace) workspaceModel.contexts.activate(topScreen.contextId)
     }
@@ -580,7 +607,7 @@ fun PikoMainScaffold(
     val panelPrefs by preferences.clipPanelFlow.collectAsStateWithLifecycle(initialPanelPrefs)
     val contentWidth = with(density) { contentSize.width.toDp() }.takeIf { contentSize != IntSize.Zero }
     // 右栏只在桌面：移动端的信息流一律全屏，平板横握也是，与手机同一套
-    val panelFits = contentWidth != null && desktop && sidePanelFits(contentWidth, ClipPanelMinWidth)
+    val panelFits = contentWidth != null && !isHeightCompact() && sidePanelFits(contentWidth, ClipPanelMinWidth)
     // null 是还没量出内容区宽度。上次开着侧栏退出的，只在这回仍放得下侧栏时照样打开；
     // 放不下就是全屏形态，窄窗口一启动就开始播不是谁想要的
     var feedShownState by workspaceModel.feed::shown
@@ -615,10 +642,10 @@ fun PikoMainScaffold(
         }
         coroutineScope.launch { preferences.setClipPanelOpen(shown) }
     }
-    val feedOnFilesTab = feedShown && !feedSuspended && !feedPoppedOut && currentTab == MainTab.FILES
+    val feedOnFilesTab = feedShown && (!feedSuspended || panelFits) && !feedPoppedOut && currentTab == MainTab.FILES
     val feedBlockedReason: String? = null
-    val feedInPanel = feedOnFilesTab && panelFits
-    val feedFullScreen = feedOnFilesTab && !panelFits
+    val feedInPanel = feedOnFilesTab && panelFits && !workspaceModel.feed.fullscreen
+    val feedFullScreen = feedOnFilesTab && (!panelFits || workspaceModel.feed.fullscreen)
     val sidebarMode = sidebarWindow &&
         (onHome || topScreen == Screen.Profile || topScreen in ProfilePanes || topScreen in SettingsSubpages)
     // 窄窗口里浮起来的那一层展开的侧边栏。只记这一回：它是临时借一下地方，不改存下的收起状态
@@ -640,7 +667,7 @@ fun PikoMainScaffold(
     LaunchedEffect(folderStack) { sidebarFloatRequested = false }
     val quickAccess = remember(fileWorkspace) {
         QuickAccessState(services.driveRepository, services.clientManager, coroutineScope) { stack ->
-            desktopWorkspace?.openTab(stack, activate = false)
+            driveWorkspace?.openTab(stack, activate = false)
         }
     }
     val pinnedFolders by quickAccess.pinnedFolders.collectAsStateWithLifecycle(emptyList())
@@ -701,10 +728,10 @@ fun PikoMainScaffold(
                 backStack.add(entry)
                 return@launch
             }
-            val detourTab = feedDetourTab?.takeIf { id -> desktopWorkspace?.tabsFlow?.value?.any { it.id == id } == true }
+            val detourTab = feedDetourTab?.takeIf { id -> driveWorkspace?.tabsFlow?.value?.any { it.id == id } == true }
             when {
-                detourTab != null -> desktopWorkspace?.switchTab(detourTab)
-                feedDetour != null && desktop -> feedDetourTab = desktopWorkspace?.openTab(stack)
+                detourTab != null -> driveWorkspace?.switchTab(detourTab)
+                feedDetour != null && desktop -> feedDetourTab = driveWorkspace?.openTab(stack)
             }
             showInDrive(stack, file.id)
         }
@@ -746,6 +773,8 @@ fun PikoMainScaffold(
                 onPlayFull = ::playFromFeed,
                 onLocate = ::locateFromFeed,
                 compact = compact,
+                pausedByHost = feedSuspended,
+                onToggleFullscreen = if (panelFits) ({ workspaceModel.feed.fullscreen = !workspaceModel.feed.fullscreen }) else null,
                 onPopOut = detachedHost?.let { ::popOutFeed },
             )
         }
@@ -753,7 +782,7 @@ fun PikoMainScaffold(
 
     val feedFrame: @Composable (@Composable () -> Unit) -> Unit = { drive ->
         SidePanelLayout(
-            open = feedShown && !feedSuspended && panelFits && !feedPoppedOut,
+            open = feedShown && panelFits && !workspaceModel.feed.fullscreen && !feedPoppedOut,
             savedWidthDp = panelPrefs.widthDp,
             title = "信息流",
             closeDescription = "关闭信息流",
@@ -831,10 +860,9 @@ fun PikoMainScaffold(
             .filterIsInstance<dev.piko.shared.presentation.WorkspaceContext.Duplicate>()
         if (reports.size == 1) workspaceModel.activateContext(reports.single().id)
         else if (reports.isNotEmpty()) {
-            if (desktop) {
-                currentTab = MainTab.FILES
-                resetToHome()
-            } else ongoingWorkShown = true
+            currentTab = MainTab.FILES
+            resetToHome()
+            if (!desktop) ongoingWorkShown = true
         }
     }
 
@@ -871,6 +899,7 @@ fun PikoMainScaffold(
                             onPlay = { file, playlist -> playVideo(file, playlist) },
                             onReveal = { file -> coroutineScope.launch { revealInDrive(file.id) } },
                             onTransfers = ::openTransfers,
+                            retainedStates = workspaceUiStates,
                         ) {
                         key(fileBrowser) {
                             fileUiStates.SaveableStateProvider(activeFileTab ?: "mobile-files") {
@@ -1211,7 +1240,8 @@ fun PikoMainScaffold(
         LocalShowExtensions provides showExtensions,
         LocalTaskSlot provides taskSlot,
         dev.piko.ui.workbench.LocalWorkspaceContexts provides workspaceModel,
-        dev.piko.ui.workbench.LocalShowOngoingWork provides if (desktop) null else ({ ongoingWorkShown = true }),
+        dev.piko.ui.workbench.LocalWorkspaceSnapshotEnabled provides !ongoingWorkShown,
+        dev.piko.ui.workbench.LocalShowOngoingWork provides if (desktop || !workspaceSurface) null else ({ ongoingWorkShown = true }),
     ) {
         Box(
             modifier = modifier
@@ -1221,6 +1251,17 @@ fun PikoMainScaffold(
                 .focusFallbackRoot(focusFallback)
                 .focusRequester(shortcutFocus)
                 .focusable()
+                .onPreviewKeyEvent { event ->
+                    if (!workspaceSurface || event.type != KeyEventType.KeyDown || !shortcutModifier.isPressed(event)) false
+                    else when (event.key) {
+                        Key.Tab -> { workspaceModel.cycleContext(if (event.isShiftPressed) -1 else 1); true }
+                        Key.T -> { workspaceModel.newFileContext(); true }
+                        Key.W -> { workspaceModel.requestCloseContext(workspaceModel.contexts.activeContextId.value); true }
+                        Key.PageUp -> if (event.isShiftPressed) { workspaceModel.moveActiveContext(-1); true } else false
+                        Key.PageDown -> if (event.isShiftPressed) { workspaceModel.moveActiveContext(1); true } else false
+                        else -> false
+                    }
+                }
                 .onKeyEvent { event ->
                     if (event.type == KeyEventType.KeyDown && (event.key == Key.F1 || (shortcutModifier.isPressed(event) && event.key == Key.Slash))) {
                         shortcutsOpen = true
@@ -1252,7 +1293,8 @@ fun PikoMainScaffold(
                     true
                 },
         ) {
-            val frameModifier = if (sidebarMode) Modifier.background(MaterialTheme.colorScheme.frame) else Modifier
+            val frameModifier = (if (sidebarMode) Modifier.background(MaterialTheme.colorScheme.frame) else Modifier)
+                .then(if (ongoingWorkShown && !desktop) Modifier.clearAndSetSemantics { } else Modifier)
             // 主界面一律接管标题栏，手机宽度的桌面窗口也是：各页顶栏贴着右上角时画窗口按钮、空白处能拖。
             // 只有外框时接管的话，窄窗口顶上叠着系统的一条标题栏，再下面才是页面的顶栏
             LocalWindowCaption.current?.Host()

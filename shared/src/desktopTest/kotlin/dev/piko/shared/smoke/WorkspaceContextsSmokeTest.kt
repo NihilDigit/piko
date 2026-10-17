@@ -26,6 +26,51 @@ import kotlin.test.assertTrue
 
 class WorkspaceContextsSmokeTest {
     @Test
+    fun `reordering mixed tabs retains identities active work and file browser order`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val folder = server.addFolder("Folder")
+        val repository = PikoDriveRepository(server.provider(), MemoryPreferences())
+        val workspace = DriveWorkspace(repository, backgroundScope = scope)
+        workspace.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB, PikoPathBreadcrumb(folder.id, folder.name)))
+        val first = workspace.activeTabId.value
+        val second = workspace.openTab(listOf(PikoDriveRepository.ROOT_BREADCRUMB))
+        val draft = workspace.openImportDraftContext()
+        val browsers = workspace.tabsFlow.value.associateBy { it.id }
+        var creations = 0
+        workspace.contexts.onCreated = { creations++ }
+        assertTrue(workspace.moveContext(first, 2))
+        assertEquals(listOf(second, draft, first), workspace.contextsFlow.value.map { it.id })
+        assertEquals(listOf(second, first), workspace.tabsFlow.value.map { it.id })
+        assertEquals(browsers, workspace.tabsFlow.value.associateBy { it.id })
+        assertEquals(draft, workspace.activeContextId.value)
+        assertEquals(0, creations)
+        assertFalse(workspace.moveContext(Long.MIN_VALUE, 0))
+        assertTrue(workspace.moveContext(first, -10))
+        assertEquals(first, workspace.contextsFlow.value.first().id)
+        assertEquals(draft, workspace.activeContextId.value)
+        workspace.close()
+    }
+
+    @Test
+    fun `creation signal includes background tabs but excludes restoring switching and closing`() {
+        val contexts = WorkspaceContexts()
+        val created = mutableListOf<WorkspaceContext>()
+        contexts.onCreated = { created += it }
+        contexts.restoreFilesPreservingAux(listOf(51L, 52L), 52L)
+        contexts.activate(51L)
+        assertTrue(created.isEmpty())
+
+        contexts.openFile(53L, activate = false)
+        val duplicate = contexts.openDuplicate(PikoPathBreadcrumb("folder", "Folder"))
+        val draft = contexts.openImportDraft()
+        assertEquals(listOf(53L, duplicate, draft), created.map { it.id })
+        contexts.activate(53L)
+        contexts.close(draft)
+        contexts.resetFiles(listOf(54L), 54L)
+        assertEquals(3, created.size)
+    }
+
+    @Test
     fun `independent duplicate contexts survive switching and only closed one is discarded`() {
         val contexts = WorkspaceContexts()
         val root = PikoPathBreadcrumb("folder", "Folder")
@@ -40,7 +85,34 @@ class WorkspaceContextsSmokeTest {
         assertEquals(second, contexts.activeContextId.value)
         assertTrue(contexts.contextsFlow.value.any { it.id == second })
         assertFalse(contexts.activate(first))
-        assertNull(contexts.close(1L), "the main file position remains available")
+        assertIs<WorkspaceContext.File>(contexts.close(1L))
+        assertNull(contexts.close(second), "the current work remains available")
+    }
+
+    @Test
+    fun `a sole auxiliary tab can return to files and closes back to a file browser`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val repository = PikoDriveRepository(server.provider(), MemoryPreferences())
+        val workspace = DriveWorkspace(repository, backgroundScope = scope)
+        val file = workspace.activeTabId.value
+        val duplicate = workspace.openDuplicateContext(PikoPathBreadcrumb("folder", "Folder"))
+        assertIs<WorkspaceContext.File>(workspace.closeContext(file))
+        assertEquals(listOf(duplicate), workspace.contextsFlow.value.map { it.id })
+        assertEquals(duplicate, workspace.activeContextId.value)
+
+        workspace.switchTab(file)
+        assertEquals(file, workspace.activeContextId.value)
+        workspace.closeContext(file)
+
+        val newFile = workspace.openTab(listOf(PikoDriveRepository.ROOT_BREADCRUMB))
+        assertEquals(setOf(duplicate, newFile), workspace.contextsFlow.value.map { it.id }.toSet())
+        assertEquals(listOf(newFile), workspace.tabsFlow.value.map { it.id }, "closed tabs must not return through persistence")
+        workspace.closeContext(newFile)
+        assertEquals(listOf(duplicate), workspace.contextsFlow.value.map { it.id })
+        workspace.closeContext(duplicate)
+        assertEquals(listOf(WorkspaceContext.File(newFile)), workspace.contextsFlow.value)
+        assertEquals(newFile, workspace.activeContextId.value)
+        workspace.close()
     }
 
     @Test

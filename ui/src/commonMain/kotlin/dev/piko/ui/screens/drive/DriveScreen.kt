@@ -1,6 +1,18 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.ui.components.DetailHost
+import dev.piko.ui.components.DetailPanelState
+import dev.piko.ui.components.DetailPanelSpec
+import dev.piko.ui.components.itemPanelAnchorArea
+
+import dev.piko.ui.components.PanelAnchor
+
+import dev.piko.ui.components.FloatingPanel
+
+import dev.piko.ui.components.FloatingPanelState
+
 import dev.piko.shared.data.isVaulted
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.material.icons.outlined.Tab
 import androidx.compose.material.icons.outlined.Close
@@ -463,6 +475,11 @@ fun DriveScreen(
     val twoPane = desktop
     // 地址栏进入输入的请求，快捷键加一，见 DrivePathTitle
     var addressEditRequests by remember { mutableIntStateOf(0) }
+    var addressPanelOpen by remember { mutableStateOf(false) }
+    fun editAddress() {
+        addressPanelOpen = !pathInTopBar
+        addressEditRequests++
+    }
     // 输入框从原名开始改；只设目标的话，框里留着上一次改名时输入的字
     fun startRename(file: FileStat) {
         renameTargetFile = file
@@ -494,19 +511,20 @@ fun DriveScreen(
     val rowNotes = if (libraryNotes.isEmpty()) state.hitLocations else state.hitLocations + libraryNotes
 
     // 属性看的几项，打开那一刻取定，之后选中怎么变都不跟。一次只开一个，再对别的开就换掉内容
-    var properties by remember { mutableStateOf<PropertiesTarget?>(null) }
+    val propertyDetails = contexts?.detailPanels?.stateFor(navigation, FilePropertiesPanelKey)
+        ?: remember(navigation) { DetailPanelState<PropertiesTarget>(FilePropertiesPanelKey.spec) }
+    val properties = propertyDetails.target
     // 宽窗口里属性卡片放在触发它的地方旁边（anchor）；已经开着时只换内容，位置不动
-    val propertiesPanel = remember { FloatingPanelState(PropertiesMinWidth, followsEnd = false) }
-    val propertiesAnchors = remember { PropertiesAnchors() }
+    val propertiesPanel = propertyDetails.panel
+    val propertiesAnchors = propertyDetails.anchors
     LaunchedEffect(activeFolderId) { propertiesAnchors.forgetItems() }
     // 操作面板开了就不是右键菜单：之前那次右键按下的位置不再作数，面板里点「属性」时卡片贴着条目
     LaunchedEffect(actionTargetFile) { if (actionTargetFile != null) propertiesAnchors.forgetPress() }
     // 「位置」一行：搜索结果与库里取行下面那一栏，平常的目录里是眼前的路径
     fun locationOf(file: FileStat): String = rowNotes[file.id] ?: folderStack.joinToString(" › ") { it.name }
     fun showProperties(files: List<FileStat>, anchor: PanelAnchor) {
-        if (properties == null) propertiesPanel.placeAt(anchor)
         val single = files.singleOrNull()
-        properties = if (single != null) {
+        val target = if (single != null) {
             val item = state.displayItems.firstOrNull { it is DriveListItem.File && it.file.id == single.id } as? DriveListItem.File
             val text = item?.let { cellText(it, state.folderView(single)) }
             PropertiesTarget.Single(
@@ -518,12 +536,12 @@ fun DriveScreen(
         } else {
             PropertiesTarget.Selection(files, files.map(::locationOf).distinct().singleOrNull() ?: "多个位置")
         }
+        propertyDetails.show(target, anchor)
     }
     // 当前目录不对着哪一项，卡片放在列表中央偏上
     fun showFolderProperties() {
-        if (properties == null) propertiesPanel.placeAt(PanelAnchor.Centered)
         val parent = folderStack.dropLast(1).joinToString(" › ") { it.name }
-        properties = PropertiesTarget.Folder(activeFolder.name, state.displayedFiles, parent.ifEmpty { null })
+        propertyDetails.show(PropertiesTarget.Folder(activeFolder.name, state.displayedFiles, parent.ifEmpty { null }))
     }
     // 记住的回调（右键菜单）里取最新的一份：局部函数抓着的是头一次组合时的路径与防窥开关
     val latestShowProperties by rememberUpdatedState<(List<FileStat>, PanelAnchor) -> Unit> { files, anchor -> showProperties(files, anchor) }
@@ -810,23 +828,29 @@ fun DriveScreen(
     val navigateToPlayer by rememberUpdatedState(onNavigateToVideoPlayer)
     // 工作区统一拥有标签和任务上下文，关闭时由它释放对应会话。
     val desktopWorkspace = workspace as? dev.piko.shared.presentation.DriveWorkspace
+    val workContexts = contexts?.let { val current by it.contexts.contextsFlow.collectAsStateWithLifecycle(); current }
     val tabs = desktopWorkspace?.let { value -> val current by value.tabsFlow.collectAsStateWithLifecycle(); current }.orEmpty()
+        .filter { tab -> workContexts == null || workContexts.any { it.id == tab.id } }
     val activeTabId = desktopWorkspace?.let { value -> val current by value.activeTabId.collectAsStateWithLifecycle(); current } ?: 0L
     fun closeTab(id: Long) { if (contexts != null) contexts.requestCloseContext(contexts.contexts.activeContextId.value) else desktopWorkspace?.closeTab(id) }
     fun selectTab(id: Long) { if (contexts != null) contexts.activateContext(id) else desktopWorkspace?.switchTab(id) }
     fun newTab(stack: List<PathBreadcrumb>, activate: Boolean = true) { desktopWorkspace?.openTab(stack, activate) }
+    fun newRootTab() {
+        if (contexts != null) contexts.newFileContext()
+        else newTab(listOf(dev.piko.shared.data.PikoDriveRepository.ROOT_BREADCRUMB))
+    }
     fun cycleTab(step: Int) { if (contexts != null) contexts.cycleContext(step) else desktopWorkspace?.cycleTab(step) }
-    val tabsAvailable = desktopWorkspace != null && twoPane && isWorkspaceBrowser
+    val tabsAvailable = desktopWorkspace != null && isWorkspaceBrowser
     val openInNewTab: ((FileStat) -> Unit)? = if (tabsAvailable) {
         { folder -> newTab(folderStack + PathBreadcrumb(folder.id, folder.name), activate = false) }
     } else {
         null
     }
-    // 记住的回调里读它的最新值：窗口从宽变窄时不该还能开标签
+    // 标签属于工作区，窗口尺寸只决定标签栏或总览的呈现。
     val latestOpenInNewTab by rememberUpdatedState(openInNewTab)
-    // 快速访问列在侧边栏与命令面板里：有侧边栏（桌面）才给固定的入口，移动端固定了也看不到
+    // 快速访问在地址栏与命令面板里也可达。
     val pinnedFolders by driveRepo.pinnedFoldersFlow.collectAsStateWithLifecycle(emptyList())
-    val togglePin: ((FileStat) -> Unit)? = if (desktop) {
+    val togglePin: (FileStat) -> Unit =
         { folder ->
             if (pinnedFolders.any { it.id == folder.id }) {
                 driveRepo.unpinFolder(folder.id)
@@ -834,9 +858,6 @@ fun DriveScreen(
                 driveRepo.pinFolder(PathBreadcrumb(folder.id, folder.name))
             }
         }
-    } else {
-        null
-    }
     val latestTogglePin by rememberUpdatedState(togglePin)
     val latestPinnedFolders by rememberUpdatedState(pinnedFolders)
 
@@ -858,9 +879,9 @@ fun DriveScreen(
         add(DriveActions.extractEntries { extractFromArchive(files) })
     }
 
-    // 剪切、复制与 Ctrl+X、Ctrl+C 走同一处。只有桌面给：移动端没有粘贴的入口（命令栏与空白处的右键菜单）
-    fun clipboardActions(files: List<FileStat>): ((Boolean) -> Unit)? =
-        if (desktop) ({ cut -> state.putOnClipboard(files.map { it.id }, cut) }) else null
+    // 剪切、复制与快捷键走同一处；窄窗口在列表菜单提供粘贴。
+    fun clipboardActions(files: List<FileStat>): (Boolean) -> Unit =
+        { cut -> state.putOnClipboard(files.map { it.id }, cut) }
 
     // 混选时一并归档：文件夹各取整棵树，文件按所在文件夹写清单，同一次确认、同一条撤销
     fun vaultScopeOf(files: List<FileStat>): VaultScope {
@@ -921,8 +942,7 @@ fun DriveScreen(
         add(DriveActions.restoreFromVault { vaultSession.restore(listOf(file)) })
         add(DriveActions.download { enqueueDownload(file) })
         add(DriveActions.rename { startRename(file) })
-        // 移动端的来源在面板头部，见 FileActionHandlers.copySource
-        if (desktop) addAll(DriveActions.sourceActions(file.source, onCopy = { copySource(file) }, onOpen = { file.sourceUrl?.let(platform::openUrl) }))
+        addAll(DriveActions.sourceActions(file.source, onCopy = { copySource(file) }, onOpen = { file.sourceUrl?.let(platform::openUrl) }))
         add(DriveActions.removeFromVault { state.removeFromVault(listOf(file.id)) })
     }
 
@@ -954,16 +974,16 @@ fun DriveScreen(
             share = { shareTargets = listOf(file) },
             rename = { startRename(file) },
             move = { moveTargetIds = setOf(file.id) },
-            copy = if (desktop || library == null) ({ copyTargetIds = setOf(file.id) }) else null,
+            copy = { copyTargetIds = setOf(file.id) },
             trash = { state.moveToTrash(listOf(file.id)) },
             extract = { extractArchives(listOf(file)) },
-            findDuplicates = if (desktop && isWorkspaceBrowser) ({ findDuplicates(PathBreadcrumb(file.id, file.name)) }) else null,
+            findDuplicates = if (isWorkspaceBrowser) ({ findDuplicates(PathBreadcrumb(file.id, file.name)) }) else null,
             // 整理的是它的子树，要在网盘里它所在的地方做，库里不给
-            canonicalNameFolder = if (desktop && library == null) ({ nameByCode(listOf(file)) }) else null,
+            canonicalNameFolder = if (library == null) ({ nameByCode(listOf(file)) }) else null,
             downloadSegment = { segmentSession.open(file) },
             prepareQualities = { mediaRepository.prefetchDownloadQualities(file.id) },
-            copySource = if (desktop) ({ copySource(file) }) else null,
-            openSource = if (desktop) ({ file.sourceUrl?.let(platform::openUrl) }) else null,
+            copySource = { copySource(file) },
+            openSource = { file.sourceUrl?.let(platform::openUrl) },
             openInExternalPlayer = platform.externalPlayer?.let { { openInExternalPlayer(file) } },
             openInNewTab = latestOpenInNewTab?.let { { it(file) } },
             togglePin = latestTogglePin?.let { { it(file) } },
@@ -996,7 +1016,7 @@ fun DriveScreen(
 
     // 只在移动端的条目上画打开操作面板的按钮：桌面有右键菜单，每一项挂一个按钮只是满屏一样的图标。
     // 曾按宽度判断，平板横握没有右键也没有这个按钮，单项的操作整个不可达
-    val itemMoreButton = !desktop
+    val itemMoreButton = true
 
     // 从没解压过的包第一次打开要等几秒。准备完 key 一变，这里的协程取消，提示随之收起；快的不提示
     LaunchedEffect(state.preparingEntryId) {
@@ -1138,7 +1158,6 @@ fun DriveScreen(
     }
     BackHandler(enabled = acceptsNavigation && state.isSelectionMode) { state.exitSelection() }
     // 属性：最后声明，Esc 先关它。它是最晚打开、最临时的东西
-    BackHandler(enabled = acceptsNavigation && properties != null) { properties = null }
 
     // 网格空白处的右键菜单，照资源管理器的顺序：怎么看、刷新、粘贴、往这里添东西、全选、属性。
     // 排序不在这里：六种排法平铺出来太长，这套菜单没有二级菜单，命令栏的排序按钮就在上方
@@ -1239,9 +1258,9 @@ fun DriveScreen(
         val addressKey = (primary && event.key == Key.L) || (!isMac && event.isAltPressed && event.key == Key.D) ||
             (!isMac && event.key == Key.F4 && !event.isAltPressed)
         when {
-            addressKey && pathInTopBar -> addressEditRequests++
+            addressKey -> editAddress()
             // 照 VS Code 的资源管理器（Ctrl+Shift+E）
-            pathInTopBar && primary && event.isShiftPressed && event.key == Key.E -> folderMap.toggle()
+            primary && event.isShiftPressed && event.key == Key.E -> folderMap.toggle()
             // 宽窗口的搜索框常驻，取得焦点即可；窄屏点开搜索栏
             primary && event.key == Key.F -> if (pathInTopBar) searchFocusRequests++ else state.openSearch()
             // 剪切、复制、粘贴，照资源管理器：换个目录粘贴，剪切的即移过去
@@ -1252,7 +1271,7 @@ fun DriveScreen(
                 state.putOnClipboard(commandTargets.map { it.id }, cut = false)
             primary && event.key == Key.V && clipboard != null && !state.isVirtualPlace -> state.paste()
             // 标签：新建停在眼前的位置，关掉活动的那个，Ctrl+Tab 与 Ctrl+PageDown/PageUp 前后切换，与浏览器相同
-            tabsAvailable && primary && event.key == Key.T -> newTab(folderStack)
+            tabsAvailable && primary && event.key == Key.T -> newRootTab()
             tabsAvailable && primary && event.key == Key.W && tabs.size > 1 -> closeTab(activeTabId)
             tabsAvailable && event.isCtrlPressed && event.key == Key.Tab -> cycleTab(if (event.isShiftPressed) -1 else 1)
             tabsAvailable && primary && event.key == Key.PageDown -> cycleTab(1)
@@ -1348,6 +1367,32 @@ fun DriveScreen(
 
     // 宽窗口的两行栏，照资源管理器：导航栏（后退、前进、上一级、刷新、地址栏、搜索框）与命令栏。
     // 多选时不换顶栏，条目操作在右键菜单里；新建与排序、视图也从 FAB 与列表页眉搬到这里
+    val addressBar: @Composable () -> Unit = {
+        val recentFolders by workspace.recentFoldersFlow.collectAsStateWithLifecycle()
+        DrivePathTitle(
+            model = AddressBarModel(
+                stack = folderStack,
+                onNavigate = { index -> state.navigateToBreadcrumb(index) },
+                onOpenStack = navigation::updateFolderStack,
+                onSubmitPath = state::goToPath,
+                completions = state::addressCompletions,
+                subfoldersOf = state::subfoldersOf,
+                recent = recentFolders,
+                pinned = pinnedFolders,
+                onOpenPinned = state::openPinned,
+                onRemoveRecent = workspace::removeRecentFolder,
+                onOpenLink = ::openLink,
+                onSearchHere = { term -> state.updateSearchQuery(term) },
+                onSearchAll = { term ->
+                    state.updateSearchQuery(term)
+                    state.startGlobalSearch()
+                },
+                destinations = addressDestinations,
+            ),
+            editRequests = addressEditRequests,
+        )
+    }
+
     val explorerBars: @Composable () -> Unit = {
         ExplorerNavBar(
             shortcuts = platform.shortcutModifier,
@@ -1358,31 +1403,7 @@ fun DriveScreen(
             onForward = { state.goForward() },
             onUp = { state.navigateUp() },
             showFolderMap = if (folderMap.presence == FolderMapPresence.Closed) ({ folderMap.dispatch(FolderMapEvent.Open) }) else null,
-            address = {
-                val recentFolders by workspace.recentFoldersFlow.collectAsStateWithLifecycle()
-                DrivePathTitle(
-                    model = AddressBarModel(
-                        stack = folderStack,
-                        onNavigate = { index -> state.navigateToBreadcrumb(index) },
-                        onOpenStack = navigation::updateFolderStack,
-                        onSubmitPath = state::goToPath,
-                        completions = state::addressCompletions,
-                        subfoldersOf = state::subfoldersOf,
-                        recent = recentFolders,
-                        pinned = pinnedFolders,
-                        onOpenPinned = state::openPinned,
-                        onRemoveRecent = workspace::removeRecentFolder,
-                        onOpenLink = ::openLink,
-                        onSearchHere = { term -> state.updateSearchQuery(term) },
-                        onSearchAll = { term ->
-                            state.updateSearchQuery(term)
-                            state.startGlobalSearch()
-                        },
-                        destinations = addressDestinations,
-                    ),
-                    editRequests = addressEditRequests,
-                )
-            },
+            address = addressBar,
             search = {
                 ExplorerSearchField(
                     query = state.searchQuery,
@@ -1478,12 +1499,11 @@ fun DriveScreen(
                 add(PaletteItem("上传文件", Icons.Outlined.UploadFile, "网盘", keywords = "upload") { pickFiles() })
                 add(PaletteItem("上传文件夹", Icons.Outlined.DriveFolderUpload, "网盘", keywords = "upload folder") { pickFolder() })
             }
-            if (pathInTopBar) {
-                add(PaletteItem(folderMap.toggleLabel, Icons.Outlined.AccountTree, "网盘",
+            add(PaletteItem(folderMap.toggleLabel, Icons.Outlined.AccountTree, "网盘",
                     detail = if (platform.shortcutModifier == ShortcutModifier.Command) "⌘⇧E" else "Ctrl+Shift+E", keywords = "folder tree map 树") {
                     folderMap.toggle()
                 })
-            }
+            add(PaletteItem("转到路径", Icons.Outlined.FolderOpen, "网盘", detail = label("L"), keywords = "path address 路径") { editAddress() })
             add(PaletteItem("搜索文件", Icons.Outlined.Search, "网盘", detail = label("F"), keywords = "search find") {
                 if (pathInTopBar) searchFocusRequests++ else state.openSearch()
             })
@@ -1499,7 +1519,7 @@ fun DriveScreen(
             add(PaletteItem("刷新", Icons.Outlined.Refresh, "网盘", detail = "F5", keywords = "refresh reload") { refreshFiles() })
             if (folderStack.size > 1) add(PaletteItem("上一级", Icons.Outlined.ArrowUpward, "网盘", detail = "Backspace", keywords = "up parent") { state.navigateUp() })
             if (tabsAvailable) {
-                add(PaletteItem("新建标签页", Icons.Outlined.Add, "标签", detail = label("T"), keywords = "new tab") { newTab(folderStack) })
+                add(PaletteItem("新建标签页", Icons.Outlined.Add, "标签", detail = label("T"), keywords = "new tab", run = ::newRootTab))
                 if (tabs.size > 1) {
                     add(PaletteItem("关闭标签页", Icons.Outlined.Close, "标签", detail = label("W"), keywords = "close tab") { closeTab(activeTabId) })
                     tabs.filter { it.id != activeTabId }.forEach { tab ->
@@ -1558,7 +1578,7 @@ fun DriveScreen(
                 Box(
                     Modifier
                         .fillMaxSize()
-                        .propertiesAnchorArea(propertiesAnchors)
+                        .itemPanelAnchorArea(propertiesAnchors)
                         .then(if (pathInTopBar) Modifier.folderMapPointer(folderMap) else Modifier),
                 ) {
                     list()
@@ -1575,25 +1595,12 @@ fun DriveScreen(
                             onActivate = { propertiesOnTop = false },
                         )
                     }
-                    val shown = properties
-                    if (propertiesFloating && shown != null) {
-                        FloatingPanel(
-                            state = propertiesPanel,
-                            title = "属性",
-                            closeLabel = "关闭属性",
-                            onClose = { properties = null },
-                            minWidth = PropertiesMinWidth,
-                            maxWidth = PropertiesMaxWidth,
-                            // 随内容长短，最高到列表这一块的底，再长就在卡片里滚
-                            autoMaxHeight = Dp.Unspecified,
-                            modifier = Modifier.zIndex(if (propertiesOnTop) 1f else 0f),
-                            resizable = false,
-                            onActivate = { propertiesOnTop = true },
-                        ) {
-                            // 换了一项从头看起，不停在上一项滚到的地方
-                            key(shown) { PropertiesPane(shown, Modifier.weight(1f, fill = false).widthIn(min = PropertiesMinWidth)) }
-                        }
-                    }
+                    DetailHost(
+                        state = propertyDetails,
+                        modifier = Modifier.zIndex(if (propertiesOnTop) 1f else 0f),
+                        onActivate = { propertiesOnTop = true },
+                    ) { shown, contentModifier -> PropertiesPane(shown, contentModifier) }
+
                 }
             }
         }
@@ -1635,6 +1642,7 @@ fun DriveScreen(
         modifier = modifier
             .fillMaxSize()
             .pageFocusTarget(shortcutFocus)
+            .onPreviewKeyEvent(propertyDetails::handleKey)
             .onKeyEvent(::handleShortcut)
             // 鼠标侧键是后退与前进，与资源管理器、浏览器相同
             .pointerInput(state) {
@@ -1658,7 +1666,7 @@ fun DriveScreen(
                 topBar = {
                     Column {
                         // 宽窗口一直有标签栏，只开一个标签时也是：开第二个时页面不跳，窗口按钮也一直在这一行
-                        if (tabsAvailable && contexts == null) {
+                        if (pathInTopBar && tabsAvailable && contexts == null) {
                             DriveTabBar(
                                 tabs = tabs,
                                 activeId = activeTabId,
@@ -1671,7 +1679,7 @@ fun DriveScreen(
                                     }
                                 },
                                 feedTabId = feedTabId,
-                                onNewTab = { newTab(folderStack) },
+                                onNewTab = ::newRootTab,
                                 newTabShortcut = platform.shortcutModifier.label("T"),
                             )
                         }
@@ -2046,6 +2054,10 @@ fun DriveScreen(
                                                         // 宽窗口的排序、筛选与视图在命令栏上，页眉只剩搜索结果的说明
                                                         showControls = !pathInTopBar,
                                                         placeActions = listOfNotNull(
+                                                            SheetAction(Icons.Outlined.ContentPaste, "粘贴", { state.paste() }).takeIf { commands.paste },
+                                                            SheetAction(Icons.Outlined.AccountTree, "目录图", { folderMap.dispatch(FolderMapEvent.Open) }),
+                                                            SheetAction(Icons.Outlined.FolderOpen, "转到路径", ::editAddress),
+                                                            SheetAction(Icons.AutoMirrored.Outlined.ArrowForward, "前进", { state.goForward() }).takeIf { history.canGoForward },
                                                             DriveActions.findDuplicates { findDuplicates(activeFolder) }.takeIf { commands.findDuplicates },
                                                             DriveActions.canonicalName { canonicalRoot = activeFolder }.takeIf { commands.canonicalNaming },
                                                         ),
@@ -2081,11 +2093,20 @@ fun DriveScreen(
         )
     }
 
-    // 窄窗口里属性是面板：放不下浮在列表上的卡片，触屏上也拖不动它
-    properties?.takeIf { !propertiesFloating }?.let { shown ->
-        PikoSheet(onDismissRequest = { properties = null }, sideSheetTitle = "属性") {
-            PropertiesPane(shown, Modifier.fillMaxWidth())
+    if (!pathInTopBar && addressPanelOpen) {
+        PikoSheet(onDismissRequest = { addressPanelOpen = false }, sideSheetTitle = "转到路径") {
+            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("转到路径", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+                    TextButton(onClick = { addressPanelOpen = false }) { Text("关闭") }
+                }
+                addressBar()
+                Text("点击地址栏可输入路径，也可选择最近访问或固定的文件夹。", style = MaterialTheme.typography.bodySmall)
+            }
         }
+    }
+    if (!pathInTopBar && folderMap.presence != FolderMapPresence.Closed && folderMap.presence != FolderMapPresence.Collapsed) {
+        FolderMapSheet(folderMap, folderStack, navigation::updateFolderStack, ::openFromMap)
     }
 
     state.archivePasswordRequest?.let { request ->

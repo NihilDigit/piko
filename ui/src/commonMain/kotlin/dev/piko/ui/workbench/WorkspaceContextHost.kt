@@ -3,6 +3,7 @@ package dev.piko.ui.workbench
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
@@ -35,6 +36,8 @@ internal fun WorkspaceContextHost(
     retainedStates: androidx.compose.runtime.saveable.SaveableStateHolder? = null,
     fileContent: @Composable () -> Unit,
 ) {
+    val wide = dev.piko.ui.adaptive.isDesktopLayout()
+    if (wide && mobileContextId != null) return
     val contexts by model.contexts.contextsFlow.collectAsStateWithLifecycle()
     val active by model.contexts.activeContextId.collectAsStateWithLifecycle()
     val states = retainedStates ?: rememberSaveableStateHolder()
@@ -44,10 +47,12 @@ internal fun WorkspaceContextHost(
         (retained - live).forEach(states::removeState)
         retained.clear()
         retained.addAll(live)
+        model.pageSnapshots.retain(live)
     }
 
     @Composable
     fun ContextContent(context: WorkspaceContext) {
+        WorkspacePageSnapshot(model, context.id) {
         states.SaveableStateProvider(context.id) {
             when (context) {
                 is WorkspaceContext.File -> fileContent()
@@ -62,25 +67,26 @@ internal fun WorkspaceContextHost(
                         rootTitle = workspaceTitle(model, context),
                         interactionEnabled = true,
                         onLibraryLeft = {
-                            if (!model.desktop) {
+                            if (!wide) {
                                 onMinimize()
                             }
                         },
                     )
                 }
                 is WorkspaceContext.ImportDraft -> model.importModels[context.id]?.state?.let { draft ->
-                    Box(Modifier.fillMaxSize().padding(horizontal = if (model.desktop) 24.dp else 0.dp)) {
-                        InstantSheetContent(draft, headerShown = !model.desktop, fillHeight = !model.desktop, onPreview = { id, name ->
+                    Box(Modifier.fillMaxSize().padding(horizontal = if (wide) 24.dp else 0.dp)) {
+                        InstantSheetContent(draft, view = model.importView(context.id), headerShown = true, fillHeight = true, onPreview = { id, name ->
                             onPlay(FileStat(id = id, name = name), emptyList())
                         })
                     }
                 }
             }
         }
+        }
     }
 
-    if (model.desktop) {
-        val workspace = requireNotNull(model.desktopWorkspace)
+    if (wide) {
+        val workspace = requireNotNull(model.driveWorkspace)
         val files by workspace.tabsFlow.collectAsStateWithLifecycle()
         val tabs = contexts.map { context ->
             when (context) {
@@ -90,25 +96,15 @@ internal fun WorkspaceContextHost(
             }
         }
         val shortcut = LocalPikoPlatform.current.shortcutModifier
-        Column(Modifier.fillMaxSize().onPreviewKeyEvent { event ->
-            if (event.type != KeyEventType.KeyDown) false
-            else if (shortcut.isPressed(event) && event.key == Key.Tab) {
-                model.cycleContext(if (event.isShiftPressed) -1 else 1); true
-            } else false
-        }.onKeyEvent { event ->
-            if (event.type != KeyEventType.KeyDown || !shortcut.isPressed(event)) false
-            else when (event.key) {
-                Key.W -> { model.requestCloseContext(active); true }
-                Key.T -> { workspace.openTab(workspace.folderStackFlow.value); true }
-                else -> false
-            }
-        }) {
+        Column(Modifier.fillMaxSize()) {
             DriveTabBar(
                 tabs = tabs, activeId = active,
                 onSelect = model::activateContext, onClose = model::requestCloseContext,
                 feedTabId = model.feed.detourTab,
-                canClose = { id -> contexts.firstOrNull { it.id == id } !is WorkspaceContext.File || contexts.count { it is WorkspaceContext.File } > 1 },
-                onNewTab = { workspace.openTab(workspace.folderStackFlow.value) },
+                canClose = { id -> contexts.firstOrNull { it.id == id } !is WorkspaceContext.File || contexts.size > 1 },
+                onCloseOthers = model::requestCloseOtherContexts,
+                onMove = model::moveContext,
+                onNewTab = model::newFileContext,
                 newTabShortcut = shortcut.label("T"),
                 sessionTab = { tab ->
                     when (contexts.firstOrNull { it.id == tab.id }) {
@@ -133,6 +129,7 @@ internal fun WorkspaceContextHost(
                     topBar = {
                         dev.piko.ui.components.PikoTopBar(
                             title = "添加链接",
+                            navigationIcon = { dev.piko.ui.components.TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, "返回来源", onMinimize) },
                             persistentActions = { WorkspaceControls() },
                         )
                     },
@@ -142,11 +139,22 @@ internal fun WorkspaceContextHost(
                 }
             } else Box(Modifier.fillMaxSize().imePadding()) { ContextContent(context) }
         }
-    } else fileContent()
+    } else WorkspacePageSnapshot(model, model.driveWorkspace.activeTabId.value, fileContent)
 }
 
 @Composable
 internal fun WorkspaceContextDialogs(model: WorkspaceViewModel) {
+    if (model.pendingCloseOtherIds.isNotEmpty()) {
+        PikoDialog(
+            onDismissRequest = model::cancelCloseOtherContexts,
+            title = { Text("关闭其他 ${model.pendingCloseOtherIds.size} 个标签页？") },
+            text = { Text("将保留当前标签，关闭其余 ${model.pendingCloseOtherIds.size} 个标签页。" +
+                if (model.pendingCloseOtherNeedsAttention) "未提交草稿和查重结果将不再保留，扫描将停止。已提交的任务继续执行。" else "") },
+            confirmButton = { PikoDialogConfirm("关闭其他标签", model::confirmCloseOtherContexts, destructive = true) },
+            dismissButton = { TextButton(model::cancelCloseOtherContexts) { Text("取消") } },
+        )
+        return
+    }
     val context = model.contexts.contextsFlow.value.firstOrNull { it.id == model.pendingCloseId } ?: return
     val duplicate = context is WorkspaceContext.Duplicate
     val scanning = model.duplicateSessions[context.id]?.state?.isScanning == true

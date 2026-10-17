@@ -3,15 +3,39 @@ package dev.piko.ui
 import dev.piko.ui.navigation.Screen
 import dev.piko.ui.navigation.openWorkspaceRoute
 import dev.piko.ui.navigation.retainWorkspaceRoutes
+import dev.piko.ui.navigation.wideWorkspaceRoutes
+import dev.piko.ui.navigation.isWorkspaceSurface
+import dev.piko.ui.navigation.MainTab
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class WorkspaceRoutesTest {
+    @Test
+    fun fileWorkControlsAreScopedAwayFromTasksSettingsAndMedia() {
+        assertEquals(true, isWorkspaceSurface(Screen.Home, MainTab.FILES))
+        assertEquals(false, isWorkspaceSurface(Screen.Home, MainTab.TRANSFERS))
+        assertEquals(false, isWorkspaceSurface(Screen.Home, MainTab.SETTINGS))
+        for (tab in MainTab.entries) {
+            assertEquals(true, isWorkspaceSurface(firstWork, tab))
+            assertEquals(true, isWorkspaceSurface(library, tab))
+            assertEquals(true, isWorkspaceSurface(browse, tab))
+            assertEquals(false, isWorkspaceSurface(Screen.Settings, tab))
+            assertEquals(false, isWorkspaceSurface(player, tab))
+        }
+    }
+
     private val library = Screen.Library("starred", 10L)
     private val firstWork = Screen.Workspace(11L)
     private val secondWork = Screen.Workspace(12L)
     private val player = Screen.VideoPlayer("episode-01", "第一集.mkv")
     private val browse = Screen.Browse(listOf("movies" to "电影"), "movie-01", 20L)
+
+    @Test
+    fun wideningShowsCurrentWorkAndPreservesAnAlreadyOpenPlayer() {
+        assertEquals(listOf(Screen.Home), wideWorkspaceRoutes(listOf(Screen.Home, library, firstWork)))
+        assertEquals(listOf(Screen.Home, player), wideWorkspaceRoutes(listOf(Screen.Home, library, firstWork, player)))
+        assertEquals(listOf(Screen.Home, library), wideWorkspaceRoutes(listOf(Screen.Home, library)))
+    }
 
     @Test
     fun openingWorkKeepsTheFileOrLibraryOriginAsItsBackDestination() {

@@ -1,6 +1,11 @@
 package dev.piko.ui.screens.drive
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitHorizontalTouchSlopOrCancellation
+import androidx.compose.foundation.gestures.horizontalDrag
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -22,6 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.SwipeVertical
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ColorScheme
@@ -37,6 +43,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.key
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,8 +59,15 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.isTertiaryPressed
+import androidx.compose.ui.input.pointer.isPrimaryPressed
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
@@ -68,6 +87,8 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
+import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
 
 /**
  * 会话占着的标签（查找重复）上显示的东西：标题、悬停说明、是否还在扫（标签上转圈）与图标。
@@ -93,11 +114,46 @@ internal fun DriveTabBar(
     /** 从信息流跳出来浏览的那个标签，见 PikoMainScaffold 的 feedDetourTab。 */
     feedTabId: Long?,
     canClose: (Long) -> Boolean = { tabs.size > 1 },
+    onCloseOthers: ((Long) -> Unit)? = null,
+    onMove: ((Long, Int) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val scroll = rememberScrollState()
+    val latestTabs by rememberUpdatedState(tabs)
+    val latestMove by rememberUpdatedState(onMove)
+    val latestSelect by rememberUpdatedState(onSelect)
+    val tabWidthPx = with(LocalDensity.current) { TabWidth.toPx() }
+    var draggingId by remember { mutableStateOf<Long?>(null) }
+    var startIndex by remember { mutableIntStateOf(0) }
+    var startScroll by remember { mutableIntStateOf(0) }
+    var travel by remember { mutableFloatStateOf(0f) }
+    var viewportWidth by remember { mutableFloatStateOf(0f) }
+    fun updateOrder() {
+        val id = draggingId ?: return
+        val current = latestTabs.indexOfFirst { it.id == id }
+        if (current < 0) return
+        val target = (startIndex + (travel + scroll.value - startScroll) / tabWidthPx)
+            .roundToInt().coerceIn(0, latestTabs.lastIndex)
+        if (target != current) latestMove?.invoke(id, target)
+    }
+    val center = startIndex * tabWidthPx - startScroll + travel + tabWidthPx / 2
+    val edge = when {
+        draggingId == null || viewportWidth <= 0f -> 0
+        center < tabWidthPx / 4 -> -1
+        center > viewportWidth - tabWidthPx / 4 -> 1
+        else -> 0
+    }
+    LaunchedEffect(draggingId, edge) {
+        if (edge == 0) return@LaunchedEffect
+        while (draggingId != null) {
+            if (scroll.scrollBy(edge * tabWidthPx / 18) == 0f) break
+            updateOrder()
+            delay(16)
+        }
+    }
     // 新开的标签在右边看不见时滚过去
-    LaunchedEffect(activeId) {
+    LaunchedEffect(activeId, draggingId) {
+        if (draggingId != null) return@LaunchedEffect
         val index = tabs.indexOfFirst { it.id == activeId }
         if (index == tabs.lastIndex) scroll.animateScrollTo(scroll.maxValue)
     }
@@ -120,23 +176,41 @@ internal fun DriveTabBar(
         Row(modifier = Modifier.weight(1f).fillMaxHeight(), verticalAlignment = Alignment.CenterVertically) {
             // 标签贴着这一行的下沿，活动的那个与下面的页眉连成一片
             Row(
-                modifier = Modifier.weight(1f, fill = false).fillMaxHeight().verticalWheelScrollsRow(scroll).horizontalScroll(scroll).selectableGroup(),
+                modifier = Modifier.weight(1f, fill = false).fillMaxHeight().onSizeChanged { viewportWidth = it.width.toFloat() }
+                    .verticalWheelScrollsRow(scroll).horizontalScroll(scroll).selectableGroup(),
                 verticalAlignment = Alignment.Bottom,
             ) {
                 val activeIndex = tabs.indexOfFirst { it.id == activeId }
                 tabs.forEachIndexed { index, tab ->
-                    TabChip(
-                        tab,
-                        session = sessionTab(tab),
-                        fromFeed = tab.id == feedTabId,
-                        active = index == activeIndex,
-                        first = index == 0,
-                        // 两个非活动标签之间画一道分隔，挨着活动标签的不画：活动标签自己的轮廓已经分开了
-                        divider = index < tabs.lastIndex && index != activeIndex && index + 1 != activeIndex,
-                        onSelect = { onSelect(tab.id) },
-                        // 只剩一个时关不掉，不给叉
-                        onClose = if (canClose(tab.id)) ({ onClose(tab.id) }) else null,
-                    )
+                    key(tab.id) {
+                        TabChip(
+                            tab,
+                            session = sessionTab(tab),
+                            fromFeed = tab.id == feedTabId,
+                            active = index == activeIndex,
+                            first = index == 0,
+                            // 两个非活动标签之间画一道分隔，挨着活动标签的不画：活动标签自己的轮廓已经分开了
+                            divider = index < tabs.lastIndex && index != activeIndex && index + 1 != activeIndex,
+                            onSelect = { onSelect(tab.id) },
+                            // 只剩一个时关不掉，不给叉
+                            onClose = if (canClose(tab.id)) ({ onClose(tab.id) }) else null,
+                            modifier = Modifier.zIndex(if (draggingId == tab.id) 1f else 0f)
+                                .graphicsLayer {
+                                    translationX = if (draggingId == tab.id) travel + scroll.value - startScroll - (index - startIndex) * tabWidthPx else 0f
+                                }.tabReorderGesture(
+                                    enabled = onMove != null,
+                                    onStart = {
+                                        startIndex = latestTabs.indexOfFirst { it.id == tab.id }
+                                        startScroll = scroll.value
+                                        travel = 0f
+                                        draggingId = tab.id
+                                        latestSelect(tab.id)
+                                    },
+                                    onDelta = { travel += it; updateOrder() },
+                                    onEnd = { draggingId = null; travel = 0f },
+                                ),
+                        )
+                    }
                 }
             }
             TooltipIconButton(
@@ -146,15 +220,55 @@ internal fun DriveTabBar(
                 shortcut = newTabShortcut,
                 modifier = Modifier.onGloballyPositioned { dragArea.plusRight = it.boundsInWindow().right },
             )
+            if (onCloseOthers != null && tabs.size > 1) {
+                var menuOpen by remember { mutableStateOf(false) }
+                Box(Modifier.onGloballyPositioned { dragArea.plusRight = it.boundsInWindow().right }) {
+                    TooltipIconButton(Icons.Outlined.MoreVert, "标签页操作", { menuOpen = true })
+                    androidx.compose.material3.DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        androidx.compose.material3.DropdownMenuItem(
+                            text = { Text("关闭其他标签") },
+                            onClick = { menuOpen = false; onCloseOthers(activeId) },
+                        )
+                    }
+                }
+            }
         }
         caption.buttons?.invoke()
     }
 }
 
-/**
- * 「+」后面到这一行末尾的空白。按位置登记，不放一个带权重的 Spacer：标签那一行是 weight(1f, fill = false)，
- * 再来一个带权重的就与它平分剩余宽度，标签多时只能占一半。
- */
+/** 越过水平拖动阈值才排序，普通点选、关闭和中键操作继续由条目处理。 */
+private fun Modifier.tabReorderGesture(
+    enabled: Boolean,
+    onStart: () -> Unit,
+    onDelta: (Float) -> Unit,
+    onEnd: () -> Unit,
+): Modifier = pointerInput(enabled) {
+    if (!enabled) return@pointerInput
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        if (down.type == PointerType.Mouse && !currentEvent.buttons.isPrimaryPressed) return@awaitEachGesture
+        var overSlop = 0f
+        val start = awaitHorizontalTouchSlopOrCancellation(down.id) { change, amount ->
+            change.consume()
+            overSlop = amount
+        }
+        if (start != null) {
+            onStart()
+            onDelta(overSlop)
+            try {
+                horizontalDrag(start.id) { change ->
+                    onDelta(change.positionChange().x)
+                    change.consume()
+                }
+            } finally {
+                onEnd()
+            }
+        }
+    }
+}
+
+/** 标签操作之后的剩余空白登记为窗口拖动区域。 */
 private class TabBarDragArea(private val caption: WindowCaption?) {
     private val key = Any()
     private var row = Rect.Zero
@@ -187,10 +301,12 @@ private fun TabChip(
     divider: Boolean,
     onSelect: () -> Unit,
     onClose: (() -> Unit)?,
+    modifier: Modifier = Modifier,
 ) {
     val colors = MaterialTheme.colorScheme
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
+    val latestClose by rememberUpdatedState(onClose)
     val contentColor = if (active) colors.onSurface else colors.onSurfaceVariant
     // 会话标签不接拖放：那里不是文件夹
     val target = tab.stack.lastOrNull()?.takeIf { tab.session == null && session == null }
@@ -211,7 +327,7 @@ private fun TabChip(
             divider = divider,
             onClick = onSelect,
             interactionSource = interaction,
-            modifier = Modifier
+            modifier = modifier
                 // 拖到别的标签上：移进它停着的文件夹
                 .then(if (!active && target != null) Modifier.fileDropTarget("tab:${tab.id}", target) else Modifier)
                 .width(TabWidth)
@@ -219,7 +335,7 @@ private fun TabChip(
                     awaitPointerEventScope {
                         while (true) {
                             val event = awaitPointerEvent()
-                            if (event.type == PointerEventType.Press && event.buttons.isTertiaryPressed) onClose?.invoke()
+                            if (event.type == PointerEventType.Press && event.buttons.isTertiaryPressed) latestClose?.invoke()
                         }
                     }
                 },

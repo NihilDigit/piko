@@ -97,27 +97,26 @@ internal class FileActionHandlers(
     val share: () -> Unit,
     val rename: () -> Unit,
     val move: () -> Unit,
-    /** 移动端库与查重结果这类列表里为 null：那里要做的是回到原处、下载、移走或删除，面板要一屏放得下。 */
+    /** 是否可以复制到另一目录，由对象与业务上下文决定。 */
     val copy: (() -> Unit)?,
     val trash: () -> Unit,
     val extract: () -> Unit,
     /**
-     * 文件夹的查找重复与按番号规范命名，作用于它的子树，是位置级的命令。移动端为 null：
-     * 进文件夹后从列表页眉的菜单发起，面板只放作用于这一项的。
+     * 文件夹的查找重复与规范命名作用于其子树，与窗口尺寸无关。
      */
     val findDuplicates: (() -> Unit)?,
     val canonicalNameFolder: (() -> Unit)?,
     val downloadSegment: () -> Unit,
     /** 视频的「下载指定画质」「下载指定段落」上按下或悬停时提前查各档。普通下载不探测。 */
     val prepareQualities: () -> Unit,
-    /** 移动端为 null：来源写在面板头部那一行，复制按钮挂在那里，见 [FileActionsSheet]；打开来源分享在手机上不给。 */
+    /** 来源操作在菜单和面板中都可用。 */
     val copySource: (() -> Unit)?,
     val openSource: (() -> Unit)?,
     /** 平台交不出去时为 null。 */
     val openInExternalPlayer: (() -> Unit)?,
-    /** 没有标签栏（移动端）时为 null。 */
+    /** 工作区支持文件标签时提供，窄窗口从标签总览恢复。 */
     val openInNewTab: (() -> Unit)?,
-    /** 固定或取消固定到快速访问；没有快速访问可去（移动端）时为 null。 */
+    /** 固定或取消固定到快速访问；固定项也可从路径面板和命令面板打开。 */
     val togglePin: (() -> Unit)?,
     val isPinned: Boolean,
     /** 把这个文件或文件夹里的文件换成归档记录，腾出空间。给不给看 [ItemCommands.vault]。 */
@@ -128,7 +127,7 @@ internal class FileActionHandlers(
     val previewHidden: Boolean?,
     val togglePreview: () -> Unit,
     /**
-     * 放进应用内剪贴板，参数为 true 是剪切。移动端为 null：没有粘贴的入口，见 [DriveActions.quickRow]。
+     * 放进应用内剪贴板，参数为 true 是剪切。
      * 不为 null 即按桌面排图标行。
      */
     val putOnClipboard: ((cut: Boolean) -> Unit)?,

@@ -136,6 +136,8 @@ fun ClipFeedScreen(
     onLocate: (FileStat) -> Unit,
     modifier: Modifier = Modifier,
     compact: Boolean = false,
+    pausedByHost: Boolean = false,
+    onToggleFullscreen: (() -> Unit)? = null,
     onPopOut: (() -> Unit)? = null,
     onDock: (() -> Unit)? = null,
 ) {
@@ -203,6 +205,7 @@ fun ClipFeedScreen(
             compact = compact,
             onPopOut = onPopOut,
             onDock = onDock,
+            onToggleFullscreen = onToggleFullscreen,
             onHideChrome = onHideChrome,
             landscapeLocked = if (landscapeLock != null && !compact) session.landscape else null,
             onToggleLandscape = { session.landscape = !session.landscape },
@@ -235,6 +238,7 @@ fun ClipFeedScreen(
                         actions = actions,
                         snackbarHostState = snackbarHostState,
                         compact = compact,
+                        pausedByHost = pausedByHost,
                         onPlayFull = playFull,
                         onLocate = onLocate,
                         onStarted = { started = true },
@@ -268,6 +272,7 @@ private fun ClipPager(
     actions: ClipActions,
     snackbarHostState: SnackbarHostState,
     compact: Boolean,
+    pausedByHost: Boolean,
     onPlayFull: (FileStat, Long) -> Unit,
     onLocate: (FileStat) -> Unit,
     /** 头一段画面走起来了，冷开的限制可以放开。 */
@@ -303,7 +308,8 @@ private fun ClipPager(
     val clipStartMs = remember { List(POOL_SIZE) { 0L }.toMutableStateList() }
     val loadJobs = remember { arrayOfNulls<Job>(POOL_SIZE) }
     val focusRequester = remember { FocusRequester() }
-    var paused by remember { mutableStateOf(false) }
+    var paused by remember { mutableStateOf(pausedByHost) }
+    val latestHostPaused by rememberUpdatedState(pausedByHost)
     // 长按期间两倍速
     var boosting by remember { mutableStateOf(false) }
     // 拖进度条时说明与操作栏让开，看得到画面
@@ -514,8 +520,8 @@ private fun ClipPager(
             currentPlayer.seekTo(start)
         }
         // 翻到一段就是要看它：在上一段暂停过，不能带到这一段，看着像没播动
-        paused = false
-        currentPlayer.play()
+        paused = latestHostPaused
+        if(paused) currentPlayer.pause() else currentPlayer.play()
         // 前后两段等这一段走起来再装，至多等 NEIGHBOURS_AFTER：装一段要解文件头、建解码器、解第一帧，
         // 手机上与这一段起步挤在同一刻，翻到预渲染好的一段也要顿 0.3 到 0.4 秒才走（2026-09-28）
         launch {
@@ -644,6 +650,10 @@ private fun ClipPager(
         snapshotFlow { currentPlayer.positionMillis in end..end + STALE_POSITION_SLACK_MS }.collect { atEnd ->
             if (atEnd) autoStep() else autoStepPending = false
         }
+    }
+
+    LaunchedEffect(pausedByHost) {
+        if(pausedByHost) { paused = true; currentPlayer.pause() }
     }
 
     fun togglePause() {
@@ -889,7 +899,7 @@ private fun ClipPager(
                             val watched = if (active) (player.positionMillis - startOnPlayer[slot]).coerceAtLeast(0) else 0L
                             onPlayFull(clip.file, videoStart + watched)
                         },
-                        onLocate = { onLocate(clip.file) },
+                        onLocate = { currentPlayer.pause(); paused = true; onLocate(clip.file) },
                         compact = compact,
                         landscape = landscape,
                     )
