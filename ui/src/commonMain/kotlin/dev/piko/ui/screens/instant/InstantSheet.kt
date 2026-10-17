@@ -1,5 +1,10 @@
 package dev.piko.ui.screens.instant
 
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.Key
+
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -76,7 +81,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
@@ -119,7 +123,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.merge
 
 /**
- * 嵌入在 BottomSheet 里的秒传与磁力确认工作台。
+ * 独立导入草稿及批量链接子编辑器的共同输入与提交界面。
  *
  * 状态机在 shared 的 [InstantSheetState]，由 [InstantSession] 持有，面板收起时不丢；
  * 这里只有 Material 的布局与外观。保存结果也不在这里收：面板可能已经收起，结果由持有会话的
@@ -127,8 +131,9 @@ import kotlinx.coroutines.flow.merge
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-fun InstantSheetContent(
+internal fun InstantSheetContent(
     state: InstantSheetState,
+    view: ImportWorkspaceViewState = remember { ImportWorkspaceViewState() },
     /**
      * 在侧栏或模态侧边面板里：标题由面板顶上那一行画，内容不再画；侧栏只有三百来 dp，两边留白收窄。
      * 底部 sheet 没有那一行，标题照旧在内容里。
@@ -145,6 +150,9 @@ fun InstantSheetContent(
     var showTargetPicker by remember { mutableStateOf(false) }
 
     val batch = state.batch
+    LaunchedEffect(state.resolution, batch) {
+        if (state.resolution != null || batch != null) view.started = true
+    }
     // 批量时预览与提示来自各行的子实例，与本体的一起收
     val sheets = remember(state, batch?.rows) { listOf(state) + batch?.rows?.map { it.state }.orEmpty() }
     val currentOnPreview by rememberUpdatedState(onPreview)
@@ -177,31 +185,52 @@ fun InstantSheetContent(
     }
     // 主修饰键+Enter 保存。不用单独的 Enter：它在输入框里换行（多条链接一行一条），在文件行上是勾选
     val saveByShortcut: (() -> Unit)? = when {
-        batch != null -> if (batch.openedRow == null && batch.canSaveAll) batch::saveAll else null
+        batch != null -> if (batch.canSaveAll) batch::saveAll else null
         shareState != null -> state.target?.takeIf { shareState.selectedIds.isNotEmpty() && !shareState.isSaving }
             ?.let { target -> { shareState.save(PikoPathBreadcrumb(target.id, target.name), canonicalNames = state.useCanonicalNames) } }
         action != null && action.enabled && !state.isSaving && (state.hasInstantRetry || state.savePlan?.blocked != true) -> saveMagnet
         else -> null
     }
     val shortcutModifier = platform.shortcutModifier
+    val saveKeyHandler: (KeyEvent) -> Boolean = { event ->
+        val save = saveByShortcut
+        if (save != null && event.type == KeyEventType.KeyDown && event.key == Key.Enter && shortcutModifier.isPressed(event)) {
+            save()
+            true
+        } else false
+    }
 
     val focusManager = LocalFocusManager.current
     val fileListState = key(state.input) { rememberLazyListState() }
+    @Composable
+    fun SaveSettings() {
+        if (state.resolution != null || batch != null) {
+            val referenceEnabled = state.canEdit && !state.hasRetainedInstantAttempt && batch?.rows?.any { !it.state.canEdit || it.state.hasRetainedInstantAttempt } != true
+            val reference = batch?.saveAsReference ?: state.saveAsReference
+            val updateReference: (Boolean) -> Unit = if (batch != null) batch::updateSaveAsReference else state::updateSaveAsReference
+            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).toggleable(reference, enabled = referenceEnabled,
+                role = Role.Checkbox, onValueChange = updateReference), verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(reference, null, Modifier.size(48.dp).clearAndSetSemantics {}, enabled = referenceEnabled)
+                Text("以引用保存", style = MaterialTheme.typography.bodyMedium)
+            }
+            if (state.saveAsReference && state.selectedItems.any { it.file.gcid == null }) {
+                Text("所选内容中有文件缺少引用，无法以引用保存", color = MaterialTheme.colorScheme.error)
+            }
+        }
+        TargetRow(target = state.target, notice = state.targetNotice, enabled = state.canEdit,
+            onClick = { showTargetPicker = true })
+    }
     @Composable
     fun Footer() {
         if (shareState != null) {
             ShareSaveFooter(state = shareState, target = state.target, canonicalNames = state.useCanonicalNames, onPickTarget = { showTargetPicker = true })
         } else if (action != null) {
-            TargetRow(
-                target = state.target,
-                notice = state.targetNotice,
-                enabled = state.canEdit,
-                onClick = { showTargetPicker = true },
-            )
+            SaveSettings()
             SaveBar(state = state, action = action, onSave = saveMagnet)
         }
     }
     BoxWithConstraints(Modifier.fillMaxWidth().then(if (inSideSheet || fillHeight) Modifier.fillMaxHeight() else Modifier)) {
+        val fullWorkspace = fillHeight && shareState == null && (batch != null || state.resolution != null || view.started)
         val splitSelection = fillHeight && maxWidth >= 720.dp && maxHeight < 480.dp && batch == null &&
             (shareState != null || state.resolution != null)
         Column(
@@ -212,21 +241,47 @@ fun InstantSheetContent(
                 .then(if (inSideSheet || fillHeight) Modifier.fillMaxHeight() else Modifier)
                 // 点面板的空白处交出输入框的焦点。子项自己的点击先消费，走不到这里
                 .pointerInput(Unit) { detectTapGestures { focusManager.clearFocus() } }
-                .onPreviewKeyEvent { event ->
-                    val save = saveByShortcut
-                    if (save != null && event.type == KeyEventType.KeyDown && event.key == Key.Enter && shortcutModifier.isPressed(event)) {
-                        save()
-                        true
-                    } else {
-                        false
-                    }
-                }
-                .padding(horizontal = if (inSideSheet) 16.dp else 24.dp)
-                .padding(bottom = if (inSideSheet) 16.dp else 24.dp),
+                .onPreviewKeyEvent(saveKeyHandler)
+                .padding(horizontal = if (fullWorkspace) 0.dp else if (inSideSheet) 16.dp else 24.dp)
+                .padding(bottom = if (fullWorkspace) 0.dp else if (inSideSheet) 16.dp else 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             val openedRow = batch?.openedRow
-            if (batch != null) {
+            if (fullWorkspace) {
+                val sources = batch?.rows?.map { row -> ImportSource(row.key, row.state, { batch.remove(row) }, !batch.isSaving) }
+                    ?: listOf(ImportSource("single", state))
+                ResolvedImportWorkspace(
+                    sources, view, { showReceipt(QUEUED_RECEIPT) }, state::updateInput, view.expanded, { view.expanded = it },
+                    onShortcut = saveKeyHandler,
+                    status = {
+                        if (batch == null) ImportResolutionStatus(state, notice) else {
+                            val message = notice?.text ?: batch.blockedReason ?: when {
+                                batch.lacksSpace -> "网盘空间不足"
+                                batch.lacksOfflineCount -> "今日离线次数不足"
+                                batch.offlineCount > 0 -> "${batch.offlineCount} 条链接需离线保存"
+                                else -> null
+                            }
+                            message?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        }
+                    },
+                    saveBar = {
+                        if (batch != null) SaveButton("全部保存", batch.canSaveAll, batch.isSaving, batch::saveAll)
+                        else if (action != null) SaveBar(state, action, saveMagnet, showProblems = false)
+                    },
+                    config = {
+                        LinkInput(state)
+                        if (sources.any { it.state.offersCanonicalNames }) CanonicalNamesToggle(
+                            state.useCanonicalNames, state.canEdit, state::updateUseCanonicalNames)
+                        sources.filter { it.state.willCreateFolder }.forEach { source ->
+                            FileNameField(source.state.folderNameToSave, source.state::updateFolderName,
+                                label = "新建文件夹", collapseWhenIdle = false, enabled = source.state.canEdit && batch?.isSaving != true,
+                                isError = source.state.folderNameToSave.isBlank(), modifier = Modifier.fillMaxWidth())
+                        }
+                        SaveSettings()
+                    },
+                )
+                return@Column
+            } else if (batch != null) {
                 if (openedRow != null) {
                     BatchRowDetail(batch, openedRow, notice, onReceipt = showReceipt)
                 } else {
@@ -343,6 +398,13 @@ private fun ColumnScope.InstantBody(
     showSelection: Boolean = true,
     fileListState: LazyListState? = null,
 ) {
+    if (state.resolution?.resource?.truncated == true) {
+        StatusBanner(
+            "清单不完整：仅保存已解析文件，禁用自动裁剪",
+            Icons.Outlined.Info, MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.colorScheme.onSecondaryContainer,
+            actionLabel = "重新解析", onAction = state::retryResolve,
+        )
+    }
     val platform = LocalPikoPlatform.current
     val downloads = LocalPikoServices.current.downloadManager
     val pendingMagnet = state.normalizedMagnet
@@ -359,27 +421,7 @@ private fun ColumnScope.InstantBody(
 
     // 输入框一直在，外部带链接打开的也是：换链接就是在这里改或粘贴，同一个会话重新解析，不另设按钮。
     // 解析出结果后缩成一行把高度让给文件列表，点进去编辑时放回三行
-    var inputFocused by remember { mutableStateOf(false) }
-    val inputCompact = result != null && !inputFocused
-    OutlinedTextField(
-        value = state.input,
-        onValueChange = state::updateInput,
-        label = { Text("磁力链接、下载地址或分享链接") },
-        placeholder = { Text("magnet:?xt=urn:btih:…") },
-        modifier = Modifier.fillMaxWidth().onFocusChanged { inputFocused = it.isFocused },
-        shape = MaterialTheme.shapes.largeIncreased,
-        singleLine = inputCompact,
-        maxLines = if (inputCompact) 1 else 3,
-        enabled = state.canEdit,
-        trailingIcon = {
-            IconButton(onClick = {
-                val clip = platform.readClipboardText()
-                if (!clip.isNullOrBlank()) state.updateInput(clip.trim())
-            }) {
-                Icon(Icons.Outlined.ContentPaste, contentDescription = "从剪贴板粘贴")
-            }
-        },
-    )
+    LinkInput(state)
 
     if (shareState != null && showSelection) {
         ShareSaveSection(
@@ -424,6 +466,34 @@ private fun ColumnScope.InstantBody(
     }
 }
 
+
+@Composable
+private fun LinkInput(state: InstantSheetState) {
+    val platform = LocalPikoPlatform.current
+    val result = state.resolution
+    var inputFocused by remember { mutableStateOf(false) }
+    val inputCompact = result != null && !inputFocused
+    OutlinedTextField(
+        value = state.input,
+        onValueChange = state::updateInput,
+        label = { Text("磁力链接、下载地址或分享链接") },
+        placeholder = { Text("magnet:?xt=urn:btih:…") },
+        modifier = Modifier.fillMaxWidth().onFocusChanged { inputFocused = it.isFocused },
+        shape = MaterialTheme.shapes.largeIncreased,
+        singleLine = inputCompact,
+        maxLines = if (inputCompact) 1 else 3,
+        enabled = state.canEdit,
+        trailingIcon = {
+            IconButton(onClick = {
+                val clip = platform.readClipboardText()
+                if (!clip.isNullOrBlank()) state.updateInput(clip.trim())
+            }) {
+                Icon(Icons.Outlined.ContentPaste, contentDescription = "从剪贴板粘贴")
+            }
+        },
+    )
+}
+
 internal const val QUEUED_RECEIPT = "已加入下载队列"
 
 /** 解析的两段：先等服务端列出文件，再在本机按文件名整理。用户只需知道还在进行，不提「索引」这类内部说法。 */
@@ -450,11 +520,13 @@ private fun offlineConfirmOf(state: InstantSheetState, action: InstantPrimaryAct
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun SaveBar(state: InstantSheetState, action: InstantPrimaryAction, onSave: () -> Unit) {
+private fun SaveBar(state: InstantSheetState, action: InstantPrimaryAction, onSave: () -> Unit, showProblems: Boolean = true) {
     val plan = state.savePlan.takeIf { state.resolution != null && !state.contentMissing && !state.hasInstantRetry && state.saveIssue?.requiresInspection != true }
     val fallback = plan?.fallback
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        if (plan != null && plan.lacksSpace) {
+        if (showProblems && plan?.incompleteCatalog == true) {
+            ErrorBanner("文件清单不完整，不能整包离线后自动裁剪", onRetry = null)
+        } else if (showProblems && plan != null && plan.lacksSpace) {
             // 秒传没有退路按钮可给，只能少选几项；整包离线的退路在下面的按钮上
             val hint = if (plan.route == SaveRoute.INSTANT) "，请减少勾选" else ""
             ErrorBanner(
@@ -462,12 +534,12 @@ private fun SaveBar(state: InstantSheetState, action: InstantPrimaryAction, onSa
                     "剩余 ${(state.remainingBytes ?: 0L).coerceAtLeast(0L).toReadableSize()}$hint",
                 onRetry = null,
             )
-        } else if (plan != null && plan.lacksOfflineCount) {
+        } else if (showProblems && plan != null && plan.lacksOfflineCount) {
             ErrorBanner(message = "今日离线次数已用完", onRetry = null)
         }
         if (plan?.blocked == true && fallback != null) {
             SaveButton(
-                label = "只保存所选文件",
+                label = if (fallback.skippedCount > 0) "只保存已收录文件" else "只保存所选文件",
                 enabled = state.canSaveSelection,
                 isSaving = state.isSaving,
                 onClick = state::saveSelectionInstantly,
@@ -734,7 +806,7 @@ private fun UnindexedBanner(state: InstantSheetState) {
 }
 
 /**
- * 保存时按番号规范命名。资源里有会改名的番号文件才出现，每次打开面板都是关的；开着时列表行直接显示存进去的名字，
+ * 保存时按番号规范命名。资源里有会改名的番号文件才出现，默认开启；开着时列表行直接显示存进去的名字，
  * 新建文件夹名同样换成规范名，看着就是保存后的样子。磁力与分享转存共用这一行。
  */
 @Composable
