@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 Piko 是 PikPak 的第三方跨平台客户端。Android、Windows、macOS 与 Linux（后两者实验性）共用一套 Material 3 Expressive 界面，
-桌面与移动各一套交互、按窗口宽度调整密度；业务逻辑与屏幕状态在 `shared`，界面在 `ui`，两端只剩入口与平台实现。
+共用能力和工作状态，按窗口可用空间调整布局，按触摸与键鼠提供交互；业务逻辑与屏幕状态在 `shared`，界面在 `ui`，两端只剩入口与平台实现。
 
 本文件只写跨模块的约定。各模块的细节在所在目录的 CLAUDE.md，读到那里的文件时自动加载；只搜索、不读文件时要自己打开：
 
@@ -17,6 +17,10 @@ Piko 是 PikPak 的第三方跨平台客户端。Android、Windows、macOS 与 L
 | `shared/.../shared/download/CLAUDE.md` | 下载：稀疏暂存、画质与转封装、片段截取 |
 | `shared/src/desktopMain/.../auth/CLAUDE.md` | 桌面端机密存储 |
 | `cli/CLAUDE.md`、`shots/CLAUDE.md` | 开发用 CLI、截图工具 |
+
+## 当前自适应前端
+
+2026-10-17 起，实际前端以 `docs/development/adaptive-frontend-framework.md` 为准（ui 模块对应 `../docs/development/adaptive-frontend-framework.md`）。文件、导入和查重共享账号工作集合与 DriveWorkspace；布局按净宽高和容量调整，输入方式只影响控件行为。下面仍含前一版 Desktop/Mobile 工作区与「正在进行」入口的历史说明，与本节冲突时以本节和上述实现文档为准。原生平台能力、业务寿命、账号/client 隔离及发布格式约定继续适用。
 
 ## 常用命令
 
@@ -100,9 +104,8 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 
 交互状态归属见 `docs/development/interaction-refactor.md`，审查入口与验收边界见
 `docs/development/interaction-refactor-review.md`。
-文件仓库不持有导航和剪贴板；桌面由 `shared/presentation/DriveWorkspace` 持有文件标签的位置、历史和剪贴板，
-移动端由 `MobileFileWorkspace` 持有单个主文件位置。两端的文件、查重、导入草稿用同一套 `WorkspaceContexts`
-记录稳定身份和活动项；移动端不创建桌面文件标签。
+文件仓库不持有导航和剪贴板；所有平台由 `shared/presentation/DriveWorkspace` 持有文件标签的位置、历史和剪贴板。
+文件、查重、导入草稿用同一套 `WorkspaceContexts` 记录稳定身份、顺序和活动项；宽窗口显示标签栏，窄窗口通过总览切换相同工作。
 各浏览页由导航条目或工作区持有。文件列表仍由 `DriveScreenState` 投影，业务会话的寿命不跟随页面。
 工作区前端生命周期由 `WorkspaceViewModel` 和账号级 ViewModelStore 管理，查询订阅与文件操作执行作用域分开。
 外部上传的默认目录经账号工作区的 `SaveTargetBinding` 注入 `SaveTargetContext`。
@@ -113,7 +116,7 @@ Release 正文由 `release.yml` 按 `.github/release-notes.md` 生成：`## 下�
 `ui/src/commonMain` 是全部界面：主题、导航、网盘、传输、设置、登录与各组件，两端共用。
 入口是 `PikoApp`：`MainActivity` 与桌面的 `Main.kt` 各自拼好 `PikoServices`（进程级的仓库与调度器）
 与 `PikoPlatform`（平台能力），传进去即可。屏幕里经 `LocalPikoServices`、`LocalPikoPlatform` 取用，
-不要再引用 `PikoApplication.instance`。交互模型按平台（`PikoPlatform.formFactor`：桌面或移动），密度按窗口宽度，细节见 `ui/CLAUDE.md`。
+不要再引用 `PikoApplication.instance`。`PikoPlatform.formFactor` 保留原生平台身份；布局按窗口容量，交互按输入来源，细节见 `ui/CLAUDE.md`。
 
 `shared/.../shared/state/DriveScreenState.kt` 仍是核心接缝：文件列表、加载态、排序、搜索、多选、
 启发式折叠、防窥揭示、目录导航与动作入口在这里；普通文件写入和历史删除委托给账号业务会话，

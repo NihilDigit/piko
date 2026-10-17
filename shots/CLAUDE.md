@@ -12,7 +12,12 @@
 ./gradlew :shots:renderAll --args="--keep-baseline"          # 反复改同一处时，始终对照改之前的那一版
 ./gradlew :shots:run --args="shot starred --size 1100x800 --click 我的 --click 星标 --wait Dune"
 ./gradlew :shots:run --args="texts --click 传输"              # 打印界面上的文本，找 --click 的目标用
+./gradlew :shots:run --args="adaptive-prototypes"            # 自适应工作区设计样例与对照页
 ```
+
+`adaptive-prototypes` 在 `build/shots/adaptive-prototypes/` 生成固定假数据的设计样例及 `index.html`。
+源码在 `AdaptivePrototypes.kt`，使用 PikoTheme 独立组合，展示标签栏/总览、输入状态、主辅栏及导入布局。
+这组样例用于设计评审；正式业务和平台输入的验收仍使用应用场景。
 
 - `renderAll` 先 `installDist`，再用装出来的 jar 跑 `all`：别处同时在编译界面时，`gradle run` 直接读的
   `build/classes` 会被换掉，跑到一半 `NoClassDefFoundError`。整套不要用 `:shots:run` 跑。
@@ -64,3 +69,13 @@
 - 没有窗口外框：拖放层不在画面里，窗口按钮要 `--caption` 才画。Linux 上没有微软雅黑，中文落到别的字体，字宽与 Windows 略有出入。
 - 网络缩略图与海报不画；图片查看器用的是本地生成的图。
 - 参数里有中文时，Linux 上要 UTF-8 的 locale（`LC_ALL=C.UTF-8`），否则 Gradle 传给进程时变成问号，按文本找不到节点。
+
+## 自适应框架交互回归
+
+`.\gradlew.bat :shots:run --args=verify-file-building-blocks` 验证网盘列表/海报悬停勾选、鼠标转触屏首次长按、部分清单保护、树行空槽与嵌套缩进、结果区文件操作、非模态管理 Sheet、宽窄/低高度与保存快捷键，以及平铺多链接和同名来源的独立勾选。输出在 `build/shots/file-building-blocks/`。全部文件操作经 FakePikPak，截图用于检查布局；原生触屏仍需设备验收。
+
+`verify-import-panel` 单独验证多链接管理面板的按需搜索、摘要与额外箭头移除、底部保存位置和宽窄切换，生成同目录下的 `10-panel-wide.png`、`11-panel-narrow.png`。此场景不提交保存，避免前一流程的保存回执覆盖收起的面板。
+
+`.\gradlew.bat :shots:run --args=verify-adaptive-workspace` 在同一个真实 PikoApp 场景中切换窗口尺寸，验证宽标签/窄总览、来源选择与保存投影、标签恢复及蜗牛入口。输出在 `build/shots/adaptive-framework/`。它使用 FakePikPak，不是原生设备或真实解码播放验收。旧工作区场景中的「正在进行/最小化」对应上一版交互。
+
+`.\gradlew.bat :shots:run --args=verify-shared-details-tasks` 验证网盘属性与任务详情共用浮窗/Sheet、列表满宽、批量勾选独立保留、进度列对齐、Escape、尺寸往返与蜗牛模式。截图在 `build/shots/shared-details-tasks/`。AppScene 的画布尺寸在创建时确定，尺寸往返场景须按最大宽高创建，再调用 resize；保存时裁切到当前窗口。
