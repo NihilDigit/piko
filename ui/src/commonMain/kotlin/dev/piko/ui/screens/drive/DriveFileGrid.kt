@@ -166,15 +166,15 @@ private const val KEY_FOLD = "drive_fold"
 internal class DriveItemCallbacks(
     val onOpen: (FileStat) -> Unit,
     /** mac 上焦点在这一项时按回车，照 Finder 是改名。 */
-    val onRename: (FileStat) -> Unit,
+    val onRename: ((FileStat) -> Unit)?,
     /** 条目上的更多按钮与菜单键：打开操作面板。 */
     val onMore: (FileStat) -> Unit,
     /** 焦点在这一项时按 Alt+Enter：打开它的属性。由条目自己接住，否则条目的单击先把回车当成打开。 */
     val onProperties: (FileStat) -> Unit,
-    /** 条目排好位置时交出它的布局坐标，属性卡片据此贴在它旁边。只存不重组，见 PropertiesAnchors。 */
+    /** 条目排好位置时交出它的布局坐标，属性卡片据此贴在它旁边。只存不重组，见 ItemPanelAnchors。 */
     val onPlaced: (FileStat, LayoutCoordinates) -> Unit,
     /** 进入多选并选中这一项：移动端是长按，桌面是右键菜单里的「选择」。 */
-    val onStartSelection: (FileStat) -> Unit,
+    val onStartSelection: ((FileStat) -> Unit)?,
     val onSelect: (FileStat, Boolean) -> Unit,
     /**
      * Ctrl（⌘）点选，见 [selectionClicks]。这两个与 [onBoxSelect] 交的是行的 key（DriveListItem.File.key），
@@ -571,7 +571,7 @@ private fun DriveCell(
     CompositionLocalProvider(LocalOwnClicks provides ownClicks) {
     ContextMenuArea(
         actions = { callbacks.contextActions(file) },
-        onSelect = if (isSelectionMode) null else ({ callbacks.onStartSelection(file) }),
+        onSelect = if (isSelectionMode) null else callbacks.onStartSelection?.let { select -> ({ select(file) }) },
         modifier = modifier
             .alpha(if (beingDragged) DraggedAlpha else 1f)
             .focusRequester(focusRequester)
@@ -604,7 +604,7 @@ private fun DriveCell(
                     if (event.type == KeyEventType.KeyDown) callbacks.onProperties(file)
                     return@onPreviewKeyEvent true
                 }
-                if (!isReturn || !isMac || isSelectionMode) return@onPreviewKeyEvent false
+                if (!isReturn || !isMac || isSelectionMode || callbacks.onRename == null) return@onPreviewKeyEvent false
                 // 按下与松开都吃掉：只吃按下的话，条目的单击在松开时照样触发
                 if (event.type == KeyEventType.KeyDown) callbacks.onRename(file)
                 true
@@ -629,7 +629,7 @@ private fun DriveCell(
                 isSpoilerBlurred = isBlurred,
                 isHighlighted = isHighlighted,
                 onClick = { callbacks.onOpen(file) },
-                onLongClick = { callbacks.onStartSelection(file) },
+                onLongClick = { callbacks.onStartSelection?.invoke(file) },
                 onSelectToggle = { callbacks.onSelect(file, it) },
                 folderHasVault = folderHasVault,
                 title = text.name.rowTitle(),
@@ -642,7 +642,7 @@ private fun DriveCell(
                 isSpoilerBlurred = isBlurred,
                 isHighlighted = isHighlighted,
                 onClick = { callbacks.onOpen(file) },
-                onLongClick = { callbacks.onStartSelection(file) },
+                onLongClick = callbacks.onStartSelection?.let { select -> ({ select(file) }) },
                 onSelectToggle = { callbacks.onSelect(file, it) },
                 onMoreClick = { callbacks.onMore(file) },
                 moreButton = moreButton,
@@ -663,7 +663,7 @@ private fun DriveCell(
                 isSpoilerBlurred = isBlurred && !file.isFolder,
                 locationLabel = locationLabel,
                 onClick = { callbacks.onOpen(file) },
-                onLongClick = { callbacks.onStartSelection(file) },
+                onLongClick = callbacks.onStartSelection?.let { select -> ({ select(file) }) },
                 onSelectToggle = { callbacks.onSelect(file, it) },
                 onMoreClick = { callbacks.onMore(file) },
                 moreButton = moreButton,

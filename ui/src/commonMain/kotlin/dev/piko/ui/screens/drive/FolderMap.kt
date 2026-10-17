@@ -1,5 +1,15 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.ui.components.PanelHeaderButton
+import dev.piko.ui.components.PanelHeaderToggle
+import dev.piko.ui.components.PanelTopMargin
+
+import dev.piko.ui.components.DockSide
+
+import dev.piko.ui.components.FloatingPanel
+
+import dev.piko.ui.components.FloatingPanelState
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -78,6 +88,8 @@ import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.state.FolderMapLevel
 import dev.piko.shared.state.FolderMapNode
 import dev.piko.ui.components.InlineLoadingIndicator
+import dev.piko.ui.components.PikoSheet
+import androidx.compose.material3.TextButton
 import dev.piko.ui.components.fileDropTarget
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -557,65 +569,19 @@ private fun MapNodeRow(
     val leaf = !node.expandable || (loaded != null && loaded.nodes.isEmpty() && !state.isExpanded(id))
     val bring = remember { BringIntoViewRequester() }
     LaunchedEffect(highlighted) { if (highlighted) bring.bringIntoView() }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .bringIntoViewRequester(bring)
-            .padding(horizontal = 4.dp)
-            // 拖到树上的文件夹里就是移进去，与地址栏、侧边栏相同；压缩包与库的位置接不住，由 fileDropTarget 自己判断
+    dev.piko.ui.components.WorkspaceTreeRow(
+        name = node.crumb.name, depth = row.depth,
+        icon = node.file?.typeIcon() ?: if (node.isArchive) Icons.Outlined.FolderZip else Icons.Outlined.Folder,
+        expanded = if (leaf) null else state.isExpanded(id),
+        onExpand = { if (state.isExpanded(id)) state.collapse(id) else state.expand(id) },
+        onOpen = onClick, emphasized = here || onPath,
+        supporting = if (showPath && row.stack.size > 2) row.stack.drop(1).dropLast(1).joinToString(" › ") { it.name } else null,
+        modifier = Modifier.bringIntoViewRequester(bring).padding(horizontal = 4.dp)
             .then(if (node.expandable) Modifier.fileDropTarget("map:$id", node.crumb) else Modifier)
             .clip(MaterialTheme.shapes.medium)
             .background(if (highlighted) colors.secondaryContainer else Color.Transparent)
-            .treeGuides(row, colors.outlineVariant, childrenBelow = node.expandable && !leaf && state.isExpanded(id))
-            .clickable(onClick = onClick)
-            .heightIn(min = 36.dp)
-            .padding(start = indent(row.depth), end = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        // 展开钮单独接点击：点名字是跳过去，点 › 只是展开
-        Box(
-            modifier = Modifier
-                .size(28.dp)
-                .clip(CircleShape)
-                .then(if (leaf) Modifier else Modifier.clickable { if (state.isExpanded(id)) state.collapse(id) else state.expand(id) }),
-            contentAlignment = Alignment.Center,
-        ) {
-            if (!leaf) {
-                Icon(
-                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                    contentDescription = if (state.isExpanded(id)) "收起" else "展开",
-                    tint = colors.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp).rotate(if (state.isExpanded(id)) 90f else 0f),
-                )
-            }
-        }
-        Icon(
-            node.file?.typeIcon() ?: if (node.isArchive) Icons.Outlined.FolderZip else Icons.Outlined.Folder,
-            contentDescription = null,
-            tint = if (here) colors.primary else colors.onSurfaceVariant,
-            modifier = Modifier.size(18.dp),
-        )
-        Spacer(Modifier.width(10.dp))
-        Column(Modifier.weight(1f)) {
-            Text(
-                node.crumb.name,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = if (here || onPath) FontWeight.SemiBold else null,
-                color = if (here) colors.primary else if (highlighted) colors.onSecondaryContainer else colors.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (showPath && row.stack.size > 2) {
-                Text(
-                    row.stack.drop(1).dropLast(1).joinToString(" › ") { it.name },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = colors.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-    }
+            .treeGuides(row, colors.outlineVariant, childrenBelow = node.expandable && !leaf && state.isExpanded(id)),
+    )
 }
 
 @Composable
@@ -676,6 +642,34 @@ private fun Modifier.treeGuides(row: MapRow, color: Color, childrenBelow: Boolea
  * 把手与面板是两个节点：把手只在收起时有，面板在自己的位置上淡入，不从把手形变出来。上一版细轨与树是同一个容器在形变，
  * 碰到的东西当场变形、拖的与停下的不是同一个东西。
  */
+@Composable
+internal fun FolderMapSheet(
+    state: FolderMapState,
+    current: List<PikoPathBreadcrumb>,
+    onOpen: (List<PikoPathBreadcrumb>) -> Unit,
+    onOpenFile: (List<PikoPathBreadcrumb>, FileStat) -> Unit,
+) {
+    val root = remember { listOf(PikoDriveRepository.ROOT_BREADCRUMB) }
+    val dismiss = { state.dispatch(FolderMapEvent.Close) }
+    LaunchedEffect(current.lastOrNull()?.id) { state.reveal(root, current) }
+    PikoSheet(onDismissRequest = dismiss, sideSheetTitle = "目录图") {
+        Column(Modifier.fillMaxWidth().heightIn(max = 600.dp).padding(12.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("目录图", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+                TextButton(onClick = state::toggleFilter) { Text("过滤") }
+                TextButton(onClick = dismiss) { Text("关闭") }
+            }
+            FolderMapTree(
+                state, root, current,
+                onOpen = { onOpen(it); dismiss() },
+                onOpenFile = { parent, file -> onOpenFile(parent, file); dismiss() },
+                onDismiss = dismiss,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+        }
+    }
+}
+
 @Composable
 internal fun FolderMapPanel(
     state: FolderMapState,

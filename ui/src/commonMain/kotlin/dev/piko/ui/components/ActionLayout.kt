@@ -83,8 +83,7 @@ class ActionLayout(
  * 否则 [ActionTier.Quick] 的进图标行，至多 [quickLimit] 个，多出的回到列表。
  * 图标行的上限分开：面板一格是图标加短标签，手机上只够四格；菜单是纯图标，桌面网盘的一排照 Win11 有五个，见 [MenuQuickLimit]。
  *
- * 没有「更多」：面板曾把用得少的收进末尾一行，点开就地展开。去掉它靠的是把位置级的命令（查找重复、文件夹的规范命名）
- * 移出移动端的面板，见 DriveActions，每类条目平铺后在手机竖屏上一屏放得下。
+ * 面板保留全部可用操作，超出一屏时滚动；图标行容量只影响排列，不裁掉业务能力。
  */
 fun layoutActions(actions: List<SheetAction>, quickLimit: Int = QuickLimit): ActionLayout {
     val (danger, safe) = actions.partition { it.destructive }

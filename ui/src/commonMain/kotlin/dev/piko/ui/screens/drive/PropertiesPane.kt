@@ -1,7 +1,15 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.ui.components.DetailHeading
+
+import dev.piko.ui.components.DetailFields
+import dev.piko.ui.components.FitDetailWidthColumn
+import dev.piko.ui.components.DetailFollowsWidth
+
+
+import dev.piko.ui.components.FloatingPanel
+
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import dev.piko.shared.state.DriveItemName
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -12,7 +20,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -23,22 +30,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.composed
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.ui.input.pointer.isSecondaryPressed
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.Layout
-import androidx.compose.ui.layout.LayoutCoordinates
-import androidx.compose.ui.layout.Placeable
 import androidx.compose.ui.layout.layoutId
-import androidx.compose.ui.layout.onPlaced
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.Constraints
-import androidx.compose.ui.unit.Density
-import androidx.compose.ui.unit.DpOffset
-import androidx.compose.ui.unit.DpRect
 import androidx.compose.ui.unit.dp
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.data.FolderUsage
@@ -79,7 +71,7 @@ internal sealed interface PropertiesTarget {
  */
 @Composable
 internal fun PropertiesPane(target: PropertiesTarget, modifier: Modifier = Modifier) {
-    FitWidthColumn(
+    FitDetailWidthColumn(
         modifier = modifier
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp)
@@ -99,7 +91,7 @@ private fun SingleDetails(target: PropertiesTarget.Single) {
     if (file.thumbnailLink.isNotEmpty()) {
         Box(
             modifier = Modifier
-                .layoutId(FollowsWidth)
+                .layoutId(DetailFollowsWidth)
                 .aspectRatio(16f / 9f)
                 .clip(MaterialTheme.shapes.medium),
         ) {
@@ -115,11 +107,11 @@ private fun SingleDetails(target: PropertiesTarget.Single) {
         }
     }
     if (target.tags.isNotEmpty()) {
-        MediaTagRow(tags = target.tags, modifier = Modifier.layoutId(FollowsWidth).padding(top = 8.dp))
+        MediaTagRow(tags = target.tags, modifier = Modifier.layoutId(DetailFollowsWidth).padding(top = 8.dp))
     }
     Spacer(Modifier.height(16.dp))
     val usage = folderUsage(file)
-    PropertyTable(
+    DetailFields(
         buildList {
             add("类型" to (if (file.isFolder) "文件夹" else file.name.substringAfterLast('.', "").uppercase().ifEmpty { "文件" }))
             if (file.isFolder) {
@@ -149,7 +141,7 @@ private fun SummaryDetails(title: String, files: List<FileStat>, location: Strin
     val others = files.size - folders
     Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 4.dp))
     Spacer(Modifier.height(12.dp))
-    PropertyTable(
+    DetailFields(
         buildList {
             add("项目" to listOfNotNull(folders.takeIf { it > 0 }?.let { "$it 个文件夹" }, others.takeIf { it > 0 }?.let { "$it 个文件" }).joinToString("、").ifEmpty { "空" })
             // 只加文件：文件夹的大小要递归统计，选中一批时不替每个都跑一遍
@@ -162,82 +154,8 @@ private fun SummaryDetails(title: String, files: List<FileStat>, location: Strin
 // 与卡片上同一个名字，真实名称在它下面；都可以选中复制，长名字换行，不截断
 @Composable
 private fun FullName(name: DriveItemName) {
-    SelectionContainer {
-        Column {
-            Text(name.headingText, style = MaterialTheme.typography.titleMedium)
-            name.headingOriginal?.let { original ->
-                Text(original, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
-    }
+    DetailHeading(name.headingText, name.headingOriginal)
 }
-
-/**
- * 标签与值两列。标签列取最长的那个标签的宽度，各行的值左沿对齐；值放不下就换行，位置、哈希都要看全。
- */
-@Composable
-private fun PropertyTable(rows: List<Pair<String, String>>) {
-    val colors = MaterialTheme.colorScheme
-    Layout(
-        content = {
-            for ((label, value) in rows) {
-                Text(text = label, style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
-                SelectionContainer {
-                    Text(text = value, style = MaterialTheme.typography.bodyMedium)
-                }
-            }
-        },
-    ) { measurables, constraints ->
-        val labels = measurables.filterIndexed { index, _ -> index % 2 == 0 }.map { it.measure(Constraints()) }
-        val labelWidth = labels.maxOfOrNull { it.width } ?: 0
-        val gap = PropertyLabelGap.roundToPx()
-        val valueMax = if (constraints.hasBoundedWidth) (constraints.maxWidth - labelWidth - gap).coerceAtLeast(0) else Constraints.Infinity
-        val values = measurables.filterIndexed { index, _ -> index % 2 == 1 }.map { it.measure(Constraints(maxWidth = valueMax)) }
-        val rowGap = PropertyRowGap.roundToPx()
-        val rowHeights = labels.indices.map { maxOf(labels[it].height, values[it].height) }
-        val width = (labelWidth + gap + (values.maxOfOrNull { it.width } ?: 0)).coerceIn(constraints.minWidth, constraints.maxWidth)
-        val height = rowHeights.sum() + rowGap * (rowHeights.size - 1).coerceAtLeast(0)
-        layout(width, height) {
-            var y = 0
-            labels.indices.forEach { row ->
-                labels[row].place(0, y)
-                values[row].place(labelWidth + gap, y)
-                y += rowHeights[row] + rowGap
-            }
-        }
-    }
-}
-
-/**
- * 竖排，宽度由文字一类的子项定，标了 [FollowsWidth] 的子项（预览图、标签行）再按这个宽度量：它们自己会填满给多少占多少，
- * 先量的话卡片总被撑到上限。不用 IntrinsicSize：缩略图与选中容器的固有尺寸靠不住。
- */
-@Composable
-private fun FitWidthColumn(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
-    Layout(content = content, modifier = modifier) { measurables, constraints ->
-        val loose = constraints.copy(minWidth = 0, minHeight = 0, maxHeight = Constraints.Infinity)
-        val placeables = arrayOfNulls<Placeable>(measurables.size)
-        measurables.forEachIndexed { index, measurable ->
-            if (measurable.layoutId != FollowsWidth) placeables[index] = measurable.measure(loose)
-        }
-        val width = maxOf(constraints.minWidth, placeables.maxOf { it?.width ?: 0 })
-        measurables.forEachIndexed { index, measurable ->
-            if (measurable.layoutId == FollowsWidth) {
-                placeables[index] = measurable.measure(Constraints(minWidth = width, maxWidth = width))
-            }
-        }
-        val laid = placeables.map { it!! }
-        layout(width, laid.sumOf { it.height }) {
-            var y = 0
-            laid.forEach {
-                it.place(0, y)
-                y += it.height
-            }
-        }
-    }
-}
-
-private const val FollowsWidth = "followsWidth"
 
 /** 文件夹的递归统计，逐步长上去；与操作面板用的是同一个统计，换了文件夹就重新数。库与压缩包里的文件夹数不了，为空。 */
 @Composable
@@ -273,72 +191,10 @@ private fun formatDuration(seconds: Long): String {
     return if (h > 0) "$h:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}" else "$m:${s.toString().padStart(2, '0')}"
 }
 
-private val PropertyLabelGap = 16.dp
-private val PropertyRowGap = 8.dp
-
-/**
- * 属性卡片放在哪要用到的几样位置，都在列表这一块（[propertiesAnchorArea] 挂的那一层）的坐标里。
- * 不进快照：右键按下的点与各条目的位置随点击、滚动一直在变，只在打开属性的那一刻读一次，不必为它们重组。
- */
-internal class PropertiesAnchors {
-    private var area: LayoutCoordinates? = null
-    private var press: Offset? = null
-    // 条目的布局坐标是活的，滚动后读到的仍是眼下的位置；换目录时清掉
-    private val items = HashMap<String, LayoutCoordinates>()
-
-    fun placed(id: String, coordinates: LayoutCoordinates) {
-        items[id] = coordinates
-    }
-
-    fun forgetItems() = items.clear()
-
-    fun forgetPress() {
-        press = null
-    }
-
-    /** 右键菜单里点的「属性」：放在右键按下的那一点，用过即忘；没有那一点（操作面板里点的）就贴着条目。 */
-    fun fromMenu(id: String): PanelAnchor {
-        val point = press ?: return beside(id)
-        press = null
-        return with(density) { PanelAnchor.AtPoint(DpOffset(point.x.toDp(), point.y.toDp())) }
-    }
-
-    /** 贴着这一项；它已滚出视野、量不到时放在中央偏上。 */
-    fun beside(id: String): PanelAnchor {
-        val area = area?.takeIf { it.isAttached } ?: return PanelAnchor.Centered
-        val item = items[id]?.takeIf { it.isAttached } ?: return PanelAnchor.Centered
-        val box = area.localBoundingBoxOf(item, clipBounds = false)
-        return with(density) { PanelAnchor.Beside(DpRect(box.left.toDp(), box.top.toDp(), box.right.toDp(), box.bottom.toDp())) }
-    }
-
-    private var density: Density = Density(1f)
-
-    fun attach(coordinates: LayoutCoordinates, density: Density) {
-        area = coordinates
-        this.density = density
-    }
-
-    fun pressed(at: Offset) {
-        press = at
-    }
-}
-
-/** 挂在列表这一块上：记下它的坐标与右键按下的位置，见 [PropertiesAnchors]。只看不吃，事件照常往下走。 */
-internal fun Modifier.propertiesAnchorArea(anchors: PropertiesAnchors): Modifier = composed {
-    val density = LocalDensity.current
-    onPlaced { anchors.attach(it, density) }
-        .pointerInput(anchors) {
-            awaitPointerEventScope {
-                while (true) {
-                    val event = awaitPointerEvent(PointerEventPass.Initial)
-                    if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) {
-                        event.changes.firstOrNull()?.let { anchors.pressed(it.position) }
-                    }
-                }
-            }
-        }
-}
 
 /** 属性卡片的宽度随内容，夹在这两者之间，照 Windows 的属性窗：不给改大小。 */
 internal val PropertiesMinWidth = 280.dp
 internal val PropertiesMaxWidth = 440.dp
+internal val FilePropertiesPanelKey = dev.piko.ui.components.DetailPanelKey<PropertiesTarget>(
+    dev.piko.ui.components.DetailPanelSpec("属性", "关闭属性", PropertiesMinWidth, PropertiesMaxWidth),
+)

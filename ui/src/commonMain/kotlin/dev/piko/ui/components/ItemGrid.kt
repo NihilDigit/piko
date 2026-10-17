@@ -39,11 +39,12 @@ fun PikoItemGrid(
     contentPadding: PaddingValues = PaddingValues(horizontal = 8.dp),
     /** 挂在网格本身上的，比如框选（marqueeSelection）：它按网格里条目的位置算，要与网格同一个原点。 */
     gridModifier: Modifier = Modifier,
+    columns: GridCells = GridCells.Adaptive(ItemColumnMinWidth),
     content: LazyGridScope.() -> Unit,
 ) {
     Box(modifier) {
         LazyVerticalGrid(
-            columns = GridCells.Adaptive(ItemColumnMinWidth),
+            columns = columns,
             state = state,
             contentPadding = contentPadding,
             modifier = Modifier.fillMaxSize().then(gridModifier),

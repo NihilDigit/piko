@@ -30,6 +30,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
+
 /**
  * 单个条目的详情与操作面板，网盘列表、海报墙与传输列表共用。
  *
@@ -58,60 +59,68 @@ fun ItemDetailsSheet(
 ) {
     PikoSheet(onDismissRequest = onDismiss) {
         val sheet = this
-        // 矮屏上放不下全部操作，整块可滚动
-        Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
-                    .padding(bottom = 16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clip(MaterialTheme.shapes.small),
-                ) {
-                    headerIcon()
+        ItemDetailsContent(title, headerIcon, actions, metaParts, extraLines, subtitle,
+            onAction = { action -> sheet.hideThen(action) })
+    }
+}
+
+@Composable
+internal fun ItemDetailsContent(
+    title: String,
+    headerIcon: @Composable () -> Unit,
+    actions: List<SheetAction>,
+    metaParts: List<String> = emptyList(),
+    extraLines: @Composable ColumnScope.() -> Unit = {},
+    subtitle: String? = null,
+    modifier: Modifier = Modifier,
+    showIcon: Boolean = true,
+    onAction: (() -> Unit) -> Unit = { it() },
+) {
+    // 矮屏上放不下全部操作，整块可滚动
+    Column(modifier = modifier.verticalScroll(rememberScrollState())) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (showIcon) {
+                Box(Modifier.size(40.dp).clip(MaterialTheme.shapes.small)) { headerIcon() }
+                Spacer(Modifier.width(16.dp))
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                DetailHeading(title, subtitle)
+                Spacer(modifier = Modifier.height(2.dp))
+                if (metaParts.isNotEmpty()) {
+                    MetaRow(
+                        parts = metaParts,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
-                Spacer(modifier = Modifier.width(16.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    SelectionContainer {
-                        Column {
-                            Text(
-                                text = title,
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                            if (subtitle != null) {
-                                Text(
-                                    text = subtitle,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(2.dp))
-                    if (metaParts.isNotEmpty()) {
-                        MetaRow(
-                            parts = metaParts,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    ProvideTextStyle(MaterialTheme.typography.bodyMedium) {
-                        extraLines()
-                    }
+                ProvideTextStyle(MaterialTheme.typography.bodyMedium) {
+                    extraLines()
                 }
             }
-            SheetActions(layoutActions(actions), onAction = { sheet.hideThen(it) })
+        }
+        DetailActions(layoutActions(actions), onAction = onAction)
+    }
+
+}
+
+@Composable
+internal fun DetailHeading(title: String, subtitle: String? = null) {
+    SelectionContainer {
+        Column {
+            Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+            subtitle?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
     }
 }
 
 @Composable
-private fun SheetActions(layout: ActionLayout, onAction: (() -> Unit) -> Unit) {
+internal fun DetailActions(layout: ActionLayout, onAction: (() -> Unit) -> Unit) {
     Column(
         modifier = Modifier
             .padding(horizontal = 16.dp)

@@ -1,9 +1,7 @@
 package dev.piko.ui.components
 
-import dev.piko.shared.data.isVaulted
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -19,7 +17,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.MoreVert
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -28,20 +25,16 @@ import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import dev.piko.ui.adaptive.isDesktopLayout
 import dev.piko.ui.theme.LocalFixedColors
 import io.github.nihildigit.pikpak.FileStat
 
@@ -104,8 +97,8 @@ fun FileListItem(
     isHighlighted: Boolean = false,
     dimmed: Boolean = false,
 ) {
-    val haptic = LocalHapticFeedback.current
-    val longClick = onLongClick.takeIf { longPressSelects() }
+    val longClick = fileItemLongPress(onLongClick)
+    val hover = fileItemHover()
     val colors = if (isHighlighted) {
         ListItemDefaults.colors(
             containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
@@ -125,6 +118,7 @@ fun FileListItem(
         draggedShape = rowShape,
     )
     val itemModifier = modifier
+        .then(hover.modifier)
         .fillMaxWidth()
         .padding(horizontal = RowOuterPadding, vertical = RowGap / 2)
         .heightIn(min = RowMinHeight)
@@ -133,17 +127,25 @@ fun FileListItem(
     // 弱化加在各槽位上而不是整行：整行降透明度会连按压的状态层一起变淡
     val slotModifier = if (dimmed) Modifier.alpha(DIMMED_ALPHA) else Modifier
 
-    val leadingSlot: @Composable () -> Unit = { Box(slotModifier) { leading() } }
+    val leadingSlot: @Composable () -> Unit = {
+        Box(slotModifier.size(ListLeadingSize), contentAlignment = Alignment.Center) {
+            if (isSelectionMode || (hover.mouseHovered && onLongClick != null)) {
+                FileItemSelectionControl(FileItemSelection(
+                    if (isSelected) androidx.compose.ui.state.ToggleableState.On else androidx.compose.ui.state.ToggleableState.Off,
+                    { if (isSelectionMode) onSelectToggle(!isSelected) else onLongClick?.invoke() }, label = "选择 $headline"),
+                    modifier = Modifier.ownsClicks(), interactive = !isSelectionMode)
+            } else leading()
+        }
+    }
     val supportingSlot: (@Composable () -> Unit)? = supporting?.let { content ->
         { Box(slotModifier) { content() } }
     }
     val headlineSlot: @Composable () -> Unit = {
         Row(modifier = slotModifier, verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = headline,
+            FileItemTitle(
+                name = FileItemName(headline),
                 fontWeight = headlineFontWeight,
                 maxLines = headlineMaxLines,
-                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f, fill = false),
             )
             if (badge != null) {
@@ -163,11 +165,7 @@ fun FileListItem(
             verticalAlignment = Alignment.CenterVertically,
             leadingContent = leadingSlot,
             trailingContent = {
-                Checkbox(
-                    checked = isSelected,
-                    onCheckedChange = null,
-                    modifier = Modifier.minimumInteractiveComponentSize(),
-                )
+                Spacer(Modifier.width(48.dp))
             },
             supportingContent = supportingSlot,
             colors = colors,
@@ -183,12 +181,7 @@ fun FileListItem(
             leadingContent = leadingSlot,
             trailingContent = { Box(slotModifier) { trailing() } },
             supportingContent = supportingSlot,
-            onLongClick = longClick?.let { select ->
-                {
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    select()
-                }
-            },
+            onLongClick = longClick,
             onLongClickLabel = if (longClick != null) "多选" else null,
             colors = colors,
             shapes = shapes,
@@ -204,7 +197,6 @@ fun FileListItem(
  */
 @Composable
 fun ListMoreButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
-    if (isDesktopLayout()) return
     IconButton(onClick = onClick, modifier = modifier) {
         Icon(imageVector = Icons.Outlined.MoreVert, contentDescription = "更多操作")
     }
@@ -223,7 +215,7 @@ fun FileListItem(
     isSelectionMode: Boolean,
     isSelected: Boolean,
     onClick: () -> Unit,
-    onLongClick: () -> Unit,
+    onLongClick: (() -> Unit)?,
     onSelectToggle: (Boolean) -> Unit,
     onMoreClick: () -> Unit,
     /** 行尾画不画打开操作面板的更多按钮。宽窗口不画：鼠标有右键菜单，每一行挂一个按钮只是满屏一样的图标。 */
@@ -242,29 +234,20 @@ fun FileListItem(
     /** 文件夹里直接放着归档条目，见 [itemMarks]。 */
     folderHasVault: Boolean = false,
 ) {
+    val item = file.filePresentation(title, original, tags, code, folderHasVault = folderHasVault)
     FileListItem(
-        headline = title ?: file.displayTitle(),
+        headline = item.name.title,
         headlineMaxLines = if (title != null) 1 else 2,
         headlineFontWeight = if (file.isFolder) FontWeight.Medium else null,
-        leading = { FileLeadingVisual(file = file, isSpoilerBlurred = isSpoilerBlurred) },
+        leading = { FileArtwork(item.visual, FileArtworkFormat.Leading, isSpoilerBlurred) },
         onClick = onClick,
         onMoreClick = onMoreClick,
         trailing = { if (moreButton) ListMoreButton(onClick = onMoreClick, modifier = Modifier.ownsClicks()) },
         modifier = modifier,
-        badge = itemMarks(file, folderHasVault),
+        badge = if (item.marks.isEmpty()) null else ({ FileItemMarks(item.marks) }),
         supporting = {
             Column {
-                if (original != null) {
-                    Text(
-                        text = original,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.MiddleEllipsis,
-                    )
-                }
-                if (tags.isNotEmpty() || code != null) MediaTagRow(tags = tags, lead = code, modifier = Modifier.padding(vertical = 2.dp))
-                if (tags.isEmpty() || !file.isFolder) MetaRow(parts = file.metaParts())
+                FileItemInformation(item, showMetadata = tags.isEmpty() || !file.isFolder)
                 if (!locationLabel.isNullOrEmpty()) {
                     // 路径从头截断：离命中项最近的几级目录最有辨识度
                     Text(
@@ -396,14 +379,8 @@ fun VaultMark(inFolder: Boolean, modifier: Modifier = Modifier) {
  * 或是归档时选的那一层），见 PikoDriveRepository.vaultedFolders。
  */
 fun itemMarks(file: FileStat, folderHasVault: Boolean): (@Composable () -> Unit)? {
-    val vault = file.isVaulted || (file.isFolder && folderHasVault)
-    if (!file.isStarred && !vault) return null
-    return {
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (file.isStarred) StarMark()
-            if (vault) VaultMark(inFolder = file.isFolder)
-        }
-    }
+    val marks = file.fileItemMarks(folderHasVault)
+    return if (marks.isEmpty()) null else ({ FileItemMarks(marks) })
 }
 
 /** 条目旁的一枚文字角标，查重里标「保留」。被定位的条目不用它，见 [locateHighlight]。 */

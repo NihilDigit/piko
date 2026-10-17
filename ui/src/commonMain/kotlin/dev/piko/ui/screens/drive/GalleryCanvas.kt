@@ -216,7 +216,7 @@ private fun GalleryCanvasCover(
     var coverFailed by remember(file.thumbnailLink) { mutableStateOf(false) }
     ContextMenuArea(
         actions = { callbacks.contextActions(file) },
-        onSelect = if (isSelectionMode) null else ({ callbacks.onStartSelection(file) }),
+        onSelect = if (isSelectionMode) null else callbacks.onStartSelection?.let { select -> ({ select(file) }) },
         modifier = Modifier
             .fillMaxSize()
             .focusRequester(focus)
@@ -242,7 +242,7 @@ private fun GalleryCanvasCover(
                 if (enter && !isMac && event.isAltPressed) {
                     if (event.type == KeyEventType.KeyDown) callbacks.onProperties(file)
                     true
-                } else if (enter && isMac && !isSelectionMode) {
+                } else if (enter && isMac && !isSelectionMode && callbacks.onRename != null) {
                     if (event.type == KeyEventType.KeyDown) callbacks.onRename(file)
                     true
                 } else false
@@ -253,7 +253,7 @@ private fun GalleryCanvasCover(
                 .semantics(mergeDescendants = true) {}
                 .focusIndication(shape)
                 .clip(shape)
-                .cardInteraction(isSelectionMode, isSelected, { callbacks.onOpen(file) }, { callbacks.onStartSelection(file) }, { callbacks.onSelect(file, it) })
+                .cardInteraction(isSelectionMode, isSelected, { callbacks.onOpen(file) }, callbacks.onStartSelection?.let { select -> ({ select(file) }) }, { callbacks.onSelect(file, it) })
                 .then(if (isSelected) Modifier.border(3.dp, MaterialTheme.colorScheme.primary, shape) else Modifier)
                 .locateHighlight(isHighlighted, shape),
         ) {

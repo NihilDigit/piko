@@ -60,6 +60,10 @@ import io.github.nihildigit.pikpak.FileStat
  * 截出来的「1080P」会被当成文件类型展示。
  */
 fun FileStat.extensionLabel(): String? {
+    return fileVisual().extensionLabel()
+}
+
+internal fun FileVisual.extensionLabel(): String? {
     if (isFolder) return null
     val dot = name.lastIndexOf('.')
     if (dot <= 0 || dot == name.lastIndex) return null
@@ -148,7 +152,7 @@ private fun FileCategory.toKind(): FileKind = when (this) {
 /** 文件大类的图标，秒传面板的按类勾选也用它。 */
 fun FileCategory.icon(): ImageVector = toKind().icon()
 
-private fun FileStat.kind(): FileKind = if (isFolder) FileKind.FOLDER else fileCategory().toKind()
+private fun FileVisual.kind(): FileKind = if (isFolder) FileKind.FOLDER else category.toKind()
 
 private fun FileKind.icon(): ImageVector = when (this) {
     FileKind.FOLDER -> Icons.Filled.Folder
@@ -160,7 +164,9 @@ private fun FileKind.icon(): ImageVector = when (this) {
     FileKind.DOCUMENT -> Icons.Outlined.Description
 }
 
-fun FileStat.typeIcon(): ImageVector = kind().icon()
+fun FileStat.typeIcon(): ImageVector = fileVisual().typeIcon()
+
+internal fun FileVisual.typeIcon(): ImageVector = kind().icon()
 
 /** 只有文件名时的类型图标，如磁力解析结果。 */
 fun fileNameTypeIcon(name: String): ImageVector = fileNameKind(name).icon()
@@ -173,6 +179,12 @@ fun fileNameTypeIcon(name: String): ImageVector = fileNameKind(name).icon()
 @Composable
 @ReadOnlyComposable
 fun FileStat.placeholderColors(): Pair<Color, Color> {
+    return fileVisual().placeholderColors()
+}
+
+@Composable
+@ReadOnlyComposable
+internal fun FileVisual.placeholderColors(): Pair<Color, Color> {
     val colors = MaterialTheme.colorScheme
     return when (kind()) {
         FileKind.VIDEO, FileKind.AUDIO -> colors.tertiaryContainer to colors.onTertiaryContainer
@@ -183,7 +195,9 @@ fun FileStat.placeholderColors(): Pair<Color, Color> {
 }
 
 /** 海报墙里没有缩略图的文件，封面区画的类型图标，见 WatermarkIcons。 */
-fun FileStat.watermarkIcon(): ImageVector = when (kind()) {
+fun FileStat.watermarkIcon(): ImageVector = fileVisual().watermarkIcon()
+
+internal fun FileVisual.watermarkIcon(): ImageVector = when (kind()) {
     FileKind.FOLDER -> WatermarkIcons.Folder
     FileKind.VIDEO -> WatermarkIcons.Movie
     FileKind.AUDIO -> WatermarkIcons.AudioFile
@@ -207,13 +221,7 @@ fun FileLeadingVisual(
     modifier: Modifier = Modifier,
     size: Dp = ListLeadingSize,
 ) {
-    ListLeadingMedia(
-        thumbnail = file.thumbnailLink.takeIf { !file.isFolder && it.isNotEmpty() },
-        fallback = { FileTypeIcon(file = file, iconSize = ListLeadingIconSize, modifier = Modifier.fillMaxSize()) },
-        isSpoilerBlurred = isSpoilerBlurred,
-        size = size,
-        modifier = modifier,
-    )
+    FileArtwork(file.fileVisual(), FileArtworkFormat.Leading, isSpoilerBlurred, modifier.size(size))
 }
 
 /** 无缩略图时的类型图标块。 */
@@ -223,6 +231,11 @@ fun FileTypeIcon(
     iconSize: Dp,
     modifier: Modifier = Modifier,
 ) {
+    FileTypeIcon(file.fileVisual(), iconSize, modifier)
+}
+
+@Composable
+internal fun FileTypeIcon(file: FileVisual, iconSize: Dp, modifier: Modifier = Modifier) {
     val container = if (file.isFolder) {
         MaterialTheme.colorScheme.secondaryContainer
     } else {

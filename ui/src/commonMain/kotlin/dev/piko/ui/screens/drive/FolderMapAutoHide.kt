@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.ui.components.DockSide
+
 import androidx.compose.ui.unit.dp
 import kotlin.math.hypot
 
@@ -61,7 +63,6 @@ enum class FolderMapPresence {
 }
 
 /** 面板停靠在列表的哪一侧。按屏幕左右算，不随书写方向翻转：面板的位置本来就是按左右记的。 */
-enum class DockSide { Left, Right }
 
 /** 列表这一块里的一个矩形，坐标单位 dp，原点是列表这一块的左上角。 */
 data class MapZone(val left: Float, val top: Float, val right: Float, val bottom: Float) {

@@ -1,4 +1,4 @@
-package dev.piko.ui.screens.drive
+package dev.piko.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
@@ -66,6 +66,8 @@ import dev.piko.ui.components.LocalAntiDiagonalResizeCursor
 import dev.piko.ui.components.LocalDiagonalResizeCursor
 import dev.piko.ui.components.LocalHorizontalResizeCursor
 import dev.piko.ui.components.LocalVerticalResizeCursor
+
+enum class DockSide { Left, Right }
 
 /** 面板第一次出现时放在哪，坐标都在列表这一块里。 */
 internal sealed interface PanelAnchor {
