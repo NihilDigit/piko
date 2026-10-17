@@ -147,7 +147,27 @@ class ClipFeedSession(
     init {
         scope.launch { driveRepo.folderIndex.flow.collect { folders = it } }
         preferences?.let { prefs ->
-            scope.launch { prefs.clipFeedFullVideoFlow.collect { isFullVideoMode = it } }
+            scope.launch {
+                prefs.clipFeedFullVideoFlow.collect { newMode ->
+                    if (isFullVideoMode != newMode) {
+                        isFullVideoMode = newMode
+                        val currentRoot = root
+                        if (currentRoot != null) {
+                            collectJob?.cancel()
+                            fillJob?.cancel()
+                            saveJob?.cancel()
+                            streams.closeAll()
+                            clips = emptyList()
+                            upcoming = emptyList()
+                            currentIndex = 0
+                            furthestIndex = 0
+                            isCollecting = true
+                            fillAhead()
+                            collectJob = scope.launch { collect(currentRoot.id) }
+                        }
+                    }
+                }
+            }
         }
     }
 
