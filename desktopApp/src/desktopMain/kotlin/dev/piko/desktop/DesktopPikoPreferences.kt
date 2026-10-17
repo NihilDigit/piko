@@ -64,6 +64,9 @@ class DesktopPikoPreferences(
             widthDp = settings.get(KEY_CLIP_PANEL_WIDTH).toFloatOrNull(),
         ),
     )
+    private val clipFeedFullVideo = MutableStateFlow(
+        settings.get(KEY_CLIP_FEED_FULL_VIDEO, "false").toBoolean(),
+    )
     private val pikpakDomain = MutableStateFlow(settings.get(KEY_PIKPAK_DOMAIN))
     private val snailMode = MutableStateFlow(
         SnailMode(
@@ -258,6 +261,12 @@ class DesktopPikoPreferences(
         clipPanel.value = clipPanel.value.copy(widthDp = widthDp)
     }
 
+    override val clipFeedFullVideoFlow: Flow<Boolean> = clipFeedFullVideo.asStateFlow()
+    override suspend fun setClipFeedFullVideoEnabled(enabled: Boolean) {
+        settings.set(KEY_CLIP_FEED_FULL_VIDEO, enabled.toString())
+        clipFeedFullVideo.value = enabled
+    }
+
 
     override val pikpakDomainFlow: Flow<String> = pikpakDomain.asStateFlow()
     override suspend fun setPikpakDomain(root: String) {
@@ -434,6 +443,7 @@ class DesktopPikoPreferences(
         fun tileSizeKey(view: String) = "ui.drive.tileSize.$view"
         const val KEY_CLIP_PANEL_OPEN = "ui.clipPanel.open"
         const val KEY_CLIP_PANEL_WIDTH = "ui.clipPanel.width"
+        const val KEY_CLIP_FEED_FULL_VIDEO = "ui.clipFeed.fullVideo"
         const val KEY_SIDEBAR_COLLAPSED = "ui.sidebar.collapsed"
         const val KEY_SHOW_EXTENSIONS = "ui.drive.showExtensions"
         const val KEY_PIKPAK_DOMAIN = "network.pikpakDomain"

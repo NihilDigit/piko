@@ -52,6 +52,7 @@ val SyncedSettings: List<SyncedSetting> = listOf(
     bool("bundleSubtitles", { it.bundleSubtitlesFlow }) { setBundleSubtitlesEnabled(it) },
     bool("autoCleanNames", { it.autoCleanNamesFlow }) { setAutoCleanNamesEnabled(it) },
     bool("syncPlayHistory", { it.syncPlayHistoryFlow }) { setSyncPlayHistoryEnabled(it) },
+    bool("clipFeedFullVideo", { it.clipFeedFullVideoFlow }) { setClipFeedFullVideoEnabled(it) },
     // 批量重命名用积木还是写正则，看的是这个人的水平，不是这台设备
     bool("renameRegexTextMode", { it.renameRegexTextModeFlow }) { setRenameRegexTextMode(it) },
     // 空串是「跟随系统」。设置接口没有写回跟随系统的入口，远端的空值不往本机写

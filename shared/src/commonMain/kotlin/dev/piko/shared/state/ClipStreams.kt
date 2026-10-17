@@ -62,7 +62,7 @@ class ClipStreams internal constructor(
             val role = if (clip in foreground || urgent) StreamRole.FOREGROUND else StreamRole.BACKGROUND
             scope.async {
                 val started = TimeSource.Monotonic.markNow()
-                suspend fun prepare() = repository.prepareClip(clip.fileId, clip.startMs, clip.videoDurationMs, role)
+                suspend fun prepare() = repository.prepareClip(clip.fileId, clip.startMs, clip.videoDurationMs, role, fullVideo = clip.fullVideo)
                     .logFailure(TAG, "备会话失败 ${logFile(clip.fileId, clip.name)}，${started.elapsedNow().inWholeMilliseconds} ms").getOrNull()
                 val prepared = (if (forPlayer) prepare() else preparing.withPermit { prepare() }) ?: return@async null
                 prepared.holdReadAhead()

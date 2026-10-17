@@ -5,6 +5,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.data.PikoCacheStore
 import dev.piko.shared.data.PikoClientProvider
@@ -44,8 +45,10 @@ data class Clip(
     val startMs: Long,
     /** 整个视频的时长，界面据此标出片段在全片中的位置。 */
     val videoDurationMs: Long,
+    val fullVideo: Boolean = false,
 ) {
     val file: FileStat get() = FileStat(id = fileId, name = name, parentId = parentId)
+    val lengthMs: Long get() = if (fullVideo) videoDurationMs else CLIP_LENGTH_MS
 }
 
 const val CLIP_LENGTH_MS = 30_000L
@@ -71,8 +74,13 @@ class ClipFeedSession(
     private val media: PikoMediaRepository,
     private val cacheStore: PikoCacheStore?,
     private val scope: CoroutineScope,
+    private val preferences: PikoUserPreferences? = null,
 ) {
     var root by mutableStateOf<PikoPathBreadcrumb?>(null)
+        private set
+
+    /** 是否为完整视频播放模式（Mode B）。 */
+    var isFullVideoMode by mutableStateOf(false)
         private set
 
     /**
@@ -138,6 +146,9 @@ class ClipFeedSession(
 
     init {
         scope.launch { driveRepo.folderIndex.flow.collect { folders = it } }
+        preferences?.let { prefs ->
+            scope.launch { prefs.clipFeedFullVideoFlow.collect { isFullVideoMode = it } }
+        }
     }
 
     /** [folderId] 的名字；还没遍历到的为 null。 */
@@ -506,10 +517,14 @@ class ClipFeedSession(
      */
     private fun clipOf(file: FileStat): Clip {
         val durationMs = file.durationMs()
-        val earliest = (durationMs * 0.10).toLong()
-        val latest = (durationMs * 0.85).toLong() - CLIP_LENGTH_MS
-        val start = if (latest > earliest) Random.nextLong(earliest, latest) else ((durationMs - CLIP_LENGTH_MS) / 2).coerceAtLeast(0)
-        return Clip(file.id, file.name, file.parentId, start, durationMs)
+        return if (isFullVideoMode) {
+            Clip(file.id, file.name, file.parentId, startMs = 0L, videoDurationMs = durationMs, fullVideo = true)
+        } else {
+            val earliest = (durationMs * 0.10).toLong()
+            val latest = (durationMs * 0.85).toLong() - CLIP_LENGTH_MS
+            val start = if (latest > earliest) Random.nextLong(earliest, latest) else ((durationMs - CLIP_LENGTH_MS) / 2).coerceAtLeast(0)
+            Clip(file.id, file.name, file.parentId, startMs = start, videoDurationMs = durationMs, fullVideo = false)
+        }
     }
 
     /**
