@@ -121,6 +121,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import dev.piko.ui.theme.FrameCardShape
 import dev.piko.ui.theme.FrameCardBottomMargin
 import dev.piko.ui.theme.IslandCorner
+import dev.piko.ui.theme.IslandGap
 import dev.piko.ui.theme.IslandInnerCorner
 import dev.piko.ui.theme.islandHeader
 import dev.piko.ui.components.islandTopStart
@@ -1598,6 +1599,7 @@ fun DriveScreen(
                 // 窄窗口照旧让它们浮在列表上
                 .padding(
                     top = innerPadding.calculateTopPadding(),
+                    end = if (pathInTopBar) IslandGap else 0.dp,
                     bottom = if (pathInTopBar) maxOf(innerPadding.calculateBottomPadding(), FrameCardBottomMargin) else 0.dp,
                 )
                 .consumeWindowInsets(innerPadding)
@@ -1720,6 +1722,7 @@ fun DriveScreen(
                             // 上下两段靠色阶分开（islandHeader），不画线
                             islandTabMode -> Column(
                                 Modifier
+                                    .padding(end = IslandGap)
                                     // 第一个标签活动时它的左边竖直接下来，岛的左上角不圆
                                     .clip(
                                         RoundedCornerShape(

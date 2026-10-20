@@ -202,7 +202,6 @@ import dev.piko.ui.platform.LocalWindowResizing
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.foundation.layout.height
 import dev.piko.ui.theme.FrameCardShape
-import dev.piko.ui.theme.FrameContentShape
 import dev.piko.ui.theme.IslandGap
 import dev.piko.ui.theme.LocalFramed
 import dev.piko.ui.theme.SidebarPushMinWindowWidth
@@ -945,6 +944,7 @@ fun PikoMainScaffold(
                 else -> NavigationSuiteType.WideNavigationRailCollapsed
             }
             NavigationSuiteScaffold(
+                containerColor = if (sidebar) MaterialTheme.colorScheme.frame else MaterialTheme.colorScheme.background,
                 navigationItems = {
                     // 侧边栏的「传输」按钮上写速度或项数；底部导航栏放不下，只挂一个项数的徽标。
                     // 解压与归档的进度只在传输页，徽标就是从别处找过去的线索
@@ -1313,18 +1313,23 @@ fun PikoMainScaffold(
                     Spacer(Modifier.width(IslandGap))
                 }
                 Column(Modifier.weight(1f).fillMaxHeight()) {
-                    // 有外框时各页嵌成一张卡片。页面自己铺底色，这里只裁出形状；网盘页的页眉取的也是外框色，
-                    // 所以在网盘页上看不出卡片的上沿，页眉与侧边栏、标题栏连成一片
-                    val cardModifier = if (sidebarMode) Modifier.clip(FrameContentShape) else Modifier
-                    Box(Modifier.weight(1f).fillMaxWidth().then(cardModifier)) {
+                    Box(Modifier.weight(1f).fillMaxWidth()) {
                         val motion = LocalPikoMotion.current
                         NavDisplay(
                             backStack = backStack,
                             onBack = ::popBack,
-                            // 压栈与返回，见 PikoMotion.forward
-                            transitionSpec = { motion.forward() },
-                            popTransitionSpec = { motion.backward() },
-                            predictivePopTransitionSpec = { _ -> motion.backward() },
+                            transitionSpec = {
+                                if (sidebarMode && initialState.entries.lastOrNull()?.contentKey in DesktopTopLevelContentKeys &&
+                                    targetState.entries.lastOrNull()?.contentKey in DesktopTopLevelContentKeys) motion.topLevel() else motion.forward()
+                            },
+                            popTransitionSpec = {
+                                if (sidebarMode && initialState.entries.lastOrNull()?.contentKey in DesktopTopLevelContentKeys &&
+                                    targetState.entries.lastOrNull()?.contentKey in DesktopTopLevelContentKeys) motion.topLevel() else motion.backward()
+                            },
+                            predictivePopTransitionSpec = { _ ->
+                                if (sidebarMode && initialState.entries.lastOrNull()?.contentKey in DesktopTopLevelContentKeys &&
+                                    targetState.entries.lastOrNull()?.contentKey in DesktopTopLevelContentKeys) motion.topLevel() else motion.backward()
+                            },
                             entryProvider = entryProvider {
                                 entry<Screen.Home> { HomeContent() }
                                 entry<Screen.MyShares> { MySharesScreen(onBackClick = paneBack, onLocate = ::revealInDrive) }
@@ -1418,6 +1423,9 @@ private val FeedResumeBarFabWidth = 56.dp + 16.dp
 
 /** 「我的」的详情页。它们互相替换，不叠在一起。 */
 private val ProfilePanes = setOf<NavKey?>(Screen.MyShares, Screen.Settings)
+private val DesktopTopLevelScreens = ProfilePanes + Screen.Home
+// NavEntry.key is private; the entry provider defaults contentKey to key.toString().
+private val DesktopTopLevelContentKeys = DesktopTopLevelScreens.mapTo(mutableSetOf()) { it.toString() }
 
 /** 设置的下一级，压在设置上面。侧边栏照旧在，亮着的仍是设置。 */
 private val SettingsSubpages = setOf<NavKey?>(Screen.WebDav)

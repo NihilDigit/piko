@@ -1,17 +1,29 @@
 package dev.piko.ui.components
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.selection.triStateToggleable
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -136,6 +148,56 @@ internal fun FileItemSelectionControl(selection: FileItemSelection, modifier: Mo
         selection.label?.let { contentDescription = it }
     }
     TriStateCheckbox(selection.state, if (interactive) selection.onToggle else null, modifier.then(semantics), enabled = selection.enabled)
+}
+
+@Composable
+internal fun FileOverlaySelectionControl(
+    selection: FileItemSelection,
+    modifier: Modifier = Modifier,
+    interactive: Boolean = true,
+) {
+    val interactions = remember { MutableInteractionSource() }
+    val focused by interactions.collectIsFocusedAsState()
+    val interaction = if (interactive) Modifier.triStateToggleable(
+        state = selection.state,
+        enabled = selection.enabled,
+        role = Role.Checkbox,
+        interactionSource = interactions,
+        indication = null,
+        onClick = selection.onToggle,
+    ).semantics { selection.label?.let { contentDescription = it } }
+    else Modifier.clearAndSetSemantics {}
+    val selected = selection.state != ToggleableState.Off
+    val fill = if (selected) MaterialTheme.colorScheme.primary else Color.Black.copy(alpha = 0.38f)
+    val mark = MaterialTheme.colorScheme.onPrimary
+    val focusRing = MaterialTheme.colorScheme.primary
+    Box(modifier.size(24.dp).then(interaction), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.size(18.dp)) {
+            val alpha = if (selection.enabled) 1f else 0.38f
+            drawRoundRect(fill, cornerRadius = CornerRadius(4.dp.toPx()), alpha = alpha)
+            if (!selected) {
+                val stroke = 1.5.dp.toPx()
+                val ringColor = if (focused) focusRing else Color.White
+                drawRoundRect(
+                    ringColor, topLeft = Offset(stroke / 2, stroke / 2),
+                    size = size.copy(width = size.width - stroke, height = size.height - stroke),
+                    cornerRadius = CornerRadius(4.dp.toPx() - stroke / 2), style = Stroke(stroke), alpha = alpha,
+                )
+            } else {
+                val path = Path().apply {
+                    if (selection.state == ToggleableState.Indeterminate) {
+                        moveTo(size.width * 0.25f, size.height * 0.5f)
+                        lineTo(size.width * 0.75f, size.height * 0.5f)
+                    } else {
+                        moveTo(size.width * 0.22f, size.height * 0.5f)
+                        lineTo(size.width * 0.43f, size.height * 0.71f)
+                        lineTo(size.width * 0.78f, size.height * 0.29f)
+                    }
+                }
+                drawPath(path, mark, alpha = alpha, style = Stroke(2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+            }
+        }
+    }
 }
 
 /** Only executable actions are bound; layouts choose their position without inventing capabilities. */

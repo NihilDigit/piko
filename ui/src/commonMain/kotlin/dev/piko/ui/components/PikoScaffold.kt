@@ -89,7 +89,7 @@ fun PikoScaffold(
         Box(
             Modifier
                 .fillMaxSize()
-                .padding(top = innerPadding.calculateTopPadding(), bottom = bottom)
+                .padding(top = innerPadding.calculateTopPadding(), end = IslandGap, bottom = bottom)
                 .consumeWindowInsets(innerPadding)
                 .clip(cardShape)
                 .background(colors.surface),
@@ -189,6 +189,7 @@ private fun IslandScaffold(
                 .fillMaxSize()
                 .padding(
                     top = innerPadding.calculateTopPadding() + if (tabs == null) IslandGap else 0.dp,
+                    end = IslandGap,
                     bottom = FrameCardBottomMargin,
                 )
                 .consumeWindowInsets(innerPadding),

@@ -136,14 +136,11 @@ internal fun PosterCard(
                 .locateHighlight(isHighlighted, coverShape),
         ) {
             FileArtwork(item.visual, FileArtworkFormat.Poster, isSpoilerBlurred, Modifier.fillMaxSize())
-            if (isSelectionMode || (hover.mouseHovered && onStartSelection != null)) Surface(
-                modifier = Modifier.align(Alignment.TopStart).padding(4.dp), shape = MaterialTheme.shapes.small,
-                color = MaterialTheme.colorScheme.surfaceContainerLow,
-            ) {
-                FileItemSelectionControl(FileItemSelection(
+            if (isSelectionMode || (hover.mouseHovered && onStartSelection != null)) {
+                FileOverlaySelectionControl(FileItemSelection(
                     if (isSelected) androidx.compose.ui.state.ToggleableState.On else androidx.compose.ui.state.ToggleableState.Off,
                     { if (isSelectionMode) onSelectToggle(!isSelected) else onStartSelection?.invoke() }, label = "选择 ${item.name.fullName}"),
-                    modifier = Modifier.ownsClicks(), interactive = !isSelectionMode)
+                    modifier = Modifier.align(Alignment.TopStart).padding(6.dp).then(if (!isSelectionMode) Modifier.ownsClicks() else Modifier), interactive = !isSelectionMode)
             }
             val cornerTags = tags.filter { it != resolution }.take(COVER_CORNER_TAGS)
             if (cornerTags.isNotEmpty()) {

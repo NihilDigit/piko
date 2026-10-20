@@ -1,6 +1,7 @@
 package dev.piko.ui.workbench
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.background
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
@@ -20,6 +21,7 @@ import dev.piko.shared.presentation.WorkspaceContext
 import dev.piko.ui.components.PikoDialog
 import dev.piko.ui.components.PikoDialogConfirm
 import dev.piko.ui.platform.LocalPikoPlatform
+import dev.piko.ui.theme.frame
 import dev.piko.ui.screens.drive.*
 import dev.piko.ui.screens.instant.InstantSheetContent
 import dev.piko.ui.screens.instant.summary
@@ -89,7 +91,7 @@ internal fun WorkspaceContextHost(
                                 val summary = draft.summary()
                                 dev.piko.ui.components.IslandSurface(
                                     connection = if (contexts.firstOrNull()?.id == active) dev.piko.ui.components.IslandConnection.FirstTab else dev.piko.ui.components.IslandConnection.OtherTab,
-                                    modifier = Modifier.fillMaxSize().padding(bottom = dev.piko.ui.theme.FrameCardBottomMargin),
+                                    modifier = Modifier.fillMaxSize().padding(end = dev.piko.ui.theme.IslandGap, bottom = dev.piko.ui.theme.FrameCardBottomMargin),
                                     header = {
                                         Row(
                                             Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 20.dp, vertical = 8.dp),
@@ -129,7 +131,7 @@ internal fun WorkspaceContextHost(
     }
 
     val activeContext = contexts.firstOrNull { it.id == active }
-    Column(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().then(if (wide) Modifier.background(MaterialTheme.colorScheme.frame) else Modifier)) {
         if (wide) {
             val workspace = requireNotNull(model.driveWorkspace)
             val files by workspace.tabsFlow.collectAsStateWithLifecycle()
