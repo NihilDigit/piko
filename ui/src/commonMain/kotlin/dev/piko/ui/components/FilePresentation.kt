@@ -92,7 +92,11 @@ internal fun FileItemOriginal(name: FileItemName, style: TextStyle = MaterialThe
 }
 
 @Composable
-internal fun FileItemInformation(item: FilePresentation, showMetadata: Boolean = true, showOriginal: Boolean = true) {
+internal fun FileItemInformation(
+    item: FilePresentation,
+    showMetadata: Boolean = item.tags.isEmpty() || !item.visual.isFolder,
+    showOriginal: Boolean = true,
+) {
     Column {
         if (showOriginal) FileItemOriginal(item.name, MaterialTheme.typography.labelMedium)
         if (item.tags.isNotEmpty() || item.code != null) MediaTagRow(item.tags, lead = item.code, modifier = Modifier.padding(vertical = 2.dp))
@@ -147,8 +151,10 @@ internal fun fileItemLongPress(action: (() -> Unit)?): (() -> Unit)? {
     val current by rememberUpdatedState(action)
     val pointers = LocalPointerSource.current
     val haptic = LocalHapticFeedback.current
-    // Keep the handler registered when the first touch changes the current pointer source.
     return if (action == null) null else remember(pointers, haptic) {
-        { if (pointers.isTouchLike) { haptic.performHapticFeedback(HapticFeedbackType.LongPress); current?.invoke() } }
+        {
+            if (pointers.isTouchLike) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            current?.invoke()
+        }
     }
 }

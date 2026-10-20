@@ -11,8 +11,8 @@ import io.github.nihildigit.pikpak.FileStat
  * 宽窗口网盘页命令栏的显隐规则，以及条目操作做不做得了（[itemCommands]）。命令栏上的每一样东西都要在眼下真有意义：
  * 做不了的不摆，别处已经摆着的不重复。规则只写在这里，命令栏照 [DriveCommands] 画，不再在各处零散地判断。
  *
- * 命令栏只放作用于当前位置的命令，不放作用于条目的操作，点中一项与多选都是：条目操作经右键菜单（桌面触屏与笔是长按）
- * 与快捷键。多选时在任一选中项上右键，菜单作用于全部选中的，命令栏再摆一份只是重复，还把位置命令挤进「更多」。
+ * 命令栏只放作用于当前位置的命令，不放作用于条目的操作，点中一项与多选都是：条目操作经右键菜单与长按操作面板
+ * 与快捷键。多选时在任一选中项上右键，菜单作用于全部选中的，窄窗口顶栏的「操作」与条目长按打开同一个批量面板。
  * 信息流复用原入口：多选时限定到选中的视频，只需传入可播放视频数量。
  *
  * 眼下的状态由两样东西决定，全在 [CommandInputs] 里：
@@ -48,7 +48,7 @@ internal class CommandInputs(
     val place: CommandPlace,
     /** 人在网盘根目录上（路径栈只有根）。 */
     val atRoot: Boolean,
-    /** 在多选中（有选中的项）。 */
+    /** 处于多选模式（可以尚未勾选条目）。 */
     val selecting: Boolean,
     val clipboardFull: Boolean,
     /** 眼前列表里的条目数。 */
@@ -66,8 +66,8 @@ internal class CommandInputs(
 )
 
 /**
- * 命令栏上每一样东西显不显示。窄窗口的 FAB 菜单照其中的新建与添加链接，只管往这里加东西；
- * 查找重复与按番号规范命名在列表页眉的菜单里。
+ * 目录命令分为三组：主操作与写入动作、视图控制、位置工具与整理。
+ * 窄窗口分别放在 FAB、列表页眉与浏览顶栏的「更多」中；宽窗口由命令栏承载。
  */
 internal data class DriveCommands(
     val home: Boolean,
@@ -78,7 +78,7 @@ internal data class DriveCommands(
     val emptyPlace: Boolean,
     val selectAll: Boolean,
     val findDuplicates: Boolean,
-    /** 按番号规范命名当前文件夹。桌面在命令栏查找重复旁边，移动端在列表页眉的 ⋮ 里，同一个条件。 */
+    /** 按番号规范命名当前文件夹。桌面在命令栏查找重复旁边，窄窗口在浏览顶栏的「更多」里，同一个条件。 */
     val canonicalNaming: Boolean,
     val sort: Boolean,
     val filter: Boolean,

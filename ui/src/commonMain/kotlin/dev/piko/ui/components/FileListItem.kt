@@ -27,6 +27,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
@@ -74,8 +79,8 @@ private const val DIMMED_ALPHA = 0.38f
  * 长内容（如完整的错误信息）放进详情面板。副文本下还要放进度条的行，把
  * [headlineMaxLines] 设为 1，两行标题、一行副文本再加进度条会超出 88dp。
  *
- * [onLongClick] 是长按进多选，只在移动端挂上；桌面上按住等于右键，由外面的 ContextMenuArea 弹菜单，
- * 见 [longPressSelects]。[dimmed] 把行内各槽位降到
+ * [onLongClick] 处理长按及无障碍长按操作，[onStartSelection] 用于悬停复选框。
+ * 鼠标副键菜单由外面的 ContextMenuArea 提供。[dimmed] 把行内各槽位降到
  * 禁用态的不透明度，行本身仍可点击。
  */
 @Composable
@@ -91,6 +96,7 @@ fun FileListItem(
     supporting: (@Composable () -> Unit)? = null,
     trailing: @Composable () -> Unit = { ListMoreButton(onClick = onMoreClick) },
     onLongClick: (() -> Unit)? = null,
+    onStartSelection: (() -> Unit)? = null,
     isSelectionMode: Boolean = false,
     isSelected: Boolean = false,
     onSelectToggle: (Boolean) -> Unit = {},
@@ -99,7 +105,9 @@ fun FileListItem(
 ) {
     val longClick = fileItemLongPress(onLongClick)
     val hover = fileItemHover()
-    val colors = if (isHighlighted) {
+    val colors = if (isSelectionMode && isSelected) {
+        ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+    } else if (isHighlighted) {
         ListItemDefaults.colors(
             containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
         )
@@ -129,10 +137,10 @@ fun FileListItem(
 
     val leadingSlot: @Composable () -> Unit = {
         Box(slotModifier.size(ListLeadingSize), contentAlignment = Alignment.Center) {
-            if (isSelectionMode || (hover.mouseHovered && onLongClick != null)) {
+            if (isSelectionMode || (hover.mouseHovered && onStartSelection != null)) {
                 FileItemSelectionControl(FileItemSelection(
                     if (isSelected) androidx.compose.ui.state.ToggleableState.On else androidx.compose.ui.state.ToggleableState.Off,
-                    { if (isSelectionMode) onSelectToggle(!isSelected) else onLongClick?.invoke() }, label = "选择 $headline"),
+                    { if (isSelectionMode) onSelectToggle(!isSelected) else onStartSelection?.invoke() }, label = "选择 $headline"),
                     modifier = Modifier.ownsClicks(), interactive = !isSelectionMode)
             } else leading()
         }
@@ -155,40 +163,25 @@ fun FileListItem(
         }
     }
 
-    if (isSelectionMode) {
-        ListItem(
-            checked = isSelected,
-            onCheckedChange = onSelectToggle,
-            modifier = itemModifier,
-            // 行高过 88dp 时 ListItem 默认把前导元素顶部对齐（M3 三行列表项的规则），
-            // 带两行标题、元信息与进度条的行会超过它，前导图像贴在左上，与右侧文字块错开
-            verticalAlignment = Alignment.CenterVertically,
-            leadingContent = leadingSlot,
-            trailingContent = {
-                Spacer(Modifier.width(48.dp))
-            },
-            supportingContent = supportingSlot,
-            colors = colors,
-            shapes = shapes,
-            contentPadding = RowContentPadding,
-            content = headlineSlot,
-        )
-    } else {
-        ListItem(
-            onClick = onClick,
-            modifier = itemModifier,
-            verticalAlignment = Alignment.CenterVertically,
-            leadingContent = leadingSlot,
-            trailingContent = { Box(slotModifier) { trailing() } },
-            supportingContent = supportingSlot,
-            onLongClick = longClick,
-            onLongClickLabel = if (longClick != null) "多选" else null,
-            colors = colors,
-            shapes = shapes,
-            contentPadding = RowContentPadding,
-            content = headlineSlot,
-        )
-    }
+    ListItem(
+        onClick = { if (isSelectionMode) onSelectToggle(!isSelected) else onClick() },
+        modifier = itemModifier.semantics {
+            if (isSelectionMode) {
+                role = Role.Checkbox
+                toggleableState = if (isSelected) ToggleableState.On else ToggleableState.Off
+            }
+        },
+        verticalAlignment = Alignment.CenterVertically,
+        leadingContent = leadingSlot,
+        trailingContent = { if (isSelectionMode) Spacer(Modifier.width(48.dp)) else Box(slotModifier) { trailing() } },
+        supportingContent = supportingSlot,
+        onLongClick = longClick,
+        onLongClickLabel = if (longClick != null) "操作" else null,
+        colors = colors,
+        shapes = shapes,
+        contentPadding = RowContentPadding,
+        content = headlineSlot,
+    )
 }
 
 /**
@@ -216,6 +209,7 @@ fun FileListItem(
     isSelected: Boolean,
     onClick: () -> Unit,
     onLongClick: (() -> Unit)?,
+    onStartSelection: (() -> Unit)? = null,
     onSelectToggle: (Boolean) -> Unit,
     onMoreClick: () -> Unit,
     /** 行尾画不画打开操作面板的更多按钮。宽窗口不画：鼠标有右键菜单，每一行挂一个按钮只是满屏一样的图标。 */
@@ -261,6 +255,7 @@ fun FileListItem(
             }
         },
         onLongClick = onLongClick,
+        onStartSelection = onStartSelection,
         isSelectionMode = isSelectionMode,
         isSelected = isSelected,
         onSelectToggle = onSelectToggle,

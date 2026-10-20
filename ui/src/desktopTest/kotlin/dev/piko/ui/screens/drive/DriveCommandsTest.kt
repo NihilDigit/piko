@@ -19,7 +19,7 @@ class DriveCommandsTest {
     )
 
     /**
-     * 查找重复与按番号规范命名作用于眼前这个目录的子树，移动端只在列表页眉的菜单里有。搜索结果、库、回收站、
+     * 查找重复与按番号规范命名作用于眼前这个目录的子树，窄窗口统一放在浏览顶栏的「更多」里。搜索结果、库、回收站、
      * 压缩包里没有一个能扫的目录，给了就扫到别处去；关了文件名解析认不出番号，规范命名扫出来必然是空的。
      */
     @Test
@@ -52,4 +52,29 @@ class DriveCommandsTest {
             assertEquals(false, driveCommands(inputs(place, selecting = true)).feed)
         }
     }
+
+    @Test
+    fun `empty folders retain paste when the clipboard has files`() {
+        for (place in CommandPlace.entries) {
+            for (clipboardFull in listOf(false, true)) {
+                val commands = driveCommands(CommandInputs(
+                    place = place,
+                    atRoot = place == CommandPlace.ROOT,
+                    selecting = false,
+                    clipboardFull = clipboardFull,
+                    itemCount = 0,
+                    allSelected = false,
+                    typeCount = 0,
+                    filtering = false,
+                    feedSupported = false,
+                    nameParsing = true,
+                ))
+                assertEquals(clipboardFull && place in setOf(CommandPlace.ROOT, CommandPlace.FOLDER), commands.paste, "$place")
+                assertEquals(false, commands.findDuplicates, "$place")
+                assertEquals(false, commands.canonicalNaming, "$place")
+                assertEquals(false, commands.emptyPlace, "$place")
+            }
+        }
+    }
+
 }

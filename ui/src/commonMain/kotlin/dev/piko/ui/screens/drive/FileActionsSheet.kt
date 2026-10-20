@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -73,6 +74,30 @@ internal fun FileActionsSheet(
                 Text(text = locationLabel, color = MaterialTheme.colorScheme.primary)
             }
             file.source?.let { SourceLine(it, onCopySource) }
+        },
+    )
+}
+
+@Composable
+internal fun FileActionsSheet(
+    target: PropertiesTarget.Selection,
+    actions: List<SheetAction>,
+    onDismiss: () -> Unit,
+) {
+    val folders = target.files.count { it.isFolder }
+    val files = target.files.size - folders
+    ItemDetailsSheet(
+        title = "已选择 ${target.files.size} 项",
+        headerIcon = { Icon(Icons.Outlined.Checklist, contentDescription = null, modifier = Modifier.fillMaxSize()) },
+        actions = actions,
+        onDismiss = onDismiss,
+        metaParts = listOfNotNull(
+            folders.takeIf { it > 0 }?.let { "$it 个文件夹" },
+            files.takeIf { it > 0 }?.let { "$it 个文件" },
+            target.files.filterNot { it.isFolder }.takeIf { it.isNotEmpty() }?.sumOf { it.sizeBytes }?.toReadableSize(),
+        ),
+        extraLines = {
+            target.location?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
         },
     )
 }

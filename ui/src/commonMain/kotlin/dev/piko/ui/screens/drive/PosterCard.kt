@@ -22,7 +22,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentSize
-import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.outlined.MoreVert
@@ -49,7 +52,7 @@ import io.github.nihildigit.pikpak.FileStat
 import dev.piko.ui.components.*
 
 /**
- * 卡片整体的点击语义。多选时整张卡是一个复选项；平时单击打开，移动端长按进入多选。
+ * 卡片整体的点击语义。多选时整张卡是一个复选项；单击打开，长按及无障碍长按打开操作面板。
  * 与列表行的 ListItem 重载分工一致。图库方格共用。
  */
 @OptIn(ExperimentalFoundationApi::class)
@@ -62,14 +65,16 @@ internal fun Modifier.cardInteraction(
     onSelectToggle: (Boolean) -> Unit,
 ): Modifier {
     val longPress = fileItemLongPress(onLongClick)
-    return when {
-        isSelectionMode -> toggleable(value = isSelected, role = Role.Checkbox, onValueChange = onSelectToggle)
-        else -> combinedClickable(
-            onLongClickLabel = "多选",
-            onLongClick = longPress,
-            onClick = onClick,
-        )
-    }
+    return semantics {
+        if (isSelectionMode) {
+            role = Role.Checkbox
+            toggleableState = if (isSelected) ToggleableState.On else ToggleableState.Off
+        }
+    }.combinedClickable(
+        onLongClickLabel = "操作",
+        onLongClick = longPress,
+        onClick = { if (isSelectionMode) onSelectToggle(!isSelected) else onClick() },
+    )
 }
 
 /**
@@ -92,6 +97,7 @@ internal fun PosterCard(
     isHighlighted: Boolean,
     onClick: () -> Unit,
     onLongClick: (() -> Unit)?,
+    onStartSelection: (() -> Unit)? = null,
     onSelectToggle: (Boolean) -> Unit,
     onMoreClick: () -> Unit,
     /** 画不画打开操作面板的更多按钮。宽窗口不画，那里有右键菜单。 */
@@ -130,13 +136,13 @@ internal fun PosterCard(
                 .locateHighlight(isHighlighted, coverShape),
         ) {
             FileArtwork(item.visual, FileArtworkFormat.Poster, isSpoilerBlurred, Modifier.fillMaxSize())
-            if (isSelectionMode || (hover.mouseHovered && onLongClick != null)) Surface(
+            if (isSelectionMode || (hover.mouseHovered && onStartSelection != null)) Surface(
                 modifier = Modifier.align(Alignment.TopStart).padding(4.dp), shape = MaterialTheme.shapes.small,
                 color = MaterialTheme.colorScheme.surfaceContainerLow,
             ) {
                 FileItemSelectionControl(FileItemSelection(
                     if (isSelected) androidx.compose.ui.state.ToggleableState.On else androidx.compose.ui.state.ToggleableState.Off,
-                    { if (isSelectionMode) onSelectToggle(!isSelected) else onLongClick?.invoke() }, label = "选择 ${item.name.fullName}"),
+                    { if (isSelectionMode) onSelectToggle(!isSelected) else onStartSelection?.invoke() }, label = "选择 ${item.name.fullName}"),
                     modifier = Modifier.ownsClicks(), interactive = !isSelectionMode)
             }
             val cornerTags = tags.filter { it != resolution }.take(COVER_CORNER_TAGS)

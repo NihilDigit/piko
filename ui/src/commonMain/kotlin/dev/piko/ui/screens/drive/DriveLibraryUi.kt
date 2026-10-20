@@ -6,31 +6,22 @@ import androidx.compose.material.icons.filled.FileCopy
 import androidx.compose.material.icons.filled.NewReleases
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.NewReleases
 import androidx.compose.material.icons.outlined.PlayCircle
-import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.material.icons.outlined.StarOutline
 import dev.piko.ui.components.PikoDialog
 import dev.piko.ui.components.PikoDialogConfirm
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBarScrollBehavior
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.vector.ImageVector
 import dev.piko.shared.data.DriveLibrary
-import dev.piko.ui.components.PikoTopBar
-import dev.piko.ui.components.asBarItem
-import dev.piko.ui.components.iconBarItem
 import dev.piko.ui.components.SheetAction
-import dev.piko.ui.components.TooltipIconButton
-import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.screens.player.formatTime
 import io.github.nihildigit.pikpak.DriveEvent
 import io.github.nihildigit.pikpak.EventType
@@ -161,30 +152,3 @@ internal fun libraryPageActions(library: DriveLibrary?, isEmpty: Boolean, onConf
             listOf(SheetAction(Icons.Outlined.DeleteSweep, "清空播放历史", { onConfirm(LibraryConfirm.ClearHistory) }, destructive = true))
         else -> emptyList()
     }
-
-/** 窄窗口里回收站的多选顶栏：网盘的那一条是移动、复制、移入回收站，这里只有恢复与彻底删除。 */
-@Composable
-internal fun TrashSelectionTopBar(
-    scrollBehavior: TopAppBarScrollBehavior,
-    selectedCount: Int,
-    enabled: Boolean,
-    onExit: () -> Unit,
-    onSelectAll: () -> Unit,
-    onRestore: () -> Unit,
-    onDelete: () -> Unit,
-) {
-    PikoTopBar(
-        scrollBehavior = scrollBehavior,
-        title = "已选择 $selectedCount 项",
-        navigationIcon = { TooltipIconButton(Icons.Outlined.Close, "退出多选", onExit, shortcut = "Esc") },
-        actions = run {
-            val shortcutModifier = LocalPikoPlatform.current.shortcutModifier
-            val canAct = enabled && selectedCount > 0
-            listOf(
-                iconBarItem(Icons.Outlined.SelectAll, "全选", onSelectAll, priority = 10, shortcut = shortcutModifier.label("A")),
-                DriveActions.restoreFromTrash(onRestore).asBarItem(priority = 30, enabled = canAct),
-                DriveActions.deleteForever(onDelete).asBarItem(priority = 20, enabled = canAct),
-            )
-        },
-    )
-}

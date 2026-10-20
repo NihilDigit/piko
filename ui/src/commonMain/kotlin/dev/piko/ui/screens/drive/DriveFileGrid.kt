@@ -173,8 +173,10 @@ internal class DriveItemCallbacks(
     val onProperties: (FileStat) -> Unit,
     /** 条目排好位置时交出它的布局坐标，属性卡片据此贴在它旁边。只存不重组，见 ItemPanelAnchors。 */
     val onPlaced: (FileStat, LayoutCoordinates) -> Unit,
-    /** 进入多选并选中这一项：移动端是长按，桌面是右键菜单里的「选择」。 */
+    /** 进入多选并选中这一项：悬停复选框与右键菜单里的「选择」共用。 */
     val onStartSelection: ((FileStat) -> Unit)?,
+    /** 触摸长按；默认与更多按钮一样打开操作面板。 */
+    val onLongClick: (FileStat) -> Unit = onMore,
     val onSelect: (FileStat, Boolean) -> Unit,
     /**
      * Ctrl（⌘）点选，见 [selectionClicks]。这两个与 [onBoxSelect] 交的是行的 key（DriveListItem.File.key），
@@ -629,7 +631,7 @@ private fun DriveCell(
                 isSpoilerBlurred = isBlurred,
                 isHighlighted = isHighlighted,
                 onClick = { callbacks.onOpen(file) },
-                onLongClick = { callbacks.onStartSelection?.invoke(file) },
+                onLongClick = { callbacks.onLongClick(file) },
                 onSelectToggle = { callbacks.onSelect(file, it) },
                 folderHasVault = folderHasVault,
                 title = text.name.rowTitle(),
@@ -642,7 +644,8 @@ private fun DriveCell(
                 isSpoilerBlurred = isBlurred,
                 isHighlighted = isHighlighted,
                 onClick = { callbacks.onOpen(file) },
-                onLongClick = callbacks.onStartSelection?.let { select -> ({ select(file) }) },
+                onStartSelection = callbacks.onStartSelection?.let { select -> ({ select(file) }) },
+                onLongClick = { callbacks.onLongClick(file) },
                 onSelectToggle = { callbacks.onSelect(file, it) },
                 onMoreClick = { callbacks.onMore(file) },
                 moreButton = moreButton,
@@ -663,7 +666,8 @@ private fun DriveCell(
                 isSpoilerBlurred = isBlurred && !file.isFolder,
                 locationLabel = locationLabel,
                 onClick = { callbacks.onOpen(file) },
-                onLongClick = callbacks.onStartSelection?.let { select -> ({ select(file) }) },
+                onStartSelection = callbacks.onStartSelection?.let { select -> ({ select(file) }) },
+                onLongClick = { callbacks.onLongClick(file) },
                 onSelectToggle = { callbacks.onSelect(file, it) },
                 onMoreClick = { callbacks.onMore(file) },
                 moreButton = moreButton,
@@ -716,11 +720,6 @@ internal fun DriveListHeader(
     onTileSizeChange: (TileSize) -> Unit,
     /** 为 false 时只留搜索结果的说明：宽窗口里这些控件在命令栏上。 */
     showControls: Boolean = true,
-    /**
-     * 作用于这个位置的命令（查找重复、按番号规范命名），常驻在末端的竖三点菜单里，排在收起的控件之后。
-     * 移动端只有这里摆它们：FAB 只管往这里加东西，条目的操作面板只放作用于那一项的。
-     */
-    placeActions: List<SheetAction> = emptyList(),
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         if (summary != null) {
@@ -758,9 +757,6 @@ internal fun DriveListHeader(
                     ViewModeToggle(viewMode = viewMode, onViewModeChange = onViewModeChange)
                 },
             ),
-            alwaysMore = placeActions.isNotEmpty(),
-            // 在菜单里同为一组，与收起的排序、视图之间才有一道分隔，彼此之间没有
-            moreActions = placeActions.map { SheetAction(it.icon, it.label, it.onClick, group = ActionGroup.Manage) },
         )
     }
 }

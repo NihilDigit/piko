@@ -48,6 +48,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -83,7 +84,6 @@ import dev.piko.ui.components.menuItemShape
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.iconBarItem
 import dev.piko.ui.components.SheetAction
-import dev.piko.ui.components.asBarItem
 import dev.piko.ui.components.AdaptiveBar
 import dev.piko.ui.components.BarItem
 import dev.piko.ui.components.verticalWheelScrollsRow
@@ -91,33 +91,14 @@ import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.rememberCaptionSlot
 import dev.piko.ui.platform.windowDragArea
 
-/**
- * 多选态顶栏。动作都作用于整批选中项，没有可以下放到别处的。
- * 各项的名字与图标取自 [DriveActions]，与右键菜单、操作面板一致。
- */
+/** 多选顶栏只保留选择控制，条目操作统一在批量面板中。 */
 @Composable
 internal fun DriveSelectionTopBar(
     scrollBehavior: TopAppBarScrollBehavior,
     selectedCount: Int,
     onExit: () -> Unit,
-    // 以下为 null 的不画：眼下做不了的不摆，规则见 DriveCommands.kt
     onSelectAll: (() -> Unit)?,
-    download: SheetAction?,
-    downloadAtQuality: SheetAction?,
-    moveTo: SheetAction?,
-    copyTo: SheetAction?,
-    trash: SheetAction?,
-    trashEnabled: Boolean = true,
-    extract: SheetAction?,
-    share: SheetAction?,
-    batchRename: SheetAction?,
-    /** 选中的有带番号的文件时：打开批量重命名并换上番号规则。用得少，一直在竖三点菜单里，不占顶栏的图标位。 */
-    canonicalName: SheetAction?,
-    /** 选中的有归档条目时，把它们恢复成网盘文件。 */
-    restoreFromVault: SheetAction?,
-    /** 归档选中的文件与文件夹。用得少，同在竖三点菜单里。 */
-    vault: SheetAction?,
-    feed: SheetAction? = null,
+    onActions: () -> Unit,
 ) {
     PikoTopBar(
         scrollBehavior = scrollBehavior,
@@ -126,22 +107,11 @@ internal fun DriveSelectionTopBar(
         navigationIcon = {
             TooltipIconButton(Icons.Outlined.Close, "退出多选", onExit, shortcut = "Esc")
         },
-        // 放不下时先收全选（另有快捷键）、批量重命名与解压，移动、复制与移入回收站最后收
         actions = buildList {
             val shortcutModifier = LocalPikoPlatform.current.shortcutModifier
             if (onSelectAll != null) add(iconBarItem(Icons.Outlined.SelectAll, "全选", onSelectAll, priority = 10, shortcut = shortcutModifier.label("A")))
-            feed?.let { add(it.asBarItem(priority = 65)) }
-            extract?.let { add(it.asBarItem(priority = 30)) }
-            download?.let { add(it.asBarItem(priority = 35)) }
-            share?.let { add(it.asBarItem(priority = 40)) }
-            // 只选一项时没有共同前后缀可言，单项改名走条目菜单
-            if (batchRename != null && selectedCount >= 2) add(batchRename.asBarItem(priority = 20, shortcut = "F2"))
-            restoreFromVault?.let { add(it.asBarItem(priority = 45)) }
-            moveTo?.let { add(it.asBarItem(priority = 60)) }
-            copyTo?.let { add(it.asBarItem(priority = 50)) }
-            trash?.let { add(it.asBarItem(priority = 70, shortcut = shortcutModifier.trashLabel, enabled = trashEnabled)) }
+            add(iconBarItem(Icons.Outlined.MoreVert, "操作", onActions, priority = 30, enabled = selectedCount > 0))
         },
-        moreActions = listOfNotNull(downloadAtQuality, canonicalName, vault),
     )
 }
 
@@ -256,6 +226,7 @@ internal fun DriveBrowseTopBar(
     navigationIcon: (@Composable () -> Unit)?,
     /** 放不下时按优先级收进「更多」，见 AdaptiveBar。 */
     actions: List<BarItem>,
+    moreActions: List<SheetAction> = emptyList(),
 ) {
     val caption = rememberCaptionSlot()
     TopAppBar(
@@ -267,6 +238,7 @@ internal fun DriveBrowseTopBar(
             AdaptiveBar(
                 modifier = Modifier.height(TopAppBarDefaults.TopAppBarExpandedHeight),
                 trailing = actions,
+                moreActions = moreActions,
                 middle = {
                     Column {
                         Text(

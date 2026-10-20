@@ -325,7 +325,7 @@ internal fun ExplorerCommandBar(
                 BarTextButton(Icons.Outlined.FileCopy, "查找重复", onFindDuplicates)
             })
         }
-        // 与查找重复同为作用于整个文件夹的整理，摆在一起；条件与移动端页眉 ⋮ 里的同一项相同（DriveCommands）
+        // 与查找重复同为作用于整个文件夹的整理，摆在一起；条件与窄窗口浏览顶栏「更多」里的同一项相同（DriveCommands）
         if (commands.canonicalNaming) {
             val action = DriveActions.canonicalName(onCanonicalNaming)
             add(BarItem("canonicalNaming", 15, listOf(action)) {

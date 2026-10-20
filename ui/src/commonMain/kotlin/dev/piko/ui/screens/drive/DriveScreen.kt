@@ -33,6 +33,8 @@ import dev.piko.shared.state.DriveListItem
 import androidx.compose.ui.graphics.Color
 import androidx.compose.runtime.produceState
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.CheckBox
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.filled.Info
@@ -281,7 +283,8 @@ fun DriveScreen(
      * 人从库里退了出来（返回键或库顶栏上的返回），网盘已回到打开库之前的位置。库若是从别的页打开的，
      * 主界面据此切回那一页；网盘页不知道库从哪里打开。
      */
-    onLibraryLeft: () -> Unit = {},
+    onLibraryLeft: (() -> Unit)? = null,
+    canLeaveOrigin: Boolean = false,
     browserSession: dev.piko.shared.state.DriveBrowserSession? = null,
     onRevealInDrive: ((FileStat) -> Unit)? = null,
     /** 把页眉下面的列表区包进去的外框，宽窗口里主界面由它在列表右边放信息流或添加链接；页眉不在里面。 */
@@ -390,12 +393,15 @@ fun DriveScreen(
     // 库是路径栈的第一级，没有上一级可回；退出库是回到打开它之前的地方，没有就回网盘根目录
     fun backInBrowser(): Boolean {
         if (state.goBack()) return true
-        if (!isWorkspaceBrowser) { onLibraryLeft(); return true }
+        if (!isWorkspaceBrowser && onLibraryLeft != null) { onLibraryLeft(); return true }
         return false
     }
     fun leaveLibrary() {
-        if (isWorkspaceBrowser && !state.goBack()) goHome()
-        onLibraryLeft()
+        if (onLibraryLeft != null) {
+            onLibraryLeft()
+        } else if (isWorkspaceBrowser && !state.goBack()) {
+            goHome()
+        }
     }
 
     LaunchedEffect(state) {
@@ -447,8 +453,9 @@ fun DriveScreen(
 
     // 返回键（桌面上是 Esc）的优先级，后声明的 BackHandler 先收到：属性 > 多选
     // > 单击高亮 > 搜索 > 上一级目录。越临时、越晚出现的越先被吃掉；后三样声明在下面，挨着它们要看的状态
-    BackHandler(enabled = acceptsNavigation && folderStack.size > navigation.rootDepth) { state.navigateUp() }
-    BackHandler(enabled = acceptsNavigation && folderStack.size <= navigation.rootDepth && (libraryView != null || !isWorkspaceBrowser)) { leaveLibrary() }
+    val atOriginBoundary = canLeaveOrigin || (folderStack.size <= navigation.rootDepth && (libraryView != null || !isWorkspaceBrowser))
+    BackHandler(enabled = acceptsNavigation && folderStack.size > navigation.rootDepth && !canLeaveOrigin) { state.navigateUp() }
+    BackHandler(enabled = acceptsNavigation && atOriginBoundary) { leaveLibrary() }
     BackHandler(enabled = acceptsNavigation && isSearchOpen) { closeSearch() }
 
     // 对话框与面板状态
@@ -494,6 +501,7 @@ fun DriveScreen(
     }
     val segmentSession = LocalPikoServices.current.segmentSession
     var actionTargetFile by remember { mutableStateOf<FileStat?>(null) }
+    var selectionActionTargetIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     // 待移动的条目。选择器只负责选目录，移动本身与刷新在这里做，
     // 所以单项操作和多选工具栏可以共用同一套状态。
     var moveTargetIds by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -591,9 +599,6 @@ fun DriveScreen(
     // 按番号规范命名一个文件夹（连同子树）：在批量重命名里扫描并预览，见 CanonicalFolderRenameDialog
     var canonicalRoot by remember { mutableStateOf<PathBreadcrumb?>(null) }
 
-    val selectedArchives by remember(state) {
-        derivedStateOf { state.displayedFiles.filter { it.id in state.selectedFileIds && (it.isExtractableArchive || it.isArchiveVolume) } }
-    }
     var copyTargetIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var shareTargets by remember { mutableStateOf<List<FileStat>>(emptyList()) }
     var batchRenameTargets by remember { mutableStateOf<List<FileStat>>(emptyList()) }
@@ -685,6 +690,16 @@ fun DriveScreen(
         (if (galleryRecursive) gallery.files else state.displayedFiles).filter { it.isPlayableVideo() && !it.isUploading }
     } else state.displayedFiles
     val latestDisplayedFiles by rememberUpdatedState(displayedFiles)
+    fun openSelectionActions() {
+        selectionActionTargetIds = latestDisplayedFiles.filter { it.id in state.selectedFileIds }.mapTo(LinkedHashSet()) { it.id }
+    }
+    val selectionActionTargets = remember(displayedFiles, selectionActionTargetIds) {
+        displayedFiles.filter { it.id in selectionActionTargetIds }
+    }
+    LaunchedEffect(state.isSelectionMode, selectionActionTargets) {
+        if (!state.isSelectionMode || selectionActionTargets.isEmpty()) selectionActionTargetIds = emptySet()
+    }
+    LaunchedEffect(activeFolderId) { selectionActionTargetIds = emptySet() }
     val latestGalleryActive by rememberUpdatedState(galleryActive)
     fun selectAllDisplayed() {
         if (galleryActive) {
@@ -840,7 +855,10 @@ fun DriveScreen(
         else newTab(listOf(dev.piko.shared.data.PikoDriveRepository.ROOT_BREADCRUMB))
     }
     fun cycleTab(step: Int) { if (contexts != null) contexts.cycleContext(step) else desktopWorkspace?.cycleTab(step) }
+    val activeContextId = contexts?.let { val current by it.contexts.activeContextId.collectAsStateWithLifecycle(); current } ?: activeTabId
+    val firstTabActive = if (workContexts != null) workContexts.firstOrNull()?.id == activeContextId else tabs.firstOrNull()?.id == activeTabId
     val tabsAvailable = desktopWorkspace != null && isWorkspaceBrowser
+    val islandTabMode = pathInTopBar && (tabsAvailable || contexts != null)
     val openInNewTab: ((FileStat) -> Unit)? = if (tabsAvailable) {
         { folder -> newTab(folderStack + PathBreadcrumb(folder.id, folder.name), activate = false) }
     } else {
@@ -879,7 +897,7 @@ fun DriveScreen(
         add(DriveActions.extractEntries { extractFromArchive(files) })
     }
 
-    // 剪切、复制与快捷键走同一处；窄窗口在列表菜单提供粘贴。
+    // 剪切、复制与快捷键走同一处；窄窗口在 FAB 菜单提供粘贴。
     fun clipboardActions(files: List<FileStat>): (Boolean) -> Unit =
         { cut -> state.putOnClipboard(files.map { it.id }, cut) }
 
@@ -1007,16 +1025,21 @@ fun DriveScreen(
             listOf(file)
         }
 
-    // 右键菜单与操作面板的全部项：操作，加上「属性」。右键菜单作用于 targetsOf，操作面板只看它自己那一项。
+    // 右键菜单与操作面板共用操作及属性；单项面板额外提供显式选择入口。
     // 右键菜单里点的属性卡片放在右键按下的地方，操作面板里点的贴着这一项
     fun itemActions(file: FileStat, targets: List<FileStat>, fromMenu: Boolean): List<SheetAction> =
         operationsOf(file, targets) + DriveActions.properties {
             latestShowProperties(targets, if (fromMenu) propertiesAnchors.fromMenu(file.id) else propertiesAnchors.beside(file.id))
-        }
+        } + if (!fromMenu && targets.size == 1) {
+            listOfNotNull(
+                SheetAction(Icons.Outlined.CheckBox, "选择", { state.enterSelection(file.id) }, group = ActionGroup.Select)
+                    .takeUnless { state.isSelectionMode },
+                SheetAction(Icons.Outlined.CheckCircle, "加入选择", { state.setSelected(file.id, true) }, group = ActionGroup.Select)
+                    .takeIf { state.isSelectionMode && file.id !in state.selectedFileIds },
+            )
+        } else emptyList()
 
-    // 只在移动端的条目上画打开操作面板的按钮：桌面有右键菜单，每一项挂一个按钮只是满屏一样的图标。
-    // 曾按宽度判断，平板横握没有右键也没有这个按钮，单项的操作整个不可达
-    val itemMoreButton = true
+    val itemMoreButton = false
 
     // 从没解压过的包第一次打开要等几秒。准备完 key 一变，这里的协程取消，提示随之收起；快的不提示
     LaunchedEffect(state.preparingEntryId) {
@@ -1030,6 +1053,13 @@ fun DriveScreen(
             file.isPreviewableImage() && file.thumbnailLink.isNotBlank() -> previewImage = file
             // 其余类型没有应用内的打开方式，单击等同于下载
             else -> enqueueDownload(file)
+        }
+    }
+    fun openItemActions(file: FileStat) {
+        if (state.isSelectionMode && file.id in state.selectedFileIds) {
+            openSelectionActions()
+        } else {
+            actionTargetFile = file
         }
     }
     val callbacks = remember(state) {
@@ -1050,10 +1080,11 @@ fun DriveScreen(
                 }
             },
             onRename = { file -> if (!file.isUploading && state.libraryView != DriveLibrary.TRASH) startRename(file) },
-            onMore = { actionTargetFile = it },
+            onMore = ::openItemActions,
             onProperties = { latestShowProperties(targetsOf(it), propertiesAnchors.beside(it.id)) },
             onPlaced = { file, coordinates -> propertiesAnchors.placed(file.id, coordinates) },
             onStartSelection = { state.enterSelection(it.id) },
+            onLongClick = ::openItemActions,
             onSelect = { file, selected -> state.setSelected(file.id, selected) },
             onToggleSelect = { id ->
                 if (latestGalleryActive) state.setSelected(id, id !in state.selectedFileIds) else state.toggleSelected(id)
@@ -1228,7 +1259,7 @@ fun DriveScreen(
         val focused = focusedFile
         // 焦点所在的那一项：菜单键或 Shift+F10 打开它的操作面板，与右键菜单同一组操作
         if (focused != null && (event.key == Key.Menu || (event.isShiftPressed && event.key == Key.F10))) {
-            actionTargetFile = focused
+            openItemActions(focused)
             return true
         }
         // 删除键在回收站里是彻底删除，要先确认，与资源管理器的回收站相同
@@ -1337,7 +1368,7 @@ fun DriveScreen(
         CommandInputs(
             place = currentPlace,
             atRoot = folderStack.size == 1 && activeFolderId.isEmpty(),
-            selecting = state.isSelectionMode && selectedIdSet.isNotEmpty(),
+            selecting = state.isSelectionMode,
             clipboardFull = clipboard != null,
             itemCount = displayedFiles.size,
             allSelected = displayedFiles.isNotEmpty() && displayedFiles.all { it.id in selectedIdSet },
@@ -1687,12 +1718,12 @@ fun DriveScreen(
                             // 页眉与下面的列表是同一块岛，页眉与活动标签同色相连：地址栏、命令栏与列表都属于这一个标签，
                             // 切标签时一起换。试过页眉、列表各成一块，中间露一道外框色，读起来像两样东西；
                             // 上下两段靠色阶分开（islandHeader），不画线
-                            pathInTopBar && tabsAvailable -> Column(
+                            islandTabMode -> Column(
                                 Modifier
                                     // 第一个标签活动时它的左边竖直接下来，岛的左上角不圆
                                     .clip(
                                         RoundedCornerShape(
-                                            topStart = islandTopStart(firstActive = tabs.firstOrNull()?.id == activeTabId),
+                                            topStart = islandTopStart(firstActive = firstTabActive),
                                             topEnd = IslandCorner,
                                         ),
                                     )
@@ -1702,57 +1733,12 @@ fun DriveScreen(
                             ) { CompositionLocalProvider(LocalHeaderOnIsland provides true) { explorerBars() } }
                             pathInTopBar -> explorerBars()
 
-                            state.isSelectionMode && inTrash -> TrashSelectionTopBar(
-                                scrollBehavior = topBarScrollBehavior,
-                                selectedCount = state.selectedFileIds.size,
-                                enabled = !state.isTrashActionRunning,
-                                onExit = { state.exitSelection() },
-                                onSelectAll = { selectAllDisplayed() },
-                                onRestore = { state.restoreFromTrash(state.selectedFileIds.toList()) },
-                                onDelete = { libraryConfirm = LibraryConfirm.DeleteForever(state.selectedFileIds.toList(), emptying = false) },
-                            )
-
-                            // 摆哪些与右键菜单同一份规则（itemCommands），做不了的不摆
                             state.isSelectionMode -> DriveSelectionTopBar(
                                 scrollBehavior = topBarScrollBehavior,
-                                selectedCount = state.selectedFileIds.size,
+                                selectedCount = commandTargets.size,
                                 onExit = { state.exitSelection() },
                                 onSelectAll = { selectAllDisplayed() }.takeIf { commands.selectAll },
-                                download = DriveActions.download { download(commandTargets.filterNot { it.isUploading }) }.takeIf { targetCommands.download },
-                                downloadAtQuality = DriveActions.downloadAtQuality { download(commandTargets, chooseQuality = true) }.takeIf { targetCommands.downloadAtQuality },
-                                moveTo = DriveActions.moveTo { moveTargetIds = state.selectedFileIds.toSet() }.takeIf { targetCommands.moveCopyTo },
-                                copyTo = DriveActions.copyTo { copyTargetIds = state.selectedFileIds.toSet() }.takeIf { targetCommands.moveCopyTo },
-                                trash = DriveActions.moveToTrash { state.moveToTrash(state.selectedFileIds.toList()) }.takeIf { targetCommands.moveToTrash },
-                                trashEnabled = state.trashProgress == null,
-                                extract = if (state.archiveView != null) {
-                                    DriveActions.extractEntries { extractFromArchive(commandTargets) }
-                                } else selectedArchives.takeIf { targetCommands.extract && it.isNotEmpty() }?.let { archives ->
-                                    DriveActions.extract {
-                                        extractArchives(archives)
-                                        state.exitSelection()
-                                    }
-                                },
-                                share = DriveActions.share {
-                                    // 按列表顺序：服务端取第一项的名字作分享标题
-                                    shareTargets = latestDisplayedFiles.filter { it.id in state.selectedFileIds && !it.isUploading }
-                                }.takeIf { targetCommands.share },
-                                batchRename = DriveActions.batchRename {
-                                    batchRenameTargets = latestDisplayedFiles.filter { it.id in state.selectedFileIds && !it.isUploading }
-                                }.takeIf { targetCommands.rename },
-                                // 以下两项与多选的右键菜单（selectionActions）同一套条件
-                                canonicalName = commandTargets.filterNot { it.isUploading || it.isVaulted }
-                                    .takeIf { settled -> targetCommands.rename && settled.any { !it.isFolder && hasAvCode(it.name) } }
-                                    ?.let { settled -> DriveActions.canonicalName { avNamingTargets = settled } },
-                                restoreFromVault = commandTargets.filter { it.isVaulted }.takeIf { it.isNotEmpty() }?.let { vaulted ->
-                                    DriveActions.restoreFromVault {
-                                        state.exitSelection()
-                                        vaultSession.restore(vaulted)
-                                    }
-                                },
-                                vault = DriveActions.vault { vaultTarget = vaultScopeOf(commandTargets) }.takeIf { targetCommands.vault },
-                                feed = if (commands.feed && feedBlockedReason == null && onOpenSelectedFeed != null && selectedFeedVideos.isNotEmpty()) {
-                                    SheetAction(Icons.Outlined.SwipeVertical, "所选视频的信息流", { openSelectedFeed(selectedFeedVideos) })
-                                } else null,
+                                onActions = ::openSelectionActions,
                             )
 
                             isSearchOpen -> DriveSearchTopBar(
@@ -1771,7 +1757,17 @@ fun DriveScreen(
                                 currentSection = currentSection.takeUnless { galleryActive },
                                 sections = if (galleryActive) emptyList() else state.sectionHeaders.map { it.value.menuLabel },
                                 onSectionSelected = ::jumpToSection,
+                                moreActions = listOfNotNull(
+                                    SheetAction(Icons.Outlined.AccountTree, "目录图", { folderMap.dispatch(FolderMapEvent.Open) }),
+                                    SheetAction(Icons.Outlined.FolderOpen, "转到路径", ::editAddress),
+                                    SheetAction(Icons.AutoMirrored.Outlined.ArrowForward, "前进", { state.goForward() }).takeIf { history.canGoForward },
+                                    DriveActions.findDuplicates { findDuplicates(activeFolder) }.takeIf { commands.findDuplicates },
+                                    DriveActions.canonicalName { canonicalRoot = activeFolder }.takeIf { commands.canonicalNaming },
+                                ),
                                 navigationIcon = when {
+                                    atOriginBoundary -> {
+                                        { TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, "返回", ::leaveLibrary) }
+                                    }
                                     folderStack.size > navigation.rootDepth -> {
                                         {
                                             TooltipIconButton(
@@ -1781,9 +1777,6 @@ fun DriveScreen(
                                                 shortcut = if (platform.shortcutModifier == ShortcutModifier.Command) "⌘↑" else "Alt+↑",
                                             )
                                         }
-                                    }
-                                    libraryView != null || !isWorkspaceBrowser -> {
-                                        { TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, "返回", ::leaveLibrary) }
                                     }
                                     else -> null
                                 },
@@ -1813,9 +1806,9 @@ fun DriveScreen(
                     // （清空回收站、选中建议移走的）在时就是它，否则是「+」菜单。曾两样依次画在同一个槽位里，查重页上「+」压住了扩展 FAB
                     if (placePrimaryAction != null && !pathInTopBar) {
                         PrimaryActionFab(placePrimaryAction)
-                    } else if (!state.isSelectionMode && !pathInTopBar && (commands.addLink || commands.create)) {
+                    } else if (!state.isSelectionMode && !pathInTopBar && (commands.addLink || commands.create || commands.paste)) {
                         // 宽窗口的新建与上传在命令栏的「新建」里。菜单里摆什么与命令栏同一份规则（commands），
-                        // 一项也没有时整个按钮不出现。FAB 只管往这里加东西，查找重复这类整理位置的命令在列表页眉的菜单里：
+                        // 一项也没有时整个按钮不出现。FAB 只管往这里加东西，查找重复这类整理位置的命令在顶栏的菜单里：
                         // FAB 菜单至多 6 项（M3），再有位置命令也不会挤进来
                         // FAB 菜单自带 16dp 的右边距与下边距，Scaffold 的 FAB 槽位又留了 16dp，
                         // 不抵消的话按钮离屏幕角是 32dp。偏移而不是挪出槽位，系统栏避让仍由 Scaffold 处理
@@ -1836,6 +1829,16 @@ fun DriveScreen(
                                 }
                             },
                         ) {
+                            if (commands.paste) {
+                                FloatingActionButtonMenuItem(
+                                    onClick = {
+                                        isFabMenuExpanded = false
+                                        state.paste()
+                                    },
+                                    icon = { Icon(Icons.Outlined.ContentPaste, contentDescription = null) },
+                                    text = { Text("粘贴") },
+                                )
+                            }
                             if (commands.addLink) {
                                 FloatingActionButtonMenuItem(
                                     onClick = {
@@ -1885,7 +1888,7 @@ fun DriveScreen(
                         .fillMaxSize()
                         .then(
                             if (pathInTopBar) {
-                                if (tabsAvailable) {
+                                if (islandTabMode) {
                                     // 与页眉同一块岛：上沿两角露出一点页眉的底色，像列表被页眉包着，而不是两块拼在一起
                                     Modifier
                                         .clip(RoundedCornerShape(bottomStart = IslandCorner, bottomEnd = IslandCorner))
@@ -2053,14 +2056,6 @@ fun DriveScreen(
                                                         onTileSizeChange = ::selectTileSize,
                                                         // 宽窗口的排序、筛选与视图在命令栏上，页眉只剩搜索结果的说明
                                                         showControls = !pathInTopBar,
-                                                        placeActions = listOfNotNull(
-                                                            SheetAction(Icons.Outlined.ContentPaste, "粘贴", { state.paste() }).takeIf { commands.paste },
-                                                            SheetAction(Icons.Outlined.AccountTree, "目录图", { folderMap.dispatch(FolderMapEvent.Open) }),
-                                                            SheetAction(Icons.Outlined.FolderOpen, "转到路径", ::editAddress),
-                                                            SheetAction(Icons.AutoMirrored.Outlined.ArrowForward, "前进", { state.goForward() }).takeIf { history.canGoForward },
-                                                            DriveActions.findDuplicates { findDuplicates(activeFolder) }.takeIf { commands.findDuplicates },
-                                                            DriveActions.canonicalName { canonicalRoot = activeFolder }.takeIf { commands.canonicalNaming },
-                                                        ),
                                                     )
                                                 }
                                             }
@@ -2076,13 +2071,33 @@ fun DriveScreen(
             } }
     } }
 
+    fun selectionSheetActions(files: List<FileStat>): List<SheetAction> {
+        val commands = itemCommands(commandPlace(), files)
+        return when {
+            commands.restoreOrDelete -> trashActions(
+                onRestore = { state.restoreFromTrash(files.map { it.id }) },
+                onDelete = { libraryConfirm = LibraryConfirm.DeleteForever(files.map { it.id }, emptying = false) },
+            )
+            state.archiveView != null -> archiveEntryActions(files, commands)
+            else -> selectionActions(files, commands)
+        } + DriveActions.properties { showProperties(files, PanelAnchor.Centered) }
+    }
+
+    if (selectionActionTargets.isNotEmpty()) {
+        val target = PropertiesTarget.Selection(selectionActionTargets, selectionActionTargets.map(::locationOf).distinct().singleOrNull() ?: "多个位置")
+        FileActionsSheet(
+            target = target,
+            actions = selectionSheetActions(selectionActionTargets),
+            onDismiss = { selectionActionTargetIds = emptySet() },
+        )
+    }
+
     actionTargetFile?.let { target ->
         FileActionsSheet(
             name = state.itemName(target),
             locationLabel = rowNotes[target.id],
             // 回收站里的条目查不了详情，文件夹也统计不了。remember 住同一个 flow：每次重组新建的话，produceState 会把统计从头再跑一遍
             folderUsage = remember(target.id, inTrash) { if (target.isFolder && !inTrash && isDriveFolderId(target.id)) driveRepo.folderUsage(target.id) else null },
-            // 面板从这一项的更多按钮打开，只作用于它自己，不随多选扩到全部选中的
             actions = itemActions(target, listOf(target), fromMenu = false),
             onDismiss = { actionTargetFile = null },
             // 复制后收起面板，与列表里的操作一样：「已复制」的提示在面板底下，不收起看不到

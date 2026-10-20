@@ -73,7 +73,7 @@ import dev.piko.ui.adaptive.isDesktopLayout
  * 更顺手的呈现：不必先点「更多」再在底部面板里找。
  *
  * 鼠标只认副键按下，只消费这一下：条目自己的单击与悬停照常工作。
- * 触摸与笔长按由条目自己的多选入口处理（[longPressSelects]）。
+ * 触摸与笔长按由条目自己的操作面板入口处理。
  */
 @Composable
 fun ContextMenuArea(
@@ -83,7 +83,7 @@ fun ContextMenuArea(
     enabled: Boolean = true,
     /**
      * 不为 null 时菜单末尾加一项「选择」，进入多选并选中这一项。多选状态下传 null。
-     * 鼠标另有主修饰键、Shift 与框选；触摸直接长按条目进入多选。
+     * 鼠标另有主修饰键、Shift 与框选；触摸在长按操作面板中选择。
      */
     onSelect: (() -> Unit)? = null,
     content: @Composable () -> Unit,
@@ -122,7 +122,7 @@ private fun withSelectAction(actions: List<SheetAction>, onSelect: (() -> Unit)?
     if (onSelect == null) actions else actions + SheetAction(Icons.Outlined.CheckBox, "选择", onSelect, group = ActionGroup.Select)
 
 /**
- * 触摸与笔长按进入多选；鼠标使用副键菜单。布局变化不改变这条输入规则。
+ * 触摸与笔使用条目长按入口；鼠标使用副键菜单。布局变化不改变这条输入规则。
  */
 @Composable
 @ReadOnlyComposable
