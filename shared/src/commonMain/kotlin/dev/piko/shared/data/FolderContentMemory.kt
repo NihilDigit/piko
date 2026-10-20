@@ -5,11 +5,15 @@ import dev.piko.data.repository.fileCategory
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.InternalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.FlowCollector
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -48,22 +52,71 @@ internal class FolderContentMemory(
     // 攒一会儿再写：进一个目录就改一次，逐次写盘没有必要
     private val saveDelayMillis: Long = 5_000L,
 ) {
-    // 插入顺序即使用顺序：命中时移到末尾，超额时从头丢
-    private val contents = MutableStateFlow<Map<String, List<ChildFile>>>(emptyMap())
+    private data class MemoryState(
+        val contents: Map<String, List<ChildFile>> = emptyMap(),
+        val epochs: Map<String, Long> = emptyMap(),
+        val clearEpoch: Long = 0L,
+        val revision: Long = 0L,
+    )
+    private val memory = MutableStateFlow(MemoryState())
 
-    val state: StateFlow<Map<String, List<ChildFile>>> = contents.asStateFlow()
+    // revision 让内容相同的访问也能发布新的迭代顺序，value 始终读取同一个原子状态。
+    val state: StateFlow<Map<String, List<ChildFile>>> = object : StateFlow<Map<String, List<ChildFile>>> {
+        override val value get() = memory.value.contents
+        override val replayCache get() = listOf(value)
+
+        @OptIn(InternalCoroutinesApi::class)
+        override suspend fun collect(collector: FlowCollector<Map<String, List<ChildFile>>>): Nothing =
+            memory.collect { collector.emit(it.contents) }
+    }
 
     // 换号在仓库的后台协程里，记下内容在列目录的线程上，两边都读
     @Volatile
     private var account: String? = null
     private var pendingSave: Job? = null
 
-    fun get(folderId: String): List<ChildFile>? = contents.value[folderId]
+    fun get(folderId: String): List<ChildFile>? {
+        while (true) {
+            val current = memory.value
+            val files = current.contents[folderId] ?: return null
+            val next = current.copy(contents = touched(current.contents, folderId, files), revision = current.revision + 1)
+            if (memory.compareAndSet(current, next)) {
+                scheduleSave()
+                return files
+            }
+        }
+    }
 
     fun put(folderId: String, files: List<ChildFile>) {
-        contents.update { (it - folderId) + (folderId to files) }
+        memory.update { it.copy(contents = touched(it.contents, folderId, files.toList()), revision = it.revision + 1) }
         scheduleSave()
     }
+
+    fun invalidate(folderIds: Set<String>?) {
+        if (folderIds == null) {
+            clear()
+            return
+        }
+        memory.update { current ->
+            current.copy(
+                contents = current.contents - folderIds,
+                epochs = current.epochs + folderIds.associateWith { (current.epochs[it] ?: 0L) + 1 },
+                revision = current.revision + 1,
+            )
+        }
+        scheduleSave()
+    }
+
+    fun clear() {
+        memory.update { MemoryState(clearEpoch = it.clearEpoch + 1, revision = it.revision + 1) }
+        scheduleSave()
+    }
+
+    private fun touched(current: Map<String, List<ChildFile>>, folderId: String, files: List<ChildFile>): Map<String, List<ChildFile>> =
+        bounded(LinkedHashMap(current).apply { remove(folderId); put(folderId, files) })
+
+    private fun bounded(value: Map<String, List<ChildFile>>): Map<String, List<ChildFile>> =
+        if (value.size <= MAX_SAVED_FOLDERS) value else value.entries.toList().takeLast(MAX_SAVED_FOLDERS).associate { it.toPair() }
 
     private val vaulted = MutableStateFlow<Set<String>>(emptySet())
 
@@ -99,14 +152,14 @@ internal class FolderContentMemory(
     }
 
     /** 列过、记下了内容的文件夹。归档树里的内层文件夹没列过时，外层按「还有条目」算，见 VaultTrees.marked。 */
-    val listedFolders: Flow<Set<String>> = contents.map { it.keys }
+    val listedFolders: Flow<Set<String>> = state.map { it.keys }
 
     /** 换账号或退出登录。退出时只清内存，磁盘上的留给下次登录同一账号。 */
     fun switchAccount(newAccount: String?) {
         if (newAccount == account) return
         pendingSave?.cancel()
         account = newAccount
-        contents.value = emptyMap()
+        val loadedAt = memory.updateAndGet { MemoryState(clearEpoch = it.clearEpoch + 1, revision = it.revision + 1) }
         vaulted.value = emptySet()
         covers.value = emptyMap()
         val cacheStore = store ?: return
@@ -121,7 +174,15 @@ internal class FolderContentMemory(
             if (storedCovers != null) covers.update { current -> storedCovers + current }
             if (stored == null) return@launch
             val loaded = stored.associate { folder -> folder.id to folder.files.map { ChildFile(it.name, it.category) } }
-            contents.update { current -> loaded - current.keys + current }
+            memory.update { current ->
+                if (current.clearEpoch != loadedAt.clearEpoch) current else {
+                    val valid = loaded.filterKeys { id -> current.epochs[id] == loadedAt.epochs[id] }
+                    current.copy(
+                        contents = bounded(LinkedHashMap(valid - current.contents.keys + current.contents)),
+                        revision = current.revision + 1,
+                    )
+                }
+            }
         }
     }
 
@@ -131,7 +192,7 @@ internal class FolderContentMemory(
         if (pendingSave?.isActive == true) return
         pendingSave = scope.launch {
             delay(saveDelayMillis)
-            val snapshot = contents.value.entries.toList().takeLast(MAX_SAVED_FOLDERS).map { (id, files) ->
+            val snapshot = memory.value.contents.entries.toList().takeLast(MAX_SAVED_FOLDERS).map { (id, files) ->
                 StoredFolder(id, files.take(SAVED_FILES_PER_FOLDER).map { StoredFile(it.name, it.category) })
             }
             cacheStore.write(keyOf(owner), json.encodeToString(serializer, snapshot))

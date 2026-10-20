@@ -27,7 +27,7 @@ internal fun FileStat.isDiscoverableVideo(): Boolean = isPlayableVideo() && !tra
 /** 显式选中的文件也能只借用作品归属，不必套用信息流的样片过滤。 */
 suspend fun analyzeVideoFolder(folderId: String, files: List<FileStat>): VideoFolderBatch = withContext(Dispatchers.Default) {
     currentCoroutineContext().ensureActive()
-    val structure = runCatching { analyzeDriveFolder(files) }
+    val structure = runCatching { DriveAnalysisCache.analyze(files) }
         .onFailure { if (it is CancellationException) throw it }
         .logFailure("VideoDiscovery", "解析视频目录失败，不折叠")
         .getOrNull()

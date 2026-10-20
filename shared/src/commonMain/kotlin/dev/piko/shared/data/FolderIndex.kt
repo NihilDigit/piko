@@ -19,7 +19,7 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 internal class FolderIndex {
     /** [parentId] 为 null 是只知道名字、不知道在哪（改名时它不在任何列过的目录里）。根目录的 ID 是空串。 */
-    class Node(val name: String, val parentId: String?, val provisional: Boolean = false)
+    data class Node(val name: String, val parentId: String?, val provisional: Boolean = false)
 
     /** [gone] 是 Piko 自己移进回收站或删掉的，路径栈停在它们里面的退到它们之外，恢复或再列到时去掉。 */
     data class State(val nodes: Map<String, Node> = emptyMap(), val gone: Set<String> = emptySet())
@@ -37,7 +37,8 @@ internal class FolderIndex {
     private inline fun edit(change: (State) -> State): Boolean {
         while (true) {
             val before = state.value
-            val after = change(before)
+            val changed = change(before)
+            val after = if (changed.nodes == before.nodes) changed.copy(nodes = before.nodes) else changed
             if (after == before) return false
             if (state.compareAndSet(before, after)) return true
         }

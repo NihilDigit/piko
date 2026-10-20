@@ -532,9 +532,7 @@ class DriveScreenState(
         // 解析放到后台：上千个文件的目录要算几秒。按内容缓存，重组、刷新与返回上级都不重算
         scope.launch {
             snapshotFlow { files }.collectLatest { list ->
-                val key = DriveAnalysisCache.fingerprint(list)
-                val structure = DriveAnalysisCache.structure(key)
-                    ?: withContext(Dispatchers.Default) { analyzeDriveFolder(list) }.also { DriveAnalysisCache.putStructure(key, it) }
+                val structure = DriveAnalysisCache.analyze(list)
                 Snapshot.withMutableSnapshot {
                     revealHighlightedItems(structure, highlightedFileIds)
                     analysis = FolderAnalysis(list, structure)

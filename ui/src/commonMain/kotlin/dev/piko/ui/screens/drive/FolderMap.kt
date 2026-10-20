@@ -151,6 +151,7 @@ internal class FolderMapState(
     private val savePinned: suspend (Boolean) -> Unit,
 ) {
     val levels = mutableStateMapOf<String, FolderMapLevel>()
+    private val requests = mutableMapOf<String, Any>()
     private val expandedIds = mutableStateMapOf<String, Boolean>()
 
     /** 面板拖到的位置与大小，随网盘页存续。 */
@@ -294,7 +295,17 @@ internal class FolderMapState(
     }
 
     fun refresh(id: String) {
-        scope.launch { levels[id] = load(id) }
+        // 同一目录只认最后发出的请求，慢回来的旧列表不能盖掉新结果
+        val token = Any()
+        requests[id] = token
+        scope.launch {
+            try {
+                val level = load(id)
+                if (requests[id] === token) levels[id] = level
+            } finally {
+                if (requests[id] === token) requests.remove(id)
+            }
+        }
     }
 
     /**

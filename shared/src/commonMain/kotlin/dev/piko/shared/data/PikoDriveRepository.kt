@@ -222,6 +222,7 @@ open class PikoDriveRepository(
             is DriveChange.Copied, is DriveChange.ContentsChanged -> false
         }
         val folders = change.folders
+        childContents.invalidate(folders)
         markChanged(folders)
         listingRequests.update { requests -> if (folders == null) emptyMap() else requests - folders }
         listings.update { cache -> cache.mapValues { (id, listing) -> if (folders == null || id in folders) listing.expired() else listing } }
@@ -568,7 +569,7 @@ open class PikoDriveRepository(
     /**
      * 文件夹里的文件，只供文件夹行解析作品名（describeFolder）。列表接口只给文件夹的缩略图，
      * 不给其中的文件名，所以来源只有两处：列过的目录，以及 [fetchChildContents] 补取的一页。
-     * 与列表缓存（[listings]）不同，不随淘汰丢弃、也不因改动过期：返回上级时正要用它描述刚离开的目录。跨进程保留，见 [FolderContentMemory]。
+     * 与列表缓存（[listings]）独立限制容量，内容改动时失效，下次可见时重新采样。跨进程保留，见 [FolderContentMemory]。
      */
     private val childContents = FolderContentMemory(cacheStore, backgroundScope)
     private val childNameFetches = Semaphore(CHILD_NAME_CONCURRENCY)
@@ -693,8 +694,11 @@ open class PikoDriveRepository(
         childNameFetches.withPermit {
             // 排队期间可能已有同一目录的请求完成
             childContents.get(folderId)?.let { return@withPermit it }
-            val files = runSuspendCatching { client.listFilesPaged(parentId = folderId, pageSize = CHILD_NAME_PAGE).files }
+            val asked = client
+            val serial = changeMarks.value.serial
+            val files = runSuspendCatching { asked.listFilesPaged(parentId = folderId, pageSize = CHILD_NAME_PAGE).files }
                 .getOrNull() ?: return@withPermit null
+            if (clientManager.currentClient.value !== asked || !unchangedSince(folderId, serial)) return@withPermit null
             val complete = files.size < CHILD_NAME_PAGE
             rememberChildContents(folderId, files, complete)
             if (folderIndex.listed(folderId, files, complete)) normalizeLocations()
