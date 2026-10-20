@@ -1,6 +1,6 @@
 package dev.piko.desktop.ui
 
-import dev.piko.ui.screens.drive.DockSide
+import dev.piko.ui.components.DockSide
 import dev.piko.ui.screens.drive.FolderMapAutoHide
 import dev.piko.ui.screens.drive.FolderMapEvent
 import dev.piko.ui.screens.drive.FolderMapEvent.PointerMoved

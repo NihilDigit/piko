@@ -27,6 +27,7 @@ import dev.piko.shared.state.TransfersState
 import dev.piko.ui.PikoServices
 import dev.piko.ui.navigation.MainTab
 import dev.piko.ui.navigation.Screen
+import dev.piko.ui.navigation.isWorkspaceSurface
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
 import kotlinx.coroutines.Deferred
@@ -90,8 +91,7 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
         sourceContextId: Long? = contexts.activeContextId.value,
     ) {
         if (!available) return
-        activateFileBrowser()
-        val token = driveWorkspace.enterWithToken(stack)
+        val token = driveWorkspace.enterPrimaryWithToken(stack)
         fileOrigins[token.tabId] = ExternalOrigin(tab, screens.toList(), sourceContextId, token)
     }
 
@@ -148,6 +148,23 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
         activateContext(fileContextId())
     }
 
+    fun activatePrimaryFileBrowser(): Long = driveWorkspace.activatePrimaryFileBrowser()
+    fun canCloseContext(id: Long): Boolean = driveWorkspace.canCloseContext(id)
+
+    fun pushLibrary(library: DriveLibrary, tab: MainTab = lastMainTab, screens: List<Screen> = lastNavigation) {
+        if (!available) return
+        val sourceContextId = contexts.activeContextId.value
+        val token = driveWorkspace.pushLibrary(
+            library, reuseCurrentEntry = isWorkspaceSurface(screens.singleOrNull(), tab),
+        ) ?: return
+        fileOrigins[token.tabId] = ExternalOrigin(tab, screens.toList(), sourceContextId, token)
+    }
+
+    fun goToDrive() {
+        if (!available) return
+        driveWorkspace.goToDrive()
+    }
+
     fun minimizeContext(id: Long) {
         if (!available) return
         val origin = contextOrigins.remove(id)
@@ -188,7 +205,7 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
     }
 
     fun requestCloseContext(id: Long) {
-        if (!available || contexts.contextsFlow.value.none { it.id == id }) return
+        if (!available || !canCloseContext(id)) return
         if (closeNeedsConfirmation(id)) pendingCloseId = id else closeContext(id)
     }
 
@@ -205,7 +222,7 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
 
     fun requestCloseOtherContexts(keepId: Long) {
         if (!available || contexts.contextsFlow.value.none { it.id == keepId }) return
-        val ids = contexts.contextsFlow.value.map { it.id }.filter { it != keepId }
+        val ids = contexts.contextsFlow.value.map { it.id }.filter { it != keepId && canCloseContext(it) }
         pendingCloseOtherNeedsAttention = ids.any(::closeNeedsConfirmation)
         pendingCloseOtherIds = ids
     }
@@ -214,7 +231,7 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
         val ids = pendingCloseOtherIds
         pendingCloseOtherIds = emptyList()
         if (!available) return
-        ids.forEach(::closeContext)
+        ids.filter(::canCloseContext).forEach(::closeContext)
     }
     fun cancelCloseOtherContexts() { pendingCloseOtherIds = emptyList() }
 
@@ -222,6 +239,7 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
     fun cancelCloseContext() { pendingCloseId = null }
 
     fun closeContext(id: Long) {
+        if (!canCloseContext(id)) return
         if (contexts.contextsFlow.value.any { it.id == id && it !is WorkspaceContext.File } && contexts.activeContextId.value == id) minimizeContext(id)
         driveWorkspace.closeContext(id)
     }

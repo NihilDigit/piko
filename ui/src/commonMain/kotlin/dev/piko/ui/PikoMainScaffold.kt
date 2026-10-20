@@ -356,9 +356,7 @@ fun PikoMainScaffold(
     }
     SideEffect { workspaceModel.rememberNavigation(backStack.filterIsInstance<Screen>(), currentTab) }
     fun pushLibrary(library: DriveLibrary) {
-        val activeIsFile = workspaceModel.contexts.activeContextId.value == driveWorkspace.activeTabId.value
-        if (currentTab == MainTab.FILES && backStack.size == 1 && activeIsFile && fileWorkspace.folderStackFlow.value == listOf(library.crumb)) return
-        workspaceModel.enterFromOutside(listOf(library.crumb), currentTab, backStack.filterIsInstance<Screen>())
+        workspaceModel.pushLibrary(library, currentTab, backStack.filterIsInstance<Screen>())
         while (backStack.size > 1) backStack.removeLastOrNull()
         currentTab = MainTab.FILES
     }
@@ -497,7 +495,7 @@ fun PikoMainScaffold(
      */
     fun goToDrive(stack: List<PikoPathBreadcrumb>, then: () -> Unit = {}) {
         if (services.driveRepository.currentAccount != account) return
-        workspaceModel.activateFileBrowser()
+        workspaceModel.activatePrimaryFileBrowser()
         fileWorkspace.navigateThen(stack) {
             if (services.driveRepository.currentAccount != account) return@navigateThen
             fileWorkspace.updateFolderStack(stack)
@@ -721,11 +719,9 @@ fun PikoMainScaffold(
         }
     }
 
-    /** 侧边栏再次点击当前资料页时返回来源页，其余入口正常压栈。 */
+    /** 侧边栏的资料页共用主文件标签；再次点击回到该资料页根目录。 */
     fun toggleLibrary(library: DriveLibrary) {
-        val activeIsFile = workspaceModel.contexts.activeContextId.value == driveWorkspace.activeTabId.value
-        if (currentTab == MainTab.FILES && backStack.size == 1 && activeIsFile && fileWorkspace.folderStackFlow.value == listOf(library.crumb)) leaveLibrary()
-        else pushLibrary(library)
+        pushLibrary(library)
     }
 
     SideEffect {
@@ -784,6 +780,7 @@ fun PikoMainScaffold(
     var filesScrollToTop by remember { mutableIntStateOf(0) }
     var transfersScrollToTop by remember { mutableIntStateOf(0) }
     fun onTabClick(tab: MainTab) {
+        if (tab == MainTab.FILES) workspaceModel.goToDrive()
         if (tab == currentTab) {
             when (tab) {
                 MainTab.FILES -> filesScrollToTop++
@@ -1228,7 +1225,11 @@ fun PikoMainScaffold(
                     else when (event.key) {
                         Key.Tab -> { workspaceModel.cycleContext(if (event.isShiftPressed) -1 else 1); true }
                         Key.T -> { workspaceModel.newFileContext(); true }
-                        Key.W -> { workspaceModel.requestCloseContext(workspaceModel.contexts.activeContextId.value); true }
+                        Key.W -> {
+                            val id = workspaceModel.contexts.activeContextId.value
+                            if (workspaceModel.canCloseContext(id)) workspaceModel.requestCloseContext(id)
+                            true
+                        }
                         Key.PageUp -> if (event.isShiftPressed) { workspaceModel.moveActiveContext(-1); true } else false
                         Key.PageDown -> if (event.isShiftPressed) { workspaceModel.moveActiveContext(1); true } else false
                         else -> false

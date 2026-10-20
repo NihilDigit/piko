@@ -22,6 +22,11 @@ sealed interface WorkspaceContext {
 class WorkspaceContexts(initialFileId: Long = 1L) {
     init { require(initialFileId != 0L) }
 
+    var primaryFileId: Long = initialFileId
+        private set
+
+    fun canClose(id: Long): Boolean = id != primaryFileId && _contextsFlow.value.any { it.id == id }
+
     private val _contextsFlow = MutableStateFlow<List<WorkspaceContext>>(listOf(WorkspaceContext.File(initialFileId)))
     val contextsFlow: StateFlow<List<WorkspaceContext>> = _contextsFlow.asStateFlow()
 
@@ -74,15 +79,16 @@ class WorkspaceContexts(initialFileId: Long = 1L) {
     fun move(id: Long, targetIndex: Int): Boolean {
         val current = _contextsFlow.value
         val from = current.indexOfFirst { it.id == id }
-        if (from < 0) return false
-        val to = targetIndex.coerceIn(0, current.lastIndex)
+        if (id == primaryFileId || from < 0 || current.size <= 1) return false
+        val to = targetIndex.coerceIn(1, current.lastIndex)
         if (from == to) return false
         _contextsFlow.value = current.toMutableList().apply { add(to, removeAt(from)) }
         return true
     }
 
-    /** The collection always retains one visible work item. */
+    /** The primary file browser always remains at index zero. */
     fun close(id: Long): WorkspaceContext? {
+        if (!canClose(id)) return null
         val current = _contextsFlow.value
         val index = current.indexOfFirst { it.id == id }.takeIf { it >= 0 } ?: return null
         val removed = current[index]
@@ -97,39 +103,31 @@ class WorkspaceContexts(initialFileId: Long = 1L) {
         return removed
     }
 
-    /** Restore only file positions. Transient contexts are returned so the owner can end their work. */
-    fun resetFiles(ids: List<Long>, activeFileId: Long): List<WorkspaceContext> {
-        require(ids.isNotEmpty() && ids.none { it == 0L } && ids.distinct().size == ids.size)
-        require(activeFileId in ids)
-        val removed = _contextsFlow.value.filterNot { it is WorkspaceContext.File }
-        _contextsFlow.value = ids.map { WorkspaceContext.File(it) }
-        _activeContextId.value = activeFileId
-        onActivated?.invoke(WorkspaceContext.File(activeFileId))
-        return removed
+    /** Reset the primary browser while retaining auxiliary work after it. */
+    fun resetFiles(firstId: Long = 1L) {
+        require(firstId != 0L)
+        val auxiliary = _contextsFlow.value.filterNot { it is WorkspaceContext.File }
+        require(auxiliary.none { it.id == firstId })
+        primaryFileId = firstId
+        _contextsFlow.value = listOf(WorkspaceContext.File(firstId)) + auxiliary
+        _activeContextId.value = firstId
+        onActivated?.invoke(WorkspaceContext.File(firstId))
     }
 
     /** Replace startup file positions without disturbing a task opened during the cache read. */
-    fun restoreFilesPreservingAux(ids: List<Long>, activeFileId: Long) {
-        require(ids.isNotEmpty() && ids.none { it == 0L } && ids.distinct().size == ids.size)
-        require(activeFileId in ids)
+    fun restoreFilesPreservingAux(fileIds: List<Long>, activeFileId: Long) {
+        val ids = fileIds.distinct().ifEmpty { listOf(1L) }
+        require(ids.none { it == 0L })
         val previous = _contextsFlow.value
         require(previous.none { it !is WorkspaceContext.File && it.id in ids })
         val wasFileActive = previous.any { it.id == _activeContextId.value && it is WorkspaceContext.File }
         val restoredFiles = ids.map { WorkspaceContext.File(it) }
-        var inserted = false
-        _contextsFlow.value = buildList {
-            previous.forEach { context ->
-                if (context is WorkspaceContext.File) {
-                    if (!inserted) {
-                        addAll(restoredFiles)
-                        inserted = true
-                    }
-                } else add(context)
-            }
-        }
+        primaryFileId = ids.first()
+        _contextsFlow.value = restoredFiles + previous.filterNot { it is WorkspaceContext.File }
         if (wasFileActive) {
-            _activeContextId.value = activeFileId
-            onActivated?.invoke(WorkspaceContext.File(activeFileId))
+            val selected = activeFileId.takeIf { it in ids } ?: ids.first()
+            _activeContextId.value = selected
+            onActivated?.invoke(WorkspaceContext.File(selected))
         }
     }
 }

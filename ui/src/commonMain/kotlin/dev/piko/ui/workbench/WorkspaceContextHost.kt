@@ -147,7 +147,7 @@ internal fun WorkspaceContextHost(
                 tabs = tabs, activeId = active,
                 onSelect = model::activateContext, onClose = model::requestCloseContext,
                 feedTabId = model.feed.detourTab,
-                canClose = { id -> contexts.firstOrNull { it.id == id } !is WorkspaceContext.File || contexts.size > 1 },
+                canClose = model::canCloseContext,
                 onCloseOthers = model::requestCloseOtherContexts,
                 onMove = model::moveContext,
                 onNewTab = model::newFileContext,

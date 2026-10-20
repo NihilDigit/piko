@@ -72,6 +72,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.piko.shared.data.DriveLibrary
 import dev.piko.shared.presentation.DriveTab
 import androidx.compose.ui.graphics.vector.ImageVector
 import dev.piko.ui.components.IslandTab
@@ -113,7 +114,7 @@ internal fun DriveTabBar(
     sessionTab: (DriveTab) -> SessionTab?,
     /** 从信息流跳出来浏览的那个标签，见 PikoMainScaffold 的 feedDetourTab。 */
     feedTabId: Long?,
-    canClose: (Long) -> Boolean = { tabs.size > 1 },
+    canClose: (Long) -> Boolean = { it != tabs.firstOrNull()?.id },
     onCloseOthers: ((Long) -> Unit)? = null,
     onMove: ((Long, Int) -> Unit)? = null,
     modifier: Modifier = Modifier,
@@ -131,9 +132,9 @@ internal fun DriveTabBar(
     fun updateOrder() {
         val id = draggingId ?: return
         val current = latestTabs.indexOfFirst { it.id == id }
-        if (current < 0) return
+        if (current <= 0 || latestTabs.size <= 1) return
         val target = (startIndex + (travel + scroll.value - startScroll) / tabWidthPx)
-            .roundToInt().coerceIn(0, latestTabs.lastIndex)
+            .roundToInt().coerceIn(1, latestTabs.lastIndex)
         if (target != current) latestMove?.invoke(id, target)
     }
     val center = startIndex * tabWidthPx - startScroll + travel + tabWidthPx / 2
@@ -155,7 +156,8 @@ internal fun DriveTabBar(
     LaunchedEffect(activeId, draggingId) {
         if (draggingId != null) return@LaunchedEffect
         val index = tabs.indexOfFirst { it.id == activeId }
-        if (index == tabs.lastIndex) scroll.animateScrollTo(scroll.maxValue)
+        if (index == 0) scroll.animateScrollTo(0)
+        else if (index == tabs.lastIndex) scroll.animateScrollTo(scroll.maxValue)
     }
     // 开着几个标签时标签栏在最上面，照 Chrome：窗口按钮在末尾，「+」后面的空白能拖动窗口
     val caption = rememberCaptionSlot()
@@ -189,16 +191,14 @@ internal fun DriveTabBar(
                             fromFeed = tab.id == feedTabId,
                             active = index == activeIndex,
                             first = index == 0,
-                            // 两个非活动标签之间画一道分隔，挨着活动标签的不画：活动标签自己的轮廓已经分开了
-                            divider = index < tabs.lastIndex && index != activeIndex && index + 1 != activeIndex,
                             onSelect = { onSelect(tab.id) },
                             // 只剩一个时关不掉，不给叉
                             onClose = if (canClose(tab.id)) ({ onClose(tab.id) }) else null,
                             modifier = Modifier.zIndex(if (draggingId == tab.id) 1f else 0f)
                                 .graphicsLayer {
-                                    translationX = if (draggingId == tab.id) travel + scroll.value - startScroll - (index - startIndex) * tabWidthPx else 0f
+                                    translationX = if (draggingId == tab.id) (travel + scroll.value - startScroll - (index - startIndex) * tabWidthPx).coerceAtLeast((1 - index) * tabWidthPx) else 0f
                                 }.tabReorderGesture(
-                                    enabled = onMove != null,
+                                    enabled = onMove != null && index != 0,
                                     onStart = {
                                         startIndex = latestTabs.indexOfFirst { it.id == tab.id }
                                         startScroll = scroll.value
@@ -227,6 +227,7 @@ internal fun DriveTabBar(
                     androidx.compose.material3.DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                         androidx.compose.material3.DropdownMenuItem(
                             text = { Text("关闭其他标签") },
+                            enabled = tabs.any { it.id != activeId && canClose(it.id) },
                             onClick = { menuOpen = false; onCloseOthers(activeId) },
                         )
                     }
@@ -298,7 +299,6 @@ private fun TabChip(
     fromFeed: Boolean,
     active: Boolean,
     first: Boolean,
-    divider: Boolean,
     onSelect: () -> Unit,
     onClose: (() -> Unit)?,
     modifier: Modifier = Modifier,
@@ -310,6 +310,8 @@ private fun TabChip(
     val contentColor = if (active) colors.onSurface else colors.onSurfaceVariant
     // 会话标签不接拖放：那里不是文件夹
     val target = tab.stack.lastOrNull()?.takeIf { tab.session == null && session == null }
+    val library = tab.stack.firstOrNull()?.let { DriveLibrary.of(it.id) }
+    val icon = session?.icon ?: library?.icon ?: if (fromFeed) Icons.Outlined.SwipeVertical else Icons.Outlined.Folder
     val title = session?.title ?: tab.title
     val tooltip = when {
         fromFeed -> "从信息流打开：" + tab.stack.joinToString(" › ") { it.name }
@@ -324,7 +326,6 @@ private fun TabChip(
         IslandTab(
             active = active,
             first = first,
-            divider = divider,
             onClick = onSelect,
             interactionSource = interaction,
             modifier = modifier
@@ -346,11 +347,7 @@ private fun TabChip(
             } else {
                 // 信息流的标签换成信息流的图标，用第三色：它停着的是普通文件夹，标题与别的标签没有分别
                 Icon(
-                    when {
-                        session != null -> session.icon
-                        fromFeed -> Icons.Outlined.SwipeVertical
-                        else -> Icons.Outlined.Folder
-                    },
+                    icon,
                     contentDescription = null,
                     tint = when {
                         fromFeed -> colors.tertiary

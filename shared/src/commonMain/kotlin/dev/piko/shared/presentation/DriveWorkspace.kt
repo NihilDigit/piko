@@ -80,13 +80,40 @@ class DriveWorkspace(
     }
     val contextsFlow: StateFlow<List<WorkspaceContext>> get() = contexts.contextsFlow
     val activeContextId: StateFlow<Long> get() = contexts.activeContextId
+    val primaryTabId: Long get() = contexts.primaryFileId
+    fun canCloseContext(id: Long): Boolean = contexts.canClose(id)
+
+    fun activatePrimaryFileBrowser(): Long {
+        switchTab(primaryTabId)
+        contexts.activate(primaryTabId)
+        return primaryTabId
+    }
+
+    fun enterPrimaryWithToken(stack: List<PikoPathBreadcrumb>): NavigationEntryToken {
+        activatePrimaryFileBrowser()
+        return enterWithToken(stack)
+    }
+
+    /** Reuse an entry only when the caller is already displaying the file browser's home page. */
+    fun pushLibrary(library: DriveLibrary, reuseCurrentEntry: Boolean = true): NavigationEntryToken? {
+        if (reuseCurrentEntry && activeContextId.value == primaryTabId && _folderStackFlow.value.firstOrNull()?.id == library.id) {
+            if (_folderStackFlow.value.size > 1) updateFolderStack(listOf(library.crumb))
+            return null
+        }
+        return enterPrimaryWithToken(listOf(library.crumb))
+    }
+
+    fun goToDrive() {
+        activatePrimaryFileBrowser()
+        if (_folderStackFlow.value.library != null) updateFolderStack(listOf(ROOT_BREADCRUMB))
+    }
 
     /** The owner uses this to stop a task when its context is actually discarded. */
     var onContextClosed: (WorkspaceContext) -> Unit = {}
 
     private val _tabsFlow = MutableStateFlow(_tabs.value)
 
-    /** Retained file browsers. Visible work tabs are listed by contextsFlow; a closed final file browser remains as the return location. */
+    /** Retained file browsers, with the primary browser first. */
     val tabsFlow: StateFlow<List<DriveTab>> = _tabsFlow.asStateFlow()
 
     private fun newTabId(excluding: Set<Long> = emptySet()): Long {
@@ -232,7 +259,9 @@ class DriveWorkspace(
         _historyFlow.value = FolderHistory()
         _folderStackFlow.value = root.stack
 
-        contexts.resetFiles(listOf(root.id), root.id).forEach(onContextClosed)
+        val auxiliary = contextsFlow.value.filterNot { it is WorkspaceContext.File }
+        contexts.resetFiles(root.id)
+        auxiliary.forEach { context -> contexts.close(context.id)?.let(onContextClosed) }
         _tabsFlow.value = _tabs.value
         scrollAnchors.value = emptyMap()
         pendingHighlight.value = emptySet()
@@ -245,15 +274,13 @@ class DriveWorkspace(
     /** 在活动标签后面开一个新标签，停在 [stack]。[activate] 为 false 是在后台开（中键点文件夹）。 */
     fun openTab(stack: List<PikoPathBreadcrumb>, activate: Boolean = true): Long {
         val tab = DriveTab(newTabId(), stack.ifEmpty { listOf(ROOT_BREADCRUMB) })
-        val replaceReturnBrowser = contextsFlow.value.none { it is WorkspaceContext.File }
         _tabs.update { tabs ->
-            if (replaceReturnBrowser) return@update listOf(tab)
             val at = tabs.indexOfFirst { it.id == _activeTabId.value }
             tabs.toMutableList().apply { add(at + 1, tab) }
         }
         val afterId = _activeTabId.value.takeIf { id -> contextsFlow.value.any { it.id == id } } ?: contexts.activeContextId.value
         contexts.openFile(tab.id, activate = false, afterId = afterId)
-        if (activate || replaceReturnBrowser) switchFileTab(tab.id, activateContext = activate) else publishTabs()
+        if (activate) switchFileTab(tab.id, activateContext = true) else publishTabs()
         return tab.id
     }
 
@@ -278,16 +305,12 @@ class DriveWorkspace(
         publishTabs()
     }
 
-    /** Close the visible tab while retaining a return location when it is the final file browser. */
-    fun closeTab(id: Long) {
+    /** Close a secondary file browser without disturbing rejected closures. */
+    fun closeTab(id: Long): Boolean {
+        if (!contexts.canClose(id)) return false
         entrySnapshots.update { snapshots -> snapshots.filterValues { it.tabId != id } }
         val tabs = _tabs.value
-        if (tabs.none { it.id == id }) return
-        if (tabs.size <= 1) {
-            contexts.close(id)?.let(onContextClosed)
-            return
-        }
-        val index = tabs.indexOfFirst { it.id == id }.takeIf { it >= 0 } ?: return
+        val index = tabs.indexOfFirst { it.id == id }.takeIf { it >= 0 } ?: return false
         if (id == _activeTabId.value) {
             switchFileTab((tabs.getOrNull(index + 1) ?: tabs[index - 1]).id, activateContext = false)
         }
@@ -296,6 +319,7 @@ class DriveWorkspace(
         pendingByTab.update { it - id }
         forgetFoldersOutsideStack()
         publishTabs()
+        return true
     }
 
     fun openDuplicateContext(root: PikoPathBreadcrumb, activate: Boolean = true): Long =
@@ -320,13 +344,11 @@ class DriveWorkspace(
     }
 
     fun closeContext(id: Long): WorkspaceContext? {
+        if (!contexts.canClose(id)) return null
         val context = contextsFlow.value.firstOrNull { it.id == id } ?: return null
         if (context is WorkspaceContext.File) {
             closeTab(id)
             return context.takeIf { contextsFlow.value.none { it.id == id } }
-        }
-        if (contextsFlow.value.size == 1) {
-            contexts.openFile(_activeTabId.value, activate = false)
         }
         return contexts.close(id)?.also(onContextClosed)
     }

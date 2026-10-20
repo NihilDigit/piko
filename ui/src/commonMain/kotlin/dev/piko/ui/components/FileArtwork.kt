@@ -1,5 +1,10 @@
 package dev.piko.ui.components
 
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.translate
+import dev.piko.ui.theme.LocalAppearance
+import dev.piko.ui.theme.isDark
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -49,11 +54,12 @@ private fun StackedSheets(
     cover: (@Composable () -> Unit)? = null,
 ) {
     val colors = MaterialTheme.colorScheme
+    val dark = LocalAppearance.current.isDark()
     val backPlate = colors.secondary.copy(alpha = 0.3f).compositeOver(colors.secondaryContainer)
     val frontShade = colors.secondary.copy(alpha = 0.16f).compositeOver(colors.secondaryContainer)
     BoxWithConstraints(modifier) {
         val cardTop = maxHeight * 0.07f
-        val cardWidth = maxWidth * 0.89f
+        val cardWidth = maxWidth * 0.81f
         val cardHeight = cardWidth * 9f / 16f
         val frontTop = maxHeight * 0.74f
         val visibleHeight = (frontTop - cardTop).coerceAtMost(cardHeight)
@@ -79,24 +85,26 @@ private fun StackedSheets(
                         modifier = Modifier.padding(top = ((visibleHeight - iconSize) / 2).coerceAtLeast(0.dp)).size(iconSize),
                     )
                 }
-                val shadowHeight = minOf(8.dp, visibleHeight)
-                Box(
-                    Modifier
-                        .padding(top = visibleHeight - shadowHeight)
-                        .fillMaxWidth()
-                        .height(shadowHeight)
-                        .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.14f)))),
-                )
+            }
+        }
+        Canvas(Modifier.fillMaxSize()) {
+            val contour = buildFolderFrontTopContourPath(size, this)
+            for (offset in 1..3) {
+                translate(top = -offset.dp.toPx()) {
+                    drawPath(contour, Color.Black.copy(alpha = 0.045f / offset), style = Stroke(2.dp.toPx()))
+                }
             }
         }
         Box(
-            Modifier
-                .fillMaxSize()
-                .padding(top = frontTop)
-                .clip(RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp))
-                .background(Brush.verticalGradient(listOf(colors.secondaryContainer, frontShade))),
-        ) {
-            Box(Modifier.fillMaxWidth().height(1.dp).background(Color.White.copy(alpha = 0.22f)))
+            Modifier.fillMaxSize().clip(FolderFrontShape)
+                .background(Brush.verticalGradient(
+                    listOf(colors.secondaryContainer, frontShade),
+                    startY = with(androidx.compose.ui.platform.LocalDensity.current) { frontTop.toPx() },
+                )),
+        )
+        Canvas(Modifier.fillMaxSize()) {
+            drawPath(buildFolderFrontTopContourPath(size, this),
+                Color.White.copy(alpha = if (dark) 0.18f else 0.45f), style = Stroke(1.dp.toPx()))
         }
     }
 }
@@ -166,4 +174,41 @@ private object FolderBackShape : Shape {
         }
         return Outline.Generic(path)
     }
+}
+
+/** Shared open contour for the flap silhouette, its highlight and its cast shadow. */
+internal fun buildFolderFrontTopContourPath(size: Size, density: Density): Path {
+    val w = size.width
+    val h = size.height
+    val yLeft = h * 0.78f
+    val yRight = h * 0.74f
+    val stepStart = w * 0.28f
+    val stepEnd = w * 0.40f
+    val r = minOf(with(density) { 6.dp.toPx() }, w * 0.14f, h * 0.08f)
+    return Path().apply {
+        moveTo(0f, yLeft + r)
+        quadraticTo(0f, yLeft, r, yLeft)
+        lineTo(stepStart, yLeft)
+        val mid = (stepStart + stepEnd) * 0.5f
+        cubicTo(mid, yLeft, mid, yRight, stepEnd, yRight)
+        lineTo(w - r, yRight)
+        quadraticTo(w, yRight, w, yRight + r)
+    }
+}
+
+internal fun buildFolderFrontPath(size: Size, density: Density): Path =
+    buildFolderFrontTopContourPath(size, density).apply {
+        val w = size.width
+        val h = size.height
+        val r = minOf(with(density) { 12.dp.toPx() }, w * 0.14f, h * 0.14f)
+        lineTo(w, h - r)
+        quadraticTo(w, h, w - r, h)
+        lineTo(r, h)
+        quadraticTo(0f, h, 0f, h - r)
+        close()
+    }
+
+private object FolderFrontShape : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline =
+        Outline.Generic(buildFolderFrontPath(size, density))
 }

@@ -109,11 +109,11 @@ class ContextMenuTest {
     }
 
     /**
-     * 桌面上按住的三条约定：鼠标左键按住不进多选；触屏按住、抬起后弹出与右键相同的菜单，条目不被点开；
-     * 嵌在网格空白处那一层里时只弹条目的菜单。菜单里的「选择」进多选。
+     * 鼠标按住不进多选；触屏长按调用条目的操作入口。
+     * 嵌套菜单由鼠标右键打开时只弹出条目的菜单，其中的「选择」进入多选。
      */
     @Test
-    fun `holding on the desktop opens the menu instead of selecting`() = runComposeUiTest {
+    fun `touch holding invokes the item action and right click opens its menu`() = runComposeUiTest {
         var clicks by mutableIntStateOf(0)
         var longClicks by mutableIntStateOf(0)
         var selects by mutableIntStateOf(0)
@@ -148,11 +148,16 @@ class ContextMenuTest {
         val clicksBefore = clicks
         item.performTouchInput { longClick(center) }
         waitForIdle()
+        assertEquals(1, longClicks)
+        assertEquals(clicksBefore, clicks)
+        onNodeWithText("下载").assertDoesNotExist()
+        onNodeWithText("新建文件夹").assertDoesNotExist()
+        assertEquals(0, selects)
+
+        item.performMouseInput { rightClick(center) }
+        waitForIdle()
         onNodeWithText("下载").assertExists()
         onNodeWithText("新建文件夹").assertDoesNotExist()
-        assertEquals(0, longClicks)
-        assertEquals(clicksBefore, clicks)
-
         onNodeWithText("选择").performClick()
         waitForIdle()
         assertEquals(1, selects)

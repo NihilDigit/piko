@@ -1304,7 +1304,7 @@ fun DriveScreen(
             primary && event.key == Key.V && clipboard != null && !state.isVirtualPlace -> state.paste()
             // 标签：新建停在眼前的位置，关掉活动的那个，Ctrl+Tab 与 Ctrl+PageDown/PageUp 前后切换，与浏览器相同
             tabsAvailable && primary && event.key == Key.T -> newRootTab()
-            tabsAvailable && primary && event.key == Key.W && tabs.size > 1 -> closeTab(activeTabId)
+            tabsAvailable && primary && event.key == Key.W && (contexts?.canCloseContext(activeTabId) ?: desktopWorkspace?.canCloseContext(activeTabId) ?: false) -> closeTab(activeTabId)
             tabsAvailable && event.isCtrlPressed && event.key == Key.Tab -> cycleTab(if (event.isShiftPressed) -1 else 1)
             tabsAvailable && primary && event.key == Key.PageDown -> cycleTab(1)
             tabsAvailable && primary && event.key == Key.PageUp -> cycleTab(-1)

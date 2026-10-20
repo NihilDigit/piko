@@ -258,7 +258,7 @@ class BrowserContextSmokeTest {
         )
         val rig = Rig(scope, server, server.provider(client))
         try {
-            val firstId = rig.workspace.activeTabId.value
+            val firstId = rig.workspace.openTab(listOf(PikoDriveRepository.ROOT_BREADCRUMB))
             val first = rig.browsers.forTab(firstId)
             first.state.load()
             awaitUntil("文件可改名") { first.state.displayedFiles.any { it.id == file.id } }

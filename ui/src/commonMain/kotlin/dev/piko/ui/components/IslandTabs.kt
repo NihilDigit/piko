@@ -17,8 +17,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import dev.piko.ui.theme.IslandCorner
@@ -27,7 +29,7 @@ import dev.piko.ui.theme.islandHeader
 /**
  * 岛上沿的一个标签，网盘页的位置标签与传输页的类别共用。照资源管理器与浏览器：活动的那个是一块上沿圆角、
  * 下沿向两侧外翻的「书签」，底色与下面那块岛的页眉相同，连成一片，像是从页眉里伸上来的；其余的平铺在外框色上，
- * 悬停时是半透明的同一个形状，彼此用细线隔开。切换时新旧两个各自淡入淡出。
+ * 非活动标签使用留有底部间隙的圆角矩形，悬停时加深填充和边框。
  * 原来网盘页是一排胶囊、传输页是一组连体按钮，活动的只是换了个底色，与下面的内容断开，看不出眼前是哪一个。
  *
  * [first] 是最左的一个：左边不外翻，活动时竖直接上岛的左边，岛的左上角随之不圆，见 [islandTopStart]。
@@ -37,7 +39,6 @@ import dev.piko.ui.theme.islandHeader
 fun IslandTab(
     active: Boolean,
     first: Boolean,
-    divider: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
@@ -45,25 +46,35 @@ fun IslandTab(
 ) {
     val colors = MaterialTheme.colorScheme
     val hovered by interactionSource.collectIsHoveredAsState()
-    val fill by animateFloatAsState(
-        targetValue = when {
-            active -> 1f
-            hovered -> HoverFill
-            else -> 0f
-        },
+    val activeFraction by animateFloatAsState(
+        targetValue = if (active) 1f else 0f,
+        animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+        label = "tabActive",
+    )
+    val inactiveFillAlpha by animateFloatAsState(
+        targetValue = if (hovered) 0.68f else 0.38f,
         animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
         label = "tabFill",
+    )
+    val borderAlpha by animateFloatAsState(
+        targetValue = if (hovered) 0.55f else 0.32f,
+        animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+        label = "tabBorder",
     )
     Row(
         modifier = modifier
             .height(IslandTabHeight)
             .drawBehind {
-                if (fill > 0f) {
-                    drawPath(tabOutline(size, TabFlare.toPx(), IslandCorner.toPx(), flushStart = first), colors.islandHeader.copy(alpha = fill))
+                val inactiveFraction = 1f - activeFraction
+                if (inactiveFraction > 0f) {
+                    val inset = 2.dp.toPx()
+                    val bounds = Size((size.width - 2 * inset).coerceAtLeast(0f), (size.height - 3.dp.toPx()).coerceAtLeast(0f))
+                    val radius = CornerRadius(8.dp.toPx())
+                    drawRoundRect(colors.islandHeader.copy(alpha = inactiveFillAlpha * inactiveFraction), Offset(inset, 0f), bounds, radius)
+                    drawRoundRect(colors.outlineVariant.copy(alpha = borderAlpha * inactiveFraction), Offset(inset, 0f), bounds, radius, style = Stroke(1.dp.toPx()))
                 }
-                if (divider && !hovered) {
-                    val inset = 10.dp.toPx()
-                    drawLine(colors.outlineVariant, Offset(size.width, inset), Offset(size.width, size.height - inset), strokeWidth = 1.dp.toPx())
+                if (activeFraction > 0f) {
+                    drawPath(tabOutline(size, TabFlare.toPx(), IslandCorner.toPx(), flushStart = first), colors.islandHeader.copy(alpha = activeFraction))
                 }
             }
             .padding(start = if (first) 0.dp else TabFlare, end = TabFlare)
@@ -83,7 +94,6 @@ val IslandTabBarHeight = 44.dp
 
 private val IslandTabHeight = 36.dp
 private val TabFlare = 8.dp
-private const val HoverFill = 0.5f
 
 /**
  * 上沿两角是 [corner] 的圆角，下沿两侧各向外翻出 [flare] 的一段凹弧，与下面的页眉接上。

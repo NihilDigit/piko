@@ -99,12 +99,14 @@ class FolderHistorySmokeTest {
         // 标签列表里第二个带着它离开时的位置
         assertEquals(listOf(root, docs, PikoPathBreadcrumb("E", "SPs")), repoWorkspace.tabsFlow.value.first { it.id == second }.stack)
 
-        // 关掉活动标签，落到旁边那个
-        repoWorkspace.closeTab(first)
-        assertEquals(second, repoWorkspace.activeTabId.value)
-        assertEquals(listOf(root, docs, PikoPathBreadcrumb("E", "SPs")), repoWorkspace.folderStackFlow.value)
-        repoWorkspace.closeTab(second)
-        assertEquals(second, repoWorkspace.activeTabId.value, "最后一个标签不关")
+        assertFalse(repoWorkspace.closeTab(first))
+        assertEquals(first, repoWorkspace.activeTabId.value)
+        assertEquals(listOf(root), repoWorkspace.folderStackFlow.value)
+        repoWorkspace.switchTab(second)
+        assertTrue(repoWorkspace.closeTab(second))
+        assertEquals(first, repoWorkspace.activeTabId.value)
+        assertEquals(listOf(root), repoWorkspace.folderStackFlow.value)
+
     }
 
     @Test

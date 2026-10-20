@@ -140,6 +140,7 @@ class MobileWorkspaceSmokeTest {
     fun `new entries tab closure and account changes invalidate old tokens`() = smoke { scope ->
         val repo = PikoDriveRepository(FakePikPakServer().provider(), MemoryPreferences())
         val workspace = DriveWorkspace(repo, backgroundScope = scope)
+        workspace.openTab(listOf(root))
         val first = workspace.enterWithToken(listOf(DriveLibrary.RECENT.crumb))
         val second = workspace.enterWithToken(listOf(DriveLibrary.STARRED.crumb))
         assertFalse(workspace.canReturnAcross(first))
@@ -150,6 +151,113 @@ class MobileWorkspaceSmokeTest {
         val third = workspace.enterWithToken(listOf(root))
         workspace.enterAccount("another-account")
         assertFalse(workspace.canReturnAcross(third))
+        workspace.close()
+    }
+
+    @Test
+    fun `sidebar libraries and external entries update only the primary browser`() = smoke { scope ->
+        val repo = PikoDriveRepository(FakePikPakServer().provider(), MemoryPreferences())
+        val workspace = DriveWorkspace(repo, backgroundScope = scope)
+        val primary = workspace.primaryTabId
+        val secondary = workspace.openTab(listOf(root, PikoPathBreadcrumb("secondary", "secondary")))
+        workspace.pushFolder("child", "child")
+        workspace.requestHighlight(setOf("secondary-file"))
+        val secondarySnapshot = workspace.tabsFlow.value.first { it.id == secondary }
+        for (library in listOf(DriveLibrary.RECENT, DriveLibrary.STARRED, DriveLibrary.HISTORY, DriveLibrary.TRASH)) {
+            workspace.switchTab(secondary)
+            val token = workspace.pushLibrary(library)!!
+            assertEquals(primary, token.tabId)
+            assertEquals(primary, workspace.activeContextId.value)
+            assertEquals(primary, workspace.contextsFlow.value.first().id)
+            assertEquals(listOf(library.crumb), workspace.folderStackFlow.value)
+            assertEquals(secondarySnapshot, workspace.tabsFlow.value.first { it.id == secondary })
+            assertEquals(null, workspace.pushLibrary(library))
+            workspace.pushFolder("nested", "nested")
+            assertEquals(null, workspace.pushLibrary(library))
+            assertEquals(listOf(library.crumb), workspace.folderStackFlow.value)
+        }
+        workspace.switchTab(secondary)
+        workspace.goToDrive()
+        assertEquals(primary, workspace.activeContextId.value)
+        assertEquals(listOf(root), workspace.folderStackFlow.value)
+        workspace.pushFolder("primary-folder", "primary-folder")
+        val primaryStack = workspace.folderStackFlow.value
+        workspace.switchTab(secondary)
+        workspace.goToDrive()
+        assertEquals(primaryStack, workspace.folderStackFlow.value)
+        workspace.switchTab(secondary)
+        val target = listOf(root, PikoPathBreadcrumb("external", "external"))
+        val token = workspace.enterPrimaryWithToken(target)
+        workspace.requestHighlight(setOf("external-file"))
+        assertEquals(primary, token.tabId)
+        assertEquals(target, workspace.folderStackFlow.value)
+        assertEquals(setOf("external-file"), workspace.takePendingHighlight())
+        assertTrue(workspace.returnAcross(token))
+        assertEquals(primaryStack, workspace.folderStackFlow.value)
+        workspace.switchTab(secondary)
+        assertEquals(secondarySnapshot.stack, workspace.folderStackFlow.value)
+        assertEquals(secondarySnapshot.history, workspace.historyFlow.value)
+        assertEquals(setOf("secondary-file"), workspace.takePendingHighlight())
+        // A secondary tab at the same library still routes the sidebar click to primary.
+        workspace.updateFolderStack(listOf(DriveLibrary.STARRED.crumb))
+        assertEquals(primary, workspace.pushLibrary(DriveLibrary.STARRED)!!.tabId)
+        assertEquals(primary, workspace.activeContextId.value)
+        workspace.close()
+    }
+
+    @Test
+    fun `reentering the same library from another page replaces the previous entry`() = smoke { scope ->
+        val repo = PikoDriveRepository(FakePikPakServer().provider(), MemoryPreferences())
+        val workspace = DriveWorkspace(repo, backgroundScope = scope)
+        try {
+            for (library in listOf(DriveLibrary.RECENT, DriveLibrary.STARRED, DriveLibrary.HISTORY, DriveLibrary.TRASH)) {
+                workspace.goToDrive()
+                workspace.pushFolder("source", "source")
+                val previousEntry = workspace.pushLibrary(library)!!
+                val stack = workspace.folderStackFlow.value
+                val history = workspace.historyFlow.value
+
+                // Another top-level page leaves the primary context and library unchanged.
+                val newEntry = workspace.pushLibrary(library, reuseCurrentEntry = false)!!
+                assertEquals(workspace.primaryTabId, newEntry.tabId)
+                assertFalse(workspace.canReturnAcross(previousEntry))
+                assertTrue(workspace.canReturnAcross(newEntry))
+                assertEquals(stack, workspace.folderStackFlow.value)
+                assertEquals(history, workspace.historyFlow.value)
+                assertEquals(null, workspace.pushLibrary(library))
+                assertTrue(workspace.returnAcross(newEntry))
+                assertEquals(stack, workspace.folderStackFlow.value)
+                assertEquals(history, workspace.historyFlow.value)
+
+                workspace.pushFolder("nested", "nested")
+                val nestedStack = workspace.folderStackFlow.value
+                val nestedEntry = workspace.pushLibrary(library, reuseCurrentEntry = false)!!
+                assertEquals(listOf(library.crumb), workspace.folderStackFlow.value)
+                assertTrue(workspace.returnAcross(nestedEntry))
+                assertEquals(nestedStack, workspace.folderStackFlow.value)
+            }
+        } finally {
+            workspace.close()
+        }
+    }
+
+    @Test
+    fun `rejected primary closure preserves entry return stack and history`() = smoke { scope ->
+        val repo = PikoDriveRepository(FakePikPakServer().provider(), MemoryPreferences())
+        val workspace = DriveWorkspace(repo, backgroundScope = scope)
+        workspace.pushFolder("source", "source")
+        val beforeStack = workspace.folderStackFlow.value
+        val beforeHistory = workspace.historyFlow.value
+        val token = workspace.enterWithToken(listOf(DriveLibrary.HISTORY.crumb))
+        val secondary = workspace.openTab(listOf(root))
+        assertFalse(workspace.closeTab(workspace.primaryTabId))
+        assertEquals(null, workspace.closeContext(workspace.primaryTabId))
+        assertEquals(secondary, workspace.activeContextId.value)
+        assertTrue(workspace.canReturnAcross(token))
+        assertTrue(workspace.returnAcross(token))
+        assertEquals(workspace.primaryTabId, workspace.activeContextId.value)
+        assertEquals(beforeStack, workspace.folderStackFlow.value)
+        assertEquals(beforeHistory, workspace.historyFlow.value)
         workspace.close()
     }
 
