@@ -5,10 +5,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.movableContentOf
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.unit.IntSize
@@ -23,19 +27,30 @@ internal val LocalWorkspaceSnapshotEnabled = staticCompositionLocalOf { true }
 
 /** Captures the existing draw pass; this never composes or initializes another work context. */
 @Composable
-internal fun WorkspacePageSnapshot(model: WorkspaceViewModel, contextId: Long, content: @Composable () -> Unit) {
+internal fun WorkspacePageSnapshot(
+    contextId: Long,
+    enabled: Boolean = true,
+    onSnapshot: (ImageBitmap) -> Unit,
+    content: @Composable () -> Unit,
+) {
+    val currentContent by rememberUpdatedState(content)
+    // Keep child state when the window switches between direct drawing and thumbnail recording.
+    val pageContent = remember(contextId) { movableContentOf { currentContent() } }
+    if (!enabled || !LocalWorkspaceSnapshotEnabled.current) {
+        pageContent()
+        return
+    }
     val layer = rememberGraphicsLayer()
     val page = remember(contextId) { RecordedPage() }
-    val enabled = LocalWorkspaceSnapshotEnabled.current
-    LaunchedEffect(model, contextId, layer, enabled) {
-        if (!enabled) return@LaunchedEffect
+    val retainSnapshot by rememberUpdatedState(onSnapshot)
+    LaunchedEffect(contextId, layer) {
         var capturedRevision = 0L
         while (isActive) {
             delay(350)
             if (page.revision == capturedRevision) continue
             val revision = page.revision
             try {
-                model.retainPageSnapshot(contextId, layer.toImageBitmap())
+                retainSnapshot(layer.toImageBitmap())
                 capturedRevision = revision
             } catch (error: CancellationException) {
                 throw error
@@ -47,7 +62,7 @@ internal fun WorkspacePageSnapshot(model: WorkspaceViewModel, contextId: Long, c
     }
     Box(Modifier.fillMaxSize().drawWithContent {
         drawContent()
-        if (enabled && size.width > 0 && size.height > 0) {
+        if (size.width > 0 && size.height > 0) {
             val ratio = (512f / maxOf(size.width, size.height)).coerceAtMost(1f)
             val thumbnailSize = IntSize((size.width * ratio).roundToInt().coerceAtLeast(1), (size.height * ratio).roundToInt().coerceAtLeast(1))
             layer.record(size = thumbnailSize) {
@@ -55,5 +70,5 @@ internal fun WorkspacePageSnapshot(model: WorkspaceViewModel, contextId: Long, c
             }
             page.revision++
         }
-    }) { content() }
+    }) { pageContent() }
 }

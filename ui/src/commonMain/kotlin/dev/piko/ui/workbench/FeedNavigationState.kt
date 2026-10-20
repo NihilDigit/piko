@@ -5,7 +5,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.piko.shared.presentation.FileLocation
 import dev.piko.shared.data.PikoPathBreadcrumb
-import dev.piko.ui.navigation.Screen
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -29,7 +28,6 @@ internal class FeedNavigationState(
     var home by mutableStateOf<FileLocation?>(null)
     var detourTab by mutableStateOf<Long?>(null)
     var opened by mutableStateOf(false)
-    private var browseEntry by mutableStateOf<Screen.Browse?>(null)
     private var prepareJob: Job? = null
     private var opening = false
     private var generation = 0L
@@ -41,7 +39,6 @@ internal class FeedNavigationState(
         val selectedHome = if (selection != null) currentLocation() else null
         if (selection != null) {
             returnLocation = null
-            browseEntry = null
         }
         prepareJob?.cancel()
         val request = ++generation
@@ -59,14 +56,9 @@ internal class FeedNavigationState(
         job.start()
     }
 
-    fun markBrowse(entry: Screen.Browse) { browseEntry = entry }
-
     fun resume(): FileLocation? = returnLocation.also {
         returnLocation = null
-        browseEntry = null
     }
-
-    fun returningFrom(screen: Screen?): FileLocation? = if (screen != null && screen == browseEntry) resume() else null
 
     fun close() {
         generation++
@@ -79,7 +71,6 @@ internal class FeedNavigationState(
         home = null
         detourTab = null
         opened = false
-        browseEntry = null
         closeSession()
     }
 }

@@ -5,6 +5,12 @@ import dev.piko.shared.data.FolderIndex
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.library
 
+data class NavigationEntryToken(
+    val id: Long,
+    val tabId: Long,
+    val enteredStack: List<PikoPathBreadcrumb>,
+)
+
 data class DriveTab(val id: Long, val stack: List<PikoPathBreadcrumb>, val history: FolderHistory = FolderHistory()) {
     val title: String get() = stack.lastOrNull()?.name.orEmpty()
     val session: DriveLibrary? get() = stack.library?.takeIf { it.isSession }

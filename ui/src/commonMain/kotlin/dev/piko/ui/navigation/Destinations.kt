@@ -19,34 +19,12 @@ sealed interface Screen : NavKey {
     @Serializable
     data object Home : Screen
 
-    /** 宽窗口里与详情页并排的「我的」，即两栏的列表栏。窄窗口不压它，「我的」就是 Home 里的那一页。 */
-    @Serializable
-    data object Profile : Screen
-
-    @Serializable
-    data object Login : Screen
-
-    @Serializable
-    data object Files : Screen
-
-    @Serializable
-    data object Transfers : Screen
-
     @Serializable
     data object Settings : Screen
 
     /** 设置的下一级，压在设置上面。 */
     @Serializable
     data object WebDav : Screen
-
-    @Serializable
-    data class Library(val libraryId: String, val instance: Long) : Screen
-
-    @Serializable
-    data class Browse(val path: List<Pair<String, String>>, val highlightId: String, val instance: Long) : Screen
-
-    @Serializable
-    data class Workspace(val contextId: Long) : Screen
 
     @Serializable
     data object MyShares : Screen

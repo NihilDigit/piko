@@ -2,7 +2,6 @@ package dev.piko.ui
 
 import dev.piko.shared.presentation.FileLocation
 import io.github.nihildigit.pikpak.FileStat
-import dev.piko.ui.navigation.Screen
 import dev.piko.ui.workbench.FeedNavigationState
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -23,29 +22,32 @@ import kotlin.test.assertTrue
 class FeedNavigationStateTest {
     private fun state(scope: CoroutineScope) = FeedNavigationState(scope, { object : FileLocation {} }, { emptyList() }, { _, _ -> }, {}, { true })
     @Test
-    fun returningFromTheMobileDetourResumesItsOriginAfterNestedNavigation() = runBlocking {
+    fun resumingTheDetourReturnsItsOriginOnlyOnce() = runBlocking {
         val state = state(this)
         val origin = object : FileLocation {}
-        val browse = Screen.Browse(listOf("folder" to "folder"), "file", 1)
         state.returnLocation = origin
-        state.markBrowse(browse)
-        assertNull(state.returningFrom(Screen.VideoPlayer("file", "file")))
+        state.detourTab = 42L
+        state.shown = true
+        state.opened = true
         assertTrue(state.returnLocation === origin)
-        assertTrue(state.returningFrom(browse.copy()) === origin, "导航条目重建后按固定身份匹配")
+        assertTrue(state.resume() === origin, "恢复入口消费一次返回位置")
         assertNull(state.returnLocation)
-        assertNull(state.returningFrom(browse))
+        assertNull(state.resume())
+        assertEquals(42L, state.detourTab)
+        assertEquals(true, state.shown)
+        assertTrue(state.opened)
     }
 
     @Test
     fun closingTheFeedWhileBrowsingDoesNotReopenItWhenReturning() = runBlocking {
         val state = state(this)
-        val browse = Screen.Browse(emptyList(), "file", 1)
         state.returnLocation = object : FileLocation {}
-        state.markBrowse(browse)
+        state.detourTab = 42L
         state.opened = true
         state.close()
-        assertNull(state.returningFrom(browse))
+        assertNull(state.resume())
         assertNull(state.returnLocation)
+        assertNull(state.detourTab)
         assertTrue(!state.opened)
     }
 

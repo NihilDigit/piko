@@ -31,13 +31,11 @@ internal fun WorkspaceContextHost(
     onPlay: (FileStat, List<FileStat>) -> Unit,
     onReveal: (FileStat) -> Unit,
     onTransfers: () -> Unit,
-    mobileContextId: Long? = null,
     onMinimize: () -> Unit = {},
     retainedStates: androidx.compose.runtime.saveable.SaveableStateHolder? = null,
     fileContent: @Composable () -> Unit,
 ) {
     val wide = dev.piko.ui.adaptive.isDesktopLayout()
-    if (wide && mobileContextId != null) return
     val contexts by model.contexts.contextsFlow.collectAsStateWithLifecycle()
     val active by model.contexts.activeContextId.collectAsStateWithLifecycle()
     val states = retainedStates ?: rememberSaveableStateHolder()
@@ -52,36 +50,55 @@ internal fun WorkspaceContextHost(
 
     @Composable
     fun ContextContent(context: WorkspaceContext) {
-        WorkspacePageSnapshot(model, context.id) {
         states.SaveableStateProvider(context.id) {
-            when (context) {
-                is WorkspaceContext.File -> fileContent()
-                is WorkspaceContext.Duplicate -> {
-                    if (context.id in model.duplicateSessions) DriveScreen(
-                        onNavigateToFolder = { _, _ -> },
-                        onNavigateToVideoPlayer = onPlay,
-                        browserSession = model.duplicateBrowser(context.id),
-                        onRevealInDrive = onReveal,
-                        onOpenTransfers = onTransfers,
-                        onCloseContext = { model.requestCloseContext(context.id) },
-                        rootTitle = workspaceTitle(model, context),
-                        interactionEnabled = true,
-                        onLibraryLeft = {
-                            if (!wide) {
-                                onMinimize()
-                            }
-                        },
-                    )
-                }
-                is WorkspaceContext.ImportDraft -> model.importModels[context.id]?.state?.let { draft ->
-                    Box(Modifier.fillMaxSize().padding(horizontal = if (wide) 24.dp else 0.dp)) {
-                        InstantSheetContent(draft, view = model.importView(context.id), headerShown = true, fillHeight = true, onPreview = { id, name ->
-                            onPlay(FileStat(id = id, name = name), emptyList())
-                        })
+            WorkspacePageSnapshot(context.id, enabled = !wide, onSnapshot = { model.retainPageSnapshot(context.id, it) }) {
+                when (context) {
+                    is WorkspaceContext.File -> fileContent()
+                    is WorkspaceContext.Duplicate -> {
+                        if (context.id in model.duplicateSessions) DriveScreen(
+                            onNavigateToFolder = { _, _ -> },
+                            onNavigateToVideoPlayer = onPlay,
+                            browserSession = model.duplicateBrowser(context.id),
+                            onRevealInDrive = onReveal,
+                            onOpenTransfers = onTransfers,
+                            onCloseContext = { model.requestCloseContext(context.id) },
+                            rootTitle = workspaceTitle(model, context),
+                            interactionEnabled = true,
+                            onLibraryLeft = {
+                                if (!wide) {
+                                    onMinimize()
+                                }
+                            },
+                        )
+                    }
+                    is WorkspaceContext.ImportDraft -> model.importModels[context.id]?.state?.let { draft ->
+                        val content: @Composable () -> Unit = {
+                            InstantSheetContent(draft, view = model.importView(context.id), headerShown = true, fillHeight = true, onPreview = { id, name ->
+                                onPlay(FileStat(id = id, name = name), emptyList())
+                            })
+                        }
+                        if (wide) {
+                            val summary = draft.summary()
+                            dev.piko.ui.components.IslandSurface(
+                                connection = if (contexts.firstOrNull()?.id == active) dev.piko.ui.components.IslandConnection.FirstTab else dev.piko.ui.components.IslandConnection.OtherTab,
+                                modifier = Modifier.fillMaxSize().padding(bottom = dev.piko.ui.theme.FrameCardBottomMargin),
+                                header = {
+                                    Row(
+                                        Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 20.dp, vertical = 8.dp),
+                                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    ) {
+                                        Icon(Icons.Outlined.Bolt, contentDescription = null)
+                                        Text(summary.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, modifier = Modifier.weight(1f))
+                                        summary.status?.let { Text(it, style = MaterialTheme.typography.labelMedium, maxLines = 1) }
+                                    }
+                                },
+                                content = content,
+                            )
+                        } else content()
                     }
                 }
             }
-        }
         }
     }
 
@@ -119,8 +136,12 @@ internal fun WorkspaceContextHost(
             )
             Box(Modifier.weight(1f)) { contexts.firstOrNull { it.id == active }?.let { ContextContent(it) } }
         }
-    } else if (mobileContextId != null) {
-        val context = contexts.firstOrNull { it.id == mobileContextId } ?: return
+    } else {
+        val context = contexts.firstOrNull { it.id == active } ?: return
+        if (context is WorkspaceContext.File) {
+            ContextContent(context)
+            return
+        }
         CompositionLocalProvider(LocalWorkspaceSurface provides WorkspaceSurface(context.id, onMinimize)) {
             BackHandler(onBack = onMinimize)
             if (context is WorkspaceContext.ImportDraft) {
@@ -139,7 +160,7 @@ internal fun WorkspaceContextHost(
                 }
             } else Box(Modifier.fillMaxSize().imePadding()) { ContextContent(context) }
         }
-    } else WorkspacePageSnapshot(model, model.driveWorkspace.activeTabId.value, fileContent)
+    }
 }
 
 @Composable

@@ -11,7 +11,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import dev.piko.shared.data.DriveLibrary
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.presentation.DriveBrowserStore
-import dev.piko.shared.presentation.DriveWorkspace
+import dev.piko.shared.presentation.NavigationEntryToken
 import dev.piko.shared.presentation.FileWorkspace
 import dev.piko.shared.presentation.DriveNavigation
 import dev.piko.shared.presentation.WorkspaceContext
@@ -71,7 +71,51 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
     private val importViews = mutableMapOf<Long, dev.piko.ui.screens.instant.ImportWorkspaceViewState>()
     fun importView(id: Long) = importViews.getOrPut(id) { dev.piko.ui.screens.instant.ImportWorkspaceViewState() }
     private val duplicateBrowsers = mutableMapOf<Long, DriveBrowserSession>()
-    private val contextOrigins = mutableMapOf<Long, List<Screen>>()
+    private val contextOrigins = mutableMapOf<Long, ExternalOrigin>()
+    private val fileOrigins = mutableStateMapOf<Long, ExternalOrigin>()
+    var returnedOrigin by mutableStateOf<ExternalOrigin?>(null)
+        private set
+
+    data class ExternalOrigin(
+        val tab: MainTab,
+        val screens: List<Screen> = listOf(Screen.Home),
+        val sourceContextId: Long? = null,
+        val token: NavigationEntryToken? = null,
+    )
+
+    fun consumeReturnedOrigin(): ExternalOrigin? = returnedOrigin.also { returnedOrigin = null }
+
+    fun enterFromOutside(
+        stack: List<PikoPathBreadcrumb>, tab: MainTab, screens: List<Screen>,
+        sourceContextId: Long? = contexts.activeContextId.value,
+    ) {
+        if (!available) return
+        activateFileBrowser()
+        val token = driveWorkspace.enterWithToken(stack)
+        fileOrigins[token.tabId] = ExternalOrigin(tab, screens.toList(), sourceContextId, token)
+    }
+
+    fun canLeaveFileOrigin(currentStack: List<PikoPathBreadcrumb>): Boolean {
+        val tabId = driveWorkspace.activeTabId.value
+        if (contexts.activeContextId.value != tabId) return false
+        val token = fileOrigins[tabId]?.token ?: return false
+        return driveWorkspace.isAtEntryRoot(token, currentStack)
+
+    }
+
+    fun returnFromFileEntry(): ExternalOrigin? {
+        if (!available) return null
+        val tabId = driveWorkspace.activeTabId.value
+        val origin = fileOrigins[tabId] ?: return null
+        val token = origin.token ?: return null
+        if (!driveWorkspace.returnAcross(token)) return null
+        fileOrigins.remove(tabId)
+        origin.sourceContextId?.takeIf { id -> contexts.contextsFlow.value.any { it.id == id } }
+            ?.let(driveWorkspace::switchContext)
+        return origin
+    }
+
+    val hasFileEntry: Boolean get() = driveWorkspace.activeTabId.value in fileOrigins
     val pageSnapshots = WorkspaceSnapshots<ImageBitmap>()
     val detailPanels = dev.piko.ui.components.DetailPanelStore()
 
@@ -79,8 +123,14 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
         if (available && contexts.contextsFlow.value.any { it.id == id }) pageSnapshots.put(id, image, image.width, image.height)
     }
 
-    fun activateContext(id: Long) {
-        if (!available || !contexts.activate(id)) return
+    fun activateContext(id: Long) = activateContext(id, rememberOrigin = false)
+
+    fun activateContext(id: Long, rememberOrigin: Boolean) {
+        if (!available) return
+        if (rememberOrigin && contexts.activeContextId.value != id) {
+            rememberContextOrigin(id, lastMainTab, lastNavigation)
+        }
+        if (!contexts.activate(id)) return
         activationRevision++
         importModels[id]?.resume()
     }
@@ -100,10 +150,11 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
 
     fun minimizeContext(id: Long) {
         if (!available) return
-        if (contexts.activeContextId.value == id && contexts.contextsFlow.value.none { it is WorkspaceContext.File }) {
-            driveWorkspace.switchTab(fileContextId())
-        }
-        contexts.minimizeToFile(id, fileContextId())
+        val origin = contextOrigins.remove(id)
+        if (contexts.activeContextId.value != id) return
+        val source = origin?.sourceContextId?.takeIf { sourceId -> contexts.contextsFlow.value.any { it.id == sourceId } }
+        if (source != null) driveWorkspace.switchContext(source) else driveWorkspace.switchTab(fileContextId())
+        if (origin != null && (origin.tab != MainTab.FILES || origin.screens.size > 1)) returnedOrigin = origin
     }
 
     fun consumeContextActivation(): Boolean {
@@ -116,14 +167,14 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
         if (!available) return
         val existing = contexts.contextsFlow.value.filterIsInstance<WorkspaceContext.Duplicate>()
             .firstOrNull { it.root.id == root.id }
-        if (existing != null) activateContext(existing.id) else createDuplicate(root)
+        if (existing != null) activateContext(existing.id, rememberOrigin = true) else createDuplicate(root)
     }
 
     private fun createDuplicate(root: PikoPathBreadcrumb) {
         val session = services.newDuplicateSession().also { it.open(root) }
         val id = contexts.openDuplicate(root, activate = false)
         duplicateSessions[id] = session
-        activateContext(id)
+        activateContext(id, rememberOrigin = true)
     }
 
     fun openImport(link: String = "", target: PikoPathBreadcrumb = fileWorkspace.saveTargetContext.currentFolder()) {
@@ -133,7 +184,7 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
         val id = contexts.openImportDraft(activate = false)
         importDrafts[id] = draft
         importModels[id] = AddLinkViewModel(draft)
-        activateContext(id)
+        activateContext(id, rememberOrigin = true)
     }
 
     fun requestCloseContext(id: Long) {
@@ -171,6 +222,7 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
     fun cancelCloseContext() { pendingCloseId = null }
 
     fun closeContext(id: Long) {
+        if (contexts.contextsFlow.value.any { it.id == id && it !is WorkspaceContext.File } && contexts.activeContextId.value == id) minimizeContext(id)
         driveWorkspace.closeContext(id)
     }
 
@@ -178,6 +230,7 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
         detailPanels.forgetWhere { it is dev.piko.shared.presentation.TabNavigation && it.tabId == id }
         pageSnapshots.remove(id)
         contextOrigins.remove(id)
+        fileOrigins.remove(id)
         duplicateBrowsers.remove(id)?.let { detailPanels.forget(it.navigation); it.close() }
         duplicateSessions.remove(id)?.let(services::releaseDuplicateSession)
         importModels.remove(id)
@@ -269,30 +322,18 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
             receiving = services.receivingActivity,
         )
     }
-    private val pages = mutableMapOf<Screen, DriveBrowserSession>()
-    fun rememberContextOrigin(id: Long, screens: List<Screen>) { if (id !in contextOrigins) contextOrigins[id] = screens.toList() }
-    fun contextOrigin(id: Long): List<Screen> = dev.piko.ui.navigation.retainWorkspaceRoutes(
-        contextOrigins[id].orEmpty().ifEmpty { listOf(Screen.Home) }, contexts.contextsFlow.value.mapTo(HashSet()) { it.id },
-    )
+    fun rememberContextOrigin(
+        id: Long, tab: MainTab, screens: List<Screen>,
+        sourceContextId: Long? = contexts.activeContextId.value.takeIf { it != id },
+    ) {
+        if (contexts.activeContextId.value != id || sourceContextId != null) {
+            contextOrigins[id] = ExternalOrigin(tab, screens.toList(), sourceContextId)
+        }
+    }
     var lastNavigation: List<Screen> = listOf(Screen.Home)
         private set
     var lastMainTab: MainTab = MainTab.FILES
         private set
-
-    fun browser(screen: Screen.Library): DriveBrowserSession = pages.getOrPut(screen) {
-        createBrowser(requireNotNull(DriveLibrary.of(screen.libraryId)), null, null)
-    }
-
-    fun browser(screen: Screen.Browse): DriveBrowserSession = pages.getOrPut(screen) {
-        createBrowser(null, screen.path.map { PikoPathBreadcrumb(it.first, it.second) }, null).also {
-            it.navigation.requestHighlight(setOf(screen.highlightId))
-        }
-    }
-
-    fun retainPages(screens: List<Screen>) {
-        val retained = screens + contextOrigins.values.flatten()
-        pages.keys.filter { it !in retained }.forEach { pages.remove(it)?.let { session -> detailPanels.forget(session.navigation); session.close() } }
-    }
 
     fun rememberNavigation(screens: List<Screen>, tab: MainTab) {
         if (closed) return
@@ -310,8 +351,8 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
         detailPanels.clear()
         importViews.clear()
         pageSnapshots.clear()
-        pages.values.forEach { it.close() }
-        pages.clear()
+        contextOrigins.clear()
+        fileOrigins.clear()
     }
 }
 

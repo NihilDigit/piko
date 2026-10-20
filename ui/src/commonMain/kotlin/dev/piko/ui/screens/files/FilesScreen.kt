@@ -29,7 +29,8 @@ fun FilesScreen(
     /** 见 DriveScreen 的同名参数。 */
     addressDestinations: List<PaletteItem> = emptyList(),
     /** 见 DriveScreen 的同名参数。 */
-    onLibraryLeft: () -> Unit = {},
+    onLibraryLeft: (() -> Unit)? = null,
+    canLeaveOrigin: Boolean = false,
     browserSession: dev.piko.shared.state.DriveBrowserSession? = null,
     onRevealInDrive: ((FileStat) -> Unit)? = null,
     modifier: Modifier = Modifier,
@@ -37,6 +38,7 @@ fun FilesScreen(
     DriveScreen(
         addressDestinations = addressDestinations,
         onLibraryLeft = onLibraryLeft,
+        canLeaveOrigin = canLeaveOrigin,
         browserSession = browserSession,
         onRevealInDrive = onRevealInDrive,
         contentFrame = feedFrame,

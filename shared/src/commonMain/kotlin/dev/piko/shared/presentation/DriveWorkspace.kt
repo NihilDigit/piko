@@ -40,6 +40,15 @@ class DriveWorkspace(
     private val workScope = CoroutineScope(backgroundScope.coroutineContext + job)
     override val clipboard = DriveClipboardState()
     private val folderIndex get() = repository.folderIndex
+    private class EntrySnapshot(
+        val tabId: Long,
+        val account: String?,
+        val enteredStack: List<PikoPathBreadcrumb>,
+        val previousStack: List<PikoPathBreadcrumb>,
+        val previousHistory: FolderHistory,
+    )
+    private val entrySnapshots = MutableStateFlow<Map<Long, EntrySnapshot>>(emptyMap())
+    private var nextEntryId = 0L
     private val scrollAnchors = MutableStateFlow<Map<Long, Map<String, ScrollAnchor>>>(emptyMap())
     private val navigations = MutableStateFlow<Set<TabNavigation>>(emptySet())
     private val _folderStackFlow = MutableStateFlow(listOf(ROOT_BREADCRUMB))
@@ -213,6 +222,7 @@ class DriveWorkspace(
             val previous = navigationAccount.value
             if (previous == account) return
             if (!navigationAccount.compareAndSet(previous, account)) continue
+            entrySnapshots.value = emptyMap()
             if (previous == null) return
             break
         }
@@ -270,6 +280,7 @@ class DriveWorkspace(
 
     /** Close the visible tab while retaining a return location when it is the final file browser. */
     fun closeTab(id: Long) {
+        entrySnapshots.update { snapshots -> snapshots.filterValues { it.tabId != id } }
         val tabs = _tabs.value
         if (tabs.none { it.id == id }) return
         if (tabs.size <= 1) {
@@ -328,6 +339,40 @@ class DriveWorkspace(
         internal val history: FolderHistory,
         internal val account: String?,
     ) : FileLocation
+
+    fun enterWithToken(stack: List<PikoPathBreadcrumb>): NavigationEntryToken {
+        val tabId = _activeTabId.value
+        val account = navigationAccount.value
+        val previousStack = _folderStackFlow.value
+        val previousHistory = _historyFlow.value
+        val resolved = folderIndex.resolve(stack.ifEmpty { listOf(ROOT_BREADCRUMB) })
+        updateFolderStack(resolved)
+        val id = ++nextEntryId
+        val snapshot = EntrySnapshot(tabId, account, _folderStackFlow.value, previousStack, previousHistory)
+        entrySnapshots.update { snapshots -> snapshots.filterValues { it.tabId != tabId } + (id to snapshot) }
+        return NavigationEntryToken(id, tabId, snapshot.enteredStack)
+    }
+
+    fun canReturnAcross(token: NavigationEntryToken): Boolean {
+        val snapshot = entrySnapshots.value[token.id] ?: return false
+        return snapshot.tabId == token.tabId && snapshot.account == navigationAccount.value &&
+            snapshot.account == repository.currentAccount && _tabs.value.any { it.id == token.tabId }
+    }
+
+    fun isAtEntryRoot(token: NavigationEntryToken, currentStack: List<PikoPathBreadcrumb>): Boolean {
+        return canReturnAcross(token) && folderIndex.resolve(currentStack) == folderIndex.resolve(token.enteredStack)
+    }
+
+    fun returnAcross(token: NavigationEntryToken): Boolean {
+        if (!canReturnAcross(token)) return false
+        val snapshot = entrySnapshots.getAndUpdate { it - token.id }[token.id] ?: return false
+        switchTab(token.tabId)
+        _folderStackFlow.value = folderIndex.resolve(snapshot.previousStack)
+        _historyFlow.value = snapshot.previousHistory.resolved(folderIndex)
+        forgetFoldersOutsideStack()
+        publishTabs()
+        return true
+    }
 
     override fun currentLocation() = DriveLocation(this, _activeTabId.value, _folderStackFlow.value, _historyFlow.value, navigationAccount.value)
 
@@ -573,6 +618,7 @@ class DriveWorkspace(
     }
 
     fun close() {
+        entrySnapshots.value = emptyMap()
         contextsFlow.value.filterNot { it is WorkspaceContext.File }.forEach(onContextClosed)
         clipboard.clear()
         job.cancel()

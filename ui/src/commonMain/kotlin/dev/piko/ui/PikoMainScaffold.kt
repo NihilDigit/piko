@@ -276,11 +276,7 @@ private val NavKeyConfiguration = SavedStateConfiguration {
     serializersModule = SerializersModule {
         polymorphic(NavKey::class) {
             subclass(Screen.Home::class)
-            subclass(Screen.Profile::class)
             subclass(Screen.MyShares::class)
-            subclass(Screen.Library::class)
-            subclass(Screen.Browse::class)
-            subclass(Screen.Workspace::class)
             subclass(Screen.Settings::class)
             subclass(Screen.WebDav::class)
             subclass(Screen.VideoPlayer::class)
@@ -328,51 +324,24 @@ fun PikoMainScaffold(
     val retainedWorkIds = remember { mutableSetOf<Long>() }
     LaunchedEffect(workspaceContexts.map { it.id }) {
         val live = workspaceContexts.mapTo(mutableSetOf()) { it.id }
-        val retainedRoutes = dev.piko.ui.navigation.retainWorkspaceRoutes(backStack.filterIsInstance<Screen>(), live)
-        backStack.indices.reversed().forEach { index ->
-            val screen = backStack[index]
-            if (screen is Screen.Workspace && screen !in retainedRoutes) backStack.removeAt(index)
-        }
-        if (backStack.isEmpty()) backStack.add(Screen.Home)
         (retainedWorkIds - live).forEach(workspaceUiStates::removeState)
         retainedWorkIds.clear()
         retainedWorkIds.addAll(live)
     }
     LaunchedEffect(workspaceModel.activationRevision) {
         if (workspaceModel.consumeContextActivation()) {
-            val active = workspaceModel.contexts.activeContextId.value
-            val context = workspaceModel.contexts.contextsFlow.value.firstOrNull { it.id == active }
-            if (context != null && context !is dev.piko.shared.presentation.WorkspaceContext.File) {
-                workspaceModel.rememberContextOrigin(active, dev.piko.ui.navigation.openWorkspaceRoute(backStack.filterIsInstance<Screen>(), active).dropLast(1))
-            }
-            if (!desktop && context != null && context !is dev.piko.shared.presentation.WorkspaceContext.File) {
-                val next = dev.piko.ui.navigation.openWorkspaceRoute(backStack.filterIsInstance<Screen>(), active)
-                workspaceModel.rememberContextOrigin(active, next.dropLast(1))
-                val prefix = backStack.zip(next).takeWhile { (before, after) -> before == after }.size
-                while(backStack.size > prefix) backStack.removeLastOrNull()
-                next.drop(prefix).forEach(backStack::add)
-            } else {
-                currentTab = MainTab.FILES
-                while (backStack.size > 1) backStack.removeLastOrNull()
-            }
+            currentTab = MainTab.FILES
+            while (backStack.size > 1) backStack.removeLastOrNull()
         }
     }
     LaunchedEffect(desktop) {
         if (desktop) ongoingWorkShown = false
-        if (desktop) {
-            val next = dev.piko.ui.navigation.wideWorkspaceRoutes(backStack.filterIsInstance<Screen>())
-            if (next != backStack.toList()) {
-                while (backStack.size > 1) backStack.removeLastOrNull()
-                next.drop(1).forEach(backStack::add)
-                currentTab = MainTab.FILES
-            }
-        }
-        else if (backStack.size == 1 && currentTab == MainTab.FILES) {
-            val active = workspaceModel.contexts.activeContextId.value
-            if (workspaceContexts.any { it.id == active && it !is dev.piko.shared.presentation.WorkspaceContext.File }) {
-                workspaceModel.contextOrigin(active).drop(1).forEach(backStack::add)
-                backStack.add(Screen.Workspace(active))
-            }
+    }
+    LaunchedEffect(workspaceModel.returnedOrigin) {
+        workspaceModel.consumeReturnedOrigin()?.let { origin ->
+            currentTab = if (desktop && origin.tab == MainTab.SETTINGS) MainTab.FILES else origin.tab
+            while (backStack.size > 1) backStack.removeLastOrNull()
+            origin.screens.drop(1).forEach(backStack::add)
         }
     }
     val activeFileTab = driveWorkspace?.let { workspace ->
@@ -387,13 +356,13 @@ fun PikoMainScaffold(
             requireNotNull(workspaceModel.tabs).retainTabs(tabs.mapTo(HashSet()) { it.id }).forEach(fileUiStates::removeState)
         }
     }
-    LaunchedEffect(backStack.toList()) {
-        workspaceModel.retainPages(backStack.filterIsInstance<Screen>())
-    }
     SideEffect { workspaceModel.rememberNavigation(backStack.filterIsInstance<Screen>(), currentTab) }
     fun pushLibrary(library: DriveLibrary) {
-        if ((backStack.lastOrNull() as? Screen.Library)?.libraryId == library.id) return
-        backStack.add(Screen.Library(library.id, kotlin.random.Random.nextLong()))
+        val activeIsFile = workspaceModel.contexts.activeContextId.value == driveWorkspace.activeTabId.value
+        if (currentTab == MainTab.FILES && backStack.size == 1 && activeIsFile && fileWorkspace.folderStackFlow.value == listOf(library.crumb)) return
+        workspaceModel.enterFromOutside(listOf(library.crumb), currentTab, backStack.filterIsInstance<Screen>())
+        while (backStack.size > 1) backStack.removeLastOrNull()
+        currentTab = MainTab.FILES
     }
     val widthClass = currentWidthClass()
     val taskSlot = remember { TaskSlot() }
@@ -409,9 +378,6 @@ fun PikoMainScaffold(
     val topScreen = backStack.lastOrNull() as? Screen
     val workspaceSurface = dev.piko.ui.navigation.isWorkspaceSurface(topScreen, currentTab)
     LaunchedEffect(workspaceSurface) { if (!workspaceSurface) ongoingWorkShown = false }
-    LaunchedEffect(topScreen) {
-        if (topScreen is Screen.Workspace) workspaceModel.contexts.activate(topScreen.contextId)
-    }
     val onHome = backStack.size <= 1
 
     // 桌面任何宽度都是一整条侧边栏：上面是去处，下面是网盘的快捷访问与库，照 Finder 的边栏与资源管理器的导航窗格。
@@ -425,27 +391,19 @@ fun PikoMainScaffold(
     val sidebarOverlays = windowWidth < SidebarPushMinWindowWidth
 
     fun resetToHome() {
-        backStack.filterIsInstance<Screen.Workspace>().lastOrNull()?.let { workspaceModel.minimizeContext(it.contextId) }
         while (backStack.size > 1) backStack.removeLastOrNull()
     }
 
-    // 详情页出栈时，垫在它下面的「我的」列表栏一起出：只剩列表栏的话，返回回到的是一页
-    // 与导航栏里「我的」一模一样的页面
     fun popBack() {
-        val popped = backStack.removeLastOrNull()
-        if (popped is Screen.Workspace) workspaceModel.minimizeContext(popped.contextId)
-        workspaceModel.feed.returningFrom(popped as? Screen)?.let {
-            fileWorkspace.returnTo(it)
-            currentTab = MainTab.FILES
-        }
-        if (popped in ProfilePanes && backStack.lastOrNull() == Screen.Profile) backStack.removeLastOrNull()
-        if (backStack.isEmpty()) backStack.add(Screen.Home)
+        if (backStack.size > 1) backStack.removeLastOrNull()
     }
 
-    fun closeProfile() {
-        while (backStack.size > 1 && (backStack.lastOrNull() in ProfilePanes || backStack.lastOrNull() in SettingsSubpages || backStack.lastOrNull() == Screen.Profile)) {
-            backStack.removeLastOrNull()
-        }
+    fun leaveFileEntry(): Boolean {
+        val origin = workspaceModel.returnFromFileEntry() ?: return false
+        currentTab = origin.tab
+        resetToHome()
+        origin.screens.drop(1).forEach(backStack::add)
+        return true
     }
 
     // 两个详情页互相替换，不叠在一起：从回收站点到设置，返回应当回到「我的」而不是回收站。
@@ -555,20 +513,20 @@ fun PikoMainScaffold(
         fileWorkspace.requestHighlight(setOf(fileId))
     }
 
-    /** 侧边栏再次点击当前资料页时返回来源页，其余入口正常压栈。 */
-    fun toggleLibrary(library: DriveLibrary) {
-        if ((backStack.lastOrNull() as? Screen.Library)?.libraryId == library.id) popBack()
-        else pushLibrary(library)
-    }
-
     /**
      * 在网盘里打开条目所在的文件夹并标出它，文件夹也是在上级里标出。传输与我的分享用：手上只有 ID。
      * 找不到（已删除、在回收站里）返回 false，由调用方提示；用户取消了不算找不到。
      */
     suspend fun revealInDrive(fileId: String): Boolean {
+        val originTab = currentTab
+        val originScreens = backStack.filterIsInstance<Screen>()
+        val originContextId = workspaceModel.contexts.activeContextId.value
         val stack = (lookUpPath(fileId) ?: return true).getOrElse { return false }
         if (services.driveRepository.currentAccount != account) return true
-        backStack.add(Screen.Browse(stack.map { it.id to it.name }, fileId, kotlin.random.Random.nextLong()))
+        workspaceModel.enterFromOutside(stack, originTab, originScreens, originContextId)
+        driveWorkspace.requestHighlight(setOf(fileId))
+        resetToHome()
+        currentTab = MainTab.FILES
         return true
     }
 
@@ -647,7 +605,7 @@ fun PikoMainScaffold(
     val feedInPanel = feedOnFilesTab && panelFits && !workspaceModel.feed.fullscreen
     val feedFullScreen = feedOnFilesTab && (!panelFits || workspaceModel.feed.fullscreen)
     val sidebarMode = sidebarWindow &&
-        (onHome || topScreen == Screen.Profile || topScreen in ProfilePanes || topScreen in SettingsSubpages)
+        (onHome || topScreen in ProfilePanes || topScreen in SettingsSubpages)
     // 窄窗口里浮起来的那一层展开的侧边栏。只记这一回：它是临时借一下地方，不改存下的收起状态
     var sidebarFloatRequested by remember { mutableStateOf(false) }
     val sidebarFloating = sidebarFloatRequested && sidebarOverlays && sidebarMode
@@ -722,16 +680,10 @@ fun PikoMainScaffold(
                 ?: return@launch
             if (services.driveRepository.currentAccount != account) return@launch
             suspendFeed(origin)
-            if (!desktop) {
-                val entry = Screen.Browse(stack.map { it.id to it.name }, file.id, kotlin.random.Random.nextLong())
-                workspaceModel.feed.markBrowse(entry)
-                backStack.add(entry)
-                return@launch
-            }
             val detourTab = feedDetourTab?.takeIf { id -> driveWorkspace?.tabsFlow?.value?.any { it.id == id } == true }
             when {
                 detourTab != null -> driveWorkspace?.switchTab(detourTab)
-                feedDetour != null && desktop -> feedDetourTab = driveWorkspace?.openTab(stack)
+                feedDetour != null -> feedDetourTab = driveWorkspace?.openTab(stack)
             }
             showInDrive(stack, file.id)
         }
@@ -755,6 +707,27 @@ fun PikoMainScaffold(
         resetToHome()
         currentTab = MainTab.FILES
         if (feedPoppedOut) popOutFeed()
+    }
+
+    val canLeaveOrigin = workspaceModel.canLeaveFileOrigin(folderStack) ||
+        (feedSuspended && !desktop && folderStack.size <= 1)
+
+    fun leaveLibrary() {
+        if (workspaceModel.canLeaveFileOrigin(folderStack) && leaveFileEntry()) return
+        if (feedSuspended && !desktop) {
+            resumeFeed()
+            return
+        }
+        if (!leaveFileEntry() && !driveWorkspace.goBack()) {
+            driveWorkspace.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB))
+        }
+    }
+
+    /** 侧边栏再次点击当前资料页时返回来源页，其余入口正常压栈。 */
+    fun toggleLibrary(library: DriveLibrary) {
+        val activeIsFile = workspaceModel.contexts.activeContextId.value == driveWorkspace.activeTabId.value
+        if (currentTab == MainTab.FILES && backStack.size == 1 && activeIsFile && fileWorkspace.folderStackFlow.value == listOf(library.crumb)) leaveLibrary()
+        else pushLibrary(library)
     }
 
     SideEffect {
@@ -858,7 +831,7 @@ fun PikoMainScaffold(
     fun openDuplicateReport() {
         val reports = workspaceModel.contexts.contextsFlow.value
             .filterIsInstance<dev.piko.shared.presentation.WorkspaceContext.Duplicate>()
-        if (reports.size == 1) workspaceModel.activateContext(reports.single().id)
+        if (reports.size == 1) workspaceModel.activateContext(reports.single().id, rememberOrigin = true)
         else if (reports.isNotEmpty()) {
             currentTab = MainTab.FILES
             resetToHome()
@@ -899,6 +872,7 @@ fun PikoMainScaffold(
                             onPlay = { file, playlist -> playVideo(file, playlist) },
                             onReveal = { file -> coroutineScope.launch { revealInDrive(file.id) } },
                             onTransfers = ::openTransfers,
+                            onMinimize = { workspaceModel.minimizeContext(workspaceModel.contexts.activeContextId.value) },
                             retainedStates = workspaceUiStates,
                         ) {
                         key(fileBrowser) {
@@ -929,6 +903,8 @@ fun PikoMainScaffold(
                                     // 「文件」就是网盘页自己，地址栏里不列
                                     addressDestinations = tabDestinations().drop(1) + pageDestinations(),
                                     browserSession = fileBrowser,
+                                    onLibraryLeft = ::leaveLibrary,
+                                    canLeaveOrigin = canLeaveOrigin,
                                     onRevealInDrive = { file -> coroutineScope.launch { revealInDrive(file.id) } },
                                 )
                             }
@@ -1102,8 +1078,7 @@ fun PikoMainScaffold(
                 if (finder == null || !finder.isScanning) return@LaunchedEffect
                 snapshotFlow { finder.isScanning }.first { !it }
                 if (workspaceModel.duplicateSessions[id]?.state !== finder) return@LaunchedEffect
-                val visibleReport = if (desktop) currentTab == MainTab.FILES && backStack.size == 1 && workspaceModel.contexts.activeContextId.value == id
-                    else (backStack.lastOrNull() as? Screen.Workspace)?.contextId == id
+                val visibleReport = currentTab == MainTab.FILES && backStack.size == 1 && workspaceModel.contexts.activeContextId.value == id
                 if (visibleReport) return@LaunchedEffect
                 val groups = finder.report.identical.size + finder.report.versions.size
                 val message = when {
@@ -1114,7 +1089,7 @@ fun PikoMainScaffold(
                 }
                 val result = rootSnackbar.showSnackbar(message, actionLabel = "查看报告", withDismissAction = true)
                 if (result == SnackbarResult.ActionPerformed && workspaceModel.duplicateSessions[id]?.state === finder) {
-                    workspaceModel.activateContext(id)
+                    workspaceModel.activateContext(id, rememberOrigin = true)
                 }
             }
         }
@@ -1163,7 +1138,7 @@ fun PikoMainScaffold(
         services.instantSaveRecords.outcomes.collect { outcome ->
             if (outcome.account != services.driveRepository.currentAccount) return@collect
             lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
-            if (outcome.account != services.driveRepository.currentAccount || services.instantSaveRecords.attempts.value.none { it.id == outcome.id } || (workspaceModel.importModels.isNotEmpty() && (desktop || (backStack.lastOrNull() as? Screen.Workspace)?.contextId in workspaceModel.importModels))) return@collect
+            if (outcome.account != services.driveRepository.currentAccount || services.instantSaveRecords.attempts.value.none { it.id == outcome.id } || (currentTab == MainTab.FILES && backStack.size == 1 && workspaceModel.contexts.activeContextId.value in workspaceModel.importModels)) return@collect
             val answer = rootSnackbar.showSnackbar(outcome.message, actionLabel = "查看任务", withDismissAction = true)
             if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) openTransfers()
         }
@@ -1182,7 +1157,7 @@ fun PikoMainScaffold(
         submissions.outcomes.collect { outcome ->
             if (outcome.account != services.driveRepository.currentAccount || outcome.status == dev.piko.shared.state.OfflineSubmitStatus.COMPLETE) return@collect
             lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
-            if (outcome.account != services.driveRepository.currentAccount || submissions.works.value.none { it.id == outcome.id } || (workspaceModel.importModels.isNotEmpty() && (desktop || (backStack.lastOrNull() as? Screen.Workspace)?.contextId in workspaceModel.importModels))) return@collect
+            if (outcome.account != services.driveRepository.currentAccount || submissions.works.value.none { it.id == outcome.id } || (currentTab == MainTab.FILES && backStack.size == 1 && workspaceModel.contexts.activeContextId.value in workspaceModel.importModels)) return@collect
             val answer = rootSnackbar.showSnackbar(outcome.message, actionLabel = "查看任务", withDismissAction = true)
             if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) openTransfers()
         }
@@ -1192,7 +1167,7 @@ fun PikoMainScaffold(
             if (outcome.account != services.driveRepository.currentAccount) return@collect
             if (outcome.result.completion == dev.piko.shared.state.ShareSaveCompletion.SUCCEEDED && services.shareSaves.works.value.firstOrNull { it.id == outcome.id }?.undoChangeIds?.isNotEmpty() == true) return@collect
             lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
-            if (outcome.account != services.driveRepository.currentAccount || services.shareSaves.works.value.none { it.id == outcome.id } || (workspaceModel.importModels.isNotEmpty() && (desktop || (backStack.lastOrNull() as? Screen.Workspace)?.contextId in workspaceModel.importModels))) return@collect
+            if (outcome.account != services.driveRepository.currentAccount || services.shareSaves.works.value.none { it.id == outcome.id } || (currentTab == MainTab.FILES && backStack.size == 1 && workspaceModel.contexts.activeContextId.value in workspaceModel.importModels)) return@collect
             val answer = rootSnackbar.showSnackbar(outcome.result.message, actionLabel = "查看任务", withDismissAction = true)
             if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) openTransfers()
         }
@@ -1316,9 +1291,9 @@ fun PikoMainScaffold(
                     },
                     quickAccess = quickAccess,
                     pinned = pinnedFolders,
-                    folderStack = (topScreen as? Screen.Library)?.let { DriveLibrary.of(it.libraryId)?.let { place -> listOf(place.crumb) } } ?: folderStack,
+                    folderStack = folderStack,
                     onOpenQuickAccess = { stack -> goToDrive(stack) },
-                    selectedPage = (topScreen as? Screen.Library) ?: selectedPane,
+                    selectedPage = selectedPane,
                     onOpenPage = ::openPage,
                     onToggleLibrary = ::toggleLibrary,
                     collapsed = collapsed,
@@ -1355,56 +1330,6 @@ fun PikoMainScaffold(
                             predictivePopTransitionSpec = { _ -> motion.backward() },
                             entryProvider = entryProvider {
                                 entry<Screen.Home> { HomeContent() }
-                                entry<Screen.Workspace> { screen ->
-                                    dev.piko.ui.workbench.WorkspaceContextHost(
-                                        model = workspaceModel,
-                                        onPlay = { file, playlist -> playVideo(file, playlist) },
-                                        onReveal = { file -> coroutineScope.launch { revealInDrive(file.id) } },
-                                        onTransfers = ::openTransfers,
-                                        mobileContextId = screen.contextId,
-                                        onMinimize = { if (backStack.lastOrNull() == screen) popBack() },
-                                        retainedStates = workspaceUiStates,
-                                        fileContent = {},
-                                    )
-                                }
-                                entry<Screen.Browse> { screen ->
-                                    val session = remember(screen, workspaceModel) { workspaceModel.browser(screen) }
-                                    FilesScreen(
-                                        browserSession = session,
-                                        onNavigateToVideoPlayer = { file, playlist -> playVideo(file, playlist) },
-                                        onOpenTransfers = ::openTransfers,
-                                        onOpenDuplicateReport = ::openDuplicateReport,
-                                        onLibraryLeft = ::popBack,
-                                        addressDestinations = tabDestinations() + pageDestinations(),
-                                        onRevealInDrive = { file -> coroutineScope.launch { revealInDrive(file.id) } },
-                                    )
-                                }
-                                entry<Screen.Library> { screen ->
-                                    val library = DriveLibrary.of(screen.libraryId)
-                                    if (library != null) {
-                                        val session = remember(screen, workspaceModel) { workspaceModel.browser(screen) }
-                                        FilesScreen(
-                                            browserSession = session,
-                                            onRevealInDrive = { file -> coroutineScope.launch { revealInDrive(file.id) } },
-                                            onNavigateToVideoPlayer = { file, playlist -> playVideo(file, playlist) },
-                                            onOpenTransfers = ::openTransfers,
-                                            onOpenDuplicateReport = ::openDuplicateReport,
-                                            onLibraryLeft = ::popBack,
-                                            addressDestinations = tabDestinations() + pageDestinations(),
-                                        )
-                                    }
-                                }
-                                // 原来的两栏布局才压这一页，只为恢复旧版存下的返回栈而留着
-                                entry<Screen.Profile> {
-                                    ProfileScreen(
-                                        onLogout = onLogout,
-                                        onOpenPane = ::openProfilePane,
-                                        selectedPane = selectedPane,
-                                        onOpenLibrary = ::openLibraryFromProfile,
-                                        // 侧边栏在时它的「我的」就是出口，列表栏不再给返回
-                                        onBackClick = if (sidebarMode) null else ::closeProfile,
-                                    )
-                                }
                                 entry<Screen.MyShares> { MySharesScreen(onBackClick = paneBack, onLocate = ::revealInDrive) }
                                 entry<Screen.Settings> {
                                     SettingsScreen(
@@ -1605,7 +1530,7 @@ private fun MainSidebar(
                 onOpen = onOpenQuickAccess,
             )
             SectionLabel("库")
-            val onFilesTab = selectedPage is Screen.Library || (selectedPage == null && currentTab == MainTab.FILES)
+            val onFilesTab = selectedPage == null && currentTab == MainTab.FILES
             for (entry in LibraryEntries) {
                 val library = entry.library
                 SidebarItem(
