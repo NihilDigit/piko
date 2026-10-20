@@ -4,8 +4,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -42,7 +40,7 @@ internal data class TaskRowLayout(
 internal fun TaskRow(
     model: TaskRowModel, selection: RowSelection, layout: TaskRowLayout,
     index: Int, count: Int, attention: Boolean,
-    onDetails: () -> Unit, onToggle: () -> Unit,
+    onOpen: () -> Unit, onToggle: () -> Unit,
     quickAction: SheetAction?, extraAction: SheetAction? = null,
     leadingVisual: (@Composable () -> Unit)? = null,
 ) {
@@ -51,8 +49,9 @@ internal fun TaskRow(
     val hovered by interactions.collectIsHoveredAsState()
     val pointers = LocalPointerSource.current
     val showCheckbox = selection.active || (hovered && !pointers.isTouchLike)
+    val shownExtraAction = extraAction.takeIf { layout.wide }
     SegmentedListItem(
-        onClick = { if (selection.active) onToggle() else onDetails() },
+        onClick = { if (selection.active) onToggle() else if (pointers.isTouchLike) onOpen() },
         // 按触发长按时的输入来源判断，避免首个触摸事件切换回调后取消正在进行的手势。
         onLongClick = { if (pointers.isTouchLike) selection.onLongClick?.invoke() },
         modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp).heightIn(min = if (layout.wide) 64.dp else 88.dp)
@@ -93,13 +92,12 @@ internal fun TaskRow(
                 model.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis, color = colors.onSurfaceVariant) }
             }
         },
-        trailingContent = {
-            Row(Modifier.width(if (layout.wide) 144.dp else 96.dp), horizontalArrangement = Arrangement.End) {
+        trailingContent = if (quickAction != null || shownExtraAction != null) ({
+            Row(Modifier.width(if (layout.wide) 96.dp else 48.dp), horizontalArrangement = Arrangement.End) {
                 quickAction?.let { TooltipIconButton(it.icon, it.label, it.onClick) }
-                if (layout.wide) extraAction?.let { TooltipIconButton(it.icon, it.label, it.onClick) }
-                TooltipIconButton(Icons.Outlined.MoreVert, "任务详情：${model.title}", onDetails)
+                shownExtraAction?.let { TooltipIconButton(it.icon, it.label, it.onClick) }
             }
-        },
+        }) else null,
     )
 }
 

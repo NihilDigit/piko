@@ -118,7 +118,7 @@ fun ContextMenuArea(
 }
 
 /** 「选择」单独一组，排在属性与危险项之前，见 [layoutActions]。 */
-private fun withSelectAction(actions: List<SheetAction>, onSelect: (() -> Unit)?): List<SheetAction> =
+internal fun withSelectAction(actions: List<SheetAction>, onSelect: (() -> Unit)?): List<SheetAction> =
     if (onSelect == null) actions else actions + SheetAction(Icons.Outlined.CheckBox, "选择", onSelect, group = ActionGroup.Select)
 
 /**

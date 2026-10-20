@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.instant
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -181,6 +183,11 @@ private fun SourceImportTree(sources: List<ImportSource>, management: ImportMana
     val sourceByKey = sources.associateBy { it.key }
     var details by remember { mutableStateOf<ImportSource?>(null) }
     val platform = LocalPikoPlatform.current
+    fun sourceActions(source: ImportSource): List<SheetAction> = buildList {
+        add(SheetAction(Icons.Outlined.ContentCopy, "复制来源链接", { platform.copyToClipboard("来源链接", source.state.input) }))
+        if (source.enabled && source.state.canEdit && source.state.normalizedMagnet != null) add(SheetAction(Icons.Outlined.Refresh, "重新解析链接", source.state::retryResolve))
+        if (source.enabled) source.onRemove?.let { remove -> add(SheetAction(Icons.Outlined.Close, "移除此链接", remove, destructive = true)) }
+    }
     LazyColumn(modifier, state = management.list, contentPadding = PaddingValues(bottom = 8.dp)) {
         if (management.searchShown) item(key = "search") {
             val focus = remember { FocusRequester() }
@@ -209,33 +216,34 @@ private fun SourceImportTree(sources: List<ImportSource>, management: ImportMana
                 metadata = listOf("${node.indices.size} 个文件"),
             ) else state.items[index].file.filePresentation(node.key)
             val open = { if (node.isFolder) toggle() else if (editable) state.setSourceSelected(node.indices, selected == 0) }
-            WorkspaceTreeRow(node.name, node.depth, item.visual.typeIcon(),
-                expanded = if (node.isFolder) entry.key !in collapsed else null, onExpand = toggle,
-                onOpen = open, item = item, reserveExpandSpace = hasBranches,
-                trailing = { if (node.depth == 0) TooltipIconButton(Icons.Outlined.MoreVert, "来源信息 ${node.name}", { details = source }) },
-                leading = { FileItemSelectionControl(FileItemSelection(checked,
-                    { if (editable) state.setSourceSelected(node.indices, checked != ToggleableState.On) },
-                    enabled = editable, label = "选择来源 ${node.name}")) })
+            ContextMenuArea(actions = { sourceActions(source) }) {
+                WorkspaceTreeRow(node.name, node.depth, item.visual.typeIcon(),
+                    expanded = if (node.isFolder) entry.key !in collapsed else null, onExpand = toggle,
+                    onOpen = open, onLongClick = { details = source }, item = item, reserveExpandSpace = hasBranches,
+                    leading = { FileItemSelectionControl(FileItemSelection(checked,
+                        { if (editable) state.setSourceSelected(node.indices, checked != ToggleableState.On) },
+                        enabled = editable, label = "选择来源 ${node.name}")) })
+            }
         }
+        @OptIn(ExperimentalFoundationApi::class)
         items(sources.filter { it.state.items.isEmpty() && (query.isBlank() || it.state.input.contains(query, true)) }, key = { "pending:${it.key}" }) { source ->
             val state = source.state
-            ListItem(headlineContent = { Text(state.resolution?.resource?.name ?: state.input, maxLines = 1,
-                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
-                supportingContent = { Text(state.errorMessage ?: if (state.isResolving) "正在解析链接" else "整条提交离线") },
-                leadingContent = { Icon(Icons.Outlined.Link, null) },
-                trailingContent = { TooltipIconButton(Icons.Outlined.MoreVert, "来源信息 ${source.key}", { details = source }) },
-                colors = ListItemDefaults.colors(containerColor = androidx.compose.ui.graphics.Color.Transparent))
+            val longClick = fileItemLongPress { details = source }
+            ContextMenuArea(actions = { sourceActions(source) }) {
+                ListItem(headlineContent = { Text(state.resolution?.resource?.name ?: state.input, maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
+                    supportingContent = { Text(state.errorMessage ?: if (state.isResolving) "正在解析链接" else "整条提交离线") },
+                    leadingContent = { Icon(Icons.Outlined.Link, null) },
+                    modifier = Modifier.combinedClickable(onClick = {}, onLongClick = longClick),
+                    colors = ListItemDefaults.colors(containerColor = androidx.compose.ui.graphics.Color.Transparent))
+            }
         }
     }
     details?.let { source ->
         ItemDetailsSheet(title = source.state.resolution?.resource?.name ?: "来源链接",
             headerIcon = { Icon(Icons.Outlined.Link, null) }, onDismiss = { details = null },
             extraLines = { Text(source.state.input, style = MaterialTheme.typography.bodySmall) },
-            actions = buildList {
-                add(SheetAction(Icons.Outlined.ContentCopy, "复制来源链接", { platform.copyToClipboard("来源链接", source.state.input) }))
-                if (source.enabled && source.state.canEdit && source.state.normalizedMagnet != null) add(SheetAction(Icons.Outlined.Refresh, "重新解析链接", source.state::retryResolve))
-                if (source.enabled) source.onRemove?.let { remove -> add(SheetAction(Icons.Outlined.Close, "移除此链接", remove, destructive = true)) }
-            })
+            actions = sourceActions(source))
     }
 }
 
@@ -288,13 +296,13 @@ private fun ImportResultBrowser(sources: List<ImportSource>, browser: ImportBrow
         if (detail.target?.file?.id !in byId) detail.close()
     }
     val shown = all.filter { (if(query.isBlank()) it.parentId == path else it.name.contains(query, true)) }
-    fun properties(file: FileStat) { entryById[file.id]?.let { detail.show(it) } }
+    fun properties(file: FileStat) { entryById[file.id]?.let { detail.show(it, detail.anchors.beside(file.id)) } }
     fun open(file: FileStat) {
         if(file.isFolder) { path = file.id; query = ""; selected = emptyList() }
         else entryById[file.id]?.let { entry ->
             val state = sourceByKey.getValue(entry.sourceKey).state
             val index = entry.sourceIndex
-            if (index != null && state.canPreview(index)) state.preview(index) else properties(file)
+            if (index != null && state.canPreview(index)) state.preview(index)
         }
     }
     fun actions(file: FileStat): List<SheetAction> = buildList {
@@ -311,8 +319,10 @@ private fun ImportResultBrowser(sources: List<ImportSource>, browser: ImportBrow
         add(SheetAction(Icons.Outlined.ContentCopy, "复制来源链接", { platform.copyToClipboard("来源链接", state.input) }))
     }
     val callbacks = DriveItemCallbacks(
-        onOpen = ::open, onRename = null, onMore = { moreId = it.id }, onProperties = ::properties, onPlaced = { _, _ -> },
-        onStartSelection = null, onSelect = { file, value -> selected = if(value) selected + file.id else selected - file.id },
+        onOpen = ::open, onRename = null, onMore = { moreId = it.id }, onProperties = ::properties,
+        onPlaced = { file, coords -> detail.anchors.placed(file.id, coords) },
+        onStartSelection = { file -> selected = listOf(file.id) },
+        onSelect = { file, value -> selected = if(value) selected + file.id else selected - file.id },
         onToggleSelect = { selected = if(it in selected) selected - it else selected + it }, onExtendSelect = { selected = selected + it },
         dragPayload = { null }, onMiddleClick = {}, onBoxSelect = { base, boxed -> selected = (base + boxed).toList() },
         onBackgroundClick = { selected = emptyList() }, onFocusChanged = { _, _ -> }, contextActions = ::actions,
@@ -320,7 +330,7 @@ private fun ImportResultBrowser(sources: List<ImportSource>, browser: ImportBrow
     )
     BackHandler(path.isNotEmpty()) { path = byId[path]?.parentId.orEmpty() }
     CompositionLocalProvider(LocalFileDrag provides null) {
-        Box(Modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxSize().itemPanelAnchorArea(detail.anchors)) {
             Column(Modifier.fillMaxSize()) {
                 Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconButton({ path = byId[path]?.parentId.orEmpty() }, enabled = path.isNotEmpty()) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "上一级保存结果") }
@@ -331,9 +341,9 @@ private fun ImportResultBrowser(sources: List<ImportSource>, browser: ImportBrow
                     trailingIcon = { if(query.isNotEmpty()) IconButton({ query = "" }) { Icon(Icons.Outlined.Close, "清空结果搜索") } })
                 if(shown.isEmpty()) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text(if(entries.isEmpty()) "从来源文件中选择要保存的内容" else "没有匹配的文件") }
                 else DriveFileGrid(items = shown.map { DriveListItem.File(it, null) }, viewMode = DriveViewMode.of(mode), tileSize = TileSize.MEDIUM,
-                    onZoom = {}, gridState = browser.grid, isSelectionMode = false, selectedIds = selected.toSet(), highlightedIds = emptySet(),
+                    onZoom = {}, gridState = browser.grid, isSelectionMode = selected.isNotEmpty(), selectedIds = selected.toSet(), highlightedIds = emptySet(),
                     highlightRevision = 0, structureReady = true, locatedItemId = null, isBlurred = { false }, hitLocations = emptyMap(), folderView = { null },
-                    callbacks = callbacks, bottomPadding = 8.dp, moreButton = true, backgroundActions = { emptyList() }, columnReferenceWidth = null,
+                    callbacks = callbacks, bottomPadding = 8.dp, moreButton = false, backgroundActions = { emptyList() }, columnReferenceWidth = null,
                     activeItemId = selected.lastOrNull(), keyboardFocusTarget = null, onKeyboardFocusMoved = {}, header = {}, foldBanner = null,
                     modifier = Modifier.weight(1f))
             }
@@ -344,7 +354,8 @@ private fun ImportResultBrowser(sources: List<ImportSource>, browser: ImportBrow
         }
         moreId?.let { id -> byId[id]?.let { file ->
             ItemDetailsSheet(title = file.name, headerIcon = { FileTypeIcon(file, 24.dp, Modifier.fillMaxSize()) },
-                actions = actions(file), onDismiss = { moreId = null }, metaParts = listOf(file.sizeBytes.toReadableSize()))
+                actions = withSelectAction(actions(file), if (selected.isEmpty()) ({ moreId = null; selected = listOf(file.id) }) else null),
+                onDismiss = { moreId = null }, metaParts = listOf(file.sizeBytes.toReadableSize()))
         } }
     }
 }

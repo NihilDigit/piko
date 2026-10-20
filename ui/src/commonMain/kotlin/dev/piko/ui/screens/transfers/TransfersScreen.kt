@@ -40,9 +40,12 @@ import dev.piko.ui.components.fullLineItem
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.SyncAlt
+import dev.piko.ui.components.ActionGroup
 import dev.piko.ui.components.PikoDialog
 import dev.piko.ui.components.PikoDialogConfirm
+import dev.piko.ui.components.withSelectAction
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -233,6 +236,12 @@ fun TransfersScreen(
         )
     }
 
+    fun locateWriteId(work: dev.piko.shared.state.FileWriteWork): String? = when (work.command) {
+        is dev.piko.shared.state.FileWriteCommand.Delete -> null
+        is dev.piko.shared.state.FileWriteCommand.Copy -> work.command.target?.id?.takeIf { it.isNotEmpty() }
+        else -> work.result?.createdId ?: work.result?.confirmed?.firstOrNull()
+    }
+
     // 一项的全部操作，详情面板与右键菜单共用：两处给的总是同一组
     fun actionsFor(item: TransferItem): List<SheetAction> = when (item) {
         is TransferItem.UploadPreparing -> uploadPreparationActions(item.work,
@@ -312,15 +321,10 @@ fun TransfersScreen(
         )
         is TransferItem.Write -> {
             val work = item.work
-            val locateId = when (work.command) {
-                is dev.piko.shared.state.FileWriteCommand.Delete -> null
-                is dev.piko.shared.state.FileWriteCommand.Copy -> work.command.target?.id?.takeIf { it.isNotEmpty() }
-                else -> work.result?.createdId ?: work.result?.confirmed?.firstOrNull()
-            }
             fileWriteActions(work, state.writeUndoStatus(work), state.canUndoWrite(work), services.fileWrites.canRecheck(work.id),
                 { state.undoWrite(work) }, { services.fileWrites.recheck(work.id) },
                 { if (work.result?.unconfirmed?.isNotEmpty() == true) { detailState.close(); state.selectOnly(item.key); confirmingDelete = true } else state.remove(item) },
-                locateId?.let { { openCloudFileById(it, work.command.title) } },
+                locateWriteId(work)?.let { { openCloudFileById(it, work.command.title) } },
             )
         }
         is TransferItem.VaultEdit -> vaultEditActions(item.work, state.vaultEditUndoStatus(item.work), state.canUndoVaultEdit(item.work), services.vaultEntryEdits.canRecheck(item.work.id),
@@ -337,10 +341,13 @@ fun TransfersScreen(
             })
     }
 
-    // 点按一项做的事，轻点与鼠标双击共用
+    fun contextActionsFor(item: TransferItem): List<SheetAction> =
+        actionsFor(item) + SheetAction(Icons.Outlined.Info, "详情", { showDetails(item.key) }, group = ActionGroup.Properties)
+
+    // 点按一项做的事，轻点与鼠标双击共用；不弹详情面板，详情在右键菜单与触屏长按里
     fun primaryActionFor(item: TransferItem): (() -> Unit)? = when (item) {
-        is TransferItem.UploadPreparing -> { { showDetails(item.key) } }
-        is TransferItem.LocalBatch -> localBatchPrimaryAction(item, batchIntents(item)) { showDetails(item.key) }
+        is TransferItem.UploadPreparing -> item.work.parentId.takeIf { it.isNotEmpty() }?.let { { openCloudFileById(it, item.work.parentName) } }
+        is TransferItem.LocalBatch -> localBatchPrimaryAction(item, batchIntents(item))
         is TransferItem.Local -> localPrimaryAction(
             task = item.task,
             files = localFiles,
@@ -361,15 +368,14 @@ fun TransfersScreen(
             onRetry = { state.retryPack(item.job.taskId) },
         )
         is TransferItem.Instant -> { { openCloudFileById(item.record.locateId, item.record.name) } }
-        is TransferItem.InstantAttempt -> { { showDetails(item.key) } }
-        is TransferItem.Share -> { { showDetails(item.key) } }
-        is TransferItem.OfflineSubmit -> { { showDetails(item.key) } }
+        is TransferItem.InstantAttempt -> item.work.locateId?.let { { openCloudFileById(it, item.work.title) } }
+        is TransferItem.Share -> (item.work.associatedOutputs.values.firstOrNull() ?: item.work.command.target.id.takeIf { it.isNotEmpty() })?.let { { openCloudFileById(it, item.work.title) } }
+        is TransferItem.OfflineSubmit -> (item.work.outputId ?: item.work.target.id.takeIf { it.isNotEmpty() })?.let { { openCloudFileById(it, item.work.title) } }
         is TransferItem.Extract -> { { openCloudFileById(item.job.file.id, item.job.file.name) } }
-        // 归档的文件夹只记着名字，没有可跳的位置；点按看详情
-        is TransferItem.Vault -> { { showDetails(item.key) } }
-        is TransferItem.Write -> { { showDetails(item.key) } }
-        is TransferItem.History -> { { showDetails(item.key) } }
-        is TransferItem.VaultEdit -> { { showDetails(item.key) } }
+        is TransferItem.Vault -> null
+        is TransferItem.Write -> locateWriteId(item.work)?.let { { openCloudFileById(it, item.work.command.title) } }
+        is TransferItem.History -> null
+        is TransferItem.VaultEdit -> null
     }
 
     // 眼前列出的先后，连选与全选按它。收起的「文件已删除」组不在其中，展开的文件夹下载连同其中的文件
@@ -390,7 +396,7 @@ fun TransfersScreen(
         onToggle = { state.toggleSelected(item.key) },
         onLongClick = {
             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-            state.enterSelection(item.key)
+            showDetails(item.key)
         },
     )
 
@@ -409,7 +415,7 @@ fun TransfersScreen(
         TaskRow(
             taskPresenter.present(item), rowSelection(item), taskLayout, index, count,
             attention = state.needsAttention.any { it.key == item.key },
-            onDetails = { showDetails(item.key) }, onToggle = { state.toggleSelected(item.key) },
+            onOpen = { primaryActionFor(item)?.invoke() }, onToggle = { state.toggleSelected(item.key) },
             quickAction = quickAction(item),
             extraAction = if (item is TransferItem.LocalBatch) SheetAction(
                 if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
@@ -419,10 +425,11 @@ fun TransfersScreen(
         )
     }
 
-    // 右键弹出与详情面板相同的操作。animateItem 这类条目修饰挂在外层，菜单锚点才跟着条目走
+    // 右键弹出操作与详情项。animateItem 这类条目修饰挂在外层，菜单锚点才跟着条目走
     val renderItem: @Composable (TransferItem, Modifier, Int, Int) -> Unit = { item, itemModifier, index, count ->
+        val hasTrailing = quickAction(item) != null || (taskLayout.wide && item is TransferItem.LocalBatch)
         ContextMenuArea(
-            actions = { actionsFor(item) },
+            actions = { contextActionsFor(item) },
             onSelect = if (selectionActive) null else ({ state.enterSelection(item.key) }),
             modifier = itemModifier,
         ) {
@@ -432,7 +439,7 @@ fun TransfersScreen(
                     .transferClicks(
                         // 多选态下单击照网盘页是勾选；平时只选中这一项
                         onSelect = {
-                            if (selectionActive) state.toggleSelected(item.key) else showDetails(item.key)
+                            if (selectionActive) state.toggleSelected(item.key) else state.selectOnly(item.key)
                             focusList()
                         },
                         onToggle = {
@@ -444,7 +451,7 @@ fun TransfersScreen(
                             focusList()
                         },
                         onOpen = { primaryActionFor(item)?.invoke() },
-                        trailingPassThrough = if (taskLayout.wide) 144.dp else 96.dp,
+                        trailingPassThrough = if (!hasTrailing) 0.dp else if (taskLayout.wide) 108.dp else 60.dp,
                         leadingPassThrough = 64.dp,
                     ),
             ) {
@@ -493,24 +500,28 @@ fun TransfersScreen(
     val closeDetails = detailState::close
     @Composable
     fun TaskDetails(modifier: Modifier) {
-    when (detailsItem) {
-        null -> Unit
-        is TransferItem.LocalBatch -> LocalBatchDetails(detailsItem, actionsFor(detailsItem), modifier = modifier)
-        is TransferItem.Local -> LocalTransferDetails(detailsItem.task, actionsFor(detailsItem), modifier = modifier)
-        is TransferItem.Upload -> UploadTransferDetails(detailsItem.task, actionsFor(detailsItem), modifier = modifier)
-        is TransferItem.UploadPreparing -> UploadPreparingDetails(detailsItem.work, actionsFor(detailsItem), modifier = modifier)
-        is TransferItem.Cloud -> CloudTransferDetails(detailsItem.task, actionsFor(detailsItem), modifier = modifier)
-        is TransferItem.Pack -> PackTransferDetails(detailsItem, actionsFor(detailsItem), modifier = modifier)
-        is TransferItem.Instant -> InstantTransferDetails(detailsItem.record, actionsFor(detailsItem), modifier = modifier)
-        is TransferItem.InstantAttempt -> InstantAttemptDetails(detailsItem.work, actionsFor(detailsItem), modifier = modifier)
-        is TransferItem.Share -> ShareTransferDetails(detailsItem.work, state.shareUndoStatus(detailsItem.work), actionsFor(detailsItem), modifier = modifier)
-        is TransferItem.OfflineSubmit -> OfflineSubmitDetails(detailsItem.work, actionsFor(detailsItem), modifier = modifier)
-        is TransferItem.Extract -> ExtractTransferDetails(detailsItem, actionsFor(detailsItem), modifier = modifier)
-        is TransferItem.Vault -> VaultTransferDetails(detailsItem, vaultSession, actionsFor(detailsItem), detailsItem.record?.let(state::vaultUndoStatus), modifier = modifier)
-        is TransferItem.Write -> FileWriteTransferDetails(detailsItem.work, state.writeUndoStatus(detailsItem.work), actionsFor(detailsItem), modifier = modifier)
-        is TransferItem.History -> HistoryTransferDetails(detailsItem.work, actionsFor(detailsItem), modifier = modifier)
-        is TransferItem.VaultEdit -> VaultEditTransferDetails(detailsItem.work, state.vaultEditUndoStatus(detailsItem.work), actionsFor(detailsItem), modifier = modifier)
-    }
+        val current = detailsItem ?: return
+        val actions = withSelectAction(
+            actionsFor(current),
+            if (LocalPointerSource.current.isTouchLike && !selectionActive) ({ closeDetails(); state.enterSelection(current.key) }) else null,
+        )
+        when (current) {
+            is TransferItem.LocalBatch -> LocalBatchDetails(current, actions, modifier = modifier)
+            is TransferItem.Local -> LocalTransferDetails(current.task, actions, modifier = modifier)
+            is TransferItem.Upload -> UploadTransferDetails(current.task, actions, modifier = modifier)
+            is TransferItem.UploadPreparing -> UploadPreparingDetails(current.work, actions, modifier = modifier)
+            is TransferItem.Cloud -> CloudTransferDetails(current.task, actions, modifier = modifier)
+            is TransferItem.Pack -> PackTransferDetails(current, actions, modifier = modifier)
+            is TransferItem.Instant -> InstantTransferDetails(current.record, actions, modifier = modifier)
+            is TransferItem.InstantAttempt -> InstantAttemptDetails(current.work, actions, modifier = modifier)
+            is TransferItem.Share -> ShareTransferDetails(current.work, state.shareUndoStatus(current.work), actions, modifier = modifier)
+            is TransferItem.OfflineSubmit -> OfflineSubmitDetails(current.work, actions, modifier = modifier)
+            is TransferItem.Extract -> ExtractTransferDetails(current, actions, modifier = modifier)
+            is TransferItem.Vault -> VaultTransferDetails(current, vaultSession, actions, current.record?.let(state::vaultUndoStatus), modifier = modifier)
+            is TransferItem.Write -> FileWriteTransferDetails(current.work, state.writeUndoStatus(current.work), actions, modifier = modifier)
+            is TransferItem.History -> HistoryTransferDetails(current.work, actions, modifier = modifier)
+            is TransferItem.VaultEdit -> VaultEditTransferDetails(current.work, state.vaultEditUndoStatus(current.work), actions, modifier = modifier)
+        }
     }
 
     val transfersListBody: @Composable (PaddingValues) -> Unit = { innerPadding ->

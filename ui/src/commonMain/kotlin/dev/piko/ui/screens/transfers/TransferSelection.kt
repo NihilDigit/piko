@@ -4,8 +4,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.isPrimaryPressed
 import androidx.compose.ui.input.pointer.isShiftPressed
@@ -29,12 +31,12 @@ internal class RowSelection(
 }
 
 /**
- * 条目的鼠标点选，照网盘页与资源管理器：单击选中这一项，主修饰键加选，Shift 连选，双击执行主操作。
+ * 条目的鼠标点选，照网盘页与资源管理器：单击选中或打开详情，主修饰键加选，Shift 连选，双击执行主操作。
  * 只截鼠标：触屏的轻点与长按照旧交给条目自己（轻点执行；长按在移动端进多选，在桌面弹右键菜单），触屏上没有修饰键可言。
- * 在 Initial 阶段截下并消费，条目自己的点击就不会同时触发。
  *
- * 不用组件库的 selectionClicks：它的普通单击什么也不做（网盘页靠条目取得焦点来「选中」），
- * 这里的选中要落进 TransfersState 的选中集，页头才能据此换成批量操作。
+ * 修饰键点选在按下时立即消费；普通单击在松开时判定（与 [dev.piko.ui.components.selectionClicks] 一致）：
+ * 按下不截走、也不立即触发 [onSelect]，这样在条目上按住鼠标左键拖动拉框多选（marqueeSelection）时，
+ * 不会在按下瞬间误触详情面板，松开时若已发生框选拖动则消费掉松开事件，不再触发条目的单击。
  *
  * 行尾 [trailingPassThrough] 宽的一段不截：那里是行自己的按钮（更多、暂停这些），在 Initial 阶段截下的话
  * 按钮先于子元素被拦住，永远点不到。
@@ -54,34 +56,74 @@ internal fun Modifier.transferClicks(
     val extend by rememberUpdatedState(onExtend)
     val open by rememberUpdatedState(onOpen)
     return pointerInput(shortcut, trailingPassThrough, leadingPassThrough) {
+        var pressed: PointerId? = null
+        var pressedAt = Offset.Zero
+        var dragged = false
         var lastClickAt = 0L
+        var lastClickPosition = Offset.Zero
         awaitPointerEventScope {
             while (true) {
                 val event = awaitPointerEvent(PointerEventPass.Initial)
                 val change = event.changes.firstOrNull() ?: continue
-                if (event.type != PointerEventType.Press || change.type != PointerType.Mouse || !event.buttons.isPrimaryPressed) continue
-                // 行宽随窗口变，每次按下时现量
-                if (change.position.x >= size.width - trailingPassThrough.toPx()) continue
-                if (change.position.x < leadingPassThrough.toPx()) continue
-                event.changes.forEach { it.consume() }
-                val modifiers = event.keyboardModifiers
-                when {
-                    modifiers.isShiftPressed -> extend()
-                    shortcut.isPressed(modifiers) -> toggle()
-                    change.uptimeMillis - lastClickAt <= viewConfiguration.doubleTapTimeoutMillis -> {
-                        // 清零：连点三下是一次双击加一次单击
-                        lastClickAt = 0L
-                        open()
+                if (change.type != PointerType.Mouse) continue
+                when (event.type) {
+                    PointerEventType.Press -> {
+                        pressed = null
+                        dragged = false
+                        if (!event.buttons.isPrimaryPressed) continue
+                        // 行宽随窗口变，每次按下时现量
+                        if (change.position.x >= size.width - trailingPassThrough.toPx()) continue
+                        if (change.position.x < leadingPassThrough.toPx()) continue
+                        val modifiers = event.keyboardModifiers
+                        val action = when {
+                            modifiers.isShiftPressed -> extend
+                            shortcut.isPressed(modifiers) -> toggle
+                            else -> null
+                        }
+                        if (action != null) {
+                            event.changes.forEach { it.consume() }
+                            lastClickAt = 0L
+                            action()
+                        } else {
+                            pressed = change.id
+                            pressedAt = change.position
+                        }
                     }
-                    else -> {
-                        lastClickAt = change.uptimeMillis
-                        select()
+                    PointerEventType.Move -> {
+                        if (change.id == pressed && (change.isConsumed || (change.position - pressedAt).getDistance() > ItemMarqueeSlopDp.dp.toPx())) {
+                            dragged = true
+                        }
+                    }
+                    PointerEventType.Release -> {
+                        if (change.id != pressed) continue
+                        val wasDragged = dragged || change.isConsumed || (change.position - pressedAt).getDistance() > ItemMarqueeSlopDp.dp.toPx()
+                        pressed = null
+                        dragged = false
+                        change.consume()
+                        if (wasDragged) {
+                            lastClickAt = 0L
+                            continue
+                        }
+                        val now = change.uptimeMillis
+                        val isDouble = now - lastClickAt <= viewConfiguration.doubleTapTimeoutMillis &&
+                            (change.position - lastClickPosition).getDistance() <= viewConfiguration.touchSlop
+                        if (isDouble) {
+                            // 清零：连点三下是一次双击加一次单击
+                            lastClickAt = 0L
+                            open()
+                        } else {
+                            lastClickAt = now
+                            lastClickPosition = change.position
+                            select()
+                        }
                     }
                 }
             }
         }
     }
 }
+
+private const val ItemMarqueeSlopDp = 4
 
 /** 剩余时间，按眼下的速度估：「3 分 20 秒」「1 小时 5 分」。速度为 0 或剩余未知时不给，免得报出无穷大。 */
 internal fun remainingTime(remainingBytes: Long?, speed: Long): String? {

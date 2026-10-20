@@ -18,3 +18,11 @@ plugins {
     alias(libs.plugins.kotlin.serialization) apply false
     alias(libs.plugins.ksp) apply false
 }
+
+// 根目录的 run 只启动桌面应用，避免同时执行需要参数的 CLI 和截图工具。
+tasks.register<DefaultTask>("run") {
+    group = "application"
+    description = "Run the Piko desktop application"
+    impliesSubProjects = true
+    dependsOn(":desktopApp:run")
+}

@@ -131,7 +131,8 @@ fun Modifier.marqueeSelection(
                     val event = awaitPointerEvent(PointerEventPass.Initial)
                     val change = event.changes.firstOrNull { it.id == down.id } ?: break
                     if (!change.pressed) {
-                        releasedOnChild = isReleaseConsumed(down.id)
+                        if (dragging) change.consume()
+                        else releasedOnChild = isReleaseConsumed(down.id)
                         break
                     }
                     pointer = change.position

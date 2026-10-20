@@ -25,6 +25,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -72,7 +73,11 @@ internal fun WorkspaceControls(compact: Boolean = false) {
                             slideOutVertically(scheme.fastEffectsSpec()) { -it }
                     } else EnterTransition.None togetherWith ExitTransition.None).using(null)
                 },
-            ) { count -> Text("$count", style = MaterialTheme.typography.labelMedium) }
+            ) { count ->
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("$count", style = MaterialTheme.typography.labelMedium, textAlign = TextAlign.Center)
+                }
+            }
         }
     }
 }

@@ -89,11 +89,11 @@ internal class LocalBatchIntents(
 )
 
 /**
- * 点按做的事：列完了是展开或收起，列出中、列出失败与待确认没有文件可列，打开详情，那里有可做的事。
+ * 点按做的事：列完了是展开或收起，列出中、列出失败与待确认没有文件可列，不弹详情。
  * 窄行的轻点、宽行的双击共用。
  */
-internal fun localBatchPrimaryAction(item: TransferItem.LocalBatch, intents: LocalBatchIntents, onDetails: () -> Unit): () -> Unit =
-    if (item.listing != null) onDetails else intents.onToggleExpand
+internal fun localBatchPrimaryAction(item: TransferItem.LocalBatch, intents: LocalBatchIntents): (() -> Unit)? =
+    if (item.listing != null) null else intents.onToggleExpand
 
 
 /** 一组的全部操作，详情面板与右键菜单共用。 */

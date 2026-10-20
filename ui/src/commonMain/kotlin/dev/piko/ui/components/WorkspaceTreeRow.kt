@@ -1,6 +1,7 @@
 package dev.piko.ui.components
 
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
@@ -16,16 +17,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.input.key.*
 
 /** Shared tree geometry; selection and file actions are optional capabilities of each instance. */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun WorkspaceTreeRow(
     name: String, depth: Int, icon: ImageVector, expanded: Boolean?, onExpand: () -> Unit,
     onOpen: () -> Unit, modifier: Modifier = Modifier, emphasized: Boolean = false,
+    onLongClick: (() -> Unit)? = null,
     leading: @Composable RowScope.() -> Unit = {}, trailing: @Composable RowScope.() -> Unit = {},
     supporting: String? = null,
     item: FilePresentation? = null,
     actions: FileItemActions? = null,
     reserveExpandSpace: Boolean = true,
 ) {
+    val longClick = fileItemLongPress(onLongClick)
     Row(modifier.fillMaxWidth().onKeyEvent { event ->
         if (event.type != KeyEventType.KeyDown) false
         else when {
@@ -33,7 +37,7 @@ internal fun WorkspaceTreeRow(
             event.key == Key.DirectionLeft && expanded == true -> { onExpand(); true }
             else -> false
         }
-    }.clickable(onClick = actions?.primary ?: onOpen).heightIn(min = 48.dp)
+    }.combinedClickable(onClick = actions?.primary ?: onOpen, onLongClick = longClick).heightIn(min = 48.dp)
         .padding(start = 4.dp + 16.dp * depth, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         if (expanded != null) IconButton(onClick = onExpand, modifier = Modifier.size(36.dp)) {
             Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, if (expanded) "收起 $name" else "展开 $name",
