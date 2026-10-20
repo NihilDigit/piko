@@ -349,11 +349,10 @@ fun PikoMainScaffold(
         active
     }
     val fileBrowser = workspaceModel.mainBrowser(activeFileTab)
-    val fileUiStates = rememberSaveableStateHolder()
     driveWorkspace?.let { workspace ->
         val tabs by workspace.tabsFlow.collectAsStateWithLifecycle()
         LaunchedEffect(tabs.map { it.id }) {
-            requireNotNull(workspaceModel.tabs).retainTabs(tabs.mapTo(HashSet()) { it.id }).forEach(fileUiStates::removeState)
+            requireNotNull(workspaceModel.tabs).retainTabs(tabs.mapTo(HashSet()) { it.id })
         }
     }
     SideEffect { workspaceModel.rememberNavigation(backStack.filterIsInstance<Screen>(), currentTab) }
@@ -876,7 +875,6 @@ fun PikoMainScaffold(
                             retainedStates = workspaceUiStates,
                         ) {
                         key(fileBrowser) {
-                            fileUiStates.SaveableStateProvider(activeFileTab ?: "mobile-files") {
                                 FilesScreen(
                                     onNavigateToVideoPlayer = { file, playlist -> playVideo(file, playlist) },
                                     scrollToTopRequests = filesScrollToTop,
@@ -907,7 +905,6 @@ fun PikoMainScaffold(
                                     canLeaveOrigin = canLeaveOrigin,
                                     onRevealInDrive = { file -> coroutineScope.launch { revealInDrive(file.id) } },
                                 )
-                            }
                         }
                         }
                     }

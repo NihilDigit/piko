@@ -50,70 +50,97 @@ internal fun WorkspaceContextHost(
 
     @Composable
     fun ContextContent(context: WorkspaceContext) {
-        states.SaveableStateProvider(context.id) {
-            WorkspacePageSnapshot(context.id, enabled = !wide, onSnapshot = { model.retainPageSnapshot(context.id, it) }) {
-                when (context) {
-                    is WorkspaceContext.File -> fileContent()
-                    is WorkspaceContext.Duplicate -> {
-                        if (context.id in model.duplicateSessions) DriveScreen(
-                            onNavigateToFolder = { _, _ -> },
-                            onNavigateToVideoPlayer = onPlay,
-                            browserSession = model.duplicateBrowser(context.id),
-                            onRevealInDrive = onReveal,
-                            onOpenTransfers = onTransfers,
-                            onCloseContext = { model.requestCloseContext(context.id) },
-                            rootTitle = workspaceTitle(model, context),
-                            interactionEnabled = true,
-                            onLibraryLeft = {
-                                if (!wide) {
-                                    onMinimize()
+        key(context.id) {
+            states.SaveableStateProvider(context.id) {
+                WorkspacePageSnapshot(context.id, enabled = !wide, onSnapshot = { model.retainPageSnapshot(context.id, it) }) {
+                    when (context) {
+                        is WorkspaceContext.File -> fileContent()
+                        is WorkspaceContext.Duplicate -> {
+                            CompositionLocalProvider(
+                                LocalWorkspaceSurface provides if (!wide) WorkspaceSurface(context.id, onMinimize) else null,
+                            ) {
+                                BackHandler(enabled = !wide, onBack = onMinimize)
+                                Box(Modifier.fillMaxSize().then(if (!wide) Modifier.imePadding() else Modifier)) {
+                                    if (context.id in model.duplicateSessions) DriveScreen(
+                                        onNavigateToFolder = { _, _ -> },
+                                        onNavigateToVideoPlayer = onPlay,
+                                        browserSession = model.duplicateBrowser(context.id),
+                                        onRevealInDrive = onReveal,
+                                        onOpenTransfers = onTransfers,
+                                        onCloseContext = { model.requestCloseContext(context.id) },
+                                        rootTitle = workspaceTitle(model, context),
+                                        interactionEnabled = true,
+                                        onLibraryLeft = {
+                                            if (!wide) {
+                                                onMinimize()
+                                            }
+                                        },
+                                    )
                                 }
-                            },
-                        )
-                    }
-                    is WorkspaceContext.ImportDraft -> model.importModels[context.id]?.state?.let { draft ->
-                        val content: @Composable () -> Unit = {
-                            InstantSheetContent(draft, view = model.importView(context.id), headerShown = true, fillHeight = true, onPreview = { id, name ->
-                                onPlay(FileStat(id = id, name = name), emptyList())
-                            })
+                            }
                         }
-                        if (wide) {
-                            val summary = draft.summary()
-                            dev.piko.ui.components.IslandSurface(
-                                connection = if (contexts.firstOrNull()?.id == active) dev.piko.ui.components.IslandConnection.FirstTab else dev.piko.ui.components.IslandConnection.OtherTab,
-                                modifier = Modifier.fillMaxSize().padding(bottom = dev.piko.ui.theme.FrameCardBottomMargin),
-                                header = {
-                                    Row(
-                                        Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 20.dp, vertical = 8.dp),
-                                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                    ) {
-                                        Icon(Icons.Outlined.Bolt, contentDescription = null)
-                                        Text(summary.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, modifier = Modifier.weight(1f))
-                                        summary.status?.let { Text(it, style = MaterialTheme.typography.labelMedium, maxLines = 1) }
+                        is WorkspaceContext.ImportDraft -> model.importModels[context.id]?.state?.let { draft ->
+                            val content: @Composable () -> Unit = {
+                                InstantSheetContent(draft, view = model.importView(context.id), headerShown = true, fillHeight = true, onPreview = { id, name ->
+                                    onPlay(FileStat(id = id, name = name), emptyList())
+                                })
+                            }
+                            if (wide) {
+                                val summary = draft.summary()
+                                dev.piko.ui.components.IslandSurface(
+                                    connection = if (contexts.firstOrNull()?.id == active) dev.piko.ui.components.IslandConnection.FirstTab else dev.piko.ui.components.IslandConnection.OtherTab,
+                                    modifier = Modifier.fillMaxSize().padding(bottom = dev.piko.ui.theme.FrameCardBottomMargin),
+                                    header = {
+                                        Row(
+                                            Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 20.dp, vertical = 8.dp),
+                                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                        ) {
+                                            Icon(Icons.Outlined.Bolt, contentDescription = null)
+                                            Text(summary.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, modifier = Modifier.weight(1f))
+                                            summary.status?.let { Text(it, style = MaterialTheme.typography.labelMedium, maxLines = 1) }
+                                        }
+                                    },
+                                    content = content,
+                                )
+                            } else {
+                                CompositionLocalProvider(LocalWorkspaceSurface provides WorkspaceSurface(context.id, onMinimize)) {
+                                    BackHandler(onBack = onMinimize)
+                                    dev.piko.ui.components.PikoScaffold(
+                                        modifier = Modifier.fillMaxSize().imePadding(),
+                                        topBar = {
+                                            dev.piko.ui.components.PikoTopBar(
+                                                title = "添加链接",
+                                                navigationIcon = { dev.piko.ui.components.TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, "返回来源", onMinimize) },
+                                                persistentActions = { WorkspaceControls() },
+                                            )
+                                        },
+                                        snackbarHost = { SnackbarHost(dev.piko.ui.LocalRootSnackbar.current) },
+                                    ) { padding ->
+                                        Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) { content() }
                                     }
-                                },
-                                content = content,
-                            )
-                        } else content()
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    if (wide) {
-        val workspace = requireNotNull(model.driveWorkspace)
-        val files by workspace.tabsFlow.collectAsStateWithLifecycle()
-        val tabs = contexts.map { context ->
-            when (context) {
-                is WorkspaceContext.File -> files.firstOrNull { it.id == context.id } ?: DriveTab(context.id, emptyList())
-                is WorkspaceContext.Duplicate -> DriveTab(context.id, listOf(PikoPathBreadcrumb("context:${context.id}", "查重：${context.root.name}")))
-                is WorkspaceContext.ImportDraft -> DriveTab(context.id, listOf(PikoPathBreadcrumb("context:${context.id}", "添加链接")))
+    val activeContext = contexts.firstOrNull { it.id == active }
+    Column(Modifier.fillMaxSize()) {
+        if (wide) {
+            val workspace = requireNotNull(model.driveWorkspace)
+            val files by workspace.tabsFlow.collectAsStateWithLifecycle()
+            val tabs = contexts.map { context ->
+                when (context) {
+                    is WorkspaceContext.File -> files.firstOrNull { it.id == context.id } ?: DriveTab(context.id, emptyList())
+                    is WorkspaceContext.Duplicate -> DriveTab(context.id, listOf(PikoPathBreadcrumb("context:${context.id}", "查重：${context.root.name}")))
+                    is WorkspaceContext.ImportDraft -> DriveTab(context.id, listOf(PikoPathBreadcrumb("context:${context.id}", "添加链接")))
+                }
             }
-        }
-        val shortcut = LocalPikoPlatform.current.shortcutModifier
-        Column(Modifier.fillMaxSize()) {
+            val shortcut = LocalPikoPlatform.current.shortcutModifier
             DriveTabBar(
                 tabs = tabs, activeId = active,
                 onSelect = model::activateContext, onClose = model::requestCloseContext,
@@ -134,31 +161,9 @@ internal fun WorkspaceContextHost(
                     }
                 },
             )
-            Box(Modifier.weight(1f)) { contexts.firstOrNull { it.id == active }?.let { ContextContent(it) } }
         }
-    } else {
-        val context = contexts.firstOrNull { it.id == active } ?: return
-        if (context is WorkspaceContext.File) {
-            ContextContent(context)
-            return
-        }
-        CompositionLocalProvider(LocalWorkspaceSurface provides WorkspaceSurface(context.id, onMinimize)) {
-            BackHandler(onBack = onMinimize)
-            if (context is WorkspaceContext.ImportDraft) {
-                dev.piko.ui.components.PikoScaffold(
-                    modifier = Modifier.fillMaxSize().imePadding(),
-                    topBar = {
-                        dev.piko.ui.components.PikoTopBar(
-                            title = "添加链接",
-                            navigationIcon = { dev.piko.ui.components.TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, "返回来源", onMinimize) },
-                            persistentActions = { WorkspaceControls() },
-                        )
-                    },
-                    snackbarHost = { SnackbarHost(dev.piko.ui.LocalRootSnackbar.current) },
-                ) { padding ->
-                    Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) { ContextContent(context) }
-                }
-            } else Box(Modifier.fillMaxSize().imePadding()) { ContextContent(context) }
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            if (activeContext != null) ContextContent(activeContext)
         }
     }
 }

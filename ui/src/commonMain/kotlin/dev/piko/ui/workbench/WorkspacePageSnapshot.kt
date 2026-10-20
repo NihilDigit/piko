@@ -6,7 +6,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
@@ -33,11 +32,8 @@ internal fun WorkspacePageSnapshot(
     onSnapshot: (ImageBitmap) -> Unit,
     content: @Composable () -> Unit,
 ) {
-    val currentContent by rememberUpdatedState(content)
-    // Keep child state when the window switches between direct drawing and thumbnail recording.
-    val pageContent = remember(contextId) { movableContentOf { currentContent() } }
     if (!enabled || !LocalWorkspaceSnapshotEnabled.current) {
-        pageContent()
+        content()
         return
     }
     val layer = rememberGraphicsLayer()
@@ -70,5 +66,5 @@ internal fun WorkspacePageSnapshot(
             }
             page.revision++
         }
-    }) { pageContent() }
+    }) { content() }
 }
