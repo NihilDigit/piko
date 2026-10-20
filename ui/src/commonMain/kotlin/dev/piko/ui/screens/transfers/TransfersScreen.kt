@@ -47,10 +47,8 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import dev.piko.ui.components.PikoScaffold
-import dev.piko.ui.theme.FrameCardShape
-import dev.piko.ui.theme.islandHeader
-import androidx.compose.foundation.background
-import androidx.compose.ui.draw.clip
+import dev.piko.ui.components.IslandPage
+import dev.piko.ui.theme.LocalFramed
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Surface
@@ -607,10 +605,14 @@ fun TransfersScreen(
     PikoScaffold(
         modifier = modifier.fillMaxSize().onPreviewKeyEvent(detailState::handleKey),
         topBar = { TaskPageHeader(state, bulkSelected.size, headerActions) },
+        island = IslandPage(
+            header = { TaskIslandHeader(state, bulkSelected.size, headerActions) },
+            belowHeader = { TaskRateBar(state) },
+        ),
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).background(MaterialTheme.colorScheme.islandHeader)) {
-            TaskRateBar(state)
-            Box(Modifier.weight(1f).fillMaxWidth().onSizeChanged { taskContentWidth = it.width }.clip(FrameCardShape).background(MaterialTheme.colorScheme.surface)
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            if (!LocalFramed.current) TaskRateBar(state)
+            Box(Modifier.weight(1f).fillMaxWidth().onSizeChanged { taskContentWidth = it.width }
                 .itemPanelAnchorArea(detailState.anchors)) {
                 Box(Modifier.fillMaxSize().semantics { contentDescription = "任务列表" }) { transfersListBody(PaddingValues()) }
                 DetailHost(detailState) { _, contentModifier -> TaskDetails(contentModifier) }

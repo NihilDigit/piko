@@ -23,6 +23,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.presentation.ImportTreeSource
+import dev.piko.shared.presentation.ImportTreeSourceVersion
 import dev.piko.shared.presentation.importSourceForest
 import dev.piko.shared.presentation.visibleImportSources
 import dev.piko.shared.state.InstantSheetState
@@ -165,8 +166,14 @@ internal fun ImportResolutionStatus(state: InstantSheetState, notice: PanelNotic
 
 @Composable
 private fun SourceImportTree(sources: List<ImportSource>, management: ImportManagementState, modifier: Modifier, config: @Composable ColumnScope.() -> Unit) {
-    val descriptors = sources.map { source -> ImportTreeSource(source.key, source.state.items.map { it.file.path }) }
-    val nodes = remember(descriptors) { importSourceForest(descriptors) }
+    val versions = sources.map { source ->
+        val resolution = source.state.resolution
+        ImportTreeSourceVersion(source.key, resolution?.resource?.name ?: source.state.input,
+            resolution?.resource?.files)
+    }
+    val nodes = remember(versions) {
+        importSourceForest(versions.map { version -> ImportTreeSource(version.key, version.files.orEmpty().map { it.path }) })
+    }
     val query = management.query
     val collapsed = management.collapsed
     val visible = remember(nodes, collapsed, query) { visibleImportSources(nodes, nodes.map { it.key }.toSet() - collapsed.toSet(), query) }
@@ -191,6 +198,7 @@ private fun SourceImportTree(sources: List<ImportSource>, management: ImportMana
         items(visible, key = { "source:${it.key}" }) { entry ->
             val source = sourceByKey.getValue(entry.sourceKey)
             val state = source.state
+            val editable = source.enabled && state.canEdit
             val node = entry.node
             val selected = node.indices.count { it in state.sourceSelectedIndices }
             val checked = when(selected) { 0 -> ToggleableState.Off; node.indices.size -> ToggleableState.On; else -> ToggleableState.Indeterminate }
@@ -200,14 +208,14 @@ private fun SourceImportTree(sources: List<ImportSource>, management: ImportMana
                 node.key, FileItemName(node.name), FileVisual(node.name, isFolder = true),
                 metadata = listOf("${node.indices.size} 个文件"),
             ) else state.items[index].file.filePresentation(node.key)
-            val open = { if (node.isFolder) toggle() else if (source.enabled) state.setSourceSelected(node.indices, selected == 0) }
+            val open = { if (node.isFolder) toggle() else if (editable) state.setSourceSelected(node.indices, selected == 0) }
             WorkspaceTreeRow(node.name, node.depth, item.visual.typeIcon(),
                 expanded = if (node.isFolder) entry.key !in collapsed else null, onExpand = toggle,
                 onOpen = open, item = item, reserveExpandSpace = hasBranches,
                 trailing = { if (node.depth == 0) TooltipIconButton(Icons.Outlined.MoreVert, "来源信息 ${node.name}", { details = source }) },
                 leading = { FileItemSelectionControl(FileItemSelection(checked,
-                    { state.setSourceSelected(node.indices, checked != ToggleableState.On) },
-                    enabled = state.canEdit && source.enabled, label = "选择来源 ${node.name}")) })
+                    { if (editable) state.setSourceSelected(node.indices, checked != ToggleableState.On) },
+                    enabled = editable, label = "选择来源 ${node.name}")) })
         }
         items(sources.filter { it.state.items.isEmpty() && (query.isBlank() || it.state.input.contains(query, true)) }, key = { "pending:${it.key}" }) { source ->
             val state = source.state

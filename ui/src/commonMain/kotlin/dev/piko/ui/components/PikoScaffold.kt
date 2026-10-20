@@ -113,7 +113,46 @@ class IslandPage(
     val tabs: (@Composable RowScope.() -> Unit)? = null,
     /** 第一个标签是活动的：它的左边竖直接下来，岛的左上角不圆。 */
     val firstTabActive: Boolean = false,
+    val belowHeader: (@Composable () -> Unit)? = null,
 )
+
+internal enum class IslandConnection {
+    Standalone,
+    FirstTab,
+    OtherTab,
+}
+
+@Composable
+internal fun IslandSurface(
+    connection: IslandConnection,
+    header: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    Column(
+        modifier
+            .clip(
+                RoundedCornerShape(
+                    topStart = if (connection == IslandConnection.FirstTab) 0.dp else IslandCorner,
+                    topEnd = IslandCorner,
+                    bottomStart = IslandCorner,
+                    bottomEnd = IslandCorner,
+                ),
+            )
+            .background(MaterialTheme.colorScheme.islandHeader),
+    ) {
+        header()
+        Box(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(topStart = IslandInnerCorner, topEnd = IslandInnerCorner, bottomStart = IslandCorner, bottomEnd = IslandCorner))
+                .background(MaterialTheme.colorScheme.surface),
+        ) {
+            content()
+        }
+    }
+}
 
 /** 没有标签的页写在页眉开头的页名。 */
 @Composable
@@ -140,46 +179,36 @@ private fun IslandScaffold(
         snackbarHost = snackbarHost,
         floatingActionButton = floatingActionButton,
     ) { innerPadding ->
-        Column(
-            Modifier
+        IslandSurface(
+            connection = when {
+                tabs == null -> IslandConnection.Standalone
+                island.firstTabActive -> IslandConnection.FirstTab
+                else -> IslandConnection.OtherTab
+            },
+            modifier = Modifier
                 .fillMaxSize()
                 .padding(
                     top = innerPadding.calculateTopPadding() + if (tabs == null) IslandGap else 0.dp,
                     bottom = FrameCardBottomMargin,
                 )
-                .consumeWindowInsets(innerPadding)
-                .clip(
-                    RoundedCornerShape(
-                        topStart = islandTopStart(island.tabs != null && island.firstTabActive),
-                        topEnd = IslandCorner,
-                        bottomStart = IslandCorner,
-                        bottomEnd = IslandCorner,
-                    ),
-                )
-                .background(colors.islandHeader),
+                .consumeWindowInsets(innerPadding),
+            header = {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(if (tabs == null) caption.modifier else Modifier)
+                        .heightIn(min = 56.dp)
+                        .padding(start = 20.dp, end = if (tabs == null && caption.buttons != null) 8.dp else 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    island.header(this)
+                    if (tabs == null) caption.buttons?.invoke()
+                }
+                island.belowHeader?.invoke()
+            },
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .then(if (tabs == null) caption.modifier else Modifier)
-                    .heightIn(min = 56.dp)
-                    .padding(start = 20.dp, end = if (tabs == null && caption.buttons != null) 8.dp else 16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                island.header(this)
-                if (tabs == null) caption.buttons?.invoke()
-            }
-            Box(
-                Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    // 上沿是小圆角、露出一点页眉的底色，下沿就是岛的下沿，与网盘页相同
-                    .clip(RoundedCornerShape(topStart = IslandInnerCorner, topEnd = IslandInnerCorner, bottomStart = IslandCorner, bottomEnd = IslandCorner))
-                    .background(colors.surface),
-            ) {
-                content(PaddingValues())
-            }
+            content(PaddingValues())
         }
     }
 }

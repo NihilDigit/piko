@@ -6,6 +6,16 @@ data class ImportTreeNode(val key: String, val name: String, val depth: Int, val
 }
 
 data class ImportTreeSource(val key: String, val paths: List<String>)
+
+/** Resolved lists are immutable snapshots; selection and expansion do not change their version. */
+class ImportTreeSourceVersion<T>(val key: String, val title: String, val files: List<T>?) {
+    override fun equals(other: Any?): Boolean = other is ImportTreeSourceVersion<*> &&
+        key == other.key && title == other.title && files === other.files
+
+    // Hash only the scalar fields so checking a version never traverses its files.
+    override fun hashCode(): Int = 31 * key.hashCode() + title.hashCode()
+}
+
 data class ImportSourceNode(val sourceKey: String, val node: ImportTreeNode) {
     // Include the key length so arbitrary source keys and paths cannot alias each other.
     val key: String get() = "${sourceKey.length}:$sourceKey:${node.key}"

@@ -40,16 +40,22 @@ internal fun WorkspaceTreeRow(
                 Modifier.size(18.dp).rotate(if (expanded) 90f else 0f))
         } else if (reserveExpandSpace) Spacer(Modifier.width(36.dp))
         leading()
-        if (item != null) FileArtwork(item.visual, FileArtworkFormat.Icon, modifier = Modifier.size(20.dp))
+        if (item != null) FileArtwork(item.visual, FileArtworkFormat.Leading, modifier = Modifier.size(32.dp))
         else Icon(icon, null, Modifier.size(20.dp), tint = if (emphasized) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.width(8.dp))
         Column(Modifier.weight(1f).padding(vertical = 6.dp)) {
-            FileItemTitle(item?.name ?: FileItemName(name), style = MaterialTheme.typography.bodyMedium,
-                fontWeight = if(emphasized) FontWeight.SemiBold else null)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                FileItemTitle(item?.name ?: FileItemName(name), modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = if (item?.name?.original != null) 1 else 2,
+                    fontWeight = if (emphasized) FontWeight.SemiBold else if (item?.visual?.isFolder == true) FontWeight.Medium else null)
+                if (item != null && item.marks.isNotEmpty()) FileItemMarks(item.marks)
+            }
             if (item != null) ProvideTextStyle(MaterialTheme.typography.bodySmall) { FileItemInformation(item) }
             else supporting?.let { Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 color = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
-        if (actions != null) FileItemActionButtons(actions) else trailing()
+        trailing()
+        if (actions != null) FileItemActionButtons(actions)
     }
 }
