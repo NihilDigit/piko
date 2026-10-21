@@ -41,6 +41,7 @@ class SingleInstance private constructor(
             {
                 while (server.isOpen) {
                     val args = runCatching { server.accept().use(::readArgs) }.getOrNull() ?: continue
+                    if (isDevRun && DEV_QUIT_ARG in args) exitProcess(0)
                     onArgs(args)
                 }
             },
@@ -50,11 +51,13 @@ class SingleInstance private constructor(
 
     companion object {
         private const val TAG = "SingleInstance"
+        private const val DEV_QUIT_ARG = "--dev-quit"
         // 不写进 instance.lock：Windows 的文件锁是强制锁，别的进程读不了被锁住的区域
         private const val OWNER_FILE = "instance.owner"
         private val directory = PikoHome.root.toFile()
         private val socketFile = PikoHome.instanceSocket.toFile()
         private val currentUser: String = System.getProperty("user.name").orEmpty()
+        private val isDevRun: Boolean = java.lang.Boolean.getBoolean("piko.dev-run")
 
         /**
          * 成为主实例则返回它；已有实例在运行时把 [args] 转交过去并返回 null，调用方应直接退出。
@@ -69,7 +72,14 @@ class SingleInstance private constructor(
                 return SingleInstance(lock = null, server = null)
             }
             // 同一 JVM 里重复加锁抛 OverlappingFileLockException，别的进程持有时返回 null
-            val lock = runCatching { channel.tryLock() }.getOrNull()
+            var lock = runCatching { channel.tryLock() }.getOrNull()
+            if (lock == null && isDevRun && forward(listOf(DEV_QUIT_ARG))) {
+                for (attempt in 0 until 50) {
+                    Thread.sleep(100)
+                    lock = runCatching { channel.tryLock() }.getOrNull()
+                    if (lock != null) break
+                }
+            }
             if (lock == null) {
                 channel.close()
                 if (!forward(args)) explainForwardFailure()

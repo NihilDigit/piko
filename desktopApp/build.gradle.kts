@@ -1,5 +1,12 @@
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
+import java.net.StandardProtocolFamily
+import java.net.UnixDomainSocketAddress
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
+import java.nio.channels.SocketChannel
+import java.nio.file.Path
+import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.FileTime
 import java.security.MessageDigest
 import java.util.Collections
@@ -614,12 +621,54 @@ tasks.register<UpdateArtifactsTask>("packageReleaseUpdate") {
 }
 // compose 的 run 任务在 afterEvaluate 里重写 jvmArgs，会盖掉上面的配置，
 // 这里后注册、后执行，把 flag 补回去（注册顺序：插件先、脚本后）。
+val devHomeDir: File = File(System.getProperty("user.home"), ".piko-dev")
+fun stopRunningDevInstance() {
+    val root = devHomeDir.toPath().toAbsolutePath().normalize()
+    val lockPath = root.resolve("instance.lock")
+    if (!lockPath.toFile().exists()) return
+    val channel = runCatching {
+        FileChannel.open(lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE)
+    }.getOrNull() ?: return
+    channel.use { ch ->
+        val existingLock = runCatching { ch.tryLock() }.getOrNull()
+        if (existingLock != null) {
+            runCatching { existingLock.release() }
+            return
+        }
+        val socketPath = Path.of(System.getProperty("java.io.tmpdir"), "piko@${Integer.toHexString(root.toString().hashCode())}.sock")
+        val sent = runCatching {
+            SocketChannel.open(StandardProtocolFamily.UNIX).use { sock ->
+                sock.connect(UnixDomainSocketAddress.of(socketPath))
+                val bytes = "--dev-quit".toByteArray(Charsets.UTF_8)
+                val buf = ByteBuffer.allocate(4 + bytes.size).putInt(bytes.size).put(bytes).flip()
+                while (buf.hasRemaining()) sock.write(buf)
+            }
+        }.isSuccess
+        if (!sent) return
+        repeat(40) {
+            Thread.sleep(75)
+            val acquired = runCatching { ch.tryLock() }.getOrNull()
+            if (acquired != null) {
+                runCatching { acquired.release() }
+                return
+            }
+        }
+    }
+}
+
+rootProject.allprojects {
+    tasks.matching { it.name == "compileKotlinDesktop" }.configureEach {
+        doFirst { stopRunningDevInstance() }
+    }
+}
+
 project.afterEvaluate {
     tasks.named<JavaExec>("run") {
         jvmArgs("--enable-native-access=ALL-UNNAMED")
         jvmArgs(linuxJvmArgs)
         // 开发版的数据放在 ~/.piko-dev，与安装版的 ~/.piko 分开，见 PikoHome。不放进 build 目录：clean 一次就要重新登录
-        jvmArgs("-Dpiko.home=" + File(System.getProperty("user.home"), ".piko-dev").path)
+        jvmArgs("-Dpiko.home=" + devHomeDir.path)
+        jvmArgs("-Dpiko.dev-run=true")
     }
 }
 
