@@ -365,6 +365,7 @@ internal fun InstantSheetContent(
             onConfirm = { targetId, targetName ->
                 showTargetPicker = false
                 state.changeTarget(PathBreadcrumb(targetId, targetName))
+                true
             },
         )
     }

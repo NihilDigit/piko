@@ -64,6 +64,7 @@ fun UploadRequestHost(uploads: PikoUploadCoordinator, saveTarget: SaveTargetCont
                 target = id to name
                 rejection = null
                 isPickingTarget = false
+                true
             },
         )
         return

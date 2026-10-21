@@ -191,6 +191,7 @@ internal fun DriveTabBar(
                             fromFeed = tab.id == feedTabId,
                             active = index == activeIndex,
                             first = index == 0,
+                            showDivider = index != activeIndex && index + 1 != activeIndex,
                             onSelect = { onSelect(tab.id) },
                             // 只剩一个时关不掉，不给叉
                             onClose = if (canClose(tab.id)) ({ onClose(tab.id) }) else null,
@@ -299,6 +300,7 @@ private fun TabChip(
     fromFeed: Boolean,
     active: Boolean,
     first: Boolean,
+    showDivider: Boolean,
     onSelect: () -> Unit,
     onClose: (() -> Unit)?,
     modifier: Modifier = Modifier,
@@ -326,6 +328,7 @@ private fun TabChip(
         IslandTab(
             active = active,
             first = first,
+            showDivider = showDivider,
             onClick = onSelect,
             interactionSource = interaction,
             modifier = modifier

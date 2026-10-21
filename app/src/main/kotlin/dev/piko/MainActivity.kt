@@ -189,29 +189,30 @@ class MainActivity : ComponentActivity() {
      * 含 PikPak 分享链接的输入：打开 mypikpak.com/s/ 链接，或分享来的一段文本。返回整段文本而不只是链接，
      * 转发的分享常把提取码写在链接后面，面板从同一段文本里把它认出来。
      */
-    private fun extractShareText(intent: Intent): String? {
-        val candidates = listOfNotNull(
-            intent.dataString,
-            intent.getStringExtra(Intent.EXTRA_TEXT),
-            intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString(),
-        )
-        return candidates.firstOrNull { InstantSheetState.findShareLink(it) != null }?.trim()
-    }
-
-    private fun extractMagnet(intent: Intent): String? {
-        val dataUri = intent.dataString
-        if (!dataUri.isNullOrBlank() && dataUri.startsWith("magnet:", ignoreCase = true)) {
-            return dataUri
+    private fun sharedTexts(intent: Intent): List<String> = buildList {
+        intent.dataString?.let(::add)
+        intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()?.let(::add)
+        intent.clipData?.let { clip ->
+            for (index in 0 until clip.itemCount) {
+                val item = clip.getItemAt(index)
+                item.text?.toString()?.let(::add)
+                item.uri?.toString()?.let(::add)
+            }
         }
+    }.map(String::trim).filter(String::isNotEmpty).distinct()
 
-        val texts = listOfNotNull(
-            intent.getStringExtra(Intent.EXTRA_TEXT),
-            intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString(),
-        )
-        // 只取磁力链：分享来的网页地址不该弹出离线下载面板。多条时一并交出去，面板列成批量清单
-        val magnets = texts.firstNotNullOfOrNull { text -> extractLinks(text).filter { it.isMagnet }.takeIf { it.isNotEmpty() } }
-        return magnets?.joinToString("\n") { it.uri }
+    private fun extractShareText(intent: Intent): String? {
+        val texts = sharedTexts(intent)
+        return texts.takeIf { candidates -> candidates.any {
+            InstantSheetState.findShareLink(it) != null || extractLinks(it).isNotEmpty()
+        } }
+            ?.joinToString("\n")
     }
+
+    private fun extractMagnet(intent: Intent): String? = sharedTexts(intent)
+        .flatMap { extractLinks(it) }.filter { it.isMagnet }.distinctBy { it.key }
+        .takeIf { it.isNotEmpty() }?.joinToString("\n") { it.uri }
+
 }
 
 /**

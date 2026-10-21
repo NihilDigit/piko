@@ -162,6 +162,7 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
 
     fun goToDrive() {
         if (!available) return
+        fileOrigins.remove(driveWorkspace.primaryTabId)
         driveWorkspace.goToDrive()
     }
 
@@ -260,6 +261,9 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
     fun duplicateBrowser(id: Long): DriveBrowserSession = duplicateBrowsers.getOrPut(id) {
         createBrowser(DriveLibrary.DUPLICATES, null, null, requireNotNull(duplicateSessions[id]))
     }
+
+    fun createLibraryBrowser(library: DriveLibrary): DriveBrowserSession =
+        createBrowser(library, null, null)
 
     fun cycleContext(step: Int) {
         val values = contexts.contextsFlow.value

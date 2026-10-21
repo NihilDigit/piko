@@ -2,11 +2,13 @@ package dev.piko.ui
 
 import dev.piko.ui.workbench.rememberTransferActivity
 import androidx.compose.material.icons.outlined.Keyboard
+import androidx.compose.material3.TonalToggleButton
 import dev.piko.ui.workbench.ShortcutsDialog
 import dev.piko.ui.workbench.ClaimDialog
 import dev.piko.ui.workbench.LocalTaskSlot
 import dev.piko.ui.workbench.TaskSlot
 import dev.piko.ui.workbench.LocalFileWorkspace
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.platform.LocalWindowInfo
@@ -64,8 +66,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
@@ -189,7 +189,6 @@ import dev.piko.ui.components.PikoBrand
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.screens.drive.LocalSidebarCollapsed
 import dev.piko.ui.screens.drive.SidebarRailWidth
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.automirrored.outlined.MenuOpen
 import androidx.compose.material3.LocalContentColor
@@ -204,8 +203,7 @@ import androidx.compose.foundation.layout.height
 import dev.piko.ui.theme.FrameCardShape
 import dev.piko.ui.theme.IslandGap
 import dev.piko.ui.theme.LocalFramed
-import dev.piko.ui.theme.SidebarPushMinWindowWidth
-import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
@@ -275,6 +273,7 @@ private val NavKeyConfiguration = SavedStateConfiguration {
     serializersModule = SerializersModule {
         polymorphic(NavKey::class) {
             subclass(Screen.Home::class)
+            subclass(Screen.Library::class)
             subclass(Screen.MyShares::class)
             subclass(Screen.Settings::class)
             subclass(Screen.WebDav::class)
@@ -355,11 +354,7 @@ fun PikoMainScaffold(
         }
     }
     SideEffect { workspaceModel.rememberNavigation(backStack.filterIsInstance<Screen>(), currentTab) }
-    fun pushLibrary(library: DriveLibrary) {
-        workspaceModel.pushLibrary(library, currentTab, backStack.filterIsInstance<Screen>())
-        while (backStack.size > 1) backStack.removeLastOrNull()
-        currentTab = MainTab.FILES
-    }
+    var libraryResetRequests by remember { mutableIntStateOf(0) }
     val widthClass = currentWidthClass()
     val taskSlot = remember { TaskSlot() }
     val pendingLink by services.instantMagnetRepository.pendingMagnetFlow.collectAsStateWithLifecycle()
@@ -376,15 +371,11 @@ fun PikoMainScaffold(
     LaunchedEffect(workspaceSurface) { if (!workspaceSurface) ongoingWorkShown = false }
     val onHome = backStack.size <= 1
 
-    // 桌面任何宽度都是一整条侧边栏：上面是去处，下面是网盘的快捷访问与库，照 Finder 的边栏与资源管理器的导航窗格。
-    // 移动端是底部导航栏，宽了换成 Rail，三项与底栏相同，见 FormFactor。
-    // 侧边栏在返回栈外面，打开设置、我的分享时不被盖住
+    // 平板与桌面按窗口容量共用侧栏；侧栏在返回栈外，设置等页面不会盖住它。
     val windowWidth = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.width.toDp() }
-    val sidebarWindow = desktop
     // 只用于移动端横握时收起系统栏
     val heightCompact = isHeightCompact()
-    // 窄窗口里只留窄轨的位置，展开时浮在内容上，见 SidebarPushMinWindowWidth
-    val sidebarOverlays = windowWidth < SidebarPushMinWindowWidth
+    val sidebarWindow = windowWidth >= 600.dp && !heightCompact
 
     fun resetToHome() {
         while (backStack.size > 1) backStack.removeLastOrNull()
@@ -414,6 +405,15 @@ fun PikoMainScaffold(
         backStack.add(screen)
     }
 
+    fun pushLibrary(library: DriveLibrary) {
+        val target = Screen.Library(library.id)
+        if (backStack.lastOrNull() == target) {
+            libraryResetRequests++
+            return
+        }
+        openProfilePane(target)
+    }
+
     val openDriveRequested by services.openDriveRequested.collectAsStateWithLifecycle()
     val fileHighlightRequested by services.fileHighlightRequested.collectAsStateWithLifecycle()
     LaunchedEffect(fileHighlightRequested) {
@@ -431,19 +431,11 @@ fun PikoMainScaffold(
         }
     }
 
-    // 上传、下载与离线任务提交后切到传输页看进度，同快捷键切页一样收起压栈页。
+    // 查看传输进度时，同快捷键切页一样收起压栈页。
     // 秒传不来这里：文件当场就在网盘里，网盘页自己定位过去
     fun openTransfers() {
         currentTab = MainTab.TRANSFERS
         resetToHome()
-    }
-
-    // 订阅调度器而不是在各上传入口各跳一次：应用外进来的上传在主界面之外确认，
-    // 而且要等任务真的排进队列，所选文件读不出来时只该有一条失败提示
-    LaunchedEffect(services.uploadManager) {
-        services.uploadManager.enqueued.collect { event ->
-            if (event.account == services.driveRepository.currentAccount) openTransfers()
-        }
     }
 
     val openTransfersRequested by services.openTransfersRequested.collectAsStateWithLifecycle()
@@ -560,8 +552,13 @@ fun PikoMainScaffold(
     val initialPanelPrefs = remember { runBlocking { preferences.clipPanelFlow.first() } }
     val panelPrefs by preferences.clipPanelFlow.collectAsStateWithLifecycle(initialPanelPrefs)
     val contentWidth = with(density) { contentSize.width.toDp() }.takeIf { contentSize != IntSize.Zero }
-    // 右栏只在桌面：移动端的信息流一律全屏，平板横握也是，与手机同一套
-    val panelFits = contentWidth != null && !isHeightCompact() && sidePanelFits(contentWidth, ClipPanelMinWidth)
+    val sidebarMode = sidebarWindow &&
+        (onHome || topScreen in ProfilePanes || topScreen in SettingsSubpages)
+    // 先按收起左栏后的净宽判断右栏容量，避免常驻左栏占宽后把信息流误判成全屏，
+    // 又因为全屏不需要让位而无法收起左栏。打开信息流时优先保证文件与右栏并列。
+    val panelAvailableWidth = if (sidebarMode) windowWidth - SidebarRailWidth - IslandGap * 2 else contentWidth
+    val panelFits = contentWidth != null && panelAvailableWidth != null && !heightCompact &&
+        sidePanelFits(panelAvailableWidth, ClipPanelMinWidth)
     // null 是还没量出内容区宽度。上次开着侧栏退出的，只在这回仍放得下侧栏时照样打开；
     // 放不下就是全屏形态，窄窗口一启动就开始播不是谁想要的
     var feedShownState by workspaceModel.feed::shown
@@ -600,25 +597,18 @@ fun PikoMainScaffold(
     val feedBlockedReason: String? = null
     val feedInPanel = feedOnFilesTab && panelFits && !workspaceModel.feed.fullscreen
     val feedFullScreen = feedOnFilesTab && (!panelFits || workspaceModel.feed.fullscreen)
-    val sidebarMode = sidebarWindow &&
-        (onHome || topScreen in ProfilePanes || topScreen in SettingsSubpages)
-    // 窄窗口里浮起来的那一层展开的侧边栏。只记这一回：它是临时借一下地方，不改存下的收起状态
-    var sidebarFloatRequested by remember { mutableStateOf(false) }
-    val sidebarFloating = sidebarFloatRequested && sidebarOverlays && sidebarMode
-    // 去了别处就收回：点了浮层里的一项，或窗口拉宽到推得开
-    LaunchedEffect(currentTab, topScreen, sidebarOverlays, sidebarMode) { sidebarFloatRequested = false }
+    val effectiveCollapsed = sidebarCollapsed
+    val sidebarWidth by animateDpAsState(
+        if (effectiveCollapsed) SidebarRailWidth else SidebarWidth,
+        animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
+        label = "sidebarWidth",
+    )
     fun toggleSidebar() {
-        if (sidebarOverlays) {
-            sidebarFloatRequested = !sidebarFloating
-        } else {
-            coroutineScope.launch { preferences.setSidebarCollapsed(!sidebarCollapsed) }
-        }
+        coroutineScope.launch { preferences.setSidebarCollapsed(!sidebarCollapsed) }
     }
 
     // 信息流刷的是打开时网盘页所在的文件夹，连同子文件夹
     val folderStack by fileWorkspace.folderStackFlow.collectAsStateWithLifecycle()
-    // 浮着的侧边栏里点快速访问或库，换的只是文件夹，不经上面那几个键
-    LaunchedEffect(folderStack) { sidebarFloatRequested = false }
     val quickAccess = remember(fileWorkspace) {
         QuickAccessState(services.driveRepository, services.clientManager, coroutineScope) { stack ->
             driveWorkspace?.openTab(stack, activate = false)
@@ -933,13 +923,8 @@ fun PikoMainScaffold(
                 currentTab = MainTab.FILES
             }
 
-            // 移动端窄时是 64dp 的 ShortNavigationBar，宽了（横握的手机、平板）换成收起的 Rail，照 M3 的断点。
-            // 写死而不交给库挑：库还看窗口高度，横握的手机宽够了、高度不够，给的是一条占地方的横向底栏
-            val navigationSuiteType = when {
-                sidebar -> NavigationSuiteType.None
-                widthClass == WidthClass.Compact -> NavigationSuiteType.ShortNavigationBarCompact
-                else -> NavigationSuiteType.WideNavigationRailCollapsed
-            }
+            // 不显示主侧栏时统一使用底部导航，不再保留占用横向空间的图标轨。
+            val navigationSuiteType = if (sidebar) NavigationSuiteType.None else NavigationSuiteType.ShortNavigationBarCompact
             NavigationSuiteScaffold(
                 containerColor = if (sidebar) MaterialTheme.colorScheme.frame else MaterialTheme.colorScheme.background,
                 navigationItems = {
@@ -1064,6 +1049,17 @@ fun PikoMainScaffold(
     var paletteOpen by remember { mutableStateOf(false) }
     val focusFallback = remember { FocusFallback(shortcutFocus) }
     val rootSnackbar = remember { SnackbarHostState() }
+    LaunchedEffect(services.uploadManager) {
+        services.uploadManager.enqueued.collect { event ->
+            if (event.account == services.driveRepository.currentAccount && currentTab != MainTab.TRANSFERS) {
+                launch {
+                    val result = rootSnackbar.showSnackbar("已加入上传队列（${event.count} 项）", actionLabel = "查看", withDismissAction = true)
+                    if (result == SnackbarResult.ActionPerformed && event.account == services.driveRepository.currentAccount) openTransfers()
+                }
+            }
+        }
+    }
+
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     workspaceModel.duplicateSessions.forEach { (id, session) ->
         key(id) {
@@ -1268,16 +1264,9 @@ fun PikoMainScaffold(
         ) {
             val frameModifier = (if (sidebarMode) Modifier.background(MaterialTheme.colorScheme.frame) else Modifier)
                 .then(if (ongoingWorkShown && !desktop) Modifier.clearAndSetSemantics { } else Modifier)
-            // 主界面一律接管标题栏，手机宽度的桌面窗口也是：各页顶栏贴着右上角时画窗口按钮、空白处能拖。
-            // 只有外框时接管的话，窄窗口顶上叠着系统的一条标题栏，再下面才是页面的顶栏
-            LocalWindowCaption.current?.Host()
-            // 侧边栏不能拖宽，只有展开与收起两档：拖宽的话，宽了挤内容，窄了文件夹名只剩几个字，要的其实是让出地方，
-            // 那就整个收成只剩图标的窄轨
-            val sidebarWidth by animateDpAsState(
-                if (sidebarCollapsed) SidebarRailWidth else SidebarWidth,
-                animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
-                label = "sidebarWidth",
-            )
+            // 宽窗口（有侧边栏与外框时）才把标题栏并进内容；窄窗口由 WindowFrame 画独立的顶栏，不把三个窗口按钮挤进紧凑顶栏
+            if (sidebarMode) LocalWindowCaption.current?.Host()
+            // 同一块内联侧栏岛，展开与收起只改变占用宽度。
             @Composable
             fun Sidebar(width: Dp, collapsed: Boolean) {
                 MainSidebar(
@@ -1290,7 +1279,7 @@ fun PikoMainScaffold(
                     quickAccess = quickAccess,
                     pinned = pinnedFolders,
                     folderStack = folderStack,
-                    onOpenQuickAccess = { stack -> goToDrive(stack) },
+                    onOpenQuickAccess = ::goToDrive,
                     selectedPage = selectedPane,
                     onOpenPage = ::openPage,
                     onToggleLibrary = ::toggleLibrary,
@@ -1298,8 +1287,8 @@ fun PikoMainScaffold(
                     onToggleCollapsed = ::toggleSidebar,
                 )
             }
-            BackHandler(enabled = sidebarFloating) { sidebarFloatRequested = false }
-            CompositionLocalProvider(LocalFramed provides sidebarMode) { Box(Modifier.fillMaxSize()) { Row(Modifier.fillMaxSize().then(frameModifier)) {
+            CompositionLocalProvider(LocalFramed provides sidebarMode) {
+                Row(Modifier.fillMaxSize().then(frameModifier)) {
                 if (sidebarMode) {
                     // 侧边栏是一块岛，与页面同色，浮在外框色上，见 IslandGap
                     Box(
@@ -1308,8 +1297,7 @@ fun PikoMainScaffold(
                             .clip(FrameCardShape)
                             .background(MaterialTheme.colorScheme.surface),
                     ) {
-                        // 窄窗口里这一条恒为窄轨，展开的那一份浮在上面，见下
-                        if (sidebarOverlays) Sidebar(SidebarRailWidth, collapsed = true) else Sidebar(sidebarWidth, sidebarCollapsed)
+                        Sidebar(sidebarWidth, collapsed = effectiveCollapsed)
                     }
                     Spacer(Modifier.width(IslandGap))
                 }
@@ -1333,6 +1321,30 @@ fun PikoMainScaffold(
                             },
                             entryProvider = entryProvider {
                                 entry<Screen.Home> { HomeContent() }
+                                entry<Screen.Library> { screen ->
+                                    val library = remember(screen.libraryId) { DriveLibrary.of(screen.libraryId) ?: DriveLibrary.TRASH }
+                                    val session = remember(workspaceModel, library) { workspaceModel.createLibraryBrowser(library) }
+                                    DisposableEffect(session) {
+                                        onDispose {
+                                            workspaceModel.detailPanels.forget(session.navigation)
+                                            session.close()
+                                        }
+                                    }
+                                    LaunchedEffect(libraryResetRequests) {
+                                        if (session.navigation.folderStackFlow.value.size > 1) {
+                                            session.navigation.updateFolderStack(listOf(library.crumb))
+                                        }
+                                    }
+                                    FilesScreen(
+                                        onNavigateToVideoPlayer = { file, playlist -> playVideo(file, playlist) },
+                                        onOpenTransfers = ::openTransfers,
+                                        onOpenDuplicateReport = ::openDuplicateReport,
+                                        addressDestinations = tabDestinations() + pageDestinations(),
+                                        browserSession = session,
+                                        onLibraryLeft = ::popBack,
+                                        onRevealInDrive = { file -> coroutineScope.launch { revealInDrive(file.id) } },
+                                    )
+                                }
                                 entry<Screen.MyShares> { MySharesScreen(onBackClick = paneBack, onLocate = ::revealInDrive) }
                                 entry<Screen.Settings> {
                                     SettingsScreen(
@@ -1353,38 +1365,7 @@ fun PikoMainScaffold(
                     }
                 }
             }
-                // 窄窗口里展开的侧边栏：浮在内容上、压一层遮罩，照 M3 的模态抽屉，点遮罩、返回或去了别处都收回
-                if (sidebarMode && sidebarOverlays) {
-                    val scrimAlpha by animateFloatAsState(
-                        if (sidebarFloating) SidebarScrimAlpha else 0f,
-                        animationSpec = MaterialTheme.motionScheme.defaultEffectsSpec(),
-                        label = "sidebarScrim",
-                    )
-                    if (scrimAlpha > 0f) {
-                        Box(
-                            Modifier
-                                .fillMaxSize()
-                                .background(MaterialTheme.colorScheme.scrim.copy(alpha = scrimAlpha))
-                                .clickable(interactionSource = null, indication = null, enabled = sidebarFloating) {
-                                    sidebarFloatRequested = false
-                                },
-                        )
-                    }
-                    AnimatedVisibility(
-                        visible = sidebarFloating,
-                        enter = slideInHorizontally(MaterialTheme.motionScheme.defaultSpatialSpec()) { -it },
-                        exit = slideOutHorizontally(MaterialTheme.motionScheme.defaultSpatialSpec()) { -it },
-                    ) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.frame,
-                            shape = RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp),
-                            shadowElevation = 6.dp,
-                        ) {
-                            Sidebar(SidebarWidth, collapsed = false)
-                        }
-                    }
-                }
-            } }
+            }
             // 拖动网盘条目时指针旁的说明，盖在一切之上
             FileDragOverlay(fileDrag)
             if (shortcutsOpen) ShortcutsDialog(shortcutModifier, onDismiss = { shortcutsOpen = false })
@@ -1422,8 +1403,9 @@ private val ClipPanelDefaultWidth = 420.dp
 // 「继续刷」条右边让出网盘页的 FAB：56dp 宽加它离屏幕边的 16dp，条自己的 16dp 外边距就是两者的间隔
 private val FeedResumeBarFabWidth = 56.dp + 16.dp
 
-/** 「我的」的详情页。它们互相替换，不叠在一起。 */
-private val ProfilePanes = setOf<NavKey?>(Screen.MyShares, Screen.Settings)
+/** 「我的」的详情页与库页面。它们互相替换，不叠在一起。 */
+private val LibraryScreens: Set<NavKey?> = DriveLibrary.entries.mapTo(mutableSetOf()) { Screen.Library(it.id) }
+private val ProfilePanes = setOf<NavKey?>(Screen.MyShares, Screen.Settings) + LibraryScreens
 private val DesktopTopLevelScreens = ProfilePanes + Screen.Home
 // NavEntry.key is private; the entry provider defaults contentKey to key.toString().
 private val DesktopTopLevelContentKeys = DesktopTopLevelScreens.mapTo(mutableSetOf()) { it.toString() }
@@ -1440,7 +1422,6 @@ private fun MainTab.icon(selected: Boolean) = when (this) {
 }
 
 /** 浮起的侧边栏下面那层遮罩，M3 模态抽屉的 32%。 */
-private const val SidebarScrimAlpha = 0.32f
 
 private val SidebarFadeLength = 24.dp
 
@@ -1536,14 +1517,14 @@ private fun MainSidebar(
                 onOpen = onOpenQuickAccess,
             )
             SectionLabel("库")
-            val onFilesTab = selectedPage == null && currentTab == MainTab.FILES
             for (entry in LibraryEntries) {
                 val library = entry.library
+                val targetScreen = entry.screen ?: library?.let { Screen.Library(it.id) }
                 SidebarItem(
                     icon = entry.icon,
                     selectedIcon = entry.selectedIcon,
                     label = entry.label,
-                    selected = if (library != null) onFilesTab && folderStack.library == library else selectedPage == entry.screen,
+                    selected = selectedPage == targetScreen,
                     onClick = { if (library != null) onToggleLibrary(library) else entry.screen?.let(onOpenPage) },
                 )
             }
@@ -1588,26 +1569,30 @@ private fun MainTabSwitch(currentTab: MainTab?, onTabClick: (MainTab) -> Unit, a
         return
     }
     Row(
-        modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 4.dp),
+        modifier = Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
     ) {
         tabs.forEachIndexed { index, tab ->
             val selected = tab == currentTab
-            ToggleButton(
+            TonalToggleButton(
                 checked = selected,
                 onCheckedChange = { onTabClick(tab) },
                 shapes = connectedToggleShapes(index, tabs.size),
-                contentPadding = PaddingValues(horizontal = 12.dp),
-                modifier = Modifier.weight(1f).heightIn(min = if (activity.hasReadout) 60.dp else 44.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                modifier = Modifier.weight(1f).height(if (activity.hasReadout) 48.dp else 40.dp),
             ) {
-                // 按钮选中时底色已是主色，强调色压在上面读不清，沿用按钮自己的文字色
                 val snailed = tab == MainTab.TRANSFERS && snail.enabled && !selected
                 CompositionLocalProvider(LocalContentColor provides if (snailed) MaterialTheme.colorScheme.tertiary else LocalContentColor.current) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(tab.icon(selected), contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text(tab.title, maxLines = 1)
+                            Text(
+                                tab.title,
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                                maxLines = 1,
+                            )
                         }
                         if (tab == MainTab.TRANSFERS && activity.hasReadout) SidebarTransferReadout(activity, checked = selected, compact = true)
                     }

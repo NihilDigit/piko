@@ -78,7 +78,7 @@ fun rememberCaptionSlot(topInset: Dp = 0.dp): CaptionSlot {
         val bounds = coordinates.boundsInWindow()
         // 容一个像素：边界按浮点算，贴边的行可能差零点几
         atTop = bounds.top <= insetPx + 1f
-        touches = bounds.right >= windowWidth - 1f && atTop
+        touches = bounds.right >= windowWidth - insetPx - 1f && atTop
     }
     return CaptionSlot(
         modifier,

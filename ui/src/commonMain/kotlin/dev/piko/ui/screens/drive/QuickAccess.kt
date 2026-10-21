@@ -3,12 +3,12 @@ package dev.piko.ui.screens.drive
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.isTertiaryPressed
 import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.outlined.Cloud
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.Home
 import androidx.compose.runtime.LaunchedEffect
 import dev.piko.shared.data.PikoDriveRepository
 import androidx.compose.material.icons.outlined.PushPin
@@ -79,9 +79,9 @@ internal fun ColumnScope.QuickAccessSection(
     val root = PikoDriveRepository.ROOT_BREADCRUMB
     ContextMenuArea(actions = { listOf(SheetAction(Icons.Outlined.Tab, "在新标签页打开", { state.openRootInNewTab() })) }) {
         SidebarItem(
-            icon = Icons.Outlined.Cloud,
-            selectedIcon = Icons.Filled.Cloud,
-            label = root.name,
+            icon = Icons.Outlined.Home,
+            selectedIcon = Icons.Filled.Home,
+            label = "根目录",
             // 拖到这里就是移回根目录
             modifier = Modifier.fileDropTarget("quick:root", root),
             selected = atRoot,
@@ -222,10 +222,7 @@ internal fun SidebarItem(
     }
 }
 
-/**
- * 窄轨里的一项：M3 navigation rail 的样子，图标居中、底色是一块胶囊，名字在悬停提示里；
- * 行尾的读数（传输的速度）写在图标下面一行小字，与 rail 项的标签同一个位置。
- */
+/** 窄轨入口原地点击即可访问，名称由提示与无障碍描述提供。 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CollapsedSidebarItem(
@@ -253,15 +250,11 @@ private fun CollapsedSidebarItem(
                 .padding(vertical = 2.dp)
                 .clickable(role = Role.Button, onClickLabel = label, onClick = onClick)
                 .then(
-                    if (onMiddleClick == null) {
-                        Modifier
-                    } else {
-                        Modifier.pointerInput(onMiddleClick) {
-                            awaitPointerEventScope {
-                                while (true) {
-                                    val event = awaitPointerEvent()
-                                    if (event.type == PointerEventType.Press && event.buttons.isTertiaryPressed) onMiddleClick()
-                                }
+                    if (onMiddleClick == null) Modifier else Modifier.pointerInput(onMiddleClick) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                if (event.type == PointerEventType.Press && event.buttons.isTertiaryPressed) onMiddleClick()
                             }
                         }
                     },
@@ -294,6 +287,4 @@ private fun CollapsedSidebarItem(
 }
 
 internal val SidebarWidth: Dp = 240.dp
-
-/** 收起后的窄轨宽度，M3 navigation rail 的 80dp。 */
-internal val SidebarRailWidth: Dp = 80.dp
+internal val SidebarRailWidth: Dp = 68.dp

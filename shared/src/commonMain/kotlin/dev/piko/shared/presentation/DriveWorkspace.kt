@@ -100,12 +100,28 @@ class DriveWorkspace(
             if (_folderStackFlow.value.size > 1) updateFolderStack(listOf(library.crumb))
             return null
         }
-        return enterPrimaryWithToken(listOf(library.crumb))
+        activatePrimaryFileBrowser()
+        return enterWithToken(listOf(library.crumb), preserveNonLibraryOrigin = reuseCurrentEntry)
     }
 
     fun goToDrive() {
         activatePrimaryFileBrowser()
-        if (_folderStackFlow.value.library != null) updateFolderStack(listOf(ROOT_BREADCRUMB))
+        if (_folderStackFlow.value.library != null) {
+            val snapshot = entrySnapshots.value.values.firstOrNull {
+                it.tabId == primaryTabId &&
+                    it.account == navigationAccount.value &&
+                    it.previousStack.library == null
+            }
+            if (snapshot != null) {
+                entrySnapshots.update { snapshots -> snapshots.filterValues { it.tabId != primaryTabId } }
+                _folderStackFlow.value = folderIndex.resolve(snapshot.previousStack)
+                _historyFlow.value = snapshot.previousHistory.resolved(folderIndex)
+                forgetFoldersOutsideStack()
+                publishTabs()
+            } else {
+                updateFolderStack(listOf(ROOT_BREADCRUMB))
+            }
+        }
     }
 
     /** The owner uses this to stop a task when its context is actually discarded. */
@@ -362,11 +378,19 @@ class DriveWorkspace(
         internal val account: String?,
     ) : FileLocation
 
-    fun enterWithToken(stack: List<PikoPathBreadcrumb>): NavigationEntryToken {
+    fun enterWithToken(
+        stack: List<PikoPathBreadcrumb>,
+        preserveNonLibraryOrigin: Boolean = false,
+    ): NavigationEntryToken {
         val tabId = _activeTabId.value
         val account = navigationAccount.value
-        val previousStack = _folderStackFlow.value
-        val previousHistory = _historyFlow.value
+        val existing = if (preserveNonLibraryOrigin && _folderStackFlow.value.library != null) {
+            entrySnapshots.value.values.firstOrNull {
+                it.tabId == tabId && it.account == account && it.previousStack.library == null
+            }
+        } else null
+        val previousStack = existing?.previousStack ?: _folderStackFlow.value
+        val previousHistory = existing?.previousHistory ?: _historyFlow.value
         val resolved = folderIndex.resolve(stack.ifEmpty { listOf(ROOT_BREADCRUMB) })
         updateFolderStack(resolved)
         val id = ++nextEntryId
@@ -564,9 +588,11 @@ class DriveWorkspace(
     // 历史里的位置也留着：后退回去时首帧就是原来的滚动位置。别的标签停着的位置与它们的历史同样留着，切回去是即时的。
     // 列表本身不在这里丢：出了路径的目录照最近列过的留着，由 rememberListing 按数量淘汰
     private fun forgetFoldersOutsideStack() {
+        val snapshots = entrySnapshots.value.values.groupBy { it.tabId }
         val kept = _tabs.value.associate { tab ->
             val current = requireNotNull(tabSnapshot(tab.id))
-            tab.id to (listOf(current.stack) + current.history.back + current.history.forward).flatten().mapTo(HashSet()) { it.id }
+            val saved = snapshots[tab.id].orEmpty().flatMap { listOf(it.previousStack) + it.previousHistory.back + it.previousHistory.forward }
+            tab.id to (listOf(current.stack) + current.history.back + current.history.forward + saved).flatten().mapTo(HashSet()) { it.id }
         }
         scrollAnchors.update { tabs -> tabs.filterKeys { it in kept }.mapValues { (id, anchors) -> anchors.filterKeys { it in kept.getValue(id) } } }
     }
