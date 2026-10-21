@@ -123,7 +123,7 @@ internal fun PosterCard(
         modifier = modifier
             .then(hover.modifier)
             .fillMaxWidth()
-            .focusIndication(coverShape)
+            .focusIndication(coverShape, showPointerFocus = !isSelectionMode)
             .clip(coverShape)
             .cardInteraction(isSelectionMode, isSelected, onClick, onLongClick, onSelectToggle),
     ) {

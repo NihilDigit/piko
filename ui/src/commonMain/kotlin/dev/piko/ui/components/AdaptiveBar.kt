@@ -152,7 +152,7 @@ fun AdaptiveBar(
         val reserved = endPlaceable.width + if (reserveMiddle && middle != null) middleMinWidth.roundToPx() else 0
 
         val shown = BooleanArray(items.size) { true }
-        fun needsMore() = alwaysMore || items.indices.any { !shown[it] && items[it].overflow.isNotEmpty() }
+        fun needsMore() = alwaysMore || moreActions.isNotEmpty() || items.indices.any { !shown[it] && items[it].overflow.isNotEmpty() }
         // 分隔只在 leading 里，两边都有东西时才摆；左段最后一道的右边是「更多」
         fun dividerShown(index: Int): Boolean {
             if (index >= leading.size || (0 until index).none { !items[it].isDivider && shown[it] }) return false

@@ -19,8 +19,10 @@ import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.isPrimaryPressed
+import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.isShiftPressed
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.dp
 import dev.piko.ui.platform.LocalPikoPlatform
 
 /**
@@ -39,6 +41,7 @@ fun Modifier.selectionClicks(
     onToggle: () -> Unit,
     onExtend: () -> Unit,
     onDoubleClick: (() -> Unit)? = null,
+    onFocus: (() -> Unit)? = null,
     /** 条目里自己接点击的控件登记的范围，按在这里的一下不截，见 [OwnClicks]。 */
     ownClicks: OwnClicks? = null,
 ): Modifier {
@@ -46,6 +49,7 @@ fun Modifier.selectionClicks(
     val toggle by rememberUpdatedState(onToggle)
     val extend by rememberUpdatedState(onExtend)
     val doubleClick by rememberUpdatedState(onDoubleClick)
+    val focus by rememberUpdatedState(onFocus)
     var origin by remember { mutableStateOf(Offset.Zero) }
     return onGloballyPositioned { origin = it.positionInRoot() }.pointerInput(shortcut, ownClicks) {
         var pressed: PointerId? = null
@@ -59,8 +63,12 @@ fun Modifier.selectionClicks(
                 when (event.type) {
                     PointerEventType.Press -> {
                         pressed = null
-                        if (!event.buttons.isPrimaryPressed) continue
                         if (ownClicks?.contains(origin + change.position) == true) continue
+                        if (change.type == PointerType.Mouse && event.buttons.isSecondaryPressed && doubleClick != null) {
+                            focus?.invoke()
+                            continue
+                        }
+                        if (!event.buttons.isPrimaryPressed) continue
                         val modifiers = event.keyboardModifiers
                         val action = when {
                             modifiers.isShiftPressed -> extend
@@ -75,16 +83,23 @@ fun Modifier.selectionClicks(
                             pressedAt = change.position
                         }
                     }
+                    PointerEventType.Move -> {
+                        if (change.id == pressed && (change.isConsumed || (change.position - pressedAt).getDistance() > MouseClickSlopDp.dp.toPx())) {
+                            pressed = null
+                        }
+                    }
                     PointerEventType.Release -> {
                         if (change.id != pressed) continue
                         pressed = null
                         val open = doubleClick ?: continue
+                        val slop = MouseClickSlopDp.dp.toPx()
                         // 挪过了就是拖动或框选，不算一次点击
-                        if (change.isConsumed || (change.position - pressedAt).getDistance() > viewConfiguration.touchSlop) continue
+                        if (change.isConsumed || (change.position - pressedAt).getDistance() > slop) continue
                         change.consume()
+                        focus?.invoke()
                         val now = change.uptimeMillis
                         val isDouble = now - lastClickAt <= viewConfiguration.doubleTapTimeoutMillis &&
-                            (change.position - lastClickPosition).getDistance() <= viewConfiguration.touchSlop
+                            (change.position - lastClickPosition).getDistance() <= slop
                         if (isDouble) {
                             // 清零：连点三下是一次双击加一次单击，不是两次双击
                             lastClickAt = 0L
@@ -130,3 +145,5 @@ fun Modifier.ownsClicks(): Modifier {
     DisposableEffect(owner) { onDispose { owner.remove(key) } }
     return onGloballyPositioned { owner.put(key, it.boundsInRoot()) }
 }
+
+private const val MouseClickSlopDp = 4

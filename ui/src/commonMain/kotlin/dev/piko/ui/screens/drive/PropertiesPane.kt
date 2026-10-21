@@ -3,11 +3,10 @@ package dev.piko.ui.screens.drive
 import dev.piko.ui.components.DetailHeading
 
 import dev.piko.ui.components.DetailFields
-import dev.piko.ui.components.FitDetailWidthColumn
-import dev.piko.ui.components.DetailFollowsWidth
-
-
-import dev.piko.ui.components.FloatingPanel
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material3.Surface
 
 import androidx.compose.foundation.layout.Box
 import dev.piko.shared.state.DriveItemName
@@ -71,8 +70,9 @@ internal sealed interface PropertiesTarget {
  */
 @Composable
 internal fun PropertiesPane(target: PropertiesTarget, modifier: Modifier = Modifier) {
-    FitDetailWidthColumn(
+    Column(
         modifier = modifier
+            .widthIn(min = PropertiesMinWidth, max = PropertiesMaxWidth)
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp)
             .padding(bottom = 16.dp),
@@ -91,25 +91,35 @@ private fun SingleDetails(target: PropertiesTarget.Single) {
     if (file.thumbnailLink.isNotEmpty()) {
         Box(
             modifier = Modifier
-                .layoutId(DetailFollowsWidth)
+                .fillMaxWidth()
                 .aspectRatio(16f / 9f)
-                .clip(MaterialTheme.shapes.medium),
+                .clip(MaterialTheme.shapes.large),
         ) {
             SpoilerThumbnail(model = file.thumbnailLink, isBlurred = target.isBlurred, blur = PosterSpoilerBlur, modifier = Modifier.fillMaxSize())
         }
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(14.dp))
         FullName(target.name)
     } else {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
-            FileTypeIcon(file = file, iconSize = 32.dp, modifier = Modifier.size(40.dp))
-            Spacer(Modifier.width(12.dp))
-            FullName(target.name)
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
+            Surface(
+                shape = MaterialTheme.shapes.medium,
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                modifier = Modifier.size(48.dp),
+            ) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    FileTypeIcon(file = file, iconSize = 26.dp, modifier = Modifier.size(28.dp))
+                }
+            }
+            Spacer(Modifier.width(14.dp))
+            Box(Modifier.weight(1f)) {
+                FullName(target.name)
+            }
         }
     }
     if (target.tags.isNotEmpty()) {
-        MediaTagRow(tags = target.tags, modifier = Modifier.layoutId(DetailFollowsWidth).padding(top = 8.dp))
+        MediaTagRow(tags = target.tags, modifier = Modifier.fillMaxWidth().padding(top = 10.dp))
     }
-    Spacer(Modifier.height(16.dp))
+    Spacer(Modifier.height(14.dp))
     val usage = folderUsage(file)
     DetailFields(
         buildList {
@@ -193,8 +203,8 @@ private fun formatDuration(seconds: Long): String {
 
 
 /** 属性卡片的宽度随内容，夹在这两者之间，照 Windows 的属性窗：不给改大小。 */
-internal val PropertiesMinWidth = 280.dp
-internal val PropertiesMaxWidth = 440.dp
+internal val PropertiesMinWidth = 340.dp
+internal val PropertiesMaxWidth = 380.dp
 internal val FilePropertiesPanelKey = dev.piko.ui.components.DetailPanelKey<PropertiesTarget>(
     dev.piko.ui.components.DetailPanelSpec("属性", "关闭属性", PropertiesMinWidth, PropertiesMaxWidth),
 )

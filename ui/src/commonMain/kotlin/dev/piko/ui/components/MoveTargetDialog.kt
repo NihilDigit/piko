@@ -34,6 +34,7 @@ import androidx.compose.material.icons.outlined.History
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.ListItemShapes
@@ -85,7 +86,8 @@ import kotlinx.coroutines.launch
  * 目录选择器，compact 下全屏，更宽时是居中的基本对话框。维护自己的路径栈，不触碰 services.driveWorkspace.folderStackFlow，
  * 否则选目标会把网盘主界面的位置一并改掉。
  *
- * onConfirm 只回传选中的目标目录，后续动作、刷新与提示由调用方负责。
+ * onConfirm 返回命令是否被接受；接受后才回传 onConfirmPath，用于记录最近目标。
+ * 后续动作、刷新与提示由调用方负责。
  *
  * blockedFolderIds 里的目录既不能进入也不能选中，列表里置灰并显示 blockedFolderHint；
  * confirmBlockedReason 只管当前目录能不能确认，返回非空即禁用确认并把原因显示在底栏。
@@ -99,12 +101,14 @@ fun FolderPickerDialog(
     title: String,
     confirmLabel: String,
     onDismiss: () -> Unit,
-    onConfirm: (targetId: String, targetName: String) -> Unit,
+    onConfirm: (targetId: String, targetName: String) -> Boolean,
     blockedFolderIds: Set<String> = emptySet(),
     blockedFolderHint: String? = null,
     confirmBlockedReason: (PathBreadcrumb) -> String? = { null },
     recentTargets: List<List<PathBreadcrumb>> = emptyList(),
     onConfirmPath: (List<PathBreadcrumb>) -> Unit = {},
+    onRemoveRecent: ((targetId: String) -> Unit)? = null,
+    onClearRecent: (() -> Unit)? = null,
 ) {
     // 高度 compact 时居中的对话框只剩两三行可滚，也全屏
     val fullscreen = currentWidthClass() == WidthClass.Compact || isHeightCompact()
@@ -116,11 +120,12 @@ fun FolderPickerDialog(
             blockedFolderHint = blockedFolderHint,
             confirmBlockedReason = confirmBlockedReason,
             recentTargets = recentTargets,
+            onRemoveRecent = onRemoveRecent,
+            onClearRecent = onClearRecent,
             fullscreen = fullscreen,
             onDismiss = onDismiss,
             onConfirm = { path ->
-                onConfirmPath(path)
-                onConfirm(path.last().id, path.last().name)
+                if (onConfirm(path.last().id, path.last().name)) onConfirmPath(path)
             },
         )
     }
@@ -172,7 +177,7 @@ fun MoveTargetDialog(
     movingIds: Set<String>,
     sourceParentId: String,
     onDismiss: () -> Unit,
-    onConfirm: (targetId: String, targetName: String) -> Unit,
+    onConfirm: (targetId: String, targetName: String) -> Boolean,
 ) {
     val history = LocalPikoServices.current.moveHistory
     val recent by history.targets.collectAsState(initial = emptyList())
@@ -180,6 +185,8 @@ fun MoveTargetDialog(
     FolderPickerDialog(
         recentTargets = reachable,
         onConfirmPath = history::remember,
+        onRemoveRecent = history::remove,
+        onClearRecent = history::clear,
         title = "移动 $itemCount 项",
         confirmLabel = "移动到这里",
         onDismiss = onDismiss,
@@ -197,6 +204,30 @@ fun MoveTargetDialog(
 }
 
 @Composable
+fun CopyTargetDialog(
+    itemCount: Int,
+    copyingIds: Set<String>,
+    onDismiss: () -> Unit,
+    onConfirm: (targetId: String, targetName: String) -> Boolean,
+) {
+    val history = LocalPikoServices.current.moveHistory
+    val recent by history.targets.collectAsState(initial = emptyList())
+    FolderPickerDialog(
+        title = "复制 $itemCount 项",
+        confirmLabel = "复制到这里",
+        onDismiss = onDismiss,
+        onConfirm = onConfirm,
+        recentTargets = recent.filter { path -> path.none { it.id in copyingIds } },
+        onConfirmPath = history::remember,
+        onRemoveRecent = history::remove,
+        onClearRecent = history::clear,
+        blockedFolderIds = copyingIds,
+        blockedFolderHint = "待复制项",
+        confirmBlockedReason = { current -> "不能复制到自身".takeIf { current.id in copyingIds } },
+    )
+}
+
+@Composable
 private fun FolderPickerContent(
     title: String,
     confirmLabel: String,
@@ -207,6 +238,8 @@ private fun FolderPickerContent(
     fullscreen: Boolean,
     onDismiss: () -> Unit,
     onConfirm: (path: List<PathBreadcrumb>) -> Unit,
+    onRemoveRecent: ((targetId: String) -> Unit)? = null,
+    onClearRecent: (() -> Unit)? = null,
 ) {
     val driveRepo = LocalPikoServices.current.driveRepository
     val scope = rememberCoroutineScope()
@@ -344,6 +377,8 @@ private fun FolderPickerContent(
         },
         bottomBar = {
             FolderPickerActionBar(
+                onRemoveRecent = onRemoveRecent,
+                onClearRecent = onClearRecent,
                 recentTargets = recentTargets,
                 currentId = current.id,
                 onRecentSelect = { target -> path = target },
@@ -520,11 +555,16 @@ private fun FolderPickerActionBar(
     disabledReason: String?,
     onCancel: (() -> Unit)?,
     onConfirm: () -> Unit,
+    onRemoveRecent: ((targetId: String) -> Unit)? = null,
+    onClearRecent: (() -> Unit)? = null,
 ) {
     Column(modifier = Modifier.fillMaxWidth().navigationBarsPadding()) {
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
         if (recentTargets.isNotEmpty()) {
             // 横滑的一行要贴到两边，不能放进下面带内边距的那一栏，否则滑到头会在边距处被裁掉
             RecentTargetsRow(
+                onRemoveRecent = onRemoveRecent,
+                onClearRecent = onClearRecent,
                 targets = recentTargets,
                 currentId = currentId,
                 onSelect = onRecentSelect,
@@ -572,22 +612,35 @@ private fun RecentTargetsRow(
     currentId: String,
     onSelect: (List<PathBreadcrumb>) -> Unit,
     modifier: Modifier = Modifier,
+    onRemoveRecent: ((targetId: String) -> Unit)? = null,
+    onClearRecent: (() -> Unit)? = null,
 ) {
     val rowState = rememberLazyListState()
-    LazyRow(
-        state = rowState,
-        modifier = modifier.fillMaxWidth().verticalWheelScrollsRow(rowState),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        items(items = targets, key = { it.last().id }) { target ->
-            FilterChip(
-                selected = target.last().id == currentId,
-                onClick = { onSelect(target) },
-                label = { Text(target.last().name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                leadingIcon = { Icon(Icons.Outlined.History, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                modifier = Modifier.widthIn(max = 200.dp),
-            )
+    Column(modifier) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("最近目标", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+            if (onClearRecent != null) TextButton(onClick = onClearRecent) { Text("清除历史") }
+        }
+        LazyRow(
+            state = rowState,
+            modifier = Modifier.fillMaxWidth().verticalWheelScrollsRow(rowState),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            items(items = targets, key = { it.last().id }) { target ->
+                FilterChip(
+                    selected = target.last().id == currentId,
+                    onClick = { onSelect(target) },
+                    label = { Text(target.last().name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    leadingIcon = { Icon(Icons.Outlined.History, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    trailingIcon = onRemoveRecent?.let { remove -> {
+                        IconButton(onClick = { remove(target.last().id) }, modifier = Modifier.size(32.dp)) {
+                            Icon(Icons.Outlined.Close, contentDescription = "移除最近目录", modifier = Modifier.size(16.dp))
+                        }
+                    } },
+                    modifier = Modifier.widthIn(max = 240.dp),
+                )
+            }
         }
     }
 }

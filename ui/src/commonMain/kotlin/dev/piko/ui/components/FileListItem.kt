@@ -130,7 +130,7 @@ fun FileListItem(
         .fillMaxWidth()
         .padding(horizontal = RowOuterPadding, vertical = RowGap / 2)
         .heightIn(min = RowMinHeight)
-        .focusIndication(rowShape)
+        .focusIndication(rowShape, showPointerFocus = !isSelectionMode)
         .locateHighlight(isHighlighted, rowShape)
     // 弱化加在各槽位上而不是整行：整行降透明度会连按压的状态层一起变淡
     val slotModifier = if (dimmed) Modifier.alpha(DIMMED_ALPHA) else Modifier

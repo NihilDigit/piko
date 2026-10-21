@@ -70,7 +70,7 @@ private val NavigationKeys = setOf(Key.Tab, Key.DirectionUp, Key.DirectionDown, 
  * - 鼠标点过来的，整项盖一层 secondary 的淡色，照资源管理器与 Finder 的选中底色：鼠标单击不再打开，得看得出点中了哪一项。
  */
 @Composable
-fun Modifier.focusIndication(shape: Shape): Modifier {
+fun Modifier.focusIndication(shape: Shape, showPointerFocus: Boolean = true): Modifier {
     var focused by remember { mutableStateOf(false) }
     val keyboard = InputModality.keyboard
     val color = MaterialTheme.colorScheme.secondary
@@ -84,7 +84,7 @@ fun Modifier.focusIndication(shape: Shape): Modifier {
             translate(stroke / 2, stroke / 2) {
                 drawOutline(outline, color, style = Stroke(stroke))
             }
-        } else {
+        } else if (showPointerFocus) {
             // 盖在内容上面而不是垫在下面：列表行与封面都自带不透明的底，垫在下面看不见
             drawOutline(shape.createOutline(size, layoutDirection, this), color.copy(alpha = PointerFocusAlpha))
         }

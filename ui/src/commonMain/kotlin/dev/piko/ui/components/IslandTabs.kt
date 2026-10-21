@@ -20,7 +20,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import dev.piko.ui.theme.IslandCorner
@@ -41,6 +40,7 @@ fun IslandTab(
     first: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    showDivider: Boolean = false,
     interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
     content: @Composable RowScope.() -> Unit,
 ) {
@@ -51,27 +51,42 @@ fun IslandTab(
         animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
         label = "tabActive",
     )
-    val inactiveFillAlpha by animateFloatAsState(
-        targetValue = if (hovered) 0.68f else 0.38f,
+    val hoverFraction by animateFloatAsState(
+        targetValue = if (!active && hovered) 1f else 0f,
         animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
-        label = "tabFill",
+        label = "tabHover",
     )
-    val borderAlpha by animateFloatAsState(
-        targetValue = if (hovered) 0.55f else 0.32f,
+    val dividerFraction by animateFloatAsState(
+        targetValue = if (!active && !hovered && showDivider) 1f else 0f,
         animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
-        label = "tabBorder",
+        label = "tabDivider",
     )
     Row(
         modifier = modifier
             .height(IslandTabHeight)
             .drawBehind {
-                val inactiveFraction = 1f - activeFraction
-                if (inactiveFraction > 0f) {
+                if (hoverFraction > 0f) {
                     val inset = 2.dp.toPx()
                     val bounds = Size((size.width - 2 * inset).coerceAtLeast(0f), (size.height - 3.dp.toPx()).coerceAtLeast(0f))
-                    val radius = CornerRadius(8.dp.toPx())
-                    drawRoundRect(colors.islandHeader.copy(alpha = inactiveFillAlpha * inactiveFraction), Offset(inset, 0f), bounds, radius)
-                    drawRoundRect(colors.outlineVariant.copy(alpha = borderAlpha * inactiveFraction), Offset(inset, 0f), bounds, radius, style = Stroke(1.dp.toPx()))
+                    val radius = CornerRadius(7.dp.toPx())
+                    drawRoundRect(
+                        colors.islandHeader.copy(alpha = 0.55f * hoverFraction * (1f - activeFraction)),
+                        Offset(inset, 2.dp.toPx()),
+                        bounds,
+                        radius,
+                    )
+                }
+                if (dividerFraction > 0f) {
+                    val dividerHeight = 16.dp.toPx()
+                    val dividerWidth = 1.dp.toPx()
+                    val x = size.width - TabFlare.toPx() / 2f - dividerWidth / 2f
+                    val y = (size.height - dividerHeight) / 2f
+                    drawRoundRect(
+                        colors.outlineVariant.copy(alpha = 0.55f * dividerFraction),
+                        Offset(x, y),
+                        Size(dividerWidth, dividerHeight),
+                        CornerRadius(dividerWidth / 2f),
+                    )
                 }
                 if (activeFraction > 0f) {
                     drawPath(tabOutline(size, TabFlare.toPx(), IslandCorner.toPx(), flushStart = first), colors.islandHeader.copy(alpha = activeFraction))

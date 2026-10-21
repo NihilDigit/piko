@@ -1,5 +1,10 @@
 package dev.piko.ui.components
 
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.lazy.grid.LazyGridState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalDensity
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
@@ -138,7 +143,7 @@ class FileDragState {
         retarget()
     }
 
-    private fun retarget() {
+    internal fun retarget() {
         val payload = payload
         if (payload == null) {
             hovered = null
@@ -190,6 +195,7 @@ fun Modifier.fileDragSource(payload: () -> FileDragPayload?): Modifier {
             while (true) {
                 val event = awaitPointerEvent(PointerEventPass.Initial)
                 val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                if (event.type == PointerEventType.Scroll) continue
                 // 外面的框选已接手这次拖动（按在没选中的条目上，见 marqueeSelection），这里就不起拖
                 if (!change.pressed || change.isConsumed) break
                 if ((change.position - down.position).getDistance() > threshold) {
@@ -254,10 +260,11 @@ fun Modifier.fileDragHost(drag: FileDragState): Modifier {
                         // 松手这一下的位置与修饰键先记上再落：只在移动时记的话，快速拖到另一个文件夹随即松手
                         // 落在上一个落点，停下后按住 Ctrl 再松手仍是移动
                         drag.move(coordinates[0].rootOf(change.position), isCopy(copyWithAlt, event.keyboardModifiers))
+                        // AWT 的滚轮事件可能带 pressed=false，不能把它当成松手。
+                        if (event.type == PointerEventType.Scroll) continue
                         when {
                             change.pressed -> {
-                                // 滚轮不消费，拖着的时候照样能滚动列表去找落点
-                                if (event.type != PointerEventType.Scroll) change.consume()
+                                change.consume()
                             }
                             // 系统取消指针时补发的「松开」一开始就是已消费的，真的松开在根上还没人碰过
                             change.isConsumed -> drag.cancel()
@@ -362,3 +369,28 @@ fun FileDragOverlay(drag: FileDragState) {
 }
 
 private val DragThreshold = 8.dp
+
+@Composable
+fun Modifier.fileDragAutoScroll(gridState: LazyGridState): Modifier {
+    val drag = LocalFileDrag.current ?: return this
+    var bounds by remember { mutableStateOf(Rect.Zero) }
+    val edge = with(LocalDensity.current) { 48.dp.toPx() }
+    LaunchedEffect(drag, gridState, drag.payload) {
+        while (drag.payload != null) {
+            val at = drag.position
+            if (bounds.contains(at)) {
+                val speed = when {
+                    at.y < bounds.top + edge -> -(bounds.top + edge - at.y)
+                    at.y > bounds.bottom - edge -> at.y - (bounds.bottom - edge)
+                    else -> 0f
+                } * 0.4f
+                if (speed != 0f) {
+                    gridState.scrollBy(speed)
+                    drag.retarget()
+                }
+            }
+            delay(16L)
+        }
+    }
+    return onGloballyPositioned { bounds = it.boundsInRoot() }
+}

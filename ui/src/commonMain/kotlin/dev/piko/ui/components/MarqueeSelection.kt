@@ -18,6 +18,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.AwaitPointerEventScope
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.PointerInputChange
@@ -25,6 +26,7 @@ import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.isPrimaryPressed
 import androidx.compose.ui.input.pointer.isShiftPressed
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.toOffset
 import androidx.compose.ui.unit.toSize
@@ -64,11 +66,16 @@ fun Modifier.marqueeSelection(
     movable: (String) -> Boolean = { it in selectedIds },
 ): Modifier {
     val shortcut = LocalPikoPlatform.current.shortcutModifier
+    val focusManager = LocalFocusManager.current
+    val focusFallback = LocalFocusFallback.current
     val selected by rememberUpdatedState(selectedIds)
     val keyOf by rememberUpdatedState(boxedKey)
     val canMove by rememberUpdatedState(movable)
     val select by rememberUpdatedState(onSelect)
     val backgroundClick by rememberUpdatedState(onBackgroundClick)
+    fun releaseItemFocus() {
+        if (focusFallback != null) focusFallback.restore() else focusManager.clearFocus()
+    }
     var box by remember { mutableStateOf<Rect?>(null) }
     val fill = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
     val outline = MaterialTheme.colorScheme.primary
@@ -82,7 +89,10 @@ fun Modifier.marqueeSelection(
                     ?.let { keyOf(it.key) }
                 val onItem = pressedKey != null
                 if (down.type == PointerType.Touch) {
-                    if (!onItem) awaitBackgroundTap(down) { backgroundClick() }
+                    if (!onItem) awaitBackgroundTap(down) {
+                        releaseItemFocus()
+                        backgroundClick()
+                    }
                     return@awaitEachGesture
                 }
                 if (down.type != PointerType.Mouse || !currentEvent.buttons.isPrimaryPressed) return@awaitEachGesture
@@ -126,38 +136,61 @@ fun Modifier.marqueeSelection(
                 }
 
                 var autoScroll: Job? = null
-                var releasedOnChild = false
-                while (true) {
-                    val event = awaitPointerEvent(PointerEventPass.Initial)
-                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                    if (!change.pressed) {
-                        if (dragging) change.consume()
-                        else releasedOnChild = isReleaseConsumed(down.id)
-                        break
+                // Follow actual item displacement, including wheel scrolling handled by the grid.
+                val scrollTracking = launch {
+                    var offsets = gridState.layoutInfo.visibleItemsInfo.associate { it.key to it.offset.y }
+                    while (isActive) {
+                        val visible = gridState.layoutInfo.visibleItemsInfo
+                        visible.firstOrNull { it.key in offsets }?.let {
+                            scrolled += offsets.getValue(it.key) - it.offset.y
+                            if (dragging) update()
+                        }
+                        offsets = visible.associate { it.key to it.offset.y }
+                        delay(FRAME_MS)
                     }
-                    pointer = change.position
-                    // 按在条目上时要比条目的拖放（8dp 起拖）先认出是拖动，否则那边先起了拖
-                    val slop = if (onItem) ItemMarqueeSlopDp.dp.toPx() else viewConfiguration.touchSlop
-                    if (!dragging && (pointer - start).getDistance() > slop) dragging = true
-                    if (!dragging) continue
-                    change.consume()
-                    update()
-                    if (edgeSpeed() != 0f && autoScroll?.isActive != true) {
-                        autoScroll = launch {
-                            while (isActive) {
-                                val speed = edgeSpeed()
-                                if (speed == 0f) break
-                                scrolled += gridState.scrollBy(speed)
-                                update()
-                                delay(FRAME_MS)
+                }
+                var releasedOnChild = false
+                try {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (event.type == PointerEventType.Scroll) continue
+                        if (!change.pressed) {
+                            if (dragging) change.consume()
+                            else releasedOnChild = isReleaseConsumed(down.id)
+                            break
+                        }
+                        pointer = change.position
+                        // 按在条目上时要比条目的拖放（8dp 起拖）先认出是拖动，否则那边先起了拖
+                        val slop = if (onItem) ItemMarqueeSlopDp.dp.toPx() else viewConfiguration.touchSlop
+                        if (!dragging && (pointer - start).getDistance() > slop) {
+                            dragging = true
+                            releaseItemFocus()
+                        }
+                        if (!dragging) continue
+                        change.consume()
+                        update()
+                        if (edgeSpeed() != 0f && autoScroll?.isActive != true) {
+                            autoScroll = launch {
+                                while (isActive) {
+                                    val speed = edgeSpeed()
+                                    if (speed == 0f) break
+                                    gridState.scrollBy(speed)
+                                    delay(FRAME_MS)
+                                }
                             }
                         }
                     }
+                } finally {
+                    autoScroll?.cancel()
+                    scrollTracking.cancel()
+                    box = null
                 }
-                autoScroll?.cancel()
-                box = null
                 // 按在条目上没拖动是点了那一项，由条目自己处理，不算点了空白；标题行里的按钮同理
-                if (!dragging && !keep && !onItem && !releasedOnChild) backgroundClick()
+                if (!dragging && !keep && !onItem && !releasedOnChild) {
+                    releaseItemFocus()
+                    backgroundClick()
+                }
             }
         }
     }.drawWithContent {
