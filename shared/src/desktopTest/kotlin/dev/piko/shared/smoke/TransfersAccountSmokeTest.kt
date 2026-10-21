@@ -53,6 +53,133 @@ import kotlin.test.assertNotNull
 
 /** 传输页只列当前账号的下载；别的账号的任务原样留在任务表里，切回去照旧看得到。 */
 class TransfersAccountSmokeTest {
+    @Test
+    fun `upload batches restore as groups and support child selection and group removal`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val provider = server.provider()
+        val account = assertNotNull(provider.currentClient.value).account
+        val prefs = MemoryPreferences()
+        val tasks = (1..3).map { index -> dev.piko.shared.upload.UploadTask(
+            "task$index", account, "source$index", "file$index.bin", 10, 1, "target", "目标",
+            status = dev.piko.shared.upload.UploadStatus.PAUSED, batchId = "batch", batchName = "文件组",
+            batchParentId = "target", batchParentName = "目标",
+        ) } + dev.piko.shared.upload.UploadTask("folder-file", account, "source4", "file4.bin", 10, 1, "child", "子目录",
+            status = dev.piko.shared.upload.UploadStatus.PAUSED, batchId = "folder", batchName = "文件夹",
+            batchParentId = "target", batchParentName = "目标", batchIsFolder = true)
+        prefs.uploadTasks = Json.encodeToString(ListSerializer(dev.piko.shared.upload.UploadTask.serializer()), tasks)
+        val drive = PikoDriveRepository(provider, prefs)
+        val instant = InstantMagnetRepository(provider)
+        val uploads = PikoUploadCoordinator(provider, prefs, NoSources, drive, scope)
+        val state = TransfersState(
+            PikoDownloadCoordinator(provider, prefs, DirectoryStorage(Files.createTempDirectory("piko-upload-groups").toFile()), scope),
+            TaskRepository(provider, drive, instant), OfflinePackTracker(instant, drive, prefs), scope, drive,
+            uploads, InstantSaveRecords(provider, null, scope), account,
+            ArchiveExtractSession(provider, drive, ArchivePasswordVault(provider, MemorySessionStore(), prefs), scope),
+            FolderVaultSession(drive, scope), listsServerWork = true,
+        )
+        awaitUntil("上传恢复为两组") { state.inProgress.filterIsInstance<TransferItem.UploadBatch>().size == 2 }
+        assertEquals(2, state.counts[TransferKind.UPLOAD])
+        val group = state.inProgress.filterIsInstance<TransferItem.UploadBatch>().first { it.batchId == "batch" }
+        assertEquals(3, group.tasks.size)
+        assertTrue(state.isResumable(group))
+        state.selectOnly("upload:task1")
+        assertEquals("upload:task1", state.selectedItems.single().key)
+        state.removeSelected()
+        awaitUntil("组内单个文件移除") { state.inProgress.filterIsInstance<TransferItem.UploadBatch>().first { it.batchId == "batch" }.tasks.size == 2 }
+        state.removeKeys(setOf("upload:task3"))
+        awaitUntil("剩余单个文件仍保留原分组") {
+            state.inProgress.filterIsInstance<TransferItem.UploadBatch>().any { it.key == group.key && it.tasks.size == 1 }
+        }
+        state.selectOnly("upload:task2")
+        state.removeKeys(setOf(group.key))
+        awaitUntil("整组移除保留其他组") { uploads.tasks.value.values.none { it.batchId == "batch" } && state.inProgress.size == 1 }
+        assertTrue(state.selectedKeys.isEmpty())
+        assertEquals("folder", (state.inProgress.single() as TransferItem.UploadBatch).batchId)
+    }
+
+    @Test
+    fun `cloud deletion deduplicates and chunks large selections by one hundred`() = smoke { _ ->
+        val server = FakePikPakServer()
+        repeat(205) { server.addTask("task$it", TaskPhase.PENDING) }
+        val provider = server.provider()
+        val repo = TaskRepository(provider, PikoDriveRepository(provider, MemoryPreferences()))
+        val ids = server.tasksSnapshot().map { it.id }
+        repo.deleteTasks(ids + ids.take(5) + "").getOrThrow()
+        assertTrue(server.tasksSnapshot().isEmpty())
+        assertEquals(3, server.count("DELETE /drive/v1/tasks"))
+    }
+
+    @Test
+    fun `remove keys batches cloud tasks and freezes targets independently of selection`() = smoke { scope ->
+        val server = FakePikPakServer()
+        repeat(4) { server.addTask("task$it", TaskPhase.PENDING) }
+        val http = server.httpClient()
+        val provider = server.provider(PikPakClient("smoke@piko.dev", "pw", sessionStore = InMemorySessionStore(),
+            httpClient = http, rateLimiter = RateLimiter(capacity = 1000, refillPerSecond = 1000.0)))
+        val prefs = MemoryPreferences()
+        val drive = PikoDriveRepository(provider, prefs)
+        val instant = InstantMagnetRepository(provider)
+        val repo = TaskRepository(provider, drive, instant)
+        repo.getTasks().getOrThrow()
+        val state = TransfersState(
+            PikoDownloadCoordinator(provider, prefs, DirectoryStorage(Files.createTempDirectory("piko-remove").toFile()), scope),
+            repo, OfflinePackTracker(instant, drive, prefs), scope, drive,
+            PikoUploadCoordinator(provider, prefs, NoSources, drive, scope), InstantSaveRecords(provider, null, scope),
+            assertNotNull(provider.currentClient.value).account,
+            ArchiveExtractSession(provider, drive, ArchivePasswordVault(provider, MemorySessionStore(), prefs), scope),
+            FolderVaultSession(drive, scope), listsServerWork = true,
+        )
+        val ids = server.tasksSnapshot().map { it.id }
+        val keys = ids.take(3).mapTo(linkedSetOf()) { "cloud:$it" }
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        val entered = Channel<Unit>(1)
+        val release = Channel<Unit>(1)
+        http.plugin(HttpSend).intercept { request ->
+            if (request.method == HttpMethod.Delete && request.url.encodedPath.endsWith("/drive/v1/tasks")) {
+                calls.incrementAndGet()
+                assertEquals(ids.take(3).toSet(), request.url.parameters.getAll("task_ids").orEmpty().toSet())
+                entered.send(Unit)
+                release.receive()
+            }
+            execute(request)
+        }
+        try {
+            state.selectOnly(keys.first())
+            val frozen = keys.toSet()
+            state.selectOnly("cloud:${ids.last()}")
+            assertEquals(3, state.itemsForKeys(frozen).size)
+            state.removeKeys(frozen)
+            assertTrue(state.itemsForKeys(frozen).isEmpty(), "optimistic removal is synchronous")
+            assertEquals(setOf("cloud:${ids.last()}"), state.selectedKeys)
+            withTimeout(5_000) { entered.receive() }
+            assertEquals(4, server.tasksSnapshot().size)
+            release.send(Unit)
+            awaitUntil("单个批量删除请求完成") { server.tasksSnapshot().size == 1 }
+            assertEquals(1, calls.get())
+        } finally { release.trySend(Unit) }
+    }
+
+    @Test
+    fun `failed optimistic cloud deletion fetches server state again`() = smoke { scope ->
+        val server = FakePikPakServer()
+        repeat(2) { server.addTask("task$it", TaskPhase.PENDING) }
+        val http = server.httpClient()
+        val provider = server.provider(PikPakClient("smoke@piko.dev", "pw", sessionStore = InMemorySessionStore(),
+            httpClient = http, rateLimiter = RateLimiter(capacity = 1000, refillPerSecond = 1000.0)))
+        val prefs = MemoryPreferences()
+        val repo = TaskRepository(provider, PikoDriveRepository(provider, prefs))
+        repo.getTasks().getOrThrow()
+        val state = dev.piko.shared.state.OfflineTasksState(repo, scope)
+        http.plugin(HttpSend).intercept { request ->
+            if (request.method == HttpMethod.Delete) throw io.github.nihildigit.pikpak.PikPakException(7, "denied", httpStatus = 403)
+            execute(request)
+        }
+        val id = server.tasksSnapshot().first().id
+        state.delete(listOf(id, id, ""))
+        assertEquals(1, state.tasks.size)
+        awaitUntil("删除失败后重新拉回") { state.tasks.size == 2 }
+    }
+
     private object NoSources : PikoUploadSources {
         override fun describe(uri: String): UploadSourceInfo? = null
         override fun readAt(uri: String, offset: Long, length: Int): ByteArray = error("不该读源文件")

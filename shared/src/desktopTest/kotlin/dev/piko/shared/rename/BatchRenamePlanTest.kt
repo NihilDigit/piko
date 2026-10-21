@@ -6,6 +6,17 @@ import kotlin.test.assertTrue
 
 class BatchRenamePlanTest {
 
+    @Test
+    fun `waves group independent steps and separate name dependencies`() {
+        val items = files("a", "b", "c", "d")
+        val plan = planRenames(items, listOf("b", "z", "d", "y"), emptyMap())
+        assertEquals(listOf(listOf("f1", "f3"), listOf("f0", "f2")), plan.waves.map { wave -> wave.steps.map { it.source.id } })
+        assertEquals(plan.steps, plan.waves.flatMap { it.steps })
+        assertStepsReplay(items, plan)
+        val swap = planRenames(files("a", "b"), listOf("b", "a"), emptyMap())
+        assertEquals(listOf(1, 1, 1), swap.waves.map { it.steps.size })
+    }
+
     private fun files(vararg names: String) = names.mapIndexed { index, name -> RenameSource("f$index", "p", name, isFolder = false) }
     private fun folders(vararg names: String) = names.mapIndexed { index, name -> RenameSource("d$index", "p", name, isFolder = true) }
 
@@ -58,6 +69,54 @@ class BatchRenamePlanTest {
         val result = runBatchRenamePipeline(items, replaceAll("Frieren - ", "第"), stripPrefix = true, stripSuffix = true)
         assertEquals(CommonAffixes("[SweetSub] ", " [WebRip]"), result.affixes)
         assertEquals(listOf("第02.mkv", "第03.mkv"), result.names)
+    }
+
+    @Test
+    fun `video companions preserve language suffix when common suffix is stripped`() {
+        val items = files("Show.E01-LUXURY.avi", "Show.E01-LUXURY.chs.srt", "Show.E02-LUXURY.avi", "Show.E02-LUXURY.chs.srt")
+        val result = runBatchRenamePipeline(items, null, stripPrefix = false, stripSuffix = true)
+        assertEquals("-LUXURY", result.affixes.suffix)
+        assertEquals(listOf("Show.E01.avi", "Show.E01.chs.srt", "Show.E02.avi", "Show.E02.chs.srt"), result.names)
+    }
+
+    @Test
+    fun `video companions share their host counter instead of consuming an episode number`() {
+        val items = files("Show.E01-LUXURY.avi", "Show.E01-LUXURY.chs.srt", "Show.E02-LUXURY.avi", "Show.E02-LUXURY.chs.srt")
+        val result = runBatchRenamePipeline(items, replaceAll("Show.E01-LUXURY", "unused"), false, false)
+        assertEquals(listOf("unused.avi", "unused.chs.srt", "Show.E02-LUXURY.avi", "Show.E02-LUXURY.chs.srt"), result.names)
+        val counter = FindReplaceRule(FindReplaceOptions(search = ".+", replacement = "Ep \${start=1}", useRegex = true), 0)
+        assertEquals(
+            listOf("Ep 1.avi", "Ep 1.chs.srt", "Ep 2.avi", "Ep 2.chs.srt"),
+            runBatchRenamePipeline(items, counter, false, false).names,
+        )
+    }
+
+    @Test
+    fun `companions use longest host stem in the same directory including audio and uncommon subtitles`() {
+        val items = files("Show.mkv", "Show.E01.mkv", "Show.E01.zh-CN.ass", "Show.E01.smi", "Show.E01.flac") +
+            RenameSource("other", "other-parent", "Show.E01.chs.srt", isFolder = false)
+        val result = runBatchRenamePipeline(items, replaceAll("E01", "E02"), false, false)
+        assertEquals(listOf("Show.mkv", "Show.E02.mkv", "Show.E02.zh-CN.ass", "Show.E02.smi", "Show.E02.flac", "Show.E02.chs.srt"), result.names)
+        // 另一目录没有宿主，照常独立应用规则。
+        val counter = FindReplaceRule(FindReplaceOptions(search = ".+", replacement = "\${start=1}", useRegex = true), 0)
+        assertEquals(listOf("1.mkv", "2.mkv", "2.zh-CN.ass", "2.smi", "2.flac", "3.srt"), runBatchRenamePipeline(items, counter, false, false).names)
+    }
+
+    @Test
+    fun `full and extension scopes and canonical base do not couple companions`() {
+        val items = files("Show.mkv", "Show.chs.srt")
+        val full = FindReplaceRule(FindReplaceOptions(search = "chs", replacement = "eng", scope = RenameScope.FULL), 0)
+        assertEquals(listOf("Show.mkv", "Show.eng.srt"), runBatchRenamePipeline(items, full, false, false, scope = RenameScope.FULL).names)
+        val extension = FindReplaceRule(FindReplaceOptions(search = "srt", replacement = "ass", scope = RenameScope.EXTENSION), 0)
+        assertEquals(listOf("Show.mkv", "Show.chs.ass"), runBatchRenamePipeline(items, extension, false, false, scope = RenameScope.EXTENSION).names)
+        val base = RenameRule { _, _ -> listOf("Video.mkv", "Subtitle.srt") }
+        assertEquals(listOf("Video.mkv", "Subtitle.srt"), runBatchRenamePipeline(items, null, false, false, base = base).names)
+    }
+
+    @Test
+    fun `empty video stem also marks companions empty`() {
+        val items = files("Show.mkv", "Show.chs.srt")
+        assertEquals(listOf("", ""), runBatchRenamePipeline(items, replaceAll("Show", ""), false, false).names)
     }
 
     @Test

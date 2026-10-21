@@ -27,6 +27,7 @@ import io.github.nihildigit.pikpak.gcidByCid
 import io.github.nihildigit.pikpak.startUpload
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -41,6 +42,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
@@ -48,6 +50,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.sync.withLock
 import kotlinx.io.buffered
 import kotlinx.serialization.Serializable
@@ -60,8 +64,18 @@ import kotlin.time.Instant
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 
+data class UploadConcurrencyPolicy(
+    val maxFiles: Int = 4,
+    val maxHashers: Int = 2,
+    val maxBufferedPartBytes: Long = 64L * 1024 * 1024,
+) {
+    init {
+        require(maxFiles > 0 && maxHashers > 0 && maxBufferedPartBytes > 0)
+    }
+}
+
 /**
- * 本机文件上传到网盘。一次只传一个文件，其余排队：瓶颈是本机的上行带宽，并行只会互相抢。
+ * 本机文件上传到网盘，并发处理文件，单独限制整份校验的并发数。
  *
  * 每个文件先读三段 20 KB 算 CID 去查全局索引，命中即秒传；查不到才整份计算 gcid 再真传。
  * gcid 不能省也不能随便填：服务端不校验它，填错的内容会进秒传索引（SDK 的 upload 注释有实测）。
@@ -76,6 +90,7 @@ class PikoUploadCoordinator(
     private val sources: PikoUploadSources,
     private val driveRepository: PikoDriveRepository,
     private val scope: CoroutineScope,
+    private val policy: UploadConcurrencyPolicy = UploadConcurrencyPolicy(),
 ) {
     private val _tasks = MutableStateFlow<Map<String, UploadTask>>(emptyMap())
 
@@ -97,6 +112,9 @@ class PikoUploadCoordinator(
     private val _isRestoring = MutableStateFlow(true)
     val isRestoring = _isRestoring.asStateFlow()
     private val sourceLock = Mutex()
+    private val preparationLock = Mutex()
+    private val preparationJobs = mutableMapOf<String, Job>()
+    private val pausedBatches = mutableSetOf<String>()
     private val preparingSources = mutableMapOf<String, Set<String>>()
 
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
@@ -122,8 +140,10 @@ class PikoUploadCoordinator(
      */
     val pendingRequest: StateFlow<UploadSelection?> = _pendingRequest.asStateFlow()
 
-    /** 正在跑的那个任务。暂停与删除要取消的是它的协程，不是整条队列。 */
-    private val running = MutableStateFlow<Pair<String, Job>?>(null)
+    /** 暂停与删除只取消对应文件，换号则取消当前调度器的全部子任务。 */
+    private val running = MutableStateFlow<Map<String, Job>>(emptyMap())
+    private val hashers = Semaphore(policy.maxHashers)
+    private val bufferedPartBytes = MutableStateFlow(0L)
 
     /** 机密存储里眼下存着的凭据，按任务 ID。只在 [restore] 与保存任务表的那个协程里改。 */
     private var storedCredentials = mapOf<String, OssCredentials>()
@@ -179,27 +199,44 @@ class PikoUploadCoordinator(
             preparingSources[preparation.id] = keys
         } }
         PikoLog.i(TAG, "上传准备 ${preparation.id}：接受 ${frozen.count} 项，目标 $parentId")
-        val preparing = scope.launch(Dispatchers.IO) {
+        val preparing = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
             prepare(client, frozen, preparation)
         }
+        runBlocking { preparationLock.withLock { preparationJobs[preparation.id] = preparing } }
         preparing.invokeOnCompletion { error ->
+            runBlocking { preparationLock.withLock {
+                if (preparationJobs[preparation.id] === preparing) preparationJobs.remove(preparation.id)
+                pausedBatches.remove(preparation.id)
+            } }
             if (error != null) _preparations.update { all -> all.map { work -> if (work.id == preparation.id && work.isRunning)
                 work.copy(result = UploadPreparationResult(UploadPreparationCompletion.STOPPED, "上传准备已结束，请检查已入队文件与目标目录", nowMs())) else work } }
             val released = runBlocking { sourceLock.withLock { preparingSources.remove(preparation.id).orEmpty() } }
             released.forEach(::releaseIfUnused)
         }
+        preparing.start()
         return UploadEnqueueResult.Accepted(preparation.id)
     }
 
     private suspend fun prepare(client: PikPakClient, selection: UploadSelection, initial: UploadPreparation) {
         var work = initial
+        val grouped = selection.folders.isNotEmpty() || selection.files.size > 1
+        var batchName: String? = null
         fun publish() { _preparations.update { all -> all.map { if (it.id == work.id) work else it } } }
         fun title(key: String, name: String) { work = work.copy(sources = work.sources.map { if (it.key == key) it.copy(title = name) else it }); publish() }
         fun issue(key: String, path: String, kind: UploadPreparationIssueKind) {
             work = work.copy(issues = work.issues + UploadPreparationIssue(key, path, kind)); publish()
         }
-        fun queue(key: String, path: String, task: UploadTask) {
-            _tasks.update { it + (task.taskId to task) }
+        suspend fun queue(key: String, path: String, task: UploadTask) = preparationLock.withLock {
+            currentCoroutineContext().ensureActive()
+            if (work.id !in preparationJobs) throw CancellationException("上传准备已移除")
+            if (batchName == null) {
+                val firstName = work.sources.firstOrNull()?.title ?: task.fileName
+                batchName = if (selection.files.isEmpty() && selection.folders.size == 1) firstName else "$firstName 等 ${selection.count} 项"
+            }
+            val queued = if (grouped) task.copy(batchId = work.id, batchName = batchName,
+                batchParentId = work.parentId, batchParentName = work.parentName, batchIsFolder = selection.folders.isNotEmpty()) else task
+            val accepted = if (work.id in pausedBatches) queued.copy(status = UploadStatus.PAUSED) else queued
+            _tasks.update { it + (accepted.taskId to accepted) }
             work = work.copy(files = work.files + UploadPreparedFile(key, path, task.taskId)); publish()
         }
         suspend fun readFile(key: String, path: String, uri: String, parent: String, name: String): UploadTask? {
@@ -333,13 +370,48 @@ class PikoUploadCoordinator(
     }
 
     fun pause(taskId: String) {
-        cancelRunning(taskId)
         update(taskId) { if (it.status.isActive) it.copy(status = UploadStatus.PAUSED, speedBytesPerSec = 0L) else it }
+        cancelRunning(taskId)
+    }
+
+    fun pauseBatch(batchId: String) {
+        val ids = runBlocking { preparationLock.withLock {
+            if (batchId in preparationJobs) pausedBatches += batchId
+            pauseBatchTasks(batchId)
+        } }
+        ids.forEach(::cancelRunning)
+    }
+
+    private fun pauseBatchTasks(batchId: String): Set<String> {
+        val ids = _tasks.value.values.filter { it.batchId == batchId }.mapTo(HashSet()) { it.taskId }
+        _tasks.update { tasks -> tasks.mapValues { (id, task) ->
+            if (id in ids && task.status.isActive) task.copy(status = UploadStatus.PAUSED, speedBytesPerSec = 0L) else task
+        } }
+        return ids
+    }
+
+    fun resumeBatch(batchId: String) {
+        runBlocking { preparationLock.withLock {
+            pausedBatches.remove(batchId)
+            _tasks.value.values.filter { it.batchId == batchId }.forEach { resume(it.taskId) }
+        } }
+    }
+
+    fun removeBatch(batchId: String) {
+        val (preparing, ids) = runBlocking { preparationLock.withLock {
+            pausedBatches.remove(batchId)
+            preparationJobs.remove(batchId) to pauseBatchTasks(batchId)
+        } }
+        preparing?.cancel()
+        ids.forEach(::remove)
     }
 
     /** 把所有未完成的任务转为暂停。Android 前台服务被系统叫停时用。 */
     fun pauseAll() {
-        _tasks.value.values.filter { it.status.isActive }.forEach { pause(it.taskId) }
+        _tasks.update { tasks -> tasks.mapValues { (_, task) ->
+            if (task.status.isActive) task.copy(status = UploadStatus.PAUSED, speedBytesPerSec = 0L) else task
+        } }
+        running.value.values.forEach { it.cancel() }
     }
 
     /**
@@ -456,36 +528,38 @@ class PikoUploadCoordinator(
             .getOrNull()
 
     /**
-     * 队列：当前账号最早排进来的任务先传，传完或停下再取下一个。换号或退出登录时
-     * collectLatest 取消正在传的那个，它转为暂停。
+     * 当前账号按入队顺序补满空位。换号或退出登录时 collectLatest 等全部子任务取消后再切换。
      */
     private suspend fun runQueue() {
         clientProvider.currentClient.collectLatest { client ->
             if (client == null) return@collectLatest
-            while (true) {
-                val next = _tasks.first { tasks -> nextQueued(tasks, client.account) != null }
-                    .let { nextQueued(it, client.account)!! }
-                coroutineScope {
-                    val job = launch(Dispatchers.IO) { run(client, next.taskId) }
-                    running.value = next.taskId to job
-                    job.join()
-                    running.update { if (it?.second === job) null else it }
+            coroutineScope {
+                combine(_tasks, running) { _, _ -> Unit }.collect {
+                    while (running.value.size < policy.maxFiles) {
+                        val next = nextQueued(_tasks.value, client.account) ?: break
+                        val job = launch(Dispatchers.IO, start = CoroutineStart.LAZY) { run(client, next.taskId) }
+                        running.update { it + (next.taskId to job) }
+                        job.invokeOnCompletion {
+                            running.update { if (it[next.taskId] === job) it - next.taskId else it }
+                        }
+                        job.start()
+                    }
                 }
             }
         }
     }
 
     private fun nextQueued(tasks: Map<String, UploadTask>, account: String): UploadTask? =
-        tasks.values.filter { it.account == account && it.status == UploadStatus.QUEUED }.minByOrNull { it.queuedAtMs }
+        tasks.values.filter { it.account == account && it.status == UploadStatus.QUEUED && it.taskId !in running.value }.minByOrNull { it.queuedAtMs }
 
     private fun cancelRunning(taskId: String): Job? {
-        val (id, job) = running.value ?: return null
-        if (id != taskId) return null
+        val job = running.value[taskId] ?: return null
         job.cancel()
         return job
     }
 
     private suspend fun run(client: PikPakClient, taskId: String) {
+        if (_tasks.value[taskId]?.status != UploadStatus.QUEUED) return
         val progress = MutableStateFlow(0L)
         try {
             coroutineScope {
@@ -498,7 +572,11 @@ class PikoUploadCoordinator(
                 driveRepository.applyWriteChange(client.account, DriveChange.ContentsChanged(setOf(task.parentId)))
             }
         } catch (e: CancellationException) {
-            update(taskId) { if (it.status.isActive) it.copy(status = UploadStatus.PAUSED, speedBytesPerSec = 0L) else it }
+            // 暂停后立即继续会重新入队；旧 worker 的取消不能覆盖这次继续。
+            update(taskId) {
+                if (it.status == UploadStatus.HASHING || it.status == UploadStatus.UPLOADING)
+                    it.copy(status = UploadStatus.PAUSED, speedBytesPerSec = 0L) else it
+            }
             throw e
         } catch (e: Throwable) {
             // 上传完成前网盘里还没有这个文件，用任务 ID 指代
@@ -546,11 +624,13 @@ class PikoUploadCoordinator(
             progress.value = 0L
             update(taskId) { it.copy(status = UploadStatus.UPLOADING, session = session, processedBytes = 0L) }
             try {
-                client.continueUpload(
-                    session,
-                    open = { offset -> ThrottledSource(sources.open(task.sourceUri, offset), limiter) },
-                    onProgress = { progress.value = it },
-                )
+                withPartBuffer(session) {
+                    client.continueUpload(
+                        session,
+                        open = { offset -> ThrottledSource(sources.open(task.sourceUri, offset), limiter) },
+                        onProgress = { progress.value = it },
+                    )
+                }
                 break
             } catch (e: PikPakException) {
                 if (e.httpStatus != 403 || retried) throw e
@@ -615,13 +695,25 @@ class PikoUploadCoordinator(
         }
         val context = currentCoroutineContext()
         val started = TimeSource.Monotonic.markNow()
-        return sources.open(task.sourceUri, 0L).buffered().use { source ->
+        fun hash(): String = sources.open(task.sourceUri, 0L).buffered().use { source ->
             PikPakHash.fromSource(source, task.size) { hashed ->
                 // 计算本身不挂起，暂停只能在这里生效
                 context.ensureActive()
                 progress.value = hashed
             }
-        }.also { PikoLog.d(TAG, "上传 ${task.taskId}：整份计算 gcid，${task.size} 字节，历时 ${started.elapsedNow().inWholeMilliseconds} ms") }
+        }
+        return (if (task.size < 256L * 1024) hash() else hashers.withPermit { hash() })
+            .also { PikoLog.d(TAG, "上传 ${task.taskId}：整份计算 gcid，${task.size} 字节，历时 ${started.elapsedNow().inWholeMilliseconds} ms") }
+    }
+
+    private suspend fun <T> withPartBuffer(session: UploadSession, block: suspend () -> T): T {
+        // SDK 一次缓冲一个分片；超出预算的单片独占额度，避免与其他文件叠加。
+        val bytes = minOf(session.size, session.partSize, policy.maxBufferedPartBytes)
+        while (true) {
+            val used = bufferedPartBytes.first { it <= policy.maxBufferedPartBytes - bytes }
+            if (bufferedPartBytes.compareAndSet(used, used + bytes)) break
+        }
+        try { return block() } finally { bufferedPartBytes.update { it - bytes } }
     }
 
     /** 同一个文件可能排了不止一次，全部传完或移除后才交还读取授权。 */

@@ -37,11 +37,16 @@ data class RenameRow(
 /** 执行时的一次改名请求。循环互换的项先改成 [to] 这样的临时名称，之后再改成新名称，所以一项可能有两步。 */
 data class RenameStep(val source: RenameSource, val from: String, val to: String)
 
-/**
- * [rows] 与所选顺序一致，供预览。[steps] 是可执行的改名请求及其顺序：A 改成 B、B 改成 C 时先改 B，
- * 逐个改名的每一步都不与当时的名称冲突。
- */
-data class RenamePlan(val rows: List<RenameRow>, val steps: List<RenameStep>) {
+/** 同一波中的目标名称已全部空出，可以并发提交。 */
+data class RenameWave(val steps: List<RenameStep>)
+
+/** [rows] 按所选顺序预览；[waves] 按名称依赖执行，[steps] 保留完整的顺序视图。 */
+data class RenamePlan(
+    val rows: List<RenameRow>,
+    val steps: List<RenameStep>,
+    val waves: List<RenameWave> = steps.map { RenameWave(listOf(it)) },
+) {
+    init { require(steps == waves.flatMap { it.steps }) }
     val problemCount: Int get() = rows.count { it.problem != null }
     val changeCount: Int get() = rows.count { it.isChanged && it.problem == null }
 }
@@ -106,7 +111,8 @@ fun planRenames(
     }
 
     val rows = items.mapIndexed { index, item -> RenameRow(item, targets[index], problems[index]) }
-    return RenamePlan(rows = rows, steps = orderSteps(items, targets, items.indices.filter(::isPending), siblingNames))
+    val waves = orderSteps(items, targets, items.indices.filter(::isPending), siblingNames)
+    return RenamePlan(rows, waves.flatMap { it.steps }, waves)
 }
 
 /**
@@ -118,16 +124,16 @@ private fun orderSteps(
     targets: List<String>,
     pendingIndices: List<Int>,
     siblingNames: Map<String, Set<String>>,
-): List<RenameStep> {
+): List<RenameWave> {
     val current = pendingIndices.associateWith { items[it].name }.toMutableMap()
     val pending = pendingIndices.toMutableList()
-    val steps = mutableListOf<RenameStep>()
+    val steps = mutableListOf<RenameWave>()
     val temporaryNames = mutableSetOf<Pair<String, String>>()
     while (pending.isNotEmpty()) {
         val occupied = pending.map { items[it].parentId to current.getValue(it) }.toSet()
         val ready = pending.filter { (items[it].parentId to targets[it]) !in occupied }
         if (ready.isNotEmpty()) {
-            ready.forEach { steps += RenameStep(items[it], current.getValue(it), targets[it]) }
+            steps += RenameWave(ready.map { RenameStep(items[it], current.getValue(it), targets[it]) })
             pending -= ready.toSet()
             continue
         }
@@ -142,7 +148,7 @@ private fun orderSteps(
             .map { n -> "${items[index].name}.piko-swap$n".takeIf { it.encodeToByteArray().size <= MAX_NAME_UTF8_BYTES } ?: "piko-swap$n" }
             .first { it !in used }
         temporaryNames += parentId to temporary
-        steps += RenameStep(items[index], current.getValue(index), temporary)
+        steps += RenameWave(listOf(RenameStep(items[index], current.getValue(index), temporary)))
         current[index] = temporary
     }
     return steps

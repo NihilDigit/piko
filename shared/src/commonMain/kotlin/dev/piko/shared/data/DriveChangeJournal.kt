@@ -95,7 +95,7 @@ class DriveChangeJournal internal constructor(
 
     enum class UndoStatus { RUNNING, UNDONE, FAILED }
     data class UndoResult(val status: UndoStatus, val message: String, val activeFileIds: Set<String> = emptySet(), val activeManifestFolders: Set<String> = emptySet(), val activeTreeIds: Set<String> = emptySet(),
-        val completedRenameSteps: Int = 0)
+        val completedRenameSteps: Int = 0, val completedTrashItems: Int = 0)
     data class JournalState(
         val generation: Long = 0,
         val available: List<Change> = emptyList(),
@@ -165,6 +165,14 @@ class DriveChangeJournal internal constructor(
     /** 撤销 [change]。它已经撤过、或被挤出记录时什么也不做。 */
     fun undo(change: Change): Boolean = undo(change.id)
 
+    private val stoppedUndos = MutableStateFlow<Set<Long>>(emptySet())
+
+    fun requestStopUndo(id: Long): Boolean {
+        if (state.value.undo[id]?.status != UndoStatus.RUNNING) return false
+        stoppedUndos.update { it + id }
+        return true
+    }
+
     fun undo(id: Long): Boolean {
         if (!scope.isActive) return false
         val access = driveRepo.currentAccount?.let(driveRepo::writeAccess) ?: return false
@@ -177,7 +185,7 @@ class DriveChangeJournal internal constructor(
             val next = current.copy(
                 available = current.available.filterNot { it.id == id },
                 undo = current.undo + (id to UndoResult(UndoStatus.RUNNING, "正在撤销", candidate.affectedFileIds(), candidate.affectedManifestFolders(), candidate.affectedTreeIds(),
-                    current.undo[id]?.completedRenameSteps ?: 0)),
+                    current.undo[id]?.completedRenameSteps ?: 0, current.undo[id]?.completedTrashItems ?: 0)),
             )
             if (_state.compareAndSet(current, next)) { generation = current.generation; change = candidate; break }
         }
@@ -193,7 +201,8 @@ class DriveChangeJournal internal constructor(
                 _state.update { current ->
                     if (current.generation != generation) current else {
                         val undo = current.undo + (id to UndoResult(if (result.isSuccess) UndoStatus.UNDONE else UndoStatus.FAILED, message,
-                            completedRenameSteps = if (result.isSuccess) 0 else current.undo[id]?.completedRenameSteps ?: 0))
+                            completedRenameSteps = if (result.isSuccess) 0 else current.undo[id]?.completedRenameSteps ?: 0,
+                            completedTrashItems = if (result.isSuccess) 0 else current.undo[id]?.completedTrashItems ?: 0))
                         val running = undo.filterValues { it.status == UndoStatus.RUNNING }
                         val finished = undo.filterValues { it.status != UndoStatus.RUNNING }.entries.toList().takeLast(100).associate { it.toPair() }
                         current.copy(
@@ -205,7 +214,7 @@ class DriveChangeJournal internal constructor(
                 if (_state.value.generation == generation) _events.emit(
                     if (result.isSuccess) Event(message, null, undone = change, generation = generation) else Event(message, null, failedChange = change, generation = generation),
                 )
-            } finally { accountGuard.cancel() }
+            } finally { stoppedUndos.update { it - id }; accountGuard.cancel() }
         }
         return true
     }
@@ -219,24 +228,43 @@ class DriveChangeJournal internal constructor(
                     access.publish(DriveChange.Moved(ids, setOf(change.targetId), parentId))
                 }
             }
-            is Change.Trash -> access.restore(change.ids).onSuccess { access.publish(DriveChange.Restored(change.ids)) }
-            // 倒着改回去：批量重命名按顺序避开了中间冲突，反过来走同样避开
-            is Change.Rename -> runSuspendCatching {
-                val completed = state.value.undo[change.id]?.completedRenameSteps ?: 0
-                change.renames.asReversed().drop(completed).forEachIndexed { offset, step ->
-                    val current = access.detail(step.id).getOrThrow()
-                    check(!current.trashed && (current.name == step.newName || current.name == step.oldName)) { "文件名称已发生其他变化" }
-                    if (current.name != step.oldName) {
-                        val written = access.rename(step.id, step.oldName)
-                        if (written.isFailure && access.detail(step.id).getOrNull()?.name != step.oldName) written.getOrThrow()
-                        access.publish(DriveChange.Renamed(step.id, step.oldName, current.parentId))
-                    }
-                    // 临时名互换会多次修改同一 ID；重试从已确认的反向步骤之后继续。
+            is Change.Trash -> runSuspendCatching {
+                var completed = state.value.undo[change.id]?.completedTrashItems ?: 0
+                for (batch in change.ids.drop(completed).chunked(100)) {
+                    check(change.id !in stoppedUndos.value) { "撤销已停止，可继续撤销剩余项目" }
+                    access.restore(batch).getOrThrow()
+                    access.publish(DriveChange.Restored(batch))
+                    completed += batch.size
                     _state.update { state ->
                         val undo = state.undo[change.id]
                         if (state.generation != generation || undo == null) state else state.copy(undo = state.undo +
-                            (change.id to undo.copy(completedRenameSteps = completed + offset + 1)))
+                            (change.id to undo.copy(completedTrashItems = completed)))
                     }
+                }
+            }
+            // 倒着改回去：批量重命名按顺序避开了中间冲突，反过来走同样避开
+            is Change.Rename -> runSuspendCatching {
+                val completed = state.value.undo[change.id]?.completedRenameSteps ?: 0
+                val affectedParents = HashSet<String>()
+                try {
+                    change.renames.asReversed().drop(completed).forEachIndexed { offset, step ->
+                        val current = access.detail(step.id).getOrThrow()
+                        check(!current.trashed && (current.name == step.newName || current.name == step.oldName)) { "文件名称已发生其他变化" }
+                        if (current.name != step.oldName) {
+                            val written = access.rename(step.id, step.oldName)
+                            if (written.isFailure && access.detail(step.id).getOrNull()?.name != step.oldName) written.getOrThrow()
+                            affectedParents += current.parentId
+                        }
+                        // 临时名互换会多次修改同一 ID；重试从已确认的反向步骤之后继续。
+                        _state.update { state ->
+                            val undo = state.undo[change.id]
+                            if (state.generation != generation || undo == null) state else state.copy(undo = state.undo +
+                                (change.id to undo.copy(completedRenameSteps = completed + offset + 1)))
+                        }
+                    }
+                } finally {
+                    // 半途失败也重列已完成的目录，整批撤销只广播一次，避免列表逐项重排。
+                    if (affectedParents.isNotEmpty()) access.publish(DriveChange.ContentsChanged(affectedParents))
                 }
             }
             is Change.Vault -> runSuspendCatching {
@@ -264,7 +292,7 @@ class DriveChangeJournal internal constructor(
             }
         }
         val kind = change::class.simpleName
-        // 撤销是反向再做一次，做成的每一步各自经仓库的 applyChange 通知过了，半途失败的也只通知了做成的那些
+        // 撤销是反向再做一次；已完成的改动经仓库通知，重命名按目录合并，半途失败也会通知。
         result.onSuccess { PikoLog.i(TAG, "已撤销：$kind") }.logFailure(TAG, "撤销失败：$kind")
         return result
     }

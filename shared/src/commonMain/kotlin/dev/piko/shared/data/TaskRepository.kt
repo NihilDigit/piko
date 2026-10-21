@@ -80,9 +80,20 @@ class TaskRepository(
 
     /** 只删任务记录。已完成任务的文件留在网盘里，未完成任务的占位文件由服务端一并清掉。 */
     suspend fun deleteTasks(taskIds: List<String>): Result<Unit> = withContext(Dispatchers.Default) {
-        val owner = client
-        runSuspendCatching { owner.deleteOfflineTasks(taskIds, deleteFiles = false) }
-            .onSuccess { offlineSubmissions.forgetTasks(owner.account, ids = taskIds.toSet()) }
+        runSuspendCatching {
+            val owner = client
+            for (ids in taskIds.distinct().filter { it.isNotEmpty() }.chunked(100)) {
+                try {
+                    owner.deleteOfflineTasks(ids, deleteFiles = false)
+                } catch (error: io.github.nihildigit.pikpak.PikPakException) {
+                    if (error.httpStatus != 404) throw error
+                }
+                offlineSubmissions.forgetTasks(owner.account, ids = ids.toSet())
+                lastTasks = lastTasks?.let { cached ->
+                    if (cached.first == owner.account) cached.first to cached.second.filterNot { it.id in ids } else cached
+                }
+            }
+        }
     }
 
     /** 按阶段清除任务记录，与网页端的「清空已完成」「清空失败」相同。产出的文件保留。 */

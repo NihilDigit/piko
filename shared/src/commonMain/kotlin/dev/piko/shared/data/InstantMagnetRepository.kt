@@ -27,6 +27,7 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 import kotlin.time.TimeSource
 
@@ -46,13 +47,16 @@ data class MagnetResolutionResult(
 internal class OfflinePruneBlocked(message: String) : IllegalStateException(message)
 
 class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
+    private val savePermits = Semaphore(SAVE_CONCURRENCY)
     val offlineSubmissions = dev.piko.shared.state.OfflineSubmitSession(clientManager)
     private val client get() = clientManager.currentClient.value ?: error("Not logged in")
     private val _pendingMagnetFlow = MutableStateFlow<String?>(null)
     val pendingMagnetFlow: StateFlow<String?> = _pendingMagnetFlow.asStateFlow()
 
     fun onIncomingMagnet(magnet: String) {
-        magnet.trim().takeIf { it.isNotEmpty() }?.let { _pendingMagnetFlow.value = it }
+        magnet.trim().takeIf { it.isNotEmpty() }?.let { incoming ->
+            _pendingMagnetFlow.update { pending -> listOfNotNull(pending, incoming).distinct().joinToString("\n") }
+        }
     }
 
     fun clearPendingMagnet() {
@@ -166,11 +170,10 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
         }
         val outcomes = runSuspendCatching {
             // 逐个串行时 84 个文件约 20 秒。并发数取得保守：SDK 自带限流，再高也快不了多少
-            val permits = Semaphore(SAVE_CONCURRENCY)
             coroutineScope {
                 files.map { file ->
                     async {
-                        permits.withPermit {
+                        savePermits.withPermit {
                             val parentId = folderIds[file.path.substringBeforeLast('/', "")] ?: targetParentId
                             val existing = previews[file.path]
                             val name = names[file.path] ?: file.name

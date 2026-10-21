@@ -70,7 +70,15 @@ class FileWriteSession(
         if (!canRecheck(id)) return false
         val work = _works.value.firstOrNull { it.id == id } ?: return false
         val access = repository.writeAccess(work.account) ?: return false
-        execute(work, access, recheck = true)
+        _works.update { all -> all.map { if (it.id == id) it.copy(stopping = false) else it } }
+        execute(work.copy(stopping = false), access, recheck = true)
+        return true
+    }
+
+    fun requestStop(id: Long): Boolean {
+        val work = _works.value.firstOrNull { it.id == id } ?: return false
+        if (!work.isRunning || work.account != repository.currentAccount) return false
+        _works.update { all -> all.map { if (it.id == id) it.copy(stopping = true) else it } }
         return true
     }
 
@@ -105,7 +113,9 @@ class FileWriteSession(
             fun active(): Boolean = epoch == generation.value && accountEpoch == accountGenerations.value[initial.account].orZero() && repository.currentAccount == initial.account
             suspend fun check() { currentCoroutineContext().ensureActive(); check(active()) }
             var work = initial.copy(result = null, phase = if (recheck) FileWritePhase.CHECKING else FileWritePhase.PREPARING)
-            fun publish() { if (active()) _works.update { all -> all.map { if (it.id == work.id) work else it } } }
+            fun publish() { if (active()) _works.update { all -> all.map {
+                if (it.id == work.id) work.copy(stopping = it.stopping || work.stopping).also { updated -> work = updated } else it
+            } } }
             val previous = initial.result
             val confirmed = previous?.confirmed.orEmpty().toMutableSet()
             val unknown = previous?.unconfirmed.orEmpty().toMutableSet()
@@ -172,9 +182,14 @@ class FileWriteSession(
                     // 缺席只能确认取消星标；详情接口的 starred 字段不可靠。
                     return ids.filterTo(HashSet()) { (it in starred) == command.starred }
                 }
+                val listed = if (command is FileWriteCommand.Move && ids.size > 4) {
+                    access.listFolder(command.target.id).getOrNull().orEmpty()
+                        .filter { it.id in ids && !it.trashed && it.parentId == command.target.id }.mapTo(HashSet()) { it.id }
+                } else emptySet()
+                check()
                 val limit = Semaphore(4)
-                return coroutineScope {
-                    ids.map { id -> async {
+                return listed + coroutineScope {
+                    ids.filterNot { it in listed }.map { id -> async {
                         limit.withPermit {
                             val detail = access.detail(id)
                             check()
@@ -196,6 +211,7 @@ class FileWriteSession(
                 var queryFailures = 0
                 while (true) {
                     check()
+                    if (_works.value.firstOrNull { it.id == work.id }?.stopping == true) return
                     var pending = false
                     var unreadable = false
                     val newly = mutableSetOf<String>()
@@ -211,7 +227,7 @@ class FileWriteSession(
                         }
                         copy.copy(phase = task.phase, progress = task.progress)
                     }
-                    work = work.copy(copies = copies); publish()
+                    work = work.copy(copies = copies, completedCount = (confirmed + newly).size); publish()
                     newly.removeAll(confirmed)
                     confirmed += newly; unknown -= newly; record(newly)
                     queryFailures = if (unreadable) queryFailures + 1 else 0
@@ -245,14 +261,24 @@ class FileWriteSession(
                 if (command is FileWriteCommand.Move || command is FileWriteCommand.Rename) {
                     val slots = Semaphore(4)
                     val details = coroutineScope { ids.map { id -> async {
-                        slots.withPermit { id to access.detail(id).getOrNull() }
+                        slots.withPermit {
+                            val provided = when (command) {
+                                is FileWriteCommand.Move -> command.knownBefore[id]
+                                is FileWriteCommand.Rename -> command.knownBefore
+                                else -> null
+                            }
+                            val cached = if (initial.account == repository.currentAccount) repository.knownFile(id)?.takeUnless { it.trashed } else null
+                            id to (provided ?: cached?.let { FileBefore(it.name, it.parentId) }
+                                ?: access.detail(id).getOrNull()?.takeUnless { it.trashed }?.let { FileBefore(it.name, it.parentId) })
+                        }
                     } }.awaitAll() }
                     check()
-                    if (details.any { it.second == null || it.second?.trashed == true }) { finish("未能确认文件的原位置或名称，尚未提交修改"); return@launch }
-                    work = work.copy(before = details.associate { (id, file) -> id to FileBefore(file!!.name, file.parentId) }); publish()
+                    if (details.any { it.second == null }) { finish("未能确认文件的原位置或名称，尚未提交修改"); return@launch }
+                    work = work.copy(before = details.associate { (id, before) -> id to requireNotNull(before) }); publish()
                 }
                 for (batch in ids.chunked(100)) {
                     check()
+                    if (_works.value.firstOrNull { it.id == work.id }?.stopping == true) break
                     work = work.copy(phase = FileWritePhase.WRITING); publish()
                     notAttempted -= batch.toSet()
                     val result = when (command) {
@@ -273,11 +299,13 @@ class FileWriteSession(
                             unknown += batch
                         } else if (definiteRefusal(result.exceptionOrNull())) failed += batch else unknown += batch
                     } else {
-                        val verified = verify(batch)
+                        val verified = if (command is FileWriteCommand.Delete && result.isSuccess) batch.toSet() else verify(batch)
                         confirmed += verified; record(verified)
                         val remaining = batch.toSet() - verified
                         if (definiteRefusal(result.exceptionOrNull())) failed += remaining else unknown += remaining
                     }
+                    if (command !is FileWriteCommand.Copy) work = work.copy(completedCount = work.completedCount + batch.size)
+                    publish()
                     if (result.isFailure) break
                 }
                 if (command is FileWriteCommand.Copy) followCopies()
@@ -309,7 +337,7 @@ private fun Long?.orZero(): Long = this ?: 0L
 private fun FileWriteCommand.frozen(): FileWriteCommand = when (this) {
     is FileWriteCommand.CreateFolder -> copy(name = name.trim())
     is FileWriteCommand.Rename -> copy(name = name.trim())
-    is FileWriteCommand.Move -> copy(ids = ids.distinct())
+    is FileWriteCommand.Move -> copy(ids = ids.distinct(), knownBefore = knownBefore.toMap())
     is FileWriteCommand.Copy -> copy(ids = ids.distinct())
     is FileWriteCommand.Restore -> copy(ids = ids.distinct())
     is FileWriteCommand.Delete -> copy(ids = ids.distinct())

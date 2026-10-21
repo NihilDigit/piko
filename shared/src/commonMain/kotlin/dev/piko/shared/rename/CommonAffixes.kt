@@ -1,5 +1,8 @@
 package dev.piko.shared.rename
 
+import dev.piko.data.repository.FileCategory
+import dev.piko.data.repository.fileCategory
+
 data class CommonAffixes(val prefix: String, val suffix: String)
 
 /**
@@ -67,12 +70,47 @@ fun runBatchRenamePipeline(
     stripPrefix: Boolean,
     stripSuffix: Boolean,
     base: RenameRule? = null,
+    scope: RenameScope = RenameScope.NAME,
 ): BatchRenamePipelineResult {
-    val start = base?.apply(items, items.map { it.name }) ?: items.map { it.name }
-    val replaced = findReplace?.apply(items, start) ?: start
-    val affixes = commonAffixes(items.zip(replaced) { item, name -> item.copy(name = name) })
+    val companions = if (base == null && scope == RenameScope.NAME) companionHosts(items) else emptyMap()
+    val primaryIndices = items.indices.filterNot { it in companions }
+    val primary = primaryIndices.map { items[it] }
+    val start = base?.apply(primary, primary.map { it.name }) ?: primary.map { it.name }
+    val replaced = findReplace?.apply(primary, start) ?: start
+    val affixes = commonAffixes(primary.zip(replaced) { item, name -> item.copy(name = name) })
     val strip = AffixStripRule(if (stripPrefix) affixes.prefix else "", if (stripSuffix) affixes.suffix else "")
-    return BatchRenamePipelineResult(strip.apply(items, replaced), affixes)
+    val names = items.map { it.name }.toMutableList()
+    primaryIndices.zip(strip.apply(primary, replaced)).forEach { (index, name) -> names[index] = name }
+    // 附件不单独消耗序号，也不参与共同词缀识别；语言与格式后缀始终跟在宿主的新主名后。
+    for ((index, hostIndex) in companions) {
+        val host = items[hostIndex]
+        if (names[hostIndex] == host.name) continue
+        val stem = splitExtension(host.name, false).first
+        val newStem = splitExtension(names[hostIndex], false).first
+        names[index] = if (newStem.isBlank()) "" else newStem + items[index].name.substring(stem.length)
+    }
+    return BatchRenamePipelineResult(names, affixes)
+}
+
+private val COMPANION_SUBTITLE_EXTENSIONS = setOf("srt", "ass", "ssa", "smi", "vtt", "sub", "idx", "sup", "lrc")
+
+/** 同目录的最长视频主名优先，避免「Show」抢走「Show.E01」的字幕。 */
+private fun companionHosts(items: List<RenameSource>): Map<Int, Int> {
+    val videos = items.indices.filter { !items[it].isFolder && items[it].name.fileCategory() == FileCategory.VIDEO }
+        .groupBy { items[it].parentId }
+    return buildMap {
+        for ((index, item) in items.withIndex()) {
+            if (item.isFolder) continue
+            val category = item.name.fileCategory()
+            if (category != FileCategory.SUBTITLE && category != FileCategory.AUDIO &&
+                item.name.substringAfterLast('.', "").lowercase() !in COMPANION_SUBTITLE_EXTENSIONS) continue
+            val host = videos[item.parentId].orEmpty().filter { videoIndex ->
+                val stem = splitExtension(items[videoIndex].name, false).first
+                stem.isNotEmpty() && item.name.startsWith("$stem.")
+            }.maxByOrNull { splitExtension(items[it].name, false).first.length }
+            if (host != null) put(index, host)
+        }
+    }
 }
 
 private const val OPEN_BRACKETS = "[【(（{「『《<〈"

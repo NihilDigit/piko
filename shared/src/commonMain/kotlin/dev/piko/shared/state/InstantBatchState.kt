@@ -15,6 +15,11 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 private const val TAG = "Instant"
 
@@ -72,7 +77,7 @@ class InstantBatchRow internal constructor(
  * 每条链接一个完整的 [InstantSheetState]，各自解析（并发数由共享的信号量限制）、各自勾选，
  * 点开一行就是单条时的工作台，返回列表后勾选仍在。保存目标全部共用。
  *
- * 「全部保存」按各行自己的路线逐条提交。空间按全部整包离线的合计检查：各自放得下、
+ * 「全部保存」按各行自己的路线并发提交。空间按全部整包离线的合计检查：各自放得下、
  * 合起来放不下的情况逐条查是拦不住的。全部成功才发 outcome，调用方随之结束会话并跳转；
  * 部分失败时成功的移出列表，失败的留着并标出原因，可以再点一次。
  */
@@ -99,6 +104,12 @@ class InstantBatchState internal constructor(
 
     var isSaving by mutableStateOf(false)
         private set
+
+    private var stopRequested = false
+
+    fun stopSaving() {
+        stopRequested = true
+    }
 
     /** 网盘剩余空间，打开列表时与保存前各查一次。null 表示未知，此时不拦。 */
     var remainingBytes by mutableStateOf<Long?>(null)
@@ -192,6 +203,7 @@ class InstantBatchState internal constructor(
         val toSubmit = submittableRows
         val needed = neededBytes
         isSaving = true
+        stopRequested = false
         saveErrors.clear()
         saveScope.launch {
             try {
@@ -208,9 +220,20 @@ class InstantBatchState internal constructor(
                 val createdIds = mutableListOf<String>()
                 var allInstant = true
                 val succeeded = mutableListOf<InstantBatchRow>()
-                // 逐条提交：秒传内部已按文件并发，行与行之间不再叠一层
-                for (row in toSubmit) {
-                    row.state.submitForBatch(target)
+                val permits = Semaphore(3)
+                val results = coroutineScope {
+                    toSubmit.map { row ->
+                        async {
+                            permits.withPermit {
+                                if (stopRequested) null else row.state.submitForBatch(target)
+                            }
+                        }
+                    }.awaitAll()
+                }
+                // 按输入顺序汇总，完成先后不改变回执和错误的顺序。
+                for ((row, result) in toSubmit.zip(results)) {
+                    if (result == null) continue
+                    result
                         .onSuccess { ids ->
                             if (ids == null) allInstant = false else createdIds += ids
                             succeeded += row
@@ -222,7 +245,7 @@ class InstantBatchState internal constructor(
                     saveErrors[row.key] = row.state.saveBlockReason ?: row.state.saveIssue?.message ?: "保存结果需要核对"
                 }
                 PikoLog.i(TAG, "批量保存：${toSubmit.size} 条链接，成功 ${succeeded.size} 条（秒传出 ${createdIds.size} 个文件），失败 ${saveErrors.size} 条")
-                if (saveErrors.isEmpty()) {
+                if (saveErrors.isEmpty() && !stopRequested) {
                     emitOutcome(
                         if (allInstant) {
                             InstantSaveOutcome.InstantSaved(createdIds, target)
@@ -232,7 +255,7 @@ class InstantBatchState internal constructor(
                     )
                 } else {
                     succeeded.forEach(::dropRow)
-                    emitMessage("已提交 ${succeeded.size} 项，${saveErrors.size} 项需要处理")
+                    emitMessage(if (stopRequested) "已停止，已提交 ${succeeded.size} 项" else "已提交 ${succeeded.size} 项，${saveErrors.size} 项需要处理")
                 }
             } finally {
                 isSaving = false
@@ -242,6 +265,7 @@ class InstantBatchState internal constructor(
 
     /** 整个列表被换掉时调用：各行的子作用域挂在会话作用域下，不取消的话旧列表的解析会一直跑到会话结束。 */
     internal fun dispose() {
+        stopSaving()
         rows.forEach { it.scope.cancel() }
     }
 

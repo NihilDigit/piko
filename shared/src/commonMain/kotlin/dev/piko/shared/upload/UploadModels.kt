@@ -58,6 +58,11 @@ data class UploadTask(
     val createdAtMs: Long = 0L,
     /** 排队次序。继续与重试排到队尾，但列表里的位置仍按 [createdAtMs]，不跟着跳。 */
     val queuedAtMs: Long = createdAtMs,
+    val batchId: String? = null,
+    val batchName: String? = null,
+    val batchParentId: String = "",
+    val batchParentName: String = "",
+    val batchIsFolder: Boolean = false,
 ) {
     val progress: Float
         get() = if (size > 0) (processedBytes.toFloat() / size).coerceIn(0f, 1f) else 0f

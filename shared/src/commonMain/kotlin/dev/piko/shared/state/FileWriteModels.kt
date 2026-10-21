@@ -12,11 +12,11 @@ sealed interface FileWriteCommand {
         override val ids = emptyList<String>()
         override val title get() = "新建文件夹「$name」"
     }
-    data class Rename(val id: String, val name: String) : FileWriteCommand {
+    data class Rename(val id: String, val name: String, val knownBefore: FileBefore? = null) : FileWriteCommand {
         override val ids = listOf(id)
         override val title get() = "重命名为「$name」"
     }
-    data class Move(override val ids: List<String>, override val target: PikoPathBreadcrumb) : FileWriteCommand {
+    data class Move(override val ids: List<String>, override val target: PikoPathBreadcrumb, val knownBefore: Map<String, FileBefore> = emptyMap()) : FileWriteCommand {
         override val title get() = "移动 ${ids.size} 项到「${target.name}」"
     }
     data class Copy(override val ids: List<String>, override val target: PikoPathBreadcrumb) : FileWriteCommand {
@@ -51,11 +51,15 @@ data class FileWriteWork(
     val createdAtMs: Long,
     val phase: FileWritePhase = FileWritePhase.PREPARING,
     val checked: Int = 0,
+    val completedCount: Int = 0,
+    val totalCount: Int = command.ids.size.coerceAtLeast(1),
+    val stopping: Boolean = false,
     val before: Map<String, FileBefore> = emptyMap(),
     val copies: List<FileCopyTask> = emptyList(),
     val result: FileWriteResult? = null,
 ) {
     val total: Int get() = command.ids.size.coerceAtLeast(1)
+    val totalSteps: Int get() = (totalCount + 99) / 100
     val isRunning: Boolean get() = result == null
 }
 

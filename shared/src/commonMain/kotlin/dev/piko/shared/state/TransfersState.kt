@@ -87,6 +87,27 @@ sealed interface TransferItem {
         override val createdAtMs: Long get() = parseEpochMillis(task.createdTime) ?: 0L
     }
 
+    data class UploadBatch(
+        val batchId: String, val title: String, val parentId: String, val parentName: String,
+        val tasks: List<UploadTask>, val isFolder: Boolean,
+    ) : TransferItem {
+        override val key: String get() = "upload-batch:$batchId"
+        override val createdAtMs: Long get() = tasks.minOfOrNull { it.createdAtMs } ?: 0L
+        val completedCount: Int get() = tasks.count { it.status == UploadStatus.COMPLETED }
+        val totalBytes: Long get() = tasks.sumOf { it.size }
+        val processedBytes: Long get() = tasks.sumOf { if (it.status == UploadStatus.COMPLETED) it.size else if (it.status == UploadStatus.UPLOADING) it.processedBytes else 0L }
+        val speedBytesPerSec: Long get() = tasks.filter { it.status == UploadStatus.UPLOADING }.sumOf { it.speedBytesPerSec }
+        val progress: Float get() = if (totalBytes > 0) (processedBytes.toFloat() / totalBytes).coerceIn(0f, 1f) else completedCount.toFloat() / tasks.size.coerceAtLeast(1)
+        val status: UploadStatus get() = when {
+            tasks.any { it.status == UploadStatus.UPLOADING } -> UploadStatus.UPLOADING
+            tasks.any { it.status == UploadStatus.HASHING } -> UploadStatus.HASHING
+            tasks.any { it.status == UploadStatus.QUEUED } -> UploadStatus.QUEUED
+            tasks.any { it.status == UploadStatus.FAILED } -> UploadStatus.FAILED
+            tasks.any { it.status == UploadStatus.PAUSED } -> UploadStatus.PAUSED
+            else -> UploadStatus.COMPLETED
+        }
+    }
+
     /**
      * 整包离线：一个云端任务加上完成后的清理与改名。[task] 是传输页列表里同一任务的快照，
      * 可见期间它每 4 秒刷新一次，下载进度取它的；跟踪器按退避轮询，不够及时。
@@ -171,7 +192,7 @@ enum class TransferKind(val label: String) {
     fun matches(item: TransferItem): Boolean = when (this) {
         ALL -> true
         DOWNLOAD -> item is TransferItem.Local || item is TransferItem.LocalBatch
-        UPLOAD -> item is TransferItem.Upload || item is TransferItem.UploadPreparing
+        UPLOAD -> item is TransferItem.Upload || item is TransferItem.UploadBatch || item is TransferItem.UploadPreparing
         CLOUD -> item is TransferItem.Cloud || item is TransferItem.Pack || item is TransferItem.Instant || item is TransferItem.InstantAttempt || item is TransferItem.Share || item is TransferItem.OfflineSubmit
         FILES -> item is TransferItem.Extract || item is TransferItem.Vault || item is TransferItem.Write || item is TransferItem.History || item is TransferItem.VaultEdit
     }
@@ -405,6 +426,7 @@ class TransfersState(
         if (done.any { it is TransferItem.Cloud }) clearCompletedCloud()
         done.forEach { item ->
             when (item) {
+                is TransferItem.UploadBatch -> removeUploadBatch(item.batchId)
                 is TransferItem.Upload -> removeUpload(item.task.taskId)
                 is TransferItem.Instant -> removeInstant(item.record.id)
                 is TransferItem.InstantAttempt -> instantSaves.forgetAttempt(item.work.id)
@@ -442,7 +464,7 @@ class TransfersState(
         val sections = current
         val keys = selectedKeys
         (sections.inProgress + sections.needsAttention + sections.completed + sections.outputDeleted)
-            .flatMap { item -> listOf(item) + (item as? TransferItem.LocalBatch)?.tasks.orEmpty().map { TransferItem.Local(it) } }
+            .flatMap { item -> listOf(item) + item.children }
             .filter { it.key in keys }
     }
 
@@ -505,6 +527,7 @@ class TransfersState(
         // 列出中的一组还没有任务可停
         is TransferItem.LocalBatch -> item.listing == null &&
             item.tasks.any { it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.PENDING }
+        is TransferItem.UploadBatch -> item.tasks.any { it.status.isActive }
         is TransferItem.Upload -> item.task.status.isActive
         else -> false
     }
@@ -513,6 +536,7 @@ class TransfersState(
     fun isResumable(item: TransferItem): Boolean = when (item) {
         is TransferItem.Local -> item.task.status == DownloadStatus.PAUSED || item.task.status == DownloadStatus.FAILED
         is TransferItem.LocalBatch -> item.tasks.any { it.status == DownloadStatus.PAUSED || it.status == DownloadStatus.FAILED }
+        is TransferItem.UploadBatch -> item.tasks.any { it.status == UploadStatus.PAUSED || it.status == UploadStatus.FAILED }
         is TransferItem.Upload -> item.task.status == UploadStatus.PAUSED || item.task.status == UploadStatus.FAILED
         else -> false
     }
@@ -521,6 +545,7 @@ class TransfersState(
         when (item) {
             is TransferItem.Local -> pauseLocal(item.task.taskId)
             is TransferItem.LocalBatch -> coordinator.pauseBatch(item.batch.id)
+            is TransferItem.UploadBatch -> pauseUploadBatch(item.batchId)
             is TransferItem.Upload -> pauseUpload(item.task.taskId)
             else -> Unit
         }
@@ -530,6 +555,7 @@ class TransfersState(
         when (item) {
             is TransferItem.Local -> resumeLocal(item.task.taskId)
             is TransferItem.LocalBatch -> coordinator.resumeBatch(item.batch.id)
+            is TransferItem.UploadBatch -> resumeUploadBatch(item.batchId)
             is TransferItem.Upload -> resumeUpload(item.task.taskId)
             else -> Unit
         }
@@ -540,7 +566,8 @@ class TransfersState(
         when (item) {
             is TransferItem.Local -> removeLocal(item.task.taskId)
             is TransferItem.LocalBatch -> removeBatch(item.batch.id)
-            is TransferItem.Upload -> removeUpload(item.task.taskId)
+            is TransferItem.UploadBatch -> removeUploadBatch(item.batchId)
+                is TransferItem.Upload -> removeUpload(item.task.taskId)
             is TransferItem.Cloud -> deleteCloud(item.task.id)
             is TransferItem.Pack -> discardPack(item.job.taskId)
             is TransferItem.Instant -> removeInstant(item.record.id)
@@ -558,8 +585,21 @@ class TransfersState(
     }
 
     fun removeSelected() {
-        selectedItems.forEach(::remove)
-        clearSelection()
+        removeKeys(selectedKeys)
+    }
+
+    fun itemsForKeys(keys: Set<String>): List<TransferItem> = allItems()
+        .flatMap { item -> listOf(item) + item.children }
+        .filter { it.key in keys }
+
+    fun removeKeys(keys: Set<String>) {
+        val items = itemsForKeys(keys)
+        cloud.delete(items.filterIsInstance<TransferItem.Cloud>().map { it.task.id })
+        items.filterNot { it is TransferItem.Cloud }.forEach(::remove)
+        val removedKeys = keys + items.flatMap { it.children.map(TransferItem::key) }
+        selectedKeys = selectedKeys - removedKeys
+        if (selectedKeys.isEmpty()) clearSelection()
+        else if (anchorKey in removedKeys) anchorKey = null
     }
 
     /**
@@ -578,7 +618,7 @@ class TransfersState(
             when (item) {
                 is TransferItem.Cloud -> item.task.fileId
                 is TransferItem.Pack -> item.job.outputId
-                is TransferItem.Local, is TransferItem.LocalBatch, is TransferItem.Upload, is TransferItem.UploadPreparing, is TransferItem.Instant, is TransferItem.InstantAttempt, is TransferItem.Share, is TransferItem.OfflineSubmit,
+                is TransferItem.Local, is TransferItem.LocalBatch, is TransferItem.UploadBatch, is TransferItem.Upload, is TransferItem.UploadPreparing, is TransferItem.Instant, is TransferItem.InstantAttempt, is TransferItem.Share, is TransferItem.OfflineSubmit,
                 is TransferItem.Extract, is TransferItem.Vault, is TransferItem.Write, is TransferItem.History, is TransferItem.VaultEdit -> null
             }?.takeIf { it.isNotEmpty() }
         }
@@ -672,6 +712,10 @@ class TransfersState(
         return path
     }
 
+    fun pauseUploadBatch(batchId: String) = uploads.pauseBatch(batchId)
+    fun resumeUploadBatch(batchId: String) = uploads.resumeBatch(batchId)
+    fun removeUploadBatch(batchId: String) = uploads.removeBatch(batchId)
+
     fun pauseUpload(taskId: String) = uploads.pause(taskId)
 
     /** 继续暂停的上传，或重试失败的上传。 */
@@ -735,6 +779,14 @@ class TransfersState(
             val tasks = grouped[id].orEmpty().sortedBy { it.fileName }
             TransferItem.LocalBatch(tasks.firstOrNull()?.batch ?: listing.getValue(id).batch, tasks, listing[id])
         }
+        val uploadGroups = uploadTasks.filter { it.batchId != null }.groupBy { it.batchId!! }
+            .filterValues { it.isNotEmpty() }
+        val uploadItems = uploadTasks.filter { it.batchId !in uploadGroups }.map { TransferItem.Upload(it) } +
+            uploadGroups.map { (id, tasks) ->
+                val first = tasks.first()
+                TransferItem.UploadBatch(id, first.batchName ?: first.fileName, first.batchParentId,
+                    first.batchParentName, tasks.sortedBy { it.createdAtMs }, first.batchIsFolder)
+            }
         val packIds = packs.mapTo(HashSet()) { it.taskId }
         val tracked = packIds + shareRecords.mapNotNull { it.remoteTaskId } + writeRecords.flatMap { it.copies.map { copy -> copy.id } } +
             (extracts.jobs + extracts.completedJobs).mapNotNull { it.remoteTaskId }
@@ -746,7 +798,7 @@ class TransfersState(
         }
         // 同一身份的结局优先于在途快照；文件夹里的本机文件只作为批次成员出现。
         return (serverItems + local.filter { it.batch == null }.map { TransferItem.Local(it) } + batches +
-            uploadTasks.map { TransferItem.Upload(it) } + uploadPreparations.map { TransferItem.UploadPreparing(it) } + cloudTasks.filter { it.id !in tracked }.map { TransferItem.Cloud(it) } +
+            uploadItems + uploadPreparations.map { TransferItem.UploadPreparing(it) } + cloudTasks.filter { it.id !in tracked }.map { TransferItem.Cloud(it) } +
             packs.map { TransferItem.Pack(it, tasksById[it.taskId], dev.piko.shared.data.OfflinePackRef(it.account, it.taskId) in busyPacks) } + instantRecords.map { TransferItem.Instant(it) } + instantAttempts.map { TransferItem.InstantAttempt(it) } + shareRecords.map { TransferItem.Share(it) } + offlineRecords.map { TransferItem.OfflineSubmit(it) })
             .associateBy { it.key }.values.sortedByDescending { it.createdAtMs }
     }
@@ -759,14 +811,17 @@ class TransfersState(
         else -> Section.PROGRESS
     }
 
+    private fun uploadSection(status: UploadStatus): Section = when (status) {
+        UploadStatus.COMPLETED -> Section.COMPLETED
+        UploadStatus.FAILED -> Section.ATTENTION
+        else -> Section.PROGRESS
+    }
+
     private fun sectionOf(item: TransferItem, currentJournal: DriveChangeJournal.JournalState, windowStart: Long): Section? = when (item) {
         is TransferItem.Local -> localSection(item.task.status)
         is TransferItem.LocalBatch -> localSection(item.status)
-        is TransferItem.Upload -> when (item.task.status) {
-            UploadStatus.COMPLETED -> Section.COMPLETED
-            UploadStatus.FAILED -> Section.ATTENTION
-            else -> Section.PROGRESS
-        }
+        is TransferItem.UploadBatch -> uploadSection(item.status)
+        is TransferItem.Upload -> uploadSection(item.task.status)
         is TransferItem.UploadPreparing -> if (item.work.isRunning) Section.PROGRESS else Section.ATTENTION
         is TransferItem.Cloud -> when {
             item.task.isOutputDeleted -> Section.DELETED
@@ -865,3 +920,10 @@ val DriveTask.isOutputDeleted: Boolean
 /** 解析服务端的 RFC 3339 时间。缺失或格式不认识时返回 null。 */
 private fun parseEpochMillis(rfc3339: String?): Long? =
     rfc3339?.let { runCatching { Instant.parse(it).toEpochMilliseconds() }.getOrNull() }
+
+val TransferItem.children: List<TransferItem>
+    get() = when (this) {
+        is TransferItem.LocalBatch -> tasks.map { TransferItem.Local(it) }
+        is TransferItem.UploadBatch -> tasks.map { TransferItem.Upload(it) }
+        else -> emptyList()
+    }

@@ -14,7 +14,7 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 
 /**
- * 最近移动到过的目录，最近的在前。存完整路径而不只是目标：选择器点一下就要进到那一层，
+ * 最近移动或复制到过的目录，最近的在前。存完整路径而不只是目标：选择器点一下就要进到那一层，
  * 面包屑与底栏的「目标位置」都靠这条路径。
  *
  * 读出时按仓库的文件夹索引改正（见 FolderIndex.resolve）：改了名的换名字，移走的换上级，Piko 里删掉的不再列出。
@@ -36,14 +36,36 @@ class MoveHistory(
         }
 
     fun remember(path: List<PikoPathBreadcrumb>) {
+        val account = driveRepo.currentAccount
         val target = path.lastOrNull() ?: return
         scope.launch {
             // 两次移动挨得很近时，读改写要串行，否则后一次会盖掉前一次
-            lock.withLock { save(listOf(path) + current().filterNot { it.lastOrNull()?.id == target.id }) }
+            lock.withLock {
+                if (driveRepo.currentAccount != account) return@withLock
+                val targets = current()
+                if (driveRepo.currentAccount == account) save(listOf(path) + targets.filterNot { it.lastOrNull()?.id == target.id })
+            }
         }
     }
 
     private val lock = Mutex()
+
+    fun remove(targetId: String) {
+        val account = driveRepo.currentAccount
+        scope.launch { lock.withLock {
+            if (driveRepo.currentAccount != account) return@withLock
+            val targets = current()
+            if (driveRepo.currentAccount == account) save(targets.filterNot { it.lastOrNull()?.id == targetId })
+        } }
+    }
+
+    fun clear() {
+        val account = driveRepo.currentAccount
+        scope.launch { lock.withLock {
+            if (driveRepo.currentAccount != account) return@withLock
+            save(emptyList())
+        } }
+    }
 
     private suspend fun current(): List<List<PikoPathBreadcrumb>> = decodeTargets(preferences.recentMoveTargetsFlow.first())
 

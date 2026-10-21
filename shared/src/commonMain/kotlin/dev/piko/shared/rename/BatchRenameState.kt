@@ -25,7 +25,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 
 /**
- * 批量重命名：编辑规则时逐行预览，用户确认后才逐个改名。
+ * 批量重命名：编辑规则时逐行预览，用户确认后按名称依赖分波改名。
  *
  * 规则管线见 [runBatchRenamePipeline]。预览、冲突检查与执行只看管线算出的新名称（见 [RenameRule]），
  * 以后别的规则来源接进来只需在管线里加一种。
@@ -423,7 +423,7 @@ class BatchRenameState(
             null to error.message.orEmpty()
         }
         val base = if (avNaming) CanonicalAvRule(canonicalTitles) else null
-        val result = runBatchRenamePipeline(included, findReplace, stripPrefix, stripSuffix, base)
+        val result = runBatchRenamePipeline(included, findReplace, stripPrefix, stripSuffix, base, scope = effectiveOptions.scope)
         val newNameById = included.map { it.id }.zip(result.names).toMap()
         val newNames = sources.map { newNameById[it.id] ?: it.name }
         Preview(planRenames(sources, newNames, siblingNames.orEmpty()), result.affixes, error)
@@ -506,7 +506,7 @@ class BatchRenameState(
         }
     }
 
-    /** 按 [RenamePlan.steps] 逐个改名，见 [RenameRun]。 */
+    /** 按 [RenamePlan.waves] 执行改名，见 [RenameRun]。 */
     fun rename() {
         if (!canRename) return
         val plan = plan
@@ -521,11 +521,13 @@ class BatchRenameState(
             try {
                 run.execute(plan)
             } finally {
+                driveRepo.applyChange(dev.piko.shared.data.DriveChange.ContentsChanged(sources.mapTo(HashSet()) { it.parentId }))
                 PikoLog.i(TAG, "批量重命名结束：${summary()}，成功 ${run.renamed.size} 步，历时 ${started.elapsedNow().inWholeMilliseconds} ms")
                 phase = Phase.DONE
                 // 改成了的记进改动记录，提示带「撤销」；一项也没改成的只报结果
                 if (run.renamed.isNotEmpty()) {
                     driveRepo.changes.record(DriveChangeJournal.Change.Rename(run.renamed.toList(), summary()))
+                    _messages.tryEmit("")
                 } else {
                     _messages.tryEmit(summary())
                 }
@@ -533,7 +535,7 @@ class BatchRenameState(
         }
     }
 
-    /** 停在当前这一项之后。正在发出的请求可能已在服务端生效，以刷新后的列表为准。 */
+    /** 取消尚未完成的请求。正在发出的请求可能已在服务端生效，以刷新后的列表为准。 */
     fun stop() {
         if (phase != Phase.RUNNING) return
         wasStopped = true

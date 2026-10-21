@@ -13,6 +13,7 @@ import dev.piko.shared.data.VaultEntry
 import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.data.isVaulted
+import dev.piko.shared.upload.isUploading
 import dev.piko.shared.data.runSuspendCatching
 import dev.piko.shared.data.DriveClipboard
 import androidx.compose.runtime.derivedStateOf
@@ -46,6 +47,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import dev.piko.shared.presentation.DriveClipboardState
@@ -97,6 +99,8 @@ private const val VAULTED_NEEDS_RESTORE = "已归档的条目需先恢复到网�
 
 data class TrashProgress(val completed: Int, val total: Int)
 
+data class PasteReturnNotice(val message: String, val originStack: List<PikoPathBreadcrumb>)
+
 data class TrashFailure(val completed: Int, val remainingIds: List<String>)
 
 /**
@@ -128,7 +132,7 @@ class DriveScreenState(
     val trashSession: TrashSession = TrashSession(driveRepo, scope),
     private val clipboard: DriveClipboardState = DriveClipboardState(),
     operationScope: CoroutineScope = scope,
-    fileWriteSession: FileWriteSession = FileWriteSession(driveRepo, operationScope),
+    private val fileWriteSession: FileWriteSession = FileWriteSession(driveRepo, operationScope),
     historyEditSession: HistoryEditSession = HistoryEditSession(driveRepo, operationScope),
     vaultEditSession: VaultEntryEditSession = VaultEntryEditSession(driveRepo, operationScope),
     folderVault: FolderVaultSession? = null,
@@ -159,10 +163,15 @@ class DriveScreenState(
         }
     }
 
-    private fun submitFileAction(command: FileWriteCommand, clearSelection: Boolean = true): Boolean =
+    private fun submitFileAction(command: FileWriteCommand, clearSelection: Boolean = true, onSuccess: (() -> Unit)? = null): Boolean =
         when (val result = fileActions.submit(command)) {
             is dev.piko.shared.presentation.FileCommandResult.Accepted -> {
                 if (clearSelection) exitSelection()
+                if (onSuccess != null) scope.launch {
+                    val finished = fileWriteSession.works.first { works -> works.any { it.id == result.workId && !it.isRunning } }
+                        .first { it.id == result.workId }
+                    if (canAcceptAction && finished.result?.completion == FileWriteCompletion.SUCCEEDED) onSuccess()
+                }
                 true
             }
             is dev.piko.shared.presentation.FileCommandResult.Rejected -> { _messages.tryEmit(result.reason); false }
@@ -239,6 +248,8 @@ class DriveScreenState(
 
     /** 面向用户的一次性提示，各端自己决定怎么呈现。 */
     val messages: SharedFlow<String> = _messages.asSharedFlow()
+    private val _pasteNotices = MutableSharedFlow<PasteReturnNotice>(extraBufferCapacity = 8)
+    val pasteNotices: SharedFlow<PasteReturnNotice> = _pasteNotices.asSharedFlow()
 
     val folderStack get() = navigation.folderStackFlow
     val activeFolder: PikoPathBreadcrumb
@@ -277,13 +288,17 @@ class DriveScreenState(
         private set
 
     /**
-     * [files] 的分析结果。只在 [analyzedFiles] 与 [files] 是同一个列表时可用：换目录后、新结果
-     * 算出来之前，不能拿上一个目录的结构去排这一个目录的文件。
+     * [files] 的分析结果。同目录补写列表时保留结构，避免后台分析完成前短暂展开全部文件；
+     * 换目录后不能借用上一个目录的结构。
      */
-    private class FolderAnalysis(val source: List<FileStat>, val structure: DriveStructure)
+    private class FolderAnalysis(val folderId: String?, val source: List<FileStat>, val structure: DriveStructure)
     private var analysis by mutableStateOf<FolderAnalysis?>(null)
 
-    private val currentAnalysis: DriveStructure? by derivedStateOf { analysis?.takeIf { it.source === files }?.structure }
+    private val currentAnalysis: DriveStructure? by derivedStateOf {
+        analysis?.takeIf {
+            it.source === files || (it.folderId != null && it.folderId == loadedFolderId && it.folderId == activeFolderId)
+        }?.structure
+    }
     val isDisplayStructureReady: Boolean by derivedStateOf { isSearching || (isVirtualPlace && !usesFolderStructure) || currentAnalysis != null }
 
     /** 列过的文件夹空不空，见 PikoDriveRepository.folderEmptiness。 */
@@ -410,6 +425,16 @@ class DriveScreenState(
         (shown + attachments).distinctBy { it.id }
     }
 
+    /** 重命名宿主时带上折叠在它下面的附件，顺序为宿主、附件，并排除不可改名的项。 */
+    fun withAttachedFiles(selected: List<FileStat>): List<FileStat> {
+        val attachedTo = currentAnalysis?.attachedTo.orEmpty()
+        if (attachedTo.isEmpty()) return selected
+        val attachments = files.filter { attachedTo[it.id] != null }.groupBy { attachedTo.getValue(it.id) }
+        return selected.flatMap { listOf(it) + attachments[it.id].orEmpty() }
+            .distinctBy { it.id }
+            .filterNot { it.isUploading || it.isVaulted }
+    }
+
     /**
      * 列表里替 [highlightedFileIds] 亮起的行。同一内容的其他版本不单独占一行，挂在最大的那个版本的行上，
      * 要标出它们只能标那一行；只找它们自己的行，滚动与描边都会落空（信息流、传输页定位到这种版本时）。
@@ -531,11 +556,13 @@ class DriveScreenState(
         }
         // 解析放到后台：上千个文件的目录要算几秒。按内容缓存，重组、刷新与返回上级都不重算
         scope.launch {
-            snapshotFlow { files }.collectLatest { list ->
+            snapshotFlow { loadedFolderId to files }.collectLatest { (folderId, list) ->
                 val structure = DriveAnalysisCache.analyze(list)
                 Snapshot.withMutableSnapshot {
-                    revealHighlightedItems(structure, highlightedFileIds)
-                    analysis = FolderAnalysis(list, structure)
+                    if (files === list && loadedFolderId == folderId) {
+                        revealHighlightedItems(structure, highlightedFileIds)
+                        analysis = FolderAnalysis(folderId, list, structure)
+                    }
                 }
             }
         }
@@ -556,7 +583,20 @@ class DriveScreenState(
         scope.launch {
             // 连着来的改动（批量重命名一项一条）不各重列一次：正在重列时来的合成一次，等这次列完再列
             val reloads = Channel<Unit>(Channel.CONFLATED)
-            launch { driveRepo.folderChanges.collect { change -> if (isAffectedBy(change)) reloads.trySend(Unit) } }
+            launch { driveRepo.folderChanges.collect { change ->
+                if (change is DriveChange.Renamed && change.parentId == activeFolderId && libraryView == null && archiveView == null && !isSearching) {
+                    val folderId = activeFolderId
+                    val previous = files
+                    val nextFiles = driveRepo.sortFiles(previous.map { if (it.id == change.id) it.copy(name = change.name) else it }, sortOrder, folderId)
+                    val structure = DriveAnalysisCache.analyze(nextFiles)
+                    Snapshot.withMutableSnapshot {
+                        if (files === previous && activeFolderId == folderId) {
+                            files = nextFiles
+                            analysis = FolderAnalysis(folderId, nextFiles, structure)
+                        } else reloads.trySend(Unit)
+                    }
+                } else if (isAffectedBy(change)) reloads.trySend(Unit)
+            } }
             for (reload in reloads) {
                 load()
                 loadJob?.join()
@@ -621,16 +661,23 @@ class DriveScreenState(
         }
         val cached = if (useCache) driveRepo.cachedBrowsable(folderId, sortOrder) else null
         when {
-            cached != null -> {
-                files = withoutInternalFolders(folderId, cached)
-                loadedFolderId = folderId
-                isLoading = false
-            }
+            cached != null -> Unit // 缓存也先在后台分析，再一起提交列表与结构。
             showRefreshing -> isRefreshing = true
             useCache -> isLoading = true
         }
         loadJob?.cancel()
         loadJob = scope.launch {
+            if (cached != null) {
+                val nextFiles = withoutInternalFolders(folderId, cached)
+                val structure = DriveAnalysisCache.analyze(nextFiles)
+                Snapshot.withMutableSnapshot {
+                    files = nextFiles
+                    loadedFolderId = folderId
+                    revealHighlightedItems(structure, highlightedFileIds)
+                    analysis = FolderAnalysis(folderId, nextFiles, structure)
+                    isLoading = false
+                }
+            }
             val started = TimeSource.Monotonic.markNow()
             val listing = driveRepo.listBrowsable(parentId = folderId, sortOrder = sortOrder)
             val elapsed = started.elapsedNow().inWholeMilliseconds
@@ -648,9 +695,15 @@ class DriveScreenState(
             }
             listing
                 .onSuccess {
-                    files = withoutInternalFolders(folderId, it)
-                    loadedFolderId = folderId
-                    loadError = null
+                    val nextFiles = withoutInternalFolders(folderId, it)
+                    val structure = DriveAnalysisCache.analyze(nextFiles)
+                    Snapshot.withMutableSnapshot {
+                        files = nextFiles
+                        loadedFolderId = folderId
+                        revealHighlightedItems(structure, highlightedFileIds)
+                        analysis = FolderAnalysis(folderId, nextFiles, structure)
+                        loadError = null
+                    }
                 }
                 .logFailure(TAG, "读取目录失败：文件夹 ${folderId.ifEmpty { "根目录" }}，$elapsed ms，${if (files.isEmpty()) "无旧内容" else "保留旧内容 ${files.size} 项"}")
                 .onFailure {
@@ -862,7 +915,12 @@ class DriveScreenState(
     // 事件记录只取第一页，至多 100 条，按时间倒序：再往前的播放与添加，到这里来找的人不多
     private suspend fun fetchLibrary(library: DriveLibrary): Result<LibraryListing> = when (library) {
         DriveLibrary.STARRED -> driveRepo.starredFiles().map { LibraryListing(it, emptyMap()) }
-        DriveLibrary.TRASH -> driveRepo.trashFiles().map { LibraryListing(it, emptyMap()) }
+        DriveLibrary.TRASH -> driveRepo.trashFiles().map { files ->
+            if (driveRepo.reconcileTrashListing(files)) {
+                _messages.tryEmit("内容较多，服务端正在后台清理，空间会自行释放")
+            }
+            LibraryListing(files, emptyMap())
+        }
         DriveLibrary.RECENT -> driveRepo.recentlyAdded().map(::eventListing)
         DriveLibrary.HISTORY -> driveRepo.playHistory().map(::eventListing)
         DriveLibrary.DUPLICATES -> error("${library.title}的内容来自会话，不经网络")
@@ -1197,8 +1255,8 @@ class DriveScreenState(
      * 内容归档后的文件夹服务端不再给封面。没进过的文件夹先取一页，才知道里面有没有清单。
      */
     suspend fun onFolderVisible(folder: FileStat) {
-        // 压缩包里的文件夹不是网盘里的，列不了
-        if (isSearching || usesFolderStructure || !isDriveFolderId(folder.id)) return
+        // 压缩包与回收站里的文件夹不预取子项或归档封面
+        if (isSearching || usesFolderStructure || folder.trashed || libraryView == DriveLibrary.TRASH || !isDriveFolderId(folder.id)) return
         val known = driveRepo.knownChildContents(folder.id)
         val wantsCover = folder.thumbnailLink.isEmpty()
         // 记下的是空表时分不清真空还是只有子文件夹，海报墙要据此画空文件夹，探一下
@@ -1356,12 +1414,16 @@ class DriveScreenState(
 
     fun rename(fileId: String, newName: String) {
         if (newName.isBlank() || refusedInArchive(listOf(fileId))) return
-        val trimmed = newName.trim()
+        val trimmed = newName.trimStart().trimEnd { it.isWhitespace() || it == '.' }
+        if (trimmed.isEmpty() || dev.piko.shared.data.DriveNames.clean(trimmed) != trimmed) {
+            _messages.tryEmit("文件名含有无效字符或为空")
+            return
+        }
         if (VaultEntry.isVaulted(fileId)) {
             renameInVault(fileId, trimmed)
             return
         }
-        submitFileAction(FileWriteCommand.Rename(fileId, trimmed), clearSelection = false)
+        submitFileAction(FileWriteCommand.Rename(fileId, trimmed, knownFile(fileId)?.let { FileBefore(it.name, it.parentId) }), clearSelection = false)
     }
 
     /** 加或去星标。星标只体现在列表条目的 tags 里，这一项所在的那一层由仓库通知重列。 */
@@ -1401,12 +1463,16 @@ class DriveScreenState(
      * [sources] 是各项原来所在的文件夹，撤销时移回去用。眼前列表里有的从列表取；剪切后换了目录再粘贴时
      * 它们已不在列表里，由剪贴板带过来，否则会被当成原本就在目标里。
      */
-    fun move(ids: List<String>, targetId: String, targetName: String, sources: Map<String, String> = emptyMap()): Boolean {
+    fun move(ids: List<String>, targetId: String, targetName: String, sources: Map<String, String> = emptyMap(), onSuccess: (() -> Unit)? = null): Boolean {
         fun sourceOf(id: String) = knownFile(id)?.parentId ?: sources[id]
         // 已经在目标里的不动：拖回原处、把文件夹拖到它自己上面，服务端要么白做一次、要么拒绝
         val moving = withoutVaulted(ids).filter { it != targetId && sourceOf(it) != targetId }
         if (moving.isEmpty()) return false
-        return submitFileAction(FileWriteCommand.Move(moving, PikoPathBreadcrumb(targetId, targetName)))
+        val before = moving.mapNotNull { id ->
+            (knownFile(id) ?: driveRepo.knownFile(id))?.takeUnless { it.trashed }
+                ?.let { id to FileBefore(it.name, it.parentId) }
+        }.toMap()
+        return submitFileAction(FileWriteCommand.Move(moving, PikoPathBreadcrumb(targetId, targetName), before), onSuccess = onSuccess)
     }
 
     /** 撤销最近一次移动、移入回收站或重命名，见 [DriveChangeJournal]。 */
@@ -1429,7 +1495,9 @@ class DriveScreenState(
         if (!canAcceptAction) return
         val ids = withoutVaulted(requested)
         if (ids.isEmpty()) return
-        clipboard.put(DriveClipboard(ids.associateWith { knownFile(it)?.parentId ?: activeFolderId }, cut))
+        val origin = activeFolderStack.takeIf { isDriveFolderId(activeFolderId) }.orEmpty()
+        clipboard.put(DriveClipboard(ids.associateWith { knownFile(it)?.parentId ?: activeFolderId }, cut, origin.toList()))
+        exitSelection()
         val verb = if (cut) "剪切" else "复制"
         _messages.tryEmit(if (ids.size == 1) "已$verb，到目标文件夹粘贴" else "已$verb ${ids.size} 项，到目标文件夹粘贴")
     }
@@ -1440,17 +1508,29 @@ class DriveScreenState(
         val clip = clipboard.contents.value ?: return
         val target = navigation.folderStackFlow.value.lastOrNull()?.takeIf { isDriveFolderId(it.id) } ?: return
         val ids = clip.sources.keys.toList()
+        val movingCount = if (clip.cut) withoutVaulted(ids).count {
+            it != target.id && (knownFile(it)?.parentId ?: clip.sources[it]) != target.id
+        } else ids.size
+        val onSuccess = {
+            if (clip.originStack.isNotEmpty() && clip.originStack.last().id != target.id) {
+                val verb = if (clip.cut) "移动" else "复制"
+                _pasteNotices.tryEmit(PasteReturnNotice("已将 $movingCount 项${verb}到「${target.name}」", clip.originStack))
+            }
+            Unit
+        }
         if (clip.cut) {
-            if (move(ids, target.id, target.name, clip.sources)) clipboard.clear()
+            if (move(ids, target.id, target.name, clip.sources, onSuccess)) clipboard.clear()
         } else {
-            copy(ids, target.id, target.name)
+            copy(ids, target.id, target.name, onSuccess)
         }
     }
 
-    fun copy(requested: List<String>, targetId: String, targetName: String) {
+    fun clearClipboard() = clipboard.clear()
+
+    fun copy(requested: List<String>, targetId: String, targetName: String, onSuccess: (() -> Unit)? = null): Boolean {
         val ids = withoutVaulted(requested)
-        if (ids.isEmpty()) return
-        submitFileAction(FileWriteCommand.Copy(ids, PikoPathBreadcrumb(targetId, targetName)))
+        if (ids.isEmpty()) return false
+        return submitFileAction(FileWriteCommand.Copy(ids, PikoPathBreadcrumb(targetId, targetName)), onSuccess = onSuccess)
     }
 
     /**

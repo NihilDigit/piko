@@ -66,6 +66,133 @@ import kotlin.test.assertIs
 import kotlin.test.assertFalse
 
 class UploadPreparationSmokeTest {
+    @Test
+    fun `pausing a batch during preparation also pauses later files`() = smoke { scope ->
+        checkBatchDuringPreparation(scope, remove = false)
+    }
+
+    @Test
+    fun `removing a batch during preparation prevents later files from returning`() = smoke { scope ->
+        checkBatchDuringPreparation(scope, remove = true)
+    }
+
+    private suspend fun checkBatchDuringPreparation(scope: CoroutineScope, remove: Boolean) {
+        val describingSecond = Channel<Unit>(1)
+        val describeResume = Channel<Unit>(1)
+        val firstDescription = AtomicBoolean(true)
+        val f = Rig(scope, object : Sources() {
+            override fun describe(uri: String): UploadSourceInfo = runBlocking {
+                if (uri == "two" && firstDescription.compareAndSet(true, false)) {
+                    describingSecond.send(Unit)
+                    describeResume.receive()
+                }
+                UploadSourceInfo("$uri.bin", 0, 1)
+            }
+        })
+        f.ready()
+        val uploading = Channel<Unit>(Channel.UNLIMITED)
+        val uploadResume = Channel<Unit>(Channel.UNLIMITED)
+        f.http.plugin(HttpSend).intercept { request ->
+            if (request.method == HttpMethod.Post && request.url.encodedPath.endsWith("/drive/v1/files")) {
+                uploading.send(Unit)
+                uploadResume.receive()
+            }
+            execute(request)
+        }
+        try {
+            val accepted = assertIs<UploadEnqueueResult.Accepted>(f.uploads.enqueue(
+                UploadSelection(files = listOf("one", "two")), f.target.id, f.target.name))
+            withTimeout(5_000) { describingSecond.receive(); uploading.receive() }
+            assertEquals(1, f.uploads.tasks.value.size)
+            if (remove) f.uploads.removeBatch(accepted.preparationId) else f.uploads.pauseBatch(accepted.preparationId)
+            describeResume.send(Unit)
+            if (remove) {
+                awaitUntil("准备取消且文件没有重新入队") { f.uploads.preparations.value.any { !it.isRunning } }
+                assertTrue(f.uploads.tasks.value.isEmpty())
+                assertEquals(UploadPreparationCompletion.STOPPED, f.uploads.preparations.value.single().result?.completion)
+            } else {
+                awaitUntil("后续准备的文件也暂停") {
+                    f.uploads.tasks.value.size == 2 && f.uploads.tasks.value.values.all { it.status == UploadStatus.PAUSED }
+                }
+                assertEquals(0, f.server.instantCreates.get())
+                repeat(2) { uploadResume.send(Unit) }
+                f.uploads.resumeBatch(accepted.preparationId)
+                awaitUntil("暂停的批次可以继续完成") { f.uploads.tasks.value.values.all { it.status == UploadStatus.COMPLETED } }
+                assertEquals(2, f.server.instantCreates.get())
+            }
+        } finally { describeResume.trySend(Unit); uploadResume.close() }
+    }
+
+    @Test
+    fun `multi-file upload batches pause resume and remove together`() = smoke { scope ->
+        val f = Rig(scope, object : Sources() {
+            override fun describe(uri: String) = UploadSourceInfo("$uri.bin", 0, 1)
+        })
+        f.ready()
+        val entered = Channel<Unit>(Channel.UNLIMITED)
+        val release = Channel<Unit>(Channel.UNLIMITED)
+        f.http.plugin(HttpSend).intercept { request ->
+            if (request.method == HttpMethod.Post && request.url.encodedPath.endsWith("/drive/v1/files")) {
+                entered.send(Unit)
+                release.receive()
+            }
+            execute(request)
+        }
+        try {
+            f.uploads.enqueue(UploadSelection(files = listOf("one", "two", "three")), f.target.id, f.target.name)
+            withTimeout(5_000) { repeat(3) { entered.receive() } }
+            val batchId = assertNotNull(f.uploads.tasks.value.values.map { it.batchId }.distinct().single())
+            assertEquals("one.bin 等 3 项", f.uploads.tasks.value.values.first().batchName)
+            f.uploads.pauseBatch(batchId)
+            awaitUntil("全部文件暂停") { f.uploads.tasks.value.values.all { it.status == UploadStatus.PAUSED } }
+            repeat(3) { release.send(Unit) }
+            f.uploads.resumeBatch(batchId)
+            awaitUntil("整组继续并完成") { f.uploads.tasks.value.values.all { it.status == UploadStatus.COMPLETED } }
+            assertEquals(3, f.server.children(f.target.id).size)
+            f.uploads.removeBatch(batchId)
+            assertTrue(f.uploads.tasks.value.isEmpty())
+        } finally { release.close() }
+    }
+
+    @Test
+    fun `four uploads overlap and freed slots drain the queue without duplicate claims`() = smoke { scope ->
+        val f = Rig(scope, object : Sources() {
+            override fun describe(uri: String) = UploadSourceInfo("$uri.bin", 0, 1)
+        })
+        f.ready()
+        val entered = Channel<String>(Channel.UNLIMITED)
+        val release = Channel<Unit>(Channel.UNLIMITED)
+        val active = AtomicInteger()
+        val peak = AtomicInteger()
+        f.http.plugin(HttpSend).intercept { request ->
+            if (request.method == HttpMethod.Post && request.url.encodedPath.endsWith("/drive/v1/files")) {
+                val count = active.incrementAndGet()
+                peak.updateAndGet { maxOf(it, count) }
+                try {
+                    entered.send(requestedName(request.body))
+                    release.receive()
+                    execute(request)
+                } finally { active.decrementAndGet() }
+            } else execute(request)
+        }
+        try {
+            f.uploads.enqueue(UploadSelection(files = (1..7).map { "file$it" }), f.target.id, f.target.name)
+            val first = withTimeout(5_000) { List(4) { entered.receive() } }
+            assertEquals(4, first.toSet().size)
+            assertEquals(4, peak.get())
+            assertTrue(entered.tryReceive().isFailure)
+            release.send(Unit)
+            val fifth = withTimeout(5_000) { entered.receive() }
+            repeat(7) { release.send(Unit) }
+            awaitUntil("全部文件完成") { f.uploads.tasks.value.size == 7 && f.uploads.tasks.value.values.all { it.status == UploadStatus.COMPLETED } }
+            assertEquals(7, f.server.children(f.target.id).size)
+            assertEquals(4, peak.get())
+            val rest = withTimeout(5_000) { List(2) { entered.receive() } }
+            assertEquals((1..7).map { "file$it.bin" }.toSet(), (first + fifth + rest).toSet())
+            assertTrue(entered.tryReceive().isFailure)
+        } finally { release.close() }
+    }
+
     private open class Sources : PikoUploadSources {
         override fun describe(uri: String): UploadSourceInfo? = UploadSourceInfo("file.bin", 0, 1)
         override fun readAt(uri: String, offset: Long, length: Int) = ByteArray(length)
@@ -122,6 +249,10 @@ class UploadPreparationSmokeTest {
             val task = uploads.tasks.value.values.single()
             assertEquals(account, task.account)
             assertEquals("local-file", task.sourceUri)
+            assertEquals(work.id, task.batchId)
+            assertEquals("local-folder", task.batchName)
+            assertEquals(target.id, task.batchParentId)
+            assertTrue(task.batchIsFolder)
             assertEquals("local-folder", server.node(task.parentId)?.name)
             awaitUntil("准备行由实际上传任务取代") { transfers.inProgress.none { it is TransferItem.UploadPreparing } }
         } finally { release.trySend(Unit); page.cancel() }

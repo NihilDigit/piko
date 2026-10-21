@@ -16,7 +16,7 @@ sealed interface DriveChange {
     }
 
     /** [parentId] 为 null 是不知道它在哪个文件夹里（改的是全盘搜索里的一项）。 */
-    class Renamed(val id: String, val name: String, parentId: String?) : DriveChange {
+    class Renamed(val id: String, val name: String, val parentId: String?) : DriveChange {
         override val folders: Set<String>? = parentId?.let(::setOf)
     }
 

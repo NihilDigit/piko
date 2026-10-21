@@ -1,9 +1,9 @@
 package dev.piko.shared.smoke
 
-import io.ktor.client.plugins.plugin
 
 import dev.piko.shared.data.ArchiveLocation
 import dev.piko.shared.data.DriveLibrary
+import dev.piko.shared.data.InstantFileItem
 import dev.piko.shared.data.InstantMagnetRepository
 import dev.piko.shared.data.OfflinePackStage
 import dev.piko.shared.data.OfflinePackTracker
@@ -15,28 +15,137 @@ import dev.piko.shared.state.InstantSaveOutcome
 import dev.piko.shared.state.InstantSaveRecords
 import dev.piko.shared.state.InstantSession
 import dev.piko.shared.state.InstantSheetState
-import dev.piko.shared.state.SaveTargetContext
 import dev.piko.shared.state.SaveRoute
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
+import dev.piko.shared.state.SaveTargetContext
+import io.github.nihildigit.pikpak.InMemorySessionStore
+import io.github.nihildigit.pikpak.PikPakClient
+import io.github.nihildigit.pikpak.RateLimiter
+import io.github.nihildigit.pikpak.ResolvedFile
+import io.ktor.client.plugins.HttpSend
+import io.ktor.client.plugins.plugin
+import io.ktor.http.HttpMethod
+import io.ktor.http.content.OutgoingContent
+import io.ktor.http.encodedPath
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 
 /**
  * 秒传工作台从解析到落盘的完整流程。两端都只剩布局，这里坏了两端一起坏。
  */
 class InstantFlowSmokeTest {
+    @Test
+    fun `incoming text keeps all links from unconsumed shares`() {
+        val repo = InstantMagnetRepository(FakePikPakServer().provider())
+        val first = "magnet:?xt=urn:btih:" + "a".repeat(40)
+        val second = "magnet:?xt=urn:btih:" + "b".repeat(40)
+        val third = "https://example.com/file.zip"
+        repo.onIncomingMagnet(first)
+        repo.onIncomingMagnet("$second\n$third")
+        assertEquals(listOf(first, second, third), dev.piko.shared.state.extractLinks(repo.pendingMagnetFlow.value!!).map { it.uri })
+        repo.clearPendingMagnet()
+        assertNull(repo.pendingMagnetFlow.value)
+    }
+
+    @Test
+    fun `repository shares four file permits across independent saves`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val http = server.httpClient()
+        val client = PikPakClient("smoke@piko.dev", "pw",
+            sessionStore = InMemorySessionStore(), httpClient = http,
+            rateLimiter = RateLimiter(capacity = 1000, refillPerSecond = 1000.0))
+        val repo = InstantMagnetRepository(server.provider(client))
+        val entered = Channel<Unit>(Channel.UNLIMITED)
+        val release = Channel<Unit>(Channel.UNLIMITED)
+        val active = AtomicInteger()
+        val peak = AtomicInteger()
+        http.plugin(HttpSend).intercept { request ->
+            if (request.method == HttpMethod.Post && request.url.encodedPath.endsWith("/drive/v1/files")) {
+                val count = active.incrementAndGet()
+                peak.updateAndGet { maxOf(it, count) }
+                try {
+                    entered.send(Unit)
+                    release.receive()
+                    execute(request)
+                } finally { active.decrementAndGet() }
+            } else execute(request)
+        }
+        try {
+            val saves = (1..3).map { row -> scope.async {
+                repo.instantSave((1..3).map { file -> InstantFileItem(
+                    ResolvedFile("$row-$file.mkv", 10, "HASH$row$file"), true) }).getOrThrow()
+            } }
+            withTimeout(5_000) { repeat(4) { entered.receive() } }
+            assertEquals(4, peak.get())
+            assertTrue(entered.tryReceive().isFailure)
+            repeat(9) { release.send(Unit) }
+            saves.forEach { assertEquals(3, it.await().size) }
+            assertEquals(4, peak.get())
+            assertEquals(9, server.instantCreates.get())
+        } finally { release.close() }
+    }
+
+    @Test
+    fun `batch rows overlap and stopping leaves queued rows unsubmitted`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val http = server.httpClient()
+        val provider = server.provider(PikPakClient("smoke@piko.dev", "pw",
+            sessionStore = InMemorySessionStore(), httpClient = http,
+            rateLimiter = RateLimiter(capacity = 1000, refillPerSecond = 1000.0)))
+        val rig = Rig(server, MemoryPreferences(), scope, provider)
+        val links = ('a'..'f').map { "magnet:?xt=urn:btih:" + it.toString().repeat(40) }
+        links.forEachIndexed { index, link ->
+            server.indexMagnet(link, resourceListBody("row$index", listOf(Triple("file$index.mkv", 100L, "HASH$index"))))
+        }
+        val sheet = rig.sheet(scope, links.joinToString("\n"))
+        val batch = assertNotNull(sheet.batch)
+        awaitUntil("批量解析完成") { batch.canSaveAll }
+        val entered = Channel<Unit>(Channel.UNLIMITED)
+        val release = Channel<Unit>(Channel.UNLIMITED)
+        http.plugin(HttpSend).intercept { request ->
+            val body = (request.body as? OutgoingContent.ByteArrayContent)?.bytes()?.decodeToString().orEmpty()
+            if (request.method == HttpMethod.Post && body.contains("HASH")) {
+                entered.send(Unit)
+                release.receive()
+            }
+            execute(request)
+        }
+        try {
+            batch.saveAll()
+            withTimeout(5_000) { repeat(3) { entered.receive() } }
+            assertTrue(entered.tryReceive().isFailure)
+            batch.stopSaving()
+            repeat(3) { release.send(Unit) }
+            awaitUntil("已开始的行保留回执") { !batch.isSaving }
+            assertEquals(3, server.instantCreates.get())
+            assertEquals(3, batch.rows.size)
+            assertEquals(3, rig.saveRecords.records.value.size)
+            assertTrue(batch.saveErrors.isEmpty())
+            assertEquals(links.drop(3), batch.rows.map { it.link.uri })
+            val outcome = scope.async(start = CoroutineStart.UNDISPATCHED) { sheet.outcomes.first() }
+            repeat(3) { release.send(Unit) }
+            batch.saveAll()
+            val saved = assertIs<InstantSaveOutcome.InstantSaved>(outcome.await())
+            assertEquals(listOf("HASH3", "HASH4", "HASH5"), saved.createdIds.map { server.node(it)?.hash })
+            assertEquals(6, server.instantCreates.get())
+        } finally { release.close() }
+    }
+
     @Test
     fun flattenedBatchSelectionKeepsLinkOwnershipAndAppliesOneReferencePolicy() = smoke { scope ->
         val server = FakePikPakServer()
@@ -537,20 +646,20 @@ class InstantFlowSmokeTest {
     fun `saving survives a replacement request and completes without a screen subscriber`() = smoke { scope ->
         val server = FakePikPakServer()
         server.indexMagnet(magnet, resourceListBody("Movie", listOf(Triple("Movie.mkv", 1024L, "GCIDMOVIE"))))
-        val started = kotlinx.coroutines.channels.Channel<Unit>(1)
-        val release = kotlinx.coroutines.channels.Channel<Unit>(1)
+        val started = Channel<Unit>(1)
+        val release = Channel<Unit>(1)
         val http = server.httpClient()
-        http.plugin(io.ktor.client.plugins.HttpSend).intercept { request ->
-            if (request.method == io.ktor.http.HttpMethod.Post && request.url.toString().substringBefore('?').endsWith("/drive/v1/files")) {
+        http.plugin(HttpSend).intercept { request ->
+            if (request.method == HttpMethod.Post && request.url.toString().substringBefore('?').endsWith("/drive/v1/files")) {
                 started.send(Unit)
                 release.receive()
             }
             execute(request)
         }
-        val client = io.github.nihildigit.pikpak.PikPakClient(
+        val client = PikPakClient(
             account = "smoke@piko.dev", password = "pw",
-            sessionStore = io.github.nihildigit.pikpak.InMemorySessionStore(),
-            rateLimiter = io.github.nihildigit.pikpak.RateLimiter(capacity = 1000, refillPerSecond = 1000.0),
+            sessionStore = InMemorySessionStore(),
+            rateLimiter = RateLimiter(capacity = 1000, refillPerSecond = 1000.0),
             httpClient = http,
         )
         val rig = Rig(server, MemoryPreferences(), scope, server.provider(client))
@@ -562,7 +671,7 @@ class InstantFlowSmokeTest {
         val draft = assertNotNull(session.state)
         awaitUntil("可以保存") { draft.canSaveSelection }
         draft.saveSelection()
-        kotlinx.coroutines.withTimeout(5_000) { started.receive() }
+        withTimeout(5_000) { started.receive() }
 
         view.open("magnet:?xt=urn:btih:" + "b".repeat(40))
         assertTrue(session.state === draft)
@@ -592,20 +701,20 @@ class InstantFlowSmokeTest {
         val firstFolder = server.addFolder("First")
         val secondFolder = server.addFolder("Second")
         val elsewhere = server.addFolder("Elsewhere")
-        val started = kotlinx.coroutines.channels.Channel<Unit>(1)
-        val release = kotlinx.coroutines.channels.Channel<Unit>(1)
+        val started = Channel<Unit>(1)
+        val release = Channel<Unit>(1)
         val http = server.httpClient()
-        http.plugin(io.ktor.client.plugins.HttpSend).intercept { request ->
-            if (request.method == io.ktor.http.HttpMethod.Post && request.url.toString().substringBefore('?').endsWith("/drive/v1/files")) {
+        http.plugin(HttpSend).intercept { request ->
+            if (request.method == HttpMethod.Post && request.url.toString().substringBefore('?').endsWith("/drive/v1/files")) {
                 started.send(Unit)
                 release.receive()
             }
             execute(request)
         }
-        val client = io.github.nihildigit.pikpak.PikPakClient(
+        val client = PikPakClient(
             account = "smoke@piko.dev", password = "pw",
-            sessionStore = io.github.nihildigit.pikpak.InMemorySessionStore(),
-            rateLimiter = io.github.nihildigit.pikpak.RateLimiter(capacity = 1000, refillPerSecond = 1000.0),
+            sessionStore = InMemorySessionStore(),
+            rateLimiter = RateLimiter(capacity = 1000, refillPerSecond = 1000.0),
             httpClient = http,
         )
         val rig = Rig(server, MemoryPreferences(), scope, server.provider(client))
@@ -625,7 +734,7 @@ class InstantFlowSmokeTest {
         assertEquals(secondFolder.id, second.state.target?.id)
 
         first.state.saveSelection()
-        kotlinx.coroutines.withTimeout(5_000) { started.receive() }
+        withTimeout(5_000) { started.receive() }
         assertEquals(listOf(first.id), session.executingSaves.map { it.draftId })
         assertTrue(session.executingSaves.single().trackedInstantAttempt)
         val firstView = dev.piko.shared.presentation.AddLinkViewModel(first)
@@ -652,22 +761,22 @@ class InstantFlowSmokeTest {
     fun `closing a draft keeps an unknown save result available for inspection`() = smoke { scope ->
         val server = FakePikPakServer()
         server.indexMagnet(magnet, resourceListBody("Movie", listOf(Triple("Movie.mkv", 1024L, "GCIDMOVIE"))))
-        val started = kotlinx.coroutines.channels.Channel<Unit>(1)
-        val release = kotlinx.coroutines.channels.Channel<Unit>(1)
+        val started = Channel<Unit>(1)
+        val release = Channel<Unit>(1)
         val http = server.httpClient()
-        http.plugin(io.ktor.client.plugins.HttpSend).intercept { request ->
+        http.plugin(HttpSend).intercept { request ->
             val response = execute(request)
-            if (request.method == io.ktor.http.HttpMethod.Post && request.url.toString().substringBefore('?').endsWith("/drive/v1/files")) {
+            if (request.method == HttpMethod.Post && request.url.toString().substringBefore('?').endsWith("/drive/v1/files")) {
                 started.send(Unit)
                 release.receive()
                 throw java.io.IOException("file acknowledgement lost")
             }
             response
         }
-        val client = io.github.nihildigit.pikpak.PikPakClient(
+        val client = PikPakClient(
             account = "smoke@piko.dev", password = "pw",
-            sessionStore = io.github.nihildigit.pikpak.InMemorySessionStore(),
-            rateLimiter = io.github.nihildigit.pikpak.RateLimiter(capacity = 1000, refillPerSecond = 1000.0),
+            sessionStore = InMemorySessionStore(),
+            rateLimiter = RateLimiter(capacity = 1000, refillPerSecond = 1000.0),
             httpClient = http,
         )
         val rig = Rig(server, MemoryPreferences(), scope, server.provider(client))
@@ -679,7 +788,7 @@ class InstantFlowSmokeTest {
         val draft = session.openDraft(magnet, SaveTargetContext.fixed())
         awaitUntil("可以保存") { draft.state.canSaveSelection }
         draft.state.saveSelection()
-        kotlinx.coroutines.withTimeout(5_000) { started.receive() }
+        withTimeout(5_000) { started.receive() }
         draft.close()
         release.send(Unit)
 
@@ -695,20 +804,20 @@ class InstantFlowSmokeTest {
     fun `account leave clears a closed draft's executing save projection`() = smoke { scope ->
         val server = FakePikPakServer()
         server.indexMagnet(magnet, resourceListBody("Movie", listOf(Triple("Movie.mkv", 1024L, "GCIDMOVIE"))))
-        val started = kotlinx.coroutines.channels.Channel<Unit>(1)
-        val release = kotlinx.coroutines.channels.Channel<Unit>(1)
+        val started = Channel<Unit>(1)
+        val release = Channel<Unit>(1)
         val http = server.httpClient()
-        http.plugin(io.ktor.client.plugins.HttpSend).intercept { request ->
-            if (request.method == io.ktor.http.HttpMethod.Post && request.url.toString().substringBefore('?').endsWith("/drive/v1/files")) {
+        http.plugin(HttpSend).intercept { request ->
+            if (request.method == HttpMethod.Post && request.url.toString().substringBefore('?').endsWith("/drive/v1/files")) {
                 started.send(Unit)
                 release.receive()
             }
             execute(request)
         }
-        val client = io.github.nihildigit.pikpak.PikPakClient(
+        val client = PikPakClient(
             account = "smoke@piko.dev", password = "pw",
-            sessionStore = io.github.nihildigit.pikpak.InMemorySessionStore(),
-            rateLimiter = io.github.nihildigit.pikpak.RateLimiter(capacity = 1000, refillPerSecond = 1000.0),
+            sessionStore = InMemorySessionStore(),
+            rateLimiter = RateLimiter(capacity = 1000, refillPerSecond = 1000.0),
             httpClient = http,
         )
         val rig = Rig(server, MemoryPreferences(), scope, server.provider(client))
@@ -720,7 +829,7 @@ class InstantFlowSmokeTest {
         val draft = session.openDraft(magnet, SaveTargetContext.fixed())
         awaitUntil("可以保存") { draft.state.canSaveSelection }
         draft.state.saveSelection()
-        kotlinx.coroutines.withTimeout(5_000) { started.receive() }
+        withTimeout(5_000) { started.receive() }
         draft.close()
         assertEquals(listOf(draft.id), session.executingSaves.map { it.draftId })
         session.clear()

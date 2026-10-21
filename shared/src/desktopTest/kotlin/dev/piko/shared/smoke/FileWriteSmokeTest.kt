@@ -337,9 +337,152 @@ class FileWriteSmokeTest {
         awaitUntil("星标与恢复已确认") { listOf(starred, restored).all { id -> session.works.value.find { it.id == id }?.result != null } }
         assertTrue(star.starred)
         assertFalse(trash.trashed)
+        val detailsBeforeDelete = server.count("GET /drive/v1/files/${trash.id}")
         commands.accept(FileWriteCommand.Delete(listOf(trash.id)))
         awaitUntil("永久删除已确认") { session.works.value.all { it.result != null } }
         assertTrue(session.works.value.all { it.result!!.completion == FileWriteCompletion.SUCCEEDED })
         assertEquals(null, server.node(trash.id))
+        assertEquals(detailsBeforeDelete, server.count("GET /drive/v1/files/${trash.id}"))
+    }
+
+    @Test
+    fun `rename preserves sibling metadata and stale status`() = smoke { _ ->
+        val server = FakePikPakServer()
+        val a = server.addFile("a")
+        val b = server.addFile("b")
+        val other = server.addFolder("other")
+        val repo = drive(server)
+        repo.listAllFiles("").getOrThrow()
+        repo.listAllFiles(other.id).getOrThrow()
+        repo.rename(a.id, "aa").getOrThrow()
+        assertEquals("", repo.knownParentOf(b.id))
+        assertEquals("aa", repo.knownFile(a.id)?.name)
+        repo.rename(b.id, "bb").getOrThrow()
+        assertNotNull(repo.cachedFiles(other.id, dev.piko.shared.data.PikoFileSortOrder.TIME_DESC))
+        repo.applyChange(dev.piko.shared.data.DriveChange.ContentsChanged(setOf("")))
+        repo.applyChange(dev.piko.shared.data.DriveChange.Renamed(a.id, "aaa", ""))
+        assertEquals(null, repo.knownFile(a.id))
+    }
+
+    @Test
+    fun `rename waves limit concurrency retry transient errors and keep journal order`() = smoke { _ ->
+        val server = FakePikPakServer()
+        val files = (1..9).map { server.addFile("$it.txt") }
+        val attempts = java.util.concurrent.atomic.AtomicInteger()
+        val active = java.util.concurrent.atomic.AtomicInteger()
+        val maximum = java.util.concurrent.atomic.AtomicInteger()
+        val http = server.httpClient()
+        http.plugin(HttpSend).intercept { request ->
+            if (request.method != HttpMethod.Patch) return@intercept execute(request)
+            if (request.url.encodedPath.endsWith("/files/${files.first().id}") && attempts.incrementAndGet() <= 3) {
+                throw io.github.nihildigit.pikpak.PikPakException(1, "busy", httpStatus = 503)
+            }
+            val running = active.incrementAndGet()
+            maximum.updateAndGet { maxOf(it, running) }
+            try { kotlinx.coroutines.delay(25); execute(request) } finally { active.decrementAndGet() }
+        }
+        val repo = drive(server, http)
+        val sources = files.map { dev.piko.shared.rename.RenameSource(it.id, it.parentId, it.name, false) }
+        val plan = dev.piko.shared.rename.planRenames(sources, files.map { "new-${it.name}" }, emptyMap())
+        val run = dev.piko.shared.rename.RenameRun(repo, "test")
+        run.execute(plan)
+        assertEquals(4, attempts.get())
+        assertTrue(maximum.get() in 2..4)
+        assertEquals(9, run.processed)
+        assertTrue(run.failures.isEmpty())
+        assertEquals(files.map { it.id }, run.renamed.map { it.id })
+        files.forEach { assertEquals(0, server.count("GET /drive/v1/files/${it.id}")) }
+    }
+
+    @Test
+    fun `failed rename blocks dependent occupancies but independent files finish`() = smoke { _ ->
+        val server = FakePikPakServer()
+        val files = listOf("a", "b", "c", "d").map { server.addFile(it) }
+        val http = server.httpClient()
+        http.plugin(HttpSend).intercept { request ->
+            if (request.method == HttpMethod.Patch && request.url.encodedPath.endsWith("/files/${files[2].id}")) {
+                throw io.github.nihildigit.pikpak.PikPakException(7, "permission_denied", httpStatus = 403)
+            }
+            execute(request)
+        }
+        val repo = drive(server, http)
+        val sources = files.map { dev.piko.shared.rename.RenameSource(it.id, it.parentId, it.name, false) }
+        val plan = dev.piko.shared.rename.planRenames(sources, listOf("b", "c", "z", "done"), emptyMap())
+        val run = dev.piko.shared.rename.RenameRun(repo, "test")
+        run.execute(plan)
+        assertEquals(3, run.failures.size)
+        assertEquals(4, run.processed)
+        assertEquals(listOf("a", "b", "c", "done"), files.map { it.name })
+        files.take(2).forEach { assertEquals(0, server.count("PATCH /drive/v1/files/${it.id}")) }
+    }
+
+    @Test
+    fun `large move uses cached preflight and destination listing`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val files = (1..12).map { server.addFile("$it.txt") }
+        val target = server.addFolder("target")
+        val repo = drive(server)
+        repo.listAllFiles("").getOrThrow()
+        val session = FileWriteSession(repo, scope, 10)
+        FileCommands(repo, session).accept(FileWriteCommand.Move(files.map { it.id }, PikoPathBreadcrumb(target.id, target.name)))
+        awaitUntil("批量移动已确认") { session.works.value.single().result != null }
+        val work = session.works.value.single()
+        assertEquals(FileWriteCompletion.SUCCEEDED, work.result!!.completion)
+        assertEquals(12, work.completedCount)
+        files.forEach { assertEquals(0, server.count("GET /drive/v1/files/${it.id}")) }
+        assertEquals(setOf(target.id), files.map { it.parentId }.toSet())
+    }
+
+    @Test
+    fun `stop completes the active chunk and preserves undo`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val files = (1..205).map { server.addFile("$it.txt") }
+        val target = server.addFolder("target")
+        val entered = Channel<Unit>(1)
+        val release = Channel<Unit>(1)
+        val http = server.httpClient()
+        http.plugin(HttpSend).intercept { request ->
+            if (request.url.encodedPath.endsWith(":batchMove") && server.count("POST /drive/v1/files:batchMove") == 0) { entered.send(Unit); release.receive() }
+            execute(request)
+        }
+        val repo = drive(server, http)
+        repo.listAllFiles("").getOrThrow()
+        val session = FileWriteSession(repo, scope, 10)
+        val id = FileCommands(repo, session).accept(FileWriteCommand.Move(files.map { it.id }, PikoPathBreadcrumb(target.id, target.name)))
+        withTimeout(5_000) { entered.receive() }
+        assertTrue(session.requestStop(id))
+        release.send(Unit)
+        awaitUntil("当前批完成后停止") { session.works.value.single().result != null }
+        val work = session.works.value.single()
+        assertTrue(work.stopping)
+        assertEquals(100, work.completedCount)
+        assertEquals(100, work.result!!.confirmed.size)
+        assertEquals(105, work.result!!.notAttempted.size)
+        assertEquals(1, server.count("POST /drive/v1/files:batchMove"))
+        assertTrue(repo.changes.undo(work.result!!.undoChangeIds.single()))
+        awaitUntil("撤销已移动部分") { files.all { it.parentId.isEmpty() } }
+    }
+
+    @Test
+    fun `lost delete acknowledgement can be rechecked without resubmission`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val file = server.addFile("file")
+        var hideDetails = true
+        val http = server.httpClient()
+        http.plugin(HttpSend).intercept { request ->
+            if (hideDetails && request.method == HttpMethod.Get && request.url.encodedPath.endsWith("/files/${file.id}")) throw IOException("detail unavailable")
+            val response = execute(request)
+            if (request.url.encodedPath.endsWith(":batchDelete")) throw IOException("response lost")
+            response
+        }
+        val repo = drive(server, http)
+        val session = FileWriteSession(repo, scope, 10)
+        val id = FileCommands(repo, session).accept(FileWriteCommand.Delete(listOf(file.id)))
+        awaitUntil("删除待核对") { session.works.value.single().result != null }
+        assertEquals(setOf(file.id), session.works.value.single().result!!.unconfirmed)
+        hideDetails = false
+        assertTrue(session.recheck(id))
+        awaitUntil("查询确认删除") { session.works.value.single().result?.completion == FileWriteCompletion.SUCCEEDED }
+        assertEquals(1, server.count("POST /drive/v1/files:batchDelete"))
     }
 }

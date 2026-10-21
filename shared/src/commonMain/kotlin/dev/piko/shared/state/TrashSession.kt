@@ -29,8 +29,25 @@ class TrashSession(private val repository: PikoDriveRepository, private val scop
     private var onComplete: () -> Unit = {}
     var isUndoing by mutableStateOf(false)
         private set
+    var stopping by mutableStateOf(false)
+        private set
+    var undoProgress by mutableStateOf<TrashProgress?>(null)
+        private set
+
+    fun requestStop() {
+        if (progress != null) stopping = true
+        else if (isUndoing) stopping = undoChange?.let { repository.changes.requestStopUndo(it.id) } == true
+    }
 
     init {
+        scope.launch {
+            repository.changes.state.collect { journal ->
+                val change = undoChange
+                val undo = change?.let { journal.undo[it.id] }
+                undoProgress = if (undo?.status == DriveChangeJournal.UndoStatus.RUNNING)
+                    TrashProgress(undo.completedTrashItems, requireNotNull(change).ids.size) else null
+            }
+        }
         scope.launch {
             repository.folderChanges.collect { change ->
                 if (change is DriveChange.Restored) projectedIds = projectedIds - change.ids.toSet()
@@ -39,7 +56,7 @@ class TrashSession(private val repository: PikoDriveRepository, private val scop
         scope.launch {
             repository.changes.events.collect { event ->
                 if (event.undone != null && event.undone === undoChange) dismiss()
-                if (event.failedChange != null && event.failedChange === undoChange) isUndoing = false
+                if (event.failedChange != null && event.failedChange === undoChange) { isUndoing = false; stopping = false }
             }
         }
     }
@@ -56,6 +73,7 @@ class TrashSession(private val repository: PikoDriveRepository, private val scop
 
     private fun execute(ids: List<String>) {
         val generation = epoch
+        stopping = false
         failure = null
         val previous = undoChange?.ids.orEmpty()
         progress = TrashProgress(previous.size, previous.size + ids.size)
@@ -63,6 +81,10 @@ class TrashSession(private val repository: PikoDriveRepository, private val scop
             val completed = previous.toMutableList()
             try {
                 for (batch in ids.chunked(100)) {
+                    if (stopping) {
+                        failure = TrashFailure(completed.size, ids.drop(completed.size - previous.size))
+                        return@launch
+                    }
                     val result = repository.trash(batch)
                     if (result.isFailure) {
                         result.logFailure("Trash", "移入回收站失败")
@@ -87,6 +109,7 @@ class TrashSession(private val repository: PikoDriveRepository, private val scop
                         )
                     }
                     progress = null
+                    stopping = false
                 }
             }
         }
@@ -106,6 +129,8 @@ class TrashSession(private val repository: PikoDriveRepository, private val scop
     }
     fun clear() {
         epoch++
+        undoProgress = null
+        stopping = false
         job?.cancel()
         job = null
         progress = null

@@ -7,4 +7,8 @@ package dev.piko.shared.data
  * @param sources 条目 ID 到它原来所在的文件夹。粘贴剪切的条目时，撤销要靠它移回原处。
  * @param cut 剪切为 true，粘贴即移动；复制为 false，粘贴即复制，剪贴板留着可以再粘。
  */
-data class DriveClipboard(val sources: Map<String, String>, val cut: Boolean)
+data class DriveClipboard(
+    val sources: Map<String, String>,
+    val cut: Boolean,
+    val originStack: List<PikoPathBreadcrumb> = emptyList(),
+)

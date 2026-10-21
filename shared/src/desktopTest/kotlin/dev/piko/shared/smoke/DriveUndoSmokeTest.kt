@@ -12,6 +12,27 @@ import kotlin.test.assertTrue
 class DriveUndoSmokeTest {
 
     @Test
+    fun `rename patches the visible listing until one final reconciliation`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val a = server.addFile("a.txt")
+        val b = server.addFile("b.txt")
+        val prefs = MemoryPreferences()
+        val repository = PikoDriveRepository(server.provider(), prefs)
+        val drive = DriveScreenState(repository, prefs, scope)
+        drive.load()
+        awaitUntil("列表加载完成") { !drive.isLoading && drive.displayedFiles.size == 2 }
+        val listings = server.count("GET /drive/v1/files")
+        repository.rename(a.id, "z.txt", "").getOrThrow()
+        repository.rename(b.id, "y.txt", "").getOrThrow()
+        awaitUntil("名称原地更新") { drive.displayedFiles.map { it.name }.toSet() == setOf("z.txt", "y.txt") }
+        assertEquals(listings, server.count("GET /drive/v1/files"))
+        assertEquals(0, server.count("GET /drive/v1/files/${a.id}"))
+        repository.applyChange(dev.piko.shared.data.DriveChange.ContentsChanged(setOf("")))
+        awaitUntil("最终统一重列") { server.count("GET /drive/v1/files") == listings + 1 && !drive.isLoading && !drive.isRefreshing }
+        assertEquals(listings + 1, server.count("GET /drive/v1/files"))
+    }
+
+    @Test
     fun `move, trash and rename are undone in reverse order`() = smoke { scope ->
         val server = FakePikPakServer()
         val target = server.addFolder("目标")

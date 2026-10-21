@@ -9,6 +9,7 @@ import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import io.github.nihildigit.pikpak.DriveTask
 import io.github.nihildigit.pikpak.TaskPhase
+import io.github.nihildigit.pikpak.PikPakException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -91,19 +92,31 @@ class OfflineTasksState(
     }
 
     /** 删除任务记录，不删已产出的文件。 */
-    fun delete(taskId: String) {
+    fun delete(taskId: String) = delete(listOf(taskId))
+
+    fun delete(taskIds: Collection<String>) {
+        val ids = taskIds.distinct().filter { it.isNotEmpty() }
+        if (ids.isEmpty()) return
+        val removedIds = ids.toSet()
+        taskRevision++
+        deletingIds += removedIds
+        tasks = tasks.filterNot { it.id in removedIds }
         scope.launch {
-            taskRepo.deleteTasks(listOf(taskId))
-                .onSuccess {
-                    tasks = tasks.filterNot { it.id == taskId }
-                    launchFetch(notifyFailure = false)
-                }
+            taskRepo.deleteTasks(ids)
                 .onFailure { err ->
-                    PikoLog.w(TAG, "删除离线任务 $taskId 失败", err)
-                    _messages.tryEmit("删除任务失败")
+                    if ((err as? PikPakException)?.httpStatus != 404) {
+                        PikoLog.w(TAG, "删除 ${ids.size} 个离线任务失败", err)
+                        _messages.tryEmit("删除任务失败")
+                    }
                 }
+            deletingIds -= removedIds
+            taskRevision++
+            launchFetch(notifyFailure = false)
         }
     }
+
+    private var deletingIds = emptySet<String>()
+    private var taskRevision = 0L
 
     /** 清除某几个阶段的任务记录，不删产出的文件。先从列表里摘掉，失败再由重新拉取带回。 */
     fun clear(phases: List<String>) {
@@ -127,13 +140,15 @@ class OfflineTasksState(
     }
 
     private suspend fun fetch(notifyFailure: Boolean) {
+        val revision = taskRevision
         try {
             taskRepo.getTasks()
                 .onSuccess { response ->
+                    if (revision != taskRevision) return@onSuccess
                     logTransitions(tasks, response.tasks)
                     if (failedPolls > 0) PikoLog.i(TAG, "离线任务恢复拉取，此前连续失败 $failedPolls 次")
                     failedPolls = 0
-                    tasks = response.tasks
+                    tasks = response.tasks.filterNot { it.id in deletingIds }
                     loadError = null
                 }
                 .onFailure { err ->

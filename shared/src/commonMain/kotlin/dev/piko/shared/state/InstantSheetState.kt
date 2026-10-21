@@ -931,7 +931,7 @@ class InstantSheetState private constructor(
     }
 
     /**
-     * 批量保存时由 [InstantBatchState] 逐行调用，路线与单条时的主操作相同，只是结果交回给列表汇总，
+     * 批量保存时由 [InstantBatchState] 调用，路线与单条时的主操作相同，只是结果交回给列表汇总，
      * 不发 [outcomes]。空间由列表按全部整包合计后检查，这里不再逐条查。
      * 秒传成功返回新文件的 id，离线返回 null。
      */

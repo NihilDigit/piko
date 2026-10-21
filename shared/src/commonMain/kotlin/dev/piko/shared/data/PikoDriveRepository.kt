@@ -87,6 +87,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -166,6 +167,7 @@ open class PikoDriveRepository(
     internal fun unregisterFolderReferences(source: FolderReferenceSource) { references.update { it - source } }
 
     private val dataAccount = MutableStateFlow<String?>(null)
+    private val pendingServerDeletes = MutableStateFlow<Set<String>>(emptySet())
 
     fun enterAccount(account: String?) {
         vaultBinding.update { it?.takeIf { binding -> binding.client.account == account } }
@@ -173,6 +175,7 @@ open class PikoDriveRepository(
             val previous = dataAccount.value
             if (previous == account) return
             if (!dataAccount.compareAndSet(previous, account)) continue
+            pendingServerDeletes.value = emptySet()
             if (previous == null) return
             break
         }
@@ -211,7 +214,10 @@ open class PikoDriveRepository(
      * 文件夹索引跟着改，各处存着的路径随之改正；受影响的列表标为过期，在路上的列目录不再合并进来；
      * 最后广播给订阅者。新加改动网盘的入口照此调一次，不要自己清缓存或通知界面。
      */
-    fun applyChange(change: DriveChange) {
+    fun applyChange(change: DriveChange) = applyChange(change, notifyChange = true)
+
+    private fun applyChange(change: DriveChange, notifyChange: Boolean) {
+        if (change is DriveChange.Deleted) pendingServerDeletes.update { it + change.ids }
         val indexChanged = when (change) {
             is DriveChange.Created -> folderIndex.learned(change.id, change.name, change.parentId, change.isFolder, trashed = false)
             is DriveChange.Renamed -> folderIndex.renamed(change.id, change.name, always = change.id in referencedNodeIds())
@@ -225,10 +231,19 @@ open class PikoDriveRepository(
         childContents.invalidate(folders)
         markChanged(folders)
         listingRequests.update { requests -> if (folders == null) emptyMap() else requests - folders }
-        listings.update { cache -> cache.mapValues { (id, listing) -> if (folders == null || id in folders) listing.expired() else listing } }
+        listings.update { cache -> cache.mapValues { (id, listing) ->
+            when {
+                change is DriveChange.Renamed && notifyChange -> Listing(
+                    listing.files.map { file -> if (file.id == change.id) file.copy(name = change.name) else file },
+                    listing.listedAt, listing.stale,
+                )
+                folders == null || id in folders -> listing.expired()
+                else -> listing
+            }
+        } }
         _folderEmptiness.update { known -> if (folders == null) emptyMap() else known - folders }
         if (indexChanged) normalizeLocations()
-        _folderChanges.tryEmit(change)
+        if (notifyChange) _folderChanges.tryEmit(change)
     }
 
     /**
@@ -885,12 +900,12 @@ open class PikoDriveRepository(
         }
     }
 
-    suspend fun rename(fileId: String, name: String): Result<Unit> = withContext(Dispatchers.Default) {
-        val parentId = knownParentOf(fileId)
+    suspend fun rename(fileId: String, name: String, parentId: String? = null, notifyChange: Boolean = true): Result<Unit> = withContext(Dispatchers.Default) {
+        val effectiveParentId = parentId ?: knownParentOf(fileId)
         runSuspendCatching { client.rename(fileId, name) }.onSuccess {
             // 快速访问存的名字是别的设备上的回落（经设置同步），跟着改；本机显示的名字取自索引
             pinnedFolders.renamed(fileId, name)
-            applyChange(DriveChange.Renamed(fileId, name, parentId))
+            applyChange(DriveChange.Renamed(fileId, name, effectiveParentId), notifyChange)
         }
     }
 
@@ -964,6 +979,12 @@ open class PikoDriveRepository(
 
     suspend fun trashFiles(): Result<List<FileStat>> = withContext(Dispatchers.Default) {
         runSuspendCatching { client.listTrash() }
+    }
+
+    /** 删除请求成功后，服务端仍可能在后台清理；只用成功取得的完整回收站列表核对。 */
+    fun reconcileTrashListing(files: List<FileStat>): Boolean {
+        val presentIds = files.mapTo(HashSet()) { it.id }
+        return pendingServerDeletes.updateAndGet { it intersect presentIds }.isNotEmpty()
     }
 
     /**
@@ -1117,7 +1138,7 @@ open class PikoDriveRepository(
      * 文件夹在前，各自按 [order] 排。根目录的 My Pack 不论哪种排序都排第一：
      * 秒传与离线任务默认存进它，是根目录里最常进的目录。
      */
-    private fun sortFiles(files: List<FileStat>, order: PikoFileSortOrder, parentId: String): List<FileStat> {
+    fun sortFiles(files: List<FileStat>, order: PikoFileSortOrder, parentId: String): List<FileStat> {
         val (folders, regularFiles) = files.partition { it.isFolder }
         val comparator = when (order) {
             // 自然顺序：第 2 集排在第 10 集前面
