@@ -296,9 +296,10 @@ internal fun ExplorerCommandBar(
                     )
                 })
             }
-        } else if (customLeading.isNotEmpty()) {
+        }
+        if (customLeading.isNotEmpty()) {
             addAll(customLeading)
-        } else if (commands.create) {
+        } else if (selectedCount == 0 && commands.create) {
             add(BarItem("new", PinnedPriority) { MenuTextButton(Icons.Outlined.Add, "新建", newActions) })
         }
         // 左段一律是图标加文字的文字按钮：原先图标按钮与文字按钮混排，两种按钮的内边距不同，字形之间的空隙忽大忽小。
@@ -376,7 +377,7 @@ private fun barDivider(key: String) = BarItem(key, PinnedPriority, isDivider = t
 
 /** 命令栏左段的一项：图标加文字，与新建、排序、筛选同一种按钮，快捷键写在悬停提示里。 */
 @Composable
-private fun BarTextButton(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String, onClick: () -> Unit, shortcut: String? = null) {
+internal fun BarTextButton(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String, onClick: () -> Unit, shortcut: String? = null) {
     val button = @Composable {
         TextButton(onClick = onClick) {
             Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))

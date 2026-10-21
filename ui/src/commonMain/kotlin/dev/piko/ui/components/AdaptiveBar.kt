@@ -1,14 +1,14 @@
 package dev.piko.ui.components
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -244,17 +244,16 @@ private fun MoreButton(icon: ImageVector, actions: () -> List<SheetAction>) {
     }
 }
 
-/** 下拉菜单里的一组操作。组号变了画一道细线，收进「更多」的几组与它原有的几项由此分开；几选一的当前项打勾。 */
+/** 下拉菜单按连续组留白并各自圆角；几选一的当前项打勾。 */
 @Composable
 fun OverflowMenu(expanded: Boolean, onDismiss: () -> Unit, actions: List<SheetAction>) = MenuMotion {
     PikoDropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
         actions.forEachIndexed { index, action ->
             if (index > 0 && actions[index - 1].group != action.group) {
-                HorizontalDivider(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                    color = MaterialTheme.colorScheme.outlineVariant,
-                )
+                Spacer(Modifier.height(6.dp))
             }
+            val groupStart = (index downTo 0).first { it == 0 || actions[it - 1].group != action.group }
+            val groupEnd = (index until actions.size).first { it == actions.lastIndex || actions[it + 1].group != action.group }
             val tint = when {
                 action.destructive -> MaterialTheme.colorScheme.error
                 action.checked == true -> MaterialTheme.colorScheme.primary
@@ -268,7 +267,7 @@ fun OverflowMenu(expanded: Boolean, onDismiss: () -> Unit, actions: List<SheetAc
                 } else {
                     null
                 },
-                shape = menuItemShape(index, actions.size),
+                shape = menuItemShape(index - groupStart, groupEnd - groupStart + 1),
                 onClick = {
                     onDismiss()
                     action.onClick()

@@ -52,6 +52,11 @@ import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.DriveFileMove
+import androidx.compose.material.icons.outlined.RestoreFromTrash
+import androidx.compose.material.icons.outlined.DeleteForever
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -179,7 +184,9 @@ import dev.piko.shared.download.DriveDownloadFolderSource
 import dev.piko.ui.adaptive.isDesktopLayout
 import dev.piko.ui.components.PikoSheet
 import dev.piko.ui.platform.ShortcutModifier
-import dev.piko.ui.platform.LocalWindowCaption
+import dev.piko.ui.components.AdaptiveBar
+import dev.piko.ui.components.PinnedPriority
+import androidx.compose.material.icons.outlined.MoreHoriz
 import dev.piko.ui.screens.share.ShareDialog
 import dev.piko.ui.screens.rename.BatchRenameDialog
 import dev.piko.ui.screens.rename.CanonicalFolderRenameDialog
@@ -1829,14 +1836,7 @@ fun DriveScreen(
                                 currentSection = currentSection.takeUnless { galleryActive },
                                 sections = if (galleryActive) emptyList() else state.sectionHeaders.map { it.value.menuLabel },
                                 onSectionSelected = ::jumpToSection,
-                                moreActions = listOfNotNull(
-                                    DriveActions.findDuplicates { findDuplicates(activeFolder) }.takeIf { commands.findDuplicates },
-                                    DriveActions.canonicalName { canonicalRoot = activeFolder }.takeIf { commands.canonicalNaming },
-                                    SheetAction(Icons.Outlined.AccountTree, "目录图", { folderMap.dispatch(FolderMapEvent.Open) }),
-                                    SheetAction(Icons.Outlined.FolderOpen, "转到路径", ::editAddress),
-                                    SheetAction(Icons.AutoMirrored.Outlined.ArrowForward, "前进", { state.goForward() }).takeIf { history.canGoForward },
-                                    SheetAction(Icons.Outlined.Refresh, "刷新", { refreshFiles() }, group = ActionGroup.Refresh).takeIf { showsRefreshButton() },
-                                ),
+                                moreActions = emptyList(),
                                 navigationIcon = when {
                                     atOriginBoundary -> {
                                         { TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, "返回", ::leaveLibrary) }
@@ -1853,20 +1853,100 @@ fun DriveScreen(
                                     }
                                     else -> null
                                 },
-                                // 顶栏只留信息流与搜索：刷新放入更多菜单（并保留下拉刷新与 F5），留足标题宽度
-                                actions = buildList {
-                                    if (commands.feed && onFeedShownChange != null) {
-                                        // 标题栏并进内容时这一行还要画三个窗口按钮，信息流收成图标，目录名才露得出来
-                                        val iconOnly = LocalWindowCaption.current != null
-                                        add(BarItem(
-                                            key = "feed",
-                                            priority = 20,
-                                            overflow = listOf(SheetAction(Icons.Outlined.SwipeVertical, if (feedShown) "关闭信息流" else "信息流", { changeFeedShown?.invoke(!(feedShown && !state.isSelectionMode)) })),
-                                        ) { FeedToggle(shown = feedShown && !state.isSelectionMode, onShownChange = { changeFeedShown?.invoke(it) }, iconOnly = iconOnly) })
-                                    }
-                                    add(iconBarItem(Icons.Outlined.Search, "搜索", { state.openSearch() }, priority = 30, shortcut = platform.shortcutModifier.label("F")))
-                                },
+                                actions = listOf(
+                                    iconBarItem(Icons.Outlined.Search, "搜索", { state.openSearch() }, priority = 30, shortcut = platform.shortcutModifier.label("F")),
+                                ),
                             )
+                        }
+                        val showMobileCommandBar = !pathInTopBar && !isSearchOpen &&
+                            if (inDuplicates) duplicateState != null && !duplicateState.isScanning else !state.isSelectionMode && (commands.paste || commands.findDuplicates || commands.canonicalNaming || (commands.feed && onFeedShownChange != null))
+                        if (showMobileCommandBar) {
+                            AdaptiveBar(
+                                modifier = Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 8.dp),
+                                leading = if (inDuplicates && duplicateState != null && !duplicateState.isScanning) {
+                                    duplicateCommandBarLeading(
+                                        finder = duplicateState,
+                                        selectedKind = duplicateReport.kind,
+                                        onKindChange = { kind ->
+                                            state.exitSelection()
+                                            duplicateReport.selectKind(kind)
+                                            scope.launch { gridState.scrollToItem(0) }
+                                        },
+                                        reportView = duplicateReport,
+                                        selectedIds = selectedIdSet,
+                                        onSelectIds = { ids -> if (ids.isEmpty()) state.exitSelection() else state.selectOnly(ids) },
+                                    )
+                                } else buildList {
+                                    if (commands.paste) {
+                                        add(BarItem("paste", 80, listOf(SheetAction(Icons.Outlined.ContentPaste, "粘贴", { state.paste() }, group = ActionGroup.Edit))) {
+                                            BarTextButton(Icons.Outlined.ContentPaste, "粘贴", { state.paste() })
+                                        })
+                                    }
+                                    if (commands.findDuplicates) {
+                                        add(BarItem("findDuplicates", 60, listOf(DriveActions.findDuplicates { findDuplicates(activeFolder) })) {
+                                            BarTextButton(Icons.Outlined.FileCopy, "查找重复", { findDuplicates(activeFolder) })
+                                        })
+                                    }
+                                    if (commands.canonicalNaming) {
+                                        val action = DriveActions.canonicalName { canonicalRoot = activeFolder }
+                                        add(BarItem("canonicalNaming", 55, listOf(action)) {
+                                            BarTextButton(action.icon, action.label, { canonicalRoot = activeFolder })
+                                        })
+                                    }
+                                },
+                                moreActions = if (inDuplicates && duplicateState != null) {
+                                    listOf(
+                                        SheetAction(Icons.Outlined.Refresh, "重新扫描", { duplicateState.rescan() }, group = ActionGroup.Refresh),
+                                        SheetAction(Icons.Outlined.Close, "结束查重", onCloseContext ?: duplicateSession::end, group = ActionGroup.Refresh),
+                                    )
+                                } else emptyList(),
+                                trailing = buildList {
+                                    if (commands.feed && onFeedShownChange != null) {
+                                        add(BarItem(key = "feed", priority = PinnedPriority) {
+                                            FeedToggle(
+                                                shown = feedShown && !state.isSelectionMode,
+                                                onShownChange = { changeFeedShown?.invoke(it) },
+                                                iconOnly = false,
+                                            )
+                                        })
+                                    }
+                                },
+                                moreAfterLeading = true,
+                                moreIcon = Icons.Outlined.MoreHoriz,
+                                gap = 4.dp,
+                            )
+                        }
+                    }
+                },
+                bottomBar = {
+                    if (!pathInTopBar && state.isSelectionMode && commandTargets.isNotEmpty()) {
+                        // 复用条目菜单的能力与处理器，只投影可用的核心操作，不另写一套业务判断。
+                        val available = operationsOf(commandTargets.first(), commandTargets)
+                        val coreIcons = if (inTrash) {
+                            listOf(Icons.Outlined.RestoreFromTrash, Icons.Outlined.DeleteForever)
+                        } else {
+                            listOf(Icons.Outlined.Download, Icons.Outlined.DriveFileMove, Icons.Outlined.DriveFileRenameOutline, Icons.Outlined.Delete)
+                        }
+                        val coreActions = coreIcons.mapNotNull { icon -> available.firstOrNull { it.icon == icon } }
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceContainer,
+                            modifier = Modifier.fillMaxWidth().navigationBarsPadding(),
+                        ) {
+                            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                (coreActions + SheetAction(Icons.Outlined.MoreHoriz, "更多", ::openSelectionActions)).forEach { action ->
+                                    TextButton(
+                                        onClick = action.onClick,
+                                        modifier = Modifier.weight(1f),
+                                        contentPadding = PaddingValues(horizontal = 0.dp, vertical = 8.dp),
+                                    ) {
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            val tint = if (action.destructive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+                                            Icon(action.icon, contentDescription = null, tint = tint, modifier = Modifier.size(24.dp))
+                                            Text(action.shortLabel, color = tint, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 },
@@ -1875,8 +1955,8 @@ fun DriveScreen(
                     // （清空回收站、选中建议移走的）在时就是它，否则是「+」菜单。曾两样依次画在同一个槽位里，查重页上「+」压住了扩展 FAB
                     if (placePrimaryAction != null && !pathInTopBar) {
                         PrimaryActionFab(placePrimaryAction)
-                    } else if (!state.isSelectionMode && !pathInTopBar && (commands.addLink || commands.findDuplicates || commands.canonicalNaming || commands.create || commands.paste)) {
-                        // FAB 汇聚窄窗口下的核心目录能力：添加链接、查重、按番号规范命名，以及新建/上传
+                    } else if (!state.isSelectionMode && !pathInTopBar && (commands.addLink || commands.create || commands.paste)) {
+                        // FAB 只汇聚添加操作；目录整理命令放在命令栏。
                         FloatingActionButtonMenu(
                             expanded = isFabMenuExpanded,
                             modifier = Modifier.offset(x = 16.dp, y = 16.dp),
@@ -1912,26 +1992,6 @@ fun DriveScreen(
                                     },
                                     icon = { PendingBadge(shown = addLink.hasCollapsedWork) { Icon(Icons.Outlined.Bolt, contentDescription = null) } },
                                     text = { Text(if (instantState != null) "继续添加链接" else "添加链接") },
-                                )
-                            }
-                            if (commands.findDuplicates) {
-                                FloatingActionButtonMenuItem(
-                                    onClick = {
-                                        isFabMenuExpanded = false
-                                        findDuplicates(activeFolder)
-                                    },
-                                    icon = { Icon(Icons.Outlined.FileCopy, contentDescription = null) },
-                                    text = { Text("查找重复") },
-                                )
-                            }
-                            if (commands.canonicalNaming) {
-                                FloatingActionButtonMenuItem(
-                                    onClick = {
-                                        isFabMenuExpanded = false
-                                        canonicalRoot = activeFolder
-                                    },
-                                    icon = { Icon(Icons.Outlined.DriveFileRenameOutline, contentDescription = null) },
-                                    text = { Text("按番号规范命名") },
                                 )
                             }
                             if (commands.create) {
@@ -2072,7 +2132,7 @@ fun DriveScreen(
                                         reportView = duplicateReport,
                                         selectedIds = selectedIdSet,
                                         onSelectIds = { ids -> if (ids.isEmpty()) state.exitSelection() else state.selectOnly(ids) },
-                                        controlsInCommandBar = pathInTopBar,
+                                        controlsInCommandBar = true,
                                     )
                                 }
                                 // 筛选或图库视图下为空时仍给列表：空目录页没有页眉，筛选撤不掉，视图也切不回去

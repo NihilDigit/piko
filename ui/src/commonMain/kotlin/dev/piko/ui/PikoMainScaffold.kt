@@ -924,7 +924,17 @@ fun PikoMainScaffold(
             }
 
             // 不显示主侧栏时统一使用底部导航，不再保留占用横向空间的图标轨。
-            val navigationSuiteType = if (sidebar) NavigationSuiteType.None else NavigationSuiteType.ShortNavigationBarCompact
+            val activeContextId by workspaceModel.contexts.activeContextId.collectAsStateWithLifecycle()
+            val activeContexts by workspaceModel.contexts.contextsFlow.collectAsStateWithLifecycle()
+            val activeContext = activeContexts.firstOrNull { it.id == activeContextId }
+            val activeDriveState = when (activeContext) {
+                is dev.piko.shared.presentation.WorkspaceContext.Duplicate ->
+                    workspaceModel.duplicateBrowser(activeContext.id).state
+                is dev.piko.shared.presentation.WorkspaceContext.File -> fileBrowser.state
+                else -> null
+            }
+            val selectingFiles = currentTab == MainTab.FILES && activeDriveState?.isSelectionMode == true
+            val navigationSuiteType = if (sidebar || selectingFiles) NavigationSuiteType.None else NavigationSuiteType.ShortNavigationBarCompact
             NavigationSuiteScaffold(
                 containerColor = if (sidebar) MaterialTheme.colorScheme.frame else MaterialTheme.colorScheme.background,
                 navigationItems = {
