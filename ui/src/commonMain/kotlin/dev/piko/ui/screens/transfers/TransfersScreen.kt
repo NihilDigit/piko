@@ -99,6 +99,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
 import dev.piko.shared.data.sourceUrl
+import dev.piko.shared.state.children
 import dev.piko.shared.state.TransferItem
 import dev.piko.shared.state.TransferKind
 import dev.piko.shared.state.TransfersState
@@ -214,7 +215,7 @@ fun TransfersScreen(
         else anchor
         detailState.show(key, at)
     }
-    var confirmingDelete by remember { mutableStateOf(false) }
+    var confirmingDeleteKeys by remember { mutableStateOf<Set<String>?>(null) }
 
     val localFiles = platform.localFiles
 
@@ -246,8 +247,15 @@ fun TransfersScreen(
     fun actionsFor(item: TransferItem): List<SheetAction> = when (item) {
         is TransferItem.UploadPreparing -> uploadPreparationActions(item.work,
             item.work.parentId.takeIf { it.isNotEmpty() }?.let { { openCloudFileById(it, item.work.parentName) } }, {
-                if (item.work.hasSideEffects) { detailState.close(); state.selectOnly(item.key); confirmingDelete = true }
+                if (item.work.hasSideEffects) { detailState.close(); state.selectOnly(item.key); confirmingDeleteKeys = setOf(item.key) }
                 else state.remove(item)
+            })
+        is TransferItem.UploadBatch -> uploadBatchActions(item, item.key in expandedBatches,
+            { toggleBatch(item.key) }, { state.pauseUploadBatch(item.batchId) },
+            { state.resumeUploadBatch(item.batchId) }, {
+                detailState.close()
+                if (item.key !in state.selectedKeys) state.selectOnly(item.key)
+                confirmingDeleteKeys = setOf(item.key)
             })
         is TransferItem.LocalBatch -> localBatchActions(item, item.key in expandedBatches, batchIntents(item))
         is TransferItem.Local -> localTransferActions(
@@ -287,7 +295,7 @@ fun TransfersScreen(
             item.work.locateId?.let { { openCloudFileById(it, item.work.title) } },
             {
                 if (item.work.receipt?.requiresInspection == true) {
-                    detailState.close(); state.selectOnly(item.key); confirmingDelete = true
+                    detailState.close(); state.selectOnly(item.key); confirmingDeleteKeys = setOf(item.key)
                 } else state.remove(item)
             },
             onRecheck = if (services.instantSaveRecords.canRecheck(item.work.id)) ({ services.instantSaveRecords.recheck(item.work.id, services.driveRepository); Unit }) else null,
@@ -295,7 +303,7 @@ fun TransfersScreen(
         is TransferItem.Share -> shareTransferActions(item.work, state.shareUndoStatus(item.work), state.canUndoShare(item.work), services.shareSaves.canRecheck(item.work.id),
             { state.undoShare(item.work) }, { services.shareSaves.recheck(item.work.id) }, {
                 if (item.work.result?.unconfirmedSources?.isNotEmpty() == true || item.work.pendingRenames.isNotEmpty()) {
-                    detailState.close(); state.selectOnly(item.key); confirmingDelete = true
+                    detailState.close(); state.selectOnly(item.key); confirmingDeleteKeys = setOf(item.key)
                 } else state.remove(item)
             },
             (item.work.associatedOutputs.values.firstOrNull() ?: item.work.command.target.id.takeIf { it.isNotEmpty() })?.let { { openCloudFileById(it, item.work.title) } },
@@ -304,7 +312,7 @@ fun TransfersScreen(
             (item.work.outputId ?: item.work.target.id.takeIf { it.isNotEmpty() })?.let { { openCloudFileById(it, item.work.title) } },
             {
                 if (item.work.status == dev.piko.shared.state.OfflineSubmitStatus.UNCONFIRMED) {
-                    detailState.close(); state.selectOnly(item.key); confirmingDelete = true
+                    detailState.close(); state.selectOnly(item.key); confirmingDeleteKeys = setOf(item.key)
                 } else state.remove(item)
             },
         )
@@ -323,30 +331,30 @@ fun TransfersScreen(
             val work = item.work
             fileWriteActions(work, state.writeUndoStatus(work), state.canUndoWrite(work), services.fileWrites.canRecheck(work.id),
                 { state.undoWrite(work) }, { services.fileWrites.recheck(work.id) },
-                { if (work.result?.unconfirmed?.isNotEmpty() == true) { detailState.close(); state.selectOnly(item.key); confirmingDelete = true } else state.remove(item) },
+                { if (work.result?.unconfirmed?.isNotEmpty() == true) { detailState.close(); state.selectOnly(item.key); confirmingDeleteKeys = setOf(item.key) } else state.remove(item) },
                 locateWriteId(work)?.let { { openCloudFileById(it, work.command.title) } },
             )
         }
         is TransferItem.VaultEdit -> vaultEditActions(item.work, state.vaultEditUndoStatus(item.work), state.canUndoVaultEdit(item.work), services.vaultEntryEdits.canRecheck(item.work.id),
             { state.undoVaultEdit(item.work) }, { services.vaultEntryEdits.recheck(item.work.id) }, {
                 if (item.work.result?.unconfirmed?.isNotEmpty() == true) {
-                    detailState.close(); state.selectOnly(item.key); confirmingDelete = true
+                    detailState.close(); state.selectOnly(item.key); confirmingDeleteKeys = setOf(item.key)
                 } else state.remove(item)
             })
         is TransferItem.History -> historyTransferActions(item.work, services.historyEdits.canRecheck(item.work.id),
             { services.historyEdits.recheck(item.work.id) }, {
                 if (item.work.result?.completion in setOf(dev.piko.shared.state.HistoryEditCompletion.PARTIAL, dev.piko.shared.state.HistoryEditCompletion.UNCONFIRMED)) {
-                    detailState.close(); state.selectOnly(item.key); confirmingDelete = true
+                    detailState.close(); state.selectOnly(item.key); confirmingDeleteKeys = setOf(item.key)
                 } else state.remove(item)
             })
     }
 
-    fun contextActionsFor(item: TransferItem): List<SheetAction> =
-        actionsFor(item) + SheetAction(Icons.Outlined.Info, "详情", { showDetails(item.key) }, group = ActionGroup.Properties)
+    fun contextActionsFor(item: TransferItem): List<SheetAction> = actionsFor(item)
 
     // 点按一项做的事，轻点与鼠标双击共用；不弹详情面板，详情在右键菜单与触屏长按里
     fun primaryActionFor(item: TransferItem): (() -> Unit)? = when (item) {
         is TransferItem.UploadPreparing -> item.work.parentId.takeIf { it.isNotEmpty() }?.let { { openCloudFileById(it, item.work.parentName) } }
+        is TransferItem.UploadBatch -> ({ toggleBatch(item.key) })
         is TransferItem.LocalBatch -> localBatchPrimaryAction(item, batchIntents(item))
         is TransferItem.Local -> localPrimaryAction(
             task = item.task,
@@ -383,7 +391,12 @@ fun TransfersScreen(
     val liveSections = state.sectionsOf(state.filter)
     val frozenOrder = remember(state.filter, selectionActive) { if (selectionActive) TaskListOrder(liveSections) else null }
     val currentSections = frozenOrder?.apply(liveSections) ?: liveSections
-    val visibleOrder = (currentSections.needsAttention + currentSections.inProgress + currentSections.completed +
+    // 未手动切换时，有待处理或在途工作就收起历史；每个类别保留自己的展开选择。
+    val completedExpansion = remember { androidx.compose.runtime.mutableStateMapOf<TransferKind, Boolean>() }
+    fun completedExpanded(kind: TransferKind, sections: TransferSections) = completedExpansion[kind]
+        ?: (sections.needsAttention.isEmpty() && sections.inProgress.isEmpty())
+    val visibleOrder = (currentSections.needsAttention + currentSections.inProgress +
+        (if (completedExpanded(state.filter, currentSections)) currentSections.completed else emptyList()) +
         if (deletedExpanded) currentSections.outputDeleted else emptyList()).withBatchChildren(expandedBatches).map { it.key }
     // 列表的键盘焦点：鼠标按进列表时取得（pageFocusTarget），Delete、Esc 与全选才有处可去
     val listFocus = remember { FocusRequester() }
@@ -404,6 +417,10 @@ fun TransfersScreen(
     val density = LocalDensity.current
     var taskContentWidth by remember { mutableIntStateOf(0) }
     val taskLayout = TaskRowLayout.forWidth(with(density) { taskContentWidth.toDp() })
+    // 相邻分页也会参与组合；行状态不能从当前筛选读取。
+    val rowSections = state.sectionsOf(TransferKind.ALL)
+    val completedKeys = (rowSections.completed + rowSections.outputDeleted).mapTo(HashSet()) { it.key }
+    val attentionKeys = rowSections.needsAttention.mapTo(HashSet()) { it.key }
     fun quickAction(item: TransferItem): SheetAction? = when {
         state.isPausable(item) -> SheetAction(Icons.Outlined.Pause, "暂停", { state.pause(item) })
         state.isResumable(item) -> SheetAction(Icons.Outlined.PlayArrow, "继续", { state.resume(item) })
@@ -414,12 +431,22 @@ fun TransfersScreen(
         val expanded = item.key in expandedBatches
         TaskRow(
             taskPresenter.present(item), rowSelection(item), taskLayout, index, count,
-            attention = state.needsAttention.any { it.key == item.key },
+            item = item,
+            completed = when (item) {
+                is TransferItem.Local -> item.task.status == DownloadStatus.COMPLETED
+                is TransferItem.Upload -> item.task.status == UploadStatus.COMPLETED
+                else -> item.key in completedKeys
+            },
+            attention = item.key in attentionKeys || when (item) {
+                is TransferItem.Local -> item.task.status == DownloadStatus.FAILED
+                is TransferItem.Upload -> item.task.status == UploadStatus.FAILED
+                else -> false
+            },
             onOpen = { primaryActionFor(item)?.invoke() }, onToggle = { state.toggleSelected(item.key) },
             quickAction = quickAction(item),
-            extraAction = if (item is TransferItem.LocalBatch) SheetAction(
+            extraAction = if (item is TransferItem.LocalBatch || item is TransferItem.UploadBatch) SheetAction(
                 if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                if (expanded) "收起下载文件" else "展开下载文件", { toggleBatch(item.key) },
+                if (expanded) "收起文件" else "展开文件", { toggleBatch(item.key) },
             ) else null,
             leadingVisual = if (item is TransferItem.Local) ({ LocalTransferVisual(item.task, blurred(item)) }) else null,
         )
@@ -427,7 +454,7 @@ fun TransfersScreen(
 
     // 右键弹出操作与详情项。animateItem 这类条目修饰挂在外层，菜单锚点才跟着条目走
     val renderItem: @Composable (TransferItem, Modifier, Int, Int) -> Unit = { item, itemModifier, index, count ->
-        val hasTrailing = quickAction(item) != null || (taskLayout.wide && item is TransferItem.LocalBatch)
+        val hasTrailing = quickAction(item) != null || (taskLayout.wide && (item is TransferItem.LocalBatch || item is TransferItem.UploadBatch))
         ContextMenuArea(
             actions = { contextActionsFor(item) },
             onSelect = if (selectionActive) null else ({ state.enterSelection(item.key) }),
@@ -494,7 +521,7 @@ fun TransfersScreen(
     val detailsItem = detailsKey?.let { key ->
         sequenceOf(state.inProgress, state.needsAttention, state.completed, state.outputDeleted)
             .flatten()
-            .flatMap { item -> sequenceOf(item) + ((item as? TransferItem.LocalBatch)?.tasks.orEmpty().map { TransferItem.Local(it) }) }
+            .flatMap { item -> sequenceOf(item) + item.children }
             .firstOrNull { it.key == key }
     }
     val closeDetails = detailState::close
@@ -506,6 +533,7 @@ fun TransfersScreen(
             if (LocalPointerSource.current.isTouchLike && !selectionActive) ({ closeDetails(); state.enterSelection(current.key) }) else null,
         )
         when (current) {
+            is TransferItem.UploadBatch -> UploadBatchDetails(current, actions, modifier = modifier)
             is TransferItem.LocalBatch -> LocalBatchDetails(current, actions, modifier = modifier)
             is TransferItem.Local -> LocalTransferDetails(current.task, actions, modifier = modifier)
             is TransferItem.Upload -> UploadTransferDetails(current.task, actions, modifier = modifier)
@@ -563,7 +591,7 @@ fun TransfersScreen(
                                     val deleteKey = event.key == Key.Delete ||
                                         (platform.shortcutModifier == ShortcutModifier.Command && primary && event.key == Key.Backspace)
                                     when {
-                                        deleteKey && selectionActive -> confirmingDelete = true
+                                        deleteKey && selectionActive -> confirmingDeleteKeys = state.selectedKeys.toSet()
                                         event.key == Key.Escape && selectionActive -> state.clearSelection()
                                         primary && event.key == Key.A -> state.selectAll(visibleOrder)
                                         else -> return@onKeyEvent false
@@ -577,6 +605,8 @@ fun TransfersScreen(
                                 state = state,
                                 kind = kind,
                                 sections = sections,
+                                completedExpanded = completedExpanded(kind, sections),
+                                onToggleCompleted = { completedExpansion[kind] = !completedExpanded(kind, sections) },
                                 sidePadding = sidePadding,
                                 deletedExpanded = deletedExpanded,
                                 onToggleDeleted = { deletedExpanded = !deletedExpanded },
@@ -609,7 +639,7 @@ fun TransfersScreen(
     val headerActions = taskPageActions(
         state = state, selectedCount = bulkSelected.size,
         onSelectAll = { state.selectAll(visibleOrder) },
-        onDelete = { confirmingDelete = true },
+        onDelete = { confirmingDeleteKeys = state.selectedKeys.toSet() },
         onPause = pauseSelected, onResume = resumeSelected,
         pauseCount = bulkSelected.count(state::isPausable), resumeCount = bulkSelected.count(state::isResumable),
     )
@@ -631,14 +661,15 @@ fun TransfersScreen(
         }
     }
 
-    if (confirmingDelete) {
+    confirmingDeleteKeys?.let { keys ->
+        val confirmingItems = state.itemsForKeys(keys)
         DeleteSelectedDialog(
-            items = selected,
+            items = confirmingItems,
             onConfirm = {
-                confirmingDelete = false
-                state.removeSelected()
+                confirmingDeleteKeys = null
+                state.removeKeys(keys)
             },
-            onDismiss = { confirmingDelete = false },
+            onDismiss = { confirmingDeleteKeys = null },
         )
     }
 
@@ -668,6 +699,8 @@ private fun TransfersList(
     state: TransfersState,
     kind: TransferKind,
     sections: TransferSections,
+    completedExpanded: Boolean,
+    onToggleCompleted: () -> Unit,
     sidePadding: Dp,
     deletedExpanded: Boolean,
     onToggleDeleted: () -> Unit,
@@ -690,8 +723,9 @@ private fun TransfersList(
         }
         // 能框选的只有条目，分组标题的 key 带 header: 前缀，不算
         val expanded = expandedBatches.toSet()
-        val selectable = remember(sections, deletedExpanded, expanded) {
-            (sections.inProgress + sections.needsAttention + sections.completed +
+        val selectable = remember(sections, completedExpanded, deletedExpanded, expanded) {
+            (sections.needsAttention + sections.inProgress +
+                (if (completedExpanded) sections.completed else emptyList()) +
                 if (deletedExpanded) sections.outputDeleted else emptyList())
                 .withBatchChildren(expanded)
                 .mapTo(HashSet()) { it.key }
@@ -714,9 +748,12 @@ private fun TransfersList(
             if (state.cleanupCount(kind) > 0) fullLineItem(key = "cleanup") {
                 dev.piko.ui.workbench.CleanupTaskCard(requireNotNull(state.cleanup), Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp))
             }
-            transferSection("需要处理", sections.needsAttention, expanded, renderItem, onClearCloud = state::clearFailedCloud)
+            transferSection("需要处理", sections.needsAttention, expanded, renderItem,
+                attention = true, onClearCloud = state::clearFailedCloud)
             transferSection("进行中", sections.inProgress, expanded, renderItem)
-            transferSection("已完成", sections.completed, expanded, renderItem)
+            transferSection("已完成", sections.completed, expanded, renderItem,
+                sectionExpanded = completedExpanded, onToggle = onToggleCompleted,
+                onClearCompleted = state::clearCompleted, canClearCompleted = state.canClearCompleted)
             deletedOutputSection(
                 items = sections.outputDeleted,
                 expanded = deletedExpanded,
@@ -736,7 +773,8 @@ private fun DeleteSelectedDialog(items: List<TransferItem>, onConfirm: () -> Uni
     val deletesFiles = items.any {
         (it is TransferItem.Local && it.task.status == DownloadStatus.COMPLETED) || (it is TransferItem.LocalBatch && it.completedCount > 0)
     }
-    val cancelsUploads = items.any { it is TransferItem.Upload && it.task.status != UploadStatus.COMPLETED }
+    val cancelsUploads = items.any { (it is TransferItem.Upload && it.task.status != UploadStatus.COMPLETED) ||
+        (it is TransferItem.UploadBatch && it.tasks.any { task -> task.status != UploadStatus.COMPLETED }) }
     val notes = listOfNotNull(
         "已下载的文件会从本机删除。".takeIf { deletesFiles },
         "未传完的上传会取消，网盘里上传到一半的文件随之删除。".takeIf { cancelsUploads },
@@ -785,7 +823,7 @@ private val SidePadding = 8.dp
 
 /** 展开的文件夹下载后面接上其中的各文件，其余照旧。 */
 private fun List<TransferItem>.withBatchChildren(expanded: Collection<String>): List<TransferItem> = flatMap { item ->
-    if (item is TransferItem.LocalBatch && item.key in expanded) listOf(item) + item.tasks.map { TransferItem.Local(it) } else listOf(item)
+    if (item.key in expanded) listOf(item) + item.children else listOf(item)
 }
 
 /**
@@ -798,7 +836,7 @@ private fun LazyGridScope.transferItems(
     renderItem: @Composable (TransferItem, Modifier, Int, Int) -> Unit,
 ) {
     val rows = items.withBatchChildren(expanded)
-    itemsIndexed(rows, key = { _, item -> item.key }) { index, item -> renderItem(item, Modifier.animateItem(), index, rows.size) }
+    itemsIndexed(rows, key = { _, item -> item.key }) { index, item -> renderItem(item, Modifier.animateItem().padding(start = if (item is TransferItem.Upload && item.task.batchId != null || item is TransferItem.Local && item.task.batch != null) 16.dp else 0.dp), index, rows.size) }
 
 }
 
@@ -807,6 +845,11 @@ private fun LazyGridScope.transferSection(
     items: List<TransferItem>,
     expanded: Set<String>,
     renderItem: @Composable (TransferItem, Modifier, Int, Int) -> Unit,
+    attention: Boolean = false,
+    sectionExpanded: Boolean = true,
+    onToggle: (() -> Unit)? = null,
+    onClearCompleted: (() -> Unit)? = null,
+    canClearCompleted: Boolean = false,
     /** 清除这一段的云端任务记录。只在段内有云端任务时给出，本地下载不受影响。 */
     onClearCloud: (() -> Unit)? = null,
 ) {
@@ -822,18 +865,42 @@ private fun LazyGridScope.transferSection(
                 .heightIn(min = SectionHeaderHeight - 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.weight(1f),
-            )
+            Row(
+                modifier = Modifier.weight(1f).then(
+                    if (onToggle != null) Modifier.clickable(
+                        onClickLabel = if (sectionExpanded) "收起已完成" else "展开已完成",
+                        onClick = onToggle,
+                    ) else Modifier,
+                ).heightIn(min = 40.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (onToggle != null) {
+                    Icon(if (sectionExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, null)
+                    Spacer(Modifier.width(8.dp))
+                }
+                Surface(
+                    color = if (attention) MaterialTheme.colorScheme.errorContainer else androidx.compose.ui.graphics.Color.Transparent,
+                    contentColor = if (attention) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                    shape = MaterialTheme.shapes.small,
+                ) {
+                    Text(
+                        text = if (attention) "$title · ${items.size}" else "$title (${items.size})",
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier.padding(horizontal = if (attention) 10.dp else 0.dp, vertical = 6.dp),
+                    )
+                }
+            }
+            if (onClearCompleted != null) {
+                TextButton(onClick = onClearCompleted, enabled = canClearCompleted,
+                    modifier = Modifier.semantics { contentDescription = "清空所有类别的已完成记录，保留本地下载" },
+                ) { Text("清空已完成") }
+            }
             if (onClearCloud != null && hasCloud) {
                 TextButton(onClick = onClearCloud) { Text("清除云端记录") }
             }
         }
     }
-    transferItems(items, expanded, renderItem)
+    if (sectionExpanded) transferItems(items, expanded, renderItem)
 }
 
 /**

@@ -32,11 +32,13 @@ internal class TaskPresenter(private val state: TransfersState, private val vaul
             )
             is TransferItem.LocalBatch -> base.copy(amount = "${item.completedCount} / ${item.tasks.size} 项",
                 rate = item.speedBytesPerSec.takeIf { it > 0 }?.let { "${it.toReadableSize()}/s" })
+            is TransferItem.UploadBatch -> base.copy(amount = "${item.completedCount} / ${item.tasks.size} 项",
+                rate = item.speedBytesPerSec.takeIf { it > 0 }?.let { "${it.toReadableSize()}/s" })
             is TransferItem.Upload -> base.copy(amount = "${item.task.processedBytes.toReadableSize()} / ${item.task.size.toReadableSize()}",
                 rate = item.task.speedBytesPerSec.takeIf { it > 0 }?.let { "${it.toReadableSize()}/s" })
-            is TransferItem.Cloud -> base.copy(amount = item.task.sizeParts().joinToString(" · "))
+            is TransferItem.Cloud -> base.copy(amount = item.task.sizeParts().joinToString("，"))
             is TransferItem.Pack -> base.copy(amount = item.job.sizeLabel())
-            is TransferItem.Instant -> base.copy(amount = item.record.details().joinToString(" · "))
+            is TransferItem.Instant -> base.copy(amount = item.record.details().joinToString("，"))
             is TransferItem.InstantAttempt -> base.copy(destination = item.work.target.name)
             else -> base
         }
@@ -46,20 +48,26 @@ internal class TaskPresenter(private val state: TransfersState, private val vaul
         is TransferItem.Local -> item.task.let { task -> TaskRowModel(
             task.displayName, "下载", task.statusLabel() ?: "正在下载",
             downloadMeter(task.status, task.progress, task.totalBytes > 0 || task.isSegment),
-            if (task.status == DownloadStatus.FAILED) task.failureReason() else task.statusDetails().joinToString(" · "),
+            if (task.status == DownloadStatus.FAILED) task.failureReason() else task.statusDetails().joinToString("，"),
             "本机", Icons.Outlined.Download,
         ) }
         is TransferItem.LocalBatch -> TaskRowModel(
             item.batch.folderName, "文件夹下载", item.statusLabel() ?: "正在下载",
             if (item.listing?.isListing == true) WorkMeter.Indeterminate else downloadMeter(item.status, item.progress, item.totalBytes > 0),
-            item.statusDetails().joinToString(" · "), "本机", Icons.Outlined.Folder,
+            item.statusDetails().joinToString("，"), "本机", Icons.Outlined.Folder,
+        )
+        is TransferItem.UploadBatch -> TaskRowModel(
+            item.title, if (item.isFolder) "文件夹上传" else "批量上传", item.statusLabel(),
+            if (item.tasks.any { it.status.isActive }) WorkMeter.Determinate(item.progress) else WorkMeter.None,
+            "${item.processedBytes.toReadableSize()} / ${item.totalBytes.toReadableSize()}",
+            item.parentName, if (item.isFolder) Icons.Outlined.Folder else Icons.Outlined.Upload,
         )
         is TransferItem.Upload -> item.task.let { task -> TaskRowModel(
             task.fileName, "上传", task.statusLabel() ?: "正在上传",
             if (task.status in setOf(UploadStatus.HASHING, UploadStatus.UPLOADING)) {
                 if (task.size > 0) WorkMeter.Determinate(task.progress) else WorkMeter.Indeterminate
             } else WorkMeter.None,
-            if (task.status == UploadStatus.FAILED) task.failureReason() else task.statusDetails().joinToString(" · "),
+            if (task.status == UploadStatus.FAILED) task.failureReason() else task.statusDetails().joinToString("，"),
             task.parentName, Icons.Outlined.Upload,
         ) }
         is TransferItem.Cloud -> TaskRowModel(
@@ -68,7 +76,7 @@ internal class TaskPresenter(private val state: TransfersState, private val vaul
                 io.github.nihildigit.pikpak.TaskPhase.RUNNING -> WorkMeter.Determinate(item.task.progress.coerceIn(0, 100) / 100f)
                 io.github.nihildigit.pikpak.TaskPhase.PENDING -> WorkMeter.Indeterminate
                 else -> WorkMeter.None
-            }, item.task.sizeParts().joinToString(" · "), "网盘", Icons.Outlined.CloudDownload,
+            }, item.task.sizeParts().joinToString("，"), "网盘", Icons.Outlined.CloudDownload,
         )
         is TransferItem.Pack -> TaskRowModel(
             item.job.folderName, "整包离线", item.statusLabel(),
@@ -78,7 +86,7 @@ internal class TaskPresenter(private val state: TransfersState, private val vaul
                 else -> WorkMeter.None
             }, item.job.detail() ?: item.job.sizeLabel(), "网盘", Icons.Outlined.CloudDownload,
         )
-        is TransferItem.Instant -> TaskRowModel(item.record.name, "保存", "已保存", detail = item.record.details().joinToString(" · "), icon = Icons.Outlined.Bolt)
+        is TransferItem.Instant -> TaskRowModel(item.record.name, "保存", "已保存", detail = item.record.details().joinToString("，"), icon = Icons.Outlined.Bolt)
         is TransferItem.Extract -> from(item.job.workProgress(), "解压", Icons.Outlined.Unarchive)
         is TransferItem.Vault -> from(
             item.record?.let { it.workProgress(state.vaultUndoStatus(it)) } ?: vault.workProgress()

@@ -15,6 +15,10 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import dev.piko.shared.state.TransferItem
+import kotlin.time.Instant
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
 import dev.piko.ui.WorkMeter
 import dev.piko.ui.components.*
 
@@ -39,12 +43,21 @@ internal data class TaskRowLayout(
 @Composable
 internal fun TaskRow(
     model: TaskRowModel, selection: RowSelection, layout: TaskRowLayout,
-    index: Int, count: Int, attention: Boolean,
+    index: Int, count: Int, item: TransferItem, completed: Boolean, attention: Boolean,
     onOpen: () -> Unit, onToggle: () -> Unit,
     quickAction: SheetAction?, extraAction: SheetAction? = null,
     leadingVisual: (@Composable () -> Unit)? = null,
 ) {
     val colors = MaterialTheme.colorScheme
+    val byteStream = item is TransferItem.Local || item is TransferItem.LocalBatch ||
+        item is TransferItem.Upload || item is TransferItem.UploadBatch ||
+        item is TransferItem.Cloud || item is TransferItem.Pack
+    val timestamp = remember(item.createdAtMs, completed) {
+        if (completed && item.createdAtMs > 0) {
+            val time = Instant.fromEpochMilliseconds(item.createdAtMs).toLocalDateTime(TimeZone.currentSystemDefault())
+            "${time.monthNumber}/${time.dayOfMonth} ${time.hour.toString().padStart(2, '0')}:${time.minute.toString().padStart(2, '0')}"
+        } else null
+    }
     val interactions = remember { MutableInteractionSource() }
     val hovered by interactions.collectIsHoveredAsState()
     val pointers = LocalPointerSource.current
@@ -54,7 +67,7 @@ internal fun TaskRow(
         onClick = { if (selection.active) onToggle() else if (pointers.isTouchLike) onOpen() },
         // 按触发长按时的输入来源判断，避免首个触摸事件切换回调后取消正在进行的手势。
         onLongClick = { if (pointers.isTouchLike) selection.onLongClick?.invoke() },
-        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp).heightIn(min = if (layout.wide) 64.dp else 88.dp)
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp).heightIn(min = if (layout.wide || completed) 64.dp else 88.dp)
             .hoverable(interactions),
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
         shapes = ListItemDefaults.segmentedShapes(if (selection.selected) 0 else index, if (selection.selected) 1 else count),
@@ -72,24 +85,34 @@ internal fun TaskRow(
             }
         },
         content = {
-            if (layout.wide) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            if (completed) {
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(model.title, style = MaterialTheme.typography.titleSmall,
+                        maxLines = if (layout.wide) 1 else 2, overflow = TextOverflow.Ellipsis)
+                    Text(listOfNotNull(model.status, model.detail?.takeIf { it.isNotBlank() }).distinct().joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(listOfNotNull(model.kind, model.destination?.takeIf { it.isNotBlank() }, timestamp).joinToString(" · "),
+                        style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            } else if (layout.wide) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 Column(Modifier.weight(1f)) {
                     Text(model.title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(listOfNotNull(model.kind, model.destination.takeUnless { layout.destination }).joinToString(" · "), style = MaterialTheme.typography.bodySmall,
+                    Text(listOfNotNull(model.kind, model.destination.takeUnless { layout.destination }).joinToString("，"), style = MaterialTheme.typography.bodySmall,
                         color = colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 TaskProgressCell(model, attention, Modifier.width(layout.progressWidth), showDetail = true)
-                if (layout.amount) Column(Modifier.width(130.dp)) {
-                    TaskMetric(model.amount ?: model.detail)
+                if (byteStream && layout.amount) Column(Modifier.width(130.dp)) {
+                    TaskMetric(model.amount)
                     if (!layout.rate) TaskMetric(model.rate)
                 }
-                if (layout.rate) TaskMetric(model.rate, Modifier.width(92.dp))
+                if (byteStream && layout.rate) TaskMetric(model.rate, Modifier.width(92.dp))
                 if (layout.destination) TaskMetric(model.destination, Modifier.width(160.dp))
             } else Column(Modifier.fillMaxWidth()) {
                 Text(model.title, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Text(model.kind, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
-                TaskProgressCell(model, attention, Modifier.fillMaxWidth())
-                model.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis, color = colors.onSurfaceVariant) }
+                TaskProgressCell(model, attention, Modifier.fillMaxWidth(), showDetail = true)
             }
         },
         trailingContent = if (quickAction != null || shownExtraAction != null) ({
@@ -110,12 +133,13 @@ private fun TaskMetric(value: String?, modifier: Modifier = Modifier) {
 @Composable
 private fun TaskProgressCell(model: TaskRowModel, attention: Boolean, modifier: Modifier, showDetail: Boolean = false) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(model.status, style = MaterialTheme.typography.bodySmall, color = if (attention) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(model.status, style = MaterialTheme.typography.bodySmall, color = if (attention) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = if (attention) 2 else 1, overflow = TextOverflow.Ellipsis)
         if (model.meter != WorkMeter.None) WorkMeterBar(model.meter, "任务进度：${model.title}", Modifier.fillMaxWidth())
-        else if (attention && showDetail) model.detail?.let {
-            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (showDetail) model.detail?.takeIf { it.isNotBlank() && it != model.status }?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall,
+                color = if (attention) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = if (attention) 2 else 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
