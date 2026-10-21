@@ -195,6 +195,7 @@ import dev.piko.ui.components.BreadcrumbBar
 import dev.piko.ui.components.FileNameField
 import dev.piko.ui.components.FolderPickerDialog
 import dev.piko.ui.components.MoveTargetDialog
+import dev.piko.ui.components.CopyTargetDialog
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoErrorState
 import dev.piko.ui.components.RefreshBox
@@ -305,6 +306,7 @@ fun DriveScreen(
     val downloadManager = LocalPikoServices.current.downloadManager
     val downloads = rememberDownloadLauncher()
     val services = LocalPikoServices.current
+    val fileWriteWorks by services.fileWrites.works.collectAsStateWithLifecycle()
     val metaTube = LocalPikoServices.current.metaTube
     val metaTubeEnabled by remember(metaTube) { metaTube?.enabled ?: flowOf(false) }.collectAsStateWithLifecycle(initialValue = false)
     val scope = rememberCoroutineScope()
@@ -352,6 +354,13 @@ fun DriveScreen(
         state.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
     }
 
+    LaunchedEffect(state) {
+        state.pasteNotices.collect { notice ->
+            val result = snackbarHostState.showSnackbar(notice.message, actionLabel = "返回原目录", withDismissAction = true)
+            if (result == SnackbarResult.ActionPerformed && state.acceptsActions) navigation.updateFolderStack(notice.originStack)
+        }
+    }
+
     val archiveSession = LocalPikoServices.current.archiveExtractSession
     LaunchedEffect(archiveSession) {
         archiveSession.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
@@ -364,22 +373,6 @@ fun DriveScreen(
     var vaultTarget by remember { mutableStateOf<VaultScope?>(null) }
     var restoreVaultTarget by remember { mutableStateOf<FileStat?>(null) }
 
-    // 视图模式存进偏好，切 Tab 与重启后保持上次的选择
-    // 初值同步读：异步给默认值的话，选了列表的用户每次进来都先闪一帧海报墙。DataStore 在
-    // MainActivity 读外观时已载入，这里只是取内存里的值
-    val initialViewMode = remember { runBlocking { sessionManager.driveViewModeFlow.first() } }
-    val viewModeName by sessionManager.driveViewModeFlow.collectAsStateWithLifecycle(initialViewMode)
-    val viewMode = DriveViewMode.of(viewModeName)
-    LaunchedEffect(state) { state.updateThumbnailsOnly(false) }
-    // 海报墙与图库各记一份卡片大小，初值同样同步读，免得先闪一帧中档
-    val tileSizeFlow = remember(viewMode) { sessionManager.driveTileSizeFlow(viewMode.name) }
-    val initialTileSize = remember(tileSizeFlow) { runBlocking { tileSizeFlow.first() } }
-    val tileSize = TileSize.of(tileSizeFlow.collectAsStateWithLifecycle(initialTileSize).value)
-    val zoom = remember(sessionManager) { DriveZoom(sessionManager) }
-    fun selectTileSize(size: TileSize) {
-        scope.launch { zoom.select(viewMode, size) }
-    }
-
     // 目录导航栈：持久化并与全局单例共享，切 Tab / 重启不丢失
     val folderStack by state.folderStack.collectAsStateWithLifecycle()
     val activeFolder = folderStack.lastOrNull() ?: PathBreadcrumb(currentFolderId, currentFolderName)
@@ -389,10 +382,47 @@ fun DriveScreen(
     val libraryView = state.libraryView
     val inTrash = libraryView == DriveLibrary.TRASH
     var libraryConfirm by remember { mutableStateOf<LibraryConfirm?>(null) }
+
+    // 列表与海报墙存进全局偏好；图库（瀑布流）只对当前页面与当前目录生效，切目录、切标签或重启自动退回常规视图
+    val initialViewMode = remember { runBlocking { sessionManager.driveViewModeFlow.first() } }
+    val viewModeName by sessionManager.driveViewModeFlow.collectAsStateWithLifecycle(initialViewMode)
+    val savedViewMode = DriveViewMode.of(viewModeName).let { if (it == DriveViewMode.GALLERY) DriveViewMode.LIST else it }
+    LaunchedEffect(viewModeName) {
+        if (viewModeName == DriveViewMode.GALLERY.name) {
+            sessionManager.setDriveViewMode(DriveViewMode.LIST.name)
+        }
+    }
+    val currentFolderKey = "${libraryView?.id.orEmpty()}:$activeFolderId"
+    var galleryFolderKey by remember(state) { mutableStateOf<String?>(null) }
+    val viewMode = if (galleryFolderKey == currentFolderKey) DriveViewMode.GALLERY else savedViewMode
+    fun selectViewMode(mode: DriveViewMode) {
+        if (mode == DriveViewMode.GALLERY) {
+            galleryFolderKey = currentFolderKey
+        } else {
+            galleryFolderKey = null
+            scope.launch { sessionManager.setDriveViewMode(mode.name) }
+        }
+    }
+    LaunchedEffect(state) { state.updateThumbnailsOnly(false) }
+    // 各视图各记一份卡片大小，初值同步读，免得先闪一帧中档
+    val tileSizeFlow = remember(viewMode) { sessionManager.driveTileSizeFlow(viewMode.name) }
+    val initialTileSize = remember(tileSizeFlow) { runBlocking { tileSizeFlow.first() } }
+    val tileSize = TileSize.of(tileSizeFlow.collectAsStateWithLifecycle(initialTileSize).value)
+    val zoom = remember(sessionManager) { DriveZoom(sessionManager) }
+    fun selectTileSize(size: TileSize) {
+        scope.launch {
+            if (viewMode == DriveViewMode.GALLERY) {
+                sessionManager.setDriveTileSize(DriveViewMode.GALLERY.name, size.name)
+            } else {
+                zoom.select(viewMode, size)
+            }
+        }
+    }
     // 回网盘根目录：整条栈换掉，不是退到第一级（库里的子文件夹栈底是库）。命令栏与目录图的主页按钮同用这一个
     fun goHome() = navigation.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB))
     // 库是路径栈的第一级，没有上一级可回；退出库是回到打开它之前的地方，没有就回网盘根目录
     fun backInBrowser(): Boolean {
+        if (canLeaveOrigin && onLibraryLeft != null) { onLibraryLeft(); return true }
         if (state.goBack()) return true
         if (!isWorkspaceBrowser && onLibraryLeft != null) { onLibraryLeft(); return true }
         return false
@@ -444,6 +474,10 @@ fun DriveScreen(
         }
     }
     fun refreshFiles() {
+        if (libraryView == DriveLibrary.DUPLICATES) {
+            duplicateSession.state?.rescan()
+            return
+        }
         if (galleryRecursive) {
             gallery.refresh()
         }
@@ -609,7 +643,7 @@ fun DriveScreen(
     fun nameByCode(files: List<FileStat>) {
         val single = files.singleOrNull()
         when {
-            single == null -> avNamingTargets = files
+            single == null -> avNamingTargets = state.withAttachedFiles(files)
             single.isFolder -> canonicalRoot = PathBreadcrumb(single.id, single.name)
             else -> startCanonicalRename(single)
         }
@@ -859,7 +893,8 @@ fun DriveScreen(
     val activeContextId = contexts?.let { val current by it.contexts.activeContextId.collectAsStateWithLifecycle(); current } ?: activeTabId
     val firstTabActive = if (workContexts != null) workContexts.firstOrNull()?.id == activeContextId else tabs.firstOrNull()?.id == activeTabId
     val tabsAvailable = desktopWorkspace != null && isWorkspaceBrowser
-    val islandTabMode = pathInTopBar && (tabsAvailable || contexts != null)
+    val hasTabBarAbove = pathInTopBar && (isWorkspaceBrowser || state.libraryView == DriveLibrary.DUPLICATES)
+    val islandTabMode = pathInTopBar
     val openInNewTab: ((FileStat) -> Unit)? = if (tabsAvailable) {
         { folder -> newTab(folderStack + PathBreadcrumb(folder.id, folder.name), activate = false) }
     } else {
@@ -926,11 +961,11 @@ fun DriveScreen(
                 download = DriveActions.download { download(files.filterNot { it.isUploading }) }.takeIf { commands.download },
                 // 按列表顺序：服务端取第一项的名字作分享标题
                 share = DriveActions.share { shareTargets = settled }.takeIf { commands.share },
-                rename = DriveActions.batchRename { batchRenameTargets = settled }.takeIf { commands.rename },
+                rename = DriveActions.batchRename { batchRenameTargets = state.withAttachedFiles(settled) }.takeIf { commands.rename },
                 star = null,
             ),
         )
-        if (commands.rename && settled.any { !it.isFolder && hasAvCode(it.name) }) add(DriveActions.canonicalName { avNamingTargets = settled })
+        if (commands.rename && settled.any { !it.isFolder && hasAvCode(it.name) }) add(DriveActions.canonicalName { avNamingTargets = state.withAttachedFiles(settled) })
         if (commands.downloadAtQuality) add(DriveActions.downloadAtQuality { download(files, chooseQuality = true) })
         files.filter { it.isVaulted }.takeIf { it.isNotEmpty() }?.let { vaulted ->
             add(DriveActions.restoreFromVault {
@@ -1063,6 +1098,7 @@ fun DriveScreen(
             actionTargetFile = file
         }
     }
+    val shortcutFocus = remember { FocusRequester() }
     val callbacks = remember(state) {
         DriveItemCallbacks(
             onOpen = { file ->
@@ -1093,7 +1129,14 @@ fun DriveScreen(
             onExtendSelect = { id ->
                 if (latestGalleryActive) state.setSelected(id, true) else state.selectRange(id)
             },
-            onBoxSelect = state::selectBoxed,
+            onBoxSelect = { base, boxed ->
+                if (commandFile != null || focusedFile != null) {
+                    commandFile = null
+                    focusedFile = null
+                    runCatching { shortcutFocus.requestFocus() }
+                }
+                state.selectBoxed(base, boxed)
+            },
             onMiddleClick = { file -> if (file.isFolder && state.libraryView != DriveLibrary.TRASH) latestOpenInNewTab?.invoke(file) },
             // 拖选中的一项时拖走全部选中的，否则只拖这一项，与文件管理器相同。回收站里的拖不出去：移走即是恢复，
             // 恢复有自己的按钮，拖放的「移到这里」在这里说不通
@@ -1121,8 +1164,10 @@ fun DriveScreen(
             },
             onBackgroundClick = {
                 commandFile = null
+                focusedFile = null
                 locatedFileId = null
                 if (state.isSelectionMode) state.exitSelection()
+                runCatching { shortcutFocus.requestFocus() }
             },
             onFocusChanged = { file, focused ->
                 if (focused) {
@@ -1176,10 +1221,16 @@ fun DriveScreen(
 
     // 桌面快捷键。挂在页面根上的 onKeyEvent 收的是冒泡上来的事件：搜索框有焦点时，
     // 退格与 Ctrl+A 先由输入框处理，不会误删文件或全选列表
-    val shortcutFocus = remember { FocusRequester() }
     // 换目录后再要一次：点进文件夹时焦点在被点的那一项上，它随旧列表一起没了，焦点落空，
     // 此后 Ctrl+F、Alt+← 这些快捷键都没有地方收
     LaunchedEffect(activeFolderId) { runCatching { shortcutFocus.requestFocus() } }
+    LaunchedEffect(state.isSelectionMode) {
+        if (!state.isSelectionMode) {
+            commandFile = null
+            focusedFile = null
+            runCatching { shortcutFocus.requestFocus() }
+        }
+    }
 
     // Esc 依次吃掉的几样，优先级见上面 BackHandler 那一段。
     // 单击高亮：鼠标点过的那一项留着焦点底色，命令栏也作用于它；Esc 让它回到没点过的样子，焦点交回页面，快捷键照常
@@ -1201,7 +1252,7 @@ fun DriveScreen(
                 SheetAction(
                     mode.icon(selected = mode == viewMode),
                     mode.paletteLabel,
-                    { scope.launch { sessionManager.setDriveViewMode(mode.name) } },
+                    { selectViewMode(mode) },
                     group = ActionGroup.View,
                     checked = mode == viewMode,
                 ),
@@ -1325,7 +1376,7 @@ fun DriveScreen(
                 val targets = latestDisplayedFiles.filter { it.id in state.selectedFileIds && !it.isUploading }
                 when {
                     targets.size == 1 -> startRename(targets.single())
-                    targets.size > 1 -> batchRenameTargets = targets
+                    targets.size > 1 -> batchRenameTargets = state.withAttachedFiles(targets)
                 }
             }
             // 后退与前进走浏览历史：资源管理器是 Alt+←/→ 与退格，Finder 是 ⌘[ 与 ⌘]。
@@ -1386,8 +1437,10 @@ fun DriveScreen(
     val placePrimaryAction: SheetAction? = when {
         // 窄窗口多选时 FAB 让给多选顶栏。宽窗口的命令栏不摆批量操作，没有要让的，主操作照旧
         state.isSelectionMode && !pathInTopBar -> null
-        inDuplicates -> duplicateState?.takeIf { duplicateReport.kind == DuplicateKind.IDENTICAL }
-            ?.suggestedIds?.intersect(displayedFiles.filterNot { it.isFolder }.mapTo(HashSet()) { it.id })
+        inDuplicates -> duplicateState?.takeIf {
+            duplicateReport.kind == DuplicateKind.IDENTICAL || duplicateReport.keepRule != dev.piko.shared.state.DuplicateKeepRule.RECOMMENDED
+        }?.let { finder -> duplicateReport.smartSelectIds(finder) }
+            ?.intersect(displayedFiles.filterNot { it.isFolder }.mapTo(HashSet()) { it.id })
             ?.takeIf { it.isNotEmpty() }?.let { suggested ->
             SheetAction(Icons.Outlined.Checklist, "选中建议移走的 ${suggested.size} 项", { state.selectOnly(suggested) })
         }
@@ -1482,11 +1535,10 @@ fun DriveScreen(
                 )
             },
             onRefresh = { refreshFiles() },
-            onHome = ::goHome,
             viewSwitcher = {
                 ViewSwitcher(
                     viewMode = viewMode,
-                    onViewModeChange = { mode -> scope.launch { sessionManager.setDriveViewMode(mode.name) } },
+                    onViewModeChange = ::selectViewMode,
                     tileSize = tileSize,
                     onTileSizeChange = ::selectTileSize,
                     feedShown = feedShown && !state.isSelectionMode,
@@ -1500,6 +1552,20 @@ fun DriveScreen(
             } else {
                 null
             },
+            customLeading = if (inDuplicates && duplicateState != null && !duplicateState.isScanning) {
+                duplicateCommandBarLeading(
+                    finder = duplicateState,
+                    selectedKind = duplicateReport.kind,
+                    onKindChange = { kind ->
+                        state.exitSelection()
+                        duplicateReport.selectKind(kind)
+                        scope.launch { gridState.scrollToItem(0) }
+                    },
+                    reportView = duplicateReport,
+                    selectedIds = selectedIdSet,
+                    onSelectIds = { ids -> if (ids.isEmpty()) state.exitSelection() else state.selectOnly(ids) },
+                )
+            } else emptyList(),
         )
     }
 
@@ -1509,7 +1575,7 @@ fun DriveScreen(
             onDismiss = { avNamingTargets = emptyList() },
             onFinished = { message ->
                 if (state.isSelectionMode) state.exitSelection()
-                scope.launch { snackbarHostState.showSnackbar(message, withDismissAction = true) }
+                if (message.isNotBlank()) scope.launch { snackbarHostState.showSnackbar(message, withDismissAction = true) }
             },
             startWithAvNaming = true,
         )
@@ -1518,7 +1584,10 @@ fun DriveScreen(
         CanonicalFolderRenameDialog(
             root = root,
             onDismiss = { canonicalRoot = null },
-            onFinished = { message -> scope.launch { snackbarHostState.showSnackbar(message, withDismissAction = true) } },
+            onFinished = { message ->
+                if (state.isSelectionMode) state.exitSelection()
+                if (message.isNotBlank()) scope.launch { snackbarHostState.showSnackbar(message, withDismissAction = true) }
+            },
         )
     }
 
@@ -1544,7 +1613,7 @@ fun DriveScreen(
             })
             DriveViewMode.entries.filter { it != viewMode }.forEach { mode ->
                 add(PaletteItem("切换到${mode.paletteLabel}", mode.icon(), "网盘", keywords = "视图 view ${mode.name.lowercase()}") {
-                    scope.launch { sessionManager.setDriveViewMode(mode.name) }
+                    selectViewMode(mode)
                 })
             }
             add(PaletteItem("全选", Icons.Outlined.SelectAll, "网盘", detail = label("A"), keywords = "select all") { selectAllDisplayed() })
@@ -1722,11 +1791,11 @@ fun DriveScreen(
                             // 上下两段靠色阶分开（islandHeader），不画线
                             islandTabMode -> Column(
                                 Modifier
-                                    .padding(end = IslandGap)
-                                    // 第一个标签活动时它的左边竖直接下来，岛的左上角不圆
+                                    .padding(top = if (hasTabBarAbove) 0.dp else IslandGap, end = IslandGap)
+                                    // 第一个标签活动时它的左边竖直接下来，岛的左上角不圆；独立库页面上方没有标签栏，左上角照常圆角
                                     .clip(
                                         RoundedCornerShape(
-                                            topStart = islandTopStart(firstActive = firstTabActive),
+                                            topStart = if (hasTabBarAbove) islandTopStart(firstActive = firstTabActive) else IslandCorner,
                                             topEnd = IslandCorner,
                                         ),
                                     )
@@ -1761,11 +1830,12 @@ fun DriveScreen(
                                 sections = if (galleryActive) emptyList() else state.sectionHeaders.map { it.value.menuLabel },
                                 onSectionSelected = ::jumpToSection,
                                 moreActions = listOfNotNull(
+                                    DriveActions.findDuplicates { findDuplicates(activeFolder) }.takeIf { commands.findDuplicates },
+                                    DriveActions.canonicalName { canonicalRoot = activeFolder }.takeIf { commands.canonicalNaming },
                                     SheetAction(Icons.Outlined.AccountTree, "目录图", { folderMap.dispatch(FolderMapEvent.Open) }),
                                     SheetAction(Icons.Outlined.FolderOpen, "转到路径", ::editAddress),
                                     SheetAction(Icons.AutoMirrored.Outlined.ArrowForward, "前进", { state.goForward() }).takeIf { history.canGoForward },
-                                    DriveActions.findDuplicates { findDuplicates(activeFolder) }.takeIf { commands.findDuplicates },
-                                    DriveActions.canonicalName { canonicalRoot = activeFolder }.takeIf { commands.canonicalNaming },
+                                    SheetAction(Icons.Outlined.Refresh, "刷新", { refreshFiles() }, group = ActionGroup.Refresh).takeIf { showsRefreshButton() },
                                 ),
                                 navigationIcon = when {
                                     atOriginBoundary -> {
@@ -1783,8 +1853,7 @@ fun DriveScreen(
                                     }
                                     else -> null
                                 },
-                                // 顶栏只留信息流与搜索：M3 顶栏放一到两个动作，新建与秒传同属「往网盘里添东西」，
-                                // 一起收进 FAB 菜单；排序与视图切换作用于列表，放在列表页眉。放不下时先收刷新
+                                // 顶栏只留信息流与搜索：刷新放入更多菜单（并保留下拉刷新与 F5），留足标题宽度
                                 actions = buildList {
                                     if (commands.feed && onFeedShownChange != null) {
                                         // 标题栏并进内容时这一行还要画三个窗口按钮，信息流收成图标，目录名才露得出来
@@ -1796,9 +1865,6 @@ fun DriveScreen(
                                         ) { FeedToggle(shown = feedShown && !state.isSelectionMode, onShownChange = { changeFeedShown?.invoke(it) }, iconOnly = iconOnly) })
                                     }
                                     add(iconBarItem(Icons.Outlined.Search, "搜索", { state.openSearch() }, priority = 30, shortcut = platform.shortcutModifier.label("F")))
-                                    if (showsRefreshButton()) {
-                                        add(iconBarItem(Icons.Outlined.Refresh, "刷新", { refreshFiles() }, priority = 10, shortcut = "F5"))
-                                    }
                                 },
                             )
                         }
@@ -1809,12 +1875,8 @@ fun DriveScreen(
                     // （清空回收站、选中建议移走的）在时就是它，否则是「+」菜单。曾两样依次画在同一个槽位里，查重页上「+」压住了扩展 FAB
                     if (placePrimaryAction != null && !pathInTopBar) {
                         PrimaryActionFab(placePrimaryAction)
-                    } else if (!state.isSelectionMode && !pathInTopBar && (commands.addLink || commands.create || commands.paste)) {
-                        // 宽窗口的新建与上传在命令栏的「新建」里。菜单里摆什么与命令栏同一份规则（commands），
-                        // 一项也没有时整个按钮不出现。FAB 只管往这里加东西，查找重复这类整理位置的命令在顶栏的菜单里：
-                        // FAB 菜单至多 6 项（M3），再有位置命令也不会挤进来
-                        // FAB 菜单自带 16dp 的右边距与下边距，Scaffold 的 FAB 槽位又留了 16dp，
-                        // 不抵消的话按钮离屏幕角是 32dp。偏移而不是挪出槽位，系统栏避让仍由 Scaffold 处理
+                    } else if (!state.isSelectionMode && !pathInTopBar && (commands.addLink || commands.findDuplicates || commands.canonicalNaming || commands.create || commands.paste)) {
+                        // FAB 汇聚窄窗口下的核心目录能力：添加链接、查重、按番号规范命名，以及新建/上传
                         FloatingActionButtonMenu(
                             expanded = isFabMenuExpanded,
                             modifier = Modifier.offset(x = 16.dp, y = 16.dp),
@@ -1826,7 +1888,7 @@ fun DriveScreen(
                                     val icon by remember { derivedStateOf { if (checkedProgress > 0.5f) Icons.Filled.Close else Icons.Filled.Add } }
                                     Icon(
                                         imageVector = icon,
-                                        contentDescription = if (isFabMenuExpanded) "收起" else "添加",
+                                        contentDescription = if (isFabMenuExpanded) "收起" else "快捷操作",
                                         modifier = Modifier.animateIcon({ checkedProgress }),
                                     )
                                 }
@@ -1848,11 +1910,28 @@ fun DriveScreen(
                                         isFabMenuExpanded = false
                                         openAddLink()
                                     },
-                                    // 小圆点挂在这一项上而不是「+」上：M3 的 badge 锚在通往那件事的入口图标上，
-                                    // 「+」只是展开菜单；收着的会话在底部 sheet 的那一截上本来就看得见
                                     icon = { PendingBadge(shown = addLink.hasCollapsedWork) { Icon(Icons.Outlined.Bolt, contentDescription = null) } },
-                                    // 会话收起着时是回到它，名字照实说
                                     text = { Text(if (instantState != null) "继续添加链接" else "添加链接") },
+                                )
+                            }
+                            if (commands.findDuplicates) {
+                                FloatingActionButtonMenuItem(
+                                    onClick = {
+                                        isFabMenuExpanded = false
+                                        findDuplicates(activeFolder)
+                                    },
+                                    icon = { Icon(Icons.Outlined.FileCopy, contentDescription = null) },
+                                    text = { Text("查找重复") },
+                                )
+                            }
+                            if (commands.canonicalNaming) {
+                                FloatingActionButtonMenuItem(
+                                    onClick = {
+                                        isFabMenuExpanded = false
+                                        canonicalRoot = activeFolder
+                                    },
+                                    icon = { Icon(Icons.Outlined.DriveFileRenameOutline, contentDescription = null) },
+                                    text = { Text("按番号规范命名") },
                                 )
                             }
                             if (commands.create) {
@@ -1872,14 +1951,6 @@ fun DriveScreen(
                                     },
                                     icon = { Icon(Icons.Outlined.UploadFile, contentDescription = null) },
                                     text = { Text("上传文件") },
-                                )
-                                FloatingActionButtonMenuItem(
-                                    onClick = {
-                                        isFabMenuExpanded = false
-                                        pickFolder()
-                                    },
-                                    icon = { Icon(Icons.Outlined.DriveFolderUpload, contentDescription = null) },
-                                    text = { Text("上传文件夹") },
                                 )
                             }
                         }
@@ -1906,6 +1977,7 @@ fun DriveScreen(
                             },
                         ),
                 ) {
+                    clipboard?.let { clip -> ClipboardBanner(clip, commands.paste, state::clearClipboard, state::paste) }
                     // 首屏三态。换的是同一块区域的三种填充，没有方向，AnimatedContent 还会多一次尺寸过渡；
                     // 淡入淡出属于效果而非位移，取 effects 档。已有内容时的刷新走下拉，不回到骨架
                     val phase = when {
@@ -1917,6 +1989,7 @@ fun DriveScreen(
                     }
                     Crossfade(
                         targetState = phase,
+                        modifier = Modifier.weight(1f),
                         animationSpec = MaterialTheme.motionScheme.defaultEffectsSpec(),
                         label = "drive_phase",
                     ) { current ->
@@ -1929,8 +2002,11 @@ fun DriveScreen(
                                     onTileSizeChange = ::selectTileSize,
                                     viewMode = viewMode,
                                     showViewSwitcher = !desktop,
-                                    onViewModeChange = { mode -> scope.launch { sessionManager.setDriveViewMode(mode.name) } },
-                                    onZoom = { larger -> scope.launch { zoom.step(larger) } },
+                                    onViewModeChange = ::selectViewMode,
+                                    onZoom = { larger ->
+                                        val next = tileSize.step(larger)
+                                        if (next != tileSize) selectTileSize(next)
+                                    },
                                     loading = if (galleryRecursive) gallery.loading else state.isLoading,
                                     complete = if (galleryRecursive) gallery.isComplete else !state.isLoading,
                                     hasMore = galleryRecursive && gallery.hasMore,
@@ -1993,6 +2069,10 @@ fun DriveScreen(
                                             scope.launch { gridState.scrollToItem(0) }
                                         },
                                         onEnd = onCloseContext ?: duplicateSession::end,
+                                        reportView = duplicateReport,
+                                        selectedIds = selectedIdSet,
+                                        onSelectIds = { ids -> if (ids.isEmpty()) state.exitSelection() else state.selectOnly(ids) },
+                                        controlsInCommandBar = pathInTopBar,
                                     )
                                 }
                                 // 筛选或图库视图下为空时仍给列表：空目录页没有页眉，筛选撤不掉，视图也切不回去
@@ -2012,6 +2092,7 @@ fun DriveScreen(
                                     DriveEmptyState(state = state, modifier = Modifier.weight(1f))
                                 } else {
                                     DriveFileGrid(
+                                        cutIds = clipboard?.takeIf { it.cut }?.sources?.keys.orEmpty(),
                                         items = state.displayItems,
                                         folderView = state::folderView,
                                         viewMode = viewMode,
@@ -2052,9 +2133,7 @@ fun DriveScreen(
                                                         availableTypes = state.availableTypes,
                                                         onTypeFilterChange = state::updateTypeFilter,
                                                         viewMode = viewMode,
-                                                        onViewModeChange = { mode ->
-                                                            scope.launch { sessionManager.setDriveViewMode(mode.name) }
-                                                        },
+                                                        onViewModeChange = ::selectViewMode,
                                                         tileSize = tileSize,
                                                         onTileSizeChange = ::selectTileSize,
                                                         // 宽窗口的排序、筛选与视图在命令栏上，页眉只剩搜索结果的说明
@@ -2183,7 +2262,7 @@ fun DriveScreen(
             onDismiss = { batchRenameTargets = emptyList() },
             onFinished = { message ->
                 if (state.isSelectionMode) state.exitSelection()
-                scope.launch { snackbarHostState.showSnackbar(message, withDismissAction = true) }
+                if (message.isNotBlank()) scope.launch { snackbarHostState.showSnackbar(message, withDismissAction = true) }
             },
         )
     }
@@ -2254,26 +2333,32 @@ fun DriveScreen(
             sourceParentId = activeFolderId,
             onDismiss = { moveTargetIds = emptySet() },
             onConfirm = { targetId, targetName ->
-                moveTargetIds = emptySet()
-                state.move(pendingIds.toList(), targetId, targetName)
+                state.move(pendingIds.toList(), targetId, targetName).also { accepted ->
+                    if (accepted) moveTargetIds = emptySet()
+                }
             },
         )
     }
 
+    if (isWorkspaceBrowser) BatchOperationDialog(
+        work = fileWriteWorks.firstOrNull { it.account == driveRepo.currentAccount && it.isRunning &&
+            (it.totalSteps > 1 || it.command is dev.piko.shared.state.FileWriteCommand.Copy) },
+        trash = state.trashSession,
+        onStopWrite = { services.fileWrites.requestStop(it) },
+    )
+
     if (copyTargetIds.isNotEmpty()) {
         val pendingIds = copyTargetIds
         // 复制到原目录是允许的（服务端给副本加「(1)」），只挡住复制进自身
-        FolderPickerDialog(
-            title = "复制 ${pendingIds.size} 项",
-            confirmLabel = "复制到这里",
+        CopyTargetDialog(
+            itemCount = pendingIds.size,
+            copyingIds = pendingIds,
             onDismiss = { copyTargetIds = emptySet() },
             onConfirm = { targetId, targetName ->
-                copyTargetIds = emptySet()
-                state.copy(pendingIds.toList(), targetId, targetName)
+                state.copy(pendingIds.toList(), targetId, targetName).also { accepted ->
+                    if (accepted) copyTargetIds = emptySet()
+                }
             },
-            blockedFolderIds = pendingIds,
-            blockedFolderHint = "待复制项",
-            confirmBlockedReason = { current -> "不能复制到自身".takeIf { current.id in pendingIds } },
         )
     }
 

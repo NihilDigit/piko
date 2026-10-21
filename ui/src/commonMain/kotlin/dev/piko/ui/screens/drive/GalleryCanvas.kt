@@ -6,17 +6,21 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.rememberScrollableState
 import androidx.compose.foundation.gestures.scrollable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.material3.Checkbox
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -47,6 +51,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.isTertiaryPressed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.SubcomposeLayout
 import androidx.compose.ui.layout.onPlaced
@@ -67,6 +72,7 @@ import dev.piko.ui.components.SpoilerThumbnail
 import dev.piko.ui.components.focusIndication
 import dev.piko.ui.components.locateHighlight
 import dev.piko.ui.components.selectionClicks
+import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.components.zoomOnWheel
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.ShortcutModifier
@@ -163,12 +169,14 @@ internal fun GalleryCanvas(
             },
     ) { constraints ->
         state.revision
-        val gap = 6.dp.toPx().toDouble()
+        val gap = 8.dp.toPx().toDouble()
+        val inset = 12.dp.toPx().toDouble()
         val width = constraints.maxWidth
         val height = constraints.maxHeight
         if (width == 0 || height == 0) return@SubcomposeLayout layout(width, height) {}
-        val count = max(columns, ceil((width + gap) / (maximumWidth.toPx() + gap)).toInt())
-        val placements = state.layout.frame(descriptors, count, width.toDouble(), height.toDouble(), gap)
+        val availableWidth = (width - inset * 2).coerceAtLeast(1.0)
+        val count = max(columns, ceil((availableWidth + gap) / (maximumWidth.toPx() + gap)).toInt())
+        val placements = state.layout.frame(descriptors, count, availableWidth, height.toDouble(), gap)
         state.visibleFileIds = placements.filter { it.top < height && it.top + it.height > 0 }.mapNotNull { it.fileId }.toSet()
         val measured = placements.map { placement ->
             val file = placement.fileId?.let(byId::get)
@@ -194,7 +202,7 @@ internal fun GalleryCanvas(
             placement to placeable
         }
         layout(width, height) {
-            measured.forEach { (placement, placeable) -> placeable.place(placement.left.roundToInt(), placement.top.roundToInt()) }
+            measured.forEach { (placement, placeable) -> placeable.place((placement.left + inset).roundToInt(), placement.top.roundToInt()) }
         }
     }
 }
@@ -211,7 +219,13 @@ private fun GalleryCanvasCover(
     onAspectRatio: (Float) -> Unit,
 ) {
     val focus = remember { FocusRequester() }
-    val shape = MaterialTheme.shapes.small
+    val shape = MaterialTheme.shapes.medium
+    val duration = file.params["duration"]?.toLongOrNull()?.takeIf { it > 0 }
+    val badgeLabel = duration?.let { seconds ->
+        val minutes = (seconds % 3600 / 60).toString().padStart(2, '0')
+        val remainder = (seconds % 60).toString().padStart(2, '0')
+        if (seconds >= 3600) "${seconds / 3600}:$minutes:$remainder" else "$minutes:$remainder"
+    } ?: file.sizeBytes.takeIf { it > 0 }?.toReadableSize()
     val isMac = LocalPikoPlatform.current.shortcutModifier == ShortcutModifier.Command
     var coverFailed by remember(file.thumbnailLink) { mutableStateOf(false) }
     ContextMenuArea(
@@ -222,21 +236,20 @@ private fun GalleryCanvasCover(
             .focusRequester(focus)
             .onFocusChanged { callbacks.onFocusChanged(file, it.hasFocus) }
             .onPlaced { callbacks.onPlaced(file, it) }
-            .pointerInput(Unit) {
-                awaitPointerEventScope {
-                    while (true) {
-                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                        if (event.type == PointerEventType.Press && event.changes.any { it.type == PointerType.Mouse }) {
-                            runCatching { focus.requestFocus() }
-                        }
-                    }
-                }
-            }
             .selectionClicks(
                 onToggle = { callbacks.onToggleSelect(file.id) },
                 onExtend = { callbacks.onExtendSelect(file.id) },
                 onDoubleClick = if (isSelectionMode) null else ({ callbacks.onOpen(file) }),
+                onFocus = { runCatching { focus.requestFocus() } },
             )
+            .pointerInput(file.id) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        if (event.type == PointerEventType.Press && event.buttons.isTertiaryPressed) callbacks.onMiddleClick(file)
+                    }
+                }
+            }
             .onPreviewKeyEvent { event ->
                 val enter = event.key == Key.Enter || event.key == Key.NumPadEnter
                 if (enter && !isMac && event.isAltPressed) {
@@ -251,10 +264,14 @@ private fun GalleryCanvasCover(
         Box(
             Modifier.fillMaxSize()
                 .semantics(mergeDescendants = true) {}
-                .focusIndication(shape)
+                .focusIndication(shape, showPointerFocus = !isSelectionMode)
                 .clip(shape)
                 .cardInteraction(isSelectionMode, isSelected, { callbacks.onOpen(file) }, callbacks.onStartSelection?.let { select -> ({ select(file) }) }, { callbacks.onSelect(file, it) })
-                .then(if (isSelected) Modifier.border(3.dp, MaterialTheme.colorScheme.primary, shape) else Modifier)
+                .border(
+                    if (isSelected) 3.dp else 1.dp,
+                    if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
+                    shape,
+                )
                 .locateHighlight(isHighlighted, shape),
         ) {
             if (file.thumbnailLink.isEmpty() || coverFailed) {
@@ -266,16 +283,40 @@ private fun GalleryCanvasCover(
             }
             Column(
                 Modifier.align(Alignment.BottomStart).fillMaxWidth()
-                    .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.72f))))
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                    .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.28f), Color.Black.copy(alpha = 0.80f))))
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
             ) {
-                Text(file.name, color = Color.White, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(file.name.substringBeforeLast('.', file.name), color = Color.White, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (!locationLabel.isNullOrBlank()) {
-                    Text(locationLabel, color = Color.White.copy(alpha = 0.75f), style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Icon(Icons.Outlined.Folder, contentDescription = null, tint = Color.White.copy(alpha = 0.75f), modifier = Modifier.size(12.dp))
+                        Text(locationLabel, color = Color.White.copy(alpha = 0.75f), style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                 }
             }
-            if (isSelectionMode) {
-                Checkbox(isSelected, onCheckedChange = null, modifier = Modifier.align(Alignment.TopEnd).padding(4.dp))
+            if (badgeLabel != null) {
+                Text(
+                    badgeLabel,
+                    modifier = Modifier.align(if (isSelectionMode || isSelected) Alignment.TopStart else Alignment.TopEnd)
+                        .padding(8.dp)
+                        .background(Color.Black.copy(alpha = 0.6f), MaterialTheme.shapes.extraSmall)
+                        .padding(horizontal = 6.dp, vertical = 3.dp),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                )
+            }
+            if (isSelectionMode || isSelected) {
+                Box(
+                    Modifier.align(Alignment.TopEnd).padding(8.dp).size(24.dp)
+                        .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Black.copy(alpha = 0.45f), CircleShape)
+                        .then(if (isSelected) Modifier else Modifier.border(1.5.dp, Color.White, CircleShape)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (isSelected) {
+                        Icon(Icons.Filled.Check, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(16.dp))
+                    }
+                }
             }
         }
     }

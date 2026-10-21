@@ -1,5 +1,8 @@
 package dev.piko.ui.screens.drive
 
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,11 +13,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.TaskAlt
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -37,6 +40,13 @@ import dev.piko.shared.data.ScanStop
 import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.DuplicateFinderState.Phase
 import dev.piko.shared.state.DuplicateKind
+import dev.piko.shared.state.DuplicateKeepRule
+import dev.piko.shared.presentation.DuplicateReportViewModel
+import dev.piko.ui.components.BarItem
+import dev.piko.ui.components.PinnedPriority
+import dev.piko.ui.components.SheetAction
+import dev.piko.ui.components.ActionGroup
+import dev.piko.ui.components.verticalWheelScrollsRow
 import dev.piko.ui.components.connectedToggleShapes
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoErrorState
@@ -44,16 +54,14 @@ import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.toReadableSize
 
 /**
- * 查找重复里每一行的位置，写在行下面那一栏：从查找的起点算起的文件夹。建议移走的在后面注明，
- * 不进多选也看得出建议的是哪几份。
+ * 查重行的位置相对扫描起点；保留建议由组内排序后的行标签呈现，避免与当前策略冲突。
  */
 internal fun duplicateLocations(finder: DuplicateFinderState?): Map<String, String> {
     val report = finder?.report ?: return emptyMap()
-    val suggested = finder.suggestedIds
     return (report.identical + report.versions).flatMap { it.rows }.associate { row ->
         val folder = row.file.folderPath
         val location = if (folder.isEmpty()) finder.root.name else "${finder.root.name}/$folder"
-        row.file.id to if (row.file.id in suggested) "$location，建议移走" else location
+        row.file.id to location
     }
 }
 
@@ -68,20 +76,23 @@ internal fun duplicatesTab(finder: DuplicateFinderState): SessionTab {
     return SessionTab("查重：${finder.root.name}", tooltip, busy = finder.isScanning, icon = Icons.Outlined.FileCopy)
 }
 
-@Composable
-internal fun DuplicatesBanner(
+internal fun duplicateCommandBarLeading(
     finder: DuplicateFinderState,
     selectedKind: DuplicateKind,
     onKindChange: (DuplicateKind) -> Unit,
-    onEnd: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val report = finder.report
+    reportView: DuplicateReportViewModel,
+    selectedIds: Set<String>,
+    onSelectIds: (Set<String>) -> Unit,
+): List<BarItem> {
     val identical = selectedKind == DuplicateKind.IDENTICAL
-    val groups = if (identical) report.identical else report.versions
-    var menuOpen by remember { mutableStateOf(false) }
-    Column(modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+    val groups = if (identical) finder.report.identical else finder.report.versions
+    val summary = if (identical) {
+        "${groups.size} 组 · 可腾出 ${groups.sumOf { it.reclaimableBytes }.toReadableSize()}"
+    } else {
+        "${groups.size} 组 · ${groups.sumOf { it.rows.size }} 个版本"
+    }
+    return buildList {
+        add(BarItem("dupKind", PinnedPriority) {
             Row(
                 Modifier.selectableGroup(),
                 horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
@@ -97,35 +108,156 @@ internal fun DuplicatesBanner(
                     }
                 }
             }
-            Column(Modifier.weight(1f).padding(start = 12.dp), horizontalAlignment = Alignment.End) {
-                Text("${groups.size} 组", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    if (identical) "可释放 ${groups.sumOf { it.reclaimableBytes }.toReadableSize()}"
-                    else "${groups.sumOf { it.rows.size }} 个版本",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Box {
-                TooltipIconButton(Icons.Outlined.MoreVert, "查重选项", { menuOpen = true })
-                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                    DropdownMenuItem(text = { Text("重新扫描") }, onClick = { menuOpen = false; finder.rescan() })
-                    DropdownMenuItem(text = { Text("结束查重") }, onClick = { menuOpen = false; onEnd() })
+        })
+        if (groups.isNotEmpty()) {
+            add(BarItem(
+                key = "dupRule",
+                priority = 70,
+                overflow = DuplicateKeepRule.entries.map { rule ->
+                    SheetAction(
+                        Icons.Outlined.TaskAlt,
+                        "规则：${rule.label}",
+                        { reportView.selectKeepRule(rule) },
+                        group = ActionGroup.Sort,
+                        checked = reportView.keepRule == rule,
+                    )
+                },
+            ) {
+                var ruleMenu by remember { mutableStateOf(false) }
+                Box {
+                    TextButton(onClick = { ruleMenu = true }) {
+                        Text("规则：${reportView.keepRule.label} ▾", maxLines = 1)
+                    }
+                    DropdownMenu(expanded = ruleMenu, onDismissRequest = { ruleMenu = false }) {
+                        DuplicateKeepRule.entries.forEach { rule ->
+                            DropdownMenuItem(
+                                text = { Text(rule.label) },
+                                onClick = { reportView.selectKeepRule(rule); ruleMenu = false },
+                            )
+                        }
+                    }
+                }
+            })
+            add(BarItem(
+                key = "dupInvert",
+                priority = 65,
+                overflow = listOf(SheetAction(Icons.Outlined.FileCopy, "反选", { onSelectIds(reportView.invertSelectionIds(finder, selectedIds)) }, group = ActionGroup.Select)),
+            ) {
+                TextButton(onClick = { onSelectIds(reportView.invertSelectionIds(finder, selectedIds)) }) {
+                    Text("反选", maxLines = 1)
+                }
+            })
+        }
+        add(BarItem("dupSummary", 25) {
+            Text(
+                summary,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                modifier = Modifier.padding(horizontal = 8.dp),
+            )
+        })
+    }
+}
+
+@Composable
+internal fun DuplicatesBanner(
+    finder: DuplicateFinderState,
+    selectedKind: DuplicateKind,
+    onKindChange: (DuplicateKind) -> Unit,
+    onEnd: () -> Unit,
+    modifier: Modifier = Modifier,
+    reportView: DuplicateReportViewModel? = null,
+    selectedIds: Set<String> = emptySet(),
+    onSelectIds: ((Set<String>) -> Unit)? = null,
+    controlsInCommandBar: Boolean = false,
+) {
+    val report = finder.report
+    val identical = selectedKind == DuplicateKind.IDENTICAL
+    val groups = if (identical) report.identical else report.versions
+    var menuOpen by remember { mutableStateOf(false) }
+    var ruleMenu by remember { mutableStateOf(false) }
+    val warning = when (finder.scanStop) {
+        ScanStop.CANCELLED -> "扫描已停止，结果不完整"
+        ScanStop.FOLDER_LIMIT, ScanStop.FILE_LIMIT -> "已达扫描上限，结果不完整"
+        ScanStop.TIMEOUT -> "扫描超时，结果不完整"
+        null -> null
+    }
+    val hasWarning = warning != null || finder.failedFolders > 0
+    if (controlsInCommandBar && !hasWarning) return
+    Column(modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = if (controlsInCommandBar) 4.dp else 8.dp, bottom = if (controlsInCommandBar) 4.dp else 8.dp)) {
+        if (!controlsInCommandBar) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(
+                    Modifier.selectableGroup(),
+                    horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
+                ) {
+                    DuplicateKind.entries.forEachIndexed { index, kind ->
+                        TonalToggleButton(
+                            checked = selectedKind == kind,
+                            onCheckedChange = { if (selectedKind != kind) onKindChange(kind) },
+                            shapes = connectedToggleShapes(index, DuplicateKind.entries.size),
+                            contentPadding = PaddingValues(horizontal = 12.dp),
+                        ) {
+                            Text(if (kind == DuplicateKind.IDENTICAL) "相同文件" else "不同版本", maxLines = 1)
+                        }
+                    }
+                }
+                if (groups.isNotEmpty() && reportView != null) {
+                    Box {
+                        TextButton(
+                            onClick = { ruleMenu = true },
+                            contentPadding = PaddingValues(horizontal = 8.dp),
+                        ) {
+                            Text("规则：${reportView.keepRule.label} ▾", maxLines = 1)
+                        }
+                        DropdownMenu(expanded = ruleMenu, onDismissRequest = { ruleMenu = false }) {
+                            DuplicateKeepRule.entries.forEach { rule ->
+                                DropdownMenuItem(
+                                    text = { Text(rule.label) },
+                                    onClick = { reportView.selectKeepRule(rule); ruleMenu = false },
+                                )
+                            }
+                        }
+                    }
+                    if (onSelectIds != null) {
+                        TextButton(
+                            onClick = { onSelectIds(reportView.invertSelectionIds(finder, selectedIds)) },
+                            contentPadding = PaddingValues(horizontal = 8.dp),
+                        ) {
+                            Text("反选", maxLines = 1)
+                        }
+                    }
+                }
+                Column(Modifier.weight(1f), horizontalAlignment = Alignment.End) {
+                    Text("${groups.size} 组", style = MaterialTheme.typography.titleSmall, maxLines = 1)
+                    Text(
+                        if (identical) "可腾出 ${groups.sumOf { it.reclaimableBytes }.toReadableSize()}"
+                        else "${groups.sumOf { it.rows.size }} 个版本",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
+                Box {
+                    TooltipIconButton(Icons.Outlined.MoreVert, "查重选项", { menuOpen = true })
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(text = { Text("重新扫描") }, onClick = { menuOpen = false; finder.rescan() })
+                        DropdownMenuItem(text = { Text("结束查重") }, onClick = { menuOpen = false; onEnd() })
+                    }
                 }
             }
         }
-        val warning = when (finder.scanStop) {
-            ScanStop.CANCELLED -> "扫描已停止，结果不完整"
-            ScanStop.FOLDER_LIMIT, ScanStop.FILE_LIMIT -> "已达扫描上限，结果不完整"
-            ScanStop.TIMEOUT -> "扫描超时，结果不完整"
-            null -> null
-        }
-        if (warning != null || finder.failedFolders > 0) {
+        if (hasWarning) {
             Text(
                 listOfNotNull(warning, "${finder.failedFolders} 个文件夹读取失败".takeIf { finder.failedFolders > 0 }).joinToString("，"),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 4.dp),
+                modifier = Modifier.padding(top = if (controlsInCommandBar) 0.dp else 4.dp),
             )
         }
     }

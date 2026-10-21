@@ -447,7 +447,11 @@ private fun actionStatus(state: BatchRenameState): Pair<String, Boolean> {
         Phase.RUNNING -> "正在重命名 ${state.processed}/${state.total}" to false
         Phase.DONE -> {
             val succeeded = state.processed - state.failures.size
-            if (state.wasStopped) "已停止，已重命名 $succeeded 项" to false else "已重命名 $succeeded 项，${state.failures.size} 项失败" to true
+            when {
+                state.wasStopped -> "已停止，已重命名 $succeeded 项" to false
+                state.failures.isEmpty() -> "已重命名 $succeeded 项" to false
+                else -> "已重命名 $succeeded 项，${state.failures.size} 项失败" to true
+            }
         }
         Phase.EDITING -> when {
             state.patternError != null -> "正则表达式有误" to true

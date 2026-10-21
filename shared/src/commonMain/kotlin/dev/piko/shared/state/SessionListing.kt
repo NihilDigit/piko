@@ -47,13 +47,46 @@ class DuplicateDirectoryListing(
     }
 }
 
-/**
- * 查找重复的结果。同一个文件可能既在完全相同的组里、又代表版本组里的一行，列表项的 key 因此带上组；
- * 选中仍按文件，两处是同一个勾，见 DriveScreenState.fileRows。
- */
-class DuplicateListing(private val finder: DuplicateFinderState, private val kind: DuplicateKind? = null) : SessionListing {
+enum class DuplicateKeepRule(val label: String) {
+    RECOMMENDED("智能推荐"),
+    NEWEST("保留最新"),
+    OLDEST("保留最旧"),
+    LARGEST("保留最大"),
+    SMALLEST("保留最小"),
+    SHORTEST_PATH("保留最浅路径"),
+    SHORTEST_NAME("保留最短文件名"),
+}
+
+/** 列表与批量勾选共用同一个顺序；目录置顶优先于保留规则。 */
+fun DuplicateGroup.orderedRows(rule: DuplicateKeepRule, focusFolder: String? = null): List<DuplicateRow> {
+    // 默认顺序由分组器决定：相同文件按保留建议，版本按大小降序。
+    if (rule == DuplicateKeepRule.RECOMMENDED) {
+        return rows.sortedByDescending { focusFolder != null && it.file.folderPath == focusFolder }
+    }
+    val order = when (rule) {
+        DuplicateKeepRule.RECOMMENDED -> KEEP_ORDER
+        DuplicateKeepRule.NEWEST -> compareByDescending<DuplicateFile> { it.modifiedTime.ifEmpty { it.createdTime } }
+        DuplicateKeepRule.OLDEST -> compareBy<DuplicateFile> { it.modifiedTime.ifEmpty { it.createdTime } }
+        DuplicateKeepRule.LARGEST -> compareByDescending<DuplicateFile> { it.size }
+        DuplicateKeepRule.SMALLEST -> compareBy<DuplicateFile> { it.size }
+        DuplicateKeepRule.SHORTEST_PATH -> compareBy<DuplicateFile> { it.folderPath.count { char -> char == '/' } }
+            .thenBy { it.path.length }
+        DuplicateKeepRule.SHORTEST_NAME -> compareBy<DuplicateFile> { it.name.length }
+    }.then(KEEP_ORDER)
+    return rows.sortedWith(compareByDescending<DuplicateRow> { focusFolder != null && it.file.folderPath == focusFolder }
+        .thenComparator { a, b -> order.compare(a.file, b.file) })
+}
+
+/** 同一文件可能同时出现在相同文件与版本组，行 key 带组身份，选中仍按文件 ID。 */
+class DuplicateListing(
+    private val finder: DuplicateFinderState,
+    private val kind: DuplicateKind? = null,
+    private val keepRule: () -> DuplicateKeepRule = { DuplicateKeepRule.RECOMMENDED },
+    private val focusFolder: () -> String? = { null },
+    private val kindProvider: () -> DuplicateKind? = { kind },
+) : SessionListing {
     private val groups: List<DuplicateGroup>
-        get() = when (kind) {
+        get() = when (kindProvider()) {
             DuplicateKind.IDENTICAL -> finder.report.identical
             DuplicateKind.VERSIONS -> finder.report.versions
             null -> finder.report.identical + finder.report.versions
@@ -70,9 +103,12 @@ class DuplicateListing(private val finder: DuplicateFinderState, private val kin
             val expanded = isExpanded(blockId)
             add(DriveListItem.SectionHeader(blockId, blockId, label(group), group.title, expanded))
             if (!expanded) continue
-            for (row in group.rows) {
+            val rule = keepRule()
+            val orderedRows = group.orderedRows(rule, focusFolder())
+            val showKeepSuggestion = group.kind == DuplicateKind.IDENTICAL || rule != DuplicateKeepRule.RECOMMENDED
+            for (row in orderedRows) {
                 val file = finder.fileStat(row.file.id) ?: continue
-                add(DriveListItem.File(file, view(file, row, group), key = "$blockId/${file.id}"))
+                add(DriveListItem.File(file, view(file, row, showKeepSuggestion && row == orderedRows.firstOrNull()), key = "$blockId/${file.id}"))
             }
         }
     }
@@ -83,9 +119,9 @@ class DuplicateListing(private val finder: DuplicateFinderState, private val kin
     }
 
     // 标签写这一份与同组其余几份的区别：字幕组、分辨率这些，以及默认留哪一份
-    private fun view(file: FileStat, row: DuplicateRow, group: DuplicateGroup): DriveFileView {
+    private fun view(file: FileStat, row: DuplicateRow, isKept: Boolean): DriveFileView {
         val tags = buildList {
-            if (file.id == group.keptId) add("建议保留")
+            if (isKept) add("建议保留")
             addAll(row.details)
             if (row.sameCopies > 0) add("另有 ${row.sameCopies} 份相同")
         }

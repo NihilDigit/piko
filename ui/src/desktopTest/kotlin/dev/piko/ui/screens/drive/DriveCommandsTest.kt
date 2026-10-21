@@ -1,9 +1,36 @@
 package dev.piko.ui.screens.drive
 
+import androidx.compose.ui.unit.dp
+import dev.piko.ui.adaptive.WidthClass
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class DriveCommandsTest {
+    @Test
+    fun `list sizes select columns for each width class`() {
+        val expected = mapOf(
+            WidthClass.Compact to listOf(1, 1, 1),
+            WidthClass.Medium to listOf(2, 2, 1),
+            WidthClass.Expanded to listOf(3, 2, 1),
+        )
+        for ((width, columns) in expected) {
+            assertEquals(columns, TileSize.entries.map { tileColumns(DriveViewMode.LIST, it, width) }, "$width")
+        }
+        assertEquals(listOf(420.dp, 640.dp, 960.dp), TileSize.entries.map { tileMaxWidth(DriveViewMode.LIST, it) })
+    }
+
+    @Test
+    fun `all view modes retain three checked size choices in overflow`() {
+        assertEquals(listOf("小", "中", "大"), TileSize.entries.map { it.label })
+        for (mode in DriveViewMode.entries) {
+            for (selected in TileSize.entries) {
+                val actions = tileSizeActions(mode, selected) {}
+                assertEquals(listOf("小尺寸", "中尺寸", "大尺寸"), actions.map { it.label }, "$mode")
+                assertEquals(TileSize.entries.map { it == selected }, actions.map { it.checked }, "$mode $selected")
+            }
+        }
+    }
+
     private fun inputs(place: CommandPlace, selecting: Boolean, nameParsing: Boolean = true, selectedVideoCount: Int = 0, feedSupported: Boolean = true) = CommandInputs(
         place = place,
         atRoot = place == CommandPlace.ROOT,

@@ -5,16 +5,18 @@ import dev.piko.ui.components.LocalFileDrag
 import dev.piko.ui.components.AdaptiveBar
 import dev.piko.ui.components.BarItem
 import dev.piko.ui.components.connectedToggleShapes
-import dev.piko.ui.components.ItemColumnMinWidth
 import androidx.compose.ui.draw.alpha
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.ui.components.fileDropTarget
 import dev.piko.ui.components.fileDragSource
 import dev.piko.ui.components.FileDragPayload
+import dev.piko.ui.components.fileDragAutoScroll
 import dev.piko.ui.components.marqueeSelection
+import dev.piko.ui.components.LocalFocusFallback
 import dev.piko.ui.components.OwnClicks
 import dev.piko.ui.components.LocalOwnClicks
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -74,6 +76,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -149,13 +152,8 @@ internal enum class DriveViewMode {
  * 不用瀑布流：它把每一项放进当前最矮的一栏，各栏宽度因除不尽差一两个像素时，按宽度算高度的海报与方块
  * 就高低不齐，第二行的第一项落到最右边；列表行高不一时顺序更是在各栏间乱跳。文件要能按行读。
  *
- * 列表视图单列宽度下限 360dp，手机上始终一列，横屏平板上自动排成两列以上。M3 列表规范
- * 要求宽窗口下控制行长或改为多栏，否则一行名字会被拉得很长。
- *
- * 海报墙与图库一行几栏随卡片大小分三档，见 [tileColumns]。
+ * 三种视图一行几栏随尺寸分三档，见 [tileColumns]；列表在手机上保持一列，宽窗口可调栏宽。
  */
-// 与各内容列表页同一个栏宽，见 PikoItemGrid
-private val ListColumnMinWidth = ItemColumnMinWidth
 
 private const val DraggedAlpha = 0.4f
 
@@ -209,7 +207,7 @@ internal fun driveLeadingItemCount(hasFoldBanner: Boolean): Int = 1 + (if (hasFo
 internal fun DriveFileGrid(
     items: List<DriveListItem>,
     viewMode: DriveViewMode,
-    /** 海报墙或图库的卡片大小；列表视图不看它。 */
+    /** 列表栏宽或海报墙、图库的卡片大小。 */
     tileSize: TileSize,
     /** 主修饰键加滚轮，见 [zoomOnWheel]。 */
     onZoom: (larger: Boolean) -> Unit,
@@ -244,8 +242,16 @@ internal fun DriveFileGrid(
     header: @Composable () -> Unit,
     foldBanner: (@Composable () -> Unit)?,
     modifier: Modifier = Modifier,
+    cutIds: Set<String> = emptySet(),
 ) {
     val leadingItemCount = driveLeadingItemCount(foldBanner != null)
+    val focusManager = LocalFocusManager.current
+    val focusFallback = LocalFocusFallback.current
+    LaunchedEffect(isSelectionMode) {
+        if (!isSelectionMode) {
+            if (focusFallback != null) focusFallback.restore() else focusManager.clearFocus()
+        }
+    }
     val latestItems by rememberUpdatedState(items)
     val latestStructureReady by rememberUpdatedState(structureReady)
     val latestLeadingItemCount by rememberUpdatedState(leadingItemCount)
@@ -285,6 +291,7 @@ internal fun DriveFileGrid(
             columns = gridCells(viewMode, tileSize, columnReferenceWidth?.minus(horizontalPadding * 2)),
             modifier = modifier
                 .fillMaxSize()
+                .fileDragAutoScroll(gridState)
                 .marqueeSelection(
                     gridState = gridState,
                     selectedIds = selectedIds,
@@ -360,7 +367,7 @@ internal fun DriveFileGrid(
                             folderHasVault = file.isFolder && file.id in vaultedFolders,
                             requestFocus = item.key == keyboardFocusTarget,
                             onFocusRequested = onKeyboardFocusMoved,
-                            modifier = Modifier.animateItem(),
+                            modifier = Modifier.animateItem().graphicsLayer { alpha = if (file.id in cutIds) 0.5f else 1f },
                         )
                     }
                 }
@@ -373,7 +380,6 @@ internal fun DriveFileGrid(
 
 @Composable
 private fun gridCells(viewMode: DriveViewMode, tileSize: TileSize, referenceWidth: Dp? = null): GridCells {
-    if (!viewMode.isGrid) return StableColumns(ListColumnMinWidth, referenceWidth)
     return TileColumns(tileColumns(viewMode, tileSize, currentWidthClass()), tileMaxWidth(viewMode, tileSize), referenceWidth)
 }
 
@@ -579,23 +585,13 @@ private fun DriveCell(
             .focusRequester(focusRequester)
             .onFocusChanged { callbacks.onFocusChanged(file, it.hasFocus) }
             .onPlaced { callbacks.onPlaced(file, it) }
-            // 鼠标点到哪一项，键盘就从哪一项接着走，与文件管理器相同。条目自己的单击不取焦点；
-            // 触屏不取，否则点过的项留着一层焦点底色
-            .pointerInput(Unit) {
-                awaitPointerEventScope {
-                    while (true) {
-                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                        if (event.type == PointerEventType.Press && event.changes.any { it.type == PointerType.Mouse }) {
-                            runCatching { focusRequester.requestFocus() }
-                        }
-                    }
-                }
-            }
             .selectionClicks(
                 onToggle = { callbacks.onToggleSelect(rowKey) },
                 onExtend = { callbacks.onExtendSelect(rowKey) },
                 // 多选时条目上画着勾选框，单击照旧是勾选或取消
                 onDoubleClick = if (isSelectionMode) null else ({ callbacks.onOpen(file) }),
+                // 鼠标点到哪一项，键盘就从哪一项接着走；框选或拖动时不取焦点，免得起拖那一项留着单选底色
+                onFocus = { runCatching { focusRequester.requestFocus() } },
                 ownClicks = ownClicks,
             )
             // Finder 里回车是改名；资源管理器里回车是打开，交给条目自己的单击
@@ -748,13 +744,9 @@ internal fun DriveListHeader(
                     TypeFilterButton(typeFilter, availableTypes, onTypeFilterChange)
                 }.takeIf { showFilter },
             ),
-            // 大小紧挨在视图切换前面，放不下时先于它收起
-            trailing = listOfNotNull(
-                BarItem("size", 5, tileSizeActions(viewMode, tileSize, onTileSizeChange)) {
-                    TileSizeButton(tileSize, onTileSizeChange)
-                }.takeIf { viewMode.isGrid },
-                BarItem("view", 10, viewModeOverflowActions(viewMode, onViewModeChange)) {
-                    ViewModeToggle(viewMode = viewMode, onViewModeChange = onViewModeChange)
+            trailing = listOf(
+                BarItem("view", 10, viewModeOverflowActions(viewMode, onViewModeChange) + tileSizeActions(viewMode, tileSize, onTileSizeChange)) {
+                    ViewSwitcher(viewMode, onViewModeChange, tileSize, onTileSizeChange, feedShown = false, onFeedShownChange = null)
                 },
             ),
         )
@@ -909,36 +901,6 @@ internal fun ViewModeToggle(
 }
 
 private val ViewToggleContentPadding = PaddingValues(horizontal = 12.dp)
-
-/** 窄窗口列表页眉里的卡片大小：图标是眼下这一档，点开三档里挑。宽窗口的在命令栏的视图菜单里。 */
-@Composable
-private fun TileSizeButton(tileSize: TileSize, onTileSizeChange: (TileSize) -> Unit) {
-    var showMenu by remember { mutableStateOf(false) }
-    Box {
-        TooltipIconButton(tileSize.icon, "卡片大小：${tileSize.label}", { showMenu = true })
-        PikoDropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-            TileSizeMenuItems(tileSize) {
-                showMenu = false
-                onTileSizeChange(it)
-            }
-        }
-    }
-}
-
-/** 大、中、小三项，眼下这一档用强调色，与视图菜单里当前视图的写法一致。列表页眉与命令栏的视图菜单共用。 */
-@Composable
-internal fun TileSizeMenuItems(tileSize: TileSize, firstIndex: Int = 0, total: Int = TileSize.entries.size, onSelect: (TileSize) -> Unit) {
-    TileSize.entries.reversed().forEachIndexed { index, option ->
-        val current = option == tileSize
-        val tint = if (current) MaterialTheme.colorScheme.primary else Color.Unspecified
-        DropdownMenuItem(
-            text = { Text(option.label, color = tint) },
-            leadingIcon = { Icon(option.icon, contentDescription = null, tint = if (current) tint else LocalContentColor.current, modifier = Modifier.size(20.dp)) },
-            shape = menuItemShape(firstIndex + index, total),
-            onClick = { onSelect(option) },
-        )
-    }
-}
 
 /** 启发式折叠提示。作为列表的一项随内容滚走，不再常驻在列表上方。 */
 @Composable

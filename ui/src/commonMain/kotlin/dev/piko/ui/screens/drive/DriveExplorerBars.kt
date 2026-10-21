@@ -44,6 +44,7 @@ import dev.piko.ui.components.PinnedPriority
 import dev.piko.ui.components.CloudCapacityRow
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.theme.FrameBottomRowHeight
+import dev.piko.ui.theme.IslandGap
 import io.github.nihildigit.pikpak.FileStat
 import androidx.compose.material3.TooltipAnchorPosition
 import androidx.compose.material3.TooltipBox
@@ -94,7 +95,6 @@ import dev.piko.ui.components.menuItemShape
 import dev.piko.ui.components.releasesFocusOnOutsidePress
 import dev.piko.ui.platform.ShortcutModifier
 import dev.piko.ui.platform.rememberCaptionSlot
-import androidx.compose.material.icons.outlined.Home
 import dev.piko.ui.platform.windowDragArea
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.automirrored.outlined.Sort
@@ -129,7 +129,7 @@ internal fun ExplorerNavBar(
     showFolderMap: (() -> Unit)? = null,
 ) {
     val mac = shortcuts == ShortcutModifier.Command
-    val caption = rememberCaptionSlot()
+    val caption = rememberCaptionSlot(topInset = IslandGap)
     Row(
         modifier = Modifier.fillMaxWidth().then(caption.modifier).height(56.dp).padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -273,16 +273,15 @@ internal fun ExplorerCommandBar(
     onCanonicalNaming: () -> Unit,
     sectionJumper: @Composable () -> Unit,
     onRefresh: () -> Unit,
-    onHome: () -> Unit,
     viewSwitcher: @Composable () -> Unit,
     /** 这一页的主操作，常驻在右端，见 [PrimaryActionButton]。网盘里是添加链接，库里是清空、查重里是选中建议移走的。 */
     primaryAction: SheetAction?,
+    customLeading: List<BarItem> = emptyList(),
 ) {
     val label = shortcuts::label
     val mac = shortcuts == ShortcutModifier.Command
     // 收起的先后见 BarItem.priority。收进「更多」的各带一个组号，菜单里组与组之间一道细线
     val leading = buildList {
-        if (commands.home) add(BarItem("home", PinnedPriority) { TooltipIconButton(Icons.Outlined.Home, "网盘根目录", onHome) })
         if (selectedCount > 0) {
             add(BarItem("exit", PinnedPriority) { TooltipIconButton(Icons.Outlined.Close, "退出多选", onExitSelection, shortcut = "Esc") })
             add(BarItem("selected", PinnedPriority) { Text("已选 $selectedCount 项", style = MaterialTheme.typography.labelLarge, maxLines = 1) })
@@ -297,6 +296,8 @@ internal fun ExplorerCommandBar(
                     )
                 })
             }
+        } else if (customLeading.isNotEmpty()) {
+            addAll(customLeading)
         } else if (commands.create) {
             add(BarItem("new", PinnedPriority) { MenuTextButton(Icons.Outlined.Add, "新建", newActions) })
         }
@@ -321,14 +322,14 @@ internal fun ExplorerCommandBar(
         if (commands.findDuplicates) {
             // FileCopy 与「复制」的 ContentCopy 都是叠放的两张纸，带上文字才不会被认成复制。图标不换，
             // 查重报告与库使用同一会话摘要。
-            add(BarItem("findDuplicates", 20, listOf(SheetAction(Icons.Outlined.FileCopy, "查找重复", onFindDuplicates, group = ActionGroup.Select))) {
+            add(BarItem("findDuplicates", 60, listOf(SheetAction(Icons.Outlined.FileCopy, "查找重复", onFindDuplicates, group = ActionGroup.Select))) {
                 BarTextButton(Icons.Outlined.FileCopy, "查找重复", onFindDuplicates)
             })
         }
         // 与查找重复同为作用于整个文件夹的整理，摆在一起；条件与窄窗口浏览顶栏「更多」里的同一项相同（DriveCommands）
         if (commands.canonicalNaming) {
             val action = DriveActions.canonicalName(onCanonicalNaming)
-            add(BarItem("canonicalNaming", 15, listOf(action)) {
+            add(BarItem("canonicalNaming", 55, listOf(action)) {
                 BarTextButton(action.icon, action.label, onCanonicalNaming)
             })
         }
@@ -437,9 +438,6 @@ internal fun ViewSwitcher(
             }
             PikoDropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                 val modes = DriveViewMode.entries
-                // 海报墙与图库下面另起一组挑卡片大小，主修饰键加滚轮走的也是这几档；触控板与触屏从这里挑
-                val sizeCount = if (viewMode.isGrid) TileSize.entries.size else 0
-                val total = modes.size + sizeCount
                 modes.forEachIndexed { index, mode ->
                     val current = mode == viewMode
                     DropdownMenuItem(
@@ -452,18 +450,31 @@ internal fun ViewSwitcher(
                                 modifier = Modifier.size(20.dp),
                             )
                         },
-                        shape = menuItemShape(index, total),
+                        shape = menuItemShape(index, modes.size),
                         onClick = {
                             menuOpen = false
                             onViewModeChange(mode)
                         },
                     )
                 }
-                if (sizeCount > 0) {
-                    Spacer(Modifier.height(6.dp))
-                    TileSizeMenuItems(tileSize, firstIndex = modes.size, total = total) {
-                        menuOpen = false
-                        onTileSizeChange(it)
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
+                ) {
+                    TileSize.entries.forEachIndexed { index, size ->
+                        TonalToggleButton(
+                            checked = tileSize == size,
+                            onCheckedChange = {
+                                onTileSizeChange(size)
+                                menuOpen = false
+                            },
+                            shapes = connectedToggleShapes(index, TileSize.entries.size),
+                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            modifier = Modifier.weight(1f).height(38.dp),
+                        ) {
+                            Text(size.label, maxLines = 1)
+                        }
                     }
                 }
             }

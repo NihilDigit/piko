@@ -10,6 +10,17 @@ import kotlin.test.assertTrue
 
 class DuplicateGroupingTest {
 
+    @Test
+    fun `recommended rows preserve version size order while explicit rules reorder`() {
+        val small = file("tv/Title.S01E03.720p.mkv", size = 40)
+        val large = file("anime/[Group] Title - 03 [1080p].mkv", size = 96)
+        val group = findDuplicates(listOf(small, large)).versions.single()
+
+        assertEquals(listOf(large.file.id, small.file.id), group.orderedRows(DuplicateKeepRule.RECOMMENDED).map { it.file.id })
+        assertEquals(listOf(small.file.id, large.file.id), group.orderedRows(DuplicateKeepRule.SMALLEST).map { it.file.id })
+        assertEquals(listOf(small.file.id, large.file.id), group.orderedRows(DuplicateKeepRule.RECOMMENDED, "tv").map { it.file.id })
+    }
+
     private var nextId = 0
 
     private fun file(
