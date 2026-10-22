@@ -24,6 +24,8 @@ class VideoFolderBatch(
 /** 画廊保留短视频与未知时长的视频；信息流另行决定能否截出片段。 */
 internal fun FileStat.isDiscoverableVideo(): Boolean = isPlayableVideo() && !trashed && !isUploading
 
+internal fun FileStat.hasGalleryCover(): Boolean = thumbnailLink.isNotBlank() || hash.isNotBlank()
+
 /** 显式选中的文件也能只借用作品归属，不必套用信息流的样片过滤。 */
 suspend fun analyzeVideoFolder(folderId: String, files: List<FileStat>): VideoFolderBatch = withContext(Dispatchers.Default) {
     currentCoroutineContext().ensureActive()

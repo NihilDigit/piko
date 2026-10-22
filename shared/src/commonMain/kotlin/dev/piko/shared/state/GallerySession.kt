@@ -26,6 +26,11 @@ class GallerySession(
     private val scope = CoroutineScope(ownerScope.coroutineContext + SupervisorJob(ownerScope.coroutineContext[Job]))
     var root by mutableStateOf<PikoPathBreadcrumb?>(null)
         private set
+    var shown by mutableStateOf(false)
+        private set
+    var selectedVideoCount by mutableStateOf<Int?>(null)
+        private set
+    val scopeLabel: String get() = selectedVideoCount?.let { "已选 $it 个视频" } ?: root?.name.orEmpty()
     var account by mutableStateOf<String?>(null)
         private set
     var files by mutableStateOf<List<FileStat>>(emptyList())
@@ -39,6 +44,7 @@ class GallerySession(
     var failedFolders by mutableStateOf<Map<String, Throwable>>(emptyMap())
         private set
 
+    private var selectedIds: Set<String>? = null
     private var rootPath = emptyList<PikoPathBreadcrumb>()
     private var folders by mutableStateOf(driveRepo.folderIndex.flow.value)
     private var discovery: VideoDiscovery? = null
@@ -69,18 +75,46 @@ class GallerySession(
         }
     }
 
-    fun open(path: List<PikoPathBreadcrumb>) {
+    fun open(path: List<PikoPathBreadcrumb>, selected: List<FileStat>? = null) {
         val folder = path.lastOrNull() ?: return close()
         val owner = driveRepo.currentAccount ?: return close()
-        if (root?.id == folder.id && account == owner) {
+        val selection = selected?.filter { it.isDiscoverableVideo() && it.hasGalleryCover() }?.distinctBy { it.id }?.toList()
+        val ids = selection?.mapTo(HashSet()) { it.id }
+        if (root?.id == folder.id && account == owner && selectedIds == ids) {
             rootPath = path
             root = folder
+            shown = true
             return
         }
         close()
+        shown = true
         rootPath = path
         root = folder
         account = owner
+        selectedIds = ids
+        selectedVideoCount = selection?.size
+        if (selection != null) {
+            val request = ++generation
+            loading = true
+            scanJob = scope.launch {
+                try {
+                    selection.groupBy { it.parentId }.forEach { (folderId, items) ->
+                        val batch = analyzeVideoFolder(folderId, items)
+                        if (request != generation) return@launch
+                        discoveredFolders += folderId
+                        folderVideos[folderId] = items
+                        workOf.putAll(batch.workOf)
+                    }
+                    rebuildCandidates()
+                    appendCandidates(Int.MAX_VALUE)
+                    hasMore = false
+                    isComplete = true
+                } finally {
+                    if (request == generation) loading = false
+                }
+            }
+            return
+        }
         discovery = VideoDiscovery(driveRepo, owner, folder.id)
         discoveredFolders += folder.id
         hasMore = true
@@ -163,7 +197,10 @@ class GallerySession(
         scanJob?.cancel()
         scanJob = null
         discovery = null
+        shown = false
         root = null
+        selectedIds = null
+        selectedVideoCount = null
         account = null
         rootPath = emptyList()
         files = emptyList()
@@ -210,7 +247,7 @@ class GallerySession(
         }
         discoveredFolders += batch.files.filter { it.isFolder }.map { it.id }
         folderVideos[batch.folderId].orEmpty().forEach { workOf.remove(it.id) }
-        folderVideos[batch.folderId] = batch.files.filter { it.isDiscoverableVideo() }
+        folderVideos[batch.folderId] = batch.files.filter { it.isDiscoverableVideo() && it.hasGalleryCover() }
         workOf.putAll(batch.workOf)
     }
 
@@ -285,6 +322,6 @@ class GallerySession(
         const val FILES_PER_REQUEST = 48
         const val FOLDERS_PER_REQUEST = 16
         const val OPENING_FOLDERS = 4
-        const val LOAD_AHEAD_FILES = 8
+        const val LOAD_AHEAD_FILES = 24
     }
 }

@@ -56,37 +56,31 @@ internal fun GalleryPane(
     var visibleIds by remember(rootKey) { mutableStateOf<Set<String>>(emptySet()) }
     LaunchedEffect(loading, hasMore, failureCount, files.size, visibleIds) {
         if (!loading && hasMore && failureCount == 0) {
-            if (files.isEmpty() || files.takeLast(24).any { it.id in visibleIds }) {
+            if (files.isEmpty() || files.takeLast(36).any { it.id in visibleIds }) {
                 onRequestMore()
             }
         }
     }
     Column(modifier) {
-        Row(
-            Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            if (!loading) {
-                Text(
-                    when {
-                        failureCount > 0 -> "${files.size} 个视频，$failureCount 个目录读取失败"
-                        files.isEmpty() && complete -> "没有视频"
-                        else -> "${files.size} 个视频"
-                    },
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f),
-                )
-                if (failureCount > 0) TextButton(onClick = onRetry) { Text("重试") }
-                if (hasMore) TextButton(onClick = onRequestMore) { Text("继续查找") }
-            } else if (files.isNotEmpty()) {
-                InlineLoadingIndicator()
-                Spacer(Modifier.weight(1f))
-            } else {
-                Spacer(Modifier.weight(1f))
+        if (showViewSwitcher || failureCount > 0) {
+            Row(
+                Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (failureCount > 0 && !loading) {
+                    Text(
+                        "有目录读取失败",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = onRetry) { Text("重试") }
+                } else {
+                    Spacer(Modifier.weight(1f))
+                }
+                if (showViewSwitcher) ViewSwitcher(viewMode, onViewModeChange, tileSize, onTileSizeChange, false, null, galleryShown = true)
             }
-            if (showViewSwitcher) ViewSwitcher(viewMode, onViewModeChange, tileSize, onTileSizeChange, false, null)
         }
         key(rootKey) {
             Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -115,7 +109,7 @@ internal fun GalleryPane(
                     ) {
                         PikoLoadingIndicator(size = 56.dp)
                         Text(
-                            "正在扫描子文件夹中的视频…",
+                            "正在准备",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             style = MaterialTheme.typography.bodyMedium,
                         )

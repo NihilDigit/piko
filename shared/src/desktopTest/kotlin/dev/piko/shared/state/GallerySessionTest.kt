@@ -230,4 +230,23 @@ class GallerySessionTest {
         assertTrue(session.isComplete)
         session.dispose()
     }
+
+    @Test fun selectedVideosRemainFixedWithoutTraversingFolders() = smoke { scope ->
+        val server = FakePikPakServer()
+        val chosen = server.addVideo("chosen.mkv")
+        server.addVideo("outside.mkv")
+        val nested = server.addFolder("nested")
+        server.addVideo("nested.mkv", nested.id)
+        val repo = PikoDriveRepository(server.provider())
+        val listed = repo.listBrowsable("", dev.piko.shared.data.PikoFileSortOrder.TIME_DESC).getOrThrow()
+        val before = server.count("GET /drive/v1/files")
+        val session = GallerySession(repo, scope)
+        session.open(listOf(PikoDriveRepository.ROOT_BREADCRUMB), listed.filter { it.id == chosen.id || it.id == nested.id })
+        awaitUntil("所选视频画廊加载完成") { !session.loading && session.isComplete }
+        assertEquals(listOf(chosen.id), session.files.map { it.id })
+        assertEquals(1, session.selectedVideoCount)
+        assertEquals("已选 1 个视频", session.scopeLabel)
+        assertEquals(before, server.count("GET /drive/v1/files"))
+        session.dispose()
+    }
 }

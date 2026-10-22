@@ -39,9 +39,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
+import coil3.compose.AsyncImagePainter
 import coil3.compose.LocalPlatformContext
 import coil3.request.ImageRequest
 import coil3.size.Precision
+import kotlinx.coroutines.CancellationException
 import dev.piko.data.repository.FileCategory
 import dev.piko.data.repository.fileCategory
 import dev.piko.data.repository.isPlayableVideo
@@ -315,7 +317,7 @@ fun SpoilerThumbnail(
                 val image = state.result.image
                 if (image.width > 0 && image.height > 0) onAspectRatio?.invoke(image.width.toFloat() / image.height)
             },
-            onError = { onError?.invoke() },
+            onError = { state -> if (!state.isCancellation()) onError?.invoke() },
         )
         return
     }
@@ -375,6 +377,9 @@ private fun BlurredThumbnail(model: Any, blur: SpoilerBlur, modifier: Modifier, 
             val image = state.result.image
             if (image.width > 0 && image.height > 0) onAspectRatio?.invoke(image.width.toFloat() / image.height)
         },
-        onError = { onError?.invoke() },
+        onError = { state -> if (!state.isCancellation()) onError?.invoke() },
     )
 }
+
+private fun AsyncImagePainter.State.Error.isCancellation(): Boolean =
+    result.throwable is CancellationException || result.throwable.cause is CancellationException

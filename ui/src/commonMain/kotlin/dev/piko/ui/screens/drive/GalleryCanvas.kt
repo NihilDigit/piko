@@ -28,12 +28,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateSetOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import coil3.request.ErrorResult
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -64,6 +67,9 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
+import coil3.SingletonImageLoader
+import coil3.compose.LocalPlatformContext
+import coil3.request.ImageRequest
 import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.components.ContextMenuArea
 import dev.piko.ui.components.PikoBrandIcons
@@ -71,15 +77,24 @@ import dev.piko.ui.components.PosterSpoilerBlur
 import dev.piko.ui.components.SpoilerThumbnail
 import dev.piko.ui.components.focusIndication
 import dev.piko.ui.components.locateHighlight
+import dev.piko.ui.components.placeholderColors
 import dev.piko.ui.components.selectionClicks
 import dev.piko.ui.components.toReadableSize
+import dev.piko.ui.components.watermarkIcon
 import dev.piko.ui.components.zoomOnWheel
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.ShortcutModifier
 import io.github.nihildigit.pikpak.FileStat
+import io.github.nihildigit.pikpak.thumbnailUrlOf
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.roundToInt
+
+private fun FileStat.galleryCoverUrl(): String =
+    thumbnailLink.ifBlank { if (hash.isNotBlank()) thumbnailUrlOf(hash) else "" }
 
 /** Keep this state at the browsing entry, so opening and closing playback retains the band. */
 internal class GalleryCanvasState internal constructor(anchor: GalleryAnchor? = null) {
@@ -132,16 +147,61 @@ internal fun GalleryCanvas(
     onVisibleFilesChanged: (Set<String>) -> Unit = {},
 ) {
     val widthClass = currentWidthClass()
-    val columns = tileColumns(DriveViewMode.GALLERY, tileSize, widthClass)
-    val maximumWidth = tileMaxWidth(DriveViewMode.GALLERY, tileSize)
+    val columns = galleryTileColumns(tileSize, widthClass)
+    val maximumWidth = galleryTileMaxWidth(tileSize)
     val ratios = remember(state) { mutableStateMapOf<String, Float>() }
-    val descriptors = files.distinctBy { it.id }.map { file ->
+    val failedCovers = remember(state) { mutableStateSetOf<String>() }
+    val prefetched = remember(state) { hashSetOf<String>() }
+    val inFlight = remember(state) { hashSetOf<String>() }
+    val prefetchScope = rememberCoroutineScope()
+    val prefetchLimit = remember(state) { Semaphore(COVER_PREFETCH_CONCURRENCY) }
+    val platformContext = LocalPlatformContext.current
+    val coverFiles = files.filter { it.id !in failedCovers }
+    val descriptors = coverFiles.distinctBy { it.id }.map { file ->
         GalleryLayoutItem(file.id, GalleryShape.nearest((aspectRatio(file) ?: ratios[file.id])?.toDouble()))
     }
-    val byId = files.associateBy { it.id }
+    val byId = coverFiles.associateBy { it.id }
     val onVisible by rememberUpdatedState(onVisibleFilesChanged)
-    LaunchedEffect(state) {
-        snapshotFlow { state.visibleFileIds }.collect { onVisible(it) }
+    LaunchedEffect(state, failedCovers.size) {
+        snapshotFlow { state.visibleFileIds + failedCovers }.collect { onVisible(it) }
+    }
+    // 激进封面预取：使用独立于滚动帧重组的常驻作用域，避免滚动时频繁取消在途图片下载
+    LaunchedEffect(coverFiles, state.visibleFileIds) {
+        val visible = state.visibleFileIds
+        val anchorIndex = if (visible.isEmpty()) 0 else coverFiles.indexOfLast { it.id in visible }.coerceAtLeast(0)
+        val targets = coverFiles.drop((anchorIndex - COVER_PREFETCH_BEHIND).coerceAtLeast(0))
+            .take(COVER_PREFETCH_AHEAD + COVER_PREFETCH_BEHIND)
+            .filter { it.galleryCoverUrl().isNotEmpty() && it.id !in prefetched && inFlight.add(it.id) }
+        if (targets.isEmpty()) return@LaunchedEffect
+        val loader = SingletonImageLoader.get(platformContext)
+        targets.forEach { file ->
+            val coverUrl = file.galleryCoverUrl()
+            prefetchScope.launch {
+                try {
+                    prefetchLimit.withPermit {
+                        val request = ImageRequest.Builder(platformContext)
+                            .data(coverUrl)
+                            .build()
+                        val result = loader.execute(request)
+                        val image = result.image
+                        if (image != null) {
+                            prefetched.add(file.id)
+                            if (image.width > 0 && image.height > 0) {
+                                val ratio = image.width.toFloat() / image.height
+                                if (ratios[file.id] != ratio) ratios[file.id] = ratio
+                            }
+                        } else if (result is ErrorResult &&
+                            result.throwable !is kotlinx.coroutines.CancellationException &&
+                            result.throwable.cause !is kotlinx.coroutines.CancellationException
+                        ) {
+                            failedCovers.add(file.id)
+                        }
+                    }
+                } finally {
+                    inFlight.remove(file.id)
+                }
+            }
+        }
     }
     val scroll = rememberScrollableState(state::scrollBy)
     SubcomposeLayout(
@@ -196,6 +256,7 @@ internal fun GalleryCanvas(
                         isBlurred(file), callbacks,
                         locationLabel = locationLabel(file),
                         onAspectRatio = { ratio -> if (ratios[file.id] != ratio) ratios[file.id] = ratio },
+                        onCoverFailed = { failedCovers.add(file.id) },
                     )
                 }
             }.single().measure(Constraints.fixed(placement.width.roundToInt().coerceAtLeast(1), placement.height.roundToInt().coerceAtLeast(1)))
@@ -217,6 +278,7 @@ private fun GalleryCanvasCover(
     callbacks: DriveItemCallbacks,
     locationLabel: String?,
     onAspectRatio: (Float) -> Unit,
+    onCoverFailed: () -> Unit,
 ) {
     val focus = remember { FocusRequester() }
     val shape = MaterialTheme.shapes.medium
@@ -227,10 +289,10 @@ private fun GalleryCanvasCover(
         if (seconds >= 3600) "${seconds / 3600}:$minutes:$remainder" else "$minutes:$remainder"
     } ?: file.sizeBytes.takeIf { it > 0 }?.toReadableSize()
     val isMac = LocalPikoPlatform.current.shortcutModifier == ShortcutModifier.Command
-    var coverFailed by remember(file.thumbnailLink) { mutableStateOf(false) }
+    val coverUrl = file.galleryCoverUrl()
+    var coverFailed by remember(coverUrl) { mutableStateOf(false) }
     ContextMenuArea(
         actions = { callbacks.contextActions(file) },
-        onSelect = if (isSelectionMode) null else callbacks.onStartSelection?.let { select -> ({ select(file) }) },
         modifier = Modifier
             .fillMaxSize()
             .focusRequester(focus)
@@ -274,19 +336,41 @@ private fun GalleryCanvasCover(
                 )
                 .locateHighlight(isHighlighted, shape),
         ) {
-            if (file.thumbnailLink.isEmpty() || coverFailed) {
-                Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerHigh), contentAlignment = Alignment.Center) {
-                    Icon(Icons.Outlined.Movie, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(36.dp))
+            if (coverUrl.isEmpty() || coverFailed) {
+                val (container, content) = file.placeholderColors()
+                Box(Modifier.fillMaxSize().background(container), contentAlignment = Alignment.Center) {
+                    Icon(
+                        file.watermarkIcon(),
+                        contentDescription = null,
+                        tint = content.copy(alpha = 0.6f),
+                        modifier = Modifier.size(40.dp).padding(bottom = 12.dp),
+                    )
                 }
             } else {
-                SpoilerThumbnail(file.thumbnailLink, isBlurred, PosterSpoilerBlur, Modifier.fillMaxSize(), onAspectRatio = onAspectRatio, onError = { coverFailed = true })
+                SpoilerThumbnail(
+                    coverUrl,
+                    isBlurred,
+                    PosterSpoilerBlur,
+                    Modifier.fillMaxSize(),
+                    onAspectRatio = onAspectRatio,
+                    onError = {
+                        coverFailed = true
+                        onCoverFailed()
+                    },
+                )
             }
             Column(
                 Modifier.align(Alignment.BottomStart).fillMaxWidth()
                     .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.28f), Color.Black.copy(alpha = 0.80f))))
                     .padding(horizontal = 10.dp, vertical = 8.dp),
             ) {
-                Text(file.name.substringBeforeLast('.', file.name), color = Color.White, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    file.name.substringBeforeLast('.', file.name),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelMedium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
                 if (!locationLabel.isNullOrBlank()) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         Icon(Icons.Outlined.Folder, contentDescription = null, tint = Color.White.copy(alpha = 0.75f), modifier = Modifier.size(12.dp))
@@ -321,3 +405,7 @@ private fun GalleryCanvasCover(
         }
     }
 }
+
+private const val COVER_PREFETCH_AHEAD = 64
+private const val COVER_PREFETCH_BEHIND = 12
+private const val COVER_PREFETCH_CONCURRENCY = 8

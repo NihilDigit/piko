@@ -15,11 +15,9 @@ class GalleryCanvasLayoutTest {
     private fun frame(layout: GalleryCanvasLayout, items: List<GalleryLayoutItem>, width: Double = 1000.0, height: Double = 700.0, columns: Int = 5) =
         layout.frame(items, columns, width, height, 6.0)
 
-    private fun assertContinuous(frame: List<GalleryPlacement>, height: Double = 700.0) {
+    private fun assertNoOverlap(frame: List<GalleryPlacement>) {
         assertEquals(frame.size, frame.map { it.key }.toSet().size)
         frame.groupBy { it.key.column }.values.forEach { lane ->
-            assertTrue(lane.first().top + lane.first().height <= 0.0001, "one complete tile before viewport")
-            assertTrue(lane.last().top >= height, "one complete tile after viewport")
             lane.zipWithNext().forEach { (a, b) ->
                 assertTrue(abs(b.top - a.top - a.height - 6.0) < 0.0001, "no overlap or unexpected hole")
             }
@@ -47,70 +45,42 @@ class GalleryCanvasLayoutTest {
     }
 
     @Test
-    fun `mixed bands cover viewport without overlaps at large positive and negative offsets`() {
+    fun `finite stream clamps scroll between zero and maxScrollOffset without repeating items`() {
         val layout = GalleryCanvasLayout()
         val pool = items(150, mixed = true)
-        for (delta in listOf(0.0, 137.0, 810.0, -2194.0, 1e8, -2e8)) {
-            layout.scrollBy(delta)
-            val frame = frame(layout, pool)
-            assertContinuous(frame)
-            frame.forEach { assertTrue(abs(it.width / it.height - it.shape.ratio) < 0.0001) }
-            assertEquals(1, frame.map { it.width }.toSet().size)
-        }
+        frame(layout, pool)
+        assertTrue(layout.maxScrollOffset > 0.0)
+        // Scrolling above top clamps at 0
+        assertEquals(0.0, layout.scrollBy(-500.0), 0.0001)
+        assertEquals(0.0, layout.scrollOffset, 0.0001)
+        // Scrolling past bottom clamps at maxScrollOffset
+        layout.scrollBy(1e8)
+        assertEquals(layout.maxScrollOffset, layout.scrollOffset, 0.0001)
+        val bottomFrame = frame(layout, pool)
+        assertNoOverlap(bottomFrame)
+        assertEquals(bottomFrame.size, bottomFrame.mapNotNull { it.fileId }.toSet().size)
     }
 
     @Test
-    fun `landscape lanes alternate by half a tile pitch and fill top immediately`() {
+    fun `lanes start flush at the top and stagger bottoms across landscape items`() {
         val frame = frame(GalleryCanvasLayout(), items(100))
         val lane0 = frame.first { it.key.column == 0 && it.key.ordinal == 0L }
         val lane1 = frame.first { it.key.column == 1 && it.key.ordinal == 0L }
-        assertEquals((lane0.height + 6) / 2, lane1.top - lane0.top, 0.0001)
-        assertContinuous(frame)
+        assertEquals(0.0, lane0.top, 0.0001)
+        assertEquals(0.0, lane1.top, 0.0001)
+        assertTrue(abs(lane1.height - lane0.height) > 10.0)
+        assertNoOverlap(frame)
         assertTrue(frame.none { it.fileId == null })
     }
 
     @Test
-    fun `single item never repeats inside viewport and empty pool only pads geometry`() {
+    fun `small pool renders each item once without cycling or glyph placeholders`() {
         for (count in listOf(0, 1, 3)) {
             val layout = GalleryCanvasLayout()
-            repeat(40) {
-                val frame = frame(layout, items(count))
-                assertContinuous(frame)
-                val visibleIds = frame.filter { it.top < 700 && it.top + it.height > 0 }.mapNotNull { it.fileId }
-                assertEquals(visibleIds.size, visibleIds.toSet().size)
-                if (count == 0) assertTrue(frame.all { it.fileId == null })
-                layout.scrollBy(211.0)
-            }
-        }
-    }
-
-    @Test
-    fun `first discovery fills an initially empty viewport and padding has mixed shapes`() {
-        val layout = GalleryCanvasLayout()
-        val empty = frame(layout, emptyList())
-        assertEquals(GalleryShape.entries.toSet(), empty.map { it.shape }.toSet())
-        val populated = frame(layout, items(120, mixed = true))
-        assertTrue(populated.none { it.fileId == null })
-        assertContinuous(populated)
-    }
-
-    @Test
-    fun `mixed content uses balanced lane heights before adding decoration`() {
-        val skewed = List(100) { GalleryLayoutItem("$it", if (it % 5 == 0) GalleryShape.Portrait else GalleryShape.Landscape) }
-        val placements = frame(GalleryCanvasLayout(), skewed)
-        assertTrue(placements.none { it.fileId == null })
-        assertContinuous(placements)
-    }
-
-    @Test
-    fun `twelve mixed videos filling desktop viewport never add decoration for buffers`() {
-        val layout = GalleryCanvasLayout()
-        val mixed = items(12, mixed = true)
-        repeat(40) {
-            val placements = frame(layout, mixed, width = 1184.0, height = 688.0, columns = 4)
-            assertTrue(placements.none { it.fileId == null })
-            assertContinuous(placements, height = 688.0)
-            layout.scrollBy(173.0)
+            val frame = frame(layout, items(count))
+            assertEquals(count, frame.size)
+            assertEquals(count, frame.mapNotNull { it.fileId }.toSet().size)
+            assertEquals(0.0, layout.maxScrollOffset, 0.0001)
         }
     }
 
@@ -124,16 +94,16 @@ class GalleryCanvasLayoutTest {
         assertEquals(GalleryShape.Landscape, initial.first { it.fileId == "video-0" }.shape)
         assertEquals(GalleryShape.Portrait, corrected.first { it.fileId == "video-0" }.shape)
         assertEquals(0.0, corrected.first { it.fileId == "video-0" && it.key.ordinal == 0L }.top, 0.0001)
-        assertContinuous(corrected)
+        assertNoOverlap(corrected)
         assertSameGeometry(corrected, frame(layout, learned + items(120).drop(100)))
     }
 
     @Test
-    fun `cover dimensions do not reflow a band after the user scrolls or returns`() {
+    fun `cover dimensions do not reflow already placed items after user scrolls`() {
         val layout = GalleryCanvasLayout()
         val unknown = items(100)
         frame(layout, unknown)
-        layout.scrollBy(1.0)
+        layout.scrollBy(10.0)
         val before = frame(layout, unknown)
         val learned = unknown.map { it.copy(shape = GalleryShape.Portrait) }
         assertSameGeometry(before, frame(layout, learned))
@@ -143,30 +113,16 @@ class GalleryCanvasLayoutTest {
     }
 
     @Test
-    fun `cycling reconstructs same content and geometry on reverse scrolling`() {
-        val layout = GalleryCanvasLayout()
-        val pool = items(101, mixed = true)
-        val initial = frame(layout, pool)
-        repeat(2000) { layout.scrollBy(103.0); frame(layout, pool) }
-        repeat(2000) { layout.scrollBy(-103.0); frame(layout, pool) }
-        assertEquals(initial, frame(layout, pool))
-        assertEquals(5, layout.checkpointCount)
-    }
-
-    @Test
     fun `append and newly discovered ratios preserve viewport and all visited history`() {
         val layout = GalleryCanvasLayout()
-        val pool = items(45)
+        val pool = items(60)
         val origin = frame(layout, pool)
-        layout.scrollBy(1800.0)
+        layout.scrollBy(150.0)
         val before = frame(layout, pool)
-        val updated = items(90, mixed = true)
-        assertEquals(before, frame(layout, updated))
-        repeat(40) { layout.scrollBy(137.0); frame(layout, updated) }
-        layout.scrollBy(-5480.0)
-        assertEquals(before, frame(layout, updated))
-        layout.scrollBy(-1800.0)
-        assertEquals(origin, frame(layout, updated))
+        val updated = items(120, mixed = true)
+        assertSameGeometry(before, frame(layout, updated))
+        layout.scrollBy(-150.0)
+        assertSameGeometry(origin, frame(layout, updated))
     }
 
     @Test
@@ -179,39 +135,9 @@ class GalleryCanvasLayoutTest {
         val anchor = assertNotNull(layout.anchor())
         val restored = GalleryCanvasLayout(anchor)
         val resized = frame(restored, pool, width = 720.0, height = 540.0, columns = 3)
-        val placement = resized.first { it.fileId == anchor.fileId && abs(-it.top / it.height - anchor.fraction) < 0.0001 }
+        val placement = resized.first { it.fileId == anchor.fileId }
         assertEquals(anchor.fraction, -placement.top / placement.height, 0.0001)
         val directResize = frame(layout, pool, width = 720.0, height = 540.0, columns = 3)
         assertEquals(resized, directResize)
-    }
-
-    @Test
-    fun `render count and checkpoint memory stay bounded during endless scrolling`() {
-        val layout = GalleryCanvasLayout()
-        val pool = items(3000, mixed = true)
-        val minimumHeight = ((1000.0 - 24) / 5) / GalleryShape.Landscape.ratio
-        val bound = 5 * (ceil(700 / (minimumHeight + 6)).toInt() + 4)
-        repeat(5000) {
-            layout.scrollBy(if (it % 2 == 0) 1e6 else -999111.0)
-            assertTrue(frame(layout, pool).size <= bound)
-        }
-        assertEquals(5, layout.checkpointCount)
-    }
-
-    @Test
-    fun `demand driven appends retain visited tiles rather than full historical catalogs`() {
-        val layout = GalleryCanvasLayout()
-        val pool = items(3000, mixed = true)
-        var visitedTileBudget = frame(layout, pool.take(100)).size
-        repeat(100) { revision ->
-            layout.scrollBy(170.0)
-            val before = frame(layout, pool.take(100 + revision * 20))
-            val after = frame(layout, pool.take(120 + revision * 20))
-            assertSameGeometry(before, after)
-            assertContinuous(after)
-            visitedTileBudget += before.size
-        }
-        assertTrue(layout.retainedCatalogEntryCount < pool.size + visitedTileBudget,
-            "retained ${layout.retainedCatalogEntryCount} entries for 2100 current candidates")
     }
 }

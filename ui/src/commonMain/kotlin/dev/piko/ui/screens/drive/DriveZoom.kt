@@ -35,6 +35,27 @@ internal val TileSize.label
         TileSize.SMALL -> "小"
     }
 
+internal const val GALLERY_TILE_PREF_KEY = "GALLERY"
+
+internal fun galleryTileColumns(size: TileSize, width: WidthClass): Int {
+    val (small, medium, large) = when (width) {
+        WidthClass.Compact -> Triple(3, 2, 1)
+        WidthClass.Medium -> Triple(4, 3, 2)
+        WidthClass.Expanded -> Triple(6, 4, 3)
+    }
+    return when (size) {
+        TileSize.SMALL -> small
+        TileSize.MEDIUM -> medium
+        TileSize.LARGE -> large
+    }
+}
+
+internal fun galleryTileMaxWidth(size: TileSize): Dp = when (size) {
+    TileSize.SMALL -> 240.dp
+    TileSize.MEDIUM -> 320.dp
+    TileSize.LARGE -> 480.dp
+}
+
 /**
  * 每一档一行排几栏，按窗口宽度档位取，卡宽由网格宽度除出来（见 DriveFileGrid 的 TileColumns）。
  * 按栏数而不按固定卡宽分档：固定卡宽时栏数随宽度跳，平板竖握（700dp 上下）大档只剩一栏，某些宽度下两档又撞成同样的栏数；
@@ -48,11 +69,6 @@ internal fun tileColumns(mode: DriveViewMode, size: TileSize, width: WidthClass)
             WidthClass.Expanded -> Triple(3, 2, 1)
         }
         DriveViewMode.POSTER -> when (width) {
-            WidthClass.Compact -> Triple(3, 2, 1)
-            WidthClass.Medium -> Triple(4, 3, 2)
-            WidthClass.Expanded -> Triple(6, 4, 3)
-        }
-        DriveViewMode.GALLERY -> when (width) {
             WidthClass.Compact -> Triple(3, 2, 1)
             WidthClass.Medium -> Triple(4, 3, 2)
             WidthClass.Expanded -> Triple(6, 4, 3)
@@ -80,16 +96,10 @@ internal fun tileMaxWidth(mode: DriveViewMode, size: TileSize): Dp = when (mode)
         TileSize.MEDIUM -> 400.dp
         TileSize.LARGE -> 560.dp
     }
-    DriveViewMode.GALLERY -> when (size) {
-        TileSize.SMALL -> 240.dp
-        TileSize.MEDIUM -> 320.dp
-        TileSize.LARGE -> 480.dp
-    }
 }
 
 /**
- * 主修饰键加滚轮的档位链：列表小、中、大，再到海报墙小、中、大。图库不在链上：它只列有缩略图的文件，滚进去文件像是没了；
- * 人在图库里时只在图库自己的几档里走。两端停住，不循环。
+ * 主修饰键加滚轮的档位链：列表小、中、大，再到海报墙小、中、大。两端停住，不循环。
  */
 private val ZoomChain = TileSize.entries.map { DriveViewMode.LIST to it } + TileSize.entries.map { DriveViewMode.POSTER to it }
 
@@ -102,12 +112,6 @@ internal class DriveZoom(private val preferences: PikoUserPreferences) {
 
     suspend fun step(larger: Boolean) = lock.withLock {
         val mode = DriveViewMode.of(preferences.driveViewModeFlow.first())
-        if (mode == DriveViewMode.GALLERY) {
-            val size = sizeOf(mode)
-            val next = size.step(larger)
-            if (next != size) preferences.setDriveTileSize(mode.name, next.name)
-            return@withLock
-        }
         val here = ZoomChain.indexOf(mode to sizeOf(mode))
         val (nextMode, nextSize) = ZoomChain[(here + if (larger) 1 else -1).coerceIn(ZoomChain.indices)]
         if (nextMode != mode) preferences.setDriveViewMode(nextMode.name)
