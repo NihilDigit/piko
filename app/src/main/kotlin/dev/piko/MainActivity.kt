@@ -128,6 +128,7 @@ class MainActivity : ComponentActivity() {
         intent.dataString?.let(PikPakAppLink::parse)?.let { target ->
             when (target) {
                 PikPakAppLink.Target.Drive -> PikoApplication.instance.services.requestOpenDrive()
+                is PikPakAppLink.Target.Import -> PikoApplication.instance.instantMagnetRepository.onIncomingMagnet(target.text)
             }
             return
         }

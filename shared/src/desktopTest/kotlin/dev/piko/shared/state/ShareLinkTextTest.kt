@@ -29,6 +29,37 @@ class ShareLinkTextTest {
     }
 
     @Test
+    fun `official share domains normalize to the SDK domain`() {
+        listOf("mypikpak.com", "mypikpak.net", "pikpak.me", "pikpakdrive.com", "pickpackapp.com").forEach { host ->
+            listOf(host, "www.$host", "share.$host").forEach { domain ->
+                listOf("http", "https").forEach { scheme ->
+                    assertEquals("https://mypikpak.com/s/VPabc_123-x",
+                        InstantSheetState.findShareLink("链接：$scheme://$domain/s/VPabc_123-x?pwd=k3f9"))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `custom app share links expose share ID and pass code`() {
+        val link = "pikpakapp://mypikpak.com/drive/share_watch?share_id=VPabc_123&pass_code=k3f9&from=web"
+        assertEquals("https://mypikpak.com/s/VPabc_123", InstantSheetState.findShareLink(link))
+        assertEquals("k3f9", InstantSheetState.findSharePassCode(link))
+        assertEquals("https://mypikpak.com/s/VPabc_123", InstantSheetState.findShareLink(
+            "pikpakapp://mypikpak.com/drive/share_watch?from=web&share_id=VPabc_123"))
+    }
+
+    @Test
+    fun `empty query pass code does not consume the following parameter`() {
+        val link = "pikpakapp://mypikpak.com/drive/share_watch?share_id=VPabc_123&pass_code=&from=web"
+        assertEquals("https://mypikpak.com/s/VPabc_123", InstantSheetState.findShareLink(link))
+        assertNull(InstantSheetState.findSharePassCode(link))
+        assertNull(InstantSheetState.findSharePassCode("https://mypikpak.com/s/VPabc?pass_code&from=web"))
+        assertNull(InstantSheetState.findSharePassCode("https://mypikpak.com/s/VPabc?pass_code=from=web"))
+        assertEquals("abcd", InstantSheetState.findSharePassCode("pass_code: abcd"))
+    }
+
+    @Test
     fun `other links are not shares`() {
         assertNull(InstantSheetState.findShareLink("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"))
         assertNull(InstantSheetState.findShareLink("https://toapp.mypikpak.com/toapp?deepLink=%252Fdrive"))

@@ -1299,14 +1299,25 @@ class InstantSheetState private constructor(
 
         /**
          * 一段文本里的 PikPak 分享链接。分享常以「链接：https://mypikpak.com/s/… 提取码：abcd」的整段话转发，
-         * 链接不在开头，SDK 的 shareIdFromUrl 只认以链接开头的串，所以先在这里把它找出来。
+         * SDK 的 shareIdFromUrl 只认 mypikpak.com，所以先提取 ID 并统一域名。
          */
-        fun findShareLink(text: String): String? = SHARE_LINK.find(text)?.value
+        fun findShareLink(text: String): String? {
+            val webId = SHARE_LINK.find(text)?.groupValues?.get(1)
+            val appId = SHARE_APP_LINK.findAll(text).firstNotNullOfOrNull { link ->
+                SHARE_ID.find(link.value)?.groupValues?.get(1)
+            }
+            return (webId ?: appId)?.let { "https://mypikpak.com/s/$it" }
+        }
 
-        /** 与分享链接一起转发的提取码：「提取码：abcd」「密码 abcd」，或链接上的 ?pwd=abcd。 */
-        fun findSharePassCode(text: String): String? = SHARE_PASS_CODE.find(text)?.groupValues?.get(1)
+        /** 与分享链接一起转发的提取码，也支持官方 App 的 pass_code 查询参数。 */
+        fun findSharePassCode(text: String): String? =
+            SHARE_QUERY_PASS_CODE.find(text)?.groupValues?.get(1)
+                ?: SHARE_PASS_CODE.find(text)?.groupValues?.get(1)
 
-        private val SHARE_LINK = Regex("""https?://(?:www\.)?mypikpak\.com/s/[A-Za-z0-9_-]+""")
-        private val SHARE_PASS_CODE = Regex("""(?:提取码|密码|访问码|pwd|passcode)\s*[:：=]?\s*([A-Za-z0-9]{4,10})""", RegexOption.IGNORE_CASE)
+        private val SHARE_LINK = Regex("""https?://(?:[A-Za-z0-9-]+\.)*(?:mypikpak\.com|mypikpak\.net|pikpak\.me|pikpakdrive\.com|pickpackapp\.com)/s/([A-Za-z0-9_-]+)""", RegexOption.IGNORE_CASE)
+        private val SHARE_APP_LINK = Regex("""pikpakapp://[^\s/?#]+/drive/share_watch\?[^\s#]*""", RegexOption.IGNORE_CASE)
+        private val SHARE_ID = Regex("""[?&]share_id=([A-Za-z0-9_-]+)(?=[&#\s]|$)""", RegexOption.IGNORE_CASE)
+        private val SHARE_QUERY_PASS_CODE = Regex("""[?&](?:pwd|passcode|pass_code)=([A-Za-z0-9]{4,10})(?=[&#\s]|$)""", RegexOption.IGNORE_CASE)
+        private val SHARE_PASS_CODE = Regex("""(?<![A-Za-z0-9_?&])(?:提取码|密码|访问码|pwd|passcode|pass_code)(?:\s*[:：=]\s*|\s+)([A-Za-z0-9]{4,10})(?![A-Za-z0-9])""", RegexOption.IGNORE_CASE)
     }
 }

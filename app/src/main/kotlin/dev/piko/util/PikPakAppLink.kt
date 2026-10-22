@@ -1,5 +1,7 @@
 package dev.piko.util
 
+import dev.piko.shared.state.InstantSheetState
+import dev.piko.shared.state.extractLinks
 import java.net.URI
 import java.net.URLDecoder
 
@@ -9,28 +11,46 @@ import java.net.URLDecoder
  * PikPak 的 Telegram 机器人存完文件后发的就是这种链接，deepLink 是官方 App 的内部路由，
  * 形如 /drive/main_tab?tab=1&uid=…&from=other%2Fbot&result=success。
  *
- * deepLink 的值被编码了两层（%252F 解一层是 %2F，再解一层才是 /），所以 query 解码之后
- * 还要再解一次。路由里目前只用到路径：tab 指官方 App 自己的底栏，uid 与当前账号不符时
- * 也只能照常打开网盘。
+ * 内部路由不对应 Piko 的导航，普通路由一律打开网盘；分享与添加磁力的路由留给添加链接面板。
  */
 object PikPakAppLink {
 
     sealed interface Target {
         /** 网盘主界面。官方路由的 tab 参数对应它自己的底栏，Piko 的底栏不同，一律落到文件页。 */
         data object Drive : Target
+
+        /** 带待添加链接或分享的官方路由，转交添加链接面板。 */
+        data class Import(val text: String) : Target
     }
 
-    private val HOSTS = setOf("toapp.mypikpak.com", "toapp.mypikpak.net")
+    private val TO_APP_HOSTS = setOf("toapp.mypikpak.com", "toapp.mypikpak.net", "toapp.pickpackapp.com")
+    private val OFFICIAL_HOSTS = setOf("mypikpak.com", "mypikpak.net", "pikpak.me", "pikpakdrive.com", "pickpackapp.com")
 
     fun parse(link: String): Target? {
         val uri = runCatching { URI(link) }.getOrNull() ?: return null
-        if (uri.scheme != "https" || uri.host !in HOSTS) return null
-        val route = queryParams(uri.rawQuery)["deepLink"]?.let(::decode) ?: return null
-        val path = route.substringBefore('?')
-        return when {
-            path.startsWith("/drive") -> Target.Drive
-            else -> null
+        val customScheme = uri.scheme.equals("pikpakapp", ignoreCase = true)
+        val host = uri.host?.lowercase()
+        val officialRoute = host?.removePrefix("www.") in OFFICIAL_HOSTS &&
+            (uri.path.orEmpty().startsWith("/toapp") || uri.path.orEmpty().startsWith("/deeplink"))
+        if (!customScheme && !(uri.scheme.equals("https", ignoreCase = true) &&
+                (host in TO_APP_HOSTS || officialRoute))) return null
+
+        val params = queryParams(uri.rawQuery)
+        if (customScheme && "share_id" in params && InstantSheetState.findShareLink(link) != null) {
+            return Target.Import(link)
         }
+        val deepParams = params["deepLink"]?.let(::decode)?.substringAfter('?', "")?.let(::queryParams).orEmpty()
+        val additions = listOfNotNull(
+            params["add_url"],
+            params["__add_url"],
+            deepParams["add_url"],
+            deepParams["__add_url"],
+        )
+        additions.firstNotNullOfOrNull { value ->
+            val decoded = decode(value)
+            decoded.takeIf { InstantSheetState.findShareLink(it) != null || extractLinks(it).any { link -> link.isMagnet } }
+        }?.let { return Target.Import(it) }
+        return Target.Drive
     }
 
     private fun queryParams(rawQuery: String?): Map<String, String> =
@@ -38,5 +58,6 @@ object PikPakAppLink {
             decode(pair.substringBefore('=')) to decode(pair.substringAfter('='))
         }
 
-    private fun decode(value: String): String = URLDecoder.decode(value, Charsets.UTF_8)
+    private fun decode(value: String): String =
+        runCatching { URLDecoder.decode(value, Charsets.UTF_8) }.getOrDefault(value)
 }
