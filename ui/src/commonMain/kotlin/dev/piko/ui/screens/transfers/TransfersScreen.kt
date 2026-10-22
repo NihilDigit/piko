@@ -1,12 +1,25 @@
 package dev.piko.ui.screens.transfers
 
 import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.CloudDownload
+import androidx.compose.material.icons.outlined.Unarchive
+import androidx.compose.material.icons.outlined.Upload
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.runtime.mutableIntStateOf
+import dev.piko.data.repository.isPlayableVideo
+import dev.piko.ui.components.ListLeadingIcon
+import dev.piko.ui.components.ListLeadingMedia
 
 import dev.piko.ui.components.DetailHost
 import dev.piko.ui.components.DetailPanelSpec
@@ -103,6 +116,7 @@ import dev.piko.shared.state.children
 import dev.piko.shared.state.TransferItem
 import dev.piko.shared.state.TransferKind
 import dev.piko.shared.state.TransfersState
+import dev.piko.shared.state.isOutputDeleted
 import dev.piko.shared.upload.UploadStatus
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.serverWorkNotices
@@ -196,11 +210,24 @@ fun TransfersScreen(
         if (!expandedBatches.remove(key)) expandedBatches.add(key)
     }
 
+    fun copySourceUrl(url: String) {
+        platform.copyToClipboard("来源链接", url)
+        scope.launch {
+            snackbarHostState.showSnackbar(
+                if (url.startsWith("magnet:", true)) "已复制磁力链接" else "已复制来源链接",
+                withDismissAction = true,
+            )
+        }
+    }
+
     // 片段的 fileId 是源视频的，播放器找不到本地文件时会按它退回云端，放出来的是整段原片。
     // 片段只该播本地文件，不给 fileId，打不开就报错
     val playLocal = { task: DownloadTask ->
         onNavigateToVideoPlayer(if (task.isSegment) "" else task.fileId, task.fileName,
             task.destinationPath.takeIf { task.status == dev.piko.download.DownloadStatus.COMPLETED })
+    }
+    val playCloud = { fileId: String, fileName: String ->
+        onNavigateToVideoPlayer(fileId, fileName, null)
     }
     val resubmitAction = { task: DriveTask -> task.sourceUrl?.let { { state.resubmitCloud(task) } } }
 
@@ -243,113 +270,135 @@ fun TransfersScreen(
         else -> work.result?.createdId ?: work.result?.confirmed?.firstOrNull()
     }
 
-    // 一项的全部操作，详情面板与右键菜单共用：两处给的总是同一组
-    fun actionsFor(item: TransferItem): List<SheetAction> = when (item) {
-        is TransferItem.UploadPreparing -> uploadPreparationActions(item.work,
-            item.work.parentId.takeIf { it.isNotEmpty() }?.let { { openCloudFileById(it, item.work.parentName) } }, {
-                if (item.work.hasSideEffects) { detailState.close(); state.selectOnly(item.key); confirmingDeleteKeys = setOf(item.key) }
-                else state.remove(item)
-            })
-        is TransferItem.UploadBatch -> uploadBatchActions(item, item.key in expandedBatches,
-            { toggleBatch(item.key) }, { state.pauseUploadBatch(item.batchId) },
-            { state.resumeUploadBatch(item.batchId) }, {
-                detailState.close()
-                if (item.key !in state.selectedKeys) state.selectOnly(item.key)
-                confirmingDeleteKeys = setOf(item.key)
-            })
-        is TransferItem.LocalBatch -> localBatchActions(item, item.key in expandedBatches, batchIntents(item))
-        is TransferItem.Local -> localTransferActions(
-            task = item.task,
-            files = localFiles,
-            onPlay = { playLocal(item.task) },
-            onStart = { state.resumeLocal(item.task.taskId) },
-            onPause = { state.pauseLocal(item.task.taskId) },
-            onRemove = { state.removeLocal(item.task.taskId) },
-            previewHidden = if (isSpoilerBlurEnabled && hasPreview(item.task)) item.key !in revealedKeys else null,
-            onTogglePreview = { if (!revealedKeys.remove(item.key)) revealedKeys.add(item.key) },
-        )
-        is TransferItem.Upload -> uploadTransferActions(
-            task = item.task,
-            onOpen = { item.task.fileId?.let { openCloudFileById(it, item.task.fileName) } },
-            onResume = { state.resumeUpload(item.task.taskId) },
-            onPause = { state.pauseUpload(item.task.taskId) },
-            onRemove = { state.removeUpload(item.task.taskId) },
-        )
-        is TransferItem.Cloud -> cloudTransferActions(
-            task = item.task,
-            onResubmit = resubmitAction(item.task),
-            onDelete = { state.deleteCloud(item.task.id) },
-            onOpen = { openCloudFile(item.task) },
-        )
-        is TransferItem.Pack -> packTransferActions(
-            item = item,
-            onOpen = { openCloudFileById(item.job.outputId, item.job.folderName) },
-            onRetry = { state.retryPack(item.job.taskId) },
-            onDiscard = { state.discardPack(item.job.taskId) },
-        )
-        is TransferItem.Instant -> instantTransferActions(
-            onOpen = { openCloudFileById(item.record.locateId, item.record.name) },
-            onRemove = { state.removeInstant(item.record.id) },
-        )
-        is TransferItem.InstantAttempt -> instantAttemptActions(item.work,
-            item.work.locateId?.let { { openCloudFileById(it, item.work.title) } },
-            {
-                if (item.work.receipt?.requiresInspection == true) {
-                    detailState.close(); state.selectOnly(item.key); confirmingDeleteKeys = setOf(item.key)
-                } else state.remove(item)
-            },
-            onRecheck = if (services.instantSaveRecords.canRecheck(item.work.id)) ({ services.instantSaveRecords.recheck(item.work.id, services.driveRepository); Unit }) else null,
-        )
-        is TransferItem.Share -> shareTransferActions(item.work, state.shareUndoStatus(item.work), state.canUndoShare(item.work), services.shareSaves.canRecheck(item.work.id),
-            { state.undoShare(item.work) }, { services.shareSaves.recheck(item.work.id) }, {
-                if (item.work.result?.unconfirmedSources?.isNotEmpty() == true || item.work.pendingRenames.isNotEmpty()) {
-                    detailState.close(); state.selectOnly(item.key); confirmingDeleteKeys = setOf(item.key)
-                } else state.remove(item)
-            },
-            (item.work.associatedOutputs.values.firstOrNull() ?: item.work.command.target.id.takeIf { it.isNotEmpty() })?.let { { openCloudFileById(it, item.work.title) } },
-        )
-        is TransferItem.OfflineSubmit -> offlineSubmitActions(item.work,
-            (item.work.outputId ?: item.work.target.id.takeIf { it.isNotEmpty() })?.let { { openCloudFileById(it, item.work.title) } },
-            {
-                if (item.work.status == dev.piko.shared.state.OfflineSubmitStatus.UNCONFIRMED) {
-                    detailState.close(); state.selectOnly(item.key); confirmingDeleteKeys = setOf(item.key)
-                } else state.remove(item)
-            },
-        )
-        is TransferItem.Extract -> extractTransferActions(
-            item = item,
-            onShowInDrive = { openCloudFileById(item.job.file.id, item.job.file.name) },
-            onSkip = { state.skipExtract(item.job.id) },
-            onRecheck = { state.recheckExtract(item.job.id) },
-        )
-        is TransferItem.Vault -> vaultTransferActions(
-            item, state.isVaultStopping, { state.stopVault(item.work.id) }, { state.dismissVault(item.work.id) },
-            item.record?.let(state::canUndoVault) == true, item.record?.let(state::vaultUndoStatus),
-            { item.record?.let(state::undoVault) },
-        )
-        is TransferItem.Write -> {
-            val work = item.work
-            fileWriteActions(work, state.writeUndoStatus(work), state.canUndoWrite(work), services.fileWrites.canRecheck(work.id),
-                { state.undoWrite(work) }, { services.fileWrites.recheck(work.id) },
-                { if (work.result?.unconfirmed?.isNotEmpty() == true) { detailState.close(); state.selectOnly(item.key); confirmingDeleteKeys = setOf(item.key) } else state.remove(item) },
-                locateWriteId(work)?.let { { openCloudFileById(it, work.command.title) } },
-            )
-        }
-        is TransferItem.VaultEdit -> vaultEditActions(item.work, state.vaultEditUndoStatus(item.work), state.canUndoVaultEdit(item.work), services.vaultEntryEdits.canRecheck(item.work.id),
-            { state.undoVaultEdit(item.work) }, { services.vaultEntryEdits.recheck(item.work.id) }, {
-                if (item.work.result?.unconfirmed?.isNotEmpty() == true) {
-                    detailState.close(); state.selectOnly(item.key); confirmingDeleteKeys = setOf(item.key)
-                } else state.remove(item)
-            })
-        is TransferItem.History -> historyTransferActions(item.work, services.historyEdits.canRecheck(item.work.id),
-            { services.historyEdits.recheck(item.work.id) }, {
-                if (item.work.result?.completion in setOf(dev.piko.shared.state.HistoryEditCompletion.PARTIAL, dev.piko.shared.state.HistoryEditCompletion.UNCONFIRMED)) {
-                    detailState.close(); state.selectOnly(item.key); confirmingDeleteKeys = setOf(item.key)
-                } else state.remove(item)
-            })
+    fun playActionFor(item: TransferItem): (() -> Unit)? = when (item) {
+        is TransferItem.Local -> if (item.task.canPlayNow()) ({ playLocal(item.task) }) else null
+        is TransferItem.Cloud -> if (item.task.canPlayVideo) ({ playCloud(item.task.fileId, item.task.displayName) }) else null
+        is TransferItem.Instant -> if (item.record.canPlayVideo) ({ playCloud(item.record.locateId, item.record.name) }) else null
+        is TransferItem.Upload -> if (item.task.canPlayVideo) ({ playCloud(requireNotNull(item.task.fileId), item.task.fileName) }) else null
+        is TransferItem.Pack -> if (item.job.canOpen && item.job.folderName.isPlayableVideo()) ({ playCloud(item.job.outputId, item.job.folderName) }) else null
+        else -> null
     }
 
-    fun contextActionsFor(item: TransferItem): List<SheetAction> = actionsFor(item)
+    // 一项的全部操作，详情面板与右键菜单共用：两处给的总是同一组
+    fun actionsFor(item: TransferItem): List<SheetAction> {
+        val base = when (item) {
+            is TransferItem.UploadPreparing -> uploadPreparationActions(item.work,
+                item.work.parentId.takeIf { it.isNotEmpty() }?.let { { openCloudFileById(it, item.work.parentName) } }, {
+                    if (item.work.hasSideEffects) { detailState.close(); state.selectOnly(item.key); confirmingDeleteKeys = setOf(item.key) }
+                    else state.remove(item)
+                })
+            is TransferItem.UploadBatch -> uploadBatchActions(item, item.key in expandedBatches,
+                { toggleBatch(item.key) }, { state.pauseUploadBatch(item.batchId) },
+                { state.resumeUploadBatch(item.batchId) }, {
+                    detailState.close()
+                    if (item.key !in state.selectedKeys) state.selectOnly(item.key)
+                    confirmingDeleteKeys = setOf(item.key)
+                },
+                onShowInDrive = item.parentId.takeIf { it.isNotEmpty() }?.let { { openCloudFileById(it, item.parentName) } },
+            )
+            is TransferItem.LocalBatch -> localBatchActions(item, item.key in expandedBatches, batchIntents(item))
+            is TransferItem.Local -> localTransferActions(
+                task = item.task,
+                files = localFiles,
+                onPlay = { playLocal(item.task) },
+                onStart = { state.resumeLocal(item.task.taskId) },
+                onPause = { state.pauseLocal(item.task.taskId) },
+                onRemove = { state.removeLocal(item.task.taskId) },
+                previewHidden = if (isSpoilerBlurEnabled && hasPreview(item.task)) item.key !in revealedKeys else null,
+                onTogglePreview = { if (!revealedKeys.remove(item.key)) revealedKeys.add(item.key) },
+                onShowInDrive = item.task.fileId.takeIf { it.isNotEmpty() && !item.task.isSegment }?.let { { openCloudFileById(it, item.task.fileName) } },
+            )
+            is TransferItem.Upload -> uploadTransferActions(
+                task = item.task,
+                onPlay = playActionFor(item),
+                onOpen = { item.task.fileId?.let { openCloudFileById(it, item.task.fileName) } },
+                onOpenParent = item.task.parentId.takeIf { it.isNotEmpty() }?.let { { openCloudFileById(it, item.task.parentName) } },
+                onResume = { state.resumeUpload(item.task.taskId) },
+                onPause = { state.pauseUpload(item.task.taskId) },
+                onRemove = { state.removeUpload(item.task.taskId) },
+                onRevealLocal = item.task.sourceUri.takeIf { it.isNotEmpty() && !it.startsWith("content:") }?.let { { localFiles.openContainingFolder(it) } },
+            )
+            is TransferItem.Cloud -> cloudTransferActions(
+                task = item.task,
+                onPlay = playActionFor(item),
+                onResubmit = resubmitAction(item.task),
+                onDelete = { state.deleteCloud(item.task.id) },
+                onOpen = { openCloudFile(item.task) },
+                onCopySource = item.task.sourceUrl?.let { url -> { copySourceUrl(url) } },
+            )
+            is TransferItem.Pack -> packTransferActions(
+                item = item,
+                onOpen = { openCloudFileById(item.job.outputId, item.job.folderName) },
+                onRetry = { state.retryPack(item.job.taskId) },
+                onDiscard = { state.discardPack(item.job.taskId) },
+                onCopySource = item.job.url.takeIf { it.isNotEmpty() }?.let { url -> { copySourceUrl(url) } },
+            )
+            is TransferItem.Instant -> instantTransferActions(
+                record = item.record,
+                onPlay = playActionFor(item),
+                onOpen = { openCloudFileById(item.record.locateId, item.record.name) },
+                onRemove = { state.removeInstant(item.record.id) },
+            )
+            is TransferItem.InstantAttempt -> instantAttemptActions(item.work,
+                item.work.locateId?.let { { openCloudFileById(it, item.work.title) } },
+                {
+                    if (item.work.receipt?.requiresInspection == true) {
+                        detailState.close(); state.selectOnly(item.key); confirmingDeleteKeys = setOf(item.key)
+                    } else state.remove(item)
+                },
+                onRecheck = if (services.instantSaveRecords.canRecheck(item.work.id)) ({ services.instantSaveRecords.recheck(item.work.id, services.driveRepository); Unit }) else null,
+            )
+            is TransferItem.Share -> shareTransferActions(item.work, state.shareUndoStatus(item.work), state.canUndoShare(item.work), services.shareSaves.canRecheck(item.work.id),
+                { state.undoShare(item.work) }, { services.shareSaves.recheck(item.work.id) }, {
+                    if (item.work.result?.unconfirmedSources?.isNotEmpty() == true || item.work.pendingRenames.isNotEmpty()) {
+                        detailState.close(); state.selectOnly(item.key); confirmingDeleteKeys = setOf(item.key)
+                    } else state.remove(item)
+                },
+                (item.work.associatedOutputs.values.firstOrNull() ?: item.work.command.target.id.takeIf { it.isNotEmpty() })?.let { { openCloudFileById(it, item.work.title) } },
+            )
+            is TransferItem.OfflineSubmit -> offlineSubmitActions(item.work,
+                (item.work.outputId ?: item.work.target.id.takeIf { it.isNotEmpty() })?.let { { openCloudFileById(it, item.work.title) } },
+                {
+                    if (item.work.status == dev.piko.shared.state.OfflineSubmitStatus.UNCONFIRMED) {
+                        detailState.close(); state.selectOnly(item.key); confirmingDeleteKeys = setOf(item.key)
+                    } else state.remove(item)
+                },
+            )
+            is TransferItem.Extract -> extractTransferActions(
+                item = item,
+                onShowInDrive = { openCloudFileById(item.job.file.id, item.job.file.name) },
+                onSkip = { state.skipExtract(item.job.id) },
+                onRecheck = { state.recheckExtract(item.job.id) },
+                onInputPassword = if (item.job.status is dev.piko.shared.state.ArchiveJobStatus.NeedsPassword) ({ state.promptExtractPassword(item.job.id); Unit }) else null,
+            )
+            is TransferItem.Vault -> vaultTransferActions(
+                item, state.isVaultStopping, { state.stopVault(item.work.id) }, { state.dismissVault(item.work.id) },
+                item.record?.let(state::canUndoVault) == true, item.record?.let(state::vaultUndoStatus),
+                { item.record?.let(state::undoVault) },
+            )
+            is TransferItem.Write -> {
+                val work = item.work
+                fileWriteActions(work, state.writeUndoStatus(work), state.canUndoWrite(work), services.fileWrites.canRecheck(work.id),
+                    { state.undoWrite(work) }, { services.fileWrites.recheck(work.id) },
+                    { if (work.result?.unconfirmed?.isNotEmpty() == true) { detailState.close(); state.selectOnly(item.key); confirmingDeleteKeys = setOf(item.key) } else state.remove(item) },
+                    locateWriteId(work)?.let { { openCloudFileById(it, work.command.title) } },
+                )
+            }
+            is TransferItem.VaultEdit -> vaultEditActions(item.work, state.vaultEditUndoStatus(item.work), state.canUndoVaultEdit(item.work), services.vaultEntryEdits.canRecheck(item.work.id),
+                { state.undoVaultEdit(item.work) }, { services.vaultEntryEdits.recheck(item.work.id) }, {
+                    if (item.work.result?.unconfirmed?.isNotEmpty() == true) {
+                        detailState.close(); state.selectOnly(item.key); confirmingDeleteKeys = setOf(item.key)
+                    } else state.remove(item)
+                })
+            is TransferItem.History -> historyTransferActions(item.work, services.historyEdits.canRecheck(item.work.id),
+                { services.historyEdits.recheck(item.work.id) }, {
+                    if (item.work.result?.completion in setOf(dev.piko.shared.state.HistoryEditCompletion.PARTIAL, dev.piko.shared.state.HistoryEditCompletion.UNCONFIRMED)) {
+                        detailState.close(); state.selectOnly(item.key); confirmingDeleteKeys = setOf(item.key)
+                    } else state.remove(item)
+                })
+        }
+        return base + SheetAction(Icons.Outlined.Info, "详情", { showDetails(item.key) }, group = ActionGroup.Properties)
+    }
 
     // 点按一项做的事，轻点与鼠标双击共用；不弹详情面板，详情在右键菜单与触屏长按里
     fun primaryActionFor(item: TransferItem): (() -> Unit)? = when (item) {
@@ -365,21 +414,26 @@ fun TransfersScreen(
         )
         is TransferItem.Upload -> uploadPrimaryAction(
             task = item.task,
+            onPlay = playActionFor(item),
             onOpen = { item.task.fileId?.let { openCloudFileById(it, item.task.fileName) } },
             onResume = { state.resumeUpload(item.task.taskId) },
             onPause = { state.pauseUpload(item.task.taskId) },
         )
-        is TransferItem.Cloud -> cloudPrimaryAction(item.task, resubmitAction(item.task)) { openCloudFile(item.task) }
-        is TransferItem.Pack -> packPrimaryAction(
+        is TransferItem.Cloud -> cloudPrimaryAction(item.task, playActionFor(item), resubmitAction(item.task)) { openCloudFile(item.task) }
+        is TransferItem.Pack -> playActionFor(item) ?: packPrimaryAction(
             item = item,
             onOpen = { openCloudFileById(item.job.outputId, item.job.folderName) },
             onRetry = { state.retryPack(item.job.taskId) },
         )
-        is TransferItem.Instant -> { { openCloudFileById(item.record.locateId, item.record.name) } }
+        is TransferItem.Instant -> playActionFor(item) ?: item.record.locateId.takeIf { it.isNotEmpty() }?.let { { openCloudFileById(it, item.record.name) } }
         is TransferItem.InstantAttempt -> item.work.locateId?.let { { openCloudFileById(it, item.work.title) } }
         is TransferItem.Share -> (item.work.associatedOutputs.values.firstOrNull() ?: item.work.command.target.id.takeIf { it.isNotEmpty() })?.let { { openCloudFileById(it, item.work.title) } }
         is TransferItem.OfflineSubmit -> (item.work.outputId ?: item.work.target.id.takeIf { it.isNotEmpty() })?.let { { openCloudFileById(it, item.work.title) } }
-        is TransferItem.Extract -> { { openCloudFileById(item.job.file.id, item.job.file.name) } }
+        is TransferItem.Extract -> if (item.job.status is dev.piko.shared.state.ArchiveJobStatus.NeedsPassword) {
+            { state.promptExtractPassword(item.job.id); Unit }
+        } else {
+            { openCloudFileById(item.job.file.id, item.job.file.name) }
+        }
         is TransferItem.Vault -> null
         is TransferItem.Write -> locateWriteId(item.work)?.let { { openCloudFileById(it, item.work.command.title) } }
         is TransferItem.History -> null
@@ -388,6 +442,7 @@ fun TransfersScreen(
 
     // 眼前列出的先后，连选与全选按它。收起的「文件已删除」组不在其中，展开的文件夹下载连同其中的文件
     val selectionActive = state.selectedKeys.isNotEmpty()
+    val checkboxActive = state.checkboxMode
     val liveSections = state.sectionsOf(state.filter)
     val frozenOrder = remember(state.filter, selectionActive) { if (selectionActive) TaskListOrder(liveSections) else null }
     val currentSections = frozenOrder?.apply(liveSections) ?: liveSections
@@ -402,9 +457,31 @@ fun TransfersScreen(
     val listFocus = remember { FocusRequester() }
     fun focusList() = runCatching { listFocus.requestFocus() }
 
+    val selected = state.selectedItems
+    val bulkSelected = selected
+    val pauseSelected = bulkSelected.filter(state::isPausable).takeIf { it.isNotEmpty() }?.let { items -> { items.forEach(state::pause) } }
+    val resumeSelected = bulkSelected.filter(state::isResumable).takeIf { it.isNotEmpty() }?.let { items -> { items.forEach(state::resume) } }
+
+    fun contextActionsFor(item: TransferItem): List<SheetAction> {
+        if (item.key in state.selectedKeys && bulkSelected.size > 1) {
+            val pausableCount = bulkSelected.count(state::isPausable)
+            val resumableCount = bulkSelected.count(state::isResumable)
+            return buildList {
+                pauseSelected?.let { add(SheetAction(Icons.Outlined.Pause, "暂停所选 $pausableCount 项", it)) }
+                resumeSelected?.let { add(SheetAction(Icons.Outlined.PlayArrow, "继续所选 $resumableCount 项", it)) }
+                if (bulkSelected.size < visibleOrder.size) {
+                    add(SheetAction(Icons.Outlined.SelectAll, "全选", { state.selectAll(visibleOrder) }, group = ActionGroup.Select))
+                }
+                add(SheetAction(Icons.Outlined.Close, "取消选择", state::clearSelection, group = ActionGroup.Select))
+                add(SheetAction(Icons.Outlined.Delete, "删除所选 ${bulkSelected.size} 项", { confirmingDeleteKeys = state.selectedKeys.toSet() }, destructive = true))
+            }
+        }
+        return actionsFor(item)
+    }
+
     val haptic = LocalHapticFeedback.current
     fun rowSelection(item: TransferItem) = RowSelection(
-        active = selectionActive,
+        active = checkboxActive,
         selected = item.key in state.selectedKeys,
         onToggle = { state.toggleSelected(item.key) },
         onLongClick = {
@@ -421,14 +498,134 @@ fun TransfersScreen(
     val rowSections = state.sectionsOf(TransferKind.ALL)
     val completedKeys = (rowSections.completed + rowSections.outputDeleted).mapTo(HashSet()) { it.key }
     val attentionKeys = rowSections.needsAttention.mapTo(HashSet()) { it.key }
-    fun quickAction(item: TransferItem): SheetAction? = when {
+
+    fun pauseOrResumeAction(item: TransferItem): SheetAction? = when {
         state.isPausable(item) -> SheetAction(Icons.Outlined.Pause, "暂停", { state.pause(item) })
-        state.isResumable(item) -> SheetAction(Icons.Outlined.PlayArrow, "继续", { state.resume(item) })
-        else -> actionsFor(item).firstOrNull { it.label.startsWith("停止") || it.label == "重新查询结果" }
+        state.isResumable(item) -> {
+            val isFailed = (item is TransferItem.Local && item.task.status == DownloadStatus.FAILED) ||
+                (item is TransferItem.Upload && item.task.status == UploadStatus.FAILED)
+            SheetAction(if (isFailed) Icons.Outlined.Refresh else Icons.Outlined.PlayArrow, if (isFailed) "重试" else "继续", { state.resume(item) })
+        }
+        else -> null
     }
+
+    fun quickAction(item: TransferItem): SheetAction? = when (item) {
+        is TransferItem.Local -> when {
+            item.task.status == DownloadStatus.COMPLETED -> if (item.task.isMedia()) {
+                SheetAction(Icons.Outlined.PlayArrow, "播放", { playLocal(item.task) })
+            } else {
+                SheetAction(Icons.Outlined.FolderOpen, "打开所在文件夹", { localFiles.openContainingFolder(item.task.destinationPath) })
+            }
+            item.task.canPlayWhileDownloading() -> SheetAction(Icons.Outlined.PlayArrow, "播放", { playLocal(item.task) })
+            else -> pauseOrResumeAction(item)
+        }
+        is TransferItem.Cloud -> when {
+            item.task.canPlayVideo -> SheetAction(Icons.Outlined.PlayArrow, "播放", { playCloud(item.task.fileId, item.task.displayName) })
+            item.task.canOpen -> SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", { openCloudFile(item.task) })
+            item.task.phase == io.github.nihildigit.pikpak.TaskPhase.ERROR && !item.task.isOutputDeleted ->
+                resubmitAction(item.task)?.let { SheetAction(Icons.Outlined.Refresh, "重试", it) }
+            else -> null
+        }
+        is TransferItem.Instant -> when {
+            item.record.canPlayVideo -> SheetAction(Icons.Outlined.PlayArrow, "播放", { playCloud(item.record.locateId, item.record.name) })
+            item.record.locateId.isNotEmpty() -> SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", { openCloudFileById(item.record.locateId, item.record.name) })
+            else -> null
+        }
+        is TransferItem.Upload -> when {
+            item.task.canPlayVideo -> SheetAction(Icons.Outlined.PlayArrow, "播放", { playCloud(requireNotNull(item.task.fileId), item.task.fileName) })
+            item.task.canOpen -> SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", { openCloudFileById(requireNotNull(item.task.fileId), item.task.fileName) })
+            else -> pauseOrResumeAction(item)
+        }
+        is TransferItem.Pack -> when {
+            item.job.canOpen && item.job.folderName.isPlayableVideo() -> SheetAction(Icons.Outlined.PlayArrow, "播放", { playCloud(item.job.outputId, item.job.folderName) })
+            item.job.canOpen -> SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", { openCloudFileById(item.job.outputId, item.job.folderName) })
+            !item.isBusy && item.job.stage == dev.piko.shared.data.OfflinePackStage.FAILED -> SheetAction(Icons.Outlined.Refresh, "重试", { state.retryPack(item.job.taskId) })
+            else -> null
+        }
+        else -> pauseOrResumeAction(item) ?: actionsFor(item).firstOrNull { it.label == "输入解压密码" || it.label.startsWith("停止") || it.label == "重新查询结果" }
+    }
+
+    fun extraAction(item: TransferItem): SheetAction? {
+        val expanded = item.key in expandedBatches
+        return when (item) {
+            is TransferItem.LocalBatch, is TransferItem.UploadBatch -> SheetAction(
+                if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                if (expanded) "收起文件" else "展开文件",
+                { toggleBatch(item.key) },
+            )
+            is TransferItem.Local -> when {
+                item.task.status == DownloadStatus.COMPLETED && item.task.isMedia() && taskLayout.wide ->
+                    SheetAction(Icons.Outlined.FolderOpen, "打开所在文件夹", { localFiles.openContainingFolder(item.task.destinationPath) })
+                item.task.canPlayWhileDownloading() -> pauseOrResumeAction(item)
+                else -> null
+            }
+            is TransferItem.Cloud -> if (item.task.canPlayVideo) {
+                SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", { openCloudFile(item.task) })
+            } else null
+            is TransferItem.Instant -> if (item.record.canPlayVideo) {
+                SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", { openCloudFileById(item.record.locateId, item.record.name) })
+            } else null
+            is TransferItem.Upload -> if (item.task.canPlayVideo) {
+                SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", { openCloudFileById(requireNotNull(item.task.fileId), item.task.fileName) })
+            } else null
+            is TransferItem.Pack -> if (item.job.canOpen && item.job.folderName.isPlayableVideo()) {
+                SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", { openCloudFileById(item.job.outputId, item.job.folderName) })
+            } else null
+            else -> null
+        }
+    }
+
+    @Composable
+    fun TransferLeadingVisual(item: TransferItem) {
+        when (item) {
+            is TransferItem.Local -> LocalTransferVisual(item.task, blurred(item))
+            is TransferItem.LocalBatch -> TaskFolderVisual(item.batch.folderName)
+            is TransferItem.UploadBatch -> if (item.isFolder) TaskFolderVisual(item.title) else ListLeadingIcon(Icons.Outlined.Upload)
+            is TransferItem.Upload -> {
+                val isVisualFile = item.task.fileName.isPlayableVideo() ||
+                    item.task.fileName.substringAfterLast('.', "").lowercase() in IMAGE_EXTENSIONS
+                val uploadThumb = remember(item.task.sourceUri, item.task.fileName) {
+                    localFiles.thumbnailModel(item.task.sourceUri).takeIf { isVisualFile }
+                } ?: item.task.fileId?.let(state::thumbnailOf)
+                ListLeadingMedia(
+                    thumbnail = uploadThumb,
+                    fallback = { TaskFileTypeIcon(item.task.fileName, Icons.Outlined.Upload) },
+                    isSpoilerBlurred = blurred(item),
+                    showPlayOverlay = item.task.canPlayVideo,
+                )
+            }
+            is TransferItem.Cloud -> ListLeadingMedia(
+                thumbnail = state.thumbnailOf(item.task.fileId),
+                fallback = { TaskFileTypeIcon(item.task.fileName.ifEmpty { item.task.displayName }, Icons.Outlined.CloudDownload) },
+                isSpoilerBlurred = blurred(item),
+                showPlayOverlay = item.task.canPlayVideo,
+            )
+            is TransferItem.Pack -> ListLeadingMedia(
+                thumbnail = state.thumbnailOf(item.job.outputId),
+                fallback = { TaskFolderVisual(item.job.folderName) },
+                isSpoilerBlurred = blurred(item),
+                showPlayOverlay = item.job.canOpen && item.job.folderName.isPlayableVideo(),
+            )
+            is TransferItem.Instant -> ListLeadingMedia(
+                thumbnail = state.thumbnailOf(item.record.locateId),
+                fallback = {
+                    if (item.record.fileCount > 1 && !item.record.name.contains('.')) {
+                        TaskFolderVisual(item.record.name)
+                    } else {
+                        TaskFileTypeIcon(item.record.name, Icons.Outlined.Bolt)
+                    }
+                },
+                isSpoilerBlurred = blurred(item),
+                showPlayOverlay = item.record.canPlayVideo,
+            )
+            is TransferItem.Extract -> TaskFileTypeIcon(item.job.file.name, Icons.Outlined.Unarchive)
+            is TransferItem.Vault -> TaskFolderVisual(item.folderName)
+            else -> ListLeadingIcon(taskPresenter.present(item).icon)
+        }
+    }
+
     @Composable
     fun TransferRow(item: TransferItem, index: Int, count: Int) {
-        val expanded = item.key in expandedBatches
         TaskRow(
             taskPresenter.present(item), rowSelection(item), taskLayout, index, count,
             item = item,
@@ -444,20 +641,20 @@ fun TransfersScreen(
             },
             onOpen = { primaryActionFor(item)?.invoke() }, onToggle = { state.toggleSelected(item.key) },
             quickAction = quickAction(item),
-            extraAction = if (item is TransferItem.LocalBatch || item is TransferItem.UploadBatch) SheetAction(
-                if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                if (expanded) "收起文件" else "展开文件", { toggleBatch(item.key) },
-            ) else null,
-            leadingVisual = if (item is TransferItem.Local) ({ LocalTransferVisual(item.task, blurred(item)) }) else null,
+            extraAction = extraAction(item),
+            onLeadingClick = playActionFor(item),
+            leadingVisual = { TransferLeadingVisual(item) },
         )
     }
 
     // 右键弹出操作与详情项。animateItem 这类条目修饰挂在外层，菜单锚点才跟着条目走
     val renderItem: @Composable (TransferItem, Modifier, Int, Int) -> Unit = { item, itemModifier, index, count ->
-        val hasTrailing = quickAction(item) != null || (taskLayout.wide && (item is TransferItem.LocalBatch || item is TransferItem.UploadBatch))
+        val rowQuick = quickAction(item)
+        val rowExtra = extraAction(item)
+        val trailingCount = (if (rowQuick != null) 1 else 0) + (if (rowExtra != null) 1 else 0)
+        val hasLeadingClick = checkboxActive || playActionFor(item) != null
         ContextMenuArea(
             actions = { contextActionsFor(item) },
-            onSelect = if (selectionActive) null else ({ state.enterSelection(item.key) }),
             modifier = itemModifier,
         ) {
             Box(
@@ -466,7 +663,7 @@ fun TransfersScreen(
                     .transferClicks(
                         // 多选态下单击照网盘页是勾选；平时只选中这一项
                         onSelect = {
-                            if (selectionActive) state.toggleSelected(item.key) else state.selectOnly(item.key)
+                            if (checkboxActive) state.toggleSelected(item.key) else state.selectOnly(item.key)
                             focusList()
                         },
                         onToggle = {
@@ -478,8 +675,8 @@ fun TransfersScreen(
                             focusList()
                         },
                         onOpen = { primaryActionFor(item)?.invoke() },
-                        trailingPassThrough = if (!hasTrailing) 0.dp else if (taskLayout.wide) 108.dp else 60.dp,
-                        leadingPassThrough = 64.dp,
+                        trailingPassThrough = if (trailingCount == 0) 0.dp else (trailingCount * 48 + 12).dp,
+                        leadingPassThrough = if (hasLeadingClick) 68.dp else 0.dp,
                     ),
             ) {
                 TransferRow(item, index, count)
@@ -512,11 +709,6 @@ fun TransfersScreen(
     // 触屏上退出多选靠返回键；键盘的 Esc 在下面的 onKeyEvent 里先接住
     BackHandler(enabled = selectionActive) { state.clearSelection() }
 
-    val selected = state.selectedItems
-    val bulkSelected = selected
-    val pauseSelected = bulkSelected.filter(state::isPausable).takeIf { it.isNotEmpty() }?.let { items -> { items.forEach(state::pause) } }
-    val resumeSelected = bulkSelected.filter(state::isResumable).takeIf { it.isNotEmpty() }?.let { items -> { items.forEach(state::resume) } }
-
     // 文件夹下载里的文件不在各段里，要到各组里找
     val detailsItem = detailsKey?.let { key ->
         sequenceOf(state.inProgress, state.needsAttention, state.completed, state.outputDeleted)
@@ -529,8 +721,8 @@ fun TransfersScreen(
     fun TaskDetails(modifier: Modifier) {
         val current = detailsItem ?: return
         val actions = withSelectAction(
-            actionsFor(current),
-            if (LocalPointerSource.current.isTouchLike && !selectionActive) ({ closeDetails(); state.enterSelection(current.key) }) else null,
+            actionsFor(current).filterNot { it.group == ActionGroup.Properties },
+            if (LocalPointerSource.current.isTouchLike && !checkboxActive) ({ closeDetails(); state.enterSelection(current.key) }) else null,
         )
         when (current) {
             is TransferItem.UploadBatch -> UploadBatchDetails(current, actions, modifier = modifier)
@@ -648,7 +840,6 @@ fun TransfersScreen(
         topBar = { TaskPageHeader(state, bulkSelected.size, headerActions) },
         island = IslandPage(
             header = { TaskIslandHeader(state, bulkSelected.size, headerActions) },
-            belowHeader = { TaskRateBar(state) },
         ),
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
@@ -732,7 +923,6 @@ private fun TransfersList(
         }
         PikoItemGrid(
             state = gridState,
-            columns = GridCells.Fixed(1),
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = sidePadding, vertical = 8.dp),
             // 照网盘页的框选：在空白或条目上按住拖动拉框。传输没有拖放，按在条目上拖也是框选
@@ -835,9 +1025,17 @@ private fun LazyGridScope.transferItems(
     expanded: Set<String>,
     renderItem: @Composable (TransferItem, Modifier, Int, Int) -> Unit,
 ) {
-    val rows = items.withBatchChildren(expanded)
-    itemsIndexed(rows, key = { _, item -> item.key }) { index, item -> renderItem(item, Modifier.animateItem().padding(start = if (item is TransferItem.Upload && item.task.batchId != null || item is TransferItem.Local && item.task.batch != null) 16.dp else 0.dp), index, rows.size) }
-
+    items.forEachIndexed { index, item ->
+        if (item.key in expanded && item.children.isNotEmpty()) {
+            fullLineItem(key = item.key) { renderItem(item, Modifier.animateItem(), index, items.size) }
+            itemsIndexed(item.children, key = { _, child -> child.key }) { childIndex, child ->
+                renderItem(child, Modifier.animateItem().padding(start = 16.dp), childIndex, item.children.size)
+            }
+            fullLineItem(key = "${item.key}:end") { Spacer(Modifier.height(4.dp)) }
+        } else {
+            item(key = item.key) { renderItem(item, Modifier.animateItem(), index, items.size) }
+        }
+    }
 }
 
 private fun LazyGridScope.transferSection(
@@ -884,7 +1082,7 @@ private fun LazyGridScope.transferSection(
                     shape = MaterialTheme.shapes.small,
                 ) {
                     Text(
-                        text = if (attention) "$title · ${items.size}" else "$title (${items.size})",
+                        text = "$title（${items.size}）",
                         style = MaterialTheme.typography.titleSmall,
                         modifier = Modifier.padding(horizontal = if (attention) 10.dp else 0.dp, vertical = 6.dp),
                     )

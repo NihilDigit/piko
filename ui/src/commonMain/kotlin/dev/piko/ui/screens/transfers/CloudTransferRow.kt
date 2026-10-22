@@ -3,17 +3,18 @@ package dev.piko.ui.screens.transfers
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.CloudDownload
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.state.isOutputDeleted
-import dev.piko.ui.components.FileListItem
 import dev.piko.ui.components.ItemDetailsContent
-import dev.piko.ui.components.ListLeadingIcon
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.theme.LocalStatusColors
@@ -27,8 +28,11 @@ private val DriveTask.isFailed: Boolean
     get() = phase == TaskPhase.ERROR && !isOutputDeleted
 
 // 完成的任务才有可打开的文件；fileId 缺失时点了也无处可去
-private val DriveTask.canOpen: Boolean
+internal val DriveTask.canOpen: Boolean
     get() = phase == TaskPhase.COMPLETE && fileId.isNotEmpty()
+
+internal val DriveTask.canPlayVideo: Boolean
+    get() = canOpen && (fileName.isPlayableVideo() || name.isPlayableVideo())
 
 internal val DriveTask.displayName: String
     get() = name.ifEmpty { fileName.ifEmpty { "离线任务" } }
@@ -64,7 +68,7 @@ internal fun CloudTransferDetails(task: DriveTask, actions: List<SheetAction>, m
     val statusColor = task.statusColor()
     ItemDetailsContent(modifier = modifier, showIcon = false,
         title = task.displayName,
-        headerIcon = { ListLeadingIcon(Icons.Outlined.CloudDownload) },
+        headerIcon = { TaskFileTypeIcon(task.fileName.ifEmpty { task.displayName }, Icons.Outlined.CloudDownload) },
         actions = actions,
         metaParts = listOf("云端", task.statusLabel()) + task.sizeParts(),
         extraLines = {
@@ -73,8 +77,14 @@ internal fun CloudTransferDetails(task: DriveTask, actions: List<SheetAction>, m
     )
 }
 
-/** 点按一项做的事：完成的打开，失败的重新提交。 */
-internal fun cloudPrimaryAction(task: DriveTask, onResubmit: (() -> Unit)?, onOpen: () -> Unit): (() -> Unit)? = when {
+/** 点按一项做的事：完成视频直接播放，其余完成的在网盘中显示，失败的重新提交。 */
+internal fun cloudPrimaryAction(
+    task: DriveTask,
+    onPlay: (() -> Unit)?,
+    onResubmit: (() -> Unit)?,
+    onOpen: () -> Unit,
+): (() -> Unit)? = when {
+    task.canPlayVideo && onPlay != null -> onPlay
     task.canOpen -> onOpen
     task.isFailed -> onResubmit
     else -> null
@@ -83,18 +93,22 @@ internal fun cloudPrimaryAction(task: DriveTask, onResubmit: (() -> Unit)?, onOp
 /** 云端任务的全部操作，详情面板与右键菜单共用。 */
 internal fun cloudTransferActions(
     task: DriveTask,
+    onPlay: (() -> Unit)?,
     onResubmit: (() -> Unit)?,
     onDelete: () -> Unit,
     onOpen: () -> Unit,
+    onCopySource: (() -> Unit)? = null,
 ): List<SheetAction> = buildList {
-        if (task.canOpen) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "打开", onOpen))
-        if (onResubmit != null && (task.isFailed || task.isOutputDeleted)) {
-            add(SheetAction(Icons.Outlined.Refresh, if (task.isOutputDeleted) "重新下载" else "重试", onResubmit))
-        }
-        val deleteLabel = when {
-            task.isActive -> "删除任务"
-            task.phase == TaskPhase.COMPLETE -> "移除"
-            else -> "删除记录"
-        }
-        add(SheetAction(Icons.Outlined.Delete, deleteLabel, onDelete, destructive = true))
+    if (task.canPlayVideo && onPlay != null) add(SheetAction(Icons.Outlined.PlayArrow, "播放", onPlay))
+    if (task.canOpen) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", onOpen))
+    if (onCopySource != null) add(SheetAction(Icons.Outlined.ContentCopy, "复制来源链接", onCopySource))
+    if (onResubmit != null && (task.isFailed || task.isOutputDeleted)) {
+        add(SheetAction(Icons.Outlined.Refresh, if (task.isOutputDeleted) "重新下载" else "重试", onResubmit))
+    }
+    val deleteLabel = when {
+        task.isActive -> "删除任务"
+        task.phase == TaskPhase.COMPLETE -> "移除记录"
+        else -> "删除记录"
+    }
+    add(SheetAction(Icons.Outlined.Delete, deleteLabel, onDelete, destructive = true))
 }

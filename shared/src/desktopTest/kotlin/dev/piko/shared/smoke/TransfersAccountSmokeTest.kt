@@ -54,6 +54,46 @@ import kotlin.test.assertNotNull
 /** 传输页只列当前账号的下载；别的账号的任务原样留在任务表里，切回去照旧看得到。 */
 class TransfersAccountSmokeTest {
     @Test
+    fun `file write task admission depends on command batch size and unresolved outcome`() {
+        val target = PikoPathBreadcrumb("target", "目标")
+        val ids = (1..101).map { "file$it" }
+        val commands = listOf(
+            dev.piko.shared.state.FileWriteCommand.CreateFolder(target, "目录"),
+            dev.piko.shared.state.FileWriteCommand.Star(ids, true),
+            dev.piko.shared.state.FileWriteCommand.Copy(ids, target),
+            dev.piko.shared.state.FileWriteCommand.Rename(ids.first(), "新名称"),
+            dev.piko.shared.state.FileWriteCommand.Move(ids, target),
+            dev.piko.shared.state.FileWriteCommand.Restore(ids),
+            dev.piko.shared.state.FileWriteCommand.Delete(ids),
+        )
+        for (command in commands) {
+            val work = dev.piko.shared.state.FileWriteWork(1L, "account", command, 0L)
+            val excluded = command is dev.piko.shared.state.FileWriteCommand.CreateFolder || command is dev.piko.shared.state.FileWriteCommand.Star
+            val copy = command is dev.piko.shared.state.FileWriteCommand.Copy
+            assertEquals(!excluded && (copy || work.totalSteps > 1), work.showsInTaskPage, command.title)
+            assertEquals(copy, work.copy(totalCount = 100).showsInTaskPage, "100 项不跨批次：${command.title}")
+            assertEquals(!excluded, work.copy(totalCount = 101).showsInTaskPage, "101 项跨批次：${command.title}")
+            for (completion in dev.piko.shared.state.FileWriteCompletion.entries) {
+                val result = dev.piko.shared.state.FileWriteResult(completion, "结果", finishedAtMs = 1L)
+                val unresolved = completion == dev.piko.shared.state.FileWriteCompletion.PARTIAL || completion == dev.piko.shared.state.FileWriteCompletion.UNCONFIRMED
+                assertEquals(!excluded && (copy || unresolved), work.copy(result = result).showsInTaskPage, "${command.title}: $completion")
+            }
+        }
+    }
+
+    @Test
+    fun `vault entry task admission keeps only unresolved outcomes`() {
+        val work = dev.piko.shared.state.VaultEntryEditWork(1L, "account",
+            dev.piko.shared.state.VaultEntryEditCommand.Remove(mapOf("folder" to setOf("entry"))), 0L)
+        assertTrue(!work.showsInTaskPage)
+        for (completion in dev.piko.shared.state.VaultEntryEditCompletion.entries) {
+            val result = dev.piko.shared.state.VaultEntryEditResult(completion, "结果", emptyMap(), emptyMap(), emptyMap(), emptyList(), 1L)
+            assertEquals(completion == dev.piko.shared.state.VaultEntryEditCompletion.PARTIAL || completion == dev.piko.shared.state.VaultEntryEditCompletion.UNCONFIRMED,
+                work.copy(result = result).showsInTaskPage, completion.name)
+        }
+    }
+
+    @Test
     fun `upload batches restore as groups and support child selection and group removal`() = smoke { scope ->
         val server = FakePikPakServer()
         val provider = server.provider()
@@ -250,41 +290,34 @@ class TransfersAccountSmokeTest {
         assertTrue(server.node(other.id) != null, "移除任务结果不删除网盘目录")
         val commands = dev.piko.shared.presentation.FileCommands(drive, fileWrites)
         assertTrue(commands.submit(dev.piko.shared.state.FileWriteCommand.Rename(original.id, "renamed.mkv")) is dev.piko.shared.presentation.FileCommandResult.Accepted)
-        awaitUntil("普通文件操作结果出现在任务页") { state.completed.any { it is TransferItem.Write } }
-        val writeResult = state.completed.filterIsInstance<TransferItem.Write>().single()
-        assertEquals(1, state.counts[TransferKind.FILES])
-        assertTrue(state.canUndoWrite(writeResult.work))
-        state.undoWrite(writeResult.work)
-        awaitUntil("任务页显示对应撤销结局") { state.writeUndoStatus(writeResult.work)?.status == dev.piko.shared.data.DriveChangeJournal.UndoStatus.UNDONE }
+        awaitUntil("普通文件操作完成") { fileWrites.works.value.singleOrNull()?.isRunning == false }
+        val writeWork = fileWrites.works.value.single()
+        assertEquals(dev.piko.shared.state.FileWriteCompletion.SUCCEEDED, writeWork.result!!.completion)
+        assertTrue(!writeWork.showsInTaskPage)
+        assertTrue(state.isEmpty, "普通改名成功不进入任务页")
+        assertTrue(state.canUndoWrite(writeWork))
+        state.undoWrite(writeWork)
+        awaitUntil("前台撤销仍可完成") { state.writeUndoStatus(writeWork)?.status == dev.piko.shared.data.DriveChangeJournal.UndoStatus.UNDONE }
         assertEquals("a.mkv", original.name)
-        state.remove(writeResult)
-        awaitUntil("移除结果不修改网盘文件") { state.isEmpty }
+        assertTrue(state.isEmpty)
         assertTrue(server.node(original.id) != null)
         val played = server.addEvent(io.github.nihildigit.pikpak.EventType.PLAY, original.id)
         val historyCommands = dev.piko.shared.presentation.HistoryCommands(drive, historyEdits)
         assertTrue(historyCommands.submit(dev.piko.shared.state.HistoryEditCommand.Remove(dev.piko.shared.data.HistoryKind.PLAY, listOf(played.id))) is dev.piko.shared.presentation.HistoryCommandResult.Accepted)
-        try {
-            awaitUntil("历史处理结果出现在任务页") { state.completed.any { it is TransferItem.History } }
-            val sections = state.sectionsOf(TransferKind.ALL)
-            val projected = sections.inProgress + sections.needsAttention + sections.completed + sections.outputDeleted
-            assertEquals(projected.size, projected.distinctBy { it.key }.size, "同一任务在一份投影中只能出现一次")
-            assertEquals(1, state.counts[TransferKind.FILES])
-        } catch (error: AssertionError) {
-            throw AssertionError("progress=${state.inProgress.map { it.key }}, attention=${state.needsAttention.map { it.key }}, completed=${state.completed.map { it.key }}, counts=${state.counts}, cleanup=${state.hasCleanup}, duplicate=${duplicates.state != null}, writes=${fileWrites.works.value.map { it.id to it.result?.completion }}, history=${historyEdits.works.value.map { it.id to it.result?.completion }}", error)
-        }
-        assertEquals(1, state.counts[TransferKind.FILES])
-        state.remove(state.completed.filterIsInstance<TransferItem.History>().single())
-        awaitUntil("移除历史操作的结果记录") { state.isEmpty }
+        awaitUntil("历史处理完成") { historyEdits.works.value.singleOrNull()?.isRunning == false }
+        assertEquals(dev.piko.shared.state.HistoryEditCompletion.SUCCEEDED, historyEdits.works.value.single().result!!.completion)
+        assertEquals(0, state.counts[TransferKind.FILES])
+        assertTrue(state.isEmpty, "历史删除成功不进入任务页")
         assertNotNull(server.node(original.id))
         val vaultCommands = dev.piko.shared.presentation.VaultEntryCommands(drive, vaultEdits, commands)
         assertTrue(vaultCommands.submit(dev.piko.shared.state.VaultEntryEditCommand.Remove(mapOf(other.id to setOf("absent")))) is dev.piko.shared.presentation.VaultEntryCommandResult.Accepted)
-        awaitUntil("归档条目编辑结果进入同一任务投影") { state.completed.any { it is TransferItem.VaultEdit } }
-        val edit = state.completed.filterIsInstance<TransferItem.VaultEdit>().single()
-        assertEquals(1, state.counts[TransferKind.FILES])
-        assertEquals(dev.piko.shared.state.VaultEntryEditCompletion.SUCCEEDED, edit.work.result!!.completion)
-        assertTrue(!state.canUndoVaultEdit(edit.work), "实际清单未变的操作不能制造撤销数据")
-        state.remove(edit)
-        awaitUntil("移除编辑结果不改变目录") { state.isEmpty }
+        awaitUntil("归档条目编辑完成") { vaultEdits.works.value.singleOrNull()?.isRunning == false }
+        val edit = vaultEdits.works.value.single()
+        assertEquals(0, state.counts[TransferKind.FILES])
+        assertEquals(dev.piko.shared.state.VaultEntryEditCompletion.SUCCEEDED, edit.result!!.completion)
+        assertTrue(!edit.showsInTaskPage)
+        assertTrue(!state.canUndoVaultEdit(edit), "实际清单未变的操作不能制造撤销数据")
+        assertTrue(state.isEmpty, "归档条目编辑成功不进入任务页")
         assertNotNull(server.node(other.id))
         val attemptId = records.beginAttempt(account, "保存尝试", PikoPathBreadcrumb(other.id, other.name),
             listOf(io.github.nihildigit.pikpak.ResolvedFile("partial.mkv", 10, "PARTIAL")))!!

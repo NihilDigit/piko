@@ -3,6 +3,7 @@ package dev.piko.ui.screens.transfers
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.CloudDownload
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.MaterialTheme
@@ -50,7 +51,7 @@ internal fun OfflinePackJob.sizeLabel(): String =
     if (keptBytes in 1 until totalBytes) "${keptBytes.toReadableSize()} / ${totalBytes.toReadableSize()}"
     else totalBytes.toReadableSize()
 
-private val OfflinePackJob.canOpen: Boolean
+internal val OfflinePackJob.canOpen: Boolean
     get() = stage == OfflinePackStage.DONE && outputId.isNotEmpty()
 
 
@@ -68,16 +69,20 @@ internal fun packTransferActions(
     onOpen: () -> Unit,
     onRetry: () -> Unit,
     onDiscard: () -> Unit,
+    onCopySource: (() -> Unit)? = null,
 ): List<SheetAction> {
     val job = item.job
     return buildList {
         if (item.isBusy) return@buildList
-        if (job.canOpen) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "打开", onOpen))
+        if (job.canOpen) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", onOpen))
+        if (onCopySource != null) {
+            add(SheetAction(androidx.compose.material.icons.Icons.Outlined.ContentCopy, "复制来源链接", onCopySource))
+        }
         if (job.stage == OfflinePackStage.FAILED) {
             add(SheetAction(Icons.Outlined.Refresh, "重试", onRetry))
         }
         // 取消会连同服务端的占位文件一起删掉；已完成的只删任务记录，文件留在网盘里
-        val discardLabel = if (job.isActive) "取消任务" else "移除"
+        val discardLabel = if (job.isActive) "取消任务" else "移除记录"
         add(SheetAction(Icons.Outlined.Delete, discardLabel, onDiscard, destructive = true))
     }
 }
@@ -89,7 +94,7 @@ internal fun PackTransferDetails(item: TransferItem.Pack, actions: List<SheetAct
     val statusColor = job.statusColor()
     ItemDetailsContent(modifier = modifier, showIcon = false,
         title = job.folderName,
-        headerIcon = { ListLeadingIcon(Icons.Outlined.CloudDownload) },
+        headerIcon = { TaskFolderVisual(job.folderName) },
         actions = actions,
         metaParts = listOf("云端", item.statusLabel(), job.sizeLabel()),
         extraLines = {

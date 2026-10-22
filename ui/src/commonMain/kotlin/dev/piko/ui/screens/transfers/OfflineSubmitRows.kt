@@ -16,7 +16,7 @@ import dev.piko.ui.components.SheetAction
 import dev.piko.ui.workProgress
 
 internal fun offlineSubmitActions(work: OfflineSubmitWork, onShow: (() -> Unit)?, onForget: () -> Unit): List<SheetAction> = buildList {
-    if (onShow != null) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中查看", onShow))
+    if (onShow != null) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", onShow))
     if (!work.isRunning) add(SheetAction(Icons.Outlined.Close, "移除记录", onForget))
 }
 

@@ -26,6 +26,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.role
@@ -287,18 +291,21 @@ fun ListLeadingMedia(
     ) {
         // 本地文件与 SAF 地址也走 SpoilerThumbnail：传输列表的缩略图可能来自已下载的文件，
         // 只对 URL 做遮蔽的话，下载下来的东西反而绕过了防窥
-        if (thumbnail == null) {
+        var coverFailed by remember(thumbnail) { mutableStateOf(false) }
+        val activeThumbnail = thumbnail?.takeUnless { coverFailed }
+        if (activeThumbnail == null) {
             fallback()
         } else {
             SpoilerThumbnail(
-                model = thumbnail,
+                model = activeThumbnail,
                 isBlurred = isSpoilerBlurred,
                 blur = ListSpoilerBlur,
                 modifier = Modifier.fillMaxSize(),
+                onError = { coverFailed = true },
             )
         }
         // 遮蔽时 SpoilerThumbnail 已画了遮蔽图标，再叠播放键就是两个图标摞在一起
-        if (showPlayOverlay && thumbnail != null && !isSpoilerBlurred) {
+        if (showPlayOverlay && activeThumbnail != null && !isSpoilerBlurred) {
             val fixed = LocalFixedColors.current
             Box(
                 modifier = Modifier

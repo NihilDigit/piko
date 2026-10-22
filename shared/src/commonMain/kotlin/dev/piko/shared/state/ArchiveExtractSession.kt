@@ -107,15 +107,25 @@ class ArchiveExtractSession(
     /** 每个压缩包的结局，供不在前台时发通知。[messages] 里还混着「已跳过分卷」这类即时反馈，通知不要那些。 */
     val outcomes: SharedFlow<ArchiveOutcome> = _outcomes.asSharedFlow()
 
+    private var requestedPasswordJobId by mutableStateOf<String?>(null)
+
     /**
-     * 该弹密码框的压缩包。刚输过密码的那个还没验证完时先不弹下一个：同一批分包常用同一个密码，
-     * 等它验证通过、存进密码表，下一个框里就能直接点选。
+     * 自动提示在上一个密码验证完成后继续，便于复用新保存的密码。
+     * 从任务页显式打开的待输入任务优先，不受自动提示顺序限制。
      */
     val passwordPrompt: ArchiveJob? by derivedStateOf {
+        val requested = jobs.firstOrNull { it.id == requestedPasswordJobId && it.status is ArchiveJobStatus.NeedsPassword }
         val verifying = jobs.any {
             it.password.isNotEmpty() && (it.status == ArchiveJobStatus.Waiting || it.status == ArchiveJobStatus.Submitting)
         }
-        if (verifying) null else jobs.firstOrNull { it.status is ArchiveJobStatus.NeedsPassword }
+        requested ?: if (verifying) null else jobs.firstOrNull { it.status is ArchiveJobStatus.NeedsPassword }
+    }
+
+    /** 任务页显式选择待输入任务，不重新提交解压请求。 */
+    fun reopenPasswordPrompt(jobId: String): Boolean {
+        if (jobs.none { it.id == jobId && it.status is ArchiveJobStatus.NeedsPassword }) return false
+        requestedPasswordJobId = jobId
+        return true
     }
 
     private var worker: Job? = null
@@ -152,6 +162,7 @@ class ArchiveExtractSession(
 
     fun submitPassword(jobId: String, password: String) {
         val job = jobs.firstOrNull { it.id == jobId } ?: return
+        if (requestedPasswordJobId == jobId) requestedPasswordJobId = null
         // 排到队首：用户正等着看这个密码对不对
         jobs = listOf(job.copy(status = ArchiveJobStatus.Waiting, password = password, remoteTaskId = null)) + jobs.filterNot { it.id == jobId }
         ensureWorker()
@@ -159,6 +170,7 @@ class ArchiveExtractSession(
 
     /** 放弃一个待输密码的压缩包。 */
     fun skip(jobId: String) {
+        if (requestedPasswordJobId == jobId) requestedPasswordJobId = null
         jobs = jobs.filterNot { it.id == jobId && it.status is ArchiveJobStatus.NeedsPassword }
         completedJobs = completedJobs.filterNot { it.id == jobId }
     }
@@ -184,6 +196,7 @@ class ArchiveExtractSession(
     fun clear() {
         worker?.cancel()
         worker = null
+        requestedPasswordJobId = null
         jobs = emptyList()
         completedJobs = emptyList()
     }

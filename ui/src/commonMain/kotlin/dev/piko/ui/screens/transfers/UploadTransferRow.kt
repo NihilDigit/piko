@@ -4,6 +4,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.CloudUpload
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
@@ -12,10 +13,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.upload.UploadStatus
 import dev.piko.shared.upload.UploadTask
 import dev.piko.ui.components.ItemDetailsContent
-import dev.piko.ui.components.ListLeadingIcon
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.theme.LocalStatusColors
@@ -45,11 +46,11 @@ internal fun UploadTask.statusDetails(): List<String> {
     }
 }
 
-private val UploadTask.showsProgress: Boolean
-    get() = status == UploadStatus.HASHING || status == UploadStatus.UPLOADING
+internal val UploadTask.canOpen: Boolean
+    get() = status == UploadStatus.COMPLETED && !fileId.isNullOrEmpty()
 
-private val UploadTask.canOpen: Boolean
-    get() = status == UploadStatus.COMPLETED && fileId != null
+internal val UploadTask.canPlayVideo: Boolean
+    get() = canOpen && fileName.isPlayableVideo()
 
 internal fun UploadTask.failureReason(): String = errorMessage?.takeIf { it.isNotBlank() } ?: "网络中断"
 
@@ -68,7 +69,7 @@ internal fun UploadTransferDetails(task: UploadTask, actions: List<SheetAction>,
     val statusColor = task.statusColor()
     ItemDetailsContent(modifier = modifier, showIcon = false,
         title = task.fileName,
-        headerIcon = { ListLeadingIcon(Icons.Outlined.CloudUpload) },
+        headerIcon = { TaskFileTypeIcon(task.fileName, Icons.Outlined.CloudUpload) },
         actions = actions,
         metaParts = listOfNotNull("上传", task.statusLabel()) + task.statusDetails(),
         extraLines = {
@@ -78,10 +79,16 @@ internal fun UploadTransferDetails(task: UploadTask, actions: List<SheetAction>,
     )
 }
 
-/** 点按一项做的事：完成的跳到网盘里的文件，暂停与失败的继续，传输中的暂停。 */
-internal fun uploadPrimaryAction(task: UploadTask, onOpen: () -> Unit, onResume: () -> Unit, onPause: () -> Unit): (() -> Unit)? =
+/** 点按一项做的事：完成视频直接播放，其余完成的跳到网盘里的文件，暂停与失败的继续，传输中的暂停。 */
+internal fun uploadPrimaryAction(
+    task: UploadTask,
+    onPlay: (() -> Unit)?,
+    onOpen: () -> Unit,
+    onResume: () -> Unit,
+    onPause: () -> Unit,
+): (() -> Unit)? =
     when (task.status) {
-        UploadStatus.COMPLETED -> onOpen.takeIf { task.canOpen }
+        UploadStatus.COMPLETED -> if (task.canPlayVideo && onPlay != null) onPlay else onOpen.takeIf { task.canOpen }
         UploadStatus.PAUSED, UploadStatus.FAILED -> onResume
         UploadStatus.HASHING, UploadStatus.UPLOADING -> onPause
         UploadStatus.QUEUED -> null
@@ -90,18 +97,37 @@ internal fun uploadPrimaryAction(task: UploadTask, onOpen: () -> Unit, onResume:
 /** 上传任务的全部操作，详情面板与右键菜单共用。 */
 internal fun uploadTransferActions(
     task: UploadTask,
+    onPlay: (() -> Unit)?,
     onOpen: () -> Unit,
+    onOpenParent: (() -> Unit)?,
     onResume: () -> Unit,
     onPause: () -> Unit,
     onRemove: () -> Unit,
+    onRevealLocal: (() -> Unit)? = null,
 ): List<SheetAction> = buildList {
-        when (task.status) {
-            UploadStatus.COMPLETED -> if (task.canOpen) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中查看", onOpen))
-            UploadStatus.HASHING, UploadStatus.UPLOADING, UploadStatus.QUEUED -> add(SheetAction(Icons.Outlined.Pause, "暂停", onPause))
-            UploadStatus.PAUSED -> add(SheetAction(Icons.Outlined.PlayArrow, "继续上传", onResume))
-            UploadStatus.FAILED -> add(SheetAction(Icons.Outlined.Refresh, "重试", onResume))
+    when (task.status) {
+        UploadStatus.COMPLETED -> {
+            if (task.canPlayVideo && onPlay != null) add(SheetAction(Icons.Outlined.PlayArrow, "播放", onPlay))
+            if (task.canOpen) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", onOpen))
+            else if (onOpenParent != null) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", onOpenParent))
         }
-        // 未完成的一并删掉网盘里那个上传中的文件；已完成的只删记录
-        val removeLabel = if (task.status == UploadStatus.COMPLETED) "移除记录" else "取消上传"
-        add(SheetAction(Icons.Outlined.Delete, removeLabel, onRemove, destructive = true))
+        UploadStatus.HASHING, UploadStatus.UPLOADING, UploadStatus.QUEUED -> {
+            add(SheetAction(Icons.Outlined.Pause, "暂停", onPause))
+            if (onOpenParent != null) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", onOpenParent))
+        }
+        UploadStatus.PAUSED -> {
+            add(SheetAction(Icons.Outlined.PlayArrow, "继续上传", onResume))
+            if (onOpenParent != null) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", onOpenParent))
+        }
+        UploadStatus.FAILED -> {
+            add(SheetAction(Icons.Outlined.Refresh, "重试", onResume))
+            if (onOpenParent != null) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", onOpenParent))
+        }
+    }
+    if (onRevealLocal != null) {
+        add(SheetAction(Icons.Outlined.FolderOpen, "打开所在文件夹", onRevealLocal))
+    }
+    // 未完成的一并删掉网盘里那个上传中的文件；已完成的只删记录
+    val removeLabel = if (task.status == UploadStatus.COMPLETED) "移除记录" else "取消上传"
+    add(SheetAction(Icons.Outlined.Delete, removeLabel, onRemove, destructive = true))
 }

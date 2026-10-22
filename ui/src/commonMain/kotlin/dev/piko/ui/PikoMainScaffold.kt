@@ -1175,20 +1175,32 @@ fun PikoMainScaffold(
     LaunchedEffect(services.vaultEntryEdits, lifecycle, account) {
         services.vaultEntryEdits.outcomes.collect { outcome ->
             if (outcome.account != services.driveRepository.currentAccount) return@collect
-            if (outcome.result.undoChangeIds.isNotEmpty() && outcome.result.completion == dev.piko.shared.state.VaultEntryEditCompletion.SUCCEEDED) return@collect
+            if (outcome.result.completion == dev.piko.shared.state.VaultEntryEditCompletion.SUCCEEDED) return@collect
             lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
-            if (outcome.account != services.driveRepository.currentAccount || services.vaultEntryEdits.works.value.none { it.id == outcome.id }) return@collect
-            val answer = rootSnackbar.showSnackbar("${outcome.title}：${outcome.result.message}", actionLabel = "查看任务", withDismissAction = true)
+            val work = services.vaultEntryEdits.works.value.firstOrNull { it.id == outcome.id } ?: return@collect
+            if (outcome.account != services.driveRepository.currentAccount) return@collect
+            val answer = rootSnackbar.showSnackbar(
+                "${outcome.title}：${outcome.result.message}",
+                actionLabel = "查看任务".takeIf { work.showsInTaskPage },
+                withDismissAction = true,
+            )
             if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) openTransfers()
         }
     }
     LaunchedEffect(services.fileWrites, lifecycle, account) {
         services.fileWrites.outcomes.collect { outcome ->
             if (outcome.account != services.driveRepository.currentAccount) return@collect
-            if (outcome.result.undoChangeIds.isNotEmpty() && outcome.result.completion == dev.piko.shared.state.FileWriteCompletion.SUCCEEDED) return@collect
+            val initialWork = services.fileWrites.works.value.firstOrNull { it.id == outcome.workId } ?: return@collect
+            if (outcome.result.completion == dev.piko.shared.state.FileWriteCompletion.SUCCEEDED &&
+                (!initialWork.showsInTaskPage || outcome.result.undoChangeIds.isNotEmpty())) return@collect
             lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
-            if (outcome.account != services.driveRepository.currentAccount || services.fileWrites.works.value.none { it.id == outcome.workId }) return@collect
-            val answer = rootSnackbar.showSnackbar("${outcome.title}：${outcome.result.message}", actionLabel = "查看任务", withDismissAction = true)
+            val work = services.fileWrites.works.value.firstOrNull { it.id == outcome.workId } ?: return@collect
+            if (outcome.account != services.driveRepository.currentAccount) return@collect
+            val answer = rootSnackbar.showSnackbar(
+                "${outcome.title}：${outcome.result.message}",
+                actionLabel = "查看任务".takeIf { work.showsInTaskPage },
+                withDismissAction = true,
+            )
             if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) openTransfers()
         }
     }

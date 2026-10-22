@@ -17,7 +17,7 @@ import dev.piko.ui.workProgress
 
 internal fun instantAttemptActions(work: InstantSaveAttempt, onShow: (() -> Unit)?, onForget: () -> Unit, onRecheck: (() -> Unit)? = null): List<SheetAction> = buildList {
     if (onRecheck != null) add(SheetAction(Icons.Outlined.Refresh, "重新查询结果", onRecheck))
-    if (onShow != null) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中查看", onShow))
+    if (onShow != null) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", onShow))
     if (!work.isRunning) add(SheetAction(Icons.Outlined.Close, "移除记录", onForget))
 }
 

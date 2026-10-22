@@ -1,15 +1,15 @@
 package dev.piko.ui.screens.transfers
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.hoverable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -31,13 +31,46 @@ internal data class TaskRowLayout(
 ) {
     companion object {
         fun forWidth(width: Dp) = TaskRowLayout(
-            wide = width >= 760.dp,
-            amount = width >= 920.dp,
-            rate = width >= 1200.dp,
-            destination = width >= 1440.dp,
-            progressWidth = if (width >= 1200.dp) 240.dp else 200.dp,
+            wide = false,
+            amount = false,
+            rate = false,
+            destination = false,
+            progressWidth = 200.dp,
         )
     }
+}
+
+/** 无缩略图的文件前导块：按文件大类配容器底色，标准 56.dp 圆角块。 */
+@Composable
+internal fun TaskFileTypeIcon(name: String, fallbackIcon: ImageVector? = null) {
+    val visual = remember(name) { FileVisual(name) }
+    val hasExt = remember(name) { visual.extensionLabel() != null }
+    val (container, content) = if (hasExt) {
+        visual.placeholderColors()
+    } else {
+        MaterialTheme.colorScheme.surfaceContainerHighest to MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Box(
+        modifier = Modifier
+            .size(ListLeadingSize)
+            .clip(MaterialTheme.shapes.small)
+            .background(container),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = if (hasExt) visual.typeIcon() else (fallbackIcon ?: visual.typeIcon()),
+            contentDescription = null,
+            tint = content,
+            modifier = Modifier.size(ListLeadingIconSize),
+        )
+    }
+}
+
+/** 文件夹批次前导块：与网盘列表文件夹一致的 56.dp 图标。 */
+@Composable
+internal fun TaskFolderVisual(name: String) {
+    val visual = remember(name) { FileVisual(name, isFolder = true) }
+    FileArtwork(visual, FileArtworkFormat.Leading)
 }
 
 @Composable
@@ -46,6 +79,7 @@ internal fun TaskRow(
     index: Int, count: Int, item: TransferItem, completed: Boolean, attention: Boolean,
     onOpen: () -> Unit, onToggle: () -> Unit,
     quickAction: SheetAction?, extraAction: SheetAction? = null,
+    onLeadingClick: (() -> Unit)? = null,
     leadingVisual: (@Composable () -> Unit)? = null,
 ) {
     val colors = MaterialTheme.colorScheme
@@ -58,65 +92,88 @@ internal fun TaskRow(
             "${time.monthNumber}/${time.dayOfMonth} ${time.hour.toString().padStart(2, '0')}:${time.minute.toString().padStart(2, '0')}"
         } else null
     }
-    val interactions = remember { MutableInteractionSource() }
-    val hovered by interactions.collectIsHoveredAsState()
     val pointers = LocalPointerSource.current
-    val showCheckbox = selection.active || (hovered && !pointers.isTouchLike)
-    val shownExtraAction = extraAction.takeIf { layout.wide }
+    val shownExtraAction = extraAction
+    val rowShape = MaterialTheme.shapes.medium
     SegmentedListItem(
         onClick = { if (selection.active) onToggle() else if (pointers.isTouchLike) onOpen() },
         // 按触发长按时的输入来源判断，避免首个触摸事件切换回调后取消正在进行的手势。
         onLongClick = { if (pointers.isTouchLike) selection.onLongClick?.invoke() },
-        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp).heightIn(min = if (layout.wide || completed) 64.dp else 88.dp)
-            .hoverable(interactions),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp).heightIn(min = if (completed) 72.dp else 80.dp),
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-        shapes = ListItemDefaults.segmentedShapes(if (selection.selected) 0 else index, if (selection.selected) 1 else count),
+        shapes = ListItemDefaults.shapes(
+            shape = rowShape,
+            selectedShape = rowShape,
+            pressedShape = rowShape,
+            focusedShape = rowShape,
+            hoveredShape = rowShape,
+            draggedShape = rowShape,
+        ),
         colors = ListItemDefaults.segmentedColors(
-            containerColor = if (selection.selected) colors.primaryContainer else colors.surfaceContainerLow,
-            contentColor = if (selection.selected) colors.onPrimaryContainer else colors.onSurface,
+            containerColor = if (selection.selected) colors.secondaryContainer else colors.surfaceContainerLow,
+            contentColor = if (selection.selected) colors.onSecondaryContainer else colors.onSurface,
         ),
         leadingContent = {
-            Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
-                if (showCheckbox) {
+            Box(
+                modifier = Modifier
+                    .size(ListLeadingSize)
+                    .then(
+                        if (!selection.active && onLeadingClick != null) {
+                            Modifier.clip(MaterialTheme.shapes.small).clickable(onClickLabel = "播放", onClick = onLeadingClick)
+                        } else {
+                            Modifier
+                        },
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (selection.active) {
                     Checkbox(selection.selected, { onToggle() }, Modifier.semantics { contentDescription = "选择任务：${model.title}" })
-                } else Box(Modifier.size(28.dp), contentAlignment = Alignment.Center) {
-                    if (leadingVisual != null) leadingVisual() else Icon(model.icon, null, Modifier.size(22.dp))
+                } else if (leadingVisual != null) {
+                    leadingVisual()
+                } else {
+                    ListLeadingIcon(model.icon)
                 }
             }
         },
         content = {
             if (completed) {
-                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(model.title, style = MaterialTheme.typography.titleSmall,
-                        maxLines = if (layout.wide) 1 else 2, overflow = TextOverflow.Ellipsis)
-                    Text(listOfNotNull(model.status, model.detail?.takeIf { it.isNotBlank() }).distinct().joinToString(" · "),
-                        style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant,
-                        maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Text(listOfNotNull(model.kind, model.destination?.takeIf { it.isNotBlank() }, timestamp).joinToString(" · "),
-                        style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        model.title,
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    val detailPart = model.detail?.takeIf { it.isNotBlank() && it != "已完成" }
+                        ?: model.status.takeIf { it.isNotBlank() && it != "已完成" }
+                    val metaParts = listOfNotNull(
+                        model.kind,
+                        detailPart,
+                        model.destination?.takeIf { it.isNotBlank() },
+                        timestamp,
+                    ).distinct()
+                    if (metaParts.isNotEmpty()) {
+                        MetaRow(
+                            parts = metaParts,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.onSurfaceVariant,
+                        )
+                    }
                 }
-            } else if (layout.wide) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Column(Modifier.weight(1f)) {
-                    Text(model.title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(listOfNotNull(model.kind, model.destination.takeUnless { layout.destination }).joinToString("，"), style = MaterialTheme.typography.bodySmall,
-                        color = colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            } else {
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        model.title,
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    TaskProgressCell(model, attention, Modifier.fillMaxWidth(), showDetail = true)
                 }
-                TaskProgressCell(model, attention, Modifier.width(layout.progressWidth), showDetail = true)
-                if (byteStream && layout.amount) Column(Modifier.width(130.dp)) {
-                    TaskMetric(model.amount)
-                    if (!layout.rate) TaskMetric(model.rate)
-                }
-                if (byteStream && layout.rate) TaskMetric(model.rate, Modifier.width(92.dp))
-                if (layout.destination) TaskMetric(model.destination, Modifier.width(160.dp))
-            } else Column(Modifier.fillMaxWidth()) {
-                Text(model.title, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Text(model.kind, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
-                TaskProgressCell(model, attention, Modifier.fillMaxWidth(), showDetail = true)
             }
         },
         trailingContent = if (quickAction != null || shownExtraAction != null) ({
-            Row(Modifier.width(if (layout.wide) 96.dp else 48.dp), horizontalArrangement = Arrangement.End) {
+            Row(horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                 quickAction?.let { TooltipIconButton(it.icon, it.label, it.onClick) }
                 shownExtraAction?.let { TooltipIconButton(it.icon, it.label, it.onClick) }
             }

@@ -18,7 +18,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.vector.ImageVector
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.download.DownloadStatus
@@ -26,6 +25,7 @@ import dev.piko.download.DownloadTask
 import dev.piko.ui.components.ItemDetailsContent
 import dev.piko.ui.components.ListLeadingIcon
 import dev.piko.ui.components.ListLeadingMedia
+import dev.piko.ui.components.ListLeadingSize
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.platform.LocalFileActions
@@ -34,10 +34,17 @@ import dev.piko.ui.theme.LocalStatusColors
 
 private val AUDIO_EXTENSIONS = setOf("mp3", "flac", "wav", "m4a", "aac")
 
-private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "avif")
+internal val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "avif")
 
-private fun DownloadTask.isMedia(): Boolean =
+internal fun DownloadTask.isMedia(): Boolean =
     fileName.isPlayableVideo() || fileName.substringAfterLast('.', "").lowercase() in AUDIO_EXTENSIONS
+
+/** 原画稀疏暂存已有已下载字节时，支持边下边播。 */
+internal fun DownloadTask.canPlayWhileDownloading(): Boolean =
+    status != DownloadStatus.COMPLETED && !isSegment && mediaId == null && fileName.isPlayableVideo() && sparseCache && downloadedBytes > 0
+
+internal fun DownloadTask.canPlayNow(): Boolean =
+    (status == DownloadStatus.COMPLETED && isMedia()) || canPlayWhileDownloading()
 
 @Composable
 internal fun LocalTransferVisual(task: DownloadTask, isSpoilerBlurred: Boolean) {
@@ -49,10 +56,10 @@ internal fun LocalTransferVisual(task: DownloadTask, isSpoilerBlurred: Boolean) 
     }
     ListLeadingMedia(
         thumbnail = imageModel,
-        fallback = { ListLeadingIcon(task.typeIcon()) },
+        fallback = { TaskFileTypeIcon(task.fileName, task.typeIcon()) },
         isSpoilerBlurred = isSpoilerBlurred,
-        showPlayOverlay = task.status == DownloadStatus.COMPLETED && isMedia,
-        size = 28.dp,
+        showPlayOverlay = task.canPlayNow(),
+        size = ListLeadingSize,
     )
 }
 
@@ -117,8 +124,8 @@ private fun DownloadTask.statusColor() = when (status) {
 
 
 /**
- * 点按一项做的事：完成的播放或用其他应用打开，暂停与失败的继续，下载中的暂停。窄行的轻点、宽行的轻点与双击共用。
- * 等待中的没有可做的，为 null。
+ * 点按一项做的事：完成或可边下边播的视频直接播放，其余完成的用其他应用打开，暂停与失败的继续，下载中的暂停。
+ * 窄行的轻点、宽行的双击共用。等待中的没有可做的，为 null。
  */
 internal fun localPrimaryAction(
     task: DownloadTask,
@@ -127,9 +134,10 @@ internal fun localPrimaryAction(
     onStart: () -> Unit,
     onPause: () -> Unit,
 ): (() -> Unit)? {
+    if (task.canPlayNow()) return onPlay
     val isMedia = task.isMedia()
     return when (task.status) {
-        DownloadStatus.COMPLETED -> if (isMedia) onPlay else LocalFileIntents(files, task, isMedia)::openExternal
+        DownloadStatus.COMPLETED -> LocalFileIntents(files, task, isMedia)::openExternal
         DownloadStatus.PAUSED, DownloadStatus.FAILED -> onStart
         DownloadStatus.DOWNLOADING -> onPause
         DownloadStatus.PENDING -> null
@@ -147,12 +155,13 @@ internal fun localTransferActions(
     /** 为 null 表示没有可切换的预览（防窥关闭或没有缩略图），不显示该项。 */
     previewHidden: Boolean?,
     onTogglePreview: () -> Unit,
+    onShowInDrive: (() -> Unit)? = null,
 ): List<SheetAction> {
     val isMedia = task.isMedia()
     val intents = LocalFileIntents(files, task, isMedia)
     return buildList {
         // 边下边播只认原画的暂存；转码档的暂存是转封装前的 TS，播放走不到它
-        if (task.status != DownloadStatus.COMPLETED && !task.isSegment && task.mediaId == null && isMedia && task.sparseCache && task.downloadedBytes > 0) {
+        if (task.canPlayWhileDownloading()) {
             add(SheetAction(Icons.Outlined.PlayArrow, "播放", onPlay))
         }
         if (previewHidden != null) {
@@ -171,13 +180,26 @@ internal fun localTransferActions(
                 add(SheetAction(Icons.Outlined.FolderOpen, "打开所在文件夹", intents::openContainingFolder))
                 if (files.canShare) add(SheetAction(Icons.Outlined.Share, "分享", intents::share))
             }
-            DownloadStatus.DOWNLOADING -> add(SheetAction(Icons.Outlined.Pause, "暂停", onPause))
-            DownloadStatus.PAUSED, DownloadStatus.PENDING -> add(SheetAction(Icons.Outlined.PlayArrow, "继续下载", onStart))
+            DownloadStatus.DOWNLOADING -> {
+                add(SheetAction(Icons.Outlined.Pause, "暂停", onPause))
+                if (task.destinationPath.isNotEmpty()) {
+                    add(SheetAction(Icons.Outlined.FolderOpen, "打开所在文件夹", intents::openContainingFolder))
+                }
+            }
+            DownloadStatus.PAUSED, DownloadStatus.PENDING -> {
+                add(SheetAction(Icons.Outlined.PlayArrow, "继续下载", onStart))
+                if (task.destinationPath.isNotEmpty() && task.downloadedBytes > 0) {
+                    add(SheetAction(Icons.Outlined.FolderOpen, "打开所在文件夹", intents::openContainingFolder))
+                }
+            }
             DownloadStatus.FAILED -> add(SheetAction(Icons.Outlined.Refresh, "重试", onStart))
+        }
+        if (onShowInDrive != null) {
+            add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", onShowInDrive))
         }
         val removeLabel = when (task.status) {
             DownloadStatus.COMPLETED -> "删除本地文件"
-            DownloadStatus.FAILED -> "移除"
+            DownloadStatus.FAILED -> "移除记录"
             else -> "取消并删除"
         }
         add(SheetAction(Icons.Outlined.Delete, removeLabel, onRemove, destructive = true))
@@ -190,7 +212,7 @@ internal fun LocalTransferDetails(task: DownloadTask, actions: List<SheetAction>
     val statusColor = task.statusColor()
     ItemDetailsContent(modifier = modifier, showIcon = false,
         title = task.displayName,
-        headerIcon = { ListLeadingIcon(task.typeIcon()) },
+        headerIcon = { TaskFileTypeIcon(task.fileName, task.typeIcon()) },
         actions = actions,
         metaParts = listOfNotNull(task.statusLabel()) + task.statusDetails(),
         extraLines = {

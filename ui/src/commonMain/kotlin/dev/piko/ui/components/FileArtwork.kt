@@ -14,7 +14,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -37,11 +40,12 @@ internal fun FileArtwork(
             isSpoilerBlurred = isSpoilerBlurred, modifier = modifier,
         )
         FileArtworkFormat.Poster -> Box(modifier) {
-            val cover = file.thumbnail
+            var coverFailed by remember(file.thumbnail) { mutableStateOf(false) }
+            val cover = file.thumbnail?.takeUnless { coverFailed }
             when {
                 file.isFolder -> StackedSheets(Modifier.fillMaxSize(), empty = file.isEmptyFolder,
-                    cover = cover?.let { { SpoilerThumbnail(it, isSpoilerBlurred, PosterSpoilerBlur, Modifier.fillMaxSize()) } })
-                cover != null -> SpoilerThumbnail(cover, isSpoilerBlurred, PosterSpoilerBlur, Modifier.fillMaxSize(), showBlurIcon = !file.isVideo)
+                    cover = cover?.let { { SpoilerThumbnail(it, isSpoilerBlurred, PosterSpoilerBlur, Modifier.fillMaxSize(), onError = { coverFailed = true }) } })
+                cover != null -> SpoilerThumbnail(cover, isSpoilerBlurred, PosterSpoilerBlur, Modifier.fillMaxSize(), showBlurIcon = !file.isVideo, onError = { coverFailed = true })
                 else -> TypePlaceholder(file, Modifier.fillMaxSize())
             }
             if (file.isVideo && cover != null) VideoPlayMark(Modifier.align(Alignment.Center))

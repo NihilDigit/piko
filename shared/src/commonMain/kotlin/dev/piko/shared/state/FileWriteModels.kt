@@ -61,6 +61,16 @@ data class FileWriteWork(
     val total: Int get() = command.ids.size.coerceAtLeast(1)
     val totalSteps: Int get() = (totalCount + 99) / 100
     val isRunning: Boolean get() = result == null
+
+    /** 轻量操作由前台反馈；仅长批次、复制和需要核对的结局进入任务页。 */
+    val showsInTaskPage: Boolean
+        get() = when (command) {
+            is FileWriteCommand.Star, is FileWriteCommand.CreateFolder -> false
+            is FileWriteCommand.Copy -> true
+            is FileWriteCommand.Rename, is FileWriteCommand.Move,
+            is FileWriteCommand.Restore, is FileWriteCommand.Delete -> if (isRunning) totalSteps > 1
+                else result?.completion == FileWriteCompletion.PARTIAL || result?.completion == FileWriteCompletion.UNCONFIRMED
+        }
 }
 
 data class FileWriteOutcome(val account: String, val workId: Long, val title: String, val result: FileWriteResult)

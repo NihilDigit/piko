@@ -618,7 +618,9 @@ class TransfersState(
             when (item) {
                 is TransferItem.Cloud -> item.task.fileId
                 is TransferItem.Pack -> item.job.outputId
-                is TransferItem.Local, is TransferItem.LocalBatch, is TransferItem.UploadBatch, is TransferItem.Upload, is TransferItem.UploadPreparing, is TransferItem.Instant, is TransferItem.InstantAttempt, is TransferItem.Share, is TransferItem.OfflineSubmit,
+                is TransferItem.Instant -> item.record.locateId
+                is TransferItem.Upload -> item.task.fileId
+                is TransferItem.Local, is TransferItem.LocalBatch, is TransferItem.UploadBatch, is TransferItem.UploadPreparing, is TransferItem.InstantAttempt, is TransferItem.Share, is TransferItem.OfflineSubmit,
                 is TransferItem.Extract, is TransferItem.Vault, is TransferItem.Write, is TransferItem.History, is TransferItem.VaultEdit -> null
             }?.takeIf { it.isNotEmpty() }
         }
@@ -749,6 +751,7 @@ class TransfersState(
     /** 放弃待输密码的压缩包或移除已结束的记录；已提交的远端任务不受影响。 */
     fun skipExtract(jobId: String) = extracts.skip(jobId)
     fun recheckExtract(jobId: String) = extracts.recheck(jobId)
+    fun promptExtractPassword(jobId: String) = extracts.reopenPasswordPrompt(jobId)
 
     /** 停止归档或取消归档。进行中的文件夹处理完才停，期间 [isVaultStopping] 为真。 */
     fun stopVault() = vault.stop()
@@ -794,7 +797,9 @@ class TransfersState(
         val serverItems = if (!listsServerWork) emptyList() else {
             (extracts.jobs + extracts.completedJobs).map { TransferItem.Extract(it) } +
                 listOfNotNull(vault.activeWork?.let { TransferItem.Vault(it) }) + vault.records.map { TransferItem.Vault(it.work, it) } +
-                writeRecords.map { TransferItem.Write(it) } + historyRecords.map { TransferItem.History(it) } + vaultEditRecords.map { TransferItem.VaultEdit(it) }
+                writeRecords.filter { it.showsInTaskPage }.map { TransferItem.Write(it) } +
+                historyRecords.filter { !it.isRunning && (it.result?.completion == HistoryEditCompletion.PARTIAL || it.result?.completion == HistoryEditCompletion.UNCONFIRMED) }.map { TransferItem.History(it) } +
+                vaultEditRecords.filter { it.showsInTaskPage }.map { TransferItem.VaultEdit(it) }
         }
         // 同一身份的结局优先于在途快照；文件夹里的本机文件只作为批次成员出现。
         return (serverItems + local.filter { it.batch == null }.map { TransferItem.Local(it) } + batches +

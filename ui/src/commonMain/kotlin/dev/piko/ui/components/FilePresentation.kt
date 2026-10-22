@@ -35,6 +35,7 @@ import dev.piko.data.repository.fileCategory
 import dev.piko.shared.data.isVaulted
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.ResolvedFile
+import io.github.nihildigit.pikpak.thumbnailUrlOf
 
 internal data class FileItemName(val title: String, val original: String? = null, val fullName: String = title)
 
@@ -63,9 +64,13 @@ internal data class FilePresentation(
     val status: FileItemStatus? = null,
 )
 
-internal fun FileStat.fileVisual(emptyFolder: Boolean = false) = FileVisual(
-    name, isFolder, thumbnailLink.takeIf { it.isNotEmpty() }, !isFolder && isPlayableVideo(), emptyFolder, fileCategory(),
-)
+internal fun FileStat.fileVisual(emptyFolder: Boolean = false): FileVisual {
+    val isVideo = !isFolder && isPlayableVideo()
+    val cover = thumbnailLink.ifBlank { if (isVideo && hash.isNotBlank()) thumbnailUrlOf(hash) else "" }
+    return FileVisual(
+        name, isFolder, cover.takeIf { it.isNotEmpty() }, isVideo, emptyFolder, fileCategory(),
+    )
+}
 
 @Composable
 internal fun FileStat.filePresentation(

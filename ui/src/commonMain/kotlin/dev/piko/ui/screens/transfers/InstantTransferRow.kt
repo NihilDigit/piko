@@ -4,15 +4,19 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.state.InstantSaveRecord
 import dev.piko.ui.components.ItemDetailsContent
-import dev.piko.ui.components.ListLeadingIcon
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.toReadableSize
+
+internal val InstantSaveRecord.canPlayVideo: Boolean
+    get() = locateId.isNotEmpty() && name.isPlayableVideo()
 
 internal fun InstantSaveRecord.details(): List<String> = buildList {
     // 一个视频连同字幕时文件数大于 1，只存一个文件时不必再说「1 个文件」
@@ -26,7 +30,10 @@ internal fun InstantSaveRecord.details(): List<String> = buildList {
 internal fun InstantTransferDetails(record: InstantSaveRecord, actions: List<SheetAction>, modifier: Modifier = Modifier) {
     ItemDetailsContent(modifier = modifier, showIcon = false,
         title = record.name,
-        headerIcon = { ListLeadingIcon(Icons.Outlined.Bolt) },
+        headerIcon = {
+            if (record.fileCount > 1 && !record.name.contains('.')) TaskFolderVisual(record.name)
+            else TaskFileTypeIcon(record.name, Icons.Outlined.Bolt)
+        },
         actions = actions,
         metaParts = listOf("秒传", "已保存") + record.details(),
         extraLines = {
@@ -36,7 +43,17 @@ internal fun InstantTransferDetails(record: InstantSaveRecord, actions: List<She
 }
 
 /** 秒传记录的全部操作，详情面板与右键菜单共用。 */
-internal fun instantTransferActions(onOpen: () -> Unit, onRemove: () -> Unit): List<SheetAction> = listOf(
-    SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中查看", onOpen),
-    SheetAction(Icons.Outlined.Delete, "移除记录", onRemove, destructive = true),
-)
+internal fun instantTransferActions(
+    record: InstantSaveRecord,
+    onPlay: (() -> Unit)?,
+    onOpen: () -> Unit,
+    onRemove: () -> Unit,
+): List<SheetAction> = buildList {
+    if (record.canPlayVideo && onPlay != null) {
+        add(SheetAction(Icons.Outlined.PlayArrow, "播放", onPlay))
+    }
+    if (record.locateId.isNotEmpty()) {
+        add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", onOpen))
+    }
+    add(SheetAction(Icons.Outlined.Delete, "移除记录", onRemove, destructive = true))
+}

@@ -91,10 +91,10 @@ internal fun rememberTransferActivity(
         // 文件夹下载一批算一项，与传输页一致；按文件数的话一个文件夹就是上千项
         count = activeDownloads.distinctBy { it.batch?.id ?: it.taskId }.size + activeUploads.size + preparingUploads.count { it.account == account } + activeCloud + serverWork + cleanupCount + untrackedSaves +
             listings.values.count { it.account == account } + fileWrites.count { work ->
-                work.account == account && (work.isRunning || work.result?.completion != dev.piko.shared.state.FileWriteCompletion.SUCCEEDED ||
+                work.account == account && work.showsInTaskPage && (work.isRunning || work.result?.completion != dev.piko.shared.state.FileWriteCompletion.SUCCEEDED ||
                     work.result?.undoChangeIds.orEmpty().any { journal.undo[it]?.status in setOf(DriveChangeJournal.UndoStatus.RUNNING, DriveChangeJournal.UndoStatus.FAILED) })
-            } + historyEdits.count { it.account == account && (it.isRunning || it.result?.completion != dev.piko.shared.state.HistoryEditCompletion.SUCCEEDED) } +
-            vaultEdits.count { work -> work.account == account && (work.isRunning || work.result?.completion != dev.piko.shared.state.VaultEntryEditCompletion.SUCCEEDED ||
+            } + historyEdits.count { !it.isRunning && it.account == account && (it.result?.completion == dev.piko.shared.state.HistoryEditCompletion.PARTIAL || it.result?.completion == dev.piko.shared.state.HistoryEditCompletion.UNCONFIRMED) } +
+            vaultEdits.count { work -> work.account == account && work.showsInTaskPage && (work.isRunning || work.result?.completion != dev.piko.shared.state.VaultEntryEditCompletion.SUCCEEDED ||
                 work.result?.undoChangeIds.orEmpty().any { journal.undo[it]?.status in setOf(DriveChangeJournal.UndoStatus.RUNNING, DriveChangeJournal.UndoStatus.FAILED) }) } +
             instantAttempts.count { it.account == account } + packs.count { it.account == account && (it.isActive || it.stage == dev.piko.shared.data.OfflinePackStage.FAILED || dev.piko.shared.data.OfflinePackRef(it.account, it.taskId) in busyPacks) } +
             offlineSubmits.count { it.account == account && it.status != dev.piko.shared.state.OfflineSubmitStatus.COMPLETE } + shares.count { work ->

@@ -311,9 +311,8 @@ fun PikoServices.runningWork(): List<WorkProgress> = (listOfNotNull(
     },
 ) + duplicateSessions.mapNotNull { it.state?.workProgress() } +
     importSaveProgress(instantSession.executingSaves) +
-    fileWrites.works.value.filter { it.account == driveRepository.currentAccount && it.isRunning }.map { it.workProgress() } +
-    historyEdits.works.value.filter { it.account == driveRepository.currentAccount && it.isRunning }.map { it.workProgress() } +
-    vaultEntryEdits.works.value.filter { it.account == driveRepository.currentAccount && it.isRunning }.map { it.workProgress() } +
+    fileWrites.works.value.filter { it.account == driveRepository.currentAccount && it.isRunning && it.showsInTaskPage }.map { it.workProgress() } +
+    vaultEntryEdits.works.value.filter { it.account == driveRepository.currentAccount && it.isRunning && it.showsInTaskPage }.map { it.workProgress() } +
     shareSaves.works.value.filter { it.account == driveRepository.currentAccount && it.isRunning }.map { it.workProgress() } +
     instantMagnetRepository.offlineSubmissions.works.value.filter { it.account == driveRepository.currentAccount && it.isRunning }.map { it.workProgress() } +
     uploadManager.preparations.value.filter { it.account == driveRepository.currentAccount && it.isRunning }.map { it.workProgress() } +
@@ -355,9 +354,8 @@ fun PikoServices.hasBackgroundWork(): Boolean =
         duplicateSessions.any { it.state?.isScanning == true } ||
         trashSession.progress != null || trashSession.isUndoing ||
         instantSession.executingSaves.isNotEmpty() ||
-        fileWrites.works.value.any { it.account == driveRepository.currentAccount && it.isRunning } ||
-        historyEdits.works.value.any { it.account == driveRepository.currentAccount && it.isRunning } ||
-        vaultEntryEdits.works.value.any { it.account == driveRepository.currentAccount && it.isRunning } ||
+        fileWrites.works.value.any { it.account == driveRepository.currentAccount && it.isRunning && it.showsInTaskPage } ||
+        vaultEntryEdits.works.value.any { it.account == driveRepository.currentAccount && it.isRunning && it.showsInTaskPage } ||
         shareSaves.works.value.any { it.account == driveRepository.currentAccount && it.isRunning } ||
         instantMagnetRepository.offlineSubmissions.works.value.any { it.account == driveRepository.currentAccount && it.isRunning } ||
         offlinePacks.busy.value.any { it.account == driveRepository.currentAccount } ||

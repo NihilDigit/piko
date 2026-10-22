@@ -43,6 +43,8 @@ data class VaultEntryEditWork(val id: Long, val account: String, val command: Va
     val before: Map<String, List<VaultEntry>> = emptyMap(), val result: VaultEntryEditResult? = null,
     val activeFolders: Set<String> = command.entries.keys.toSet()) {
     val isRunning: Boolean get() = result == null
+    val showsInTaskPage: Boolean get() = !isRunning &&
+        (result?.completion == VaultEntryEditCompletion.PARTIAL || result?.completion == VaultEntryEditCompletion.UNCONFIRMED)
     val pendingFolders: Set<String> get() = if (isRunning) activeFolders else result?.unconfirmed.orEmpty().keys
 }
 data class VaultEntryEditOutcome(val account: String, val id: Long, val title: String, val result: VaultEntryEditResult)
