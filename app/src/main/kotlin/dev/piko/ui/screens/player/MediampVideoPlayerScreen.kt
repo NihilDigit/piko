@@ -2,6 +2,9 @@ package dev.piko.ui.screens.player
 
 import android.content.Context
 import android.content.res.Configuration
+import android.media.MediaMetadata
+import android.media.session.MediaSession
+import android.media.session.PlaybackState
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.view.WindowManager
@@ -184,6 +187,72 @@ fun MediampVideoPlayerScreen(
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // Android 系统媒体控制（MediaSession）：支持蓝牙耳机按键、系统媒体中心与进度拖动
+    val mediaSession = remember(context, state) {
+        MediaSession(context, "PikoPlayer").apply {
+            setCallback(object : MediaSession.Callback() {
+                override fun onPlay() = state.play()
+                override fun onPause() = state.pause()
+                override fun onStop() = state.pause()
+                override fun onSkipToNext() = state.playNext()
+                override fun onSkipToPrevious() = state.playPrevious()
+                override fun onFastForward() = state.seekBy(seekStepSeconds * 1_000L)
+                override fun onRewind() = state.seekBy(-seekStepSeconds * 1_000L)
+                override fun onSeekTo(pos: Long) = state.seekTo(pos)
+            })
+            isActive = true
+        }
+    }
+    DisposableEffect(mediaSession) {
+        onDispose {
+            mediaSession.isActive = false
+            mediaSession.release()
+        }
+    }
+    LaunchedEffect(mediaSession, state.title, state.durationMillis, state.isImage) {
+        if (!state.isImage) {
+            mediaSession.setMetadata(
+                MediaMetadata.Builder()
+                    .putString(MediaMetadata.METADATA_KEY_TITLE, state.title)
+                    .putLong(MediaMetadata.METADATA_KEY_DURATION, state.durationMillis.coerceAtLeast(0L))
+                    .build(),
+            )
+        }
+    }
+    LaunchedEffect(
+        mediaSession,
+        state.isPlaying,
+        state.isLoading,
+        state.positionMillis / 1_000L,
+        state.playbackSpeed,
+        state.previousEntry != null,
+        state.nextEntry != null,
+        state.isImage,
+    ) {
+        if (!state.isImage) {
+            var actions = PlaybackState.ACTION_PLAY or
+                PlaybackState.ACTION_PAUSE or
+                PlaybackState.ACTION_PLAY_PAUSE or
+                PlaybackState.ACTION_STOP or
+                PlaybackState.ACTION_SEEK_TO or
+                PlaybackState.ACTION_FAST_FORWARD or
+                PlaybackState.ACTION_REWIND
+            if (state.previousEntry != null) actions = actions or PlaybackState.ACTION_SKIP_TO_PREVIOUS
+            if (state.nextEntry != null) actions = actions or PlaybackState.ACTION_SKIP_TO_NEXT
+            val playbackState = when {
+                state.isLoading -> PlaybackState.STATE_BUFFERING
+                state.isPlaying -> PlaybackState.STATE_PLAYING
+                else -> PlaybackState.STATE_PAUSED
+            }
+            mediaSession.setPlaybackState(
+                PlaybackState.Builder()
+                    .setActions(actions)
+                    .setState(playbackState, state.positionMillis.coerceAtLeast(0L), state.playbackSpeed ?: 1f)
+                    .build(),
+            )
+        }
     }
 
     BackHandler {

@@ -697,7 +697,7 @@ internal fun PlayerSettingsPanel(
             .padding(start = 24.dp, end = 24.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(24.dp),
     ) {
-        // 文件操作与去处排成一排：分成两排加分隔线时，第二排只有两项，看着像另一组不相干的东西
+        // 文件操作排成一排，带圆角底色块与清晰短标签
         val rowActions = fileActions + actions
         if (title != null || rowActions.isNotEmpty()) {
             SettingsSection("文件") {
@@ -712,8 +712,12 @@ internal fun PlayerSettingsPanel(
                     }
                 }
                 if (rowActions.isNotEmpty()) {
-                    if (title != null) Spacer(Modifier.height(8.dp))
-                    ActionIconRow(rowActions, onAction = { it.onClick() })
+                    if (title != null) Spacer(Modifier.height(10.dp))
+                    ActionIconRow(
+                        rowActions,
+                        onAction = { it.onClick() },
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    )
                 }
             }
         }
@@ -725,8 +729,6 @@ internal fun PlayerSettingsPanel(
                     optionLabel = ::formatSpeedPreset,
                     onSelect = onSpeedChange,
                 )
-                Spacer(Modifier.height(8.dp))
-                SpeedSlider(playbackSpeed, onSpeedChange)
             }
         }
         if (qualityOptions.isNotEmpty()) {
@@ -995,7 +997,7 @@ private const val SPEED_SLIDER_STEP = 0.01f
 private const val SPEED_MATCH_TOLERANCE = 0.005f
 private const val CONNECTED_MAX_OPTIONS = 4
 
-private val SIDE_SHEET_WIDTH = 360.dp
+private val SIDE_SHEET_WIDTH = 400.dp
 private val SIDE_SHEET_CORNER = 16.dp
 private const val SIDE_SHEET_SCRIM_ALPHA = 0.32f
 

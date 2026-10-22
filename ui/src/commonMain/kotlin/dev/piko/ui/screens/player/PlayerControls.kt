@@ -62,7 +62,9 @@ import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material.icons.outlined.Subtitles
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material3.ButtonDefaults
@@ -168,6 +170,8 @@ fun PlayerTopBar(
     isLocalPlayback: Boolean,
     onBackClick: () -> Unit,
     modifier: Modifier = Modifier,
+    onTracksClick: (() -> Unit)? = null,
+    onStatsClick: (() -> Unit)? = null,
     onSettingsClick: (() -> Unit)? = null,
 ) {
     // 桌面端独立的播放窗口没有标题栏：关窗按钮放在右上角，与其他按钮同款，左边的返回键与它重复，不再显示
@@ -227,6 +231,23 @@ fun PlayerTopBar(
                     }
                 }
             }
+        }
+        if (onTracksClick != null) {
+            PlayerIconButton(
+                icon = Icons.Outlined.Subtitles,
+                label = "音轨与字幕",
+                onClick = onTracksClick,
+                tooltipBelow = true,
+                shortcut = "C",
+            )
+        }
+        if (onStatsClick != null) {
+            PlayerIconButton(
+                icon = Icons.Outlined.Info,
+                label = "详细信息",
+                onClick = onStatsClick,
+                tooltipBelow = true,
+            )
         }
         if (onSettingsClick != null) {
             PlayerIconButton(

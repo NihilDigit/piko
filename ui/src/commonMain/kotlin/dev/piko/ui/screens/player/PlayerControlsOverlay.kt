@@ -415,14 +415,16 @@ fun MobilePlayerControls(
         if (event.isCtrlPressed || event.isAltPressed || event.isMetaPressed) return false
         val shift = event.isShiftPressed
         when (event.key) {
-            Key.Spacebar, Key.K -> onPlayPause()
+            Key.Spacebar, Key.K, Key.MediaPlayPause -> onPlayPause()
+            Key.MediaPlay -> if (!isPlaying) onPlayPause() else return true
+            Key.MediaPause, Key.MediaStop -> if (isPlaying) onPlayPause() else return true
             Key.DirectionLeft, Key.DirectionRight -> {
                 val forward = event.key == Key.DirectionRight
                 // Shift 的大步不接按住，按下即进退
                 if (shift) stepSeek(forward, LONG_SEEK_STEP_MILLIS) else arrowDown(event.key)
             }
-            Key.J -> stepSeek(forward = false)
-            Key.L -> stepSeek(forward = true)
+            Key.J, Key.MediaRewind -> stepSeek(forward = false)
+            Key.L, Key.MediaFastForward -> stepSeek(forward = true)
             Key.DirectionUp -> stepVolume(VOLUME_KEY_STEP)
             Key.DirectionDown -> stepVolume(-VOLUME_KEY_STEP)
             Key.M -> toggleMute()
@@ -432,8 +434,8 @@ fun MobilePlayerControls(
             Key.RightBracket -> stepSpeed(faster = true)
             Key.Backspace -> onSpeedChange(1f)
             Key.C -> return toggleSubtitles()
-            Key.PageUp -> if (hasPrevious) onPrevious() else return false
-            Key.PageDown -> if (hasNext) onNext() else return false
+            Key.PageUp, Key.MediaPrevious -> if (hasPrevious) onPrevious() else return false
+            Key.PageDown, Key.MediaNext -> if (hasNext) onNext() else return false
             Key.MoveHome -> onSeek(0L)
             else -> {
                 // 数字键跳到全片的几成处，0 是开头
@@ -740,6 +742,14 @@ fun MobilePlayerControls(
                         episodeLabel = episodeLabel,
                         isLocalPlayback = isLocalPlayback,
                         onBackClick = onBack,
+                        onTracksClick = {
+                            interacted()
+                            openSheet = PlayerSheet.Tracks
+                        }.takeIf { hasTracksEntry },
+                        onStatsClick = {
+                            interacted()
+                            openSheet = PlayerSheet.Stats
+                        }.takeIf { playbackStats != null },
                         onSettingsClick = {
                             interacted()
                             openSheet = PlayerSheet.Settings
@@ -908,14 +918,7 @@ fun MobilePlayerControls(
                     )
                     PlayerSheet.Settings -> PlayerSettingsPanel(
                         title = title,
-                        // 音轨与字幕换到它自己的面板；分享、下载这类先收起面板再做，免得面板挡着随后弹出的东西
-                        actions = listOfNotNull(
-                            // 与分享、下载排在一排，一律两个字：竖屏的手机上一格只有 60dp 上下，四个字就被截断
-                            SheetAction(Icons.Outlined.Subtitles, "音轨与字幕", { openSheet = PlayerSheet.Tracks }, shortLabel = "字幕")
-                                .takeIf { hasTracksEntry },
-                            SheetAction(Icons.Outlined.Info, "详细信息", { openSheet = PlayerSheet.Stats }, shortLabel = "信息")
-                                .takeIf { playbackStats != null },
-                        ),
+                        actions = emptyList(),
                         fileActions = fileActions.map { action ->
                             SheetAction(action.icon, action.label, {
                                 openSheet = null
