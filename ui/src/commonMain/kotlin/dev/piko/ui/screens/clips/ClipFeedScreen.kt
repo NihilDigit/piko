@@ -222,7 +222,7 @@ fun ClipFeedScreen(
                     Box(Modifier.fillMaxSize()) {
                         Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                             MediaLoadingIndicator()
-                            Text(if (session.upcoming.isEmpty()) "正在查找视频" else "正在缓存", color = Color.White, modifier = Modifier.padding(top = 16.dp))
+                            Text("正在准备", color = Color.White, modifier = Modifier.padding(top = 16.dp))
                         }
                         topBar(null)
                     }
@@ -306,6 +306,8 @@ private fun ClipPager(
     // 每个播放器所装那一段实际从全片哪一刻开始，读自切片的时间戳，见 PreparedClip.clipStartMs。
     // 看完整从这里接着放；Clip.startMs 只是挑段时定的目标，切片按码率估的位置会偏开它
     val clipStartMs = remember { List(POOL_SIZE) { 0L }.toMutableStateList() }
+    // 每个播放器所装那一段当前开放的播放长度，初值为 CLIP_LENGTH_MS，播完一段自动往后续 30s
+    val clipLengths = remember { List(POOL_SIZE) { CLIP_LENGTH_MS }.toMutableStateList() }
     val loadJobs = remember { arrayOfNulls<Job>(POOL_SIZE) }
     val focusRequester = remember { FocusRequester() }
     var paused by remember { mutableStateOf(pausedByHost) }
@@ -388,6 +390,7 @@ private fun ClipPager(
             val preparedMs = started.elapsedNow().inWholeMilliseconds
             startOnPlayer[slot] = prepared.startOnPlayer
             clipStartMs[slot] = prepared.clipStartMs
+            clipLengths[slot] = CLIP_LENGTH_MS
             try {
                 // 新装的段先压着，真看起来才升档，见 LaunchedEffect(current)
                 players[slot].setBufferAhead(HOLD_BUFFER_SECONDS)
@@ -509,14 +512,16 @@ private fun ClipPager(
             return@LaunchedEffect
         }
         // 翻回看过的一段，它停在哪里就从哪里接着；已经快放完了就从头再放，免得一翻回来就被自动翻走
-        val start = startOnPlayer[slotOf(settled)]
-        val end = start + CLIP_LENGTH_MS
+        val slot = slotOf(settled)
+        val start = startOnPlayer[slot]
+        val end = start + clipLengths[slot]
         // 只看出过首帧的：刚装上的，位置读数可能还是这个播放器上一段的。放到了切片末尾的也从头来，
         // 播放器停在流尾，只按播放不会动
-        val positionIsOurs = rendered[slotOf(settled)] == current
-        val atEnd = ended[slotOf(settled)] == current
+        val positionIsOurs = rendered[slot] == current
+        val atEnd = ended[slot] == current
         if (positionIsOurs && (atEnd || currentPlayer.positionMillis >= end - REPLAY_WITHIN_MS)) {
-            ended[slotOf(settled)] = null
+            ended[slot] = null
+            clipLengths[slot] = CLIP_LENGTH_MS
             currentPlayer.seekTo(start)
         }
         // 翻到一段就是要看它：在上一段暂停过，不能带到这一段，看着像没播动
@@ -646,9 +651,27 @@ private fun ClipPager(
             }
         }
         // 刚换源时 positionMillis 可能还是上一段的，只认落在这一段范围里的位置。
-        // 一直看着而不是只等一次：等下一段取好期间拖回段内，就不该再被带走
-        snapshotFlow { currentPlayer.positionMillis in end..end + STALE_POSITION_SLACK_MS }.collect { atEnd ->
-            if (atEnd) autoStep() else autoStepPending = false
+        // 放满当前 30 秒窗口时，若全片后面还有内容则自动续上 30 秒接着播，直到全片末尾才翻到下一段
+        snapshotFlow {
+            val length = clipLengths[slot]
+            val currentEnd = start + length
+            val reachedWindowEnd = rendered[slot] == current && currentPlayer.positionMillis in currentEnd..currentEnd + STALE_POSITION_SLACK_MS
+            Triple(reachedWindowEnd, length, clipStartMs[slot])
+        }.collect { (reachedWindowEnd, length, videoStart) ->
+            if (!reachedWindowEnd) {
+                autoStepPending = false
+                return@collect
+            }
+            val maxRemaining = (current.videoDurationMs - videoStart).coerceAtLeast(CLIP_LENGTH_MS)
+            if (ended[slot] != current && length < maxRemaining) {
+                val nextLength = (length + CLIP_LENGTH_MS).coerceAtMost(maxRemaining)
+                clipLengths[slot] = nextLength
+                currentPlayer.setBufferAhead(BOOSTED_SECONDS)
+                streams.boost(current, BOOSTED_SECONDS)
+                PikoLog.d("Clips", "自动续播 30s ${logFile(current.fileId, current.name)}：当前窗口 ${nextLength / 1000}s")
+            } else {
+                autoStep()
+            }
         }
     }
 
@@ -670,18 +693,25 @@ private fun ClipPager(
     }
 
     // 定位只在当前段的范围里：段首是播放器时钟上的 startOnPlayer，见 PreparedClip
-    val currentStart = startOnPlayer[slotOf(settled)]
+    val currentSlot = slotOf(settled)
+    val currentStart = startOnPlayer[currentSlot]
+    val currentLength = clipLengths[currentSlot].coerceAtLeast(CLIP_LENGTH_MS)
     // 出过首帧才定位：刚装上的播放器位置读数可能还是它上一段的
-    val seekable = current != null && rendered[slotOf(settled)] == current
+    val seekable = current != null && rendered[currentSlot] == current
 
     /** 当前段已放了多久，从段首算起。 */
-    fun clipPosition(): Long = (currentPlayer.positionMillis - currentStart).coerceIn(0L, CLIP_LENGTH_MS)
+    fun clipPosition(): Long = (currentPlayer.positionMillis - currentStart).coerceIn(0L, currentLength)
 
     fun seekClip(millis: Long) {
         if (!seekable) return
         // 放到流尾停住的播放器靠定位重新走起来；不清掉的话翻回来时会被当作已放完，从头再放
-        ended[slotOf(settled)] = null
-        currentPlayer.seekTo(currentStart + millis.coerceIn(0L, CLIP_LENGTH_MS))
+        ended[currentSlot] = null
+        val maxRemaining = (current.videoDurationMs - clipStartMs[currentSlot]).coerceAtLeast(CLIP_LENGTH_MS)
+        if (millis >= currentLength - SEEK_EXTEND_THRESHOLD_MS && currentLength < maxRemaining) {
+            clipLengths[currentSlot] = (currentLength + CLIP_LENGTH_MS).coerceAtMost(maxRemaining)
+        }
+        val limit = clipLengths[currentSlot].coerceAtLeast(CLIP_LENGTH_MS)
+        currentPlayer.seekTo(currentStart + millis.coerceIn(0L, limit))
         seekPending++
     }
 
@@ -702,11 +732,13 @@ private fun ClipPager(
                 val repeat = event.key == heldKey
                 heldKey = event.key
                 when (event.key) {
-                    Key.DirectionDown, Key.PageDown -> go(1)
-                    Key.DirectionUp, Key.PageUp -> go(-1)
-                    Key.DirectionLeft -> seekClipBy(-seekStepMillis)
-                    Key.DirectionRight -> seekClipBy(seekStepMillis)
-                    Key.Spacebar -> if (!repeat) togglePause()
+                    Key.DirectionDown, Key.PageDown, Key.MediaNext -> go(1)
+                    Key.DirectionUp, Key.PageUp, Key.MediaPrevious -> go(-1)
+                    Key.DirectionLeft, Key.MediaRewind -> seekClipBy(-seekStepMillis)
+                    Key.DirectionRight, Key.MediaFastForward -> seekClipBy(seekStepMillis)
+                    Key.Spacebar, Key.MediaPlayPause -> if (!repeat) togglePause()
+                    Key.MediaPlay -> if (!repeat && paused) togglePause()
+                    Key.MediaPause, Key.MediaStop -> if (!repeat && !paused) togglePause()
                     Key.M -> if (!repeat) session.muted = !session.muted
                     else -> return@onPreviewKeyEvent false
                 }
@@ -907,8 +939,8 @@ private fun ClipPager(
                 if (current != null) {
                     ClipProgressBar(
                         positionMillis = clipPosition(),
-                        lengthMillis = CLIP_LENGTH_MS,
-                        bufferedPositionMillis = (currentPlayer.bufferedPositionMillis - currentStart).coerceIn(0L, CLIP_LENGTH_MS),
+                        lengthMillis = currentLength,
+                        bufferedPositionMillis = (currentPlayer.bufferedPositionMillis - currentStart).coerceIn(0L, currentLength),
                         onSeek = ::seekClip,
                         onScrubbingChange = { scrubbing = it },
                         modifier = Modifier
@@ -1010,6 +1042,9 @@ private const val REPLAY_WITHIN_MS = 5_000L
 
 /** 超过片段终点这么多还当作本段的位置；再大就是换源前上一段残留的读数。 */
 private const val STALE_POSITION_SLACK_MS = 10_000L
+
+/** 进度条或按键快进接近当前段尾这么多以内时，顺手往后续上一段 30 秒。 */
+private const val SEEK_EXTEND_THRESHOLD_MS = 2_000L
 
 /**
  * 当前段往回留着会话的段数，再早的关掉，往回翻到时重开（转码切片的开头在磁盘上，重开快）。

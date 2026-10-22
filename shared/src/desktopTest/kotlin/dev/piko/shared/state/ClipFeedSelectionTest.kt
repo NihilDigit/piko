@@ -77,6 +77,16 @@ class ClipFeedSelectionTest {
         assertEquals(0L, chooseClipStart(20_000, 0, Random(0)))
     }
 
+    @Test fun multipleRecentStartsAvoidPingPongInLongSingleVideo() {
+        // Window is 60_000..480_000. Blocking 60_000 and 120_000 leaves 150_000..480_000.
+        repeat(50) { seed ->
+            val next = chooseClipStart(600_000, listOf(60_000L, 120_000L, 200_000L), Random(seed))
+            assertTrue(abs(next - 60_000L) >= CLIP_LENGTH_MS, "seed $seed: $next")
+            assertTrue(abs(next - 120_000L) >= CLIP_LENGTH_MS, "seed $seed: $next")
+            assertTrue(abs(next - 200_000L) >= CLIP_LENGTH_MS, "seed $seed: $next")
+        }
+    }
+
     /** 根下三部番各 12 集、一个 5 部电影的文件夹、3 个散文件：前 30 段要散开。 */
     @Test fun consecutiveClipsComeFromDifferentFoldersAndWorks() = repeat(SEEDS) { seed ->
         val pool = seriesTree()

@@ -22,6 +22,8 @@ class PreparedClip internal constructor(
     clipStartMs: Long,
     /** 这条流每毫秒视频的平均字节数。预取与预读的深度都按它折算。 */
     private val bytesPerMs: Double,
+    /** 切片首段预取与落盘的窗口长度；未给时取整个 [stream] 长度。 */
+    private val prefetchBytes: Long? = null,
     /** 按磁盘上的记录重建，没查详情；开头与末尾多半也在盘上，见 ClipCache。 */
     val fromDisk: Boolean = false,
     /**
@@ -85,7 +87,7 @@ class PreparedClip internal constructor(
             proxy.prefetch(originalRanges(proxy.size), role, priority = PikPakStreamReader.WARM_PRIORITY - 1)
             return
         }
-        proxy.prefetch(sliceRanges(proxy.size, bytesPerMs), role)
+        proxy.prefetch(sliceRanges(prefetchBytes ?: proxy.size, bytesPerMs), role)
         resolveStart?.let { resolve ->
             // 读不出来就沿用按码率估的起点：偏几秒，不值得为此让这一段放不了
             try {

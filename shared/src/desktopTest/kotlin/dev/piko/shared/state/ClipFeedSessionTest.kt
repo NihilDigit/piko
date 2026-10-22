@@ -172,4 +172,12 @@ class ClipFeedSessionTest {
         assertEquals(null, session.selectedVideoCount)
         assertTrue(session.upcoming.any { it.fileId == second.id }, "Folder cache must retain the full folder scope")
     }
+
+    @Test fun singleShortVideoFolderFallsBackInsteadOfShowingEmptyFeed() = runSession { server, _, session, _ ->
+        val shortVideo = server.addVideo("short.mp4", durationSeconds = 40.0)
+        session.open(path)
+        awaitState { !session.isCollecting && session.upcoming.isNotEmpty() }
+        assertEquals(shortVideo.id, session.upcoming.first().fileId)
+        assertFalse(session.isEmpty)
+    }
 }

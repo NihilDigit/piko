@@ -176,20 +176,38 @@ internal class FeedHold(val perFolder: Int, val from: Int) {
     }
 }
 
-/** Choose within the usual time window, avoiding the previous interval whenever it can fit. */
-internal fun chooseClipStart(durationMs: Long, previousStartMs: Long?, random: Random = Random): Long {
+/** Choose within the usual time window, avoiding recent intervals whenever a disjoint slot fits. */
+internal fun chooseClipStart(durationMs: Long, previousStartMs: Long?, random: Random = Random): Long =
+    chooseClipStart(durationMs, listOfNotNull(previousStartMs), random)
+
+internal fun chooseClipStart(durationMs: Long, recentStartsMs: List<Long>, random: Random = Random): Long {
     val first = (durationMs * 0.10).toLong()
     val last = (durationMs * 0.85).toLong() - CLIP_LENGTH_MS
     if (last <= first) return ((durationMs - CLIP_LENGTH_MS) / 2).coerceAtLeast(0)
-    if (previousStartMs == null) return random.nextLong(first, last + 1)
-    val beforeLast = minOf(last, previousStartMs - CLIP_LENGTH_MS)
-    val afterFirst = maxOf(first, previousStartMs + CLIP_LENGTH_MS)
-    val beforeCount = (beforeLast - first + 1).coerceAtLeast(0)
-    val afterCount = (last - afterFirst + 1).coerceAtLeast(0)
-    if (beforeCount + afterCount > 0) {
-        val offset = random.nextLong(beforeCount + afterCount)
-        return if (offset < beforeCount) first + offset else afterFirst + offset - beforeCount
+    if (recentStartsMs.isEmpty()) return random.nextLong(first, last + 1)
+    for (keepCount in recentStartsMs.size downTo 1) {
+        val blocked = recentStartsMs.takeLast(keepCount)
+            .map { (it - CLIP_LENGTH_MS + 1).coerceAtLeast(first)..(it + CLIP_LENGTH_MS - 1).coerceAtMost(last) }
+            .filter { !it.isEmpty() }
+            .sortedBy { it.first }
+        val allowed = mutableListOf<LongRange>()
+        var cursor = first
+        for (range in blocked) {
+            if (range.first > cursor) allowed += cursor until range.first
+            cursor = maxOf(cursor, range.last + 1)
+        }
+        if (cursor <= last) allowed += cursor..last
+        val total = allowed.sumOf { it.last - it.first + 1 }
+        if (total > 0) {
+            var offset = random.nextLong(total)
+            for (range in allowed) {
+                val count = range.last - range.first + 1
+                if (offset < count) return range.first + offset
+                offset -= count
+            }
+        }
     }
+    val previousStartMs = recentStartsMs.last()
     val leftDistance = kotlin.math.abs(first - previousStartMs)
     val rightDistance = kotlin.math.abs(last - previousStartMs)
     return when {

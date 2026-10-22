@@ -32,6 +32,7 @@ import java.util.concurrent.atomic.AtomicInteger
 internal class FakePikPakCloud(
     val origin: ByteArray,
     val transcode: ByteArray? = null,
+    val transcodeName: String = "480P",
     private val blockDelayMillis: Long = 0,
     /** 每一代直链服务这么多次 CDN 请求后开始回 403。null 表示不过期。 */
     private val expireAfterRequests: Int? = null,
@@ -94,7 +95,7 @@ internal class FakePikPakCloud(
         val transcodeEntry = if (transcode == null) {
             ""
         } else {
-            """,{"media_id":"m480","media_name":"480P","resolution_name":"480P","is_origin":false,
+            """,{"media_id":"m480","media_name":"$transcodeName","resolution_name":"$transcodeName","is_origin":false,
                 "video":{"width":854,"height":480,"duration":$durationSeconds,"video_type":"mpegts"},
                 "link":{"url":"https://$CDN_HOST/t480/g$gen","expire":""}}"""
         } + unreadableTranscodeHeight.let { height ->

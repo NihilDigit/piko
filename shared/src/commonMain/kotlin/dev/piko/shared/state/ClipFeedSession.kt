@@ -411,16 +411,24 @@ class ClipFeedSession(
 
     private suspend fun collectSelected(selection: List<FileStat>, request: Long) {
         try {
+            val discovered = mutableListOf<FileStat>()
             selection.groupBy { it.parentId }.forEach { (folderId, files) ->
                 val batch = analyzeVideoFolder(folderId, files)
                 if (request != generation) return
                 workOf.putAll(batch.workOf)
+                files.forEach { if (it.isDiscoverableVideo()) discovered += it }
                 files.filter { it.isClipCandidate() }.forEach {
                     listedFiles[it.id] = it
                     addToPool(it)
                 }
                 listedFolders++
                 fillAhead()
+            }
+            if (pool.isEmpty()) {
+                discovered.filter { it.durationMs() > 0L || it.isVaulted }.forEach {
+                    listedFiles[it.id] = it
+                    addToPool(it)
+                }
             }
         } finally {
             if (request == generation) {
@@ -432,6 +440,7 @@ class ClipFeedSession(
 
     private suspend fun collect(rootId: String, owner: String, request: Long) {
         val started = TimeSource.Monotonic.markNow()
+        val shortCandidates = mutableListOf<FileStat>()
         try {
             val discovery = VideoDiscovery(driveRepo, owner, rootId)
             while (true) {
@@ -439,11 +448,21 @@ class ClipFeedSession(
                 if (request != generation) return
                 listedFolders++
                 workOf.putAll(batch.workOf)
-                batch.candidates.filter { it.isClipCandidate() }.forEach {
+                batch.candidates.forEach { file ->
+                    if (file.isClipCandidate()) {
+                        listedFiles[file.id] = file
+                        addToPool(file)
+                    } else if (pool.isEmpty() && shortCandidates.size < 8 && file.isPlayableVideo() && !file.isUploading && file.durationMs() > 0L) {
+                        shortCandidates += file
+                    }
+                }
+                fillAhead()
+            }
+            if (pool.isEmpty()) {
+                shortCandidates.forEach {
                     listedFiles[it.id] = it
                     addToPool(it)
                 }
-                fillAhead()
             }
             PikoLog.d(TAG, "遍历完：$listedFolders 个目录，候选 ${pool.size} 个，${started.elapsedNow().inWholeMilliseconds} ms")
         } finally {
@@ -509,7 +528,7 @@ class ClipFeedSession(
                         if (request != generation) return@launch
                         // 查过之后池里的那份才带着时长；量出来太短的（多是样片、花絮）从此不挑
                         val (checked, tooShort) = probed.mapNotNull { (id, transcode) -> pooled(id)?.let { it to transcode } }
-                            .partition { (file, _) -> file.durationMs() >= MIN_DURATION_MS }
+                            .partition { (file, _) -> file.durationMs() >= MIN_DURATION_MS || pool.size == 1 }
                         tooShort.forEach { (file, _) -> rejected[file.id] = Clock.System.now().toEpochMilliseconds() }
                         PikoLog.d(TAG, "查转码 ${batch.size} 个，有 ${checked.count { it.second == Transcode.Yes }} 个：${checkStarted.elapsedNow().inWholeMilliseconds} ms")
                         val now = Clock.System.now().toEpochMilliseconds()
@@ -587,9 +606,11 @@ class ClipFeedSession(
     private fun clipOf(file: FileStat): Clip {
         val durationMs = file.durationMs()
         val key = file.clipContentKey()
-        val last = upcoming.lastOrNull { contentKey(it.fileId) == key }
-            ?: clips.lastOrNull { contentKey(it.fileId) == key }
-        val start = chooseClipStart(durationMs, last?.startMs)
+        val recentStarts = (clips + upcoming)
+            .filter { contentKey(it.fileId) == key }
+            .takeLast(RECENT_SAME_VIDEO_CLIPS)
+            .map { it.startMs }
+        val start = chooseClipStart(durationMs, recentStarts)
         return Clip(file.id, file.name, file.parentId, start, durationMs)
     }
 
@@ -703,6 +724,9 @@ class ClipFeedSession(
 
         /** 当前段之后挑好的不到这么多段时，没有转码的也当场收下，见 fillAhead。 */
         const val LOW_ON_CLIPS = 3
+
+        /** 同一个视频再次出段时避开最近这么多段的起点，防止只在两个时间点之间来回跳。 */
+        const val RECENT_SAME_VIDEO_CLIPS = 6
 
         /**
          * 遍历列出这么多个目录之前，补队列按 [FeedHold.Opening] 留位，此后按 [FeedHold.Collecting]。

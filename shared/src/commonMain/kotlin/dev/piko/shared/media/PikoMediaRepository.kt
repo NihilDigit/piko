@@ -201,6 +201,17 @@ class PikoMediaRepository(
         }
 
     /**
+     * 获取文件的下载直链（含归档条目或压缩包内条目的按需借出直链）。
+     */
+    suspend fun fetchDownloadUrl(fileId: String): Result<String> =
+        withContext(Dispatchers.Default) {
+            runSuspendCatching {
+                val detail = detailOf(client, fileId)
+                detail.downloadUrl?.takeIf { it.isNotBlank() } ?: error("没有下载链接")
+            }
+        }
+
+    /**
      * 取元数据并为视频开一个代理会话。
      *
      * 只调一次 getFile：元数据、直链与 handle 都出自同一份详情，失败回退用的直链
@@ -314,9 +325,19 @@ class PikoMediaRepository(
             throw e
         }
         backgroundScope.launch { runCatching { handle.prewarm() } }
-        val source = SlicedByteSource(PikPakByteSource(handle, cache), record.sliceOffset, record.sliceLength)
+        // 切片从起点一直开放到转码流末尾，30 秒放完可以直接往后续播；预取与落盘仍只限开头那一段
+        val openLength = (record.streamBytes - record.sliceOffset).coerceAtLeast(record.sliceLength)
+        val source = SlicedByteSource(PikPakByteSource(handle, cache), record.sliceOffset, openLength)
         val stream = registerProxy(source, fileName = "clip.ts", role = role) ?: return null
-        return PreparedClip(stream, fallbackUrl = null, sliced = true, clipStartMs = record.sliceStartMs, bytesPerMs = bytesPerMs, fromDisk = true)
+        return PreparedClip(
+            stream,
+            fallbackUrl = null,
+            sliced = true,
+            clipStartMs = record.sliceStartMs,
+            bytesPerMs = bytesPerMs,
+            prefetchBytes = record.sliceLength,
+            fromDisk = true,
+        )
     }
 
     private fun sliceStore(sliceOffset: Long, sliceLength: Long, bytesPerMs: Double) =
@@ -415,7 +436,8 @@ class PikoMediaRepository(
         val offset = if (keyframe != null) estimated + keyframe.byteOffset else estimated
         val sliceLength = sliceLengthAt(offset)
         store?.keepSlice(offset, sliceLength, bytesPerMs)
-        val slice = SlicedByteSource(source, offset, sliceLength)
+        val openLength = (source.size - offset).coerceAtLeast(sliceLength)
+        val slice = SlicedByteSource(source, offset, openLength)
         val stream = registerProxy(slice, fileName = "clip.ts", role = role) ?: return null
         fun record(sliceStartMs: Long) = ClipRecord(
             fileId = detail.id,
@@ -436,6 +458,7 @@ class PikoMediaRepository(
             sliced = true,
             clipStartMs = startMs,
             bytesPerMs = bytesPerMs,
+            prefetchBytes = sliceLength,
             resolveStart = keyframe?.let { sliceStart ->
                 {
                     // 前台读：这一步在开头预取之后、算作取好之前，与预取一样急。以后台身份读，预取一结束这个文件

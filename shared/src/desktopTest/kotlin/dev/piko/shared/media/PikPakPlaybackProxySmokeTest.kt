@@ -72,4 +72,31 @@ class PikPakPlaybackProxySmokeTest {
             playback.close()
         }
     }
+
+    @Test
+    fun clipSliceServesOpenEndedTailWhileBoundedPrefetchWarmsOnlyTheOpeningWindow() = runBlocking {
+        val origin = FakePikPakCloud.payload(4 * 1024 * 1024)
+        // TS 流长度是 188 的整数倍：188 * 20_000 = 3_760_000 字节，在 600 秒时长下每 30 秒约 188_000 字节
+        val transcode = FakePikPakCloud.payload(188 * 20_000)
+        val cloud = FakePikPakCloud(origin = origin, transcode = transcode, transcodeName = "720P")
+        val repository = PikoMediaRepository(cloud.provider)
+
+        val clip = repository.prepareClip("f1", startMs = 120_000L, videoDurationMs = 600_000L, role = io.github.nihildigit.pikpak.StreamRole.FOREGROUND).getOrThrow()
+        try {
+            assertTrue(clip.sliced)
+            val url = assertNotNull(clip.url)
+            clip.prefetch(io.github.nihildigit.pikpak.StreamRole.FOREGROUND)
+            // 预取只取首段窗口的开头与末尾，不应把整条 3.76 MB 转码流全部拉下来
+            assertTrue(cloud.deliveredCdnBytes.get() < 2_000_000L, "delivered=${cloud.deliveredCdnBytes.get()}")
+            // 但代理会话暴露给播放器的长度直通转码流末尾，30 秒后无需换源即可继续往后读
+            val expectedOffset = (transcode.size.toDouble() / 600_000.0 * 120_000L).toLong() / 188L * 188L
+            val expectedOpenLength = transcode.size - expectedOffset
+            assertEquals(expectedOpenLength, clip.streamBytes)
+            val tailRead = withTimeout(30_000) { request(url, range = "bytes=${expectedOpenLength - 1024}-") }
+            assertEquals(206, tailRead.status)
+            assertContentEquals(transcode.copyOfRange(transcode.size - 1024, transcode.size), tailRead.body)
+        } finally {
+            clip.close()
+        }
+    }
 }
