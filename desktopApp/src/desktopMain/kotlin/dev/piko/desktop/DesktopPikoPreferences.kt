@@ -106,7 +106,7 @@ class DesktopPikoPreferences(
     override suspend fun getLastFolder(): Triple<String, String, String> =
         Triple(
             settings.get(KEY_LAST_FOLDER_ID),
-            settings.get(KEY_LAST_FOLDER_NAME, "网盘"),
+            settings.get(KEY_LAST_FOLDER_NAME, "我的网盘"),
             settings.get(KEY_LAST_FOLDER_STACK),
         )
 

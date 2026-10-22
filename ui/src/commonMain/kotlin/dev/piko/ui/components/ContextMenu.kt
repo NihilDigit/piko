@@ -24,10 +24,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DropdownMenuPopup
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuDefaults
 import androidx.compose.material3.Text
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -254,39 +257,63 @@ private fun MenuRows(layout: ActionLayout, firstItem: FocusRequester, onDismiss:
 }
 
 /**
- * 顶上一排纯图标，名字在悬停提示里，照 Win11 资源管理器与 HIG 菜单顶部的小号图标行。
- * 按钮看上去是 40dp，最小触控区却按 48dp 占位，五个要 240dp，排不进 224dp 的菜单，末一个被挤成 24dp（ContextMenuTest 量过）。
- * 这里取消 48dp 的占位，按钮与下面 40dp 高的菜单项同一尺度；不加宽菜单，各处菜单的宽度才一致。
+ * 顶上一排四个带圆角底色块与短标签的快捷磁贴：下载、重命名、分享、星标。
+ * 纯无字图标容易被视线直接略过；加上容器色块与两字标签后，头等操作一眼可见。
  */
 @Composable
 private fun MenuIconRow(actions: List<SheetAction>, firstItem: FocusRequester?, onDismiss: () -> Unit) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
-        horizontalArrangement = Arrangement.SpaceEvenly,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp.Unspecified) {
             actions.forEachIndexed { index, action ->
-                TooltipIconButton(
-                    icon = action.icon,
-                    label = action.label,
+                Surface(
                     onClick = {
                         onDismiss()
                         action.onClick()
                     },
+                    shape = MaterialTheme.shapes.medium,
+                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    contentColor = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier
+                        .weight(1f)
                         .prepareOnPointer(action)
                         .then(if (index == 0 && firstItem != null) Modifier.focusRequester(firstItem) else Modifier),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.padding(vertical = 8.dp, horizontal = 2.dp),
+                    ) {
+                        Icon(
+                            imageVector = action.icon,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(MenuIconSize),
+                        )
+                        Text(
+                            text = action.shortLabel,
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
             }
         }
     }
 }
 
-/** 组与组之间的空隙，代替分隔线。 */
+/** 组与组之间的轻量分隔。 */
 @Composable
 private fun MenuDivider() {
-    Spacer(Modifier.height(MenuGroupGap))
+    HorizontalDivider(
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+    )
 }
 
 private val MenuGroupGap = 6.dp
@@ -303,8 +330,8 @@ private fun MenuItemIcon(icon: ImageVector, tint: Color = LocalContentColor.curr
     Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(MenuIconSize))
 }
 
-// 放得下最长的条目（「从快速访问取消固定」）与图标行的四个按钮
-private val ActionMenuWidth = 224.dp
+// 放得下顶部四个带字快捷磁贴与最长的菜单项
+private val ActionMenuWidth = 252.dp
 
 /**
  * 行高 40dp（[MenuItemHeight]），图标与字号用组件库的默认值。M3 menus 的 48dp 是按手指定的，整份菜单十来行时

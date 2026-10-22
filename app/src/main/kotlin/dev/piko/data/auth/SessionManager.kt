@@ -166,7 +166,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val prefs = context.dataStore.data.first()
         return Triple(
             prefs[PreferencesKeys.LAST_FOLDER_ID] ?: "",
-            prefs[PreferencesKeys.LAST_FOLDER_NAME] ?: "网盘",
+            prefs[PreferencesKeys.LAST_FOLDER_NAME] ?: "我的网盘",
             prefs[PreferencesKeys.LAST_FOLDER_STACK_SERIALIZED] ?: "",
         )
     }

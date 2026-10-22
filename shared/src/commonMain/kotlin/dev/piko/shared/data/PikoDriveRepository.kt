@@ -1160,7 +1160,7 @@ open class PikoDriveRepository(
     private fun FileStat.isMyPacksFolder() = isFolder && name.lowercase() in MY_PACKS_FOLDER_NAMES
 
     companion object {
-        val ROOT_BREADCRUMB = PikoPathBreadcrumb("", "网盘")
+        val ROOT_BREADCRUMB = PikoPathBreadcrumb("", "我的网盘")
         private const val TAG = "DriveRepository"
 
         // 批量操作的日志里列出的 ID 个数：够在网盘里对上是哪几项，几百项的移动不至于占满一屏

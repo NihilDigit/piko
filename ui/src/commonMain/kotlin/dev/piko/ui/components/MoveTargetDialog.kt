@@ -151,16 +151,16 @@ fun FolderPickerDialog(
             onDismissRequest = onDismiss,
             properties = DialogProperties(usePlatformDefaultWidth = false),
         ) {
-            // 高度写死比例：Android 的对话框按内容定高，换一层目录、文件夹数一变整个对话框就跳。
-            // 底色照 M3 对话框取 surfaceContainerHigh：取 surface 时深色主题下与变暗的背景分不开。文件夹行因此高一级，见 FolderPickerRow
-            Surface(
-                modifier = Modifier
-                    .widthIn(max = 560.dp)
-                    .fillMaxWidth(0.92f)
-                    .fillMaxHeight(0.85f),
-                shape = MaterialTheme.shapes.extraLarge,
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            ) {
+        // 高度写死比例：Android 的对话框按内容定高，换一层目录、文件夹数一变整个对话框就跳。
+        // 底色照 M3 对话框取 surfaceContainerHigh：取 surface 时深色主题下与变暗的背景分不开。文件夹行因此高一级，见 FolderPickerRow
+        Surface(
+            modifier = Modifier
+                .widthIn(max = 680.dp)
+                .fillMaxWidth(0.92f)
+                .fillMaxHeight(0.85f),
+            shape = MaterialTheme.shapes.extraLarge,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        ) {
                 content()
             }
         }
@@ -246,7 +246,7 @@ private fun FolderPickerContent(
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
 
-    var path by remember { mutableStateOf(listOf(PathBreadcrumb("", "网盘"))) }
+    var path by remember { mutableStateOf(listOf(PathBreadcrumb("", "我的网盘"))) }
     val current = path.last()
 
     var folders by remember { mutableStateOf<List<FileStat>>(emptyList()) }
@@ -559,7 +559,6 @@ private fun FolderPickerActionBar(
     onClearRecent: (() -> Unit)? = null,
 ) {
     Column(modifier = Modifier.fillMaxWidth().navigationBarsPadding()) {
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
         if (recentTargets.isNotEmpty()) {
             // 横滑的一行要贴到两边，不能放进下面带内边距的那一栏，否则滑到头会在边距处被裁掉
             RecentTargetsRow(

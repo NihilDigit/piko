@@ -32,11 +32,15 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.SwipeVertical
 import androidx.compose.material.icons.outlined.ArrowDropDown
+import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material.icons.outlined.SwipeVertical
+import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.TonalToggleButton
+import dev.piko.ui.components.connectedToggleShapes
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -314,6 +318,62 @@ internal fun FeedToggle(
         )
         Spacer(Modifier.width(6.dp))
         Text("信息流")
+    }
+}
+
+/**
+ * 窄窗口命令栏右端的连体探索组：左段瀑布流（封面画布），右段信息流（随机片段）。
+ */
+@Composable
+internal fun ExploreToggleGroup(
+    galleryShown: Boolean,
+    onGalleryShownChange: ((Boolean) -> Unit)?,
+    feedShown: Boolean,
+    onFeedShownChange: ((Boolean) -> Unit)?,
+) {
+    val count = (if (onGalleryShownChange != null) 1 else 0) + (if (onFeedShownChange != null) 1 else 0)
+    if (count == 0) return
+    var index = 0
+    Row(
+        modifier = Modifier.padding(end = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
+    ) {
+        if (onGalleryShownChange != null) {
+            val currentIndex = index++
+            TonalToggleButton(
+                checked = galleryShown,
+                onCheckedChange = onGalleryShownChange,
+                shapes = connectedToggleShapes(currentIndex, count),
+                contentPadding = PaddingValues(start = 12.dp, end = if (count == 1) 16.dp else 12.dp),
+                modifier = Modifier.heightIn(min = 40.dp),
+            ) {
+                Icon(
+                    imageVector = if (galleryShown) Icons.Filled.PhotoLibrary else Icons.Outlined.PhotoLibrary,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text("瀑布流")
+            }
+        }
+        if (onFeedShownChange != null) {
+            val currentIndex = index
+            TonalToggleButton(
+                checked = feedShown,
+                onCheckedChange = onFeedShownChange,
+                shapes = connectedToggleShapes(currentIndex, count),
+                contentPadding = PaddingValues(start = 12.dp, end = 16.dp),
+                modifier = Modifier.heightIn(min = 40.dp),
+            ) {
+                Icon(
+                    imageVector = if (feedShown) Icons.Filled.SwipeVertical else Icons.Outlined.SwipeVertical,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text("信息流")
+            }
+        }
     }
 }
 

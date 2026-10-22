@@ -82,6 +82,7 @@ internal data class DriveCommands(
     val canonicalNaming: Boolean,
     val sort: Boolean,
     val filter: Boolean,
+    val gallery: Boolean,
     val feed: Boolean,
     val addLink: Boolean,
 )
@@ -154,6 +155,9 @@ internal fun driveCommands(input: CommandInputs): DriveCommands = with(input) {
         sort = (folder || place == CommandPlace.SEARCH) && itemCount >= 2,
         // 只有一类时筛了等于没筛；筛着的时候要留着，才撤得掉
         filter = typeCount >= 2 || filtering,
+        gallery = if (selecting) {
+            selectedVideoCount > 0 && place != CommandPlace.TRASH && place != CommandPlace.ARCHIVE
+        } else folder,
         feed = feedSupported && if (selecting) {
             selectedVideoCount > 0 && place != CommandPlace.TRASH && place != CommandPlace.ARCHIVE
         } else folder,

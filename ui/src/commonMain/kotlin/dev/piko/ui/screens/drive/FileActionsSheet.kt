@@ -157,6 +157,7 @@ internal class FileActionHandlers(
      */
     val putOnClipboard: ((cut: Boolean) -> Unit)?,
     val downloadAtQuality: () -> Unit,
+    val copyDownloadLink: (() -> Unit)? = null,
 )
 
 /**
@@ -179,17 +180,16 @@ internal fun fileActions(file: FileStat, commands: ItemCommands, on: FileActionH
         ),
     )
     if (file.isFolder) on.openInNewTab?.let { add(DriveActions.openInNewTab(it)) }
-    if (video) on.openInExternalPlayer?.let { add(DriveActions.openInExternalPlayer(it)) }
     if (commands.downloadAtQuality) add(DriveActions.downloadAtQuality(on.prepareQualities.takeIf { video }, on.downloadAtQuality))
+    if (video) add(DriveActions.downloadSegment(on.downloadSegment, on.prepareQualities))
+    if (video) on.openInExternalPlayer?.let { add(DriveActions.openInExternalPlayer(it)) }
+    if (!file.isFolder && commands.download) on.copyDownloadLink?.let { add(DriveActions.copyDownloadLink(it)) }
     if (commands.extract) add(DriveActions.extract(on.extract))
-    // 桌面的星标在列表里，排在打开方式之后：放在它们之前的话整理组先出现，整组挪到打开方式之上
-    if (desktop) add(DriveActions.star(file.isStarred, on.toggleStar, tier = ActionTier.Standard))
     if (commands.moveCopyTo) {
         add(DriveActions.moveTo(on.move))
         on.copy?.let { add(DriveActions.copyTo(it)) }
     }
     if (file.isFolder) on.togglePin?.let { add(DriveActions.pin(on.isPinned, it)) }
-    if (video) add(DriveActions.downloadSegment(on.downloadSegment, on.prepareQualities))
     if (file.isFolder) {
         if (commands.rename) on.canonicalNameFolder?.let { add(DriveActions.canonicalName(it)) }
         on.findDuplicates?.let { add(DriveActions.findDuplicates(it)) }

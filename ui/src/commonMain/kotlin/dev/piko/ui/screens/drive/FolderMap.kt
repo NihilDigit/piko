@@ -366,7 +366,7 @@ private fun flatten(
         )
         is FolderMapLevel.Loaded -> {
             if (level.nodes.isEmpty()) {
-                out += MapRow("empty:$parentId", parent, depth, note = "空文件夹", guides = guides)
+                out += MapRow("empty:$parentId", parent, depth, note = "空文件夹", onNoteClick = { state.collapse(parentId) }, guides = guides)
                 return
             }
             val (expandable, files) = level.nodes.partition { it.expandable }
@@ -411,11 +411,25 @@ private fun filtered(state: FolderMapState, root: List<PikoPathBreadcrumb>, quer
 }
 
 /** 点了树里的一行：能展开的跳过去，文件在它所在的文件夹（[MapRow.stack] 去掉末级）里打开。 */
-private fun MapRow.activate(onOpen: (List<PikoPathBreadcrumb>) -> Unit, onOpenFile: (List<PikoPathBreadcrumb>, FileStat) -> Unit) {
+private fun MapRow.activate(
+    state: FolderMapState,
+    currentId: String?,
+    onOpen: (List<PikoPathBreadcrumb>) -> Unit,
+    onOpenFile: (List<PikoPathBreadcrumb>, FileStat) -> Unit,
+) {
     onNoteClick?.invoke()
     val node = node ?: return
     val file = node.file
-    if (file != null) onOpenFile(stack.dropLast(1), file) else onOpen(stack)
+    if (file != null) {
+        onOpenFile(stack.dropLast(1), file)
+        return
+    }
+    val id = node.crumb.id
+    val loaded = state.levels[id] as? FolderMapLevel.Loaded
+    if (state.isExpanded(id) && (loaded?.nodes?.isEmpty() == true || currentId == id)) {
+        state.collapse(id)
+    }
+    if (currentId != id) onOpen(stack)
 }
 
 /**
@@ -477,7 +491,7 @@ private fun FolderMapTree(
         state.highlighted = rows[selectable[next]].key
     }
 
-    fun activate(row: MapRow) = row.activate(onOpen, onOpenFile)
+    fun activate(row: MapRow) = row.activate(state, currentId, onOpen, onOpenFile)
 
     Column(
         modifier = modifier.onPreviewKeyEvent { event ->
@@ -765,7 +779,7 @@ internal fun FolderMapPanel(
             enter = motion.peekEnter(fromEnd = state.dock != DockSide.Left, offsetPx = with(density) { PeekOffset.roundToPx() }),
             exit = motion.peekExit(),
             headerActions = {
-                if (onHome != null) PanelHeaderButton(Icons.Outlined.Home, "网盘根目录", onHome)
+                if (onHome != null) PanelHeaderButton(Icons.Outlined.Home, "我的网盘", onHome)
                 PanelHeaderToggle(Icons.Outlined.Search, Icons.Filled.Search, "过滤", checked = state.filterShown, onClick = state::toggleFilter)
                 // 停在中间时也给：钉住是记下来的偏好，拖回边沿或关掉再开时生效
                 val pinned = state.autoHide.pinned

@@ -38,17 +38,17 @@ class FileActionsRowTest {
     }
 
     @Test
-    fun `the desktop menu row follows the windows 11 context menu and lists the star`() {
+    fun `the desktop menu row highlights core actions and keeps clipboard in organize`() {
         val layout = layoutActions(actions(desktop = true), quickLimit = MenuQuickLimit)
-        assertEquals(listOf("剪切", "复制", "重命名", "分享", "下载到本地"), layout.quick.map { it.label })
+        assertEquals(listOf("下载到本地", "重命名", "分享", "添加星标"), layout.quick.map { it.label })
         val organize = layout.sections.single { section -> section.all { it.group == ActionGroup.Organize } }
-        assertEquals("添加星标", organize.first().label)
+        assertTrue(organize.map { it.label }.containsAll(listOf("剪切", "复制")))
     }
 
     @Test
-    fun `the mobile panel row keeps download share star and rename`() {
+    fun `the mobile panel row keeps download rename share and star`() {
         val layout = layoutActions(actions(desktop = false))
-        assertEquals(listOf("下载到本地", "分享", "添加星标", "重命名"), layout.quick.map { it.label })
+        assertEquals(listOf("下载到本地", "重命名", "分享", "添加星标"), layout.quick.map { it.label })
         assertTrue(layout.sections.flatten().none { it.label == "剪切" || it.label == "复制" })
     }
     @Test

@@ -28,6 +28,7 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Search
@@ -434,7 +435,7 @@ private fun PathCrumbs(model: AddressBarModel) {
             ) {
                 if (index == 0) {
                     val library = DriveLibrary.of(crumb.id)
-                    Icon(library?.icon ?: Icons.Outlined.Cloud, contentDescription = null, tint = colors.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                    Icon(library?.icon ?: Icons.Outlined.Home, contentDescription = null, tint = colors.onSurfaceVariant, modifier = Modifier.size(18.dp))
                 }
                 CrumbName(crumb.name, current = index == stack.lastIndex)
             }

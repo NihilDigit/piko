@@ -29,7 +29,7 @@ class MemoryPreferences : PikoUserPreferences {
     }
     override suspend fun getPlaybackPosition(fileId: String): Long = positions[fileId] ?: 0L
     override suspend fun saveLastFolder(folderId: String, folderName: String, stackSerialized: String) = Unit
-    override suspend fun getLastFolder(): Triple<String, String, String> = Triple("", "网盘", "")
+    override suspend fun getLastFolder(): Triple<String, String, String> = Triple("", "我的网盘", "")
     override val spoilerBlurFlow: Flow<Boolean> = MutableStateFlow(true)
     override suspend fun setSpoilerBlurEnabled(enabled: Boolean) = Unit
     override val autoCheckUpdatesFlow: Flow<Boolean> = MutableStateFlow(true)

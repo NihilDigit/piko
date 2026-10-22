@@ -59,7 +59,20 @@ internal object DriveActions {
     )
 
     fun downloadAtQuality(onPrepare: (() -> Unit)? = null, onClick: () -> Unit) = SheetAction(
-        Icons.Outlined.HighQuality, "下载指定画质…", onClick, group = ActionGroup.Open, onPrepare = onPrepare,
+        Icons.Outlined.HighQuality,
+        "下载指定画质…",
+        onClick,
+        group = ActionGroup.Open,
+        onPrepare = onPrepare,
+        shortLabel = "指定画质",
+    )
+
+    fun copyDownloadLink(onClick: () -> Unit) = SheetAction(
+        Icons.Outlined.Link,
+        "复制下载链接",
+        onClick,
+        group = ActionGroup.Open,
+        shortLabel = "复制直链",
     )
 
     fun share(onClick: () -> Unit) =
@@ -72,6 +85,7 @@ internal object DriveActions {
         onClick = onClick,
         group = ActionGroup.Organize,
         tier = tier,
+        shortLabel = if (starred) "已星标" else "星标",
     )
 
     // 剪切与复制只放进应用内剪贴板，粘贴在命令栏与空白处的右键菜单里，与 Ctrl+X、Ctrl+C 同一处（DriveScreenState.putOnClipboard）
@@ -83,7 +97,6 @@ internal object DriveActions {
 
     /**
      * 调整常用操作的顺序，完整能力集合保持一致。图标行放不下的操作由 layoutActions 放回列表。
-     * 星标在宽排列中由调用方放入整理组，保留开关的文字说明。
      */
     fun quickRow(
         desktop: Boolean,
@@ -94,18 +107,17 @@ internal object DriveActions {
         rename: SheetAction?,
         star: SheetAction?,
     ): List<SheetAction> =
-        if (desktop) listOfNotNull(cut, copy, rename, share, download)
-        else listOfNotNull(download, share, star, rename, cut, copy)
+        listOfNotNull(download, rename, share, star, cut, copy)
 
     fun rename(onClick: () -> Unit) =
         SheetAction(Icons.Outlined.DriveFileRenameOutline, "重命名", onClick, group = ActionGroup.Organize, tier = ActionTier.Quick)
 
     fun batchRename(onClick: () -> Unit) =
-        SheetAction(Icons.Outlined.DriveFileRenameOutline, "批量重命名", onClick, group = ActionGroup.Organize, tier = ActionTier.Quick)
+        SheetAction(Icons.Outlined.DriveFileRenameOutline, "批量重命名", onClick, group = ActionGroup.Organize, tier = ActionTier.Quick, shortLabel = "重命名")
 
     // 几项是批量重命名换上番号规则，一个文件夹是整理它的子树；单个文件并进了重命名对话框，见 docs/development/av-naming.md
     fun canonicalName(onClick: () -> Unit) =
-        SheetAction(Icons.Outlined.DriveFileRenameOutline, "按番号规范命名", onClick, group = ActionGroup.Organize)
+        SheetAction(Icons.Outlined.DriveFileRenameOutline, "规范命名", onClick, group = ActionGroup.Organize)
 
     fun moveTo(onClick: () -> Unit) = SheetAction(Icons.Outlined.DriveFileMove, "移动到…", onClick, group = ActionGroup.Organize)
 
@@ -141,10 +153,11 @@ internal object DriveActions {
         onClick,
         group = ActionGroup.Open,
         onPrepare = onPrepare,
+        shortLabel = "截取段落",
     )
 
     fun findDuplicates(onClick: () -> Unit) =
-        SheetAction(Icons.Outlined.FileCopy, "查找重复", onClick, group = ActionGroup.Manage)
+        SheetAction(Icons.Outlined.FileCopy, "查重", onClick, group = ActionGroup.Manage)
 
     fun vault(onClick: () -> Unit) = SheetAction(Icons.Outlined.Inventory2, "归档", onClick, group = ActionGroup.Manage)
 

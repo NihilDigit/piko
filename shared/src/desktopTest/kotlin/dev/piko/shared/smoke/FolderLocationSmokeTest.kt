@@ -48,9 +48,9 @@ class FolderLocationSmokeTest {
         repo.rename(anime.id, "Anime").getOrThrow()
         repo.rename(pack.node.id, "特典.zip").getOrThrow()
 
-        assertEquals(listOf("网盘", "Anime", "Frieren", "特典.zip"), repoWorkspace.names())
-        assertEquals(listOf("网盘", "Anime"), repoWorkspace.historyFlow.value.back.last().map { it.name })
-        assertEquals(listOf("网盘", "Anime"), repoWorkspace.tabsFlow.value.first { it.id == other }.stack.map { it.name })
+        assertEquals(listOf("我的网盘", "Anime", "Frieren", "特典.zip"), repoWorkspace.names())
+        assertEquals(listOf("我的网盘", "Anime"), repoWorkspace.historyFlow.value.back.last().map { it.name })
+        assertEquals(listOf("我的网盘", "Anime"), repoWorkspace.tabsFlow.value.first { it.id == other }.stack.map { it.name })
         assertEquals("Anime", repoWorkspace.tabsFlow.value.first { it.id == other }.title)
         assertTrue(repoWorkspace.recentFoldersFlow.value.all { stack -> stack.none { it.name == "动画" } }, "最近去过里不该留着旧名")
         assertTrue(repoWorkspace.recentFoldersFlow.value.any { stack -> stack.last().id == anime.id }, "改名不是删除，最近去过里照留")
@@ -74,7 +74,7 @@ class FolderLocationSmokeTest {
         repo.move(listOf(show.id), archive.id).getOrThrow()
 
         assertEquals(listOf("", archive.id, show.id, season.id), repoWorkspace.folderStackFlow.value.map { it.id })
-        assertEquals(listOf("网盘", "归档", "Frieren", "S1"), repoWorkspace.names())
+        assertEquals(listOf("我的网盘", "归档", "Frieren", "S1"), repoWorkspace.names())
     }
 
     @Test

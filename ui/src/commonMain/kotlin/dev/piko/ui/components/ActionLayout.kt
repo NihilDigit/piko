@@ -98,9 +98,7 @@ private fun sectionsOf(actions: List<SheetAction>): List<List<SheetAction>> = ac
 
 const val FlatLimit = 6
 const val QuickLimit = 4
-
-/** 右键菜单的图标行：剪切、复制、重命名、分享、下载。五个 40dp 的按钮排进 224dp 的菜单只剩几 dp 的间隙，再多就要加宽菜单。 */
-const val MenuQuickLimit = 5
+const val MenuQuickLimit = 4
 
 /** 在 [action] 上按下或指针移入时调用 [SheetAction.onPrepare]。不消费事件，点击照常。 */
 internal fun Modifier.prepareOnPointer(action: SheetAction): Modifier {

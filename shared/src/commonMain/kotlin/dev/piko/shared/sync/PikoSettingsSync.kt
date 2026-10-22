@@ -44,7 +44,6 @@ private fun bool(key: String, read: (PikoUserPreferences) -> Flow<Boolean>, writ
     SyncedSetting(key, { read(it).map(Boolean::toString) }, { prefs, value -> value.toBooleanStrictOrNull()?.let { prefs.write(it) } })
 
 val SyncedSettings: List<SyncedSetting> = listOf(
-    bool("spoilerBlur", { it.spoilerBlurFlow }) { setSpoilerBlurEnabled(it) },
     // 关掉自动检查是不想被打扰，换一台设备也一样
     bool("autoCheckUpdates", { it.autoCheckUpdatesFlow }) { setAutoCheckUpdates(it) },
     bool("heuristicFilter", { it.heuristicFilterFlow }) { setHeuristicFilterEnabled(it) },
@@ -80,7 +79,7 @@ val SyncedSettings: List<SyncedSetting> = listOf(
  * archivePasswords：1.1.0 把解压密码明文同步进网盘。之后本机存进机密存储，跨设备改由 ArchivePasswordSync
  * 以账号密码派生的密钥加密后单独存一份。
  */
-private val RetiredSettingKeys = setOf("archivePasswords")
+private val RetiredSettingKeys = setOf("archivePasswords", "spoilerBlur")
 
 /**
  * 把 [SyncedSettings] 同步到网盘根目录下的 `.piko` 文件夹（[DriveSettingsStore]），换一台设备登录同一个账号，设置跟着过来。

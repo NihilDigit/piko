@@ -135,11 +135,10 @@ import io.github.nihildigit.pikpak.FileStat
  */
 internal enum class DriveViewMode {
     LIST,
-    GALLERY,
     POSTER,
     ;
 
-    /** 海报墙与图库都是带页边距的网格，整行项与页眉的排布相同。 */
+    /** 海报墙是带页边距的网格，整行项与页眉的排布相同。 */
     val isGrid: Boolean get() = this != LIST
 
     companion object {
@@ -439,11 +438,9 @@ private class StableColumns(private val minSize: Dp, private val referenceWidth:
 
 private fun gridHorizontalPadding(viewMode: DriveViewMode): Dp = if (viewMode.isGrid) 16.dp else 0.dp
 
-// 图库格子之间只留一道细缝，照片连成一片；海报墙的卡片带标题，要分得开些
 private fun gridItemSpacing(viewMode: DriveViewMode): Dp = when (viewMode) {
     DriveViewMode.LIST -> 0.dp
     DriveViewMode.POSTER -> 8.dp
-    DriveViewMode.GALLERY -> 4.dp
 }
 
 /**
@@ -468,7 +465,6 @@ internal fun DriveGridSkeleton(viewMode: DriveViewMode, tileSize: TileSize, modi
                 when (viewMode) {
                     DriveViewMode.LIST -> FileRowSkeleton(titleFraction = titleFraction)
                     DriveViewMode.POSTER -> PosterCardSkeleton(titleFraction)
-                    DriveViewMode.GALLERY -> SkeletonBlock(Modifier.fillMaxWidth().aspectRatio(1f), MaterialTheme.shapes.small)
                 }
             }
         }
@@ -579,7 +575,6 @@ private fun DriveCell(
     CompositionLocalProvider(LocalOwnClicks provides ownClicks) {
     ContextMenuArea(
         actions = { callbacks.contextActions(file) },
-        onSelect = if (isSelectionMode) null else callbacks.onStartSelection?.let { select -> ({ select(file) }) },
         modifier = modifier
             .alpha(if (beingDragged) DraggedAlpha else 1f)
             .focusRequester(focusRequester)
@@ -620,19 +615,6 @@ private fun DriveCell(
             .then(if (file.isFolder) Modifier.fileDropTarget("cell:${file.id}", PikoPathBreadcrumb(file.id, file.name)) else Modifier),
     ) {
         when (viewMode) {
-            DriveViewMode.GALLERY -> GalleryTile(
-                file = file,
-                isSelectionMode = isSelectionMode,
-                isSelected = isSelected,
-                isSpoilerBlurred = isBlurred,
-                isHighlighted = isHighlighted,
-                onClick = { callbacks.onOpen(file) },
-                onLongClick = { callbacks.onLongClick(file) },
-                onSelectToggle = { callbacks.onSelect(file, it) },
-                folderHasVault = folderHasVault,
-                title = text.name.rowTitle(),
-                original = text.name.rowOriginal(),
-            )
             DriveViewMode.POSTER -> PosterCard(
                 file = file,
                 isSelectionMode = isSelectionMode,
@@ -860,14 +842,12 @@ internal fun TypeFilterButton(
 internal fun DriveViewMode.icon(selected: Boolean = false) = when (this) {
     DriveViewMode.LIST -> if (selected) Icons.AutoMirrored.Filled.ViewList else Icons.AutoMirrored.Outlined.ViewList
     DriveViewMode.POSTER -> if (selected) Icons.Filled.GridView else Icons.Outlined.GridView
-    DriveViewMode.GALLERY -> if (selected) Icons.Filled.PhotoLibrary else Icons.Outlined.PhotoLibrary
 }
 
 internal val DriveViewMode.label
     get() = when (this) {
         DriveViewMode.LIST -> "列表"
-        DriveViewMode.POSTER -> "海报墙"
-        DriveViewMode.GALLERY -> "图库"
+        DriveViewMode.POSTER -> "网格"
     }
 
 /**

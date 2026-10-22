@@ -50,7 +50,9 @@ import androidx.compose.material3.TooltipAnchorPosition
 import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.rememberTooltipState
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.SwipeVertical
+import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material.icons.outlined.SwipeVertical
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.material3.Icon
@@ -323,8 +325,8 @@ internal fun ExplorerCommandBar(
         if (commands.findDuplicates) {
             // FileCopy 与「复制」的 ContentCopy 都是叠放的两张纸，带上文字才不会被认成复制。图标不换，
             // 查重报告与库使用同一会话摘要。
-            add(BarItem("findDuplicates", 60, listOf(SheetAction(Icons.Outlined.FileCopy, "查找重复", onFindDuplicates, group = ActionGroup.Select))) {
-                BarTextButton(Icons.Outlined.FileCopy, "查找重复", onFindDuplicates)
+            add(BarItem("findDuplicates", 60, listOf(SheetAction(Icons.Outlined.FileCopy, "查重", onFindDuplicates, group = ActionGroup.Select))) {
+                BarTextButton(Icons.Outlined.FileCopy, "查重", onFindDuplicates)
             })
         }
         // 与查找重复同为作用于整个文件夹的整理，摆在一起；条件与窄窗口浏览顶栏「更多」里的同一项相同（DriveCommands）
@@ -402,8 +404,8 @@ private val SectionJumperMinWidth = 72.dp
 
 
 /**
- * 命令栏右端「怎么看这个文件夹」的连体按钮：左段是当前视图，点开在列表、海报墙、图库间换，海报墙与图库另挑卡片大小；右段是信息流。
- * 视图三选一平时用不着一直摊开，收进下拉；信息流是开关，常驻。[onFeedShownChange] 为 null 时只有左段。
+ * 命令栏右端「怎么看这个文件夹」的连体按钮：左段是当前视图，点开在列表与海报墙间换并挑卡片大小；
+ * 中段与右段是两种跨子目录探索方式——瀑布流（封面画布）与信息流（随机片段）。
  */
 @Composable
 internal fun ViewSwitcher(
@@ -416,31 +418,39 @@ internal fun ViewSwitcher(
     feedSuspended: Boolean = false,
     /** 非 null 时信息流一段置灰，悬停提示写这个原因：右栏被添加链接占着，信息流挤不走它。 */
     feedBlockedReason: String? = null,
+    galleryShown: Boolean = false,
+    onGalleryShownChange: ((Boolean) -> Unit)? = null,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
-    val count = if (onFeedShownChange == null) 1 else 2
+    val count = 1 + (if (onGalleryShownChange != null) 1 else 0) + (if (onFeedShownChange != null) 1 else 0)
+    var buttonIndex = 0
     Row(horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)) {
+        val viewIndex = buttonIndex++
         Box {
             TooltipBox(
                 positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
-                tooltip = { PlainTooltip { Text("视图：${viewMode.label}") } },
+                tooltip = { PlainTooltip { Text(if (galleryShown) "瀑布流尺寸：${tileSize.label}" else "视图：${viewMode.label}") } },
                 state = rememberTooltipState(),
             ) {
                 TonalToggleButton(
                     checked = menuOpen,
                     onCheckedChange = { menuOpen = it },
-                    shapes = connectedToggleShapes(0, count),
+                    shapes = connectedToggleShapes(viewIndex, count),
                     contentPadding = PaddingValues(start = 12.dp, end = 8.dp),
                     modifier = Modifier.heightIn(min = 40.dp),
                 ) {
-                    Icon(viewMode.icon(selected = true), contentDescription = "视图：${viewMode.label}", modifier = Modifier.size(18.dp))
+                    Icon(
+                        if (galleryShown) Icons.Filled.PhotoLibrary else viewMode.icon(selected = true),
+                        contentDescription = if (galleryShown) "瀑布流尺寸：${tileSize.label}" else "视图：${viewMode.label}",
+                        modifier = Modifier.size(18.dp),
+                    )
                     Icon(Icons.Outlined.ArrowDropDown, contentDescription = null, modifier = Modifier.size(18.dp))
                 }
             }
             PikoDropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                 val modes = DriveViewMode.entries
                 modes.forEachIndexed { index, mode ->
-                    val current = mode == viewMode
+                    val current = !galleryShown && mode == viewMode
                     DropdownMenuItem(
                         text = { Text(mode.label, color = if (current) MaterialTheme.colorScheme.primary else Color.Unspecified) },
                         leadingIcon = {
@@ -451,6 +461,9 @@ internal fun ViewSwitcher(
                                 modifier = Modifier.size(20.dp),
                             )
                         },
+                        trailingIcon = if (current) ({
+                            Icon(Icons.Outlined.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                        }) else null,
                         shape = menuItemShape(index, modes.size),
                         onClick = {
                             menuOpen = false
@@ -459,34 +472,49 @@ internal fun ViewSwitcher(
                     )
                 }
                 Spacer(Modifier.height(6.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
-                    horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
-                ) {
-                    TileSize.entries.forEachIndexed { index, size ->
-                        TonalToggleButton(
-                            checked = tileSize == size,
-                            onCheckedChange = {
-                                onTileSizeChange(size)
-                                menuOpen = false
-                            },
-                            shapes = connectedToggleShapes(index, TileSize.entries.size),
-                            contentPadding = PaddingValues(horizontal = 16.dp),
-                            modifier = Modifier.weight(1f).height(38.dp),
-                        ) {
-                            Text(size.label, maxLines = 1)
-                        }
-                    }
+                val sizes = TileSize.entries
+                sizes.forEachIndexed { index, size ->
+                    val current = tileSize == size
+                    DropdownMenuItem(
+                        text = { Text("${size.label}尺寸", color = if (current) MaterialTheme.colorScheme.primary else Color.Unspecified) },
+                        trailingIcon = if (current) ({
+                            Icon(Icons.Outlined.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                        }) else null,
+                        shape = menuItemShape(index, sizes.size),
+                        onClick = {
+                            menuOpen = false
+                            onTileSizeChange(size)
+                        },
+                    )
                 }
             }
         }
+        if (onGalleryShownChange != null) {
+            val galleryIndex = buttonIndex++
+            TonalToggleButton(
+                checked = galleryShown,
+                onCheckedChange = onGalleryShownChange,
+                shapes = connectedToggleShapes(galleryIndex, count),
+                contentPadding = PaddingValues(start = 12.dp, end = if (count == galleryIndex + 1) 16.dp else 12.dp),
+                modifier = Modifier.heightIn(min = 40.dp),
+            ) {
+                Icon(
+                    imageVector = if (galleryShown) Icons.Filled.PhotoLibrary else Icons.Outlined.PhotoLibrary,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text("瀑布流")
+            }
+        }
         if (onFeedShownChange != null) {
+            val feedIndex = buttonIndex
             val feedButton: @Composable () -> Unit = {
                 TonalToggleButton(
                     checked = feedShown,
                     onCheckedChange = onFeedShownChange,
                     enabled = feedBlockedReason == null,
-                    shapes = connectedToggleShapes(1, count),
+                    shapes = connectedToggleShapes(feedIndex, count),
                     contentPadding = PaddingValues(start = 12.dp, end = 16.dp),
                     modifier = Modifier.heightIn(min = 40.dp),
                 ) {

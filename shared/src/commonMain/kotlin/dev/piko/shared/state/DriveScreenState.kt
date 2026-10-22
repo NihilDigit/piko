@@ -253,7 +253,7 @@ class DriveScreenState(
 
     val folderStack get() = navigation.folderStackFlow
     val activeFolder: PikoPathBreadcrumb
-        get() = navigation.folderStackFlow.value.lastOrNull() ?: PikoPathBreadcrumb("", "网盘")
+        get() = navigation.folderStackFlow.value.lastOrNull() ?: PikoDriveRepository.ROOT_BREADCRUMB
 
     private var activeFolderId by mutableStateOf(navigation.folderStackFlow.value.lastOrNull()?.id.orEmpty())
     private var activeFolderStack by mutableStateOf(navigation.folderStackFlow.value)
@@ -498,7 +498,7 @@ class DriveScreenState(
      */
     val hitLocations: Map<String, String> by derivedStateOf {
         if (isGlobalSearchActive) {
-            globalSearchHits.associate { it.file.id to it.parentPath.ifEmpty { "网盘" } }
+            globalSearchHits.associate { it.file.id to it.parentPath.ifEmpty { PikoDriveRepository.ROOT_BREADCRUMB.name } }
         } else {
             emptyMap()
         }
@@ -1620,7 +1620,7 @@ fun addressPathNames(text: String, current: List<PikoPathBreadcrumb>): List<Stri
         when {
             segment == ".." -> names.removeLastOrNull()
             segment == "." -> Unit
-            index == 0 && !relative && segment == PikoDriveRepository.ROOT_BREADCRUMB.name -> Unit
+            index == 0 && !relative && (segment == PikoDriveRepository.ROOT_BREADCRUMB.name || segment == "网盘") -> Unit
             else -> names += segment
         }
     }

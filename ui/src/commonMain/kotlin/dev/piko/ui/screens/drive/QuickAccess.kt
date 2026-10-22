@@ -81,7 +81,7 @@ internal fun ColumnScope.QuickAccessSection(
         SidebarItem(
             icon = Icons.Outlined.Home,
             selectedIcon = Icons.Filled.Home,
-            label = "根目录",
+            label = root.name,
             // 拖到这里就是移回根目录
             modifier = Modifier.fileDropTarget("quick:root", root),
             selected = atRoot,
