@@ -369,7 +369,14 @@ private fun ImportResultBrowser(sources: List<ImportSource>, browser: ImportBrow
             }
         DetailHost(detail) { entry, modifier ->
             val location = stackFor(entry.file.parentId).joinToString(" / ") { it.name }
-            PropertiesPane(PropertiesTarget.Single(dev.piko.shared.state.DriveItemName(entry.file, null, null), emptyList(), location, false), modifier)
+            PropertiesPane(
+                target = PropertiesTarget.Single(dev.piko.shared.state.DriveItemName(entry.file, null, null), emptyList(), location, false),
+                modifier = modifier,
+                onParseSource = { url ->
+                    detail.close()
+                    onOpenLink(url)
+                },
+            )
         }
         }
         moreId?.let { id -> byId[id]?.let { file ->

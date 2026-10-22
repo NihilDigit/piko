@@ -596,10 +596,10 @@ fun DriveScreen(
         }
         propertyDetails.show(target, anchor)
     }
-    // 当前目录不对着哪一项，卡片放在列表中央偏上
+    // 当前目录不对着哪一项
     fun showFolderProperties() {
         val parent = folderStack.dropLast(1).joinToString(" › ") { it.name }
-        propertyDetails.show(PropertiesTarget.Folder(activeFolder.name, state.displayedFiles, parent.ifEmpty { null }))
+        propertyDetails.show(PropertiesTarget.Folder(activeFolder.name, state.displayedFiles, parent.ifEmpty { null }, activeFolder.id))
     }
     // 记住的回调（右键菜单）里取最新的一份：局部函数抓着的是头一次组合时的路径与防窥开关
     val latestShowProperties by rememberUpdatedState<(List<FileStat>, PanelAnchor) -> Unit> { files, anchor -> showProperties(files, anchor) }
@@ -1773,9 +1773,28 @@ fun DriveScreen(
                     }
                     DetailHost(
                         state = propertyDetails,
-                        modifier = Modifier.zIndex(if (propertiesOnTop) 1f else 0f),
+                        modifier = Modifier.zIndex(2f),
                         onActivate = { propertiesOnTop = true },
-                    ) { shown, contentModifier -> PropertiesPane(shown, contentModifier) }
+                    ) { shown, contentModifier ->
+                        PropertiesPane(
+                            target = shown,
+                            modifier = contentModifier,
+                            onLocate = if (libraryView != null || state.searchQuery.isNotBlank() || state.isGlobalSearchActive) {
+                                { file ->
+                                    propertyDetails.close()
+                                    onRevealInDrive?.invoke(file) ?: state.revealInDrive(file)
+                                }
+                            } else null,
+                            onParseSource = { url ->
+                                propertyDetails.close()
+                                openLink(url)
+                            },
+                            onToggleBlur = if (isSpoilerBlurEnabled) {
+                                { file -> state.toggleSpoiler(file.id) }
+                            } else null,
+                            isRevealed = { file -> file.id in state.revealedFileIds },
+                        )
+                    }
 
                 }
             }

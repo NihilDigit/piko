@@ -1,31 +1,36 @@
 package dev.piko.ui.components
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
-import androidx.compose.material3.Text
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.TextButton
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.Saver
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.backhandler.BackHandler
-import androidx.compose.foundation.focusable
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.*
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Close
-import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.paneTitle
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpRect
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.Dp.Companion.Unspecified
-import dev.piko.ui.adaptive.isDesktopLayout
+import dev.piko.ui.adaptive.WidthClass
+import dev.piko.ui.adaptive.currentWidthClass
+import dev.piko.ui.adaptive.isHeightCompact
 
 internal data class DetailPanelSpec(
     val title: String,
     val closeLabel: String,
-    val minWidth: Dp = 280.dp,
+    val minWidth: Dp = 320.dp,
     val maxWidth: Dp = 440.dp,
 )
 
@@ -82,28 +87,85 @@ internal fun <T : Any> DetailHost(
 ) {
     val target = state.target ?: return
     val spec = state.spec
+    val focus = remember { FocusRequester() }
+    val useBottomSheet = currentWidthClass() == WidthClass.Compact && !isHeightCompact()
     BackHandler { state.close() }
-    if (isDesktopLayout()) {
-        FloatingPanel(
-            state = state.panel, title = spec.title, closeLabel = spec.closeLabel,
-            onClose = state::close, minWidth = spec.minWidth, maxWidth = spec.maxWidth,
-            autoMaxHeight = Unspecified, modifier = modifier, resizable = false,
-            avoid = avoid, onActivate = onActivate,
+    if (useBottomSheet) {
+        PikoSheet(
+            onDismissRequest = state::close,
+            sideSheetTitle = spec.title,
+            sideSheetButtons = { TooltipIconButton(Icons.Outlined.Close, spec.closeLabel, state::close) },
         ) {
-            key(target) { content(target, Modifier.weight(1f, fill = false).widthIn(min = spec.minWidth)) }
-        }
-    } else {
-        val focus = remember { FocusRequester() }
-        PikoSheet(onDismissRequest = state::close, sideSheetTitle = spec.title,
-            sideSheetButtons = { TooltipIconButton(Icons.Outlined.Close, spec.closeLabel, state::close) }) {
             val sideSheet = isSideSheet
             Column(Modifier.fillMaxWidth().onPreviewKeyEvent(state::handleKey).focusRequester(focus).focusable()) {
                 LaunchedEffect(target) { focus.requestFocus() }
-                if (!sideSheet) Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                    Text(spec.title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                    TextButton(onClick = state::close, modifier = Modifier.semantics { contentDescription = spec.closeLabel }) { Text("关闭") }
+                if (!sideSheet) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(spec.title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                        TooltipIconButton(Icons.Outlined.Close, spec.closeLabel, state::close)
+                    }
                 }
                 key(target) { content(target, Modifier.fillMaxWidth()) }
+            }
+        }
+    } else {
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .onPreviewKeyEvent(state::handleKey),
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.32f))
+                    .pointerInput(state) {
+                        detectTapGestures { state.close() }
+                    },
+            )
+            Surface(
+                shape = MaterialTheme.shapes.extraLarge,
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                tonalElevation = 6.dp,
+                shadowElevation = 8.dp,
+                modifier = Modifier
+                    .padding(horizontal = 24.dp, vertical = 16.dp)
+                    .widthIn(min = spec.minWidth, max = spec.maxWidth)
+                    .pointerInput(Unit) {
+                        detectTapGestures { onActivate() }
+                    }
+                    .focusRequester(focus)
+                    .focusable()
+                    .semantics { paneTitle = spec.title },
+            ) {
+                LaunchedEffect(target) { focus.requestFocus() }
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = spec.title,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TooltipIconButton(
+                            icon = Icons.Outlined.Close,
+                            label = spec.closeLabel,
+                            onClick = state::close,
+                            shortcut = "Esc",
+                        )
+                    }
+                    key(target) {
+                        content(target, Modifier.weight(1f, fill = false).fillMaxWidth())
+                    }
+                }
             }
         }
     }
