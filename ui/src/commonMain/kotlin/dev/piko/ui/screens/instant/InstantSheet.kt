@@ -213,8 +213,13 @@ internal fun InstantSheetContent(
                 Checkbox(reference, null, Modifier.size(48.dp).clearAndSetSemantics {}, enabled = referenceEnabled)
                 Text("以引用保存", style = MaterialTheme.typography.bodyMedium)
             }
-            if (state.saveAsReference && state.selectedItems.any { it.file.gcid == null }) {
-                Text("所选内容中有文件缺少引用，无法以引用保存", color = MaterialTheme.colorScheme.error)
+            val referenceStates = batch?.rows?.map { it.state } ?: listOf(state)
+            val missing = referenceStates.sumOf { it.missingReferenceCount }
+            if (reference && missing > 0) {
+                val allMissing = referenceStates.all { it.referenceItemsToSave.isEmpty() }
+                Text(if (allMissing) "所选内容均缺少引用，无法以引用保存" else "已选文件中有 $missing 项缺少引用，保存时将跳过",
+                    color = if (allMissing) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+                if (!allMissing) TextButton(onClick = { referenceStates.forEach { it.deselectUnindexed() } }, enabled = referenceEnabled) { Text("取消勾选无引用项") }
             }
         }
         TargetRow(target = state.target, notice = state.targetNotice, enabled = state.canEdit,
@@ -423,6 +428,7 @@ private fun ColumnScope.InstantBody(
     // 输入框一直在，外部带链接打开的也是：换链接就是在这里改或粘贴，同一个会话重新解析，不另设按钮。
     // 解析出结果后缩成一行把高度让给文件列表，点进去编辑时放回三行
     LinkInput(state)
+    SharePassCodeInput(state)
 
     if (shareState != null && showSelection) {
         ShareSaveSection(

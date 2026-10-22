@@ -31,7 +31,14 @@ fun extractLinks(text: String): List<PastedLink> {
         if (match.range.first <= coveredUntil) continue
         coveredUntil = match.range.last
         val raw = if (match.value.startsWith("ed2k", ignoreCase = true)) match.value else match.value.trimEnd(*TRAILING_PUNCTUATION)
-        found += match.range.first to linkFromUri(raw)
+        var link = linkFromUri(raw)
+        if (InstantSheetState.findShareLink(link.uri) != null && InstantSheetState.findSharePassCode(link.uri) == null) {
+            val next = linkMatches.firstOrNull { it.range.first > match.range.last }?.range?.first ?: text.length
+            InstantSheetState.findSharePassCode(text.substring(match.range.first, next))?.let { code ->
+                link = link.copy(uri = "${link.uri}?pwd=$code")
+            }
+        }
+        found += match.range.first to link
     }
     val covered = linkMatches.map { it.range }
     for (match in BARE_HASH.findAll(text)) {
@@ -43,7 +50,11 @@ fun extractLinks(text: String): List<PastedLink> {
 }
 
 private fun linkFromUri(uri: String): PastedLink {
-    if (!uri.startsWith("magnet:", ignoreCase = true)) return PastedLink(uri, null)
+    if (!uri.startsWith("magnet:", ignoreCase = true)) {
+        val share = InstantSheetState.findShareLink(uri)
+        val code = InstantSheetState.findSharePassCode(uri)
+        return PastedLink(if (share != null) share + (code?.let { "?pwd=$it" } ?: "") else uri, null)
+    }
     val btih = BTIH.find(uri) ?: return PastedLink(uri, null)
     val raw = btih.groupValues[1]
     val hash = infoHashOf(raw) ?: return PastedLink(uri, null)
@@ -85,7 +96,7 @@ private const val HEX_DIGITS = "0123456789abcdef"
 // 链接在空白、引号、尖括号与中文标点处结束。磁力的 dn 常带未转义的中文，所以不能只收 ASCII
 private const val LINK_BODY = """[^\s"'<>，。；！？、（）【】「」『』《》]+"""
 private val MAGNET = Regex("""magnet:\?$LINK_BODY""", RegexOption.IGNORE_CASE)
-private val WEB_LINK = Regex("""(?:https?|thunder)://$LINK_BODY""", RegexOption.IGNORE_CASE)
+private val WEB_LINK = Regex("""(?:https?|thunder|pikpakapp)://$LINK_BODY""", RegexOption.IGNORE_CASE)
 // ed2k 的文件名段可以带空格，按竖线分段匹配，到末尾的「|/」为止
 private val ED2K = Regex("""ed2k://\|file\|[^|\r\n]+\|[0-9]+\|[0-9A-Fa-f]{32}\|(?:[^|\s]*\|)*/?""", RegexOption.IGNORE_CASE)
 private val BTIH = Regex("""xt=urn:btih:([A-Za-z0-9]+)""", RegexOption.IGNORE_CASE)

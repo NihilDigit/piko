@@ -102,7 +102,15 @@ class VaultTrees internal constructor(
          * 没列过（不在 [listed] 里）时当作还有：别的设备归档的，这里还没进去看过。不往上推到根目录：「电影」这类大目录
          * 下面迟早有归档过的，全挂上就没有意义了。
          */
-        fun marked(direct: Set<String>, listed: Set<String>, trees: Map<String, Set<String>>): Set<String> =
-            direct + trees.filterValues { members -> members.any { it in direct || it !in listed } }.keys
+        fun marked(direct: Set<String>, listed: Set<String>, trees: Map<String, Set<String>>): Set<String> {
+            val marked = direct.toMutableSet()
+            do {
+                val before = marked.size
+                trees.forEach { (id, members) ->
+                    if (id.isNotEmpty() && members.any { it in marked || it !in listed }) marked += id
+                }
+            } while (marked.size != before)
+            return marked
+        }
     }
 }

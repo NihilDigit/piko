@@ -8,6 +8,7 @@ import dev.piko.shared.smoke.awaitUntil
 import dev.piko.shared.smoke.smoke
 import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.FileStat
+import io.github.nihildigit.pikpak.InstantContentUnavailableException
 import io.github.nihildigit.pikpak.TaskPhase
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
@@ -45,6 +46,8 @@ class FolderVaultSessionTest {
         assertEquals(active, record.work)
         assertEquals(FolderVaultSession.Completion.SUCCEEDED, record.completion)
         assertEquals(drive.changes.single().id, record.undoChangeId)
+        assertTrue(record.missingEntries.isEmpty())
+        assertTrue(record.missingSources.isEmpty())
         assertFalse(session.isRunning)
 
         session.archive(PikoPathBreadcrumb("empty", "empty"), true)
@@ -191,12 +194,113 @@ class FolderVaultSessionTest {
         assertEquals(listOf(listOf("one")), drive.removed.toList())
     }
 
+    @Test
+    fun `missing restore entries remain queryable with distinct nonblank sources`() = smoke { scope ->
+        val entries = listOf("magnet:?xt=urn:btih:source", "magnet:?xt=urn:btih:source", " ", null, "other-source")
+            .mapIndexed { index, source -> VaultEntry.create("$index.mkv", 100, "GCID-$index", source, 0) }
+        val operations = object : FolderVaultOperations by Drive() {
+            override suspend fun archived(folderId: String) = ArchivedLevel(emptyList(), entries)
+            override suspend fun trash(): List<FileStat> = emptyList()
+            override suspend fun remainingBytes(): Long? = null
+            override suspend fun recreate(entry: VaultEntry, folderId: String): String {
+                if (entry == entries.last()) throw IOException("temporary failure")
+                throw InstantContentUnavailableException(entry.gcid, entry.name, "ERROR")
+            }
+        }
+        val session = FolderVaultSession(operations, scope)
+        session.restoreFolder(PikoPathBreadcrumb("folder", "folder"))
+        awaitUntil("缺失条目保留在恢复结果") { session.records.size == 1 }
+        val record = session.records.single()
+        assertEquals(FolderVaultSession.Completion.FAILED, record.completion)
+        assertEquals(entries.dropLast(1).toSet(), record.missingEntries.map { it.entry }.toSet())
+        assertEquals(setOf("folder"), record.missingEntries.map { it.folderId }.toSet())
+        assertEquals(listOf("magnet:?xt=urn:btih:source"), record.missingSources)
+        assertNull(record.undoChangeId)
+    }
+
+    @Test
+    fun `vault tree stops at selected roots and excludes empty root and cycles`() {
+        val parents = mapOf("leaf" to "middle", "middle" to "root", "root" to "outside", "outside" to "")
+        assertEquals(mapOf("middle" to setOf("leaf"), "root" to setOf("leaf")), vaultTree(setOf("root"), setOf("leaf"), parents))
+        assertTrue(vaultTree(setOf("root"), setOf("root"), parents).isEmpty())
+        assertTrue(vaultTree(setOf("elsewhere"), setOf("leaf"), parents).isEmpty())
+        assertEquals(mapOf("middle" to setOf("leaf"), "root" to setOf("leaf"), "outside" to setOf("leaf")), vaultTree(emptySet(), setOf("leaf"), parents))
+        assertEquals(mapOf("middle" to setOf("leaf")), vaultTree(emptySet(), setOf("leaf"), mapOf("leaf" to "middle", "middle" to "leaf")))
+        assertTrue(vaultTree(emptySet(), setOf("leaf"), mapOf("leaf" to "leaf")).isEmpty())
+    }
+
+    @Test
+    fun `files only archive uses known ancestors without marking them fully vaulted`() = smoke { scope ->
+        val selected = file("one").copy(parentId = "leaf")
+        val drive = Drive().apply {
+            directories["leaf"] = listOf(selected)
+            parents = mapOf("leaf" to "parent", "parent" to "")
+        }
+        val session = FolderVaultSession(drive, scope)
+        session.archive(VaultScope("files", files = listOf(selected)), true)
+        awaitUntil("单文件归档刷新完成") { drive.refreshed }
+        assertEquals(mapOf("parent" to setOf("leaf")), drive.tree)
+        assertTrue(drive.fullyVaulted.isEmpty())
+    }
+
+    @Test
+    fun `full folder archive remembers scanned empty folders after refresh not unrelated known folders`() = smoke { scope ->
+        val drive = Drive().apply {
+            directories["root"] = listOf(folder("empty"), folder("leaf"))
+            directories["leaf"] = listOf(file("one"))
+            parents = mapOf("root" to "outside", "unrelated" to "outside")
+        }
+        val session = FolderVaultSession(drive, scope)
+        session.archive(PikoPathBreadcrumb("root", "root"), false)
+        awaitUntil("完整归档目录已记下") { drive.fullyVaulted.isNotEmpty() }
+        assertEquals(setOf("root", "empty", "leaf"), drive.fullyVaulted.single())
+        assertEquals(mapOf("root" to setOf("leaf")), drive.tree)
+    }
+
+    @Test
+    fun `mixed scope only marks fully scanned folders not individual file parents`() = smoke { scope ->
+        val selected = file("selected").copy(parentId = "other")
+        val drive = Drive().apply {
+            directories["root"] = listOf(folder("empty"))
+            directories["other"] = listOf(selected, file("untouched"))
+            parents = mapOf("other" to "outside", "outside" to "")
+        }
+        val session = FolderVaultSession(drive, scope)
+        session.archive(VaultScope("mixed", folders = listOf(PikoPathBreadcrumb("root", "root")), files = listOf(selected)), true)
+        awaitUntil("混合范围完整目录已记下") { drive.fullyVaulted.isNotEmpty() }
+        assertEquals(setOf("root", "empty"), drive.fullyVaulted.single())
+        assertTrue(drive.tree.isEmpty())
+        assertEquals(listOf(listOf("selected")), drive.removed.toList())
+    }
+
+    @Test
+    fun `filtered failed and stopped archives never mark folders fully vaulted`() = smoke { scope ->
+        for (mode in listOf("sourced", "large", "failed", "stopped")) {
+            val drive = Drive().apply {
+                directories["root"] = listOf(if (mode == "sourced") file("one").copy(params = emptyMap()) else file("one"))
+                if (mode == "failed") failRemove = true
+            }
+            val session = FolderVaultSession(drive, scope)
+            session.archive(PikoPathBreadcrumb("root", "root"), includeUnsourced = mode != "sourced", onlyLargeFiles = mode == "large")
+            if (mode == "stopped") {
+                awaitUntil("目录写入中停止") { drive.writes.get() > 0 }
+                session.stop()
+            }
+            awaitUntil("归档刷新完成") { drive.refreshed }
+            assertTrue(drive.fullyVaulted.isEmpty(), mode)
+        }
+    }
+
     private class Drive(private val permanentlyDelete: Boolean = false) : FolderVaultOperations {
         val directories = ConcurrentHashMap<String, List<FileStat>>()
         val manifests = ConcurrentHashMap<String, List<VaultEntry>>()
         val removed = CopyOnWriteArrayList<List<String>>()
         val changes = CopyOnWriteArrayList<DriveChangeJournal.Change.Vault>()
         val samples = CopyOnWriteArrayList<String>()
+        var parents: Map<String, String> = emptyMap()
+        var tree: Map<String, Set<String>> = emptyMap()
+        val fullyVaulted = CopyOnWriteArrayList<Set<String>>()
+        @Volatile var refreshed = false
         val inFlight = AtomicInteger()
         val maximum = AtomicInteger()
         val writes = AtomicInteger()
@@ -237,7 +341,13 @@ class FolderVaultSessionTest {
             removed += ids
         }
         override fun record(change: DriveChangeJournal.Change.Vault) { changes += change }
-        override fun refresh() = Unit
+        override fun refresh() { refreshed = true }
+        override fun knownParents() = parents
+        override fun rememberTree(members: Map<String, Set<String>>) { tree = members }
+        override fun rememberFullyVaulted(folderIds: Set<String>) {
+            assertTrue(refreshed, "完整归档标记必须在刷新后写入")
+            fullyVaulted += folderIds
+        }
 
         // 恢复走真实仓库与假服务端，见 VaultFolderRestoreTest
         override suspend fun archived(folderId: String): ArchivedLevel = error("unused")

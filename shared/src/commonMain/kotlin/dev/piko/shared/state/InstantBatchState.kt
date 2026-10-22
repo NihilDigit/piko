@@ -57,9 +57,10 @@ class InstantBatchRow internal constructor(
         when {
             s.saveBlockReason != null || (s.saveIssue?.requiresInspection == true && s.retryFileCount == 0) -> InstantBatchRowStatus.NEEDS_REVIEW
             // 防抖期间还没开始请求，同样算解析中
-            s.isResolving || (s.normalizedMagnet != null && s.resolution == null && s.errorMessage == null) ->
+            s.isResolving || (!s.needsSharePassCode && s.resolution == null && !s.isUnindexed && s.errorMessage == null) ->
                 InstantBatchRowStatus.RESOLVING
-            s.resolution == null && (s.isUnindexed || s.normalizedMagnet == null) -> InstantBatchRowStatus.WHOLE_OFFLINE
+            s.needsSharePassCode -> InstantBatchRowStatus.FAILED
+            s.resolution == null && s.isUnindexed -> InstantBatchRowStatus.WHOLE_OFFLINE
             s.resolution == null -> InstantBatchRowStatus.FAILED
             s.selectedItems.isEmpty() -> InstantBatchRowStatus.NOTHING_SELECTED
             s.willCreateFolder && s.folderNameToSave.isBlank() -> InstantBatchRowStatus.NEEDS_NAME
@@ -123,7 +124,7 @@ class InstantBatchState internal constructor(
             (it.status == InstantBatchRowStatus.READY || it.status == InstantBatchRowStatus.WHOLE_OFFLINE) &&
                 (!it.state.hasInstantRetry || it.state.retryFileCount > 0) &&
                 (it.state.saveIssue?.requiresInspection != true || it.state.retryFileCount > 0)
-                && it.state.saveBlockReason == null
+                && it.state.saveBlockReason == null && (!saveAsReference || it.state.referenceItemsToSave.isNotEmpty())
         }
     }
 
@@ -159,9 +160,8 @@ class InstantBatchState internal constructor(
             resolving > 0 -> "$resolving 项正在解析"
             failed > 0 -> "$failed 项解析失败，重试或移除后再保存"
             unnamed > 0 -> "$unnamed 项的文件夹名为空"
-            saveAsReference && rows.any { it.status == InstantBatchRowStatus.WHOLE_OFFLINE ||
-                it.state.sourceSelectedIndices.any { index -> !it.state.items[index].isInstantReady } } ->
-                "所选内容缺少引用，请取消选择或关闭以引用保存"
+            saveAsReference && rows.none { it.state.referenceItemsToSave.isNotEmpty() } ->
+                "所选内容均缺少引用，无法以引用保存"
             rows.any { it.state.savePlan?.incompleteCatalog == true } -> "有不完整的文件清单，请逐项检查并选择可保存的内容"
             submittableRows.isEmpty() && rows.any { it.status == InstantBatchRowStatus.NEEDS_REVIEW } -> rows.firstNotNullOfOrNull { it.state.saveBlockReason } ?: "保存结果需要先在任务页核对"
             submittableRows.isEmpty() -> "没有要保存的项"

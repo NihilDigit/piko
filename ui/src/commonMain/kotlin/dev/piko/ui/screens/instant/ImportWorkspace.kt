@@ -142,7 +142,7 @@ internal fun ImportResolutionStatus(state: InstantSheetState, notice: PanelNotic
     val missing = state.sourceSelectedIndices.count { !state.items[it].isInstantReady }
     val error = state.saveBlockReason ?: state.errorMessage ?: when {
         state.willCreateFolder && state.folderNameToSave.isBlank() -> "保存文件夹名称不能为空"
-        state.saveAsReference && missing > 0 -> "选中的 ${missing} 个文件缺少引用"
+        state.saveAsReference && state.missingReferenceCount > 0 && state.referenceItemsToSave.isEmpty() -> "所选内容均缺少引用，无法以引用保存"
         plan?.lacksSpace == true -> "网盘空间不足，请减少选择或更换保存位置"
         plan?.lacksOfflineCount == true -> "今日离线次数已用完"
         else -> null
@@ -150,6 +150,7 @@ internal fun ImportResolutionStatus(state: InstantSheetState, notice: PanelNotic
     val message = error ?: notice?.text ?: when {
         state.isResolving -> "正在解析链接"
         state.resolution?.resource?.truncated == true -> "清单不完整，自动裁剪已停用"
+        state.saveAsReference && state.missingReferenceCount > 0 -> "已选文件中有 ${state.missingReferenceCount} 项缺少引用，保存时将跳过"
         missing > 0 -> "已选文件中有 ${missing} 项未收录"
         else -> null
     }
@@ -160,9 +161,23 @@ internal fun ImportResolutionStatus(state: InstantSheetState, notice: PanelNotic
         val color = if (error != null || notice?.isError == true) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
         Icon(Icons.Outlined.Info, null, Modifier.size(18.dp), tint = color)
         Text(message, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = color)
+        if (state.saveAsReference && state.missingReferenceCount > 0 && state.referenceItemsToSave.isNotEmpty()) {
+            TextButton(onClick = state::deselectUnindexed, enabled = state.canEdit) { Text("取消勾选") }
+        }
         if (state.resolution?.resource?.truncated == true) TooltipIconButton(
             Icons.Outlined.Refresh, "重新解析链接", state::retryResolve, enabled = state.canEdit,
         )
+    }
+}
+
+@Composable
+internal fun SharePassCodeInput(state: InstantSheetState) {
+    if (!state.needsSharePassCode) return
+    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(value = state.sharePassCode, onValueChange = state::updateSharePassCode,
+            modifier = Modifier.weight(1f), label = { Text("提取码") }, singleLine = true, enabled = state.canEdit)
+        TextButton(onClick = state::submitSharePassCode, enabled = state.canEdit && state.sharePassCode.isNotBlank()) { Text("解析") }
     }
 }
 
@@ -185,7 +200,7 @@ private fun SourceImportTree(sources: List<ImportSource>, management: ImportMana
     val platform = LocalPikoPlatform.current
     fun sourceActions(source: ImportSource): List<SheetAction> = buildList {
         add(SheetAction(Icons.Outlined.ContentCopy, "复制来源链接", { platform.copyToClipboard("来源链接", source.state.input) }))
-        if (source.enabled && source.state.canEdit && source.state.normalizedMagnet != null) add(SheetAction(Icons.Outlined.Refresh, "重新解析链接", source.state::retryResolve))
+        if (source.enabled && source.state.canEdit && source.state.input.isNotBlank()) add(SheetAction(Icons.Outlined.Refresh, "重新解析链接", source.state::retryResolve))
         if (source.enabled) source.onRemove?.let { remove -> add(SheetAction(Icons.Outlined.Close, "移除此链接", remove, destructive = true)) }
     }
     LazyColumn(modifier, state = management.list, contentPadding = PaddingValues(bottom = 8.dp)) {
@@ -232,11 +247,16 @@ private fun SourceImportTree(sources: List<ImportSource>, management: ImportMana
             ContextMenuArea(actions = { sourceActions(source) }) {
                 ListItem(headlineContent = { Text(state.resolution?.resource?.name ?: state.input, maxLines = 1,
                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
-                    supportingContent = { Text(state.errorMessage ?: if (state.isResolving) "正在解析链接" else "整条提交离线") },
+                    supportingContent = { Text(state.errorMessage ?: when {
+                        state.isResolving -> "正在解析链接"
+                        state.needsSharePassCode -> "需要提取码"
+                        else -> "整条提交离线"
+                    }) },
                     leadingContent = { Icon(Icons.Outlined.Link, null) },
                     modifier = Modifier.combinedClickable(onClick = {}, onLongClick = longClick),
                     colors = ListItemDefaults.colors(containerColor = androidx.compose.ui.graphics.Color.Transparent))
             }
+            SharePassCodeInput(state)
         }
     }
     details?.let { source ->

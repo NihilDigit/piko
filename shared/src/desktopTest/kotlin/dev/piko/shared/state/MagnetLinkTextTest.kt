@@ -6,6 +6,22 @@ import kotlin.test.assertNull
 
 /** 批量粘贴的文本来自论坛帖、聊天记录与种子站，同一个种子常以几种写法重复出现。 */
 class MagnetLinkTextTest {
+    @Test
+    fun `app and web shares normalize and preserve their own pass codes in mixed input`() {
+        val links = extractLinks("""
+            pikpakapp://mypikpak.com/drive/share_watch?share_id=first&pass_code=1234
+            https://mypikpak.net/s/second 提取码：abcd
+            magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567
+        """.trimIndent())
+        assertEquals(listOf("https://mypikpak.com/s/first?pwd=1234", "https://mypikpak.com/s/second?pwd=abcd",
+            "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"), links.map { it.uri })
+    }
+
+    @Test
+    fun `official share aliases deduplicate after normalization`() {
+        assertEquals(1, extractLinks("https://mypikpak.com/s/abc https://pikpakdrive.com/s/abc").size)
+    }
+
     private val hex = "c9e15763f722f23e98a29decdfae341b98d53056"
 
     // 同一个 hash 的 Base32 写法，用 coreutils 的 base32 另行算出

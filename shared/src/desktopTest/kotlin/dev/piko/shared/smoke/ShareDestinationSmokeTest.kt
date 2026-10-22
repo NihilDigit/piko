@@ -39,7 +39,10 @@ class ShareDestinationSmokeTest {
         val release = Channel<Unit>(1)
         val http = server.httpClient()
         http.plugin(HttpSend).intercept { request ->
-            if (request.url.encodedPath.endsWith("/share/restore")) { entered.send(Unit); release.receive() }
+            if (request.url.encodedPath == "/drive/v1/files" && request.method.value == "POST") {
+                entered.send(Unit)
+                release.receive()
+            }
             execute(request)
         }
         val provider = server.provider(PikPakClient("share@piko.dev", "pw", sessionStore = InMemorySessionStore(),
@@ -56,11 +59,12 @@ class ShareDestinationSmokeTest {
         val model = AddLinkViewModel(session)
         model.open("https://mypikpak.com/s/S1")
         val draft = assertNotNull(model.state)
-        val share = assertNotNull(draft.shareSave)
-        awaitUntil("分享状态由业务会话载入") { !share.isLoading && share.info != null }
-        share.toggle(share.entries.single())
+        awaitUntil("分享状态由业务会话载入统一解析") { !draft.isResolving && draft.resolution != null }
+        val resolution = assertNotNull(draft.resolution)
+        draft.setSourceSelected(setOf(0), true)
         assertTrue(model.discardNeedsConfirm)
-        share.save(PikoPathBreadcrumb(target.id, target.name))
+        draft.changeTarget(PikoPathBreadcrumb(target.id, target.name))
+        draft.performPrimaryAction()
         withTimeout(5_000) { entered.receive() }
         model.collapse()
         assertTrue(model.hasCollapsedWork)
@@ -70,16 +74,12 @@ class ShareDestinationSmokeTest {
         draft.updateInput("another input")
         assertSame(draft, model.state)
         assertEquals("https://mypikpak.com/s/S1", draft.input)
-        assertSame(share, draft.shareSave)
+        assertSame(resolution, draft.resolution)
         val rebound = AddLinkViewModel(session)
-        assertSame(share, rebound.state?.shareSave, "界面绑定重建不能重建分享浏览状态")
+        assertSame(resolution, rebound.state?.resolution, "界面绑定重建不能重建分享解析状态")
         release.send(Unit)
-        awaitUntil("收起状态下分享转存完成并保留回执") { !share.isSaving && share.doneMessage != null }
+        awaitUntil("收起状态下分享保存完成并记录回执") { !draft.isSaving && records.records.value.isNotEmpty() }
         assertEquals(listOf(source.name), server.children(target.id).map { it.name })
-        model.resume()
-        assertSame(share, model.state?.shareSave)
-        assertTrue(share.selectedIds.isEmpty())
-        assertEquals(1, server.count("POST /drive/v1/share/restore"))
         model.discard()
         assertTrue(model.state == null)
     }

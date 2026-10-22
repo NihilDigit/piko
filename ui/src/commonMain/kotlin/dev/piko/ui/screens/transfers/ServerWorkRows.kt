@@ -7,6 +7,7 @@ import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material.icons.outlined.Unarchive
 import androidx.compose.material.icons.outlined.Refresh
@@ -91,7 +92,10 @@ internal fun vaultTransferActions(
     canUndo: Boolean,
     undo: DriveChangeJournal.UndoResult?,
     onUndo: () -> Unit,
+    onCreateImport: (String) -> Unit,
 ): List<SheetAction> = buildList {
+    val sources = item.record?.missingSources.orEmpty()
+    if (sources.isNotEmpty()) add(SheetAction(Icons.Outlined.Link, "解析来源链接", { onCreateImport(sources.joinToString("\n")) }))
     if (item.record == null) {
         if (!stopping) add(SheetAction(Icons.Outlined.Stop, if (item.restoring) "停止恢复" else "停止归档", onStop))
     } else if (undo?.status != DriveChangeJournal.UndoStatus.RUNNING) {

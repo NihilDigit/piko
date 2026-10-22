@@ -50,6 +50,28 @@ import kotlinx.coroutines.withTimeout
  */
 class InstantFlowSmokeTest {
     @Test
+    fun sharesUseResolvedWorkspaceAndInstantRouteAlongsideMagnets() = smoke { scope ->
+        val server = FakePikPakServer()
+        val first = server.addFile("first.mkv", content = ByteArray(100), hash = "SHARE1")
+        val second = server.addFile("second.mkv", content = ByteArray(200), hash = "SHARE2")
+        server.shares["shared"] = listOf(first.id, second.id)
+        val rig = Rig(server, MemoryPreferences(), scope)
+        val sheet = rig.sheet(scope, "https://mypikpak.net/s/shared?pwd=1234")
+        awaitUntil("分享解析完成") { sheet.resolution != null && sheet.target != null }
+        assertNull(sheet.shareSave)
+        assertEquals(listOf("SHARE1", "SHARE2"), sheet.items.map { it.file.gcid })
+        sheet.setSourceSelected(sheet.items.indices.toSet(), true)
+        assertEquals(SaveRoute.INSTANT, sheet.savePlan?.route)
+        assertEquals(2, sheet.projectedSaveFiles.size)
+        val magnet = "magnet:?xt=urn:btih:" + "a".repeat(40)
+        server.indexMagnet(magnet, resourceListBody("magnet", listOf(Triple("third.mkv", 100L, "MAGNET"))))
+        val mixed = rig.sheet(scope, "https://mypikpak.com/s/shared\n$magnet")
+        val batch = assertNotNull(mixed.batch)
+        awaitUntil("分享与磁力均完成解析") { batch.rows.all { it.state.resolution != null } }
+        assertEquals(2, batch.rows.size)
+    }
+
+    @Test
     fun `incoming text keeps all links from unconsumed shares`() {
         val repo = InstantMagnetRepository(FakePikPakServer().provider())
         val first = "magnet:?xt=urn:btih:" + "a".repeat(40)
@@ -160,8 +182,22 @@ class InstantFlowSmokeTest {
         awaitUntil("所有来源解析完成") { batch.rows.all { it.state.resolution != null } && state.target != null }
         batch.updateSaveAsReference(true)
         assertTrue(batch.rows.all { it.state.saveAsReference })
-        assertTrue(!batch.canSaveAll)
-        assertTrue(assertNotNull(batch.blockedReason).contains("缺少引用"))
+        assertTrue(batch.canSaveAll)
+        assertNull(batch.blockedReason)
+        val mixed = batch.rows.last().state
+        assertEquals(1, mixed.missingReferenceCount)
+        assertEquals(1, mixed.savePlan?.fileCount)
+        assertEquals(1, mixed.savePlan?.skippedCount)
+        assertEquals(1, mixed.projectedSaveFiles.size)
+        assertTrue(mixed.canSaveSelection)
+        mixed.setSourceSelected(mixed.items.indices.toSet(), false)
+        mixed.setSourceSelected(mixed.items.indices.filter { mixed.items[it].file.gcid == null }.toSet(), true)
+        assertTrue(!mixed.canSaveSelection)
+        assertEquals(0, mixed.savePlan?.fileCount)
+        assertTrue(mixed.projectedSaveFiles.isEmpty())
+        mixed.setSourceSelected(mixed.items.indices.toSet(), true)
+        mixed.deselectUnindexed()
+        assertEquals(0, mixed.missingReferenceCount)
         batch.rows.last().state.let { it.setSourceSelected(it.items.indices.toSet(), false) }
         assertTrue(batch.canSaveAll)
         batch.updateSaveAsReference(false)

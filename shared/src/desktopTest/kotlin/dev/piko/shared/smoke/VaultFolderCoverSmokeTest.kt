@@ -63,6 +63,30 @@ class VaultFolderCoverSmokeTest {
     }
 
     @Test
+    fun nestedContainersAggregateMarksAndPreferArchiveCoversOverLeftoverImages() = smoke { _ ->
+        val server = FakePikPakServer()
+        val outer = server.addFolder("Show")
+        val season = server.addFolder("Season", outer.id)
+        val leaf = server.addFolder("Episodes", season.id)
+        server.addFile(".piko-vault-v1-0123456789abcdef.json", leaf.id, content = oldManifest.encodeToByteArray())
+        val repo = PikoDriveRepository(server.provider(), MemoryPreferences())
+        repo.listBrowsable(leaf.id, PikoFileSortOrder.NAME_ASC).getOrThrow()
+        repo.listBrowsable(season.id, PikoFileSortOrder.NAME_ASC).getOrThrow()
+        repo.listBrowsable(outer.id, PikoFileSortOrder.NAME_ASC).getOrThrow()
+        awaitUntil("多层目录完全归档") { setOf(outer.id, season.id, leaf.id).all { it in repo.fullyVaultedFolders.value } }
+        val folder = repo.listBrowsable("", PikoFileSortOrder.NAME_ASC).getOrThrow().single { it.id == outer.id }
+        val covered = repo.withVaultCovers(listOf(folder.copy(thumbnailLink = "leftover-image")))
+        assertEquals(thumbnailUrlOf("GCIDEP01"), covered.single().thumbnailLink)
+
+        val partial = server.addFolder("Partial")
+        server.addFile(".piko-vault-v1-0123456789abcdef.json", partial.id, content = oldManifest.encodeToByteArray())
+        server.addFile("remaining.mkv", partial.id)
+        repo.listBrowsable(partial.id, PikoFileSortOrder.NAME_ASC).getOrThrow()
+        awaitUntil("部分归档标记") { partial.id in repo.vaultedFolders.value }
+        assertEquals(false, partial.id in repo.fullyVaultedFolders.value)
+    }
+
+    @Test
     fun `restored entries do not cover a folder`() = smoke { scope ->
         val server = FakePikPakServer()
         val folder = server.addFolder("Restored")

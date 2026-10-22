@@ -1,6 +1,9 @@
 package dev.piko.shared.data
 
 import dev.piko.shared.log.PikoLog
+import io.ktor.client.request.prepareRequest
+import io.ktor.http.decodeURLPart
+import io.ktor.http.encodedPath
 import io.github.nihildigit.pikpak.CreateUrlResult
 import io.github.nihildigit.pikpak.MagnetResource
 import io.github.nihildigit.pikpak.DriveTask
@@ -44,6 +47,25 @@ data class MagnetResolutionResult(
     val totalCount: Int,
 )
 
+internal fun httpResource(url: String, status: Int, headers: io.ktor.http.Headers): MagnetResolutionResult? {
+    if (status !in 200..299) return null
+    val type = headers["Content-Type"].orEmpty().substringBefore(';').trim().lowercase()
+    val disposition = headers["Content-Disposition"].orEmpty()
+    val attachment = disposition.contains("attachment", ignoreCase = true)
+    if (!attachment && type in setOf("text/html", "application/xhtml+xml")) return null
+    val encoded = Regex("""filename\*=UTF-8''([^;]+)""", RegexOption.IGNORE_CASE).find(disposition)?.groupValues?.get(1)
+    val plain = Regex("""filename=\"?([^\";]+)""", RegexOption.IGNORE_CASE).find(disposition)?.groupValues?.get(1)
+    val path = io.ktor.http.Url(url).encodedPath.substringAfterLast('/')
+    val name = runCatching { (encoded ?: plain ?: path).decodeURLPart() }.getOrDefault(plain ?: path)
+        .substringAfterLast('/').substringAfterLast('\\').trim().ifBlank { "下载文件" }
+    val knownFile = name.substringAfterLast('.', "").lowercase() in setOf("mp4", "mkv", "avi", "mov", "webm", "mp3", "flac", "zip", "rar", "7z", "tar", "gz", "pdf", "iso", "epub")
+    if (!attachment && type.isBlank() && !knownFile) return null
+    val size = headers["Content-Range"]?.substringAfterLast('/')?.toLongOrNull()
+        ?: if (status == 206) 0L else headers["Content-Length"]?.toLongOrNull() ?: 0L
+    val file = ResolvedFile(name, size.coerceAtLeast(0), null)
+    return MagnetResolutionResult(MagnetResource(name, listOf(file)), listOf(InstantFileItem(file, false)), 0, 1)
+}
+
 internal class OfflinePruneBlocked(message: String) : IllegalStateException(message)
 
 class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
@@ -79,6 +101,29 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
         }.onFailure { PikoLog.d(TAG, "解析磁力失败，历时 ${started.elapsedNow().inWholeMilliseconds} ms，${it::class.simpleName}") }
     }
 
+    /** 探测只读取响应头，不下载正文；普通网页和失败仍交给原有离线入口。 */
+    suspend fun probeHttpResource(url: String): Result<MagnetResolutionResult?> = withContext(Dispatchers.Default) {
+        runSuspendCatching {
+            kotlinx.coroutines.withTimeoutOrNull(4_000) {
+                val http = io.ktor.client.HttpClient()
+                try {
+                    var resource: MagnetResolutionResult? = null
+                    var needsRange = true
+                    http.prepareRequest(url) { method = io.ktor.http.HttpMethod.Head }.execute { response ->
+                        resource = httpResource(url, response.status.value, response.headers)
+                        needsRange = response.status.value !in 200..299 ||
+                            (resource != null && response.headers["Content-Length"]?.toLongOrNull() == null)
+                    }
+                    if (needsRange) http.prepareRequest(url) {
+                        method = io.ktor.http.HttpMethod.Get
+                        headers.append("Range", "bytes=0-0")
+                    }.execute { response -> resource = httpResource(url, response.status.value, response.headers) }
+                    resource
+                } finally { http.close() }
+            }
+        }.fold({ Result.success(it) }, { Result.success(null) })
+    }
+
     /**
      * 秒传一批文件，返回落进网盘的文件 id。没有 gcid 的（云端未收录）跳过。
      *
@@ -108,14 +153,16 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
     }
 
     suspend fun saveReferences(items: List<InstantFileItem>, targetParentId: String, keepStructure: Boolean,
-        names: Map<String, String>, existingFolders: Map<String, String>, vault: VaultStore, source: String?): Result<List<String>> {
+        names: Map<String, String>, existingFolders: Map<String, String>, vault: VaultStore, source: String?,
+        onReferencesSaved: (Map<String, Set<String>>) -> Unit = {}): Result<List<String>> {
         val owner = clientManager.currentClient.value ?: return Result.failure(IllegalStateException("未登录"))
         return withContext(Dispatchers.Default) { saveFiles(owner, items.toList(), targetParentId, emptyMap(), keepStructure,
-            names.toMap(), existingFolders.toMap(), vault, source) }
+            names.toMap(), existingFolders.toMap(), vault, source, onReferencesSaved) }
     }
 
     private suspend fun saveFiles(owner: PikPakClient, items: List<InstantFileItem>, targetParentId: String,
-        reuse: Map<String, String>, keepStructure: Boolean, names: Map<String, String>, existingFolders: Map<String, String>, referenceVault: VaultStore? = null, source: String? = null): Result<List<String>> {
+        reuse: Map<String, String>, keepStructure: Boolean, names: Map<String, String>, existingFolders: Map<String, String>, referenceVault: VaultStore? = null, source: String? = null,
+        onReferencesSaved: (Map<String, Set<String>>) -> Unit = {}): Result<List<String>> {
         val started = TimeSource.Monotonic.markNow()
         val files = items.map { it.file }.filter { it.gcid != null }
         val reused = files.count { it.gcid in reuse }
@@ -155,6 +202,10 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
                 group.zip(entries).forEach { (file, entry) ->
                     if(actual?.any { it.id == entry.id } == true) confirmed[file.path] = entry.virtualId
                     else if(write.exceptionOrNull() is VaultWriteUnconfirmed) unknown += file.path
+                }
+                if (group.any { it.path in confirmed }) {
+                    val ancestors = folderIds.filterKeys { it.isEmpty() || directory == it || directory.startsWith("$it/") }
+                    onReferencesSaved(ancestors.values.associateWith { setOf(folderId) })
                 }
                 remaining.removeAll(confirmed.keys + unknown)
                 if(write.isFailure) { failure = write.exceptionOrNull(); break }

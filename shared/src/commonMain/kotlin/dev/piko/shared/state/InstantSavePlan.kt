@@ -47,6 +47,7 @@ data class SavePlan(
     val lacksOfflineCount: Boolean = false,
     val incompleteCatalog: Boolean = false,
     val fallback: InstantFallback? = null,
+    val skippedCount: Int = 0,
 ) {
     val blocked: Boolean get() = lacksSpace || lacksOfflineCount || incompleteCatalog
 }

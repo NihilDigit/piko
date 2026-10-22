@@ -97,6 +97,7 @@ internal class FolderContentMemory(
             clear()
             return
         }
+        invalidateCompleteness(folderIds)
         memory.update { current ->
             current.copy(
                 contents = current.contents - folderIds,
@@ -108,6 +109,7 @@ internal class FolderContentMemory(
     }
 
     fun clear() {
+        completeness.value = emptyMap()
         memory.update { MemoryState(clearEpoch = it.clearEpoch + 1, revision = it.revision + 1) }
         scheduleSave()
     }
@@ -117,6 +119,42 @@ internal class FolderContentMemory(
 
     private fun bounded(value: Map<String, List<ChildFile>>): Map<String, List<ChildFile>> =
         if (value.size <= MAX_SAVED_FOLDERS) value else value.entries.toList().takeLast(MAX_SAVED_FOLDERS).associate { it.toPair() }
+
+    // 完全归档只信本次会话完整列表或成功的全量归档，不从跨进程的抽样文件名推断。
+    private data class Completeness(val hasRealFiles: Boolean, val children: Set<String>)
+    private val completeness = MutableStateFlow<Map<String, Completeness>>(emptyMap())
+    val fullyVaultedFolders: Flow<Set<String>> = completeness.map { known ->
+        val full = mutableSetOf<String>()
+        do {
+            val before = full.size
+            known.forEach { (id, level) ->
+                if (!level.hasRealFiles && level.children.all { it in full }) full += id
+            }
+        } while (full.size != before)
+        full
+    }
+
+    fun rememberCompleteness(folderId: String, hasRealFiles: Boolean, children: Set<String>, complete: Boolean) {
+        if (complete) completeness.update { it + (folderId to Completeness(hasRealFiles, children)) }
+        else if (hasRealFiles || children.isNotEmpty()) invalidateCompleteness(setOf(folderId))
+    }
+
+    fun markFullyVaulted(folderIds: Set<String>, parents: Map<String, String>) {
+        completeness.update { current -> current + folderIds.associateWith { id ->
+            Completeness(false, folderIds.filterTo(mutableSetOf()) { parents[it] == id })
+        } }
+    }
+
+    private fun invalidateCompleteness(folderIds: Set<String>) {
+        completeness.update { current ->
+            val affected = folderIds.toMutableSet()
+            do {
+                val before = affected.size
+                current.forEach { (id, level) -> if (level.children.any { it in affected }) affected += id }
+            } while (affected.size != before)
+            current - affected
+        }
+    }
 
     private val vaulted = MutableStateFlow<Set<String>>(emptySet())
 
@@ -160,6 +198,7 @@ internal class FolderContentMemory(
         pendingSave?.cancel()
         account = newAccount
         val loadedAt = memory.updateAndGet { MemoryState(clearEpoch = it.clearEpoch + 1, revision = it.revision + 1) }
+        completeness.value = emptyMap()
         vaulted.value = emptySet()
         covers.value = emptyMap()
         val cacheStore = store ?: return

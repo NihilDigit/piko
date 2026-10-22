@@ -541,13 +541,13 @@ open class PikoDriveRepository(
     }
 
     /**
-     * 服务端没给封面的文件夹，用其中归档条目的封面补上，见 FolderContentMemory.vaultCovers。
+     * 已归档文件夹优先使用归档视频封面，避免残留小文件抢占；其他文件夹只补空封面。
      * 归档时选的那一层往往只有子文件夹，取 [VaultTrees] 里其下文件夹的。没有可补的时原样返回同一个列表。
      */
     fun withVaultCovers(files: List<FileStat>): List<FileStat> {
-        if (files.none { it.isFolder && it.thumbnailLink.isEmpty() && vaultCoverOf(it.id) != null }) return files
+        if (files.none { it.isFolder && (it.thumbnailLink.isEmpty() || it.id in vaultedFolders.value) && vaultCoverOf(it.id) != null }) return files
         return files.map { file ->
-            if (!file.isFolder || file.thumbnailLink.isNotEmpty()) return@map file
+            if (!file.isFolder || (file.thumbnailLink.isNotEmpty() && file.id !in vaultedFolders.value)) return@map file
             vaultCoverOf(file.id)?.let { file.copy(thumbnailLink = thumbnailUrlOf(it)) } ?: file
         }
     }
@@ -557,8 +557,13 @@ open class PikoDriveRepository(
 
     private fun vaultCoverOf(folderId: String): String? {
         val covers = childContents.vaultCovers.value
-        return covers[folderId]?.ifEmpty { null }
-            ?: vaultTrees.flow.value[folderId]?.sorted()?.firstNotNullOfOrNull { covers[it]?.ifEmpty { null } }
+        val visited = mutableSetOf<String>()
+        fun cover(id: String): String? {
+            if (!visited.add(id)) return null
+            return covers[id]?.ifEmpty { null }
+                ?: vaultTrees.flow.value[id]?.sorted()?.firstNotNullOfOrNull(::cover)
+        }
+        return cover(folderId)
     }
 
     /**
@@ -570,7 +575,13 @@ open class PikoDriveRepository(
         if (vaultCoverOf(folderId) != null) return@withContext
         val known = childContents.vaultCovers.value
         val direct = folderId.takeIf { it in childContents.vaultedFolders.value && it !in known }
-        val members = vaultTrees.flow.value[folderId].orEmpty().sorted().filter { it != folderId && it !in known }
+        val descendants = mutableSetOf<String>()
+        fun visit(id: String) {
+            if (!descendants.add(id)) return
+            vaultTrees.flow.value[id].orEmpty().forEach(::visit)
+        }
+        visit(folderId)
+        val members = descendants.sorted().filter { it != folderId && it !in known }
         for (candidate in listOfNotNull(direct) + members.take(COVER_PROBE_MEMBERS)) {
             childNameFetches.withPermit {
                 if (candidate in childContents.vaultCovers.value) return@withPermit
@@ -664,7 +675,29 @@ open class PikoDriveRepository(
         childContents.put(folderId, real.filterNot(FileStat::isFolder).take(MAX_REMEMBERED_CHILD_NAMES).map(ChildFile::of))
         val hasEntries = manifests.isNotEmpty() && vault.cached(folderId, files)?.any { it.isArchived } != false
         if (hasEntries || complete) childContents.markVaulted(folderId, hasEntries)
+        val visibleReal = real.filterNot { it.trashed || VaultStore.isRecoveryFile(it) }
+        val subfolders = visibleReal.filter { it.isFolder }.mapTo(mutableSetOf()) { it.id }
+        val hasRealFiles = visibleReal.any { !it.isFolder && !it.isVaulted }
+        childContents.rememberCompleteness(folderId, hasRealFiles, subfolders, complete)
+        val marked = VaultTrees.marked(childContents.vaultedFolders.value, childContents.state.value.keys, vaultTrees.flow.value)
+        if (complete && folderId.isNotEmpty() && visibleReal.none { !it.isFolder && !it.isVaulted } &&
+            subfolders.isNotEmpty() && subfolders.all { it in marked }) {
+            vaultTrees.merge(mapOf(folderId to subfolders))
+        }
         _folderEmptiness.update { it + (folderId to files.isEmpty()) }
+    }
+
+    internal fun knownVaultParents(): Map<String, String> = folderIndex.flow.value.nodes
+        .filterValues { !it.provisional }.mapNotNull { (id, node) -> node.parentId?.let { id to it } }.toMap()
+
+    internal fun rememberFullyVaulted(folderIds: Set<String>) {
+        childContents.markFullyVaulted(folderIds, knownVaultParents())
+    }
+
+    /** 完整列举或全量归档成功确认无剩余真实文件；未知目录保留继续归档入口。 */
+    val fullyVaultedFolders: StateFlow<Set<String>> by lazy {
+        combine(childContents.fullyVaultedFolders, vaultedFolders) { full, marked -> full intersect marked }
+            .stateIn(backgroundScope, SharingStarted.Eagerly, emptySet())
     }
 
     /** 挂归档标记的文件夹：直接放着归档条目的，加上归档时选的那一层到它们之间的各层，见 VaultTrees.marked。 */

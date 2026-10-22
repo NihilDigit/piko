@@ -46,13 +46,17 @@ import dev.piko.shared.state.FolderVaultSession
 import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.toReadableSize
 
+internal fun offersVaultSizeChoice(survey: FolderVaultSession.Survey?): Boolean {
+    val largeFiles = survey?.largeFiles?.files ?: return false
+    return largeFiles in 1 until survey.files
+}
+
 /**
  * 归档之前的确认，文件夹与单独选的文件共用。先清点：多少文件、多大，其中没有来源记录的（自己上传、秒传）单独计，
  * 默认不带上：它们没有磁力或分享链接可凭，PikPak 不再保存时就找不回来。
  *
- * 只有文件时，对这几个文件不起作用的选项不显示，也不生效：大小全在门槛同一侧时「不归档小文件」只会把它们全留下，
- * 全有来源或全无来源时「仅归档有来源记录的文件」同理。全无来源时改为直接说明，归不归档由人按确认或取消决定。
- * 文件夹的选项照旧全给：整棵树里有什么，打开前看不到。
+ * 大小全在门槛同一侧时隐藏大小选项且不应用过滤，避免仅剩小文件时被上次的偏好全部排除。
+ * 只有文件时，全有来源或全无来源也隐藏来源选项。全无来源时改为直接说明，归不归档由人按确认或取消决定。
  *
  * 丢失的风险只在这里讲清楚。考虑过给回收站里的原件打标记、清空时再提醒，否决了：官方客户端照样能清空回收站，
  * Piko 拦不住，拦一半只会让人以为有保护。
@@ -72,8 +76,7 @@ internal fun VaultDialog(
     val scope = rememberCoroutineScope()
     val chosen = options ?: VaultArchiveOptions()
     val all = survey?.getOrNull()
-    val largeFiles = all?.largeFiles?.files
-    val offersSizeChoice = !target.filesOnly || (all != null && largeFiles != null && largeFiles in 1 until all.files)
+    val offersSizeChoice = offersVaultSizeChoice(all)
     val skipSmallFiles = offersSizeChoice && chosen.skipSmallFiles
     val counted = all?.let { if (skipSmallFiles) it.largeFiles else it }
     val offersSourceChoice = !target.filesOnly || (counted != null && counted.unsourcedFiles in 1 until counted.files)

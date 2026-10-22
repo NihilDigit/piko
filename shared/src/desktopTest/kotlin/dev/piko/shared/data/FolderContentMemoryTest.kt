@@ -20,6 +20,33 @@ import kotlin.test.assertNull
 class FolderContentMemoryTest {
 
     @Test
+    fun fullArchiveRequiresCompleteChildrenAndNoRemainingFiles() = runBlocking {
+        val memory = FolderContentMemory(null, this)
+        memory.rememberCompleteness("outer", false, setOf("inner"), true)
+        assertEquals(emptySet(), memory.fullyVaultedFolders.first())
+        memory.rememberCompleteness("inner", true, emptySet(), true)
+        assertEquals(emptySet(), memory.fullyVaultedFolders.first())
+        memory.rememberCompleteness("inner", false, emptySet(), true)
+        assertEquals(setOf("inner", "outer"), memory.fullyVaultedFolders.first())
+        memory.invalidate(setOf("inner"))
+        assertEquals(emptySet(), memory.fullyVaultedFolders.first())
+    }
+
+    @Test
+    fun partialListingsCannotProveFullArchiveAndAccountSwitchClearsProof() = runBlocking {
+        val memory = FolderContentMemory(null, this)
+        memory.rememberCompleteness("folder", false, emptySet(), false)
+        assertEquals(emptySet(), memory.fullyVaultedFolders.first())
+        memory.markFullyVaulted(setOf("outer", "inner"), mapOf("inner" to "outer"))
+        assertEquals(setOf("outer", "inner"), memory.fullyVaultedFolders.first())
+        memory.rememberCompleteness("inner", true, emptySet(), false)
+        assertEquals(emptySet(), memory.fullyVaultedFolders.first())
+        memory.markFullyVaulted(setOf("folder"), emptyMap())
+        memory.switchAccount("other")
+        assertEquals(emptySet(), memory.fullyVaultedFolders.first())
+    }
+
+    @Test
     fun readsAndIdenticalWritesRefreshLruOrder() = runBlocking {
         val memory = FolderContentMemory(null, this)
         val sample = listOf(ChildFile("Show.mkv"))

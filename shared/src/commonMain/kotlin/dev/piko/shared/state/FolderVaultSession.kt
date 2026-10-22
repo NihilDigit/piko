@@ -70,6 +70,8 @@ data class VaultScope(
 
 data class VaultWorkTargets(val roots: Set<String> = emptySet(), val manifests: Set<String> = emptySet(), val files: Set<String> = emptySet())
 
+data class MissingVaultEntry(val folderId: String, val entry: VaultEntry)
+
 /**
  * 把文件夹里或单独选的真实文件换成归档条目（范围见 [VaultScope]），腾出网盘空间，以及反过来恢复到网盘。进程级：离开网盘页照常进行；
  * 归档与恢复同一时刻只做一件，免得两边同时改同一份清单。
@@ -96,7 +98,10 @@ class FolderVaultSession internal constructor(
         val message: String,
         val finishedAtMs: Long,
         val undoChangeId: Long? = null,
-    )
+        val missingEntries: List<MissingVaultEntry> = emptyList(),
+    ) {
+        val missingSources: List<String> get() = missingEntries.mapNotNull { it.entry.source?.takeIf(String::isNotBlank) }.distinct()
+    }
 
     var activeWork by mutableStateOf<Work?>(null)
         private set
@@ -216,9 +221,9 @@ class FolderVaultSession internal constructor(
         if (activeWork !== work) throw CancellationException("归档会话已结束")
     }
 
-    private fun publish(work: Work, completion: Completion, title: String, message: String, change: DriveChangeJournal.Change.Vault? = null) {
+    private fun publish(work: Work, completion: Completion, title: String, message: String, change: DriveChangeJournal.Change.Vault? = null, missingEntries: List<MissingVaultEntry> = emptyList()) {
         if (activeWork !== work) return
-        val record = Record(work, completion, title, message, Clock.System.now().toEpochMilliseconds(), change?.id)
+        val record = Record(work, completion, title, message, Clock.System.now().toEpochMilliseconds(), change?.id, missingEntries)
         Snapshot.withMutableSnapshot {
             records = (records + record).takeLast(100)
             activeWork = null
@@ -253,17 +258,21 @@ class FolderVaultSession internal constructor(
             val reverts = mutableMapOf<String, VaultEdit>()
             val trashed = mutableListOf<String>()
             val deleted = mutableMapOf<String, List<VaultEntry>>()
-            val parents = mutableMapOf<String, String>()
+            val parents = operations.knownParents().toMutableMap()
+            val scannedFolders = mutableSetOf<String>()
             val started = TimeSource.Monotonic.markNow()
             // CID 取样失败或超时的文件数，条目照样写，只是少一份体检资料
             var noCid = 0
+            var skippedFiles = false
             val result = runSuspendCatching {
                 val delete = !moveToTrash
-                val levels = levelsOf(target, until = { stopping }, parents = parents).map { (folderId, files) ->
+                val scannedLevels = levelsOf(target, until = { stopping }, parents = parents, scannedFolders = scannedFolders)
+                val levels = scannedLevels.map { (folderId, files) ->
                     folderId to files.filter {
                         (includeUnsourced || !it.sourceUrl.isNullOrBlank()) && (!onlyLargeFiles || it.sizeBytes >= LARGE_FILE_MIN_BYTES)
                     }
                 }.filter { it.second.isNotEmpty() }
+                skippedFiles = levels.sumOf { it.second.size } != scannedLevels.sumOf { it.second.size }
                 ensureCurrent(work)
                 val total = levels.sumOf { it.second.size }
                 val targets = requireNotNull(activeTargets)
@@ -318,7 +327,7 @@ class FolderVaultSession internal constructor(
             PikoLog.i(TAG, "归档${if (result.isFailure) "中途失败" else if (stopped) "已停止" else "完成"}：${target.logScope}，" +
                 "写成清单 ${reverts.size + deleted.size} 个文件夹，归档 ${result.getOrNull() ?: "?"} 个文件，CID 未取到 $noCid 个，" +
                 "历时 ${started.elapsedNow().inWholeMilliseconds} ms")
-            // 单独归档的文件只在所在那一层写清单，那一层自己就有标记，不进目录表
+            // 文件夹范围只记到所选根；单独归档的文件沿已知父级补上祖先标记。
             operations.rememberTree(vaultTree(target.folders.mapTo(HashSet()) { it.id }, reverts.keys + deleted.keys, parents))
             // 做完的几层记成一条改动，哪怕后面失败了：撤销得回已经归档的那些
             if (reverts.isNotEmpty() || deleted.isNotEmpty()) {
@@ -345,6 +354,9 @@ class FolderVaultSession internal constructor(
                 if (reverts.isEmpty() && deleted.isEmpty()) publish(work, Completion.FAILED, "归档失败", "「${target.name}」：$message")
             }
             operations.refresh()
+            if (result.isSuccess && !stopping && !target.filesOnly && !skippedFiles) {
+                operations.rememberFullyVaulted(scannedFolders + target.folders.map { it.id })
+            }
         }
     }
 
@@ -484,7 +496,7 @@ class FolderVaultSession internal constructor(
         val started = TimeSource.Monotonic.markNow()
         restoreProgress = restoreProgress?.copy(stage = "正在恢复到网盘")
         val lock = Mutex()
-        var missing = 0
+        val missingEntries = mutableListOf<MissingVaultEntry>()
         var manifestFailures = 0
         val created = mutableListOf<String>()
         val reverts = mutableMapOf<String, VaultEdit>()
@@ -521,7 +533,7 @@ class FolderVaultSession internal constructor(
                             if (stopping) return@withPermit
                             ensureCurrent(work)
                             val id = runSuspendCatching { operations.recreate(entry, folderId) }
-                                .onFailure { if (it is InstantContentUnavailableException) lock.withLock { missing++ } }
+                                .onFailure { if (it is InstantContentUnavailableException) lock.withLock { missingEntries += MissingVaultEntry(folderId, entry) } }
                                 .logFailure(TAG, "恢复归档条目失败")
                                 .getOrNull()
                             finish(entry, id)
@@ -539,6 +551,7 @@ class FolderVaultSession internal constructor(
         }
         ensureCurrent(work)
         val failed = total - created.size
+        val missing = missingEntries.size
         PikoLog.i(TAG, "恢复归档${if (stopping) "已停止" else "结束"}：恢复 ${created.size}/$total 项，云端已无内容 $missing 项，" +
             "其他失败 ${failed - missing} 项，改写清单 ${reverts.size}/${byFolder.size} 个文件夹，历时 ${started.elapsedNow().inWholeMilliseconds} ms")
         val summary = when {
@@ -568,7 +581,7 @@ class FolderVaultSession internal constructor(
             failed == 0 && manifestFailures == 0 -> Completion.SUCCEEDED
             created.isEmpty() -> Completion.FAILED
             else -> Completion.PARTIAL
-        }, title, named, change)
+        }, title, named, change, missingEntries.toList())
         operations.refresh()
     }
 
@@ -601,6 +614,7 @@ class FolderVaultSession internal constructor(
         target: VaultScope,
         until: () -> Boolean = { false },
         parents: MutableMap<String, String>? = null,
+        scannedFolders: MutableSet<String>? = null,
     ): List<Pair<String, List<FileStat>>> {
         val levels = LinkedHashMap<String, LinkedHashMap<String, FileStat>>()
         fun add(folderId: String, files: List<FileStat>) {
@@ -608,7 +622,10 @@ class FolderVaultSession internal constructor(
         }
         for (folder in target.folders) {
             if (until()) break
-            walk(folder.id, until, parents).forEach { (folderId, files) -> add(folderId, files) }
+            walk(folder.id, until, parents).forEach { (folderId, files) ->
+                scannedFolders?.add(folderId)
+                add(folderId, files)
+            }
         }
         val requested = target.files.groupBy({ it.parentId }, { it.id })
         for (chunk in requested.entries.chunked(4)) {
@@ -669,15 +686,22 @@ private val SKIPPED_FOLDERS = setOf("Piko-Temp", ".piko")
 /**
  * 从选的那几层 [roots] 到各写了清单的文件夹（[written]）之间的每一层 → 其下写了清单的那些，
  * 见 FolderContentMemory.markedFolders。写了清单的文件夹自己不进来，它们有直接的标记。
+ * 未指定根时沿已知父级追溯；指定根时仅保留能追到根的路径，不扩散到范围外。
  */
 internal fun vaultTree(roots: Set<String>, written: Set<String>, parents: Map<String, String>): Map<String, Set<String>> {
     val tree = mutableMapOf<String, MutableSet<String>>()
     for (folderId in written) {
         var current = folderId
+        val visited = mutableSetOf(folderId)
+        val ancestors = mutableListOf<String>()
         while (current !in roots) {
-            current = parents[current] ?: break
-            tree.getOrPut(current) { mutableSetOf() } += folderId
+            val parent = parents[current] ?: break
+            if (parent.isEmpty() || !visited.add(parent)) break
+            current = parent
+            ancestors += current
         }
+        if (roots.isNotEmpty() && current !in roots) continue
+        for (ancestor in ancestors) tree.getOrPut(ancestor) { mutableSetOf() } += folderId
     }
     return tree
 }
@@ -690,6 +714,8 @@ internal interface FolderVaultOperations {
     fun record(change: DriveChangeJournal.Change.Vault)
     fun refresh()
     fun rememberTree(members: Map<String, Set<String>>) {}
+    fun knownParents(): Map<String, String> = emptyMap()
+    fun rememberFullyVaulted(folderIds: Set<String>) {}
 
     /** [folderId] 的子文件夹与仍归档着的条目。清单读不出来就失败：当作没有条目会漏掉恢复。 */
     suspend fun archived(folderId: String): ArchivedLevel
@@ -720,6 +746,8 @@ private class DriveFolderVaultOperations(private val drive: PikoDriveRepository)
     override fun rememberTree(members: Map<String, Set<String>>) {
         drive.vaultTrees.merge(members)
     }
+    override fun knownParents() = drive.knownVaultParents()
+    override fun rememberFullyVaulted(folderIds: Set<String>) = drive.rememberFullyVaulted(folderIds)
 
     override suspend fun archived(folderId: String): ArchivedLevel {
         val listing = drive.listAllFiles(folderId).getOrThrow()

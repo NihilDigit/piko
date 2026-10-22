@@ -306,6 +306,7 @@ class DriveScreenState(
 
     /** 挂归档标记的文件夹，见 PikoDriveRepository.vaultedFolders。 */
     val vaultedFolders get() = driveRepo.vaultedFolders
+    val fullyVaultedFolders get() = driveRepo.fullyVaultedFolders
 
     /** 按文件夹 id 的显示信息，后台算好逐个填入。解析关闭时界面不读它。 */
     private val _folderViews = mutableStateMapOf<String, DriveFolderView>()

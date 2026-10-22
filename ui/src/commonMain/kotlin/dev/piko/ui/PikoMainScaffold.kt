@@ -897,7 +897,7 @@ fun PikoMainScaffold(
                     MainTab.TRANSFERS -> {
                         TransfersScreen(
                             state = workspaceModel.transfers,
-                            onCreateImport = { workspaceModel.openImport() },
+                            onCreateImport = { workspaceModel.openImport(it) },
                             scrollToTopRequests = transfersScrollToTop,
                             onOpenCloudFile = { fileId, _ -> revealInDrive(fileId) },
                             onNavigateToVideoPlayer = ::playLocal,

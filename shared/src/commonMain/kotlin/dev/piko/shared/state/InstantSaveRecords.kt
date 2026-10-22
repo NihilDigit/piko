@@ -1,5 +1,6 @@
 package dev.piko.shared.state
 
+import dev.piko.shared.data.isVaulted
 import dev.piko.shared.data.PikoCacheStore
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.runSuspendCatching
@@ -114,7 +115,7 @@ class InstantSaveRecords(
                         ?: initial.target.id.takeIf { initial.containerName == null && !initial.keepStructure } ?: continue
                     val actual = contents[folder] ?: read(folder).getOrNull()?.also { contents[folder] = it } ?: continue
                     val expectedName = initial.names[file.path] ?: file.name
-                    val matches = actual.filter { !it.isFolder && it.name == expectedName && it.sizeBytes == file.size && it.hash.equals(file.gcid, true) }
+                    val matches = actual.filter { !it.isFolder && it.isVaulted == initial.reference && it.name == expectedName && it.sizeBytes == file.size && it.hash.equals(file.gcid, true) }
                     if (matches.size == 1) { confirmed[file.path] = matches.single().id; naming.remove(file.path) }
                 }
                 if (repository.currentAccount != initial.account) return@launch

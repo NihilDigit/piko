@@ -103,17 +103,20 @@ internal class ItemCommands(
     val downloadAtQuality: Boolean,
     val extract: Boolean,
     val removeRecord: Boolean,
-    /** 归档，文件夹另有取消归档。 */
+    /** 选中范围仍有可归档的文件。 */
     val vault: Boolean,
+    /** 网盘上下文中的文件夹可取消归档，具体标记由条目提供。 */
+    val unvault: Boolean,
 )
 
-internal fun itemCommands(place: CommandPlace, targets: List<FileStat>): ItemCommands {
+internal fun itemCommands(place: CommandPlace, targets: List<FileStat>, fullyVaultedFolders: Set<String> = emptySet()): ItemCommands {
     val inTrash = place == CommandPlace.TRASH
     val inArchive = place == CommandPlace.ARCHIVE
     val eventLog = place == CommandPlace.RECENT || place == CommandPlace.HISTORY
     val hasTargets = targets.isNotEmpty()
     // 上传中的文件改名、移动、分享都会失败，作用对象里有它就不给这几样；归档条目与压缩包里的条目在网盘里没有文件，同理
     val settled = hasTargets && !inArchive && targets.none { it.isUploading || it.isVaulted }
+    val vaultContext = settled && (place == CommandPlace.ROOT || place == CommandPlace.FOLDER || place == CommandPlace.SEARCH)
     return ItemCommands(
         cutCopy = settled && !inTrash,
         rename = settled && !inTrash,
@@ -131,7 +134,8 @@ internal fun itemCommands(place: CommandPlace, targets: List<FileStat>): ItemCom
         removeRecord = hasTargets && eventLog,
         // 回收站与压缩包里的不在网盘里。库（星标、最近添加、播放历史、查重的结果）里要做的是回到原处、下载、移走或删除，
         // 不给：移动端面板在最近添加里已满 8 行，见 MobilePanelSizeTest。搜索结果的条目仍在各自的文件夹里，清单按所在文件夹写，照常给
-        vault =settled && (place == CommandPlace.ROOT || place == CommandPlace.FOLDER || place == CommandPlace.SEARCH),
+        vault = vaultContext && targets.any { !it.isFolder || it.id !in fullyVaultedFolders },
+        unvault = vaultContext,
     )
 }
 

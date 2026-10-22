@@ -759,6 +759,7 @@ fun DriveScreen(
     }
     val folderEmptiness by state.folderEmptiness.collectAsStateWithLifecycle()
     val vaultedFolders by state.vaultedFolders.collectAsStateWithLifecycle()
+    val fullyVaultedFolders by state.fullyVaultedFolders.collectAsStateWithLifecycle()
     val highlightedFileIds = state.highlightedFileIds
     val highlightedRowIds = state.highlightedRowIds
     // 每一项都要问一次「是否选中」，SnapshotStateList 的 contains 是线性查找
@@ -1049,7 +1050,7 @@ fun DriveScreen(
         if (library == DriveLibrary.DUPLICATES && file.isFolder) {
             return listOf(DriveActions.revealInDrive { onRevealInDrive?.invoke(file) ?: state.revealInDrive(file) })
         }
-        val commands = itemCommands(commandPlace(), targets)
+        val commands = itemCommands(commandPlace(), targets, fullyVaultedFolders)
         if (commands.restoreOrDelete) {
             val ids = targets.map { it.id }
             return trashActions(
@@ -1100,7 +1101,7 @@ fun DriveScreen(
             openInNewTab = latestOpenInNewTab?.let { { it(file) } },
             togglePin = latestTogglePin?.let { { it(file) } },
             isPinned = latestPinnedFolders.any { it.id == file.id },
-            // 挂着归档标记的才给取消归档；归档却一直给：跳过小文件或之后又放进新文件时，挂着标记的文件夹里仍有可归档的
+            // 部分归档保留两种操作，完全归档只保留取消归档。
             vault = { vaultTarget = vaultScopeOf(listOf(file)) },
             unvault = if (file.id in vaultedFolders) ({ restoreVaultTarget = file }) else null,
             previewHidden = if (isSpoilerBlurEnabled && file.thumbnailLink.isNotEmpty()) file.id !in state.revealedFileIds else null,
@@ -1486,7 +1487,7 @@ fun DriveScreen(
 
     // 各入口上摆哪些操作：宽窗口的命令栏与窄窗口的 FAB 菜单照位置命令，窄窗口的多选顶栏照条目操作，规则见 DriveCommands.kt
     val currentPlace = commandPlace(folderStack.size)
-    val targetCommands = itemCommands(currentPlace, commandTargets)
+    val targetCommands = itemCommands(currentPlace, commandTargets, fullyVaultedFolders)
     val commands = driveCommands(
         CommandInputs(
             place = currentPlace,
@@ -2282,7 +2283,7 @@ fun DriveScreen(
     } }
 
     fun selectionSheetActions(files: List<FileStat>): List<SheetAction> {
-        val commands = itemCommands(commandPlace(), files)
+        val commands = itemCommands(commandPlace(), files, fullyVaultedFolders)
         return when {
             commands.restoreOrDelete -> trashActions(
                 onRestore = { state.restoreFromTrash(files.map { it.id }) },

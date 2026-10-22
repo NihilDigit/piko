@@ -144,7 +144,7 @@ import kotlinx.coroutines.launch
 fun TransfersScreen(
     state: TransfersState,
     onNavigateToVideoPlayer: (fileId: String, fileName: String, localPath: String?) -> Unit,
-    onCreateImport: () -> Unit = {},
+    onCreateImport: (String) -> Unit = {},
     /** 跳到网盘里该文件所在目录。找不到（已移动或删除）时返回 false，由本页提示。 */
     onOpenCloudFile: suspend (fileId: String, fileName: String) -> Boolean = { _, _ -> false },
     /** 再点一次底栏的「传输」时加一：回到列表顶部。 */
@@ -375,6 +375,7 @@ fun TransfersScreen(
                 item, state.isVaultStopping, { state.stopVault(item.work.id) }, { state.dismissVault(item.work.id) },
                 item.record?.let(state::canUndoVault) == true, item.record?.let(state::vaultUndoStatus),
                 { item.record?.let(state::undoVault) },
+                onCreateImport,
             )
             is TransferItem.Write -> {
                 val work = item.work
@@ -501,12 +502,17 @@ fun TransfersScreen(
 
     fun pauseOrResumeAction(item: TransferItem): SheetAction? = when {
         state.isPausable(item) -> SheetAction(Icons.Outlined.Pause, "暂停", { state.pause(item) })
+<<<<<<< HEAD
         state.isResumable(item) -> {
             val isFailed = (item is TransferItem.Local && item.task.status == DownloadStatus.FAILED) ||
                 (item is TransferItem.Upload && item.task.status == UploadStatus.FAILED)
             SheetAction(if (isFailed) Icons.Outlined.Refresh else Icons.Outlined.PlayArrow, if (isFailed) "重试" else "继续", { state.resume(item) })
         }
         else -> null
+=======
+        state.isResumable(item) -> SheetAction(Icons.Outlined.PlayArrow, "继续", { state.resume(item) })
+        else -> actionsFor(item).firstOrNull { it.label.startsWith("停止") || it.label == "重新查询结果" || it.label == "解析来源链接" }
+>>>>>>> 895f74a6 (feat(vault): unify import resolution and refine archive folder semantics)
     }
 
     fun quickAction(item: TransferItem): SheetAction? = when (item) {
@@ -818,7 +824,7 @@ fun TransfersScreen(
                                 description = "已提交的传输和文件处理将显示于此",
                                 icon = Icons.Outlined.SyncAlt,
                                 actionText = "添加链接",
-                                onActionClick = onCreateImport,
+                                onActionClick = { onCreateImport("") },
                             )
                         }
                     }

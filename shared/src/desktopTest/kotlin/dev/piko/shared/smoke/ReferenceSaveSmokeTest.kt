@@ -31,11 +31,17 @@ class ReferenceSaveSmokeTest {
         val repository = InstantMagnetRepository(server.provider())
         val files = listOf(InstantFileItem(ResolvedFile("正片/原名.mkv", 100, "GCID1"), true),
             InstantFileItem(ResolvedFile("字幕/原名.ass", 10, "GCID2"), true))
-        val ids = repository.saveReferences(files, "", true, mapOf("正片/原名.mkv" to "最终名.mkv"), emptyMap(), vault, "magnet:source").getOrThrow()
+        val members = mutableMapOf<String, Set<String>>()
+        val ids = repository.saveReferences(files + InstantFileItem(ResolvedFile("未知.mkv", 50, null), false), "", true,
+            mapOf("正片/原名.mkv" to "最终名.mkv"), emptyMap(), vault, "magnet:source") { added ->
+            added.forEach { (ancestor, leaves) -> members[ancestor] = members[ancestor].orEmpty() + leaves }
+        }.getOrThrow()
         assertEquals(0, server.instantCreates.get())
         assertEquals(2, ids.size)
         assertTrue(ids.all(VaultEntry::isVaulted))
         val folders = server.children("").associateBy { it.name }
+        assertEquals(folders.values.map { it.id }.toSet(), members[""])
+        assertEquals(setOf(folders.getValue("正片").id), members[folders.getValue("正片").id])
         val video = vault.committed(folders.getValue("正片").id).getOrThrow().single()
         assertEquals("最终名.mkv", video.name)
         assertEquals("magnet:source", video.source)

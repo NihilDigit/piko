@@ -17,10 +17,10 @@ import kotlin.test.assertTrue
 class FileActionsRowTest {
     private val file = FileStat(kind = FileKind.FILE, id = "f", name = "a.txt", fileExtension = ".txt")
 
-    private fun handlers(desktop: Boolean) = FileActionHandlers(
+    private fun handlers(desktop: Boolean, unvault: (() -> Unit)? = null) = FileActionHandlers(
         toggleStar = {}, download = {}, downloadAtQuality = {}, share = {}, rename = {}, move = {}, copy = {}, trash = {}, extract = {},
         findDuplicates = {}, canonicalNameFolder = null, downloadSegment = {}, prepareQualities = {}, copySource = {}, openSource = {},
-        openInExternalPlayer = null, openInNewTab = null, togglePin = null, isPinned = false, vault = {}, unvault = null,
+        openInExternalPlayer = null, openInNewTab = null, togglePin = null, isPinned = false, vault = {}, unvault = unvault,
         previewHidden = null, togglePreview = {},
         putOnClipboard = if (desktop) ({ _ -> }) else null,
     )
@@ -35,6 +35,20 @@ class FileActionsRowTest {
         assertEquals(null, actions.single { it.label == "下载到本地" }.onPrepare)
         assertTrue(actions.single { it.label == "下载指定画质…" }.onPrepare != null)
         assertTrue(fileActions(file, itemCommands(CommandPlace.FOLDER, listOf(file)), handlers(true)).none { it.label == "下载指定画质…" })
+    }
+
+    @Test
+    fun `fully vaulted folders retain only unvault while partial folders retain both`() {
+        val folder = FileStat(kind = FileKind.FOLDER, id = "folder", name = "folder")
+        for (desktop in listOf(false, true)) {
+            val on = handlers(desktop, unvault = {})
+            val partial = fileActions(folder, itemCommands(CommandPlace.FOLDER, listOf(folder)), on).map { it.label }
+            assertTrue("归档" in partial)
+            assertTrue("取消归档" in partial)
+            val full = fileActions(folder, itemCommands(CommandPlace.FOLDER, listOf(folder), setOf(folder.id)), on).map { it.label }
+            assertTrue("归档" !in full)
+            assertTrue("取消归档" in full)
+        }
     }
 
     @Test

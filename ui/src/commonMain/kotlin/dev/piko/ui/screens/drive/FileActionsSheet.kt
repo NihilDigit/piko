@@ -194,10 +194,8 @@ internal fun fileActions(file: FileStat, commands: ItemCommands, on: FileActionH
         if (commands.rename) on.canonicalNameFolder?.let { add(DriveActions.canonicalName(it)) }
         on.findDuplicates?.let { add(DriveActions.findDuplicates(it)) }
     }
-    if (commands.vault) {
-        add(DriveActions.vault(on.vault))
-        on.unvault?.let { add(DriveActions.unvault(it)) }
-    }
+    if (commands.vault) add(DriveActions.vault(on.vault))
+    if (commands.unvault) on.unvault?.let { add(DriveActions.unvault(it)) }
     on.previewHidden?.let { add(DriveActions.previewVisibility(it, on.togglePreview)) }
     if (on.copySource != null && on.openSource != null) addAll(DriveActions.sourceActions(file.source, on.copySource, on.openSource))
     if (commands.moveToTrash) add(DriveActions.moveToTrash(on.trash))

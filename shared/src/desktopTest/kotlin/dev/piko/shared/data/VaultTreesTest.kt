@@ -31,6 +31,15 @@ class VaultTreesTest {
         assertEquals(setOf("show", "s1"), VaultTrees.marked(emptySet(), setOf("show"), tree))
     }
 
+    @Test
+    fun nestedAggregatesFollowLiveDescendantsWithoutMarkingRootOrCycles() {
+        val nested = mapOf("" to setOf("outer"), "outer" to setOf("season"), "season" to setOf("leaf"))
+        val listed = setOf("", "outer", "season", "leaf")
+        assertEquals(setOf("outer", "season", "leaf"), VaultTrees.marked(setOf("leaf"), listed, nested))
+        assertEquals(emptySet(), VaultTrees.marked(emptySet(), listed, nested))
+        assertEquals(emptySet(), VaultTrees.marked(emptySet(), setOf("a", "b"), mapOf("a" to setOf("b"), "b" to setOf("a"))))
+    }
+
     private class MemoryRemote : RemoteSettingsStore {
         var text: String? = null
         override suspend fun read(account: String) = text
