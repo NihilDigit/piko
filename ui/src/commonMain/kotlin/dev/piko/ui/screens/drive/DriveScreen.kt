@@ -1135,7 +1135,7 @@ fun DriveScreen(
             )
         } else emptyList()
 
-    val itemMoreButton = false
+    val itemMoreButton = dev.piko.ui.components.LocalPointerSource.current.isTouchLike
 
     // 从没解压过的包第一次打开要等几秒。准备完 key 一变，这里的协程取消，提示随之收起；快的不提示
     LaunchedEffect(state.preparingEntryId) {
@@ -1181,7 +1181,15 @@ fun DriveScreen(
             onProperties = { latestShowProperties(targetsOf(it), propertiesAnchors.beside(it.id)) },
             onPlaced = { file, coordinates -> propertiesAnchors.placed(file.id, coordinates) },
             onStartSelection = { state.enterSelection(it.id) },
-            onLongClick = ::openItemActions,
+            onLongClick = { file ->
+                if (state.libraryView == DriveLibrary.DUPLICATES && file.isFolder) {
+                    openItemActions(file)
+                } else if (state.isSelectionMode) {
+                    state.setSelected(file.id, file.id !in state.selectedFileIds)
+                } else {
+                    state.enterSelection(file.id)
+                }
+            },
             onSelect = { file, selected -> state.setSelected(file.id, selected) },
             onToggleSelect = { id ->
                 if (latestGalleryActive) state.setSelected(id, id !in state.selectedFileIds) else state.toggleSelected(id)

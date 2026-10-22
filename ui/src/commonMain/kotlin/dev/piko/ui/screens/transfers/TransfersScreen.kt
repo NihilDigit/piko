@@ -502,17 +502,12 @@ fun TransfersScreen(
 
     fun pauseOrResumeAction(item: TransferItem): SheetAction? = when {
         state.isPausable(item) -> SheetAction(Icons.Outlined.Pause, "暂停", { state.pause(item) })
-<<<<<<< HEAD
         state.isResumable(item) -> {
             val isFailed = (item is TransferItem.Local && item.task.status == DownloadStatus.FAILED) ||
                 (item is TransferItem.Upload && item.task.status == UploadStatus.FAILED)
             SheetAction(if (isFailed) Icons.Outlined.Refresh else Icons.Outlined.PlayArrow, if (isFailed) "重试" else "继续", { state.resume(item) })
         }
-        else -> null
-=======
-        state.isResumable(item) -> SheetAction(Icons.Outlined.PlayArrow, "继续", { state.resume(item) })
         else -> actionsFor(item).firstOrNull { it.label.startsWith("停止") || it.label == "重新查询结果" || it.label == "解析来源链接" }
->>>>>>> 895f74a6 (feat(vault): unify import resolution and refine archive folder semantics)
     }
 
     fun quickAction(item: TransferItem): SheetAction? = when (item) {

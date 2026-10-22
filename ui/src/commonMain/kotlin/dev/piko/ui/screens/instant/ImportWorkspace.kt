@@ -342,6 +342,7 @@ private fun ImportResultBrowser(sources: List<ImportSource>, browser: ImportBrow
         onOpen = ::open, onRename = null, onMore = { moreId = it.id }, onProperties = ::properties,
         onPlaced = { file, coords -> detail.anchors.placed(file.id, coords) },
         onStartSelection = { file -> selected = listOf(file.id) },
+        onLongClick = { file -> selected = if (file.id in selected) selected - file.id else selected + file.id },
         onSelect = { file, value -> selected = if(value) selected + file.id else selected - file.id },
         onToggleSelect = { selected = if(it in selected) selected - it else selected + it }, onExtendSelect = { selected = selected + it },
         dragPayload = { null }, onMiddleClick = {}, onBoxSelect = { base, boxed -> selected = (base + boxed).toList() },
@@ -363,7 +364,7 @@ private fun ImportResultBrowser(sources: List<ImportSource>, browser: ImportBrow
                 else DriveFileGrid(items = shown.map { DriveListItem.File(it, null) }, viewMode = DriveViewMode.of(mode), tileSize = TileSize.MEDIUM,
                     onZoom = {}, gridState = browser.grid, isSelectionMode = selected.isNotEmpty(), selectedIds = selected.toSet(), highlightedIds = emptySet(),
                     highlightRevision = 0, structureReady = true, locatedItemId = null, isBlurred = { false }, hitLocations = emptyMap(), folderView = { null },
-                    callbacks = callbacks, bottomPadding = 8.dp, moreButton = false, backgroundActions = { emptyList() }, columnReferenceWidth = null,
+                    callbacks = callbacks, bottomPadding = 8.dp, moreButton = LocalPointerSource.current.isTouchLike, backgroundActions = { emptyList() }, columnReferenceWidth = null,
                     activeItemId = selected.lastOrNull(), keyboardFocusTarget = null, onKeyboardFocusMoved = {}, header = {}, foldBanner = null,
                     modifier = Modifier.weight(1f))
             }

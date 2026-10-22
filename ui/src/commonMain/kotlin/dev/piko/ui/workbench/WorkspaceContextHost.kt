@@ -1,5 +1,13 @@
 package dev.piko.ui.workbench
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.background
 import androidx.compose.material.icons.Icons
@@ -21,6 +29,7 @@ import dev.piko.shared.presentation.WorkspaceContext
 import dev.piko.ui.components.PikoDialog
 import dev.piko.ui.components.PikoDialogConfirm
 import dev.piko.ui.platform.LocalPikoPlatform
+import dev.piko.ui.theme.LocalPikoMotion
 import dev.piko.ui.theme.frame
 import dev.piko.ui.screens.drive.*
 import dev.piko.ui.screens.instant.InstantSheetContent
@@ -108,11 +117,14 @@ internal fun WorkspaceContextHost(
                             } else {
                                 CompositionLocalProvider(LocalWorkspaceSurface provides WorkspaceSurface(context.id, onMinimize)) {
                                     BackHandler(onBack = onMinimize)
+                                    val topTitle = draft.resolution?.resource?.name
+                                        ?: draft.batch?.let { "${it.rows.size} 条链接" }
+                                        ?: "添加链接"
                                     dev.piko.ui.components.PikoScaffold(
                                         modifier = Modifier.fillMaxSize().imePadding(),
                                         topBar = {
                                             dev.piko.ui.components.PikoTopBar(
-                                                title = "添加链接",
+                                                title = topTitle,
                                                 navigationIcon = { dev.piko.ui.components.TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, "返回来源", onMinimize) },
                                                 persistentActions = { WorkspaceControls() },
                                             )

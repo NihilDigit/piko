@@ -220,8 +220,10 @@ internal fun fileItemLongPress(action: (() -> Unit)?): (() -> Unit)? {
     val haptic = LocalHapticFeedback.current
     return if (action == null) null else remember(pointers, haptic) {
         {
-            if (pointers.isTouchLike) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-            current?.invoke()
+            if (pointers.isTouchLike) {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                current?.invoke()
+            }
         }
     }
 }
