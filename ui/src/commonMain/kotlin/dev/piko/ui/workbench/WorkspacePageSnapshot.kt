@@ -21,7 +21,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlin.math.roundToInt
 
-private class RecordedPage { var revision = 0L }
+private class RecordedPage {
+    var drawRevision = 0L
+    var recordedRevision = 0L
+    var captureRequested = true
+}
 internal val LocalWorkspaceSnapshotEnabled = staticCompositionLocalOf { true }
 
 /** Captures the existing draw pass; this never composes or initializes another work context. */
@@ -41,30 +45,38 @@ internal fun WorkspacePageSnapshot(
     val retainSnapshot by rememberUpdatedState(onSnapshot)
     LaunchedEffect(contextId, layer) {
         var capturedRevision = 0L
+        var lastObservedDraw = 0L
         while (isActive) {
-            delay(350)
-            if (page.revision == capturedRevision) continue
-            val revision = page.revision
-            try {
-                retainSnapshot(layer.toImageBitmap())
-                capturedRevision = revision
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Exception) {
-                PikoLog.w("Workspace", "工作标签页面快照失败", error)
-                return@LaunchedEffect
+            delay(500)
+            if (page.recordedRevision != capturedRevision) {
+                val revision = page.recordedRevision
+                try {
+                    retainSnapshot(layer.toImageBitmap())
+                    capturedRevision = revision
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    PikoLog.w("Workspace", "工作标签页面快照失败", error)
+                    return@LaunchedEffect
+                }
+            } else if (page.drawRevision != lastObservedDraw && !page.captureRequested) {
+                // 页面停止高频绘制后按需请求录制一帧缩略图，避免滚动期间每帧重复录制整棵 DisplayList
+                lastObservedDraw = page.drawRevision
+                page.captureRequested = true
             }
         }
     }
     Box(Modifier.fillMaxSize().drawWithContent {
         drawContent()
-        if (size.width > 0 && size.height > 0) {
+        page.drawRevision++
+        if (page.captureRequested && size.width > 0 && size.height > 0) {
+            page.captureRequested = false
             val ratio = (512f / maxOf(size.width, size.height)).coerceAtMost(1f)
             val thumbnailSize = IntSize((size.width * ratio).roundToInt().coerceAtLeast(1), (size.height * ratio).roundToInt().coerceAtLeast(1))
             layer.record(size = thumbnailSize) {
                 scale(ratio, ratio, pivot = Offset.Zero) { this@drawWithContent.drawContent() }
             }
-            page.revision++
+            page.recordedRevision++
         }
     }) { content() }
 }

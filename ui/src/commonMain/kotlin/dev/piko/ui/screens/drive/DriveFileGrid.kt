@@ -477,7 +477,7 @@ private const val SKELETON_ITEM_COUNT = 40
 private val SkeletonTitleWidths = listOf(0.62f, 0.45f, 0.74f, 0.52f, 0.68f, 0.4f)
 
 /** 单元格上的文字：名字（见 [DriveItemName]）与解析出的标签。 */
-internal class CellText(val name: DriveItemName, val tags: List<String>, val code: String? = null, val resolution: String? = null)
+internal data class CellText(val name: DriveItemName, val tags: List<String>, val code: String? = null, val resolution: String? = null)
 
 internal fun cellText(item: DriveListItem.File, folder: DriveFolderView?): CellText {
     val view = item.view

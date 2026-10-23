@@ -48,29 +48,28 @@ sealed interface TransferItem {
      * 各文件仍是普通任务，展开后各占一行（[Local]）。
      */
     data class LocalBatch(val batch: DownloadBatch, val tasks: List<DownloadTask>, val listing: FolderListing?) : TransferItem {
-        override val key: String get() = "batch:${batch.id}"
-        override val createdAtMs: Long get() = listing?.createdAtMs ?: tasks.minOfOrNull { it.createdAtMs } ?: 0L
+        override val key: String = "batch:${batch.id}"
+        override val createdAtMs: Long = listing?.createdAtMs ?: tasks.minOfOrNull { it.createdAtMs } ?: 0L
 
-        val totalBytes: Long get() = tasks.sumOf { it.totalBytes }
-        val downloadedBytes: Long get() = tasks.sumOf { it.downloadedBytes }
-        val completedCount: Int get() = tasks.count { it.status == DownloadStatus.COMPLETED }
-        val failedCount: Int get() = tasks.count { it.status == DownloadStatus.FAILED }
-        val speedBytesPerSec: Long get() = tasks.sumOf { it.speedBytesPerSec }
-        val progress: Float get() = totalBytes.takeIf { it > 0 }?.let { (downloadedBytes.toFloat() / it).coerceIn(0f, 1f) } ?: 0f
+        val totalBytes: Long = tasks.sumOf { it.totalBytes }
+        val downloadedBytes: Long = tasks.sumOf { it.downloadedBytes }
+        val completedCount: Int = tasks.count { it.status == DownloadStatus.COMPLETED }
+        val failedCount: Int = tasks.count { it.status == DownloadStatus.FAILED }
+        val speedBytesPerSec: Long = tasks.sumOf { it.speedBytesPerSec }
+        val progress: Float = totalBytes.takeIf { it > 0 }?.let { (downloadedBytes.toFloat() / it).coerceIn(0f, 1f) } ?: 0f
 
         /**
          * 整组的状态：有一个还在下、排着或暂停就算进行中，其余有失败的算失败，否则完成。
          * 列出失败与超额待确认都要用户处理，记作失败。
          */
-        val status: DownloadStatus
-            get() = when {
-                listing != null -> if (listing.isListing) DownloadStatus.PENDING else DownloadStatus.FAILED
-                tasks.any { it.status == DownloadStatus.DOWNLOADING } -> DownloadStatus.DOWNLOADING
-                tasks.any { it.status == DownloadStatus.PENDING } -> DownloadStatus.PENDING
-                tasks.any { it.status == DownloadStatus.PAUSED } -> DownloadStatus.PAUSED
-                failedCount > 0 -> DownloadStatus.FAILED
-                else -> DownloadStatus.COMPLETED
-            }
+        val status: DownloadStatus = when {
+            listing != null -> if (listing.isListing) DownloadStatus.PENDING else DownloadStatus.FAILED
+            tasks.any { it.status == DownloadStatus.DOWNLOADING } -> DownloadStatus.DOWNLOADING
+            tasks.any { it.status == DownloadStatus.PENDING } -> DownloadStatus.PENDING
+            tasks.any { it.status == DownloadStatus.PAUSED } -> DownloadStatus.PAUSED
+            failedCount > 0 -> DownloadStatus.FAILED
+            else -> DownloadStatus.COMPLETED
+        }
     }
 
     data class Upload(val task: UploadTask) : TransferItem {
@@ -91,14 +90,14 @@ sealed interface TransferItem {
         val batchId: String, val title: String, val parentId: String, val parentName: String,
         val tasks: List<UploadTask>, val isFolder: Boolean,
     ) : TransferItem {
-        override val key: String get() = "upload-batch:$batchId"
-        override val createdAtMs: Long get() = tasks.minOfOrNull { it.createdAtMs } ?: 0L
-        val completedCount: Int get() = tasks.count { it.status == UploadStatus.COMPLETED }
-        val totalBytes: Long get() = tasks.sumOf { it.size }
-        val processedBytes: Long get() = tasks.sumOf { if (it.status == UploadStatus.COMPLETED) it.size else if (it.status == UploadStatus.UPLOADING) it.processedBytes else 0L }
-        val speedBytesPerSec: Long get() = tasks.filter { it.status == UploadStatus.UPLOADING }.sumOf { it.speedBytesPerSec }
-        val progress: Float get() = if (totalBytes > 0) (processedBytes.toFloat() / totalBytes).coerceIn(0f, 1f) else completedCount.toFloat() / tasks.size.coerceAtLeast(1)
-        val status: UploadStatus get() = when {
+        override val key: String = "upload-batch:$batchId"
+        override val createdAtMs: Long = tasks.minOfOrNull { it.createdAtMs } ?: 0L
+        val completedCount: Int = tasks.count { it.status == UploadStatus.COMPLETED }
+        val totalBytes: Long = tasks.sumOf { it.size }
+        val processedBytes: Long = tasks.sumOf { if (it.status == UploadStatus.COMPLETED) it.size else if (it.status == UploadStatus.UPLOADING) it.processedBytes else 0L }
+        val speedBytesPerSec: Long = tasks.filter { it.status == UploadStatus.UPLOADING }.sumOf { it.speedBytesPerSec }
+        val progress: Float = if (totalBytes > 0) (processedBytes.toFloat() / totalBytes).coerceIn(0f, 1f) else completedCount.toFloat() / tasks.size.coerceAtLeast(1)
+        val status: UploadStatus = when {
             tasks.any { it.status == UploadStatus.UPLOADING } -> UploadStatus.UPLOADING
             tasks.any { it.status == UploadStatus.HASHING } -> UploadStatus.HASHING
             tasks.any { it.status == UploadStatus.QUEUED } -> UploadStatus.QUEUED

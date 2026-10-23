@@ -158,12 +158,19 @@ class SourceLedger internal constructor(
         /** 读不出时为 null。下标越界的行丢掉，键按 [keyOf] 重新规整。 */
         fun decode(text: String): Map<String, SourceRecord>? = runCatching {
             val stored = json.decodeFromString(Stored.serializer(), text)
-            stored.files.entries.fold(emptyMap<String, SourceRecord>()) { acc, (key, row) ->
-                val source = stored.sources.getOrNull(row.source) ?: return@fold acc
+            val merged = HashMap<String, SourceRecord>(stored.files.size * 2)
+            for ((key, row) in stored.files) {
+                val source = stored.sources.getOrNull(row.source) ?: continue
                 val gcid = key.substringBeforeLast(':')
-                val size = key.substringAfterLast(':').toLongOrNull() ?: return@fold acc
-                union(acc, mapOf(keyOf(gcid, size) to SourceRecord(source, row.path, row.at)))
+                val size = key.substringAfterLast(':').toLongOrNull() ?: continue
+                val normalizedKey = keyOf(gcid, size)
+                val record = SourceRecord(source, row.path, row.at)
+                val existing = merged[normalizedKey]
+                if (existing == null || ORDER.compare(record, existing) > 0) {
+                    merged[normalizedKey] = record
+                }
             }
+            merged
         }.getOrNull()
 
         fun union(a: Map<String, SourceRecord>, b: Map<String, SourceRecord>): Map<String, SourceRecord> {

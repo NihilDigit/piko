@@ -675,10 +675,12 @@ private class BatchAnalyzer(inputs: List<MediaFileInput>) {
                     .thenBy { it.title == null }
                     .thenComparator { a, b -> NaturalOrder.compare(a.title.orEmpty(), b.title.orEmpty()) },
             )
+        val isContent = BooleanArray(items.size)
+        content.forEach { if (it.index in isContent.indices) isContent[it.index] = true }
         val roles = items.map { item ->
             when {
                 item.secondary != null -> FileRole.SECONDARY
-                item in content -> FileRole.CONTENT
+                item.index in isContent.indices && isContent[item.index] -> FileRole.CONTENT
                 else -> FileRole.ATTACHMENT
             }
         }

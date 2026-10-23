@@ -21,9 +21,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -57,12 +56,22 @@ internal fun GalleryPane(
     rootKey: Any,
     modifier: Modifier = Modifier,
 ) {
-    var visibleIds by remember(rootKey) { mutableStateOf<Set<String>>(emptySet()) }
-    LaunchedEffect(loading, hasMore, failureCount, files.size, visibleIds) {
-        if (!loading && hasMore && failureCount == 0) {
-            if (files.isEmpty() || files.takeLast(36).any { it.id in visibleIds }) {
-                onRequestMore()
+    val latestFiles by rememberUpdatedState(files)
+    val latestLoading by rememberUpdatedState(loading)
+    val latestHasMore by rememberUpdatedState(hasMore)
+    val latestFailureCount by rememberUpdatedState(failureCount)
+    val latestRequestMore by rememberUpdatedState(onRequestMore)
+    fun checkRequestMore(visibleIds: Set<String>) {
+        if (!latestLoading && latestHasMore && latestFailureCount == 0) {
+            val current = latestFiles
+            if (current.isEmpty() || current.takeLast(36).any { it.id in visibleIds }) {
+                latestRequestMore()
             }
+        }
+    }
+    LaunchedEffect(loading, hasMore, failureCount, files.size) {
+        if (!loading && hasMore && failureCount == 0 && files.isEmpty()) {
+            onRequestMore()
         }
     }
     Column(modifier) {
@@ -101,7 +110,7 @@ internal fun GalleryPane(
                         onZoom = onZoom,
                         locationLabel = { folderName(it.parentId) },
                         onVisibleFilesChanged = { ids ->
-                            visibleIds = ids
+                            checkRequestMore(ids)
                             onVisibleFilesChanged(ids)
                         },
                     )

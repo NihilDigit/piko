@@ -77,11 +77,17 @@ internal fun FileStat.fileVisual(emptyFolder: Boolean = false): FileVisual {
 internal fun FileStat.filePresentation(
     title: String? = null, original: String? = null, tags: List<String> = emptyList(), code: String? = null,
     resolution: String? = null, folderHasVault: Boolean = false, emptyFolder: Boolean = false,
-): FilePresentation = FilePresentation(
-    key = id, name = FileItemName(title ?: displayTitle(), original, name), visual = fileVisual(emptyFolder),
-    metadata = metaParts(), tags = tags, code = code, resolution = resolution,
-    marks = fileItemMarks(folderHasVault),
-)
+): FilePresentation {
+    val showExt = LocalShowExtensions.current
+    val resolvedTitle = title ?: displayTitle()
+    return remember(this, resolvedTitle, original, tags, code, resolution, folderHasVault, emptyFolder, showExt) {
+        FilePresentation(
+            key = id, name = FileItemName(resolvedTitle, original, name), visual = fileVisual(emptyFolder),
+            metadata = metaParts(), tags = tags, code = code, resolution = resolution,
+            marks = fileItemMarks(folderHasVault),
+        )
+    }
+}
 
 internal fun FileStat.fileItemMarks(folderHasVault: Boolean): Set<FileItemMark> = buildSet {
     if (isImportPreview) add(FileItemMark.ImportPreview)

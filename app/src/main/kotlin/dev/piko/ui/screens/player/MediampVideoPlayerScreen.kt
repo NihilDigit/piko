@@ -30,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import dev.piko.data.auth.PlayerGestureDefaults
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.setValue
@@ -220,37 +221,43 @@ fun MediampVideoPlayerScreen(
             )
         }
     }
-    LaunchedEffect(
-        mediaSession,
-        state.isPlaying,
-        state.isLoading,
-        state.positionMillis / 1_000L,
-        state.playbackSpeed,
-        state.previousEntry != null,
-        state.nextEntry != null,
-        state.isImage,
-    ) {
-        if (!state.isImage) {
-            var actions = PlaybackState.ACTION_PLAY or
-                PlaybackState.ACTION_PAUSE or
-                PlaybackState.ACTION_PLAY_PAUSE or
-                PlaybackState.ACTION_STOP or
-                PlaybackState.ACTION_SEEK_TO or
-                PlaybackState.ACTION_FAST_FORWARD or
-                PlaybackState.ACTION_REWIND
-            if (state.previousEntry != null) actions = actions or PlaybackState.ACTION_SKIP_TO_PREVIOUS
-            if (state.nextEntry != null) actions = actions or PlaybackState.ACTION_SKIP_TO_NEXT
-            val playbackState = when {
-                state.isLoading -> PlaybackState.STATE_BUFFERING
-                state.isPlaying -> PlaybackState.STATE_PLAYING
-                else -> PlaybackState.STATE_PAUSED
-            }
-            mediaSession.setPlaybackState(
-                PlaybackState.Builder()
-                    .setActions(actions)
-                    .setState(playbackState, state.positionMillis.coerceAtLeast(0L), state.playbackSpeed ?: 1f)
-                    .build(),
+    LaunchedEffect(mediaSession, state) {
+        snapshotFlow {
+            Triple(
+                state.isPlaying,
+                state.isLoading,
+                state.positionMillis / 1_000L,
+            ) to Triple(
+                state.playbackSpeed,
+                (state.previousEntry != null) to (state.nextEntry != null),
+                state.isImage,
             )
+        }.collect { (playInfo, extraInfo) ->
+            val (playing, loading, posSeconds) = playInfo
+            val (speed, navFlags, isImg) = extraInfo
+            val (hasPrev, hasNext) = navFlags
+            if (!isImg) {
+                var actions = PlaybackState.ACTION_PLAY or
+                    PlaybackState.ACTION_PAUSE or
+                    PlaybackState.ACTION_PLAY_PAUSE or
+                    PlaybackState.ACTION_STOP or
+                    PlaybackState.ACTION_SEEK_TO or
+                    PlaybackState.ACTION_FAST_FORWARD or
+                    PlaybackState.ACTION_REWIND
+                if (hasPrev) actions = actions or PlaybackState.ACTION_SKIP_TO_PREVIOUS
+                if (hasNext) actions = actions or PlaybackState.ACTION_SKIP_TO_NEXT
+                val playbackState = when {
+                    loading -> PlaybackState.STATE_BUFFERING
+                    playing -> PlaybackState.STATE_PLAYING
+                    else -> PlaybackState.STATE_PAUSED
+                }
+                mediaSession.setPlaybackState(
+                    PlaybackState.Builder()
+                        .setActions(actions)
+                        .setState(playbackState, (posSeconds * 1_000L).coerceAtLeast(0L), speed ?: 1f)
+                        .build(),
+                )
+            }
         }
     }
 

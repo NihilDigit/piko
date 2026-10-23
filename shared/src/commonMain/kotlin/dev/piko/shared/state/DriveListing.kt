@@ -415,7 +415,9 @@ fun buildDriveItems(
         val attachments = block.id.startsWith(ATTACHMENT_BLOCK_PREFIX)
         !attachments && (block.id == OTHERS_BLOCK_ID || block.fileIds.size <= FLAT_BLOCK_MAX || untitled)
     }
-    val flatIds = flat.flatMap { it.fileIds }.sortedBy { id -> files.indexOfFirst { it.id == id } }
+    val positionById = HashMap<String, Int>(files.size * 2)
+    files.forEachIndexed { index, file -> positionById.putIfAbsent(file.id, index) }
+    val flatIds = flat.flatMap { it.fileIds }.sortedBy { id -> positionById[id] ?: -1 }
     val flatWorks = flat.filter { it.id != OTHERS_BLOCK_ID }.flatMap { it.fileIds }.toSet()
     val blocks = grouped + listOfNotNull(secondaryBlock)
     val withHeaders = blocks.size > 1 || (blocks.isNotEmpty() && flatIds.isNotEmpty())

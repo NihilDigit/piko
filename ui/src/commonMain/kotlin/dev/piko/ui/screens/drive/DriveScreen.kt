@@ -800,9 +800,13 @@ fun DriveScreen(
     var isFabMenuExpanded by rememberSaveable { mutableStateOf(false) }
     BackHandler(enabled = acceptsNavigation && isFabMenuExpanded) { isFabMenuExpanded = false }
 
-    val displayedFiles = if (galleryActive) {
-        (if (galleryRecursive) gallery.files else state.displayedFiles).filter { it.isPlayableVideo() && !it.isUploading }
-    } else state.displayedFiles
+    val displayedFiles by remember(galleryActive, galleryRecursive, gallery, state) {
+        derivedStateOf {
+            if (galleryActive) {
+                (if (galleryRecursive) gallery.files else state.displayedFiles).filter { it.isPlayableVideo() && !it.isUploading }
+            } else state.displayedFiles
+        }
+    }
     val latestDisplayedFiles by rememberUpdatedState(displayedFiles)
     fun openSelectionActions() {
         selectionActionTargetIds = latestDisplayedFiles.filter { it.id in state.selectedFileIds }.mapTo(LinkedHashSet()) { it.id }
@@ -830,12 +834,20 @@ fun DriveScreen(
     val selectedIdSet by remember { derivedStateOf { state.selectedFileIds.toSet() } }
     LaunchedEffect(activeFolderId) { commandFile = null; locatedFileId = null }
     // 命令栏与剪切、复制快捷键作用的条目：多选时是选中的几项，否则是 commandFile（已不在列表里的不算）
-    val commandTargets: List<FileStat> = if (state.isSelectionMode) {
-        displayedFiles.filter { it.id in selectedIdSet }
-    } else {
-        listOfNotNull(commandFile?.let { current -> displayedFiles.firstOrNull { it.id == current.id } })
+    val commandTargets: List<FileStat> by remember(state, displayedFiles) {
+        derivedStateOf {
+            if (state.isSelectionMode) {
+                displayedFiles.filter { it.id in selectedIdSet }
+            } else {
+                listOfNotNull(commandFile?.let { current -> displayedFiles.firstOrNull { it.id == current.id } })
+            }
+        }
     }
-    val selectedFeedVideos = if (state.isSelectionMode) commandTargets.filter { it.isPlayableVideo() && !it.isUploading && !it.isImportPreview } else emptyList()
+    val selectedFeedVideos by remember(state) {
+        derivedStateOf {
+            if (state.isSelectionMode) commandTargets.filter { it.isPlayableVideo() && !it.isUploading && !it.isImportPreview } else emptyList()
+        }
+    }
     fun openSelectedFeed(files: List<FileStat>) {
         if (feedBlockedReason != null) return
         val videos = files.filter { it.isPlayableVideo() && !it.isUploading && !it.isImportPreview }

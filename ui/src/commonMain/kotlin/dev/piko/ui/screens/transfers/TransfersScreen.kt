@@ -70,6 +70,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -444,16 +445,20 @@ fun TransfersScreen(
     // 眼前列出的先后，连选与全选按它。收起的「文件已删除」组不在其中，展开的文件夹下载连同其中的文件
     val selectionActive = state.selectedKeys.isNotEmpty()
     val checkboxActive = state.checkboxMode
-    val liveSections = state.sectionsOf(state.filter)
+    val liveSections by remember(state) { derivedStateOf { state.sectionsOf(state.filter) } }
     val frozenOrder = remember(state.filter, selectionActive) { if (selectionActive) TaskListOrder(liveSections) else null }
     val currentSections = frozenOrder?.apply(liveSections) ?: liveSections
     // 未手动切换时，有待处理或在途工作就收起历史；每个类别保留自己的展开选择。
     val completedExpansion = remember { androidx.compose.runtime.mutableStateMapOf<TransferKind, Boolean>() }
     fun completedExpanded(kind: TransferKind, sections: TransferSections) = completedExpansion[kind]
         ?: (sections.needsAttention.isEmpty() && sections.inProgress.isEmpty())
-    val visibleOrder = (currentSections.needsAttention + currentSections.inProgress +
-        (if (completedExpanded(state.filter, currentSections)) currentSections.completed else emptyList()) +
-        if (deletedExpanded) currentSections.outputDeleted else emptyList()).withBatchChildren(expandedBatches).map { it.key }
+    val visibleOrder by remember(state, currentSections, deletedExpanded, expandedBatches) {
+        derivedStateOf {
+            (currentSections.needsAttention + currentSections.inProgress +
+                (if (completedExpanded(state.filter, currentSections)) currentSections.completed else emptyList()) +
+                if (deletedExpanded) currentSections.outputDeleted else emptyList()).withBatchChildren(expandedBatches).map { it.key }
+        }
+    }
     // 列表的键盘焦点：鼠标按进列表时取得（pageFocusTarget），Delete、Esc 与全选才有处可去
     val listFocus = remember { FocusRequester() }
     fun focusList() = runCatching { listFocus.requestFocus() }
@@ -496,9 +501,9 @@ fun TransfersScreen(
     var taskContentWidth by remember { mutableIntStateOf(0) }
     val taskLayout = TaskRowLayout.forWidth(with(density) { taskContentWidth.toDp() })
     // 相邻分页也会参与组合；行状态不能从当前筛选读取。
-    val rowSections = state.sectionsOf(TransferKind.ALL)
-    val completedKeys = (rowSections.completed + rowSections.outputDeleted).mapTo(HashSet()) { it.key }
-    val attentionKeys = rowSections.needsAttention.mapTo(HashSet()) { it.key }
+    val rowSections by remember(state) { derivedStateOf { state.sectionsOf(TransferKind.ALL) } }
+    val completedKeys by remember(rowSections) { derivedStateOf { (rowSections.completed + rowSections.outputDeleted).mapTo(HashSet()) { it.key } } }
+    val attentionKeys by remember(rowSections) { derivedStateOf { rowSections.needsAttention.mapTo(HashSet()) { it.key } } }
 
     fun pauseOrResumeAction(item: TransferItem): SheetAction? = when {
         state.isPausable(item) -> SheetAction(Icons.Outlined.Pause, "暂停", { state.pause(item) })

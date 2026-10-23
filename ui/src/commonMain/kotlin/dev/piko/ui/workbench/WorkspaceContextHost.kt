@@ -144,11 +144,14 @@ internal fun WorkspaceContextHost(
         if (wide) {
             val workspace = requireNotNull(model.driveWorkspace)
             val files by workspace.tabsFlow.collectAsStateWithLifecycle()
-            val tabs = contexts.map { context ->
-                when (context) {
-                    is WorkspaceContext.File -> files.firstOrNull { it.id == context.id } ?: DriveTab(context.id, emptyList())
-                    is WorkspaceContext.Duplicate -> DriveTab(context.id, listOf(PikoPathBreadcrumb("context:${context.id}", "查重：${context.root.name}")))
-                    is WorkspaceContext.ImportDraft -> DriveTab(context.id, listOf(PikoPathBreadcrumb("context:${context.id}", "添加链接")))
+            val tabs = remember(contexts, files) {
+                val fileById = files.associateBy { it.id }
+                contexts.map { context ->
+                    when (context) {
+                        is WorkspaceContext.File -> fileById[context.id] ?: DriveTab(context.id, emptyList())
+                        is WorkspaceContext.Duplicate -> DriveTab(context.id, listOf(PikoPathBreadcrumb("context:${context.id}", "查重：${context.root.name}")))
+                        is WorkspaceContext.ImportDraft -> DriveTab(context.id, listOf(PikoPathBreadcrumb("context:${context.id}", "添加链接")))
+                    }
                 }
             }
             val shortcut = LocalPikoPlatform.current.shortcutModifier

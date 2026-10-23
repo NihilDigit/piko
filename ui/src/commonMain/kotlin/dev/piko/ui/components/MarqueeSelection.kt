@@ -136,17 +136,20 @@ fun Modifier.marqueeSelection(
                 }
 
                 var autoScroll: Job? = null
-                // Follow actual item displacement, including wheel scrolling handled by the grid.
-                val scrollTracking = launch {
-                    var offsets = gridState.layoutInfo.visibleItemsInfo.associate { it.key to it.offset.y }
-                    while (isActive) {
-                        val visible = gridState.layoutInfo.visibleItemsInfo
-                        visible.firstOrNull { it.key in offsets }?.let {
-                            scrolled += offsets.getValue(it.key) - it.offset.y
-                            if (dragging) update()
+                var scrollTracking: Job? = null
+                fun startScrollTracking() {
+                    if (scrollTracking != null) return
+                    scrollTracking = launch {
+                        var offsets = gridState.layoutInfo.visibleItemsInfo.associate { it.key to it.offset.y }
+                        while (isActive) {
+                            val visible = gridState.layoutInfo.visibleItemsInfo
+                            visible.firstOrNull { it.key in offsets }?.let {
+                                scrolled += offsets.getValue(it.key) - it.offset.y
+                                if (dragging) update()
+                            }
+                            offsets = visible.associate { it.key to it.offset.y }
+                            delay(FRAME_MS)
                         }
-                        offsets = visible.associate { it.key to it.offset.y }
-                        delay(FRAME_MS)
                     }
                 }
                 var releasedOnChild = false
@@ -166,6 +169,7 @@ fun Modifier.marqueeSelection(
                         if (!dragging && (pointer - start).getDistance() > slop) {
                             dragging = true
                             releaseItemFocus()
+                            startScrollTracking()
                         }
                         if (!dragging) continue
                         change.consume()
@@ -183,7 +187,7 @@ fun Modifier.marqueeSelection(
                     }
                 } finally {
                     autoScroll?.cancel()
-                    scrollTracking.cancel()
+                    scrollTracking?.cancel()
                     box = null
                 }
                 // 按在条目上没拖动是点了那一项，由条目自己处理，不算点了空白；标题行里的按钮同理

@@ -92,7 +92,13 @@ class FileClipCache(
                     output.writeLong(record.sliceStartMs)
                 }
                 val records = recordDirectory.listFiles { it.isFile && !it.name.endsWith(".tmp") } ?: return@runCatching
-                records.sortedBy { it.lastModified() }.take((records.size - MAX_RECORDS).coerceAtLeast(0)).forEach { it.delete() }
+                val excess = records.size - MAX_RECORDS
+                if (excess > 0) {
+                    records.map { it to it.lastModified() }
+                        .sortedBy { it.second }
+                        .take(excess)
+                        .forEach { it.first.delete() }
+                }
             }.onFailure { PikoLog.w(TAG, "切片记录写盘失败", it) }
             Unit
         }
@@ -103,12 +109,13 @@ class FileClipCache(
      * 每写一块都要把上千个块文件列一遍、排一遍序，还持着锁；缓存满了之后，实验里取开头的吞吐掉了约三成（2026-09-28，piko-cli bench --store）。
      */
     private fun evictBlocks(): Long {
-        val files = blockDirectory.walkTopDown().filter { it.isFile && !it.name.endsWith(".tmp") }.toList()
-        var total = files.sumOf { it.length() }
+        val files = blockDirectory.walkTopDown().filter { it.isFile && !it.name.endsWith(".tmp") }
+            .map { Triple(it, it.length(), it.lastModified()) }
+            .toList()
+        var total = files.sumOf { it.second }
         val target = (capBytes * EVICT_TO).toLong()
-        for (file in files.sortedBy { it.lastModified() }) {
+        for ((file, size, _) in files.sortedBy { it.third }) {
             if (total <= target) break
-            val size = file.length()
             if (file.delete()) total -= size
         }
         blockDirectory.listFiles()?.filter { it.isDirectory && it.list()?.isEmpty() == true }?.forEach { it.delete() }
@@ -133,7 +140,7 @@ class FileClipCache(
 
     private fun recordFile(key: String) = File(recordDirectory, safe(key))
 
-    private fun safe(name: String) = name.replace(Regex("[^A-Za-z0-9_-]"), "_")
+    private fun safe(name: String) = name.replace(UNSAFE_NAME_CHARS, "_")
 
     private companion object {
         const val TAG = "Clips"
@@ -142,5 +149,6 @@ class FileClipCache(
         const val DEFAULT_CAP_BYTES = 300L * 1024 * 1024
         const val MAX_RECORDS = 4096
         const val EVICT_TO = 0.8
+        val UNSAFE_NAME_CHARS = Regex("[^A-Za-z0-9_-]")
     }
 }

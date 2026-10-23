@@ -44,6 +44,7 @@ internal class GalleryCanvasLayout(private var restoredAnchor: GalleryAnchor? = 
         private set
 
     private var configuration: Configuration? = null
+    private var rawItemsRef: List<GalleryLayoutItem>? = null
     private var items: List<GalleryLayoutItem> = emptyList()
     private val fixedShapes = LinkedHashMap<String, GalleryShape>()
     private var lanes: List<Lane> = emptyList()
@@ -88,25 +89,28 @@ internal class GalleryCanvasLayout(private var restoredAnchor: GalleryAnchor? = 
     ): List<GalleryPlacement> {
         require(columns > 0 && width > 0 && height > 0 && gap >= 0)
         val next = Configuration(columns, width, height, gap)
-        if (!hasScrolled) {
-            fixedShapes.clear()
-            items.forEach { fixedShapes[it.id] = it.shape }
-        } else {
-            items.forEach { if (it.id !in fixedShapes) fixedShapes[it.id] = it.shape }
-        }
-        val effectiveItems = items.map { it.copy(shape = fixedShapes[it.id] ?: it.shape) }
-        if (next != configuration) {
-            val anchor = anchor() ?: restoredAnchor
-            configuration = next
-            this.items = effectiveItems
-            lanes = buildLanes(effectiveItems, next)
-            if (anchor != null) restore(anchor)
-            restoredAnchor = null
-        } else if (this.items != effectiveItems || lanes.isEmpty()) {
-            val anchor = if (!hasScrolled) anchor() else null
-            this.items = effectiveItems
-            lanes = buildLanes(effectiveItems, next)
-            if (anchor != null) restore(anchor)
+        if (items !== rawItemsRef || next != configuration || lanes.isEmpty()) {
+            rawItemsRef = items
+            if (!hasScrolled) {
+                fixedShapes.clear()
+                items.forEach { fixedShapes[it.id] = it.shape }
+            } else {
+                items.forEach { if (it.id !in fixedShapes) fixedShapes[it.id] = it.shape }
+            }
+            val effectiveItems = items.map { it.copy(shape = fixedShapes[it.id] ?: it.shape) }
+            if (next != configuration) {
+                val anchor = anchor() ?: restoredAnchor
+                configuration = next
+                this.items = effectiveItems
+                lanes = buildLanes(effectiveItems, next)
+                if (anchor != null) restore(anchor)
+                restoredAnchor = null
+            } else if (this.items != effectiveItems || lanes.isEmpty()) {
+                val anchor = if (!hasScrolled) anchor() else null
+                this.items = effectiveItems
+                lanes = buildLanes(effectiveItems, next)
+                if (anchor != null) restore(anchor)
+            }
         }
         scrollOffset = scrollOffset.coerceIn(0.0, maxScrollOffset)
         lastFrame = lanes.flatMapIndexed { column, lane ->

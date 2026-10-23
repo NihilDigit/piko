@@ -25,6 +25,7 @@ import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -164,11 +165,19 @@ internal fun GalleryCanvas(
     val prefetchScope = rememberCoroutineScope()
     val prefetchLimit = remember(state) { Semaphore(COVER_PREFETCH_CONCURRENCY) }
     val platformContext = LocalPlatformContext.current
-    val coverFiles = files.filter { it.id !in failedCovers }
-    val descriptors = coverFiles.distinctBy { it.id }.map { file ->
-        GalleryLayoutItem(file.id, GalleryShape.nearest((aspectRatio(file) ?: ratios[file.id])?.toDouble()))
+    val coverFiles by remember(files) {
+        derivedStateOf { files.filter { it.id !in failedCovers } }
     }
-    val byId = coverFiles.associateBy { it.id }
+    val byId by remember(coverFiles) {
+        derivedStateOf { coverFiles.associateBy { it.id } }
+    }
+    val descriptors by remember(coverFiles, aspectRatio) {
+        derivedStateOf {
+            coverFiles.distinctBy { it.id }.map { file ->
+                GalleryLayoutItem(file.id, GalleryShape.nearest((aspectRatio(file) ?: ratios[file.id])?.toDouble()))
+            }
+        }
+    }
     val onVisible by rememberUpdatedState(onVisibleFilesChanged)
     LaunchedEffect(state, failedCovers.size) {
         snapshotFlow { state.visibleFileIds + failedCovers }.collect { onVisible(it) }

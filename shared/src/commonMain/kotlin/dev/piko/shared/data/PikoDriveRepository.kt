@@ -541,7 +541,33 @@ open class PikoDriveRepository(
         if (entries.isEmpty() && visible.none(VaultStore::looksLikeManifest)) return sortFiles(visible, sortOrder, folderId)
         val real = visible.filterNot(VaultStore::looksLikeManifest)
         val restoredMetadata = entries.filterNot { it.isArchived }
-        val enriched = real.map { file -> restoredMetadata.firstOrNull { it.matches(file) }?.enrich(file) ?: file }
+        val enriched = if (restoredMetadata.isEmpty()) {
+            real
+        } else {
+            val byFileId = HashMap<String, Pair<Int, VaultEntry>>()
+            val byName = HashMap<String, Pair<Int, VaultEntry>>()
+            restoredMetadata.forEachIndexed { index, entry ->
+                val gcidKey = "${entry.gcid.uppercase()}:${entry.size}"
+                val fileId = entry.restoredFileId
+                if (!fileId.isNullOrEmpty()) {
+                    byFileId.putIfAbsent("$gcidKey|id:$fileId", index to entry)
+                }
+                byName.putIfAbsent("$gcidKey|name:${entry.name}", index to entry)
+            }
+            real.map { file ->
+                if (file.isFolder) return@map file
+                val gcidKey = "${file.hash.uppercase()}:${file.sizeBytes}"
+                val matchById = byFileId["$gcidKey|id:${file.id}"]
+                val matchByName = byName["$gcidKey|name:${file.name}"]
+                val matched = when {
+                    matchById != null && matchByName != null -> if (matchById.first <= matchByName.first) matchById.second else matchByName.second
+                    matchById != null -> matchById.second
+                    matchByName != null -> matchByName.second
+                    else -> null
+                }
+                matched?.enrich(file) ?: file
+            }
+        }
         return sortFiles(enriched + entries.filter { it.isArchived }.map { it.toFileStat(folderId) }, sortOrder, folderId)
     }
 
