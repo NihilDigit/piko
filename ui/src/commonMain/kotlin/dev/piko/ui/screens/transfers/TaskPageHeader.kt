@@ -44,7 +44,7 @@ internal fun TaskPageHeader(state: TransfersState, selectedCount: Int, actions: 
             navigationIcon = if (selectedCount > 0) ({ TooltipIconButton(Icons.Outlined.Close, "取消选择", state::clearSelection) }) else null,
             actions = buildList {
                 addAll(actions.mapIndexed { index, action ->
-                    iconBarItem(action.icon, action.label, action.onClick, priority = PinnedPriority, destructive = action.destructive, key = "${action.label}:$index")
+                    iconBarItem(action.icon, action.label, action.onClick, priority = 50 - index, destructive = action.destructive, key = "${action.label}:$index")
                 })
                 if (selectedCount == 0) {
                     add(BarItem(key = "snail", priority = PinnedPriority) { SnailModeToggle() })

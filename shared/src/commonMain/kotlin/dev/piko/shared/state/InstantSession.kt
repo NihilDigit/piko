@@ -30,6 +30,9 @@ class InstantDraft internal constructor(
         private set
 
     val endNeedsConfirm: Boolean
+        get() = !state.hasLocalSave && state.shareSave?.isSaving != true && state.hasPickedFiles
+
+    val hasUncommittedWork: Boolean
         get() = !state.hasLocalSave && state.shareSave?.isSaving != true && (!state.isBlank || state.hasPickedFiles)
 
     fun close() {
@@ -88,6 +91,7 @@ class InstantSession(
     private var legacyDraft by mutableStateOf<InstantDraft?>(null)
     val state: InstantSheetState? get() = legacyDraft?.takeUnless { it.isClosed }?.state
     val endNeedsConfirm: Boolean get() = legacyDraft?.endNeedsConfirm == true
+    val hasUncommittedWork: Boolean get() = legacyDraft?.hasUncommittedWork == true
 
     private val _pendingCompletions = MutableStateFlow<List<LinkSaveCompletion>>(emptyList())
     val pendingCompletions: StateFlow<List<LinkSaveCompletion>> = _pendingCompletions.asStateFlow()

@@ -1255,8 +1255,16 @@ fun DriveScreen(
         snackbarHostState.showSnackbar("正在读取压缩包里的文件…", duration = SnackbarDuration.Indefinite)
     }
     LaunchedEffect(instantState) {
-        instantState?.previewRequests?.collect { req ->
-            if (addLinkInSidePanel && !addLink.isExpanded) navigateToPlayer(FileStat(id = req.fileId, name = req.fileName), emptyList())
+        if (instantState == null) return@LaunchedEffect
+        launch {
+            instantState.previewRequests.collect { req ->
+                if (addLinkInSidePanel && !addLink.isExpanded) navigateToPlayer(FileStat(id = req.fileId, name = req.fileName), emptyList())
+            }
+        }
+        launch {
+            instantState.messages.collect { msg ->
+                if (addLinkInSidePanel && !addLink.isExpanded) snackbarHostState.showSnackbar(msg, withDismissAction = true)
+            }
         }
     }
     val openFile: (FileStat) -> Unit = { file ->
@@ -2409,8 +2417,8 @@ fun DriveScreen(
                                     DuplicatesEmptyState(
                                         finder = duplicateState,
                                         selectedKind = duplicateReport.kind,
-                                        onLeave = ::goHome,
-                                        canLeave = twoPane,
+                                        onLeave = onCloseContext ?: ::goHome,
+                                        canLeave = twoPane || contexts != null,
                                         cleaning = state.trashProgress != null,
                                         modifier = Modifier.weight(1f),
                                     )

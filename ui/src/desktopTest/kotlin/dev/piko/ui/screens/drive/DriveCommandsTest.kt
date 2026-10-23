@@ -71,11 +71,12 @@ class DriveCommandsTest {
     }
     @Test
     fun `selected videos open a fixed feed from browsable places`() {
+        val nonFeedPlaces = setOf(CommandPlace.TRASH, CommandPlace.ARCHIVE, CommandPlace.IMPORT_PREVIEW)
         for (place in CommandPlace.entries) {
             val selected = inputs(place, selecting = true, selectedVideoCount = 2)
-            assertEquals(place != CommandPlace.TRASH && place != CommandPlace.ARCHIVE,
+            assertEquals(place !in nonFeedPlaces,
                 driveCommands(selected).gallery, "$place")
-            assertEquals(place != CommandPlace.TRASH && place != CommandPlace.ARCHIVE,
+            assertEquals(place !in nonFeedPlaces,
                 driveCommands(selected).feed, "$place")
             assertEquals(false, driveCommands(inputs(place, selecting = true, selectedVideoCount = 2, feedSupported = false)).feed)
             assertEquals(false, driveCommands(inputs(place, selecting = true)).gallery)

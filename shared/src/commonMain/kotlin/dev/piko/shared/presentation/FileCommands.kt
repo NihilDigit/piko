@@ -2,6 +2,8 @@ package dev.piko.shared.presentation
 
 import dev.piko.shared.data.ArchiveEntryId
 import dev.piko.shared.data.ArchiveLocation
+import dev.piko.shared.data.ImportPreviewEntryId
+import dev.piko.shared.data.ImportPreviewLocation
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.VaultEntry
 import dev.piko.shared.data.isDriveFolderId
@@ -63,7 +65,10 @@ class FileCommands(
     fun availability(command: FileWriteCommand): ActionAvailability {
         fun blocked(reason: String) = ActionAvailability.Blocked(reason)
         if (!acceptsActions() || account == null || repository.currentAccount != account) return blocked("当前浏览上下文已结束，请重新打开")
-        if (command.ids.any { it.isBlank() || VaultEntry.isVaulted(it) || ArchiveEntryId.isEntry(it) || ArchiveLocation.of(it) != null }) {
+        if (command.ids.any {
+                it.isBlank() || VaultEntry.isVaulted(it) || ArchiveEntryId.isEntry(it) ||
+                    ArchiveLocation.of(it) != null || ImportPreviewEntryId.isEntry(it) || ImportPreviewLocation.of(it) != null
+            }) {
             return blocked("此操作只适用于网盘中的真实文件")
         }
         if (command !is FileWriteCommand.CreateFolder && command.ids.isEmpty()) return blocked("请先选择文件")

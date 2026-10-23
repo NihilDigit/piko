@@ -99,13 +99,12 @@ class FolderHistorySmokeTest {
         // 标签列表里第二个带着它离开时的位置
         assertEquals(listOf(root, docs, PikoPathBreadcrumb("E", "SPs")), repoWorkspace.tabsFlow.value.first { it.id == second }.stack)
 
-        assertFalse(repoWorkspace.closeTab(first))
-        assertEquals(first, repoWorkspace.activeTabId.value)
-        assertEquals(listOf(root), repoWorkspace.folderStackFlow.value)
-        repoWorkspace.switchTab(second)
-        assertTrue(repoWorkspace.closeTab(second))
-        assertEquals(first, repoWorkspace.activeTabId.value)
-        assertEquals(listOf(root), repoWorkspace.folderStackFlow.value)
+        // 存在多个文件标签时可以关闭第一个，只剩最后一个时不能关闭
+        assertTrue(repoWorkspace.closeTab(first))
+        assertEquals(second, repoWorkspace.activeTabId.value)
+        assertEquals(listOf(root, docs, PikoPathBreadcrumb("E", "SPs")), repoWorkspace.folderStackFlow.value)
+        assertFalse(repoWorkspace.closeTab(second))
+        assertEquals(second, repoWorkspace.activeTabId.value)
 
     }
 

@@ -250,6 +250,7 @@ fun main(args: Array<String>) {
             .collectAsState(initial = services.hasBackgroundWork() || services.hasDesktopResumeContext())
         // 执行结束但仍有待输入、报告或未知结果时保留托盘，避免自动退出丢失恢复入口。
         var isInBackground by remember { mutableStateOf(false) }
+        var manualTraySession by remember { mutableStateOf(false) }
         var isMainWindowFocused by remember { mutableStateOf(true) }
         var askCloseBehavior by remember { mutableStateOf(false) }
 
@@ -257,8 +258,11 @@ fun main(args: Array<String>) {
         WorkNotifications(services) { isInBackground || !isMainWindowFocused }
 
         val closeToTray = platform.closeToTray?.enabled?.collectAsState()?.value == true
-        LaunchedEffect(isInBackground, keepSessionAlive, closeToTray) {
-            if (isInBackground && !closeToTray && !keepSessionAlive && !services.hasBackgroundWork() && !services.hasDesktopResumeContext()) exitApplication()
+        LaunchedEffect(isInBackground) {
+            if (!isInBackground) manualTraySession = false
+        }
+        LaunchedEffect(isInBackground, manualTraySession, keepSessionAlive, closeToTray) {
+            if (isInBackground && !manualTraySession && !closeToTray && !keepSessionAlive && !services.hasBackgroundWork() && !services.hasDesktopResumeContext()) exitApplication()
         }
         // 更新脚本等本进程退出后才替换文件。下载会被中断，更新对话框已先征得用户同意
         LaunchedEffect(Unit) {
@@ -277,7 +281,8 @@ fun main(args: Array<String>) {
             )
         }
 
-        val hideToTray = {
+        val hideToTray: (manual: Boolean) -> Unit = { manual ->
+            manualTraySession = manual
             isInBackground = true
             // Toast 同步等系统结果，不能压在界面线程上
             Thread {
@@ -286,7 +291,7 @@ fun main(args: Array<String>) {
                     isLinux -> LinuxDesktop.backgroundHint()
                     else -> "可从通知区域图标重新打开"
                 }
-                if (closeToTray) showSystemNotification("Piko 已最小化到系统托盘", "$reopenHint；可从托盘菜单退出程序。")
+                if (closeToTray || manual) showSystemNotification("Piko 已最小化到系统托盘", "$reopenHint；可从托盘菜单退出程序。")
                 else if (services.hasBackgroundWork()) showSystemNotification("Piko 在后台继续处理", "工作完成后自动退出；需你处理的结果会保留，$reopenHint。")
                 else showSystemNotification("Piko 已保留待处理工作", "重新打开窗口可继续处理，$reopenHint。")
             }.start()
@@ -294,7 +299,7 @@ fun main(args: Array<String>) {
 
         val closeMainWindow = {
             if (services.hasBackgroundWork() || services.hasDesktopResumeContext() || closeToTray) {
-                hideToTray()
+                hideToTray(closeToTray)
             } else if (platform.closeToTray != null && settings.get(CLOSE_BEHAVIOR_ASKED_KEY) != "true") {
                 askCloseBehavior = true
             } else {
@@ -400,7 +405,7 @@ fun main(args: Array<String>) {
                                             settings.set(CLOSE_BEHAVIOR_ASKED_KEY, "true")
                                             platform.closeToTray?.set(true)
                                         }
-                                        hideToTray()
+                                        hideToTray(true)
                                     },
                                 )
                             },

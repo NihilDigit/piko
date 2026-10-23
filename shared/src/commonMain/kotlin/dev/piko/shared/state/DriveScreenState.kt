@@ -606,20 +606,70 @@ class DriveScreenState(
                 }.collectLatest {
                     val folderId = activeFolderId
                     val draft = instantSession.state
+                    val tabNav = navigation as? dev.piko.shared.presentation.TabNavigation
+                    val ownerTab = addLinkOwnerTabId()
+                    val wrongTab = tabNav != null && ownerTab != null && tabNav.tabId != ownerTab
                     val previewLocations = activeFolderStack.mapNotNull { ImportPreviewLocation.of(it.id) }
                     val inPreview = previewLocations.isNotEmpty() || archiveView?.archiveId in previewArchiveIds
-                    val invalidPreview = inPreview && (draft == null || previewLocations.any { location ->
+                    if (inPreview && !wrongTab && draft != null && draft.willCreateFolder && draft.folderNameToSave.isNotBlank()) {
+                        val currentStack = navigation.folderStackFlow.value
+                        val firstPreviewIdx = currentStack.indexOfFirst { ImportPreviewLocation.of(it.id) != null }
+                        if (firstPreviewIdx >= 0) {
+                            val firstLoc = requireNotNull(ImportPreviewLocation.of(currentStack[firstPreviewIdx].id))
+                            val oldTop = firstLoc.path.trim('/').substringBefore('/')
+                            val newTop = draft.folderNameToSave.trim('/')
+                            if (oldTop.isNotEmpty() && newTop.isNotEmpty() && oldTop != newTop &&
+                                draft.projectedSaveEntries.any { (_, resolved) ->
+                                    val clean = resolved.path.trim('/')
+                                    clean == newTop || clean.startsWith("$newTop/")
+                                }
+                            ) {
+                                val rewritten = currentStack.mapIndexed { idx, crumb ->
+                                    val loc = ImportPreviewLocation.of(crumb.id) ?: return@mapIndexed crumb
+                                    val cleanPath = loc.path.trim('/')
+                                    val updatedPath = when {
+                                        cleanPath == oldTop -> newTop
+                                        cleanPath.startsWith("$oldTop/") -> "$newTop/${cleanPath.removePrefix("$oldTop/")}"
+                                        else -> cleanPath
+                                    }
+                                    val newLoc = ImportPreviewLocation(loc.targetFolderId, updatedPath)
+                                    val newName = if (idx == firstPreviewIdx && cleanPath == oldTop) newTop else crumb.name
+                                    PikoPathBreadcrumb(newLoc.id, newName)
+                                }
+                                if (rewritten != currentStack) {
+                                    navigation.restoreFolderStack(rewritten)
+                                    return@collectLatest
+                                }
+                            }
+                        }
+                    }
+                    val invalidPreview = inPreview && (wrongTab || draft == null || previewLocations.any { location ->
                         val subPath = location.path.trim('/')
                         location.targetFolderId != draft.target?.id || draft.projectedSaveEntries.none { (_, resolved) ->
                             val clean = resolved.path.trim('/')
                             clean == subPath || clean.startsWith("$subPath/")
                         }
                     })
-                    if (draft == null) previewArchiveIds.clear()
+                    if (draft == null || wrongTab) previewArchiveIds.clear()
                     if (invalidPreview) {
-                        val outside = navigation.folderStackFlow.value.outsideArchives()
-                        if (outside.isNotEmpty() && outside.size < navigation.folderStackFlow.value.size) {
-                            navigation.popToBreadcrumb(outside.size - 1)
+                        val currentStack = navigation.folderStackFlow.value
+                        val validIdx = if (!wrongTab && draft != null) {
+                            currentStack.indexOfLast { crumb ->
+                                val loc = ImportPreviewLocation.of(crumb.id)
+                                if (loc == null) ArchiveLocation.of(crumb.id) == null
+                                else {
+                                    val subPath = loc.path.trim('/')
+                                    loc.targetFolderId == draft.target?.id && draft.projectedSaveEntries.any { (_, resolved) ->
+                                        val clean = resolved.path.trim('/')
+                                        clean == subPath || clean.startsWith("$subPath/")
+                                    }
+                                }
+                            }
+                        } else {
+                            currentStack.outsideArchives().size - 1
+                        }
+                        if (validIdx in 0 until currentStack.lastIndex) {
+                            navigation.popToBreadcrumb(validIdx)
                         }
                         return@collectLatest
                     }

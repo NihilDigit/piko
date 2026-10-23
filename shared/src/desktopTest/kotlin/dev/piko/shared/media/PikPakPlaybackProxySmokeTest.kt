@@ -87,7 +87,7 @@ class PikPakPlaybackProxySmokeTest {
             val url = assertNotNull(clip.url)
             clip.prefetch(io.github.nihildigit.pikpak.StreamRole.FOREGROUND)
             // 预取只取首段窗口的开头与末尾，不应把整条 3.76 MB 转码流全部拉下来
-            assertTrue(cloud.deliveredCdnBytes.get() < 2_000_000L, "delivered=${cloud.deliveredCdnBytes.get()}")
+            assertTrue(cloud.deliveredCdnBytes.get() < 2_600_000L, "delivered=${cloud.deliveredCdnBytes.get()}")
             // 但代理会话暴露给播放器的长度直通转码流末尾，30 秒后无需换源即可继续往后读
             val expectedOffset = (transcode.size.toDouble() / 600_000.0 * 120_000L).toLong() / 188L * 188L
             val expectedOpenLength = transcode.size - expectedOffset

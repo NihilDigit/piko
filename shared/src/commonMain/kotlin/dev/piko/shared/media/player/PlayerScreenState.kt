@@ -96,7 +96,10 @@ class PlayerScreenState(
     val cropRegion: VideoCropRegion? get() = backend.cropRegion
     val videoAspect: Float? by derivedStateOf {
         backend.videoAspect ?: mediaInfo?.let { info ->
-            if (info.width > 0 && info.height > 0) info.width.toFloat() / info.height else null
+            if (info.width > 0 && info.height > 0) {
+                if (rotationDegrees % 180 == 0) info.width.toFloat() / info.height
+                else info.height.toFloat() / info.width
+            } else null
         }
     }
 

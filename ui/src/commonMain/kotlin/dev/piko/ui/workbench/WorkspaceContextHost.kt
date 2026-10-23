@@ -205,10 +205,17 @@ internal fun WorkspaceContextDialogs(model: WorkspaceViewModel) {
     val duplicate = context is WorkspaceContext.Duplicate
     val scanning = model.duplicateSessions[context.id]?.state?.isScanning == true
     val name = workspaceTitle(model, context)
+    val hasAddLinkOnTab = context is WorkspaceContext.File && model.hasUncommittedAddLinkOnTab(context.id)
+    val hasGalleryOnTab = context is WorkspaceContext.File && model.hasGalleryOnTab(context.id)
+    val fileCloseText = when {
+        hasAddLinkOnTab && hasGalleryOnTab -> "关闭此标签页将退出瀑布流浏览，并一并放弃当前输入的链接和勾选的文件。"
+        hasGalleryOnTab -> "将退出瀑布流浏览并关闭此标签页，回到文件列表。"
+        else -> "关闭此标签页将一并放弃当前输入的链接和勾选的文件。"
+    }
     PikoDialog(
         onDismissRequest = model::cancelCloseContext,
         title = { Text(if (context is WorkspaceContext.File) "关闭标签页？" else if (duplicate) "关闭查重？" else "关闭草稿？") },
-        text = { Text(if (context is WorkspaceContext.File) "关闭此标签页将一并放弃当前输入的链接和勾选的文件。" else "「$name」" + if (duplicate) (if (scanning) "的扫描将停止，已有结果不再保留。已执行的文件操作不会撤销。" else "的本次查重结果将不再保留。已执行的文件操作不会撤销。")
+        text = { Text(if (context is WorkspaceContext.File) fileCloseText else "「$name」" + if (duplicate) (if (scanning) "的扫描将停止，已有结果不再保留。已执行的文件操作不会撤销。" else "的本次查重结果将不再保留。已执行的文件操作不会撤销。")
             else "中未提交的内容将不再保留。已提交的保存继续执行，结果可在任务页查看。") },
         confirmButton = { PikoDialogConfirm("关闭", model::confirmCloseContext, destructive = true,
             modifier = Modifier.semantics { contentDescription = "确认关闭工作" }) },

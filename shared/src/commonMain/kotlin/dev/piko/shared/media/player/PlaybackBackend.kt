@@ -156,8 +156,14 @@ data class VideoCropRegion(
     val bottom: Float = 0.9f,
     val containerAspect: Float = 0f,
 ) {
-    val width: Float get() = (right - left).coerceIn(0.05f, 1f)
-    val height: Float get() = (bottom - top).coerceIn(0.05f, 1f)
-    val centerX: Float get() = (left + right) * 0.5f
-    val centerY: Float get() = (top + bottom) * 0.5f
+    private val safeLeft: Float get() = if (left.isFinite()) left.coerceIn(0f, 0.95f) else 0.1f
+    private val safeTop: Float get() = if (top.isFinite()) top.coerceIn(0f, 0.95f) else 0.1f
+    private val safeRight: Float get() = if (right.isFinite()) right.coerceIn(safeLeft + 0.05f, 1f) else 0.9f
+    private val safeBottom: Float get() = if (bottom.isFinite()) bottom.coerceIn(safeTop + 0.05f, 1f) else 0.9f
+    val safeContainerAspect: Float get() = if (containerAspect.isFinite() && containerAspect > 0f) containerAspect else 0f
+
+    val width: Float get() = (safeRight - safeLeft).coerceIn(0.05f, 1f)
+    val height: Float get() = (safeBottom - safeTop).coerceIn(0.05f, 1f)
+    val centerX: Float get() = ((safeLeft + safeRight) * 0.5f).coerceIn(0f, 1f)
+    val centerY: Float get() = ((safeTop + safeBottom) * 0.5f).coerceIn(0f, 1f)
 }

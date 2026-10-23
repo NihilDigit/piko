@@ -24,6 +24,7 @@ class AddLinkViewModel private constructor(
     val isExpanded: Boolean get() = state != null && generation != collapsedGeneration
     val hasCollapsedWork: Boolean get() = state?.isBlank == false && !isExpanded
     val discardNeedsConfirm: Boolean get() = draft?.endNeedsConfirm ?: (session?.endNeedsConfirm == true)
+    val tabCloseNeedsConfirm: Boolean get() = draft?.hasUncommittedWork ?: (session?.hasUncommittedWork == true)
     val replacementAvailability: ActionAvailability
         get() = if (draft == null && (state?.isSaving == true || state?.batch?.isSaving == true)) {
             ActionAvailability.Blocked("文件正在保存，完成后才能放弃或换一条链接。可以先收起添加链接。")

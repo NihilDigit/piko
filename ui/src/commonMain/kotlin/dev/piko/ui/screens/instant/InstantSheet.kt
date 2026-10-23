@@ -267,6 +267,9 @@ internal fun InstantSheetContent(
     BoxWithConstraints(Modifier.fillMaxWidth().then(if (inSideSheet || fillHeight) Modifier.fillMaxHeight() else Modifier)) {
         val splitSelection = fillHeight && maxWidth >= 720.dp && maxHeight < 480.dp && batch == null &&
             (shareState != null || state.resolution != null)
+        LaunchedEffect(splitSelection) {
+            if (splitSelection) isTreeMaximized = false
+        }
         @Composable
         fun Footer() {
             if (shareState != null) {

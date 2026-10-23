@@ -304,8 +304,8 @@ internal class MpvPlaybackBackend(
                 }
 
                 PlayerAspectRatio.RegionCrop -> {
-                    val vAspect = videoAspect ?: 16f / 9f
-                    val cAspect = region.containerAspect.takeIf { it > 0f } ?: vAspect
+                    val vAspect = videoAspect?.takeIf { it.isFinite() && it > 0f } ?: (16f / 9f)
+                    val cAspect = region.safeContainerAspect.takeIf { it > 0f } ?: vAspect
                     val fitW = if (cAspect > vAspect) vAspect / cAspect else 1f
                     val fitH = if (cAspect > vAspect) 1f else cAspect / vAspect
                     val scale = maxOf(1f / (fitW * region.width), 1f / (fitH * region.height))
@@ -627,6 +627,9 @@ internal class MpvPlaybackBackend(
     private fun updateVideoAspect() {
         val aspect = rawAspect?.takeIf { it > 0.0 } ?: return
         videoAspect = if (rotateDegrees % 180L == 0L) aspect.toFloat() else (1.0 / aspect).toFloat()
+        if (currentAspectRatio == PlayerAspectRatio.RegionCrop) {
+            setAspectRatio(PlayerAspectRatio.RegionCrop)
+        }
     }
 
     private companion object {

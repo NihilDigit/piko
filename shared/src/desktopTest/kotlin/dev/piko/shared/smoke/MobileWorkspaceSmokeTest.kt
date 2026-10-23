@@ -249,10 +249,10 @@ class MobileWorkspaceSmokeTest {
         val beforeStack = workspace.folderStackFlow.value
         val beforeHistory = workspace.historyFlow.value
         val token = workspace.enterWithToken(listOf(DriveLibrary.HISTORY.crumb))
-        val secondary = workspace.openTab(listOf(root))
+        val draft = workspace.openImportDraftContext()
         assertFalse(workspace.closeTab(workspace.primaryTabId))
         assertEquals(null, workspace.closeContext(workspace.primaryTabId))
-        assertEquals(secondary, workspace.activeContextId.value)
+        assertEquals(draft, workspace.activeContextId.value)
         assertTrue(workspace.canReturnAcross(token))
         assertTrue(workspace.returnAcross(token))
         assertEquals(workspace.primaryTabId, workspace.activeContextId.value)

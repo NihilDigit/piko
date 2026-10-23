@@ -214,10 +214,17 @@ internal fun OngoingWorkSheet(model: WorkspaceViewModel, onDismiss: () -> Unit) 
                         }
                     }
                     if (canClose) {
+                        var swipeRequested by remember { mutableStateOf(false) }
+                        LaunchedEffect(swipeRequested) {
+                            if (swipeRequested) {
+                                swipeRequested = false
+                                model.requestCloseContext(context.id)
+                            }
+                        }
                         val dismissState = rememberSwipeToDismissBoxState(
                             confirmValueChange = { value ->
                                 if (value != SwipeToDismissBoxValue.Settled) {
-                                    model.requestCloseContext(context.id)
+                                    swipeRequested = true
                                 }
                                 false
                             },

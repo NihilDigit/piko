@@ -6,6 +6,8 @@ class DriveBrowserStore(private val create: (Long) -> DriveBrowserSession) {
     private val sessions = mutableMapOf<Long, DriveBrowserSession>()
     private var closed = false
 
+    fun peek(id: Long): DriveBrowserSession? = sessions[id]
+
     fun forTab(id: Long): DriveBrowserSession {
         check(!closed) { "浏览状态容器已释放" }
         return sessions.getOrPut(id) { create(id) }

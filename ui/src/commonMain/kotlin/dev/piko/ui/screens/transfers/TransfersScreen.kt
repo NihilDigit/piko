@@ -858,11 +858,13 @@ fun TransfersScreen(
             dismissButton = { TextButton(onClick = { confirmingClearCompleted = false }) { Text("取消") } },
         )
     }
+    val inlineIslandFilter = with(density) { taskContentWidth.toDp() } >= 820.dp
     PikoScaffold(
         modifier = modifier.fillMaxSize().onPreviewKeyEvent(detailState::handleKey),
         topBar = { TaskPageHeader(state, bulkSelected.size, headerActions) },
         island = IslandPage(
-            header = { TaskIslandHeader(state, bulkSelected.size, headerActions) },
+            header = { TaskIslandHeader(state, bulkSelected.size, headerActions, inlineFilter = inlineIslandFilter) },
+            belowHeader = if (!inlineIslandFilter) ({ TaskIslandSubHeader(state) }) else null,
         ),
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {

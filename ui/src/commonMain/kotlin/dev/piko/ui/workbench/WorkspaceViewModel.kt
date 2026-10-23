@@ -225,15 +225,20 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
         if (closeNeedsConfirmation(id)) pendingCloseId = id else closeContext(id)
     }
 
+    fun hasUncommittedAddLinkOnTab(id: Long): Boolean =
+        services.addLink.ownerTabId == id && services.addLink.state != null && services.addLink.tabCloseNeedsConfirm
+
+    fun hasGalleryOnTab(id: Long): Boolean = tabs.peek(id)?.gallery?.shown == true
+
     private fun closeNeedsConfirmation(id: Long): Boolean {
         val model = importModels[id]
         val draft = model?.state
         val unsubmittedInput = draft != null && !draft.isBlank && !draft.isSaving && draft.batch?.isSaving != true &&
             !draft.hasRetainedInstantAttempt && !draft.hasRetainedShareWork && !draft.hasRetainedOfflineSubmission
-        val duplicate = duplicateSessions[id]?.state
         val isDuplicateContext = contexts.contextsFlow.value.any { it.id == id && it is WorkspaceContext.Duplicate }
-        val hasAddLinkOnTab = services.addLink.ownerTabId == id && services.addLink.state != null && services.addLink.discardNeedsConfirm
-        return model?.discardNeedsConfirm == true || unsubmittedInput || isDuplicateContext || hasAddLinkOnTab
+        val hasAddLinkOnTab = hasUncommittedAddLinkOnTab(id)
+        val hasGalleryOnTab = hasGalleryOnTab(id)
+        return model?.tabCloseNeedsConfirm == true || unsubmittedInput || isDuplicateContext || hasAddLinkOnTab || hasGalleryOnTab
     }
 
     fun requestCloseOtherContexts(keepId: Long) {

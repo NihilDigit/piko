@@ -40,6 +40,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlin.concurrent.Volatile
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.collectLatest
@@ -96,8 +98,9 @@ internal class InstantSharedContext {
     val targetNotice = mutableStateOf<String?>(null)
 
     /** 用户在面板里另选过目标，此后不再跟随网盘页的当前目录。 */
+    @Volatile
     var targetChosen = false
-    val targetHeld = mutableStateOf(false)
+    val targetHeld = MutableStateFlow(false)
 
     // gcid 到 Piko-Temp 里的文件 id。同一会话内再预览、或保存这一项时直接复用；
     // 两条链接里的同一个文件也共用这一份
@@ -766,10 +769,11 @@ class InstantSheetState private constructor(
         folderNameEdited = true
     }
 
-    /** 更换本次的保存目标；左侧网盘若在别处再导航，followDriveFolder 仍继续跟随。 */
+    /** 更换本次的保存目标；用户显式指定后不再被 followDriveFolder 覆盖。 */
     fun changeTarget(breadcrumb: PikoPathBreadcrumb) {
         if (!canEdit) return
         resetEditableAttempt()
+        shared.targetChosen = true
         target = breadcrumb
         targetNotice = null
     }
@@ -1111,11 +1115,16 @@ class InstantSheetState private constructor(
      * 两者同时生效时，用户看着一个目录，东西却进了另一个，而当前目录恰是他此刻最可能想要的。
      */
     private suspend fun followDriveFolder() {
-        combine(saveTargetContext.folders, snapshotFlow { shared.targetHeld.value || isSaving || hasPendingOfflineSubmission || batch?.rows?.any { it.state.hasPendingOfflineSubmission } == true }) { folder, held -> folder to held }
+        combine(
+            saveTargetContext.folders,
+            shared.targetHeld,
+            snapshotFlow { isSaving || hasPendingOfflineSubmission || batch?.rows?.any { it.state.hasPendingOfflineSubmission } == true },
+        ) { folder, held, busy -> folder to (held || busy) }
             .distinctUntilChanged()
             .collectLatest { (folder, held) ->
-                if (held) return@collectLatest
-                target = targetFor(folder)
+                if (held || shared.targetChosen) return@collectLatest
+                val resolved = targetFor(folder)
+                if (!shared.targetChosen && !shared.targetHeld.value) target = resolved
             }
     }
 

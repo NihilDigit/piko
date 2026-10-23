@@ -159,6 +159,9 @@ internal class MediampPlaybackBackend(
                 val width = properties?.videoWidth ?: 0
                 val height = properties?.videoHeight ?: 0
                 videoAspect = if (width > 0 && height > 0) width.toFloat() / height else null
+                if (currentAspectRatio == PlayerAspectRatio.RegionCrop) {
+                    currentCropRegion?.let(::applyMpvCropRegion)
+                }
             }
         }
         scope.launch {
@@ -367,8 +370,8 @@ internal class MediampPlaybackBackend(
     private fun applyMpvCropRegion(region: VideoCropRegion) {
         aspectRatioFeature?.setMode(AspectRatioMode.FIT)
         val handle = mpv ?: return
-        val vAspect = videoAspect ?: 16f / 9f
-        val cAspect = region.containerAspect.takeIf { it > 0f } ?: vAspect
+        val vAspect = videoAspect?.takeIf { it.isFinite() && it > 0f } ?: (16f / 9f)
+        val cAspect = region.safeContainerAspect.takeIf { it > 0f } ?: vAspect
         val fitW = if (cAspect > vAspect) vAspect / cAspect else 1f
         val fitH = if (cAspect > vAspect) 1f else cAspect / vAspect
         val scale = maxOf(1f / (fitW * region.width), 1f / (fitH * region.height))

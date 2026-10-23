@@ -2,8 +2,13 @@ package dev.piko.shared.data
 
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.io.Buffer
 import io.ktor.utils.io.toByteArray
+import io.github.nihildigit.pikpak.UploadStart
+import io.github.nihildigit.pikpak.cancelUpload
+import io.github.nihildigit.pikpak.continueUpload
+import io.github.nihildigit.pikpak.startUpload
 import io.github.nihildigit.pikpak.streamRangeFromUrl
 import io.github.nihildigit.pikpak.upload
 import io.github.nihildigit.pikpak.PikPakHash
@@ -878,19 +883,36 @@ open class PikoDriveRepository(
     private suspend fun uploadBytes(asked: PikPakClient, parentId: String, name: String, bytes: ByteArray): String {
         val size = bytes.size.toLong()
         val gcid = PikPakHash.fromSource(Buffer().apply { write(bytes) }, size)
-        var lastError: Throwable? = null
-        for (attempt in 0 until UPLOAD_BYTES_ATTEMPTS) {
-            try {
-                return asked.upload(parentId, name, size, gcid, { Buffer().apply { write(bytes) } }, {}).fileId
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                lastError = e
-                if (e is PikPakException || attempt == UPLOAD_BYTES_ATTEMPTS - 1) throw e
-                delay(LINK_RETRY_DELAYS.getOrElse(attempt) { 1.seconds })
-            }
+        val session = when (val start = asked.startUpload(parentId, name, size, gcid)) {
+            is UploadStart.Instant -> return start.fileId
+            is UploadStart.Pending -> start.session
         }
-        throw lastError ?: error("上传失败")
+        var lastError: Throwable? = null
+        try {
+            for (attempt in 0 until UPLOAD_BYTES_ATTEMPTS) {
+                try {
+                    asked.continueUpload(
+                        session,
+                        open = { offset: Long ->
+                            val startOffset = offset.toInt().coerceIn(0, bytes.size)
+                            Buffer().apply { write(bytes, startOffset, bytes.size) }
+                        },
+                        onProgress = {},
+                    )
+                    return session.fileId
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    lastError = e
+                    if (e is PikPakException || attempt == UPLOAD_BYTES_ATTEMPTS - 1) throw e
+                    delay(LINK_RETRY_DELAYS.getOrElse(attempt) { 1.seconds })
+                }
+            }
+            throw lastError ?: error("上传失败")
+        } catch (e: Throwable) {
+            withContext(NonCancellable) { runCatching { asked.cancelUpload(session) } }
+            throw e
+        }
     }
 
     /**

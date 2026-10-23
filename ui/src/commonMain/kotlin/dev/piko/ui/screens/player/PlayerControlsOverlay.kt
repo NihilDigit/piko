@@ -522,9 +522,10 @@ fun MobilePlayerControls(
     LaunchedEffect(currentFileId) {
         isEditingCropRegion = false
     }
-    LaunchedEffect(windowSize, aspectRatio, cropRegion) {
-        if (aspectRatio == PlayerAspectRatio.RegionCrop && cropRegion != null && windowSize.width > 0 && windowSize.height > 0) {
-            val currentAspect = windowSize.width.toFloat() / windowSize.height.toFloat()
+    var viewportSize by remember { mutableStateOf(IntSize.Zero) }
+    LaunchedEffect(viewportSize, aspectRatio, cropRegion) {
+        if (aspectRatio == PlayerAspectRatio.RegionCrop && cropRegion != null && viewportSize.width > 0 && viewportSize.height > 0) {
+            val currentAspect = viewportSize.width.toFloat() / viewportSize.height.toFloat()
             if (abs(cropRegion.containerAspect - currentAspect) > 0.001f) {
                 onCropRegionChange(cropRegion.copy(containerAspect = currentAspect))
             }
@@ -671,6 +672,7 @@ fun MobilePlayerControls(
         Box(
             modifier = modifier
                 .fillMaxSize()
+                .onSizeChanged { viewportSize = it }
                 // 在根节点先行拦截：焦点落在某个按钮上时，空格不该变成「点一下那个按钮」
                 .onPreviewKeyEvent(::handleKey)
                 // 只接焦点不进无障碍树：focusable 会让读屏在整个画面上多停一站
@@ -1106,6 +1108,7 @@ private fun CropRegionEditorOverlay(
 ) {
     var region by remember(initialRegion) { mutableStateOf(initialRegion) }
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
+    var isDraggingBox by remember { mutableStateOf(false) }
     val density = LocalDensity.current
     val hitRadiusPx = with(density) { 28.dp.toPx() }
     val cornerRadiusPx = with(density) { 6.dp.toPx() }
@@ -1162,9 +1165,16 @@ private fun CropRegionEditorOverlay(
                             offset.x in leftPx..rightPx && offset.y in topPx..bottomPx -> CropDragHandle.Inside
                             else -> null
                         }
+                        isDraggingBox = activeHandle != null
                     },
-                    onDragEnd = { activeHandle = null },
-                    onDragCancel = { activeHandle = null },
+                    onDragEnd = {
+                        activeHandle = null
+                        isDraggingBox = false
+                    },
+                    onDragCancel = {
+                        activeHandle = null
+                        isDraggingBox = false
+                    },
                     onDrag = { change, dragAmount ->
                         val handle = activeHandle ?: return@detectDragGestures
                         val bounds = videoBounds(size)
@@ -1241,44 +1251,46 @@ private fun CropRegionEditorOverlay(
             }
         }
 
-        Surface(
-            shape = MaterialTheme.shapes.large,
-            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f),
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
-                .padding(horizontal = 16.dp, vertical = 20.dp),
-        ) {
-            Text(
-                text = "拖动选框四角或内部选择要铺满画面的区域",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-            )
-        }
-
-        Surface(
-            shape = MaterialTheme.shapes.large,
-            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f),
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
-                .padding(horizontal = 16.dp)
-                .padding(bottom = 28.dp),
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically,
+        if (!isDraggingBox) {
+            Surface(
+                shape = MaterialTheme.shapes.large,
+                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
+                    .padding(horizontal = 16.dp, vertical = 20.dp),
             ) {
-                FilledTonalButton(onClick = onReset) { Text("还原适应") }
-                FilledTonalButton(onClick = onCancel) { Text("取消") }
-                Button(onClick = {
-                    val containerAspect = if (containerSize.width > 0 && containerSize.height > 0) {
-                        containerSize.width.toFloat() / containerSize.height.toFloat()
-                    } else 0f
-                    onConfirm(region.copy(containerAspect = containerAspect))
-                }) { Text("铺满画面") }
+                Text(
+                    text = "拖动选框四角或内部选择要铺满画面的区域",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                )
+            }
+
+            Surface(
+                shape = MaterialTheme.shapes.large,
+                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 28.dp),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    FilledTonalButton(onClick = onReset) { Text("还原适应") }
+                    FilledTonalButton(onClick = onCancel) { Text("取消") }
+                    Button(onClick = {
+                        val containerAspect = if (containerSize.width > 0 && containerSize.height > 0) {
+                            containerSize.width.toFloat() / containerSize.height.toFloat()
+                        } else 0f
+                        onConfirm(region.copy(containerAspect = containerAspect))
+                    }) { Text("铺满画面") }
+                }
             }
         }
     }
