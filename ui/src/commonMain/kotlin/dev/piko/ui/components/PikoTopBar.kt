@@ -139,7 +139,7 @@ private fun PikoTopBarContent(
                         )
                     }
                 },
-                middleMinWidth = TitleMinWidth,
+                middleMinWidth = titleMinWidthOf(title),
                 reserveMiddle = true,
                 fillMiddle = true,
                 alwaysMore = moreActions.isNotEmpty(),
@@ -169,5 +169,9 @@ private fun PikoTopBarContent(
     )
 }
 
-/** 标题至少留这么宽，动作先收进「更多」：多选栏的「已选择 12 项」要读得出来。 */
-private val TitleMinWidth = 112.dp
+/** 标题至少留这么宽，动作先收进「更多」：多选栏的「已选择 12 项」要读得出来；短标题（「任务」）不必空占 112dp。 */
+private fun titleMinWidthOf(title: String): Dp = when {
+    title.length <= 2 -> 52.dp
+    title.length <= 4 -> 80.dp
+    else -> 112.dp
+}

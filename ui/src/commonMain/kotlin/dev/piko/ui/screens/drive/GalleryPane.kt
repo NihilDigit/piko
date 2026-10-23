@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -26,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.piko.ui.components.InlineLoadingIndicator
+import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoLoadingIndicator
 import io.github.nihildigit.pikpak.FileStat
 
@@ -48,6 +51,7 @@ internal fun GalleryPane(
     isBlurred: (FileStat) -> Boolean,
     isSelectionMode: Boolean,
     selectedIds: Set<String>,
+    highlightedIds: Set<String> = emptySet(),
     callbacks: DriveItemCallbacks,
     folderName: (String) -> String?,
     rootKey: Any,
@@ -93,6 +97,7 @@ internal fun GalleryPane(
                         modifier = Modifier.fillMaxSize(),
                         isSelectionMode = isSelectionMode,
                         selectedIds = selectedIds,
+                        highlightedIds = highlightedIds,
                         onZoom = onZoom,
                         locationLabel = { folderName(it.parentId) },
                         onVisibleFilesChanged = { ids ->
@@ -115,11 +120,10 @@ internal fun GalleryPane(
                         )
                     }
                 } else if (files.isEmpty() && complete && failureCount == 0) {
-                    Text(
-                        "此范围内没有可浏览的视频",
+                    PikoEmptyState(
+                        title = "此范围内没有可浏览的视频",
+                        icon = Icons.Outlined.PhotoLibrary,
                         modifier = Modifier.align(Alignment.Center),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodyMedium,
                     )
                 }
             }

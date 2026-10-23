@@ -25,7 +25,7 @@ import androidx.compose.material.icons.outlined.RemoveCircleOutline
 import androidx.compose.material.icons.outlined.RestoreFromTrash
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.StarOutline
-import androidx.compose.material.icons.outlined.Tab
+import androidx.compose.material.icons.outlined.AddToPhotos
 import androidx.compose.material.icons.outlined.Timelapse
 import androidx.compose.material.icons.outlined.Unarchive
 import androidx.compose.material.icons.outlined.Visibility
@@ -90,10 +90,10 @@ internal object DriveActions {
 
     // 剪切与复制只放进应用内剪贴板，粘贴在命令栏与空白处的右键菜单里，与 Ctrl+X、Ctrl+C 同一处（DriveScreenState.putOnClipboard）
     fun cut(onClick: () -> Unit) =
-        SheetAction(Icons.Outlined.ContentCut, "剪切", onClick, group = ActionGroup.Organize, tier = ActionTier.Quick)
+        SheetAction(Icons.Outlined.ContentCut, "剪切", onClick, group = ActionGroup.Manage)
 
     fun copy(onClick: () -> Unit) =
-        SheetAction(Icons.Outlined.ContentCopy, "复制", onClick, group = ActionGroup.Organize, tier = ActionTier.Quick)
+        SheetAction(Icons.Outlined.ContentCopy, "复制", onClick, group = ActionGroup.Manage)
 
     /**
      * 调整常用操作的顺序，完整能力集合保持一致。图标行放不下的操作由 layoutActions 放回列表。
@@ -132,7 +132,7 @@ internal object DriveActions {
         group = ActionGroup.Organize,
     )
 
-    fun openInNewTab(onClick: () -> Unit) = SheetAction(Icons.Outlined.Tab, "在新标签页打开", onClick, group = ActionGroup.Open)
+    fun openInNewTab(onClick: () -> Unit) = SheetAction(Icons.Outlined.AddToPhotos, "在新标签页打开", onClick, group = ActionGroup.Open)
 
     fun openInExternalPlayer(onClick: () -> Unit) =
         SheetAction(Icons.Outlined.OndemandVideo, "用外部播放器打开", onClick, group = ActionGroup.Open)
@@ -159,9 +159,9 @@ internal object DriveActions {
     fun findDuplicates(onClick: () -> Unit) =
         SheetAction(Icons.Outlined.FileCopy, "查重", onClick, group = ActionGroup.Manage)
 
-    fun vault(onClick: () -> Unit) = SheetAction(Icons.Outlined.Inventory2, "归档", onClick, group = ActionGroup.Manage)
+    fun vault(onClick: () -> Unit) = SheetAction(Icons.Outlined.Inventory2, "归档", onClick, group = ActionGroup.Open)
 
-    fun unvault(onClick: () -> Unit) = SheetAction(Icons.Outlined.Unarchive, "取消归档", onClick, group = ActionGroup.Manage)
+    fun unvault(onClick: () -> Unit) = SheetAction(Icons.Outlined.Unarchive, "取消归档", onClick, group = ActionGroup.Open)
 
     fun previewVisibility(hidden: Boolean, onClick: () -> Unit) = SheetAction(
         icon = if (hidden) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,

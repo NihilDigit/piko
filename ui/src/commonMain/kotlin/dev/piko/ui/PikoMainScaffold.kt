@@ -755,7 +755,7 @@ fun PikoMainScaffold(
             currentTab = MainTab.FILES
             resetToHome()
             if (addLink.state != null && addLink.ownerTabId != null) {
-                driveWorkspace?.switchTab(addLink.ownerTabId!!)
+                workspaceModel.activateContext(addLink.ownerTabId!!)
             } else {
                 workspaceModel.activateFileBrowser()
             }
@@ -828,8 +828,8 @@ fun PikoMainScaffold(
             open = columnContent != null,
             savedWidthDp = panelPrefs.widthDp,
             title = if (showAddLink) "添加链接" else "信息流",
-            closeDescription = if (showAddLink) null else "关闭信息流",
-            onClose = if (showAddLink) null else ::requestCloseFeed,
+            closeDescription = if (showAddLink) dev.piko.ui.screens.instant.CollapseAddLinkLabel else "关闭信息流",
+            onClose = if (showAddLink) ({ addLink.collapse() }) else ::requestCloseFeed,
             endActions = {
                 val addLinkState = addLink.state
                 if (showAddLink && addLinkState != null) DiscardAddLinkButton(addLinkState, discardAddLink)
@@ -839,11 +839,12 @@ fun PikoMainScaffold(
             minWidth = ClipPanelMinWidth,
             ready = feedShownState != null,
             showHeader = showAddLink,
+            bottomMargin = 0.dp,
             main = {
                 Box(Modifier.fillMaxSize()) {
                     drive()
                     FeedResumeBar(
-                        visible = feedSuspended && !desktop,
+                        visible = feedSuspended && !desktop && !fileBrowser.state.isSelectionMode && (addLink.state == null || !addLink.isExpanded),
                         folderName = clipFeedSession.root?.name,
                         onResume = ::resumeFeed,
                         onClose = ::requestCloseFeed,

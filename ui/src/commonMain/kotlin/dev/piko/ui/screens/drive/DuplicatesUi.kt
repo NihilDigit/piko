@@ -87,9 +87,9 @@ internal fun duplicateCommandBarLeading(
     val identical = selectedKind == DuplicateKind.IDENTICAL
     val groups = if (identical) finder.report.identical else finder.report.versions
     val summary = if (identical) {
-        "${groups.size} 组 · 可腾出 ${groups.sumOf { it.reclaimableBytes }.toReadableSize()}"
+        "${groups.size} 组，可腾出 ${groups.sumOf { it.reclaimableBytes }.toReadableSize()}"
     } else {
-        "${groups.size} 组 · ${groups.sumOf { it.rows.size }} 个版本"
+        "${groups.size} 组，${groups.sumOf { it.rows.size }} 个版本"
     }
     return buildList {
         add(BarItem("dupKind", PinnedPriority) {

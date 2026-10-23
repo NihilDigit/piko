@@ -264,18 +264,18 @@ internal fun InstantSheetContent(
         TargetRow(target = state.target, notice = state.targetNotice, enabled = state.canEdit,
             onClick = { showTargetPicker = true })
     }
-    @Composable
-    fun Footer() {
-        if (shareState != null) {
-            ShareSaveFooter(state = shareState, target = state.target, canonicalNames = state.useCanonicalNames, onPickTarget = { showTargetPicker = true })
-        } else if (action != null) {
-            if (!isTreeMaximized) SaveSettings()
-            SaveBar(state = state, action = action, onSave = saveMagnet)
-        }
-    }
     BoxWithConstraints(Modifier.fillMaxWidth().then(if (inSideSheet || fillHeight) Modifier.fillMaxHeight() else Modifier)) {
         val splitSelection = fillHeight && maxWidth >= 720.dp && maxHeight < 480.dp && batch == null &&
             (shareState != null || state.resolution != null)
+        @Composable
+        fun Footer() {
+            if (shareState != null) {
+                ShareSaveFooter(state = shareState, target = state.target, canonicalNames = state.useCanonicalNames, onPickTarget = { showTargetPicker = true })
+            } else if (action != null) {
+                if (!isTreeMaximized || splitSelection) SaveSettings()
+                SaveBar(state = state, action = action, onSave = saveMagnet)
+            }
+        }
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -821,10 +821,10 @@ internal fun ColumnScope.ResolutionSection(
 
     if (!showFileSelection) return
 
-    // 列表连同它的页眉占满剩下的面板高度
-    Column(modifier = Modifier.weight(1f)) {
+    // 列表连同它的页眉占去剩下的高度，短列表照常收缩
+    Column(modifier = Modifier.weight(1f, fill = false)) {
         SelectionHeader(state, isMaximized = false, onToggleMaximized = onMaximizeTree)
-        FileTreeList(state, onDownloaded = onDownloaded, modifier = Modifier.weight(1f), retainedListState = fileListState)
+        FileTreeList(state, onDownloaded = onDownloaded, modifier = Modifier.weight(1f, fill = false), retainedListState = fileListState)
     }
 }
 

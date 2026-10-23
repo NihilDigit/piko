@@ -282,6 +282,7 @@ private fun MenuIconRow(actions: List<SheetAction>, firstItem: FocusRequester?, 
                     contentColor = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier
                         .weight(1f)
+                        .focusIndication(MaterialTheme.shapes.medium)
                         .prepareOnPointer(action)
                         .semantics { contentDescription = action.label }
                         .then(if (index == 0 && firstItem != null) Modifier.focusRequester(firstItem) else Modifier),

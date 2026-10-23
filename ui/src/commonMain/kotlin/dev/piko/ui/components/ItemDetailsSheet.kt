@@ -57,7 +57,11 @@ fun ItemDetailsSheet(
     /** 标题下面的一行，网盘条目在标题是显示名时写真实名称。与标题一起可选中复制。 */
     subtitle: String? = null,
 ) {
-    PikoSheet(onDismissRequest = onDismiss) {
+    PikoSheet(
+        onDismissRequest = onDismiss,
+        skipPartiallyExpanded = false,
+        maxHeightFraction = 0.72f,
+    ) {
         val sheet = this
         ItemDetailsContent(title, headerIcon, actions, metaParts, extraLines, subtitle,
             onAction = { action -> sheet.hideThen(action) })

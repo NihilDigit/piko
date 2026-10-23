@@ -60,6 +60,20 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
     var activationRevision by mutableStateOf(0L)
         private set
     private var handledActivationRevision = 0L
+    var blockedCloseMessage by mutableStateOf<String?>(null)
+        private set
+    fun dismissBlockedClose() { blockedCloseMessage = null }
+
+    private fun blockCloseIfSaving(ids: List<Long>): Boolean {
+        if (services.addLink.ownerTabId in ids &&
+            services.addLink.replacementAvailability is dev.piko.shared.presentation.ActionAvailability.Blocked
+        ) {
+            blockedCloseMessage = "当前标签页中的链接正在保存，请等待保存完成后再关闭标签页。"
+            return true
+        }
+        return false
+    }
+
     var pendingCloseId by mutableStateOf<Long?>(null)
         private set
     var pendingCloseOtherIds by mutableStateOf<List<Long>>(emptyList())
@@ -207,6 +221,7 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
 
     fun requestCloseContext(id: Long) {
         if (!available || !canCloseContext(id)) return
+        if (blockCloseIfSaving(listOf(id))) return
         if (closeNeedsConfirmation(id)) pendingCloseId = id else closeContext(id)
     }
 
@@ -224,6 +239,7 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
     fun requestCloseOtherContexts(keepId: Long) {
         if (!available || contexts.contextsFlow.value.none { it.id == keepId }) return
         val ids = contexts.contextsFlow.value.map { it.id }.filter { it != keepId && canCloseContext(it) }
+        if (blockCloseIfSaving(ids)) return
         pendingCloseOtherNeedsAttention = ids.any(::closeNeedsConfirmation)
         pendingCloseOtherIds = ids
     }
@@ -246,7 +262,7 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
     }
 
     private fun releaseContext(id: Long) {
-        if (services.addLink.ownerTabId == id) services.addLink.discard()
+        if (services.addLink.ownerTabId == id) services.addLink.forceDiscard()
         detailPanels.forgetWhere { it is dev.piko.shared.presentation.TabNavigation && it.tabId == id }
         pageSnapshots.remove(id)
         contextOrigins.remove(id)

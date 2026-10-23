@@ -94,6 +94,8 @@ fun PikoSheet(
      * 桌面的添加链接要收起与放弃两个按钮，关闭只是收起，用 × 就与放弃撞了。
      */
     sideSheetButtons: (@Composable RowScope.(dismiss: () -> Unit) -> Unit)? = null,
+    skipPartiallyExpanded: Boolean = true,
+    maxHeightFraction: Float? = null,
     content: @Composable PikoSheetScope.() -> Unit,
 ) {
     // 桌面一律是侧边面板：底部 sheet 配鼠标不顺手，见上。横握的手机宽度多在 medium，但只有三百多 dp 高：
@@ -103,7 +105,7 @@ fun PikoSheet(
         ModalSideSheet(onDismissRequest, sideSheetTitle, sideSheetButtons, content)
         return
     }
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = skipPartiallyExpanded)
     val latestDismiss by rememberUpdatedState(onDismissRequest)
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,
@@ -112,7 +114,11 @@ fun PikoSheet(
         containerColor = ShortNavigationBarDefaults.containerColor,
         contentWindowInsets = bottomSheetInsets,
     ) {
-        Column(Modifier.wheelStaysInSheet()) {
+        Column(
+            Modifier
+                .then(if (maxHeightFraction != null) Modifier.fillMaxHeight(maxHeightFraction) else Modifier)
+                .wheelStaysInSheet(),
+        ) {
             val sheetScope = remember(this) {
                 SheetScopeImpl(this, isSideSheet = false) { action ->
                     latestDismiss()

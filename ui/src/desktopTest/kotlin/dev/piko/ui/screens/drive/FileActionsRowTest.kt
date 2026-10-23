@@ -52,11 +52,11 @@ class FileActionsRowTest {
     }
 
     @Test
-    fun `the desktop menu row highlights core actions and keeps clipboard in organize`() {
+    fun `the desktop menu row highlights core actions and keeps clipboard in manage`() {
         val layout = layoutActions(actions(desktop = true), quickLimit = MenuQuickLimit)
         assertEquals(listOf("下载到本地", "重命名", "分享", "添加星标"), layout.quick.map { it.label })
-        val organize = layout.sections.single { section -> section.all { it.group == ActionGroup.Organize } }
-        assertTrue(organize.map { it.label }.containsAll(listOf("剪切", "复制")))
+        val manage = layout.sections.single { section -> section.all { it.group == ActionGroup.Manage } }
+        assertTrue(manage.map { it.label }.containsAll(listOf("剪切", "复制")))
     }
 
     @Test

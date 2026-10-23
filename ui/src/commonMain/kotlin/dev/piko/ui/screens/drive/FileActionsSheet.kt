@@ -171,33 +171,37 @@ internal fun fileActions(file: FileStat, commands: ItemCommands, on: FileActionH
     addAll(
         DriveActions.quickRow(
             desktop = desktop,
-            cut = putOnClipboard?.let { put -> DriveActions.cut { put(true) } },
-            copy = putOnClipboard?.let { put -> DriveActions.copy { put(false) } },
+            cut = null,
+            copy = null,
             download = DriveActions.download(onClick = on.download).takeIf { commands.download },
             share = DriveActions.share(on.share).takeIf { commands.share },
             rename = DriveActions.rename(on.rename).takeIf { commands.rename },
             star = DriveActions.star(file.isStarred, on.toggleStar),
         ),
     )
-    if (file.isFolder) on.openInNewTab?.let { add(DriveActions.openInNewTab(it)) }
-    if (commands.downloadAtQuality) add(DriveActions.downloadAtQuality(on.prepareQualities.takeIf { video }, on.downloadAtQuality))
     if (video) add(DriveActions.downloadSegment(on.downloadSegment, on.prepareQualities))
-    if (video) on.openInExternalPlayer?.let { add(DriveActions.openInExternalPlayer(it)) }
-    if (!file.isFolder && commands.download) on.copyDownloadLink?.let { add(DriveActions.copyDownloadLink(it)) }
+    if (commands.vault) add(DriveActions.vault(on.vault))
+    if (commands.unvault) on.unvault?.let { add(DriveActions.unvault(it)) }
     if (commands.extract) add(DriveActions.extract(on.extract))
+    if (commands.downloadAtQuality) add(DriveActions.downloadAtQuality(on.prepareQualities.takeIf { video }, on.downloadAtQuality))
+    if (!file.isFolder && commands.download) on.copyDownloadLink?.let { add(DriveActions.copyDownloadLink(it)) }
+    if (video) on.openInExternalPlayer?.let { add(DriveActions.openInExternalPlayer(it)) }
+    if (file.isFolder) on.openInNewTab?.let { add(DriveActions.openInNewTab(it)) }
     if (commands.moveCopyTo) {
         add(DriveActions.moveTo(on.move))
         on.copy?.let { add(DriveActions.copyTo(it)) }
     }
-    if (file.isFolder) on.togglePin?.let { add(DriveActions.pin(on.isPinned, it)) }
     if (file.isFolder) {
         if (commands.rename) on.canonicalNameFolder?.let { add(DriveActions.canonicalName(it)) }
         on.findDuplicates?.let { add(DriveActions.findDuplicates(it)) }
+        on.togglePin?.let { add(DriveActions.pin(on.isPinned, it)) }
     }
-    if (commands.vault) add(DriveActions.vault(on.vault))
-    if (commands.unvault) on.unvault?.let { add(DriveActions.unvault(it)) }
     on.previewHidden?.let { add(DriveActions.previewVisibility(it, on.togglePreview)) }
     if (on.copySource != null && on.openSource != null) addAll(DriveActions.sourceActions(file.source, on.copySource, on.openSource))
+    if (putOnClipboard != null) {
+        add(DriveActions.cut { putOnClipboard(true) })
+        add(DriveActions.copy { putOnClipboard(false) })
+    }
     if (commands.moveToTrash) add(DriveActions.moveToTrash(on.trash))
 }
 

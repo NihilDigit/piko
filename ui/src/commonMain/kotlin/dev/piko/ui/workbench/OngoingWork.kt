@@ -151,64 +151,85 @@ internal fun OngoingWorkSheet(model: WorkspaceViewModel, onDismiss: () -> Unit) 
                         is WorkspaceContext.Duplicate -> Icons.Outlined.FileCopy
                         is WorkspaceContext.ImportDraft -> Icons.Outlined.Link
                     }
-                    Surface(
-                        onClick = { model.activateContext(context.id); onDismiss() },
-                        shape = RoundedCornerShape(20.dp),
-                        border = if (isActive) BorderStroke(2.5.dp, colors.primary) else BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.5f)),
-                        color = if (isActive) colors.secondaryContainer else colors.surfaceContainerHighest,
-                    ) {
-                        Column {
-                            Row(
-                                Modifier.fillMaxWidth().height(44.dp).padding(start = 12.dp, end = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Icon(
-                                    imageVector = icon,
-                                    contentDescription = null,
-                                    tint = if (isActive) colors.primary else colors.onSurfaceVariant,
-                                    modifier = Modifier.size(16.dp),
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    text = title,
-                                    modifier = Modifier.weight(1f),
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = if (isActive) colors.onSecondaryContainer else colors.onSurface,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                if (model.canCloseContext(context.id)) {
-                                    TooltipIconButton(Icons.Outlined.Close, "关闭 $title", { model.requestCloseContext(context.id) })
-                                } else {
-                                    Spacer(Modifier.width(40.dp))
-                                }
-                            }
-                            val snapshot = model.pageSnapshots[context.id]
-                            Surface(
-                                modifier = Modifier.fillMaxWidth().padding(start = 6.dp, end = 6.dp, bottom = 6.dp),
-                                shape = RoundedCornerShape(14.dp),
-                                color = colors.surface,
-                            ) {
-                                Box(Modifier.fillMaxWidth().aspectRatio(.75f), contentAlignment = Alignment.Center) {
-                                    if (snapshot != null) {
-                                        Image(
-                                            bitmap = snapshot,
-                                            contentDescription = "页面快照：$title",
-                                            contentScale = ContentScale.FillWidth,
-                                            alignment = Alignment.TopCenter,
-                                            modifier = Modifier.fillMaxSize(),
-                                        )
+                    val canClose = model.canCloseContext(context.id)
+                    val cardContent: @Composable () -> Unit = {
+                        Surface(
+                            onClick = { model.activateContext(context.id); onDismiss() },
+                            shape = RoundedCornerShape(20.dp),
+                            border = if (isActive) BorderStroke(2.5.dp, colors.primary) else BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.5f)),
+                            color = if (isActive) colors.secondaryContainer else colors.surfaceContainerHighest,
+                        ) {
+                            Column {
+                                Row(
+                                    Modifier.fillMaxWidth().height(44.dp).padding(start = 12.dp, end = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Icon(
+                                        imageVector = icon,
+                                        contentDescription = null,
+                                        tint = if (isActive) colors.primary else colors.onSurfaceVariant,
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        text = title,
+                                        modifier = Modifier.weight(1f),
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = if (isActive) colors.onSecondaryContainer else colors.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    if (canClose) {
+                                        TooltipIconButton(Icons.Outlined.Close, "关闭 $title", { model.requestCloseContext(context.id) })
                                     } else {
-                                        Icon(
-                                            imageVector = icon,
-                                            contentDescription = null,
-                                            tint = colors.outlineVariant,
-                                            modifier = Modifier.size(36.dp),
-                                        )
+                                        Spacer(Modifier.width(40.dp))
+                                    }
+                                }
+                                val snapshot = model.pageSnapshots[context.id]
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth().padding(start = 6.dp, end = 6.dp, bottom = 6.dp),
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = colors.surface,
+                                ) {
+                                    Box(Modifier.fillMaxWidth().aspectRatio(.75f), contentAlignment = Alignment.Center) {
+                                        if (snapshot != null) {
+                                            Image(
+                                                bitmap = snapshot,
+                                                contentDescription = "页面快照：$title",
+                                                contentScale = ContentScale.FillWidth,
+                                                alignment = Alignment.TopCenter,
+                                                modifier = Modifier.fillMaxSize(),
+                                            )
+                                        } else {
+                                            Icon(
+                                                imageVector = icon,
+                                                contentDescription = null,
+                                                tint = colors.outlineVariant,
+                                                modifier = Modifier.size(36.dp),
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
+                    }
+                    if (canClose) {
+                        val dismissState = rememberSwipeToDismissBoxState(
+                            confirmValueChange = { value ->
+                                if (value != SwipeToDismissBoxValue.Settled) {
+                                    model.requestCloseContext(context.id)
+                                }
+                                false
+                            },
+                        )
+                        SwipeToDismissBox(
+                            state = dismissState,
+                            backgroundContent = {},
+                        ) {
+                            cardContent()
+                        }
+                    } else {
+                        cardContent()
                     }
                 }
             }

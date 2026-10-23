@@ -52,6 +52,10 @@ class AddLinkViewModel private constructor(
 
     fun discard() {
         if (!allowReplacement()) return
+        forceDiscard()
+    }
+
+    fun forceDiscard() {
         if (draft != null) draft.close() else session?.end()
         collapsedGeneration = null
         ownerTabId = null
