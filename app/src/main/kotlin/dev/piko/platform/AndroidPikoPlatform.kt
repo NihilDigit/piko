@@ -128,6 +128,47 @@ class AndroidPikoPlatform(
     // 应用没有接口替用户设定：RoleManager 只管浏览器、电话、短信这类角色，「默认打开」页只管验证过的 http 链接
     override val linkAssociation: LinkAssociation? = null
 
+    override val openAppLinkSettings: (() -> Unit) = {
+        val packageUri = Uri.parse("package:${context.packageName}")
+        val opened = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching {
+                context.startActivity(
+                    Intent(android.provider.Settings.ACTION_APP_OPEN_BY_DEFAULT_SETTINGS, packageUri)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }.isSuccess
+        } else {
+            false
+        }
+        if (!opened) {
+            startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, packageUri))
+        }
+    }
+
+    override suspend fun needsAppLinkPrompt(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return false
+        val prefs = context.getSharedPreferences("piko_app_links", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("prompt_dismissed", false)) return false
+        return runCatching {
+            val manager = context.getSystemService(android.content.pm.verify.domain.DomainVerificationManager::class.java)
+                ?: return@runCatching false
+            val userState = manager.getDomainVerificationUserState(context.packageName) ?: return@runCatching false
+            if (!userState.isLinkHandlingAllowed) return@runCatching true
+            val hostStates = userState.hostToStateMap
+            // 只要用户还没有在「默认打开」里把核心分享域名（mypikpak.com）勾上，就提示
+            val mainState = hostStates["mypikpak.com"]
+            mainState != android.content.pm.verify.domain.DomainVerificationUserState.DOMAIN_STATE_SELECTED &&
+                mainState != android.content.pm.verify.domain.DomainVerificationUserState.DOMAIN_STATE_VERIFIED
+        }.getOrDefault(false)
+    }
+
+    override fun dismissAppLinkPrompt() {
+        context.getSharedPreferences("piko_app_links", Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("prompt_dismissed", true)
+            .apply()
+    }
+
     /**
      * 回环地址在 Android 上各应用共用，别的播放器连得上 Piko 的代理。每次都弹选择器：
      * 用户多半就是想换一个播放器，替他记住默认反而多一步去改。

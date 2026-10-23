@@ -107,6 +107,16 @@ interface PikoPlatform {
     /** 为 null 表示该平台不能由应用自己登记为磁力链接与种子文件的打开方式，设置页不给入口。 */
     val linkAssociation: LinkAssociation?
 
+    /** 打开系统设置里的「默认打开」页（Android），添加支持的分享与深链域名。不支持的平台为 null。 */
+    /** 跳转系统「默认打开 -> 添加链接」设置页（Android 12+），不支持的平台为 null。 */
+    val openAppLinkSettings: (() -> Unit)? get() = null
+
+    /** 当前是否尚未在系统「默认打开」中添加 PikPak 分享与跳转域名，用于「我的」页提醒卡片。 */
+    suspend fun needsAppLinkPrompt(): Boolean = false
+
+    /** 标记用户已关闭「我的」页的深链默认打开提醒。 */
+    fun dismissAppLinkPrompt() = Unit
+
     /**
      * 铺满窗口的对话框。Android 要关掉 decorFitsSystemWindows，内容自己按 safeDrawing 避让；
      * [immersive] 为真时（看图）系统栏图标固定浅色，并按 [systemBarsVisible] 收起系统栏，

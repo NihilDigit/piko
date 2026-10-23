@@ -8,7 +8,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.PersonAdd
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.components.PikoDialog
 import dev.piko.ui.components.PikoDialogConfirm
 import androidx.compose.material3.ButtonDefaults
@@ -100,6 +107,7 @@ internal fun AccountSwitcher(onLoggedOut: (() -> Unit)? = null) {
             )
         }
     }
+    AppLinkPromptBanner()
     if (confirmLogout && onLoggedOut != null) {
         LogoutDialog(
             next = others.maxByOrNull { it.usedAt },
@@ -176,3 +184,48 @@ private fun AvatarSlot(icon: ImageVector, tint: Color) {
 
 // 比行图标大一号，仍放得进一行之内；与当前账号卡片的 48dp 头像分出主次
 private val AccountAvatarSize = 32.dp
+
+/**
+ * 「我的」页在「添加账号」下方显示的深链默认打开提醒卡片：
+ * 当系统支持在「默认打开」中添加 PikPak 分享与跳转域名、且尚未添加、用户也未关闭提醒时展示；
+ * 从系统设置返回应用（ON_RESUME）时自动重查，已添加则自动收起。
+ */
+@Composable
+private fun AppLinkPromptBanner() {
+    val platform = LocalPikoPlatform.current
+    val openSettings = platform.openAppLinkSettings ?: return
+    val scope = rememberCoroutineScope()
+    var showPrompt by remember { mutableStateOf(false) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, platform) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                scope.launch { showPrompt = platform.needsAppLinkPrompt() }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(platform) {
+        showPrompt = platform.needsAppLinkPrompt()
+    }
+    if (!showPrompt) return
+    SettingsGroup(null) {
+        SettingsRow(
+            title = "用 Piko 直接打开分享链接",
+            leading = { AvatarSlot(Icons.Outlined.Link, MaterialTheme.colorScheme.primary) },
+            supporting = "在系统「默认打开」中勾选支持的链接域名，点击 PikPak 分享或跳转链接即可直接用 Piko 打开",
+            onClick = openSettings,
+            trailing = {
+                TooltipIconButton(
+                    icon = Icons.Outlined.Close,
+                    label = "不再提示",
+                    onClick = {
+                        platform.dismissAppLinkPrompt()
+                        showPrompt = false
+                    },
+                )
+            },
+        )
+    }
+}

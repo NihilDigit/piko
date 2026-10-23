@@ -40,8 +40,10 @@ import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Lan
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material.icons.outlined.Minimize
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.PlayCircle
+import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Router
 import androidx.compose.material.icons.outlined.SlowMotionVideo
@@ -323,7 +325,7 @@ fun SettingsScreen(
                                     }
                                 }
                                 SettingsSwitchRow(
-                                    icon = Icons.Outlined.WebAsset,
+                                    icon = Icons.Outlined.PowerSettingsNew,
                                     title = "开机自动启动",
                                     supporting = "登录 Windows 后打开 Piko",
                                     checked = enabled,
@@ -340,7 +342,7 @@ fun SettingsScreen(
                             platform.closeToTray?.let { toggle ->
                                 val enabled by toggle.enabled.collectAsState()
                                 SettingsSwitchRow(
-                                    icon = Icons.Outlined.WebAsset,
+                                    icon = Icons.Outlined.Minimize,
                                     title = "关闭时最小化到托盘",
                                     supporting = "点击关闭按钮时收进托盘而不退出",
                                     checked = enabled,
@@ -432,6 +434,14 @@ fun SettingsScreen(
                                     state = linkAssociationState,
                                     onStateChange = { linkAssociationState = it },
                                     onFailure = { message -> scope.launch { snackbarHostState.showSnackbar(message, withDismissAction = true) } },
+                                )
+                            }
+                            if (platform.openAppLinkSettings != null) {
+                                SettingsNavigationRow(
+                                    icon = Icons.Outlined.Link,
+                                    title = "默认打开分享与深链",
+                                    supporting = "在系统设置中添加支持的链接域名，点击 PikPak 分享或跳转链接时直接用 Piko 打开",
+                                    onClick = platform.openAppLinkSettings!!,
                                 )
                             }
                             // 这一项靠文件名解析认出字幕。解析在另一类，关掉时留着并写明原因，收起的话人找不到它去了哪

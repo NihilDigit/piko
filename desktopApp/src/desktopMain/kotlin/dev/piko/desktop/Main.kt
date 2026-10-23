@@ -1,8 +1,20 @@
 package dev.piko.desktop
 
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import dev.piko.ui.components.PikoDialog
 import dev.piko.ui.components.PikoDialogConfirm
 import dev.piko.shared.PikoHome
@@ -282,7 +294,6 @@ fun main(args: Array<String>) {
 
         val closeMainWindow = {
             if (services.hasBackgroundWork() || services.hasDesktopResumeContext() || closeToTray) {
-                settings.set(CLOSE_BEHAVIOR_ASKED_KEY, "true")
                 hideToTray()
             } else if (platform.closeToTray != null && settings.get(CLOSE_BEHAVIOR_ASKED_KEY) != "true") {
                 askCloseBehavior = true
@@ -356,17 +367,39 @@ fun main(args: Array<String>) {
                         }
                     }
                     if (askCloseBehavior) {
+                        var rememberCloseChoice by remember { mutableStateOf(true) }
                         PikoDialog(
                             onDismissRequest = { askCloseBehavior = false },
                             title = { Text("关闭主窗口") },
-                            text = { Text("选择点击关闭按钮时的操作，之后可在设置「外观」中随时更改。") },
+                            text = {
+                                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    Text("选择点击关闭按钮时的操作，之后可在设置「外观」中随时更改。")
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(min = 40.dp)
+                                            .toggleable(
+                                                value = rememberCloseChoice,
+                                                role = Role.Checkbox,
+                                                onValueChange = { rememberCloseChoice = it },
+                                            ),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Checkbox(checked = rememberCloseChoice, onCheckedChange = null)
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("记住我的选择，不再询问", style = MaterialTheme.typography.bodyMedium)
+                                    }
+                                }
+                            },
                             confirmButton = {
                                 PikoDialogConfirm(
                                     label = "最小化到托盘",
                                     onClick = {
                                         askCloseBehavior = false
-                                        settings.set(CLOSE_BEHAVIOR_ASKED_KEY, "true")
-                                        platform.closeToTray?.set(true)
+                                        if (rememberCloseChoice) {
+                                            settings.set(CLOSE_BEHAVIOR_ASKED_KEY, "true")
+                                            platform.closeToTray?.set(true)
+                                        }
                                         hideToTray()
                                     },
                                 )
@@ -375,8 +408,10 @@ fun main(args: Array<String>) {
                                 TextButton(
                                     onClick = {
                                         askCloseBehavior = false
-                                        settings.set(CLOSE_BEHAVIOR_ASKED_KEY, "true")
-                                        platform.closeToTray?.set(false)
+                                        if (rememberCloseChoice) {
+                                            settings.set(CLOSE_BEHAVIOR_ASKED_KEY, "true")
+                                            platform.closeToTray?.set(false)
+                                        }
                                         exitApplication()
                                     },
                                 ) {
