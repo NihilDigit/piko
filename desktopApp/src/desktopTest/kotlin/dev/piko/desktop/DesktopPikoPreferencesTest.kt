@@ -30,6 +30,17 @@ class DesktopPikoPreferencesTest {
     }
 
     @Test
+    fun clipboardDetectionIsOptInAndPersistsLocally() = runBlocking {
+        val file = tempFile()
+        val prefs = DesktopPikoPreferences(DesktopSettingsStore(file)) { secrets }
+        assertFalse(prefs.autoDetectClipboardLinksFlow.first())
+        prefs.setAutoDetectClipboardLinks(true)
+        assertEquals(true, DesktopPikoPreferences(DesktopSettingsStore(file)) { secrets }.autoDetectClipboardLinksFlow.first())
+        prefs.setAutoDetectClipboardLinks(false)
+        assertFalse(DesktopPikoPreferences(DesktopSettingsStore(file)) { secrets }.autoDetectClipboardLinksFlow.first())
+    }
+
+    @Test
     fun playbackFolderAndSwitches_roundTrip() = runBlocking {
         val store = DesktopSettingsStore(tempFile())
         val prefs = DesktopPikoPreferences(store) { secrets }

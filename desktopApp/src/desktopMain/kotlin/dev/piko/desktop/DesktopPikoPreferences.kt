@@ -31,6 +31,7 @@ class DesktopPikoPreferences(
 
     private val spoiler = MutableStateFlow(settings.get(KEY_SPOILER, "true").toBoolean())
     private val autoCheckUpdates = MutableStateFlow(settings.get(KEY_AUTO_CHECK_UPDATES, "true").toBoolean())
+    private val autoDetectClipboardLinks = MutableStateFlow(settings.get("ui.autoDetectClipboardLinks") == "true")
     private val reduceMotion = MutableStateFlow(settings.get(KEY_REDUCE_MOTION) == "true")
     private val hardwareDecoding = MutableStateFlow(settings.get(KEY_HARDWARE_DECODING, "true").toBoolean())
     private val playbackMaxHeight = MutableStateFlow(settings.get(KEY_PLAYBACK_MAX_HEIGHT).toIntOrNull() ?: 0)
@@ -120,6 +121,12 @@ class DesktopPikoPreferences(
     override suspend fun setAutoCheckUpdates(enabled: Boolean) {
         settings.set(KEY_AUTO_CHECK_UPDATES, enabled.toString())
         autoCheckUpdates.value = enabled
+    }
+
+    override val autoDetectClipboardLinksFlow: Flow<Boolean> = autoDetectClipboardLinks.asStateFlow()
+    override suspend fun setAutoDetectClipboardLinks(enabled: Boolean) {
+        settings.set("ui.autoDetectClipboardLinks", enabled.toString())
+        autoDetectClipboardLinks.value = enabled
     }
 
     override val reduceMotionFlow: Flow<Boolean> = reduceMotion.asStateFlow()

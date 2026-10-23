@@ -19,6 +19,7 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.AccountCircle
@@ -311,6 +312,41 @@ fun SettingsScreen(
                                 appearance = appearance,
                                 onSeedChange = { scope.launch { sessionManager.setThemeSeed(it?.name) } },
                             )
+                            platform.launchAtStartup?.let { startup ->
+                                var enabled by remember { mutableStateOf(false) }
+                                var busy by remember { mutableStateOf(true) }
+                                val focused = LocalWindowInfo.current.isWindowFocused
+                                LaunchedEffect(startup, focused) {
+                                    if (focused) {
+                                        enabled = startup.isEnabled()
+                                        busy = false
+                                    }
+                                }
+                                SettingsSwitchRow(
+                                    icon = Icons.Outlined.WebAsset,
+                                    title = "开机自动启动",
+                                    supporting = "登录 Windows 后打开 Piko",
+                                    checked = enabled,
+                                    onCheckedChange = { value ->
+                                        if (!busy) scope.launch {
+                                            busy = true
+                                            if (!startup.setEnabled(value)) snackbarHostState.showSnackbar("无法更改开机启动设置")
+                                            enabled = startup.isEnabled()
+                                            busy = false
+                                        }
+                                    },
+                                )
+                            }
+                            platform.closeToTray?.let { toggle ->
+                                val enabled by toggle.enabled.collectAsState()
+                                SettingsSwitchRow(
+                                    icon = Icons.Outlined.WebAsset,
+                                    title = "关闭时最小化到托盘",
+                                    supporting = "点击关闭按钮时收进托盘而不退出",
+                                    checked = enabled,
+                                    onCheckedChange = toggle::set,
+                                )
+                            }
                             platform.compactTitleBar?.let { compactTitleBar ->
                                 val compact by compactTitleBar.enabled.collectAsState()
                                 SettingsSwitchRow(
@@ -382,6 +418,14 @@ fun SettingsScreen(
                     // 而配套字幕只在添加链接时起作用，与本机下载无关
                     section(SettingsSection.Saving) {
                         SettingsGroup(null) {
+                            val detectClipboard by sessionManager.autoDetectClipboardLinksFlow.collectAsStateWithLifecycle(initialValue = false)
+                            SettingsSwitchRow(
+                                icon = Icons.Outlined.ContentPaste,
+                                title = "自动检测剪贴板链接",
+                                supporting = "回到前台时提示磁力或 PikPak 分享链接，确认后解析",
+                                checked = detectClipboard,
+                                onCheckedChange = { scope.launch { sessionManager.setAutoDetectClipboardLinks(it) } },
+                            )
                             if (linkAssociation != null) {
                                 LinkAssociationRow(
                                     association = linkAssociation,

@@ -1,5 +1,8 @@
 package dev.piko.desktop
 
+import dev.piko.desktop.winrt.WindowsLaunchAtStartup
+import dev.piko.ui.platform.LaunchAtStartup
+
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyListState
@@ -85,6 +88,13 @@ class DesktopPikoPlatform(
 
     // Windows 没有 Monet 那样的整套取色，强调色只有一个值，撑不起 M3 的色调方案
     override val supportsDynamicColor: Boolean = false
+
+    override val launchAtStartup: LaunchAtStartup? =
+        if (WinRTSupport.isWindows) System.getProperty("jpackage.app-path")?.takeIf { it.isNotBlank() }
+            ?.let { WindowsLaunchAtStartup(it) } else null
+
+    override val closeToTray: PlatformToggle? =
+        if (java.awt.SystemTray.isSupported()) StoredToggle(settings, "window.closeToTray", default = false) else null
 
     // 只在 Windows 上：macOS 的拖动区挪不进内容，见 WindowFrame
     override val compactTitleBar: PlatformToggle? =

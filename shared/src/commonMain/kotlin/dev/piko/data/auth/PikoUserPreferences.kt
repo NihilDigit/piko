@@ -186,6 +186,10 @@ interface PikoUserPreferences {
     val autoCheckUpdatesFlow: Flow<Boolean>
     suspend fun setAutoCheckUpdates(enabled: Boolean)
 
+    /** 回到前台时检测剪贴板中的磁力或分享链接，默认关，仅保存在当前设备。 */
+    val autoDetectClipboardLinksFlow: Flow<Boolean>
+    suspend fun setAutoDetectClipboardLinks(enabled: Boolean)
+
     /** 设置里的「减少动画」，默认关，与系统的减少动画取或。每台设备各自的，不同步：系统那一半本来就按设备。 */
     val reduceMotionFlow: Flow<Boolean>
     suspend fun setReduceMotion(enabled: Boolean)

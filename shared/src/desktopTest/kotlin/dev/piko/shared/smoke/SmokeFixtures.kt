@@ -34,6 +34,8 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun setSpoilerBlurEnabled(enabled: Boolean) = Unit
     override val autoCheckUpdatesFlow: Flow<Boolean> = MutableStateFlow(true)
     override suspend fun setAutoCheckUpdates(enabled: Boolean) = Unit
+    override val autoDetectClipboardLinksFlow: Flow<Boolean> = MutableStateFlow(false)
+    override suspend fun setAutoDetectClipboardLinks(enabled: Boolean) = Unit
     override val reduceMotionFlow: Flow<Boolean> = MutableStateFlow(false)
     override suspend fun setReduceMotion(enabled: Boolean) = Unit
     override val hardwareDecodingFlow: Flow<Boolean> = MutableStateFlow(true)
