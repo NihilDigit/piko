@@ -205,7 +205,11 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
                 }
                 if (group.any { it.path in confirmed }) {
                     val ancestors = folderIds.filterKeys { it.isEmpty() || directory == it || directory.startsWith("$it/") }
-                    onReferencesSaved(ancestors.values.associateWith { setOf(folderId) })
+                    val tree = ancestors.values.associateWith { setOf(folderId) }.toMutableMap()
+                    if (targetParentId.isNotEmpty() && folderId != targetParentId) {
+                        tree[targetParentId] = (tree[targetParentId].orEmpty() + folderId)
+                    }
+                    onReferencesSaved(tree)
                 }
                 remaining.removeAll(confirmed.keys + unknown)
                 if(write.isFailure) { failure = write.exceptionOrNull(); break }

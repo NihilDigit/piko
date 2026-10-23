@@ -347,7 +347,7 @@ open class PikoDriveRepository(
     suspend fun folderMapLevel(folderId: String): Result<List<FileStat>> = withContext(Dispatchers.Default) {
         runSuspendCatching {
             val files = freshListing(folderId) ?: fetchListing(folderId)
-            files.filter { !it.trashed && !isPikoInternalFolder(it, folderId) && !VaultStore.looksLikeManifest(it) }
+            files.filter { !it.trashed && !isPikoInternalFolder(it, folderId) && !VaultStore.looksLikeManifest(it) && !VaultStore.isRecoveryFile(it) }
                 .sortedWith(compareBy<FileStat> { !it.isFolder }.thenBy(NaturalOrder) { it.name })
         }
     }
@@ -532,7 +532,7 @@ open class PikoDriveRepository(
         entries: List<VaultEntry>,
         sortOrder: PikoFileSortOrder,
     ): List<FileStat> {
-        val visible = withVaultCovers(listing.filterNot { isPikoInternalFolder(it, folderId) })
+        val visible = withVaultCovers(listing.filterNot { isPikoInternalFolder(it, folderId) || VaultStore.isRecoveryFile(it) })
         if (entries.isEmpty() && visible.none(VaultStore::looksLikeManifest)) return sortFiles(visible, sortOrder, folderId)
         val real = visible.filterNot(VaultStore::looksLikeManifest)
         val restoredMetadata = entries.filterNot { it.isArchived }
@@ -669,13 +669,13 @@ open class PikoDriveRepository(
 
     /** [complete] 为假时 [files] 只是一页：其中没有清单不说明文件夹里没有，只加标记、不去掉。 */
     private fun rememberChildContents(folderId: String, files: List<FileStat>, complete: Boolean = true) {
-        // 清单文件不是用户的文件，不拿来解析作品名；有没有它说明这个文件夹里有没有归档条目。
+        // 清单文件与归档来源兜底文件不是用户的文件，不拿来解析作品名；有没有清单说明这个文件夹里有没有归档条目。
         // 清单读过、确认已经空了的不算
         val (manifests, real) = files.partition(VaultStore::looksLikeManifest)
-        childContents.put(folderId, real.filterNot(FileStat::isFolder).take(MAX_REMEMBERED_CHILD_NAMES).map(ChildFile::of))
+        val visibleReal = real.filterNot { it.trashed || VaultStore.isRecoveryFile(it) }
+        childContents.put(folderId, visibleReal.filterNot(FileStat::isFolder).take(MAX_REMEMBERED_CHILD_NAMES).map(ChildFile::of))
         val hasEntries = manifests.isNotEmpty() && vault.cached(folderId, files)?.any { it.isArchived } != false
         if (hasEntries || complete) childContents.markVaulted(folderId, hasEntries)
-        val visibleReal = real.filterNot { it.trashed || VaultStore.isRecoveryFile(it) }
         val subfolders = visibleReal.filter { it.isFolder }.mapTo(mutableSetOf()) { it.id }
         val hasRealFiles = visibleReal.any { !it.isFolder && !it.isVaulted }
         childContents.rememberCompleteness(folderId, hasRealFiles, subfolders, complete)
@@ -878,7 +878,19 @@ open class PikoDriveRepository(
     private suspend fun uploadBytes(asked: PikPakClient, parentId: String, name: String, bytes: ByteArray): String {
         val size = bytes.size.toLong()
         val gcid = PikPakHash.fromSource(Buffer().apply { write(bytes) }, size)
-        return asked.upload(parentId, name, size, gcid, { Buffer().apply { write(bytes) } }, {}).fileId
+        var lastError: Throwable? = null
+        for (attempt in 0 until UPLOAD_BYTES_ATTEMPTS) {
+            try {
+                return asked.upload(parentId, name, size, gcid, { Buffer().apply { write(bytes) } }, {}).fileId
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                lastError = e
+                if (e is PikPakException || attempt == UPLOAD_BYTES_ATTEMPTS - 1) throw e
+                delay(LINK_RETRY_DELAYS.getOrElse(attempt) { 1.seconds })
+            }
+        }
+        throw lastError ?: error("上传失败")
     }
 
     /**
@@ -1006,7 +1018,7 @@ open class PikoDriveRepository(
      */
     fun searchRecursive(query: String, parentId: String = ""): Flow<SearchHit> =
         client.searchFilesRecursive(query, parentId).filter { hit ->
-            !isPikoInternalFolder(hit.file) && !VaultStore.looksLikeManifest(hit.file) &&
+            !isPikoInternalFolder(hit.file) && !VaultStore.looksLikeManifest(hit.file) && !VaultStore.isRecoveryFile(hit.file) &&
                 !(parentId.isEmpty() && hit.breadcrumb.firstOrNull()?.let(::isPikoInternalFolderName) == true)
         }.map { hit -> hit.copy(file = sourceLedger.enrich(hit.file)) }
 
@@ -1199,6 +1211,7 @@ open class PikoDriveRepository(
         // 批量操作的日志里列出的 ID 个数：够在网盘里对上是哪几项，几百项的移动不至于占满一屏
         private const val LOGGED_IDS = 5
         private val LINK_RETRY_DELAYS = listOf(500.milliseconds, 1.seconds, 2.seconds)
+        private const val UPLOAD_BYTES_ATTEMPTS = 3
         private const val MAX_LOCATE_DEPTH = 64
         private const val CHILD_NAME_PAGE = 20
         private const val CHILD_NAME_CONCURRENCY = 2

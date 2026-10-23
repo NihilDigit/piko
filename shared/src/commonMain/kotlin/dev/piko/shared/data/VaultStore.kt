@@ -8,6 +8,7 @@ import io.github.nihildigit.pikpak.ResolvedFile
 import io.github.nihildigit.pikpak.TaskPhase
 import io.github.nihildigit.pikpak.thumbnailUrlOf
 import dev.piko.data.repository.isPlayableVideo
+import dev.piko.data.repository.isPreviewableImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
@@ -86,8 +87,8 @@ data class VaultEntry(
             phase = TaskPhase.COMPLETE,
             params = source?.let { mapOf("url" to it) }.orEmpty(),
         )
-        // 缩略图只由 gcid 决定、不带签名，不借文件就有；只给视频拼，别的类型 PikPak 没有截图
-        return if (row.isPlayableVideo()) row.copy(thumbnailLink = thumbnailUrlOf(gcid)) else row
+        // 缩略图只由 gcid 决定、不带签名，不借文件就有；给视频与图片拼上
+        return if (row.isPlayableVideo() || row.isPreviewableImage()) row.copy(thumbnailLink = thumbnailUrlOf(gcid)) else row
     }
 
     companion object {
