@@ -989,6 +989,7 @@ internal val PlayerAspectRatio.label: String
         PlayerAspectRatio.Fit -> "适应屏幕"
         PlayerAspectRatio.Crop -> "裁剪填充"
         PlayerAspectRatio.Stretch -> "拉伸全屏"
+        PlayerAspectRatio.RegionCrop -> "框选填充"
     }
 
 // 设置面板的倍速选项，[ ] 键也按这几档换

@@ -20,9 +20,11 @@ import dev.piko.shared.media.player.PlaybackBackend
 import dev.piko.shared.media.player.PlaybackBackendEvent
 import dev.piko.shared.media.player.PlaybackTarget
 import dev.piko.shared.media.player.PlayerAspectRatio
+import dev.piko.shared.media.player.VideoCropRegion
 import dev.piko.shared.media.player.mpvSubtitleAddCommands
 import dev.piko.shared.media.player.mpvSubtitleSelectCommand
 import dev.piko.shared.media.player.readMpvTracks
+import kotlin.math.ln
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -71,6 +73,8 @@ internal class MpvPlaybackBackend(
     override val supportsSpeed: Boolean = true
     private var currentAspectRatio by mutableStateOf(PlayerAspectRatio.Fit)
     override val aspectRatio: PlayerAspectRatio get() = currentAspectRatio
+    private var currentCropRegion by mutableStateOf<VideoCropRegion?>(null)
+    override val cropRegion: VideoCropRegion? get() = currentCropRegion
     override var videoAspect by mutableStateOf<Float?>(null)
         private set
     private var currentVolume by mutableFloatStateOf(1f)
@@ -272,25 +276,57 @@ internal class MpvPlaybackBackend(
 
     override fun setAspectRatio(mode: PlayerAspectRatio) {
         if (released) return
+        val region = currentCropRegion ?: VideoCropRegion().also { if (mode == PlayerAspectRatio.RegionCrop) currentCropRegion = it }
         onMpv {
             when (mode) {
                 PlayerAspectRatio.Fit -> {
                     mpv.setPropertyString("keepaspect", "yes")
                     mpv.setPropertyDouble("panscan", 0.0)
+                    mpv.setPropertyDouble("video-zoom", 0.0)
+                    mpv.setPropertyDouble("video-pan-x", 0.0)
+                    mpv.setPropertyDouble("video-pan-y", 0.0)
                 }
 
                 PlayerAspectRatio.Crop -> {
                     mpv.setPropertyString("keepaspect", "yes")
                     mpv.setPropertyDouble("panscan", 1.0)
+                    mpv.setPropertyDouble("video-zoom", 0.0)
+                    mpv.setPropertyDouble("video-pan-x", 0.0)
+                    mpv.setPropertyDouble("video-pan-y", 0.0)
                 }
 
                 PlayerAspectRatio.Stretch -> {
                     mpv.setPropertyString("keepaspect", "no")
                     mpv.setPropertyDouble("panscan", 0.0)
+                    mpv.setPropertyDouble("video-zoom", 0.0)
+                    mpv.setPropertyDouble("video-pan-x", 0.0)
+                    mpv.setPropertyDouble("video-pan-y", 0.0)
+                }
+
+                PlayerAspectRatio.RegionCrop -> {
+                    val scale = maxOf(1f / region.width, 1f / region.height)
+                    val zoom = ln(scale.toDouble()) / ln(2.0)
+                    val panX = (0.5f - region.centerX).toDouble()
+                    val panY = (0.5f - region.centerY).toDouble()
+                    mpv.setPropertyString("keepaspect", "yes")
+                    mpv.setPropertyDouble("panscan", 1.0)
+                    mpv.setPropertyDouble("video-zoom", zoom)
+                    mpv.setPropertyDouble("video-pan-x", panX)
+                    mpv.setPropertyDouble("video-pan-y", panY)
                 }
             }
         }
         currentAspectRatio = mode
+    }
+
+    override fun setCropRegion(region: VideoCropRegion?) {
+        if (released) return
+        currentCropRegion = region
+        if (region != null) {
+            setAspectRatio(PlayerAspectRatio.RegionCrop)
+        } else if (currentAspectRatio == PlayerAspectRatio.RegionCrop) {
+            setAspectRatio(PlayerAspectRatio.Fit)
+        }
     }
 
     override fun setVolume(volume: Float) {

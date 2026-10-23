@@ -17,6 +17,8 @@ import dev.piko.shared.media.player.PlaybackBackend
 import dev.piko.shared.media.player.PlaybackBackendEvent
 import dev.piko.shared.media.player.PlaybackTarget
 import dev.piko.shared.media.player.PlayerAspectRatio
+import dev.piko.shared.media.player.VideoCropRegion
+import kotlin.math.ln
 import dev.piko.shared.media.player.mpvSubtitleAddCommands
 import dev.piko.shared.media.player.mpvSubtitleSelectCommand
 import dev.piko.shared.media.player.readMpvTracks
@@ -86,6 +88,8 @@ internal class MediampPlaybackBackend(
         aspectRatioFeature?.mode?.value?.toShared(),
     )
     override val aspectRatio: PlayerAspectRatio? get() = currentAspectRatio
+    private var currentCropRegion by mutableStateOf<VideoCropRegion?>(null)
+    override val cropRegion: VideoCropRegion? get() = currentCropRegion
     override var videoAspect by mutableStateOf<Float?>(null)
         private set
 
@@ -178,7 +182,15 @@ internal class MediampPlaybackBackend(
             }
         }
         speedFeature?.let { feature -> scope.launch { feature.valueFlow.collect { currentSpeed = it } } }
-        aspectRatioFeature?.let { feature -> scope.launch { feature.mode.collect { currentAspectRatio = it.toShared() } } }
+        aspectRatioFeature?.let { feature ->
+            scope.launch {
+                feature.mode.collect {
+                    if (currentAspectRatio != PlayerAspectRatio.RegionCrop) {
+                        currentAspectRatio = it.toShared()
+                    }
+                }
+            }
+        }
         audioFeature?.let { feature -> scope.launch { feature.volume.collect { currentVolume = it.coerceIn(0f, 1f) } } }
         scope.launch {
             player.events.collect { event ->
@@ -320,13 +332,58 @@ internal class MediampPlaybackBackend(
     }
 
     override fun setAspectRatio(mode: PlayerAspectRatio) {
-        aspectRatioFeature?.setMode(
-            when (mode) {
-                PlayerAspectRatio.Fit -> AspectRatioMode.FIT
-                PlayerAspectRatio.Crop -> AspectRatioMode.CROP
-                PlayerAspectRatio.Stretch -> AspectRatioMode.STRETCH
-            },
-        )
+        currentAspectRatio = mode
+        when (mode) {
+            PlayerAspectRatio.Fit -> {
+                resetMpvCropZoom()
+                aspectRatioFeature?.setMode(AspectRatioMode.FIT)
+            }
+            PlayerAspectRatio.Crop -> {
+                resetMpvCropZoom()
+                aspectRatioFeature?.setMode(AspectRatioMode.CROP)
+            }
+            PlayerAspectRatio.Stretch -> {
+                resetMpvCropZoom()
+                aspectRatioFeature?.setMode(AspectRatioMode.STRETCH)
+            }
+            PlayerAspectRatio.RegionCrop -> {
+                aspectRatioFeature?.setMode(AspectRatioMode.CROP)
+                applyMpvCropRegion(currentCropRegion ?: VideoCropRegion().also { currentCropRegion = it })
+            }
+        }
+    }
+
+    override fun setCropRegion(region: VideoCropRegion?) {
+        currentCropRegion = region
+        if (region != null) {
+            currentAspectRatio = PlayerAspectRatio.RegionCrop
+            aspectRatioFeature?.setMode(AspectRatioMode.CROP)
+            applyMpvCropRegion(region)
+        } else if (currentAspectRatio == PlayerAspectRatio.RegionCrop) {
+            setAspectRatio(PlayerAspectRatio.Fit)
+        } else {
+            resetMpvCropZoom()
+        }
+    }
+
+    private fun applyMpvCropRegion(region: VideoCropRegion) {
+        val handle = mpv ?: return
+        val scale = maxOf(1f / region.width, 1f / region.height)
+        val zoom = (ln(scale.toDouble()) / ln(2.0))
+        val panX = (0.5f - region.centerX).toDouble()
+        val panY = (0.5f - region.centerY).toDouble()
+        handle.setPropertyString("keepaspect", "yes")
+        handle.setPropertyString("panscan", "1.0")
+        handle.setPropertyString("video-zoom", zoom.toString())
+        handle.setPropertyString("video-pan-x", panX.toString())
+        handle.setPropertyString("video-pan-y", panY.toString())
+    }
+
+    private fun resetMpvCropZoom() {
+        val handle = mpv ?: return
+        handle.setPropertyString("video-zoom", "0.0")
+        handle.setPropertyString("video-pan-x", "0.0")
+        handle.setPropertyString("video-pan-y", "0.0")
     }
 }
 

@@ -703,19 +703,29 @@ private fun ClipPager(
     fun clipPosition(): Long = (currentPlayer.positionMillis - currentStart).coerceIn(0L, currentLength)
 
     fun seekClip(millis: Long) {
-        if (!seekable) return
+        val activeClip = clips.getOrNull(latestSettled)
+        val slot = slotOf(latestSettled)
+        if (activeClip == null || rendered[slot] != activeClip) return
+        val player = players[slot]
         // 放到流尾停住的播放器靠定位重新走起来；不清掉的话翻回来时会被当作已放完，从头再放
-        ended[currentSlot] = null
-        val maxRemaining = (current.videoDurationMs - clipStartMs[currentSlot]).coerceAtLeast(CLIP_LENGTH_MS)
-        if (millis >= currentLength - SEEK_EXTEND_THRESHOLD_MS && currentLength < maxRemaining) {
-            clipLengths[currentSlot] = (currentLength + CLIP_LENGTH_MS).coerceAtMost(maxRemaining)
+        ended[slot] = null
+        // 主动定位时立即放开缓存与预读：还没播满升档时间的段，预读原本锁在 0，不放开的话拖到未预取处读不到字节
+        player.setBufferAhead(BOOSTED_SECONDS)
+        streams.boost(activeClip, BOOSTED_SECONDS)
+        val currentClipLen = clipLengths[slot].coerceAtLeast(CLIP_LENGTH_MS)
+        val maxRemaining = (activeClip.videoDurationMs - clipStartMs[slot]).coerceAtLeast(CLIP_LENGTH_MS)
+        if (millis >= currentClipLen - SEEK_EXTEND_THRESHOLD_MS && currentClipLen < maxRemaining) {
+            clipLengths[slot] = (currentClipLen + CLIP_LENGTH_MS).coerceAtMost(maxRemaining)
         }
-        val limit = clipLengths[currentSlot].coerceAtLeast(CLIP_LENGTH_MS)
-        currentPlayer.seekTo(currentStart + millis.coerceIn(0L, limit))
+        val limit = clipLengths[slot].coerceAtLeast(CLIP_LENGTH_MS)
+        val targetOnPlayer = startOnPlayer[slot] + millis.coerceIn(0L, limit)
+        player.seekTo(targetOnPlayer)
         seekPending++
     }
 
-    fun seekClipBy(deltaMillis: Long) = seekClip(clipPosition() + deltaMillis)
+    val latestSeekClip by rememberUpdatedState(::seekClip)
+
+    fun seekClipBy(deltaMillis: Long) = latestSeekClip(clipPosition() + deltaMillis)
 
     // 按键拦在最外层：焦点可能落在翻页器里的操作栏上，也可能落在翻页器外的顶栏按钮上，两处都要接得住。
     // 用 Preview 先于按钮拦下：焦点落在按钮上时，空格不该变成点一下那个按钮
@@ -941,7 +951,7 @@ private fun ClipPager(
                         positionMillis = clipPosition(),
                         lengthMillis = currentLength,
                         bufferedPositionMillis = (currentPlayer.bufferedPositionMillis - currentStart).coerceIn(0L, currentLength),
-                        onSeek = ::seekClip,
+                        onSeek = { latestSeekClip(it) },
                         onScrubbingChange = { scrubbing = it },
                         modifier = Modifier
                             .align(Alignment.BottomCenter)

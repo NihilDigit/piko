@@ -97,6 +97,34 @@ internal fun FullscreenPromptButton(
 }
 
 /**
+ * 框选填充生效时的「还原」浮窗胶囊按钮，随控件栏显隐浮在画面底部，一键还原回适应屏幕。
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+internal fun RestoreCropPromptButton(
+    visible: Boolean,
+    onClick: () -> Unit,
+) {
+    val motion = MaterialTheme.motionScheme
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(motion.defaultEffectsSpec()) + slideInVertically(motion.defaultSpatialSpec()) { it / 2 },
+        exit = fadeOut(motion.fastEffectsSpec()) + slideOutVertically(motion.fastSpatialSpec()) { it / 2 },
+    ) {
+        FilledTonalButton(
+            onClick = onClick,
+            shapes = ButtonDefaults.shapes(),
+            colors = ButtonDefaults.filledTonalButtonColors(
+                containerColor = playerContainerColor(),
+                contentColor = MaterialTheme.colorScheme.onSurface,
+            ),
+        ) {
+            Text("还原")
+        }
+    }
+}
+
+/**
  * 续播提示：「从 xx 继续播放」，附带「从头播放」。
  *
  * 形式上就是一条带操作的 Snackbar：短暂、不打断播放、只有一个操作，

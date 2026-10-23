@@ -1003,11 +1003,12 @@ internal fun PlayerSeekBar(
     )
     val positionText = formatTime((fraction * durationMillis).toLong())
     val durationText = formatTime(durationMillis)
+    val currentDurationMillis by rememberUpdatedState(durationMillis)
     val currentOnSeek by rememberUpdatedState(onSeek)
     val currentOnScrub by rememberUpdatedState(onScrub)
 
     fun commitSeek(target: Float) {
-        val millis = (target * durationMillis).toLong()
+        val millis = (target * currentDurationMillis).toLong()
         pendingSeekMillis = millis
         currentOnSeek(millis)
     }
@@ -1032,7 +1033,7 @@ internal fun PlayerSeekBar(
                 .requiredHeight(SeekTouchHeight)
                 .handCursor(enabled)
                 // 按下即跳到该处并开始拖动，松手才真正 seek
-                .pointerInput(enabled, durationMillis) {
+                .pointerInput(enabled) {
                     if (!enabled) return@pointerInput
                     val inset = SeekThumbDraggingRadius.toPx()
                     awaitEachGesture {
@@ -1041,7 +1042,7 @@ internal fun PlayerSeekBar(
                         fun follow(x: Float) {
                             val target = seekFractionAt(x, size.width.toFloat(), inset)
                             dragFraction = target
-                            currentOnScrub((target * durationMillis).toLong())
+                            currentOnScrub((target * currentDurationMillis).toLong())
                         }
                         follow(down.position.x)
                         while (true) {

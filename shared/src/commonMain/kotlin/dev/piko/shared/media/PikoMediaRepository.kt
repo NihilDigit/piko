@@ -325,9 +325,7 @@ class PikoMediaRepository(
             throw e
         }
         backgroundScope.launch { runCatching { handle.prewarm() } }
-        // 切片从起点一直开放到转码流末尾，30 秒放完可以直接往后续播；预取与落盘仍只限开头那一段
-        val openLength = (record.streamBytes - record.sliceOffset).coerceAtLeast(record.sliceLength)
-        val source = SlicedByteSource(PikPakByteSource(handle, cache), record.sliceOffset, openLength)
+        val source = SlicedByteSource(PikPakByteSource(handle, cache), record.sliceOffset, record.sliceLength)
         val stream = registerProxy(source, fileName = "clip.ts", role = role) ?: return null
         return PreparedClip(
             stream,
@@ -436,8 +434,7 @@ class PikoMediaRepository(
         val offset = if (keyframe != null) estimated + keyframe.byteOffset else estimated
         val sliceLength = sliceLengthAt(offset)
         store?.keepSlice(offset, sliceLength, bytesPerMs)
-        val openLength = (source.size - offset).coerceAtLeast(sliceLength)
-        val slice = SlicedByteSource(source, offset, openLength)
+        val slice = SlicedByteSource(source, offset, sliceLength)
         val stream = registerProxy(slice, fileName = "clip.ts", role = role) ?: return null
         fun record(sliceStartMs: Long) = ClipRecord(
             fileId = detail.id,

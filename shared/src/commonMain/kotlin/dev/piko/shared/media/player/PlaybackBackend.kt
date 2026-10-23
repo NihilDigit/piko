@@ -90,6 +90,10 @@ interface PlaybackBackend {
      */
     fun setRotation(degrees: Int) = Unit
 
+    /** 自定义画面裁剪选区（归一化坐标 0..1），仅在 [PlayerAspectRatio.RegionCrop] 下生效。 */
+    val cropRegion: VideoCropRegion? get() = null
+    fun setCropRegion(region: VideoCropRegion?) = Unit
+
     /**
      * 读一个 mpv 属性的字符串值，播放详细信息面板用，见 readPlaybackStats。两端都是 libmpv，属性名通用；
      * 读不到（还没加载、后端不是 mpv、已释放）时为 null。
@@ -142,4 +146,17 @@ sealed interface PlaybackBackendEvent {
     data class Error(val detail: String?) : PlaybackBackendEvent
 }
 
-enum class PlayerAspectRatio { Fit, Crop, Stretch }
+enum class PlayerAspectRatio { Fit, Crop, Stretch, RegionCrop }
+
+/** 归一化（0f..1f）的画面区域选择框，用于区域裁剪铺满窗口。 */
+data class VideoCropRegion(
+    val left: Float = 0.1f,
+    val top: Float = 0.1f,
+    val right: Float = 0.9f,
+    val bottom: Float = 0.9f,
+) {
+    val width: Float get() = (right - left).coerceIn(0.05f, 1f)
+    val height: Float get() = (bottom - top).coerceIn(0.05f, 1f)
+    val centerX: Float get() = (left + right) * 0.5f
+    val centerY: Float get() = (top + bottom) * 0.5f
+}
