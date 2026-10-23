@@ -27,5 +27,5 @@ data class InstantSaveAttempt(
             it.confirmed.keys.containsAll(files.filter { file -> file.gcid != null }.map { file -> file.path })
     } == true
     val locateId: String? get() = receipt?.folders?.get("")?.takeIf { it.isNotEmpty() }
-        ?: receipt?.confirmed?.values?.firstOrNull() ?: target.id.takeIf { it.isNotEmpty() }
+        ?: receipt?.confirmed?.values?.firstOrNull() ?: target.id
 }

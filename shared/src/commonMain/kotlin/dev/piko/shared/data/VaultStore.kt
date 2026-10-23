@@ -224,6 +224,11 @@ class VaultStore(
         return parsed.value[file.id]
     }
 
+    /** 查找已知清单中含 [entryId] 的文件夹 ID。 */
+    fun folderOfEntry(entryId: String): String? =
+        known.value.entries.firstOrNull { (_, entries) -> entries.any { it.id == entryId } }?.key
+            ?: pending.value.entries.firstOrNull { (_, entries) -> entries.any { it.id == entryId } }?.key
+
     /**
      * 把 [edit] 写进 [folderId] 的清单。现列目录再读，不用调用方手上的列表：它可能已经过时。
      * 改完与原来相同就不写。

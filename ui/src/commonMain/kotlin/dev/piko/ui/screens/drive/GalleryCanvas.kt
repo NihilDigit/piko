@@ -165,9 +165,7 @@ internal fun GalleryCanvas(
     val prefetchScope = rememberCoroutineScope()
     val prefetchLimit = remember(state) { Semaphore(COVER_PREFETCH_CONCURRENCY) }
     val platformContext = LocalPlatformContext.current
-    val coverFiles by remember(files) {
-        derivedStateOf { files.filter { it.id !in failedCovers } }
-    }
+    val coverFiles = files
     val byId by remember(coverFiles) {
         derivedStateOf { coverFiles.associateBy { it.id } }
     }
@@ -179,8 +177,8 @@ internal fun GalleryCanvas(
         }
     }
     val onVisible by rememberUpdatedState(onVisibleFilesChanged)
-    LaunchedEffect(state, failedCovers.size) {
-        snapshotFlow { state.visibleFileIds + failedCovers }.collect { onVisible(it) }
+    LaunchedEffect(state) {
+        snapshotFlow { state.visibleFileIds }.collect { onVisible(it) }
     }
     // 激进封面预取：使用独立于滚动帧重组的常驻作用域，避免滚动时频繁取消在途图片下载
     LaunchedEffect(coverFiles, state.visibleFileIds) {

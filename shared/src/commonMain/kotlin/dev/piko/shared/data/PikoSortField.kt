@@ -14,6 +14,7 @@ enum class PikoSortField(
     TIME("创建时间", PikoFileSortOrder.TIME_ASC, PikoFileSortOrder.TIME_DESC, PikoFileSortOrder.TIME_DESC),
     NAME("名称", PikoFileSortOrder.NAME_ASC, PikoFileSortOrder.NAME_DESC, PikoFileSortOrder.NAME_ASC),
     SIZE("大小", PikoFileSortOrder.SIZE_ASC, PikoFileSortOrder.SIZE_DESC, PikoFileSortOrder.SIZE_DESC),
+    DURATION("时长", PikoFileSortOrder.DURATION_ASC, PikoFileSortOrder.DURATION_DESC, PikoFileSortOrder.DURATION_DESC),
     ;
 
     fun owns(order: PikoFileSortOrder) = order == ascending || order == descending

@@ -265,9 +265,10 @@ fun TransfersScreen(
         )
     }
 
-    fun locateWriteId(work: dev.piko.shared.state.FileWriteWork): String? = when (work.command) {
+    fun locateWriteId(work: dev.piko.shared.state.FileWriteWork): String? = when (val cmd = work.command) {
         is dev.piko.shared.state.FileWriteCommand.Delete -> null
-        is dev.piko.shared.state.FileWriteCommand.Copy -> work.command.target?.id?.takeIf { it.isNotEmpty() }
+        is dev.piko.shared.state.FileWriteCommand.Copy -> cmd.target.id
+        is dev.piko.shared.state.FileWriteCommand.Move -> work.result?.confirmed?.firstOrNull() ?: cmd.target.id
         else -> work.result?.createdId ?: work.result?.confirmed?.firstOrNull()
     }
 
@@ -284,7 +285,7 @@ fun TransfersScreen(
     fun actionsFor(item: TransferItem): List<SheetAction> {
         val base = when (item) {
             is TransferItem.UploadPreparing -> uploadPreparationActions(item.work,
-                item.work.parentId.takeIf { it.isNotEmpty() }?.let { { openCloudFileById(it, item.work.parentName) } }, {
+                { openCloudFileById(item.work.parentId, item.work.parentName) }, {
                     if (item.work.hasSideEffects) { detailState.close(); state.selectOnly(item.key); confirmingDeleteKeys = setOf(item.key) }
                     else state.remove(item)
                 })
@@ -295,7 +296,7 @@ fun TransfersScreen(
                     if (item.key !in state.selectedKeys) state.selectOnly(item.key)
                     confirmingDeleteKeys = setOf(item.key)
                 },
-                onShowInDrive = item.parentId.takeIf { it.isNotEmpty() }?.let { { openCloudFileById(it, item.parentName) } },
+                onShowInDrive = { openCloudFileById(item.parentId, item.parentName) },
             )
             is TransferItem.LocalBatch -> localBatchActions(item, item.key in expandedBatches, batchIntents(item))
             is TransferItem.Local -> localTransferActions(
@@ -307,17 +308,17 @@ fun TransfersScreen(
                 onRemove = { state.removeLocal(item.task.taskId) },
                 previewHidden = if (isSpoilerBlurEnabled && hasPreview(item.task)) item.key !in revealedKeys else null,
                 onTogglePreview = { if (!revealedKeys.remove(item.key)) revealedKeys.add(item.key) },
-                onShowInDrive = item.task.fileId.takeIf { it.isNotEmpty() && !item.task.isSegment }?.let { { openCloudFileById(it, item.task.fileName) } },
+                onShowInDrive = item.task.fileId.takeIf { it.isNotEmpty() && !item.task.isSegment }?.let { id -> { openCloudFileById(id, item.task.fileName) } },
             )
             is TransferItem.Upload -> uploadTransferActions(
                 task = item.task,
                 onPlay = playActionFor(item),
-                onOpen = { item.task.fileId?.let { openCloudFileById(it, item.task.fileName) } },
-                onOpenParent = item.task.parentId.takeIf { it.isNotEmpty() }?.let { { openCloudFileById(it, item.task.parentName) } },
+                onOpen = { item.task.fileId?.let { id -> openCloudFileById(id, item.task.fileName) } },
+                onOpenParent = { openCloudFileById(item.task.parentId, item.task.parentName) },
                 onResume = { state.resumeUpload(item.task.taskId) },
                 onPause = { state.pauseUpload(item.task.taskId) },
                 onRemove = { state.removeUpload(item.task.taskId) },
-                onRevealLocal = item.task.sourceUri.takeIf { it.isNotEmpty() && !it.startsWith("content:") }?.let { { localFiles.openContainingFolder(it) } },
+                onRevealLocal = item.task.sourceUri.takeIf { it.isNotEmpty() && !it.startsWith("content:") }?.let { path -> { localFiles.openContainingFolder(path) } },
             )
             is TransferItem.Cloud -> cloudTransferActions(
                 task = item.task,
@@ -341,7 +342,7 @@ fun TransfersScreen(
                 onRemove = { state.removeInstant(item.record.id) },
             )
             is TransferItem.InstantAttempt -> instantAttemptActions(item.work,
-                item.work.locateId?.let { { openCloudFileById(it, item.work.title) } },
+                item.work.locateId?.let { id -> { openCloudFileById(id, item.work.title) } },
                 {
                     if (item.work.receipt?.requiresInspection == true) {
                         detailState.close(); state.selectOnly(item.key); confirmingDeleteKeys = setOf(item.key)
@@ -355,10 +356,10 @@ fun TransfersScreen(
                         detailState.close(); state.selectOnly(item.key); confirmingDeleteKeys = setOf(item.key)
                     } else state.remove(item)
                 },
-                (item.work.associatedOutputs.values.firstOrNull() ?: item.work.command.target.id.takeIf { it.isNotEmpty() })?.let { { openCloudFileById(it, item.work.title) } },
+                (item.work.associatedOutputs.values.firstOrNull() ?: item.work.command.target.id).let { id -> { openCloudFileById(id, item.work.title) } },
             )
             is TransferItem.OfflineSubmit -> offlineSubmitActions(item.work,
-                (item.work.outputId ?: item.work.target.id.takeIf { it.isNotEmpty() })?.let { { openCloudFileById(it, item.work.title) } },
+                (item.work.outputId ?: item.work.target.id).let { id -> { openCloudFileById(id, item.work.title) } },
                 {
                     if (item.work.status == dev.piko.shared.state.OfflineSubmitStatus.UNCONFIRMED) {
                         detailState.close(); state.selectOnly(item.key); confirmingDeleteKeys = setOf(item.key)
@@ -383,7 +384,7 @@ fun TransfersScreen(
                 fileWriteActions(work, state.writeUndoStatus(work), state.canUndoWrite(work), services.fileWrites.canRecheck(work.id),
                     { state.undoWrite(work) }, { services.fileWrites.recheck(work.id) },
                     { if (work.result?.unconfirmed?.isNotEmpty() == true) { detailState.close(); state.selectOnly(item.key); confirmingDeleteKeys = setOf(item.key) } else state.remove(item) },
-                    locateWriteId(work)?.let { { openCloudFileById(it, work.command.title) } },
+                    locateWriteId(work)?.let { id -> { openCloudFileById(id, work.command.title) } },
                 )
             }
             is TransferItem.VaultEdit -> vaultEditActions(item.work, state.vaultEditUndoStatus(item.work), state.canUndoVaultEdit(item.work), services.vaultEntryEdits.canRecheck(item.work.id),
@@ -404,7 +405,7 @@ fun TransfersScreen(
 
     // 点按一项做的事，轻点与鼠标双击共用；不弹详情面板，详情在右键菜单与触屏长按里
     fun primaryActionFor(item: TransferItem): (() -> Unit)? = when (item) {
-        is TransferItem.UploadPreparing -> item.work.parentId.takeIf { it.isNotEmpty() }?.let { { openCloudFileById(it, item.work.parentName) } }
+        is TransferItem.UploadPreparing -> ({ openCloudFileById(item.work.parentId, item.work.parentName) })
         is TransferItem.UploadBatch -> ({ toggleBatch(item.key) })
         is TransferItem.LocalBatch -> localBatchPrimaryAction(item, batchIntents(item))
         is TransferItem.Local -> localPrimaryAction(
@@ -417,7 +418,7 @@ fun TransfersScreen(
         is TransferItem.Upload -> uploadPrimaryAction(
             task = item.task,
             onPlay = playActionFor(item),
-            onOpen = { item.task.fileId?.let { openCloudFileById(it, item.task.fileName) } },
+            onOpen = { item.task.fileId?.let { id -> openCloudFileById(id, item.task.fileName) } },
             onResume = { state.resumeUpload(item.task.taskId) },
             onPause = { state.pauseUpload(item.task.taskId) },
         )
@@ -427,17 +428,17 @@ fun TransfersScreen(
             onOpen = { openCloudFileById(item.job.outputId, item.job.folderName) },
             onRetry = { state.retryPack(item.job.taskId) },
         )
-        is TransferItem.Instant -> playActionFor(item) ?: item.record.locateId.takeIf { it.isNotEmpty() }?.let { { openCloudFileById(it, item.record.name) } }
-        is TransferItem.InstantAttempt -> item.work.locateId?.let { { openCloudFileById(it, item.work.title) } }
-        is TransferItem.Share -> (item.work.associatedOutputs.values.firstOrNull() ?: item.work.command.target.id.takeIf { it.isNotEmpty() })?.let { { openCloudFileById(it, item.work.title) } }
-        is TransferItem.OfflineSubmit -> (item.work.outputId ?: item.work.target.id.takeIf { it.isNotEmpty() })?.let { { openCloudFileById(it, item.work.title) } }
+        is TransferItem.Instant -> playActionFor(item) ?: ({ openCloudFileById(item.record.locateId, item.record.name) })
+        is TransferItem.InstantAttempt -> item.work.locateId?.let { id -> { openCloudFileById(id, item.work.title) } }
+        is TransferItem.Share -> (item.work.associatedOutputs.values.firstOrNull() ?: item.work.command.target.id).let { id -> { openCloudFileById(id, item.work.title) } }
+        is TransferItem.OfflineSubmit -> (item.work.outputId ?: item.work.target.id).let { id -> { openCloudFileById(id, item.work.title) } }
         is TransferItem.Extract -> if (item.job.status is dev.piko.shared.state.ArchiveJobStatus.NeedsPassword) {
             { state.promptExtractPassword(item.job.id); Unit }
         } else {
             { openCloudFileById(item.job.file.id, item.job.file.name) }
         }
         is TransferItem.Vault -> null
-        is TransferItem.Write -> locateWriteId(item.work)?.let { { openCloudFileById(it, item.work.command.title) } }
+        is TransferItem.Write -> locateWriteId(item.work)?.let { id -> { openCloudFileById(id, item.work.command.title) } }
         is TransferItem.History -> null
         is TransferItem.VaultEdit -> null
     }
@@ -534,8 +535,7 @@ fun TransfersScreen(
         }
         is TransferItem.Instant -> when {
             item.record.canPlayVideo -> SheetAction(Icons.Outlined.PlayArrow, "播放", { playCloud(item.record.locateId, item.record.name) })
-            item.record.locateId.isNotEmpty() -> SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", { openCloudFileById(item.record.locateId, item.record.name) })
-            else -> null
+            else -> SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", { openCloudFileById(item.record.locateId, item.record.name) })
         }
         is TransferItem.Upload -> when {
             item.task.canPlayVideo -> SheetAction(Icons.Outlined.PlayArrow, "播放", { playCloud(requireNotNull(item.task.fileId), item.task.fileName) })
@@ -549,7 +549,7 @@ fun TransfersScreen(
             else -> null
         }
         else -> pauseOrResumeAction(item) ?: actionsFor(item).firstOrNull {
-            it.label == "输入解压密码" || it.label.startsWith("停止") || it.label == "重新查询结果" || it.label == "重试" || it.label == "仍然下载"
+            it.label == "输入解压密码" || it.label.startsWith("停止") || it.label == "重新查询结果" || it.label == "重试" || it.label == "仍然下载" || it.label == "在网盘中显示"
         }
     }
 
@@ -729,7 +729,25 @@ fun TransfersScreen(
     fun TaskDetails(modifier: Modifier) {
         val current = detailsItem ?: return
         val actions = withSelectAction(
-            actionsFor(current).filterNot { it.group == ActionGroup.Properties },
+            actionsFor(current)
+                .filterNot { it.group == ActionGroup.Properties }
+                .map { action ->
+                    SheetAction(
+                        icon = action.icon,
+                        label = action.label,
+                        onClick = {
+                            closeDetails()
+                            action.onClick()
+                        },
+                        destructive = action.destructive,
+                        group = action.group,
+                        checked = action.checked,
+                        onPrepare = action.onPrepare,
+                        tier = action.tier,
+                        shortLabel = action.shortLabel,
+                        pending = action.pending,
+                    )
+                },
             if (LocalPointerSource.current.isTouchLike && !checkboxActive) ({ closeDetails(); state.enterSelection(current.key) }) else null,
         )
         when (current) {

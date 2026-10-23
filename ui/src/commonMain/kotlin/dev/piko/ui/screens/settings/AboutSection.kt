@@ -92,6 +92,9 @@ internal fun AboutSection(snackbarHostState: SnackbarHostState, modifier: Modifi
             onOpenRepository = { platform.openUrl(REPOSITORY_URL) },
             onOpenChannel = { platform.openUrl(CHANNEL_URL) },
         )
+    }
+
+    SettingsGroup(title = null, modifier = modifier) {
         // 没有应用内更新的平台不给这个开关
         if (updater != null) {
             val autoCheckUpdates by sessionManager.autoCheckUpdatesFlow.collectAsState(initial = true)
@@ -106,7 +109,7 @@ internal fun AboutSection(snackbarHostState: SnackbarHostState, modifier: Modifi
         SettingsNavigationRow(
             icon = Icons.Outlined.BugReport,
             title = "导出日志",
-            supporting = "反馈问题时附上。不含文件名、账号与密码",
+            supporting = "反馈问题时附上，不含文件名与账号机密",
             onClick = { scope.launch { exportLogs(platform) } },
             trailingIcon = null,
         )
@@ -114,7 +117,7 @@ internal fun AboutSection(snackbarHostState: SnackbarHostState, modifier: Modifi
         SettingsNavigationRow(
             icon = Icons.Outlined.History,
             title = "清除日志",
-            supporting = "日志保留七天。复现问题前先清除，导出内容更清楚",
+            supporting = "日志保留七天，复现问题前可先清空",
             onClick = {
                 scope.launch {
                     PikoLog.clear()
@@ -186,13 +189,8 @@ private fun AboutCard(
                         )
                     }
                 }
-            }
-            Spacer(modifier = Modifier.height(12.dp))
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
                 if (updateStatus != null) {
+                    Spacer(modifier = Modifier.width(12.dp))
                     FilledTonalButton(onClick = onUpdateClick, enabled = updateStatus != UpdateStatus.Checking) {
                         if (updateStatus == UpdateStatus.Checking) {
                             // 按钮在检查期间是禁用态，指示器跟着用禁用的内容色，不然一块亮色压在灰按钮上
@@ -200,33 +198,54 @@ private fun AboutCard(
                         } else {
                             Icon(Icons.Outlined.SystemUpdate, contentDescription = null, modifier = Modifier.size(18.dp))
                         }
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             when (updateStatus) {
                                 is UpdateStatus.Available, is UpdateStatus.ReadyToRestart -> "查看更新"
                                 is UpdateStatus.Downloading, is UpdateStatus.Installing -> "查看进度"
                                 else -> "检查更新"
                             },
+                            maxLines = 1,
                         )
                         if (updateStatus is UpdateStatus.Available) {
-                            Spacer(modifier = Modifier.width(8.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
                             Badge()
                         }
                     }
                 }
-                OutlinedButton(onClick = onOpenRepository) {
+            }
+            Spacer(modifier = Modifier.height(14.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                FilledTonalButton(
+                    onClick = onOpenRepository,
+                    modifier = Modifier.weight(1f),
+                    colors = androidx.compose.material3.ButtonDefaults.filledTonalButtonColors(
+                        containerColor = colors.surfaceContainerHighest,
+                        contentColor = colors.onSurface,
+                    ),
+                ) {
                     Icon(Icons.Outlined.Code, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("开源仓库")
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("开源仓库", maxLines = 1)
                     Spacer(modifier = Modifier.width(4.dp))
-                    Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp))
                 }
-                OutlinedButton(onClick = onOpenChannel) {
+                FilledTonalButton(
+                    onClick = onOpenChannel,
+                    modifier = Modifier.weight(1f),
+                    colors = androidx.compose.material3.ButtonDefaults.filledTonalButtonColors(
+                        containerColor = colors.surfaceContainerHighest,
+                        contentColor = colors.onSurface,
+                    ),
+                ) {
                     Icon(Icons.Outlined.Campaign, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Telegram 频道")
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Telegram 频道", maxLines = 1)
                     Spacer(modifier = Modifier.width(4.dp))
-                    Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp))
                 }
             }
         }

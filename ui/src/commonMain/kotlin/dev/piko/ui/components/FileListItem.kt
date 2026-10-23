@@ -147,7 +147,7 @@ fun FileListItem(
 
     val leadingSlot: @Composable () -> Unit = {
         Box(slotModifier.size(ListLeadingSize), contentAlignment = Alignment.Center) {
-            if (isSelectionMode || (hover.mouseHovered && isDesktopLayout() && onStartSelection != null)) {
+            if (isSelectionMode || (hover.mouseHovered && onStartSelection != null)) {
                 FileItemSelectionControl(FileItemSelection(
                     if (isSelected) androidx.compose.ui.state.ToggleableState.On else androidx.compose.ui.state.ToggleableState.Off,
                     { if (isSelectionMode) onSelectToggle(!isSelected) else onStartSelection?.invoke() }, label = "选择 $headline"),

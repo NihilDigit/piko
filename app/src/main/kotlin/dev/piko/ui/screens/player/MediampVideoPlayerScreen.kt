@@ -1,13 +1,28 @@
 package dev.piko.ui.screens.player
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.media.MediaMetadata
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
 import android.net.Uri
+import android.os.Build
 import android.provider.OpenableColumns
+import android.view.KeyEvent
 import android.view.WindowManager
+import androidx.core.content.ContextCompat
+import androidx.core.content.IntentCompat
+import dev.piko.MainActivity
+import dev.piko.R
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -189,17 +204,109 @@ fun MediampVideoPlayerScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // Android 系统媒体控制（MediaSession）：支持蓝牙耳机按键、系统媒体中心与进度拖动
+    // Android 系统媒体控制（AudioFocus + MediaSession + MediaStyle Notification）：
+    // 只有持有 AudioFocus 的活跃 MediaSession 才能稳定接收蓝牙耳机按键路由
+    val audioManager = remember(context) { context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager }
+    val audioFocusRequest = remember(audioManager, state) {
+        val attrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+            .build()
+        AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(attrs)
+            .setOnAudioFocusChangeListener { focusChange ->
+                when (focusChange) {
+                    AudioManager.AUDIOFOCUS_LOSS,
+                    AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+                    -> state.pause()
+                }
+            }
+            .build()
+    }
+    LaunchedEffect(audioManager, audioFocusRequest, state.isPlaying, state.isImage) {
+        if (!state.isImage && state.isPlaying) {
+            runCatching { audioManager?.requestAudioFocus(audioFocusRequest) }
+        }
+    }
+    DisposableEffect(audioManager, audioFocusRequest) {
+        onDispose {
+            runCatching { audioManager?.abandonAudioFocusRequest(audioFocusRequest) }
+        }
+    }
+
+    val notificationManager = remember(context) { context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager }
+    val latestSeekStepSeconds by androidx.compose.runtime.rememberUpdatedState(seekStepSeconds)
     val mediaSession = remember(context, state) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                MEDIA_CHANNEL_ID,
+                "媒体播放",
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply {
+                description = "视频播放时的系统媒体控制"
+                setShowBadge(false)
+            }
+            notificationManager.createNotificationChannel(channel)
+        }
+        val sessionActivity = PendingIntent.getActivity(
+            context,
+            0,
+            Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
         MediaSession(context, "PikoPlayer").apply {
+            setSessionActivity(sessionActivity)
             setCallback(object : MediaSession.Callback() {
+                override fun onMediaButtonEvent(mediaButtonIntent: Intent): Boolean {
+                    val event = IntentCompat.getParcelableExtra(mediaButtonIntent, Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
+                    if (event != null && event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                        when (event.keyCode) {
+                            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                            KeyEvent.KEYCODE_HEADSETHOOK,
+                            -> {
+                                state.togglePlayPause()
+                                return true
+                            }
+                            KeyEvent.KEYCODE_MEDIA_PLAY -> {
+                                state.play()
+                                return true
+                            }
+                            KeyEvent.KEYCODE_MEDIA_PAUSE,
+                            KeyEvent.KEYCODE_MEDIA_STOP,
+                            -> {
+                                state.pause()
+                                return true
+                            }
+                            KeyEvent.KEYCODE_MEDIA_NEXT -> {
+                                state.playNext()
+                                return true
+                            }
+                            KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
+                                state.playPrevious()
+                                return true
+                            }
+                            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
+                                state.seekBy(latestSeekStepSeconds * 1_000L)
+                                return true
+                            }
+                            KeyEvent.KEYCODE_MEDIA_REWIND -> {
+                                state.seekBy(-latestSeekStepSeconds * 1_000L)
+                                return true
+                            }
+                        }
+                    }
+                    return super.onMediaButtonEvent(mediaButtonIntent)
+                }
+
                 override fun onPlay() = state.play()
                 override fun onPause() = state.pause()
                 override fun onStop() = state.pause()
                 override fun onSkipToNext() = state.playNext()
                 override fun onSkipToPrevious() = state.playPrevious()
-                override fun onFastForward() = state.seekBy(seekStepSeconds * 1_000L)
-                override fun onRewind() = state.seekBy(-seekStepSeconds * 1_000L)
+                override fun onFastForward() = state.seekBy(latestSeekStepSeconds * 1_000L)
+                override fun onRewind() = state.seekBy(-latestSeekStepSeconds * 1_000L)
                 override fun onSeekTo(pos: Long) = state.seekTo(pos)
             })
             isActive = true
@@ -207,18 +314,54 @@ fun MediampVideoPlayerScreen(
     }
     DisposableEffect(mediaSession) {
         onDispose {
+            runCatching { notificationManager.cancel(MEDIA_NOTIFICATION_ID) }
             mediaSession.isActive = false
             mediaSession.release()
         }
     }
-    LaunchedEffect(mediaSession, state.title, state.durationMillis, state.isImage) {
+    val artistLabel = remember(state.currentEntry, state.title) {
+        state.currentEntry?.sectionLabel?.takeIf { it.isNotBlank() && it != state.title } ?: "Piko"
+    }
+    LaunchedEffect(mediaSession, state.title, artistLabel, state.durationMillis, state.isImage) {
         if (!state.isImage) {
             mediaSession.setMetadata(
                 MediaMetadata.Builder()
                     .putString(MediaMetadata.METADATA_KEY_TITLE, state.title)
+                    .putString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE, state.title)
+                    .putString(MediaMetadata.METADATA_KEY_ARTIST, artistLabel)
+                    .putString(MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE, artistLabel)
                     .putLong(MediaMetadata.METADATA_KEY_DURATION, state.durationMillis.coerceAtLeast(0L))
                     .build(),
             )
+        } else {
+            runCatching { notificationManager.cancel(MEDIA_NOTIFICATION_ID) }
+        }
+    }
+    LaunchedEffect(mediaSession, state.title, artistLabel, state.isPlaying, state.isImage) {
+        if (!state.isImage && state.title.isNotEmpty()) {
+            val hasPermission = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+            if (hasPermission) {
+                val openIntent = PendingIntent.getActivity(
+                    context,
+                    0,
+                    Intent(context, MainActivity::class.java).apply {
+                        flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    },
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                )
+                val notification = Notification.Builder(context, MEDIA_CHANNEL_ID)
+                    .setSmallIcon(R.drawable.ic_stat_piko)
+                    .setContentTitle(state.title)
+                    .setContentText(artistLabel)
+                    .setSubText("Piko")
+                    .setContentIntent(openIntent)
+                    .setOngoing(state.isPlaying)
+                    .setVisibility(Notification.VISIBILITY_PUBLIC)
+                    .setStyle(Notification.MediaStyle().setMediaSession(mediaSession.sessionToken))
+                    .build()
+                runCatching { notificationManager.notify(MEDIA_NOTIFICATION_ID, notification) }
+            }
         }
     }
     LaunchedEffect(mediaSession, state) {
@@ -393,6 +536,9 @@ private fun copySubtitleToCache(context: Context, uri: Uri): LocalSubtitle {
  *
  * 分段下载的片段不算，路径对应的文件也要还在。
  */
+private const val MEDIA_CHANNEL_ID = "piko_media_playback"
+private const val MEDIA_NOTIFICATION_ID = 9528
+
 private fun completedDownloadPath(fileId: String): String? =
     PikoApplication.instance.downloadManager.tasks.value.values
         .find { it.fileId == fileId && it.status == DownloadStatus.COMPLETED && !it.isSegment }

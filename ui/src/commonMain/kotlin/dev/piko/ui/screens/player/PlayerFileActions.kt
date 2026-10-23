@@ -102,7 +102,15 @@ fun rememberPlayerFileActions(fileId: String, isLocalPlayback: Boolean, onMessag
         if (!isLocalPlayback) {
             add(
                 DriveActions.download(
-                    onClick = { withFile { file -> downloads.download(listOf(file)) { notice -> message(notice ?: "已加入下载") } } },
+                    onClick = {
+                        val resolved = LeasedFile.resolvedFileOf(fileId)
+                        if (resolved != null) {
+                            services.downloadManager.enqueueResolved(listOf(resolved), "")
+                            message("已加入下载")
+                        } else {
+                            withFile { file -> downloads.download(listOf(file)) { notice -> message(notice ?: "已加入下载") } }
+                        }
+                    },
                 ),
             )
             add(

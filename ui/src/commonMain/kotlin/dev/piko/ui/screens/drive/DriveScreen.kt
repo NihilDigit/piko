@@ -1272,12 +1272,12 @@ fun DriveScreen(
         if (instantState == null) return@LaunchedEffect
         launch {
             instantState.previewRequests.collect { req ->
-                if (addLinkInSidePanel && !addLink.isExpanded) navigateToPlayer(FileStat(id = req.fileId, name = req.fileName), emptyList())
+                if (!addLink.isExpanded) navigateToPlayer(FileStat(id = req.fileId, name = req.fileName), emptyList())
             }
         }
         launch {
             instantState.messages.collect { msg ->
-                if (addLinkInSidePanel && !addLink.isExpanded) snackbarHostState.showSnackbar(msg, withDismissAction = true)
+                if (!addLink.isExpanded) snackbarHostState.showSnackbar(msg, withDismissAction = true)
             }
         }
     }
@@ -1950,10 +1950,21 @@ fun DriveScreen(
                         PropertiesPane(
                             target = shown,
                             modifier = contentModifier,
-                            onLocate = if (libraryView != null || state.searchQuery.isNotBlank() || state.isGlobalSearchActive) {
+                            onLocate = if (libraryView != null || state.searchQuery.isNotBlank() || state.isGlobalSearchActive || galleryActive) {
                                 { file ->
                                     propertyDetails.close()
-                                    onRevealInDrive?.invoke(file) ?: state.revealInDrive(file)
+                                    if (galleryActive) {
+                                        val path = gallery.pathTo(file.parentId)
+                                        gallery.close()
+                                        if (path != null) {
+                                            navigation.updateFolderStack(path)
+                                            state.highlight(setOf(file.id))
+                                        } else {
+                                            onRevealInDrive?.invoke(file) ?: state.revealInDrive(file)
+                                        }
+                                    } else {
+                                        onRevealInDrive?.invoke(file) ?: state.revealInDrive(file)
+                                    }
                                 }
                             } else null,
                             onParseSource = { url ->

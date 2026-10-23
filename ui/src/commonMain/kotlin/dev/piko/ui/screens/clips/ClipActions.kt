@@ -59,6 +59,10 @@ internal class ClipActions(
 
     /** [value] 为 null 时切换。双击画面只加不减，与短视频应用的点赞一致。 */
     fun setStarred(clip: Clip, value: Boolean? = null) {
+        if (dev.piko.shared.data.VaultEntry.isVaulted(clip.fileId)) {
+            onMessage("归档文件需要先恢复到网盘才能添加星标")
+            return
+        }
         val before = isStarred(clip)
         val target = value ?: !before
         if (target == before) return

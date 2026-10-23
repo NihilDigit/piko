@@ -401,7 +401,7 @@ private fun ZoomableImagePage(
     onDismiss: () -> Unit,
     onDismissProgress: (Float) -> Unit,
 ) {
-    val driveRepo = LocalPikoServices.current.driveRepository
+    val mediaRepo = LocalPikoServices.current.mediaRepository
     val scope = rememberCoroutineScope()
     val platformContext = LocalPlatformContext.current
 
@@ -410,7 +410,14 @@ private fun ZoomableImagePage(
     // 全屏查看器里不再受防窥遮蔽拦一道：点进来本身就是「我要看这张」，
     // 再要求点一次「显示图片」只是多一步。遮蔽仍然作用在列表和海报墙的缩略图上。
     LaunchedEffect(file.id) {
-        if (fullUrl == null) fullUrl = driveRepo.originalImageUrl(file.id)
+        if (fullUrl == null) {
+            val url = mediaRepo.fetchDownloadUrl(file.id).getOrNull()
+            if (url != null) {
+                fullUrl = url
+            } else {
+                isFullReady = true
+            }
+        }
     }
 
     var dragY by remember(file.id) { mutableFloatStateOf(0f) }
@@ -542,6 +549,7 @@ private fun ZoomableImagePage(
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxSize(),
                     onSuccess = { isFullReady = true },
+                    onError = { isFullReady = true },
                 )
             }
         }

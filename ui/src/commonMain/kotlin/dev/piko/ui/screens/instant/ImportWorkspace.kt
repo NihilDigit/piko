@@ -271,7 +271,7 @@ private fun SourceImportTree(sources: List<ImportSource>, management: ImportMana
 @Composable
 private fun ImportResultBrowser(sources: List<ImportSource>, browser: ImportBrowserState, onDownloaded: () -> Unit, onOpenLink: (String) -> Unit) {
     val descriptors = sources.map { source -> ImportProjectionSource(source.key,
-        source.state.sourceSelectedIndices.sorted().zip(source.state.projectedSaveFiles)) }
+        source.state.projectedSaveEntries) }
     val entries = remember(descriptors) { importResultEntries(descriptors) }
     val all = entries.map { it.file }
     val entryById = entries.associateBy { it.file.id }

@@ -392,16 +392,18 @@ class DriveScreenState(
             // 库里的条目散在全盘各处，按作品与分区归拢的是一个目录里的东西，这里照原来的先后平铺；
             // 压缩包里的也平铺、不折叠：在包里多半是挑要解压的几项，折起来的次要文件正是要挑的一部分
             structure == null || (isVirtualPlace && importPreviewView == null) -> files.map { DriveListItem.File(it, null) }
-            !isNameParsing || structure.blocks.isEmpty() ->
-                filterDriveFiles(files, structure.foldedIds, enabled = hideFolded, revealAll = false).map { DriveListItem.File(it, null) }
+            !isNameParsing || structure.blocks.isEmpty() || sortOrder == PikoFileSortOrder.DURATION_DESC || sortOrder == PikoFileSortOrder.DURATION_ASC ->
+                filterDriveFiles(files, structure.foldedIds, enabled = hideFolded, revealAll = false).map { DriveListItem.File(it, structure.views[it.id]) }
             else -> buildDriveItems(files, structure, hideFolded) { block -> isBlockExpanded(block) }
         }
     }
 
-    /** 眼前按作品与分区排：不在搜索、不在库或压缩包里、解析开着且认出了作品。 */
+    /** 眼前按作品与分区排：不在搜索、不在库或压缩包里、解析开着、未按时长排序且认出了作品。 */
     private val isStructured: Boolean by derivedStateOf {
         val structure = currentAnalysis
-        !isSearching && (!isVirtualPlace || importPreviewView != null) && isNameParsing && structure != null && structure.blocks.isNotEmpty()
+        !isSearching && (!isVirtualPlace || importPreviewView != null) && isNameParsing &&
+            sortOrder != PikoFileSortOrder.DURATION_DESC && sortOrder != PikoFileSortOrder.DURATION_ASC &&
+            structure != null && structure.blocks.isNotEmpty()
     }
 
     /**

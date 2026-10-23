@@ -3,6 +3,7 @@ package dev.piko.ui.screens.settings
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
@@ -151,10 +152,15 @@ private fun otherAccounts(): List<SavedAccount> {
 internal fun LogoutButton(onLoggedOut: () -> Unit) {
     val others = otherAccounts()
     var confirmLogout by remember { mutableStateOf(false) }
-    OutlinedButton(
+    val colors = MaterialTheme.colorScheme
+    androidx.compose.material3.FilledTonalButton(
         onClick = { confirmLogout = true },
-        modifier = Modifier.fillMaxWidth(),
-        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+        modifier = Modifier.fillMaxWidth().height(50.dp),
+        shape = settingsStyle().groupShape,
+        colors = ButtonDefaults.filledTonalButtonColors(
+            containerColor = colors.errorContainer.copy(alpha = 0.24f),
+            contentColor = colors.error,
+        ),
     ) {
         Icon(Icons.AutoMirrored.Outlined.Logout, contentDescription = null, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(8.dp))

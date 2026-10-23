@@ -523,10 +523,14 @@ fun PikoMainScaffold(
         val originTab = currentTab
         val originScreens = backStack.filterIsInstance<Screen>()
         val originContextId = workspaceModel.contexts.activeContextId.value
-        val stack = (lookUpPath(fileId) ?: return true).getOrElse { return false }
+        val stack = if (fileId.isEmpty()) {
+            listOf(PikoDriveRepository.ROOT_BREADCRUMB)
+        } else {
+            (lookUpPath(fileId) ?: return true).getOrElse { return false }
+        }
         if (services.driveRepository.currentAccount != account) return true
         workspaceModel.enterFromOutside(stack, originTab, originScreens, originContextId)
-        driveWorkspace.requestHighlight(setOf(fileId))
+        if (fileId.isNotEmpty()) driveWorkspace.requestHighlight(setOf(fileId))
         resetToHome()
         currentTab = MainTab.FILES
         return true

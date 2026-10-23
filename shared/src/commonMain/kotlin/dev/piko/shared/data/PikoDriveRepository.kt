@@ -103,7 +103,7 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 
-enum class PikoFileSortOrder { NAME_ASC, NAME_DESC, TIME_DESC, TIME_ASC, SIZE_DESC, SIZE_ASC }
+enum class PikoFileSortOrder { NAME_ASC, NAME_DESC, TIME_DESC, TIME_ASC, SIZE_DESC, SIZE_ASC, DURATION_DESC, DURATION_ASC }
 
 data class PikoPathBreadcrumb(val id: String, val name: String)
 
@@ -257,8 +257,22 @@ open class PikoDriveRepository(
      */
     suspend fun locateFolder(fileId: String): Result<List<PikoPathBreadcrumb>> = withContext(Dispatchers.Default) {
         runSuspendCatching {
+            val asked = client
+            val vaultEntryId = VaultEntry.entryIdOf(fileId)
+            if (vaultEntryId != null) {
+                val parentId = vault.folderOfEntry(vaultEntryId) ?: error("找不到归档条目所在的文件夹")
+                if (parentId.isEmpty()) return@runSuspendCatching listOf(ROOT_BREADCRUMB)
+                val folder = folderIndex.node(parentId)?.takeUnless { it.provisional }
+                if (folder != null) {
+                    val above = if (folder.parentId.isNullOrEmpty()) listOf(ROOT_BREADCRUMB) else locateFolder(parentId).getOrThrow()
+                    return@runSuspendCatching above + PikoPathBreadcrumb(parentId, folder.name)
+                }
+                val detail = fetchDetail(parentId, asked)
+                val above = if (detail.parentId.isEmpty()) listOf(ROOT_BREADCRUMB) else locateFolder(parentId).getOrThrow()
+                return@runSuspendCatching above + PikoPathBreadcrumb(detail.id, detail.name)
+            }
             val chain = ArrayDeque<PikoPathBreadcrumb>()
-            var parentId = knownParentOf(fileId) ?: fetchDetail(fileId).parentId
+            var parentId = knownParentOf(fileId) ?: fetchDetail(fileId, asked).parentId
             repeat(MAX_LOCATE_DEPTH) {
                 if (parentId.isEmpty()) return@runSuspendCatching listOf(ROOT_BREADCRUMB) + chain
                 val known = folderIndex.node(parentId)?.takeUnless { it.provisional }
@@ -267,7 +281,7 @@ open class PikoDriveRepository(
                     chain.addFirst(PikoPathBreadcrumb(parentId, known.name))
                     parentId = knownParent
                 } else {
-                    val folder = fetchDetail(parentId)
+                    val folder = fetchDetail(parentId, asked)
                     chain.addFirst(PikoPathBreadcrumb(folder.id, folder.name))
                     parentId = folder.parentId
                 }
@@ -853,13 +867,15 @@ open class PikoDriveRepository(
     }.flowOn(Dispatchers.Default)
 
     suspend fun getFileDetail(fileId: String): Result<FileDetail> = withContext(Dispatchers.Default) {
-        runSuspendCatching { fetchDetail(fileId) }
+        runSuspendCatching { fetchDetail(fileId, client) }
     }
 
-    /** 查详情，是文件夹就记进索引。 */
-    private suspend fun fetchDetail(fileId: String): FileDetail = client.getFile(fileId).also { detail ->
-        val isFolder = detail.kind == FileKind.FOLDER
-        if (folderIndex.learned(detail.id, detail.name, detail.parentId, isFolder, detail.trashed)) normalizeLocations()
+    /** 查详情，是文件夹就记进索引（仅当请求归属的 client 仍为当前活跃 client 时）。 */
+    private suspend fun fetchDetail(fileId: String, asked: PikPakClient = client): FileDetail = asked.getFile(fileId).also { detail ->
+        if (clientManager.currentClient.value === asked) {
+            val isFolder = detail.kind == FileKind.FOLDER
+            if (folderIndex.learned(detail.id, detail.name, detail.parentId, isFolder, detail.trashed)) normalizeLocations()
+        }
     }
 
     /**
@@ -1233,18 +1249,42 @@ open class PikoDriveRepository(
      */
     fun sortFiles(files: List<FileStat>, order: PikoFileSortOrder, parentId: String): List<FileStat> {
         val (folders, regularFiles) = files.partition { it.isFolder }
+        fun durationOf(file: FileStat): Double? = file.params["duration"]?.toDoubleOrNull()?.takeIf { it > 0.0 }
+        val nameComparator = compareBy(NaturalOrder, FileStat::name)
         val comparator = when (order) {
             // 自然顺序：第 2 集排在第 10 集前面
-            PikoFileSortOrder.NAME_ASC -> compareBy(NaturalOrder, FileStat::name)
-            PikoFileSortOrder.NAME_DESC -> compareBy(NaturalOrder, FileStat::name).reversed()
+            PikoFileSortOrder.NAME_ASC -> nameComparator
+            PikoFileSortOrder.NAME_DESC -> nameComparator.reversed()
             // 按创建时间而非 modified_time：目录的 modified_time 不随其中内容变动而更新，
             // 与创建时间相同（2026-09-23 实测），按它排序只会让「修改时间」名不副实
             PikoFileSortOrder.TIME_DESC -> compareByDescending(FileStat::createdTime)
             PikoFileSortOrder.TIME_ASC -> compareBy(FileStat::createdTime)
             PikoFileSortOrder.SIZE_DESC -> compareByDescending(FileStat::sizeBytes)
             PikoFileSortOrder.SIZE_ASC -> compareBy(FileStat::sizeBytes)
+            // 按时长排序时，无时长的非音视频文件排在有具体时长的音视频文件之后，同为无时长时按自然名称排
+            PikoFileSortOrder.DURATION_DESC -> Comparator { a, b ->
+                val da = durationOf(a)
+                val db = durationOf(b)
+                when {
+                    da != null && db != null -> db.compareTo(da).takeIf { it != 0 } ?: nameComparator.compare(a, b)
+                    da != null -> -1
+                    db != null -> 1
+                    else -> nameComparator.compare(a, b)
+                }
+            }
+            PikoFileSortOrder.DURATION_ASC -> Comparator { a, b ->
+                val da = durationOf(a)
+                val db = durationOf(b)
+                when {
+                    da != null && db != null -> da.compareTo(db).takeIf { it != 0 } ?: nameComparator.compare(a, b)
+                    da != null -> -1
+                    db != null -> 1
+                    else -> nameComparator.compare(a, b)
+                }
+            }
         }
-        val sortedFolders = folders.sortedWith(comparator)
+        val folderComparator = if (order == PikoFileSortOrder.DURATION_DESC || order == PikoFileSortOrder.DURATION_ASC) nameComparator else comparator
+        val sortedFolders = folders.sortedWith(folderComparator)
         val pinned = if (parentId.isEmpty()) sortedFolders.firstOrNull { it.isMyPacksFolder() } else null
         val orderedFolders = if (pinned == null) sortedFolders else listOf(pinned) + (sortedFolders - pinned)
         return orderedFolders + regularFiles.sortedWith(comparator)
