@@ -216,9 +216,9 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
         val unsubmittedInput = draft != null && !draft.isBlank && !draft.isSaving && draft.batch?.isSaving != true &&
             !draft.hasRetainedInstantAttempt && !draft.hasRetainedShareWork && !draft.hasRetainedOfflineSubmission
         val duplicate = duplicateSessions[id]?.state
-        val hasReport = duplicate?.report?.let { it.identical.isNotEmpty() || it.versions.isNotEmpty() } == true
-        val scanning = duplicate?.phase == DuplicateFinderState.Phase.SCANNING || duplicate?.phase == DuplicateFinderState.Phase.ANALYZING
-        return model?.discardNeedsConfirm == true || unsubmittedInput || scanning || hasReport
+        val isDuplicateContext = contexts.contextsFlow.value.any { it.id == id && it is WorkspaceContext.Duplicate }
+        val hasAddLinkOnTab = services.addLink.ownerTabId == id && services.addLink.state != null && services.addLink.discardNeedsConfirm
+        return model?.discardNeedsConfirm == true || unsubmittedInput || isDuplicateContext || hasAddLinkOnTab
     }
 
     fun requestCloseOtherContexts(keepId: Long) {
@@ -246,6 +246,7 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
     }
 
     private fun releaseContext(id: Long) {
+        if (services.addLink.ownerTabId == id) services.addLink.discard()
         detailPanels.forgetWhere { it is dev.piko.shared.presentation.TabNavigation && it.tabId == id }
         pageSnapshots.remove(id)
         contextOrigins.remove(id)
@@ -301,6 +302,8 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
             folderVault = services.folderVaultSession,
             shareSaves = services.shareSaves,
             receiving = services.receivingActivity,
+            instantSession = services.instantSession,
+            addLinkOwnerTabId = { services.addLink.ownerTabId },
         )
     }
     val tabs = DriveBrowserStore { id -> createBrowser(null, null, driveWorkspace.navigationForTab(id)) }

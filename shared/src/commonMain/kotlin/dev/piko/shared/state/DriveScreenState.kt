@@ -3,9 +3,14 @@ package dev.piko.shared.state
 import dev.piko.shared.data.isPikoInternalFolder
 import dev.piko.shared.data.ArchiveEntryId
 import dev.piko.shared.data.ArchiveLocation
+import dev.piko.shared.data.ImportPreviewEntryId
+import dev.piko.shared.data.ImportPreviewLocation
 import dev.piko.shared.data.isDriveFolderId
 import dev.piko.shared.data.isExtractableArchive
+import dev.piko.shared.data.isImportPreview
 import dev.piko.shared.data.outsideArchives
+import dev.piko.data.repository.isPlayableVideo
+import io.github.nihildigit.pikpak.thumbnailUrlOf
 import io.github.nihildigit.pikpak.ArchivePasswordException
 import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.PikPakException
@@ -138,6 +143,8 @@ class DriveScreenState(
     folderVault: FolderVaultSession? = null,
     shareSaves: ShareSaveSession? = null,
     receiving: dev.piko.shared.presentation.ReceivingActivity? = null,
+    private val instantSession: InstantSession? = null,
+    private val addLinkOwnerTabId: () -> Long? = { null },
     /** 递归画廊当前显示的条目；只读借用来源信息，不并进普通目录列表。 */
     private val supplementalFiles: () -> List<FileStat> = { emptyList() },
 ) {
@@ -180,6 +187,7 @@ class DriveScreenState(
     val clipboardFlow: StateFlow<DriveClipboard?> get() = clipboard.contents
     var files by mutableStateOf<List<FileStat>>(emptyList())
         private set
+    private var remoteFiles by mutableStateOf<List<FileStat>>(emptyList())
     var isLoading by mutableStateOf(true)
         private set
     var isRefreshing by mutableStateOf(false)
@@ -274,11 +282,13 @@ class DriveScreenState(
     /** 眼前列的是压缩包里的哪一层，不在压缩包里时为 null。 */
     val archiveView: ArchiveLocation? by derivedStateOf { ArchiveLocation.of(activeFolderId) }
 
+    /** 眼前列的是添加链接混入的虚拟子目录，不在虚拟子目录里时为 null。 */
+    val importPreviewView: ImportPreviewLocation? by derivedStateOf { ImportPreviewLocation.of(activeFolderId) }
+
     /**
-     * 眼前不是网盘里的文件夹：库或压缩包。这里平铺不解析、不折叠，也不能新建、上传、粘贴或接住拖放。
-     * 各库、压缩包各自多出或少掉的操作，看 [libraryView] 与 [archiveView]。
+     * 眼前不是网盘里的文件夹：库、压缩包或添加链接的虚拟子目录。这里不能新建、上传、粘贴或接住拖放。
      */
-    val isVirtualPlace: Boolean by derivedStateOf { libraryView != null || archiveView != null }
+    val isVirtualPlace: Boolean by derivedStateOf { libraryView != null || archiveView != null || importPreviewView != null }
 
     /**
      * 最近添加与播放历史里每个文件对应的那条记录，按文件 ID。列表的副文本（何时添加、看到哪里）
@@ -380,7 +390,7 @@ class DriveScreenState(
             libraryView?.isSession == true -> sessionItems { blockId -> isSessionGroupExpanded(blockId) }
             // 库里的条目散在全盘各处，按作品与分区归拢的是一个目录里的东西，这里照原来的先后平铺；
             // 压缩包里的也平铺、不折叠：在包里多半是挑要解压的几项，折起来的次要文件正是要挑的一部分
-            structure == null || isVirtualPlace -> files.map { DriveListItem.File(it, null) }
+            structure == null || (isVirtualPlace && importPreviewView == null) -> files.map { DriveListItem.File(it, null) }
             !isNameParsing || structure.blocks.isEmpty() ->
                 filterDriveFiles(files, structure.foldedIds, enabled = hideFolded, revealAll = false).map { DriveListItem.File(it, null) }
             else -> buildDriveItems(files, structure, hideFolded) { block -> isBlockExpanded(block) }
@@ -390,7 +400,7 @@ class DriveScreenState(
     /** 眼前按作品与分区排：不在搜索、不在库或压缩包里、解析开着且认出了作品。 */
     private val isStructured: Boolean by derivedStateOf {
         val structure = currentAnalysis
-        !isSearching && !isVirtualPlace && isNameParsing && structure != null && structure.blocks.isNotEmpty()
+        !isSearching && (!isVirtualPlace || importPreviewView != null) && isNameParsing && structure != null && structure.blocks.isNotEmpty()
     }
 
     /**
@@ -579,6 +589,53 @@ class DriveScreenState(
                 if (patched !== files) files = patched
             }
         }
+        // 添加链接面板打开或里面的勾选/命名改变时，实时更新当前真实目录或虚拟子目录里的待保存条目
+        if (instantSession != null) {
+            scope.launch {
+                snapshotFlow {
+                    val draft = instantSession.state
+                    val targetId = draft?.target?.id
+                    val entries = draft?.projectedSaveEntries.orEmpty()
+                    val ownerTab = addLinkOwnerTabId()
+                    listOf(activeFolderId, targetId, entries, ownerTab)
+                }.collectLatest {
+                    val folderId = activeFolderId
+                    val previewLoc = ImportPreviewLocation.of(folderId)
+                    if (previewLoc != null) {
+                        val virtualList = importPreviewFilesFor(folderId)
+                        if (virtualList.isEmpty() && instantSession.state?.projectedSaveEntries.orEmpty().isEmpty()) {
+                            // 链接已清空或关闭，退回真实目录
+                            val outside = navigation.folderStackFlow.value.outsideArchives()
+                            if (outside.isNotEmpty() && outside.size < navigation.folderStackFlow.value.size) {
+                                navigation.popToBreadcrumb(outside.size - 1)
+                            }
+                            return@collectLatest
+                        }
+                        val structure = DriveAnalysisCache.analyze(virtualList)
+                        Snapshot.withMutableSnapshot {
+                            if (activeFolderId == folderId) {
+                                files = virtualList
+                                loadedFolderId = folderId
+                                analysis = FolderAnalysis(folderId, virtualList, structure)
+                                isLoading = false
+                                isRefreshing = false
+                            }
+                        }
+                    } else if (libraryView == null && archiveView == null && loadedFolderId == folderId) {
+                        val merged = withImportPreviews(folderId, remoteFiles)
+                        if (merged != files) {
+                            val structure = DriveAnalysisCache.analyze(merged)
+                            Snapshot.withMutableSnapshot {
+                                if (activeFolderId == folderId && loadedFolderId == folderId) {
+                                    files = merged
+                                    analysis = FolderAnalysis(folderId, merged, structure)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         // 网盘里的改动（这一页自己做的与界面外的上传、解压、撤销都算）由仓库层广播过来，订阅放在这里，
         // 免得每个平台的视图各订阅一遍；各个改动入口因此也不必自己重列
         scope.launch {
@@ -607,7 +664,7 @@ class DriveScreenState(
 
     /** 眼前这一页受不受 [change] 影响。库是从全盘挑出来的，哪里改了都可能有它；会话位置与压缩包里的不经网络重列。 */
     private fun isAffectedBy(change: DriveChange): Boolean = when {
-        libraryView?.isSession == true || archiveView != null -> false
+        libraryView?.isSession == true || archiveView != null || importPreviewView != null -> false
         libraryView != null -> true
         else -> change.affects(activeFolderId)
     }
@@ -648,6 +705,69 @@ class DriveScreenState(
     private fun withoutInternalFolders(folderId: String, listing: List<FileStat>): List<FileStat> =
         listing.filterNot { isPikoInternalFolder(it, folderId) }
 
+    /** 当前目录（真实目录 [folderId] 或虚拟子目录 [ImportPreviewLocation]）下由添加链接投影出的虚拟文件夹与虚拟文件。 */
+    private fun importPreviewFilesFor(folderId: String): List<FileStat> {
+        val tabNav = navigation as? dev.piko.shared.presentation.TabNavigation
+        val ownerTab = addLinkOwnerTabId()
+        if (tabNav != null && ownerTab != null && tabNav.tabId != ownerTab) return emptyList()
+        val draft = instantSession?.state ?: return emptyList()
+        val targetId = draft.target?.id ?: return emptyList()
+        val entries = draft.projectedSaveEntries
+        if (entries.isEmpty()) return emptyList()
+        val previewLoc = ImportPreviewLocation.of(folderId)
+        val prefix = when {
+            previewLoc != null -> if (previewLoc.targetFolderId == targetId) "${previewLoc.path.trim('/')}/" else return emptyList()
+            folderId == targetId -> ""
+            else -> return emptyList()
+        }
+        val childFolders = LinkedHashMap<String, MutableList<Pair<Int, io.github.nihildigit.pikpak.ResolvedFile>>>()
+        val directFiles = mutableListOf<FileStat>()
+        for ((sourceIndex, resolved) in entries) {
+            val clean = resolved.path.trim('/')
+            if (clean.isEmpty()) continue
+            val rest = if (prefix.isEmpty()) clean else {
+                if (!clean.startsWith(prefix)) continue
+                clean.removePrefix(prefix)
+            }
+            val slash = rest.indexOf('/')
+            if (slash >= 0) {
+                val childName = rest.substring(0, slash)
+                if (childName.isNotEmpty()) childFolders.getOrPut(childName) { mutableListOf() }.add(sourceIndex to resolved)
+            } else {
+                val ext = rest.substringAfterLast('.', "").let { if (it.isEmpty()) "" else ".$it" }
+                val gcid = resolved.gcid.orEmpty()
+                val base = FileStat(
+                    kind = FileKind.FILE,
+                    id = ImportPreviewEntryId.of(sourceIndex, resolved.gcid, resolved.size, rest),
+                    parentId = folderId,
+                    name = rest,
+                    size = resolved.size.toString(),
+                    fileExtension = ext,
+                    hash = gcid,
+                )
+                directFiles += if (gcid.isNotEmpty() && base.isPlayableVideo()) base.copy(thumbnailLink = thumbnailUrlOf(gcid)) else base
+            }
+        }
+        val folderStats = childFolders.map { (name, children) ->
+            val subPath = if (prefix.isEmpty()) name else "$prefix$name"
+            val coverGcid = children.map { it.second }.firstOrNull { it.gcid != null && it.name.isPlayableVideo() }?.gcid
+            FileStat(
+                kind = FileKind.FOLDER,
+                id = ImportPreviewLocation(targetId, subPath).id,
+                parentId = folderId,
+                name = name,
+                size = children.sumOf { it.second.size }.toString(),
+                thumbnailLink = if (coverGcid != null) thumbnailUrlOf(coverGcid) else "",
+            )
+        }
+        return folderStats + directFiles
+    }
+
+    private fun withImportPreviews(folderId: String, realFiles: List<FileStat>): List<FileStat> {
+        val virtuals = importPreviewFilesFor(folderId)
+        return if (virtuals.isEmpty()) realFiles else virtuals + realFiles
+    }
+
     /** [useCache] 与 [showRefreshing] 都为 false 是静默重列：不用缓存，也不出任何加载指示，见 [catchUpWithHighlight]。 */
     private fun load(useCache: Boolean, showRefreshing: Boolean) {
         if (!canAcceptAction) return
@@ -660,6 +780,22 @@ class DriveScreenState(
             loadArchive(location, useCache, showRefreshing)
             return
         }
+        if (ImportPreviewLocation.of(folderId) != null) {
+            loadJob?.cancel()
+            val virtualList = importPreviewFilesFor(folderId)
+            loadJob = scope.launch {
+                val structure = DriveAnalysisCache.analyze(virtualList)
+                Snapshot.withMutableSnapshot {
+                    files = virtualList
+                    loadedFolderId = folderId
+                    analysis = FolderAnalysis(folderId, virtualList, structure)
+                    loadError = null
+                    isLoading = false
+                    isRefreshing = false
+                }
+            }
+            return
+        }
         val cached = if (useCache) driveRepo.cachedBrowsable(folderId, sortOrder) else null
         when {
             cached != null -> Unit // 缓存也先在后台分析，再一起提交列表与结构。
@@ -669,9 +805,11 @@ class DriveScreenState(
         loadJob?.cancel()
         loadJob = scope.launch {
             if (cached != null) {
-                val nextFiles = withoutInternalFolders(folderId, cached)
+                val rawFiles = withoutInternalFolders(folderId, cached)
+                val nextFiles = withImportPreviews(folderId, rawFiles)
                 val structure = DriveAnalysisCache.analyze(nextFiles)
                 Snapshot.withMutableSnapshot {
+                    remoteFiles = rawFiles
                     files = nextFiles
                     loadedFolderId = folderId
                     revealHighlightedItems(structure, highlightedFileIds)
@@ -696,9 +834,11 @@ class DriveScreenState(
             }
             listing
                 .onSuccess {
-                    val nextFiles = withoutInternalFolders(folderId, it)
+                    val rawFiles = withoutInternalFolders(folderId, it)
+                    val nextFiles = withImportPreviews(folderId, rawFiles)
                     val structure = DriveAnalysisCache.analyze(nextFiles)
                     Snapshot.withMutableSnapshot {
+                        remoteFiles = rawFiles
                         files = nextFiles
                         loadedFolderId = folderId
                         revealHighlightedItems(structure, highlightedFileIds)
@@ -783,11 +923,42 @@ class DriveScreenState(
     var preparingEntryId by mutableStateOf<String?>(null)
         private set
 
-    /** 把压缩包当文件夹打开。gcid 还没算出来的（刚传完）列不了目录，与解压同一句提示。 */
+    private val previewArchiveIds = mutableSetOf<String>()
+
+    /** 当前浏览的压缩包是否来自添加链接的待保存预览（临时借在 Piko-Temp 里）。 */
+    val isArchiveInImportPreview: Boolean by derivedStateOf {
+        val loc = archiveView
+        loc != null && (loc.archiveId in previewArchiveIds || activeFolderStack.any { ImportPreviewLocation.of(it.id) != null })
+    }
+
+    /** 把压缩包当文件夹打开。gcid 还没算出来的（刚传完）列不了目录，与解压同一句提示。待保存虚拟压缩包先临时借到 Piko-Temp。 */
     fun openArchive(file: FileStat) {
         if (archives == null) return
         if (file.hash.isEmpty()) {
-            _messages.tryEmit("文件尚未完成校验，稍后再试")
+            _messages.tryEmit(if (file.isImportPreview) "未收录的压缩包需先离线保存到网盘才能打开" else "文件尚未完成校验，稍后再试")
+            return
+        }
+        if (ImportPreviewEntryId.isEntry(file.id)) {
+            val resolved = ImportPreviewEntryId.resolvedFileOf(file.id)
+            val draft = instantSession?.state
+            if (resolved == null || draft == null) {
+                _messages.tryEmit("未收录的压缩包需先离线保存到网盘才能打开")
+                return
+            }
+            if (preparingEntryId != null) return
+            preparingEntryId = file.id
+            scope.launch {
+                try {
+                    draft.leaseForArchiveBrowse(resolved)
+                        .onSuccess { leasedFileId ->
+                            previewArchiveIds += leasedFileId
+                            openFolder(ArchiveLocation(leasedFileId, file.hash, "").id, file.name)
+                        }
+                        .onFailure { _messages.tryEmit("无法打开压缩包：${it.message}") }
+                } finally {
+                    preparingEntryId = null
+                }
+            }
             return
         }
         openFolder(ArchiveLocation(file.id, file.hash, "").id, file.name)
@@ -846,8 +1017,8 @@ class DriveScreenState(
     fun dismissArchivePassword() {
         archivePasswordRequest = null
         val stack = navigation.folderStackFlow.value
-        val outside = stack.outsideArchives()
-        if (outside.isNotEmpty() && outside.size < stack.size) navigation.popToBreadcrumb(outside.size - 1)
+        val firstArchive = stack.indexOfFirst { ArchiveLocation.of(it.id) != null }
+        if (firstArchive > 0) navigation.popToBreadcrumb(firstArchive - 1)
     }
 
     /**
@@ -891,7 +1062,8 @@ class DriveScreenState(
 
     private fun archiveName(): String {
         val stack = navigation.folderStackFlow.value
-        return stack.getOrNull(stack.outsideArchives().size)?.name ?: "压缩包"
+        val firstArchive = stack.indexOfFirst { ArchiveLocation.of(it.id) != null }
+        return if (firstArchive >= 0) stack[firstArchive].name else "压缩包"
     }
 
     private fun archiveFailure(error: Throwable): String = when {
@@ -1415,6 +1587,10 @@ class DriveScreenState(
 
     fun rename(fileId: String, newName: String) {
         if (newName.isBlank() || refusedInArchive(listOf(fileId))) return
+        if (ImportPreviewEntryId.isEntry(fileId) || ImportPreviewLocation.of(fileId) != null) {
+            _messages.tryEmit("待保存的链接条目请在右侧面板修改名称")
+            return
+        }
         val trimmed = newName.trimStart().trimEnd { it.isWhitespace() || it == '.' }
         if (trimmed.isEmpty() || dev.piko.shared.data.DriveNames.clean(trimmed) != trimmed) {
             _messages.tryEmit("文件名含有无效字符或为空")
@@ -1430,6 +1606,10 @@ class DriveScreenState(
     /** 加或去星标。星标只体现在列表条目的 tags 里，这一项所在的那一层由仓库通知重列。 */
     fun setStarred(file: FileStat, starred: Boolean) {
         if (refusedInArchive(listOf(file.id))) return
+        if (file.isImportPreview) {
+            _messages.tryEmit("待保存的链接条目需要先保存到网盘")
+            return
+        }
         if (file.isVaulted) {
             _messages.tryEmit(VAULTED_NEEDS_RESTORE)
             return
@@ -1443,11 +1623,46 @@ class DriveScreenState(
     fun retryTrash() = trashSession.retry()
     fun dismissTrashFailure() = trashSession.dismissFailure()
 
-    /** 归档条目从清单移除，真实文件交给跨页面清理任务。 */
+    /** 从添加链接的待保存勾选里排除 [ids]（包含挂载在视频条目下的配套字幕，以及虚拟文件夹下的全部子项）。 */
+    fun removeFromImportPreview(ids: Collection<String>) {
+        val draft = instantSession?.state ?: return
+        val attached = currentAnalysis?.attachedTo.orEmpty()
+        val expandedIds = buildSet {
+            addAll(ids)
+            ids.forEach { hostId ->
+                files.filter { attached[it.id] == hostId }.forEach { add(it.id) }
+            }
+        }
+        val indices = mutableSetOf<Int>()
+        for (id in expandedIds) {
+            ImportPreviewEntryId.sourceIndexOf(id)?.let { indices += it }
+            ImportPreviewLocation.of(id)?.let { loc ->
+                val prefix = "${loc.path.trim('/')}/"
+                draft.projectedSaveEntries.forEach { (idx, resolved) ->
+                    val clean = resolved.path.trim('/')
+                    if (clean == loc.path.trim('/') || clean.startsWith(prefix)) indices += idx
+                }
+            }
+        }
+        if (indices.isNotEmpty()) {
+            draft.setSourceSelected(indices, false)
+            exitSelection()
+        }
+    }
+
+    /** 归档条目从清单移除，待保存虚拟条目取消勾选，真实文件交给跨页面清理任务。 */
     fun moveToTrash(ids: List<String>) {
         if (!canAcceptAction) return
         if (trashProgress != null || trashSession.isUndoing || refusedInArchive(ids)) return
-        val (vaulted, real) = ids.distinct().filter(::canSelect).partition(VaultEntry::isVaulted)
+        val distinct = ids.distinct().filter(::canSelect)
+        val (importPreviewIds, nonPreviewIds) = distinct.partition {
+            ImportPreviewEntryId.isEntry(it) || ImportPreviewLocation.of(it) != null
+        }
+        if (importPreviewIds.isNotEmpty()) {
+            removeFromImportPreview(importPreviewIds)
+        }
+        if (nonPreviewIds.isEmpty()) return
+        val (vaulted, real) = nonPreviewIds.partition(VaultEntry::isVaulted)
         val availability = fileActions.filesAvailability(real)
         if (availability is dev.piko.shared.presentation.ActionAvailability.Blocked) { _messages.tryEmit(availability.reason); return }
         val removal = vaultRemoval(vaulted)
@@ -1540,8 +1755,10 @@ class DriveScreenState(
      */
     private fun withoutVaulted(ids: List<String>): List<String> {
         if (refusedInArchive(ids)) return emptyList()
-        val real = ids.filterNot(VaultEntry::isVaulted)
-        if (real.size < ids.size) _messages.tryEmit(VAULTED_NEEDS_RESTORE)
+        val nonPreview = ids.filterNot { ImportPreviewEntryId.isEntry(it) || ImportPreviewLocation.of(it) != null }
+        if (nonPreview.size < ids.size) _messages.tryEmit("待保存的链接条目需要先保存到网盘")
+        val real = nonPreview.filterNot(VaultEntry::isVaulted)
+        if (real.size < nonPreview.size) _messages.tryEmit(VAULTED_NEEDS_RESTORE)
         return real
     }
 

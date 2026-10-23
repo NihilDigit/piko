@@ -114,7 +114,7 @@ internal fun DriveTabBar(
     sessionTab: (DriveTab) -> SessionTab?,
     /** 从信息流跳出来浏览的那个标签，见 PikoMainScaffold 的 feedDetourTab。 */
     feedTabId: Long?,
-    canClose: (Long) -> Boolean = { it != tabs.firstOrNull()?.id },
+    canClose: (Long) -> Boolean = { tabs.size > 1 },
     onCloseOthers: ((Long) -> Unit)? = null,
     onMove: ((Long, Int) -> Unit)? = null,
     modifier: Modifier = Modifier,
@@ -132,9 +132,9 @@ internal fun DriveTabBar(
     fun updateOrder() {
         val id = draggingId ?: return
         val current = latestTabs.indexOfFirst { it.id == id }
-        if (current <= 0 || latestTabs.size <= 1) return
+        if (current < 0 || latestTabs.size <= 1) return
         val target = (startIndex + (travel + scroll.value - startScroll) / tabWidthPx)
-            .roundToInt().coerceIn(1, latestTabs.lastIndex)
+            .roundToInt().coerceIn(0, latestTabs.lastIndex)
         if (target != current) latestMove?.invoke(id, target)
     }
     val center = startIndex * tabWidthPx - startScroll + travel + tabWidthPx / 2
@@ -197,9 +197,9 @@ internal fun DriveTabBar(
                             onClose = if (canClose(tab.id)) ({ onClose(tab.id) }) else null,
                             modifier = Modifier.zIndex(if (draggingId == tab.id) 1f else 0f)
                                 .graphicsLayer {
-                                    translationX = if (draggingId == tab.id) (travel + scroll.value - startScroll - (index - startIndex) * tabWidthPx).coerceAtLeast((1 - index) * tabWidthPx) else 0f
+                                    translationX = if (draggingId == tab.id) (travel + scroll.value - startScroll - (index - startIndex) * tabWidthPx).coerceAtLeast(-index * tabWidthPx) else 0f
                                 }.tabReorderGesture(
-                                    enabled = onMove != null && index != 0,
+                                    enabled = onMove != null && tabs.size > 1,
                                     onStart = {
                                         startIndex = latestTabs.indexOfFirst { it.id == tab.id }
                                         startScroll = scroll.value

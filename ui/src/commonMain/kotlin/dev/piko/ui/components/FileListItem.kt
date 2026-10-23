@@ -44,7 +44,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import dev.piko.ui.theme.LocalFixedColors
+import dev.piko.shared.data.isImportPreview
+import dev.piko.ui.adaptive.isDesktopLayout
 import io.github.nihildigit.pikpak.FileStat
 
 /** M3 列表的前导图像尺寸（ItemLeadingImage 56x56dp）。 */
@@ -105,6 +106,7 @@ fun FileListItem(
     isSelected: Boolean = false,
     onSelectToggle: (Boolean) -> Unit = {},
     isHighlighted: Boolean = false,
+    isImportPreview: Boolean = false,
     dimmed: Boolean = false,
 ) {
     val longClick = fileItemLongPress(onLongClick)
@@ -114,6 +116,10 @@ fun FileListItem(
     } else if (isHighlighted) {
         ListItemDefaults.colors(
             containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+        )
+    } else if (isImportPreview) {
+        ListItemDefaults.colors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.28f),
         )
     } else {
         ListItemDefaults.colors()
@@ -141,7 +147,7 @@ fun FileListItem(
 
     val leadingSlot: @Composable () -> Unit = {
         Box(slotModifier.size(ListLeadingSize), contentAlignment = Alignment.Center) {
-            if (isSelectionMode || (hover.mouseHovered && onStartSelection != null)) {
+            if (isSelectionMode || (hover.mouseHovered && isDesktopLayout() && onStartSelection != null)) {
                 FileItemSelectionControl(FileItemSelection(
                     if (isSelected) androidx.compose.ui.state.ToggleableState.On else androidx.compose.ui.state.ToggleableState.Off,
                     { if (isSelectionMode) onSelectToggle(!isSelected) else onStartSelection?.invoke() }, label = "选择 $headline"),
@@ -264,6 +270,7 @@ fun FileListItem(
         isSelected = isSelected,
         onSelectToggle = onSelectToggle,
         isHighlighted = isHighlighted,
+        isImportPreview = file.isImportPreview,
     )
 }
 
@@ -306,7 +313,7 @@ fun ListLeadingMedia(
         }
         // 遮蔽时 SpoilerThumbnail 已画了遮蔽图标，再叠播放键就是两个图标摞在一起
         if (showPlayOverlay && activeThumbnail != null && !isSpoilerBlurred) {
-            val fixed = LocalFixedColors.current
+            val fixed = dev.piko.ui.theme.LocalFixedColors.current
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -374,6 +381,23 @@ fun VaultMark(inFolder: Boolean, modifier: Modifier = Modifier) {
         tint = MaterialTheme.colorScheme.secondary,
         modifier = modifier.size(StarMarkSize),
     )
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+fun ImportPreviewMark(modifier: Modifier = Modifier) {
+    Surface(
+        shape = MaterialTheme.shapes.extraSmall,
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        modifier = modifier,
+    ) {
+        Text(
+            text = "待保存",
+            style = MaterialTheme.typography.labelSmallEmphasized,
+            color = MaterialTheme.colorScheme.onTertiaryContainer,
+            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+        )
+    }
 }
 
 /**

@@ -25,7 +25,15 @@ class WorkspaceContexts(initialFileId: Long = 1L) {
     var primaryFileId: Long = initialFileId
         private set
 
-    fun canClose(id: Long): Boolean = id != primaryFileId && _contextsFlow.value.any { it.id == id }
+    fun canClose(id: Long): Boolean {
+        val current = _contextsFlow.value
+        val target = current.firstOrNull { it.id == id } ?: return false
+        return if (target is WorkspaceContext.File) {
+            current.count { it is WorkspaceContext.File } > 1
+        } else {
+            true
+        }
+    }
 
     private val _contextsFlow = MutableStateFlow<List<WorkspaceContext>>(listOf(WorkspaceContext.File(initialFileId)))
     val contextsFlow: StateFlow<List<WorkspaceContext>> = _contextsFlow.asStateFlow()
@@ -79,14 +87,16 @@ class WorkspaceContexts(initialFileId: Long = 1L) {
     fun move(id: Long, targetIndex: Int): Boolean {
         val current = _contextsFlow.value
         val from = current.indexOfFirst { it.id == id }
-        if (id == primaryFileId || from < 0 || current.size <= 1) return false
-        val to = targetIndex.coerceIn(1, current.lastIndex)
+        if (from < 0 || current.size <= 1) return false
+        val to = targetIndex.coerceIn(0, current.lastIndex)
         if (from == to) return false
-        _contextsFlow.value = current.toMutableList().apply { add(to, removeAt(from)) }
+        val next = current.toMutableList().apply { add(to, removeAt(from)) }
+        _contextsFlow.value = next
+        next.firstOrNull { it is WorkspaceContext.File }?.let { primaryFileId = it.id }
         return true
     }
 
-    /** The primary file browser always remains at index zero. */
+    /** Any file browser can be closed as long as at least one file browser remains. */
     fun close(id: Long): WorkspaceContext? {
         if (!canClose(id)) return null
         val current = _contextsFlow.value
@@ -95,6 +105,9 @@ class WorkspaceContexts(initialFileId: Long = 1L) {
         if (current.size == 1) return null
         val next = current.toMutableList().apply { removeAt(index) }
         _contextsFlow.value = next
+        if (id == primaryFileId) {
+            next.firstOrNull { it is WorkspaceContext.File }?.let { primaryFileId = it.id }
+        }
         if (_activeContextId.value == id) {
             val replacement = next.getOrNull(index) ?: next[index - 1]
             _activeContextId.value = replacement.id

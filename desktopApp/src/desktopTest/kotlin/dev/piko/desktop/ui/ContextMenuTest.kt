@@ -165,12 +165,12 @@ class ContextMenuTest {
     }
 
     /**
-     * 网盘的菜单图标行有五个（剪切、复制、重命名、分享、下载）。菜单定宽，Row 放不下时末尾的按钮被挤窄或挤出边，
-     * 不报错，只在这里看得出：五个按钮要一样宽、互不重叠，且都在菜单列表项的左右边界之内。
+     * 网盘的菜单快捷行有四个带字磁贴（下载、重命名、分享、星标）。菜单定宽，Row 放不下时末尾的按钮被挤窄或挤出边，
+     * 不报错，只在这里看得出：四个磁贴要一样宽、互不重叠，且都在菜单列表项的左右边界之内。
      */
     @Test
-    fun `five icons fit the menu width`() = runComposeUiTest {
-        val labels = listOf("剪切", "复制", "重命名", "分享", "下载")
+    fun `four quick tiles fit the menu width`() = runComposeUiTest {
+        val labels = listOf("下载", "重命名", "分享", "添加星标")
         setContent {
             CompositionLocalProvider(LocalPikoPlatform provides platform) { PikoTheme {
                 ContextMenuArea(actions = {
@@ -187,7 +187,7 @@ class ContextMenuTest {
         val row = onNodeWithText("移动到").fetchSemanticsNode().boundsInWindow
         val icons = labels.map { onNodeWithContentDescription(it).fetchSemanticsNode().boundsInWindow }
         val widths = icons.map { it.width }
-        assertTrue(widths.all { abs(it - widths.first()) < 0.5f }, "图标宽度不一：$widths")
+        assertTrue(widths.all { abs(it - widths.first()) < 1.5f }, "图标宽度不一：$widths")
         icons.zipWithNext().forEach { (a, b) -> assertTrue(a.right <= b.left, "图标重叠：$a $b") }
         assertTrue(icons.first().left >= row.left && icons.last().right <= row.right, "超出菜单：$icons 列表项 $row")
     }

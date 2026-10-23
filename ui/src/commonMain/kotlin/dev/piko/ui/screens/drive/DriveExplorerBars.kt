@@ -448,30 +448,32 @@ internal fun ViewSwitcher(
                 }
             }
             PikoDropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                val modes = DriveViewMode.entries
-                modes.forEachIndexed { index, mode ->
-                    val current = !galleryShown && mode == viewMode
-                    DropdownMenuItem(
-                        text = { Text(mode.label, color = if (current) MaterialTheme.colorScheme.primary else Color.Unspecified) },
-                        leadingIcon = {
-                            Icon(
-                                mode.icon(selected = current),
-                                contentDescription = null,
-                                tint = if (current) MaterialTheme.colorScheme.primary else LocalContentColor.current,
-                                modifier = Modifier.size(20.dp),
-                            )
-                        },
-                        trailingIcon = if (current) ({
-                            Icon(Icons.Outlined.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
-                        }) else null,
-                        shape = menuItemShape(index, modes.size),
-                        onClick = {
-                            menuOpen = false
-                            onViewModeChange(mode)
-                        },
-                    )
+                if (!galleryShown) {
+                    val modes = DriveViewMode.entries
+                    modes.forEachIndexed { index, mode ->
+                        val current = mode == viewMode
+                        DropdownMenuItem(
+                            text = { Text(mode.label, color = if (current) MaterialTheme.colorScheme.primary else Color.Unspecified) },
+                            leadingIcon = {
+                                Icon(
+                                    mode.icon(selected = current),
+                                    contentDescription = null,
+                                    tint = if (current) MaterialTheme.colorScheme.primary else LocalContentColor.current,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            },
+                            trailingIcon = if (current) ({
+                                Icon(Icons.Outlined.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                            }) else null,
+                            shape = menuItemShape(index, modes.size),
+                            onClick = {
+                                menuOpen = false
+                                onViewModeChange(mode)
+                            },
+                        )
+                    }
+                    Spacer(Modifier.height(6.dp))
                 }
-                Spacer(Modifier.height(6.dp))
                 val sizes = TileSize.entries
                 sizes.forEachIndexed { index, size ->
                     val current = tileSize == size

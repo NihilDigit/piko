@@ -75,6 +75,18 @@ internal fun VaultDialog(
     LaunchedEffect(Unit) { options = VaultArchiveOptions.load(preferences) }
     val scope = rememberCoroutineScope()
     val chosen = options ?: VaultArchiveOptions()
+    val current = options
+    if (current != null && !current.riskNoticeAcknowledged) {
+        VaultRiskWarningDialog(
+            onAcknowledge = {
+                val next = current.copy(riskNoticeAcknowledged = true)
+                options = next
+                scope.launch { VaultArchiveOptions.save(preferences, next) }
+            },
+            onDismiss = onDismiss,
+        )
+        return
+    }
     val all = survey?.getOrNull()
     val offersSizeChoice = offersVaultSizeChoice(all)
     val skipSmallFiles = offersSizeChoice && chosen.skipSmallFiles
@@ -99,23 +111,6 @@ internal fun VaultDialog(
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 VaultDialogHeading(target.name, survey, counted?.files, files, bytes, emptyText = "无可归档的文件")
                 blocked?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                // 原文件放进回收站也一样醒目：清空回收站是常事，人会想「反正有归档」，清空后只剩引用
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = MaterialTheme.shapes.medium,
-                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.15f),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.25f)),
-                ) {
-                    Row(Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Icon(Icons.Outlined.Warning, contentDescription = null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.error)
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("仅保存引用，文件可能无法找回", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
-                            Text("归档不保存文件内容。云端不再保存对应内容时，将无法播放、下载或恢复。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
-                            Text("建议用于很少使用的合集文件。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                }
-                val current = options
                 if (current != null) {
                     // 是偏好而不是这一次的参数：一改就存，取消归档也记住，与设置页的开关相同
                     fun update(next: VaultArchiveOptions) {
@@ -267,4 +262,53 @@ private fun VaultCheckboxOption(
             }
         }
     }
+}
+
+/**
+ * 首次使用「归档」或「以引用保存」之前弹出的一次性风险提示弹窗。
+ * 相比常驻在对话框里的文字说明，首次触发时的独立警告更能让用户明确意识到引用机制的丢失风险。
+ */
+@Composable
+internal fun VaultRiskWarningDialog(
+    onAcknowledge: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    PikoDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Icon(Icons.Outlined.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                Text("归档与引用保存风险提示")
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "归档（及「以引用保存」）不会在你的网盘中实际存储文件内容，仅保留几 KB 的内容哈希（GCID）与来源记录以释放空间。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    "后续播放、下载或恢复文件时，完全依赖 PikPak 云端仍存有相同哈希的副本以完成秒传。一旦云端清理了冷门资源或秒传失效，仅靠引用将无法找回原文件。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Text(
+                    "请勿将个人独有文件、自行上传的孤本或无外部备份的重要资料转为归档引用。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            PikoDialogConfirm(
+                label = "我已知晓风险，继续",
+                destructive = true,
+                onClick = onAcknowledge,
+            )
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        },
+    )
 }

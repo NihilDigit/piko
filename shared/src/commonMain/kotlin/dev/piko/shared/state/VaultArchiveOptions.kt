@@ -18,6 +18,7 @@ data class VaultArchiveOptions(
     val sourcedOnly: Boolean = true,
     val toTrash: Boolean = true,
     val skipSmallFiles: Boolean = false,
+    val riskNoticeAcknowledged: Boolean = false,
 ) {
     companion object {
         // 内容损坏时退回默认值，不让一份坏数据挡住归档

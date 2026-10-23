@@ -117,7 +117,10 @@ internal fun OngoingWorkSheet(model: WorkspaceViewModel, onDismiss: () -> Unit) 
     BackHandler(onBack = onDismiss)
     Surface(Modifier.fillMaxSize(), color = colors.surfaceContainerHigh) {
         Column(Modifier.fillMaxSize().safeDrawingPadding()) {
-            Row(Modifier.fillMaxWidth().then(caption.modifier).padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier.fillMaxWidth().then(caption.modifier).padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text("${contexts.size} 个标签页", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, maxLines = 1)
                 TooltipIconButton(Icons.Outlined.Close, "关闭标签总览", onDismiss)
                 caption.buttons?.invoke()

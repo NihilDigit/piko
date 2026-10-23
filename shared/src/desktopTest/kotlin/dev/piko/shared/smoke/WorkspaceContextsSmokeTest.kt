@@ -38,7 +38,6 @@ class WorkspaceContextsSmokeTest {
         val browsers = workspace.tabsFlow.value.associateBy { it.id }
         var creations = 0
         workspace.contexts.onCreated = { creations++ }
-        assertFalse(workspace.moveContext(first, 2))
         assertTrue(workspace.moveContext(draft, 1))
         assertEquals(listOf(first, draft, second), workspace.contextsFlow.value.map { it.id })
         assertEquals(listOf(first, second), workspace.tabsFlow.value.map { it.id })
@@ -47,8 +46,8 @@ class WorkspaceContextsSmokeTest {
         assertEquals(0, creations)
         assertFalse(workspace.moveContext(Long.MIN_VALUE, 0))
         assertTrue(workspace.moveContext(second, -10))
-        assertEquals(listOf(first, second, draft), workspace.contextsFlow.value.map { it.id })
-        assertEquals(first, workspace.contextsFlow.value.first().id)
+        assertEquals(listOf(second, first, draft), workspace.contextsFlow.value.map { it.id })
+        assertEquals(second, workspace.contextsFlow.value.first().id)
         assertEquals(draft, workspace.activeContextId.value)
         workspace.close()
     }
@@ -111,19 +110,20 @@ class WorkspaceContextsSmokeTest {
     }
 
     @Test
-    fun `primary identity follows restoration and secondary contexts cannot occupy slot zero`() {
+    fun `any file tab can close or move while at least one file tab remains`() {
         val contexts = WorkspaceContexts()
         val draft = contexts.openImportDraft()
         contexts.restoreFilesPreservingAux(listOf(51L, 51L, 52L), -1L)
         assertEquals(51L, contexts.primaryFileId)
         assertEquals(listOf(51L, 52L, draft), contexts.contextsFlow.value.map { it.id })
         assertEquals(draft, contexts.activeContextId.value)
-        assertFalse(contexts.canClose(51L))
+        assertTrue(contexts.canClose(51L))
+        assertTrue(contexts.canClose(52L))
         assertFalse(contexts.canClose(-1L))
-        assertNull(contexts.close(51L))
-        assertFalse(contexts.move(51L, 2))
-        assertTrue(contexts.move(draft, 0))
-        assertEquals(listOf(51L, draft, 52L), contexts.contextsFlow.value.map { it.id })
+        assertEquals(WorkspaceContext.File(51L), contexts.close(51L))
+        assertEquals(52L, contexts.primaryFileId)
+        assertFalse(contexts.canClose(52L))
+        assertNull(contexts.close(52L))
         contexts.activate(52L)
         contexts.restoreFilesPreservingAux(emptyList(), -1L)
         assertEquals(1L, contexts.primaryFileId)

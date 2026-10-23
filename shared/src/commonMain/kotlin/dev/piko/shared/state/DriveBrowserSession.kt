@@ -37,6 +37,8 @@ class DriveBrowserSession(
     folderVault: FolderVaultSession? = null,
     shareSaves: ShareSaveSession? = null,
     receiving: dev.piko.shared.presentation.ReceivingActivity? = null,
+    instantSession: InstantSession? = null,
+    addLinkOwnerTabId: () -> Long? = { null },
 ) {
     val duplicateReport = dev.piko.shared.presentation.DuplicateReportViewModel()
     private val account = repository.currentAccount
@@ -68,6 +70,8 @@ class DriveBrowserSession(
         folderVault = folderVault,
         shareSaves = shareSaves,
         receiving = receiving,
+        instantSession = instantSession,
+        addLinkOwnerTabId = addLinkOwnerTabId,
         supplementalFiles = { gallery.files },
     )
 

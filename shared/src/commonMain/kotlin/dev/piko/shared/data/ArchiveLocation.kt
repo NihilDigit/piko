@@ -27,16 +27,65 @@ data class ArchiveLocation(val archiveId: String, val gcid: String, val path: St
 val List<PikoPathBreadcrumb>.archive: ArchiveLocation? get() = lastOrNull()?.let { ArchiveLocation.of(it.id) }
 
 /**
- * 存盘与记进最近去过的路径：截到压缩包之前。重启后回到包里要先问密码，为这个弹框不值得，
- * 停在压缩包所在的文件夹即可。
+ * 存盘与记进最近去过的路径：截到压缩包与待保存虚拟目录之前。重启后回到包里要先问密码，为这个弹框不值得，
+ * 停在压缩包所在的文件夹即可；待保存虚拟目录在关闭添加链接后也不复存在。
  */
 fun List<PikoPathBreadcrumb>.outsideArchives(): List<PikoPathBreadcrumb> {
-    val first = indexOfFirst { ArchiveLocation.of(it.id) != null }
+    val first = indexOfFirst { ArchiveLocation.of(it.id) != null || ImportPreviewLocation.of(it.id) != null }
     return if (first < 0) this else subList(0, first)
 }
 
-/** 能放进东西、能列出网盘内容的真实文件夹，库与压缩包都不是。 */
-fun isDriveFolderId(id: String): Boolean = DriveLibrary.of(id) == null && ArchiveLocation.of(id) == null
+/** 能放进东西、能列出网盘内容的真实文件夹，库、压缩包与待保存虚拟目录都不是。 */
+fun isDriveFolderId(id: String): Boolean =
+    DriveLibrary.of(id) == null && ArchiveLocation.of(id) == null && ImportPreviewLocation.of(id) == null
+
+/**
+ * 添加链接时混入网盘浏览页的虚拟文件夹位置。
+ * [targetFolderId] 是保存目标所在的真实网盘目录 ID，[path] 是相对于保存目标的虚拟子路径（不以 `/` 开头或结尾）。
+ */
+data class ImportPreviewLocation(val targetFolderId: String, val path: String) {
+    val id: String get() = "$PREFIX$targetFolderId:${path.trim('/')}"
+
+    companion object {
+        private const val PREFIX = "piko-import-dir:"
+
+        fun of(id: String): ImportPreviewLocation? {
+            if (!id.startsWith(PREFIX)) return null
+            val parts = id.removePrefix(PREFIX).split(':', limit = 2)
+            return if (parts.size == 2) ImportPreviewLocation(parts[0], parts[1].trim('/')) else null
+        }
+    }
+}
+
+/**
+ * 添加链接时混入网盘浏览页的虚拟文件条目。
+ * 打开或下载时与归档条目一样按 [gcid] 借用对象（见 [LeasedFile]）；在网盘页删除它即取消右侧对应的勾选（[sourceIndex]）。
+ */
+object ImportPreviewEntryId {
+    private const val PREFIX = "piko-import-entry:"
+
+    fun of(sourceIndex: Int, gcid: String?, size: Long, name: String): String =
+        "$PREFIX$sourceIndex/${gcid.orEmpty()}/$size/$name"
+
+    fun isEntry(fileId: String): Boolean = fileId.startsWith(PREFIX)
+
+    fun sourceIndexOf(fileId: String): Int? = parts(fileId)?.get(0)?.toIntOrNull()
+
+    fun resolvedFileOf(fileId: String): ResolvedFile? {
+        val parts = parts(fileId) ?: return null
+        val gcid = parts[1].takeIf { it.isNotEmpty() } ?: return null
+        val size = parts[2].toLongOrNull() ?: return null
+        return ResolvedFile(path = parts[3], size = size, gcid = gcid)
+    }
+
+    private fun parts(fileId: String): List<String>? {
+        if (!isEntry(fileId)) return null
+        return fileId.removePrefix(PREFIX).split('/', limit = 4).takeIf { it.size == 4 }
+    }
+}
+
+val io.github.nihildigit.pikpak.FileStat.isImportPreview: Boolean
+    get() = ImportPreviewEntryId.isEntry(id) || ImportPreviewLocation.of(id) != null
 
 /**
  * 压缩包里的一个文件。网盘里没有它，打开时与归档条目一样按 gcid 借一个对象（见 [LeasedFile]），
@@ -68,11 +117,13 @@ object ArchiveEntryId {
 }
 
 /**
- * 网盘里没有常驻文件、打开时按 gcid 借一个对象的条目：归档条目与压缩包里的文件。
+ * 网盘里没有常驻文件、打开时按 gcid 借一个对象的条目：归档条目、压缩包里的文件与添加链接的虚拟预览文件。
  * 播放、下载与信息流只认这里，不分它从哪来。
  */
 object LeasedFile {
-    fun isLeased(fileId: String): Boolean = VaultEntry.isVaulted(fileId) || ArchiveEntryId.isEntry(fileId)
+    fun isLeased(fileId: String): Boolean =
+        VaultEntry.isVaulted(fileId) || ArchiveEntryId.isEntry(fileId) || ImportPreviewEntryId.isEntry(fileId)
 
-    fun resolvedFileOf(fileId: String): ResolvedFile? = VaultEntry.resolvedFileOf(fileId) ?: ArchiveEntryId.resolvedFileOf(fileId)
+    fun resolvedFileOf(fileId: String): ResolvedFile? =
+        VaultEntry.resolvedFileOf(fileId) ?: ArchiveEntryId.resolvedFileOf(fileId) ?: ImportPreviewEntryId.resolvedFileOf(fileId)
 }

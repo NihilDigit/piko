@@ -32,39 +32,16 @@ import dev.piko.ui.components.pageFocusTarget
  * 打开即取得焦点：下一步多半是粘贴链接，右栏里的 Esc 也要当场能收起它。
  */
 @Composable
-fun DockedAddLink(state: InstantSheetState, onPreview: (fileId: String, fileName: String) -> Unit) {
+fun DockedAddLink(
+    state: InstantSheetState,
+    onTargetPicked: ((List<dev.piko.data.repository.PathBreadcrumb>) -> Unit)? = null,
+    onPreview: (fileId: String, fileName: String) -> Unit,
+) {
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
     // 登记为页面落点：按在右栏的空白处同样把焦点拿进来，Esc 才归右栏，而不是落到网盘页的返回上
     Column(Modifier.fillMaxSize().pageFocusTarget(focus)) {
-        InstantSheetContent(state = state, inSideSheet = true, onPreview = onPreview)
-    }
-}
-
-/**
- * 右栏放不下时的退路：浮动的模态侧边面板。顶上一行与右栏的栏头相同：收起（[AddLinkViewModel.collapse]，点遮罩、Esc 同此）
- * 与放弃（×）。
- */
-@Composable
-fun FloatingAddLinkSheet(
-    session: AddLinkViewModel,
-    state: InstantSheetState,
-    onPreview: (fileId: String, fileName: String) -> Unit,
-) {
-    val discard = rememberDiscardAddLink(session)
-    // 侧边面板的顶上已有标题与关闭那一行，标题交给它，内容里不再画第二个
-    PikoSheet(
-        onDismissRequest = session::collapse,
-        sideSheetTitle = "添加链接",
-        sideSheetButtons = { collapse ->
-            TooltipIconButton(Icons.AutoMirrored.Outlined.ViewSidebar, CollapseAddLinkLabel, collapse, shortcut = "Esc")
-            DiscardAddLinkButton(state, discard)
-        },
-    ) {
-        val sideSheet = isSideSheet
-        Column {
-            InstantSheetContent(state = state, inSideSheet = sideSheet, onPreview = onPreview)
-        }
+        InstantSheetContent(state = state, inSideSheet = true, onTargetPicked = onTargetPicked, onPreview = onPreview)
     }
 }
 
@@ -94,12 +71,12 @@ fun rememberDiscardAddLink(session: AddLinkViewModel): () -> Unit {
     if (asking) {
         PikoDialog(
             onDismissRequest = { asking = false },
-            title = { Text("放弃添加？") },
+            title = { Text("关闭添加链接？") },
             text = { Text(if (session.state?.saveIssue != null || session.state?.shareSave?.hasPendingResult == true || session.state?.batch?.rows?.any { it.state.saveIssue != null } == true)
                 "本次保存已有部分结果。已提交的请求不会取消，已保存文件保留；待确认的结果仍可在任务页查看。"
-                else "已勾选的文件不会保存。") },
+                else "当前输入的链接和勾选的文件不会保存。") },
             confirmButton = {
-                PikoDialogConfirm("放弃", destructive = true, onClick = {
+                PikoDialogConfirm("关闭", destructive = true, onClick = {
                     asking = false
                     session.discard()
                 })

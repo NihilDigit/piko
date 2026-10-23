@@ -30,6 +30,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuDefaults
 import androidx.compose.material3.Text
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -281,6 +283,7 @@ private fun MenuIconRow(actions: List<SheetAction>, firstItem: FocusRequester?, 
                     modifier = Modifier
                         .weight(1f)
                         .prepareOnPointer(action)
+                        .semantics { contentDescription = action.label }
                         .then(if (index == 0 && firstItem != null) Modifier.focusRequester(firstItem) else Modifier),
                 ) {
                     Column(

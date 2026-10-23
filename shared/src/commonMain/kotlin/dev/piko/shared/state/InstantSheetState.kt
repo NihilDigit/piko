@@ -440,13 +440,18 @@ class InstantSheetState private constructor(
 
     /** Exact accepted inputs for the passive result browser; querying this never writes or previews. */
     val projectedSaveFiles: List<io.github.nihildigit.pikpak.ResolvedFile> by derivedStateOf {
+        projectedSaveEntries.map { it.second }
+    }
+
+    /** (sourceIndex, projected ResolvedFile) pairs for virtual directory projection in Drive. */
+    val projectedSaveEntries: List<Pair<Int, io.github.nihildigit.pikpak.ResolvedFile>> by derivedStateOf {
         sourceSelectedIndices.sorted().filter { !saveAsReference || items[it].file.gcid != null }.map { index ->
             val item = items[index]
             val name = nameToSave(index)
             val relative = if (willCreateFolder) item.file.path.substringBeforeLast('/', "").let { dir ->
                 if (dir.isEmpty()) name else "$dir/$name"
             } else name
-            item.file.copy(path = if (willCreateFolder) "$folderNameToSave/$relative" else relative)
+            index to item.file.copy(path = if (willCreateFolder) "$folderNameToSave/$relative" else relative)
         }
     }
 
@@ -761,11 +766,10 @@ class InstantSheetState private constructor(
         folderNameEdited = true
     }
 
-    /** 更换本次的保存目标。只管这一次会话，下次仍默认存进网盘页的当前目录。 */
+    /** 更换本次的保存目标；左侧网盘若在别处再导航，followDriveFolder 仍继续跟随。 */
     fun changeTarget(breadcrumb: PikoPathBreadcrumb) {
         if (!canEdit) return
         resetEditableAttempt()
-        shared.targetChosen = true
         target = breadcrumb
         targetNotice = null
     }
@@ -783,6 +787,17 @@ class InstantSheetState private constructor(
     fun preview(index: Int) {
         val item = items.getOrNull(index) ?: return
         previewFile(item.file, index)
+    }
+
+    /**
+     * 把待保存虚拟压缩包临时秒传到 Piko-Temp，返回真实的文件 ID，供 [ArchiveBrowser] 列包内目录。
+     * 同一会话里按 gcid 复用，不重复消耗额度。
+     */
+    suspend fun leaseForArchiveBrowse(file: io.github.nihildigit.pikpak.ResolvedFile): Result<String> {
+        val gcid = file.gcid ?: return Result.failure(IllegalStateException("压缩包尚未收录，需离线保存后打开"))
+        previewedIds[gcid]?.let { return Result.success(it) }
+        val lease = shared.previewLease ?: return Result.failure(IllegalStateException("预览会话未就绪"))
+        return lease.put(file).onSuccess { fileId -> previewedIds[gcid] = fileId }
     }
 
     var previewingSharedId by mutableStateOf<String?>(null)
@@ -1099,9 +1114,8 @@ class InstantSheetState private constructor(
         combine(saveTargetContext.folders, snapshotFlow { shared.targetHeld.value || isSaving || hasPendingOfflineSubmission || batch?.rows?.any { it.state.hasPendingOfflineSubmission } == true }) { folder, held -> folder to held }
             .distinctUntilChanged()
             .collectLatest { (folder, held) ->
-                if (shared.targetChosen || held) return@collectLatest
-                val resolved = targetFor(folder)
-                if (!shared.targetChosen) target = resolved
+                if (held) return@collectLatest
+                target = targetFor(folder)
             }
     }
 

@@ -52,9 +52,12 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.coerceAtLeast
 import androidx.compose.ui.unit.coerceIn
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.shape.RoundedCornerShape
 import dev.piko.ui.theme.FrameCardBottomMargin
+import dev.piko.ui.theme.IslandCorner
 import dev.piko.ui.theme.LocalFramed
 import dev.piko.ui.theme.frame
+import dev.piko.ui.theme.islandHeader
 
 /**
  * 宽窗口的主区加右侧侧栏，开关、拖宽与记住宽度只有这一份。
@@ -90,8 +93,8 @@ fun SidePanelLayout(
     open: Boolean,
     savedWidthDp: Float?,
     title: String,
-    closeDescription: String,
-    onClose: () -> Unit,
+    closeDescription: String? = null,
+    onClose: (() -> Unit)? = null,
     onWidthChange: (Float) -> Unit,
     defaultWidth: Dp,
     minWidth: Dp,
@@ -105,8 +108,15 @@ fun SidePanelLayout(
     panel: @Composable () -> Unit,
 ) {
     val framed = LocalFramed.current
-    // 并进外框时整行铺外框色，主区自己的卡片浮在上面；侧栏不再是卡，只有信息流的黑底画面仍裁圆角
-    val rowBackground = if (framed) Modifier.background(MaterialTheme.colorScheme.frame) else Modifier
+    // 并进外框时：若展示栏头（添加链接），整行采用 islandHeader 标签底色，与上方页眉连成一体包裹左侧白色网盘卡片；
+    // 信息流无栏头，保持外框色并给画面裁圆角
+    val rowBackground = when {
+        !framed -> Modifier
+        showHeader && open -> Modifier
+            .clip(RoundedCornerShape(bottomStart = IslandCorner, bottomEnd = IslandCorner))
+            .background(MaterialTheme.colorScheme.islandHeader)
+        else -> Modifier.background(MaterialTheme.colorScheme.frame)
+    }
     val panelSurface = when {
         !framed -> Modifier.panelCard()
         showHeader -> Modifier
@@ -155,7 +165,7 @@ fun SidePanelLayout(
                         Column(
                             modifier = Modifier
                                 // 上边也留 16dp，与主区的内容隔开。并进外框时侧栏落在页眉下面，与主区的卡片上沿齐平
-                                .padding(top = if (framed) 0.dp else PanelMargin, end = PanelMargin, bottom = bottomMargin)
+                                .padding(top = if (framed) 0.dp else PanelMargin, end = if (framed && showHeader) 0.dp else PanelMargin, bottom = bottomMargin)
                                 .width(panelWidth)
                                 .fillMaxHeight()
                                 .then(panelSurface)
@@ -168,14 +178,14 @@ fun SidePanelLayout(
                             ) {
                                 PaneTitle(title, Modifier.weight(1f))
                                 headerActions()
-                                // 收起而不是关掉：里面的东西都找得回来（详情一按就开，面板的会话还在），用 × 读起来像没了。
-                                // 与信息流窗口的「收回到主窗口」同一个图标，看得出是一对
-                                TooltipIconButton(
-                                    Icons.AutoMirrored.Outlined.ViewSidebar,
-                                    closeDescription,
-                                    onClose,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                                if (onClose != null && closeDescription != null) {
+                                    TooltipIconButton(
+                                        Icons.AutoMirrored.Outlined.ViewSidebar,
+                                        closeDescription,
+                                        onClose,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                                 endActions()
                             }
                             Box(modifier = Modifier.weight(1f)) { panel() }

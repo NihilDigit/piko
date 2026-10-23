@@ -30,7 +30,7 @@ class InstantDraft internal constructor(
         private set
 
     val endNeedsConfirm: Boolean
-        get() = !state.hasLocalSave && state.shareSave?.isSaving != true && state.hasPickedFiles
+        get() = !state.hasLocalSave && state.shareSave?.isSaving != true && (!state.isBlank || state.hasPickedFiles)
 
     fun close() {
         if (isClosed) return
@@ -85,7 +85,7 @@ class InstantSession(
         }
 
     // Compatibility adapter while the UI moves from a single editor to draft identities.
-    private var legacyDraft: InstantDraft? = null
+    private var legacyDraft by mutableStateOf<InstantDraft?>(null)
     val state: InstantSheetState? get() = legacyDraft?.takeUnless { it.isClosed }?.state
     val endNeedsConfirm: Boolean get() = legacyDraft?.endNeedsConfirm == true
 
@@ -106,10 +106,10 @@ class InstantSession(
         _pendingCompletions.value = emptyList()
     }
 
-    fun openDraft(initialLink: String = "", targetContext: SaveTargetContext = SaveTargetContext.fixed()): InstantDraft {
+    fun openDraft(initialLink: String = "", targetContext: SaveTargetContext? = null): InstantDraft {
         val draftScope = newScope()
         val saveScope = newScope()
-        val state = if (newStateForDraft == null) newState(draftScope, initialLink)
+        val state = if (newStateForDraft == null || targetContext == null) newState(draftScope, initialLink)
             else newStateForDraft.invoke(draftScope, saveScope, initialLink, targetContext)
         val draft = InstantDraft(++generation, state, draftScope, saveScope) { closed ->
             drafts = drafts - closed

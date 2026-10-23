@@ -67,10 +67,11 @@ internal fun WorkspaceContextHost(
                     when (context) {
                         is WorkspaceContext.File -> fileContent()
                         is WorkspaceContext.Duplicate -> {
+                            val requestCloseDuplicate = { model.requestCloseContext(context.id) }
                             CompositionLocalProvider(
-                                LocalWorkspaceSurface provides if (!wide) WorkspaceSurface(context.id, onMinimize) else null,
+                                LocalWorkspaceSurface provides if (!wide) WorkspaceSurface(context.id, requestCloseDuplicate) else null,
                             ) {
-                                BackHandler(enabled = !wide, onBack = onMinimize)
+                                BackHandler(enabled = !wide, onBack = requestCloseDuplicate)
                                 Box(Modifier.fillMaxSize().then(if (!wide) Modifier.imePadding() else Modifier)) {
                                     if (context.id in model.duplicateSessions) DriveScreen(
                                         onNavigateToFolder = { _, _ -> },
@@ -78,14 +79,10 @@ internal fun WorkspaceContextHost(
                                         browserSession = model.duplicateBrowser(context.id),
                                         onRevealInDrive = onReveal,
                                         onOpenTransfers = onTransfers,
-                                        onCloseContext = { model.requestCloseContext(context.id) },
+                                        onCloseContext = requestCloseDuplicate,
                                         rootTitle = workspaceTitle(model, context),
                                         interactionEnabled = true,
-                                        onLibraryLeft = {
-                                            if (!wide) {
-                                                onMinimize()
-                                            }
-                                        },
+                                        onLibraryLeft = requestCloseDuplicate,
                                     )
                                 }
                             }

@@ -20,10 +20,13 @@ fun FilesScreen(
     onOpenSelectedFeed: ((List<FileStat>) -> Unit)? = null,
     /** 见 DriveScreen 的同名参数。 */
     feedStashed: Boolean = false,
+    onResumeFeed: (() -> Unit)? = null,
     /** 见 DriveScreen 的同名参数。 */
     feedBlockedReason: String? = null,
     /** 见 DriveScreen 的同名参数。 */
     feedTabId: Long? = null,
+    /** 右栏放得下时添加链接停在右栏，否则退化到底部 Sheet。 */
+    addLinkInSidePanel: Boolean = false,
     /** 把网盘页的列表区（页眉下面）包进去的外框，宽窗口里由它在右侧放信息流或添加链接。 */
     feedFrame: @Composable (content: @Composable () -> Unit) -> Unit = { it() },
     /** 见 DriveScreen 的同名参数。 */
@@ -51,8 +54,10 @@ fun FilesScreen(
         onFeedShownChange = onFeedShownChange,
         onOpenSelectedFeed = onOpenSelectedFeed,
         feedStashed = feedStashed,
+        onResumeFeed = onResumeFeed,
         feedBlockedReason = feedBlockedReason,
         feedTabId = feedTabId,
+        addLinkInSidePanel = addLinkInSidePanel,
         modifier = modifier,
     )
 }

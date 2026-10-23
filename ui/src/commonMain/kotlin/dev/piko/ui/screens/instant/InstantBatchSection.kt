@@ -53,7 +53,7 @@ internal fun ColumnScope.BatchList(
     showTitle: Boolean,
     /** 侧边面板里列表部分占满中间，保存栏钉在底部，与单条时相同。 */
     fillHeight: Boolean,
-    onPickTarget: () -> Unit,
+    saveSettings: @Composable () -> Unit,
 ) {
     Column(
         modifier = Modifier.weight(1f, fill = fillHeight),
@@ -108,12 +108,7 @@ internal fun ColumnScope.BatchList(
     } else if (batch.lacksOfflineCount) {
         ErrorBanner(message = "需要 ${batch.offlineCount} 次离线，今日还剩 ${batch.offlineLeft} 次", onRetry = null)
     }
-    TargetRow(
-        target = state.target,
-        notice = state.targetNotice,
-        enabled = !batch.isSaving,
-        onClick = onPickTarget,
-    )
+    saveSettings()
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         SaveButton(
             label = "全部保存",

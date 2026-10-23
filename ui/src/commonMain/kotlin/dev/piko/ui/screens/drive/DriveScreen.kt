@@ -196,9 +196,12 @@ import dev.piko.ui.screens.rename.MetaTubeTitleRow
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.LocalRootSnackbar
 import dev.piko.shared.data.ArchiveEntryId
+import dev.piko.shared.data.ImportPreviewEntryId
+import dev.piko.shared.data.ImportPreviewLocation
 import dev.piko.shared.data.isArchiveVolume
 import dev.piko.shared.data.isDriveFolderId
 import dev.piko.shared.data.isExtractableArchive
+import dev.piko.shared.data.isImportPreview
 import dev.piko.ui.screens.archive.ArchiveBrowsePasswordDialog
 import dev.piko.ui.components.BreadcrumbBar
 import dev.piko.ui.components.FileNameField
@@ -219,6 +222,7 @@ import dev.piko.ui.components.UnsupportedNameDialog
 import dev.piko.ui.components.driveNameHint
 import dev.piko.ui.components.isUnfixableDriveName
 import dev.piko.ui.components.submitDriveName
+import dev.piko.ui.screens.instant.AddLinkBlockedAction
 import dev.piko.ui.screens.instant.DiscardAddLinkLabel
 import dev.piko.ui.screens.instant.InstantSheetContent
 import dev.piko.ui.screens.instant.rememberDiscardAddLink
@@ -279,12 +283,15 @@ fun DriveScreen(
     feedShown: Boolean = false,
     onFeedShownChange: ((Boolean) -> Unit)? = null,
     onOpenSelectedFeed: ((List<FileStat>) -> Unit)? = null,
-    /** 信息流挂起着（队列还在、应用内不画），宽窗口命令栏的「信息流」按钮据此点一个小圆点。 */
+    /** 信息流挂起着（队列还在、应用内不画），宽窗口命令栏右端的主按钮切换为「继续刷」。 */
     feedStashed: Boolean = false,
+    onResumeFeed: (() -> Unit)? = null,
     /** 信息流此刻打不开的原因（右栏被添加链接占着），宽窗口命令栏的「信息流」按钮据此置灰、在提示里写明。null 为打得开。 */
     feedBlockedReason: String? = null,
     /** 从信息流跳出来浏览的那个标签，标签栏上与别的分开画。没有时为 null。 */
     feedTabId: Long? = null,
+    /** 右栏放得下时添加链接停在右栏，否则退化到底部 Sheet。 */
+    addLinkInSidePanel: Boolean = false,
     /**
      * 地址栏里输入页面名（回收站、星标、传输、设置）时给出的前往项。与命令面板的「前往」「页面」两组是同一份，
      * 由主界面传进来：怎么打开这些页只有主界面知道。
@@ -347,6 +354,7 @@ fun DriveScreen(
             folderVault = services.folderVaultSession,
             shareSaves = services.shareSaves,
             receiving = services.receivingActivity,
+            instantSession = services.instantSession,
             supplementalFiles = { gallery.files },
             operationScope = services.driveRepository.currentAccount?.let(services.fileExecutionScopes::forAccount) ?: scope)
     }
@@ -664,18 +672,18 @@ fun DriveScreen(
         }
     }
     var previewImage by remember { mutableStateOf<FileStat?>(null) }
+    val currentTabId = (navigation as? dev.piko.shared.presentation.TabNavigation)?.tabId
+        ?: (workspace as? dev.piko.shared.presentation.DriveWorkspace)?.let { val id by it.activeTabId.collectAsStateWithLifecycle(); id }
+    val addLinkOwnedHere = addLink.ownerTabId == null || currentTabId == null || addLink.ownerTabId == currentTabId
     fun openLink(link: String) {
-        if (contexts != null) {
-            contexts.openImport(link, workspace.saveTargetContext.currentFolder())
-            return
-        }
         val replacing = addLink.state?.isBlank == false
         taskSlot.claim(
             action = if (replacing) "打开新链接" else "添加链接",
             confirmLabel = if (replacing) "打开新链接" else "添加链接",
             task = TaskSlot.Task.ADD_LINK,
             replacesSame = replacing,
-        ) { addLink.open(link) }
+            conflictsWith = setOf(TaskSlot.Task.ADD_LINK, TaskSlot.Task.FEED),
+        ) { addLink.open(link, tabId = currentTabId) }
     }
     // 外部打开的磁力链是一次明确的新请求：开新会话并就地取走，面板收起后不再靠它续命。
     // 已有一次粘过东西的添加链接时不静默换掉它，与别的占着 sheet 的事一样先确认
@@ -689,10 +697,21 @@ fun DriveScreen(
     }
 
     val openTransfers by rememberUpdatedState(onOpenTransfers)
-    val instantState = addLink.state
+    val instantState = addLink.state.takeIf { addLinkOwnedHere }
     fun openAddLink() {
-        if (contexts != null) contexts.openImport(target = workspace.saveTargetContext.currentFolder())
-        else taskSlot.claim("添加链接", "添加链接", TaskSlot.Task.ADD_LINK) { addLink.resume() }
+        taskSlot.claim(
+            action = "添加链接",
+            confirmLabel = "添加链接",
+            task = TaskSlot.Task.ADD_LINK,
+            conflictsWith = setOf(TaskSlot.Task.ADD_LINK, TaskSlot.Task.FEED),
+        ) {
+            if (addLink.state != null && addLink.ownerTabId != null && currentTabId != null && addLink.ownerTabId != currentTabId) {
+                (workspace as? dev.piko.shared.presentation.DriveWorkspace)?.switchTab(addLink.ownerTabId!!)
+                addLink.resume()
+            } else {
+                addLink.resume(tabId = currentTabId)
+            }
+        }
     }
 
     // 没有浮动卡片的窗口里，解压与归档的进度只在传输页。开始时提示一次并给出去处；不像离线那样直接跳过去：
@@ -862,22 +881,48 @@ fun DriveScreen(
     // 下载的成品只在传输页里看得到，与上传、离线一样提交后切过去。文件夹各成一批，在后台列出其中的文件。
     // 普通下载与显式指定画质共用这条提交路径。
     fun download(files: List<FileStat>, chooseQuality: Boolean = false) {
+        val importPreviewItems = files.filter { it.isImportPreview }
+        if (importPreviewItems.isNotEmpty()) {
+            val draft = services.instantSession.state
+            if (draft != null) {
+                val resolvedList = mutableListOf<io.github.nihildigit.pikpak.ResolvedFile>()
+                importPreviewItems.forEach { item ->
+                    ImportPreviewEntryId.resolvedFileOf(item.id)?.let { resolvedList += it }
+                    ImportPreviewLocation.of(item.id)?.let { loc ->
+                        val prefix = "${loc.path.trim('/')}/"
+                        draft.projectedSaveEntries.forEach { (_, resolved) ->
+                            val clean = resolved.path.trim('/')
+                            if ((clean == loc.path.trim('/') || clean.startsWith(prefix)) && resolved.gcid != null) {
+                                resolvedList += resolved
+                            }
+                        }
+                    }
+                }
+                if (resolvedList.isNotEmpty()) {
+                    downloadManager.enqueueResolved(resolvedList, draft.target?.id.orEmpty())
+                    openTransfers()
+                }
+            }
+            val rest = files.filterNot { it.isImportPreview }
+            if (rest.isEmpty()) return
+        }
+        val activeFiles = files.filterNot { it.isImportPreview }
         // 压缩包里的文件先变成借得出来的样子；包里的文件夹不在网盘里，列不出内容，不下。借出的只有原画，不问画质
         if (state.archiveView != null) {
             scope.launch {
-                val ready = files.filter { !it.isFolder }.mapNotNull { state.prepareArchiveEntry(it) }
+                val ready = activeFiles.filter { !it.isFolder }.mapNotNull { state.prepareArchiveEntry(it) }
                 downloadManager.enqueueFiles(ready)
                 if (ready.isNotEmpty()) openTransfers()
             }
             return
         }
-        val singles = files.filter { !it.isFolder && !it.isUploading }
+        val singles = activeFiles.filter { !it.isFolder && !it.isUploading }
         val onQueued: (String?) -> Unit = { notice ->
             // 提示要在切过去的传输页上显示，这一页随即离开
             notice?.let(services::noticeOnTransfers)
             openTransfers()
         }
-        val targets = singles + files.filter { it.isFolder }
+        val targets = singles + activeFiles.filter { it.isFolder }
         val source = DriveDownloadFolderSource(driveRepo)
         if (chooseQuality) downloads.downloadAtQuality(targets, source, onQueued)
         else downloads.download(targets, source, onQueued)
@@ -967,10 +1012,10 @@ fun DriveScreen(
         else -> CommandPlace.FOLDER
     }
 
-    // 压缩包里的条目不在网盘里：能做的只有下载文件与解压出来，打开就是单击
+    // 压缩包里的条目不在网盘里：能做的只有下载文件与解压出来，打开就是单击；待保存预览里的压缩包尚未保存到网盘，不提供解压出来
     fun archiveEntryActions(files: List<FileStat>, commands: ItemCommands): List<SheetAction> = buildList {
         if (commands.download) add(DriveActions.download { download(files) })
-        add(DriveActions.extractEntries { extractFromArchive(files) })
+        if (!state.isArchiveInImportPreview) add(DriveActions.extractEntries { extractFromArchive(files) })
     }
 
     // 剪切、复制与快捷键走同一处；窄窗口在 FAB 菜单提供粘贴。
@@ -1043,6 +1088,27 @@ fun DriveScreen(
         add(DriveActions.removeFromVault { state.removeFromVault(listOf(file.id)) })
     }
 
+    fun importPreviewActions(targets: List<FileStat>): List<SheetAction> = buildList {
+        val ids = targets.map { it.id }
+        val canDownload = targets.any { file ->
+            if (file.isFolder) true else file.hash.isNotBlank()
+        }
+        if (canDownload) add(DriveActions.download { download(targets) })
+        val single = targets.singleOrNull()
+        if (single != null && !single.isFolder && single.hash.isNotBlank()) {
+            add(DriveActions.copyDownloadLink { copyDownloadLink(single) })
+        }
+        add(
+            SheetAction(
+                Icons.Outlined.Delete,
+                if (targets.size > 1) "不保存所选 ${targets.size} 项" else "不保存此项",
+                { state.removeFromImportPreview(ids) },
+                destructive = true,
+                shortLabel = "不保存",
+            ),
+        )
+    }
+
     // 一项（或 targets 那几项）的全部操作，右键菜单与操作面板只从这里取。读 state 上的当下值：记住的回调里拿不到重组后的局部变量。
     // 点的那一项在几项选中里时，照资源管理器作用于全部选中的：只作用于这一项的话，多选后右键「移入回收站」只删掉一项
     fun operationsOf(file: FileStat, targets: List<FileStat>): List<SheetAction> {
@@ -1050,6 +1116,7 @@ fun DriveScreen(
         if (library == DriveLibrary.DUPLICATES && file.isFolder) {
             return listOf(DriveActions.revealInDrive { onRevealInDrive?.invoke(file) ?: state.revealInDrive(file) })
         }
+        if (targets.all { it.isImportPreview }) return importPreviewActions(targets)
         val commands = itemCommands(commandPlace(), targets, fullyVaultedFolders)
         if (commands.restoreOrDelete) {
             val ids = targets.map { it.id }
@@ -1145,7 +1212,10 @@ fun DriveScreen(
     }
     val openFile: (FileStat) -> Unit = { file ->
         when {
-            file.isPlayableVideo() -> navigateToPlayer(file, latestDisplayedFiles.filter { it.isPlayableVideo() })
+            file.isImportPreview && file.hash.isBlank() -> {
+                scope.launch { snackbarHostState.showSnackbar("未收录的链接条目需先离线保存到网盘才能打开", withDismissAction = true) }
+            }
+            file.isPlayableVideo() -> navigateToPlayer(file, latestDisplayedFiles.filter { it.isPlayableVideo() && (!it.isImportPreview || it.hash.isNotBlank()) })
             file.isPreviewableImage() && file.thumbnailLink.isNotBlank() -> previewImage = file
             // 其余类型没有应用内的打开方式，单击等同于下载
             else -> enqueueDownload(file)
@@ -1215,7 +1285,7 @@ fun DriveScreen(
                     latestDisplayedFiles.filter { it.id in state.selectedFileIds }
                 } else {
                     listOf(file)
-                }.filterNot { it.isUploading || it.isVaulted }
+                }.filterNot { it.isUploading || it.isVaulted || it.isImportPreview }
                 if (batch.isEmpty()) {
                     null
                 } else {
@@ -1524,7 +1594,7 @@ fun DriveScreen(
             ?.takeIf { it.isNotEmpty() }?.let { suggested ->
             SheetAction(Icons.Outlined.Checklist, "选中建议移走的 ${suggested.size} 项", { state.selectOnly(suggested) })
         }
-        state.archiveView != null && displayedFiles.isNotEmpty() ->
+        state.archiveView != null && displayedFiles.isNotEmpty() && !state.isArchiveInImportPreview ->
             SheetAction(Icons.Outlined.Unarchive, "全部解压", { extractFromArchive(emptyList()) })
         commands.emptyPlace -> libraryPageActions(libraryView, state.files.isEmpty(), { libraryConfirm = it }, { state.files.map { it.id } }).firstOrNull()
         else -> null
@@ -1622,14 +1692,16 @@ fun DriveScreen(
                     tileSize = tileSize,
                     onTileSizeChange = ::selectTileSize,
                     feedShown = feedShown && !state.isSelectionMode,
-                    onFeedShownChange = changeFeedShown.takeIf { commands.feed },
-                    feedSuspended = feedStashed,
+                    onFeedShownChange = changeFeedShown.takeIf { commands.feed && !feedStashed },
+                    feedSuspended = false,
                     feedBlockedReason = feedBlockedReason,
                     galleryShown = galleryActive && !state.isSelectionMode,
                     onGalleryShownChange = changeGalleryShown.takeIf { commands.gallery || galleryActive },
                 )
             },
-            primaryAction = placePrimaryAction ?: if (commands.addLink) {
+            primaryAction = placePrimaryAction ?: if (feedStashed && onResumeFeed != null) {
+                SheetAction(Icons.Outlined.SwipeVertical, "继续刷", onResumeFeed, group = ActionGroup.Refresh)
+            } else if (commands.addLink) {
                 SheetAction(Icons.Outlined.Bolt, "添加链接", ::openAddLink, group = ActionGroup.Refresh, pending = addLink.hasCollapsedWork)
             } else {
                 null
@@ -1809,13 +1881,11 @@ fun DriveScreen(
         }
     }
 
-    // 窄窗口底部那一块 sheet：添加链接或查找重复，同一时刻只有一件（TaskSlot 管着入口）。
-    // 宽窗口的添加链接由主界面放进右栏或侧边面板；任务页提供草稿与报告的恢复入口。
+    // 放不下右侧栏时，底部那一块 sheet 承载添加链接（宽窗口放得下右侧栏时由主界面放进右栏）。
     val discardAddLink = rememberDiscardAddLink(addLink)
     val taskSheet: TaskSheetModel? = when {
-        contexts != null -> null
         !isWorkspaceBrowser -> null
-        twoPane -> null
+        addLinkInSidePanel -> null
         instantState != null -> TaskSheetModel(
             key = instantState,
             expanded = addLink.isExpanded,
@@ -1829,6 +1899,8 @@ fun DriveScreen(
                 InstantSheetContent(
                     state = instantState,
                     headerShown = true,
+                    fillHeight = instantState.resolution != null || instantState.batch != null,
+                    onTargetPicked = { path -> navigation.updateFolderStack(path) },
                     // 先收起：播放器压栈进来时网盘页还看得见那一截，回来接着挑
                     onPreview = { fileId, fileName ->
                         addLink.collapse()
@@ -1839,6 +1911,7 @@ fun DriveScreen(
         )
         else -> null
     }
+    AddLinkBlockedAction(addLink)
 
     // 焦点与按键挂在最外层：挂在侧栏的子组合里的话，比外面的 LaunchedEffect 晚挂上，首帧要焦点时找不到它
     Box(
@@ -1932,6 +2005,9 @@ fun DriveScreen(
                                 onSectionSelected = ::jumpToSection,
                                 moreActions = emptyList(),
                                 navigationIcon = when {
+                                    inDuplicates && onCloseContext != null && folderStack.size <= navigation.rootDepth -> {
+                                        { TooltipIconButton(Icons.Outlined.Close, "结束查重", onCloseContext) }
+                                    }
                                     atOriginBoundary -> {
                                         { TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, "返回", ::leaveLibrary) }
                                     }
@@ -2002,7 +2078,9 @@ fun DriveScreen(
                                                 galleryShown = galleryActive && !state.isSelectionMode,
                                                 onGalleryShownChange = changeGalleryShown.takeIf { commands.gallery || galleryActive },
                                                 feedShown = feedShown && !state.isSelectionMode,
-                                                onFeedShownChange = changeFeedShown.takeIf { commands.feed },
+                                                onFeedShownChange = changeFeedShown.takeIf { commands.feed && !feedStashed },
+                                                tileSize = tileSize,
+                                                onTileSizeChange = ::selectTileSize,
                                             )
                                         })
                                     }
@@ -2026,9 +2104,12 @@ fun DriveScreen(
                         val coreActions = coreIcons.mapNotNull { icon -> available.firstOrNull { it.icon == icon } }
                         Surface(
                             color = MaterialTheme.colorScheme.surfaceContainer,
-                            modifier = Modifier.fillMaxWidth().navigationBarsPadding(),
+                            modifier = Modifier.fillMaxWidth(),
                         ) {
-                            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Row(
+                                Modifier.fillMaxWidth().navigationBarsPadding().padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
                                 (coreActions + SheetAction(Icons.Outlined.MoreHoriz, "更多", ::openSelectionActions)).forEach { action ->
                                     TextButton(
                                         onClick = action.onClick,
@@ -2113,17 +2194,35 @@ fun DriveScreen(
                     }
                 },
             ) { innerPadding -> listArea(innerPadding) {
+                val addLinkSideOpen = addLinkInSidePanel && instantState != null && addLink.isExpanded
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
                         .then(
                             if (pathInTopBar) {
                                 if (islandTabMode) {
-                                    // 与页眉同一块岛：上沿两角露出一点页眉的底色，像列表被页眉包着，而不是两块拼在一起
+                                    // 与页眉同一块岛：当右侧打开添加链接面板时，左与下留出一点标签底色，
+                                    // 让页眉与右侧栏连成一体把白色网盘卡片包在里面
                                     Modifier
-                                        .clip(RoundedCornerShape(bottomStart = IslandCorner, bottomEnd = IslandCorner))
+                                        .clip(
+                                            RoundedCornerShape(
+                                                bottomStart = IslandCorner,
+                                                bottomEnd = if (addLinkSideOpen) 0.dp else IslandCorner,
+                                            ),
+                                        )
                                         .background(MaterialTheme.colorScheme.islandHeader)
-                                        .clip(RoundedCornerShape(topStart = IslandInnerCorner, topEnd = IslandInnerCorner, bottomStart = IslandCorner, bottomEnd = IslandCorner))
+                                        .padding(
+                                            start = if (addLinkSideOpen) 8.dp else 0.dp,
+                                            bottom = if (addLinkSideOpen) 8.dp else 0.dp,
+                                        )
+                                        .clip(
+                                            RoundedCornerShape(
+                                                topStart = IslandInnerCorner,
+                                                topEnd = IslandInnerCorner,
+                                                bottomStart = if (addLinkSideOpen) IslandInnerCorner else IslandCorner,
+                                                bottomEnd = if (addLinkSideOpen) IslandInnerCorner else IslandCorner,
+                                            ),
+                                        )
                                         .background(MaterialTheme.colorScheme.surface)
                                 } else {
                                     Modifier.clip(FrameCardShape).background(MaterialTheme.colorScheme.surface)
@@ -2157,7 +2256,7 @@ fun DriveScreen(
                                     tileSize = tileSize,
                                     onTileSizeChange = ::selectTileSize,
                                     viewMode = viewMode,
-                                    showViewSwitcher = !desktop,
+                                    showViewSwitcher = false,
                                     onViewModeChange = ::selectViewMode,
                                     onZoom = { larger ->
                                         val next = tileSize.step(larger)
@@ -2680,7 +2779,7 @@ private fun DriveEmptyState(state: DriveScreenState, modifier: Modifier = Modifi
                 } else {
                     PikoEmptyState(
                         title = "此文件夹为空",
-                        description = "可用右下角的按钮添加链接、上传文件或新建文件夹",
+                        description = "",
                         icon = Icons.Outlined.FolderOpen,
                     )
                 }

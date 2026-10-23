@@ -211,6 +211,13 @@ import dev.piko.ui.theme.frame
 import androidx.compose.ui.draw.clip
 import androidx.compose.material3.MaterialTheme
 import dev.piko.ui.workbench.LocatingOverlay
+import dev.piko.ui.screens.instant.DockedAddLink
+import dev.piko.ui.screens.instant.DiscardAddLinkButton
+import dev.piko.ui.screens.instant.rememberDiscardAddLink
+import dev.piko.ui.components.PikoDialog
+import dev.piko.ui.components.PikoDialogConfirm
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.focus.onFocusChanged
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
@@ -357,13 +364,7 @@ fun PikoMainScaffold(
     var libraryResetRequests by remember { mutableIntStateOf(0) }
     val widthClass = currentWidthClass()
     val taskSlot = remember { TaskSlot() }
-    val pendingLink by services.instantMagnetRepository.pendingMagnetFlow.collectAsStateWithLifecycle()
-    LaunchedEffect(pendingLink) {
-        pendingLink?.takeIf { it.isNotBlank() }?.let { link ->
-            services.instantMagnetRepository.clearPendingMagnet()
-            workspaceModel.openImport(link)
-        }
-    }
+    val addLink = services.addLink
 
 
     val topScreen = backStack.lastOrNull() as? Screen
@@ -497,8 +498,16 @@ fun PikoMainScaffold(
         }
     }
 
-    fun showInDrive(stack: List<PikoPathBreadcrumb>, fileId: String) = goToDrive(stack) {
-        fileWorkspace.requestHighlight(setOf(fileId))
+    fun showInDrive(stack: List<PikoPathBreadcrumb>, fileId: String, activatePrimary: Boolean = true) {
+        if (services.driveRepository.currentAccount != account) return
+        if (activatePrimary) workspaceModel.activatePrimaryFileBrowser()
+        fileWorkspace.navigateThen(stack) {
+            if (services.driveRepository.currentAccount != account) return@navigateThen
+            fileWorkspace.updateFolderStack(stack)
+            fileWorkspace.requestHighlight(setOf(fileId))
+            resetToHome()
+            currentTab = MainTab.FILES
+        }
     }
 
     /**
@@ -593,9 +602,29 @@ fun PikoMainScaffold(
         }
         coroutineScope.launch { preferences.setClipPanelOpen(shown) }
     }
-    val feedOnFilesTab = feedShown && (!feedSuspended || panelFits) && !feedPoppedOut && currentTab == MainTab.FILES
+    var askingCloseFeed by remember { mutableStateOf(false) }
+    fun requestCloseFeed() {
+        if (feedShown) askingCloseFeed = true else setFeedShown(false)
+    }
+    if (askingCloseFeed) {
+        PikoDialog(
+            onDismissRequest = { askingCloseFeed = false },
+            title = { Text("关闭信息流？") },
+            text = { Text("关闭后将清空当前播放队列与浏览进度。") },
+            confirmButton = {
+                PikoDialogConfirm("关闭", destructive = true, onClick = {
+                    askingCloseFeed = false
+                    setFeedShown(false)
+                })
+            },
+            dismissButton = { TextButton(onClick = { askingCloseFeed = false }) { Text("取消") } },
+        )
+    }
+    val addLinkDocked = panelFits && addLink.state != null && addLink.isExpanded &&
+        (addLink.ownerTabId == null || addLink.ownerTabId == activeFileTab)
+    val feedOnFilesTab = feedShown && !feedSuspended && !feedPoppedOut && currentTab == MainTab.FILES
     val feedBlockedReason: String? = null
-    val feedInPanel = feedOnFilesTab && panelFits && !workspaceModel.feed.fullscreen
+    val feedInPanel = feedOnFilesTab && panelFits && !workspaceModel.feed.fullscreen && !addLinkDocked
     val feedFullScreen = feedOnFilesTab && (!panelFits || workspaceModel.feed.fullscreen)
     val effectiveCollapsed = sidebarCollapsed
     val sidebarWidth by animateDpAsState(
@@ -671,7 +700,7 @@ fun PikoMainScaffold(
                 detourTab != null -> driveWorkspace?.switchTab(detourTab)
                 feedDetour != null -> feedDetourTab = driveWorkspace?.openTab(stack)
             }
-            showInDrive(stack, file.id)
+            showInDrive(stack, file.id, activatePrimary = false)
         }
     }
 
@@ -681,7 +710,7 @@ fun PikoMainScaffold(
                 playFull = ::playFromFeed,
                 locate = ::locateFromFeed,
                 dock = { detachedHost.closeClipFeed() },
-                close = { setFeedShown(false) },
+                close = ::requestCloseFeed,
             ),
         )
     }
@@ -714,9 +743,55 @@ fun PikoMainScaffold(
         pushLibrary(library)
     }
 
+    fun openAddLinkWithConfirm(initialLink: String = "") {
+        val replacing = initialLink.isNotBlank() && addLink.state?.isBlank == false && addLink.state?.input != initialLink
+        taskSlot.claim(
+            action = if (replacing) "打开新链接" else "添加链接",
+            confirmLabel = if (replacing) "打开新链接" else "添加链接",
+            task = TaskSlot.Task.ADD_LINK,
+            replacesSame = replacing,
+            conflictsWith = setOf(TaskSlot.Task.ADD_LINK, TaskSlot.Task.FEED),
+        ) {
+            currentTab = MainTab.FILES
+            resetToHome()
+            if (addLink.state != null && addLink.ownerTabId != null) {
+                driveWorkspace?.switchTab(addLink.ownerTabId!!)
+            } else {
+                workspaceModel.activateFileBrowser()
+            }
+            val targetTabId = driveWorkspace?.activeTabId?.value
+            if (initialLink.isNotBlank()) addLink.open(initialLink, tabId = targetTabId) else addLink.resume(tabId = targetTabId)
+        }
+    }
+
+    val pendingLink by services.instantMagnetRepository.pendingMagnetFlow.collectAsStateWithLifecycle()
+    LaunchedEffect(pendingLink) {
+        pendingLink?.takeIf { it.isNotBlank() }?.let { link ->
+            services.instantMagnetRepository.clearPendingMagnet()
+            ClipboardLinkDetection.session.handled(link)
+            openAddLinkWithConfirm(link)
+        }
+    }
+
     SideEffect {
-        taskSlot.exclusive = false
-        taskSlot.occupants = emptyList()
+        taskSlot.exclusive = true
+        taskSlot.occupants = listOf(
+            TaskSlot.Occupant(
+                task = TaskSlot.Task.FEED,
+                name = "信息流",
+                loss = "当前播放队列与浏览进度将清空。",
+                active = { feedShown },
+                end = { setFeedShown(false) },
+            ),
+            TaskSlot.Occupant(
+                task = TaskSlot.Task.ADD_LINK,
+                name = "添加链接",
+                loss = "当前输入的链接和勾选的文件不会保存。",
+                active = { addLink.state != null },
+                end = { addLink.discard() },
+                replacementAvailability = { addLink.replacementAvailability },
+            ),
+        )
     }
     @Composable
     fun FeedContent(compact: Boolean, visible: Boolean) {
@@ -726,7 +801,7 @@ fun PikoMainScaffold(
             // 底下还放着一段
             !visible || !feedOpened || !onHome -> Box(Modifier.fillMaxSize().background(Color.Black))
             else -> ClipFeedScreen(
-                onBackClick = { setFeedShown(false) },
+                onBackClick = ::requestCloseFeed,
                 onPlayFull = ::playFromFeed,
                 onLocate = ::locateFromFeed,
                 compact = compact,
@@ -737,18 +812,33 @@ fun PikoMainScaffold(
         }
     }
 
+    val columnContent = when {
+        addLinkDocked -> SideColumnContent.AddLink
+        feedInPanel -> SideColumnContent.Feed
+        else -> null
+    }
+    var lastColumnContent by remember { mutableStateOf(SideColumnContent.Feed) }
+    SideEffect { if (columnContent != null) lastColumnContent = columnContent }
+    val columnShows = columnContent ?: lastColumnContent
+
     val feedFrame: @Composable (@Composable () -> Unit) -> Unit = { drive ->
+        val showAddLink = columnShows == SideColumnContent.AddLink
+        val discardAddLink = rememberDiscardAddLink(addLink)
         SidePanelLayout(
-            open = feedShown && panelFits && !workspaceModel.feed.fullscreen && !feedPoppedOut,
+            open = columnContent != null,
             savedWidthDp = panelPrefs.widthDp,
-            title = "信息流",
-            closeDescription = "关闭信息流",
-            onClose = { setFeedShown(false) },
+            title = if (showAddLink) "添加链接" else "信息流",
+            closeDescription = if (showAddLink) null else "关闭信息流",
+            onClose = if (showAddLink) null else ::requestCloseFeed,
+            endActions = {
+                val addLinkState = addLink.state
+                if (showAddLink && addLinkState != null) DiscardAddLinkButton(addLinkState, discardAddLink)
+            },
             onWidthChange = { coroutineScope.launch { preferences.setClipPanelWidth(it) } },
             defaultWidth = ClipPanelDefaultWidth,
             minWidth = ClipPanelMinWidth,
             ready = feedShownState != null,
-            showHeader = false,
+            showHeader = showAddLink,
             main = {
                 Box(Modifier.fillMaxSize()) {
                     drive()
@@ -756,12 +846,25 @@ fun PikoMainScaffold(
                         visible = feedSuspended && !desktop,
                         folderName = clipFeedSession.root?.name,
                         onResume = ::resumeFeed,
-                        onClose = { setFeedShown(false) },
+                        onClose = ::requestCloseFeed,
                         modifier = Modifier.align(Alignment.BottomStart).padding(end = FeedResumeBarFabWidth),
                     )
                 }
             },
-            panel = { FeedContent(compact = true, visible = feedInPanel) },
+            panel = {
+                when (columnShows) {
+                    SideColumnContent.AddLink -> EscClosesWhenFocused(onClose = discardAddLink) {
+                        addLink.state?.let { state ->
+                            DockedAddLink(
+                                state = state,
+                                onTargetPicked = { path -> fileWorkspace.updateFolderStack(path) },
+                                onPreview = { fileId, fileName -> playVideo(FileStat(id = fileId, name = fileName), emptyList()) },
+                            )
+                        }
+                    }
+                    SideColumnContent.Feed -> FeedContent(compact = true, visible = feedInPanel)
+                }
+            },
         )
     }
 
@@ -870,19 +973,25 @@ fun PikoMainScaffold(
                                     feedShown = feedShown && !feedSuspended,
                                     onFeedShownChange = { shown ->
                                         when {
-                                            shown && feedSuspended -> resumeFeed()
-                                            shown -> taskSlot.claim("打开信息流", "打开信息流", TaskSlot.Task.FEED) { setFeedShown(true) }
-                                            else -> setFeedShown(false)
+                                            shown && feedSuspended -> taskSlot.claim("继续刷信息流", "继续刷", TaskSlot.Task.FEED, conflictsWith = setOf(TaskSlot.Task.ADD_LINK)) { resumeFeed() }
+                                            shown -> taskSlot.claim("打开信息流", "打开信息流", TaskSlot.Task.FEED, conflictsWith = setOf(TaskSlot.Task.ADD_LINK)) { setFeedShown(true) }
+                                            else -> requestCloseFeed()
                                         }
                                     },
                                     onOpenSelectedFeed = { selected ->
-                                        taskSlot.claim("打开所选视频的信息流", "打开信息流", TaskSlot.Task.FEED) {
+                                        taskSlot.claim("打开所选视频的信息流", "打开信息流", TaskSlot.Task.FEED, conflictsWith = setOf(TaskSlot.Task.ADD_LINK)) {
                                             setFeedShown(true, selected.toList())
                                         }
                                     },
                                     feedStashed = feedSuspended,
+                                    onResumeFeed = {
+                                        taskSlot.claim("继续刷信息流", "继续刷", TaskSlot.Task.FEED, conflictsWith = setOf(TaskSlot.Task.ADD_LINK)) {
+                                            resumeFeed()
+                                        }
+                                    },
                                     feedBlockedReason = feedBlockedReason,
                                     feedTabId = feedDetourTab,
+                                    addLinkInSidePanel = panelFits,
                                     feedFrame = feedFrame,
                                     // 「文件」就是网盘页自己，地址栏里不列
                                     addressDestinations = tabDestinations().drop(1) + pageDestinations(),
@@ -897,7 +1006,10 @@ fun PikoMainScaffold(
                     MainTab.TRANSFERS -> {
                         TransfersScreen(
                             state = workspaceModel.transfers,
-                            onCreateImport = { workspaceModel.openImport(it) },
+                            onCreateImport = {
+                                ClipboardLinkDetection.session.handled(it)
+                                openAddLinkWithConfirm(it)
+                            },
                             scrollToTopRequests = transfersScrollToTop,
                             onOpenCloudFile = { fileId, _ -> revealInDrive(fileId) },
                             onNavigateToVideoPlayer = ::playLocal,
@@ -966,7 +1078,7 @@ fun PikoMainScaffold(
             // 全屏形态的信息流：盖住网盘页连同导航栏。不进返回栈，形态由窗口宽度随时推出来，窗口拉宽即换成侧栏。
             // 压栈页（看完整的播放器）盖住 Home 时它随 Home 一起离开组合，两个播放器不同时在放；
             // 退出播放器后重新进入组合，首帧即可见，也不播进场动画，接着看刚才那一段
-            BackHandler(enabled = feedFullScreen) { setFeedShown(false) }
+            BackHandler(enabled = feedFullScreen) { requestCloseFeed() }
             AnimatedVisibility(
                 visible = feedFullScreen,
                 enter = motion.overlayEnter(),
@@ -1012,15 +1124,15 @@ fun PikoMainScaffold(
         }
         addAll(contributed)
         add(PaletteItem("添加链接", Icons.Outlined.Bolt, "操作", keywords = "magnet link offline 磁力 离线") {
-            taskSlot.claim("添加链接", "添加链接", TaskSlot.Task.ADD_LINK) {
-                workspaceModel.openImport()
-            }
+            openAddLinkWithConfirm()
         })
         add(PaletteItem("撤销", Icons.AutoMirrored.Outlined.Undo, "操作", detail = label("Z"), keywords = "undo") {
             if (services.driveRepository.currentAccount == account) taskSlot.requestUndoLast(services.driveRepository.changes, workspaceModel.fileCommands)
         })
         if (feedSuspended) {
-            add(PaletteItem("继续刷信息流", Icons.Outlined.SwipeVertical, "操作", keywords = "feed clips resume", disabledReason = feedBlockedReason) { resumeFeed() })
+            add(PaletteItem("继续刷信息流", Icons.Outlined.SwipeVertical, "操作", keywords = "feed clips resume", disabledReason = feedBlockedReason) {
+                taskSlot.claim("继续刷信息流", "继续刷", TaskSlot.Task.FEED, conflictsWith = setOf(TaskSlot.Task.ADD_LINK)) { resumeFeed() }
+            })
         }
         // 信息流刷的是网盘里的一个文件夹，库与压缩包都不是
         if (feedShown || isDriveFolderId(folderStack.lastOrNull()?.id.orEmpty())) {
@@ -1031,9 +1143,9 @@ fun PikoMainScaffold(
                 if (feedShown) {
                     currentTab = MainTab.FILES
                     resetToHome()
-                    setFeedShown(false)
+                    requestCloseFeed()
                 } else {
-                    taskSlot.claim("打开信息流", "打开信息流", TaskSlot.Task.FEED) {
+                    taskSlot.claim("打开信息流", "打开信息流", TaskSlot.Task.FEED, conflictsWith = setOf(TaskSlot.Task.ADD_LINK)) {
                         currentTab = MainTab.FILES
                         resetToHome()
                         workspaceModel.activateFileBrowser()
@@ -1059,6 +1171,20 @@ fun PikoMainScaffold(
     var paletteOpen by remember { mutableStateOf(false) }
     val focusFallback = remember { FocusFallback(shortcutFocus) }
     val rootSnackbar = remember { SnackbarHostState() }
+    val clipboardPlatform = LocalPikoPlatform.current
+    val detectClipboard by preferences.autoDetectClipboardLinksFlow.collectAsStateWithLifecycle(initialValue = false)
+    val clipboardWindowFocused = LocalWindowInfo.current.isWindowFocused
+    LaunchedEffect(detectClipboard, clipboardWindowFocused, clipboardPlatform) {
+        if (detectClipboard && clipboardWindowFocused) {
+            val links = ClipboardLinkDetection.session.detect(clipboardPlatform.readClipboardText())
+            if (links != null) {
+                val result = rootSnackbar.showSnackbar(
+                    "检测到剪贴板中的链接", actionLabel = "解析", withDismissAction = true,
+                )
+                if (result == SnackbarResult.ActionPerformed) openAddLinkWithConfirm(links)
+            }
+        }
+    }
     LaunchedEffect(services.uploadManager) {
         services.uploadManager.enqueued.collect { event ->
             if (event.account == services.driveRepository.currentAccount && currentTab != MainTab.TRANSFERS) {
@@ -1417,6 +1543,16 @@ fun PikoMainScaffold(
     }
 }
 
+
+/** 网盘页右栏放着的那一样，同一时刻只有一样。 */
+private enum class SideColumnContent { Feed, AddLink }
+
+@Composable
+private fun EscClosesWhenFocused(onClose: () -> Unit, content: @Composable () -> Unit) {
+    var hasFocus by remember { mutableStateOf(false) }
+    BackHandler(enabled = hasFocus, onBack = onClose)
+    Box(Modifier.fillMaxSize().onFocusChanged { hasFocus = it.hasFocus }) { content() }
+}
 
 /** 侧栏的宽度下限：竖排的片段控件与横屏画面在这个宽度里还放得开。 */
 private val ClipPanelMinWidth = 360.dp

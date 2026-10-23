@@ -107,8 +107,11 @@ import dev.piko.shared.state.InstantRow
 import dev.piko.shared.state.InstantSheetState
 import dev.piko.shared.state.NameGroupSummary
 import dev.piko.shared.state.ShareSaveState
+import dev.piko.shared.state.VaultArchiveOptions
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.ui.LocalPikoServices
+import dev.piko.ui.screens.drive.VaultRiskWarningDialog
+import kotlinx.coroutines.launch
 import dev.piko.ui.components.FileNameField
 import dev.piko.ui.components.FolderPickerDialog
 import dev.piko.ui.components.MediaTagRow
@@ -117,6 +120,21 @@ import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.fileNameTypeIcon
 import dev.piko.ui.components.toReadableSize
+import dev.piko.shared.presentation.ImportTreeSourceVersion
+import dev.piko.shared.presentation.importTree
+import dev.piko.shared.presentation.visibleImportTree
+import dev.piko.ui.components.FileItemHover
+import dev.piko.ui.components.FileItemName
+import dev.piko.ui.components.FileItemSelection
+import dev.piko.ui.components.FileItemSelectionControl
+import dev.piko.ui.components.FilePresentation
+import dev.piko.ui.components.FileVisual
+import dev.piko.ui.components.WorkspaceTreeRow
+import dev.piko.ui.components.filePresentation
+import dev.piko.ui.components.typeIcon
+import androidx.compose.material.icons.outlined.CloseFullscreen
+import androidx.compose.material.icons.outlined.OpenInFull
+import androidx.compose.ui.backhandler.BackHandler
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.theme.LocalStatusColors
 import kotlinx.coroutines.delay
@@ -142,12 +160,20 @@ internal fun InstantSheetContent(
     /** 窄窗口的 sheet 顶上已有一行标题与状态（收起时露出的那一截），内容里不再画标题。 */
     headerShown: Boolean = false,
     fillHeight: Boolean = false,
+    /** 选中保存位置后的回调（例如驱动左侧网盘同步导航到该目录）。 */
+    onTargetPicked: ((List<PathBreadcrumb>) -> Unit)? = null,
     /** 预览的文件已秒传进 Piko-Temp，交给播放器打开。 */
     onPreview: (fileId: String, fileName: String) -> Unit,
 ) {
     val platform = LocalPikoPlatform.current
-    val platformDownloads = LocalPikoServices.current.downloadManager
+    val services = LocalPikoServices.current
+    val platformDownloads = services.downloadManager
+    val preferences = services.preferences
+    val scope = rememberCoroutineScope()
     var showTargetPicker by remember { mutableStateOf(false) }
+    var vaultOptions by remember { mutableStateOf<VaultArchiveOptions?>(null) }
+    var pendingReferenceWarning by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { vaultOptions = VaultArchiveOptions.load(preferences) }
 
     val batch = state.batch
     LaunchedEffect(state.resolution, batch) {
@@ -202,12 +228,25 @@ internal fun InstantSheetContent(
 
     val focusManager = LocalFocusManager.current
     val fileListState = key(state.input) { rememberLazyListState() }
+    var isTreeMaximized by rememberSaveable(state.input) { mutableStateOf(false) }
+    LaunchedEffect(state.resolution) {
+        if (state.resolution == null) isTreeMaximized = false
+    }
+    BackHandler(enabled = isTreeMaximized) { isTreeMaximized = false }
     @Composable
     fun SaveSettings() {
         if (state.resolution != null || batch != null) {
             val referenceEnabled = state.canEdit && !state.hasRetainedInstantAttempt && batch?.rows?.any { !it.state.canEdit || it.state.hasRetainedInstantAttempt } != true
             val reference = batch?.saveAsReference ?: state.saveAsReference
-            val updateReference: (Boolean) -> Unit = if (batch != null) batch::updateSaveAsReference else state::updateSaveAsReference
+            val rawUpdateReference: (Boolean) -> Unit = if (batch != null) batch::updateSaveAsReference else state::updateSaveAsReference
+            val updateReference: (Boolean) -> Unit = { checked ->
+                val opts = vaultOptions
+                if (checked && opts != null && !opts.riskNoticeAcknowledged) {
+                    pendingReferenceWarning = true
+                } else {
+                    rawUpdateReference(checked)
+                }
+            }
             Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).toggleable(reference, enabled = referenceEnabled,
                 role = Role.Checkbox, onValueChange = updateReference), verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(reference, null, Modifier.size(48.dp).clearAndSetSemantics {}, enabled = referenceEnabled)
@@ -230,12 +269,11 @@ internal fun InstantSheetContent(
         if (shareState != null) {
             ShareSaveFooter(state = shareState, target = state.target, canonicalNames = state.useCanonicalNames, onPickTarget = { showTargetPicker = true })
         } else if (action != null) {
-            SaveSettings()
+            if (!isTreeMaximized) SaveSettings()
             SaveBar(state = state, action = action, onSave = saveMagnet)
         }
     }
     BoxWithConstraints(Modifier.fillMaxWidth().then(if (inSideSheet || fillHeight) Modifier.fillMaxHeight() else Modifier)) {
-        val fullWorkspace = fillHeight && shareState == null && (batch != null || state.resolution != null || view.started)
         val splitSelection = fillHeight && maxWidth >= 720.dp && maxHeight < 480.dp && batch == null &&
             (shareState != null || state.resolution != null)
         Column(
@@ -247,46 +285,12 @@ internal fun InstantSheetContent(
                 // 点面板的空白处交出输入框的焦点。子项自己的点击先消费，走不到这里
                 .pointerInput(Unit) { detectTapGestures { focusManager.clearFocus() } }
                 .onPreviewKeyEvent(saveKeyHandler)
-                .padding(horizontal = if (fullWorkspace) 0.dp else if (inSideSheet) 16.dp else 24.dp)
-                .padding(bottom = if (fullWorkspace) 0.dp else if (inSideSheet) 16.dp else 24.dp),
+                .padding(horizontal = if (inSideSheet) 16.dp else 24.dp)
+                .padding(bottom = if (inSideSheet) 16.dp else 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             val openedRow = batch?.openedRow
-            if (fullWorkspace) {
-                val sources = batch?.rows?.map { row -> ImportSource(row.key, row.state, { batch.remove(row) }, !batch.isSaving) }
-                    ?: listOf(ImportSource("single", state))
-                ResolvedImportWorkspace(
-                    sources, view, { showReceipt(QUEUED_RECEIPT) }, state::updateInput, view.expanded, { view.expanded = it },
-                    onShortcut = saveKeyHandler,
-                    status = {
-                        if (batch == null) ImportResolutionStatus(state, notice) else {
-                            val message = notice?.text ?: batch.blockedReason ?: when {
-                                batch.lacksSpace -> "网盘空间不足"
-                                batch.lacksOfflineCount -> "今日离线次数不足"
-                                batch.offlineCount > 0 -> "${batch.offlineCount} 条链接需离线保存"
-                                else -> null
-                            }
-                            message?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                        }
-                    },
-                    saveBar = {
-                        if (batch != null) SaveButton("全部保存", batch.canSaveAll, batch.isSaving, batch::saveAll)
-                        else if (action != null) SaveBar(state, action, saveMagnet, showProblems = false)
-                    },
-                    config = {
-                        LinkInput(state)
-                        if (sources.any { it.state.offersCanonicalNames }) CanonicalNamesToggle(
-                            state.useCanonicalNames, state.canEdit, state::updateUseCanonicalNames)
-                        sources.filter { it.state.willCreateFolder }.forEach { source ->
-                            FileNameField(source.state.folderNameToSave, source.state::updateFolderName,
-                                label = "新建文件夹", collapseWhenIdle = false, enabled = source.state.canEdit && batch?.isSaving != true,
-                                isError = source.state.folderNameToSave.isBlank(), modifier = Modifier.fillMaxWidth())
-                        }
-                        SaveSettings()
-                    },
-                )
-                return@Column
-            } else if (batch != null) {
+            if (batch != null) {
                 if (openedRow != null) {
                     BatchRowDetail(batch, openedRow, notice, onReceipt = showReceipt)
                 } else {
@@ -294,7 +298,7 @@ internal fun InstantSheetContent(
                         batch, state, notice,
                         showTitle = !inSideSheet && !headerShown,
                         fillHeight = inSideSheet || fillHeight,
-                        onPickTarget = { showTargetPicker = true },
+                        saveSettings = { SaveSettings() },
                     )
                 }
                 return@Column
@@ -327,17 +331,34 @@ internal fun InstantSheetContent(
             } else {
                 // 内容与保存栏分开：侧边面板里内容占满中间，保存栏钉在底部，解析前后、勾多勾少，按钮都在同一处
                 Column(
-                    modifier = Modifier.weight(1f, fill = inSideSheet || fillHeight),
+                    modifier = Modifier.weight(1f, fill = inSideSheet || fillHeight || isTreeMaximized),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    InstantBody(
-                        state = state,
-                        shareState = shareState,
-                        showTitle = !inSideSheet && !headerShown,
-                        notice = notice,
-                        onReceipt = showReceipt,
-                        fileListState = fileListState,
-                    )
+                    if (isTreeMaximized && shareState == null && state.resolution != null) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            SelectionHeader(
+                                state = state,
+                                isMaximized = true,
+                                onToggleMaximized = { isTreeMaximized = false },
+                            )
+                            FileTreeList(
+                                state = state,
+                                onDownloaded = { showReceipt(QUEUED_RECEIPT) },
+                                modifier = Modifier.weight(1f),
+                                retainedListState = fileListState,
+                            )
+                        }
+                    } else {
+                        InstantBody(
+                            state = state,
+                            shareState = shareState,
+                            showTitle = !inSideSheet && !headerShown,
+                            notice = notice,
+                            onReceipt = showReceipt,
+                            fileListState = fileListState,
+                            onMaximizeTree = { isTreeMaximized = true },
+                        )
+                    }
                 }
 
                 Footer()
@@ -362,6 +383,19 @@ internal fun InstantSheetContent(
         )
     }
 
+    if (pendingReferenceWarning) {
+        VaultRiskWarningDialog(
+            onAcknowledge = {
+                pendingReferenceWarning = false
+                val next = (vaultOptions ?: VaultArchiveOptions()).copy(riskNoticeAcknowledged = true)
+                vaultOptions = next
+                scope.launch { VaultArchiveOptions.save(preferences, next) }
+                if (batch != null) batch.updateSaveAsReference(true) else state.updateSaveAsReference(true)
+            },
+            onDismiss = { pendingReferenceWarning = false },
+        )
+    }
+
     if (showTargetPicker) {
         FolderPickerDialog(
             title = "选择保存位置",
@@ -372,6 +406,7 @@ internal fun InstantSheetContent(
                 state.changeTarget(PathBreadcrumb(targetId, targetName))
                 true
             },
+            onConfirmPath = { path -> onTargetPicked?.invoke(path) },
         )
     }
 }
@@ -403,6 +438,7 @@ private fun ColumnScope.InstantBody(
     onReceipt: (String) -> Unit,
     showSelection: Boolean = true,
     fileListState: LazyListState? = null,
+    onMaximizeTree: (() -> Unit)? = null,
 ) {
     if (state.resolution?.resource?.truncated == true) {
         StatusBanner(
@@ -469,6 +505,7 @@ private fun ColumnScope.InstantBody(
             onDownloaded = { onReceipt(QUEUED_RECEIPT) },
             showFileSelection = showSelection,
             fileListState = fileListState,
+            onMaximizeTree = onMaximizeTree,
         )
     }
 }
@@ -736,6 +773,7 @@ internal fun ColumnScope.ResolutionSection(
     onDownloaded: () -> Unit,
     showFileSelection: Boolean = true,
     fileListState: LazyListState? = null,
+    onMaximizeTree: (() -> Unit)? = null,
 ) {
     // 批量列表里点开的一行没有输入框，链接看不到，标题右侧留一个复制入口，好转发或换设备打开
     Row(verticalAlignment = Alignment.Top) {
@@ -783,10 +821,10 @@ internal fun ColumnScope.ResolutionSection(
 
     if (!showFileSelection) return
 
-    // 列表连同它的页眉占去剩下的高度，短列表照常收缩
-    Column(modifier = Modifier.weight(1f, fill = false)) {
-        SelectionHeader(state)
-        FileTreeList(state, onDownloaded = onDownloaded, modifier = Modifier.weight(1f, fill = false), retainedListState = fileListState)
+    // 列表连同它的页眉占满剩下的面板高度
+    Column(modifier = Modifier.weight(1f)) {
+        SelectionHeader(state, isMaximized = false, onToggleMaximized = onMaximizeTree)
+        FileTreeList(state, onDownloaded = onDownloaded, modifier = Modifier.weight(1f), retainedListState = fileListState)
     }
 }
 
@@ -835,9 +873,13 @@ internal fun CanonicalNamesToggle(checked: Boolean, enabled: Boolean, onChange: 
 internal const val UNINDEXED_HINT = "未收录，保存较慢"
 internal val UnindexedIcon = Icons.Outlined.HourglassTop
 
-/** 已选计数与全选。筛选只看未收录时不给全选：它作用于全部行，眼前却只列着几行，点了会动到看不见的勾选。 */
+/** 已选计数、全选与展开/收起文件树按钮。筛选只看未收录时不给全选：它作用于全部行，眼前却只列着几行，点了会动到看不见的勾选。 */
 @Composable
-private fun SelectionHeader(state: InstantSheetState) {
+private fun SelectionHeader(
+    state: InstantSheetState,
+    isMaximized: Boolean = false,
+    onToggleMaximized: (() -> Unit)? = null,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -845,7 +887,7 @@ private fun SelectionHeader(state: InstantSheetState) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text = "已选 ${state.selectedEntryCount} / ${state.entryCount}",
+            text = "原始文件（已选 ${state.sourceSelectedIndices.size} / ${state.items.size}）",
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.weight(1f),
@@ -855,22 +897,40 @@ private fun SelectionHeader(state: InstantSheetState) {
                 Text(if (state.isAllSelected) "全不选" else "全选")
             }
         }
+        if (onToggleMaximized != null) {
+            TooltipIconButton(
+                icon = if (isMaximized) Icons.Outlined.CloseFullscreen else Icons.Outlined.OpenInFull,
+                label = if (isMaximized) "收起文件树" else "展开文件树",
+                onClick = onToggleMaximized,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
-/** 层级、展开状态与组统计都在 [InstantSheetState]，这里只按行渲染。 */
+/** 右侧显示原始文件目录树，默认勾选需要的条目，支持展开目录精细调整。 */
 @Composable
 private fun FileTreeList(state: InstantSheetState, onDownloaded: () -> Unit, modifier: Modifier = Modifier, retainedListState: LazyListState? = null) {
-    val rows = state.treeRows
-    val downloads = LocalPikoServices.current.downloadManager
+    val version = remember(state.resolution) {
+        ImportTreeSourceVersion("single", state.resolution?.resource?.name ?: state.input, state.resolution?.resource?.files)
+    }
+    val nodes = remember(version) {
+        importTree(version.files.orEmpty().map { it.path })
+    }
+    var collapsed by remember(version) { mutableStateOf(emptySet<String>()) }
     val filtering = state.isUnindexedFilterActive
+    val visible = remember(nodes, collapsed, filtering, state.items) {
+        val base = visibleImportTree(nodes, nodes.mapTo(HashSet()) { it.key } - collapsed, "")
+        if (!filtering) base else base.filter { node -> node.indices.any { !state.items[it].isInstantReady } }
+    }
+    val hasBranches = visible.any { it.isFolder }
+    val editable = state.canEdit
 
     Surface(
         shape = MaterialTheme.shapes.large,
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         modifier = modifier,
     ) {
-        // 切换筛选时回到顶上：两份列表长短不同，停在原来的位置可能整屏都是空的
         val listState = retainedListState ?: rememberLazyListState()
         var previousFilter by rememberSaveable { mutableStateOf(filtering) }
         LaunchedEffect(filtering) {
@@ -884,44 +944,41 @@ private fun FileTreeList(state: InstantSheetState, onDownloaded: () -> Unit, mod
             modifier = Modifier.fillMaxWidth(),
             contentPadding = PaddingValues(vertical = 4.dp),
         ) {
-            items(rows, key = { it.key }) { row ->
-                when (val node = row.node) {
-                    is InstantGroup -> {
-                        GroupRow(
-                            group = node,
-                            depth = row.depth,
-                            // 筛选时组只是给几行交代出处，一律摊开，不让收起
-                            isExpanded = filtering || state.isGroupExpanded(node),
-                            summary = state.summaryOf(node),
-                            onToggleExpanded = if (filtering) null else ({ state.toggleGroupExpanded(node) }),
-                            onSelectAll = { state.setGroupSelected(node, it) },
-                            selectionEnabled = state.canEdit,
-                        )
-                    }
-                    is InstantRow -> {
-                        // 开着规范命名时行上就是存进去的名字，番号已在名字里，不再挂芯片
-                        val renamed = state.renamedLabel(node)
-                        InstantFileRow(
-                            row = if (renamed != null) node.copy(label = renamed, code = null) else node,
-                            fullName = state.items[node.index].file.name,
-                            depth = row.depth,
-                            isInstantReady = !state.isUnindexed(node),
-                            checked = node.index in state.selectedIndices,
-                            enabled = state.canEdit,
-                            onCheckedChange = { state.setItemSelected(node.index, it) },
-                            onPreview = if (state.canPreview(node.index)) {
-                                { state.preview(node.index) }
-                            } else {
-                                null
-                            },
-                            isPreviewing = state.previewingIndex == node.index,
-                            onDownload = if (state.items[node.index].isInstantReady) ({
-                                downloads.enqueueResolved(node.indices.map { state.items[it].file }, state.target?.id.orEmpty())
-                                onDownloaded()
-                            }) else null,
-                        )
-                    }
+            items(visible, key = { it.key }) { node ->
+                val selected = node.indices.count { it in state.sourceSelectedIndices }
+                val checked = when (selected) {
+                    0 -> ToggleableState.Off
+                    node.indices.size -> ToggleableState.On
+                    else -> ToggleableState.Indeterminate
                 }
+                val index = node.fileIndex
+                val toggle = { collapsed = if (node.key in collapsed) collapsed - node.key else collapsed + node.key }
+                val item = if (index == null) FilePresentation(
+                    node.key, FileItemName(node.name), FileVisual(node.name, isFolder = true),
+                    metadata = listOf("${node.indices.size} 个文件"),
+                ) else state.items[index].file.filePresentation(node.key)
+                val open = { if (node.isFolder) toggle() else if (editable) state.setSourceSelected(node.indices, selected == 0) }
+                WorkspaceTreeRow(
+                    name = node.name,
+                    depth = node.depth,
+                    icon = item.visual.typeIcon(),
+                    expanded = if (node.isFolder) node.key !in collapsed else null,
+                    onExpand = toggle,
+                    onOpen = open,
+                    onLongClick = null,
+                    item = item,
+                    reserveExpandSpace = hasBranches,
+                    leading = {
+                        FileItemSelectionControl(
+                            FileItemSelection(
+                                checked,
+                                { if (editable) state.setSourceSelected(node.indices, checked != ToggleableState.On) },
+                                enabled = editable,
+                                label = "选择来源 ${node.name}",
+                            ),
+                        )
+                    },
+                )
             }
         }
     }
