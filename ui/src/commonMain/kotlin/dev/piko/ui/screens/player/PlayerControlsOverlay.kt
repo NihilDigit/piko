@@ -435,6 +435,14 @@ fun MobilePlayerControls(
     // 键位照主流桌面播放器（YouTube、mpv、PotPlayer 的公约数），加了要同时写进 ShortcutsDialog 的「播放器」一节。
     // 带 Ctrl、Alt、⌘ 的一律放过，留给窗口与系统
     fun handleKey(event: KeyEvent): Boolean {
+        if (isEditingCropRegion) {
+            if (event.type == KeyEventType.KeyDown && event.key == Key.Escape) {
+                isEditingCropRegion = false
+                aspectBeforeEdit?.let(onAspectRatioChange)
+                return true
+            }
+            return false
+        }
         if (event.type == KeyEventType.KeyUp) return arrowUp(event.key)
         if (event.type != KeyEventType.KeyDown) return false
         if (event.isCtrlPressed || event.isAltPressed || event.isMetaPressed) return false
@@ -506,7 +514,21 @@ fun MobilePlayerControls(
     }
     // 出错时控件栏必须可见：返回键在顶栏里
     LaunchedEffect(errorMessage) {
-        if (errorMessage != null) controlsVisible = true
+        if (errorMessage != null) {
+            controlsVisible = true
+            isEditingCropRegion = false
+        }
+    }
+    LaunchedEffect(currentFileId) {
+        isEditingCropRegion = false
+    }
+    LaunchedEffect(windowSize, aspectRatio, cropRegion) {
+        if (aspectRatio == PlayerAspectRatio.RegionCrop && cropRegion != null && windowSize.width > 0 && windowSize.height > 0) {
+            val currentAspect = windowSize.width.toFloat() / windowSize.height.toFloat()
+            if (abs(cropRegion.containerAspect - currentAspect) > 0.001f) {
+                onCropRegionChange(cropRegion.copy(containerAspect = currentAspect))
+            }
+        }
     }
 
     LaunchedEffect(showResumeTip) {
@@ -623,7 +645,7 @@ fun MobilePlayerControls(
 
     // 焦点在点过的按钮上时，按钮随控件栏收起或面板关闭，焦点也跟着没了，之后的按键无处可去。
     // 每逢这两种变化把焦点收回根节点
-    LaunchedEffect(chromeVisible, openSheet) {
+    LaunchedEffect(chromeVisible, openSheet, isEditingCropRegion) {
         runCatching { focusRequester.requestFocus() }
     }
     val hasPlaylist = playlist.size > 1
@@ -688,7 +710,7 @@ fun MobilePlayerControls(
                 .then(if (hideCursor) Modifier.pointerHoverIcon(idleCursor) else Modifier),
         ) {
             PlayerGestureLayer(
-                isLocked = isLocked,
+                isLocked = isLocked || isEditingCropRegion,
                 durationMillis = durationMillis,
                 positionProvider = { currentPosition },
                 brightness = brightness,
@@ -723,8 +745,8 @@ fun MobilePlayerControls(
                 onSpeedBoost = { active -> if (active) startBoost() else endBoost() },
                 // 滚轮调音量，与上下方向键同一步长。挂在手势层而不是根节点：面板里的列表滚到头后
                 // 剩下的滚轮位移会冒泡到根节点，那时不该变成调音量
-                modifier = Modifier.pointerInput(isLocked) {
-                    if (isLocked) return@pointerInput
+                modifier = Modifier.pointerInput(isLocked, isEditingCropRegion) {
+                    if (isLocked || isEditingCropRegion) return@pointerInput
                     awaitPointerEventScope {
                         while (true) {
                             val event = awaitPointerEvent()
@@ -883,7 +905,7 @@ fun MobilePlayerControls(
             }
 
             PlayerHud(
-                indicator = hudIndicator,
+                indicator = if (isEditingCropRegion) null else hudIndicator,
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
@@ -1112,7 +1134,15 @@ private fun CropRegionEditorOverlay(
         modifier = Modifier
             .fillMaxSize()
             .onSizeChanged { containerSize = it }
-            .pointerInput(videoAspect) {
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        event.changes.forEach { it.consume() }
+                    }
+                }
+            }
+            .pointerInput(videoAspect, initialRegion) {
                 var activeHandle: CropDragHandle? = null
                 detectDragGestures(
                     onDragStart = { offset ->
@@ -1165,7 +1195,7 @@ private fun CropRegionEditorOverlay(
                                 val h = region.height
                                 val newLeft = (region.left + dx).coerceIn(0f, 1f - w)
                                 val newTop = (region.top + dy).coerceIn(0f, 1f - h)
-                                VideoCropRegion(newLeft, newTop, newLeft + w, newTop + h)
+                                region.copy(left = newLeft, top = newTop, right = newLeft + w, bottom = newTop + h)
                             }
                         }
                     },
@@ -1215,8 +1245,25 @@ private fun CropRegionEditorOverlay(
             shape = MaterialTheme.shapes.large,
             color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f),
             modifier = Modifier
+                .align(Alignment.TopCenter)
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
+                .padding(horizontal = 16.dp, vertical = 20.dp),
+        ) {
+            Text(
+                text = "拖动选框四角或内部选择要铺满画面的区域",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            )
+        }
+
+        Surface(
+            shape = MaterialTheme.shapes.large,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f),
+            modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
+                .padding(horizontal = 16.dp)
                 .padding(bottom = 28.dp),
         ) {
             Row(
@@ -1224,15 +1271,14 @@ private fun CropRegionEditorOverlay(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = "拖动选框四角或内部选择要铺满画面的区域",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-                Spacer(Modifier.width(4.dp))
                 FilledTonalButton(onClick = onReset) { Text("还原适应") }
                 FilledTonalButton(onClick = onCancel) { Text("取消") }
-                Button(onClick = { onConfirm(region) }) { Text("铺满画面") }
+                Button(onClick = {
+                    val containerAspect = if (containerSize.width > 0 && containerSize.height > 0) {
+                        containerSize.width.toFloat() / containerSize.height.toFloat()
+                    } else 0f
+                    onConfirm(region.copy(containerAspect = containerAspect))
+                }) { Text("铺满画面") }
             }
         }
     }

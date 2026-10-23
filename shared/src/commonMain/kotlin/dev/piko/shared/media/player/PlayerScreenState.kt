@@ -324,6 +324,7 @@ class PlayerScreenState(
 
     fun setRotation(degrees: Int) {
         val normalized = degrees.mod(360) / 90 * 90
+        if (normalized != rotationDegrees && cropRegion != null) setCropRegion(null)
         rotationDegrees = normalized
         backend.setRotation(normalized)
     }

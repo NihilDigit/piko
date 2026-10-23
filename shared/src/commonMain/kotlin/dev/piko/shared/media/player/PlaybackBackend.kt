@@ -154,6 +154,7 @@ data class VideoCropRegion(
     val top: Float = 0.1f,
     val right: Float = 0.9f,
     val bottom: Float = 0.9f,
+    val containerAspect: Float = 0f,
 ) {
     val width: Float get() = (right - left).coerceIn(0.05f, 1f)
     val height: Float get() = (bottom - top).coerceIn(0.05f, 1f)

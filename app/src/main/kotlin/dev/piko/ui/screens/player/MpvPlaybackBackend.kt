@@ -304,12 +304,16 @@ internal class MpvPlaybackBackend(
                 }
 
                 PlayerAspectRatio.RegionCrop -> {
-                    val scale = maxOf(1f / region.width, 1f / region.height)
+                    val vAspect = videoAspect ?: 16f / 9f
+                    val cAspect = region.containerAspect.takeIf { it > 0f } ?: vAspect
+                    val fitW = if (cAspect > vAspect) vAspect / cAspect else 1f
+                    val fitH = if (cAspect > vAspect) 1f else cAspect / vAspect
+                    val scale = maxOf(1f / (fitW * region.width), 1f / (fitH * region.height))
                     val zoom = ln(scale.toDouble()) / ln(2.0)
                     val panX = (0.5f - region.centerX).toDouble()
                     val panY = (0.5f - region.centerY).toDouble()
                     mpv.setPropertyString("keepaspect", "yes")
-                    mpv.setPropertyDouble("panscan", 1.0)
+                    mpv.setPropertyDouble("panscan", 0.0)
                     mpv.setPropertyDouble("video-zoom", zoom)
                     mpv.setPropertyDouble("video-pan-x", panX)
                     mpv.setPropertyDouble("video-pan-y", panY)

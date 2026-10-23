@@ -325,7 +325,8 @@ class PikoMediaRepository(
             throw e
         }
         backgroundScope.launch { runCatching { handle.prewarm() } }
-        val source = SlicedByteSource(PikPakByteSource(handle, cache), record.sliceOffset, record.sliceLength)
+        val fullRemaining = (record.streamBytes - record.sliceOffset).coerceAtLeast(record.sliceLength)
+        val source = SlicedByteSource(PikPakByteSource(handle, cache), record.sliceOffset, fullRemaining)
         val stream = registerProxy(source, fileName = "clip.ts", role = role) ?: return null
         return PreparedClip(
             stream,
@@ -411,30 +412,41 @@ class PikoMediaRepository(
         val mediaId = transcode.mediaId ?: return null
         val store = clipCache?.let { RangeLimitedStore(it.blocks) }
         val source = openByteSource(client, detail, transcode, blockStore = store, leased = leased) ?: return null
-        // 长度是 188 的整数倍是 TS 的样子；不是 TS 截出来就放不了，退回原画
-        if (source.size % TS_PACKET_BYTES != 0L) {
-            PikoLog.d(TAG, "转码流不是 TS（${source.size} 字节），片段退回原画：${logFile(detail.id, detail.name)}")
+        val bytesPerMs: Double
+        val keyframe: TsTimestamps.VideoPes?
+        val offset: Long
+        val sliceLength: Long
+        val initialWindowBytes: Long
+        val slice = try {
+            // 长度是 188 的整数倍是 TS 的样子；不是 TS 截出来就放不了，退回原画
+            if (source.size % TS_PACKET_BYTES != 0L) {
+                PikoLog.d(TAG, "转码流不是 TS（${source.size} 字节），片段退回原画：${logFile(detail.id, detail.name)}")
+                source.close()
+                return null
+            }
+            bytesPerMs = source.size.toDouble() / videoDurationMs
+            val estimated = ((bytesPerMs * startMs).toLong() / TS_PACKET_BYTES * TS_PACKET_BYTES).coerceIn(0, source.size - TS_PACKET_BYTES)
+            // 初始预取与落盘窗口按 30s 片段计算；SlicedByteSource 本身放开到流尾（source.size - offset），
+            // 这样自动续播（extend）超过初始窗口时播放器可以一直顺畅读到全片末尾，不会撞上人为 EOF
+            val wanted = (bytesPerMs * (CLIP_SLICE_MS + PreparedClip.KEYFRAME_INTERVAL_MS) * SLICE_BITRATE_MARGIN).toLong()
+            val length = (wanted / TS_PACKET_BYTES + 1) * TS_PACKET_BYTES
+            fun windowLengthAt(pos: Long) = length.coerceAtMost(source.size - pos)
+            // 找关键帧读到的块也要落盘：它们多半就是切片开头，存储在这之前设好范围，否则这些块只进内存缓存，
+            // 之后预取从内存读到，不再经过存储，盘上就缺了开头
+            store?.keepSlice(estimated, windowLengthAt(estimated), bytesPerMs)
+            // 切片从第一个关键帧起：从估的位置截，解码器要先丢掉一堆缺参数集的包，HEVC 逐包报错，
+            // 一段刷几百行日志，还白下了那一截。估的位置之后五秒内（转码每 5 秒一个关键帧）必有一个
+            val keyframeWindow = (bytesPerMs * PreparedClip.KEYFRAME_INTERVAL_MS * PreparedClip.BITRATE_MARGIN).toLong()
+            keyframe = source.findKeyframe(estimated, keyframeWindow, role)
+            offset = if (keyframe != null) estimated + keyframe.byteOffset else estimated
+            initialWindowBytes = windowLengthAt(offset)
+            sliceLength = (source.size - offset).coerceAtLeast(initialWindowBytes)
+            store?.keepSlice(offset, initialWindowBytes, bytesPerMs)
+            SlicedByteSource(source, offset, sliceLength)
+        } catch (t: Throwable) {
             source.close()
-            return null
+            throw t
         }
-        val bytesPerMs = source.size.toDouble() / videoDurationMs
-        val estimated = ((bytesPerMs * startMs).toLong() / TS_PACKET_BYTES * TS_PACKET_BYTES).coerceIn(0, source.size - TS_PACKET_BYTES)
-        // 按平均码率折算，截得宽裕：码率高的场面一截装下的视频比平均短，截短了没放完这一段就到了切片末尾，
-        // 画面停在最后一帧。截长不费什么，播放器只读放到的部分，多出来的只是末尾那一截估时长时读一下
-        val wanted = (bytesPerMs * (CLIP_SLICE_MS + PreparedClip.KEYFRAME_INTERVAL_MS) * SLICE_BITRATE_MARGIN).toLong()
-        val length = (wanted / TS_PACKET_BYTES + 1) * TS_PACKET_BYTES
-        fun sliceLengthAt(offset: Long) = length.coerceAtMost(source.size - offset)
-        // 找关键帧读到的块也要落盘：它们多半就是切片开头，存储在这之前设好范围，否则这些块只进内存缓存，
-        // 之后预取从内存读到，不再经过存储，盘上就缺了开头
-        store?.keepSlice(estimated, sliceLengthAt(estimated), bytesPerMs)
-        // 切片从第一个关键帧起：从估的位置截，解码器要先丢掉一堆缺参数集的包，HEVC 逐包报错，
-        // 一段刷几百行日志，还白下了那一截。估的位置之后五秒内（转码每 5 秒一个关键帧）必有一个
-        val keyframeWindow = (bytesPerMs * PreparedClip.KEYFRAME_INTERVAL_MS * PreparedClip.BITRATE_MARGIN).toLong()
-        val keyframe = source.findKeyframe(estimated, keyframeWindow, role)
-        val offset = if (keyframe != null) estimated + keyframe.byteOffset else estimated
-        val sliceLength = sliceLengthAt(offset)
-        store?.keepSlice(offset, sliceLength, bytesPerMs)
-        val slice = SlicedByteSource(source, offset, sliceLength)
         val stream = registerProxy(slice, fileName = "clip.ts", role = role) ?: return null
         fun record(sliceStartMs: Long) = ClipRecord(
             fileId = detail.id,
@@ -445,7 +457,7 @@ class PikoMediaRepository(
             mediaId = mediaId,
             streamBytes = source.size,
             sliceOffset = offset,
-            sliceLength = sliceLength,
+            sliceLength = initialWindowBytes,
             sliceStartMs = sliceStartMs,
         )
         // 切片起点的时间戳已在找关键帧时读到；流开头的几十 KB 要另取一次，放到预取之后，不拖慢出会话
@@ -455,7 +467,7 @@ class PikoMediaRepository(
             sliced = true,
             clipStartMs = startMs,
             bytesPerMs = bytesPerMs,
-            prefetchBytes = sliceLength,
+            prefetchBytes = initialWindowBytes,
             resolveStart = keyframe?.let { sliceStart ->
                 {
                     // 前台读：这一步在开头预取之后、算作取好之前，与预取一样急。以后台身份读，预取一结束这个文件

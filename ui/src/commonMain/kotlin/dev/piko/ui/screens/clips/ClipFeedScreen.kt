@@ -40,6 +40,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -308,6 +309,8 @@ private fun ClipPager(
     val clipStartMs = remember { List(POOL_SIZE) { 0L }.toMutableStateList() }
     // 每个播放器所装那一段当前开放的播放长度，初值为 CLIP_LENGTH_MS，播完一段自动往后续 30s
     val clipLengths = remember { List(POOL_SIZE) { CLIP_LENGTH_MS }.toMutableStateList() }
+    // 按 Clip 记住已扩展的窗口长度，回翻重新装入时保留已 extend 的进度窗口，不重置回 30s
+    val rememberedLengths = remember { mutableStateMapOf<Clip, Long>() }
     val loadJobs = remember { arrayOfNulls<Job>(POOL_SIZE) }
     val focusRequester = remember { FocusRequester() }
     var paused by remember { mutableStateOf(pausedByHost) }
@@ -390,7 +393,7 @@ private fun ClipPager(
             val preparedMs = started.elapsedNow().inWholeMilliseconds
             startOnPlayer[slot] = prepared.startOnPlayer
             clipStartMs[slot] = prepared.clipStartMs
-            clipLengths[slot] = CLIP_LENGTH_MS
+            clipLengths[slot] = rememberedLengths[clip] ?: CLIP_LENGTH_MS
             try {
                 // 新装的段先压着，真看起来才升档，见 LaunchedEffect(current)
                 players[slot].setBufferAhead(HOLD_BUFFER_SECONDS)
@@ -519,9 +522,9 @@ private fun ClipPager(
         // 播放器停在流尾，只按播放不会动
         val positionIsOurs = rendered[slot] == current
         val atEnd = ended[slot] == current
-        if (positionIsOurs && (atEnd || currentPlayer.positionMillis >= end - REPLAY_WITHIN_MS)) {
+        val maxRemaining = (current.videoDurationMs - clipStartMs[slot]).coerceAtLeast(CLIP_LENGTH_MS)
+        if (positionIsOurs && (atEnd || (end >= start + maxRemaining && currentPlayer.positionMillis >= end - REPLAY_WITHIN_MS))) {
             ended[slot] = null
-            clipLengths[slot] = CLIP_LENGTH_MS
             currentPlayer.seekTo(start)
         }
         // 翻到一段就是要看它：在上一段暂停过，不能带到这一段，看着像没播动
@@ -666,6 +669,7 @@ private fun ClipPager(
             if (ended[slot] != current && length < maxRemaining) {
                 val nextLength = (length + CLIP_LENGTH_MS).coerceAtMost(maxRemaining)
                 clipLengths[slot] = nextLength
+                rememberedLengths[current] = nextLength
                 currentPlayer.setBufferAhead(BOOSTED_SECONDS)
                 streams.boost(current, BOOSTED_SECONDS)
                 PikoLog.d("Clips", "自动续播 30s ${logFile(current.fileId, current.name)}：当前窗口 ${nextLength / 1000}s")
@@ -715,7 +719,9 @@ private fun ClipPager(
         val currentClipLen = clipLengths[slot].coerceAtLeast(CLIP_LENGTH_MS)
         val maxRemaining = (activeClip.videoDurationMs - clipStartMs[slot]).coerceAtLeast(CLIP_LENGTH_MS)
         if (millis >= currentClipLen - SEEK_EXTEND_THRESHOLD_MS && currentClipLen < maxRemaining) {
-            clipLengths[slot] = (currentClipLen + CLIP_LENGTH_MS).coerceAtMost(maxRemaining)
+            val nextLength = (currentClipLen + CLIP_LENGTH_MS).coerceAtMost(maxRemaining)
+            clipLengths[slot] = nextLength
+            rememberedLengths[activeClip] = nextLength
         }
         val limit = clipLengths[slot].coerceAtLeast(CLIP_LENGTH_MS)
         val targetOnPlayer = startOnPlayer[slot] + millis.coerceIn(0L, limit)

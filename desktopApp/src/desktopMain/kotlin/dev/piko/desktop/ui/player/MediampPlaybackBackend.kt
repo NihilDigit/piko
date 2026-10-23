@@ -347,7 +347,6 @@ internal class MediampPlaybackBackend(
                 aspectRatioFeature?.setMode(AspectRatioMode.STRETCH)
             }
             PlayerAspectRatio.RegionCrop -> {
-                aspectRatioFeature?.setMode(AspectRatioMode.CROP)
                 applyMpvCropRegion(currentCropRegion ?: VideoCropRegion().also { currentCropRegion = it })
             }
         }
@@ -357,7 +356,6 @@ internal class MediampPlaybackBackend(
         currentCropRegion = region
         if (region != null) {
             currentAspectRatio = PlayerAspectRatio.RegionCrop
-            aspectRatioFeature?.setMode(AspectRatioMode.CROP)
             applyMpvCropRegion(region)
         } else if (currentAspectRatio == PlayerAspectRatio.RegionCrop) {
             setAspectRatio(PlayerAspectRatio.Fit)
@@ -367,13 +365,18 @@ internal class MediampPlaybackBackend(
     }
 
     private fun applyMpvCropRegion(region: VideoCropRegion) {
+        aspectRatioFeature?.setMode(AspectRatioMode.FIT)
         val handle = mpv ?: return
-        val scale = maxOf(1f / region.width, 1f / region.height)
-        val zoom = (ln(scale.toDouble()) / ln(2.0))
+        val vAspect = videoAspect ?: 16f / 9f
+        val cAspect = region.containerAspect.takeIf { it > 0f } ?: vAspect
+        val fitW = if (cAspect > vAspect) vAspect / cAspect else 1f
+        val fitH = if (cAspect > vAspect) 1f else cAspect / vAspect
+        val scale = maxOf(1f / (fitW * region.width), 1f / (fitH * region.height))
+        val zoom = ln(scale.toDouble()) / ln(2.0)
         val panX = (0.5f - region.centerX).toDouble()
         val panY = (0.5f - region.centerY).toDouble()
         handle.setPropertyString("keepaspect", "yes")
-        handle.setPropertyString("panscan", "1.0")
+        handle.setPropertyString("panscan", "0.0")
         handle.setPropertyString("video-zoom", zoom.toString())
         handle.setPropertyString("video-pan-x", panX.toString())
         handle.setPropertyString("video-pan-y", panY.toString())
