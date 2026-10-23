@@ -211,42 +211,43 @@ jobs:
       - name: Verify classes
         run: java -Xverify:all desktopApp/package/VerifyClasses.java desktopApp/build/compose/binaries/main-release/app/Piko/app
 
-      - name: Upload unsigned launcher
-        id: unsigned-launcher
-        uses: actions/upload-artifact@v6
-        with:
-          name: unsigned-launcher-${{ matrix.arch }}
-          path: desktopApp/build/compose/binaries/main-release/app/Piko/Piko.exe
-          if-no-files-found: error
-          retention-days: 3
+      # SignPath 正式生产证书尚未就绪，暂时注释掉签名步骤，直接用构建出的应用目录打包
+      # - name: Upload unsigned launcher
+      #   id: unsigned-launcher
+      #   uses: actions/upload-artifact@v6
+      #   with:
+      #     name: unsigned-launcher-${{ matrix.arch }}
+      #     path: desktopApp/build/compose/binaries/main-release/app/Piko/Piko.exe
+      #     if-no-files-found: error
+      #     retention-days: 3
+      #
+      # - name: Sign launcher
+      #   id: sign-launcher
+      #   uses: signpath/github-action-submit-signing-request@v3
+      #   with:
+      #     api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+      #     organization-id: 641251b4-b3c6-4958-88f3-a5e9349050cc
+      #     project-slug: piko
+      #     signing-policy-slug: ${{ env.SIGNING_POLICY }}
+      #     artifact-configuration-slug: windows-launcher
+      #     github-artifact-id: ${{ steps.unsigned-launcher.outputs.artifact-id }}
+      #     wait-for-completion: true
+      #     output-artifact-directory: ${{ runner.temp }}/signed-launcher
 
-      - name: Sign launcher
-        id: sign-launcher
-        uses: signpath/github-action-submit-signing-request@v3
-        with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: 641251b4-b3c6-4958-88f3-a5e9349050cc
-          project-slug: piko
-          signing-policy-slug: ${{ env.SIGNING_POLICY }}
-          artifact-configuration-slug: windows-launcher
-          github-artifact-id: ${{ steps.unsigned-launcher.outputs.artifact-id }}
-          wait-for-completion: true
-          output-artifact-directory: ${{ runner.temp }}/signed-launcher
-
-      - name: Stage signed application image
+      - name: Stage application image
         timeout-minutes: 5
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          & .github/scripts/verify-windows-signature.ps1 -Path "$env:RUNNER_TEMP/signed-launcher/Piko.exe" -TestCertificate:($env:SIGNING_POLICY -eq 'test-signing')
+          # & .github/scripts/verify-windows-signature.ps1 -Path "$env:RUNNER_TEMP/signed-launcher/Piko.exe" -TestCertificate:($env:SIGNING_POLICY -eq 'test-signing')
           New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/signed-image" | Out-Null
           # robocopy 保留文件时间；AOT 缓存依赖 jar 的修改时间。
           robocopy desktopApp/build/compose/binaries/main-release/app/Piko "$env:RUNNER_TEMP/signed-image/Piko" /E /COPY:DAT /DCOPY:DAT /NFL /NDL /NJH /NJS
           if ($LASTEXITCODE -ge 8) { throw "robocopy failed: $LASTEXITCODE" }
-          Copy-Item "$env:RUNNER_TEMP/signed-launcher/Piko.exe" "$env:RUNNER_TEMP/signed-image/Piko/Piko.exe" -Force
+          # Copy-Item "$env:RUNNER_TEMP/signed-launcher/Piko.exe" "$env:RUNNER_TEMP/signed-image/Piko/Piko.exe" -Force
           exit 0
 
-      - name: Package signed application
+      - name: Package application
         run: .\gradlew.bat :desktopApp:packageReleaseMsi :desktopApp:packageReleaseUpdate --no-daemon --stacktrace "-PpikoSignedAppImage=$env:RUNNER_TEMP/signed-image/Piko" "-PpikoUpdateBases=$env:RUNNER_TEMP/update-bases" "-PpikoUpdateRetired=$env:RUNNER_TEMP/update-retired"
 
       - name: Collect artifacts
@@ -267,48 +268,48 @@ jobs:
           Copy-Item "$binaries/update/*" dist/
           Get-ChildItem dist | Format-Table Name, Length
 
-      - name: Upload unsigned MSI
-        id: unsigned-msi
-        uses: actions/upload-artifact@v6
-        with:
-          name: unsigned-msi-${{ matrix.arch }}
-          path: dist/*.msi
-          if-no-files-found: error
-          retention-days: 3
+      # - name: Upload unsigned MSI
+      #   id: unsigned-msi
+      #   uses: actions/upload-artifact@v6
+      #   with:
+      #     name: unsigned-msi-${{ matrix.arch }}
+      #     path: dist/*.msi
+      #     if-no-files-found: error
+      #     retention-days: 3
+      #
+      # - name: Sign MSI
+      #   id: sign-msi
+      #   uses: signpath/github-action-submit-signing-request@v3
+      #   with:
+      #     api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+      #     organization-id: 641251b4-b3c6-4958-88f3-a5e9349050cc
+      #     project-slug: piko
+      #     signing-policy-slug: ${{ env.SIGNING_POLICY }}
+      #     artifact-configuration-slug: windows-msi
+      #     github-artifact-id: ${{ steps.unsigned-msi.outputs.artifact-id }}
+      #     wait-for-completion: true
+      #     output-artifact-directory: ${{ runner.temp }}/signed-msi
 
-      - name: Sign MSI
-        id: sign-msi
-        uses: signpath/github-action-submit-signing-request@v3
-        with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: 641251b4-b3c6-4958-88f3-a5e9349050cc
-          project-slug: piko
-          signing-policy-slug: ${{ env.SIGNING_POLICY }}
-          artifact-configuration-slug: windows-msi
-          github-artifact-id: ${{ steps.unsigned-msi.outputs.artifact-id }}
-          wait-for-completion: true
-          output-artifact-directory: ${{ runner.temp }}/signed-msi
-
-      - name: Verify signed packages
+      - name: Verify packages
         timeout-minutes: 10
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $name = "piko-windows-${{ matrix.arch }}-$env:VERSION"
-          Copy-Item "$env:RUNNER_TEMP/signed-msi/$name.msi" "dist/$name.msi" -Force
-          & .github/scripts/verify-windows-signature.ps1 -Path "$env:RUNNER_TEMP/signed-image/Piko/Piko.exe", "dist/$name.msi" -TestCertificate:($env:SIGNING_POLICY -eq 'test-signing')
+          # Copy-Item "$env:RUNNER_TEMP/signed-msi/$name.msi" "dist/$name.msi" -Force
+          # & .github/scripts/verify-windows-signature.ps1 -Path "$env:RUNNER_TEMP/signed-image/Piko/Piko.exe", "dist/$name.msi" -TestCertificate:($env:SIGNING_POLICY -eq 'test-signing')
           & .github/scripts/verify-windows-packages.ps1 -Dist dist -Prefix $name -Launcher "$env:RUNNER_TEMP/signed-image/Piko/Piko.exe" -Work "$env:RUNNER_TEMP/verify-packages"
 
-      - name: Signing request links
-        if: always()
-        shell: pwsh
-        env:
-          LAUNCHER_REQUEST: ${{ steps.sign-launcher.outputs.signing-request-web-url }}
-          MSI_REQUEST: ${{ steps.sign-msi.outputs.signing-request-web-url }}
-        run: |
-          "### Windows ${{ matrix.arch }} ($env:SIGNING_POLICY)" >> $env:GITHUB_STEP_SUMMARY
-          "Launcher: $env:LAUNCHER_REQUEST" >> $env:GITHUB_STEP_SUMMARY
-          "MSI: $env:MSI_REQUEST" >> $env:GITHUB_STEP_SUMMARY
+      # - name: Signing request links
+      #   if: always()
+      #   shell: pwsh
+      #   env:
+      #     LAUNCHER_REQUEST: ${{ steps.sign-launcher.outputs.signing-request-web-url }}
+      #     MSI_REQUEST: ${{ steps.sign-msi.outputs.signing-request-web-url }}
+      #   run: |
+      #     "### Windows ${{ matrix.arch }} ($env:SIGNING_POLICY)" >> $env:GITHUB_STEP_SUMMARY
+      #     "Launcher: $env:LAUNCHER_REQUEST" >> $env:GITHUB_STEP_SUMMARY
+      #     "MSI: $env:MSI_REQUEST" >> $env:GITHUB_STEP_SUMMARY
 
       - name: Upload package verification logs
         if: failure()
