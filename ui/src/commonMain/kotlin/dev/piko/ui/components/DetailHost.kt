@@ -88,6 +88,7 @@ internal fun <T : Any> DetailHost(
     val target = state.target ?: return
     val spec = state.spec
     val focus = remember { FocusRequester() }
+    val pointerSource = LocalPointerSource.current
     val useBottomSheet = currentWidthClass() == WidthClass.Compact && !isHeightCompact()
     BackHandler { state.close() }
     if (useBottomSheet) {
@@ -97,8 +98,10 @@ internal fun <T : Any> DetailHost(
             sideSheetButtons = { TooltipIconButton(Icons.Outlined.Close, spec.closeLabel, state::close) },
         ) {
             val sideSheet = isSideSheet
-            Column(Modifier.fillMaxWidth().onPreviewKeyEvent(state::handleKey).focusRequester(focus).focusable()) {
-                LaunchedEffect(target) { focus.requestFocus() }
+            Column(Modifier.fillMaxWidth().onPreviewKeyEvent(state::handleKey).focusRequester(focus).focusable(!pointerSource.isTouchLike)) {
+                LaunchedEffect(target, pointerSource.isTouchLike) {
+                    if (!pointerSource.isTouchLike) runCatching { focus.requestFocus() }
+                }
                 if (!sideSheet) {
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, bottom = 4.dp),
@@ -138,10 +141,12 @@ internal fun <T : Any> DetailHost(
                         detectTapGestures { onActivate() }
                     }
                     .focusRequester(focus)
-                    .focusable()
+                    .focusable(!pointerSource.isTouchLike)
                     .semantics { paneTitle = spec.title },
             ) {
-                LaunchedEffect(target) { focus.requestFocus() }
+                LaunchedEffect(target, pointerSource.isTouchLike) {
+                    if (!pointerSource.isTouchLike) runCatching { focus.requestFocus() }
+                }
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Row(
                         modifier = Modifier

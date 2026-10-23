@@ -105,22 +105,21 @@ fun MediampVideoPlayerScreen(
         onDispose { backend.release() }
     }
 
-    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-    // 全屏原先就等于横屏。竖着的片子（竖拍的，或转过 90 度的横片）全屏时屏幕是竖的，横竖推不出是否全屏，
-    // 另记一个；不记的话返回键把竖着的全屏当成普通页面，直接退出播放器
-    var portraitFullscreen by rememberSaveable { mutableStateOf(false) }
-    val isFullscreen = isLandscape || portraitFullscreen
+    // 是否处于主动开启的沉浸全屏。原先把 isLandscape 当全屏只适合手机：平板本来就是横屏，或手机开启自动旋转后
+    // 直接横握打开视频，把 isLandscape 当全屏会导致第一次按返回键只调一次 setPortrait()（平板不转屏或手机转回竖屏），
+    // 需要按两次甚至在横屏平板上永远无法通过返回手势退出播放器（Issue #30）。
+    var isFullscreen by rememberSaveable { mutableStateOf(false) }
     val orientationController = rememberOrientationController()
 
     // 全屏时屏幕方向跟着片子走：横片横屏，竖片竖屏。与桌面端转画面时窗口横竖对调是同一件事
     fun enterFullscreen(landscapeVideo: Boolean) {
-        portraitFullscreen = !landscapeVideo
+        isFullscreen = true
         if (landscapeVideo) orientationController.setLandscape() else orientationController.setPortraitFullscreen()
     }
 
     fun exitFullscreen() {
-        portraitFullscreen = false
-        orientationController.setPortrait()
+        isFullscreen = false
+        orientationController.resetOrientation()
     }
     val brightness = rememberWindowBrightness()
     val mediaVolume = rememberMediaVolume()

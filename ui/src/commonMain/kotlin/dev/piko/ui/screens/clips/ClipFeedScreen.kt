@@ -427,7 +427,10 @@ private fun ClipPager(
     DisposableEffect(Unit) {
         onDispose { players.forEach(PreviewBackend::release) }
     }
-    LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
+    val pointerSource = dev.piko.ui.components.LocalPointerSource.current
+    LaunchedEffect(pointerSource.isTouchLike) {
+        if (!pointerSource.isTouchLike) runCatching { focusRequester.requestFocus() }
+    }
     val latestSettled by rememberUpdatedState(settled)
     LaunchedEffect(pagerState) { snapshotFlow { latestSettled }.collect(session::moveTo) }
     LaunchedEffect(muted) { players.forEach { it.setVolume(if (muted) 0f else 1f) } }

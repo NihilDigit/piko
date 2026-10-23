@@ -137,7 +137,9 @@ internal fun ImageViewer(
         var dismissProgress by remember { mutableFloatStateOf(0f) }
         val scope = rememberCoroutineScope()
         val focusRequester = remember { FocusRequester() }
-        LaunchedEffect(Unit) { focusRequester.requestFocus() }
+        LaunchedEffect(pointers.isTouchLike) {
+            if (!pointers.isTouchLike) runCatching { focusRequester.requestFocus() }
+        }
         // 键盘缩放作用于眼前这一页，缩放状态却在各页里；各页组合时登记进来
         val zoomStates = remember { HashMap<Int, ZoomState>() }
 
@@ -182,7 +184,7 @@ internal fun ImageViewer(
                 .trackPointerSource(pointers)
                 .background(Color.Black.copy(alpha = 1f - dismissProgress * 0.55f))
                 .focusRequester(focusRequester)
-                .focusable()
+                .focusable(!pointers.isTouchLike)
                 .onKeyEvent(::handleKey),
         ) {
             HorizontalPager(

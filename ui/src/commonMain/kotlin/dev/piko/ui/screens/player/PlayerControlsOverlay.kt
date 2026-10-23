@@ -69,7 +69,8 @@ import dev.piko.shared.media.player.PlayerAspectRatio
 import dev.piko.shared.media.player.PlaylistEntry
 import dev.piko.shared.media.player.VideoCropRegion
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -645,9 +646,9 @@ fun MobilePlayerControls(
     }
 
     // 焦点在点过的按钮上时，按钮随控件栏收起或面板关闭，焦点也跟着没了，之后的按键无处可去。
-    // 每逢这两种变化把焦点收回根节点
-    LaunchedEffect(chromeVisible, openSheet, isEditingCropRegion) {
-        runCatching { focusRequester.requestFocus() }
+    // 每逢这两种变化把焦点收回根节点（仅非触屏模式：触屏模式下 requestFocus 会吃掉 Android 的第一次返回键，见 Issue #30）
+    LaunchedEffect(chromeVisible, openSheet, isEditingCropRegion, pointerSource.isTouchLike) {
+        if (!pointerSource.isTouchLike) runCatching { focusRequester.requestFocus() }
     }
     val hasPlaylist = playlist.size > 1
     // 文件本身没有字幕时也要给入口：正是这种时候才要自己挑一个
@@ -677,7 +678,7 @@ fun MobilePlayerControls(
                 .onPreviewKeyEvent(::handleKey)
                 // 只接焦点不进无障碍树：focusable 会让读屏在整个画面上多停一站
                 .focusRequester(focusRequester)
-                .focusTarget()
+                .then(if (!pointerSource.isTouchLike) Modifier.focusTarget() else Modifier)
                 // Initial 阶段只观察不消费，停在按钮与面板上的移动也算。只认没按键、位置真变了的
                 // 鼠标移动：触屏的移动都是拖动，不该顺带唤出控件；指针不动而底下的布局变了时，
                 // 桌面端可能补发原地的移动，不滤掉的话控件收起后会被它重新唤出
@@ -1096,7 +1097,7 @@ private enum class CropDragHandle {
 }
 
 /**
- * 画面框选填充编辑器：在适应屏幕的完整画面上叠加可拖动四角的矩形选框，确定后将该区域放大铺满窗口。
+ * 画面框选填充编辑器：在适应屏幕的完整画面上叠加可拖动四角、四边或内部的矩形选框，确定后将该区域放大铺满窗口。
  */
 @Composable
 private fun CropRegionEditorOverlay(
@@ -1110,7 +1111,7 @@ private fun CropRegionEditorOverlay(
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
     var isDraggingBox by remember { mutableStateOf(false) }
     val density = LocalDensity.current
-    val hitRadiusPx = with(density) { 28.dp.toPx() }
+    val hitRadiusPx = with(density) { 44.dp.toPx() }
     val cornerRadiusPx = with(density) { 6.dp.toPx() }
     val strokePx = with(density) { 2.5.dp.toPx() }
 
@@ -1137,79 +1138,85 @@ private fun CropRegionEditorOverlay(
         modifier = Modifier
             .fillMaxSize()
             .onSizeChanged { containerSize = it }
-            .pointerInput(Unit) {
-                awaitPointerEventScope {
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        event.changes.forEach { it.consume() }
-                    }
-                }
-            }
             .pointerInput(videoAspect, initialRegion) {
                 var activeHandle: CropDragHandle? = null
-                detectDragGestures(
-                    onDragStart = { offset ->
-                        val bounds = videoBounds(size)
-                        if (bounds.width <= 0f || bounds.height <= 0f) return@detectDragGestures
-                        val leftPx = bounds.left + region.left * bounds.width
-                        val topPx = bounds.top + region.top * bounds.height
-                        val rightPx = bounds.left + region.right * bounds.width
-                        val bottomPx = bounds.top + region.bottom * bounds.height
-                        fun near(x: Float, y: Float) =
-                            (offset.x - x) * (offset.x - x) + (offset.y - y) * (offset.y - y) <= hitRadiusPx * hitRadiusPx
-                        activeHandle = when {
-                            near(leftPx, topPx) -> CropDragHandle.TopLeft
-                            near(rightPx, topPx) -> CropDragHandle.TopRight
-                            near(leftPx, bottomPx) -> CropDragHandle.BottomLeft
-                            near(rightPx, bottomPx) -> CropDragHandle.BottomRight
-                            offset.x in leftPx..rightPx && offset.y in topPx..bottomPx -> CropDragHandle.Inside
-                            else -> null
-                        }
-                        isDraggingBox = activeHandle != null
-                    },
-                    onDragEnd = {
-                        activeHandle = null
-                        isDraggingBox = false
-                    },
-                    onDragCancel = {
-                        activeHandle = null
-                        isDraggingBox = false
-                    },
-                    onDrag = { change, dragAmount ->
-                        val handle = activeHandle ?: return@detectDragGestures
-                        val bounds = videoBounds(size)
-                        if (bounds.width <= 0f || bounds.height <= 0f) return@detectDragGestures
-                        change.consume()
-                        val dx = dragAmount.x / bounds.width
-                        val dy = dragAmount.y / bounds.height
-                        val minSpan = 0.12f
-                        region = when (handle) {
-                            CropDragHandle.TopLeft -> region.copy(
-                                left = (region.left + dx).coerceIn(0f, region.right - minSpan),
-                                top = (region.top + dy).coerceIn(0f, region.bottom - minSpan),
-                            )
-                            CropDragHandle.TopRight -> region.copy(
-                                right = (region.right + dx).coerceIn(region.left + minSpan, 1f),
-                                top = (region.top + dy).coerceIn(0f, region.bottom - minSpan),
-                            )
-                            CropDragHandle.BottomLeft -> region.copy(
-                                left = (region.left + dx).coerceIn(0f, region.right - minSpan),
-                                bottom = (region.bottom + dy).coerceIn(region.top + minSpan, 1f),
-                            )
-                            CropDragHandle.BottomRight -> region.copy(
-                                right = (region.right + dx).coerceIn(region.left + minSpan, 1f),
-                                bottom = (region.bottom + dy).coerceIn(region.top + minSpan, 1f),
-                            )
-                            CropDragHandle.Inside -> {
-                                val w = region.width
-                                val h = region.height
-                                val newLeft = (region.left + dx).coerceIn(0f, 1f - w)
-                                val newTop = (region.top + dy).coerceIn(0f, 1f - h)
-                                region.copy(left = newLeft, top = newTop, right = newLeft + w, bottom = newTop + h)
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val bounds = videoBounds(size)
+                    if (bounds.width <= 0f || bounds.height <= 0f) return@awaitEachGesture
+                    val leftPx = bounds.left + region.left * bounds.width
+                    val topPx = bounds.top + region.top * bounds.height
+                    val rightPx = bounds.left + region.right * bounds.width
+                    val bottomPx = bounds.top + region.bottom * bounds.height
+                    val offset = down.position
+                    fun distSq(x: Float, y: Float) = (offset.x - x) * (offset.x - x) + (offset.y - y) * (offset.y - y)
+                    val rSq = hitRadiusPx * hitRadiusPx
+                    val corners = listOf(
+                        CropDragHandle.TopLeft to distSq(leftPx, topPx),
+                        CropDragHandle.TopRight to distSq(rightPx, topPx),
+                        CropDragHandle.BottomLeft to distSq(leftPx, bottomPx),
+                        CropDragHandle.BottomRight to distSq(rightPx, bottomPx),
+                    )
+                    val closestCorner = corners.minByOrNull { it.second }?.takeIf { it.second <= rSq }?.first
+                    activeHandle = closestCorner ?: if (offset.x in (leftPx - hitRadiusPx)..(rightPx + hitRadiusPx) &&
+                        offset.y in (topPx - hitRadiusPx)..(bottomPx + hitRadiusPx)
+                    ) {
+                        CropDragHandle.Inside
+                    } else null
+                    if (activeHandle == null) return@awaitEachGesture
+                    down.consume()
+                    var prevPos = down.position
+                    try {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (!change.pressed) {
+                                change.consume()
+                                break
+                            }
+                            val delta = change.position - prevPos
+                            prevPos = change.position
+                            if (delta != Offset.Zero) {
+                                isDraggingBox = true
+                                change.consume()
+                                val currentBounds = videoBounds(size)
+                                if (currentBounds.width > 0f && currentBounds.height > 0f) {
+                                    val dx = delta.x / currentBounds.width
+                                    val dy = delta.y / currentBounds.height
+                                    val minSpan = 0.12f
+                                    region = when (requireNotNull(activeHandle)) {
+                                        CropDragHandle.TopLeft -> region.copy(
+                                            left = (region.left + dx).coerceIn(0f, region.right - minSpan),
+                                            top = (region.top + dy).coerceIn(0f, region.bottom - minSpan),
+                                        )
+                                        CropDragHandle.TopRight -> region.copy(
+                                            right = (region.right + dx).coerceIn(region.left + minSpan, 1f),
+                                            top = (region.top + dy).coerceIn(0f, region.bottom - minSpan),
+                                        )
+                                        CropDragHandle.BottomLeft -> region.copy(
+                                            left = (region.left + dx).coerceIn(0f, region.right - minSpan),
+                                            bottom = (region.bottom + dy).coerceIn(region.top + minSpan, 1f),
+                                        )
+                                        CropDragHandle.BottomRight -> region.copy(
+                                            right = (region.right + dx).coerceIn(region.left + minSpan, 1f),
+                                            bottom = (region.bottom + dy).coerceIn(region.top + minSpan, 1f),
+                                        )
+                                        CropDragHandle.Inside -> {
+                                            val w = region.width
+                                            val h = region.height
+                                            val newLeft = (region.left + dx).coerceIn(0f, 1f - w)
+                                            val newTop = (region.top + dy).coerceIn(0f, 1f - h)
+                                            region.copy(left = newLeft, top = newTop, right = newLeft + w, bottom = newTop + h)
+                                        }
+                                    }
+                                }
                             }
                         }
-                    },
-                )
+                    } finally {
+                        activeHandle = null
+                        isDraggingBox = false
+                    }
+                }
             },
     ) {
         Canvas(

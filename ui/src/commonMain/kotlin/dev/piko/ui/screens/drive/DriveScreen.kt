@@ -63,6 +63,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -1246,7 +1247,8 @@ fun DriveScreen(
             latestShowProperties(targets, if (fromMenu) propertiesAnchors.fromMenu(file.id) else propertiesAnchors.beside(file.id))
         }
 
-    val itemMoreButton = dev.piko.ui.components.LocalPointerSource.current.isTouchLike
+    val pointerSource = dev.piko.ui.components.LocalPointerSource.current
+    val itemMoreButton = pointerSource.isTouchLike
 
     // 从没解压过的包第一次打开要等几秒。准备完 key 一变，这里的协程取消，提示随之收起；快的不提示
     LaunchedEffect(state.preparingEntryId) {
@@ -1385,7 +1387,7 @@ fun DriveScreen(
                 if (focused) {
                     if (locatedFileId != file.id) locatedFileId = null
                     focusedFile = file
-                    commandFile = file
+                    if (!pointerSource.isTouchLike) commandFile = file
                 } else if (focusedFile?.id == file.id) {
                     focusedFile = null
                 }
@@ -1435,18 +1437,21 @@ fun DriveScreen(
     // 退格与 Ctrl+A 先由输入框处理，不会误删文件或全选列表
     // 换目录后再要一次：点进文件夹时焦点在被点的那一项上，它随旧列表一起没了，焦点落空，
     // 此后 Ctrl+F、Alt+← 这些快捷键都没有地方收
-    LaunchedEffect(activeFolderId) { runCatching { shortcutFocus.requestFocus() } }
+    LaunchedEffect(activeFolderId, pointerSource.isTouchLike) {
+        if (!pointerSource.isTouchLike) runCatching { shortcutFocus.requestFocus() }
+    }
     LaunchedEffect(state.isSelectionMode) {
         if (!state.isSelectionMode) {
             commandFile = null
             focusedFile = null
-            runCatching { shortcutFocus.requestFocus() }
+            if (!pointerSource.isTouchLike) runCatching { shortcutFocus.requestFocus() }
         }
     }
 
     // Esc 依次吃掉的几样，优先级见上面 BackHandler 那一段。
-    // 单击高亮：鼠标点过的那一项留着焦点底色，命令栏也作用于它；Esc 让它回到没点过的样子，焦点交回页面，快捷键照常
-    BackHandler(enabled = acceptsNavigation && commandFile != null && !state.isSelectionMode) {
+    // 单击高亮：鼠标点过的那一项留着焦点底色，命令栏也作用于它；Esc 让它回到没点过的样子，焦点交回页面，快捷键照常。
+    // 触屏上点进文件夹、打开条目时不挂这层拦截，避免系统侧滑返回第一次只清掉 commandFile 而不返回上一级（Issue #30）
+    BackHandler(enabled = acceptsNavigation && !pointerSource.isTouchLike && commandFile != null && !state.isSelectionMode) {
         commandFile = null
         focusedFile = null
         runCatching { shortcutFocus.requestFocus() }
@@ -2038,6 +2043,7 @@ fun DriveScreen(
                             // 上下两段靠色阶分开（islandHeader），不画线
                             islandTabMode -> Column(
                                 Modifier
+                                    .then(if (!hasTabBarAbove) Modifier.windowInsetsPadding(TopAppBarDefaults.windowInsets) else Modifier)
                                     .padding(top = if (hasTabBarAbove) 0.dp else IslandGap, end = IslandGap)
                                     // 第一个标签活动时它的左边竖直接下来，岛的左上角不圆；独立库页面上方没有标签栏，左上角照常圆角
                                     .clip(

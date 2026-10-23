@@ -157,14 +157,17 @@ val LocalFocusFallback = staticCompositionLocalOf<FocusFallback?> { null }
 fun Modifier.focusFallbackRoot(fallback: FocusFallback): Modifier {
     val focusManager = LocalFocusManager.current
     val windowFocused = LocalWindowInfo.current.isWindowFocused
+    val pointerSource = LocalPointerSource.current
     var hasFocus by remember { mutableStateOf(false) }
     val coordinates = remember { arrayOfNulls<LayoutCoordinates>(1) }
-    // 窗口失去焦点时不抢：要焦点会连带要窗口的焦点。窗口回来时 Compose 不会自己恢复被释放的焦点，由这里补上
-    LaunchedEffect(hasFocus, windowFocused) {
-        if (hasFocus || !windowFocused) return@LaunchedEffect
+    // 窗口失去焦点时不抢：要焦点会连带要窗口的焦点。窗口回来时 Compose 不会自己恢复被释放的焦点，由这里补上。
+    // 触屏模式下不抢焦点：Android 的 KEYCODE_BACK 在根焦点节点 focusable 时，第一次返回键只会走 FocusManager.clearFocus()
+    // 退出非触屏焦点态，导致需要侧滑两次才能触发 BackHandler（Issue #30）
+    LaunchedEffect(hasFocus, windowFocused, pointerSource.isTouchLike) {
+        if (hasFocus || !windowFocused || pointerSource.isTouchLike) return@LaunchedEffect
         // 等一帧再看：清空焦点的同一帧里常有别处接着要焦点（换目录后网盘页自己要一次），不必抢在它前面
         withFrameNanos {}
-        if (!hasFocus) fallback.restore()
+        if (!hasFocus && !pointerSource.isTouchLike) fallback.restore()
     }
     return onFocusChanged { hasFocus = it.hasFocus }
         .onGloballyPositioned { coordinates[0] = it }
@@ -192,6 +195,7 @@ fun Modifier.focusFallbackRoot(fallback: FocusFallback): Modifier {
 @Composable
 fun Modifier.pageFocusTarget(requester: FocusRequester): Modifier {
     val fallback = LocalFocusFallback.current
+    val pointerSource = LocalPointerSource.current
     val page = remember(requester) { FocusPage(requester) }
     DisposableEffect(fallback, page) {
         fallback?.add(page)
@@ -208,7 +212,9 @@ fun Modifier.pageFocusTarget(requester: FocusRequester): Modifier {
                     // Initial 先于页里的条目：先把焦点拿回这一页，按下的条目随后照常取得焦点
                     val event = awaitPointerEvent(PointerEventPass.Initial)
                     if (event.type != PointerEventType.Press) continue
-                    val position = event.changes.firstOrNull()?.position ?: continue
+                    val change = event.changes.firstOrNull() ?: continue
+                    if (change.type != PointerType.Mouse) continue
+                    val position = change.position
                     // 焦点在嵌在里面的一页（信息流）上、而按在它外面时，这一页同样要拿回来
                     val inner = fallback?.focusedInside(page).orEmpty()
                     val windowPosition = page.coordinates?.takeIf { it.isAttached }?.localToWindow(position)
@@ -218,7 +224,7 @@ fun Modifier.pageFocusTarget(requester: FocusRequester): Modifier {
             }
         }
         .focusRequester(requester)
-        .focusable()
+        .focusable(!pointerSource.isTouchLike)
 }
 
 /**

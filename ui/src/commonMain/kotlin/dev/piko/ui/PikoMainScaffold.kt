@@ -141,7 +141,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation3.runtime.NavKey
 import androidx.navigation3.runtime.entryProvider
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.filter
@@ -888,8 +893,9 @@ fun PikoMainScaffold(
     // 快捷键的兜底落点：网盘页有自己的焦点目标，其余页面没有可聚焦的内容时，
     // 按键要有个地方落，Ctrl+数字切换页面才能生效
     val shortcutFocus = remember { FocusRequester() }
-    LaunchedEffect(currentTab, onHome) {
-        if (currentTab != MainTab.FILES || !onHome) runCatching { shortcutFocus.requestFocus() }
+    val pointerSource = dev.piko.ui.components.LocalPointerSource.current
+    LaunchedEffect(currentTab, onHome, pointerSource.isTouchLike) {
+        if (!pointerSource.isTouchLike && (currentTab != MainTab.FILES || !onHome)) runCatching { shortcutFocus.requestFocus() }
     }
 
     // 桌面没有「我的」这一页：设置与我的分享压在当前页上，出栈即回到原来那一页，侧边栏在打开期间只亮这一项。
@@ -1364,7 +1370,7 @@ fun PikoMainScaffold(
                 .fileDragHost(fileDrag)
                 .focusFallbackRoot(focusFallback)
                 .focusRequester(shortcutFocus)
-                .focusable()
+                .focusable(!pointerSource.isTouchLike)
                 .onPreviewKeyEvent { event ->
                     if (!workspaceSurface || event.type != KeyEventType.KeyDown || !shortcutModifier.isPressed(event)) false
                     else when (event.key) {
@@ -1439,9 +1445,11 @@ fun PikoMainScaffold(
             CompositionLocalProvider(LocalFramed provides sidebarMode) {
                 Row(Modifier.fillMaxSize().then(frameModifier)) {
                 if (sidebarMode) {
-                    // 侧边栏是一块岛，与页面同色，浮在外框色上，见 IslandGap
+                    // 侧边栏是一块岛，与页面同色，浮在外框色上，见 IslandGap。
+                    // 窄屏或平板下避开系统状态栏与任务栏（statusBars / navigationBars）
                     Box(
                         Modifier
+                            .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Top + WindowInsetsSides.Bottom + WindowInsetsSides.Start))
                             .padding(start = IslandGap, top = IslandGap, bottom = IslandGap)
                             .clip(FrameCardShape)
                             .background(MaterialTheme.colorScheme.surface),
@@ -1635,13 +1643,8 @@ private fun MainSidebar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = if (collapsed) Arrangement.Center else Arrangement.Start,
         ) {
-            // 图标与名字只在标题栏并进内容时画：单独的标题栏上已经画着图标与标题
             if (!collapsed) {
-                if (LocalWindowCaption.current != null) {
-                    PikoBrand(Modifier.weight(1f).fillMaxHeight().windowDragArea().padding(start = 24.dp))
-                } else {
-                    Spacer(Modifier.weight(1f))
-                }
+                PikoBrand(Modifier.weight(1f).fillMaxHeight().windowDragArea().padding(start = 24.dp))
             }
             TooltipIconButton(
                 icon = if (collapsed) Icons.Outlined.Menu else Icons.AutoMirrored.Outlined.MenuOpen,

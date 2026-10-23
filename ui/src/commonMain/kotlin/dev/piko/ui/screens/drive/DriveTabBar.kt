@@ -19,6 +19,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -168,6 +170,7 @@ internal fun DriveTabBar(
         modifier = modifier
             .fillMaxWidth()
             .then(caption.modifier)
+            .windowInsetsPadding(TopAppBarDefaults.windowInsets)
             .onGloballyPositioned { dragArea.onRow(it.boundsInWindow()) }
             .height(IslandTabBarHeight)
             // 第一个标签贴着页眉那块岛的左边，活动时左边竖直上去，与岛的左边连成一条线
