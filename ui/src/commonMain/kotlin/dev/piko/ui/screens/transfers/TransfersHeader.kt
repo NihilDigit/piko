@@ -41,6 +41,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.state.TransferKind
 import dev.piko.shared.state.TransfersState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ToggleButtonShapes
 import dev.piko.ui.components.connectedToggleShapes
 
 /** 类别切换按钮上的图标：未选中用描边，选中用实心。 */
@@ -75,49 +77,48 @@ internal fun TaskKindFilter(
         kinds.forEachIndexed { index, kind ->
             val selected = state.filter == kind
             val count = state.counts[kind] ?: 0
-            val showText = !compact
-            val label = when {
-                showText && count > 0 -> "${kind.label} $count"
-                showText -> kind.label
-                count > 0 -> "$count"
-                else -> ""
+            val label = if (count > 0) "${kind.label} $count" else kind.label
+            val buttonWeight = when {
+                !compact -> null
+                selected && count > 0 -> 1.45f
+                selected -> 1.32f
+                count > 0 -> 1.12f
+                else -> 1f
             }
-            val button: @Composable () -> Unit = {
-                TonalToggleButton(
-                    checked = selected,
-                    onCheckedChange = { if (!selected) state.changeFilter(kind) },
-                    shapes = connectedToggleShapes(index, kinds.size),
-                    contentPadding = PaddingValues(
-                        horizontal = if (showText) 12.dp else 10.dp,
-                        vertical = 0.dp,
-                    ),
-                    modifier = Modifier.heightIn(min = 36.dp),
-                ) {
+            val outerCorner = if (compact) 12.dp else 18.dp
+            val innerCorner = 4.dp
+            val itemShape = when (index) {
+                0 -> RoundedCornerShape(topStart = outerCorner, bottomStart = outerCorner, topEnd = innerCorner, bottomEnd = innerCorner)
+                kinds.lastIndex -> RoundedCornerShape(topStart = innerCorner, bottomStart = innerCorner, topEnd = outerCorner, bottomEnd = outerCorner)
+                else -> RoundedCornerShape(innerCorner)
+            }
+            TonalToggleButton(
+                checked = selected,
+                onCheckedChange = { if (!selected) state.changeFilter(kind) },
+                shapes = if (compact) ToggleButtonShapes(shape = itemShape, pressedShape = itemShape, checkedShape = itemShape) else connectedToggleShapes(index, kinds.size),
+                contentPadding = PaddingValues(
+                    horizontal = if (compact) 6.dp else 12.dp,
+                    vertical = 0.dp,
+                ),
+                modifier = Modifier
+                    .heightIn(min = 36.dp)
+                    .then(if (buttonWeight != null) Modifier.weight(buttonWeight) else Modifier),
+            ) {
+                if (selected) {
                     Icon(
-                        imageVector = kind.icon(selected),
-                        contentDescription = if (showText) null else kind.label,
+                        imageVector = kind.icon(true),
+                        contentDescription = null,
                         modifier = Modifier.size(18.dp),
                     )
-                    if (label.isNotEmpty()) {
-                        Spacer(Modifier.width(if (showText) 6.dp else 4.dp))
-                        Text(
-                            text = label,
-                            style = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum"),
-                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
+                    Spacer(Modifier.width(4.dp))
                 }
-            }
-            if (!showText) {
-                TooltipBox(
-                    positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
-                    tooltip = { PlainTooltip { Text(if (count > 0) "${kind.label} $count" else kind.label) } },
-                    state = rememberTooltipState(),
-                ) { button() }
-            } else {
-                button()
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum"),
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
     }

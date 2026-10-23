@@ -543,17 +543,19 @@ fun TransfersScreen(
             !item.isBusy && item.job.stage == dev.piko.shared.data.OfflinePackStage.FAILED -> SheetAction(Icons.Outlined.Refresh, "重试", { state.retryPack(item.job.taskId) })
             else -> null
         }
-        else -> pauseOrResumeAction(item) ?: actionsFor(item).firstOrNull { it.label == "输入解压密码" || it.label.startsWith("停止") || it.label == "重新查询结果" }
+        else -> pauseOrResumeAction(item) ?: actionsFor(item).firstOrNull {
+            it.label == "输入解压密码" || it.label.startsWith("停止") || it.label == "重新查询结果" || it.label == "重试" || it.label == "仍然下载"
+        }
     }
 
     fun extraAction(item: TransferItem): SheetAction? {
         val expanded = item.key in expandedBatches
         return when (item) {
-            is TransferItem.LocalBatch, is TransferItem.UploadBatch -> SheetAction(
+            is TransferItem.LocalBatch, is TransferItem.UploadBatch -> if (item.children.isNotEmpty()) SheetAction(
                 if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
                 if (expanded) "收起文件" else "展开文件",
                 { toggleBatch(item.key) },
-            )
+            ) else null
             is TransferItem.Local -> when {
                 item.task.status == DownloadStatus.COMPLETED && item.task.isMedia() && taskLayout.wide ->
                     SheetAction(Icons.Outlined.FolderOpen, "打开所在文件夹", { localFiles.openContainingFolder(item.task.destinationPath) })
@@ -640,7 +642,7 @@ fun TransfersScreen(
                 is TransferItem.Upload -> item.task.status == UploadStatus.FAILED
                 else -> false
             },
-            onOpen = { primaryActionFor(item)?.invoke() }, onToggle = { state.toggleSelected(item.key) },
+            onOpen = { primaryActionFor(item)?.invoke() ?: showDetails(item.key) }, onToggle = { state.toggleSelected(item.key) },
             quickAction = quickAction(item),
             extraAction = extraAction(item),
             onLeadingClick = playActionFor(item),
@@ -653,7 +655,7 @@ fun TransfersScreen(
         val rowQuick = quickAction(item)
         val rowExtra = extraAction(item)
         val trailingCount = (if (rowQuick != null) 1 else 0) + (if (rowExtra != null) 1 else 0)
-        val hasLeadingClick = checkboxActive || playActionFor(item) != null
+        val hasLeadingClick = !checkboxActive && playActionFor(item) != null
         ContextMenuArea(
             actions = { contextActionsFor(item) },
             modifier = itemModifier,
@@ -675,7 +677,7 @@ fun TransfersScreen(
                             state.selectRange(item.key, visibleOrder)
                             focusList()
                         },
-                        onOpen = { primaryActionFor(item)?.invoke() },
+                        onOpen = { primaryActionFor(item)?.invoke() ?: showDetails(item.key) },
                         trailingPassThrough = if (trailingCount == 0) 0.dp else (trailingCount * 48 + 12).dp,
                         leadingPassThrough = if (hasLeadingClick) 68.dp else 0.dp,
                     ),
@@ -829,13 +831,33 @@ fun TransfersScreen(
     }
 
     LaunchedEffect(detailsKey, detailsItem) { if (detailsKey != null && detailsItem == null) detailState.close() }
+    var confirmingClearCompleted by remember { mutableStateOf(false) }
     val headerActions = taskPageActions(
         state = state, selectedCount = bulkSelected.size,
         onSelectAll = { state.selectAll(visibleOrder) },
         onDelete = { confirmingDeleteKeys = state.selectedKeys.toSet() },
         onPause = pauseSelected, onResume = resumeSelected,
         pauseCount = bulkSelected.count(state::isPausable), resumeCount = bulkSelected.count(state::isResumable),
+        onRequestClearCompleted = { confirmingClearCompleted = true },
     )
+    if (confirmingClearCompleted) {
+        PikoDialog(
+            onDismissRequest = { confirmingClearCompleted = false },
+            title = { Text("清除已完成任务？") },
+            text = { Text("将清除所有类别的已完成任务记录，已下载到本机或保存到网盘的文件不会被删除。") },
+            confirmButton = {
+                PikoDialogConfirm(
+                    label = "清除",
+                    destructive = true,
+                    onClick = {
+                        confirmingClearCompleted = false
+                        state.clearCompleted()
+                    },
+                )
+            },
+            dismissButton = { TextButton(onClick = { confirmingClearCompleted = false }) { Text("取消") } },
+        )
+    }
     PikoScaffold(
         modifier = modifier.fillMaxSize().onPreviewKeyEvent(detailState::handleKey),
         topBar = { TaskPageHeader(state, bulkSelected.size, headerActions) },
@@ -943,8 +965,7 @@ private fun TransfersList(
                 attention = true, onClearCloud = state::clearFailedCloud)
             transferSection("进行中", sections.inProgress, expanded, renderItem)
             transferSection("已完成", sections.completed, expanded, renderItem,
-                sectionExpanded = completedExpanded, onToggle = onToggleCompleted,
-                onClearCompleted = state::clearCompleted, canClearCompleted = state.canClearCompleted)
+                sectionExpanded = completedExpanded, onToggle = onToggleCompleted)
             deletedOutputSection(
                 items = sections.outputDeleted,
                 expanded = deletedExpanded,

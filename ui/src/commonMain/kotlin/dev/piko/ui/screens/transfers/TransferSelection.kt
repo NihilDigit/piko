@@ -73,7 +73,6 @@ internal fun Modifier.transferClicks(
                         if (!event.buttons.isPrimaryPressed) continue
                         // 行宽随窗口变，每次按下时现量
                         if (change.position.x >= size.width - trailingPassThrough.toPx()) continue
-                        if (change.position.x < leadingPassThrough.toPx()) continue
                         val modifiers = event.keyboardModifiers
                         val action = when {
                             modifiers.isShiftPressed -> extend
@@ -84,7 +83,7 @@ internal fun Modifier.transferClicks(
                             event.changes.forEach { it.consume() }
                             lastClickAt = 0L
                             action()
-                        } else {
+                        } else if (change.position.x >= leadingPassThrough.toPx()) {
                             pressed = change.id
                             pressedAt = change.position
                         }

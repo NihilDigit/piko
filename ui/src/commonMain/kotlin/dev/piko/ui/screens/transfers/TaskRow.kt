@@ -31,7 +31,7 @@ internal data class TaskRowLayout(
 ) {
     companion object {
         fun forWidth(width: Dp) = TaskRowLayout(
-            wide = false,
+            wide = width >= 600.dp,
             amount = false,
             rate = false,
             destination = false,
@@ -127,7 +127,7 @@ internal fun TaskRow(
                 contentAlignment = Alignment.Center,
             ) {
                 if (selection.active) {
-                    Checkbox(selection.selected, { onToggle() }, Modifier.semantics { contentDescription = "选择任务：${model.title}" })
+                    Checkbox(selection.selected, null, Modifier.semantics { contentDescription = "选择任务：${model.title}" })
                 } else if (leadingVisual != null) {
                     leadingVisual()
                 } else {

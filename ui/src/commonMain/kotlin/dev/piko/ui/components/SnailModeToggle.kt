@@ -53,7 +53,7 @@ import kotlinx.coroutines.launch
  * 形状不随按下与选中变，理由见 connectedToggleShapes。
  */
 @Composable
-fun SnailModeToggle(modifier: Modifier = Modifier, compact: Boolean = false) {
+fun SnailModeToggle(modifier: Modifier = Modifier) {
     val preferences = LocalPikoServices.current.preferences
     val scope = rememberCoroutineScope()
     val mode by preferences.snailModeFlow.collectAsStateWithLifecycle(initialValue = SnailMode())
@@ -63,7 +63,7 @@ fun SnailModeToggle(modifier: Modifier = Modifier, compact: Boolean = false) {
     val inner = CornerSize(4.dp)
     val leading = RoundedCornerShape(topStart = full, topEnd = inner, bottomEnd = inner, bottomStart = full)
     val trailing = RoundedCornerShape(topStart = inner, topEnd = full, bottomEnd = full, bottomStart = inner)
-    val height = if (compact) 36.dp else 40.dp
+    val height = 36.dp
     // 按中线对齐、两块同高：两个按钮外面各包着一圈高度不同的最小触控区，按顶边排就一高一低
     Row(
         modifier = modifier,
@@ -71,44 +71,23 @@ fun SnailModeToggle(modifier: Modifier = Modifier, compact: Boolean = false) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         ContextMenuArea(actions = { listOf(SheetAction(Icons.Outlined.Tune, "设置上限", { editing = true })) }) {
-            val toggleButton: @Composable () -> Unit = {
-                TonalToggleButton(
-                    checked = mode.enabled,
-                    onCheckedChange = { enabled -> scope.launch { preferences.setSnailMode(mode.copy(enabled = enabled)) } },
-                    shapes = ToggleButtonShapes(shape = leading, pressedShape = leading, checkedShape = leading),
-                    colors = ToggleButtonDefaults.tonalToggleButtonColors(
-                        checkedContainerColor = colors.tertiaryContainer,
-                        checkedContentColor = colors.onTertiaryContainer,
-                    ),
-                    contentPadding = if (compact && !mode.enabled) {
-                        androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 0.dp)
-                    } else {
-                        ToggleButtonDefaults.ContentPadding
-                    },
-                    modifier = Modifier.height(height),
-                ) {
-                    Icon(Icons.Outlined.SlowMotionVideo, contentDescription = "蜗牛模式", modifier = Modifier.size(18.dp))
-                    if (!compact || mode.enabled) {
-                        Spacer(Modifier.width(if (compact) 4.dp else 8.dp))
-                        Text(
-                            if (mode.enabled) {
-                                if (compact) mode.limitLabel() else "限速 ${mode.limitLabel()}"
-                            } else {
-                                "蜗牛模式"
-                            },
-                            maxLines = 1,
-                        )
-                    }
-                }
-            }
-            if (compact) {
-                TooltipBox(
-                    positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
-                    tooltip = { PlainTooltip { Text(if (mode.enabled) "限速 ${mode.limitLabel()}" else "蜗牛模式") } },
-                    state = rememberTooltipState(),
-                ) { toggleButton() }
-            } else {
-                toggleButton()
+            TonalToggleButton(
+                checked = mode.enabled,
+                onCheckedChange = { enabled -> scope.launch { preferences.setSnailMode(mode.copy(enabled = enabled)) } },
+                shapes = ToggleButtonShapes(shape = leading, pressedShape = leading, checkedShape = leading),
+                colors = ToggleButtonDefaults.tonalToggleButtonColors(
+                    checkedContainerColor = colors.tertiaryContainer,
+                    checkedContentColor = colors.onTertiaryContainer,
+                ),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                modifier = Modifier.height(height),
+            ) {
+                Icon(Icons.Outlined.SlowMotionVideo, contentDescription = "蜗牛模式", modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    if (mode.enabled) "限速 ${mode.limitLabel()}" else "蜗牛模式",
+                    maxLines = 1,
+                )
             }
         }
         TooltipBox(
@@ -127,7 +106,7 @@ fun SnailModeToggle(modifier: Modifier = Modifier, compact: Boolean = false) {
                 } else {
                     IconButtonDefaults.filledTonalIconButtonColors()
                 },
-                modifier = Modifier.size(width = if (compact) 36.dp else 44.dp, height = height),
+                modifier = Modifier.size(width = 36.dp, height = height),
             ) {
                 Icon(Icons.Outlined.Tune, contentDescription = "设置上限", modifier = Modifier.size(18.dp))
             }
