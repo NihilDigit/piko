@@ -204,9 +204,7 @@ class MainActivity : ComponentActivity() {
 
     private fun extractShareText(intent: Intent): String? {
         val texts = sharedTexts(intent)
-        return texts.takeIf { candidates -> candidates.any {
-            InstantSheetState.findShareLink(it) != null || extractLinks(it).isNotEmpty()
-        } }
+        return texts.takeIf { candidates -> candidates.any { InstantSheetState.findShareLink(it) != null } }
             ?.joinToString("\n")
     }
 
