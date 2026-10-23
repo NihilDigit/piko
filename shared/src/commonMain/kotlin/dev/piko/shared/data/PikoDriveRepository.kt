@@ -260,15 +260,33 @@ open class PikoDriveRepository(
             val asked = client
             val vaultEntryId = VaultEntry.entryIdOf(fileId)
             if (vaultEntryId != null) {
-                val parentId = vault.folderOfEntry(vaultEntryId) ?: error("找不到归档条目所在的文件夹")
-                if (parentId.isEmpty()) return@runSuspendCatching listOf(ROOT_BREADCRUMB)
-                val folder = folderIndex.node(parentId)?.takeUnless { it.provisional }
-                if (folder != null) {
-                    val above = if (folder.parentId.isNullOrEmpty()) listOf(ROOT_BREADCRUMB) else locateFolder(parentId).getOrThrow()
-                    return@runSuspendCatching above + PikoPathBreadcrumb(parentId, folder.name)
+                val store = vault
+                var parentId = store.folderOfEntry(vaultEntryId)
+                if (parentId == null) {
+                    val candidates = buildList {
+                        add("")
+                        addAll(childContents.vaultedFolders.value)
+                        addAll(vaultTrees.flow.value.values.flatten())
+                        addAll(vaultTrees.flow.value.keys)
+                    }.distinct()
+                    for (candidateId in candidates) {
+                        runSuspendCatching {
+                            val listing = cachedListing(candidateId) ?: fetchListing(candidateId, asked)
+                            store.read(candidateId, listing).getOrNull()?.let { vaultEntriesKnown(candidateId, it) }
+                        }
+                        parentId = store.folderOfEntry(vaultEntryId)
+                        if (parentId != null) break
+                    }
                 }
-                val detail = fetchDetail(parentId, asked)
-                val above = if (detail.parentId.isEmpty()) listOf(ROOT_BREADCRUMB) else locateFolder(parentId).getOrThrow()
+                val resolvedParent = parentId ?: error("找不到归档条目所在的文件夹")
+                if (resolvedParent.isEmpty()) return@runSuspendCatching listOf(ROOT_BREADCRUMB)
+                val folder = folderIndex.node(resolvedParent)?.takeUnless { it.provisional }
+                if (folder != null) {
+                    val above = if (folder.parentId.isNullOrEmpty()) listOf(ROOT_BREADCRUMB) else locateFolder(resolvedParent).getOrThrow()
+                    return@runSuspendCatching above + PikoPathBreadcrumb(resolvedParent, folder.name)
+                }
+                val detail = fetchDetail(resolvedParent, asked)
+                val above = if (detail.parentId.isEmpty()) listOf(ROOT_BREADCRUMB) else locateFolder(resolvedParent).getOrThrow()
                 return@runSuspendCatching above + PikoPathBreadcrumb(detail.id, detail.name)
             }
             val chain = ArrayDeque<PikoPathBreadcrumb>()

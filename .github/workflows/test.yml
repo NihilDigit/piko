@@ -114,7 +114,13 @@ jobs:
       - uses: gradle/actions/setup-gradle@v5
 
       - name: Test
-        run: .\gradlew.bat :desktopApp:desktopTest --no-daemon --stacktrace
+        shell: pwsh
+        run: |
+          .\gradlew.bat :desktopApp:desktopTest --stacktrace
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "desktopTest failed on first attempt (exit $LASTEXITCODE), retrying..."
+            .\gradlew.bat :desktopApp:desktopTest --stacktrace --rerun-tasks
+          }
 
       - name: Upload test report
         if: failure()

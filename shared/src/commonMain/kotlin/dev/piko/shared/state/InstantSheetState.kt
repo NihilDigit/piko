@@ -1279,8 +1279,7 @@ class InstantSheetState private constructor(
     private fun recordSingleEntry(target: PikoPathBreadcrumb, toSave: List<InstantFileItem>, ids: List<String>) {
         val saved = toSave.filter { it.file.gcid != null }.zip(ids)
         val (main, mainId) = saved.maxByOrNull { (item, _) -> item.file.size } ?: return
-        val locateTargetId = if (saveAsReference) target.id else mainId
-        saveRecords.add(main.file.name, saved.size, saved.sumOf { (item, _) -> item.file.size }, target.name, locateId = locateTargetId,
+        saveRecords.add(main.file.name, saved.size, saved.sumOf { (item, _) -> item.file.size }, target.name, locateId = mainId,
             id = instantAttemptId, expectedAccount = saveAccount)
         instantAttemptId = null
     }

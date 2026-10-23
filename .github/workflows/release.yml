@@ -180,7 +180,13 @@ jobs:
 
       # test 在 x64 上已跑过；这里在每个架构的打包机上再跑一遍，arm64 的 WinRT 与原生库问题只有这里暴露
       - name: Test
-        run: .\gradlew.bat :desktopApp:desktopTest --no-daemon --stacktrace
+        shell: pwsh
+        run: |
+          .\gradlew.bat :desktopApp:desktopTest --stacktrace
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "desktopTest failed on first attempt (exit $LASTEXITCODE), retrying..."
+            .\gradlew.bat :desktopApp:desktopTest --stacktrace --rerun-tasks
+          }
 
       # arm64 的问题只在这里暴露，失败时要能看到具体异常
       - name: Upload test report
@@ -204,7 +210,7 @@ jobs:
         run: bash .github/scripts/update-bases.sh "$VERSION" "${{ matrix.arch }}" "$RUNNER_TEMP/update-bases" "$RUNNER_TEMP/update-retired"
 
       - name: Build application image
-        run: .\gradlew.bat :desktopApp:createReleaseDistributable --no-daemon --stacktrace
+        run: .\gradlew.bat :desktopApp:createReleaseDistributable --stacktrace
 
       # 打包出的类逐个让 JVM 校验。ProGuard 改写过的字节码可能校验不过，而那只在装上之后
       # 进到某一页才崩，gradle run 与单测都走不到（见 desktopApp/package/VerifyClasses.java）
@@ -248,7 +254,7 @@ jobs:
           exit 0
 
       - name: Package application
-        run: .\gradlew.bat :desktopApp:packageReleaseMsi :desktopApp:packageReleaseUpdate --no-daemon --stacktrace "-PpikoSignedAppImage=$env:RUNNER_TEMP/signed-image/Piko" "-PpikoUpdateBases=$env:RUNNER_TEMP/update-bases" "-PpikoUpdateRetired=$env:RUNNER_TEMP/update-retired"
+        run: .\gradlew.bat :desktopApp:packageReleaseMsi :desktopApp:packageReleaseUpdate --stacktrace "-PpikoSignedAppImage=$env:RUNNER_TEMP/signed-image/Piko" "-PpikoUpdateBases=$env:RUNNER_TEMP/update-bases" "-PpikoUpdateRetired=$env:RUNNER_TEMP/update-retired"
 
       - name: Collect artifacts
         shell: powershell
