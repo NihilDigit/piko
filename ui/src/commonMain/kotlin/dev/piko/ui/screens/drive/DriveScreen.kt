@@ -941,24 +941,20 @@ fun DriveScreen(
         val importPreviewItems = files.filter { it.isImportPreview }
         if (importPreviewItems.isNotEmpty()) {
             val draft = services.instantSession.state
-            if (draft != null) {
-                val resolvedList = mutableListOf<io.github.nihildigit.pikpak.ResolvedFile>()
-                importPreviewItems.forEach { item ->
-                    ImportPreviewEntryId.resolvedFileOf(item.id)?.let { resolvedList += it }
-                    ImportPreviewLocation.of(item.id)?.let { loc ->
-                        val prefix = "${loc.path.trim('/')}/"
-                        draft.projectedSaveEntries.forEach { (_, resolved) ->
-                            val clean = resolved.path.trim('/')
-                            if ((clean == loc.path.trim('/') || clean.startsWith(prefix)) && resolved.gcid != null) {
-                                resolvedList += resolved
+            val resolvedList = importPreviewItems.flatMap { item ->
+                ImportPreviewEntryId.resolvedFileOf(item.id)?.let { listOf(it) }
+                    ?: draft?.let { d ->
+                        ImportPreviewLocation.of(item.id)?.let { location ->
+                            val path = location.path.trim('/')
+                            d.projectedSaveEntries.filter { (_, file) ->
+                                path.isEmpty() || file.path.trim('/') == path || file.path.trim('/').startsWith("$path/")
                             }
                         }
-                    }
-                }
-                if (resolvedList.isNotEmpty()) {
-                    downloadManager.enqueueResolved(resolvedList, draft.target?.id.orEmpty())
-                    openTransfers()
-                }
+                    }?.map { it.second }.orEmpty()
+            }.filter { it.gcid != null }.distinct()
+            if (resolvedList.isNotEmpty()) {
+                downloadManager.enqueueResolved(resolvedList, draft?.target?.id ?: activeFolderId)
+                openTransfers()
             }
             val rest = files.filterNot { it.isImportPreview }
             if (rest.isEmpty()) return
@@ -1286,15 +1282,14 @@ fun DriveScreen(
             file.isImportPreview && file.hash.isBlank() -> {
                 scope.launch { snackbarHostState.showSnackbar("未收录的链接条目需先离线保存到网盘才能打开", withDismissAction = true) }
             }
-            file.isImportPreview && file.isPlayableVideo() -> {
-                ImportPreviewEntryId.sourceIndexOf(file.id)?.let { sourceIndex -> instantState?.preview(sourceIndex) }
-            }
             file.isPlayableVideo() -> navigateToPlayer(file, latestDisplayedFiles.filter { it.isPlayableVideo() && (!it.isImportPreview || it.hash.isNotBlank()) })
             file.isPreviewableImage() && file.thumbnailLink.isNotBlank() -> previewImage = file
             // 其余类型没有应用内的打开方式，单击等同于下载
             else -> enqueueDownload(file)
         }
     }
+    val latestOpenFile by rememberUpdatedState(openFile)
+    val latestItemActions by rememberUpdatedState<(FileStat, List<FileStat>, Boolean) -> List<SheetAction>>(::itemActions)
     fun openItemActions(file: FileStat) {
         if (state.isSelectionMode && file.id in state.selectedFileIds) {
             openSelectionActions()
@@ -1316,8 +1311,8 @@ fun DriveScreen(
                     file.isExtractableArchive && !file.isVaulted && !ArchiveEntryId.isEntry(file.id) ->
                         taskSlot.claim("打开压缩包", "打开压缩包", task = null, conflictsWith = setOf(TaskSlot.Task.FEED)) { state.openArchive(file) }
                     // 包里的文件先借得出来才能打开，从没解压过的包第一次要等几秒
-                    ArchiveEntryId.isEntry(file.id) -> scope.launch { state.prepareArchiveEntry(file)?.let(openFile) }
-                    else -> openFile(file)
+                    ArchiveEntryId.isEntry(file.id) -> scope.launch { state.prepareArchiveEntry(file)?.let(latestOpenFile) }
+                    else -> latestOpenFile(file)
                 }
             },
             onRename = { file -> if (!file.isUploading && !file.isImportPreview && state.libraryView != DriveLibrary.TRASH) startRename(file) },
@@ -1404,7 +1399,7 @@ fun DriveScreen(
                     focusedFile = null
                 }
             },
-            contextActions = { file -> itemActions(file, targetsOf(file), fromMenu = true) },
+            contextActions = { file -> latestItemActions(file, targetsOf(file), true) },
             onToggleSection = state::toggleSection,
             onFolderVisible = state::onFolderVisible,
         )

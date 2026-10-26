@@ -448,13 +448,20 @@ class InstantSheetState private constructor(
 
     /** (sourceIndex, projected ResolvedFile) pairs for virtual directory projection in Drive. */
     val projectedSaveEntries: List<Pair<Int, io.github.nihildigit.pikpak.ResolvedFile>> by derivedStateOf {
-        sourceSelectedIndices.sorted().filter { !saveAsReference || items[it].file.gcid != null }.map { index ->
-            val item = items[index]
-            val name = nameToSave(index)
-            val relative = if (willCreateFolder) item.file.path.substringBeforeLast('/', "").let { dir ->
-                if (dir.isEmpty()) name else "$dir/$name"
-            } else name
-            index to item.file.copy(path = if (willCreateFolder) "$folderNameToSave/$relative" else relative)
+        val batchRows = batch?.rows
+        if (batchRows != null) {
+            batchRows.flatMapIndexed { rowIndex, row ->
+                row.state.projectedSaveEntries.map { (idx, file) -> (rowIndex * BATCH_INDEX_STRIDE + idx) to file }
+            }
+        } else {
+            sourceSelectedIndices.sorted().filter { !saveAsReference || items[it].file.gcid != null }.map { index ->
+                val item = items[index]
+                val name = nameToSave(index)
+                val relative = if (willCreateFolder) item.file.path.substringBeforeLast('/', "").let { dir ->
+                    if (dir.isEmpty()) name else "$dir/$name"
+                } else name
+                index to item.file.copy(path = if (willCreateFolder) "$folderNameToSave/$relative" else relative)
+            }
         }
     }
 
@@ -729,6 +736,13 @@ class InstantSheetState private constructor(
     /** Source-tree selection addresses actual files, including individual attached subtitles. */
     fun setSourceSelected(indices: Set<Int>, selected: Boolean) {
         if (!canEdit) return
+        val batchRows = batch?.rows
+        if (batchRows != null) {
+            for ((rowIndex, group) in indices.groupBy { it / BATCH_INDEX_STRIDE }) {
+                batchRows.getOrNull(rowIndex)?.state?.setSourceSelected(group.mapTo(HashSet()) { it % BATCH_INDEX_STRIDE }, selected)
+            }
+            return
+        }
         resetEditableAttempt()
         val valid = indices.filterTo(HashSet()) { it in items.indices }
         val current = sourceSelectedIndices
@@ -1337,6 +1351,7 @@ class InstantSheetState private constructor(
     companion object {
         private const val TAG = "Instant"
         private const val AUTO_RESOLVE_DEBOUNCE_MS = 350L
+        private const val BATCH_INDEX_STRIDE = 1_000_000
 
         /**
          * 各文件的规范名。没有一个文件会改名时为 null。

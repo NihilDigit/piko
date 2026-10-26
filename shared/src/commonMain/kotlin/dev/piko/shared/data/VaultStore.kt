@@ -6,7 +6,8 @@ import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.ResolvedFile
 import io.github.nihildigit.pikpak.TaskPhase
-import io.github.nihildigit.pikpak.thumbnailUrlOf
+import io.github.nihildigit.pikpak.videoThumbnailUrlOf
+import io.github.nihildigit.pikpak.imageThumbnailUrlOf
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.data.repository.isPreviewableImage
 import kotlinx.coroutines.delay
@@ -46,6 +47,10 @@ data class VaultEntry(
     val addedAt: Long,
     /** 已取回时关联真实文件，保留来源元数据，不再作为虚拟条目显示。 */
     val restoredFileId: String? = null,
+    val duration: String? = null,
+    val width: String? = null,
+    val height: String? = null,
+    val mimeType: String? = null,
 ) {
     val isArchived: Boolean get() = restoredFileId == null
 
@@ -58,8 +63,11 @@ data class VaultEntry(
         val metadata = buildMap {
             if (!source.isNullOrBlank() && file.sourceUrl.isNullOrBlank()) put("url", source)
             if (cid != null) put("piko_vault_cid", cid)
+            if (file.params["duration"].isNullOrBlank() && duration != null) put("duration", duration)
+            if (file.params["width"].isNullOrBlank() && width != null) put("width", width)
+            if (file.params["height"].isNullOrBlank() && height != null) put("height", height)
         }
-        return file.copy(params = file.params + metadata)
+        return file.copy(params = file.params + metadata, mimeType = file.mimeType.ifBlank { mimeType.orEmpty() })
     }
 
     /**
@@ -85,18 +93,31 @@ data class VaultEntry(
             modifiedTime = time,
             hash = gcid,
             phase = TaskPhase.COMPLETE,
-            params = source?.let { mapOf("url" to it) }.orEmpty(),
+            mimeType = mimeType.orEmpty(),
+            params = buildMap {
+                source?.let { put("url", it) }
+                duration?.let { put("duration", it) }
+                width?.let { put("width", it) }
+                height?.let { put("height", it) }
+            },
         )
         // 缩略图只由 gcid 决定、不带签名，不借文件就有；给视频与图片拼上
-        return if (row.isPlayableVideo() || row.isPreviewableImage()) row.copy(thumbnailLink = thumbnailUrlOf(gcid)) else row
+        return when {
+            row.isPlayableVideo() -> row.copy(thumbnailLink = videoThumbnailUrlOf(gcid))
+            row.isPreviewableImage() -> row.copy(thumbnailLink = imageThumbnailUrlOf(gcid))
+            else -> row
+        }
     }
 
     companion object {
         const val VIRTUAL_ID_PREFIX = "piko-vault:"
 
         /** 新的一条，ID 随机取。 */
-        fun create(name: String, size: Long, gcid: String, source: String?, addedAt: Long, cid: String? = null) =
-            VaultEntry(randomToken(), name, size, gcid, cid, source, addedAt)
+        fun create(
+            name: String, size: Long, gcid: String, source: String?, addedAt: Long, cid: String? = null,
+            duration: String? = null, width: String? = null, height: String? = null, mimeType: String? = null,
+        ) = VaultEntry(randomToken(), name, size, gcid, cid, source, addedAt,
+            duration = duration, width = width, height = height, mimeType = mimeType)
 
         fun isVaulted(fileId: String): Boolean = fileId.startsWith(VIRTUAL_ID_PREFIX)
 
@@ -124,8 +145,11 @@ val FileStat.isVaulted: Boolean get() = VaultEntry.isVaulted(id)
  * 替文件夹当封面的条目：按名字排在最前的、仍在归档中的视频，与条目行的缩略图同出一处（按 gcid 拼出）。
  * 只用 gcid，不需要清单另记缩略图，所以任何版本写下的清单都能补出封面。
  */
-internal fun List<VaultEntry>.coverGcid(): String? =
-    filter { it.isArchived }.sortedBy { it.name }.firstOrNull { it.toFileStat("").thumbnailLink.isNotEmpty() }?.gcid
+internal fun List<VaultEntry>.coverGcid(): String? {
+    val entry = filter { it.isArchived }.sortedBy { it.name }.firstOrNull { it.toFileStat("").thumbnailLink.isNotEmpty() } ?: return null
+    val stat = entry.toFileStat("")
+    return if (stat.isPreviewableImage()) "img:${entry.gcid}" else entry.gcid
+}
 
 /**
  * 对一个文件夹里归档条目的改动。都是纯函数，不存进清单：写入输了要重做时，原样套到赢家的状态上再算一次。

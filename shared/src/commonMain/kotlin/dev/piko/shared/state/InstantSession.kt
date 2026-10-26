@@ -89,7 +89,7 @@ class InstantSession(
 
     // Compatibility adapter while the UI moves from a single editor to draft identities.
     private var legacyDraft by mutableStateOf<InstantDraft?>(null)
-    val state: InstantSheetState? get() = legacyDraft?.takeUnless { it.isClosed }?.state
+    val state: InstantSheetState? get() = (legacyDraft?.takeUnless { it.isClosed } ?: drafts.lastOrNull { !it.isClosed })?.state
     val endNeedsConfirm: Boolean get() = legacyDraft?.endNeedsConfirm == true
     val hasUncommittedWork: Boolean get() = legacyDraft?.hasUncommittedWork == true
 

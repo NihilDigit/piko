@@ -59,10 +59,12 @@ import io.github.nihildigit.pikpak.listStarred
 import io.github.nihildigit.pikpak.listTrash
 import io.github.nihildigit.pikpak.rename
 import io.github.nihildigit.pikpak.searchFiles
-import io.github.nihildigit.pikpak.searchFilesRecursive
+import io.github.nihildigit.pikpak.searchDriveFlat
 import io.github.nihildigit.pikpak.starFiles
 import io.github.nihildigit.pikpak.unstarFiles
 import io.github.nihildigit.pikpak.thumbnailUrlOf
+import io.github.nihildigit.pikpak.imageThumbnailUrlOf
+import dev.piko.data.repository.isPlayableVideo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
@@ -276,6 +278,21 @@ open class PikoDriveRepository(
                         }
                         parentId = store.folderOfEntry(vaultEntryId)
                         if (parentId != null) break
+                    }
+                    if (parentId == null) {
+                        val discovered = runSuspendCatching { asked.listFiles(parentId = "*", pageSize = 500) }
+                            .getOrDefault(emptyList()).filter(VaultStore::looksLikeManifest)
+                            .map { it.parentId }.distinct().filterNot { it in candidates }
+                        for (candidateId in discovered) {
+                            runSuspendCatching {
+                                store.read(candidateId, fetchListing(candidateId, asked)).getOrNull()?.let {
+                                    if (clientManager.currentClient.value !== asked) throw CancellationException("Account changed")
+                                    vaultEntriesKnown(candidateId, it)
+                                }
+                            }
+                            parentId = store.folderOfEntry(vaultEntryId)
+                            if (parentId != null) break
+                        }
                     }
                 }
                 val resolvedParent = parentId ?: error("找不到归档条目所在的文件夹")
@@ -611,7 +628,10 @@ open class PikoDriveRepository(
         if (files.none { it.isFolder && (it.thumbnailLink.isEmpty() || it.id in vaultedFolders.value) && vaultCoverOf(it.id) != null }) return files
         return files.map { file ->
             if (!file.isFolder || (file.thumbnailLink.isNotEmpty() && file.id !in vaultedFolders.value)) return@map file
-            vaultCoverOf(file.id)?.let { file.copy(thumbnailLink = thumbnailUrlOf(it)) } ?: file
+            vaultCoverOf(file.id)?.let { cover ->
+                val url = if (cover.startsWith("img:")) imageThumbnailUrlOf(cover.removePrefix("img:")) else thumbnailUrlOf(cover)
+                file.copy(thumbnailLink = url)
+            } ?: file
         }
     }
 
@@ -930,7 +950,9 @@ open class PikoDriveRepository(
      * getFileDetail 才带。链接是签过名的，过期后 CDN 直接 403，所以不缓存，每次打开现取。
      */
     suspend fun originalImageUrl(fileId: String): String? =
-        getFileDetail(fileId).getOrNull()?.downloadUrl
+        if (LeasedFile.isLeased(fileId)) {
+            LeasedFile.resolvedFileOf(fileId)?.gcid?.takeIf { it.isNotBlank() }?.let { imageThumbnailUrlOf(it, large = true) }
+        } else getFileDetail(fileId).getOrNull()?.downloadUrl
 
     /**
      * 把一小段内容传成网盘里的文件，返回新文件的 ID。只给配置同步这类几 KB 的东西用：整段在内存里，
@@ -1094,12 +1116,10 @@ open class PikoDriveRepository(
     }
 
     /**
-     * 全盘按名搜索。PikPak 没有服务端搜索接口，只能逐层遍历目录树，
-     * 所以结果是流式的：大网盘走完一轮要几十秒，不能等遍历结束才给结果。
-     * 遍历的深度、目录数与超时上限由 SDK 的默认值兜底。
+     * 全盘分页平铺读取并在客户端按名匹配，由 SDK 重建路径和限定子树范围。
      */
     fun searchRecursive(query: String, parentId: String = ""): Flow<SearchHit> =
-        client.searchFilesRecursive(query, parentId).filter { hit ->
+        client.searchDriveFlat(query, parentId).filter { hit ->
             !isPikoInternalFolder(hit.file) && !VaultStore.looksLikeManifest(hit.file) && !VaultStore.isRecoveryFile(hit.file) &&
                 !(parentId.isEmpty() && hit.breadcrumb.firstOrNull()?.let(::isPikoInternalFolderName) == true)
         }.map { hit -> hit.copy(file = sourceLedger.enrich(hit.file)) }
@@ -1279,25 +1299,22 @@ open class PikoDriveRepository(
             PikoFileSortOrder.TIME_ASC -> compareBy(FileStat::createdTime)
             PikoFileSortOrder.SIZE_DESC -> compareByDescending(FileStat::sizeBytes)
             PikoFileSortOrder.SIZE_ASC -> compareBy(FileStat::sizeBytes)
-            // 按时长排序时，无时长的非音视频文件排在有具体时长的音视频文件之后，同为无时长时按自然名称排
-            PikoFileSortOrder.DURATION_DESC -> Comparator { a, b ->
+            // 分层后再比较，避免视频按大小、其他文件按名称导致比较关系成环。
+            PikoFileSortOrder.DURATION_DESC, PikoFileSortOrder.DURATION_ASC -> Comparator { a, b ->
                 val da = durationOf(a)
                 val db = durationOf(b)
-                when {
-                    da != null && db != null -> db.compareTo(da).takeIf { it != 0 } ?: nameComparator.compare(a, b)
-                    da != null -> -1
-                    db != null -> 1
-                    else -> nameComparator.compare(a, b)
-                }
-            }
-            PikoFileSortOrder.DURATION_ASC -> Comparator { a, b ->
-                val da = durationOf(a)
-                val db = durationOf(b)
-                when {
-                    da != null && db != null -> da.compareTo(db).takeIf { it != 0 } ?: nameComparator.compare(a, b)
-                    da != null -> -1
-                    db != null -> 1
-                    else -> nameComparator.compare(a, b)
+                val ta = if (da != null) 0 else if (a.isPlayableVideo()) 1 else 2
+                val tb = if (db != null) 0 else if (b.isPlayableVideo()) 1 else 2
+                val descending = order == PikoFileSortOrder.DURATION_DESC
+                val tier = ta.compareTo(tb)
+                if (tier != 0) tier else {
+                    val duration = if (ta == 0) {
+                        if (descending) db!!.compareTo(da!!) else da!!.compareTo(db!!)
+                    } else 0
+                    val size = if (ta < 2) {
+                        if (descending) b.sizeBytes.compareTo(a.sizeBytes) else a.sizeBytes.compareTo(b.sizeBytes)
+                    } else 0
+                    duration.takeIf { it != 0 } ?: size.takeIf { it != 0 } ?: nameComparator.compare(a, b)
                 }
             }
         }

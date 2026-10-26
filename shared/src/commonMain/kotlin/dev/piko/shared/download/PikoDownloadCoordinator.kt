@@ -634,9 +634,16 @@ class PikoDownloadCoordinator(
             if (task.qualityCap > 0 || task.quality != null) task = chooseQuality(task)
             val concurrency = preferences.concurrentConnectionsFlow.first().coerceIn(1, 8)
             // 转码档的 handle 要原画的大小（重建文件对象时用），暂存的大小是转码流的长度
+            val isLeased = task.leasedSource || LeasedFile.isLeased(task.fileId)
+            val leaseParentId = if (isLeased) {
+                runSuspendCatching { mediaRepository?.leaseFolder?.invoke(client) }.getOrNull()
+                    ?: task.parentId.takeIf { dev.piko.shared.data.isDriveFolderId(it) }.orEmpty()
+            } else {
+                task.parentId
+            }
             lease = fileCachePool.acquire(client, task.fileId, task.gcid,
                 if (task.mediaId != null) task.fullFileSize else task.totalBytes, task.fileName,
-                parentId = task.parentId, leased = task.leasedSource || LeasedFile.isLeased(task.fileId),
+                parentId = leaseParentId, leased = isLeased,
                 retained = true, concurrency = concurrency, owner = taskId,
                 mediaId = task.mediaId, streamSize = task.totalBytes)
             val entry = lease.entry

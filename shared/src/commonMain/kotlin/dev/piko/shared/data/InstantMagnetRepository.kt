@@ -173,19 +173,32 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
         var creatingFolder: String? = null
         val directories = if (keepStructure) files.flatMap { ancestorsOf(it.path) }.distinct().sortedBy { it.count { c -> c == '/' } } else emptyList()
         val prepared = runSuspendCatching {
-            for (dir in directories) {
-                if (dir in folderIds) continue
-                val parent = folderIds.getValue(dir.substringBeforeLast('/', ""))
-                creatingFolder = dir
-                folderIds[dir] = owner.createFolder(parent, dir.substringAfterLast('/'))
-                creatingFolder = null
+            for (level in directories.groupBy { it.count { c -> c == '/' } }.toSortedMap().values) {
+                val results = coroutineScope {
+                    level.filterNot { it in folderIds }.map { dir ->
+                        async {
+                            dir to runSuspendCatching {
+                                savePermits.withPermit {
+                                    owner.createFolder(folderIds.getValue(dir.substringBeforeLast('/', "")), dir.substringAfterLast('/'))
+                                }
+                            }
+                        }
+                    }.awaitAll()
+                }
+                // 每层完成后单线程合并，失败也保留同层已经确认创建的目录。
+                results.forEach { (dir, result) -> result.getOrNull()?.let { folderIds[dir] = it } }
+                val failure = results.firstOrNull { it.second.isFailure }
+                if (failure != null) {
+                    creatingFolder = results.firstOrNull { it.second.isFailure && !definitelyNotSaved(it.second.exceptionOrNull()) }?.first
+                    throw failure.second.exceptionOrNull()!!
+                }
             }
         }
         if (prepared.isFailure) {
             val error = prepared.exceptionOrNull()!!
             val receipt = InstantSaveReceipt(owner.account, targetParentId,
                 notAttempted = files.mapTo(HashSet()) { it.path }, folders = folderIds.toMap(),
-                unconfirmedFolder = creatingFolder.takeUnless { definitelyNotSaved(error) })
+                unconfirmedFolder = creatingFolder)
             return Result.failure(InstantSaveIncomplete(receipt, error))
         }
         if (referenceVault != null) {
@@ -193,12 +206,25 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
             val unknown = linkedSetOf<String>()
             val remaining = files.mapTo(linkedSetOf()) { it.path }
             var failure: Throwable? = null
-            for ((directory, group) in files.groupBy { if (keepStructure) it.path.substringBeforeLast('/', "") else "" }) {
-                val folderId = folderIds[directory] ?: targetParentId
-                val entries = group.map { file -> VaultEntry.create(names[file.path] ?: file.name, file.size, requireNotNull(file.gcid), source,
-                    kotlin.time.Clock.System.now().toEpochMilliseconds()) }
-                val write = referenceVault.update(folderId, VaultEdits.add(entries))
-                val actual = write.getOrNull()?.after ?: referenceVault.committed(folderId).getOrNull()
+            val groups = files.groupBy { if (keepStructure) it.path.substringBeforeLast('/', "") else "" }
+            val writes = coroutineScope {
+                groups.map { (directory, group) ->
+                    async {
+                        savePermits.withPermit {
+                            val folderId = folderIds.getValue(directory)
+                            val entries = group.map { file -> VaultEntry.create(names[file.path] ?: file.name, file.size, requireNotNull(file.gcid), source,
+                                kotlin.time.Clock.System.now().toEpochMilliseconds()) }
+                            val write = referenceVault.update(folderId, VaultEdits.add(entries))
+                            val actual = write.getOrNull()?.after ?: referenceVault.committed(folderId).getOrNull()
+                            Triple(entries, write, actual)
+                        }
+                    }
+                }.awaitAll()
+            }
+            for ((indexed, outcome) in groups.entries.zip(writes)) {
+                val (directory, group) = indexed
+                val folderId = folderIds.getValue(directory)
+                val (entries, write, actual) = outcome
                 group.zip(entries).forEach { (file, entry) ->
                     if(actual?.any { it.id == entry.id } == true) confirmed[file.path] = entry.virtualId
                     else if(write.exceptionOrNull() is VaultWriteUnconfirmed) unknown += file.path
@@ -212,7 +238,7 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
                     onReferencesSaved(tree)
                 }
                 remaining.removeAll(confirmed.keys + unknown)
-                if(write.isFailure) { failure = write.exceptionOrNull(); break }
+                if (write.isFailure && failure == null) failure = write.exceptionOrNull()
             }
             val receipt = InstantSaveReceipt(owner.account, targetParentId, confirmed = confirmed, unconfirmed = unknown,
                 notAttempted = remaining, folders = folderIds.toMap())

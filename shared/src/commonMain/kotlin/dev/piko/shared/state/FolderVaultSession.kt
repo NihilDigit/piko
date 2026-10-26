@@ -300,7 +300,9 @@ class FolderVaultSession internal constructor(
                                     if (activeWork === work) progress = Progress(target.name, done, total, prepared)
                                 }
                                 if (cid == null) progressLock.withLock { noCid++ }
-                                VaultEntry.create(file.name, file.sizeBytes, file.hash, file.sourceUrl, addedAt, cid)
+                                VaultEntry.create(file.name, file.sizeBytes, file.hash, file.sourceUrl, addedAt, cid,
+                                    duration = file.params["duration"], width = file.params["width"],
+                                    height = file.params["height"], mimeType = file.mimeType.takeIf { it.isNotBlank() })
                             } }.awaitAll()
                             ensureCurrent(work)
                             operations.write(folderId, entries)

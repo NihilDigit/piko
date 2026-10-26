@@ -401,17 +401,19 @@ private fun ZoomableImagePage(
     onDismiss: () -> Unit,
     onDismissProgress: (Float) -> Unit,
 ) {
+    val driveRepo = LocalPikoServices.current.driveRepository
     val mediaRepo = LocalPikoServices.current.mediaRepository
     val scope = rememberCoroutineScope()
     val platformContext = LocalPlatformContext.current
 
     var fullUrl by remember(file.id) { mutableStateOf<String?>(null) }
     var isFullReady by remember(file.id) { mutableStateOf(false) }
+    var fallbackTried by remember(file.id) { mutableStateOf(false) }
     // 全屏查看器里不再受防窥遮蔽拦一道：点进来本身就是「我要看这张」，
     // 再要求点一次「显示图片」只是多一步。遮蔽仍然作用在列表和海报墙的缩略图上。
     LaunchedEffect(file.id) {
         if (fullUrl == null) {
-            val url = mediaRepo.fetchDownloadUrl(file.id).getOrNull()
+            val url = driveRepo.originalImageUrl(file.id) ?: mediaRepo.fetchDownloadUrl(file.id).getOrNull()
             if (url != null) {
                 fullUrl = url
             } else {
@@ -549,7 +551,17 @@ private fun ZoomableImagePage(
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxSize(),
                     onSuccess = { isFullReady = true },
-                    onError = { isFullReady = true },
+                    onError = {
+                        if (!fallbackTried && dev.piko.shared.data.LeasedFile.isLeased(file.id)) {
+                            fallbackTried = true
+                            scope.launch {
+                                val leasedUrl = mediaRepo.fetchDownloadUrl(file.id).getOrNull()
+                                if (leasedUrl != null && leasedUrl != url) fullUrl = leasedUrl else isFullReady = true
+                            }
+                        } else {
+                            isFullReady = true
+                        }
+                    },
                 )
             }
         }

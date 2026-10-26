@@ -11,6 +11,8 @@ import dev.piko.shared.data.isImportPreview
 import dev.piko.shared.data.outsideArchives
 import dev.piko.data.repository.isPlayableVideo
 import io.github.nihildigit.pikpak.thumbnailUrlOf
+import io.github.nihildigit.pikpak.videoThumbnailUrlOf
+import io.github.nihildigit.pikpak.imageThumbnailUrlOf
 import io.github.nihildigit.pikpak.ArchivePasswordException
 import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.PikPakException
@@ -814,7 +816,12 @@ class DriveScreenState(
                     fileExtension = ext,
                     hash = gcid,
                 )
-                directFiles += if (gcid.isNotEmpty() && (base.isPlayableVideo() || base.fileCategory() == FileCategory.IMAGE)) base.copy(thumbnailLink = thumbnailUrlOf(gcid)) else base
+                directFiles += when {
+                    gcid.isBlank() -> base
+                    base.isPlayableVideo() -> base.copy(thumbnailLink = videoThumbnailUrlOf(gcid))
+                    base.fileCategory() == FileCategory.IMAGE -> base.copy(thumbnailLink = imageThumbnailUrlOf(gcid))
+                    else -> base
+                }
             }
         }
         val folderStats = childFolders.map { (name, children) ->
