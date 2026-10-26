@@ -7,9 +7,9 @@ package dev.piko.shared.search
  * 长的文本略减分，同样匹配时短的名字更像要找的那个。不分大小写，查询里的空格忽略。
  */
 fun fuzzyScore(query: String, text: String): Int? {
-    val q = query.lowercase().filterNot(Char::isWhitespace)
+    val q = normalizeCjk(query).filterNot(Char::isWhitespace)
     if (q.isEmpty()) return 0
-    val t = text.lowercase()
+    val t = normalizeCjk(text)
     val at = t.indexOf(q)
     if (at >= 0) {
         val wordStart = at == 0 || !t[at - 1].isLetterOrDigit()

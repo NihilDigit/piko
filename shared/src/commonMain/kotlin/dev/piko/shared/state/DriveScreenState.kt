@@ -47,8 +47,14 @@ import dev.piko.shared.data.PikoFileSortOrder
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.data.repository.FileCategory
 import dev.piko.data.repository.fileCategory
+import dev.piko.shared.search.cjkFuzzyScore
+import dev.piko.shared.search.cjkMatches
+import dev.piko.shared.search.normalizeCjk
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.SearchHit
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.Json
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -201,6 +207,10 @@ class DriveScreenState(
         private set
     var sortOrder by mutableStateOf(initialSortOrder)
         private set
+    var perFolderSort by mutableStateOf(false)
+        private set
+    private var globalSortOrder = initialSortOrder
+    private val folderSortOrders = LinkedHashMap<String, PikoFileSortOrder>()
 
     var searchQuery by mutableStateOf("")
         private set
@@ -351,7 +361,9 @@ class DriveScreenState(
     private val searchedFiles: List<FileStat> by derivedStateOf {
         when {
             isGlobalSearchActive -> globalSearchHits.map { it.file }
-            searchQuery.isNotBlank() -> searchQuery.trim().let { query -> files.filter { listedName(it).matches(query) } }
+            searchQuery.isNotBlank() -> searchQuery.trim().let { query ->
+                files.filter { listedName(it).matches(query) }
+            }
             else -> files
         }
     }
@@ -534,6 +546,33 @@ class DriveScreenState(
         }
         scope.launch {
             preferences.nameParsingFlow.collect { isNameParsing = it }
+        }
+        scope.launch {
+            preferences.perFolderSortFlow.collect { enabled ->
+                if (perFolderSort == enabled) return@collect
+                perFolderSort = enabled
+                val desired = effectiveSortOrderFor(activeFolderId)
+                if (sortOrder != desired) {
+                    sortOrder = desired
+                    load()
+                }
+            }
+        }
+        scope.launch {
+            preferences.folderSortOrdersFlow.collect { serialized ->
+                val parsed = decodeFolderSortOrders(serialized)
+                synchronized(folderSortOrders) {
+                    folderSortOrders.clear()
+                    folderSortOrders.putAll(parsed)
+                }
+                if (usesPerFolderSort()) {
+                    val desired = effectiveSortOrderFor(activeFolderId)
+                    if (sortOrder != desired) {
+                        sortOrder = desired
+                        load()
+                    }
+                }
+            }
         }
         // 目录一变就重新加载，不管是谁改的栈。只由这里负责：界面外的跳转（「在网盘中显示」）改栈时
         // 网盘页可能一直开着、不会重建，让各导航入口自己调加载的话，这条路就漏掉了
@@ -1283,10 +1322,68 @@ class DriveScreenState(
     /** 彻底删除，不能撤销，由界面先确认。 */
     fun deletePermanently(ids: List<String>) { submitFileAction(FileWriteCommand.Delete(ids)) }
 
+    private fun usesPerFolderSort(folderId: String = activeFolderId): Boolean =
+        perFolderSort && isDriveFolderId(folderId) && libraryView == null && archiveView == null && !isGlobalSearchActive
+
+    private fun effectiveSortOrderFor(folderId: String): PikoFileSortOrder =
+        if (perFolderSort && isDriveFolderId(folderId) && libraryView == null && archiveView == null) {
+            synchronized(folderSortOrders) { folderSortOrders[folderId] } ?: globalSortOrder
+        } else {
+            globalSortOrder
+        }
+
     fun changeSortOrder(order: PikoFileSortOrder) {
-        if (order == sortOrder) return
+        if (usesPerFolderSort()) {
+            val folderId = activeFolderId
+            val serialized = synchronized(folderSortOrders) {
+                folderSortOrders.remove(folderId)
+                folderSortOrders[folderId] = order
+                while (folderSortOrders.size > MAX_FOLDER_SORT_ENTRIES) {
+                    val eldest = folderSortOrders.keys.firstOrNull() ?: break
+                    folderSortOrders.remove(eldest)
+                }
+                encodeFolderSortOrders(folderSortOrders)
+            }
+            scope.launch { preferences.saveFolderSortOrders(serialized) }
+        } else {
+            globalSortOrder = order
+        }
+        if (order == sortOrder && !isGlobalSearchActive) return
         sortOrder = order
-        load()
+        if (isGlobalSearchActive) {
+            val sortedFiles = driveRepo.sortFiles(globalSearchHits.map { it.file }, order, "")
+            val byId = globalSearchHits.associateBy { it.file.id }
+            val reordered = sortedFiles.mapNotNull { byId[it.id] }
+            globalSearchHits.clear()
+            globalSearchHits.addAll(reordered)
+        } else {
+            load()
+        }
+    }
+
+    fun setPerFolderSortEnabled(enabled: Boolean) {
+        if (perFolderSort == enabled) return
+        perFolderSort = enabled
+        if (enabled && isDriveFolderId(activeFolderId) && libraryView == null && archiveView == null) {
+            val folderId = activeFolderId
+            val serialized = synchronized(folderSortOrders) {
+                if (folderId !in folderSortOrders) {
+                    folderSortOrders[folderId] = sortOrder
+                    encodeFolderSortOrders(folderSortOrders)
+                } else null
+            }
+            if (serialized != null) {
+                scope.launch { preferences.saveFolderSortOrders(serialized) }
+            }
+            val desired = effectiveSortOrderFor(folderId)
+            if (sortOrder != desired) {
+                sortOrder = desired
+                load()
+            }
+        } else if (!enabled) {
+            globalSortOrder = sortOrder
+        }
+        scope.launch { preferences.setPerFolderSort(enabled) }
     }
 
     // 以下几个导航只改栈，重新加载与清掉搜索、选中这些由栈的监听统一做，见 init
@@ -1434,7 +1531,7 @@ class DriveScreenState(
         if (isSelectionMode) exitSelection()
     }
 
-    /** 换了目录：搜索态、选中态、防窥揭示都不该跨目录留存。 */
+    /** 换了目录：搜索态、选中态、防窥揭示都不该跨目录留存；若开启按文件夹独立排序，则切换到该目录的排序。 */
     private fun onFolderChanged() {
         isSearchOpen = false
         typeFilter = null
@@ -1442,21 +1539,31 @@ class DriveScreenState(
         stopGlobalSearch()
         exitSelection()
         _revealedFileIds.clear()
+        sortOrder = effectiveSortOrderFor(activeFolderId)
         load()
     }
 
     fun updateSearchQuery(value: String) {
         searchQuery = value
-        stopGlobalSearch()
+        if (isGlobalSearchActive) {
+            if (value.isBlank()) {
+                stopGlobalSearch()
+            } else {
+                startGlobalSearch()
+            }
+        } else {
+            stopGlobalSearch()
+        }
     }
 
     /**
-     * 全盘搜索。PikPak 没有服务端按名搜索，只能逐层遍历，所以结果边走边到，
-     * 中途可以停下并保留已找到的部分。
+     * 全盘搜索。优先从仓库本地文件树（[PikoDriveRepository.searchRecursive]）毫秒级返回已知命中，
+     * 尚未拉齐整棵树时边流式同步边增量追加结果，中途可以停下并保留已找到的部分。
      */
     fun startGlobalSearch() {
         val keyword = searchQuery.trim()
         if (keyword.isEmpty()) return
+        globalSearchJob?.cancel()
         globalSearchHits.clear()
         isGlobalSearchActive = true
         isGlobalSearching = true
@@ -1927,10 +2034,30 @@ fun addressPathNames(text: String, current: List<PikoPathBreadcrumb>): List<Stri
     return names
 }
 
-/** 名字含 [partial] 的，开头相同的在前，各自保持原来的顺序；[partial] 为空时全部。 */
+/** 名字含 [partial] 的（支持 CJK 归一与模糊匹配），开头相同的在前，各自保持原来的顺序；[partial] 为空时全部。 */
 private fun rankByName(folders: List<PikoPathBreadcrumb>, partial: String): List<PikoPathBreadcrumb> {
     if (partial.isEmpty()) return folders
-    val (prefixed, rest) = folders.filter { it.name.contains(partial, ignoreCase = true) }
-        .partition { it.name.startsWith(partial, ignoreCase = true) }
+    val normPartial = normalizeCjk(partial)
+    val (prefixed, rest) = folders.filter { cjkMatches(it.name, partial) }
+        .partition { normalizeCjk(it.name).startsWith(normPartial) }
     return prefixed + rest
+}
+
+private const val MAX_FOLDER_SORT_ENTRIES = 500
+private val folderSortJson = Json { ignoreUnknownKeys = true }
+private val folderSortMapSerializer = MapSerializer(String.serializer(), String.serializer())
+
+private fun encodeFolderSortOrders(orders: Map<String, PikoFileSortOrder>): String =
+    if (orders.isEmpty()) ""
+    else folderSortJson.encodeToString(folderSortMapSerializer, orders.mapValues { it.value.name })
+
+private fun decodeFolderSortOrders(serialized: String): Map<String, PikoFileSortOrder> {
+    if (serialized.isBlank()) return emptyMap()
+    val raw = runCatching { folderSortJson.decodeFromString(folderSortMapSerializer, serialized) }.getOrDefault(emptyMap())
+    return buildMap {
+        for ((folderId, name) in raw) {
+            val order = PikoFileSortOrder.entries.firstOrNull { it.name == name } ?: continue
+            put(folderId, order)
+        }
+    }
 }

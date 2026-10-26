@@ -125,6 +125,12 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun saveRecentMoveTargets(serialized: String) = Unit
     override val pinnedFoldersFlow: Flow<String> = MutableStateFlow("")
     override suspend fun savePinnedFolders(serialized: String) = Unit
+    private val perFolderSort = MutableStateFlow(false)
+    override val perFolderSortFlow: Flow<Boolean> = perFolderSort
+    override suspend fun setPerFolderSort(enabled: Boolean) { perFolderSort.value = enabled }
+    private val folderSortOrders = MutableStateFlow("")
+    override val folderSortOrdersFlow: Flow<String> = folderSortOrders
+    override suspend fun saveFolderSortOrders(serialized: String) { folderSortOrders.value = serialized }
     override val batchRenameFlow: Flow<String> = MutableStateFlow("")
     override suspend fun saveBatchRename(serialized: String) = Unit
     override val vaultArchiveOptionsFlow: Flow<String> = MutableStateFlow("")

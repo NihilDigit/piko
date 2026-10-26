@@ -1,5 +1,6 @@
 package dev.piko.shared.state
 
+import dev.piko.shared.search.cjkMatches
 import io.github.nihildigit.pikpak.FileStat
 
 /**
@@ -15,8 +16,8 @@ class DriveItemName(
     /** 离开列表时的名字（面板、属性、拖放、提示）：没有作品头可依，集号前带上作品名，如「Steins;Gate 01」。 */
     val heading: String?,
 ) {
-    /** 显示名或真实名称里含有 [query]，不区分大小写。 */
-    fun matches(query: String): Boolean = listOfNotNull(file.name, title, heading).any { it.contains(query, ignoreCase = true) }
+    /** 显示名或真实名称里含有 [query]（支持 CJK 简繁/日新字体/假名归一与模糊匹配）。 */
+    fun matches(query: String): Boolean = listOfNotNull(file.name, title, heading).any { cjkMatches(it, query) }
 }
 
 /**

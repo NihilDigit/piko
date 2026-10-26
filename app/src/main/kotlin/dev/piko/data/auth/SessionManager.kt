@@ -127,6 +127,8 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val LAST_FOLDER_STACK_SERIALIZED = stringPreferencesKey("last_folder_stack")
         val RECENT_MOVE_TARGETS = stringPreferencesKey("recent_move_targets")
         val PINNED_FOLDERS = stringPreferencesKey("pinned_folders")
+        val PER_FOLDER_SORT_ENABLED = booleanPreferencesKey("per_folder_sort_enabled")
+        val FOLDER_SORT_ORDERS = stringPreferencesKey("folder_sort_orders")
         val BATCH_RENAME = stringPreferencesKey("batch_rename")
         val VAULT_ARCHIVE_OPTIONS = stringPreferencesKey("vault_archive_options")
         val RENAME_REGEX_TEXT_MODE = booleanPreferencesKey("rename_regex_text_mode")
@@ -512,6 +514,22 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun savePinnedFolders(serialized: String) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.PINNED_FOLDERS] = serialized
+        }
+    }
+
+    override val perFolderSortFlow: Flow<Boolean> = preference { it[PreferencesKeys.PER_FOLDER_SORT_ENABLED] ?: false }
+
+    override suspend fun setPerFolderSort(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.PER_FOLDER_SORT_ENABLED] = enabled
+        }
+    }
+
+    override val folderSortOrdersFlow: Flow<String> = preference { it[PreferencesKeys.FOLDER_SORT_ORDERS].orEmpty() }
+
+    override suspend fun saveFolderSortOrders(serialized: String) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.FOLDER_SORT_ORDERS] = serialized
         }
     }
 

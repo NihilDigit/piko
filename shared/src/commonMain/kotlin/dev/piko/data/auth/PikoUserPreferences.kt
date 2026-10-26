@@ -2,6 +2,7 @@ package dev.piko.data.auth
 
 import dev.piko.shared.net.ProxySetting
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 
 /** 网盘空间用量。取到之前先用账号列表里记着的上一次的值，免得卡片整块缺席。 */
 data class QuotaSnapshot(val usageBytes: Long, val limitBytes: Long)
@@ -162,6 +163,14 @@ interface PikoUserPreferences {
     /** 固定到快速访问的文件夹，JSON，见 PinnedFolders。空串表示从未保存。 */
     val pinnedFoldersFlow: Flow<String>
     suspend fun savePinnedFolders(serialized: String)
+
+    /** 每个文件夹独立记住自己的排序方式，默认关（所有文件夹共用同一排序）。 */
+    val perFolderSortFlow: Flow<Boolean> get() = flowOf(false)
+    suspend fun setPerFolderSort(enabled: Boolean) {}
+
+    /** 按文件夹记住的排序方式，JSON（folderId -> PikoFileSortOrder.name），按账号隔离。 */
+    val folderSortOrdersFlow: Flow<String> get() = flowOf("")
+    suspend fun saveFolderSortOrders(serialized: String) {}
 
     /** 批量重命名上次的选项与最近用过的查找、替换串，JSON，见 BatchRenameMemory。空串表示从未保存。每台设备各自的，不同步。 */
     val batchRenameFlow: Flow<String>

@@ -49,10 +49,12 @@ import androidx.compose.material.icons.outlined.FilterList
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
@@ -696,6 +698,8 @@ internal fun DriveListHeader(
     onViewModeChange: (DriveViewMode) -> Unit,
     tileSize: TileSize,
     onTileSizeChange: (TileSize) -> Unit,
+    perFolderSort: Boolean = false,
+    onPerFolderSortChange: ((Boolean) -> Unit)? = null,
     /** 为 false 时只留搜索结果的说明：宽窗口里这些控件在命令栏上。 */
     showControls: Boolean = true,
 ) {
@@ -721,7 +725,9 @@ internal fun DriveListHeader(
         AdaptiveBar(
             modifier = Modifier.fillMaxWidth().height(48.dp),
             leading = listOfNotNull(
-                BarItem("sort", 30, sortOverflowActions(sortOrder, onSortChange)) { SortButton(sortOrder, onSortChange) },
+                BarItem("sort", 30, sortOverflowActions(sortOrder, onSortChange, perFolderSort, onPerFolderSortChange)) {
+                    SortButton(sortOrder, onSortChange, perFolderSort, onPerFolderSortChange)
+                },
                 BarItem("filter", 20, typeFilterOverflowActions(typeFilter, availableTypes, onTypeFilterChange)) {
                     TypeFilterButton(typeFilter, availableTypes, onTypeFilterChange)
                 }.takeIf { showFilter },
@@ -736,18 +742,37 @@ internal fun DriveListHeader(
 }
 
 /** 排序收进「更多」时摊成几项，当前的一项打勾并写出方向，再点它是翻转，与排序按钮的菜单相同。 */
-internal fun sortOverflowActions(sortOrder: FileSortOrder, onSortChange: (FileSortOrder) -> Unit): List<SheetAction> =
-    PikoSortField.entries.map { field ->
+internal fun sortOverflowActions(
+    sortOrder: FileSortOrder,
+    onSortChange: (FileSortOrder) -> Unit,
+    perFolderSort: Boolean = false,
+    onPerFolderSortChange: ((Boolean) -> Unit)? = null,
+): List<SheetAction> = buildList {
+    PikoSortField.entries.forEach { field ->
         val current = field.owns(sortOrder)
         val direction = if (sortOrder.isAscending) "升序" else "降序"
-        SheetAction(
-            Icons.AutoMirrored.Outlined.Sort,
-            if (current) "按${field.label}（$direction）" else "按${field.label}",
-            { onSortChange(field.selectFrom(sortOrder)) },
-            group = ActionGroup.Sort,
-            checked = current,
+        add(
+            SheetAction(
+                Icons.AutoMirrored.Outlined.Sort,
+                if (current) "按${field.label}（$direction）" else "按${field.label}",
+                { onSortChange(field.selectFrom(sortOrder)) },
+                group = ActionGroup.Sort,
+                checked = current,
+            ),
         )
     }
+    if (onPerFolderSortChange != null) {
+        add(
+            SheetAction(
+                Icons.AutoMirrored.Outlined.Sort,
+                "各文件夹独立排序",
+                { onPerFolderSortChange(!perFolderSort) },
+                group = ActionGroup.Sort,
+                checked = perFolderSort,
+            ),
+        )
+    }
+}
 
 internal fun typeFilterOverflowActions(
     typeFilter: FileCategory?,
@@ -769,7 +794,12 @@ internal fun viewModeOverflowActions(viewMode: DriveViewMode, onViewModeChange: 
  * 不必为六种组合各列一项。列表页眉与宽窗口的命令栏共用。
  */
 @Composable
-internal fun SortButton(sortOrder: FileSortOrder, onSortChange: (FileSortOrder) -> Unit) {
+internal fun SortButton(
+    sortOrder: FileSortOrder,
+    onSortChange: (FileSortOrder) -> Unit,
+    perFolderSort: Boolean = false,
+    onPerFolderSortChange: ((Boolean) -> Unit)? = null,
+) {
     var showMenu by remember { mutableStateOf(false) }
     Box {
         TextButton(onClick = { showMenu = true }) {
@@ -791,6 +821,23 @@ internal fun SortButton(sortOrder: FileSortOrder, onSortChange: (FileSortOrder) 
                     text = { Text(field.label) },
                     shape = menuItemShape(index, fields.size),
                     trailingIcon = { if (isCurrent) SortDirectionIcon(sortOrder) },
+                )
+            }
+            if (onPerFolderSortChange != null) {
+                HorizontalDivider(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                )
+                DropdownMenuItem(
+                    onClick = {
+                        showMenu = false
+                        onPerFolderSortChange(!perFolderSort)
+                    },
+                    text = { Text("各文件夹独立排序") },
+                    shape = menuItemShape(0, 1),
+                    trailingIcon = {
+                        if (perFolderSort) Icon(Icons.Outlined.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                    },
                 )
             }
         }

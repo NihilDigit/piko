@@ -77,6 +77,8 @@ class DesktopPikoPreferences(
     private val connections = MutableStateFlow(settings.get(KEY_CONNECTIONS, "8").toIntOrNull() ?: 8)
     private val recentMoveTargets = MutableStateFlow(settings.get(KEY_RECENT_MOVE_TARGETS))
     private val pinnedFolders = MutableStateFlow(settings.get(KEY_PINNED_FOLDERS))
+    private val perFolderSort = MutableStateFlow(settings.get(KEY_PER_FOLDER_SORT) == "true")
+    private val folderSortOrders = MutableStateFlow(settings.get(KEY_FOLDER_SORT_ORDERS))
     private val batchRename = MutableStateFlow(settings.get(KEY_BATCH_RENAME))
     private val vaultArchiveOptions = MutableStateFlow(settings.get(KEY_VAULT_ARCHIVE_OPTIONS))
     private val renameRegexTextMode = MutableStateFlow(settings.get(KEY_RENAME_REGEX_TEXT_MODE) == "true")
@@ -346,6 +348,18 @@ class DesktopPikoPreferences(
         pinnedFolders.value = serialized
     }
 
+    override val perFolderSortFlow: Flow<Boolean> = perFolderSort.asStateFlow()
+    override suspend fun setPerFolderSort(enabled: Boolean) {
+        settings.set(KEY_PER_FOLDER_SORT, enabled.toString())
+        perFolderSort.value = enabled
+    }
+
+    override val folderSortOrdersFlow: Flow<String> = folderSortOrders.asStateFlow()
+    override suspend fun saveFolderSortOrders(serialized: String) {
+        settings.set(KEY_FOLDER_SORT_ORDERS, serialized)
+        folderSortOrders.value = serialized
+    }
+
     override val batchRenameFlow: Flow<String> = batchRename.asStateFlow()
     override suspend fun saveBatchRename(serialized: String) {
         settings.set(KEY_BATCH_RENAME, serialized)
@@ -414,6 +428,8 @@ class DesktopPikoPreferences(
         const val KEY_ARCHIVE_PASSWORDS = "drive.archivePasswords"
         const val KEY_RECENT_MOVE_TARGETS = "drive.recentMoveTargets"
         const val KEY_PINNED_FOLDERS = "drive.pinnedFolders"
+        const val KEY_PER_FOLDER_SORT = "drive.perFolderSort"
+        const val KEY_FOLDER_SORT_ORDERS = "drive.folderSortOrders"
         const val KEY_BATCH_RENAME = "drive.batchRename"
         const val KEY_VAULT_ARCHIVE_OPTIONS = "drive.vaultArchiveOptions"
         const val KEY_RENAME_REGEX_TEXT_MODE = "drive.renameRegexTextMode"

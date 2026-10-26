@@ -267,6 +267,8 @@ internal fun ExplorerCommandBar(
     onPaste: () -> Unit,
     sortOrder: FileSortOrder,
     onSortChange: (FileSortOrder) -> Unit,
+    perFolderSort: Boolean = false,
+    onPerFolderSortChange: ((Boolean) -> Unit)? = null,
     typeFilter: FileCategory?,
     availableTypes: List<Pair<FileCategory, Int>>,
     onTypeFilterChange: (FileCategory?) -> Unit,
@@ -314,7 +316,9 @@ internal fun ExplorerCommandBar(
         }
         add(barDivider("viewDivider"))
         if (commands.sort) {
-            add(BarItem("sort", 40, sortOverflowActions(sortOrder, onSortChange)) { SortButton(sortOrder, onSortChange) })
+            add(BarItem("sort", 40, sortOverflowActions(sortOrder, onSortChange, perFolderSort, onPerFolderSortChange)) {
+                SortButton(sortOrder, onSortChange, perFolderSort, onPerFolderSortChange)
+            })
         }
         if (commands.filter) {
             add(BarItem("filter", 35, typeFilterOverflowActions(typeFilter, availableTypes, onTypeFilterChange)) {

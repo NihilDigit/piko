@@ -1760,6 +1760,8 @@ fun DriveScreen(
             onCanonicalNaming = { canonicalRoot = activeFolder },
             sortOrder = state.sortOrder,
             onSortChange = { state.changeSortOrder(it) },
+            perFolderSort = state.perFolderSort,
+            onPerFolderSortChange = state::setPerFolderSortEnabled,
             typeFilter = state.typeFilter,
             availableTypes = state.availableTypes,
             onTypeFilterChange = state::updateTypeFilter,
@@ -2496,6 +2498,8 @@ fun DriveScreen(
                                                         onViewModeChange = ::selectViewMode,
                                                         tileSize = tileSize,
                                                         onTileSizeChange = ::selectTileSize,
+                                                        perFolderSort = state.perFolderSort,
+                                                        onPerFolderSortChange = state::setPerFolderSortEnabled,
                                                         // 宽窗口的排序、筛选与视图在命令栏上，页眉只剩搜索结果的说明
                                                         showControls = !pathInTopBar && !inDuplicates,
                                                     )

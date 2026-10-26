@@ -22,6 +22,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.Sort
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Animation
 import androidx.compose.material.icons.outlined.AutoFixHigh
@@ -151,6 +152,7 @@ fun SettingsScreen(
     val isSpoilerBlurEnabled by sessionManager.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = true)
     val isHeuristicFilterEnabled by sessionManager.heuristicFilterFlow.collectAsStateWithLifecycle(initialValue = true)
     val isNameParsingEnabled by sessionManager.nameParsingFlow.collectAsStateWithLifecycle(initialValue = true)
+    val isPerFolderSortEnabled by sessionManager.perFolderSortFlow.collectAsStateWithLifecycle(initialValue = false)
     val isBundleSubtitlesEnabled by sessionManager.bundleSubtitlesFlow.collectAsStateWithLifecycle(initialValue = true)
     val isAutoCleanNamesEnabled by sessionManager.autoCleanNamesFlow.collectAsStateWithLifecycle(initialValue = false)
     val isHardwareDecodingEnabled by sessionManager.hardwareDecodingFlow.collectAsStateWithLifecycle(initialValue = true)
@@ -396,6 +398,13 @@ fun SettingsScreen(
                                 supporting = "模糊显示缩略图与封面",
                                 checked = isSpoilerBlurEnabled,
                                 onCheckedChange = { scope.launch { sessionManager.setSpoilerBlurEnabled(it) } },
+                            )
+                            SettingsSwitchRow(
+                                icon = Icons.AutoMirrored.Outlined.Sort,
+                                title = "各文件夹独立排序",
+                                supporting = "每个文件夹单独记住自己的排序方式",
+                                checked = isPerFolderSortEnabled,
+                                onCheckedChange = { scope.launch { sessionManager.setPerFolderSort(it) } },
                             )
                         }
                         SettingsGroup("播放") {
