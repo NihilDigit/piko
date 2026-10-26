@@ -28,6 +28,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
@@ -658,24 +659,49 @@ class PikoDownloadCoordinator(
                 (if (task.leasedSource || LeasedFile.isLeased(task.fileId)) "，借出取流" else "") +
                 (limiter.bytesPerSecond?.let { "，限速 ${it / 1024} KiB/s" } ?: ""))
             coroutineScope {
-                // 分批提交范围，在占用连接之前等限速额度；播放读取不经过限速器。
-                for (range in downloadOrder(task.totalBytes)) {
-                    var offset = range.first
-                    while (offset <= range.last) {
-                        currentCoroutineContext().ensureActive()
-                        val blockSize = PikPakStreamReader.DEFAULT_BLOCK_SIZE
-                        val maximum = minOf(DOWNLOAD_WINDOW_BYTES, concurrency * blockSize)
-                        val window = limiter.bytesPerSecond?.coerceIn(blockSize, maximum)
-                            ?.let { (it / blockSize) * blockSize } ?: maximum
-                        val end = minOf(range.last, offset + window - 1)
-                        val missing = entry.store.missing(entry.handle.contentKey, listOf(offset..end))
-                        val needed = missing.sumOf { it.last - it.first + 1 }
-                        if (needed > 0) {
-                            limiter.acquire(needed)
-                            val download = entry.cache.download(missing, StreamRole.BACKGROUND)
-                            try { download.await() } finally { download.cancel() }
+                // 不限速时一次性提交整段范围，由 SDK 的全部 worker 连续流水化拉取，避免微窗口同步停等屏障；
+                // 开启蜗牛限速时分批提交并在占用连接前等待限速额度；播放读取不经过限速器。
+                val ranges = downloadOrder(task.totalBytes)
+                while (true) {
+                    val missingAll = entry.store.missing(entry.handle.contentKey, ranges)
+                    if (missingAll.isEmpty()) break
+                    if (limiter.bytesPerSecond == null) {
+                        val download = entry.cache.download(missingAll, StreamRole.BACKGROUND)
+                        val throttleWatcher = launch {
+                            preferences.snailModeFlow.first { it.enabled }
+                            download.cancel()
                         }
-                        offset = end + 1
+                        try {
+                            download.await()
+                            break
+                        } catch (e: CancellationException) {
+                            currentCoroutineContext().ensureActive()
+                        } finally {
+                            throttleWatcher.cancel()
+                            download.cancel()
+                        }
+                    } else {
+                        for (range in missingAll) {
+                            var offset = range.first
+                            while (offset <= range.last && limiter.bytesPerSecond != null) {
+                                currentCoroutineContext().ensureActive()
+                                val blockSize = PikPakStreamReader.DEFAULT_BLOCK_SIZE
+                                // SDK 下载每次认领 2 个块（512 KiB），窗口至少覆盖所有并发 worker 的双块跨度
+                                val maximum = maxOf(DOWNLOAD_WINDOW_BYTES, concurrency * blockSize * 2)
+                                val window = limiter.bytesPerSecond?.coerceIn(blockSize, maximum)
+                                    ?.let { (it / blockSize) * blockSize } ?: maximum
+                                val end = minOf(range.last, offset + window - 1)
+                                val missing = entry.store.missing(entry.handle.contentKey, listOf(offset..end))
+                                val needed = missing.sumOf { it.last - it.first + 1 }
+                                if (needed > 0) {
+                                    limiter.acquire(needed)
+                                    val download = entry.cache.download(missing, StreamRole.BACKGROUND)
+                                    try { download.await() } finally { download.cancel() }
+                                }
+                                offset = end + 1
+                            }
+                            if (limiter.bytesPerSecond == null) break
+                        }
                     }
                 }
                 check(entry.store.heldBytes.value == task.totalBytes) { "文件仍有未完成的块" }
@@ -713,6 +739,9 @@ class PikoDownloadCoordinator(
                 downloadedBytes = lease?.entry?.store?.heldBytes?.value ?: it.downloadedBytes, errorMessage = e.message,
                 converting = false, progressFraction = null) }
         } finally {
+            withContext(NonCancellable) {
+                runCatching { lease?.entry?.store?.flush() }
+            }
             lease?.release()
         }
     }
